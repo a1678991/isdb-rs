@@ -1,0 +1,60 @@
+# Commit messages (commitlint) and the workflows themselves.
+name: Lint
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # MISE_GITHUB_TOKEN so mise/aqua use authenticated GH API calls
+      # and don't hit the 60/hr anonymous rate limit on tool downloads.
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install commitlint
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint commits in this PR
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: pnpm exec commitlint --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
+
+  actions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: actionlint
+        run: mise run actions:actionlint
+
+      - name: zizmor
+        run: mise run actions:zizmor
+
+      - name: pinact (verify pins)
+        run: mise run actions:pinact:check
+
+  # Rust fmt/clippy/test/doc/deny/MSRV jobs are in ci.yml.
