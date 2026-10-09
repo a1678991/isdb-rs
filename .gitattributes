@@ -1,0 +1,19 @@
+# Normalise line endings; the code base is LF-only.
+* text=auto eol=lf
+
+# Lockfiles: no textual merges, collapsed in diffs.
+Cargo.lock linguist-generated=true -merge
+pnpm-lock.yaml linguist-generated=true -merge
+mise.lock linguist-generated=true -merge
+proptest-regressions/** linguist-generated=true
+*.proptest-regressions linguist-generated=true
+
+# Binary capture / IQ formats (normally gitignored; never diff them).
+*.ts binary
+*.m2ts binary
+*.m2v binary
+*.m2a binary
+*.cf32 binary
+*.cs8 binary
+*.cu8 binary
+*.iq binary

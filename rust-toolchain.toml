@@ -1,0 +1,7 @@
+# Toolchain used for development and CI (fmt, clippy, test, doc).
+# The minimum supported Rust version is separate: `rust-version` in the
+# workspace Cargo.toml, checked by the `msrv` CI job / `make msrv`.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
