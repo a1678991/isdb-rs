@@ -2279,6 +2279,8 @@ pub fn source_events(p: &Probe) -> Vec<EventCfg> {
 enum Chunk {
     Packets(Vec<Packet>),
     Eof,
+    /// A read error: the relay stops with this message.
+    Error(String),
 }
 
 fn spawn_reader(path: &Path, at_eof: AtEof) -> Result<Receiver<Chunk>> {
@@ -2297,12 +2299,25 @@ fn spawn_reader(path: &Path, at_eof: AtEof) -> Result<Receiver<Chunk>> {
             loop {
                 let mut r = StreamReader::new(BufReader::with_capacity(1 << 20, f));
                 let mut batch = Vec::with_capacity(BATCH);
-                while let Ok(Some(p)) = r.next_packet() {
-                    batch.push(*p.packet());
-                    if batch.len() == BATCH
-                        && tx.send(Chunk::Packets(std::mem::take(&mut batch))).is_err()
-                    {
-                        return;
+                loop {
+                    match r.next_packet() {
+                        Ok(Some(p)) => {
+                            batch.push(*p.packet());
+                            if batch.len() == BATCH
+                                && tx.send(Chunk::Packets(std::mem::take(&mut batch))).is_err()
+                            {
+                                return;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            if !batch.is_empty() {
+                                let _ = tx.send(Chunk::Packets(std::mem::take(&mut batch)));
+                            }
+                            let _ = tx
+                                .send(Chunk::Error(format!("{}: read error: {e}", path.display())));
+                            return;
+                        }
                     }
                 }
                 if !batch.is_empty() && tx.send(Chunk::Packets(batch)).is_err() {
@@ -2313,7 +2328,10 @@ fn spawn_reader(path: &Path, at_eof: AtEof) -> Result<Receiver<Chunk>> {
                 }
                 match open(&path) {
                     Ok(x) => f = x,
-                    Err(_) => return,
+                    Err(e) => {
+                        let _ = tx.send(Chunk::Error(format!("reopening for the next pass: {e}")));
+                        return;
+                    }
                 }
             }
         })
@@ -2602,6 +2620,10 @@ impl Relay {
                     }
                 }
                 Ok(Chunk::Eof) => self.end_pass(),
+                Ok(Chunk::Error(m)) => {
+                    self.failure = Some(m);
+                    self.reading_done = true;
+                }
                 Err(_) => self.reading_done = true,
             }
         }
