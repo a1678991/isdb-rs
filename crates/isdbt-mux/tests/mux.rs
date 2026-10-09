@@ -32,7 +32,7 @@ fn run(extra: &str, name: &str, frames: u64) -> Run {
         let (f, layers) = mux.next_frame_full();
         assert_eq!(f.len(), n);
         for l in Layer::ALL {
-            let want = params.layers[l.index()].map_or(0, |c| c.tsp_per_frame(params.mode));
+            let want = params.layers()[l.index()].map_or(0, |c| c.tsp_per_frame(params.mode()));
             assert_eq!(layers[l.index()].len(), want, "frame {k} layer {l}");
         }
         for j in 0..n {

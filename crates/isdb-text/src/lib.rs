@@ -50,7 +50,7 @@ pub mod encode;
 pub mod sets;
 pub mod tables;
 
-pub use decode::{DecodeOptions, Decoded, Issue, IssueKind, WidthMode};
+pub use decode::{DecodeOptions, Decoded, Issue, IssueKind, WidthMode, decode_with};
 pub use encode::{EncodeError, EncodeOptions, encode, encode_with};
 pub use sets::{CharSize, GraphicSet, InitialState, Shift};
 

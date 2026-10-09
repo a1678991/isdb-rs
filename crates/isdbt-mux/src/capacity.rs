@@ -26,7 +26,8 @@ pub fn layer_config_bps(mode: Mode, guard: GuardInterval, cfg: &LayerConfig) -> 
 
 /// TS rate (bit/s) of `layer` in `params`, 0 if the layer is unused.
 pub fn layer_bps(params: &Params, layer: Layer) -> f64 {
-    params.layers[layer.index()].map_or(0.0, |c| layer_config_bps(params.mode, params.guard, &c))
+    params.layers()[layer.index()]
+        .map_or(0.0, |c| layer_config_bps(params.mode(), params.guard(), &c))
 }
 
 /// Short layer description, e.g. `12seg 64QAM 7/8`.
@@ -99,13 +100,13 @@ fn coherent_by_robustness() -> Vec<(Modulation, CodeRate)> {
 /// without it. At most `max` entries, configured guard interval first.
 pub fn suggest(params: &Params, layer: Layer, need_bps: f64, max: usize) -> Vec<Suggestion> {
     let mut out = Vec::new();
-    let Some(cur) = params.layers[layer.index()] else {
+    let Some(cur) = params.layers()[layer.index()] else {
         return out;
     };
     let ti = cur.time_interleave;
-    let mut guards = vec![params.guard];
+    let mut guards = vec![params.guard()];
     for g in [GuardInterval::G1_16, GuardInterval::G1_32] {
-        if g.denominator() > params.guard.denominator() && !guards.contains(&g) {
+        if g.denominator() > params.guard().denominator() && !guards.contains(&g) {
             guards.push(g);
         }
     }
@@ -117,12 +118,12 @@ pub fn suggest(params: &Params, layer: Layer, need_bps: f64, max: usize) -> Vec<
                 code_rate: r,
                 ..cur
             };
-            let mut layers = params.layers;
+            let mut layers = params.layers();
             layers[layer.index()] = Some(cfg);
-            let Ok(p) = Params::new(params.mode, g, params.partial_reception, layers) else {
+            let Ok(p) = Params::new(params.mode(), g, params.partial_reception(), layers) else {
                 continue;
             };
-            let bps = layer_config_bps(params.mode, g, &cfg);
+            let bps = layer_config_bps(params.mode(), g, &cfg);
             if bps >= need_bps {
                 out.push(Suggestion {
                     summary: format!(
@@ -130,7 +131,7 @@ pub fn suggest(params: &Params, layer: Layer, need_bps: f64, max: usize) -> Vec<
                         describe_layer(&cfg),
                         bps / 1e6,
                         guard_name(g),
-                        if params.partial_reception {
+                        if params.partial_reception() {
                             ", partial reception kept"
                         } else {
                             ""
@@ -138,7 +139,7 @@ pub fn suggest(params: &Params, layer: Layer, need_bps: f64, max: usize) -> Vec<
                     ),
                     options: format!(
                         "{}--layer-{} {}",
-                        if g != params.guard {
+                        if g != params.guard() {
                             format!("--gi {} ", g.denominator())
                         } else {
                             String::new()
@@ -154,7 +155,7 @@ pub fn suggest(params: &Params, layer: Layer, need_bps: f64, max: usize) -> Vec<
             }
         }
         // (b) one 13-segment layer, no partial reception.
-        if params.partial_reception || params.active_layers().count() > 1 {
+        if params.partial_reception() || params.active_layers().count() > 1 {
             for (m, r) in coherent_by_robustness() {
                 let cfg = LayerConfig {
                     segments: 13,
@@ -162,11 +163,11 @@ pub fn suggest(params: &Params, layer: Layer, need_bps: f64, max: usize) -> Vec<
                     code_rate: r,
                     time_interleave: TimeInterleave(ti.0),
                 };
-                let bps = layer_config_bps(params.mode, g, &cfg);
+                let bps = layer_config_bps(params.mode(), g, &cfg);
                 if bps < need_bps {
                     continue;
                 }
-                let Ok(p) = Params::new(params.mode, g, false, [Some(cfg), None, None]) else {
+                let Ok(p) = Params::new(params.mode(), g, false, [Some(cfg), None, None]) else {
                     continue;
                 };
                 out.push(Suggestion {
@@ -178,7 +179,7 @@ pub fn suggest(params: &Params, layer: Layer, need_bps: f64, max: usize) -> Vec<
                     ),
                     options: format!(
                         "{}--partial false --layer-a {} --layer-b none --layer-c none",
-                        if g != params.guard {
+                        if g != params.guard() {
                             format!("--gi {} ", g.denominator())
                         } else {
                             String::new()
@@ -201,14 +202,14 @@ pub fn suggest(params: &Params, layer: Layer, need_bps: f64, max: usize) -> Vec<
 /// carries only its capacity; lists [`suggest`]ions (or says none fits).
 pub fn over_capacity_message(params: &Params, layer: Layer, need_bps: f64, what: &str) -> String {
     let cap = layer_bps(params, layer);
-    let cur = params.layers[layer.index()]
+    let cur = params.layers()[layer.index()]
         .map(|c| describe_layer(&c))
         .unwrap_or_else(|| "unused".into());
     let mut s = format!(
         "{what} needs {:.2} Mbit/s but layer {layer} ({cur}, mode {}, GI {}) carries {:.2} Mbit/s ({:.1} % of the need)",
         need_bps / 1e6,
-        params.mode.number(),
-        guard_name(params.guard),
+        params.mode().number(),
+        guard_name(params.guard()),
         cap / 1e6,
         100.0 * cap / need_bps.max(1.0)
     );
@@ -258,7 +259,7 @@ mod tests {
         assert!((layer_bps(&p, Layer::A) / 1e6 - 0.416).abs() < 0.001);
         let b78 = LayerConfig {
             code_rate: CodeRate::R7_8,
-            ..p.layers[1].unwrap()
+            ..p.layers()[1].unwrap()
         };
         assert!(
             (layer_config_bps(Mode::M3, GuardInterval::G1_8, &b78) / 1e6 - 19.660).abs() < 0.001

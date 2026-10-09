@@ -8,6 +8,7 @@ use isdb_ts::section::Long;
 
 /// A decoded section.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Table {
     /// program_association_section (H.222.0 Table 2-30).
     Pat(Long<Pat>),

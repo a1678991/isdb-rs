@@ -90,7 +90,7 @@ impl MultiplexPattern {
     }
 
     fn simulate(params: &Params, strict: bool) -> Self {
-        let mode = params.mode;
+        let mode = params.mode();
         let sym = params.samples_per_symbol() as u64;
         let n = params.multiplex_frame_tsps();
         let intervals = switch_intervals_per_frame(mode);
@@ -147,7 +147,7 @@ impl MultiplexPattern {
             let q = ((TSP_PERIOD_CLOCKS * j) as u64 / interval_clocks) as usize;
             if q > 0
                 && heads[q - 1] < sections[q - 1].len()
-                && (TSP_PERIOD_CLOCKS * j) as u64 % interval_clocks == 0
+                && ((TSP_PERIOD_CLOCKS * j) as u64).is_multiple_of(interval_clocks)
             {
                 panic!(
                     "model receiver: section {} not drained when S4 switched",

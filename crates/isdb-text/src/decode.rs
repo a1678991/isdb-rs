@@ -59,6 +59,7 @@ pub struct Issue {
 
 /// Kinds of decoding problems.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum IssueKind {
     /// Escape sequence not listed in Table 7-1 / Table 7-2, or a final byte
     /// not listed in Table 7-3 (the designation is not applied).

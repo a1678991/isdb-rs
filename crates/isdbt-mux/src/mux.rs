@@ -212,7 +212,7 @@ impl Multiplexer {
             ));
         }
         for s in &cfg.services {
-            if params.layers[s.layer.index()].is_none() {
+            if params.layers()[s.layer.index()].is_none() {
                 return Err(MuxError::Config(format!(
                     "service {:#06x} is on layer {:?}, which is not active",
                     s.service_id, s.layer
@@ -398,7 +398,7 @@ impl Multiplexer {
             let mut svc_streams: Vec<(usize, Media, u64, usize)> = Vec::new();
             for st in &s.streams {
                 let layer = st.layer.unwrap_or(s.layer).index();
-                if params.layers[layer].is_none() {
+                if params.layers()[layer].is_none() {
                     return Err(MuxError::Config(format!(
                         "stream {:#06x} on inactive layer {}",
                         st.pid,
@@ -632,7 +632,7 @@ impl Multiplexer {
                 .layer
                 .map(|l| l.index())
                 .unwrap_or_else(|| si.default_layer(kind));
-            if params.layers[layer].is_none() {
+            if params.layers()[layer].is_none() {
                 return Err(MuxError::Config(format!(
                     "{} on inactive layer {}",
                     kind.name(),
@@ -670,7 +670,7 @@ impl Multiplexer {
         }
 
         // ---- PCR
-        let scale = params.mode.scale() as u32;
+        let scale = params.mode().scale() as u32;
         let per_frame = cfg.timing.pcr_per_frame.unwrap_or(scale) as usize;
         let mut pcr = Vec::new();
         let mut per_layer_count = [0usize; 3];
@@ -806,8 +806,8 @@ impl Multiplexer {
         // ---- rough capacity check
         for e in &es {
             if let Media::Video { es: v, .. } = &e.media {
-                let cap = params.layers[e.layer]
-                    .map(|l| l.tsp_per_frame(params.mode))
+                let cap = params.layers()[e.layer]
+                    .map(|l| l.tsp_per_frame(params.mode()))
                     .unwrap_or(0) as f64
                     * 184.0
                     * 8.0

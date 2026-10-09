@@ -159,8 +159,8 @@ proptest! {
         fi.deinterleave(&y, &mut z);
         prop_assert_eq!(x, z);
         // Segments never leave their group: partial reception stays in segment 0.
-        let nc = p.mode.data_carriers_per_segment();
-        if p.partial_reception {
+        let nc = p.mode().data_carriers_per_segment();
+        if p.partial_reception() {
             for q in 0..nc { prop_assert!((fi.permutation()[q] as usize) < nc); }
         }
     }
@@ -221,11 +221,11 @@ proptest! {
     /// frames × 204 symbols on every carrier of each layer.
     #[test]
     fn prop_time_interleave_identity(p in arb_params(3), seed in any::<u64>()) {
-        let nc = p.mode.data_carriers_per_segment();
+        let nc = p.mode().data_carriers_per_segment();
         let mut ti = TimeInterleaver::new(&p, u32::MAX);
         let mut tdi = TimeDeinterleaver::new(&p, u32::MAX);
         let mut rng = Rng(seed);
-        let max_f = Layer::ALL.iter().map(|&l| time_interleave_delayed_frames(p.mode, p.time_interleave_length(l)).unwrap()).max().unwrap();
+        let max_f = Layer::ALL.iter().map(|&l| time_interleave_delayed_frames(p.mode(), p.time_interleave_length(l)).unwrap()).max().unwrap();
         let total = max_f * 204 + 3;
         let mut hist: Vec<Vec<u32>> = Vec::new();
         for t in 0..total {
@@ -235,7 +235,7 @@ proptest! {
             tdi.process(&mut y);
             hist.push(x);
             for (id, _) in p.active_layers() {
-                let f = time_interleave_delayed_frames(p.mode, p.time_interleave_length(id)).unwrap();
+                let f = time_interleave_delayed_frames(p.mode(), p.time_interleave_length(id)).unwrap();
                 let d = f * 204;
                 let (first, cnt) = layer_segments(&p, id).unwrap();
                 if t >= d {
@@ -249,7 +249,7 @@ proptest! {
     /// (both rotation numberings): LLR hard decisions equal the input bits.
     #[test]
     fn prop_noiseless_loopback(p in arb_params(1), rel in any::<bool>(), seed in any::<u64>()) {
-        prop_assume!(p.mode != Mode::M3);
+        prop_assume!(p.mode() != Mode::M3);
         let numbering = if rel { RotationNumbering::GroupRelative } else { RotationNumbering::DataSegmentNumber };
         let mut m = Modulator::with_numbering(p.clone(), numbering);
         let tmcc = TmccInfo::from_params(&p);
@@ -276,7 +276,7 @@ proptest! {
                     // The very first transmitted symbol has no DQPSK reference
                     // on air: its differential bits come out as erasures (0).
                     let first_dqpsk = idx == lat
-                        && p.layers[l.index()].is_some_and(|c| c.modulation.is_differential());
+                        && p.layers()[l.index()].is_some_and(|c| c.modulation.is_differential());
                     let input = &inputs[idx - lat][l.index()];
                     let mut erasures = 0;
                     for (x, &b) in llr.iter().zip(input) {
@@ -315,11 +315,11 @@ proptest! {
         let tmcc = TmccInfo::from_params(&p);
         let ac = AcFrame::stuffing(m.layout());
         let layout = m.layout().clone();
-        let nc = p.mode.data_carriers_per_segment();
+        let nc = p.mode().data_carriers_per_segment();
         let fi = FrequencyInterleaver::new(&p);
         let mut tdi = TimeDeinterleaver::new(&p, (C32::default(), 0f32));
         let mut bdi: Vec<Option<(BitDeinterleaver, Demapper)>> =
-            p.layers.iter().map(|l| l.map(|l| (BitDeinterleaver::new(l.modulation), Demapper::new(l.modulation)))).collect();
+            p.layers().iter().map(|l| l.map(|l| (BitDeinterleaver::new(l.modulation), Demapper::new(l.modulation)))).collect();
         let max_f = Layer::ALL.iter().map(|&l| ti_frames(&p, l)).max().unwrap();
         let mut rng = Rng(seed);
         let mut inputs: Vec<[Vec<u8>; 3]> = Vec::new();

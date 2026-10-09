@@ -364,7 +364,7 @@ impl ViterbiDecoder {
     /// input by at least `traceback` steps.
     pub fn push(&mut self, pairs: &[f32], out: &mut Vec<u8>) {
         assert_eq!(pairs.len() % 2, 0);
-        for (i, p) in pairs.chunks_exact(2).enumerate() {
+        for (i, p) in pairs.as_chunks::<2>().0.iter().enumerate() {
             self.acs(p[0], p[1]);
             if i % 64 == 63 {
                 self.renormalise();

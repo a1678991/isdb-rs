@@ -6,6 +6,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Decode/encode failure.  Every variant names the syntax element (`what`)
 /// so a failure can be traced to the spec table that defines it.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// The input ended before the syntax element was complete.
     #[error("{what}: truncated (need {need} bytes, have {have})")]

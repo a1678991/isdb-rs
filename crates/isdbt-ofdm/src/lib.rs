@@ -85,6 +85,7 @@ pub type C32 = num_complex::Complex32;
 
 /// Errors of this crate.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Wrong number of input bits for a layer.
     #[error("layer {layer}: expected {expected} bits, got {got}")]

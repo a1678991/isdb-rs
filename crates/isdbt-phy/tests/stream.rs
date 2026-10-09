@@ -120,7 +120,7 @@ fn pipelined_receiver_matches_inline() {
     let (iq, _) = transmit(&p, true, 4);
     let mut rx = Receiver::new(DemodConfig::default());
     let inline: Vec<RxFrame> = rx.push(&iq).unwrap();
-    let mut prx = PipelinedReceiver::new(DemodConfig::default(), 2);
+    let mut prx = PipelinedReceiver::new(DemodConfig::default(), 2).unwrap();
     let mut piped = Vec::new();
     for c in iq.chunks(50_000) {
         prx.push(c.to_vec());

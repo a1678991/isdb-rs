@@ -59,7 +59,7 @@ use isdbt_core::{Layer, Params, SYMBOLS_PER_FRAME};
 
 /// Table 3-12 delayed frames `F_l` of `layer` (0 for unused layers).
 pub fn ti_frames(params: &Params, layer: Layer) -> usize {
-    time_interleave_delayed_frames(params.mode, params.time_interleave_length(layer)).unwrap_or(0)
+    time_interleave_delayed_frames(params.mode(), params.time_interleave_length(layer)).unwrap_or(0)
 }
 
 /// Frames held by the modulator for the bit-interleave frame alignment
@@ -88,8 +88,8 @@ pub fn rx_alignment_symbols(params: &Params, layer: Layer) -> usize {
 
 /// Coded bits per OFDM frame of `layer` (`nc·S·N·204`; 0 if unused).
 pub fn bits_per_frame(params: &Params, layer: Layer) -> usize {
-    params.layers[layer.index()].map_or(0, |l| {
-        params.mode.data_carriers_per_segment()
+    params.layers()[layer.index()].map_or(0, |l| {
+        params.mode().data_carriers_per_segment()
             * l.modulation.bits_per_symbol()
             * l.segments
             * SYMBOLS_PER_FRAME

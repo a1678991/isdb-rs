@@ -93,7 +93,7 @@ fn run_sfo(params: Params, frames: usize, ch: Channel, skip: usize, seed: u64, p
     for f in &out {
         assert!(f.tmcc.parity.is_ok(), "TMCC parity {:?}", f.tmcc.parity);
         assert_eq!(
-            f.tmcc.info.params(params.mode, params.guard).unwrap(),
+            f.tmcc.info.params(params.mode(), params.guard()).unwrap(),
             params
         );
         assert_eq!(f.params, params);
@@ -126,8 +126,8 @@ fn run_sfo(params: Params, frames: usize, ch: Channel, skip: usize, seed: u64, p
     let last = out.last().unwrap();
     eprintln!(
         "{:?} {:?}: frames_out={} checked={} errors={:?}/{:?} cfo={:.4} start_err={} mer={:?} drift={:.4} smp/sym corr={:.1}",
-        params.mode,
-        params.guard,
+        params.mode(),
+        params.guard(),
         out.len(),
         rep.frames_checked,
         rep.bit_errors,
@@ -581,7 +581,7 @@ fn acquisition_helpers() {
     // List index j holds frame symbol n = j + 5, so n mod 4 = (j + c) mod 4 with c = 1.
     assert_eq!(c, 1);
     assert!(conf > 0.9);
-    let (kinds, _) = detect_kinds(p.mode, &noisy);
+    let (kinds, _) = detect_kinds(p.mode(), &noisy);
     for (s, kind) in kinds.iter().enumerate() {
         let want = if p.segment_is_differential(s) {
             SegmentKind::Differential
@@ -591,19 +591,19 @@ fn acquisition_helpers() {
         assert_eq!(*kind, want, "segment {s}");
     }
     // Integer CFO: shift the band by +5 bins in a full N-bin spectrum.
-    let n = p.mode.fft_size();
+    let n = p.mode().fft_size();
     let full: Vec<Vec<C32>> = noisy
         .iter()
         .map(|s| {
             let mut v = vec![C32::default(); n];
             for (k, &x) in s.iter().enumerate() {
-                let b = isdbt_ofdm::ofdm::carrier_bin(p.mode, k);
+                let b = isdbt_ofdm::ofdm::carrier_bin(p.mode(), k);
                 v[(b + 5) % n] = x;
             }
             v
         })
         .collect();
-    assert_eq!(integer_cfo(p.mode, &full, 300).0, 5);
+    assert_eq!(integer_cfo(p.mode(), &full, 300).0, 5);
 }
 
 /// The experimental unaligned mode (no one-frame buffer) emits on-air frame

@@ -200,7 +200,7 @@ pub fn robustness_rank(m: Modulation, r: CodeRate) -> u32 {
 /// Layer for PAT/NIT/CAT per B31 Part 2 Table 3-1: the partial-reception
 /// layer with partial reception, else the robustest layer.
 pub fn control_layer(params: &Params) -> usize {
-    if params.partial_reception {
+    if params.partial_reception() {
         return 0;
     }
     params
@@ -570,7 +570,7 @@ impl SiBuilder {
                 // carrying the service's elementary streams (condition 2
                 // requires it, condition 3 allows it).
                 let s = &self.cfg.services[i];
-                if s.layer == LayerName::A && self.params.partial_reception {
+                if s.layer == LayerName::A && self.params.partial_reception() {
                     0
                 } else {
                     (0..s.streams.len())
@@ -764,7 +764,7 @@ impl SiBuilder {
     }
 
     fn layer_rank(&self, layer: usize) -> u32 {
-        self.params.layers[layer].map_or(u32::MAX, |l| robustness_rank(l.modulation, l.code_rate))
+        self.params.layers()[layer].map_or(u32::MAX, |l| robustness_rank(l.modulation, l.code_rate))
     }
 
     /// quality_level: explicit, or '1' for the stream on the less robust
@@ -828,8 +828,8 @@ impl SiBuilder {
         let mut ts = vec![Descriptor::TerrestrialDeliverySystem(
             TerrestrialDeliverySystem {
                 area_code: n.area_code & 0x0FFF,
-                guard_interval: guard_interval_code(self.params.guard),
-                transmission_mode: transmission_mode_code(self.params.mode),
+                guard_interval: guard_interval_code(self.params.guard()),
+                transmission_mode: transmission_mode_code(self.params.mode()),
                 frequencies: freqs,
             },
         )];
@@ -867,7 +867,8 @@ impl SiBuilder {
         list.sort_by_key(|e| e.service_id);
         ts.push(Descriptor::ServiceList(ServiceList { services: list }));
         let partial = services_on(LayerName::A);
-        if self.params.partial_reception && n.partial_reception_descriptor && !partial.is_empty() {
+        if self.params.partial_reception() && n.partial_reception_descriptor && !partial.is_empty()
+        {
             ts.push(Descriptor::PartialReception(PartialReception {
                 service_ids: partial,
             }));

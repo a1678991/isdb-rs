@@ -95,29 +95,30 @@ impl PhyArgs {
 pub fn describe_params(p: &Params) -> String {
     let mut s = format!(
         "Mode {}, GI 1/{}, {}",
-        p.mode.number(),
-        p.guard.denominator(),
-        if p.partial_reception {
+        p.mode().number(),
+        p.guard().denominator(),
+        if p.partial_reception() {
             "partial reception"
         } else {
             "no partial reception"
         }
     );
     for (id, l) in p.active_layers() {
-        s += &format!("; {id} {}", describe_layer(l, p.mode));
+        s += &format!("; {id} {}", describe_layer(l, p.mode()));
     }
     s
 }
 
 /// The `--mode/--gi/--partial/--layer-*` options selecting `p`.
 pub fn phy_options(p: &Params) -> String {
-    let layer =
-        |i: usize| p.layers[i].map_or("none".to_string(), |l| isdbt_mux::capacity::layer_spec(&l));
+    let layer = |i: usize| {
+        p.layers()[i].map_or("none".to_string(), |l| isdbt_mux::capacity::layer_spec(&l))
+    };
     format!(
         "--mode {} --gi {} --partial {} --layer-a {} --layer-b {} --layer-c {}",
-        p.mode.number(),
-        p.guard.denominator(),
-        p.partial_reception,
+        p.mode().number(),
+        p.guard().denominator(),
+        p.partial_reception(),
         layer(0),
         layer(1),
         layer(2)
@@ -274,23 +275,23 @@ mod tests {
         let p = phy("1,qpsk,2/3,2", "12,64qam,3/4,2", "none")
             .params()
             .unwrap();
-        assert_eq!(p.mode, Mode::M3);
-        assert_eq!(p.guard, GuardInterval::G1_8);
-        assert!(p.partial_reception);
-        let a = p.layers[0].unwrap();
+        assert_eq!(p.mode(), Mode::M3);
+        assert_eq!(p.guard(), GuardInterval::G1_8);
+        assert!(p.partial_reception());
+        let a = p.layers()[0].unwrap();
         assert_eq!(
             (a.segments, a.modulation, a.code_rate, a.time_interleave.0),
             (1, Modulation::Qpsk, CodeRate::R2_3, 2)
         );
-        let b = p.layers[1].unwrap();
+        let b = p.layers()[1].unwrap();
         assert_eq!(
             (b.segments, b.modulation, b.code_rate),
             (12, Modulation::Qam64, CodeRate::R3_4)
         );
-        assert!(p.layers[2].is_none());
+        assert!(p.layers()[2].is_none());
         // Table 3-3 × N for Mode 3: 64 and 2592 TSPs per frame.
-        assert_eq!(a.tsp_per_frame(p.mode), 64);
-        assert_eq!(b.tsp_per_frame(p.mode), 2592);
+        assert_eq!(a.tsp_per_frame(p.mode()), 64);
+        assert_eq!(b.tsp_per_frame(p.mode()), 2592);
         assert!(describe_params(&p).contains("B 12seg 64QAM 3/4 TI2 (2592 TSP/frame)"));
     }
 

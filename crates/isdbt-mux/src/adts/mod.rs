@@ -83,6 +83,7 @@ pub fn buffer_channels(channel_configuration: u8) -> Option<u32> {
 
 /// Why a header could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HeaderError {
     /// Fewer bytes than the header needs.
     Short,

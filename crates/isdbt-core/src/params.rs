@@ -246,22 +246,51 @@ impl fmt::Display for Layer {
     }
 }
 
-/// Invalid parameter combination.
+/// Invalid parameter combination: which §3.11.2 / Table 3-2 constraint a
+/// [`Params::new`] call violates.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("invalid ISDB-T parameters: {0}")]
-pub struct ParamError(pub String);
+#[non_exhaustive]
+pub enum ParamError {
+    /// No layer is configured.
+    #[error("invalid ISDB-T parameters: no layer configured")]
+    NoLayer,
+    /// A layer is configured after an unused one (layers are used
+    /// contiguously from A, §3.11.2).
+    #[error("invalid ISDB-T parameters: layers must be used contiguously from A")]
+    NonContiguousLayers,
+    /// A configured layer has no segment.
+    #[error("invalid ISDB-T parameters: layer {0} has 0 segments")]
+    EmptyLayer(Layer),
+    /// The layers' segment counts do not sum to the 13 segments of the
+    /// channel (Table 3-2, Ns = 13).
+    #[error("invalid ISDB-T parameters: segments sum to {0}, need 13")]
+    SegmentSum(usize),
+    /// Partial reception (§3.15.6.4) with a layer A of more than one
+    /// segment.
+    #[error("invalid ISDB-T parameters: partial reception requires layer A = 1 segment (got {0})")]
+    PartialReceptionSegments(usize),
+    /// A differential (DQPSK) layer follows a coherent one: data segments
+    /// are numbered partial reception → differential → coherent (§3.11.2).
+    #[error("invalid ISDB-T parameters: differential layer {0} after a coherent layer")]
+    DifferentialAfterCoherent(Layer),
+    /// Time-interleaving length index outside 0..=3 (Table 3-12, TMCC
+    /// codes '000'–'011').
+    #[error("invalid ISDB-T parameters: layer {0} time interleave index {1} not in 0..=3")]
+    TimeInterleaveIndex(Layer, u8),
+}
 
 /// Complete validated transmission configuration (what TMCC signals).
+///
+/// The fields are private: a `Params` only exists through [`Params::new`],
+/// so every value satisfies the §3.11.2 constraints the modulator and
+/// demodulator rely on (segment counts summing to 13, contiguous layers,
+/// segment order). Read them with the accessors.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Params {
-    /// Mode.
-    pub mode: Mode,
-    /// Guard interval ratio.
-    pub guard: GuardInterval,
-    /// Partial-reception flag (§3.15.6.4): layer A is the single centre segment.
-    pub partial_reception: bool,
-    /// Layers A, B, C; `None` for an unused layer.
-    pub layers: [Option<LayerConfig>; 3],
+    mode: Mode,
+    guard: GuardInterval,
+    partial_reception: bool,
+    layers: [Option<LayerConfig>; 3],
 }
 
 impl Params {
@@ -271,47 +300,49 @@ impl Params {
     /// reception → differential → coherent, so after the (optional)
     /// partial-reception layer no DQPSK layer may follow a coherent one;
     /// time-interleave index 0..=3.
+    ///
+    /// # Errors
+    ///
+    /// The [`ParamError`] of the first violated constraint.
     pub fn new(
         mode: Mode,
         guard: GuardInterval,
         partial_reception: bool,
         layers: [Option<LayerConfig>; 3],
     ) -> Result<Self, ParamError> {
-        let used: Vec<_> = layers
-            .iter()
-            .take_while(|l| l.is_some())
-            .flatten()
+        let used: Vec<(Layer, &LayerConfig)> = Layer::ALL
+            .into_iter()
+            .zip(layers.iter())
+            .map_while(|(id, l)| l.as_ref().map(|l| (id, l)))
             .collect();
         if layers.iter().flatten().count() != used.len() {
-            return Err(ParamError("layers must be used contiguously from A".into()));
+            return Err(ParamError::NonContiguousLayers);
         }
         if used.is_empty() {
-            return Err(ParamError("no layer configured".into()));
+            return Err(ParamError::NoLayer);
         }
-        let total: usize = used.iter().map(|l| l.segments).sum();
+        if let Some(&(id, _)) = used.iter().find(|(_, l)| l.segments == 0) {
+            return Err(ParamError::EmptyLayer(id));
+        }
+        let total = used
+            .iter()
+            .fold(0usize, |acc, (_, l)| acc.saturating_add(l.segments));
         if total != SEGMENTS {
-            return Err(ParamError(format!("segments sum to {total}, need 13")));
+            return Err(ParamError::SegmentSum(total));
         }
-        if used.iter().any(|l| l.segments == 0) {
-            return Err(ParamError("layer with 0 segments".into()));
-        }
-        if partial_reception && used[0].segments != 1 {
-            return Err(ParamError(
-                "partial reception requires layer A = 1 segment".into(),
-            ));
+        if partial_reception && used[0].1.segments != 1 {
+            return Err(ParamError::PartialReceptionSegments(used[0].1.segments));
         }
         let skip = usize::from(partial_reception);
         let mut seen_coherent = false;
-        for l in &used[skip..] {
+        for &(id, l) in &used[skip..] {
             if l.modulation.is_differential() && seen_coherent {
-                return Err(ParamError(
-                    "differential layer after a coherent layer".into(),
-                ));
+                return Err(ParamError::DifferentialAfterCoherent(id));
             }
             seen_coherent |= !l.modulation.is_differential();
         }
-        if used.iter().any(|l| l.time_interleave.0 > 3) {
-            return Err(ParamError("time interleave index must be 0..=3".into()));
+        if let Some(&(id, l)) = used.iter().find(|(_, l)| l.time_interleave.0 > 3) {
+            return Err(ParamError::TimeInterleaveIndex(id, l.time_interleave.0));
         }
         Ok(Self {
             mode,
@@ -319,6 +350,32 @@ impl Params {
             partial_reception,
             layers,
         })
+    }
+
+    /// Mode.
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Guard interval ratio.
+    pub fn guard(&self) -> GuardInterval {
+        self.guard
+    }
+
+    /// Partial-reception flag (§3.15.6.4): layer A is the single centre
+    /// segment.
+    pub fn partial_reception(&self) -> bool {
+        self.partial_reception
+    }
+
+    /// Layers A, B, C; `None` for an unused layer.
+    pub fn layers(&self) -> [Option<LayerConfig>; 3] {
+        self.layers
+    }
+
+    /// The configuration of layer `id`, `None` when it is unused.
+    pub fn layer(&self, id: Layer) -> Option<&LayerConfig> {
+        self.layers[id.index()].as_ref()
     }
 
     /// Configured layers with their identifiers, in data-segment order.
@@ -330,6 +387,10 @@ impl Params {
     }
 
     /// Layer owning data segment `seg` (0..13), in the §3.11.2 numbering.
+    ///
+    /// # Panics
+    ///
+    /// If `seg` ≥ 13.
     pub fn layer_of_segment(&self, seg: usize) -> Layer {
         let mut acc = 0;
         for (id, l) in self.active_layers() {
@@ -504,5 +565,57 @@ mod tests {
         let d = Some(layer(6, Modulation::Dqpsk, CodeRate::R1_2));
         assert!(Params::new(Mode::M3, GuardInterval::G1_8, true, [a, c, d]).is_err());
         assert!(Params::new(Mode::M3, GuardInterval::G1_8, false, [b, None, None]).is_err());
+    }
+
+    /// Invalid combinations are errors, never a panic later in the
+    /// modulator (the fields are private, so `Params::new` is the only way
+    /// to build one).
+    #[test]
+    fn invalid_configurations_are_rejected() {
+        let l = |n| Some(layer(n, Modulation::Qam64, CodeRate::R3_4));
+        let new = |p, ls| Params::new(Mode::M3, GuardInterval::G1_8, p, ls);
+        assert_eq!(new(false, [None, None, None]), Err(ParamError::NoLayer));
+        assert_eq!(
+            new(false, [l(1), l(13), None]),
+            Err(ParamError::SegmentSum(14))
+        );
+        assert_eq!(
+            new(false, [l(12), None, None]),
+            Err(ParamError::SegmentSum(12))
+        );
+        assert_eq!(
+            new(false, [l(usize::MAX), l(14), None]),
+            Err(ParamError::SegmentSum(usize::MAX))
+        );
+        assert_eq!(
+            new(false, [l(13), None, l(0)]),
+            Err(ParamError::NonContiguousLayers)
+        );
+        assert_eq!(
+            new(false, [l(0), l(13), None]),
+            Err(ParamError::EmptyLayer(Layer::A))
+        );
+        assert_eq!(
+            new(true, [l(2), l(11), None]),
+            Err(ParamError::PartialReceptionSegments(2))
+        );
+        let mut ti = layer(13, Modulation::Qpsk, CodeRate::R1_2);
+        ti.time_interleave = TimeInterleave(4);
+        assert_eq!(
+            new(false, [Some(ti), None, None]),
+            Err(ParamError::TimeInterleaveIndex(Layer::A, 4))
+        );
+        let d = Some(layer(6, Modulation::Dqpsk, CodeRate::R1_2));
+        assert_eq!(
+            new(false, [l(7), d, None]),
+            Err(ParamError::DifferentialAfterCoherent(Layer::B))
+        );
+        let p = new(true, [l(1), l(12), None]).unwrap();
+        assert_eq!(p.mode(), Mode::M3);
+        assert_eq!(p.guard(), GuardInterval::G1_8);
+        assert!(p.partial_reception());
+        assert_eq!(p.layer(Layer::B).map(|x| x.segments), Some(12));
+        assert_eq!(p.layer(Layer::C), None);
+        assert_eq!(p.layers()[0].map(|x| x.segments), Some(1));
     }
 }

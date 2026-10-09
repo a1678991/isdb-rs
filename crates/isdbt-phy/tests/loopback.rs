@@ -82,7 +82,7 @@ fn ts_loopback_hierarchical_mode3() {
         sent.push([a, b]);
     }
     // Channel: CFO of +1.7 carrier spacings, 28 dB SNR.
-    let df = 1.7 / params.mode.fft_size() as f32;
+    let df = 1.7 / params.mode().fft_size() as f32;
     for (n, c) in iq.iter_mut().enumerate() {
         *c *= C32::from_polar(1.0, 2.0 * std::f32::consts::PI * df * n as f32);
     }

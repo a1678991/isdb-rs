@@ -73,6 +73,7 @@ pub enum DemuxEventKind {
 /// Reason a partial section was dropped (H.222.0 §2.4.3.3 continuity,
 /// §2.4.4.2 pointer_field).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DiscardReason {
     /// continuity_counter break (packet loss).
     ContinuityBreak,

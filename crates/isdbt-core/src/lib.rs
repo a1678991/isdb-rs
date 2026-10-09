@@ -29,7 +29,7 @@
 //! let a = LayerConfig { segments: 1, modulation: Modulation::Qpsk, code_rate: CodeRate::R2_3, time_interleave: ti };
 //! let b = LayerConfig { segments: 12, modulation: Modulation::Qam64, code_rate: CodeRate::R3_4, time_interleave: ti };
 //! let p = Params::new(Mode::M3, GuardInterval::G1_8, true, [Some(a), Some(b), None]).unwrap();
-//! assert_eq!((a.tsp_per_frame(p.mode), b.tsp_per_frame(p.mode)), (64, 2592)); // Table 3-3
+//! assert_eq!((a.tsp_per_frame(p.mode()), b.tsp_per_frame(p.mode())), (64, 2592)); // Table 3-3
 //! assert_eq!(p.multiplex_frame_tsps(), 4608); // Table 3-5
 //! assert_eq!(p.frame_ticks_27mhz(), 6_246_072); // 231.336 ms × 27 MHz
 //! ```
@@ -38,7 +38,11 @@ pub mod fec_params;
 pub mod ofdm_params;
 pub mod params;
 
-pub use params::*;
+pub use params::{
+    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, ParamError, Params,
+    SAMPLE_RATE_DEN, SAMPLE_RATE_NUM, SEGMENTS, SYMBOLS_PER_FRAME, TRANSMISSION_TSP, TSP,
+    TimeInterleave, sample_rate_hz,
+};
 
 // Compile the README's code blocks as doctests.
 #[cfg(doctest)]

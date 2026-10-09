@@ -86,7 +86,7 @@
 //! let (full, layers) = mux.next_frame_full();
 //! assert_eq!(full.len(), mux.pattern().len());
 //! for l in 0..3 {
-//!     let want = params.layers[l].map_or(0, |c| c.tsp_per_frame(params.mode));
+//!     let want = params.layers()[l].map_or(0, |c| c.tsp_per_frame(params.mode()));
 //!     assert_eq!(layers[l].len(), want);
 //! }
 //! ```

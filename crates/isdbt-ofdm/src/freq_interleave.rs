@@ -36,6 +36,7 @@ pub fn randomize_table(mode: Mode) -> &'static [u16] {
 
 /// Segment number `k` used by the carrier rotation of Fig. 3-27.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum RotationNumbering {
     /// `k` = data-segment number 0..12 (default; "carrier rotation by
     /// segment number").
@@ -52,7 +53,7 @@ pub enum RotationNumbering {
 pub fn segment_groups(params: &Params) -> Vec<(usize, usize, bool)> {
     let mut groups = Vec::new();
     let mut start = 0;
-    if params.partial_reception {
+    if params.partial_reception() {
         groups.push((0, 1, false));
         start = 1;
     }
@@ -84,8 +85,8 @@ impl FrequencyInterleaver {
 
     /// Build for `params` with an explicit rotation numbering.
     pub fn with_numbering(params: &Params, numbering: RotationNumbering) -> Self {
-        let nc = params.mode.data_carriers_per_segment();
-        let table = randomize_table(params.mode);
+        let nc = params.mode().data_carriers_per_segment();
+        let table = randomize_table(params.mode());
         let mut perm = vec![u32::MAX; 13 * nc];
         for (g0, n, inter) in segment_groups(params) {
             for k_in in 0..n {

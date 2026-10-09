@@ -93,6 +93,7 @@ impl Selector {
 
 /// One edit operation.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum EditOp {
     /// Replace every packet of these PIDs with a null packet.
     NullPids(Vec<u16>),

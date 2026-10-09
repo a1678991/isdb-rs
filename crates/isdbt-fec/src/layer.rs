@@ -108,7 +108,9 @@ fn unpack_bits(bytes: &[u8], out: &mut Vec<u8>) {
 }
 
 fn pack_bits(bits: &[u8]) -> Vec<u8> {
-    bits.chunks_exact(8)
+    bits.as_chunks::<8>()
+        .0
+        .iter()
         .map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | (b & 1)))
         .collect()
 }
@@ -329,7 +331,7 @@ impl LayerDecoder {
         let mut tsps = Vec::with_capacity(self.tsps);
         let mut status = Vec::with_capacity(self.tsps);
         let mut stats = RsStats::default();
-        for slot in bytes.chunks_exact(TRANSMISSION_TSP) {
+        for slot in bytes.as_chunks::<TRANSMISSION_TSP>().0 {
             let mut t = slot_to_tsp(slot);
             match rs::decode(&mut t) {
                 Ok(c) if c.errors == 0 => {

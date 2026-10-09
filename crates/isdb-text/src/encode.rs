@@ -34,6 +34,7 @@ pub struct EncodeOptions {
 
 /// Why a string cannot be encoded.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum EncodeError {
     /// The character is in none of the sets the encoder uses.
     #[error("character {ch:?} (U+{:04X}) at byte {index} is not representable in the ARIB 8-unit code", *ch as u32)]

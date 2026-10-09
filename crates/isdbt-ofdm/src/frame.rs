@@ -295,7 +295,7 @@ impl FrameLayout {
 
     /// Layout for `params` (segment kinds from the layer modulations).
     pub fn from_params(params: &Params) -> Self {
-        Self::new(params.mode, kinds_from_params(params))
+        Self::new(params.mode(), kinds_from_params(params))
     }
 
     /// Band carrier number of carrier `c` of segment `seg`.

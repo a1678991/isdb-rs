@@ -18,6 +18,7 @@ use isdb_ts::section::{LongHeader, ShortHeader};
 
 /// Category of a deviation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Kind {
     /// reserved / reserved_future_use bits not all '1' (B10 Part 2 §3.1).
     ReservedBits,

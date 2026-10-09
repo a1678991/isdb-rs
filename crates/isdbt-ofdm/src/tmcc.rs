@@ -143,9 +143,9 @@ impl TmccParams {
     /// From validated parameters.
     pub fn from_params(p: &Params) -> Self {
         Self {
-            partial_reception: p.partial_reception,
+            partial_reception: p.partial_reception(),
             layers: p
-                .layers
+                .layers()
                 .map(|l| l.as_ref().map_or(TmccLayer::UNUSED, TmccLayer::from_config)),
         }
     }

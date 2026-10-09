@@ -416,8 +416,19 @@ impl std::fmt::Debug for Demodulator {
 }
 
 impl Demodulator {
-    /// New receiver.
-    pub fn new(cfg: DemodConfig) -> Self {
+    /// New receiver. Out-of-range settings are clamped rather than
+    /// trusted (the fields of [`DemodConfig`] are public): symbol counts
+    /// and `sp_time_window` to at least 1, `timing_backoff` to 0..=1 (a
+    /// non-finite value takes the default 0.25).
+    pub fn new(mut cfg: DemodConfig) -> Self {
+        cfg.detect_symbols = cfg.detect_symbols.max(1);
+        cfg.continual_symbols = cfg.continual_symbols.max(1);
+        cfg.sp_time_window = cfg.sp_time_window.max(1);
+        cfg.timing_backoff = if cfg.timing_backoff.is_finite() {
+            cfg.timing_backoff.clamp(0.0, 1.0)
+        } else {
+            DemodConfig::default().timing_backoff
+        };
         Self {
             cfg,
             buf: VecDeque::new(),
@@ -596,7 +607,7 @@ impl Demodulator {
 
     fn start_track(&mut self, acq: Acq, f: usize, params: Params) {
         let layout = FrameLayout::from_params(&params);
-        let nc = params.mode.data_carriers_per_segment();
+        let nc = params.mode().data_carriers_per_segment();
         let latency = latency_frames(&params);
         let layers = params
             .active_layers()
@@ -630,7 +641,7 @@ impl Demodulator {
         // of the locked frame; processing restarts from the buffered samples
         // with the timing and resampling rate corrected for it.
         let cont = continual_list(&layout);
-        let n = params.mode.fft_size();
+        let n = params.mode().fft_size();
         let kc = (layout.k_total / 2) as f64;
         let drifts: Vec<f64> = acq.spectra[f..]
             .windows(2)
@@ -710,7 +721,7 @@ impl Demodulator {
                 && fr
                     .tmcc
                     .info
-                    .params(t.params.mode, t.params.guard)
+                    .params(t.params.mode(), t.params.guard())
                     .is_ok_and(|p| p != t.params);
             let lost = t.bad_frames >= 4;
             out.push(fr);
@@ -1022,4 +1033,36 @@ fn timing_drift(cont: &[usize], kc: f64, n: usize, y: &[C32], prev: &[C32]) -> f
     }
     let slope = (sxp - sx * sp / sw) / den;
     -slope * n as f64 / (2.0 * std::f64::consts::PI)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Degenerate public settings are clamped: no panic on any input.
+    #[test]
+    fn degenerate_config_is_clamped() {
+        let cfg = DemodConfig {
+            detect_symbols: 0,
+            continual_symbols: 0,
+            sp_time_window: 0,
+            timing_backoff: f32::NAN,
+            max_cfo_carriers: Some(usize::MAX / 4),
+            ..DemodConfig::default()
+        };
+        let mut d = Demodulator::new(cfg);
+        let mut x = 1u32;
+        let noise: Vec<C32> = (0..200_000)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                C32::new(
+                    (x >> 16) as f32 / 65536.0 - 0.5,
+                    (x & 0xFFFF) as f32 / 65536.0 - 0.5,
+                )
+            })
+            .collect();
+        let _ = d.push(&noise);
+        assert!(d.cfg.timing_backoff.is_finite());
+        assert_eq!(d.cfg.sp_time_window, 1);
+    }
 }

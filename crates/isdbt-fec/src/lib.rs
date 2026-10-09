@@ -47,10 +47,6 @@
 //! # Ok::<(), isdbt_fec::FecError>(())
 //! ```
 
-// The workspace declares rust-version 1.85; `as_chunks` (1.88) and
-// `is_multiple_of` (1.87) suggested by these lints are not available there.
-#![allow(clippy::chunks_exact_to_as_chunks, clippy::manual_is_multiple_of)]
-
 pub mod byte_interleave;
 pub mod conv;
 pub mod delay;
@@ -71,6 +67,7 @@ use isdbt_core::Layer;
 
 /// Errors of the channel-coding stages.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum FecError {
     /// More than t = 8 byte errors in an RS(204,188) word (§3.3).
     #[error("RS(204,188): uncorrectable")]

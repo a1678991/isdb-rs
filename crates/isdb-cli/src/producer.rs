@@ -308,8 +308,8 @@ mod tests {
         assert_eq!(
             frames[2].real,
             [
-                p.layers[0].unwrap().tsp_per_frame(p.mode),
-                p.layers[1].unwrap().tsp_per_frame(p.mode),
+                p.layers()[0].unwrap().tsp_per_frame(p.mode()),
+                p.layers()[1].unwrap().tsp_per_frame(p.mode()),
                 0
             ]
         );

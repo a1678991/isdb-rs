@@ -88,6 +88,7 @@ pub type Packet = [u8; TSP];
 
 /// Pipeline error.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Channel-coding error.
     #[error(transparent)]
@@ -98,6 +99,10 @@ pub enum Error {
     /// Input does not match the configured layers.
     #[error("{0}")]
     Input(String),
+    /// A [`PipelinedReceiver`] worker thread panicked (its frames after
+    /// the panic are missing).
+    #[error("receiver worker thread {0} panicked")]
+    Worker(&'static str),
 }
 
 /// Result alias.
@@ -118,9 +123,9 @@ impl Transmitter {
     /// information (§3.15.6).
     pub fn new(params: Params) -> Self {
         let encoders = std::array::from_fn(|i| {
-            params.layers[i]
+            params.layers()[i]
                 .as_ref()
-                .map(|l| LayerEncoder::new(params.mode, l))
+                .map(|l| LayerEncoder::new(params.mode(), l))
         });
         Self {
             pattern: MultiplexPattern::new(&params),
@@ -324,7 +329,9 @@ impl FrameDecoder {
             let p = f.params.clone();
             self.chain = Some(RxChain {
                 decoders: std::array::from_fn(|i| {
-                    p.layers[i].as_ref().map(|l| LayerDecoder::new(p.mode, l))
+                    p.layers()[i]
+                        .as_ref()
+                        .map(|l| LayerDecoder::new(p.mode(), l))
                 }),
                 pattern: MultiplexPattern::new(&p),
                 params: p,
@@ -415,12 +422,17 @@ pub struct PipelinedReceiver {
     samples: Option<SyncSender<Vec<C32>>>,
     frames: Receiver_<Result<RxFrame>>,
     state: Arc<AtomicU8>,
-    workers: Vec<std::thread::JoinHandle<()>>,
+    workers: Vec<(&'static str, std::thread::JoinHandle<()>)>,
 }
 
 impl PipelinedReceiver {
     /// Start the workers; `depth` sample chunks may be queued.
-    pub fn new(cfg: DemodConfig, depth: usize) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// The operating system's error when a worker thread cannot be
+    /// spawned.
+    pub fn new(cfg: DemodConfig, depth: usize) -> std::io::Result<Self> {
         let (s_tx, s_rx) = sync_channel::<Vec<C32>>(depth.max(1));
         let (d_tx, d_rx) = sync_channel::<DemodFrame>(2);
         // Unbounded output: a caller blocked in `push` while not draining
@@ -441,8 +453,7 @@ impl PipelinedReceiver {
                     }
                     st.store(demod.state() as u8, Ordering::Relaxed);
                 }
-            })
-            .expect("spawn demod thread");
+            })?;
         let decode = std::thread::Builder::new()
             .name("rx-decode".into())
             .spawn(move || {
@@ -452,14 +463,13 @@ impl PipelinedReceiver {
                         return;
                     }
                 }
-            })
-            .expect("spawn decode thread");
-        Self {
+            })?;
+        Ok(Self {
             samples: Some(s_tx),
             frames: f_rx,
             state,
-            workers: vec![demod, decode],
-        }
+            workers: vec![("rx-demod", demod), ("rx-decode", decode)],
+        })
     }
 
     /// Queue samples (blocks while the queue is full).
@@ -486,12 +496,15 @@ impl PipelinedReceiver {
         self.frames.try_recv().ok()
     }
 
-    /// Close the input and return every remaining frame.
+    /// Close the input and return every remaining frame, followed by an
+    /// [`Error::Worker`] item for each worker thread that panicked.
     pub fn finish(mut self) -> Vec<Result<RxFrame>> {
         self.samples = None;
-        let out: Vec<_> = self.frames.iter().collect();
-        for w in self.workers.drain(..) {
-            let _ = w.join();
+        let mut out: Vec<_> = self.frames.iter().collect();
+        for (name, w) in self.workers.drain(..) {
+            if w.join().is_err() {
+                out.push(Err(Error::Worker(name)));
+            }
         }
         out
     }

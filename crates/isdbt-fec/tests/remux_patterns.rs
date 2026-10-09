@@ -44,20 +44,20 @@ fn check(p: &Params) -> MultiplexPattern {
     for (id, l) in p.active_layers() {
         assert_eq!(
             pat.count(id),
-            l.tsp_per_frame(p.mode),
+            l.tsp_per_frame(p.mode()),
             "Table 3-3 count, layer {id}"
         );
     }
     let used: usize = p
         .active_layers()
-        .map(|(_, l)| l.tsp_per_frame(p.mode))
+        .map(|(_, l)| l.tsp_per_frame(p.mode()))
         .sum();
     assert_eq!(pat.null_count(), pat.len() - used);
     // §3.2.2.2: S3/S4 switch every 204/scale symbols, and each interval
     // carries an integral number of every layer's packets, so the pattern
     // repeats with period n/scale (reference Part 3.2.4 Figs. 3-4/3-5,
     // "Same pattern").
-    let k = p.mode.scale();
+    let k = p.mode().scale();
     let sub = pat.len() / k;
     for q in 1..k {
         assert_eq!(

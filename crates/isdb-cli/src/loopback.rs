@@ -7,7 +7,7 @@ use crate::phyargs::{PhyArgs, describe_params};
 use crate::producer::{self, EndReason, FrameKind, ProducerConfig};
 use crate::rx::RxStats;
 use crate::source::{Packet, is_null};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use isdbt_core::Params;
 use isdbt_fec::remux::{MultiplexPattern, null_tsp};
@@ -108,7 +108,7 @@ impl Verifier {
     pub fn new(params: &Params) -> Self {
         Self {
             pattern: MultiplexPattern::new(params),
-            active: std::array::from_fn(|l| params.layers[l].is_some()),
+            active: std::array::from_fn(|l| params.layers()[l].is_some()),
             ring: VecDeque::new(),
             real: Vec::new(),
             verified: Vec::new(),
@@ -263,11 +263,12 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
     let mut ch = Channel::new(
         a.snr_db,
         a.cfo_carriers,
-        params.mode.fft_size(),
+        params.mode().fft_size(),
         a.sample_offset,
         a.seed,
     );
-    let mut prx = PipelinedReceiver::new(DemodConfig::default(), 2);
+    let mut prx =
+        PipelinedReceiver::new(DemodConfig::default(), 2).context("start the receiver threads")?;
     let mut ver = Verifier::new(&params);
     let mut stats = RxStats::default();
     let (mut sent_frames, mut sent_data) = (0u64, 0u64);
@@ -373,7 +374,7 @@ mod tests {
         }
         .params()
         .unwrap();
-        let n = params.layers[0].unwrap().tsp_per_frame(params.mode);
+        let n = params.layers()[0].unwrap().tsp_per_frame(params.mode());
         let pattern = MultiplexPattern::new(&params);
         let frame = |i: u64| -> [Vec<Packet>; 3] {
             [

@@ -148,7 +148,7 @@ pub fn parse_u16(s: &str) -> std::result::Result<u16, String> {
 pub fn service_layer(p: &Params) -> Result<LayerName> {
     let (id, _) = p
         .active_layers()
-        .filter(|(id, _)| !(p.partial_reception && *id == Layer::A))
+        .filter(|(id, _)| !(p.partial_reception() && *id == Layer::A))
         .max_by_key(|(id, l)| (l.segments, std::cmp::Reverse(id.index())))
         .context("no layer can carry the relayed service")?;
     Ok(match id {
@@ -229,7 +229,7 @@ pub fn build_mux(
         }) if auto_layout => {
             let pick = isdbt_mux::capacity::suggest(&params, layer, need_bps, 64)
                 .into_iter()
-                .find(|s| s.layer == layer && s.params.partial_reception == params.partial_reception);
+                .find(|s| s.layer == layer && s.params.partial_reception() == params.partial_reception());
             let Some(s) = pick else {
                 bail!(
                     "{message}\n  --auto-layout: no layout keeps layer {layer} and the layer set; choose one of the above"

@@ -156,13 +156,13 @@ impl Params {
     /// is differentially modulated (its layer uses DQPSK, §3.12.1).
     pub fn segment_is_differential(&self, seg: usize) -> bool {
         let layer = self.layer_of_segment(seg);
-        self.layers[layer.index()].is_some_and(|l| l.modulation.is_differential())
+        self.layers()[layer.index()].is_some_and(|l| l.modulation.is_differential())
     }
 
     /// Time-interleave length I of `layer` (0 if the layer is unused).
     pub fn time_interleave_length(&self, layer: crate::Layer) -> usize {
-        self.layers[layer.index()]
-            .and_then(|l| l.time_interleave.length(self.mode))
+        self.layers()[layer.index()]
+            .and_then(|l| l.time_interleave.length(self.mode()))
             .unwrap_or(0)
     }
 
@@ -170,8 +170,9 @@ impl Params {
     /// carrier modulator to LLRs leaving the bit deinterleaver, in OFDM
     /// symbols: 2 (bit interleave, §3.9.2) + 204 × Table 3-12 frames.
     pub fn symbol_domain_delay_symbols(&self, layer: crate::Layer) -> usize {
-        let frames = time_interleave_delayed_frames(self.mode, self.time_interleave_length(layer))
-            .unwrap_or(0);
+        let frames =
+            time_interleave_delayed_frames(self.mode(), self.time_interleave_length(layer))
+                .unwrap_or(0);
         BIT_INTERLEAVE_TOTAL_SYMBOLS + frames * SYMBOLS_PER_FRAME
     }
 }

@@ -1,14 +1,14 @@
 //! Energy dispersal (ARIB STD-B31 §3.5, Fig. 3-8).
 //!
-//! > "All signals other than the synchronization byte in each of the
-//! > transmission TSPs at different hierarchical layers are EXCLUSIVE ORed
-//! > using PRBSs, on a bit-by-bit basis. The initial value of the register
-//! > in the PRBS-generating circuit must be “100101010000000” (arranged in
-//! > ascending order of bits, from left to right), and this value must be
-//! > initialized every OFDM frame. At this time, the beginning of an OFDM
-//! > frame must be the MSB of the byte next to the transmission TSP's
-//! > synchronization byte. Note also that the shift register must also
-//! > perform shifting during the synchronization byte." — §3.5
+//! > "The initial value of the register in the PRBS-generating circuit
+//! > must be “100101010000000” (arranged in ascending order of bits, from
+//! > left to right), and this value must be initialized every OFDM
+//! > frame." — §3.5
+//!
+//! In short (§3.5): every bit of each transmission TSP except its sync byte
+//! is XORed with the PRBS, per layer; the PRBS restarts every OFDM frame,
+//! its first bit meeting the MSB of the byte after a TSP's sync byte, and
+//! the register keeps shifting during sync bytes (which are not XORed).
 //!
 //! Reading of Fig. 3-8 (g(x) = X¹⁵ + X¹⁴ + 1): fifteen D stages numbered
 //! 1..15 shift from stage 1 towards stage 15; the outputs of stages 14 and
@@ -106,8 +106,10 @@ pub fn disperse_frame(frame: &mut [u8], prbs: &[u8]) {
     assert_eq!(frame.len() % TRANSMISSION_TSP, 0);
     assert!(prbs.len() >= frame.len());
     for (slot, seq) in frame
-        .chunks_exact_mut(TRANSMISSION_TSP)
-        .zip(prbs.chunks_exact(TRANSMISSION_TSP))
+        .as_chunks_mut::<TRANSMISSION_TSP>()
+        .0
+        .iter_mut()
+        .zip(prbs.as_chunks::<TRANSMISSION_TSP>().0)
     {
         for (b, &p) in slot[..TRANSMISSION_TSP - 1].iter_mut().zip(seq) {
             *b ^= p;

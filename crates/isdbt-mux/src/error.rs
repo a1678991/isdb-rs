@@ -2,6 +2,7 @@
 
 /// Multiplexer error.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MuxError {
     /// Invalid or inconsistent configuration.
     #[error("config: {0}")]

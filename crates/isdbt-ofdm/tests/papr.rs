@@ -101,7 +101,8 @@ fn papr_first_frames() {
                 let papr = papr_db(&s);
                 eprintln!(
                     "{:?} {:?} zero={zero_input} frame {f}: PAPR {papr:.1} dB",
-                    p.mode, p.guard
+                    p.mode(),
+                    p.guard()
                 );
                 if !zero_input {
                     assert!(papr < 15.0, "{p:?} frame {f}: PAPR {papr:.1} dB");

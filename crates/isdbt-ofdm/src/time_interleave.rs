@@ -19,13 +19,13 @@ use isdbt_core::ofdm_params::{
 fn layer_length_and_adjust(params: &Params, seg: usize) -> (usize, usize) {
     let layer = params.layer_of_segment(seg);
     let i = params.time_interleave_length(layer);
-    let a = time_interleave_adjustment_symbols(params.mode, i).expect("Table 3-12 length");
+    let a = time_interleave_adjustment_symbols(params.mode(), i).expect("Table 3-12 length");
     (i, a)
 }
 
 /// Per-carrier transmit delays (data-segment order).
 pub fn tx_delays(params: &Params) -> Vec<usize> {
-    let nc = params.mode.data_carriers_per_segment();
+    let nc = params.mode().data_carriers_per_segment();
     let mut d = Vec::with_capacity(13 * nc);
     for seg in 0..13 {
         let (len, adj) = layer_length_and_adjust(params, seg);
@@ -38,7 +38,7 @@ pub fn tx_delays(params: &Params) -> Vec<usize> {
 
 /// Per-carrier receive delays (data-segment order).
 pub fn rx_delays(params: &Params) -> Vec<usize> {
-    let nc = params.mode.data_carriers_per_segment();
+    let nc = params.mode().data_carriers_per_segment();
     let mut d = Vec::with_capacity(13 * nc);
     for seg in 0..13 {
         let (len, _) = layer_length_and_adjust(params, seg);
@@ -71,7 +71,7 @@ impl<T: Copy> TimeInterleaver<T> {
     /// `fill(seg)`.
     pub fn with_fill(params: &Params, fill: impl Fn(usize) -> T) -> Self {
         let d = tx_delays(params);
-        let nc = params.mode.data_carriers_per_segment();
+        let nc = params.mode().data_carriers_per_segment();
         let fills: Vec<T> = (0..d.len()).map(|q| fill(q / nc)).collect();
         Self {
             lines: MultiDelay::with_fills(d, &fills),

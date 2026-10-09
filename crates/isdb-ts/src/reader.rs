@@ -22,6 +22,7 @@ use crate::packet::{PACKET_SIZE, SYNC_BYTE};
 /// Framing of transport packets in a byte stream: H.222.0 §2.4.3 188-byte
 /// packets, optionally with a non-H.222.0 prefix/trailer (module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PacketFormat {
     /// Plain 188-byte packets (H.222.0 §2.4.3).
     Ts188,

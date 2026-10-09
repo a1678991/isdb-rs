@@ -183,8 +183,8 @@ impl RxStats {
         };
         s += &format!(
             " M{} GI1/{} | frames {}/{} valid",
-            p.mode.number(),
-            p.guard.denominator(),
+            p.mode().number(),
+            p.guard().denominator(),
             iv.valid,
             iv.frames
         );
@@ -247,15 +247,15 @@ pub fn params_json(p: &Params) -> Value {
                     "modulation": format!("{:?}", l.modulation),
                     "code_rate": format!("{n}/{d}"),
                     "time_interleave_index": l.time_interleave.0,
-                    "tsp_per_frame": l.tsp_per_frame(p.mode),
+                    "tsp_per_frame": l.tsp_per_frame(p.mode()),
                 }),
             )
         })
         .collect();
     json!({
-        "mode": p.mode.number(),
-        "guard_interval": format!("1/{}", p.guard.denominator()),
-        "partial_reception": p.partial_reception,
+        "mode": p.mode().number(),
+        "guard_interval": format!("1/{}", p.guard().denominator()),
+        "partial_reception": p.partial_reception(),
         "layers": layers,
         "description": describe_params(p),
     })
@@ -470,7 +470,8 @@ pub fn receive(
     mut on_frame: impl FnMut(&RxFrame) -> Result<()>,
     stats: &mut RxStats,
 ) -> Result<u64> {
-    let mut prx = PipelinedReceiver::new(DemodConfig::default(), 4);
+    let mut prx =
+        PipelinedReceiver::new(DemodConfig::default(), 4).context("start the receiver threads")?;
     let fs = sample_rate_hz();
     let mut samples = 0u64;
     let mut next_status = status_secs;

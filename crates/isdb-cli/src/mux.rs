@@ -136,7 +136,7 @@ pub fn run(args: MuxArgs) -> Result<()> {
     }
     let (mut mux, params) = build_mux(&cfg, &base, params, args.relay.auto_layout)?;
     for (i, o) in [&args.out_a, &args.out_b, &args.out_c].iter().enumerate() {
-        if o.is_some() && params.layers[i].is_none() {
+        if o.is_some() && params.layers()[i].is_none() {
             bail!(
                 "layer {} output requested but the layer is not active",
                 ["A", "B", "C"][i]
@@ -188,7 +188,7 @@ pub fn run(args: MuxArgs) -> Result<()> {
         if st.layer_packets[i] > 0 {
             eprintln!(
                 "layer {name}: {} packets/frame, {} packets, {} null ({:.1} %)",
-                params.layers[i].map_or(0, |l| l.tsp_per_frame(params.mode)),
+                params.layers()[i].map_or(0, |l| l.tsp_per_frame(params.mode())),
                 st.layer_packets[i],
                 st.layer_nulls[i],
                 100.0 * st.layer_nulls[i] as f64 / st.layer_packets[i] as f64

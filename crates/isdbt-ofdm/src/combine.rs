@@ -26,7 +26,7 @@ pub fn layer_segments(params: &Params, layer: Layer) -> Option<(usize, usize)> {
 /// data-segment order.  `layers[l]` must hold `nc·N_l` values for active
 /// layers (ignored for unused ones).
 pub fn combine<T: Copy>(params: &Params, layers: [&[T]; 3], out: &mut [T]) {
-    let nc = params.mode.data_carriers_per_segment();
+    let nc = params.mode().data_carriers_per_segment();
     assert_eq!(out.len(), 13 * nc);
     for layer in Layer::ALL {
         if let Some((first, n)) = layer_segments(params, layer) {
@@ -39,7 +39,7 @@ pub fn combine<T: Copy>(params: &Params, layers: [&[T]; 3], out: &mut [T]) {
 
 /// Split one combined symbol (data-segment order) back into layers.
 pub fn split<'a, T: Copy>(params: &Params, data: &'a [T]) -> [Option<&'a [T]>; 3] {
-    let nc = params.mode.data_carriers_per_segment();
+    let nc = params.mode().data_carriers_per_segment();
     assert_eq!(data.len(), 13 * nc);
     Layer::ALL.map(|layer| {
         layer_segments(params, layer).map(|(first, n)| &data[first * nc..(first + n) * nc])

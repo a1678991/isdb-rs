@@ -474,7 +474,7 @@ fn spec_table_3_21_sync_alternation() {
             );
             assert_eq!(d.parity, dsc::ParityStatus::Ok);
             assert_eq!(d.info, tmcc);
-            assert_eq!(d.info.params(p.mode, p.guard).unwrap(), p);
+            assert_eq!(d.info.params(p.mode(), p.guard()).unwrap(), p);
         }
         // AC stuffing: every information bit 1 → the carrier flips every symbol.
         for a in &m.layout().ac.clone() {

@@ -90,9 +90,9 @@ impl Modulator {
         let numbering = options.rotation;
         let layout = FrameLayout::from_params(&params);
         let mut seed = 0u64;
-        let mappers = params.layers.map(|l| {
+        let mappers = params.layers().map(|l| {
             seed += 1;
-            l.map(|l| CarrierMapper::with_seed(params.mode, &l, seed))
+            l.map(|l| CarrierMapper::with_seed(params.mode(), &l, seed))
         });
         // Start-up fill.  Every carrier position first emits the initial
         // contents of its time-interleaver line (A + I·m_i symbols) and then,
@@ -110,14 +110,14 @@ impl Modulator {
         } else {
             0
         };
-        let nc = params.mode.data_carriers_per_segment();
+        let nc = params.mode().data_carriers_per_segment();
         let ti_delays = crate::time_interleave::tx_delays(&params);
         let mut fill_seqs: Vec<Vec<C32>> = Vec::with_capacity(ti_delays.len());
         let mut rng = FillRng::new(0x5eed);
         let mut next = || rng.next_u32();
         for (q, &d) in ti_delays.iter().enumerate() {
             let layer = params.layer_of_segment(q / nc);
-            let m = params.layers[layer.index()].expect("active").modulation;
+            let m = params.layers()[layer.index()].expect("active").modulation;
             let len = d + lead;
             let seq: Vec<C32> = if m.is_differential() {
                 let mut v = vec![C32::default(); len];
@@ -179,7 +179,7 @@ impl Modulator {
             aligned: options.bit_interleave_frame_alignment,
             ti,
             fi: FrequencyInterleaver::with_numbering(&params, numbering),
-            ofdm: OfdmTx::new(params.mode, params.guard),
+            ofdm: OfdmTx::new(params.mode(), params.guard()),
             layout,
             mappers,
             params,
@@ -253,7 +253,7 @@ impl Modulator {
         let odd = self.frame % 2 == 1;
         let tmcc_coh = tmcc.frame_bits(odd, false);
         let tmcc_diff = tmcc.frame_bits(odd, true);
-        let nc = self.params.mode.data_carriers_per_segment();
+        let nc = self.params.mode().data_carriers_per_segment();
         let k_total = self.layout.k_total;
         let mut layer_sym: [Vec<C32>; 3] = std::array::from_fn(|l| {
             vec![

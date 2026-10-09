@@ -41,7 +41,10 @@ and `Params` methods used by `isdbt-ofdm`).
 ## Key types and entry points
 
 - `Params::new(mode, guard, partial_reception, [Option<LayerConfig>; 3])`
-  validates a configuration and returns `ParamError` otherwise.
+  validates a configuration and returns a `ParamError` (one variant per
+  violated constraint) otherwise. The fields are private, so every
+  `Params` is valid; read them with `mode()`, `guard()`,
+  `partial_reception()`, `layers()` and `layer(Layer)`.
 - `LayerConfig { segments, modulation, code_rate, time_interleave }`;
   `TimeInterleave(k)` is the TMCC index 0..=3, and `.length(mode)` gives I.
 - `Params` figures: `multiplex_frame_tsps`, `samples_per_symbol`,
@@ -60,8 +63,8 @@ let a = LayerConfig { segments: 1, modulation: Modulation::Qpsk, code_rate: Code
 let b = LayerConfig { segments: 12, modulation: Modulation::Qam64, code_rate: CodeRate::R3_4, time_interleave: ti };
 let p = Params::new(Mode::M3, GuardInterval::G1_8, true, [Some(a), Some(b), None]).unwrap();
 
-assert_eq!(a.tsp_per_frame(p.mode), 64); // Table 3-3: 16 × 4 (Mode 3) × 1 segment
-assert_eq!(b.tsp_per_frame(p.mode), 2592); // 54 × 4 × 12
+assert_eq!(a.tsp_per_frame(p.mode()), 64); // Table 3-3: 16 × 4 (Mode 3) × 1 segment
+assert_eq!(b.tsp_per_frame(p.mode()), 2592); // 54 × 4 × 12
 assert_eq!(p.multiplex_frame_tsps(), 4608); // Table 3-5, Mode 3, GI 1/8
 assert_eq!(ti.length(Mode::M3), Some(2));
 assert_eq!(p.layer_of_segment(0), Layer::A);

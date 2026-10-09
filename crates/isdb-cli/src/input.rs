@@ -752,8 +752,9 @@ impl InputArgs {
 
     /// Open the inputs for `params`.
     pub fn open(&self, params: &Params) -> Result<Box<dyn FrameInput>> {
-        let counts: [usize; 3] =
-            std::array::from_fn(|l| params.layers[l].map_or(0, |c| c.tsp_per_frame(params.mode)));
+        let counts: [usize; 3] = std::array::from_fn(|l| {
+            params.layers()[l].map_or(0, |c| c.tsp_per_frame(params.mode()))
+        });
         let frame_s = params.frame_seconds();
         if self.synthetic {
             return Ok(Box::new(SyntheticInput::new()));
