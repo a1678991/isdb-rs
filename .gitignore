@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 
 # Specification text extractions (copyrighted; regenerate locally with
-# `pdftotext -layout <pdf> specs/<name>.txt`, see README.md)
+# `pdftotext -layout <pdf> specs/<name>.txt`, see SPECS.md)
 /specs/
 
 # Captures, recordings and IQ data are never committed
@@ -14,6 +14,20 @@ __pycache__/
 *.cs8
 *.cu8
 *.iq
+
+# Media (elementary streams and containers) used as multiplexer input
+media/
+*.m2v
+*.m2a
+*.aac
+*.adts
+*.mpg
+*.mp4
+*.mkv
+*.wav
+
+# Specification PDFs (copyrighted; keep them outside the repository or in specs/)
+*.pdf
 
 # mise local override (per-developer)
 mise.local.toml
