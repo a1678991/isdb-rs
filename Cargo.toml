@@ -31,9 +31,80 @@ serde_json = "1"
 toml = "1"
 ctrlc = "3"
 
+# Every member opts in with `[lints] workspace = true`. CI runs clippy with
+# `-D warnings`, so "warn" fails CI while keeping local builds usable.
 [workspace.lints.rust]
+# `deny`, not `forbid`: the FFI crate `hackrf` opts out with a crate-level
+# `#![allow(unsafe_code)]`; every other crate is unsafe-free.
 unsafe_code = "deny"
 missing_docs = "warn"
+meta_variable_misuse = "warn"
+redundant_lifetimes = "warn"
+unit_bindings = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+
+# A subset of clippy::pedantic (plus a few restriction lints) that the code
+# already satisfies. The pedantic group as a whole is not enabled: its
+# cast_* / must_use_candidate / doc_markdown / missing_*_doc lints fire
+# thousands of times on bit-field code and spec-citing docs.
+[workspace.lints.clippy]
+# pedantic
+case_sensitive_file_extension_comparisons = "warn"
+cast_ptr_alignment = "warn"
+checked_conversions = "warn"
+copy_iterator = "warn"
+doc_link_with_quotes = "warn"
+expl_impl_clone_on_copy = "warn"
+explicit_into_iter_loop = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+ignored_unit_patterns = "warn"
+implicit_clone = "warn"
+implicit_hasher = "warn"
+inconsistent_struct_constructor = "warn"
+index_refutable_slice = "warn"
+inefficient_to_string = "warn"
+invalid_upcast_comparisons = "warn"
+iter_filter_is_ok = "warn"
+iter_filter_is_some = "warn"
+large_types_passed_by_value = "warn"
+manual_ilog2 = "warn"
+manual_is_power_of_two = "warn"
+manual_let_else = "warn"
+manual_ok_or = "warn"
+manual_string_new = "warn"
+map_flatten = "warn"
+match_bool = "warn"
+maybe_infinite_iter = "warn"
+mut_mut = "warn"
+naive_bytecount = "warn"
+no_effect_underscore_binding = "warn"
+option_as_ref_cloned = "warn"
+option_option = "warn"
+ptr_cast_constness = "warn"
+range_minus_one = "warn"
+redundant_else = "warn"
+ref_as_ptr = "warn"
+ref_binding_to_reference = "warn"
+return_self_not_must_use = "warn"
+should_panic_without_expect = "warn"
+string_add_assign = "warn"
+transmute_ptr_to_ptr = "warn"
+unnecessary_box_returns = "warn"
+unnecessary_debug_formatting = "warn"
+unnecessary_join = "warn"
+unused_async = "warn"
+used_underscore_binding = "warn"
+used_underscore_items = "warn"
+# restriction
+dbg_macro = "warn"
+lossy_float_literal = "warn"
+mem_forget = "warn"
+rc_buffer = "warn"
+todo = "warn"
+unimplemented = "warn"
 
 [profile.release]
 debug = 1

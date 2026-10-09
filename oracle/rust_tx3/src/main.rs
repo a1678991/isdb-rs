@@ -32,7 +32,7 @@ fn parse_layer(s: &str) -> LayerConfig {
 
 fn load(p: &str) -> Vec<[u8; 188]> {
     let d = std::fs::read(p).unwrap();
-    d.chunks_exact(188).map(|c| c.try_into().unwrap()).collect()
+    d.as_chunks::<188>().0.to_vec()
 }
 
 fn main() {
