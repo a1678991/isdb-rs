@@ -7,6 +7,13 @@ license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/isdbt-core"
+readme = "README.md"
+keywords = ["isdb-t", "arib", "ofdm", "broadcast", "dtv"]
+categories = ["multimedia::video", "science"]
+# Ship sources, examples and docs only: tests (and any local captures
+# next to them) stay out of the .crate.
+include = ["/src/**", "/examples/**", "/README.md", "/SPEC-NOTES.md", "/LICENSE", "/NOTICE"]
 
 [dependencies]
 thiserror.workspace = true

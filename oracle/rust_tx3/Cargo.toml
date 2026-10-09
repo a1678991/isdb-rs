@@ -5,6 +5,7 @@
 #            --target-dir target/oracle
 [package]
 name = "rust_tx3"
+description = "Oracle helper: three-layer ISDB-T test transmitter and rotation-numbering check for the gr-isdbt differential tests"
 version = "0.1.0"
 edition = "2024"
 publish = false
