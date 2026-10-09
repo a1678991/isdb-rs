@@ -1,41 +1,44 @@
 //! HackRF streaming for `isdb tx` / `isdb rx`.
 //!
-//! The transmit path is written against the [`RadioTx`] trait so the whole
-//! sink logic (start after prefill, back-pressure, stall detection, drain,
-//! stop confirmation) is tested with an in-memory radio; [`isdb_hackrf::Device`]
-//! implements it for the real thing.
+//! The transmit path is written against the [`RadioTx`] trait (and its
+//! [`StreamCounters`]) so the whole sink logic (start after prefill,
+//! back-pressure, stall detection, drain, stop confirmation) is tested with
+//! an in-memory radio; `isdb_hackrf::Device` implements it for the real
+//! thing. The HackRF itself is behind the `hackrf` cargo feature (default
+//! on): without it, [`open_tx`] / [`open_rx`] fail with a message saying
+//! so, and nothing links libhackrf.
 
 use crate::phyargs::Tuning;
+use crate::rx::IqSource;
 use crate::sink::{Cs8Scaler, IqSink};
-use anyhow::{Context, Result, bail};
-use isdb_hackrf::Counters;
+use anyhow::{Result, bail};
 use isdbt_ofdm::C32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
+/// Live counters of a radio stream, shared with its USB thread.
+pub trait StreamCounters: Send + Sync {
+    /// Buffers transferred.
+    fn buffers(&self) -> u64;
+    /// TX: buffers sent as zeros because nothing was queued.
+    fn underruns(&self) -> u64;
+    /// The stream ended (source closed or stop requested).
+    fn finished(&self) -> bool;
+}
+
+/// A started TX stream: the buffer queue and its counters.
+pub type TxStreamParts = (SyncSender<Vec<i8>>, Arc<dyn StreamCounters>);
+
 /// A transmitting radio taking interleaved cs8 buffers.
 pub trait RadioTx {
     /// Start streaming with `depth` buffers queued ahead.
-    fn start_tx(&mut self, depth: usize) -> Result<(SyncSender<Vec<i8>>, Arc<Counters>)>;
+    fn start_tx(&mut self, depth: usize) -> Result<TxStreamParts>;
     /// Stop streaming.
     fn stop(&mut self) -> Result<()>;
     /// True while the device reports streaming.
     fn is_streaming(&mut self) -> bool;
-}
-
-impl RadioTx for isdb_hackrf::Device {
-    fn start_tx(&mut self, depth: usize) -> Result<(SyncSender<Vec<i8>>, Arc<Counters>)> {
-        let s = isdb_hackrf::Device::start_tx(self, depth)?;
-        Ok((s.sender, s.counters))
-    }
-    fn stop(&mut self) -> Result<()> {
-        Ok(isdb_hackrf::Device::stop(self)?)
-    }
-    fn is_streaming(&mut self) -> bool {
-        isdb_hackrf::Device::is_streaming(self)
-    }
 }
 
 /// HackRF transmit settings.
@@ -82,23 +85,6 @@ impl TxRfSettings {
     }
 }
 
-/// Open and configure a HackRF for transmission (not yet streaming).
-pub fn open_tx(s: &TxRfSettings) -> Result<(isdb_hackrf::Device, String)> {
-    let mut d = isdb_hackrf::Device::open(s.serial.as_deref()).context("open HackRF")?;
-    let info = device_info(&mut d);
-    d.set_antenna_enable(false)?;
-    d.set_amp_enable(false)?;
-    d.set_sample_rate_manual(s.tuning.rate_num, s.tuning.rate_den)?;
-    let bw = d.set_baseband_filter(s.bb_filter_hz)?;
-    d.set_freq(s.tuning.set_hz)?;
-    d.set_txvga_gain(s.txvga_db)?;
-    d.set_amp_enable(s.amp)?;
-    Ok((
-        d,
-        format!("{info}; baseband filter {:.2} MHz", bw as f64 / 1e6),
-    ))
-}
-
 /// HackRF receive settings.
 #[derive(Debug, Clone)]
 pub struct RxRfSettings {
@@ -142,33 +128,186 @@ impl RxRfSettings {
     }
 }
 
-/// Open and configure a HackRF for reception (not yet streaming).
-pub fn open_rx(s: &RxRfSettings) -> Result<(isdb_hackrf::Device, String)> {
-    let mut d = isdb_hackrf::Device::open(s.serial.as_deref()).context("open HackRF")?;
-    let info = device_info(&mut d);
-    d.set_antenna_enable(false)?;
-    d.set_sample_rate_manual(s.tuning.rate_num, s.tuning.rate_den)?;
-    let bw = d.set_baseband_filter(s.bb_filter_hz)?;
-    d.set_freq(s.tuning.set_hz)?;
-    d.set_lna_gain(s.lna_db)?;
-    d.set_vga_gain(s.vga_db)?;
-    d.set_amp_enable(s.amp)?;
-    Ok((
-        d,
-        format!("{info}; baseband filter {:.2} MHz", bw as f64 / 1e6),
-    ))
+pub use device::{open_rx, open_tx};
+
+/// The HackRF behind the `hackrf` feature.
+#[cfg(feature = "hackrf")]
+mod device {
+    use super::{IqSource, RadioTx, RxRfSettings, StreamCounters, TxRfSettings, TxStreamParts};
+    use anyhow::{Context, Result, bail};
+    use isdbt_ofdm::C32;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
+
+    /// The transmitting device.
+    pub type TxDevice = isdb_hackrf::Device;
+
+    impl StreamCounters for isdb_hackrf::Counters {
+        fn buffers(&self) -> u64 {
+            self.buffers.load(Ordering::Relaxed)
+        }
+        fn underruns(&self) -> u64 {
+            self.underruns.load(Ordering::Relaxed)
+        }
+        fn finished(&self) -> bool {
+            self.finished.load(Ordering::SeqCst)
+        }
+    }
+
+    impl RadioTx for isdb_hackrf::Device {
+        fn start_tx(&mut self, depth: usize) -> Result<TxStreamParts> {
+            let s = isdb_hackrf::Device::start_tx(self, depth)?;
+            Ok((s.sender, s.counters))
+        }
+        fn stop(&mut self) -> Result<()> {
+            Ok(isdb_hackrf::Device::stop(self)?)
+        }
+        fn is_streaming(&mut self) -> bool {
+            isdb_hackrf::Device::is_streaming(self)
+        }
+    }
+
+    /// Open and configure a HackRF for transmission (not yet streaming).
+    pub fn open_tx(s: &TxRfSettings) -> Result<(TxDevice, String)> {
+        let mut d = isdb_hackrf::Device::open(s.serial.as_deref()).context("open HackRF")?;
+        let info = device_info(&mut d);
+        d.set_antenna_enable(false)?;
+        d.set_amp_enable(false)?;
+        d.set_sample_rate_manual(s.tuning.rate_num, s.tuning.rate_den)?;
+        let bw = d.set_baseband_filter(s.bb_filter_hz)?;
+        d.set_freq(s.tuning.set_hz)?;
+        d.set_txvga_gain(s.txvga_db)?;
+        d.set_amp_enable(s.amp)?;
+        Ok((
+            d,
+            format!("{info}; baseband filter {:.2} MHz", bw as f64 / 1e6),
+        ))
+    }
+
+    /// Open and configure a HackRF for reception and start streaming
+    /// (`depth` buffers queued before dropping).
+    pub fn open_rx(s: &RxRfSettings, depth: usize) -> Result<(Box<dyn IqSource>, String)> {
+        let mut d = isdb_hackrf::Device::open(s.serial.as_deref()).context("open HackRF")?;
+        let info = device_info(&mut d);
+        d.set_antenna_enable(false)?;
+        d.set_sample_rate_manual(s.tuning.rate_num, s.tuning.rate_den)?;
+        let bw = d.set_baseband_filter(s.bb_filter_hz)?;
+        d.set_freq(s.tuning.set_hz)?;
+        d.set_lna_gain(s.lna_db)?;
+        d.set_vga_gain(s.vga_db)?;
+        d.set_amp_enable(s.amp)?;
+        let stream = d.start_rx(depth)?;
+        Ok((
+            Box::new(HackrfIqSource {
+                dev: d,
+                stream: Some(stream),
+            }),
+            format!("{info}; baseband filter {:.2} MHz", bw as f64 / 1e6),
+        ))
+    }
+
+    fn device_info(d: &mut isdb_hackrf::Device) -> String {
+        let fw = d.firmware_version().unwrap_or_else(|e| format!("? ({e})"));
+        let board = d
+            .board_id()
+            .map(|b| b.to_string())
+            .unwrap_or_else(|e| format!("? ({e})"));
+        format!(
+            "libhackrf {} (release {}), board id {board}, firmware {fw}",
+            isdb_hackrf::library_version(),
+            isdb_hackrf::library_release()
+        )
+    }
+
+    /// HackRF receive stream.
+    struct HackrfIqSource {
+        dev: isdb_hackrf::Device,
+        stream: Option<isdb_hackrf::RxStream>,
+    }
+
+    impl IqSource for HackrfIqSource {
+        fn read(&mut self, stop: &AtomicBool) -> Result<Option<Vec<C32>>> {
+            let Some(st) = &self.stream else {
+                return Ok(None);
+            };
+            loop {
+                match st.receiver.recv_timeout(Duration::from_millis(200)) {
+                    Ok(b) => return Ok(Some(isdbt_phy::iq::samples_from_cs8(&b))),
+                    Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Relaxed) => {
+                        return Ok(None);
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        if st.counters.finished() {
+                            bail!("HackRF RX stream ended unexpectedly");
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => bail!("HackRF RX stream closed"),
+                }
+            }
+        }
+
+        fn status(&self) -> String {
+            self.stream.as_ref().map_or(String::new(), |s| {
+                format!(
+                    " | overruns {}",
+                    s.counters.overruns.load(Ordering::Relaxed)
+                )
+            })
+        }
+
+        fn finish(&mut self) -> Result<String> {
+            let overruns = self
+                .stream
+                .as_ref()
+                .map_or(0, |s| s.counters.overruns.load(Ordering::Relaxed));
+            self.stream = None;
+            self.dev.stop()?;
+            let streaming = self.dev.is_streaming();
+            let s = format!(
+                "radio: overruns {overruns}; device stopped streaming: {}",
+                if streaming { "NO" } else { "yes" }
+            );
+            if streaming {
+                bail!("{s}");
+            }
+            Ok(s)
+        }
+    }
 }
 
-fn device_info(d: &mut isdb_hackrf::Device) -> String {
-    let fw = d.firmware_version().unwrap_or_else(|e| format!("? ({e})"));
-    let board = d
-        .board_id()
-        .map(|b| b.to_string())
-        .unwrap_or_else(|e| format!("? ({e})"));
-    format!(
-        "libhackrf {}, board id {board}, firmware {fw}",
-        isdb_hackrf::library_version()
-    )
+/// Without the `hackrf` feature: no device; opening one fails.
+#[cfg(not(feature = "hackrf"))]
+mod device {
+    use super::{IqSource, RadioTx, RxRfSettings, TxRfSettings, TxStreamParts};
+    use anyhow::{Result, bail};
+
+    const MISSING: &str = "this isdb was built without the `hackrf` cargo feature (no libhackrf): rebuild with default features to use --hackrf";
+
+    /// No transmitting device can exist in this build.
+    pub enum TxDevice {}
+
+    impl RadioTx for TxDevice {
+        fn start_tx(&mut self, _depth: usize) -> Result<TxStreamParts> {
+            match *self {}
+        }
+        fn stop(&mut self) -> Result<()> {
+            match *self {}
+        }
+        fn is_streaming(&mut self) -> bool {
+            match *self {}
+        }
+    }
+
+    /// Always fails: built without the `hackrf` feature.
+    pub fn open_tx(_s: &TxRfSettings) -> Result<(TxDevice, String)> {
+        bail!(MISSING)
+    }
+
+    /// Always fails: built without the `hackrf` feature.
+    pub fn open_rx(_s: &RxRfSettings, _depth: usize) -> Result<(Box<dyn IqSource>, String)> {
+        bail!(MISSING)
+    }
 }
 
 /// Radio sink: converts frames to cs8 and streams them.  Streaming starts
@@ -179,8 +318,8 @@ pub struct RadioSink<R: RadioTx> {
     scaler: Cs8Scaler,
     prefill: usize,
     pending: Vec<Vec<i8>>,
-    stream: Option<(SyncSender<Vec<i8>>, Arc<Counters>)>,
-    counters: Option<Arc<Counters>>,
+    stream: Option<TxStreamParts>,
+    counters: Option<Arc<dyn StreamCounters>>,
     frame_s: f64,
     stall: Duration,
     last_underruns: u64,
@@ -222,7 +361,7 @@ impl<R: RadioTx> RadioSink<R> {
     fn send(&mut self, mut b: Vec<i8>, stop: &AtomicBool) -> Result<()> {
         let (sender, counters) = self.stream.as_ref().expect("streaming");
         let mut last_progress = Instant::now();
-        let mut last_buffers = counters.buffers.load(Ordering::Relaxed);
+        let mut last_buffers = counters.buffers();
         loop {
             match sender.try_send(b) {
                 Ok(()) => return Ok(()),
@@ -232,10 +371,10 @@ impl<R: RadioTx> RadioSink<R> {
             if stop.load(Ordering::Relaxed) {
                 return Ok(()); // dropped: we are stopping anyway
             }
-            if counters.finished.load(Ordering::Relaxed) {
+            if counters.finished() {
                 bail!("radio stream finished unexpectedly");
             }
-            let n = counters.buffers.load(Ordering::Relaxed);
+            let n = counters.buffers();
             if n != last_buffers {
                 last_buffers = n;
                 last_progress = Instant::now();
@@ -250,9 +389,7 @@ impl<R: RadioTx> RadioSink<R> {
     }
 
     fn underruns(&self) -> u64 {
-        self.counters
-            .as_ref()
-            .map_or(0, |c| c.underruns.load(Ordering::Relaxed))
+        self.counters.as_ref().map_or(0, |c| c.underruns())
     }
 }
 
@@ -273,10 +410,7 @@ impl<R: RadioTx> IqSink for RadioSink<R> {
         let u = self.underruns();
         let d = u - self.last_underruns;
         self.last_underruns = u;
-        let buffers = self
-            .counters
-            .as_ref()
-            .map_or(0, |c| c.buffers.load(Ordering::Relaxed));
+        let buffers = self.counters.as_ref().map_or(0, |c| c.buffers());
         format!(
             " | usb buffers {buffers} underruns {u} (+{d}) | {}",
             self.scaler.describe()
@@ -296,10 +430,10 @@ impl<R: RadioTx> IqSink for RadioSink<R> {
                 drop(sender); // the callback ends the stream once the queue is empty
                 let limit = Duration::from_secs_f64(self.frame_s * (self.prefill + 2) as f64 + 2.0);
                 let t = Instant::now();
-                while !counters.finished.load(Ordering::Relaxed) && t.elapsed() < limit {
+                while !counters.finished() && t.elapsed() < limit {
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                drained = if counters.finished.load(Ordering::Relaxed) {
+                drained = if counters.finished() {
                     format!("queue drained in {:.2} s", t.elapsed().as_secs_f64())
                 } else {
                     "queue did not drain in time; stopped".into()
@@ -331,7 +465,31 @@ impl<R: RadioTx> IqSink for RadioSink<R> {
 pub mod mock {
     use super::*;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicU64;
     use std::sync::mpsc::{TryRecvError, sync_channel};
+
+    /// Plain atomic counters (the in-memory radio of the tests).
+    #[derive(Debug, Default)]
+    pub struct Counters {
+        /// Buffers transferred.
+        pub buffers: AtomicU64,
+        /// Underruns.
+        pub underruns: AtomicU64,
+        /// Stream ended.
+        pub finished: AtomicBool,
+    }
+
+    impl StreamCounters for Counters {
+        fn buffers(&self) -> u64 {
+            self.buffers.load(Ordering::Relaxed)
+        }
+        fn underruns(&self) -> u64 {
+            self.underruns.load(Ordering::Relaxed)
+        }
+        fn finished(&self) -> bool {
+            self.finished.load(Ordering::SeqCst)
+        }
+    }
 
     /// Mock radio.
     #[derive(Default)]
@@ -358,7 +516,7 @@ pub mod mock {
     }
 
     impl RadioTx for MockRadio {
-        fn start_tx(&mut self, depth: usize) -> Result<(SyncSender<Vec<i8>>, Arc<Counters>)> {
+        fn start_tx(&mut self, depth: usize) -> Result<TxStreamParts> {
             self.starts += 1;
             let (tx, rx) = sync_channel::<Vec<i8>>(depth);
             let counters = Arc::new(Counters::default());
@@ -415,7 +573,7 @@ pub mod mock {
                     }
                 }
             }));
-            Ok((tx, counters))
+            Ok((tx, counters as Arc<dyn StreamCounters>))
         }
 
         fn stop(&mut self) -> Result<()> {

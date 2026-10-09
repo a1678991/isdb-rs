@@ -13,8 +13,6 @@ use isdbt_phy::{PipelinedReceiver, RxFrame};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::RecvTimeoutError;
-use std::time::Duration;
 
 /// `isdb rx` arguments.
 #[derive(Debug, Args)]
@@ -330,59 +328,6 @@ impl IqSource for FileIqSource {
     }
 }
 
-/// HackRF receive stream.
-pub struct HackrfIqSource {
-    dev: isdb_hackrf::Device,
-    stream: Option<isdb_hackrf::RxStream>,
-}
-
-impl IqSource for HackrfIqSource {
-    fn read(&mut self, stop: &AtomicBool) -> Result<Option<Vec<C32>>> {
-        let Some(st) = &self.stream else {
-            return Ok(None);
-        };
-        loop {
-            match st.receiver.recv_timeout(Duration::from_millis(200)) {
-                Ok(b) => return Ok(Some(isdbt_phy::iq::samples_from_cs8(&b))),
-                Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Relaxed) => return Ok(None),
-                Err(RecvTimeoutError::Timeout) => {
-                    if st.counters.finished.load(Ordering::Relaxed) {
-                        bail!("HackRF RX stream ended unexpectedly");
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => bail!("HackRF RX stream closed"),
-            }
-        }
-    }
-
-    fn status(&self) -> String {
-        self.stream.as_ref().map_or(String::new(), |s| {
-            format!(
-                " | overruns {}",
-                s.counters.overruns.load(Ordering::Relaxed)
-            )
-        })
-    }
-
-    fn finish(&mut self) -> Result<String> {
-        let overruns = self
-            .stream
-            .as_ref()
-            .map_or(0, |s| s.counters.overruns.load(Ordering::Relaxed));
-        self.stream = None;
-        self.dev.stop()?;
-        let streaming = self.dev.is_streaming();
-        let s = format!(
-            "radio: overruns {overruns}; device stopped streaming: {}",
-            if streaming { "NO" } else { "yes" }
-        );
-        if streaming {
-            bail!("{s}");
-        }
-        Ok(s)
-    }
-}
-
 /// Output files.
 #[derive(Default)]
 pub struct Outputs {
@@ -534,16 +479,9 @@ pub fn run(a: RxArgs) -> Result<()> {
         };
         rf.check()?;
         eprintln!("HackRF RX settings:\n{}", rf.describe());
-        let (mut dev, info) = crate::radio::open_rx(&rf)?;
+        let (src, info) = crate::radio::open_rx(&rf, 64)?;
         eprintln!("  opened: {info}");
-        let stream = dev.start_rx(64)?;
-        (
-            Box::new(HackrfIqSource {
-                dev,
-                stream: Some(stream),
-            }),
-            format!("HackRF {}", rf.tuning.describe()),
-        )
+        (src, format!("HackRF {}", rf.tuning.describe()))
     } else {
         let p = a.iq.as_deref().expect("clap group");
         (

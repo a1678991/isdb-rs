@@ -123,3 +123,25 @@ jobs:
           workspaces: ". -> target/msrv"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: make msrv
+
+  no-hackrf:
+    name: isdb-cli without libhackrf
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Deliberately no libhackrf-dev: `--no-default-features` drops the
+      # `hackrf` feature, so nothing may link the system library.
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: build (no default features)
+        run: cargo build -p isdb-cli --no-default-features --locked
+      - name: clippy (no default features, -D warnings)
+        run: cargo clippy -p isdb-cli --no-default-features --all-targets --locked -- -D warnings
+      - name: test (no default features)
+        run: cargo test -p isdb-cli --no-default-features --locked

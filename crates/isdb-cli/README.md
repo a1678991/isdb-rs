@@ -6,7 +6,13 @@ plus the service multiplexer and TS analysis tools.
 
 ```text
 cargo build --release -p isdb-cli      # → target/release/isdb
+cargo build --release -p isdb-cli --no-default-features   # without libhackrf
 ```
+
+The `hackrf` cargo feature (default on) links the system libhackrf
+(≥ 2022.09.1) through `isdb-hackrf`. Built without it, every file-based
+command works and `--hackrf` fails with a message naming the feature
+(`--dry-run` still prints the settings).
 
 > **Legal and safety notice** (also printed by `isdb tx --help`):
 > radiating on broadcast frequencies requires a licence (in Japan the

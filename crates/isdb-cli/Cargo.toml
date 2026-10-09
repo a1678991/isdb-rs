@@ -26,13 +26,20 @@ isdbt-core.workspace = true
 isdbt-fec.workspace = true
 isdbt-ofdm.workspace = true
 isdbt-phy.workspace = true
-isdb-hackrf.workspace = true
+isdb-hackrf = { workspace = true, optional = true }
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 ctrlc = { workspace = true, features = ["termination"] }
+
+[features]
+default = ["hackrf"]
+# HackRF TX/RX (`--hackrf`): links the system libhackrf through isdb-hackrf.
+# Without it (`--no-default-features`) every file-based command still works
+# and `--hackrf` fails with a message saying the feature is missing.
+hackrf = ["dep:isdb-hackrf"]
 
 [lints]
 workspace = true
