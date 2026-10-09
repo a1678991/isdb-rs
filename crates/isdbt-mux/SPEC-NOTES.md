@@ -540,60 +540,88 @@ unchanged without checks (reproducing old streams on receivers).
   minus half a byte has reached EBn/Bn at its decoding time (buffer
   contents are whole bytes; the f64 running sums accumulate ≈ 0.01 byte of
   rounding after 4 GB, which a tighter tolerance reported as an
-  "underflow" in a 30-minute relay).
+  "underflow" in a long relay).
 
 ## Rebroadcasting a recorded program (`kind = "ts-program"`, `src/relay.rs`)
-- Purpose: a recorded program of another network (bench: a BS
-  recording, network_id 0x0004 "BS Digital", PMT with
-  conditional_access_descriptor → ECM PID 0x0121 and
-  digital_copy_control_descriptor) cannot be registered by a terrestrial
-  receiver when relayed as is (the recorder registers a TS from its
-  terrestrial NIT). Only
-  the program's elementary streams are taken; every PSI/SI table is this
-  multiplexer's (terrestrial NIT/SDT/EIT/TOT/BIT, PMT with typed copy
-  control, CAT from the configuration — empty).
+- Purpose: a recorded program of another network (its own NIT/SDT,
+  possibly CA descriptors and an ECM PID, copy control) cannot be
+  registered by a terrestrial receiver when relayed as is (the recorder
+  registers a TS from its terrestrial NIT). Only the program's elementary
+  streams (and, with `ca = "keep"`, its ECM / EMM PIDs) are taken; every
+  PSI/SI table is this multiplexer's (terrestrial NIT/SDT/EIT/TOT/BIT, PMT
+  with typed copy control, CAT from the configuration plus the source's
+  CA_descriptors). The input must be unscrambled.
 - Selection (H.222.0 §2.4.4.8 PMT; Table 2-34 / B32 Part 3 §3.10 (2)
   stream types): default stream_types 0x01/0x02 (MPEG-1/2 video), 0x1B
   (H.264), 0x24 (HEVC), 0x03/0x04 (MPEG audio), 0x0F (AAC ADTS), 0x11 (AAC
   LATM), 0x06 (PES private data: ARIB captions / superimpose / data PES);
   section streams 0x05 / 0x0B–0x0D (data carousels) only with
   `include_carousels` (relayed packet by packet, payload unchanged).
-  ECM/EMM are not PMT elementary streams (the CA descriptor points at
-  them) and are never relayed. Scrambled packets of a selected stream
-  (transport_scrambling_control ≠ '00') make the probe refuse the source.
-- Descriptors: source program_info descriptors are all dropped (CA 0x09
-  H.222.0 §2.6.16; copy control 0xC1 and content availability 0xDE are
-  generated from the typed configuration).
-- Copy restriction is never weakened by default: with
+  Scrambled packets of a relayed PID (transport_scrambling_control ≠
+  '00') make the probe refuse the source.
+- Conditional access (`ca`, owner decision; `relay::SourceCa`): with
+  `"keep"` (default) the source PMT's conditional_access_descriptors
+  (H.222.0 §2.6.16 Table 2-60; program loop and the relayed streams' ES
+  loops) are carried as bytes into the generated PMT, the ECM PIDs they
+  name (CA_PID ≠ 0x1FFF) are relayed packet by packet like a carousel,
+  and the source CAT's CA_descriptors (§2.4.4.6) go into the generated CAT
+  (after any configured `[cat] descriptors`), with each EMM PID relayed
+  when it has packets in the probed part (otherwise the descriptor is
+  carried as is and the report says so). CA_PIDs follow the PID mapping:
+  `"keep"` / unlisted keep the source PID; with `"auto"` a CA PID that the
+  plan or a relayed stream already uses moves to the next free PID; an
+  explicit `pid_map` may list ECM / EMM PIDs. The CA_PID field is
+  rewritten in place (3 reserved bits and private data kept). The payload
+  stays unscrambled, so receivers see CA signalling with a clear payload;
+  `free_CA_mode` is not derived (the report notes a source SDT
+  free_CA_mode 1). `"drop"`: no CA descriptors, ECM or EMM (each listed
+  as dropped with the reason). Status: confirmed on the synthetic source
+  (`tests/relay.rs`); receiver behaviour pending real-world check.
+- Program-loop descriptors: the CA descriptors as above; copy control 0xC1
+  and content availability 0xDE are generated from the typed
+  configuration; the others are dropped (listed in the report).
+- Copy control (owner decision; `relay::SourceCopyControl`): the probe
+  collects every digital_copy_control_descriptor 0xC1 (B10 §6.2.23) and
+  content_availability_descriptor 0xDE (§6.2.45) of the source program in
+  its PMT program loop, the relayed streams' ES loops, its SDT service
+  loop (§5.2.6) and its EIT present/following events (§5.2.7), first
+  version of each; all are listed in the report. With
   `copy_control.recording_control = "source"` (the default of
   `examples/relay-ts.toml` and of `isdb … --relay`) the generated 0xC1
-  takes the source's digital_recording_control_data (B10 §6.2.23 Table
-  6-39): the PMT program-loop descriptor ("digital copy control
-  information is specified for the whole event"), else the most
-  restrictive value (largest code) among the relayed streams' ES-loop
-  descriptors, else — when the source signals none — '00' copy-free
-  (`relay::SourceCopyControl`, resolved in `Multiplexer::new`, reported in
-  the notes). user_defined still defaults to copy_control_type '01' (see
-  "Digital copy control descriptor" and the receiver compatibility notes),
-  maximum_bitrate is not carried over. `--copy copy-free |
-  copy-one-generation | copy-never` (or a Table 6-39 name in the TOML)
-  overrides it explicitly. ES descriptors are decoded with
-  `isdb_si::Descriptor` and carried over by type when they describe the
-  stream itself: stream_identifier 0x52 (B10 §6.2.16; its component_tag
-  becomes the stream's typed `component_tag`, also used by the EIT
-  component descriptors), video_decode_control 0xC8 (§6.2.30; when absent
-  for MPEG-2 video it is derived from the sequence header as for media
-  files), data_component 0xFD (§6.2.20; tells the receiver the caption /
-  superimpose coding, e.g. data_component_id 0x0008). Dropped: CA 0x09 (the
-  bench recording's superimpose PID carries one with ca_pid 0x1FFF), per-component copy
-  control 0xC1, hierarchical_transmission 0xC0 (refers to source PIDs and
-  layers), access_control 0xF6, unknown tags. The probe report lists both.
+  takes the source's digital_recording_control_data (Table 6-39) with the
+  precedence PMT program loop ("digital copy control information is
+  specified for the whole event") > relayed ES loops (most restrictive,
+  largest code) > SDT > EIT present > EIT following, else '00' copy-free
+  when the source signals none; the relayed streams keep their
+  per-component ES-loop 0xC1 bytes. An explicit value (`--copy`, a Table
+  6-39 name in the TOML) is used as given — relaxing included — and the
+  ES-loop 0xC1 are then dropped. Either way one note prints the source
+  value and what is sent, e.g. `source copy control: copy-one-generation
+  (PMT); relayed as: copy-free (explicit)`. 0xDE is reported, not carried
+  (configure `content_availability` to send one). Raw configuration that
+  can set a relayed service's copy control (raw 0xC1/0xDE descriptors,
+  `add_descriptors`, `byte_patches`, `replace_sections`, `extra_sections`
+  of its PMT or of the SDT/EIT) is allowed; a note names it with the copy
+  control decoded from the generated sections. user_defined still
+  defaults to copy_control_type '01' (see "Digital copy control
+  descriptor" and the receiver compatibility notes); maximum_bitrate is
+  not carried over.
+- ES descriptors are decoded with `isdb_si::Descriptor` and carried over
+  by type when they describe the stream itself: stream_identifier 0x52
+  (B10 §6.2.16; its component_tag becomes the stream's typed
+  `component_tag`, also used by the EIT component descriptors),
+  video_decode_control 0xC8 (§6.2.30; when absent for MPEG-2 video it is
+  derived from the sequence header as for media files), data_component
+  0xFD (§6.2.20; tells the receiver the caption / superimpose coding,
+  e.g. data_component_id 0x0008). CA 0x09 and copy control 0xC1 as above.
+  Dropped: hierarchical_transmission 0xC0 (refers to source PIDs and
+  layers), access_control 0xF6, unknown tags. The probe report lists
+  both.
 - Re-timing (H.222.0 §2.4.2.2): the source has no slot clock, so every
   packet's arrival time is interpolated between the PCRs of the program's
   PCR_PID (eq. 2-4, `pcrclock::PcrClock`). A recording of a partial TS has
   lost the other services' packets, so the interpolation spreads the
-  program's packets evenly over each PCR interval (bench BS recording:
-  66 ms) — an
+  program's packets evenly over each PCR interval (tens of ms) — an
   approximation of their original positions, exact in the mean.
   Discontinuities (discontinuity_indicator, or a PCR step outside
   0 < Δ ≤ 0.7 s) continue the time line at the previous interval's rate;
@@ -605,9 +633,18 @@ unchanged without checks (reproducing old streams on receivers).
   of the service, dedicated: relayed packets keep their payload, so a PCR
   cannot be added to them). A packet is eligible from its time on (TBn
   permitting) and leaves in the first free slot of its layer; with spare
-  capacity the delay is a few slots (bench BS recording on B 12 seg 7/8:
-  ≤ 64 ms over
-  30 minutes, 0 late PES).
+  capacity the delay is a few slots. A due packet whose T-STD buffer would
+  overflow waits up to 2 ms past its time (`relay::RETIME_HOLD`): the
+  output slots are not the source's, so relayed packets arrive 0–1 ms
+  later than in the source, unevenly, and consecutive packets can move up
+  to a few slots closer. A source multiplexed with no MBn/EBn headroom —
+  such as a TS made by `isdb mux`, whose scheduler admits a packet whenever
+  it just fits — then overflowed MBn by one or two packets at hundreds of
+  points (and kept MBn busy > 1 s) although the probe found the source
+  clean: the probe and the output check run the same model, the
+  difference was this jitter. The hold removes it (`tests/relay_tstd.rs`;
+  a TS made from `examples/bench.toml` with ffmpeg test media: 2326 MBn
+  overflows → 0, at most 2 ms behind the source pace).
 - PES bytes intact: every source packet of a relayed PID becomes one
   output packet with the same payload bytes; only the 33 PTS/DTS bits of
   the PES header are rewritten (prefix and marker bits kept, Table 2-21);
@@ -623,9 +660,8 @@ unchanged without checks (reproducing old streams on receivers).
   ES begins with a sequence_header (an access point); if its GOP is open,
   the following B-picture PES (which reference the unsent previous GOP) are
   dropped whole until the first I/P. Other PIDs start at their first PES
-  start after that point. Audio PES need not start on an ADTS frame (bench
-  BS recording:
-  720-byte PES, data_alignment_indicator '0', frames straddling PES), so
+  start after that point. Audio PES need not start on an ADTS frame (e.g.
+  fixed 720-byte PES, data_alignment_indicator '0', frames straddling PES), so
   the first relayed audio PES may begin mid-frame — one decoder resync at
   the cut-in (ffmpeg: "Number of bands … exceeds limit" once), not
   trimmed. A pass ends with each PID's last complete PES. `at_eof =
@@ -638,24 +674,21 @@ unchanged without checks (reproducing old streams on receivers).
   a later pass a due packet whose T-STD buffer would overflow is held
   until it fits or until its PES must leave to complete by its decoding
   time (100 ms + twice its remaining bytes at the layer rate). Elsewhere
-  the source timing is kept as is (no holds).
+  the source timing is kept, apart from the 2 ms re-timing hold above.
 - T-STD of the source: the probe runs the same model on the source's own
-  timing. Bench BS recording: video arrival → DTS 0.201/0.460/0.507 s (min/median/max),
-  model clean; AAC (267 kbit/s) arrives 0.133/0.154/0.168 s before its PTS,
-  ≈ 5 KB in Bn, above H.222.0 §2.4.2.3's BSn = 3584 bytes for ≤ 2
-  channels (`specs/ITU-T-H.222.0-2006.txt`: "BSn = BSmux + BSdec + BSoh =
-  3584 bytes") — the recording itself overflows the model (and the
-  relayed stream reports the same overflow count; the relay does not
-  re-time to hide it). The model is approximate for such audio: each PES is
-  one access unit removed at its PTS.
+  timing and reports it. A recording whose audio arrives early enough to
+  hold more than H.222.0 §2.4.2.3's BSn = 3584 bytes for ≤ 2 channels
+  ("BSn = BSmux + BSdec + BSoh = 3584 bytes") overflows the model itself;
+  the relayed stream then reports overflows too (the 2 ms hold does not
+  re-time it to hide them). The model is approximate for such audio: each
+  PES is one access unit removed at its PTS.
 - Rate check: need = the relayed packets' mean rate over the probe + the
   layer's PCR packets + its PSI/SI (each section stream's packets per
   repetition interval); above the layer's Table 3-3 capacity →
   configuration error listing `capacity::suggest` layouts
   (`rate_check = "warn"` relays anyway, falling behind); 1-s peak + overhead
-  above it → warning. Bench BS recording (whole file): mean 18.53 Mbit/s, peaks 19.02
-  (1 s) / 19.51 (100 ms); B 12 seg 64QAM 3/4 = 16.85 refused; 7/8 = 19.66
-  carries it (96 % with PCR/PMT, 5.5 % null fill).
+  above it → warning. E.g. a recording of about 18.5 Mbit/s: B 12 seg
+  64QAM 3/4 = 16.85 refused; 7/8 = 19.66 carries it.
 - EIT (`eit_from_source`): the source EIT p/f actual (table 0x4E,
   service_id = program) present and following events: event_id, duration,
   short_event name/text (decoded by `isdb-text`, re-encoded by the SI
@@ -702,8 +735,8 @@ unchanged without checks (reproducing old streams on receivers).
      (a) component_tag 0x30–0x37 caption, 0x38–0x3F superimpose — the
          component_tag assignment of the terrestrial / BS operational
          guidelines (ARIB TR-B14 / TR-B15). **Not available locally: from
-         knowledge**, confirmed only by the bench BS recording (0x30 on the
-         synchronous-PES stream, 0x38 on the asynchronous one).
+         knowledge**, consistent with a recording used during development
+         (0x30 on the synchronous-PES stream, 0x38 on the asynchronous one).
      (b) the Timing field (2 LSBs) of additional_arib_caption_info in the
          data_component_descriptor (B24 Part 3 §9.6.1 Table 9-15, values
          Table 9-16: '00' asynchronous, '01' program synchronous, '10'
@@ -717,10 +750,10 @@ unchanged without checks (reproducing old streams on receivers).
          the two independent-PES forms are B24 Vol. 3, not local; only
          PTS presence is used.)
      (d) otherwise caption.
-     The bench BS recording: 0x0145 (tag 0x30, info 0x3D = DMF '0011' Timing
-     '01', stream_id 0xBD with PTS) → caption; 0x0138 (tag 0x38, info
-     0x3C = Timing '00', stream_id 0xBF without PTS) → superimpose. All
-     three signals agree; rule (a) decides.
+     In a recording used during development the caption stream (tag 0x30,
+     info 0x3D = DMF '0011' Timing '01', stream_id 0xBD with PTS) and the
+     superimpose stream (tag 0x38, info 0x3C = Timing '00', stream_id 0xBF
+     without PTS) agree on all three signals; rule (a) decides.
   4. Rank within a role: component_tag ascending, untagged streams after
      the tagged ones, then PMT order. Audio rank 0 is the "main" audio
      (the operational main audio component_tag is 0x10, the lowest audio
@@ -915,8 +948,9 @@ showed to matter.
 20. `[network] channels` must equal the transmit channel (receivers retune to
     the NIT frequency); the example keeps 27.
 21. `ts-program` selection defaults (video, audio, PES private data;
-    carousels off), carried ES descriptors (0x52, 0xC8, 0xFD) and dropped
-    ones (everything else, all program descriptors).
+    carousels off), carried ES descriptors (0x52, 0xC8, 0xFD; 0x09 with
+    `ca = "keep"`, 0xC1 with `recording_control = "source"`) and dropped
+    ones (everything else; program descriptors other than CA).
 22. `ts-program` timing: first relayed packet 100 ms after the first slot;
     `base` rounded down to 300 ticks; `max_early_ms = 0` by default (no
     packet before its PCR-derived time; > 0 allows early sending when the
@@ -933,7 +967,9 @@ showed to matter.
 26. `examples/relay-ts.toml`: program and PIDs from the recording
     (`pid_map = "auto"`: 0x0111/0x0112/0x0130/0x0138 for video / main
     audio / captions / superimpose), copy control from the source
-    (`recording_control = "source"`, copy_control_type '01'),
+    (`recording_control = "source"`, copy_control_type '01'), CA
+    signalling kept (`ca = "keep"`), area_code 0x5A5 and network_id
+    0x79EE as placeholders,
     one service on layer B 12 seg 64QAM 7/8 with partial reception (layer
     A carries PSI/SI only).
 27. `ts-program` program selection when none is given (the only program,
@@ -950,3 +986,14 @@ showed to matter.
     the most robust modulation / code rate of the relay's layer that
     carries the mean rate + PCR/PSI/SI (configured GI first, then 1/16,
     1/32), never switching to a single 13-segment layer by itself.
+31. `ts-program` conditional access: `ca = "keep"` by default (owner
+    decision): CA descriptors, ECM and CAT/EMM relayed with CA_PIDs
+    following the PID mapping (`"auto"`: the source PID unless taken,
+    then the next free one); `"drop"` relays none.
+32. `ts-program` copy control: the source's value with the precedence PMT
+    program loop > ES loops > SDT > EIT present > EIT following; any
+    explicit value accepted as given and reported next to the source's.
+33. `ts-program` re-timing hold: a due packet waits at most 2 ms
+    (`relay::RETIME_HOLD`) while its T-STD buffer would overflow — above
+    the ≈ 0.7 ms slot jitter measured on a relay of this crate's own
+    output, small against the 0.1 s release margin of the seam hold.

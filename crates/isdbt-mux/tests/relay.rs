@@ -582,7 +582,7 @@ fn ts_program_keys_are_checked() {
         format!(
             r#"
 [network]
-network_id = 0x7FE0
+network_id = 0x79EE
 name = "n"
 area_code = 1
 remote_control_key_id = 9

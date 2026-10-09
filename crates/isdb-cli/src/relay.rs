@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn numbers_channels_and_layers() {
-        assert_eq!(parse_u16("0x00d3"), Ok(0xD3));
+        assert_eq!(parse_u16("0x0101"), Ok(0x0101));
         assert_eq!(parse_u16("211"), Ok(211));
         assert!(parse_u16("0x1_0000").is_err());
         assert_eq!(tx_channel(None, None).unwrap(), 44);

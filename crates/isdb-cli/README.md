@@ -70,11 +70,10 @@ Inputs (one of):
   13-segment layer, shorter guard intervals) unless `--allow-overrate`
   (then it runs behind its schedule — slow motion — and every status line
   shows `OVER CAPACITY` and the lag). An input without PCR is not paced.
-  For a recorded *program* of another network (BS/CS recordings), use
-  `--relay FILE` (or `--mux-config` with a `ts-program` source) instead
-  (see "Rebroadcast a recording" below): relaying a foreign TS as is keeps
-  its BS SI and CA descriptors, which a terrestrial receiver will not
-  register.
+  For a recorded *program* of another network, use `--relay FILE` (or
+  `--mux-config` with a `ts-program` source) instead (see "Rebroadcast a
+  recording" below): relaying a foreign TS as is keeps that network's
+  NIT/SDT, which a terrestrial receiver will not register.
 * `--mux-config FILE.toml` the isdbt-mux service multiplexer run in-process
   (`Multiplexer::next_frame()` straight into the modulator, same
   `--mode/--gi/--partial/--layer-*` parameters), so a synthetic service goes
@@ -327,8 +326,9 @@ isdb ts diff ours.ts live-capture.ts
 
 ## Rebroadcast a recording
 
-A recorded program of another network (e.g. a BS recording)
-as a terrestrial service on UHF ch44, remote key 9, in one line:
+A recorded program (unscrambled, transport_scrambling_control '00'; one
+you have the rights to relay) as a terrestrial service on UHF ch44,
+remote key 9, in one line:
 
 ```text
 isdb tx --relay FILE --auto-layout --hackrf --channel 44 --txvga 20 --rf-enable
@@ -342,8 +342,13 @@ It runs until Ctrl-C (the recording loops; `--seconds S` to bound,
 the program's PES go out unchanged at the recording's own PCR pace with
 PTS/DTS rebased onto this multiplex; NIT/SDT/EIT/PMT/CAT/TOT/BIT are
 terrestrial ones: service 0x0400, PMT 0x01F0, PCR 0x01FF, network/TS
-0x7FE0, the NIT naming the transmit channel; CA descriptors and ECM
-dropped). Nothing is written by hand: the program is the recording's only
+0x79EE (a placeholder), the NIT naming the transmit channel). The
+recording's conditional-access signalling is kept by default (`--ca
+keep`): its PMT conditional_access_descriptors, the ECM PIDs they name
+and its CAT's CA_descriptors with the EMM PIDs present in the recording
+are relayed, CA_PIDs following the PID mapping; the payload stays
+unscrambled, so receivers see CA signalling with a clear payload.
+`--ca drop` relays none of it. Nothing is written by hand: the program is the recording's only
 one (`--program N` or `--service-name S` for multi-service recordings; a
 missing or ambiguous choice lists the programs with SDT names and
 streams), and every elementary stream is classified from the PMT and
@@ -352,17 +357,23 @@ renumbered by role — video → 0x0111, main audio → 0x0112 (further audio
 and sources: `isdbt-mux/SPEC-NOTES.md` "Program selection, stream roles and
 the PID plan"). At start the probe report lists the source program, each
 source PID → role (with the rule that decided it) → output PID with its
-rate, the dropped PIDs with the reason (SI, PMT, source PCR, ECM, …), and
-the measured mean / peak rates and layer usage.
+rate, the relayed ECM / EMM PIDs, the dropped PIDs with the reason (SI,
+PMT, source PCR, …), the source's copy control (every
+digital_copy_control_descriptor and content_availability_descriptor found
+in its PMT program and ES loops, SDT and EIT p/f) and the measured mean /
+peak rates and layer usage. One info line says what the relay sends,
+e.g. `source copy control: copy-one-generation (PMT); relayed as:
+copy-free (explicit)`.
 
 | option (`--relay` only) | default | meaning |
 |---|---|---|
 | `--program N` / `--service-name S` | the only program | source program_number (hex or decimal) / SDT name (exact, else unique substring; full-width ASCII folded: `TV12` finds `ＴＶ１２テスト`) |
 | `--channel N` | 44 | UHF channel in the NIT (`tx`: its `--channel`, or the channel of `--freq`) |
 | `--remote-key K` | 9 | remote_control_key_id 1..12 |
-| `--area-code C` | 0x8D5 | area_code (12 bits) |
+| `--area-code C` | 0x5A5 | area_code (12 bits, B10 Annex D Table D-2); set the receiver's area |
 | `--name S` | source SDT name, else ベンチ | network / TS / service / provider / broadcaster name |
-| `--copy copy-free\|copy-one-generation\|copy-never` | the source program's digital_recording_control_data (copy-free only if the source signals none) | digital copy control (copy_control_type '01'); without `--copy` the relay keeps the recording's copy restriction |
+| `--copy copy-free\|copy-one-generation\|copy-never` | the source program's digital_recording_control_data (PMT program loop, else relayed ES loops, else SDT, else EIT p/f; copy-free only if the source signals none) | digital copy control (copy_control_type '01'). Without `--copy` the relay keeps the recording's value and its per-component (ES loop) descriptors; an explicit value is used as given (ES-loop descriptors dropped). The source's value is printed either way |
+| `--ca keep\|drop` | keep | the recording's CA descriptors, ECM and CAT/EMM: relayed (payload unscrambled) or dropped |
 | `--at-eof loop\|end` | loop | at the end of the recording |
 | `--eit-from-source [BOOL]` | true | EIT p/f event name / text / genre from the recording (the TOML key `eit_from_source` itself defaults to false; `--relay` sets it) |
 | `--clock-start JST` | system clock | fixed stream clock (reproducible output) |
@@ -373,14 +384,11 @@ measured mean rate + PCR/PSI/SI exceeds its layer, use the first suggested
 layout that only changes that layer (the most robust modulation / code
 rate that fits, configured GI first; partial reception and the one-seg
 layer A kept) and print the choice, instead of refusing with the list of
-layouts. For example, a 30-minute BS recording used during development
-needed 18.92 Mbit/s over the first 30 s (18.53 over the whole file; peaks
-19.02 Mbit/s over 1 s, 19.51 over 100 ms): the default B (12 seg 64QAM 3/4
-= 16.85 Mbit/s) was refused and `--auto-layout` picked B 12 seg 64QAM 7/8
-(19.66 Mbit/s), which carried all 30 minutes with 0 late PES and at most
-64 ms behind the PCR schedule (5.5 % null fill); a single 13-segment 64QAM
-7/8 layer (`--partial false --layer-a 13,64qam,7/8,2 --layer-b none`,
-21.30 Mbit/s) leaves 12.7 % spare.
+layouts. For example, a recording of about 18.5 Mbit/s is refused on the
+default B (12 seg 64QAM 3/4 = 16.85 Mbit/s); `--auto-layout` picks B 12
+seg 64QAM 7/8 (19.66 Mbit/s), and a single 13-segment 64QAM 7/8 layer
+(`--partial false --layer-a 13,64qam,7/8,2 --layer-b none`, 21.30 Mbit/s)
+leaves more spare.
 
 ```text
 # check (no radiation): the probe report, the layer usage, the TS itself
@@ -424,7 +432,7 @@ real time); `rx --iq` of that file took 14.0 s (≈ 1.4× real time; the
 demodulator is the bottleneck).
 
 **Build profile matters for the radio.** On the same machine,
-`tx --mux-ts <BS recording, 19.1 Mbit/s> --iq /dev/null` runs at 4.1× real
+`tx --mux-ts <a 19.1 Mbit/s recording> --iq /dev/null` runs at 4.1× real
 time in a release build (input 0.3 ms + modulation 54 ms per 231 ms frame)
 but at **0.18× in an unoptimised build**. Under a simulated real-time
 HackRF (cs8 on stdout consumed at 512/63 MS/s in 256 KiB buffers) the
@@ -451,9 +459,9 @@ against a mock device):
 | `tests/cli.rs` `mux_ts_file_is_paced_by_its_pcr` | an 8 Mbit/s PCR-timed file into the 16.85 Mbit/s layer B: ≈ 50 % null fill, `tx` → `rx` returns every data packet in order |
 | `tests/cli.rs` `mux_ts_over_capacity_is_refused_with_layouts_that_fit` | a 19.1 Mbit/s file is refused with the computed capacities and `--layer-b 12,64qam,7/8,2` / the 13-segment layout; the suggested layout and `--allow-overrate` run |
 | `tests/cli.rs` `mux_ts_producer_throughput` (ignored) | producer ≥ 2× real time for a 19.5 Mbit/s `--mux-ts` file (regression benchmark against HackRF underruns) |
-| `tests/cli.rs` `relay_recording` | opt-in real data (`ISDB_RS_RELAY_TS` names a recording): the first 60 s through `examples/relay-ts.toml` (placeholder `source` replaced) with `--auto-layout` → video on 0x0111, 0 late PES, T-STD ok, `ts validate` without errors, ffmpeg decodes it (at most the AAC resync at the cut-in), `loopback` PASS; without `--auto-layout` the default layer B either carries it or is refused with the layouts that fit (the development BS recording: refused, B 12 seg 64QAM 7/8 chosen). Prints `SKIP` and passes when the variable is unset or the file is missing |
-| `tests/cli.rs` `relay_without_toml` | `--relay` on a synthetic BS-like recording (≈ 8.6 Mbit/s, CA + ECM, captions in the PMT): refused on B 12 seg 16QAM 1/2 with the layouts that fit; `--auto-layout` picks B 12 seg 16QAM 2/3 and prints it; program / roles / PIDs (0x0140→0x0111 video, 0x0141→0x0112 main audio, 0x0145→0x0130 captions) and the ECM drop in the report; `ts validate` clean; `--print-config` TOML (header with the chosen `--layer-b`) run with `mux -c` gives a byte-identical TS; every option lands in the printed TOML; `tx` takes the NIT channel from `--channel` / `--freq`; an unknown `--service-name` lists the programs; `loopback --relay --auto-layout` PASS |
-| `tests/cli.rs` `relay_recording_without_toml` | opt-in real data (`ISDB_RS_RELAY_TS`): `mux --relay <recording> --auto-layout --seconds 20` names the program, relays the video to 0x0111 with 0 late PES, `ts validate` 0 errors; `loopback --relay … --auto-layout` PASS (on the development BS recording also: B 12 seg 64QAM 7/8, 0x0140→0x0111 video, 0x0141→0x0112 main audio, 0x0145→0x0130 captions, 0x0138→0x0138 superimpose, ECM dropped). Prints `SKIP` and passes without the variable |
+| `tests/cli.rs` `relay_recording` | opt-in real data (`ISDB_RS_RELAY_TS` names a recording): the first 60 s through `examples/relay-ts.toml` (placeholder `source` replaced) with `--auto-layout` → video on 0x0111, 0 late PES, T-STD ok, `ts validate` without errors, ffmpeg decodes it (at most the AAC resync at the cut-in), `loopback` PASS; without `--auto-layout` the default layer B either carries it or is refused with the layouts that fit. Prints `SKIP` and passes when the variable is unset or the file is missing |
+| `tests/cli.rs` `relay_without_toml` | `--relay` on a synthetic recording of another network (≈ 8.6 Mbit/s, CA + ECM, copy control, captions in the PMT): refused on B 12 seg 16QAM 1/2 with the layouts that fit; `--auto-layout` picks B 12 seg 16QAM 2/3 and prints it; program / roles / PIDs (0x0140→0x0111 video, 0x0141→0x0112 main audio, 0x0145→0x0130 captions), the relayed ECM, the CA notice and the source copy-control line in the report; `ts validate` clean; `--print-config` TOML (header with the chosen `--layer-b`) run with `mux -c` gives a byte-identical TS; every option (including `--ca drop`) lands in the printed TOML; `tx` takes the NIT channel from `--channel` / `--freq`; an unknown `--service-name` lists the programs; `loopback --relay --auto-layout` PASS |
+| `tests/cli.rs` `relay_recording_without_toml` | opt-in real data (`ISDB_RS_RELAY_TS`): `mux --relay <recording> --auto-layout --seconds 20` names the program, relays the video to 0x0111 with 0 late PES, `ts validate` 0 errors; `loopback --relay … --auto-layout` PASS. Prints `SKIP` and passes without the variable |
 | `tests/cli.rs` `live_feed_with_stalling_input_stays_cbr_and_lossless` | `--feed live` pads with nulls at constant rate and loses no input |
 | `tests/cli.rs` `loopback_passes_with_impairments`, `loopback_with_file_inputs_and_detects_loss` | loopback verdicts: PASS under impairments, FAIL with lost packets counted |
 | `tests/cli.rs` `hackrf_tx_refuses_without_rf_enable` | `--dry-run` prints the RF settings and refuses; no `--rf-enable` ⇒ rejected |

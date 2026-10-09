@@ -1,10 +1,11 @@
 //! `kind = "ts-program"`: rebroadcast one program of a recorded transport
 //! stream as a service of this multiplex.
 //!
-//! A foreign TS (e.g. a BS recording) relayed as is cannot be registered
-//! by a terrestrial receiver: its NIT/SDT describe another network and its
-//! PMT points at ECM PIDs. Here only the program's elementary streams are
-//! taken over, and everything around them is this multiplexer's own:
+//! A TS of another network relayed as is cannot be registered by a
+//! terrestrial receiver: its NIT/SDT describe that network. Here only the
+//! program's elementary streams (and, with `ca = "keep"`, its ECM / EMM
+//! PIDs) are taken over, and everything around them is this multiplexer's
+//! own. The input must be unscrambled (transport_scrambling_control '00'):
 //!
 //! * **Selection** (source PMT, H.222.0 §2.4.4.8): elementary streams by
 //!   stream_type ([`DEFAULT_STREAM_TYPES`]: video, audio, PES private data
@@ -2025,7 +2026,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             }
             0x0F if !data.is_empty() => {
                 // PES need not start on an ADTS frame (data_alignment_indicator
-                // 0; BS audio PES carry 720 bytes with frames straddling them):
+                // 0; e.g. fixed 720-byte audio PES with frames straddling them):
                 // start at the first syncword whose frame chain checks out.
                 let Some(adts) = adts_frames(&data) else {
                     continue;

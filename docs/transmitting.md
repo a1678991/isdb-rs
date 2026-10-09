@@ -250,29 +250,45 @@ isdb ts diff ours.ts check.ts
 ## Relaying a recording
 
 `--relay FILE` (on `tx`, `loopback` and `mux`) rebroadcasts one program of
-a recorded transport stream — typically a recording of another network,
-such as a satellite (BS) recording — as a terrestrial service. A foreign
-TS relayed as is keeps its satellite SI and conditional-access
-descriptors, which a terrestrial receiver will not register. The relay
-instead:
+a recorded transport stream — for example a recording of another network
+— as a terrestrial service. The recording must be unscrambled
+(transport_scrambling_control '00'; scrambled input is refused), and you
+must have the rights to relay it. A foreign TS relayed as is keeps that
+network's NIT/SDT, which a terrestrial receiver will not register. The
+relay instead:
 
 - takes only the program's elementary streams; their PES bytes go out
   unchanged, at the recording's own PCR pace, with PTS/DTS shifted onto
   this multiplex's clock;
 - generates terrestrial PSI/SI around them: service 0x0400, PMT PID
-  0x01F0, PCR PID 0x01FF, network / TS id 0x7FE0, a NIT naming the
-  transmit channel, SDT, EIT (event names from the recording), TOT, BIT;
-  CA descriptors and the ECM PID are dropped;
+  0x01F0, PCR PID 0x01FF, network / TS id 0x79EE (a placeholder: use an ID
+  not used where your receiver is), a NIT naming the transmit channel,
+  SDT, EIT (event names from the recording), TOT, BIT;
+- **carries the recording's conditional-access signalling** by default
+  (`--ca keep`; TOML `ca = "keep"`): the PMT's conditional_access_descriptors
+  (program and ES loops), the ECM PIDs they name, and the CAT's
+  CA_descriptors with the EMM PIDs present in the recording, every CA_PID
+  following the PID mapping. The payload stays unscrambled, so receivers
+  see CA signalling with a clear payload. `--ca drop` (`ca = "drop"`)
+  relays none of it;
 - selects the program automatically when the recording has one
   (`--program N` or `--service-name S` otherwise; a missing or ambiguous
   choice lists the programs with their names and streams);
 - classifies every stream from the PMT and renumbers it by role: video →
   0x0111, main audio → 0x0112 (more audio 0x0113, …), captions → 0x0130,
   superimpose → 0x0138, data → 0x0140;
-- **keeps the recording's copy restriction**: the generated digital copy
-  control descriptor takes the source program's recording control value
-  (copy-free only if the source signals none) unless `--copy` overrides it.
-  Relaying content you have no rights to is your responsibility.
+- **keeps the recording's copy restriction** by default: the generated
+  digital copy control descriptor takes the source program's recording
+  control value — from its PMT program loop, else its relayed ES loops,
+  else its SDT, else its EIT p/f (copy-free only if the source signals
+  none) — and the relayed streams keep their per-component (ES loop)
+  descriptors. `--copy` (TOML `recording_control`) sets any value
+  explicitly; it is used as given. The source's value is printed as an
+  info line either way, e.g. `source copy control: copy-one-generation
+  (PMT); relayed as: copy-free (explicit)`, and raw descriptors or byte
+  patches that set the copy control of a relayed service are reported
+  with what is actually sent. Relaying content you have no rights to is
+  your responsibility.
 
 Check it without a radio, then transmit:
 
@@ -285,9 +301,10 @@ isdb tx --relay FILE --auto-layout --hackrf --channel 27 --txvga 20 --rf-enable
 ```
 
 At start the probe report lists the source program, each source PID → role
-(and the rule that decided it) → output PID with its rate, the dropped PIDs
-with the reason, and the measured mean and peak rates against the layer
-capacity. The status line shows, per relay, the lag behind the PCR
+(and the rule that decided it) → output PID with its rate, the relayed
+ECM / EMM PIDs, the dropped PIDs with the reason, the source's copy
+control (every 0xC1 / 0xDE found in its PMT, SDT and EIT p/f), and the
+measured mean and peak rates against the layer capacity. The status line shows, per relay, the lag behind the PCR
 schedule, late PES, peak rates and the loop period. The recording loops
 until Ctrl-C (`--at-eof end` stops after one pass; `--seconds S` bounds
 the air time).
@@ -297,23 +314,23 @@ the air time).
 | `--program N` / `--service-name S` | the only program | source program_number, or SDT service name (exact, else a unique substring; full-width ASCII folded) |
 | `--channel N` | `tx`: the transmit channel; `mux`/`loopback`: 44 | UHF channel named in the NIT |
 | `--remote-key K` | 9 | remote_control_key_id 1–12 |
-| `--area-code C` | 0x8D5 | area_code (12 bits, B10 Annex D) |
+| `--area-code C` | 0x5A5 | area_code (12 bits, B10 Annex D Table D-2); set the receiver's area |
 | `--name S` | the recording's SDT service name | network / TS / service / provider name |
-| `--copy copy-free\|copy-one-generation\|copy-never` | the source program's value | recording control of the digital copy control descriptor |
+| `--copy copy-free\|copy-one-generation\|copy-never` | the source program's value | recording control of the digital copy control descriptor; an explicit value is used as given |
+| `--ca keep\|drop` | keep | the recording's CA descriptors, ECM and CAT/EMM: relayed (payload unscrambled) or dropped |
 | `--at-eof loop\|end` | loop | at the end of the recording |
 | `--eit-from-source [BOOL]` | true | EIT present/following names, texts, genres from the recording |
 | `--clock-start JST` | system clock | fixed stream clock, for reproducible output |
 | `--print-config` | — | print the generated TOML and exit (save it, edit it, run it with `--mux-config` / `-c`) |
 
-**Capacity.** Satellite HD recordings often exceed the default layer B
+**Capacity.** HD recordings often exceed the default layer B
 (12 segments 64QAM 3/4 = 16.85 Mbit/s). Such a relay is refused with a list
 of layouts that fit; `--auto-layout` takes the first one that changes only
 the relay's layer (the most robust code rate that carries the mean rate
 plus PCR and SI, the configured GI first; partial reception and the one-seg
-layer kept) and prints the choice. For example, a 30-minute BS recording
-measured during development averaged 18.5 Mbit/s (19.0 Mbit/s peak over
-1 s): refused on 3/4, carried on 12 segments 64QAM 7/8 (19.66 Mbit/s) with
-0 late PES. A single 13-segment 64QAM 7/8 layer (`--partial false
+layer kept) and prints the choice. For example, a recording of about
+18.5 Mbit/s is refused on 3/4 and carried on 12 segments 64QAM 7/8
+(19.66 Mbit/s). A single 13-segment 64QAM 7/8 layer (`--partial false
 --layer-a 13,64qam,7/8,2 --layer-b none`, 21.30 Mbit/s) leaves more room
 but has no one-seg layer.
 

@@ -260,9 +260,15 @@ stream of the source program. Its `pid`, `stream_type`, `component_tag`,
 `descriptors`, `hierarchical`, `video_decode_control` and `component_type`
 come from the source PMT (giving them is an error). ES descriptors carried
 over: stream_identifier (0x52), video_decode_control (0xC8) and
-data_component (0xFD); CA, copy control, hierarchy and unknown descriptors,
-all program-loop descriptors and the ECM/EMM PIDs are dropped (the start-up
-report lists every drop). Background and rules:
+data_component (0xFD); conditional_access (0x09) with `ca = "keep"`;
+per-component digital_copy_control (0xC1) when the service keeps the
+source's copy control (`recording_control = "source"`); hierarchy and
+unknown descriptors are dropped. Program-loop descriptors: the CA
+descriptors with `ca = "keep"`; copy control is regenerated from the
+typed `copy_control` (see below); the rest is dropped. The start-up report
+lists every drop, the relayed ECM / EMM PIDs and every copy-control
+descriptor (0xC1, 0xDE) found in the source's PMT, SDT and EIT p/f, and
+prints one line `source copy control: …; relayed as: …`. Background and rules:
 [isdbt-mux README](../crates/isdbt-mux/README.md) and
 [transmitting.md](transmitting.md#relaying-a-recording).
 
@@ -274,18 +280,24 @@ report lists every drop). Background and rules:
 | `stream_types` | array of u8 | `[0x01, 0x02, 0x1B, 0x24, 0x03, 0x04, 0x0F, 0x11, 0x06]` | Relay the elementary streams with these stream_types: video (MPEG-1/2, H.264, HEVC), audio (MPEG-1/2, AAC ADTS / LATM) and PES private data (captions, superimpose, data PES). |
 | `component_tags` | array of u8 | all | Relay only streams whose stream_identifier_descriptor carries one of these tags. |
 | `include_carousels` | bool | `false` | Also relay section streams (stream_type 0x05 private sections, 0x0B–0x0D DSM-CC data carousels), packet by packet. |
-| `pid_map` | `"auto"` \| `"keep"` \| `[[source, output], …]` | `"auto"` | `auto`: output PID by stream role from `pids`. `keep`: the source PIDs. A list: explicit pairs; every source PID must be a relayed elementary stream of the program; output PIDs 0x0010–0x1FFE; unlisted relayed streams keep their source PID. |
+| `pid_map` | `"auto"` \| `"keep"` \| `[[source, output], …]` | `"auto"` | `auto`: output PID by stream role from `pids`; a relayed ECM / EMM PID keeps its source PID unless the plan or a relayed stream uses it (then the next free one). `keep`: the source PIDs. A list: explicit pairs; every source PID must be a relayed elementary stream or a relayed ECM / EMM PID of the program; output PIDs 0x0010–0x1FFE; unlisted relayed PIDs keep their source PID. CA_PIDs in the generated descriptors follow the mapping. |
 | `pids` | `{ video, audio, captions, superimpose, data }`, each a PID or a list | `{ video = 0x0111, audio = 0x0112, captions = 0x0130, superimpose = 0x0138, data = 0x0140 }` | Only with `pid_map = "auto"`. Streams of a role, in component_tag order (then PMT order), take the role's PIDs in turn; extra streams take the next free PIDs after the last entry (a second audio stream gets 0x0113). The defaults are what terrestrial broadcasters use: an operational choice, not a spec value. Roles: main audio = lowest component_tag; captions and superimpose (both data_component_id 0x0008) are split by component_tag range, then by the data_component Timing field, then by PES PTS presence. |
 | `at_eof` | `"loop"` \| `"end"` | `"loop"` | `loop`: restart at the first random access point with continuous timestamps. `end`: stop relaying; the multiplex then carries PSI/SI and nulls (`isdb tx` ends when every relay has ended). |
 | `eit_from_source` | bool | `false` | Take the EIT present/following events (name, text, genre, duration) from the source's EIT p/f for the program; the configured `[[service.event]]` entries are used when this is off or the source has none. (`--relay` sets it to `true`.) |
 | `rate_check` | `"error"` \| `"warn"` | `"error"` | When the measured mean rate plus PCR/PSI/SI exceeds the layer capacity: refuse, listing layer layouts that fit, or warn and relay anyway (the stream then falls behind its PCR schedule). `--auto-layout` on the command line picks a layout instead. |
+| `ca` | `"keep"` \| `"drop"` | `"keep"` | The source's conditional-access signalling. `keep`: the source PMT's conditional_access_descriptors (program and ES loops) go into the generated PMT, the ECM PIDs they name are relayed packet by packet, and the source CAT's CA_descriptors go into the generated CAT, with the EMM PIDs present in the source relayed. The payload stays unscrambled (transport_scrambling_control '00'; scrambled input is refused), so receivers see CA signalling with a clear payload. `drop`: none of it. CLI: `--ca keep\|drop`. |
 | `max_early_ms` | u32 | `0` | A packet may be sent up to this long before its PCR-derived time when the stream's T-STD model accepts it (smooths rate peaks into idle slots). 0 = strictly at the recording's pace. |
 | `probe_seconds` | f64, 1..600 | `30` | Seconds of the source's PCR time measured at start for the rate check, the stream parameters, program selection and the source EIT. |
 
 Service-level settings that matter for a relay: give the service a
 dedicated `pcr_pid`, and use `copy_control = { recording_control = "source" }`
 to keep the recording's own copy restriction (see
-[copy_control](#copy_control)).
+[copy_control](#copy_control)); an explicit value is used as given and the
+source's value is still reported. Raw descriptors, `add_descriptors`,
+`byte_patches`, `replace_sections` or `extra_sections` that can set the
+copy control of a relayed service are allowed; the start-up report names
+them with the copy control actually sent. `free_ca_mode` is not taken
+from the source (the report notes a source SDT with free_CA_mode 1).
 
 ## `[[service.event]]`
 
@@ -333,7 +345,7 @@ TR-B15, not available to this project) are understood to make it normative.
 
 | Field | Name (code) |
 |---|---|
-| `recording_control` (Table 6-39) | `"copy-free"` ('00'), `"provider-defined"` ('01'), `"copy-one-generation"` ('10'), `"copy-never"` ('11'), `"source"` (the relayed source program's value: its PMT program loop, else the most restrictive relayed ES loop; copy-free only if the source signals none) |
+| `recording_control` (Table 6-39) | `"copy-free"` ('00'), `"provider-defined"` ('01'), `"copy-one-generation"` ('10'), `"copy-never"` ('11'), `"source"` (the relayed source program's value: its PMT program loop, else the most restrictive relayed ES loop, else its SDT, else its EIT p/f; copy-free only if the source signals none; the relayed streams keep their per-component ES-loop 0xC1) |
 | `copy_control_type` (Table F-2) | `"undefined-00"` ('00'), `"serial-output-encoded"` ('01'), `"undefined-10"` ('10'), `"serial-output-unencoded"` ('11') |
 | `aps_control_data` (Table F-4) | `"copy-free"` ('00'), `"pseudo-sync"` ('01'), `"pseudo-sync-2-line-burst"` ('10'), `"pseudo-sync-4-line-burst"` ('11') |
 
@@ -479,12 +491,12 @@ Defaults per table:
 | Table | Default PID (B10 Table 5-1) | Default interval (B10 Table 5-2) | Default layer | Extra keys |
 |---|---|---|---|---|
 | `[pat]` | 0x0000 | 100 ms | control layer | — |
-| `[cat]` | 0x0001 | 1 s | control layer | `descriptors = [ { tag, hex } ]`: CA_descriptors (0x09, H.222.0 §2.6.16); default none (free to air) |
+| `[cat]` | 0x0001 | 1 s | control layer | `descriptors = [ { tag, hex } ]`: CA_descriptors (0x09, H.222.0 §2.6.16); default none (free to air). A `ts-program` with `ca = "keep"` adds the source CAT's CA_descriptors. |
 | `[service.pmt]` | the service's `pmt_pid` | 100 ms | see below | — |
 | `[nit]` | 0x0010 | 10 s | control layer | — |
 | `[sdt]` | 0x0011 | 2 s | control layer | — |
 | `[eit]` | 0x0012 | 2 s | control layer | `present_running_status` (u8, default 4 "running", B10 Part 2 Annex Table 1-1), `following_running_status` (u8, default 1 "not running"; Table 1-2 does not allow "running") |
-| `[eit_schedule]` | 0x0012 | 10 s | control layer | `reference = "today"` (default; segments counted from today 00:00 JST, Annex 1.4.2 method 1) or `"month"` (from the first of the month, method 2); any other string is currently treated as `"today"`. Tables 0x50 + 4-day blocks, 32 segments of 3 h, 8 sections each. |
+| `[eit_schedule]` | 0x0012 | 10 s | control layer | `reference = "today"` (default; segments counted from today 00:00 JST, Annex 1.4.2 method 1) or `"month"` (from the first of the month, method 2); any other value is a configuration error. Tables 0x50 + 4-day blocks, 32 segments of 3 h, 8 sections each. |
 | `[tot]` | 0x0014 | 30 s | control layer | `local_time_offset = [ { country_code = "JPN", country_region_id = 0, polarity = false, offset = "HH:MM", time_of_change = "<JST time>", next_offset = "HH:MM" } ]`: local_time_offset_descriptor 0x58 (§6.2.25); default none |
 | `[tdt]` | 0x0014 | 30 s | control layer | — |
 | `[bit]` | 0x0024 | 20 s | control layer | `broadcast_view_propriety` (bool, default `true`); `first_descriptors = [ { tag, hex } ]` (raw first-loop descriptors, e.g. SI_parameter_descriptor 0xD7); `broadcasters = [ { broadcaster_id = u8, name = "…", terrestrial = { terrestrial_broadcaster_id = u16, affiliation_ids = [u8], broadcasters = [[onid, broadcaster_id]] }, descriptors = [ { tag, hex } ] } ]`: `name` → broadcaster_name_descriptor 0xD8, `terrestrial` → extended_broadcaster_descriptor 0xCE (broadcaster_type 0x1) |
