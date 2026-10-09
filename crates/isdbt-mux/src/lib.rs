@@ -54,18 +54,18 @@
 //! .unwrap();
 //! let cfg = Config::from_toml(r#"
 //! [network]
-//! network_id = 0x7FE0
+//! network_id = 0x79EE
 //! name = "ベンチ"
 //! area_code = 0x5A5
 //! remote_control_key_id = 9
 //! channels = [27]
 //!
 //! [transport]
-//! transport_stream_id = 0x7FE0
+//! transport_stream_id = 0x79EE
 //!
 //! [clock]
 //! source = "fixed"
-//! start = "2026-10-08T12:00:00"
+//! start = "2026-01-01T12:00:00"
 //!
 //! [[service]]
 //! service_id = 0x0400

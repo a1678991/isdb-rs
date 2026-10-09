@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn long_roundtrip_preserves_reserved_bits() {
-        let mut h = LongHeader::new(0x42, 0x7FD5, 17);
+        let mut h = LongHeader::new(0x42, 0x79EE, 17);
         h.private_indicator = true;
         h.reserved1 = 0b10;
         h.section_number = 1;

@@ -96,7 +96,7 @@ pub fn test_config(dir: &std::path::Path, extra: &str) -> Config {
     let text = format!(
         r#"
 [network]
-network_id = 0x7FE0
+network_id = 0x79EE
 name = "ベンチ"
 area_code = 0x5A5
 remote_control_key_id = 12
@@ -104,7 +104,7 @@ channels = [27]
 transmission_types = [ {{ info = 0x0F, layer = "B" }}, {{ info = 0xAF, layer = "A" }} ]
 
 [transport]
-transport_stream_id = 0x7FE0
+transport_stream_id = 0x79EE
 
 [clock]
 source = "fixed"

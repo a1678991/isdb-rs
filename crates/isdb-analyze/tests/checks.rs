@@ -341,11 +341,11 @@ fn expectations() {
         original_network_id: Some(ONID),
         network_id: Some(ONID),
         service_ids: Some(vec![SID]),
-        frequency_mhz: Some(479.142857),
+        frequency_mhz: Some(557.142857),
         guard_interval: Some(2),
         transmission_mode: Some(2),
-        area_code: Some(0x8D5),
-        remote_control_key_id: Some(10),
+        area_code: Some(0x5A5),
+        remote_control_key_id: Some(9),
         ts_name: Some("テスト".into()),
         network_name: Some("テスト".into()),
     };
@@ -392,8 +392,9 @@ fn expectations() {
 }
 
 /// digital_copy_control_descriptor with copy_control_type '00' in
-/// user_defined (B10 Annex F layout): warning (a Sony BDZ-series recorder refuses it,
-/// bench 2026-10-08); '01' (0b0100, what live broadcasters send) is clean.
+/// user_defined (B10 Annex F layout): warning (observed to be refused by a
+/// Sony BDZ-series recorder); '01' (0b0100, what live broadcasters send) is
+/// clean.
 #[test]
 fn copy_control_type_00_warns() {
     let pmt_with = |ud: u8| {

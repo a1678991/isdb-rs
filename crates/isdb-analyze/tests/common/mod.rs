@@ -16,8 +16,8 @@ use std::collections::HashMap;
 
 pub type Pkt = [u8; PACKET_SIZE];
 
-pub const TSID: u16 = 0x7FD5;
-pub const ONID: u16 = 0x7FD5;
+pub const TSID: u16 = 0x79EE;
+pub const ONID: u16 = 0x79EE;
 pub const SID: u16 = 0x0408;
 pub const PMT_PID: u16 = 0x01F0;
 pub const PCR_PID: u16 = 0x01FF;
@@ -66,10 +66,10 @@ pub fn cat() -> Vec<u8> {
 
 pub fn tds(gi: u8) -> Descriptor {
     Descriptor::TerrestrialDeliverySystem(d::TerrestrialDeliverySystem {
-        area_code: 0x8D5,
+        area_code: 0x5A5,
         guard_interval: gi,
         transmission_mode: 2,
-        frequencies: vec![3354],
+        frequencies: vec![3900],
     })
 }
 
@@ -101,7 +101,7 @@ pub fn nit_with(version: u8, gi: u8) -> Vec<u8> {
                     }),
                     tds(gi),
                     Descriptor::TsInformation(d::TsInformation {
-                        remote_control_key_id: 10,
+                        remote_control_key_id: 9,
                         ts_name: AribString::encode("テスト").unwrap(),
                         transmission_types: vec![d::TransmissionType {
                             transmission_type_info: 0x0F,

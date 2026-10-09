@@ -26,7 +26,7 @@ use isdb_ts::section::{Long, LongHeader, Short, ShortHeader};
 
 /// network_id = original_network_id = transport_stream_id of the
 /// fictional multiplex.
-pub const NETWORK_ID: u16 = 0x7FE0;
+pub const NETWORK_ID: u16 = 0x79EE;
 /// HD service (service_type 0x01) whose EIT carries every event descriptor.
 pub const HD: u16 = 0x0400;
 /// Second and third services of the multi-channel group (service_type 0x01).
@@ -111,7 +111,7 @@ fn nit() -> Vec<u8> {
             .collect(),
         }),
         Descriptor::TerrestrialDeliverySystem(TerrestrialDeliverySystem {
-            area_code: 0x8D5,
+            area_code: 0x5A5,
             guard_interval: 0b10,    // 1/8 (Table 6-62)
             transmission_mode: 0b10, // Mode 3 (Table 6-63)
             frequencies: [20, 23, 27, 31, 36, 40, 44, 49, 52].map(uhf).to_vec(),
@@ -156,7 +156,7 @@ fn nit() -> Vec<u8> {
                         signal_level: false,
                         reserved_future_use: 0x3F,
                         area_codes: vec![AreaCode {
-                            area_code: 0x8D5,
+                            area_code: 0x5A5,
                             reserved_future_use: 0xF,
                         }],
                     }],

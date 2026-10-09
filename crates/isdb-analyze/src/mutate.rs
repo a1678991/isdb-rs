@@ -18,7 +18,7 @@
 //! `desc.del=0xTT`, `desc[0xTT]=<hex>` (replace), `desc[0xTT].<field>=v`.
 //!
 //! Examples: `nit.ts[0].desc[0xFA].guard_interval=2`, `nit.version=24`,
-//! `pat.add=0x0928:0x1fff`, `sdt.services[0x0828].desc[0x48].service_name="ABC"`,
+//! `pat.add=0x0e28:0x1fff`, `sdt.services[0x0400].desc[0x48].service_name="ABC"`,
 //! `pmt[0x0408].streams.add=0x0f:0x0111`, `eit[0x0408].events[0].duration=01:00:00`.
 //!
 //! Values: integers (decimal or 0x…), booleans, `"text"` (ARIB-encoded
@@ -1114,16 +1114,16 @@ mod tests {
 
     fn nit() -> Vec<u8> {
         let tds = Descriptor::TerrestrialDeliverySystem(d::TerrestrialDeliverySystem {
-            area_code: 0x8D5,
+            area_code: 0x5A5,
             guard_interval: 2,
             transmission_mode: 2,
-            frequencies: vec![3354],
+            frequencies: vec![3900],
         });
         let n = Nit {
             header: LongHeader {
                 table_id: 0x40,
                 private_indicator: true,
-                ..LongHeader::new(0x40, 0x7FD5, 3)
+                ..LongHeader::new(0x40, 0x79EE, 3)
             },
             body: NitBody(NetworkLoops {
                 reserved_future_use_1: 0xF,
@@ -1132,8 +1132,8 @@ mod tests {
                 })],
                 reserved_future_use_2: 0xF,
                 transport_streams: vec![TransportStreamEntry {
-                    transport_stream_id: 0x7FD5,
-                    original_network_id: 0x7FD5,
+                    transport_stream_id: 0x79EE,
+                    original_network_id: 0x79EE,
                     reserved_future_use: 0xF,
                     descriptors: vec![tds],
                 }],
@@ -1159,9 +1159,9 @@ mod tests {
             }
         );
         assert_eq!(e.op, Op::Set("2".into()));
-        let e = Expr::parse("pat.add=0x0928:0x1fff").unwrap();
+        let e = Expr::parse("pat.add=0x0e28:0x1fff").unwrap();
         assert!(e.path.is_empty());
-        assert_eq!(e.op, Op::Add("0x0928:0x1fff".into()));
+        assert_eq!(e.op, Op::Add("0x0e28:0x1fff".into()));
         let e = Expr::parse("eit@0x50[0x0408].events[0].duration=01:00:00").unwrap();
         assert_eq!((e.tid, e.ext), (Some(0x50), Some(0x0408)));
         assert_eq!(e.target().unwrap().table_id, 0x50);
@@ -1186,7 +1186,7 @@ mod tests {
         let out = apply_to_section(&Expr::parse("nit.version=24").unwrap(), 0x10, &out).unwrap();
         assert_eq!(decoded(&out).header.version_number, 24);
         let out = apply_to_section(
-            &Expr::parse("nit.desc[0x40].name=\"近畿\"").unwrap(),
+            &Expr::parse("nit.desc[0x40].name=\"テスト\"").unwrap(),
             0x10,
             &out,
         )
@@ -1194,9 +1194,9 @@ mod tests {
         let Descriptor::NetworkName(nn) = &decoded(&out).body.0.descriptors[0] else {
             panic!()
         };
-        assert_eq!(nn.name.to_string_lossy(), "近畿");
+        assert_eq!(nn.name.to_string_lossy(), "テスト");
         let out = apply_to_section(
-            &Expr::parse("nit.ts[0x7fd5].desc.add=cd0a0a40000f00000828ffff").unwrap(),
+            &Expr::parse("nit.ts[0x79ee].desc.add=cd0a0940000f00000e08ffff").unwrap(),
             0x10,
             &out,
         );
@@ -1205,7 +1205,7 @@ mod tests {
             "malformed TS info hex must be rejected by the typed decoder"
         );
         let out = apply_to_section(
-            &Expr::parse("nit.ts[0x7fd5].desc[0xFA].frequencies.add=3564").unwrap(),
+            &Expr::parse("nit.ts[0x79ee].desc[0xFA].frequencies.add=3564").unwrap(),
             0x10,
             &nit(),
         )
@@ -1215,7 +1215,7 @@ mod tests {
         else {
             panic!()
         };
-        assert_eq!(t.frequencies, vec![3354, 3564]);
+        assert_eq!(t.frequencies, vec![3900, 3564]);
         // width overflow is caught by the encoder
         assert!(
             apply_to_section(
@@ -1238,7 +1238,7 @@ mod tests {
     #[test]
     fn pat_add_del() {
         let p = isdb_ts::psi::Pat::section(
-            0x7FD5,
+            0x79EE,
             0,
             vec![
                 isdb_ts::psi::PatEntry::new(0, 0x10),
@@ -1247,25 +1247,25 @@ mod tests {
         )
         .encode()
         .unwrap();
-        let out = apply_to_section(&Expr::parse("pat.add=0x0928:0x1fff").unwrap(), 0, &p).unwrap();
+        let out = apply_to_section(&Expr::parse("pat.add=0x0e28:0x1fff").unwrap(), 0, &p).unwrap();
         let d = isdb_ts::section::Long::<isdb_ts::psi::Pat>::decode(&out).unwrap();
         assert_eq!(
             d.body.programs().collect::<Vec<_>>(),
-            vec![(0x0408, 0x1F0), (0x0928, 0x1FFF)]
+            vec![(0x0408, 0x1F0), (0x0E28, 0x1FFF)]
         );
         let out = apply_to_section(&Expr::parse("pat.del=0x0408").unwrap(), 0, &out).unwrap();
         let d = isdb_ts::section::Long::<isdb_ts::psi::Pat>::decode(&out).unwrap();
         assert_eq!(
             d.body.programs().collect::<Vec<_>>(),
-            vec![(0x0928, 0x1FFF)]
+            vec![(0x0E28, 0x1FFF)]
         );
         let out = apply_to_section(
-            &Expr::parse("pat.entries[0x0928].pid=0x01f0").unwrap(),
+            &Expr::parse("pat.entries[0x0E28].pid=0x01f0").unwrap(),
             0,
             &out,
         )
         .unwrap();
         let d = isdb_ts::section::Long::<isdb_ts::psi::Pat>::decode(&out).unwrap();
-        assert_eq!(d.body.programs().collect::<Vec<_>>(), vec![(0x0928, 0x1F0)]);
+        assert_eq!(d.body.programs().collect::<Vec<_>>(), vec![(0x0E28, 0x1F0)]);
     }
 }

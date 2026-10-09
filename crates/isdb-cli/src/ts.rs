@@ -192,7 +192,7 @@ pub struct EditArgs {
     #[arg(long)]
     pub replace: Vec<String>,
     /// Typed field mutation, e.g. `nit.ts[0].desc[0xFA].guard_interval=2`,
-    /// `nit.version=24`, `pat.add=0x0928:0x1fff` (see isdb_analyze::mutate).
+    /// `nit.version=24`, `pat.add=0x0e28:0x1fff` (see isdb_analyze::mutate).
     #[arg(long = "set")]
     pub set: Vec<String>,
     /// Insert sections into null-packet slots: PID:TID[:EXT[:SN]]=FILE@INTERVAL_MS

@@ -204,20 +204,20 @@ fn mutate_pat_add_program() {
     edit::apply(
         &mut q,
         &[EditOp::Mutate(
-            Expr::parse("pat.add=0x0928:0x1fc8").unwrap(),
+            Expr::parse("pat.add=0x0e28:0x1fc8").unwrap(),
         )],
         &EditOptions::default(),
     )
     .unwrap();
     let cap = scan(&q);
     let pat = cap.pat().unwrap();
-    assert!(pat.body.programs().any(|x| x == (0x0928, 0x1FC8)));
+    assert!(pat.body.programs().any(|x| x == (0x0E28, 0x1FC8)));
     let r = isdb_analyze::validate::validate(&cap, &Default::default());
     assert!(
         r.findings
             .iter()
-            .any(|f| f.check == "psi.pmt" && f.message.contains("0x0928")
-                || f.location.contains("0x0928")),
+            .any(|f| f.check == "psi.pmt" && f.message.contains("0x0e28")
+                || f.location.contains("0x0e28")),
         "{}",
         r.to_text(Error)
     );

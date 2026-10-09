@@ -426,13 +426,13 @@ mod tests {
     #[test]
     fn spec_table2_30_pat_layout() {
         let s = Pat::section(
-            0x7FD5,
+            0x79EE,
             3,
             vec![PatEntry::new(0, 0x0010), PatEntry::new(0x0428, 0x01F0)],
         );
         let b = s.encode().unwrap();
-        // header: 00 B0 11 7F D5 C7 00 00 ; body: 0000 E010 0428 E1F0 ; CRC
-        assert_eq!(&b[..8], &[0x00, 0xB0, 0x11, 0x7F, 0xD5, 0xC7, 0x00, 0x00]);
+        // header: 00 B0 11 79 EE C7 00 00 ; body: 0000 E010 0428 E1F0 ; CRC
+        assert_eq!(&b[..8], &[0x00, 0xB0, 0x11, 0x79, 0xEE, 0xC7, 0x00, 0x00]);
         assert_eq!(&b[8..16], &[0x00, 0x00, 0xE0, 0x10, 0x04, 0x28, 0xE1, 0xF0]);
         let d = Long::<Pat>::decode(&b).unwrap();
         assert_eq!(d, s);

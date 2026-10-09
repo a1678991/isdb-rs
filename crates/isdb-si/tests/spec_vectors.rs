@@ -276,18 +276,18 @@ fn spec_nit() {
     let tdsd = desc(
         0xFA,
         &fields(&[
-            ("area_code", 12, 0x8D5),
+            ("area_code", 12, 0x5A5),
             ("guard_interval", 2, 0b10),
             ("transmission_mode", 2, 0b10),
-            ("frequency", 16, 3354),
+            ("frequency", 16, 3900),
         ]),
     );
     let pr = desc(0xFB, &[0x04, 0x08]);
     let net: Vec<u8> = [name.clone(), sysm.clone()].concat();
     let tsd: Vec<u8> = [slist, tdsd, pr].concat();
     let mut ts_loop = fields(&[
-        ("transport_stream_id", 16, 0x7FD5),
-        ("original_network_id", 16, 0x7FD5),
+        ("transport_stream_id", 16, 0x79EE),
+        ("original_network_id", 16, 0x79EE),
         ("reserved_future_use", 4, 0xF),
         ("transport_descriptors_length", 12, tsd.len() as u64),
     ]);
@@ -302,11 +302,11 @@ fn spec_nit() {
         ("transport_stream_loop_length", 12, ts_loop.len() as u64),
     ]));
     body.extend_from_slice(&ts_loop);
-    let sec = long_section(0x40, 0x7FD5, 3, 0, 0, &body);
+    let sec = long_section(0x40, 0x79EE, 3, 0, 0, &body);
     let AnyTable::Nit(n) = roundtrip(0x0010, &sec) else {
         panic!()
     };
-    assert_eq!(n.header.table_id_extension, 0x7FD5);
+    assert_eq!(n.header.table_id_extension, 0x79EE);
     assert_eq!(n.header.version_number, 3);
     assert_eq!(
         n.body.0.descriptors[0],
@@ -353,9 +353,9 @@ fn spec_nit() {
             t.transmission_mode,
             t.frequencies.clone()
         ),
-        (0x8D5, 2, 2, vec![3354])
+        (0x5A5, 2, 2, vec![3900])
     );
-    assert!((TerrestrialDeliverySystem::frequency_hz(3354) - 479_142_857.142_857).abs() < 1e-3);
+    assert!((TerrestrialDeliverySystem::frequency_hz(3900) - 557_142_857.142_857).abs() < 1e-3);
     assert_eq!(
         ts.descriptors[2],
         Descriptor::PartialReception(PartialReception {
@@ -404,11 +404,11 @@ fn spec_bat() {
 fn spec_sdt() {
     let sd = desc(0x48, &[0x01, 0x02, b'P', b'V', 0x03, b'S', b'V', b'C']);
     let mut body = fields(&[
-        ("original_network_id", 16, 0x7FD5),
+        ("original_network_id", 16, 0x79EE),
         ("reserved_future_use", 8, 0xFF),
     ]);
     body.extend(fields(&[
-        ("service_id", 16, 0x0828),
+        ("service_id", 16, 0x0E08),
         ("reserved_future_use", 3, 0b111),
         ("EIT_user_defined_flags", 3, 0b101),
         ("EIT_schedule_flag", 1, 1),
@@ -418,11 +418,11 @@ fn spec_sdt() {
         ("descriptors_loop_length", 12, sd.len() as u64),
     ]));
     body.extend_from_slice(&sd);
-    let sec = long_section(0x42, 0x7FD5, 1, 0, 0, &body);
+    let sec = long_section(0x42, 0x79EE, 1, 0, 0, &body);
     let AnyTable::Sdt(s) = roundtrip(0x0011, &sec) else {
         panic!()
     };
-    assert_eq!(s.body.original_network_id, 0x7FD5);
+    assert_eq!(s.body.original_network_id, 0x79EE);
     let sv = &s.body.services[0];
     assert_eq!(
         (
@@ -434,7 +434,7 @@ fn spec_sdt() {
             sv.running_status,
             sv.free_ca_mode
         ),
-        (0x0828, 0b111, 0b101, true, false, 4, true)
+        (0x0E08, 0b111, 0b101, true, false, 4, true)
     );
     let Descriptor::Service(x) = &sv.descriptors[0] else {
         panic!()
@@ -495,8 +495,8 @@ fn spec_eit() {
     );
     let ds: Vec<u8> = [se, ee, ct, cp, ac].concat();
     let mut body = fields(&[
-        ("transport_stream_id", 16, 0x7FD5),
-        ("original_network_id", 16, 0x7FD5),
+        ("transport_stream_id", 16, 0x79EE),
+        ("original_network_id", 16, 0x79EE),
         ("segment_last_section_number", 8, 0),
         ("last_table_id", 8, 0x4E),
     ]);
@@ -509,7 +509,7 @@ fn spec_eit() {
         ("descriptors_loop_length", 12, ds.len() as u64),
     ]));
     body.extend_from_slice(&ds);
-    let sec = long_section(0x4E, 0x0828, 7, 0, 1, &body);
+    let sec = long_section(0x4E, 0x0E08, 7, 0, 1, &body);
     let AnyTable::Eit(e) = roundtrip(0x0012, &sec) else {
         panic!()
     };
@@ -519,7 +519,7 @@ fn spec_eit() {
             e.body.transport_stream_id,
             e.body.last_table_id
         ),
-        (0x0828, 0x7FD5, 0x4E)
+        (0x0E08, 0x79EE, 0x4E)
     );
     let ev = &e.body.events[0];
     assert_eq!(ev.event_id, 0x1234);
@@ -758,8 +758,8 @@ fn spec_pcat() {
         ("duration", 24, 0x00_30_00),
     ]);
     let mut body = fields(&[
-        ("transport_stream_id", 16, 0x7FD5),
-        ("original_network_id", 16, 0x7FD5),
+        ("transport_stream_id", 16, 0x79EE),
+        ("original_network_id", 16, 0x79EE),
         ("content_id", 32, 0xDEAD_BEEF),
         ("num_of_content_version", 8, 1),
         ("content_version", 16, 2),
@@ -776,7 +776,7 @@ fn spec_pcat() {
     ]);
     body.extend_from_slice(&sched);
     body.extend_from_slice(&dc);
-    let sec = long_section(0xC2, 0x09A8, 0, 0, 0, &body);
+    let sec = long_section(0xC2, 0x0F88, 0, 0, 0, &body);
     let AnyTable::Pcat(p) = roundtrip(0x0022, &sec) else {
         panic!()
     };
@@ -816,7 +816,7 @@ fn spec_bit() {
         &fields(&[
             ("broadcaster_type", 4, 0x1),
             ("reserved_future_use", 4, 0xF),
-            ("terrestrial_broadcaster_id", 16, 0x7FD5),
+            ("terrestrial_broadcaster_id", 16, 0x79EE),
             ("number_of_affiliation_id_loop", 4, 1),
             ("number_of_broadcaster_id_loop", 4, 1),
             ("affiliation_id", 8, 0x02),
@@ -837,7 +837,7 @@ fn spec_bit() {
         ("broadcaster_descriptors_length", 12, bd.len() as u64),
     ]));
     body.extend_from_slice(&bd);
-    let sec = long_section(0xC4, 0x7FD5, 0, 0, 0, &body);
+    let sec = long_section(0xC4, 0x79EE, 0, 0, 0, &body);
     let AnyTable::Bit(b) = roundtrip(0x0024, &sec) else {
         panic!()
     };
@@ -865,7 +865,7 @@ fn spec_bit() {
     };
     assert_eq!(
         (t.terrestrial_broadcaster_id, &t.affiliation_ids[..]),
-        (0x7FD5, &[2u8][..])
+        (0x79EE, &[2u8][..])
     );
     assert_eq!(
         t.broadcasters,
@@ -887,13 +887,13 @@ fn spec_nbit() {
         ("reserved_future_use", 2, 0b11),
         ("user_defined", 8, 0xAB),
         ("number_of_keys", 8, 2),
-        ("key_id", 16, 0x0828),
-        ("key_id", 16, 0x0829),
+        ("key_id", 16, 0x0E08),
+        ("key_id", 16, 0x0E09),
         ("reserved_future_use", 4, 0xF),
         ("descriptors_loop_length", 12, bi.len() as u64),
     ]);
     body.extend_from_slice(&bi);
-    let sec = long_section(0xC5, 0x7FD5, 0, 0, 0, &body);
+    let sec = long_section(0xC5, 0x79EE, 0, 0, 0, &body);
     let AnyTable::Nbit(n) = roundtrip(0x0025, &sec) else {
         panic!()
     };
@@ -905,7 +905,7 @@ fn spec_nbit() {
             i.user_defined,
             &i.key_ids[..]
         ),
-        (2, 1, 0xAB, &[0x0828u16, 0x0829][..])
+        (2, 1, 0xAB, &[0x0E08u16, 0x0E09][..])
     );
     let Descriptor::BoardInformation(b) = &i.descriptors[0] else {
         panic!()
@@ -918,14 +918,14 @@ fn spec_nbit() {
 fn spec_ldt() {
     let se = desc(0x4D, &[b'j', b'p', b'n', 0, 1, b'x']);
     let mut body = fields(&[
-        ("transport_stream_id", 16, 0x7FD5),
-        ("original_network_id", 16, 0x7FD5),
+        ("transport_stream_id", 16, 0x79EE),
+        ("original_network_id", 16, 0x79EE),
         ("description_id", 16, 0x0001),
         ("reserved_future_use", 12, 0xFFF),
         ("descriptors_loop_length", 12, se.len() as u64),
     ]);
     body.extend_from_slice(&se);
-    let sec = long_section(0xC7, 0x0828, 0, 0, 0, &body);
+    let sec = long_section(0xC7, 0x0E08, 0, 0, 0, &body);
     let AnyTable::Ldt(l) = roundtrip(0x0025, &sec) else {
         panic!()
     };
@@ -935,7 +935,7 @@ fn spec_ldt() {
             l.body.descriptions[0].description_id,
             l.body.descriptions[0].reserved_future_use
         ),
-        (0x0828, 1, 0xFFF)
+        (0x0E08, 1, 0xFFF)
     );
 }
 
@@ -997,7 +997,7 @@ fn spec_descriptor_ts_information() {
     body.extend(fields(&[
         ("transmission_type_info", 8, 0x0F),
         ("num_of_service", 8, 1),
-        ("service_id", 16, 0x0828),
+        ("service_id", 16, 0x0E08),
     ]));
     let d = TsInformation::decode(&body).unwrap();
     assert_eq!(
@@ -1008,7 +1008,7 @@ fn spec_descriptor_ts_information() {
         d.transmission_types,
         vec![TransmissionType {
             transmission_type_info: 0x0F,
-            service_ids: vec![0x0828]
+            service_ids: vec![0x0E08]
         }]
     );
     assert!(d.reserved_future_use.is_empty());
@@ -1061,7 +1061,7 @@ fn spec_descriptor_event_group() {
     let body = fields(&[
         ("group_type", 4, 0x4),
         ("event_count", 4, 1),
-        ("service_id", 16, 0x0828),
+        ("service_id", 16, 0x0E08),
         ("event_id", 16, 0x0001),
         ("original_network_id", 16, 0x0004),
         ("transport_stream_id", 16, 0x0010),
@@ -1072,7 +1072,7 @@ fn spec_descriptor_event_group() {
     assert_eq!(
         d.events,
         vec![EventRef {
-            service_id: 0x0828,
+            service_id: 0x0E08,
             event_id: 1
         }]
     );
@@ -1085,7 +1085,7 @@ fn spec_descriptor_event_group() {
             event_id: 2
         }]
     );
-    let d1 = EventGroup::decode(&[0x11, 0x08, 0x28, 0x00, 0x01, 0xEE]).unwrap();
+    let d1 = EventGroup::decode(&[0x11, 0x0E, 0x08, 0x00, 0x01, 0xEE]).unwrap();
     assert_eq!((d1.group_type, &d1.private_data[..]), (1, &[0xEEu8][..]));
 }
 
@@ -1133,19 +1133,19 @@ fn spec_descriptor_ca() {
 #[test]
 fn spec_descriptor_emergency() {
     let body = fields(&[
-        ("service_id", 16, 0x0828),
+        ("service_id", 16, 0x0E08),
         ("start_end_flag", 1, 1),
         ("signal_level", 1, 0),
         ("reserved_future_use", 6, 0x3F),
         ("area_code_length", 8, 2),
-        ("area_code", 12, 0x8D5),
+        ("area_code", 12, 0x5A5),
         ("reserved_future_use", 4, 0xF),
     ]);
     let d = EmergencyInformation::decode(&body).unwrap();
     assert_eq!(
         d.services[0].area_codes,
         vec![AreaCode {
-            area_code: 0x8D5,
+            area_code: 0x5A5,
             reserved_future_use: 0xF
         }]
     );

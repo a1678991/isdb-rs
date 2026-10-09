@@ -78,14 +78,14 @@ packets are generated:
 
 ```toml
 [network]
-network_id = 0x7FE0
+network_id = 0x79EE
 name = "テスト"
-area_code = 0x8D5
+area_code = 0x5A5
 remote_control_key_id = 9
 channels = [27]
 
 [transport]
-transport_stream_id = 0x7FE0
+transport_stream_id = 0x79EE
 
 [clock]
 source = "fixed"
@@ -130,9 +130,9 @@ Required.
 
 | Key | Type | Default | Spec | Notes |
 |---|---|---|---|---|
-| `network_id` | u16 | required | B10 §5.2.4; Annex N | Terrestrial TV range 0x7880–0x7FE8 (outside it the multiplexer warns). Also the default `original_network_id`. |
+| `network_id` | u16 | required | B10 §5.2.4; Annex N | Terrestrial TV range 0x7880–0x7FE8 (outside it the multiplexer warns); the allocation inside the range (ARIB TR-B14) belongs to real broadcasters, so choose an ID not used where your receiver is. The examples use the placeholder 0x79EE. Also the default `original_network_id`. |
 | `name` | string | required | network_name_descriptor 0x40, §6.2.11 | ARIB 8-unit coded by `isdb-text`. |
-| `area_code` | u16 (12 bits) | required | terrestrial_delivery_system_descriptor 0xFA, §6.2.31; Annex D Table D-2 | e.g. 0x5A5 Kanto wide area, 0x8D5 Kinki wide area. |
+| `area_code` | u16 (12 bits) | required | terrestrial_delivery_system_descriptor 0xFA, §6.2.31; Annex D Table D-2 | A code from Annex D Table D-2 (e.g. 0x5A5); set the area your receiver expects. |
 | `remote_control_key_id` | integer 1..=12 | required | TS_information_descriptor 0xCD, §6.2.42 Table 6-82 | B10 gives no range; isdbt-mux accepts the 12 one-touch keys. Receivers number the services key·10 + index (key 9 → 091, 092 …). See [receiver-relevant settings](#receiver-relevant-settings). |
 | `ts_name` | string | `name` | 0xCD ts_name | |
 | `channels` | array of u32 (13..62) | `[]` | 0xFA frequency, §6.2.31 | Japanese UHF channel numbers; each gives one frequency code, the centre 473 + 6·(ch − 13) + 1/7 MHz in units of 1/7 MHz (ch 27 → 3900). **Must equal the channel you transmit on.** |

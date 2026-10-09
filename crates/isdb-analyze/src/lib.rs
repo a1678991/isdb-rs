@@ -42,10 +42,10 @@
 //! use isdb_ts::psi::{Pat, PatEntry};
 //!
 //! // A stream that carries only a PAT (H.222.0 Table 2-30).
-//! let pat = Pat::section(0x7FD5, 1, vec![PatEntry::new(0x0408, 0x01F0)]).encode()?;
+//! let pat = Pat::section(0x79EE, 1, vec![PatEntry::new(0x0408, 0x01F0)]).encode()?;
 //! let pkts = packetize_sections(0x0000, &[pat], Packing::OnePerPacket, &mut Counter::new(0))?;
 //! let cap = isdb_analyze::scan_packets(&pkts, &Default::default());
-//! assert_eq!(cap.pat().unwrap().header.table_id_extension, 0x7FD5);
+//! assert_eq!(cap.pat().unwrap().header.table_id_extension, 0x79EE);
 //!
 //! // B10 Table 5-2 makes CAT/PMT/NIT/SDT/EIT p/f/TDT-or-TOT mandatory.
 //! let report = validate(&cap, &Default::default());

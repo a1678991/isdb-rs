@@ -257,7 +257,7 @@ fn overrides() {
         Long {
             header: h,
             body: SdtBody {
-                original_network_id: 0x7FE0,
+                original_network_id: 0x79EE,
                 reserved_future_use: 0xFF,
                 services: vec![SdtService {
                     service_id: 0x0400,

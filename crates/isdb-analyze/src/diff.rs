@@ -16,7 +16,7 @@ use std::fmt::Write as _;
 /// One changed field.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FieldChange {
-    /// Path, e.g. `body.transport_streams[transport_stream_id=0x7fd5].descriptors[TerrestrialDeliverySystem].guard_interval`.
+    /// Path, e.g. `body.transport_streams[transport_stream_id=0x79ee].descriptors[TerrestrialDeliverySystem].guard_interval`.
     pub path: String,
     /// Value in A (`None` = absent).
     pub a: Option<String>,

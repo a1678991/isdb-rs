@@ -17,6 +17,12 @@ resynchronises after corruption. Common options:
 | `--max-packets N` | stop after N packets |
 | `--bitrate BPS` | nominal bit rate for timing when the stream has no PCR |
 
+The decoded-field parts of the JSON (`inspect --json` tables and
+descriptors, `diff` field paths) are generated from the decoders' Rust
+`Debug` representation, so field names and nesting may change between
+releases: treat that JSON as **unstable**, and do not build tooling that
+depends on its exact shape yet.
+
 Timing (repetition intervals, PCR spacing, PES delays) comes from the PCR,
 interpolated between PCR packets (H.222.0 eq. 2-4), not from packet
 positions, so captures with null packets stripped are still timed.
@@ -55,13 +61,13 @@ The report has these parts:
 
 ```text
 -- SI --
-PAT: transport_stream_id 0x7fe0 network_PID 0x0010 programs 0x0400→0x01f0
-NIT tid 0x40 network_id 0x7fe0 v0 name "テスト" system_management_id 0x0301
-  TS 0x7fe0 onid 0x7fe0
-    delivery: area 0x8d5 GI 1/8 (2) Mode 3 (2) freq [3900] = ["557.142857"] MHz
+PAT: transport_stream_id 0x79ee network_PID 0x0010 programs 0x0400→0x01f0
+NIT tid 0x40 network_id 0x79ee v0 name "テスト" system_management_id 0x0301
+  TS 0x79ee onid 0x79ee
+    delivery: area 0x5a5 GI 1/8 (2) Mode 3 (2) freq [3900] = ["557.142857"] MHz
     TS info: remote key 9 name "テスト" types
     service list: 0x0400/0x01
-SDT tid 0x42 ts 0x7fe0 onid 0x7fe0 service 0x0400 type 0x01 "テスト" / "テストHD" sched false p/f true undefined free_CA false
+SDT tid 0x42 ts 0x79ee onid 0x79ee service 0x0400 type 0x01 "テスト" / "テストHD" sched false p/f true undefined free_CA false
 EIT 0x4e service 0x0400 sec 0 event 0x0001 2026-01-01 11:50:00 JST +01:00:00 running "試験放送"
 TOT 2026-01-01 12:00:00 JST TDT -
 ```
@@ -136,7 +142,7 @@ transmitted, `--expect-*` options turn mismatches into errors (check
 | `--expect-ts-name S` / `--expect-network-name S` | TS name / network name |
 
 ```sh
-isdb ts validate rx.ts --expect-tsid 0x7fe0 --expect-freq-mhz 557.142857 --expect-remote-key 9
+isdb ts validate rx.ts --expect-tsid 0x79ee --expect-freq-mhz 557.142857 --expect-remote-key 9
 ```
 
 How each check reads the spec text (and why some are warnings, not
@@ -156,9 +162,9 @@ in each stream, marked `identical`, `ONLY IN A` / `ONLY IN B`, or with
 the list of field changes found by decoding both:
 
 ```text
-pid=0x0010 tid=0x40 ext=0x7fe0 sn=0 NIT actual — x1|x1 max interval -|- s len 53|53 2 field changes
+pid=0x0010 tid=0x40 ext=0x79ee sn=0 NIT actual — x1|x1 max interval -|- s len 53|53 2 field changes
     header.version_number: 0 → 5
-    body.transport_streams[transport_stream_id=0x7fe0].descriptors[TsInformation].remote_control_key_id: 0x09 → 0x03
+    body.transport_streams[transport_stream_id=0x79ee].descriptors[TsInformation].remote_control_key_id: 0x09 → 0x03
 ```
 
 Typical uses: the multiplexer's output against a live capture (what does a
@@ -167,8 +173,10 @@ one, a stream before and after `edit`.
 
 ## edit
 
-`isdb ts edit IN OUT` applies experiment transforms and writes a TS that
-stays valid: sections are re-packetised into their PID's original packet
+`isdb ts edit IN OUT` applies experiment transforms to synthetic streams
+and to streams you produced or have the rights to (it is a test tool, not
+a way to alter broadcast signalling such as copy control in recordings of
+others), and writes a TS that stays valid: sections are re-packetised into their PID's original packet
 slots (H.222.0 §2.4.4 pointer_field and stuffing), continuity counters are
 renumbered, CRC_32 is recomputed by the codecs, and packet positions are
 kept (freed slots become null packets), so a constant-rate stream stays
@@ -230,7 +238,7 @@ seg   := field ('[' sel ']')?      sel: decimal index | 0x… id or tag | 0xTT#k
   offsets, `none` for absent optional fields.
 
 Examples: `nit.ts[0].desc[0xFA].guard_interval=2`, `nit.version=24`,
-`pat.add=0x0928:0x1fff`, `sdt.services[0x0828].desc[0x48].service_name="ABC"`,
+`pat.add=0x0e28:0x1fff`, `sdt.services[0x0400].desc[0x48].service_name="ABC"`,
 `pmt[0x0408].streams.add=0x0f:0x0111`, `eit[0x0408].events[0].duration=01:00:00`.
 The field names are those printed by `isdb ts inspect --decode`.
 
@@ -250,7 +258,7 @@ one section per string.
 
 ```text
 # sections of test.ts (pid table_id hex)
-0x0010 0x40 40f0327fe0c10000f00b40051b6f463948fe020301f01a7fe07fe0f014fa048d5a0f3ccd0709141b6f46394841030400015ac7fa3c
+0x0010 0x40 40f03279eec10000f00b40051b6f463948fe020301f01a79ee79eef014fa045a5a0f3ccd0709141b6f4639484103040001e315344c
 ```
 
 Captures may contain material you have no rights to redistribute; keep
