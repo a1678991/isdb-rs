@@ -14,3 +14,12 @@ __pycache__/
 *.cs8
 *.cu8
 *.iq
+
+# mise local override (per-developer)
+mise.local.toml
+
+# Node / pnpm (commitlint tooling only)
+node_modules/
+
+# OS
+.DS_Store

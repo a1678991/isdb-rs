@@ -1,0 +1,46 @@
+# Git hooks (installed by `lefthook install`, which `mise install` runs).
+# See CONTRIBUTING.md. Skip once with `LEFTHOOK=0 git commit ...`.
+commit-msg:
+  jobs:
+    - name: commitlint
+      run: pnpm exec commitlint --edit {1}
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: rustfmt
+      glob: "*.rs"
+      run: make fmt
+      stage_fixed: true
+    # Fast path: incremental clippy over the workspace (tests, doc, MSRV and
+    # the full cargo-deny run are left to CI / `make check`).
+    - name: clippy
+      glob: "{*.rs,**/Cargo.toml,Cargo.lock}"
+      run: make clippy
+    - name: cargo-deny
+      glob: "{**/Cargo.toml,Cargo.lock,deny.toml}"
+      run: make deny-offline
+    - name: actionlint
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: mise run actions:actionlint
+    - name: zizmor
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: mise run actions:zizmor
+    - name: pinact
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: mise run actions:pinact
+      stage_fixed: true
+    - name: mise-lock
+      glob: "mise.{toml,lock}"
+      run: mise lock
+      stage_fixed: true
+
+pre-push:
+  jobs:
+    - name: block-direct-push-to-main
+      run: |
+        branch=$(git rev-parse --abbrev-ref HEAD)
+        if [ "$branch" = "main" ]; then
+          echo "Direct push to main is blocked. Open a PR (or LEFTHOOK=0 for the initial push)."
+          exit 1
+        fi

@@ -1,0 +1,37 @@
+# Tool versions for the repository harness (hooks, CI linters, cargo-deny).
+# The Rust toolchain itself is pinned in rust-toolchain.toml (rustup), and
+# the Rust build/check commands live in the Makefile.
+[tools]
+node = "24"
+pnpm = "12.10.0"
+lefthook = "2.1.17"
+actionlint = "1.7.12"
+zizmor = "1.30.1"
+pinact = "5.0.0"
+cargo-deny = "0.20.2"
+
+[settings]
+minimum_release_age = "3d"
+
+[hooks]
+postinstall = ["pnpm install --frozen-lockfile", "lefthook install"]
+
+[tasks."actions:lint"]
+description = "lint GitHub Actions workflows (actionlint + zizmor)"
+depends = ["actions:actionlint", "actions:zizmor"]
+
+[tasks."actions:actionlint"]
+description = "lint GitHub Actions workflow syntax with actionlint"
+run = "actionlint"
+
+[tasks."actions:zizmor"]
+description = "run zizmor security linter on GitHub Actions workflows"
+run = "zizmor --min-confidence medium .github/workflows"
+
+[tasks."actions:pinact"]
+description = "pin GitHub Actions versions to commit hashes"
+run = "pinact run"
+
+[tasks."actions:pinact:check"]
+description = "verify GitHub Actions are pinned (CI mode)"
+run = "pinact run --check"
