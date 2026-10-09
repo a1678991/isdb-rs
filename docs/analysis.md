@@ -1,11 +1,11 @@
 # Transport-stream analysis
 
-`arib ts` inspects, validates, compares and edits MPEG-2 transport
-streams: captures from a tuner, the output of `arib mux`, or what
-`arib rx` received. It is built only on the decoders of `arib-ts`,
-`arib-si` and `arib-text` and shares no code with the multiplexer, so
+`isdb ts` inspects, validates, compares and edits MPEG-2 transport
+streams: captures from a tuner, the output of `isdb mux`, or what
+`isdb rx` received. It is built only on the decoders of `isdb-ts`,
+`isdb-si` and `isdb-text` and shares no code with the multiplexer, so
 validating the multiplexer's output is an independent check. Library use:
-[`crates/arib-analyze`](../crates/arib-analyze/README.md).
+[`crates/isdb-analyze`](../crates/isdb-analyze/README.md).
 
 Input packets may be 188, 192 (4-byte prefix, e.g. M2TS) or 204 bytes
 (16-byte trailer); the framing is detected automatically and the reader
@@ -27,9 +27,9 @@ The examples below use `test.ts` and `rx.ts` from
 ## inspect
 
 ```sh
-arib ts inspect test.ts
-arib ts inspect test.ts --decode        # plus the decoded field tree of every section
-arib ts inspect test.ts --json > report.json
+isdb ts inspect test.ts
+isdb ts inspect test.ts --decode        # plus the decoded field tree of every section
+isdb ts inspect test.ts --json > report.json
 ```
 
 The report has these parts:
@@ -74,10 +74,10 @@ coded values with their table names. The field paths it shows are the ones
 ## validate
 
 ```sh
-arib ts validate capture.ts
-arib ts validate capture.ts --show info            # include informational findings
-arib ts validate capture.ts --fail-on warning      # non-zero exit on warnings too
-arib ts validate capture.ts --json
+isdb ts validate capture.ts
+isdb ts validate capture.ts --show info            # include informational findings
+isdb ts validate capture.ts --fail-on warning      # non-zero exit on warnings too
+isdb ts validate capture.ts --json
 ```
 
 Each finding has a severity, a check identifier, the clause it comes from
@@ -136,18 +136,18 @@ transmitted, `--expect-*` options turn mismatches into errors (check
 | `--expect-ts-name S` / `--expect-network-name S` | TS name / network name |
 
 ```sh
-arib ts validate rx.ts --expect-tsid 0x7fe0 --expect-freq-mhz 557.142857 --expect-remote-key 9
+isdb ts validate rx.ts --expect-tsid 0x7fe0 --expect-freq-mhz 557.142857 --expect-remote-key 9
 ```
 
 How each check reads the spec text (and why some are warnings, not
 errors) is recorded in
-[`crates/arib-analyze/SPEC-NOTES.md`](../crates/arib-analyze/SPEC-NOTES.md).
+[`crates/isdb-analyze/SPEC-NOTES.md`](../crates/isdb-analyze/SPEC-NOTES.md).
 
 ## diff
 
 ```sh
-arib ts diff ours.ts reference.ts
-arib ts diff ours.ts reference.ts --all     # every EIT schedule section, not a per-sub_table summary
+isdb ts diff ours.ts reference.ts
+isdb ts diff ours.ts reference.ts --all     # every EIT schedule section, not a per-sub_table summary
 ```
 
 Compares two streams table by table: the PID inventory with rates side by
@@ -167,7 +167,7 @@ one, a stream before and after `edit`.
 
 ## edit
 
-`arib ts edit IN OUT` applies experiment transforms and writes a TS that
+`isdb ts edit IN OUT` applies experiment transforms and writes a TS that
 stays valid: sections are re-packetised into their PID's original packet
 slots (H.222.0 §2.4.4 pointer_field and stuffing), continuity counters are
 renumbered, CRC_32 is recomputed by the codecs, and packet positions are
@@ -188,16 +188,16 @@ Selectors are `PID:TID[:EXT[:SN]]`, numbers in hex or decimal, e.g.
 
 ```sh
 # change the NIT version and the remote-control key, then see exactly that in the diff
-arib ts edit test.ts edited.ts --set nit.version=5 --set 'nit.ts[0].desc[0xCD].remote_control_key_id=3'
-arib ts diff test.ts edited.ts
+isdb ts edit test.ts edited.ts --set nit.version=5 --set 'nit.ts[0].desc[0xCD].remote_control_key_id=3'
+isdb ts diff test.ts edited.ts
 
 # drop the BIT and blank the PCR PID
-arib ts edit test.ts e3.ts --remove 0x0024:0xC4 --null-pid 0x01ff
+isdb ts edit test.ts e3.ts --remove 0x0024:0xC4 --null-pid 0x01ff
 
 # transplant a NIT from another stream, or insert it every 500 ms from t = 1 s
-arib ts extract edited.ts --pid 0x0010 -o nit.hex
-arib ts edit test.ts e2.ts --replace 0x0010:0x40=nit.hex
-arib ts edit test.ts e4.ts --insert 0x0010:0x40=nit.hex@500 --insert-offset-ms 1000
+isdb ts extract edited.ts --pid 0x0010 -o nit.hex
+isdb ts edit test.ts e2.ts --replace 0x0010:0x40=nit.hex
+isdb ts edit test.ts e4.ts --insert 0x0010:0x40=nit.hex@500 --insert-offset-ms 1000
 ```
 
 Each operation reports, per PID, sections in / changed / removed /
@@ -232,14 +232,14 @@ seg   := field ('[' sel ']')?      sel: decimal index | 0x… id or tag | 0xTT#k
 Examples: `nit.ts[0].desc[0xFA].guard_interval=2`, `nit.version=24`,
 `pat.add=0x0928:0x1fff`, `sdt.services[0x0828].desc[0x48].service_name="ABC"`,
 `pmt[0x0408].streams.add=0x0f:0x0111`, `eit[0x0408].events[0].duration=01:00:00`.
-The field names are those printed by `arib ts inspect --decode`.
+The field names are those printed by `isdb ts inspect --decode`.
 
 ## extract
 
 ```sh
-arib ts extract capture.ts                       # every section, latest version of each
-arib ts extract capture.ts --pid 0x0010 --tid 0x40 -o nit.hex
-arib ts extract capture.ts --all-versions        # every distinct body of every version
+isdb ts extract capture.ts                       # every section, latest version of each
+isdb ts extract capture.ts --pid 0x0010 --tid 0x40 -o nit.hex
+isdb ts extract capture.ts --all-versions        # every distinct body of every version
 ```
 
 Writes sections as a text fixture, one per line: `pid table_id hex`, after

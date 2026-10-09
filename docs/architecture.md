@@ -21,34 +21,34 @@ are in each crate's README.
   encoders recompute lengths and CRCs, so `encode(decode(x)) == x` for
   anything that decodes. Whether a field *value* is allowed (reserved bits
   set to '1', table_id allowed on a PID, repetition rates, value ranges) is
-  checked by separate validators (`check` functions, `arib_si::conformance`,
-  `arib_analyze::validate`). A capture that violates the spec can still be
+  checked by separate validators (`check` functions, `isdb_si::conformance`,
+  `isdb_analyze::validate`). A capture that violates the spec can still be
   decoded, edited and re-encoded byte-identically, and the validator
   reports the violation instead of the decoder failing.
-- **Generator and checker share no code.** `arib-mux` builds streams;
-  `arib-analyze` checks them using only the decoders. Neither reuses the
+- **Generator and checker share no code.** `isdbt-mux` builds streams;
+  `isdb-analyze` checks them using only the decoders. Neither reuses the
   other's packing or timing logic, so they cannot share a bug.
 - **Everything is clocked by the OFDM frame.** The multiplexer, the
   transmitter and the receiver all work in whole OFDM frames (204 symbols)
   with exactly known packet counts and latencies.
 - **No panics on malformed input** in decoders; no `unsafe` outside the
-  `hackrf` FFI crate.
+  `isdb-hackrf` FFI crate.
 
 ## Crate graph
 
 ```mermaid
 graph TD
-  ts[arib-ts<br/>H.222.0 TS / PES / PSI]
-  text[arib-text<br/>B24 8-unit strings]
-  si[arib-si<br/>B10 SI tables, descriptors]
+  ts[isdb-ts<br/>H.222.0 TS / PES / PSI]
+  text[isdb-text<br/>B24 8-unit strings]
+  si[isdb-si<br/>B10 SI tables, descriptors]
   core[isdbt-core<br/>B31 parameters]
   fec[isdbt-fec<br/>B31 §3.2–3.8]
   ofdm[isdbt-ofdm<br/>B31 §3.9–3.16]
   phy[isdbt-phy<br/>TX/RX pipelines]
-  mux[arib-mux<br/>multiplexer]
-  ana[arib-analyze<br/>analyzer]
-  hrf[hackrf<br/>libhackrf FFI]
-  cli[arib-cli<br/>the arib binary]
+  mux[isdbt-mux<br/>multiplexer]
+  ana[isdb-analyze<br/>analyzer]
+  hrf[isdb-hackrf<br/>libhackrf FFI]
+  cli[isdb-cli<br/>the isdb binary]
 
   si --> ts
   si --> text
@@ -75,24 +75,25 @@ graph TD
   cli --> hrf
 ```
 
-Arrows point to dependencies. The TS/SI side (`arib-*`) and the PHY side
-(`isdbt-*`) meet in only two places: `arib-mux` uses `isdbt-core` and
+Arrows point to dependencies. The TS/SI side (`isdb-ts`, `isdb-text`,
+`isdb-si`, `isdbt-mux`, `isdb-analyze`) and the PHY side (`isdbt-core`,
+`isdbt-fec`, `isdbt-ofdm`, `isdbt-phy`) meet in only two places: `isdbt-mux` uses `isdbt-core` and
 `isdbt-fec` for the frame clock and the §3.2 multiplex-frame slot pattern,
-and `arib-cli` wires everything together. The PHY crates carry TS packets
-as plain `[u8; 188]` and do not depend on `arib-ts`. `arib-analyze` uses
-`arib-mux` only for the ARIB STD-B32 Part 2 ADTS rule identities and
+and `isdb-cli` wires everything together. The PHY crates carry TS packets
+as plain `[u8; 188]` and do not depend on `isdb-ts`. `isdb-analyze` uses
+`isdbt-mux` only for the ARIB STD-B32 Part 2 ADTS rule identities and
 quality modes; it parses ADTS headers itself.
 
 ## Data flow
 
 ```text
-                       ┌──────────── arib-ts / arib-text / arib-si ────────────┐
+                       ┌──────────── isdb-ts / isdb-text / isdb-si ────────────┐
                        │  lossless codecs: packets, PES, sections, SI, strings │
                        └───────▲──────────────────────────────────────────▲────┘
                                │ builds with                 decodes with │
 TX                             │                                          │
- TOML + media ─► arib-mux::Multiplexer::next_frame()                      │
-   (or per-layer TS files / PID split / synthetic, in arib-cli)           │
+ TOML + media ─► isdbt-mux::Multiplexer::next_frame()                     │
+   (or per-layer TS files / PID split / synthetic, in isdb-cli)           │
         │  [Vec<Packet>; 3]: exactly tsp_per_frame 188-byte TSPs per layer│
         ▼                                                                 │
  isdbt-phy::Transmitter::transmit_frame   (one call = one OFDM frame)     │
@@ -104,10 +105,10 @@ TX                             │                                          │
         │    → time / frequency interleave → SP/CP/TMCC/AC frame          │
         │    → IFFT + guard interval                   ⇒ C32 @ 512/63 MHz │
         ▼                                                                 │
- IQ file (cf32 / cs8 via isdbt-phy::iq)  or  hackrf::TxStream (cs8)       │
+ IQ file (cf32 / cs8 via isdbt-phy::iq)  or  isdb_hackrf::TxStream (cs8)  │
                                                                           │
 RX                                                                        │
- IQ file  or  hackrf::RxStream                                            │
+ IQ file  or  isdb_hackrf::RxStream                                       │
         │                                                                 │
  isdbt-phy::Receiver / PipelinedReceiver::push(samples)                   │
         │  isdbt-ofdm::Demodulator: sync, CFO, channel estimation,        │
@@ -120,7 +121,7 @@ RX                                                                        │
         ▼                                                                 │
  RxFrame { tx_frame, valid, layers, ts, tmcc, metrics, rs }               │
         ▼                                                                 │
- TS file ─► arib-analyze (scan → inspect / validate / diff / edit) ───────┘
+ TS file ─► isdb-analyze (scan → inspect / validate / diff / edit) ───────┘
 ```
 
 `isdbt-core` (parameters and spec tables) is used by every PHY crate.
@@ -130,7 +131,7 @@ are `u8` 0/1; samples are `Complex32` at 512/63 MHz.
 
 ### The multiplexer
 
-`arib-mux` models packet arrival as the multiplex-frame slot: slot *j* of
+`isdbt-mux` models packet arrival as the multiplex-frame slot: slot *j* of
 OFDM frame *k* starts at sample clock `k·samples_per_frame + 408·j`
 (512/63 MHz), converted to the 27 MHz system clock by ×1701/512. PCR
 values and the PTS/DTS schedule are therefore consistent with the
@@ -154,7 +155,7 @@ constant), and sent in the first free slot of its layer from that time on.
 ```text
 tx:  reader thread(s) ─packets (bounded, ~2 s)─► producer thread
        (per-layer files / PID split (PCR-paced for files) /
-        in-process arib-mux (its ts-program relays have their own
+        in-process isdbt-mux (its ts-program relays have their own
         reader thread) / synthetic; feed policy)
      producer: Transmitter (pre-roll, lead, data, finish + flush)
        ─frames (bounded, --queue-frames 4)─► main thread: sink
@@ -165,7 +166,7 @@ rx:  source (file / HackRF RX callback) ─► PipelinedReceiver
 loopback: producer ─► software channel ─► PipelinedReceiver ─► verifier
 ```
 
-`arib-cli` adds I/O, threading, pacing, radio control and reporting; no
+`isdb-cli` adds I/O, threading, pacing, radio control and reporting; no
 spec logic lives there.
 
 ## Frame and latency contract
@@ -222,7 +223,7 @@ higher rungs are progressively more independent:
 3. **Inverse pairs** — every TX stage against its RX inverse
    (interleavers, mappers, codes, TMCC), then the whole PHY as TX →
    impairments (AWGN, CFO, sample offset, clock offset, echo) → RX,
-   byte-exact; the CLI repeats it end to end (`arib loopback`).
+   byte-exact; the CLI repeats it end to end (`isdb loopback`).
 4. **Independent oracles** — gr-isdbt as a separate program: Rust TX
    decoded by gr-isdbt and gr-isdbt TX decoded by Rust, byte-exact in 8
    parameter sets, plus a carrier-level comparison of the two modulators;

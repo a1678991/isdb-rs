@@ -34,8 +34,8 @@ and `Params` methods used by `isdbt-ofdm`).
 ## Position in the stack
 
 - Depends on: no workspace crate (only `thiserror`).
-- Used by: `isdbt-fec`, `isdbt-ofdm`, `isdbt-phy`, `arib-mux` (frame
-  clock: `Params::frame_ticks_27mhz`, per-layer TSP counts) and `arib-cli`
+- Used by: `isdbt-fec`, `isdbt-ofdm`, `isdbt-phy`, `isdbt-mux` (frame
+  clock: `Params::frame_ticks_27mhz`, per-layer TSP counts) and `isdb-cli`
   (parsing of `--mode`, `--gi`, `--partial`, `--layer-a/-b/-c` into `Params`).
 
 ## Key types and entry points
@@ -80,7 +80,7 @@ assert!(Params::new(Mode::M3, GuardInterval::G1_8, true, [Some(bad), Some(c), No
   integer functions (e.g. TSPs per frame = nc·S·R/8 per segment) that the
   tests compare against the tables as printed, not against each other.
 - `frame_ticks_27mhz` is exact for every mode and GI (it asserts the
-  division is exact); `arib-mux` uses it to tie PCR to the OFDM frame.
+  division is exact); `isdbt-mux` uses it to tie PCR to the OFDM frame.
 - `Params` is the unit of configuration everywhere: the modulator, the
   receiver's TMCC decoder and the multiplexer all agree through it.
   `Layer::ALL` / `layer.index()` define the A/B/C array order used by the

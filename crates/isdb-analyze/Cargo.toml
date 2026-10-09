@@ -1,0 +1,31 @@
+[package]
+name = "isdb-analyze"
+description = "TS analysis, validation, diff and experiment editing built on the isdb-ts/isdb-si decoders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-analyze"
+readme = "README.md"
+keywords = ["mpeg-ts", "arib", "isdb", "analyzer", "broadcast"]
+categories = ["multimedia::video", "parser-implementations"]
+# Ship sources, examples and docs only: tests (and any local captures
+# next to them) stay out of the .crate.
+include = ["/src/**", "/examples/**", "/README.md", "/SPEC-NOTES.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+isdb-ts.workspace = true
+isdb-si.workspace = true
+isdb-text.workspace = true
+# B32 Part 2 ADTS rule identities / clauses, quality modes and the
+# synthetic SilentFrame of the tests (crate::aac); the header parse is
+# re-implemented independently in crate::aac.
+isdbt-mux = { path = "../isdbt-mux" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

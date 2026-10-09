@@ -1,0 +1,25 @@
+[package]
+name = "isdb-ts"
+description = "MPEG-2 transport stream layer (ITU-T H.222.0 | ISO/IEC 13818-1) as used by ARIB ISDB-T"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-ts"
+readme = "README.md"
+keywords = ["mpeg-ts", "transport-stream", "arib", "isdb", "broadcast"]
+categories = ["multimedia::video", "parser-implementations", "encoding"]
+# Ship sources, examples and docs only: tests (and any local captures
+# next to them) stay out of the .crate.
+include = ["/src/**", "/examples/**", "/README.md", "/SPEC-NOTES.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

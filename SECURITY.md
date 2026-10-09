@@ -30,12 +30,13 @@ otherwise.
 In scope, for example:
 
 - Memory-safety issues (the only `unsafe` code is the libhackrf FFI wrapper,
-  `crates/hackrf`).
+  `crates/isdb-hackrf`).
 - Panics, unbounded memory use or hangs triggered by malformed transport
   streams, sections, descriptors, strings or IQ input in the decoders and
-  analysers (`arib-ts`, `arib-text`, `arib-si`, `arib-analyze`,
-  `isdbt-*`, `arib rx`, `arib ts`).
-- Bugs that make `arib tx` radiate without `--rf-enable`, or keep the
+  analysers (`isdb-ts`, `isdb-text`, `isdb-si`, `isdb-analyze`, the PHY
+  crates `isdbt-core`/`isdbt-fec`/`isdbt-ofdm`/`isdbt-phy`, `isdb rx`,
+  `isdb ts`).
+- Bugs that make `isdb tx` radiate without `--rf-enable`, or keep the
   device transmitting after the program reports that it stopped.
 
 Out of scope: radio-regulation questions about how someone operates their

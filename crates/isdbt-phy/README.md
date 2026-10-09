@@ -27,7 +27,7 @@ Packets of uncorrectable RS words are marked with
 ## Position in the stack
 
 - Depends on: `isdbt-core` (parameters), `isdbt-fec`, `isdbt-ofdm`.
-- Used by: `arib-cli` (`arib tx`, `arib rx`, `arib loopback`); `arib-mux`
+- Used by: `isdb-cli` (`isdb tx`, `isdb rx`, `isdb loopback`); `isdbt-mux`
   only as a dev-dependency (its tests feed the multiplexer's frames to a
   `Transmitter`); the stand-alone oracle crate `oracle/rust_tx3`.
 

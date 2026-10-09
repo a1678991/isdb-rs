@@ -15,23 +15,23 @@ gr-isdbt differential test.
 
 | Variable | Points at | Enables |
 |---|---|---|
-| `ISDB_RS_CAPTURE_TS` | a terrestrial ISDB-T transport-stream capture (188/192/204-byte packets) | `arib-ts` `tests/capture.rs` (every packet and section round-trips byte-identically, CRCs valid); `arib-si` `tests/capture.rs` (every distinct SI section decodes typed and re-encodes byte-identically); `arib-text` `capture_si_strings` (every NIT/SDT/EIT string decodes without issues and round-trips); `arib-analyze` `tests/real_data.rs` (inspect decodes everything, validate, identity and mutation edits stay clean); `arib-mux` `tests/adts.rs` `capture_all_frames_conform` (every ADTS frame passes the B32 Part 2 header rules) |
-| `ISDB_RS_OUR_TS` | a TS written by `arib mux` (together with `ISDB_RS_CAPTURE_TS`) | `arib-analyze` `ours_vs_capture` (prints a diff report of ours against the capture), `transplant_nit_between_captures_is_crc_and_cc_clean` |
-| `ISDB_RS_RELAY_TS` | a recorded TS you may relay (not scrambled) | `arib-cli` `relay_recording` and `relay_recording_without_toml` (the recording through `ts-program` / `--relay`: video on 0x0111, no late PES, T-STD clean, `ts validate` without errors, ffmpeg decodes it, `loopback` passes; the decode check uses `ffmpeg` when installed) |
-| `ISDB_RS_MEDIA_DIR` | a directory with `v63p.m2v` (MPEG-2 video ES) and `a.m2a` (AAC ADTS) | `arib-mux` `tests/media.rs` (10 s of `bench.toml` with real media; needs `ffprobe`), `tests/adts.rs` `bench_media_refused_by_conform`; `arib-cli` `loopback_with_in_process_multiplexer` (media part), `bench_media_aac_conforms_to_b32_part2` |
+| `ISDB_RS_CAPTURE_TS` | a terrestrial ISDB-T transport-stream capture (188/192/204-byte packets) | `isdb-ts` `tests/capture.rs` (every packet and section round-trips byte-identically, CRCs valid); `isdb-si` `tests/capture.rs` (every distinct SI section decodes typed and re-encodes byte-identically); `isdb-text` `capture_si_strings` (every NIT/SDT/EIT string decodes without issues and round-trips); `isdb-analyze` `tests/real_data.rs` (inspect decodes everything, validate, identity and mutation edits stay clean); `isdbt-mux` `tests/adts.rs` `capture_all_frames_conform` (every ADTS frame passes the B32 Part 2 header rules) |
+| `ISDB_RS_OUR_TS` | a TS written by `isdb mux` (together with `ISDB_RS_CAPTURE_TS`) | `isdb-analyze` `ours_vs_capture` (prints a diff report of ours against the capture), `transplant_nit_between_captures_is_crc_and_cc_clean` |
+| `ISDB_RS_RELAY_TS` | a recorded TS you may relay (not scrambled) | `isdb-cli` `relay_recording` and `relay_recording_without_toml` (the recording through `ts-program` / `--relay`: video on 0x0111, no late PES, T-STD clean, `ts validate` without errors, ffmpeg decodes it, `loopback` passes; the decode check uses `ffmpeg` when installed) |
+| `ISDB_RS_MEDIA_DIR` | a directory with `v63p.m2v` (MPEG-2 video ES) and `a.m2a` (AAC ADTS) | `isdbt-mux` `tests/media.rs` (10 s of `bench.toml` with real media; needs `ffprobe`), `tests/adts.rs` `bench_media_refused_by_conform`; `isdb-cli` `loopback_with_in_process_multiplexer` (media part), `bench_media_aac_conforms_to_b32_part2` |
 | `ISDB_RS_ORACLE_CONTAINER` | name of the GNU Radio container (default `arib-sdr`) | `oracle/run_matrix.py` |
 | `ISDB_RS_ORACLE_OUT` | output directory of the oracle matrix, inside the repository (default `target/oracle-matrix`) | `oracle/run_matrix.py` |
 
 Run the opt-in tests with `--nocapture` to see their reports, for example:
 
 ```sh
-ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test --release -p arib-ts --test capture -- --nocapture
-ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test --release -p arib-si --test capture -- --nocapture
-ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test --release -p arib-text --test synthetic capture -- --nocapture
+ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test --release -p isdb-ts --test capture -- --nocapture
+ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test --release -p isdb-si --test capture -- --nocapture
+ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test --release -p isdb-text --test synthetic capture -- --nocapture
 ISDB_RS_CAPTURE_TS=/path/to/capture.ts ISDB_RS_OUR_TS=/path/to/ours.ts \
-    cargo test --release -p arib-analyze --test real_data -- --nocapture
-ISDB_RS_MEDIA_DIR=/path/to/media cargo test --release -p arib-mux --test media --test adts -- --nocapture
-ISDB_RS_RELAY_TS=/path/to/recording.ts cargo test --release -p arib-cli --test cli relay_recording -- --nocapture
+    cargo test --release -p isdb-analyze --test real_data -- --nocapture
+ISDB_RS_MEDIA_DIR=/path/to/media cargo test --release -p isdbt-mux --test media --test adts -- --nocapture
+ISDB_RS_RELAY_TS=/path/to/recording.ts cargo test --release -p isdb-cli --test cli relay_recording -- --nocapture
 ```
 
 Statistics quoted in the crate READMEs, SPECS.md and SPEC-NOTES (for
@@ -56,8 +56,8 @@ ffmpeg -f lavfi -i testsrc2=size=1440x1080:rate=30000/1001 -t 10 -vf setfield=tf
     -flags +ilme+ildct -aspect 16:9 -f mpeg2video media/v63p.m2v
 ffmpeg -f lavfi -i sine=frequency=1000:sample_rate=48000 -ac 2 -t 10 \
     -c:a aac -b:a 192k -f adts media/a.m2a
-ISDB_RS_MEDIA_DIR=$PWD/media cargo test --release -p arib-mux --test media --test adts
-ISDB_RS_MEDIA_DIR=$PWD/media cargo test --release -p arib-cli --test cli bench_media
+ISDB_RS_MEDIA_DIR=$PWD/media cargo test --release -p isdbt-mux --test media --test adts
+ISDB_RS_MEDIA_DIR=$PWD/media cargo test --release -p isdb-cli --test cli bench_media
 ```
 
 (Checked with FFmpeg 9.0: all media tests pass. The FFmpeg AAC encoder
@@ -72,7 +72,7 @@ recording is not unlimited: in Japan private copying is permitted
 Keep captures, recordings and anything extracted from them (section
 fixtures, IQ files) out of public repositories and issue reports; describe
 what you see, or share small synthetic reproductions made with
-`arib mux` or `arib ts edit` instead.
+`isdb mux` or `isdb ts edit` instead.
 
 **Transport-stream capture.** Any tuner that delivers the whole TS works.
 With a Linux DVB device (for example a MyGica S270), after a channel scan:
@@ -85,7 +85,7 @@ dvbv5-zap -c dvb_channel.conf -r -P -t 30 -o capture.ts "<channel name>"   # all
 
 ```sh
 hackrf_transfer -r capture.cs8 -f 557142857 -s 8126984 -l 16 -g 20 -n 81269840   # ch27, 10 s
-arib rx --iq capture.cs8 --iq-format cs8 --out capture.ts --json
+isdb rx --iq capture.cs8 --iq-format cs8 --out capture.ts --json
 ```
 
 The centre frequency of channel N is 473 + 6·(N − 13) + 1/7 MHz;
@@ -97,16 +97,16 @@ independent check the project still lacks
 
 **Scrambling.** In Japan the elementary streams of full-segment services
 are scrambled; PSI/SI and the one-seg service are not. The SI-only tests
-(`arib-si`, `arib-text`) only need the SI PIDs. Tests that parse PES
-payloads (`arib-ts` `capture`, `arib-analyze` `real_data`, `arib-mux`
+(`isdb-si`, `isdb-text`) only need the SI PIDs. Tests that parse PES
+payloads (`isdb-ts` `capture`, `isdb-analyze` `real_data`, `isdbt-mux`
 `capture_all_frames_conform`) need elementary streams that are not
 scrambled (transport_scrambling_control '00'). This project does not
 descramble and gives no help with it; circumventing broadcast protection
-may be illegal where you are. Your own `arib tx` output received with
-`arib rx`, or broadcasts that are transmitted unscrambled, are fine.
+may be illegal where you are. Your own `isdb tx` output received with
+`isdb rx`, or broadcasts that are transmitted unscrambled, are fine.
 
 **Relay recordings** (`ISDB_RS_RELAY_TS`) must likewise be unscrambled;
-`arib` refuses scrambled input.
+`isdb` refuses scrambled input.
 
 ## The gr-isdbt oracle
 

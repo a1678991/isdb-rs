@@ -30,7 +30,7 @@ ARIB STD-B31 v2.2 (`specs/ARIB-STD-B31-v2.2.txt`):
 
 - Depends on: `isdbt-core` (modes, guard intervals, `Params`, Table 3-x
   quantities), `num-complex`, `rustfft`.
-- Used by: `isdbt-phy` (TX/RX pipelines), `arib-cli` (channel model,
+- Used by: `isdbt-phy` (TX/RX pipelines), `isdb-cli` (channel model,
   receiver configuration and metrics).
 
 ## Key types and entry points

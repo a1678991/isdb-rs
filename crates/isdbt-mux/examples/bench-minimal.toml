@@ -1,0 +1,182 @@
+# isdbt-mux example: the bench transport stream with the spec-minimum
+# signalling variants, for comparison with bench.toml (which follows what
+# live broadcasters send): every receiver-facing value is derived from the
+# media, and copy control is copy-free.
+#
+#   isdb mux --config crates/isdbt-mux/examples/bench-minimal.toml --frames 40 \
+#            --out-b /tmp/b.ts --out-ts /tmp/full.ts
+#
+# Transmission parameters are NOT set here: they come from the same
+# --mode/--gi/--partial/--layer-a/--layer-b options as `isdb tx`
+# (default Mode 3, GI 1/8, partial reception, A = 1 seg QPSK 2/3,
+# B = 12 seg 64QAM 3/4). Everything ARIB derives from them (terrestrial
+# delivery system descriptor guard_interval/transmission_mode, partial
+# reception descriptor, PCR packets per frame, packets per layer) is derived.
+#
+# Integers may be written in hex (0x...). Relative `source` paths are
+# relative to this file. Section/descriptor hex may contain spaces.
+#
+# The media `source` paths (media/video.m2v, media/audio.m2a) are
+# placeholders: point them at your own MPEG-2 video elementary stream and
+# AAC ADTS file. The comments below describe the bench media (v63p.m2v,
+# a.m2a); the tests take those from the directory named by the environment
+# variable ISDB_RS_MEDIA_DIR, or substitute synthetic streams.
+
+[network]
+network_id = 0x7FE0              # B10 Annex N: terrestrial TV range 0x7880–0x7FE8
+name = "ベンチ"                   # network_name_descriptor (0x40), ARIB 8-unit coded
+area_code = 0x5A5                # 0xFA area_code (B10 Annex D Table D-2: Kanto wide area)
+# 0xCD remote_control_key_id (B10 §6.2.42): 1..=12 (one-touch keys, TR-B14
+# practice). Receivers list the services as 3-digit channels key·10 + index
+# (key 9 → 091, …). 9, not 12: key 12 collides with a local station on the bench.
+remote_control_key_id = 9
+ts_name = "ベンチ"                # 0xCD ts_name (defaults to name)
+# UHF channel(s) → 0xFA frequency (1/7 MHz units). MUST equal the channel `isdb tx`
+# transmits on: receivers tune by the NIT frequency after the scan, so a
+# mismatch registers the service on a channel with no signal.
+channels = [27]
+# frequencies = [3900]           # extra raw 0xFA frequency codes
+additional_broadcasting_identification = 0x01  # 0xFE low byte (operational choice, see SPEC-NOTES)
+# 0xCD transmission_type loops; service_ids are derived from the layer.
+# transmission_type_info values are operational (TR-B14, not available):
+transmission_types = [
+  { info = 0x0F, layer = "B" },
+  { info = 0xAF, layer = "A" },
+]
+
+[transport]
+transport_stream_id = 0x7FE0
+# original_network_id defaults to network_id (B10 §5.2.4)
+
+[clock]
+source = "system"                # TOT/EIT clock: "system" (now) or "fixed" (start below)
+# start = "2026-10-08T12:00:00"  # JST; with source = "fixed" (or to pin the system start)
+start_pcr = 0                    # PCR (27 MHz) of the first multiplex slot
+
+[timing]
+av_delay_ms = 700                # first DTS − first slot
+max_std_delay_ms = 1000          # H.222.0 §2.4.2.6: ≤ 1 s through the T-STD
+# pcr_per_frame = 4              # default = 1/2/4 for Mode 1/2/3 (B31 Part 2 Table 3-5)
+interval_margin = 0.9            # sections repeat at interval × margin
+si_max_bytes = 4096              # B10 §5.1.4 "4KB in 32 ms" per PID
+si_window_ms = 32
+
+# ---------------------------------------------------------------- services
+
+[[service]]                      # full-seg HD service on layer B
+service_id = 0x0400
+service_type = 0x01              # digital TV service (B10 Table 6-25)
+provider = "ベンチ"
+name = "ベンチHD"
+layer = "B"
+pmt_pid = 0x01F0
+pcr_pid = 0x01FF                 # dedicated PCR PID (adaptation-field-only packets)
+running_status = 0               # SDT running_status (operational choice)
+eit_pf = true
+# digital_copy_control_descriptor 0xC1 (B10 §6.2.23): copy-free, default
+# placement (PMT program loop + EIT events). copy_control_type/aps_control_data
+# keep their defaults '01'/'00' (user_defined 0b0100): '00' is refused by the
+# Sony BDZ-series recorder (bench 2026-10-08), see SPEC-NOTES.
+copy_control = { recording_control = "copy-free" }
+# content_availability = { image_constraint_token = true, retention_state = 7 }
+# program_descriptors = [ { tag = 0xC1, hex = "60" } ]   # raw PMT program_info descriptors
+
+  [[service.stream]]
+  kind = "mpeg2-video"
+  pid = 0x0111
+  component_tag = 0x00           # → stream_identifier_descriptor (0x52), EIT component tag
+  source = "media/video.m2v"
+  # 0xC8 derived from the sequence header (here 0x04: 1080/I, no
+  # sequence_end_code, transfer_characteristics "bt709").
+  video_decode_control = { mode = "derived" }
+  # EIT 0x50 derived from the sequence header (v63p.m2v: 1080i, aspect 4:3 → 0xB1).
+  component_type = "derived"
+
+  [[service.stream]]
+  kind = "aac-adts"
+  pid = 0x0112
+  component_tag = 0x10
+  source = "media/audio.m2a"
+  frames_per_pes = 1
+  component_type = "derived"     # 0xC4 audio mode from the ADTS channel_configuration
+
+  [[service.event]]
+  event_id = 0x0001
+  start_offset_s = -600          # started 10 minutes before the stream clock start
+  duration = "01:00:00"
+  name = "ベンチ試験放送"
+  text = "isdbt-mux bench"
+  content = [0x00]               # genre: news (content_nibble 0/0)
+
+  [[service.event]]
+  event_id = 0x0002              # starts when 0x0001 ends
+  duration = "01:00:00"
+  name = "ベンチ試験放送２"
+
+  [service.pmt]
+  # Experiment knobs available on every table ([pat], [cat], [nit], [sdt],
+  # [eit], [eit_schedule], [tot], [tdt], [bit], [service.pmt]):
+  # interval_ms = 100
+  # layer = "A"
+  # version = 0
+  # add_descriptors = [ { loop = "es:0x0111", tag = 0xC8, hex = "47" } ]
+  #   (a raw descriptor with the tag of an active typed one in the same loop is
+  #    rejected at load: set the typed one off, e.g. video_decode_control = { mode = "off" })
+  # header = { version_number = 3, reserved1 = 1 }
+  # byte_patches = [ { offset = 5, hex = "c3" } ]
+  # replace_sections = [ "02b0..." ]       # transplanted section, sent byte-identical
+  # extra_sections = [ ]
+
+[[service]]                      # one-seg service declared on layer A (no media)
+service_id = 0x0588
+service_type = 0xC0              # data service: one-seg convention (operational, TR-B14 not available)
+provider = "ベンチ"
+name = "ベンチワンセグ"
+layer = "A"
+pmt_pid = 0x1FC8
+pcr_pid = 0x01FE
+eit_pf = true
+
+  [[service.stream]]
+  kind = "declared"
+  pid = 0x0181
+  stream_type = 0x1B             # H.264 video (H.222.0 Table 2-34)
+  component_tag = 0x81
+
+  [[service.stream]]
+  kind = "declared"
+  pid = 0x0183
+  stream_type = 0x0F
+  component_tag = 0x83
+
+  [[service.event]]
+  event_id = 0x0001
+  start_offset_s = -600
+  duration = "01:00:00"
+  name = "ベンチ試験放送"
+
+# ---------------------------------------------------------------- tables
+# Defaults: intervals from B10 Table 5-2; PAT/CAT/NIT on the partial-reception
+# layer (B31 Part 2 Table 3-1); PMT on its service's layer (Table 3-3);
+# SDT/EIT/TOT/BIT with PAT (operational choice).
+
+[eit]
+present_running_status = 4       # running (B10 Part 2 Annex Table 1-1)
+following_running_status = 1     # not running (Table 1-2: "running" not allowed)
+
+[eit_schedule]
+enabled = false
+
+[tot]
+enabled = true
+
+[bit]
+enabled = true
+broadcast_view_propriety = false
+# first_descriptors = [ { tag = 0xD7, hex = "..." } ]   # SI_parameter_descriptor (TR-B14)
+broadcasters = [
+  { broadcaster_id = 0x01, name = "ベンチ" },
+]
+
+[cat]
+descriptors = []                 # CA_descriptors (none: free-to-air)

@@ -59,81 +59,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "arib-analyze"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arib-mux",
- "arib-si",
- "arib-text",
- "arib-ts",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "arib-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arib-analyze",
- "arib-mux",
- "clap",
- "ctrlc",
- "hackrf",
- "isdbt-core",
- "isdbt-fec",
- "isdbt-ofdm",
- "isdbt-phy",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "arib-mux"
-version = "0.1.0"
-dependencies = [
- "arib-analyze",
- "arib-si",
- "arib-text",
- "arib-ts",
- "isdbt-core",
- "isdbt-fec",
- "isdbt-phy",
- "serde",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "arib-si"
-version = "0.1.0"
-dependencies = [
- "arib-text",
- "arib-ts",
- "proptest",
- "thiserror",
-]
-
-[[package]]
-name = "arib-text"
-version = "0.1.0"
-dependencies = [
- "encoding_rs",
- "proptest",
- "thiserror",
-]
-
-[[package]]
-name = "arib-ts"
-version = "0.1.0"
-dependencies = [
- "proptest",
- "thiserror",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -322,13 +247,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hackrf"
-version = "0.1.0"
-dependencies = [
- "thiserror",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -357,6 +275,72 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
+name = "isdb-analyze"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "isdb-si",
+ "isdb-text",
+ "isdb-ts",
+ "isdbt-mux",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "isdb-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ctrlc",
+ "isdb-analyze",
+ "isdb-hackrf",
+ "isdbt-core",
+ "isdbt-fec",
+ "isdbt-mux",
+ "isdbt-ofdm",
+ "isdbt-phy",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "isdb-hackrf"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "isdb-si"
+version = "0.1.0"
+dependencies = [
+ "isdb-text",
+ "isdb-ts",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "isdb-text"
+version = "0.1.0"
+dependencies = [
+ "encoding_rs",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "isdb-ts"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "isdbt-core"
 version = "0.1.0"
 dependencies = [
@@ -370,6 +354,22 @@ dependencies = [
  "isdbt-core",
  "proptest",
  "thiserror",
+]
+
+[[package]]
+name = "isdbt-mux"
+version = "0.1.0"
+dependencies = [
+ "isdb-analyze",
+ "isdb-si",
+ "isdb-text",
+ "isdb-ts",
+ "isdbt-core",
+ "isdbt-fec",
+ "isdbt-phy",
+ "serde",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

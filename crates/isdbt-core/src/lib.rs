@@ -15,7 +15,7 @@
 //!   carrier counts, centre carrier.
 //!
 //! The crate is the shared vocabulary of `isdbt-fec`, `isdbt-ofdm`,
-//! `isdbt-phy`, `arib-mux` and `arib-cli`; it does no signal processing.
+//! `isdbt-phy`, `isdbt-mux` and `isdb-cli`; it does no signal processing.
 //! See `README.md` next to this crate for the verification table and
 //! limitations.
 //!

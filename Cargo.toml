@@ -11,9 +11,9 @@ authors = ["a1678991 <a1678991@iroserver.net>"]
 repository = "https://github.com/a1678991/isdb-rs"
 
 [workspace.dependencies]
-arib-ts = { path = "crates/arib-ts" }
-arib-text = { path = "crates/arib-text" }
-arib-si = { path = "crates/arib-si" }
+isdb-ts = { path = "crates/isdb-ts" }
+isdb-text = { path = "crates/isdb-text" }
+isdb-si = { path = "crates/isdb-si" }
 isdbt-core = { path = "crates/isdbt-core" }
 isdbt-fec = { path = "crates/isdbt-fec" }
 isdbt-ofdm = { path = "crates/isdbt-ofdm" }
@@ -23,7 +23,7 @@ rustfft = "6"
 encoding_rs = "0.8"
 proptest = "1"
 isdbt-phy = { path = "crates/isdbt-phy" }
-hackrf = { path = "crates/hackrf" }
+isdb-hackrf = { path = "crates/isdb-hackrf" }
 clap = { version = "4.6", features = ["derive"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -34,7 +34,7 @@ ctrlc = "3"
 # Every member opts in with `[lints] workspace = true`. CI runs clippy with
 # `-D warnings`, so "warn" fails CI while keeping local builds usable.
 [workspace.lints.rust]
-# `deny`, not `forbid`: the FFI crate `hackrf` opts out with a crate-level
+# `deny`, not `forbid`: the FFI crate `isdb-hackrf` opts out with a crate-level
 # `#![allow(unsafe_code)]`; every other crate is unsafe-free.
 unsafe_code = "deny"
 missing_docs = "warn"
@@ -113,7 +113,7 @@ debug = 1
 opt-level = 2
 
 # The modulator must run faster than real time even in a dev build
-# (`cargo run -p arib-cli -- tx --hackrf …`): unoptimised, the PHY crates
+# (`cargo run -p isdb-cli -- tx --hackrf …`): unoptimised, the PHY crates
 # reach only ≈ 0.2× real time and a HackRF underruns ≈ 75 % of its USB
 # buffers. Optimise the signal-processing crates and all dependencies in
 # the dev profile; debug assertions and overflow checks stay on.

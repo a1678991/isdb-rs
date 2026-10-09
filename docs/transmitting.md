@@ -1,8 +1,8 @@
 # Transmitting
 
-`arib tx` turns transport streams into an ISDB-T signal and sends it to an
+`isdb tx` turns transport streams into an ISDB-T signal and sends it to an
 IQ file or a HackRF One. This page covers the conducted bench set-up, the
-levels and channel plan, the `arib tx` inputs and options, relaying a
+levels and channel plan, the `isdb tx` inputs and options, relaying a
 recorded program, and what real receivers turned out to need.
 
 ## Safety and legal requirements
@@ -11,14 +11,14 @@ recorded program, and what real receivers turned out to need.
 > Radiating on UHF television frequencies requires a radio station licence
 > (in Japan under the Radio Act, 電波法; elsewhere under local law).
 > Unlicensed transmission is illegal and interferes with television
-> reception around you. Use `arib tx --hackrf` only in a **conducted**
+> reception around you. Use `isdb tx --hackrf` only in a **conducted**
 > set-up (coax and attenuators into the receiver, nothing radiating) or in
 > a **shielded enclosure**. Never connect an antenna to the HackRF while
 > transmitting. You are responsible for the rights to any content you
-> transmit or relay; `arib` does not descramble and refuses scrambled
+> transmit or relay; `isdb` does not descramble and refuses scrambled
 > input.
 
-`arib tx --hackrf` radiates only with `--rf-enable`. Without it, or with
+`isdb tx --hackrf` radiates only with `--rf-enable`. Without it, or with
 `--dry-run`, it prints the RF settings and exits with "not transmitting"
 before the device is opened, so you can check every setting first. Every
 exit path stops streaming and switches the HackRF's RF amplifier off; a
@@ -41,13 +41,13 @@ HackRF One ──SMA coax── fixed attenuators ── DC block ── F/IEC a
   weak signal.
 - **DC block.** Many TV receivers and recorders can supply DC power on the
   antenna input (for mast amplifiers). Switch that off in the receiver's
-  settings and put a DC block in the line to protect the HackRF. `arib`
+  settings and put a DC block in the line to protect the HackRF. `isdb`
   itself keeps the HackRF's own antenna-port power off.
 - **Shielding.** Use double-shielded coax and terminated, tight
   connectors; disconnect the receiver's normal antenna. Leakage works both
   ways: strong local broadcasts can leak into the bench and the bench can
   leak out.
-- **Receiving with a second HackRF** (for `arib rx`, [receiving.md](receiving.md)):
+- **Receiving with a second HackRF** (for `isdb rx`, [receiving.md](receiving.md)):
   a splitter after the attenuators feeds both receivers. Keep the level at
   the HackRF's RX port low — HackRF documents −5 dBm as the maximum RX
   input before damage, and its receiver works best far below that.
@@ -55,7 +55,7 @@ HackRF One ──SMA coax── fixed attenuators ── DC block ── F/IEC a
   off. ISDB-T receivers track ±20 ppm of clock error (B21 §5.2.4), but a
   large offset slows acquisition. `--freq-corr-ppm P` divides both the
   tuning frequency and the sample clock by (1 + P·10⁻⁶) so the signal is at
-  the nominal values; measure P with `arib rx` (the CFO figure) or a
+  the nominal values; measure P with `isdb rx` (the CFO figure) or a
   reference receiver.
 
 ## Channel plan
@@ -110,7 +110,7 @@ The level in the HackRF's 8-bit DAC is set by `--backoff-db` (default
 leaves headroom for OFDM's peaks. Clipped components are counted and
 reported; a few in 10⁵ are normal at 10 dB.
 
-## `arib tx` inputs
+## `isdb tx` inputs
 
 Exactly one input:
 
@@ -118,7 +118,7 @@ Exactly one input:
 |---|---|
 | `--mux-config FILE.toml` | the multiplexer runs in-process ([mux-config.md](mux-config.md)); never ends by itself (unless every relay has `at_eof = "end"`) |
 | `--relay FILE` | rebroadcast a recorded program as a terrestrial service, no TOML needed ([below](#relaying-a-recording)) |
-| `--a-ts/--b-ts/--c-ts PATH` | per-layer transport streams (`-` = stdin, FIFOs fine), e.g. from `arib mux --out-a/--out-b`; a layer without input carries null packets |
+| `--a-ts/--b-ts/--c-ts PATH` | per-layer transport streams (`-` = stdin, FIFOs fine), e.g. from `isdb mux --out-a/--out-b`; a layer without input carries null packets |
 | `--mux-ts PATH --a-pids … [--c-pids …]` | one TS split into layers by PID: the listed PIDs go to A / C, every other PID to B, input null packets are dropped |
 | `--synthetic` | deterministic test packets (PID 0x0100/0x0200/0x0300); never ends |
 
@@ -138,7 +138,7 @@ schedule). A station multiplex split by PID keeps that station's SI — for
 a program of *another* network (e.g. a satellite recording), use
 `--relay`, which gives it terrestrial SI.
 
-## `arib tx` options
+## `isdb tx` options
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -181,10 +181,10 @@ look-ahead. Details: [architecture.md](architecture.md#frame-and-latency-contrac
 Run the whole chain without a radio first:
 
 ```sh
-arib mux -c bench.toml --seconds 20 --out-ts check.ts --report   # optional: check the multiplex
-arib ts validate check.ts
-arib loopback --mux-config bench.toml --frames 8 --snr-db 25     # exactly what will be modulated
-arib tx --mux-config bench.toml --iq /dev/null --seconds 10      # producer speed, no radio
+isdb mux -c bench.toml --seconds 20 --out-ts check.ts --report   # optional: check the multiplex
+isdb ts validate check.ts
+isdb loopback --mux-config bench.toml --frames 8 --snr-db 25     # exactly what will be modulated
+isdb tx --mux-config bench.toml --iq /dev/null --seconds 10      # producer speed, no radio
 ```
 
 The `tx` status line reports the **producer speed** — on-air time of the
@@ -195,13 +195,13 @@ frames produced divided by the time spent making them:
 ```
 
 Below 1× the radio underruns (USB buffers sent as zeros, reported in the
-status lines) and `arib tx` prints a warning with the per-stage times. An
+status lines) and `isdb tx` prints a warning with the per-stage times. An
 unoptimised build runs at ≈ 0.2×; use `cargo build --release`.
 
 Then check the RF settings, still without radiating:
 
 ```sh
-arib tx --mux-config bench.toml --hackrf --channel 27 --txvga 20 --dry-run
+isdb tx --mux-config bench.toml --hackrf --channel 27 --txvga 20 --dry-run
 ```
 
 ```text
@@ -219,14 +219,14 @@ Error: not transmitting: add --rf-enable to radiate with the settings above (coa
 
 ```sh
 # the multiplexer in-process, until Ctrl-C
-arib tx --mux-config bench.toml --hackrf --channel 27 --txvga 20 --rf-enable
+isdb tx --mux-config bench.toml --hackrf --channel 27 --txvga 20 --rf-enable
 
 # per-layer files, looped, at most 10 minutes
-arib tx --hackrf --channel 27 --txvga 20 --rf-enable --seconds 600 \
+isdb tx --hackrf --channel 27 --txvga 20 --rf-enable --seconds 600 \
     --b-ts service.ts --a-ts oneseg.ts --feed loop
 
 # a live multiplex from a FIFO, split by PID, padded with nulls when it lags
-arib tx --hackrf --channel 27 --txvga 20 --rf-enable \
+isdb tx --hackrf --channel 27 --txvga 20 --rf-enable \
     --mux-ts /tmp/live.fifo --feed live --a-pids 0x0000,0x0010,0x0011,0x0012,0x0014,0x1fc8,0x1fc9
 ```
 
@@ -238,9 +238,9 @@ the producer speed and, for the radio, USB buffers and underruns.
 Typical end-to-end check with a second HackRF:
 
 ```sh
-arib rx --hackrf --serial <RX-SERIAL> --channel 27 --seconds 30 --out ours.ts --json
-arib ts validate ours.ts
-arib ts diff ours.ts check.ts
+isdb rx --hackrf --serial <RX-SERIAL> --channel 27 --seconds 30 --out ours.ts --json
+isdb ts validate ours.ts
+isdb ts diff ours.ts check.ts
 ```
 
 ## Relaying a recording
@@ -273,11 +273,11 @@ instead:
 Check it without a radio, then transmit:
 
 ```sh
-arib mux --relay FILE --auto-layout --seconds 60 --out-ts check.ts   # probe report + TS
-arib ts validate check.ts
-arib loopback --relay FILE --auto-layout --frames 8 --snr-db 25
-arib tx --relay FILE --auto-layout --hackrf --channel 27 --txvga 20 --dry-run
-arib tx --relay FILE --auto-layout --hackrf --channel 27 --txvga 20 --rf-enable
+isdb mux --relay FILE --auto-layout --seconds 60 --out-ts check.ts   # probe report + TS
+isdb ts validate check.ts
+isdb loopback --relay FILE --auto-layout --frames 8 --snr-db 25
+isdb tx --relay FILE --auto-layout --hackrf --channel 27 --txvga 20 --dry-run
+isdb tx --relay FILE --auto-layout --hackrf --channel 27 --txvga 20 --rf-enable
 ```
 
 At start the probe report lists the source program, each source PID → role
@@ -316,16 +316,16 @@ but has no one-seg layer.
 To keep and tweak the generated configuration:
 
 ```sh
-arib mux --relay FILE --auto-layout --print-config > relay.toml
-arib tx --mux-config relay.toml --layer-b 12,64qam,7/8,2 --hackrf --channel 27 --txvga 20 --rf-enable
+isdb mux --relay FILE --auto-layout --print-config > relay.toml
+isdb tx --mux-config relay.toml --layer-b 12,64qam,7/8,2 --hackrf --channel 27 --txvga 20 --rf-enable
 ```
 
-`crates/arib-mux/examples/relay-ts.toml` is the same configuration with
+`crates/isdbt-mux/examples/relay-ts.toml` is the same configuration with
 comments; the `ts-program` keys are described in [mux-config.md](mux-config.md).
 
 ## Receiver compatibility notes
 
-These were found by feeding `arib tx` output over a conducted link to two
+These were found by feeding `isdb tx` output over a conducted link to two
 consumer receivers — a **MyGica S270** USB tuner and a **Sony BDZ-series**
 Blu-ray recorder — in one configuration (Mode 3, GI 1/8, partial reception,
 layer A 1 segment QPSK 2/3, layer B 12 segments 64QAM 3/4, time-interleave
@@ -341,10 +341,10 @@ specifications, and the defaults follow them.
   SDT or PMT + EIT), the video decode control byte and the EIT component
   type made no difference. B10 only shows this layout in an informative
   annex (Annex F); the ARIB operational guidelines that may make it
-  normative are not available to the project. `arib-mux` defaults to
-  copy_control_type '01' + APS '00', and `arib ts validate` warns
+  normative are not available to the project. `isdbt-mux` defaults to
+  copy_control_type '01' + APS '00', and `isdb ts validate` warns
   (`si.copy_control`) on '00'. Details:
-  [arib-mux SPEC-NOTES](../crates/arib-mux/SPEC-NOTES.md#digital-copy-control-descriptor-0xc1-and-its-user_defined-bits).
+  [isdbt-mux SPEC-NOTES](../crates/isdbt-mux/SPEC-NOTES.md#digital-copy-control-descriptor-0xc1-and-its-user_defined-bits).
 - **Remote-control key collisions.** Receivers file a TS under its
   remote_control_key_id (one-touch key 1–12) and list its services as
   three-digit channels key·10 + index (key 9 → 091, 092, …). A key that a

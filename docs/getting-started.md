@@ -1,6 +1,6 @@
 # Getting started
 
-This walk-through builds the `arib` command-line tool, runs the ISDB-T
+This walk-through builds the `isdb` command-line tool, runs the ISDB-T
 modulator and demodulator in a software loopback, generates a transport
 stream with the multiplexer, and analyses it. Nothing here needs a radio or
 any captured data. For transmitting with a HackRF, continue with
@@ -12,7 +12,7 @@ in the [glossary](glossary.md).
 ## Prerequisites
 
 - **Rust ≥ 1.88** (edition 2024), e.g. from [rustup](https://rustup.rs).
-- **libhackrf**, the HackRF host library. The `arib` binary links it
+- **libhackrf**, the HackRF host library. The `isdb` binary links it
   dynamically, so it is needed even when no radio is attached:
 
   | System | Package |
@@ -21,8 +21,8 @@ in the [glossary](glossary.md).
   | Debian / Ubuntu | `libhackrf-dev` |
   | Fedora | `hackrf-devel` |
 
-  The library crates (`arib-ts`, `arib-si`, `isdbt-phy`, …) do not need it;
-  only `hackrf` and `arib-cli` do.
+  The library crates (`isdb-ts`, `isdb-si`, `isdbt-phy`, …) do not need it;
+  only `isdb-hackrf` and `isdb-cli` do.
 - Optional: `ffmpeg` / `ffprobe` to make test media and to check the
   multiplexer's output.
 
@@ -33,33 +33,33 @@ tried.
 
 ```sh
 git clone https://github.com/a1678991/isdb-rs && cd isdb-rs
-cargo build --release -p arib-cli          # → target/release/arib
+cargo build --release -p isdb-cli          # → target/release/isdb
 export PATH="$PWD/target/release:$PATH"
-arib --help
+isdb --help
 ```
 
-Alternatively `cargo install --path crates/arib-cli --locked` puts `arib`
+Alternatively `cargo install --path crates/isdb-cli --locked` puts `isdb`
 into `~/.cargo/bin`. Always use an optimised build for anything real time:
 the modulator needs it to keep up with a radio.
 
-`arib <command> --help` is the authoritative option list. The commands are:
+`isdb <command> --help` is the authoritative option list. The commands are:
 
 | Command | What it does |
 |---|---|
-| `arib tx` | transport streams → ISDB-T baseband → IQ file or HackRF |
-| `arib rx` | IQ file or HackRF → ISDB-T demodulation → transport stream |
-| `arib loopback` | `tx` → software channel (noise, CFO, timing offset) → `rx`, comparing every packet |
-| `arib mux` | service multiplexer: TOML description (+ media) → transport stream |
-| `arib ts` | transport-stream analysis: `inspect`, `validate`, `diff`, `edit`, `extract` |
+| `isdb tx` | transport streams → ISDB-T baseband → IQ file or HackRF |
+| `isdb rx` | IQ file or HackRF → ISDB-T demodulation → transport stream |
+| `isdb loopback` | `tx` → software channel (noise, CFO, timing offset) → `rx`, comparing every packet |
+| `isdb mux` | service multiplexer: TOML description (+ media) → transport stream |
+| `isdb ts` | transport-stream analysis: `inspect`, `validate`, `diff`, `edit`, `extract` |
 
 ## First loopback
 
 ```sh
-arib loopback --synthetic
+isdb loopback --synthetic
 ```
 
 ```text
-arib loopback: Mode 3, GI 1/8, partial reception; A 1seg QPSK 2/3 TI2 (64 TSP/frame); B 12seg 64QAM 3/4 TI2 (2592 TSP/frame)
+isdb loopback: Mode 3, GI 1/8, partial reception; A 1seg QPSK 2/3 TI2 (64 TSP/frame); B 12seg 64QAM 3/4 TI2 (2592 TSP/frame)
   input: synthetic test packets (PID 0x0100/0x0200/0x0300 for A/B/C)
   channel: SNR ∞, CFO +0 carriers, sample offset 0; lead 2, flush 4 frames
 [loopback] sent 12 frames (6 data); received 11 frames (8 valid, 2 before anchor); TS frames exact 6/6
@@ -81,7 +81,7 @@ What happened:
 - The receiver locked, decoded TMCC to learn the parameters, and returned
   every packet byte-exact. The MER is ≈ 120 dB because the channel is
   noise-free float arithmetic.
-- `arib loopback` exits non-zero on any failure, so it can be used in
+- `isdb loopback` exits non-zero on any failure, so it can be used in
   scripts (`--json` prints a machine-readable verdict).
 
 Add impairments, or change the transmission parameters (the same options
@@ -89,10 +89,10 @@ exist on `tx` and `mux`):
 
 ```sh
 # 22 dB SNR, 2.3 carrier spacings of frequency offset, receiver starts mid-frame
-arib loopback --synthetic --frames 8 --snr-db 22 --cfo-carriers 2.3 --sample-offset -700000
+isdb loopback --synthetic --frames 8 --snr-db 22 --cfo-carriers 2.3 --sample-offset -700000
 
 # Mode 2, GI 1/16, three layers, no partial reception
-arib loopback --synthetic --mode 2 --gi 16 --partial false \
+isdb loopback --synthetic --mode 2 --gi 16 --partial false \
     --layer-a 3,qpsk,1/2,2 --layer-b 5,16qam,2/3,2 --layer-c 5,64qam,5/6,1
 ```
 
@@ -104,10 +104,10 @@ partial reception layer A must be exactly one segment.
 
 ## Generate a test multiplex
 
-`arib mux` turns a TOML description of a network and its services into a
+`isdb mux` turns a TOML description of a network and its services into a
 transport stream paced to the OFDM frame. The shipped example
-(`arib mux --print-config-example`, the same as
-[`crates/arib-mux/examples/bench.toml`](../crates/arib-mux/examples/bench.toml))
+(`isdb mux --print-config-example`, the same as
+[`crates/isdbt-mux/examples/bench.toml`](../crates/isdbt-mux/examples/bench.toml))
 needs an MPEG-2 video and an AAC file, so start with a configuration whose
 only stream is *declared* in the PMT without any media:
 
@@ -148,7 +148,7 @@ copy_control = { recording_control = "copy-free" }
   duration = "01:00:00"
   name = "試験放送"
 EOF
-arib mux -c test.toml --seconds 5 --out-ts test.ts --report
+isdb mux -c test.toml --seconds 5 --out-ts test.ts --report
 ```
 
 The multiplexer generates PAT, CAT, PMT, NIT, SDT, EIT present/following,
@@ -165,14 +165,14 @@ Outputs:
   packets in the slots of no layer (≈ 29.96 Mbit/s in Mode 3, GI 1/8). This
   is the file to analyse or to play.
 - `--out-a/--out-b/--out-c FILE` — the packets of each layer, exactly
-  `tsp_per_frame` per OFDM frame, as `arib tx --a-ts/--b-ts/--c-ts` takes
+  `tsp_per_frame` per OFDM frame, as `isdb tx --a-ts/--b-ts/--c-ts` takes
   them.
 - `--frames N` or `--seconds S` sets the length (default 10 s).
 
 ## Inspect and validate
 
 ```sh
-arib ts inspect test.ts
+isdb ts inspect test.ts
 ```
 
 prints the packet count and duration, a PID table (rate, continuity and PCR
@@ -183,7 +183,7 @@ repetition intervals. `--decode` adds the full field tree of every section,
 `--json` gives the same as JSON.
 
 ```sh
-arib ts validate test.ts
+isdb ts validate test.ts
 ```
 
 ```text
@@ -204,31 +204,31 @@ everything). [analysis.md](analysis.md) covers `validate` options,
 ## Through the PHY and back, in files
 
 ```sh
-arib tx --mux-config test.toml --iq test.cf32 --seconds 3
-arib rx --iq test.cf32 --out rx.ts --json
-arib ts diff test.ts rx.ts
+isdb tx --mux-config test.toml --iq test.cf32 --seconds 3
+isdb rx --iq test.cf32 --out rx.ts --json
+isdb ts diff test.ts rx.ts
 ```
 
-- `arib tx --mux-config` runs the multiplexer in-process and modulates its
+- `isdb tx --mux-config` runs the multiplexer in-process and modulates its
   output; `--iq` writes interleaved little-endian float32 I/Q at
   512/63 MHz ≈ 8.127 MS/s (GNU Radio "complex" format). That is about
   65 MB per second of signal; `--iq-format cs8` (signed 8-bit, the
   `hackrf_transfer` format) is 16 MB/s. An input that never ends (a
   multiplexer, `--synthetic`, `--feed loop`) needs `--seconds` when writing
   to a regular file.
-- `arib rx --iq` demodulates the file, prints a status line per second of
+- `isdb rx --iq` demodulates the file, prints a status line per second of
   signal and writes the reproduced TS of the valid frames
   ([receiving.md](receiving.md)).
-- `arib ts diff` compares the two streams table by table; every section
+- `isdb ts diff` compares the two streams table by table; every section
   should be `identical`. The received file is shorter: frames before lock
   and the interleaver start-up are not output.
 
 The same with per-layer files:
 
 ```sh
-arib mux -c test.toml --frames 10 --out-a a.ts --out-b b.ts
-arib tx --a-ts a.ts --b-ts b.ts --iq x.cf32
-arib rx --iq x.cf32 --a-out a.out.ts --b-out b.out.ts --strip-nulls
+isdb mux -c test.toml --frames 10 --out-a a.ts --out-b b.ts
+isdb tx --a-ts a.ts --b-ts b.ts --iq x.cf32
+isdb rx --iq x.cf32 --a-out a.out.ts --b-out b.out.ts --strip-nulls
 ```
 
 ## Using your own media
@@ -244,8 +244,8 @@ ffmpeg -f lavfi -i testsrc2=size=1440x1080:rate=30000/1001 -t 10 -vf setfield=tf
     -flags +ilme+ildct -aspect 16:9 -f mpeg2video media/video.m2v
 ffmpeg -f lavfi -i sine=frequency=1000:sample_rate=48000 -ac 2 -t 10 \
     -c:a aac -b:a 192k -f adts media/audio.m2a
-arib mux --print-config-example > bench.toml
-arib mux -c bench.toml --seconds 10 --out-ts bench.ts --report --adts-compliance warn
+isdb mux --print-config-example > bench.toml
+isdb mux -c bench.toml --seconds 10 --out-ts bench.ts --report --adts-compliance warn
 ```
 
 `--adts-compliance warn` is needed here. ARIB STD-B32 Part 2 §5.2 requires
@@ -253,9 +253,9 @@ ADTS with crc_check (protection_absent '0'), MPEG-2 ID and a constant-rate
 adts_buffer_fullness; FFmpeg's ADTS has none of these, so the default
 policy (`conform`) refuses the file and lists every violated rule with its
 clause. `warn` sends it unchanged and reports the violations, and
-`arib ts validate bench.ts` will flag them as `aac.*` errors. The
-`--adts-compliance` override exists only on `arib mux`; for `arib loopback`
-and `arib tx --mux-config`, set `adts_compliance = "warn"` on the
+`isdb ts validate bench.ts` will flag them as `aac.*` errors. The
+`--adts-compliance` override exists only on `isdb mux`; for `isdb loopback`
+and `isdb tx --mux-config`, set `adts_compliance = "warn"` on the
 `aac-adts` stream in the TOML instead. Use an encoder that writes
 conforming ADTS for anything beyond a smoke test. The video
 needs no such step: the multiplexer packetises it as it is (vbv_delay is
@@ -263,11 +263,11 @@ set to 0xFFFF as B32 Part 1 requires).
 
 ## Next steps
 
-- [transmitting.md](transmitting.md) — bench set-up, `arib tx --hackrf`,
+- [transmitting.md](transmitting.md) — bench set-up, `isdb tx --hackrf`,
   relaying a recording, receiver compatibility notes.
-- [receiving.md](receiving.md) — `arib rx` in detail.
+- [receiving.md](receiving.md) — `isdb rx` in detail.
 - [mux-config.md](mux-config.md) — every multiplexer configuration key.
-- [analysis.md](analysis.md) — `arib ts` in detail.
+- [analysis.md](analysis.md) — `isdb ts` in detail.
 - [architecture.md](architecture.md) — how the crates fit together.
 - [test-data.md](test-data.md) — running the optional tests on your own
   captures and the gr-isdbt oracle.

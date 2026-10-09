@@ -63,7 +63,7 @@ run the transmit path on hardware must:
 
 1. Use a **conducted or shielded** setup only: coax with attenuators straight
    into the receiver, or a shielded enclosure. No antenna on the TX port.
-2. Check the settings first without radiating: `arib tx --hackrf … --dry-run`
+2. Check the settings first without radiating: `isdb tx --hackrf … --dry-run`
    (or without `--rf-enable`), which prints the RF settings and exits.
 3. Add `--rf-enable` only on that bench; start with low TX VGA and leave the
    RF amplifier off (`--amp` is opt-in). Bound runs with `--seconds` where
@@ -90,7 +90,7 @@ it is unset or the file is missing, so a fresh checkout passes with no data:
 | Variable | Points at |
 |---|---|
 | `ISDB_RS_CAPTURE_TS` | an unscrambled terrestrial ISDB-T capture (188-byte TS) |
-| `ISDB_RS_OUR_TS` | a TS produced by `arib mux`, compared with the capture |
+| `ISDB_RS_OUR_TS` | a TS produced by `isdb mux`, compared with the capture |
 | `ISDB_RS_RELAY_TS` | an unscrambled recording you may relay (`ts-program`) |
 | `ISDB_RS_MEDIA_DIR` | bench media: `v63p.m2v` (MPEG-2 video), `a.m2a` (ADTS AAC); some tests also need `ffprobe` |
 
@@ -104,8 +104,8 @@ unset, never fail for missing data).
   selects the pinned toolchain (with rustfmt and clippy) automatically. The
   minimum supported Rust version is `rust-version` in `Cargo.toml` (1.88);
   `make msrv` needs it installed: `rustup toolchain install 1.88 --profile minimal`.
-- **libhackrf**: `crates/hackrf` links the system library even when no radio
-  is attached (Arch `hackrf`, Debian/Ubuntu `libhackrf-dev`, Homebrew
+- **libhackrf**: `crates/isdb-hackrf` links the system library even when no
+  radio is attached (Arch `hackrf`, Debian/Ubuntu `libhackrf-dev`, Homebrew
   `hackrf`).
 - **Harness tools** (recommended): install [mise](https://mise.jdx.dev/),
   then run `mise install` in the repository. It installs the pinned
@@ -148,8 +148,8 @@ The Makefile is the single entry point; CI runs the same targets.
 
 Lints are configured once in `[workspace.lints]` (`Cargo.toml`); every crate
 opts in with `[lints] workspace = true`. `unsafe_code` is denied everywhere
-except the FFI crate `hackrf`, which allows it in `src/lib.rs`. Do not add
-`#[allow(...)]` to silence a lint without a comment that says why.
+except the FFI crate `isdb-hackrf`, which allows it in `src/lib.rs`. Do not
+add `#[allow(...)]` to silence a lint without a comment that says why.
 
 New dependencies must pass `make deny` (crates.io only, licences compatible
 with Apache-2.0) and build with the MSRV. Raising the MSRV is a deliberate
@@ -181,7 +181,7 @@ spec and record the outcome in SPEC-NOTES / VERIFICATION.md.
 
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)
   (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `perf:`, `chore:`,
-  `ci:` …). The optional scope is a crate directory name (`arib-ts`,
+  `ci:` …). The optional scope is a crate directory name (`isdb-ts`,
   `isdbt-ofdm`, …) or `oracle`, `workspace`, `ci`, `deps`. commitlint
   enforces this in the hook and in CI.
 - Work on a branch and open a pull request; `main` is merged by squash.

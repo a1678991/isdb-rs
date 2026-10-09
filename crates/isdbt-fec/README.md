@@ -31,8 +31,8 @@ The bit interleaving and everything after it (§3.9–3.16) is in
 - Depends on: `isdbt-core` (`LayerConfig`, `Mode`, `Params`, Table 3-7 /
   coded-bit figures).
 - Used by: `isdbt-phy` (TX/RX pipelines: `LayerEncoder`, `LayerDecoder`,
-  `MultiplexPattern`, `LATENCY_FRAMES`), `arib-mux` (`MultiplexPattern`
-  for multiplex-frame output and null packets) and `arib-cli`.
+  `MultiplexPattern`, `LATENCY_FRAMES`), `isdbt-mux` (`MultiplexPattern`
+  for multiplex-frame output and null packets) and `isdb-cli`.
 
 ## Key types and entry points
 

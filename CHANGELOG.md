@@ -14,16 +14,16 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
 
 ### Added
 
-- `arib-ts`: MPEG-2 transport stream layer — bit I/O, CRC_32, TS packets,
+- `isdb-ts`: MPEG-2 transport stream layer — bit I/O, CRC_32, TS packets,
   adaptation field and PCR, PES, section assembly and packetisation,
   PAT/PMT/CAT, a TS reader for 188/192/204-byte framings.
-- `arib-text`: ARIB STD-B24 8-unit character coding, decode and encode.
-- `arib-si`: ARIB STD-B10 service information tables and descriptors with
+- `isdb-text`: ARIB STD-B24 8-unit character coding, decode and encode.
+- `isdb-si`: ARIB STD-B10 service information tables and descriptors with
   lossless typed codecs (reserved bits kept), MJD/BCD time and separate
   conformance checks.
-- `arib-analyze`: TS inspection, spec validation with clause citations,
+- `isdb-analyze`: TS inspection, spec validation with clause citations,
   table/field diff of two streams and experiment editing.
-- `arib-mux`: service multiplexer — PSI/SI generation, MPEG-2 video and
+- `isdbt-mux`: service multiplexer — PSI/SI generation, MPEG-2 video and
   AAC (ADTS, STD-B32 Part 2 rules) packetisation, rebroadcast of a
   recorded program (`ts-program`), CBR output paced to the OFDM frame,
   layer capacities.
@@ -37,9 +37,9 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   IFFT/guard interval, and receiver synchronisation and equalisation.
 - `isdbt-phy`: TX/RX pipelines between TS packets and complex baseband,
   IQ file formats (cf32/cs8).
-- `hackrf`: minimal safe wrapper over the system libhackrf for TX/RX
+- `isdb-hackrf`: minimal safe wrapper over the system libhackrf for TX/RX
   streaming.
-- `arib-cli`: the `arib` binary — `tx` (to an IQ file or a HackRF; radiates
+- `isdb-cli`: the `isdb` binary — `tx` (to an IQ file or a HackRF; radiates
   only with `--rf-enable`), `rx`, `loopback` (software channel with
   impairments), `mux` (including `--relay` of a recording) and `ts`
   (inspect, validate, diff, edit).

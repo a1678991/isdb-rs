@@ -1,13 +1,13 @@
-# Multiplexer configuration reference (`arib mux` TOML)
+# Multiplexer configuration reference (`isdb mux` TOML)
 
-`arib mux -c FILE.toml`, `arib tx --mux-config FILE.toml` and
-`arib loopback --mux-config FILE.toml` read a declarative description of one
+`isdb mux -c FILE.toml`, `isdb tx --mux-config FILE.toml` and
+`isdb loopback --mux-config FILE.toml` read a declarative description of one
 ISDB-T transport stream: the network, the services and their elementary
 streams, the events, and options for every generated PSI/SI table. This page
 lists every key the multiplexer accepts, with its type, default and the
 specification clause it implements. It is written from the configuration
-structs in [`crates/arib-mux/src/config.rs`](../crates/arib-mux/src/config.rs)
-and [`signalling.rs`](../crates/arib-mux/src/signalling.rs); when this page
+structs in [`crates/isdbt-mux/src/config.rs`](../crates/isdbt-mux/src/config.rs)
+and [`signalling.rs`](../crates/isdbt-mux/src/signalling.rs); when this page
 and the code disagree, the code wins.
 
 - [General rules](#general-rules)
@@ -30,7 +30,7 @@ and the code disagree, the code wins.
 - **Transmission parameters are not in the TOML.** Mode, guard interval,
   partial reception and the layer layouts come from the same
   `--mode / --gi / --partial / --layer-a / --layer-b / --layer-c` options as
-  `arib tx` (defaults: Mode 3, GI 1/8, partial reception, A = 1 segment QPSK
+  `isdb tx` (defaults: Mode 3, GI 1/8, partial reception, A = 1 segment QPSK
   2/3, B = 12 segments 64QAM 3/4). Everything ARIB derives from them is
   derived, not configured: the guard_interval and transmission_mode codes and
   the frequency list of the terrestrial delivery system descriptor (B10
@@ -60,10 +60,10 @@ Ready-made configurations:
 
 | Source | What it is |
 |---|---|
-| `arib mux --print-config-example` | the annotated example, identical to [`crates/arib-mux/examples/bench.toml`](../crates/arib-mux/examples/bench.toml): a full-segment HD service with MPEG-2 video and AAC from files, plus a declared one-seg service, with the values live terrestrial broadcasters send |
-| [`examples/bench-minimal.toml`](../crates/arib-mux/examples/bench-minimal.toml) | the same with every receiver-facing value derived from the media and copy-free |
-| [`examples/relay-ts.toml`](../crates/arib-mux/examples/relay-ts.toml) | rebroadcast one program of a recorded TS (`kind = "ts-program"`) |
-| `arib mux --relay FILE --print-config` | the relay configuration built for a given recording, with the chosen layout in a header comment |
+| `isdb mux --print-config-example` | the annotated example, identical to [`crates/isdbt-mux/examples/bench.toml`](../crates/isdbt-mux/examples/bench.toml): a full-segment HD service with MPEG-2 video and AAC from files, plus a declared one-seg service, with the values live terrestrial broadcasters send |
+| [`examples/bench-minimal.toml`](../crates/isdbt-mux/examples/bench-minimal.toml) | the same with every receiver-facing value derived from the media and copy-free |
+| [`examples/relay-ts.toml`](../crates/isdbt-mux/examples/relay-ts.toml) | rebroadcast one program of a recorded TS (`kind = "ts-program"`) |
+| `isdb mux --relay FILE --print-config` | the relay configuration built for a given recording, with the chosen layout in a header comment |
 
 The two `bench*.toml` examples reference the placeholder media paths
 `media/video.m2v` and `media/audio.m2a`; no media is shipped. Point them at
@@ -114,11 +114,11 @@ copy_control = { recording_control = "copy-free" }
 ```
 
 ```sh
-arib mux -c minimal.toml --seconds 5 --out-ts test.ts --report
-arib ts validate test.ts
+isdb mux -c minimal.toml --seconds 5 --out-ts test.ts --report
+isdb ts validate test.ts
 ```
 
-`arib ts validate` reports one warning for this file (`pid.missing`: PID
+`isdb ts validate` reports one warning for this file (`pid.missing`: PID
 0x0111 is listed in the PMT but carries no packets), which is what a declared
 stream is. See [getting-started.md](getting-started.md) and
 [analysis.md](analysis.md) for what to do with the output.
@@ -131,9 +131,9 @@ Required.
 | Key | Type | Default | Spec | Notes |
 |---|---|---|---|---|
 | `network_id` | u16 | required | B10 §5.2.4; Annex N | Terrestrial TV range 0x7880–0x7FE8 (outside it the multiplexer warns). Also the default `original_network_id`. |
-| `name` | string | required | network_name_descriptor 0x40, §6.2.11 | ARIB 8-unit coded by `arib-text`. |
+| `name` | string | required | network_name_descriptor 0x40, §6.2.11 | ARIB 8-unit coded by `isdb-text`. |
 | `area_code` | u16 (12 bits) | required | terrestrial_delivery_system_descriptor 0xFA, §6.2.31; Annex D Table D-2 | e.g. 0x5A5 Kanto wide area, 0x8D5 Kinki wide area. |
-| `remote_control_key_id` | integer 1..=12 | required | TS_information_descriptor 0xCD, §6.2.42 Table 6-82 | B10 gives no range; arib-mux accepts the 12 one-touch keys. Receivers number the services key·10 + index (key 9 → 091, 092 …). See [receiver-relevant settings](#receiver-relevant-settings). |
+| `remote_control_key_id` | integer 1..=12 | required | TS_information_descriptor 0xCD, §6.2.42 Table 6-82 | B10 gives no range; isdbt-mux accepts the 12 one-touch keys. Receivers number the services key·10 + index (key 9 → 091, 092 …). See [receiver-relevant settings](#receiver-relevant-settings). |
 | `ts_name` | string | `name` | 0xCD ts_name | |
 | `channels` | array of u32 (13..62) | `[]` | 0xFA frequency, §6.2.31 | Japanese UHF channel numbers; each gives one frequency code, the centre 473 + 6·(ch − 13) + 1/7 MHz in units of 1/7 MHz (ch 27 → 3900). **Must equal the channel you transmit on.** |
 | `frequencies` | array of u16 | `[]` | 0xFA frequency | Extra raw frequency codes (1/7 MHz units), appended after `channels`. |
@@ -245,7 +245,7 @@ Media files are looped; the timestamps continue across the seam.
 | `frames_per_pes` | u32 | `1` | — | ADTS frames per PES packet. |
 | `component_type` | `"derived"` or an audio table | `"derived"` | 0xC4, Table 6-43 | See [component_type](#component_type). |
 | `audio_quality_indicator` | `"derived"` \| `"mode-1"` \| `"mode-2"` \| `"mode-3"` | `"derived"` | 0xC4 quality_indicator, Table 6-44; B32 Part 2 Attachment Ch. 3 Table 1 | See [audio_quality_indicator](#audio_quality_indicator). |
-| `adts_compliance` | `"conform"` \| `"warn"` \| `"pass-through"` | `"conform"` | B32 Part 2 §5.2 | See [adts_compliance](#adts_compliance). `arib mux --adts-compliance` overrides it for every stream. |
+| `adts_compliance` | `"conform"` \| `"warn"` \| `"pass-through"` | `"conform"` | B32 Part 2 §5.2 | See [adts_compliance](#adts_compliance). `isdb mux --adts-compliance` overrides it for every stream. |
 
 ### `declared` keys
 
@@ -263,7 +263,7 @@ over: stream_identifier (0x52), video_decode_control (0xC8) and
 data_component (0xFD); CA, copy control, hierarchy and unknown descriptors,
 all program-loop descriptors and the ECM/EMM PIDs are dropped (the start-up
 report lists every drop). Background and rules:
-[arib-mux README](../crates/arib-mux/README.md) and
+[isdbt-mux README](../crates/isdbt-mux/README.md) and
 [transmitting.md](transmitting.md#relaying-a-recording).
 
 | Key | Type | Default | Notes |
@@ -276,7 +276,7 @@ report lists every drop). Background and rules:
 | `include_carousels` | bool | `false` | Also relay section streams (stream_type 0x05 private sections, 0x0B–0x0D DSM-CC data carousels), packet by packet. |
 | `pid_map` | `"auto"` \| `"keep"` \| `[[source, output], …]` | `"auto"` | `auto`: output PID by stream role from `pids`. `keep`: the source PIDs. A list: explicit pairs; every source PID must be a relayed elementary stream of the program; output PIDs 0x0010–0x1FFE; unlisted relayed streams keep their source PID. |
 | `pids` | `{ video, audio, captions, superimpose, data }`, each a PID or a list | `{ video = 0x0111, audio = 0x0112, captions = 0x0130, superimpose = 0x0138, data = 0x0140 }` | Only with `pid_map = "auto"`. Streams of a role, in component_tag order (then PMT order), take the role's PIDs in turn; extra streams take the next free PIDs after the last entry (a second audio stream gets 0x0113). The defaults are what terrestrial broadcasters use: an operational choice, not a spec value. Roles: main audio = lowest component_tag; captions and superimpose (both data_component_id 0x0008) are split by component_tag range, then by the data_component Timing field, then by PES PTS presence. |
-| `at_eof` | `"loop"` \| `"end"` | `"loop"` | `loop`: restart at the first random access point with continuous timestamps. `end`: stop relaying; the multiplex then carries PSI/SI and nulls (`arib tx` ends when every relay has ended). |
+| `at_eof` | `"loop"` \| `"end"` | `"loop"` | `loop`: restart at the first random access point with continuous timestamps. `end`: stop relaying; the multiplex then carries PSI/SI and nulls (`isdb tx` ends when every relay has ended). |
 | `eit_from_source` | bool | `false` | Take the EIT present/following events (name, text, genre, duration) from the source's EIT p/f for the program; the configured `[[service.event]]` entries are used when this is off or the source has none. (`--relay` sets it to `true`.) |
 | `rate_check` | `"error"` \| `"warn"` | `"error"` | When the measured mean rate plus PCR/PSI/SI exceeds the layer capacity: refuse, listing layer layouts that fit, or warn and relay anyway (the stream then falls behind its PCR schedule). `--auto-layout` on the command line picks a layout instead. |
 | `max_early_ms` | u32 | `0` | A packet may be sent up to this long before its PCR-derived time when the stream's T-STD model accepts it (smooths rate peaks into idle slots). 0 = strictly at the recording's pace. |
@@ -424,12 +424,12 @@ Part 2 Attachment Chapter 3 Table 1).
 - `"mode-1"` ('01'), `"mode-2"` ('10'), `"mode-3"` ('11'): fixed. The Table 1
   bit rates are "for reference purposes", so an explicit mode always wins.
 
-`arib ts validate` reports a quality_indicator that contradicts the measured
+`isdb ts validate` reports a quality_indicator that contradicts the measured
 rate (`aac.quality_indicator`).
 
 ### adts_compliance
 
-What `arib mux` does with an `aac-adts` file whose ADTS headers violate the
+What `isdb mux` does with an `aac-adts` file whose ADTS headers violate the
 header restrictions of ARIB STD-B32 Part 2 §5.2 (ID, layer,
 protection_absent '0', profile LC, sampling_frequency_index 0x3–0x8 for
 terrestrial TV, channel_configuration, adts_buffer_fullness ≠ 0x7FF, one
@@ -449,10 +449,10 @@ adts_buffer_fullness itself (MPEG-2 AAC LC, 48 kHz, ≤ 5.1, CBR) to pass
 
 `[network] remote_control_key_id`, an integer 1..=12 (0xCD, B10 §6.2.42).
 B10 leaves the 8-bit key number to the operator ("Specified and operated by
-the company", Part 1 Table 7-1); arib-mux restricts it to the 12 one-touch
+the company", Part 1 Table 7-1); isdbt-mux restricts it to the 12 one-touch
 keys of terrestrial receivers. For an out-of-range experiment, patch the NIT
 bytes (`[nit] byte_patches`). Background:
-[arib-mux SPEC-NOTES](../crates/arib-mux/SPEC-NOTES.md#remote-control-key-0xcd-remote_control_key_id).
+[isdbt-mux SPEC-NOTES](../crates/isdbt-mux/SPEC-NOTES.md#remote-control-key-0xcd-remote_control_key_id).
 
 ## Table options
 
@@ -471,7 +471,7 @@ experiments: `[pat]`, `[cat]`, `[nit]`, `[sdt]`, `[eit]` (present/following),
 | `add_descriptors` | array of `{ loop = "…", tag = u8, hex = "…", first = bool }` | `[]` | Raw descriptors added to a generated loop (appended, or inserted at the front with `first = true`). Loop selectors below. |
 | `header` | table | `{}` | Header-field overrides applied to every generated section (CRC_32 recomputed): `table_id`, `section_syntax_indicator`, `private_indicator` (the bit after section_syntax_indicator), `reserved1` (2 bits before section_length), `table_id_extension`, `reserved2` (2 bits before version_number), `version_number` (fixes the version: no automatic increments), `current_next_indicator`, `section_number`, `last_section_number`. Short-form tables (TDT, TOT) use only the first four. |
 | `byte_patches` | array of `{ section = usize, offset = usize, hex = "…", fix_crc = bool }` | `[]` | Overwrite bytes of the encoded section at `offset` (from the table_id byte); `section` = index in the table's generated list (all sections if absent); `fix_crc` (default `true`) recomputes CRC_32. Not checked: this is how to send values the typed options refuse. |
-| `replace_sections` | array of hex strings | `[]` | Send these complete sections, byte-identical, instead of the generated ones (e.g. a section transplanted from a capture with `arib ts extract`). |
+| `replace_sections` | array of hex strings | `[]` | Send these complete sections, byte-identical, instead of the generated ones (e.g. a section transplanted from a capture with `isdb ts extract`). |
 | `extra_sections` | array of hex strings | `[]` | Send these complete sections after the generated ones. |
 
 Defaults per table:
@@ -493,7 +493,7 @@ The **control layer** is the partial-reception layer (A) when partial
 reception is on, otherwise the most robust active layer (B31 Part 2 §3.2.1
 Table 3-1; robustness rank of Table 3-2). The B31 Part 2 rule covers
 PAT/NIT/CAT; putting SDT/EIT/TOT/TDT/BIT on the same layer is an operational
-choice (choice 2 in the [arib-mux operational choices](../crates/arib-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers)).
+choice (choice 2 in the [isdbt-mux operational choices](../crates/isdbt-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers)).
 The ARIB per-layer EIT PIDs (0x0012 H-EIT, 0x0026/0x0027 M-/L-EIT) are not
 applied by default; set `[eit] pid` / `layer` to use them.
 
@@ -530,7 +530,7 @@ header = { version_number = 2 }
 
 An additional stream of sections the multiplexer does not generate (for
 example a table this project does not type, transplanted from a capture with
-`arib ts extract`), each on its own PID and layer.
+`isdb ts extract`), each on its own PID and layer.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
@@ -539,7 +539,7 @@ example a table this project does not type, transplanted from a capture with
 | `interval_ms` | u32 | required | All sections are sent, in order, every interval. |
 | `sections` | array of hex strings | required | Each must be one complete section. |
 
-The sections are sent as given; `arib ts validate` will still report a
+The sections are sent as given; `isdb ts validate` will still report a
 table_id on a PID that B10 Table 5-1 does not allow.
 
 ## Load-time checks
@@ -600,7 +600,7 @@ message naming the table, service and stream, when:
 These are not spec requirements but matter on real receivers (details and
 evidence: [transmitting.md](transmitting.md#receiver-compatibility-notes)
 and the
-[arib-mux SPEC-NOTES](../crates/arib-mux/SPEC-NOTES.md#digital-copy-control-descriptor-0xc1-and-its-user_defined-bits)):
+[isdbt-mux SPEC-NOTES](../crates/isdbt-mux/SPEC-NOTES.md#digital-copy-control-descriptor-0xc1-and-its-user_defined-bits)):
 
 - **`[network] channels` must equal the channel you transmit on.** After a
   scan, receivers tune by the NIT frequency; a mismatch registers the service
@@ -608,7 +608,7 @@ and the
 - **Keep `copy_control_type = "serial-output-encoded"` ('01'),** the
   default. A Sony BDZ-series recorder refuses to play a service whose 0xC1
   user_defined carries copy_control_type '00' ("Unsupported signal");
-  `arib ts validate` warns (`si.copy_control`) on '00'.
+  `isdb ts validate` warns (`si.copy_control`) on '00'.
 - **Choose a `remote_control_key_id` that no local station uses.** A key
   that collides with a station already registered on the receiver can make
   its scan merge or ignore the service.
@@ -616,4 +616,4 @@ and the
 See also: [getting-started.md](getting-started.md),
 [analysis.md](analysis.md), [glossary.md](glossary.md),
 [SPECS.md](../SPECS.md), and the
-[arib-mux README](../crates/arib-mux/README.md).
+[isdbt-mux README](../crates/isdbt-mux/README.md).

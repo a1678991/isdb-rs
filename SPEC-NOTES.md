@@ -12,15 +12,15 @@ every entry with its status.
 
 | Crate | Notes | Topics |
 |---|---|---|
-| `arib-ts` | [crates/arib-ts/SPEC-NOTES.md](crates/arib-ts/SPEC-NOTES.md) | H.222.0 2006 table numbering, PES extension/stuffing, adaptation field edge cases, CC and duplicates, section assembly, PMT CRC "Annex B", reserved bits, PCR range, 192/204-byte framings |
-| `arib-text` | [crates/arib-text/SPEC-NOTES.md](crates/arib-text/SPEC-NOTES.md) | SI initial state (G3 = Katakana), character widths, Kanji / additional-symbol Unicode mapping, DRCS/macro, control codes |
-| `arib-si` | [crates/arib-si/SPEC-NOTES.md](crates/arib-si/SPEC-NOTES.md) | Annex C time formulas, section length limits, descriptor syntax vs semantics conflicts, descriptors defined outside B10, Table 6-1 mandatory descriptors |
-| `arib-analyze` | [crates/arib-analyze/SPEC-NOTES.md](crates/arib-analyze/SPEC-NOTES.md) | severity classification, Table 5-2 transmission level vs frequency, PCR interval/accuracy, repetition time base, table_id per PID, EIT rules, cross-table identities, PES timing |
-| `arib-mux` | [crates/arib-mux/SPEC-NOTES.md](crates/arib-mux/SPEC-NOTES.md) | timing model, PCR placement, repetition intervals, section packing, NIT/SDT/EIT/BIT/TOT/CAT content, media packetisation, AAC ADTS header rules (the raw_data_block is not parsed), recorded-program relay (`ts-program`) and its copy control, T-STD pacing, **receiver compatibility notes**; list of **operational choices** (not dictated by the local specs, ARIB TR-B14 unavailable) to be tested on receivers |
+| `isdb-ts` | [crates/isdb-ts/SPEC-NOTES.md](crates/isdb-ts/SPEC-NOTES.md) | H.222.0 2006 table numbering, PES extension/stuffing, adaptation field edge cases, CC and duplicates, section assembly, PMT CRC "Annex B", reserved bits, PCR range, 192/204-byte framings |
+| `isdb-text` | [crates/isdb-text/SPEC-NOTES.md](crates/isdb-text/SPEC-NOTES.md) | SI initial state (G3 = Katakana), character widths, Kanji / additional-symbol Unicode mapping, DRCS/macro, control codes |
+| `isdb-si` | [crates/isdb-si/SPEC-NOTES.md](crates/isdb-si/SPEC-NOTES.md) | Annex C time formulas, section length limits, descriptor syntax vs semantics conflicts, descriptors defined outside B10, Table 6-1 mandatory descriptors |
+| `isdb-analyze` | [crates/isdb-analyze/SPEC-NOTES.md](crates/isdb-analyze/SPEC-NOTES.md) | severity classification, Table 5-2 transmission level vs frequency, PCR interval/accuracy, repetition time base, table_id per PID, EIT rules, cross-table identities, PES timing |
+| `isdbt-mux` | [crates/isdbt-mux/SPEC-NOTES.md](crates/isdbt-mux/SPEC-NOTES.md) | timing model, PCR placement, repetition intervals, section packing, NIT/SDT/EIT/BIT/TOT/CAT content, media packetisation, AAC ADTS header rules (the raw_data_block is not parsed), recorded-program relay (`ts-program`) and its copy control, T-STD pacing, **receiver compatibility notes**; list of **operational choices** (not dictated by the local specs, ARIB TR-B14 unavailable) to be tested on receivers |
 | `isdbt-fec` | [crates/isdbt-fec/SPEC-NOTES.md](crates/isdbt-fec/SPEC-NOTES.md) | remux model receiver, PRBS bit order and frame alignment, delay adjustment, byte-interleave alignment, convolutional taps / puncturing reset, one-frame latency contract |
 | `isdbt-ofdm` | [crates/isdbt-ofdm/SPEC-NOTES.md](crates/isdbt-ofdm/SPEC-NOTES.md) | mapping bit order and delays, DQPSK reference, time/frequency interleave indexing and carrier rotation, pilots, TMCC/AC, difference-set code bit order, frame alignment (`latency`), gr-isdbt deviations |
 
-`isdbt-core`, `isdbt-phy`, `hackrf` and `arib-cli` have no notes of their
+`isdbt-core`, `isdbt-phy`, `isdb-hackrf` and `isdb-cli` have no notes of their
 own: they take parameters from the spec tables or wire the crates above
 together.
 

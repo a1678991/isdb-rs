@@ -16,7 +16,7 @@ checks something the rung below cannot:
    tested as an identity (interleavers, mappers, codes), and the whole PHY
    runs TX → channel impairments (AWGN, CFO, sample offset, echo) → RX with
    a byte-exact comparison (`isdbt-ofdm`/`isdbt-phy` loopback tests,
-   `arib loopback`).
+   `isdb loopback`).
 4. **Independent oracle.** gr-isdbt (GNU Radio) is run as a separate program
    and cross-decodes with the Rust chain in both directions
    ([below](#phy-differential-test-against-gr-isdbt)). It detects
@@ -35,7 +35,7 @@ cargo test --workspace --doc            # doctests, including every crate README
 # heavy tests, ignored by default
 cargo test --release -p isdbt-ofdm --test loopback -- --ignored --nocapture
 cargo test --release -p isdbt-fec viterbi_throughput -- --ignored --nocapture
-cargo test --release -p arib-cli --test cli -- --ignored mux_ts_producer_throughput --nocapture
+cargo test --release -p isdb-cli --test cli -- --ignored mux_ts_producer_throughput --nocapture
 ```
 
 Tests that read real data (a terrestrial capture, a recording, media files)
@@ -295,17 +295,17 @@ python3 oracle/run_matrix.py            # or: python3 oracle/run_matrix.py m3g4p
 
 ## Real receivers
 
-The Rust transmitter (`arib tx --mux-config`, spec-conformant TMCC and
-modulated AC, multiplex from `arib-mux`) was received over a conducted link
+The Rust transmitter (`isdb tx --mux-config`, spec-conformant TMCC and
+modulated AC, multiplex from `isdbt-mux`) was received over a conducted link
 (HackRF One → coax → attenuators → receiver):
 
-- **MyGica S270** (USB ISDB-T tuner): decoded with PER 0; `arib ts validate`
+- **MyGica S270** (USB ISDB-T tuner): decoded with PER 0; `isdb ts validate`
   of its 12 s capture reported 0 errors (5 warnings).
 - **A Sony BDZ-series recorder**: a channel scan registered the service and
   the recorder played it, once the digital copy control descriptor (0xC1)
   carried copy_control_type '01' in its user_defined bits. With '00' the
-  recorder refuses playback. `arib-mux` therefore defaults to '01' and
-  `arib ts validate` warns (`si.copy_control`) on '00'.
+  recorder refuses playback. `isdbt-mux` therefore defaults to '01' and
+  `isdb ts validate` warns (`si.copy_control`) on '00'.
 
 Only one configuration was shown to these receivers: Mode 3, GI 1/8, partial
 reception, layer A 1 segment QPSK 2/3 TI 2, layer B 12 segments 64QAM 3/4
@@ -313,8 +313,8 @@ TI 2. This also shows that these receivers accept the spec-conformant TMCC
 bits where gr-isdbt deviates (D1, D3). The receiver-specific findings and how
 to reproduce the setup are in
 [docs/transmitting.md](docs/transmitting.md#receiver-compatibility-notes)
-and in the `arib-mux`
-[receiver compatibility notes](crates/arib-mux/SPEC-NOTES.md#receiver-compatibility-notes).
+and in the `isdbt-mux`
+[receiver compatibility notes](crates/isdbt-mux/SPEC-NOTES.md#receiver-compatibility-notes).
 
 ## Open questions
 
