@@ -1,0 +1,52 @@
+# cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/).
+# Run with `make deny` (CI) or `make deny-offline` (pre-commit, no
+# advisory-database fetch).
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec vulnerabilities are always errors. Unmaintained / unsound
+# notices fail for direct dependencies; transitive ones only show up in
+# the report until a direct dependency can do something about them.
+unmaintained = "workspace"
+unsound = "workspace"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# The workspace is Apache-2.0; only permissive licences compatible with
+# distributing it under Apache-2.0 are accepted (no copyleft, no
+# "non-commercial" or unknown terms). The list holds only licences the
+# current graph needs; add one only after checking it (ISC, BSD-2-Clause and
+# Apache-2.0 WITH LLVM-exception are acceptable candidates).
+allow = [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+exceptions = []
+
+[licenses.private]
+# Workspace crates are checked like any dependency.
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+# Path dependencies between workspace crates carry no version yet (needed
+# before publishing; see CONTRIBUTING.md), so wildcards are not banned.
+wildcards = "allow"
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# crates.io only: no other registries, no git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
