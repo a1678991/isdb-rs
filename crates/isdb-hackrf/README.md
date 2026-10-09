@@ -6,6 +6,12 @@ and exchange interleaved signed 8-bit I/Q buffers over bounded channels.
 It knows nothing about ISDB-T; `isdb-cli` uses it to put the baseband from
 `isdbt-phy` on air and to receive it.
 
+> **Transmitting needs a licence.** This crate has no RF gate:
+> `Device::start_tx` radiates whatever is queued. Radiating on broadcast
+> (UHF TV) frequencies requires a licence (in Japan under the Radio Act,
+> elsewhere under local law); use a conducted or shielded setup. The
+> `--rf-enable` / `--dry-run` gate lives in `isdb-cli`.
+
 ## Spec scope
 
 No broadcast specification. The surface is the libhackrf C API
@@ -24,9 +30,24 @@ No broadcast specification. The surface is the libhackrf C API
   rational rate, e.g. 512 MHz / 63 for ISDB-T.
 - **Linking:** `build.rs` emits `cargo:rustc-link-lib=dylib=hackrf`, so
   building this crate (and anything depending on it, e.g. `isdb-cli`)
-  needs the system library: Arch `hackrf`, Debian/Ubuntu `libhackrf-dev`.
-  The manifest declares `links = "hackrf"`, so Cargo allows only one crate
-  linking libhackrf in a dependency graph.
+  needs the system library: Arch `hackrf`, Debian/Ubuntu `libhackrf-dev`,
+  Homebrew `hackrf` (for a library outside the linker's default search
+  path, add `RUSTFLAGS="-L <dir>"`). On docs.rs (`DOCS_RS` set) nothing is
+  linked. The manifest declares `links = "hackrf"`, so Cargo allows only
+  one crate linking libhackrf in a dependency graph. `isdb-cli` can be
+  built without this crate (`--no-default-features`).
+- **Minimum libhackrf: 2022.09.1.** From that release on `hackrf_stop_tx`
+  / `hackrf_stop_rx` wait until every in-flight USB transfer has completed
+  or been cancelled (`cancel_transfers` waits on `active_transfers` in the
+  libhackrf source; hackrf.h does not say so), which is what makes freeing
+  the callback context after a successful stop sound. `Device::open`
+  refuses an older release reported by `hackrf_library_release()`
+  (unparsable strings such as git builds are accepted).
+- **Attribution:** the declarations in `src/ffi.rs` follow libhackrf's
+  `hackrf.h` (BSD-3-Clause, © Great Scott Gadgets, Jared Boone, Benjamin
+  Vernoux). Linking the system library dynamically puts no extra
+  obligation on this crate; a binary distribution that bundles libhackrf
+  must carry its BSD notice.
 
 ## Position in the stack
 
@@ -43,7 +64,7 @@ No broadcast specification. The surface is the libhackrf C API
 | `Device::start_rx(depth) -> RxStream` | `receiver: Receiver<Vec<i8>>` + `counters` |
 | `Device::stop` | stop any stream and free its callback context |
 | `Counters` | atomics: `buffers`, `underruns` (TX), `overruns` (RX), `finished` |
-| `library_version()`, `Device::board_id`, `firmware_version`, `is_streaming` | information |
+| `library_version()`, `library_release()`, `MIN_LIBRARY_RELEASE`, `Device::board_id`, `firmware_version`, `is_streaming` | information |
 | `Error` | failing call, libhackrf code and name |
 
 Transmit a buffer of I/Q at 512/63 MHz (needs a device, so not run in
@@ -81,13 +102,21 @@ and streaming state of the attached HackRF without any RF activity:
   `try_send`s it; a full queue drops the buffer and counts an overrun; a
   dropped receiver sets `finished` and stops the stream.
 - **Ownership and Drop safety.** The callback context is a boxed value
-  passed to libhackrf and freed only after `hackrf_stop_tx/rx`. Dropping a
-  `Device` stops any stream, disables the RF amplifier and closes the
-  device, so a panic or early return never leaves the radio transmitting.
-  `Device` is `Send` but not `Sync`.
+  passed to libhackrf and freed only after a successful
+  `hackrf_stop_tx/rx`. When the stop (or a `hackrf_start_*`) fails,
+  transfers may still be in flight, so the context — and with it the
+  stream's channel end — is kept by the `Device` and freed only after
+  `hackrf_close`, which joins libhackrf's transfer thread. Dropping a
+  `Device` stops any stream, disables the RF amplifier, closes the device
+  and then frees such kept contexts, so an early return or an unwinding
+  panic never leaves the radio transmitting. `Drop` does not run when the
+  process aborts (`panic = "abort"`, or a panic inside the `extern "C"`
+  callbacks, which aborts since Rust 1.81); the device is then released by
+  the OS. `Device` is `Send` but not `Sync`.
 - **unsafe.** This is the only crate that allows `unsafe_code`, all of it
-  FFI calls and the callback-context pointers. It does not inherit the
-  workspace lint table (only `missing_docs = "warn"`).
+  FFI calls and the callback-context pointers. It uses the workspace lint
+  table (`[lints] workspace = true`) and lifts `unsafe_code` with
+  `#![allow(unsafe_code)]` in `src/lib.rs`.
 
 ## Verification
 
@@ -103,6 +132,8 @@ link time.
 
 - Only the calls listed above are wrapped (no sweep mode, clock-source or
   CLKOUT control, firmware/CPLD operations, transceiver-mode queries).
+- RX copies each USB transfer into a new `Vec<i8>` on the USB thread (no
+  buffer pool).
 - `depth` counts queued `Vec<i8>` buffers, not samples: on TX they are the
   caller's buffers (any length), on RX one per USB transfer, so queue
   latency depends on buffer sizes.

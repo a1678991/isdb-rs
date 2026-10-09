@@ -3,8 +3,31 @@
 //! Samples are interleaved signed 8-bit I/Q (the HackRF wire format).
 //! Streaming uses bounded channels: TX pulls buffers and transmits zeros on
 //! underrun (counted); RX pushes buffers and drops on overrun (counted).
-//! Dropping a [`Device`] stops any stream and closes the device, so a
-//! panic or early return never leaves the radio transmitting.
+//! Dropping a [`Device`] stops any stream, switches the RF amplifier off
+//! and closes the device, so an early return or an unwinding panic never
+//! leaves the radio transmitting. `Drop` does not run when the process
+//! aborts (`panic = "abort"`, or a panic inside the `extern "C"` USB
+//! callbacks, which aborts since Rust 1.81); libhackrf and the firmware
+//! then stop when the USB handle is released by the OS, not by this crate.
+//!
+//! # Transmitting
+//!
+//! This crate has no RF gate of its own: [`Device::start_tx`] radiates
+//! whatever the caller queues. Transmitting on broadcast frequencies needs
+//! a licence (in Japan under the Radio Act); use a conducted or shielded
+//! setup. `isdb-cli` adds the `--rf-enable` / `--dry-run` gate.
+//!
+//! # libhackrf version
+//!
+//! Requires libhackrf **2022.09.1 or later**: from that release on,
+//! `hackrf_stop_tx` / `hackrf_stop_rx` wait until every in-flight USB
+//! transfer has completed or been cancelled (`cancel_transfers` waits on
+//! `active_transfers`), so the callback context can be freed after a
+//! successful stop. hackrf.h does not document this; it is read from the
+//! libhackrf source. [`Device::open`] refuses an older release reported by
+//! `hackrf_library_release` (a release string it cannot parse, e.g. a git
+//! build, is accepted). If a stop fails, the context is kept until
+//! `hackrf_close` has joined the transfer thread.
 //!
 //! Entry points: [`Device::open`], the radio settings on [`Device`],
 //! [`Device::start_tx`] → [`TxStream`], [`Device::start_rx`] →
@@ -94,6 +117,42 @@ pub fn library_version() -> String {
         .into_owned()
 }
 
+/// libhackrf release string (e.g. `2026.01.3`; `unknown` or a git
+/// description for builds outside a release).
+pub fn library_release() -> String {
+    // SAFETY: returns a static string (may be called before hackrf_init).
+    unsafe { CStr::from_ptr(ffi::hackrf_library_release()) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Oldest libhackrf release this crate supports (year, month): the first
+/// whose `hackrf_stop_tx` / `hackrf_stop_rx` wait for in-flight transfers.
+pub const MIN_LIBRARY_RELEASE: (u32, u32) = (2022, 9);
+
+/// `YYYY.MM[.N]` → (year, month); anything else → `None`.
+fn parse_release(s: &str) -> Option<(u32, u32)> {
+    let mut it = s.trim().split('.');
+    let y: u32 = it.next()?.parse().ok()?;
+    let m: u32 = it.next()?.parse().ok()?;
+    ((1900..10000).contains(&y) && (1..=12).contains(&m)).then_some((y, m))
+}
+
+/// Refuse a libhackrf release older than [`MIN_LIBRARY_RELEASE`].
+fn check_release(release: &str) -> Result<()> {
+    match parse_release(release) {
+        Some(v) if v < MIN_LIBRARY_RELEASE => Err(Error {
+            call: "hackrf_library_release",
+            code: ffi::HACKRF_ERROR_OTHER,
+            name: format!(
+                "libhackrf {release} is older than {}.{:02}.1: its hackrf_stop_tx/rx do not wait for in-flight transfers",
+                MIN_LIBRARY_RELEASE.0, MIN_LIBRARY_RELEASE.1
+            ),
+        }),
+        _ => Ok(()),
+    }
+}
+
 /// Streaming counters shared with the USB callback thread.
 #[derive(Debug, Default)]
 pub struct Counters {
@@ -124,8 +183,9 @@ unsafe extern "C" fn tx_cb(t: *mut ffi::hackrf_transfer) -> c_int {
     // registered and which outlives streaming (freed only after stop).
     let t = unsafe { &mut *t };
     let ctx = unsafe { &mut *(t.tx_ctx as *mut TxCtx) };
-    let out =
-        unsafe { std::slice::from_raw_parts_mut(t.buffer as *mut i8, t.buffer_length as usize) };
+    let len = usize::try_from(t.buffer_length).unwrap_or(0);
+    // SAFETY: `buffer` holds `buffer_length` writable bytes.
+    let out = unsafe { std::slice::from_raw_parts_mut(t.buffer as *mut i8, len) };
     let mut filled = 0;
     let mut starved = false;
     while filled < out.len() {
@@ -163,11 +223,15 @@ unsafe extern "C" fn tx_cb(t: *mut ffi::hackrf_transfer) -> c_int {
 }
 
 unsafe extern "C" fn rx_cb(t: *mut ffi::hackrf_transfer) -> c_int {
-    // SAFETY: as in tx_cb, rx_ctx is our live RxCtx.
-    let t = unsafe { &mut *t };
+    // SAFETY: as in tx_cb, rx_ctx is our live RxCtx. The RX transfer is
+    // read-only for the callback.
+    let t = unsafe { &*t };
     let ctx = unsafe { &*(t.rx_ctx as *const RxCtx) };
-    let data =
-        unsafe { std::slice::from_raw_parts(t.buffer as *const i8, t.valid_length as usize) };
+    let len = usize::try_from(t.valid_length)
+        .unwrap_or(0)
+        .min(usize::try_from(t.buffer_length).unwrap_or(0));
+    // SAFETY: `buffer` holds `valid_length` (≤ `buffer_length`) received bytes.
+    let data = unsafe { std::slice::from_raw_parts(t.buffer as *const i8, len) };
     ctx.counters.buffers.fetch_add(1, Ordering::Relaxed);
     match ctx.tx.try_send(data.to_vec()) {
         Ok(()) => 0,
@@ -188,10 +252,47 @@ enum Stream {
     Rx(*mut RxCtx),
 }
 
+impl Stream {
+    /// Free the context.
+    ///
+    /// # Safety
+    ///
+    /// libhackrf must no longer call the callback with it: after a
+    /// successful `hackrf_stop_*` (libhackrf ≥ [`MIN_LIBRARY_RELEASE`]),
+    /// a `hackrf_start_*` that never started, or `hackrf_close`.
+    unsafe fn free(self) {
+        match self {
+            Stream::None => {}
+            Stream::Tx(c) => drop(unsafe { Box::from_raw(c) }),
+            Stream::Rx(c) => drop(unsafe { Box::from_raw(c) }),
+        }
+    }
+}
+
 /// An open HackRF.
 pub struct Device {
     dev: *mut ffi::hackrf_device,
     stream: Stream,
+    /// Contexts of streams whose stop (or start) failed: transfers may
+    /// still be in flight, so they are freed only after `hackrf_close`
+    /// has joined libhackrf's transfer thread.
+    retired: Vec<Stream>,
+}
+
+impl std::fmt::Debug for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Device")
+            .field(
+                "stream",
+                &match self.stream {
+                    Stream::None => "none",
+                    Stream::Tx(_) => "tx",
+                    Stream::Rx(_) => "rx",
+                },
+            )
+            .field("retired_contexts", &self.retired.len())
+            .finish_non_exhaustive()
+    }
 }
 
 // SAFETY: libhackrf device handles may be used from any single thread at a
@@ -214,18 +315,45 @@ pub struct RxStream {
     pub counters: Arc<Counters>,
 }
 
+impl std::fmt::Debug for TxStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TxStream")
+            .field("counters", &self.counters)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for RxStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RxStream")
+            .field("counters", &self.counters)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Device {
     /// Open the first HackRF, or the one with `serial`.
+    ///
+    /// Fails (without opening anything) when libhackrf is older than
+    /// [`MIN_LIBRARY_RELEASE`] or `serial` contains a NUL byte.
     pub fn open(serial: Option<&str>) -> Result<Self> {
+        check_release(&library_release())?;
+        let serial = serial
+            .map(|s| {
+                CString::new(s).map_err(|_| Error {
+                    call: "hackrf_open_by_serial",
+                    code: ffi::HACKRF_ERROR_INVALID_PARAM,
+                    name: "serial number contains a NUL byte".into(),
+                })
+            })
+            .transpose()?;
         lib_acquire()?;
         let mut dev = std::ptr::null_mut();
-        let rc = match serial {
+        let rc = match &serial {
+            // SAFETY: valid out pointer.
             None => unsafe { ffi::hackrf_open(&mut dev) },
-            Some(s) => {
-                let s = CString::new(s).expect("serial without NUL");
-                // SAFETY: valid C string and out pointer.
-                unsafe { ffi::hackrf_open_by_serial(s.as_ptr(), &mut dev) }
-            }
+            // SAFETY: valid C string and out pointer.
+            Some(s) => unsafe { ffi::hackrf_open_by_serial(s.as_ptr(), &mut dev) },
         };
         if let Err(e) = check("hackrf_open", rc) {
             lib_release();
@@ -234,6 +362,7 @@ impl Device {
         Ok(Self {
             dev,
             stream: Stream::None,
+            retired: Vec::new(),
         })
     }
 
@@ -337,7 +466,9 @@ impl Device {
         if let Err(e) = check("hackrf_start_tx", unsafe {
             ffi::hackrf_start_tx(self.dev, tx_cb, ctx as *mut c_void)
         }) {
-            drop(unsafe { Box::from_raw(ctx) });
+            // libhackrf may have submitted transfers before failing: keep
+            // the context until close.
+            self.retired.push(Stream::Tx(ctx));
             return Err(e);
         }
         self.stream = Stream::Tx(ctx);
@@ -356,41 +487,78 @@ impl Device {
         if let Err(e) = check("hackrf_start_rx", unsafe {
             ffi::hackrf_start_rx(self.dev, rx_cb, ctx as *mut c_void)
         }) {
-            drop(unsafe { Box::from_raw(ctx) });
+            // as in start_tx
+            self.retired.push(Stream::Rx(ctx));
             return Err(e);
         }
         self.stream = Stream::Rx(ctx);
         Ok(RxStream { receiver, counters })
     }
 
-    /// Stop any active stream and free its context.
+    /// Stop any active stream and free its callback context.
+    ///
+    /// On success the context is freed at once (libhackrf ≥
+    /// [`MIN_LIBRARY_RELEASE`] has waited for every in-flight transfer).
+    /// If `hackrf_stop_tx` / `hackrf_stop_rx` fails, transfers may still
+    /// complete and call back, so the context (and with it the stream's
+    /// channel end) is kept until the device is closed.
     pub fn stop(&mut self) -> Result<()> {
-        match std::mem::replace(&mut self.stream, Stream::None) {
-            Stream::None => Ok(()),
-            Stream::Tx(ctx) => {
-                let rc = unsafe { ffi::hackrf_stop_tx(self.dev) };
-                // SAFETY: streaming stopped; the callback no longer runs.
-                drop(unsafe { Box::from_raw(ctx) });
-                check("hackrf_stop_tx", rc)
-            }
-            Stream::Rx(ctx) => {
-                let rc = unsafe { ffi::hackrf_stop_rx(self.dev) };
-                drop(unsafe { Box::from_raw(ctx) });
-                check("hackrf_stop_rx", rc)
-            }
+        let stream = std::mem::replace(&mut self.stream, Stream::None);
+        let (call, rc) = match stream {
+            Stream::None => return Ok(()),
+            // SAFETY: valid device handle.
+            Stream::Tx(_) => ("hackrf_stop_tx", unsafe { ffi::hackrf_stop_tx(self.dev) }),
+            // SAFETY: valid device handle.
+            Stream::Rx(_) => ("hackrf_stop_rx", unsafe { ffi::hackrf_stop_rx(self.dev) }),
+        };
+        let r = check(call, rc);
+        if r.is_ok() {
+            // SAFETY: the stop succeeded and waited for in-flight
+            // transfers; the callback no longer runs.
+            unsafe { stream.free() };
+        } else {
+            self.retired.push(stream);
         }
+        r
     }
 }
 
 impl Drop for Device {
+    /// Stop the stream, switch the RF amplifier off, close the device
+    /// (which joins libhackrf's transfer thread), then free any context
+    /// a failed stop kept, then release the library.
     fn drop(&mut self) {
         let _ = self.stop();
-        // Leave the PA off on close regardless of what the caller did.
+        // SAFETY: valid device handle; closed exactly once, after which
+        // no transfer or callback is left (kill_transfer_thread joins).
         unsafe {
+            // Leave the PA off on close regardless of what the caller did.
             ffi::hackrf_set_amp_enable(self.dev, 0);
             ffi::hackrf_close(self.dev);
         }
+        for s in self.retired.drain(..) {
+            // SAFETY: the device is closed; libhackrf holds no reference.
+            unsafe { s.free() };
+        }
         lib_release();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_strings() {
+        assert_eq!(parse_release("2026.01.3"), Some((2026, 1)));
+        assert_eq!(parse_release("2022.09.1"), Some((2022, 9)));
+        assert_eq!(parse_release("unknown"), None);
+        assert_eq!(parse_release("git-1234abcd"), None);
+        assert!(check_release("2022.09.1").is_ok());
+        assert!(check_release("2026.01.3").is_ok());
+        assert!(check_release("unknown").is_ok());
+        let e = check_release("2021.03.1").unwrap_err();
+        assert!(e.name.contains("older than 2022.09.1"), "{e}");
     }
 }
 

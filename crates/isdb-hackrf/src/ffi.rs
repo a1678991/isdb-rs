@@ -1,4 +1,10 @@
 //! Raw declarations from `libhackrf/hackrf.h` (only what this crate uses).
+//!
+//! Declarations follow libhackrf's hackrf.h (BSD-3-Clause, © Great Scott Gadgets, Jared Boone, Benjamin Vernoux)
+//!
+//! Only the function signatures, the `hackrf_transfer` layout and error
+//! codes are re-typed here; no libhackrf code is included.
+// C names and fields mirror hackrf.h exactly; they are documented there.
 #![allow(non_camel_case_types, missing_docs)]
 
 use std::os::raw::{c_char, c_int, c_void};
@@ -22,11 +28,14 @@ pub type hackrf_sample_block_cb_fn = unsafe extern "C" fn(transfer: *mut hackrf_
 
 pub const HACKRF_SUCCESS: c_int = 0;
 pub const HACKRF_TRUE: c_int = 1;
+pub const HACKRF_ERROR_INVALID_PARAM: c_int = -2;
+pub const HACKRF_ERROR_OTHER: c_int = -9999;
 
 unsafe extern "C" {
     pub fn hackrf_init() -> c_int;
     pub fn hackrf_exit() -> c_int;
     pub fn hackrf_library_version() -> *const c_char;
+    pub fn hackrf_library_release() -> *const c_char;
     pub fn hackrf_open(device: *mut *mut hackrf_device) -> c_int;
     pub fn hackrf_open_by_serial(serial: *const c_char, device: *mut *mut hackrf_device) -> c_int;
     pub fn hackrf_close(device: *mut hackrf_device) -> c_int;
