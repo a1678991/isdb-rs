@@ -112,16 +112,16 @@ assert_eq!(back.encode().unwrap(), bytes); // encode(decode(x)) == x
 | Test | What it proves | Data |
 |---|---|---|
 | `tests/prop.rs` | `prop_*`: packet, PES, PAT/CAT/PMT `decode(encode(x)) == x` for generated structures; arbitrary packet / PES / PSI body bytes re-encode byte-identically; sections packetised (packed or one-per-packet, any start CC) reassemble to the same sections; PES packetised (with/without PCR) reassembles | synthetic (proptest; regressions in `prop.proptest-regressions`) |
-| `tests/capture.rs` | opt-in, over a live ISDB-T capture whose packets are not scrambled: every packet decodes and re-encodes byte-identically; no sync loss or skipped bytes; every long section on PIDs 0x0000, 0x0001, 0x0010–0x0014, 0x0024 and the PMT PIDs has CRC_32 residue 0; PAT/CAT/PMT and every PES on the PMT's elementary PIDs round-trip byte-identically; spec violations are printed, not asserted | the file named by the environment variable `ISDB_RS_CAPTURE_TS` (no capture is committed); prints `SKIP` and passes when the variable is unset or the file is missing |
+| `tests/capture.rs` | opt-in, over an ISDB-T capture: every packet decodes and re-encodes byte-identically; no sync loss or skipped bytes; every long section on PIDs 0x0000, 0x0001, 0x0010–0x0014, 0x0024 and the PMT PIDs has CRC_32 residue 0; PAT/CAT/PMT round-trip byte-identically (these checks treat payloads as opaque); every PES on the PMT's elementary PIDs that are unscrambled (transport_scrambling_control '00', e.g. a one-seg service, which is sent in the clear) round-trips byte-identically, scrambled PIDs are skipped; spec violations are printed, not asserted | the file named by the environment variable `ISDB_RS_CAPTURE_TS` (no capture is committed); prints `SKIP` and passes when the variable is unset or the file is missing |
 | in-crate `#[cfg(test)]` (`crc`, `cc`, `demux`, `packet`, `pes`, `pcr`, `psi`, `reader`, `section`, `packetize`, `bits`, `descriptor`, `stats`) | spec vectors named after the table/clause (`spec_table2_2_header_layout`, `spec_table2_30_pat_layout`, `spec_2_4_3_3_*` continuity rules incl. duplicates and the PCR exception, `spec_table2_21_*` PES fields); CRC check value, zero residue and table vs bitwise; section header split across packets, TEI / pointer_field discards; reader format autodetection behind garbage, resync after corruption; packetiser layouts at boundary lengths; PCR/90 kHz wrap helpers | synthetic |
 
 Run: `cargo test -p isdb-ts`; the real-data test with
 `ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test -p isdb-ts --test capture -- --nocapture`
 (prints its statistics and violations; obtaining a capture:
-[docs/test-data.md](../../docs/test-data.md)). During development, on a
+[docs/test-data.md](https://github.com/a1678991/isdb-rs/blob/main/docs/test-data.md)). During development, on a
 live terrestrial capture of 120 091 packets, it found no sync loss, 825
-sections with valid CRC_32 and byte-identical PAT/CAT/PMT and PES round
-trips.
+sections with valid CRC_32 and byte-identical PAT/CAT/PMT round trips
+(development observation, not reproducible from the repository).
 
 ## Known limitations
 
@@ -140,7 +140,7 @@ trips.
 
 ## See also
 
-- [SPEC-NOTES.md](SPEC-NOTES.md) — interpretations with quoted spec text and
+- [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/crates/isdb-ts/SPEC-NOTES.md) — interpretations with quoted spec text and
   confirmation status.
-- Workspace [README](../../README.md) — ground truth, verification levels,
-  conventions; [docs/architecture.md](../../docs/architecture.md).
+- Workspace [README](https://github.com/a1678991/isdb-rs/blob/main/README.md) — ground truth, verification levels,
+  conventions; [docs/architecture.md](https://github.com/a1678991/isdb-rs/blob/main/docs/architecture.md).

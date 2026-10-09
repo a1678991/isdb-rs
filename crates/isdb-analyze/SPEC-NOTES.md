@@ -274,11 +274,10 @@ interpretations it adopts.  Texts: `specs/ITU-T-H.222.0-2006.txt`,
   at sampling_frequency_index 0x6–0x8, where §5.2.3 (4)(a) permits it, a
   contradiction that disappears at 2 × fs is reported as **info** naming
   the ambiguity.
-- Live findings (a live terrestrial capture recorded during development):
-  the full-seg audio PID, 504 frames LC 48 kHz stereo 191.7 kbit/s
-  (192 kbit/s CBR), crc_check in every frame, fullness 37..=128; the
-  one-seg audio PID, 249 frames LC 24 kHz (with SBR), 48.1 kbit/s,
-  crc_check, fullness 85..=160 — no violation (crc_check presence counted;
-  values not verified, see above); EIT quality_indicator '10'
-  (Mode 2) for the full-seg services, consistent; the one-seg EIT has no
-  audio component descriptor. Status: confirmed on live data.
+- Live findings (the one-seg service of a terrestrial capture recorded
+  during development; one-seg is sent in the clear): the audio PID, 249
+  frames LC 24 kHz (with SBR), 48.1 kbit/s, crc_check, fullness 85..=160 —
+  no violation (crc_check presence counted; values not verified, see
+  above); the one-seg EIT has no audio component descriptor. Status:
+  confirmed on live data (development observation, not reproducible from
+  the repository).

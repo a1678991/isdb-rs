@@ -406,14 +406,15 @@ fn capture_strings(ts: &[u8]) -> Vec<Vec<u8>> {
 /// Environment variable naming the capture file.
 const CAPTURE_ENV: &str = "ISDB_RS_CAPTURE_TS";
 
-/// Runs only when `ISDB_RS_CAPTURE_TS` names a descrambled ISDB-T capture
+/// Runs only when `ISDB_RS_CAPTURE_TS` names an ISDB-T capture (SI only, so
+/// the payload of the elementary streams does not matter)
 /// (prints a `SKIP` line and passes otherwise): extracts the SI strings
 /// with its own section parser (no `isdb-ts`), and decodes and round-trips
 /// all of them.
 #[test]
 fn capture_si_strings() {
     let Some(path) = std::env::var_os(CAPTURE_ENV) else {
-        eprintln!("SKIP: {CAPTURE_ENV} not set (path of a descrambled ISDB-T capture)");
+        eprintln!("SKIP: {CAPTURE_ENV} not set (path of an ISDB-T capture)");
         return;
     };
     let ts = match std::fs::read(&path) {

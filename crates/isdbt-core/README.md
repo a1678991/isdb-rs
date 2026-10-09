@@ -117,6 +117,6 @@ no `tests/` directory and no data dependency.
 - `Params::layer_of_segment` panics for a segment index ≥ 13.
 - This crate has no `SPEC-NOTES.md` of its own: its values come directly
   from the tables. See the workspace index
-  [`../../SPEC-NOTES.md`](../../SPEC-NOTES.md).
+  [`../../SPEC-NOTES.md`](https://github.com/a1678991/isdb-rs/blob/main/SPEC-NOTES.md).
 
-See also the workspace [README](../../README.md).
+See also the workspace [README](https://github.com/a1678991/isdb-rs/blob/main/README.md).

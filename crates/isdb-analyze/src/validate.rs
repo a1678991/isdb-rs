@@ -1686,13 +1686,13 @@ fn pes_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out
 /// carry copy_control_type '00' in the B10 Annex F (informative) Table F-1
 /// layout (copy_control_type (2) + APS_control_data (2)); the ARIB
 /// operational guidelines (TR-B14/TR-B15, not available locally) are
-/// understood to make that layout normative.  Receiver evidence: the Sony
-/// BDZ-series recorder refuses a service whose 0xC1 has user_defined 0b0000 ("Unsupported
-/// signal") and plays it with 0b0100 (bench 2026-10-08); live broadcasters send
-/// 0b0100.
+/// understood to make that layout normative.  Receiver evidence (observed
+/// on one Sony BDZ-series recorder): a service whose 0xC1 has user_defined
+/// 0b0000 is refused ("Unsupported signal") and plays with 0b0100; live
+/// broadcasters send 0b0100.
 fn copy_control_checks(cap: &Capture, o: &mut Out) {
     use isdb_si::descriptor::Descriptor;
-    const CLAUSE: &str = "B10 §6.2.23 user_defined / Annex F Table F-2 (copy_control_type '00' \"Undefined\"; a Sony BDZ-series recorder refuses it, bench 2026-10-08)";
+    const CLAUSE: &str = "B10 §6.2.23 user_defined / Annex F Table F-2 (copy_control_type '00' \"Undefined\"; observed to be refused by a Sony BDZ-series recorder)";
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut check = |loc: String, d: &Descriptor, o: &mut Out| {
         let Descriptor::DigitalCopyControl(c) = d else {

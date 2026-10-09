@@ -109,7 +109,7 @@ encoders and `isdb-text` (fictional names and texts only), so every test in
 this crate except the opt-in `tests/capture.rs` runs without external data.
 `tests/capture.rs` (and the capture tests of `isdb-ts`, `isdb-text` and
 `isdb-analyze`) read the terrestrial capture named by
-`ISDB_RS_CAPTURE_TS` ([docs/test-data.md](../../docs/test-data.md)).
+`ISDB_RS_CAPTURE_TS` ([docs/test-data.md](https://github.com/a1678991/isdb-rs/blob/main/docs/test-data.md)).
 During development, on a live terrestrial capture, all 144 distinct SI
 sections decoded typed (no `Unknown` table or descriptor) and re-encoded
 byte-identically; the only conformance deviations were the 217 EIT events
@@ -139,6 +139,6 @@ ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test -p isdb-si --test capture -- -
   `isdb_ts::descriptor::Descriptor` (the raw H.222.0 form used in PMT/CAT
   loops).
 
-See [SPEC-NOTES.md](SPEC-NOTES.md) for every interpretation (with quoted
-text and status) and the workspace [README](../../README.md) for the ground
+See [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/crates/isdb-si/SPEC-NOTES.md) for every interpretation (with quoted
+text and status) and the workspace [README](https://github.com/a1678991/isdb-rs/blob/main/README.md) for the ground
 truth and verification policy.

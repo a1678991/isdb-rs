@@ -39,11 +39,11 @@ terrestrial norm: `--mode 3`, `--gi 8`, `--partial true`, layer A =
 `dqpsk|qpsk|16qam|64qam`, RATE `1/2|2/3|3/4|5/6|7/8` and TI the TMCC
 time-interleave index 0..3. `isdb <cmd> --help` is the authoritative option
 list; the sections below explain behaviour. Task-oriented guides are in the
-workspace [`docs/`](../../docs/getting-started.md): getting started,
-[transmitting](../../docs/transmitting.md) (bench set-up, levels, channel
-plan, receiver compatibility notes), [receiving](../../docs/receiving.md),
-[analysis](../../docs/analysis.md) and the multiplexer
-[configuration reference](../../docs/mux-config.md).
+workspace [`docs/`](https://github.com/a1678991/isdb-rs/blob/main/docs/getting-started.md): getting started,
+[transmitting](https://github.com/a1678991/isdb-rs/blob/main/docs/transmitting.md) (bench set-up, levels, channel
+plan, receiver compatibility notes), [receiving](https://github.com/a1678991/isdb-rs/blob/main/docs/receiving.md),
+[analysis](https://github.com/a1678991/isdb-rs/blob/main/docs/analysis.md) and the multiplexer
+[configuration reference](https://github.com/a1678991/isdb-rs/blob/main/docs/mux-config.md).
 
 ## Commands
 
@@ -200,9 +200,9 @@ the placeholder media paths `media/video.m2v` / `media/audio.m2a` (relative
 to the TOML; point them at your own files, no media is committed). A raw descriptor
 (`descriptors`, `add_descriptors`) with the tag of an active typed one in the
 same loop is rejected at load (set the typed one `off`). Every key:
-[`docs/mux-config.md`](../../docs/mux-config.md). Background and the
+[`docs/mux-config.md`](https://github.com/a1678991/isdb-rs/blob/main/docs/mux-config.md). Background and the
 receiver bisection behind the copy-control default:
-[`../isdbt-mux/SPEC-NOTES.md`](../isdbt-mux/SPEC-NOTES.md).
+[`../isdbt-mux/SPEC-NOTES.md`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/SPEC-NOTES.md).
 
 AAC input is checked against ARIB STD-B32 Part 2 §5.2 (`adts_compliance`
 per `aac-adts` stream, overridden for all by `--adts-compliance`):
@@ -400,7 +400,7 @@ rates and the loop period.
 
 An RF loopback needs two radios: `isdb tx --hackrf --serial A …` and
 `isdb rx --hackrf --serial B …`, connected through attenuators
-([docs/transmitting.md](../../docs/transmitting.md#bench-set-up)).
+([docs/transmitting.md](https://github.com/a1678991/isdb-rs/blob/main/docs/transmitting.md#bench-set-up)).
 
 ## Architecture
 
@@ -419,7 +419,7 @@ loopback: producer ─► Channel ─► PipelinedReceiver ─► Verifier
 ```
 
 Throughput (Mode 3, GI 1/8, default layers, file I/O, measured on a
-Ryzen 9 7950X): `tx --synthetic --iq` of 20 s of signal took 4.9 s (≈ 4×
+current 16-core desktop CPU): `tx --synthetic --iq` of 20 s of signal took 4.9 s (≈ 4×
 real time); `rx --iq` of that file took 14.0 s (≈ 1.4× real time; the
 demodulator is the bottleneck).
 
@@ -459,10 +459,10 @@ against a mock device):
 | `tests/cli.rs` `hackrf_tx_refuses_without_rf_enable` | `--dry-run` prints the RF settings and refuses; no `--rf-enable` ⇒ rejected |
 | `tests/cli.rs` `scrambled_input_is_refused` | a TS with one scrambled packet (transport_scrambling_control ≠ '00') is refused: `isdb` neither descrambles nor transmits scrambled content |
 | `tests/cli.rs` `endless_input_into_iq_file_is_refused_without_seconds` | `tx --synthetic --iq FILE` without `--seconds` is refused before the file is created; with `--seconds` it runs |
-| `tests/cli.rs` `mux_config_and_ts_tools_smoke`, `loopback_with_in_process_multiplexer` | `isdb mux` / `ts inspect` and `loopback --mux-config` on `bench.toml` with media streams replaced by `declared` streams; the media variant runs only when `ISDB_RS_MEDIA_DIR` names a directory with `v63p.m2v` and `a.m2a` (prints `SKIP` otherwise; [docs/test-data.md](../../docs/test-data.md#making-a-media-directory) shows how to make one) |
-| `tests/cli.rs` `bench_media_aac_conforms_to_b32_part2` | `isdb mux` on `bench.toml` with the real `a.m2a`: the default `conform` refuses it (crc_check cannot be inserted); with `--adts-compliance warn` `isdb ts validate` reports the file's protection_absent / adts_buffer_fullness errors and quality_indicator '10' (Mode 2) consistent (opt-in: `ISDB_RS_MEDIA_DIR` with `v63p.m2v` and `a.m2a`; prints `SKIP` otherwise) |
+| `tests/cli.rs` `mux_config_and_ts_tools_smoke`, `loopback_with_in_process_multiplexer` | `isdb mux` / `ts inspect` and `loopback --mux-config` on `bench.toml` with media streams replaced by `declared` streams; the media variant runs only when `ISDB_RS_MEDIA_DIR` names a directory with `video.m2v` and `audio.m2a` (prints `SKIP` otherwise; [docs/test-data.md](https://github.com/a1678991/isdb-rs/blob/main/docs/test-data.md#making-a-media-directory) shows how to make one) |
+| `tests/cli.rs` `media_aac_gate_matches_b32_part2_report` | `isdb mux` on `bench.toml` with your own `audio.m2a`, expectations taken from its ADTS headers: the default `conform` succeeds exactly when no error-severity B32 Part 2 rule is violated (refusal says "crc_check cannot be inserted" for protection_absent '1'); with `--adts-compliance warn` `isdb ts validate` reports each violated per-frame rule as an `aac.*` error and the quality_indicator Table 1 derives from the file's rate (opt-in: `ISDB_RS_MEDIA_DIR` with `video.m2v` and `audio.m2a`; prints `SKIP` otherwise) |
 | `src/*` unit tests | `--relay` numbers (hex/decimal), NIT channel from `--freq`, service layer from the layout; PCR pacing of the PID split (frames carry only the packets due; over capacity: everything sent, lag measured), layer-spec parsing and defaults, UHF channel centres and ppm correction, cs8 scaling/clip count, AWGN/CFO channel, verifier anchoring, producer lead/data/flush sequence and stop, file/loop/live sources, PID split, radio sink prefill/drain/abort/underruns (mock radio), `clap` definition consistency, `--seconds` default 0 for every `tx` input and for `rx`, the `--iq` bound check (regular file refused; stdout, FIFO, `/dev/null` accepted), which `--mux-config` / `--relay` configurations end by themselves |
 
-Workspace overview: [`../../README.md`](../../README.md); architecture and
-the frame/latency contract: [`docs/architecture.md`](../../docs/architecture.md);
-optional real-data tests: [`docs/test-data.md`](../../docs/test-data.md).
+Workspace overview: [`../../README.md`](https://github.com/a1678991/isdb-rs/blob/main/README.md); architecture and
+the frame/latency contract: [`docs/architecture.md`](https://github.com/a1678991/isdb-rs/blob/main/docs/architecture.md);
+optional real-data tests: [`docs/test-data.md`](https://github.com/a1678991/isdb-rs/blob/main/docs/test-data.md).

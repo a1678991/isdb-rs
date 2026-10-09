@@ -15,17 +15,20 @@
 #
 # The media `source` paths (media/video.m2v, media/audio.m2a) are
 # placeholders: point them at your own MPEG-2 video elementary stream and
-# AAC ADTS file. The comments below describe the bench media (v63p.m2v,
-# a.m2a); the tests take those from the directory named by the environment
+# AAC ADTS file (docs/test-data.md has an ffmpeg recipe). The tests take
+# video.m2v / audio.m2a from the directory named by the environment
 # variable ISDB_RS_MEDIA_DIR, or substitute synthetic streams.
 
 [network]
-network_id = 0x7FE0              # B10 Annex N: terrestrial TV range 0x7880–0x7FE8
+# B10 Annex N: terrestrial TV range 0x7880–0x7FE8, allocated to real
+# broadcasters by ARIB TR-B14; 0x79EE is a placeholder: choose an ID not used
+# where your receiver is.
+network_id = 0x79EE
 name = "ベンチ"                   # network_name_descriptor (0x40), ARIB 8-unit coded
 area_code = 0x5A5                # 0xFA area_code (B10 Annex D Table D-2: Kanto wide area)
 # 0xCD remote_control_key_id (B10 §6.2.42): 1..=12 (one-touch keys, TR-B14
 # practice). Receivers list the services as 3-digit channels key·10 + index
-# (key 9 → 091, …). 9, not 12: key 12 collides with a local station on the bench.
+# (key 9 → 091, …). Use a key no station in your area uses.
 remote_control_key_id = 9
 ts_name = "ベンチ"                # 0xCD ts_name (defaults to name)
 # UHF channel(s) → 0xFA frequency (1/7 MHz units). MUST equal the channel `isdb tx`
@@ -42,12 +45,12 @@ transmission_types = [
 ]
 
 [transport]
-transport_stream_id = 0x7FE0
+transport_stream_id = 0x79EE
 # original_network_id defaults to network_id (B10 §5.2.4)
 
 [clock]
 source = "system"                # TOT/EIT clock: "system" (now) or "fixed" (start below)
-# start = "2026-10-08T12:00:00"  # JST; with source = "fixed" (or to pin the system start)
+# start = "2026-01-01T12:00:00"  # JST; with source = "fixed" (or to pin the system start)
 start_pcr = 0                    # PCR (27 MHz) of the first multiplex slot
 
 [timing]
@@ -71,12 +74,12 @@ pcr_pid = 0x01FF                 # dedicated PCR PID (adaptation-field-only pack
 running_status = 0               # SDT running_status (operational choice)
 eit_pf = true
 # digital_copy_control_descriptor 0xC1 (B10 §6.2.23). Live terrestrial broadcasters
-# (capture 2026-10-07) send copy-one-generation with user_defined 0b0100 =
+# send copy-one-generation with user_defined 0b0100 =
 # copy_control_type '01' + APS_control_data '00' (B10 Annex F layout; TR-B14).
-# A Sony BDZ-series recorder refuses user_defined 0b0000 ("Unsupported signal",
-# bench 2026-10-08) — copy_control_type/aps_control_data default to '01'/'00'.
-# Placement PMT + SDT (PMT + EIT also plays on the BDZ; the live capture carries all three,
-# with maximum_bitrate 16.5 Mbit/s in PMT and EIT).
+# One Sony BDZ-series recorder was observed to refuse user_defined 0b0000
+# ("Unsupported signal") — copy_control_type/aps_control_data default to '01'/'00'.
+# Placement PMT + SDT (PMT + EIT also played on that recorder; live broadcasts carry
+# all three, with maximum_bitrate 16.5 Mbit/s in PMT and EIT).
 copy_control = { recording_control = "copy-one-generation", copy_control_type = "serial-output-encoded", aps_control_data = "copy-free", in_pmt = true, in_sdt = true, in_eit = false }
 # recording_control: "copy-free" | "provider-defined" | "copy-one-generation" | "copy-never" (Table 6-39)
 # copy_control_type: "undefined-00" | "serial-output-encoded" | "undefined-10" | "serial-output-unencoded" (Annex F Table F-2)
@@ -95,11 +98,11 @@ copy_control = { recording_control = "copy-one-generation", copy_control_type = 
   # still_picture 0, sequence_end_code 1, 1080/I ('0001', Table 6-60),
   # transfer_characteristics '11' "undefined" (Table 6-60-1; the old reserved bits).
   # mode = "derived" takes the fields from the sequence header (here 0x04);
-  # "off" sends none. (Bench 2026-10-08: derived also plays on the BDZ.)
+  # "off" sends none. ("derived" also played on the recorder.)
   video_decode_control = { mode = "explicit", still_picture = false, sequence_end_code = true, video_encode_format = "1080i", transfer_characteristics = "undefined" }
-  # EIT component_descriptor 0x50 (B10 Table 6-5). v63p.m2v declares
-  # aspect_ratio_information 2 (4:3), so "derived" would give 0xB1 "1080i-4:3";
-  # live HD services send 0xB3. (Bench 2026-10-08: derived also plays on the BDZ.)
+  # EIT component_descriptor 0x50 (B10 Table 6-5). "derived" takes it from the
+  # sequence header (a 1080i 4:3 file gives 0xB1 "1080i-4:3"); live HD services
+  # send 0xB3. ("derived" also played on the recorder.)
   component_type = "1080i-16:9-without-pan-vectors"
 
   [[service.stream]]
@@ -112,14 +115,14 @@ copy_control = { recording_control = "copy-one-generation", copy_control_type = 
   # "derived" = audio mode from the ADTS channel_configuration (here 2/0).
   component_type = { audio_mode = "2/0", dialog_control = false, for_disabilities = "none" }
   # quality_indicator (B10 Table 6-44 / B32 Part 2 Attachment Ch. 3 Table 1):
-  # "derived" from the measured rate — a.m2a ≈ 189 kbit/s stereo → "mode-2"
+  # "derived" from the measured rate — e.g. ≈ 189 kbit/s stereo → "mode-2"
   # ('10'), what live broadcasters send for 192 kbit/s.
   audio_quality_indicator = "derived"
   # "conform" sends a file whose ADTS headers satisfy B32 Part 2 §5.2
   # unchanged and refuses anything else; it never inserts crc_check (that
-  # needs the ISO/IEC 13818-7 tables, not included). a.m2a has
-  # protection_absent '1' and adts_buffer_fullness 0x7FF in every frame, so
-  # it is refused: use an encode with ADTS crc_check and a constant-rate
+  # needs the ISO/IEC 13818-7 tables, not included). Common encoders (FFmpeg
+  # `aac`) write protection_absent '1' and adts_buffer_fullness 0x7FF in every
+  # frame, so their output is refused: use an encode with ADTS crc_check and a constant-rate
   # fullness, or set "warn" (send unchanged, report) / "pass-through".
   adts_compliance = "conform"
 

@@ -277,10 +277,10 @@ impl AdtsEs {
 /// its element_instance_tag (the bits after the 3-bit id_syn_ele) zero
 /// padded to 192 bits, and for the CPE its second individual_channel_stream
 /// zero padded to 128 bits; fill elements are not protected.  (That an
-/// element's protected bits start after id_syn_ele was established against
-/// broadcast captures and an independent decoder while the walker still
-/// existed — SPEC-NOTES "AAC ADTS"; it is not re-checked by any in-tree
-/// test now.)
+/// element's protected bits start after id_syn_ele was established during
+/// development against broadcast frames and an independent decoder —
+/// SPEC-NOTES "AAC ADTS"; no in-tree test re-checks it, because the
+/// raw_data_block is not parsed.)
 #[derive(Debug, Clone, Copy)]
 pub struct SilentFrame {
     /// Header template; aac_frame_length is set by [`SilentFrame::build`],
@@ -330,6 +330,11 @@ impl SilentFrame {
     }
 
     /// The frame bytes (`len` ≥ header + 13 bytes).
+    ///
+    /// # Panics
+    ///
+    /// When `len` is too small for the header and the audio element, or
+    /// cannot be filled exactly with fill elements.
     pub fn build(&self) -> Vec<u8> {
         let mut h = self.header;
         h.aac_frame_length = self.len as u16;

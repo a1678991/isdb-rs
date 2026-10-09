@@ -1,7 +1,9 @@
-//! Real broadcast data (opt-in): every distinct SI section of a descrambled
-//! terrestrial capture named by the environment variable
+//! Real broadcast data (opt-in): every distinct SI section of a terrestrial
+//! capture named by the environment variable
 //! `ISDB_RS_CAPTURE_TS`.  Without the variable, or when the file is
-//! missing, the test prints a `SKIP` line and passes.
+//! missing, the test prints a `SKIP` line and passes. SI sections are
+//! never scrambled, so only the SI PIDs are read and the payload of the
+//! elementary streams does not matter.
 //!
 //! ```text
 //! ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test -p isdb-si --test capture -- --nocapture
@@ -38,7 +40,7 @@ const EXTERNAL_TAGS: [u8; 3] = [0xC9, 0xCB, 0xCC];
 
 fn capture() -> Option<Vec<u8>> {
     let Some(p) = std::env::var_os(CAPTURE_ENV).map(PathBuf::from) else {
-        eprintln!("SKIP: {CAPTURE_ENV} not set (path of a descrambled ISDB-T capture)");
+        eprintln!("SKIP: {CAPTURE_ENV} not set (path of an ISDB-T capture)");
         return None;
     };
     match std::fs::read(&p) {

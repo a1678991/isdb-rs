@@ -2,8 +2,8 @@
 
 ISDB-T transmitter and receiver pipelines: per-layer 188-byte transport
 stream packets ⇄ complex baseband at 512/63 MHz. The crate wires the
-bit-domain channel coding of [`isdbt-fec`](../isdbt-fec) and the
-symbol-domain processing of [`isdbt-ofdm`](../isdbt-ofdm) into one
+bit-domain channel coding of [`isdbt-fec`](https://github.com/a1678991/isdb-rs/tree/main/crates/isdbt-fec) and the
+symbol-domain processing of [`isdbt-ofdm`](https://github.com/a1678991/isdb-rs/tree/main/crates/isdbt-ofdm) into one
 frame-synchronous TX and one RX object, adds the stream-boundary rules
 (pre-roll, lead-in, flush) and IQ sample-format conversion. It contains no
 signal processing of its own.
@@ -94,7 +94,7 @@ assert_eq!(got, sent);
 ### Examples (file tools)
 
 Built with `cargo build --release -p isdbt-phy --examples`; used by the
-gr-isdbt differential test ([VERIFICATION.md](../../VERIFICATION.md)).
+gr-isdbt differential test ([VERIFICATION.md](https://github.com/a1678991/isdb-rs/blob/main/VERIFICATION.md)).
 Arguments are positional and unchecked (they panic on bad input).
 
 ```text
@@ -120,8 +120,8 @@ rx_file IN.cf32 OUT_PREFIX
   frame_number − L − 1`, counted from the on-air frame at which the
   receiver locked (warm-up outputs are negative); `RxFrame::valid` is set
   once both the current and the previous LLR frame were valid. Details in
-  [`isdbt-ofdm/src/latency.rs`](../isdbt-ofdm/src/latency.rs) and the
-  workspace [SPEC-NOTES](../../SPEC-NOTES.md) cross-crate entry.
+  [`isdbt-ofdm/src/latency.rs`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-ofdm/src/latency.rs) and the
+  workspace [SPEC-NOTES](https://github.com/a1678991/isdb-rs/blob/main/SPEC-NOTES.md) cross-crate entry.
 - **Stream boundaries.** `preroll()` modulates and discards
   `end_to_end_frames + 1` null frames, because the FEC encoder's
   byte-interleaver / delay-adjustment start-up fill is not
@@ -155,7 +155,7 @@ rx_file IN.cf32 OUT_PREFIX
 
 The PHY as a whole was cross-decoded against gr-isdbt in both directions,
 byte-exact in 8 parameter sets, using `examples/tx_file.rs` /
-`examples/rx_file.rs` ([VERIFICATION.md](../../VERIFICATION.md)). No test
+`examples/rx_file.rs` ([VERIFICATION.md](https://github.com/a1678991/isdb-rs/blob/main/VERIFICATION.md)). No test
 needs captures or other files outside the repository.
 
 ```text
@@ -176,8 +176,8 @@ cargo test --release -p isdbt-phy
   tested only in software loopback, not against the gr-isdbt oracle or
   off-air signals (VERIFICATION.md "Open questions").
 - This crate has no SPEC-NOTES of its own; interpretations live in
-  [isdbt-fec](../isdbt-fec/SPEC-NOTES.md),
-  [isdbt-ofdm](../isdbt-ofdm/SPEC-NOTES.md) and the workspace index
-  [SPEC-NOTES.md](../../SPEC-NOTES.md).
+  [isdbt-fec](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-fec/SPEC-NOTES.md),
+  [isdbt-ofdm](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-ofdm/SPEC-NOTES.md) and the workspace index
+  [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/SPEC-NOTES.md).
 
-See also the workspace [README](../../README.md).
+See also the workspace [README](https://github.com/a1678991/isdb-rs/blob/main/README.md).

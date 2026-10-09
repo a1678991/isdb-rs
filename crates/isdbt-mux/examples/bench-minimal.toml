@@ -18,17 +18,20 @@
 #
 # The media `source` paths (media/video.m2v, media/audio.m2a) are
 # placeholders: point them at your own MPEG-2 video elementary stream and
-# AAC ADTS file. The comments below describe the bench media (v63p.m2v,
-# a.m2a); the tests take those from the directory named by the environment
+# AAC ADTS file (docs/test-data.md has an ffmpeg recipe). The tests take
+# video.m2v / audio.m2a from the directory named by the environment
 # variable ISDB_RS_MEDIA_DIR, or substitute synthetic streams.
 
 [network]
-network_id = 0x7FE0              # B10 Annex N: terrestrial TV range 0x7880–0x7FE8
+# B10 Annex N: terrestrial TV range 0x7880–0x7FE8, allocated to real
+# broadcasters by ARIB TR-B14; 0x79EE is a placeholder: choose an ID not used
+# where your receiver is.
+network_id = 0x79EE
 name = "ベンチ"                   # network_name_descriptor (0x40), ARIB 8-unit coded
 area_code = 0x5A5                # 0xFA area_code (B10 Annex D Table D-2: Kanto wide area)
 # 0xCD remote_control_key_id (B10 §6.2.42): 1..=12 (one-touch keys, TR-B14
 # practice). Receivers list the services as 3-digit channels key·10 + index
-# (key 9 → 091, …). 9, not 12: key 12 collides with a local station on the bench.
+# (key 9 → 091, …). Use a key no station in your area uses.
 remote_control_key_id = 9
 ts_name = "ベンチ"                # 0xCD ts_name (defaults to name)
 # UHF channel(s) → 0xFA frequency (1/7 MHz units). MUST equal the channel `isdb tx`
@@ -45,12 +48,12 @@ transmission_types = [
 ]
 
 [transport]
-transport_stream_id = 0x7FE0
+transport_stream_id = 0x79EE
 # original_network_id defaults to network_id (B10 §5.2.4)
 
 [clock]
 source = "system"                # TOT/EIT clock: "system" (now) or "fixed" (start below)
-# start = "2026-10-08T12:00:00"  # JST; with source = "fixed" (or to pin the system start)
+# start = "2026-01-01T12:00:00"  # JST; with source = "fixed" (or to pin the system start)
 start_pcr = 0                    # PCR (27 MHz) of the first multiplex slot
 
 [timing]
@@ -75,8 +78,8 @@ running_status = 0               # SDT running_status (operational choice)
 eit_pf = true
 # digital_copy_control_descriptor 0xC1 (B10 §6.2.23): copy-free, default
 # placement (PMT program loop + EIT events). copy_control_type/aps_control_data
-# keep their defaults '01'/'00' (user_defined 0b0100): '00' is refused by the
-# Sony BDZ-series recorder (bench 2026-10-08), see SPEC-NOTES.
+# keep their defaults '01'/'00' (user_defined 0b0100): '00' was observed to be
+# refused by a Sony BDZ-series recorder, see SPEC-NOTES.
 copy_control = { recording_control = "copy-free" }
 # content_availability = { image_constraint_token = true, retention_state = 7 }
 # program_descriptors = [ { tag = 0xC1, hex = "60" } ]   # raw PMT program_info descriptors
@@ -89,7 +92,7 @@ copy_control = { recording_control = "copy-free" }
   # 0xC8 derived from the sequence header (here 0x04: 1080/I, no
   # sequence_end_code, transfer_characteristics "bt709").
   video_decode_control = { mode = "derived" }
-  # EIT 0x50 derived from the sequence header (v63p.m2v: 1080i, aspect 4:3 → 0xB1).
+  # EIT 0x50 derived from the sequence header (e.g. 1080i, aspect 4:3 → 0xB1).
   component_type = "derived"
 
   [[service.stream]]

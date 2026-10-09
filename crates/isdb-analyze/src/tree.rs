@@ -13,6 +13,9 @@
 //! decoders.
 //!
 //! The tree is used for JSON output, text dumps and field-level diffs.
+//! `Debug` output is not a stable format, so the JSON built from it
+//! (`isdb ts inspect --json`, diffs) is unstable: field names and nesting
+//! may change between releases.
 //! It is *not* used to modify tables (see [`crate::mutate`], which edits the
 //! typed structs).
 

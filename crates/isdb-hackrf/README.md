@@ -122,8 +122,8 @@ and streaming state of the attached HackRF without any RF activity:
 
 There are no automated tests: everything requires hardware. The crate is
 exercised on a conducted bench through `isdb tx` / `isdb rx` (see
-[isdb-cli](../isdb-cli/README.md) and
-[docs/transmitting.md](../../docs/transmitting.md)); the radio sink of
+[isdb-cli](https://github.com/a1678991/isdb-rs/blob/main/crates/isdb-cli/README.md) and
+[docs/transmitting.md](https://github.com/a1678991/isdb-rs/blob/main/docs/transmitting.md)); the radio sink of
 `isdb-cli` is tested against a mock device. `cargo test -p isdb-hackrf --doc`
 compiles (but does not run) the example above, which needs `libhackrf` at
 link time.
@@ -138,4 +138,4 @@ link time.
   caller's buffers (any length), on RX one per USB transfer, so queue
   latency depends on buffer sizes.
 - No SPEC-NOTES (no specification involved); see the workspace index
-  [SPEC-NOTES.md](../../SPEC-NOTES.md) and [README](../../README.md).
+  [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/SPEC-NOTES.md) and [README](https://github.com/a1678991/isdb-rs/blob/main/README.md).

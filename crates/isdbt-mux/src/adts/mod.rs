@@ -2,13 +2,13 @@
 //! the ADTS CRC-16 and the header-level ARIB STD-B32 Part 2 §5.2
 //! restrictions ([`b32`]).
 //!
-//! This module works on the ADTS *headers* only.  It does not walk
+//! This module works on the ADTS *headers* only.  It does not parse
 //! raw_data_block (that needs the ISO/IEC 13818-7 Annex A Huffman and
 //! scalefactor-band tables, which ARIB STD-B32 does not reproduce and this
-//! crate does not include; see SPEC-NOTES "AAC ADTS: raw_data_block walk
-//! removed").  Consequently it cannot verify or insert the crc_check of an
+//! crate does not include; see SPEC-NOTES "AAC ADTS: raw_data_block not
+//! parsed").  Consequently it cannot verify or insert the crc_check of an
 //! arbitrary frame: the CRC covers element bits whose boundaries are only
-//! known after a raw_data_block walk.  [`Crc16`] is used where the element
+//! known by parsing raw_data_block.  [`Crc16`] is used where the element
 //! layout is known by construction ([`crate::audio::SilentFrame`]).
 //!
 //! # Sources
@@ -314,7 +314,7 @@ mod tests {
         b.extend_from_slice(&0xBEEFu16.to_be_bytes());
         assert_eq!(AdtsHeader::parse(&b).unwrap(), h);
         assert_eq!(h.header_len(), 9);
-        // bench a.m2a first header: ff f9 4c 80 36 5f fc
+        // a first header of FFmpeg `aac` encoder output: ff f9 4c 80 36 5f fc
         let a = AdtsHeader::parse(&[0xFF, 0xF9, 0x4C, 0x80, 0x36, 0x5F, 0xFC]).unwrap();
         assert_eq!(
             (

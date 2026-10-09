@@ -223,8 +223,8 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
   other row (and the H.264 rows 0x5/0xD2–0xD4) has 16:9 there, so the
   variants are named `240p-16:9-with-pan-vectors` etc.; the code is
   unaffected. Status: interpretation (typo).
-- The bench media `v63p.m2v` (1440×1080i) declares aspect_ratio_information
-  2 (4:3), so `derived` gives 0xB1 `1080i-4:3`; live HD services send 0xB3.
+- A 1440×1080i file that declares aspect_ratio_information 2 (4:3) gives
+  0xB1 `1080i-4:3` under `derived`; live HD services send 0xB3.
 - audio_component_descriptor (§6.2.26): stream_content 0x2 ("For an audio
   stream whose coding method isn't specified, it is set to "0x2""),
   component_type (typed: `"derived"` or `{ audio_mode = "2/0",
@@ -278,12 +278,10 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
   (4)(a) permits it, a contradiction that disappears at 2 × fs is
   reported as information, not as a warning. Coded channels come from
   channel_configuration (6 → 5; 0 / 7 undetermined, counted as 2).
-- Results: bench `a.m2a` 188.4 kbit/s stereo 48 kHz as the file is (sent
-  with `warn`) → Mode 2 ('10'), the value live broadcasters send; the live
-  full-seg audio, 191.7 kbit/s (192 kbit/s CBR, 4096 bits/frame), signals
-  '10' → consistent (also `derived` = Mode 2). The live one-seg EIT
-  carries no audio component descriptor. Status: interpretation;
-  confirmed against live broadcasters for the full-seg service.
+- Results: an AAC test file of 188.4 kbit/s stereo 48 kHz (sent with
+  `warn`) → Mode 2 ('10'), the value the EIT of live full-seg services
+  carries (SI only; the audio itself was not examined); the live one-seg
+  EIT carries no audio component descriptor. Status: interpretation.
 
 ## MPEG-2 video access units and timestamps [H.262 from knowledge]
 - Access unit per H.222.0 §2.1.1 (local): the AU starts at the first of
@@ -382,21 +380,16 @@ unchanged without checks (reproducing old streams on receivers).
 `isdb mux --adts-compliance` overrides it for every stream.
 
 ### CRC (B32 Part 2 Appendix 1)
-- Text (printed p. 81, PDF page checked): adts_error_check() "CRC error
-  detection data generated as described in ISO/IEC 11172-3, subclause
-  2.4.3.1 (table 1.7). The following bits are protected and fed into the
-  CRC algorithm in order of appearance: all bits of the headers; first 192
-  bits of any single_channel_element (SCE), channel_pair_element (CPE),
-  coupling_channel_element (CCE), low frequency enhancement channel (LFE).
-  In addition, the first 128 bits of the second individual_channel_stream
-  in the channel_pair_element shall be protected. All information in any
-  program configuration element or data element shall be protected. For
-  any element where the specified protection length of 128 or 192 bits
-  exceeds its actual length, the element is zero padded"; "First, the CPE
-  is processed from the beginning. If the CPE is less than 192 bits in
-  length, it will be zero padded to 192 bits. Next, the second ICS of the
-  same CPE is processed from the beginning. If this ICS is less than 128
-  bits in length, it will be zero padded to 128 bits."
+- Text (printed p. 81, PDF page checked), paraphrased: adts_error_check()
+  is the CRC of ISO/IEC 11172-3 §2.4.3.1 over, in order of appearance,
+  (1) every header bit, (2) the first 192 bits of each SCE, CPE, CCE and
+  LFE element, (3) the first 128 bits of the second
+  individual_channel_stream of a CPE, (4) all of any PCE or data element.
+  The appendix walks a CPE through it: the CPE from its start padded to
+  192 bits, then its second ICS from its start padded to 128 bits.
+  Verbatim only the padding rule: "For any element where the specified
+  protection length of 128 or 192 bits exceeds its actual length, the
+  element is zero padded".
 - Consequence: crc_check covers every header bit, so rewriting any header
   field (adts_buffer_fullness, ID, aac_frame_length) of a protected frame
   invalidates it, and computing it for an arbitrary frame needs the
@@ -412,9 +405,9 @@ unchanged without checks (reproducing old streams on receivers).
   start **after its 3-bit id_syn_ele** (at element_instance_tag); fill
   elements are not protected. This reading was settled during
   development: of 16 combinations tried, only it reproduced the
-  transmitted crc_check of every frame of the live capture (504 full-seg,
-  249 one-seg frames; omitting the zero padding failed exactly the frames
-  with a short CPE), and libfdk-aac (which verifies ADTS CRCs; FFmpeg's
+  transmitted crc_check of every frame of the one-seg audio of a live
+  capture (249 frames; one-seg is sent in the clear; omitting the zero
+  padding failed exactly the frames with a short element), and libfdk-aac (which verifies ADTS CRCs; FFmpeg's
   native decoder does not) accepted frames written under it and rejected
   single-byte corruptions. That check needs a raw_data_block parser, which
   the workspace does not include (see "AAC ADTS: raw_data_block not
@@ -439,19 +432,17 @@ unchanged without checks (reproducing old streams on receivers).
   6144·NCC − R), bits = the whole ADTS frame; r ≥ 0 (decoder buffer never
   underflows); adts_buffer_fullness = ⌊r[n] / (32·NCC)⌋; NCC = SCE + 2·CPE
   (LFE excluded).
-- Confirmed on live data: the live encoders follow exactly this recurrence
-  with R = 4096 bits (192 kbit/s at 48 kHz, full-seg) and 2048 bits
-  (48 kbit/s at 24 kHz, one-seg), prediction error within the truncation
-  (−0.25…+0.5 and −0.75…0 fullness units over 504 / 249 frames); their
-  maxima 128 = (12288 − 4096)/64 and 160 = (12288 − 2048)/64 are the
-  model's caps. The header-only recurrence check runs in
+- Confirmed on live data: the live one-seg encoder follows exactly this
+  recurrence with R = 2048 bits (48 kbit/s at 24 kHz), prediction error
+  within the truncation (−0.75…0 fullness units over 249 frames); its
+  maximum 160 = (12288 − 2048)/64 is the model's cap. The header-only recurrence check runs in
   `capture_all_frames_conform` when `ISDB_RS_CAPTURE_TS` names a capture.
 - Choice of R: the smallest integer R ≥ the mean frame length for which r
   never goes negative on the periodic trajectory (start full, repeat the
   pass until it repeats, so the values continue across the media loop).
-  A constant-rate stream (the live encoders) gets R = its rate and nothing clamped. The
-  bench file is **not** constant-rate at its mean (it is an FFmpeg ABR
-  encode): at its mean of 4034.1 bits/frame it needs a 13 588-bit
+  A constant-rate stream (the live encoder) gets R = its rate and nothing
+  clamped. An ABR test file (an FFmpeg encode) is **not** constant-rate at
+  its mean: in the file examined, at its mean of 4034.1 bits/frame it needs a 13 588-bit
   reservoir, more than the 8 254 bits the buffer allows, so the model uses
   R = 4072 bits/frame (190.9 kbit/s, 0.9 % above the mean, computed on
   the frame lengths with crc_check); a constant-rate encoder at R would
@@ -476,17 +467,15 @@ unchanged without checks (reproducing old streams on receivers).
   B32 Part 2 Appendix 2 (printed p. 83): Rxn 2 000 000 bit/s / BSn 3 584
   bytes for 1–2 channels, 5 529 600 / 8 976 for 3–8.
 
-### Bench media and live reference
-- `a.m2a` (470 frames, ID 1, LC, 48 kHz, channel_configuration 2):
-  violates §5.2.2 (1) protection_absent and §5.2.2 (2)
-  adts_buffer_fullness in all 470 frames (the header rules see nothing
-  else). `conform` refuses it; `warn` sends it unchanged (the recorder
+### Encoder output and live reference
+- FFmpeg's `aac` encoder output (ID 1, LC, 48 kHz, channel_configuration
+  2) violates §5.2.2 (1) protection_absent and §5.2.2 (2)
+  adts_buffer_fullness in every frame (the header rules see nothing
+  else). `conform` refuses it; `warn` sends it unchanged (a recorder
   played it unchanged).
-- Live capture: full-seg (504 frames, LC 48 kHz
-  stereo, 192 kbit/s CBR, crc_check in every frame, fullness 37..=128) and
-  one-seg (249 frames, 24 kHz, 48 kbit/s CBR, crc_check, fullness
-  85..=160) violate none of the header rules and pass `conform`
-  byte-identically (test `capture_all_frames_conform`).
+- Live capture: the one-seg audio (249 frames, 24 kHz, 48 kbit/s CBR,
+  crc_check, fullness 85..=160) violates none of the header rules and
+  passes `conform` byte-identically (test `capture_all_frames_conform`).
 - Frames per PES configurable (default 1); PTS of the first frame; every
   audio PES gets random_access_indicator (an audio frame start is an
   elementary stream access point, H.222.0 §2.4.3.5).
@@ -912,17 +901,17 @@ showed to matter.
     passes unchanged, anything else is refused (see "AAC ADTS").
 14. RAI on video PES that start with a sequence header; on every audio PES.
 15. Component descriptor "16:9 without pan vectors" when derived; bench.toml
-    sets 0xB3 `1080i-16:9-without-pan-vectors` explicitly **[live]** (the
-    bench media declares 4:3; irrelevant to the recorder). Audio quality_indicator
-    derived from B32 Part 2 Attachment Ch. 3 Table 1 with the conservative
-    256 kbit/s Mode 1 threshold (bench → '10' Mode 2 **[live]**: the live
-    capture sends '10').
+    sets 0xB3 `1080i-16:9-without-pan-vectors` explicitly **[live]**
+    (irrelevant to the recorder). Audio quality_indicator derived from B32
+    Part 2 Attachment Ch. 3 Table 1 with the conservative 256 kbit/s Mode 1
+    threshold (a ≈ 189 kbit/s stereo file → '10' Mode 2 **[live]**: live
+    EITs carry '10').
 16. The 1/7 MHz frequency code derived from the UHF channel plan formula.
 17. Null packets: PID 0x1FFF, payload 0xFF, CC 0.
 18. Video decode control: derived by default; bench.toml sends the live byte
     0x47 explicitly **[live]** (irrelevant to the recorder).
-19. remote_control_key_id 1..=12 only (TR-B14 practice); the examples use 9,
-    a key no local station used on the bench.
+19. remote_control_key_id 1..=12 only (TR-B14 practice); the examples use 9
+    (choose a key no station in your area uses).
 20. `[network] channels` must equal the transmit channel (receivers retune to
     the NIT frequency); the example keeps 27.
 21. `ts-program` selection defaults (video, audio, PES private data;

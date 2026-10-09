@@ -95,7 +95,7 @@ time-interleave index, TSPs per frame), `cfo_carriers`,
 ## Performance
 
 The receiver runs as a pipeline of two threads (demodulation, then FEC
-decoding). On a Ryzen 9 7950X it processes a Mode 3 signal at about 1.4×
+decoding). On a current 16-core desktop CPU it processes a Mode 3 signal at about 1.4×
 real time, the demodulator being the bottleneck. Live reception with
 `--hackrf` therefore needs a fast CPU and a release build; if it falls
 behind, the status line counts `overruns`. Recording to a file

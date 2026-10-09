@@ -668,7 +668,7 @@ fn old_numeric_forms_name_the_variants() {
         "{CC_LINE}\n=>\ncopy_control = {{ recording_control = \"copy-one-generation\", copy_control_type = \"undefined-00\", user_defined = 0 }}"
     ));
     assert!(e.contains("conflicts"), "{e}");
-    // ... and works alone (bisection: user_defined 0 is refused by the BDZ)
+    // ... and works alone (bisection: user_defined 0 was refused by the recorder)
     assert_eq!(
         cfg_err(&format!(
             "{CC_LINE}\n=>\ncopy_control = {{ recording_control = \"copy-one-generation\", user_defined = 0 }}"

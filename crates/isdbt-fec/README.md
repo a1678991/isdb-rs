@@ -134,7 +134,7 @@ captures or fixtures are needed.
 
 End-to-end, through `isdbt-phy` and `isdbt-ofdm`, the chain cross-decodes
 byte-exactly with the gr-isdbt oracle in both directions in 8 parameter
-sets ([VERIFICATION.md](../../VERIFICATION.md)); this settled the PRBS
+sets ([VERIFICATION.md](https://github.com/a1678991/isdb-rs/blob/main/VERIFICATION.md)); this settled the PRBS
 and puncturing reset points.
 
 ## Known limitations
@@ -152,4 +152,4 @@ and puncturing reset points.
   the next frame (traceback flushed per frame).
 
 Spec interpretations, quoted text and confirmation status:
-[SPEC-NOTES.md](SPEC-NOTES.md). Workspace overview: [README](../../README.md).
+[SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-fec/SPEC-NOTES.md). Workspace overview: [README](https://github.com/a1678991/isdb-rs/blob/main/README.md).

@@ -444,8 +444,8 @@ impl<'de> Deserialize<'de> for ComponentTypeCfg {
 /// otherwise Mode 3.  "The quality indicator shall be transmitted in
 /// accordance with the quality of an AAC coding stream" — the bit rates
 /// of Table 1 are "for reference purposes", so an explicit mode always
-/// wins.  The bench `a.m2a` (≈ 189 kbit/s stereo, 48 kHz) derives Mode 2,
-/// the value live broadcasters send for 192 kbit/s stereo.
+/// wins.  A ≈ 189 kbit/s stereo 48 kHz stream derives Mode 2, the value
+/// live broadcasters send for 192 kbit/s stereo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AudioQualityIndicator {
     /// From the measured stream ([`QualityMode::derive`]).
@@ -781,7 +781,8 @@ pub struct CopyControlCfg {
     /// (informative) Table F-2; understood to be normative in the ARIB
     /// operational guidelines TR-B14/TR-B15, not available locally).
     /// Default "serial-output-encoded" ('01'), as live broadcasters send and
-    /// a Sony BDZ-series recorder requires (bench 2026-10-08: '00' is refused).
+    /// one BDZ-series recorder was observed to require ('00' refused, see
+    /// SPEC-NOTES "Receiver compatibility notes").
     #[serde(default, with = "named_opt", skip_serializing_if = "Option::is_none")]
     pub copy_control_type: Option<CopyControlType>,
     /// APS_control_data (Annex F Table F-4), only with copy_control_type

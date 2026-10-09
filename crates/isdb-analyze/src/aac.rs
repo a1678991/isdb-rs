@@ -15,9 +15,9 @@
 //!   (12 + 1 + 2 bits, as `isdbt_mux::adts::b32::Rule::Layer` expects), so
 //!   a stream with another layer yields no frames (`aac.frames`).
 //!
-//! The raw_data_block is not walked (that needs the ISO/IEC 13818-7 Annex
+//! The raw_data_block is not parsed (that needs the ISO/IEC 13818-7 Annex
 //! A tables, not included; `isdbt-mux` SPEC-NOTES "AAC ADTS:
-//! raw_data_block walk removed"), so the crc_check value, coupling channel
+//! raw_data_block not parsed"), so the crc_check value, coupling channel
 //! elements (§5.2.2 (3)), element order (§5.2.3 (2)), PCE fields
 //! (§5.2.3 (3)(d)), SBR fill payloads (§5.2.3 (4)(a)) and the LC tool set
 //! are not checked.  Coded channels come from channel_configuration;
@@ -311,7 +311,7 @@ mod tests {
             (x.frame_length, x.buffer_fullness, x.raw_data_blocks),
             (0x1234, 0x5A5, 3)
         );
-        // bench a.m2a first header
+        // a first header of FFmpeg `aac` encoder output (no CRC, fullness 0x7FF)
         let a = header(&[0xFF, 0xF9, 0x4C, 0x80, 0x36, 0x5F, 0xFC]).unwrap();
         assert_eq!(
             (

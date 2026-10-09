@@ -6,7 +6,7 @@ interleaving, OFDM frame with pilots/TMCC/AC, IFFT and guard interval) and
 the receiver that inverts it (synchronisation, channel estimation, TMCC
 decoding, deinterleaving, soft demapping) down to per-layer LLRs.
 Everything above the coded-bit interface (RS, energy dispersal, byte
-interleaving, convolutional code) is in [`isdbt-fec`](../isdbt-fec).
+interleaving, convolutional code) is in [`isdbt-fec`](https://github.com/a1678991/isdb-rs/tree/main/crates/isdbt-fec).
 
 ## Spec scope
 
@@ -141,7 +141,7 @@ cargo test --release -p isdbt-ofdm --test loopback -- --ignored --nocapture
 Independent check: the gr-isdbt oracle (TX ↔ RX cross-decoding byte-exact
 in both directions, carrier-identical modulator output except for the
 documented gr-isdbt TMCC/AC deviations D1–D4) —
-[VERIFICATION.md](../../VERIFICATION.md). No test needs captures or files
+[VERIFICATION.md](https://github.com/a1678991/isdb-rs/blob/main/VERIFICATION.md). No test needs captures or files
 outside the repository.
 
 ## Known limitations
@@ -160,9 +160,9 @@ outside the repository.
   over a conducted link) have accepted this crate's conformant TMCC
   (B17–B19, B67, where gr-isdbt deviates) in one configuration only:
   coherent Mode 3, GI 1/8, partial reception 1 + 12 segments
-  ([VERIFICATION.md](../../VERIFICATION.md#real-receivers)).
+  ([VERIFICATION.md](https://github.com/a1678991/isdb-rs/blob/main/VERIFICATION.md#real-receivers)).
 - `TmccInfo::from_params` never announces a parameter switch; switching
   requires a caller-built `TmccInfo`.
 
 Interpretations of the spec text, with quotes and confirmation status:
-[SPEC-NOTES.md](SPEC-NOTES.md). Workspace overview: [README](../../README.md).
+[SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-ofdm/SPEC-NOTES.md). Workspace overview: [README](https://github.com/a1678991/isdb-rs/blob/main/README.md).

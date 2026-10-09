@@ -52,19 +52,19 @@ not included (SPEC-NOTES "AAC ADTS: raw_data_block not parsed").
 
 | Item | Role |
 |---|---|
-| [`Config`](src/config.rs) | `Config::from_toml` / `to_toml`; `deny_unknown_fields` everywhere. `config::EXAMPLE_TOML` = `examples/bench.toml` |
-| [`Multiplexer`](src/mux.rs) | `new(&cfg, &params, base_dir)`, `next_frame()` → `[Vec<Packet>; 3]`, `next_frame_full()` → (13-segment multiplex frame, per-layer packets), `slot_time(k, j)`, `stats()`, `tstd_violations()`, `warnings()`; also an endless `Iterator` |
+| [`Config`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/src/config.rs) | `Config::from_toml` / `to_toml`; `deny_unknown_fields` everywhere. `config::EXAMPLE_TOML` = `examples/bench.toml` |
+| [`Multiplexer`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/src/mux.rs) | `new(&cfg, &params, base_dir)`, `next_frame()` → `[Vec<Packet>; 3]`, `next_frame_full()` → (13-segment multiplex frame, per-layer packets), `slot_time(k, j)`, `stats()`, `tstd_violations()`, `warnings()`; also an endless `Iterator` |
 | `layer_slices` | borrows a frame as `isdbt_phy::Transmitter::transmit_frame` takes it |
-| [`TsWriter`](src/output.rs) | per-layer TS files and/or the multiplex-frame TS (`-` = stdout) |
+| [`TsWriter`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/src/output.rs) | per-layer TS files and/or the multiplex-frame TS (`-` = stdout) |
 | `signalling` | typed receiver-facing values (video decode control 0xC8, EIT component types 0x50/0xC4, digital copy control 0xC1, remote control key) by spec-table name |
 | `analysis::analyze` | measures a produced stream (section intervals, PCR, PES arrival vs DTS, CC); used by the tests and `isdb mux --report` |
-| [`adts`](src/adts/mod.rs) | ADTS header (`AdtsHeader`, every field), CRC-16 (`Crc16`), `buffer_channels` (from channel_configuration), `b32` (header `Rule`s with clause + quoted text, `check_frame` / `check_stream`, `conform` (pass or refuse), `cbr_fullness` / `stream_fullness`, `QualityMode`) |
-| [`audio`](src/audio.rs) | `AdtsEs::load(data, path, AdtsCompliance)` (`conform` / `warn` / `pass-through`), bit rate, derived quality mode; `SilentFrame` (valid silent ADTS frames of any size and header, crc_check computed from the known element layout, for tests) |
+| [`adts`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/src/adts/mod.rs) | ADTS header (`AdtsHeader`, every field), CRC-16 (`Crc16`), `buffer_channels` (from channel_configuration), `b32` (header `Rule`s with clause + quoted text, `check_frame` / `check_stream`, `conform` (pass or refuse), `cbr_fullness` / `stream_fullness`, `QualityMode`) |
+| [`audio`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/src/audio.rs) | `AdtsEs::load(data, path, AdtsCompliance)` (`conform` / `warn` / `pass-through`), bit rate, derived quality mode; `SilentFrame` (valid silent ADTS frames of any size and header, crc_check computed from the known element layout, for tests) |
 | `si`, `video`, `tstd`, `jst` | PSI/SI builder, H.262 parser, T-STD model, JST clock |
-| [`capacity`](src/capacity.rs) | `layer_bps(params, layer)` (TS rate from Table 3-3 × segments and the frame length), `suggest(params, layer, need_bps, n)` (layer layouts that carry a rate: the most robust code rate per layout, single 13-segment layer, shorter guard intervals), `over_capacity_message` (also used by `isdb tx --mux-ts`) |
-| [`pcrclock`](src/pcrclock.rs) | `PcrClock`: arrival time of every packet of a recorded TS interpolated from its PCR (H.222.0 eq. 2-4), wraps unwrapped, discontinuities bridged at the previous rate; each packet's `Anchor` maps the PTS/DTS it carries onto the same time line (also used by `isdb tx --mux-ts` pacing) |
-| [`relay`](src/relay.rs) | `kind = "ts-program"`: `probe` (program selection over PAT/PMT/SDT, ES selection, `classify` → `Role` and the PID plan, carried / dropped descriptors and PIDs, stream parameters, mean / peak rates, the T-STD model on the source timing, source EIT p/f and TOT; `Probe::report`), `select_source_program`, the expansion into service streams, the PCR-paced re-timing; `Multiplexer::relay_status`, `relay_stats`, `relays_finished`, `notes`; `MuxError::OverCapacity` (layer + need, for `--auto-layout`) |
-| [`relay_template`](src/relay_template.rs) | `RelayOptions`: the values of `examples/relay-ts.toml` filled from a few options (source, program / service name, channel, remote key, area code, name, copy control, at_eof, EIT from source, layer, clock) → `to_toml()` / `config()`; what `isdb … --relay FILE` runs and `--print-config` prints |
+| [`capacity`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/src/capacity.rs) | `layer_bps(params, layer)` (TS rate from Table 3-3 × segments and the frame length), `suggest(params, layer, need_bps, n)` (layer layouts that carry a rate: the most robust code rate per layout, single 13-segment layer, shorter guard intervals), `over_capacity_message` (also used by `isdb tx --mux-ts`) |
+| [`pcrclock`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/src/pcrclock.rs) | `PcrClock`: arrival time of every packet of a recorded TS interpolated from its PCR (H.222.0 eq. 2-4), wraps unwrapped, discontinuities bridged at the previous rate; each packet's `Anchor` maps the PTS/DTS it carries onto the same time line (also used by `isdb tx --mux-ts` pacing) |
+| [`relay`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/src/relay.rs) | `kind = "ts-program"`: `probe` (program selection over PAT/PMT/SDT, ES selection, `classify` → `Role` and the PID plan, carried / dropped descriptors and PIDs, stream parameters, mean / peak rates, the T-STD model on the source timing, source EIT p/f and TOT; `Probe::report`), `select_source_program`, the expansion into service streams, the PCR-paced re-timing; `Multiplexer::relay_status`, `relay_stats`, `relays_finished`, `notes`; `MuxError::OverCapacity` (layer + need, for `--auto-layout`) |
+| [`relay_template`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/src/relay_template.rs) | `RelayOptions`: the values of `examples/relay-ts.toml` filled from a few options (source, program / service name, channel, remote key, area code, name, copy control, at_eof, EIT from source, layer, clock) → `to_toml()` / `config()`; what `isdb … --relay FILE` runs and `--print-config` prints |
 
 Example configurations: `examples/bench.toml` (live-broadcaster values, as
 seen in a live terrestrial capture), `examples/bench-minimal.toml` (every
@@ -76,7 +76,7 @@ remote key 9; program and PIDs detected from the recording; its `source =
 "recording.ts"` is a placeholder for your own recording). Transmission parameters are
 not in the TOML: they come from `Params` (the `isdb` `--mode/--gi/--layer-*`
 options). Every key, its default and its spec reference:
-[docs/mux-config.md](../../docs/mux-config.md).
+[docs/mux-config.md](https://github.com/a1678991/isdb-rs/blob/main/docs/mux-config.md).
 
 ```rust
 use isdbt_mux::{Config, Multiplexer};
@@ -97,18 +97,18 @@ let params = Params::new(
 // One service whose only stream is declared in the PMT (no media file).
 let cfg = Config::from_toml(r#"
 [network]
-network_id = 0x7FE0
+network_id = 0x79EE
 name = "ベンチ"
 area_code = 0x5A5
 remote_control_key_id = 9
 channels = [27]
 
 [transport]
-transport_stream_id = 0x7FE0
+transport_stream_id = 0x79EE
 
 [clock]
 source = "fixed"
-start = "2026-10-08T12:00:00"
+start = "2026-01-01T12:00:00"
 
 [[service]]
 service_id = 0x0400
@@ -205,7 +205,7 @@ assert!(full.iter().all(|p| p[0] == 0x47));
 - **Operational choices** (values not dictated by the local specs — PCR
   positions, SI layer, no section packing, descriptor order, copy-control
   defaults, etc.) are listed, numbered, at the end of
-  [SPEC-NOTES.md](SPEC-NOTES.md), with which ones follow live practice and
+  [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/SPEC-NOTES.md), with which ones follow live practice and
   which a bisection on a Sony BDZ-series recorder showed to matter
   (copy_control_type `'00'` in 0xC1 user_defined is refused; `'01'`
   plays).
@@ -220,9 +220,9 @@ assert!(full.iter().all(|p| p[0] == 0x47));
 | `tests/relay_roles.rs` | permuted source PIDs, two audio streams (secondary first in the PMT), caption / superimpose / untagged ES with injected synchronous (0xBD, PTS) and asynchronous (0xBF) PES: roles and plan PIDs 0x0111/0x0112/0x0113/0x0130/0x0138/0x0139, carried 0xFD, PES bytes on the new PIDs, validation clean; three-program recording: ambiguity error listing number / SDT name / streams, selection by `program`, `service_id`, `service_name` (full-width), substring ambiguity, not found, only-program-with-packets; explicit `pid_map` errors (not an ES, not relayed, output collision), `"keep"`, per-role `pids`, config errors; the template's defaults = `examples/relay-ts.toml` | synthetic media |
 | `tests/relay.rs` | a synthetic BS-like source (network_id 0x0004, CA descriptors in program and ES loops, ECM PID, copy control, a carousel stream; PCR and PTS wrap 2 s in) generated by this crate, relayed for 21 s (2+ loop passes): `isdb-analyze` validation without errors; no T-STD violation or late PES; ES bytes identical PES by PES across passes; the arrival→DTS distance equal to the source's within 5 ms (first pass) and never earlier / at most 0.5 s held after a seam; PTS continuous across seams and the wrap; CA/ECM/carousel/foreign copy control gone, stream_identifier carried, 0xC8 derived; source EIT p/f copied; `at_eof = "end"` stops; a 1-segment layer is refused with layouts that fit (`rate_check = "warn"` relays anyway); ts-program key validation; `examples/relay-ts.toml` parses | synthetic media |
 | `tests/signalling.rs` | both shipped examples re-decode to the named variants (live-broadcaster values for `bench.toml`, derived/copy-free for `bench-minimal.toml`); synthetic PMTs built with the isdb-ts/isdb-si encoders (three HD services with CA / access control / copy control `a4 42` / content availability in the program loop and stream identifier, video decode control `47`, data component 0x0008/0x000C in the ES loops; a data-only service; the one-seg service with copy control `a8 02`, H.264, data component 0x0012/0x000D) re-encode byte-identically and every descriptor decodes to its named isdb-si variant; raw duplicates rejected; remote-key range; old numeric forms rejected with variant names; maximum_bitrate / component loop encoding; examples round-trip through TOML | synthetic (built in the test) |
-| `tests/adts.rs` `bench_media_refused_by_conform` | the bench `a.m2a` violates exactly protection_absent and adts_buffer_fullness (470/470 frames); `conform` refuses it ("crc_check cannot be inserted") and reports the fullness model (≠ 0x7FF, ≤ the buffer); `warn` sends it unchanged; derived Mode 2 | `$ISDB_RS_MEDIA_DIR/a.m2a` (SKIP when unset / absent) |
-| `tests/adts.rs` `capture_all_frames_conform` | every frame of every ADTS PID of a terrestrial capture passes every header rule and `conform` byte-identically; fullness never 0x7FF (on the development capture: 504 + 249 frames of two AAC PIDs) | `$ISDB_RS_CAPTURE_TS` (SKIP when unset / absent) |
-| `tests/media.rs` `bench_media_ffprobe` | 10 s of `bench.toml` with the real media: no CC events, no T-STD violation, no late PES; ffprobe detects mpeg2video + aac with the expected duration; ffmpeg decode errors are printed | opt-in: `v63p.m2v` and `a.m2a` in the directory named by `ISDB_RS_MEDIA_DIR`, and `ffprobe` — prints `SKIP` and passes when the variable is unset or a file or ffprobe is missing |
+| `tests/adts.rs` `media_audio_gate_follows_header_report` | your own ADTS file: frame count = header report; `conform` passes it byte-identically exactly when no error-severity rule is violated, else refuses it ("crc_check cannot be inserted" for protection_absent '1') with a fullness model (≠ 0x7FF, ≤ the buffer); `warn` sends it unchanged; the quality mode is Table 1's for the file's own rate | `$ISDB_RS_MEDIA_DIR/audio.m2a` (SKIP when unset / absent) |
+| `tests/adts.rs` `capture_all_frames_conform` | every frame of every unscrambled ADTS PID of a terrestrial capture (e.g. the one-seg audio, sent in the clear; scrambled PIDs do not parse as ADTS and are skipped) passes every header rule and `conform` byte-identically; fullness never 0x7FF | `$ISDB_RS_CAPTURE_TS` (SKIP when unset / absent) |
+| `tests/media.rs` `media_ffprobe` | 10 s of `bench.toml` with your own media: no CC events, no T-STD violation, no late PES; ffprobe detects mpeg2video + aac with the expected duration and the width, height and sampling frequency the files declare; ffmpeg decode errors are printed | opt-in: `video.m2v` and `audio.m2a` in the directory named by `ISDB_RS_MEDIA_DIR`, and `ffprobe` — prints `SKIP` and passes when the variable is unset or a file or ffprobe is missing |
 | unit tests in `src/` | capacity rates (Table 3-3: B 12 seg 64QAM 3/4 = 16.85, 7/8 = 19.66, 13 seg 7/8 = 21.30 Mbit/s at GI 1/8) and suggestions; PCR clock (eq. 2-4 interpolation, wrap, discontinuity at the previous rate, reference PID lock); PTS/DTS rewrite keeping prefix and marker bits; GOP flags after the 25-bit time_code; ADTS header round trip, CRC-16 check value, `SilentFrame` crc_check against an independent Appendix 1 computation, one frame per B32 Part 2 header rule (each violating exactly that rule), `conform` pass-through of conforming input and its refusals (protection_absent '1', protected input needing a header rewrite, re-encode cases), `warn`/`pass-through`, reservoir model (recurrence, VBR rate search, cap), Table 1 mode derivation; B10 Tables 6-62/6-63 codes, frequency codes, B31 Table 3-2 ranking, ADTS parsing, Annex C examples, IBBP timestamps, vbv_delay rewrite, copy-control user_defined, remote-key range, 0xC8 resolution, T-STD TB limit / underflow | — |
 
 Synthetic media (`tests/common/mod.rs`): closed-GOP 1440×1080i MPEG-2
@@ -255,7 +255,8 @@ default `conform` unchanged.
   access unit (conservative); Main/Low-level MBn without the
   `VBVmax − vbv_buffer_size` term.
 - Media looping offsets timestamps by the longest stream's duration; the
-  shorter stream has a gap at the seam (bench media: 17 ms of video).
+  shorter stream has a gap at the seam (up to one frame of the shorter
+  stream, e.g. 17 ms of video).
 - `ts-program`: a PES is sent only once complete (1.2 s look-ahead);
   audio PES that do not start on an ADTS frame (BS: 720-byte PES) make the
   first relayed audio PES start mid-frame (one decoder resync at the cut-in;
@@ -280,6 +281,6 @@ default `conform` unchanged.
 
 ## See also
 
-- [SPEC-NOTES.md](SPEC-NOTES.md) — interpretations, receiver evidence and
+- [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-mux/SPEC-NOTES.md) — interpretations, receiver evidence and
   the numbered operational choices.
-- Workspace [README](../../README.md).
+- Workspace [README](https://github.com/a1678991/isdb-rs/blob/main/README.md).

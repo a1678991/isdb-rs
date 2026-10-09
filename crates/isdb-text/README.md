@@ -97,7 +97,7 @@ Print the decoded strings for a human check:
 `cargo test -p isdb-text --test synthetic -- --nocapture`. Run
 `capture_si_strings` on your own capture with
 `ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test -p isdb-text --test synthetic capture`
-([docs/test-data.md](../../docs/test-data.md)); during development, on a
+([docs/test-data.md](https://github.com/a1678991/isdb-rs/blob/main/docs/test-data.md)); during development, on a
 live terrestrial capture, it found 100 distinct SI strings, all decoded
 with zero issues and round-tripped.
 
@@ -123,7 +123,7 @@ with zero issues and round-tripped.
 
 ## See also
 
-- [SPEC-NOTES.md](SPEC-NOTES.md) — interpretations with quoted spec text and
+- [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/crates/isdb-text/SPEC-NOTES.md) — interpretations with quoted spec text and
   confirmation status.
-- Workspace [README](../../README.md) — ground truth, verification levels,
+- Workspace [README](https://github.com/a1678991/isdb-rs/blob/main/README.md) — ground truth, verification levels,
   conventions.

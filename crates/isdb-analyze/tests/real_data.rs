@@ -1,8 +1,10 @@
 //! Real captures (opt-in; no capture is committed). Each test reads the
 //! file named by an environment variable and prints a `SKIP` line and
 //! passes when the variable is unset or the file is missing:
-//! * `ISDB_RS_CAPTURE_TS` — a descrambled live ISDB-T terrestrial capture
-//!   (null packets may be stripped);
+//! * `ISDB_RS_CAPTURE_TS` — an unscrambled (transport_scrambling_control
+//!   '00') ISDB-T terrestrial capture, e.g. of a one-seg service, which is
+//!   sent in the clear (null packets may be stripped); the PSI/SI checks
+//!   treat payloads as opaque, only the AAC/PES checks need a clear payload;
 //! * `ISDB_RS_OUR_TS` — a transport stream written by this project's
 //!   multiplexer (for the NIT transplant and the ours-vs-capture diff).
 //!
@@ -24,7 +26,7 @@ use isdb_ts::psi::Pat;
 use isdb_ts::section::Long;
 use std::path::PathBuf;
 
-/// Descrambled live terrestrial capture.
+/// Unscrambled (transport_scrambling_control '00') terrestrial capture.
 const CAPTURE: &str = "ISDB_RS_CAPTURE_TS";
 /// Transport stream written by this project's multiplexer.
 const OURS: &str = "ISDB_RS_OUR_TS";

@@ -225,17 +225,17 @@ coded_enum! {
     /// the ARIB operational guidelines (TR-B14 terrestrial / TR-B15 BS, not
     /// available locally) are understood to make this layout normative.
     ///
-    /// Receiver evidence (a Sony BDZ-series recorder, bench 2026-10-08): with
+    /// Receiver evidence (observed on one Sony BDZ-series recorder): with
     /// digital_recording_control_data '10', copy_control_type '01' (user_defined
     /// 0b0100, as live terrestrial broadcasters send) plays; '00'
     /// (user_defined 0b0000) is refused with "Unsupported signal".
     pub enum CopyControlType: "copy_control_type", "B10 Annex F (informative) Table F-2", 2 bits {
-        /// '00' "Undefined".  Refused by a Sony BDZ-series recorder (bench 2026-10-08).
+        /// '00' "Undefined".  Refused by one Sony BDZ-series recorder (observation).
         Undefined00 = 0b00 => "undefined-00", "Undefined";
         /// '01' "Output by encoding to serial interface" (*1 "Encoding
         /// method specified by service provider is used"); the next 2 bits
-        /// are APS_control_data.  Live broadcasters send it; required by the
-        /// a Sony BDZ-series recorder (bench 2026-10-08).
+        /// are APS_control_data.  Live broadcasters send it; one Sony
+        /// BDZ-series recorder was observed to require it.
         SerialOutputEncoded = 0b01 => "serial-output-encoded", "Output by encoding to serial interface";
         /// '10' "Undefined".
         Undefined10 = 0b10 => "undefined-10", "Undefined";

@@ -1,6 +1,9 @@
-//! Real-data check (workspace README "How it is verified", item 4) over a
-//! descrambled capture of a live ISDB-T broadcast (null packets may be
-//! stripped by the tuner software).  No capture is committed: the test reads
+//! Real-data check (workspace README "How it is verified", item 4) over an
+//! unscrambled (transport_scrambling_control '00') capture of an ISDB-T
+//! broadcast, e.g. a one-seg service, which is sent in the clear (null
+//! packets may be stripped by the tuner software). The packet and section
+//! checks treat payloads as opaque; only the PES checks need a clear
+//! payload.  No capture is committed: the test reads
 //! the file named by the environment variable `ISDB_RS_CAPTURE_TS` and
 //! prints a `SKIP` line and passes when the variable is unset or the file
 //! does not exist.
@@ -12,8 +15,8 @@
 //! Asserts: every packet decodes and re-encodes byte-identically; every long
 //! section on PIDs 0x0000, 0x0001, 0x0010–0x0014, 0x0024 and the PMT PIDs has
 //! a valid CRC_32; PAT/CAT/PMT decode and re-encode byte-identically; every
-//! PES packet on the PMT's elementary PIDs decodes and re-encodes
-//! byte-identically.  Spec-rule violations are printed, not asserted.
+//! PES packet on the PMT's elementary PIDs that carry no scrambled packet
+//! decodes and re-encodes byte-identically.  Spec-rule violations are printed, not asserted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -33,7 +36,7 @@ const CAPTURE_ENV: &str = "ISDB_RS_CAPTURE_TS";
 /// line on stderr) when the variable is unset or the file is missing.
 fn capture() -> Option<Vec<u8>> {
     let Some(p) = std::env::var_os(CAPTURE_ENV).map(PathBuf::from) else {
-        eprintln!("SKIP: {CAPTURE_ENV} not set (path of a descrambled ISDB-T capture)");
+        eprintln!("SKIP: {CAPTURE_ENV} not set (path of an unscrambled ISDB-T capture)");
         return None;
     };
     match std::fs::read(&p) {
@@ -223,8 +226,22 @@ fn capture_round_trips() {
     assert!(by_table.contains_key(&(0x0000, 0x00)));
 
     // 3. PES on the elementary PIDs (PES stream_types) listed in the PMTs.
-    let mut asm: BTreeMap<u16, PesAssembler> =
-        es_pids.iter().map(|&p| (p, PesAssembler::new(p))).collect();
+    // A PID with any scrambled packet (transport_scrambling_control ≠ '00')
+    // has an opaque payload: it is skipped here (and only here).
+    let scrambled: BTreeSet<u16> = packets
+        .iter()
+        .filter(|raw| raw[3] & 0xC0 != 0)
+        .map(|raw| (((raw[1] & 0x1F) as u16) << 8) | raw[2] as u16)
+        .collect();
+    let skipped: Vec<u16> = es_pids.intersection(&scrambled).copied().collect();
+    if !skipped.is_empty() {
+        println!("PES checks skipped on scrambled PIDs: {skipped:04x?}");
+    }
+    let mut asm: BTreeMap<u16, PesAssembler> = es_pids
+        .iter()
+        .filter(|p| !scrambled.contains(p))
+        .map(|&p| (p, PesAssembler::new(p)))
+        .collect();
     let mut pes_count: BTreeMap<u16, usize> = BTreeMap::new();
     let mut pes_events: BTreeMap<String, usize> = BTreeMap::new();
     let mut pes_violations: BTreeMap<String, usize> = BTreeMap::new();

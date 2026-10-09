@@ -11,12 +11,12 @@
 //! Only header fields are checked.  The restrictions that need the
 //! raw_data_block contents (crc_check value, coupling channel elements,
 //! element order, PCE fields, SBR fill payloads, LC tool set) are not
-//! checked: walking raw_data_block needs the ISO/IEC 13818-7 Annex A
+//! checked: parsing raw_data_block needs the ISO/IEC 13818-7 Annex A
 //! tables, which this crate does not include (SPEC-NOTES "AAC ADTS:
-//! raw_data_block walk removed").  For the same reason no header is ever
+//! raw_data_block not parsed").  For the same reason no header is ever
 //! rewritten: the Appendix 1 crc_check covers every header bit, so any
 //! header change would need the CRC recomputed over element bits whose
-//! boundaries are unknown without that walk.
+//! boundaries are unknown without that parse.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn quality_derivation_table_1() {
-        // bench a.m2a ≈ 189 kbit/s stereo 48 kHz → Mode 2
+        // an encoder at ≈ 189 kbit/s stereo 48 kHz → Mode 2
         assert_eq!(
             QualityMode::derive(48_000, 189_100.0, 2),
             QualityMode::Mode2
