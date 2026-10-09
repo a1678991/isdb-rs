@@ -48,6 +48,36 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   variables) and a differential test against gr-isdbt (`oracle/`,
   `VERIFICATION.md`).
 - Repository harness: pinned toolchain, rustfmt/clippy/cargo-deny
-  configuration, git hooks, CI and Renovate.
+  configuration, git hooks (lefthook, commitlint), a Makefile as the single
+  check entry point, CI workflows (lint, test, doc, cargo-deny, MSRV) and
+  Renovate.
+- `oracle/Dockerfile`: a reproducible gr-isdbt oracle container (Ubuntu
+  24.04, GNU Radio 3.10, gr-isdbt built from upstream at a pinned commit),
+  and `oracle/README.md` with the licensing of the oracle scripts.
+
+### Changed
+
+- Crates and binary renamed: `arib-ts` → `isdb-ts`, `arib-text` →
+  `isdb-text`, `arib-si` → `isdb-si`, `arib-analyze` → `isdb-analyze`,
+  `arib-mux` → `isdbt-mux`, `hackrf` → `isdb-hackrf`, `arib-cli` →
+  `isdb-cli`; the binary `arib` is now `isdb`. The `isdbt-*` PHY crates keep
+  their names. The default oracle container name is now `isdb-oracle`
+  (`ISDB_RS_ORACLE_CONTAINER` still overrides it).
+- `ts-program` relay, conditional access: input must be unscrambled
+  (transport_scrambling_control '00') and scrambled input is refused; the
+  tool never descrambles. The source program's CA_descriptor and ECM are
+  now kept by default (`ca = "keep"`); `ca = "drop"` removes them on
+  explicit request.
+- `ts-program` relay, copy control: the relayed service preserves the
+  source's digital copy control by default. Relaxing it is possible only
+  explicitly, and the source value is then reported as an `info` line.
+
+### Removed
+
+- Insertion of AAC crc_check into unprotected ADTS input. Computing the
+  CRC needs a raw_data_block parser written from ISO/IEC 13818-7, which
+  the project does not have, so the default `adts_compliance = "conform"`
+  refuses such input with the reason, and `"warn"` sends it unchanged.
+  crc_check values of protected input are neither verified nor rewritten.
 
 [Unreleased]: https://github.com/a1678991/isdb-rs/commits/main

@@ -38,6 +38,9 @@ In scope, for example:
   `isdb ts`).
 - Bugs that make `isdb tx` radiate without `--rf-enable`, or keep the
   device transmitting after the program reports that it stopped.
+- Bugs that let the `ts-program` relay accept scrambled input, or drop or
+  weaken the source's copy-control or conditional-access signalling
+  without the user asking for it explicitly.
 
 Out of scope: radio-regulation questions about how someone operates their
 own equipment, and requests for descrambling / conditional-access support

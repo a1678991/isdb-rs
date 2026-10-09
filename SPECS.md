@@ -33,9 +33,9 @@ Broadcasting", PDF printed pp. 89–138). This file uses the same name.
 The PDFs are not distributed with this repository. Each URL was checked with
 `curl -sI` on 2026-10-08. Every one returned HTTP 200 with
 `Content-Type: application/pdf`, and the remote `Content-Length` equalled
-the size of the copy the hashes below were taken from.
+the size of the file the hashes below were taken from.
 
-| Spec | Local edition | Title | Official download | Local PDF | `specs/` text | Role here |
+| Spec | Edition used | Title | Official download | PDF file name | `specs/` text | Role here |
 |---|---|---|---|---|---|---|
 | ITU-T H.222.0 (05/2006) \| ISO/IEC 13818-1:2007 | 05/2006 | Information technology – Generic coding of moving pictures and associated audio information: Systems | https://www.itu.int/rec/dologin_pub.asp?lang=e&id=T-REC-H.222.0-200605-S!!PDF-E&type=items (landing page https://www.itu.int/rec/T-REC-H.222.0-200605-S/en) | `T-REC-H.222.0-200605-S.pdf` | `ITU-T-H.222.0-2006.txt` | implemented (`isdb-ts`, `isdb-analyze`, `isdbt-mux`) |
 | ARIB STD-B10 | 5.13-E1 (2019-12-05) | Service Information for Digital Broadcasting System | https://www.arib.or.jp/english/html/overview/doc/6-STD-B10v5_13-E1.pdf | `6-STD-B10v5_13-E1.pdf` | `ARIB-STD-B10-v5.13.txt` | implemented (`isdb-si`, `isdb-analyze`, `isdbt-mux`) |
@@ -48,7 +48,7 @@ the size of the copy the hashes below were taken from.
 | ARIB STD-B25 | 6.7-E1 (2019-01-21) | Conditional Access System Specifications for Digital Broadcasting | https://www.arib.or.jp/english/html/overview/doc/6-STD-B25v6_7-E1.pdf | `6-STD-B25v6_7-E1.pdf` | — | referenced only: descriptors 0xCB/0xCC are left `Unknown` (`isdb-si`) |
 | ARIB STD-B19 | 1.0-E3 (1998-05-29) | Camera Positioning Information Conveyed by Ancillary Data Packets | https://www.arib.or.jp/english/html/overview/doc/6-STD-B19v1_0E3.pdf | `6-STD-B19v1_0E3.pdf` | — | **not used.** Studio ancillary-data standard (its scope is equipment per STD-B6 / BTA S-005B). The workspace never cites it ("B19" hits in the code are TMCC bit B19) |
 
-SHA-256 of the local PDFs:
+SHA-256 of the PDF files used:
 
 ```
 4a00a13540a20c372e6e1f98b3c65cb2f41f7ac1ac4fab2ac3cdaed5162651c2  T-REC-H.222.0-200605-S.pdf
@@ -70,17 +70,18 @@ repository; `specs/` is gitignored. To get them, download the PDFs from the
 URLs above, check them against the hashes, and extract the text:
 
 ```sh
-mkdir -p ../arib-specs specs
-# download the PDFs into ../arib-specs/ (URLs above), then compare
-(cd ../arib-specs && sha256sum *.pdf)   # against the list above
-pdftotext -layout ../arib-specs/T-REC-H.222.0-200605-S.pdf specs/ITU-T-H.222.0-2006.txt
-pdftotext -layout ../arib-specs/6-STD-B10v5_13-E1.pdf     specs/ARIB-STD-B10-v5.13.txt
-pdftotext -layout ../arib-specs/6-STD-B24v6_4-1p3-E1.pdf  specs/ARIB-STD-B24-v6.4-vol1.txt
-pdftotext -layout ../arib-specs/6-STD-B31v2_2-E1.pdf      specs/ARIB-STD-B31-v2.2.txt
-pdftotext -layout ../arib-specs/6-STD-B32v3_11-1p3-E1.pdf specs/ARIB-STD-B32-v3.11-part1.txt
-pdftotext -layout ../arib-specs/6-STD-B32v3_11-2p3-E1.pdf specs/ARIB-STD-B32-v3.11-part2.txt
-pdftotext -layout ../arib-specs/6-STD-B32v3_11-3p3-E1.pdf specs/ARIB-STD-B32-v3.11-part3.txt
-pdftotext -layout ../arib-specs/6-STD-B21v5_12-E2.pdf     specs/ARIB-STD-B21-v5.12.txt
+PDFS=/path/to/spec-pdfs   # any directory outside the repository
+mkdir -p "$PDFS" specs
+# download the PDFs into "$PDFS" (URLs above), then compare
+(cd "$PDFS" && sha256sum *.pdf)   # against the list above
+pdftotext -layout "$PDFS"/T-REC-H.222.0-200605-S.pdf specs/ITU-T-H.222.0-2006.txt
+pdftotext -layout "$PDFS"/6-STD-B10v5_13-E1.pdf     specs/ARIB-STD-B10-v5.13.txt
+pdftotext -layout "$PDFS"/6-STD-B24v6_4-1p3-E1.pdf  specs/ARIB-STD-B24-v6.4-vol1.txt
+pdftotext -layout "$PDFS"/6-STD-B31v2_2-E1.pdf      specs/ARIB-STD-B31-v2.2.txt
+pdftotext -layout "$PDFS"/6-STD-B32v3_11-1p3-E1.pdf specs/ARIB-STD-B32-v3.11-part1.txt
+pdftotext -layout "$PDFS"/6-STD-B32v3_11-2p3-E1.pdf specs/ARIB-STD-B32-v3.11-part2.txt
+pdftotext -layout "$PDFS"/6-STD-B32v3_11-3p3-E1.pdf specs/ARIB-STD-B32-v3.11-part3.txt
+pdftotext -layout "$PDFS"/6-STD-B21v5_12-E2.pdf     specs/ARIB-STD-B21-v5.12.txt
 ```
 
 With poppler `pdftotext` 26.08.0, rerunning the B31 and H.222.0 commands gave
@@ -120,7 +121,7 @@ The SPEC-NOTES statements that depend on these documents. Search terms used:
 
 | Statement | File |
 |---|---|
-| "Not available locally: ITU-T H.262 …, ISO/IEC 13818-7 …, ARIB STD-B32 Parts 2/3 …, ARIB TR-B14"; every **[from knowledge]** tag | [crates/isdbt-mux/SPEC-NOTES.md](crates/isdbt-mux/SPEC-NOTES.md) (header, video, AAC, T-STD, PMT/EIT descriptor sections) |
+| "not available locally" (ITU-T H.262, ISO/IEC 13818-7, ARIB TR-B14 / TR-B15) and every **[from knowledge]** tag | [crates/isdbt-mux/SPEC-NOTES.md](crates/isdbt-mux/SPEC-NOTES.md) (header, video, AAC, T-STD, PMT/EIT descriptor sections) |
 | Operational choices 1–30 "not dictated by the local specs — test on receivers" | [crates/isdbt-mux/SPEC-NOTES.md](crates/isdbt-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers) |
 | Annex F layout "understood" normative per TR-B14/TR-B15 | [crates/isdb-si/SPEC-NOTES.md](crates/isdb-si/SPEC-NOTES.md#isdb-si-digital_copy_control_descriptor-4-bit-field-after-the-flags) |
 | SDTT/CDT/0xC9/0xCB/0xCC "To be typed from B21/B25 when those are admitted" | [crates/isdb-si/SPEC-NOTES.md](crates/isdb-si/SPEC-NOTES.md#isdb-si-descriptors-and-tables-defined-outside-b10) |
@@ -140,7 +141,7 @@ clause.
 |---|---|
 | **S** | spec-vector or unit tests only (values printed in the spec asserted in `spec_*` / unit tests) |
 | **P** | property tests (`prop_*`: lossless `encode(decode(x)) == x`, TX/RX inverse pairs) |
-| **L** | decoded with zero errors and re-encoded byte-identically on a live terrestrial capture recorded during development (120,091 packets, 10.777 s; not distributed). The figures quoted in this file are from that capture; the same opt-in tests run on your own capture with `ISDB_RS_CAPTURE_TS` ([docs/test-data.md](docs/test-data.md)) |
+| **L** | decoded with zero errors and re-encoded byte-identically on a live terrestrial capture (120,091 packets, 10.777 s). This is a development result: the capture is not distributed, so the figures quoted with **L** in this file cannot be reproduced from the repository. The same opt-in tests run on your own capture through the `ISDB_RS_*` environment variables (`ISDB_RS_CAPTURE_TS`, …; [docs/test-data.md](docs/test-data.md)) and print the corresponding figures for it |
 | **O** | gr-isdbt oracle, byte-exact in both directions ([VERIFICATION.md](VERIFICATION.md), 8 parameter sets / 9 runs) |
 | **RX** | a real receiver accepted the Rust output over a conducted link (HackRF → coax → attenuators → receiver), configuration **C_rx**: `isdb tx` with Mode 3, GI 1/8, partial reception; layer A 1 seg QPSK 2/3 I=2; layer B 12 seg 64QAM 3/4 I=2; multiplex from `isdbt-mux`. MyGica S270 USB tuner: its 12.0 s capture validates with `isdb ts validate`: 0 errors, 5 warnings. A Sony BDZ-series recorder ("the recorder" below): registered the service in a channel scan and played it, with digital copy control copy_control_type '01' (§3.4). RX shows only that the whole chain was accepted in C_rx; it does not test each clause separately ([VERIFICATION.md](VERIFICATION.md#real-receivers)) |
 | **RX(gr)** | a real receiver accepted *gr-isdbt* output that the Rust chain matches byte-exactly (S270, PER 0) |
@@ -162,7 +163,7 @@ clause.
 | §2.4.3 Table 2-1 framing; 192/204-byte units (heuristic, not H.222.0) | `isdb_ts::reader` | `autodetects_each_format_with_garbage_prefix`, `resyncs_after_corruption`, `short_and_empty_inputs` | L |
 | §2.1.64 reserved bits = '1' | `check` functions in `isdb_ts`, `isdb_si::conformance`, `isdb_analyze::validate` | `spec_conformance_reserved_bits`, `reserved_bits_are_warnings` | L (no violations in the live PSI) |
 | §2.7.2 PCR interval ≤ 0.1 s | `isdb_analyze::validate`; generation in `isdbt_mux::mux` | `pcr_interval_over_100ms`; `pcr_and_timestamps` (mux) | Validator: L. It flags the live one-seg program, see §3.3. Mux: S, RX |
-| §2.4.2.2 PCR tolerance ±500 ns; eq. 2-4 byte timing | `isdb_analyze::validate`, `isdb_analyze::timebase`; `isdbt_mux::pcrclock` (packet arrival times of a recorded TS: `isdb tx --mux-ts` pacing, `ts-program` relay re-timing) | `interpolates_between_pcrs_and_inverts`; `spec_eq_2_4_interpolation`, `wrap_is_continuous_and_anchor_maps_timestamps`, `discontinuity_continues_at_previous_rate`, `relays_a_foreign_program_as_a_terrestrial_service` | estimate (warning only); relay: S, real data (a BS recording) |
+| §2.4.2.2 PCR tolerance ±500 ns; eq. 2-4 byte timing | `isdb_analyze::validate`, `isdb_analyze::timebase`; `isdbt_mux::pcrclock` (packet arrival times of a recorded TS: `isdb tx --mux-ts` pacing, `ts-program` relay re-timing) | `interpolates_between_pcrs_and_inverts`; `spec_eq_2_4_interpolation`, `wrap_is_continuous_and_anchor_maps_timestamps`, `discontinuity_continues_at_previous_rate`, `relays_a_foreign_program_as_a_terrestrial_service` | estimate (warning only); relay: S, plus the opt-in `relay_recording` test on a recording you supply (`ISDB_RS_RELAY_TS`) |
 | §2.7.4 PTS spacing ≤ 0.7 s; §2.4.2.6 T-STD delay ≤ 1 s | `isdb_analyze::validate`; `isdbt_mux::tstd` | `pts_interval_over_700ms`; `tb_limits_bursts`, `underflow_detected`, `tables_conform_and_repeat` | S (mux), RX |
 | §2.4.2.3–2.4.2.6 T-STD buffers (TBn/MBn/EBn/Bn) | `isdbt_mux::tstd` | as above; `bench_media_ffprobe` | S, RX. TBsys/Bsys for PSI are **not modelled** |
 | §2.1.1 access unit | `isdbt_mux::video` | `ibbp_timestamps` | S, RX |
@@ -201,7 +202,7 @@ clause.
 | DRCS (§7.1.1.5, Annex E.5) | U+FFFD + `IssueKind::Drcs` | `spec_drcs_placeholder` | — (no mapping by design) |
 | JIS compatible Kanji Plane 1 beyond rows 1–84, Plane 2 | `IssueKind::UnsupportedCode` | — | — (no JIS X 0213 table) |
 | Robustness on truncated escape / control sequences | `isdb_text::decode` | `spec_truncated_sequences` | S |
-| Part 1 §3.1 / Part 3 §3.1 definitions (superimpose; synchronous / asynchronous PES), Part 3 Ch. 4 (caption vs superimpose "not classified" in coding), §9.6 footnote 1 (data_component_id 0x0008), Tables 9-15/9-16 (additional_arib_caption_info Timing) | `isdbt_mux::relay::classify` (roles of relayed `ts-program` streams) | `classification_rules`, `roles_and_pid_plan_on_permuted_pids`, `relay_recording_without_toml` (opt-in) | S, real data (a BS recording: caption and superimpose PIDs classified as expected) |
+| Part 1 §3.1 / Part 3 §3.1 definitions (superimpose; synchronous / asynchronous PES), Part 3 Ch. 4 (caption vs superimpose "not classified" in coding), §9.6 footnote 1 (data_component_id 0x0008), Tables 9-15/9-16 (additional_arib_caption_info Timing) | `isdbt_mux::relay::classify` (roles of relayed `ts-program` streams) | `classification_rules`, `roles_and_pid_plan_on_permuted_pids`, `relay_recording_without_toml` (opt-in, `ISDB_RS_RELAY_TS`) | S; during development also on a real recording (caption and superimpose PIDs classified as expected) |
 
 ### 2.4 ARIB STD-B31 v2.2
 
@@ -246,11 +247,11 @@ clause.
 
 | Clause | Implementation | Tests | Status |
 |---|---|---|---|
-| §5.2.1 ADTS, LC profile, ≤ 5.1 channels; §5.2.2 (1) protection_absent '0', profile 1, sampling_frequency_index 0x3–0x8 (terrestrial TV); §5.2.2 (2) adts_buffer_fullness ≠ 0x7FF, one raw_data_block (header-level checks only; §5.2.2 (3) coupling channel, §5.2.3 (2) element order, §5.2.3 (3)(d) PCE fields and §5.2.3 (4)(a) SBR need a raw_data_block parser and are **not checked**) | `isdbt_mux::adts::b32` (`check_frame`, `conform`; `adts_compliance` policy), `isdb_analyze::aac` (`aac.*` findings, header rules parsed independently) | `each_rule_detected`, `conform_passes_conforming_input_unchanged`, `conform_refuses_unprotected_input`, `conform_refuses_protected_input_needing_a_header_rewrite`, `conform_refuses_unfixable_and_warn_passes`, `bench_media_refused_by_conform`, `aac_adts_rules`, `bench_media_aac_conforms_to_b32_part2` | S, L (all 753 live frames pass the header rules); **RX pending** for conforming audio (the recorder played a non-conforming test file: protection_absent '1', adts_buffer_fullness 0x7FF) |
-| Appendix 1 ADTS CRC coverage (ISO/IEC 11172-3 CRC-16) | `isdbt_mux::audio::SilentFrame` only (layout known by construction); the crc_check of arbitrary input is neither verified nor rewritten (raw_data_block not parsed) | `crc16_known_answer`, `silent_frame_crc_matches_appendix_1` | S. The coverage reading was checked during development against every crc_check of a live capture (504 full-seg + 249 one-seg frames); no in-tree test re-checks it on third-party data |
+| §5.2.1 ADTS, LC profile, ≤ 5.1 channels; §5.2.2 (1) protection_absent '0', profile 1, sampling_frequency_index 0x3–0x8 (terrestrial TV); §5.2.2 (2) adts_buffer_fullness ≠ 0x7FF, one raw_data_block (header-level checks only; §5.2.2 (3) coupling channel, §5.2.3 (2) element order, §5.2.3 (3)(d) PCE fields and §5.2.3 (4)(a) SBR need a raw_data_block parser and are **not checked**) | `isdbt_mux::adts::b32` (`check_frame`, `conform`; `adts_compliance` policy), `isdb_analyze::aac` (`aac.*` findings, header rules parsed independently) | `each_rule_detected`, `conform_passes_conforming_input_unchanged`, `conform_refuses_unprotected_input`, `conform_refuses_protected_input_needing_a_header_rewrite`, `conform_refuses_unfixable_and_warn_passes`, `bench_media_refused_by_conform`, `aac_adts_rules`, `bench_media_aac_conforms_to_b32_part2` | S, L (every ADTS frame of the live capture passes the header rules); **RX pending** for conforming audio (the recorder played a non-conforming test file: protection_absent '1', adts_buffer_fullness 0x7FF) |
+| Appendix 1 ADTS CRC coverage (ISO/IEC 11172-3 CRC-16) | `isdbt_mux::audio::SilentFrame` only (layout known by construction); the crc_check of arbitrary input is neither verified nor rewritten (raw_data_block not parsed) | `crc16_known_answer`, `silent_frame_crc_matches_appendix_1` | S. During development the coverage reading was also checked against the crc_check values of a live capture's ADTS frames; no in-tree test re-checks it on third-party data |
 | Appendix 3 adts_buffer_fullness ("6,144 bits per channel"), Description 1 (3) fixed average rate | `isdbt_mux::adts::b32::cbr_fullness` | `fullness_model_recurrence`, `silent_frame_fullness_is_the_cbr_value` | L (live encoders followed the model during development); R > mean for VBR input is an interpretation; computed values are reported, not inserted (a protected frame's header cannot be rewritten without recomputing crc_check, which needs a raw_data_block parser) |
 | Appendix 2 AAC buffer sizes (Rxn/BSn = H.222.0 §2.4.2.3) | `isdbt_mux::audio::AdtsEs::{rx, bs}`, T-STD | `bench_media_ffprobe`, `pcr_and_timestamps` | S, RX |
-| Attachment Ch. 3 Table 1 quality_indicator modes | `QualityMode::derive` (`audio_quality_indicator = "derived"` default), `QualityMode::contradiction` (`aac.quality_indicator`) | `quality_derivation_table_1`, `audio_quality_indicator_typed`, `aac_quality_indicator_consistency`, `capture_validate_findings` (opt-in) | S, L (live '10' at 192 kbit/s consistent); the Mode 1 bitrate range is ambiguous (SPEC-NOTES) |
+| Attachment Ch. 3 Table 1 quality_indicator modes | `QualityMode::derive` (`audio_quality_indicator = "derived"` default), `QualityMode::contradiction` (`aac.quality_indicator`) | `quality_derivation_table_1`, `audio_quality_indicator_typed`, `aac_quality_indicator_consistency`, `capture_validate_findings` (opt-in) | S, L (the live quality_indicator '10' is consistent with Table 1); the Mode 1 bitrate range is ambiguous (SPEC-NOTES) |
 | §5.2.3 (3)(a)–(c) PCE on audio-mode switches / every < 550 ms with downmix; §5.2.1 maximum bit rate "Compliant to ISO/IEC 13818-7"; §5.2.4 downmix | — | — | — (constant-mode files; 13818-7 limit not local) |
 
 ### 2.6 STD-B21, STD-B25, STD-B19

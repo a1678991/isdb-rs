@@ -116,7 +116,7 @@ cat > test.toml <<'EOF'
 [network]
 network_id = 0x7FE0
 name = "テスト"
-area_code = 0x8D5
+area_code = 0x5A5
 remote_control_key_id = 9
 channels = [27]
 

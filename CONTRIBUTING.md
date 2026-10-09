@@ -2,8 +2,9 @@
 
 Thank you for helping. This file covers the rules that are specific to this
 project (specifications as ground truth, RF safety, test data) and the
-mechanics (toolchain, hooks, checks, commits). The architecture and the
-crate map are in [README.md](README.md).
+mechanics (toolchain, hooks, checks, commits). The crate map is in
+[README.md](README.md#crates); the architecture (data flow, threads, the
+frame and latency contract) is in [docs/architecture.md](docs/architecture.md).
 
 ## Ground rules
 
@@ -72,6 +73,26 @@ run the transmit path on hardware must:
    not descramble and refuses scrambled input; changes that add
    descrambling or conditional-access (B-CAS) support will not be accepted.
 
+### Relay policy: copy control and conditional access
+
+The `ts-program` relay (`isdb mux --relay`, `kind = "ts-program"` streams)
+retransmits a recorded program, so changes to it must keep these rules:
+
+- **Input must be unscrambled** (transport_scrambling_control '00' on every
+  relayed packet). Scrambled input is refused, never descrambled.
+- **Conditional-access signalling is kept by default.** The source
+  program's CA_descriptor and ECM are carried into the output (`ca =
+  "keep"`, the default); `ca = "drop"` removes them only when the user asks
+  for it explicitly.
+- **Copy control preserves the source by default.** The relayed service
+  carries the source's digital copy control. A user may relax it only
+  explicitly (`--copy`, `recording_control` in the TOML), and the source
+  value is then reported as an `info` line so the change is visible.
+- Keep these defaults and their tests when you touch the relay, and do not
+  add paths that weaken them silently. The exact options are in
+  [docs/mux-config.md](docs/mux-config.md) and
+  [docs/transmitting.md](docs/transmitting.md).
+
 Rules for code changes:
 
 - Nothing may radiate without the explicit `--rf-enable` flag; keep every
@@ -83,18 +104,20 @@ Rules for code changes:
 ### Real capture data never enters the repository
 
 Captures, recordings, media and IQ files are never committed (`*.ts`,
-`*.m2ts`, `*.cf32`, `*.cs8`, `*.cu8`, `*.iq` are gitignored). Tests that need
+`*.m2ts`, `*.cf32`, `*.cs8`, `*.cu8`, `*.iq`, the usual media formats and a
+`media/` directory are gitignored). Tests that need
 them read a path from an environment variable and print `SKIP` and pass when
 it is unset or the file is missing, so a fresh checkout passes with no data:
 
 | Variable | Points at |
 |---|---|
-| `ISDB_RS_CAPTURE_TS` | an unscrambled terrestrial ISDB-T capture (188-byte TS) |
+| `ISDB_RS_CAPTURE_TS` | a terrestrial ISDB-T capture; the tests that parse PES payloads need them unscrambled (transport_scrambling_control '00') |
 | `ISDB_RS_OUR_TS` | a TS produced by `isdb mux`, compared with the capture |
-| `ISDB_RS_RELAY_TS` | an unscrambled recording you may relay (`ts-program`) |
+| `ISDB_RS_RELAY_TS` | an unscrambled recording (transport_scrambling_control '00') that you have the rights to relay (`ts-program`) |
 | `ISDB_RS_MEDIA_DIR` | bench media: `v63p.m2v` (MPEG-2 video), `a.m2a` (ADTS AAC); some tests also need `ffprobe` |
 
-Which tests read which variable is documented in each crate's README. New
+Which tests read which variable is listed in
+[docs/test-data.md](docs/test-data.md) and in each crate's README. New
 real-data tests must follow the same pattern (`ISDB_RS_` prefix, skip when
 unset, never fail for missing data).
 
@@ -163,8 +186,11 @@ path-only dev-dependency that would otherwise form a publish cycle
 
 `oracle/` holds the differential test against GNU Radio gr-isdbt, an
 external GPL-3.0 program that is **not** distributed here and must not be
-vendored or copied. Run it when you change `isdbt-fec`, `isdbt-ofdm` or
-`isdbt-phy` behaviour:
+vendored or copied. The scripts are Apache-2.0 like the rest of the
+repository, but `grisdbt_tx.py` and `grisdbt_rx.py` import GNU Radio and
+gr-isdbt at run time, so the running combination is under GPL-3.0
+([oracle/README.md](oracle/README.md)). Run it when you change
+`isdbt-fec`, `isdbt-ofdm` or `isdbt-phy` behaviour:
 
 ```sh
 cargo build --release -p isdbt-phy --examples
@@ -172,8 +198,11 @@ cargo build --release --manifest-path oracle/rust_tx3/Cargo.toml --target-dir ta
 python3 oracle/run_matrix.py        # rows 1-8, about 2 minutes
 ```
 
-The scripts expect a container with GNU Radio 3.10 and gr-isdbt that has the
-repository mounted at `/work` (name `arib-sdr`, override with
+The scripts run gr-isdbt in a container built from
+[`oracle/Dockerfile`](oracle/Dockerfile) (GNU Radio 3.10, gr-isdbt at a
+pinned commit) with the repository mounted at `/work`; build and start it
+as described in [docs/test-data.md](docs/test-data.md#the-gr-isdbt-oracle).
+The container name defaults to `isdb-oracle` (override with
 `ISDB_RS_ORACLE_CONTAINER`); results go to `target/oracle-matrix/`
 (`ISDB_RS_ORACLE_OUT`, which must lie inside the repository). Full
 reproduction steps and the current results are in

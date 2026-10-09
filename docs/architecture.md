@@ -114,8 +114,8 @@ RX                                                                        │
         │  isdbt-ofdm::Demodulator: sync, CFO, channel estimation,        │
         │    TMCC decode → Params, inverse chain   ⇒ DemodFrame (f32 LLRs)│
         │  isdbt-phy::FrameDecoder → isdbt-fec::LayerDecoder:             │
-        │    depuncture + Viterbi → byte deinterleave → descramble        │
-        │    → RS decode                           ⇒ per-layer TSPs       │
+        │    depuncture + Viterbi → byte deinterleave                     │
+        │    → energy de-dispersal → RS decode     ⇒ per-layer TSPs       │
         │  isdbt-fec::MultiplexPattern::reproduce_ts  (§3.2.2 model       │
         │    receiver: multiplex frame with null TSPs in unused slots)    │
         ▼                                                                 │
@@ -149,6 +149,11 @@ A `ts-program` relay adds a reader thread per recording: each source
 packet's time is interpolated from the recording's PCR, shifted by a
 constant (a multiple of 300 ticks, so PTS/DTS move by an exact 90 kHz
 constant), and sent in the first free slot of its layer from that time on.
+The relay passes only unscrambled packets (transport_scrambling_control
+'00') and refuses scrambled input; nothing is descrambled. By default the
+relayed service keeps the source's digital copy control and its
+CA_descriptor/ECM (`ca = "keep"`; `"drop"` removes them on request), and an
+explicitly relaxed copy control is reported together with the source value.
 
 ### The CLI
 

@@ -24,12 +24,24 @@ leaves room for ISDB-S and ISDB-S3.
 >   antenna. It radiates only with `--rf-enable`; without it (or with
 >   `--dry-run`) it prints the RF settings and exits before opening the
 >   device. See [docs/transmitting.md](docs/transmitting.md).
-> - **No descrambling.** There is no B-CAS / conditional-access support, and
->   scrambled input (transport_scrambling_control ≠ '00') is refused.
+> - **No descrambling.** There is no B-CAS / conditional-access support and
+>   the tool never descrambles. Input must be unscrambled
+>   (transport_scrambling_control '00'); scrambled input is refused. A
+>   relayed program keeps its source copy-control signalling and its
+>   CA_descriptor/ECM by default.
 > - **Content rights.** You are responsible for having the rights to any
->   content you transmit or relay, including recordings.
+>   content you transmit or relay, including recordings. Rebroadcasting a
+>   broadcaster's programme, even privately over coax, may be restricted
+>   where you live.
 > - The software is provided under the Apache License 2.0 **without
 >   warranty** (see [LICENSE](LICENSE)).
+> - **No affiliation.** isdb-rs is an independent project. It is not
+>   affiliated with, endorsed by or sponsored by ARIB, ITU, ISO/IEC, Great
+>   Scott Gadgets, Sony, MyGica or any broadcaster. These names, and
+>   product names such as HackRF and BDZ, are used only to identify the
+>   standards implemented and the equipment tested; they may be trademarks
+>   of their respective owners (HackRF is a trademark of Great Scott
+>   Gadgets).
 
 ## Features
 
@@ -46,9 +58,11 @@ leaves room for ISDB-S and ISDB-S3.
 - **Multiplexer** (`isdbt-mux`): a TOML service description (network,
   services, events, SI tables, experiment overrides) plus MPEG-2 video and
   AAC ADTS files → a constant-rate multiplex paced to the OFDM frame, with
-  an H.222.0 T-STD buffer model. **TS relay**: rebroadcast one program of a
-  recorded TS (e.g. a satellite recording) as a terrestrial service with
-  its own PSI/SI; the stream roles and PIDs are detected from the recording.
+  an H.222.0 T-STD buffer model. **TS relay**: rebroadcast one program of
+  an unscrambled recorded TS (for example one you produced yourself) as a
+  terrestrial service with its own PSI/SI; the stream roles and PIDs are
+  detected from the recording, and the source's copy control and
+  conditional-access signalling are kept by default.
 - **Analyzer** (`isdb-analyze`): inspect, validate (every finding cites the
   clause it comes from), table/field-level diff of two captures, and edits
   that keep the TS valid (null a PID, remove/replace/insert sections, typed
@@ -124,7 +138,7 @@ cat > test.toml <<'EOF'
 [network]
 network_id = 0x7FE0
 name = "テスト"
-area_code = 0x8D5
+area_code = 0x5A5
 remote_control_key_id = 9
 channels = [27]
 
@@ -179,8 +193,12 @@ HackRF, relaying a recording), [docs/receiving.md](docs/receiving.md),
 
 The specifications are the only ground truth. Other implementations are
 never copied; they serve only as independent oracles, and a disagreement
-is settled by reading the spec. Every layer is checked without trusting the
-implementation itself:
+is settled by reading the spec. No code or tables from other ISDB/ARIB
+implementations are included: the JIS X 0208 → Unicode mapping comes at
+run time from the `encoding_rs` dependency (WHATWG index), and the
+gr-isdbt source was read only after the implementation existed, to explain
+oracle disagreements ([VERIFICATION.md](VERIFICATION.md#discrepancies)).
+Every layer is checked without trusting the implementation itself:
 
 1. **Spec vectors** — numbers printed in the specs (check values, tables,
    PRBS states, constellation points, frame lengths, TSP counts) are
@@ -195,7 +213,7 @@ implementation itself:
    with GNU Radio's gr-isdbt in both directions in 8 parameter sets; every
    place where the two differ is a gr-isdbt deviation from B31.
 5. **Real receivers** — over a conducted link, a MyGica S270 USB tuner
-   decoded the Rust TX with zero packet errors, and a Sony BDZ-series
+   decoded the Rust TX with zero packet errors, and one Sony BDZ-series
    recorder registered and played the service.
 
 Results, reproduction steps and open questions:
@@ -253,7 +271,7 @@ end, but some parts have had less independent checking than others:
   broadcast-TS information packet (IIP), SFN synchronisation, data
   broadcasting (BML/DSM-CC), DRCS glyphs, ISDB-T<sub>SB</sub>.
 - **Radio**: HackRF One only. The demodulator runs at about 1.4× real time
-  on a Ryzen 9 7950X, so live reception needs a fast machine.
+  on a current 16-core desktop CPU, so live reception needs a fast machine.
 
 ## Roadmap
 
@@ -268,29 +286,29 @@ end, but some parts have had less independent checking than others:
 
 ## Development
 
-Contribution rules (specifications as ground truth, SPEC-NOTES entries,
-RF safety for hardware tests, toolchain, hooks and commit format) are in
-[CONTRIBUTING.md](CONTRIBUTING.md); security issues go through
+The [Makefile](Makefile) is the single entry point for checks, and CI runs
+the same targets:
+
+```sh
+make check                                 # everything CI runs: lint, test, doc, deny, msrv, oracle helper
+make test                                  # unit, integration and doc tests; no radio or data needed
+make lint                                  # rustfmt check + clippy -D warnings
+make help                                  # all targets
+```
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the rules (specifications as ground
+truth, SPEC-NOTES entries, RF safety for hardware tests, the relay
+copy-control and conditional-access policy), the toolchain, git hooks and
+commit format; the code layout is in
+[docs/architecture.md](docs/architecture.md). Security issues go through
 [SECURITY.md](SECURITY.md); changes are listed in
 [CHANGELOG.md](CHANGELOG.md).
 
-```sh
-cargo test --workspace --release           # all tests; no radio or data needed
-cargo test --workspace --doc               # doctests, including every crate README
-cargo clippy --workspace --all-targets
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-```
-
-The dev profile builds the signal-processing crates and all dependencies
-with `opt-level = 3`, because unoptimised the modulator runs at ≈ 0.2× real
-time and a HackRF would underrun; use `--release` for transmissions anyway.
-Heavy tests are `#[ignore]`d; tests that use real captures, recordings or
-media are opt-in through `ISDB_RS_*` environment variables and print
-`SKIP` otherwise ([docs/test-data.md](docs/test-data.md)). Conventions:
-every public item's doc comment names its clause or table; spec-vector
-tests are named `spec_<table>_…` and property tests `prop_…`; no `unsafe`
-outside the `isdb-hackrf` FFI crate; decoders never panic on malformed input;
-soft bits are `f32` LLRs `ln P(b=0)/P(b=1)`.
+Use `--release` builds for anything real time: unoptimised, the modulator
+runs at ≈ 0.2× real time and a HackRF would underrun. Heavy tests are
+`#[ignore]`d (`make test-ignored`); tests that use real captures,
+recordings or media are opt-in through `ISDB_RS_*` environment variables
+and print `SKIP` otherwise ([docs/test-data.md](docs/test-data.md)).
 
 ## License
 

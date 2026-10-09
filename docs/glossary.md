@@ -210,5 +210,9 @@ this project can declare such streams in the PMT but not packetise them.
 
 **B-CAS, conditional access, scrambling** — Japanese full-seg services are
 scrambled and need a B-CAS (or ACAS) access-control module to view. This
-project has no conditional-access support and refuses scrambled input
-(transport_scrambling_control ≠ '00').
+project has no conditional-access support and never descrambles: input
+must be unscrambled (transport_scrambling_control '00'), and scrambled input
+is refused. The *CA_descriptor* (0x09, in the CAT or PMT) and the *ECM*
+(entitlement control message) PID it points to are the conditional-access
+signalling of a program; when a program is relayed they are kept by
+default (`ca = "keep"`).
