@@ -1,7 +1,8 @@
 #![allow(missing_docs)]
-//! Real-media test: muxes 10 s of the bench example (MPEG-2 video
-//! `v63p.m2v` + AAC `a.m2a`, not committed) and checks the result with
-//! ffprobe. The media are read from the directory named by the environment
+//! Real-media test: muxes 10 s of the bench example with your own media
+//! (MPEG-2 video `video.m2v` + AAC ADTS `audio.m2a`, not committed) and
+//! checks the result with ffprobe against what the files themselves
+//! declare (sequence header size, ADTS sampling frequency and channels). The media are read from the directory named by the environment
 //! variable `ISDB_RS_MEDIA_DIR`; the test prints a `SKIP` line and passes
 //! when it is unset, a file is missing or ffprobe is not installed.
 //!
@@ -24,13 +25,13 @@ fn toml_string(s: &str) -> String {
 }
 
 #[test]
-fn bench_media_ffprobe() {
+fn media_ffprobe() {
     let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
     let Some(media) = std::env::var_os("ISDB_RS_MEDIA_DIR").map(PathBuf::from) else {
-        eprintln!("SKIP: ISDB_RS_MEDIA_DIR not set (directory with v63p.m2v and a.m2a)");
+        eprintln!("SKIP: ISDB_RS_MEDIA_DIR not set (directory with video.m2v and audio.m2a)");
         return;
     };
-    let (video, audio) = (media.join("v63p.m2v"), media.join("a.m2a"));
+    let (video, audio) = (media.join("video.m2v"), media.join("audio.m2a"));
     if !video.exists() || !audio.exists() {
         eprintln!("SKIP: {} or {} missing", video.display(), audio.display());
         return;
@@ -42,7 +43,7 @@ fn bench_media_ffprobe() {
     let text = isdbt_mux::config::EXAMPLE_TOML
         .replace("\"media/video.m2v\"", &toml_string(video.to_str().unwrap()))
         .replace("\"media/audio.m2a\"", &toml_string(audio.to_str().unwrap()))
-        // the bench audio has no crc_check, which `conform` cannot insert
+        // common encoders write no crc_check, which `conform` cannot insert
         // (tests/adts.rs); this test is about video/T-STD, so send it as is
         .replace("adts_compliance = \"conform\"", "adts_compliance = \"warn\"");
     let cfg = Config::from_toml(&text).unwrap();
@@ -120,6 +121,23 @@ fn bench_media_ffprobe() {
         "no MPEG-2 video detected"
     );
     assert!(summary.contains("codec_name=aac"), "no AAC detected");
+    // what the files declare reaches the demuxer unchanged
+    let v = isdbt_mux::video::VideoEs::parse(std::fs::read(&video).unwrap(), "video").unwrap();
+    assert!(
+        summary.contains(&format!("width={}", v.seq.width))
+            && summary.contains(&format!("height={}", v.seq.height)),
+        "video size {}x{} not reported",
+        v.seq.width,
+        v.seq.height
+    );
+    let a = isdbt_mux::audio::AdtsEs::parse(std::fs::read(&audio).unwrap(), "audio").unwrap();
+    assert!(
+        // (implicit SBR doubles the output rate, B32 Part 2 §5.2.3 (4)(a))
+        summary.contains(&format!("sample_rate={}", a.sampling_frequency))
+            || summary.contains(&format!("sample_rate={}", 2 * a.sampling_frequency)),
+        "sampling frequency {} not reported",
+        a.sampling_frequency
+    );
     let dur: f64 = summary
         .lines()
         .find(|l| l.starts_with("format"))

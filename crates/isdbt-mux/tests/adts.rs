@@ -3,17 +3,17 @@
 //! real encoder output (optional inputs from environment variables; each
 //! one unset or missing prints `SKIP` and passes):
 //!
-//! * `ISDB_RS_MEDIA_DIR/a.m2a`, the bench media (an encoder that writes
-//!   no CRC): protection_absent '1' and
-//!   adts_buffer_fullness 0x7FF in every frame, so [`b32::conform`]
-//!   refuses it (crc_check cannot be inserted without a raw_data_block
-//!   walk) and reports the constant-rate fullness model for reference;
-//!   `warn` sends it unchanged;
+//! * `ISDB_RS_MEDIA_DIR/audio.m2a`, an ADTS file from any encoder: the
+//!   [`b32::conform`] verdict matches the header report (conforming input
+//!   passes byte-identically; otherwise refused, crc_check cannot be
+//!   inserted because the raw_data_block is not parsed); `warn` sends it
+//!   unchanged;
 //! * `ISDB_RS_CAPTURE_TS`, a terrestrial capture: every frame of every
-//!   ADTS PID passes the header rules and passes [`b32::conform`]
-//!   byte-identically.  (During development, the full-seg encoder of a live
-//!   capture also followed the constant-rate reservoir recurrence of
-//!   [`b32::cbr_fullness`] exactly.)
+//!   ADTS PID whose payload is unscrambled (transport_scrambling_control
+//!   '00'; scrambled PIDs do not parse as ADTS and are skipped) passes the
+//!   header rules and passes [`b32::conform`] byte-identically.  (During
+//!   development, the one-seg encoder of a live capture also followed the
+//!   constant-rate reservoir recurrence of [`b32::cbr_fullness`] exactly.)
 
 use std::path::PathBuf;
 
@@ -33,38 +33,67 @@ fn env_path(var: &str, rel: Option<&str>) -> Option<PathBuf> {
     })
 }
 
+/// `$ISDB_RS_MEDIA_DIR/audio.m2a`, whatever encoder wrote it: the gate's
+/// verdict follows from the header report alone — a file without
+/// violations passes byte-identically, any other file is refused with its
+/// violations (and, for adts_buffer_fullness 0x7FF, a fullness model that
+/// never signals variable rate and stays within the buffer); `warn` sends
+/// it unchanged; the quality mode is the one B32 Part 2 Table 1 derives
+/// from the file's own rate, sampling frequency and channels.
 #[test]
-fn bench_media_refused_by_conform() {
-    let Some(src) = env_path("ISDB_RS_MEDIA_DIR", Some("a.m2a")) else {
+fn media_audio_gate_follows_header_report() {
+    let Some(src) = env_path("ISDB_RS_MEDIA_DIR", Some("audio.m2a")) else {
         return;
     };
     let Ok(data) = std::fs::read(&src) else {
         eprintln!("SKIP: {} absent", src.display());
         return;
     };
-    let (rep, _) = b32::check_stream(&data).unwrap();
+    let (rep, checks) = b32::check_stream(&data).unwrap();
     eprintln!("input:\n  {}", rep.lines().join("\n  "));
-    assert_eq!(rep.frames, 470);
-    for r in [Rule::ProtectionAbsent, Rule::BufferFullness] {
-        assert_eq!(rep.rules[&r].frames, 470, "{r}");
+    let spans = b32::split_frames(&data).unwrap();
+    assert_eq!(rep.frames, spans.len());
+    assert_eq!(checks.len(), spans.len());
+    for (r, t) in &rep.rules {
+        assert!(t.frames <= rep.frames, "{r}");
     }
-    let e = b32::conform(&data).unwrap_err();
-    eprintln!("{e}");
-    assert!(e.reason.contains("crc_check cannot be inserted"), "{e}");
-    let m = e.fullness.as_ref().unwrap();
-    assert_eq!(m.channels, 2);
-    let cap = ((12288 - m.rate_frame_bits) / 64) as u16;
-    assert!(m.values.iter().all(|&f| f != 0x7FF && f <= cap));
-    let (es, w) = AdtsEs::load(data.clone(), "a.m2a", AdtsCompliance::Warn).unwrap();
+    match b32::conform(&data) {
+        Ok(c) => {
+            assert!(rep.blocking().next().is_none(), "{:?}", rep.lines());
+            assert_eq!(c.data, data);
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            assert!(rep.blocking().next().is_some());
+            if rep.rules.contains_key(&Rule::ProtectionAbsent) {
+                assert!(e.reason.contains("crc_check cannot be inserted"), "{e}");
+            }
+            if let Some(m) = e.fullness.as_ref() {
+                let cap = (6144 * m.channels as u64 - m.rate_frame_bits) / (32 * m.channels as u64);
+                assert!(m.values.iter().all(|&f| f != 0x7FF && f as u64 <= cap));
+            }
+        }
+    }
+    let (es, _) = AdtsEs::load(data.clone(), "audio.m2a", AdtsCompliance::Warn).unwrap();
     assert_eq!(es.data, data);
-    assert!(w.iter().any(|l| l.contains("for reference")), "{w:?}");
     eprintln!(
         "bit rate {:.0} bit/s, {:?}",
         es.bit_rate(),
         es.quality_mode()
     );
-    assert_eq!(es.quality_mode(), QualityMode::Mode2);
-    assert_eq!(es.quality_mode().code(), 0b10);
+    let bytes: u64 = checks
+        .iter()
+        .map(|c| c.header.aac_frame_length as u64)
+        .sum();
+    let fs = es.sampling_frequency;
+    assert_eq!(
+        es.quality_mode(),
+        QualityMode::derive(
+            fs,
+            b32::bit_rate(bytes, es.total_samples, fs),
+            es.coded_channels
+        )
+    );
 }
 
 /// ADTS bytes of one PID (PES payloads concatenated), from the first

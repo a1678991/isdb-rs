@@ -333,7 +333,7 @@ fn mux_ts_over_capacity_is_refused_with_layouts_that_fit() {
     std::fs::remove_dir_all(&d).unwrap();
 }
 
-/// Regression benchmark for the 2026-10-09 starvation report: the producer
+/// Regression benchmark for producer starvation (TX underruns): the producer
 /// must sustain ≥ 2× real time for a high-rate `--mux-ts` file (19.5 Mbit/s
 /// into B 12seg 64QAM 7/8).  The cause was an unoptimised (dev profile)
 /// build at ≈ 0.2× real time; the workspace now optimises the PHY crates in
@@ -573,15 +573,18 @@ fn toml_string(s: &str) -> String {
     toml::Value::String(s.to_string()).to_string()
 }
 
-/// Directory of the bench media (`v63p.m2v`, `a.m2a`) named by the
+/// Directory of your own media (`video.m2v` MPEG-2 video ES, `audio.m2a`
+/// AAC ADTS) named by the
 /// environment variable `ISDB_RS_MEDIA_DIR`, or `None` (with a `SKIP` line)
 /// when it is unset or a file is missing.
 fn media_dir(test: &str) -> Option<PathBuf> {
     let Some(dir) = std::env::var_os("ISDB_RS_MEDIA_DIR").map(PathBuf::from) else {
-        eprintln!("SKIP {test}: ISDB_RS_MEDIA_DIR not set (directory with v63p.m2v and a.m2a)");
+        eprintln!(
+            "SKIP {test}: ISDB_RS_MEDIA_DIR not set (directory with video.m2v and audio.m2a)"
+        );
         return None;
     };
-    for f in ["v63p.m2v", "a.m2a"] {
+    for f in ["video.m2v", "audio.m2a"] {
         if !dir.join(f).is_file() {
             eprintln!("SKIP {test}: {} missing", dir.join(f).display());
             return None;
@@ -597,8 +600,8 @@ fn bench_media_config(dir: &Path, media: &Path) -> PathBuf {
     let text = std::fs::read_to_string(bench_toml()).unwrap();
     assert!(text.contains("\"media/video.m2v\"") && text.contains("\"media/audio.m2a\""));
     let text = text
-        .replace("\"media/video.m2v\"", &path("v63p.m2v"))
-        .replace("\"media/audio.m2a\"", &path("a.m2a"));
+        .replace("\"media/video.m2v\"", &path("video.m2v"))
+        .replace("\"media/audio.m2a\"", &path("audio.m2a"));
     let p = dir.join("bench-media.toml");
     std::fs::write(&p, text).unwrap();
     p
@@ -647,10 +650,10 @@ fn loopback_with_in_process_multiplexer() {
         "PSI/SI in layer A"
     );
     // The bench config with its media (opt-in: ISDB_RS_MEDIA_DIR).
-    if let Some(media) = media_dir("loopback_with_in_process_multiplexer (bench media part)") {
+    if let Some(media) = media_dir("loopback_with_in_process_multiplexer (media part)") {
         let bench = bench_media_config(&d, &media);
-        // the bench audio has no crc_check, which `conform` cannot insert
-        // (bench_media_aac_conforms_to_b32_part2); this test is about the
+        // common encoders write no crc_check, which `conform` cannot insert
+        // (media_aac_gate_matches_b32_part2_report); this test is about the
         // multiplexer → PHY path, so send it unchanged
         let text = std::fs::read_to_string(&bench).unwrap();
         assert!(text.contains("adts_compliance = \"conform\""));
@@ -687,16 +690,27 @@ fn loopback_with_in_process_multiplexer() {
     std::fs::remove_dir_all(&d).unwrap();
 }
 
-/// `isdb mux` with the bench media (opt-in: `ISDB_RS_MEDIA_DIR`), whose ADTS has protection_absent '1' and adts_buffer_fullness
-/// 0x7FF: the default `adts_compliance = "conform"` refuses it (crc_check
-/// cannot be inserted); `--adts-compliance warn` sends the file unchanged,
-/// the validator reports its protection_absent / adts_buffer_fullness
-/// errors and the EIT carries quality_indicator '10' (Mode 2).
+/// `isdb mux` with your own media (opt-in: `ISDB_RS_MEDIA_DIR`): the
+/// expectations come from the audio file's own ADTS headers. The default
+/// `adts_compliance = "conform"` accepts the file exactly when its headers
+/// break no error-severity B32 Part 2 §5.2 rule (refused otherwise, with
+/// "crc_check cannot be inserted" for protection_absent '1');
+/// `--adts-compliance warn` sends it unchanged, the validator reports each
+/// such per-frame rule as an `aac.*` error, and the EIT carries the
+/// quality_indicator Table 1 derives from the file's rate.
 #[test]
-fn bench_media_aac_conforms_to_b32_part2() {
-    let Some(media) = media_dir("bench_media_aac_conforms_to_b32_part2") else {
+fn media_aac_gate_matches_b32_part2_report() {
+    use isdbt_mux::adts::b32::{self, Rule};
+    let Some(media) = media_dir("media_aac_gate_matches_b32_part2_report") else {
         return;
     };
+    let audio = std::fs::read(media.join("audio.m2a")).unwrap();
+    let (rep, _) = b32::check_stream(&audio).unwrap();
+    let blocking: Vec<Rule> = rep.blocking().map(|(r, _)| *r).collect();
+    let (es, _) =
+        isdbt_mux::audio::AdtsEs::load(audio, "audio.m2a", isdbt_mux::audio::AdtsCompliance::Warn)
+            .unwrap();
+    let quality = es.quality_mode();
     let d = tmp("aacb32");
     let bench = bench_media_config(&d, &media);
     let findings = |extra: &[&str]| {
@@ -723,24 +737,33 @@ fn bench_media_aac_conforms_to_b32_part2() {
             .collect::<Vec<_>>()
     };
     let cfg = bench.clone();
-    let ts = d.join("refused.ts");
+    let ts = d.join("conform.ts");
     let o = run(&["mux", "-c", s(&cfg), "--seconds", "1", "--out-ts", s(&ts)]);
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        !o.status.success() && err.contains("crc_check cannot be inserted"),
-        "{err}"
+    assert_eq!(
+        o.status.success(),
+        blocking.is_empty(),
+        "{blocking:?}: {err}"
     );
+    if blocking.contains(&Rule::ProtectionAbsent) {
+        assert!(err.contains("crc_check cannot be inserted"), "{err}");
+    }
     let f = findings(&["--adts-compliance", "warn"]);
-    for check in ["aac.protection_absent", "aac.adts_buffer_fullness"] {
+    for r in blocking
+        .iter()
+        .filter(|r| !matches!(r, Rule::Layer | Rule::ConstantRate))
+    {
+        let check = isdb_analyze::aac::check_name(*r);
         assert!(
             f.iter().any(|(sev, c, _)| sev == "error" && c == check),
             "{check}: {f:?}"
         );
     }
+    let want = format!("'{:02b}' ({})", quality.code(), quality.name());
     assert!(
         f.iter()
-            .any(|(_, c, m)| c == "aac.quality_indicator" && m.contains("'10' (Mode 2)")),
-        "{f:?}"
+            .any(|(_, c, m)| c == "aac.quality_indicator" && m.contains(&want)),
+        "{want}: {f:?}"
     );
     std::fs::remove_dir_all(&d).unwrap();
 }
