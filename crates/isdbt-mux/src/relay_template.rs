@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use crate::config::{AtEof, Config, LayerName};
+use crate::config::{AtEof, CaMode, Config, LayerName};
 use crate::error::Result;
 
 /// Network / service name used when neither `name` nor the source SDT
@@ -17,10 +17,10 @@ use crate::error::Result;
 pub const DEFAULT_NAME: &str = "ベンチ";
 
 /// Options of a relay configuration; everything else is the value of
-/// `examples/relay-ts.toml` (network_id / transport_stream_id 0x7FE0,
-/// service 0x0400, PMT PID 0x01F0, dedicated PCR PID 0x01FF, roles →
-/// PIDs by the default plan, rate_check "error", the fallback event, TOT,
-/// BIT, empty CAT).
+/// `examples/relay-ts.toml` (network_id / transport_stream_id 0x79EE, a
+/// placeholder, service 0x0400, PMT PID 0x01F0, dedicated PCR PID 0x01FF,
+/// roles → PIDs by the default plan, rate_check "error", the fallback
+/// event, TOT, BIT, a CAT with the source's CA_descriptors only).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelayOptions {
     /// The recorded TS (written as given; pass an absolute path for a
@@ -39,11 +39,13 @@ pub struct RelayOptions {
     /// Network name, TS name, service name, provider and broadcaster name.
     pub name: String,
     /// digital_recording_control_data by name: "source" (default: the
-    /// relayed program's own value, so the relay never weakens the
-    /// source's copy restriction; see
+    /// relayed program's own value, see
     /// [`crate::signalling::RecordingControlCfg`]) or a B10 Table 6-39
-    /// name ("copy-free", "copy-one-generation", "copy-never", …).
+    /// name ("copy-free", "copy-one-generation", "copy-never", …), used as
+    /// given.
     pub recording_control: String,
+    /// The source's conditional-access signalling ([`CaMode`]).
+    pub ca: CaMode,
     /// End-of-file behaviour.
     pub at_eof: AtEof,
     /// EIT p/f from the source.
@@ -60,9 +62,8 @@ pub struct RelayOptions {
 
 impl RelayOptions {
     /// The values of `examples/relay-ts.toml` for `source`: channel 44,
-    /// remote key 9, area code 0x8D5 (Kinki wide area), name "ベンチ",
-    /// copy control from the source, loop, EIT from the source, layer B,
-    /// system clock.
+    /// remote key 9, area code 0x5A5, name "ベンチ", copy control from the
+    /// source, CA kept, loop, EIT from the source, layer B, system clock.
     pub fn new(source: impl Into<PathBuf>) -> Self {
         Self {
             source: source.into(),
@@ -70,9 +71,10 @@ impl RelayOptions {
             service_name: None,
             channel: 44,
             remote_control_key_id: 9,
-            area_code: 0x8D5,
+            area_code: 0x5A5,
             name: DEFAULT_NAME.to_string(),
             recording_control: crate::signalling::RecordingControlCfg::SOURCE.to_string(),
+            ca: CaMode::Keep,
             at_eof: AtEof::Loop,
             eit_from_source: true,
             layer: LayerName::B,
@@ -93,14 +95,14 @@ impl RelayOptions {
         t += "# Integers may be written in hex (0x...).\n\n";
         t += &format!(
             "[network]\n\
-             network_id = 0x7FE0              # B10 Annex N: terrestrial TV range 0x7880–0x7FE8\n\
+             network_id = 0x79EE              # placeholder in the B10 Annex N terrestrial range 0x7880–0x7FE8: use an ID not used where the receiver is\n\
              name = {name}\n\
-             area_code = {:#05X}                # B10 Annex D Table D-2 (0x8D5: Kinki wide area)\n\
+             area_code = {:#05X}                # B10 Annex D Table D-2: the receiver's area\n\
              remote_control_key_id = {}        # one-touch key\n\
              channels = [{}]                  # MUST equal the channel `isdb tx` transmits on\n\n",
             self.area_code, self.remote_control_key_id, self.channel
         );
-        t += "[transport]\ntransport_stream_id = 0x7FE0\n\n";
+        t += "[transport]\ntransport_stream_id = 0x79EE\n\n";
         match &self.clock_start {
             Some(s) => t += &format!("[clock]\nsource = \"fixed\"\nstart = {}\n\n", q(s)),
             None => {
@@ -117,7 +119,8 @@ impl RelayOptions {
              pmt_pid = 0x01F0\n\
              pcr_pid = 0x01FF                 # dedicated PCR PID: relayed packets keep their payload\n\
              # recording_control = \"source\": the relayed program's digital_recording_control_data\n\
-             # (B10 Table 6-39); copy_control_type '01' as receivers require\n\
+             # (B10 Table 6-39; PMT, else ES loops, else SDT, else EIT), ES-loop copy control kept;\n\
+             # a Table 6-39 name is used as given. copy_control_type '01' as receivers require\n\
              copy_control = {{ recording_control = {}, in_pmt = true, in_sdt = true }}\n\n",
             self.layer,
             q(&self.recording_control)
@@ -137,12 +140,17 @@ impl RelayOptions {
                 )
             }
             (None, None) => {
-                t += "  # program = 0x00D3 / service_name = \"...\": default = the recording's only program\n"
+                t += "  # program = 0x0101 / service_name = \"...\": default = the recording's only program\n"
             }
         }
         t += "  # Output PIDs by role (pid_map = \"auto\"); override the plan with\n";
         t += "  # pids = { video = 0x0111, audio = [0x0112, 0x0113], captions = 0x0130, superimpose = 0x0138, data = 0x0140 }\n";
         t += "  # or list them: pid_map = [[0x0140, 0x0111], [0x0141, 0x0112]] (\"keep\": source PIDs).\n";
+        if self.ca == CaMode::Drop {
+            t += "  ca = \"drop\"                   # source CA descriptors, ECM and EMM not relayed\n";
+        } else {
+            t += "  # ca = \"keep\" (default): source CA descriptors, ECM and EMM relayed (payload unscrambled); \"drop\": none\n";
+        }
         t += &format!(
             "  at_eof = \"{}\"                # \"loop\" or \"end\"\n",
             match self.at_eof {
@@ -163,7 +171,7 @@ impl RelayOptions {
         t += &format!(
             "[bit]\nenabled = true\nbroadcast_view_propriety = false\nbroadcasters = [\n  {{ broadcaster_id = 0x01, name = {name} }},\n]\n\n"
         );
-        t += "[cat]\ndescriptors = []                 # free to air: no CA_descriptor\n";
+        t += "[cat]\ndescriptors = []                 # none of its own; with ca = \"keep\" the source CAT's CA_descriptors are added\n";
         t
     }
 
@@ -180,16 +188,17 @@ mod tests {
     #[test]
     fn options_round_trip_through_toml() {
         let mut o = RelayOptions::new("/r/a \"b\" \\ c.ts");
-        o.program = Some(0x00D3);
+        o.program = Some(0x0101);
         o.channel = 27;
         o.remote_control_key_id = 3;
         o.area_code = 0x5A5;
         o.name = "名前\"x\"".into();
         o.recording_control = "copy-one-generation".into();
+        o.ca = CaMode::Drop;
         o.at_eof = AtEof::End;
         o.eit_from_source = false;
         o.layer = LayerName::A;
-        o.clock_start = Some("2026-10-09T09:00:00".into());
+        o.clock_start = Some("2026-01-01T09:00:00".into());
         o.header = vec!["hello".into()];
         let text = o.to_toml();
         assert!(text.starts_with("# hello\n"), "{text}");
@@ -207,11 +216,12 @@ mod tests {
         assert_eq!(s.name, "名前\"x\"");
         let st = &s.streams[0];
         assert_eq!(st.source.as_deref(), Some("/r/a \"b\" \\ c.ts"));
-        assert_eq!(st.program, Some(0x00D3));
+        assert_eq!(st.program, Some(0x0101));
+        assert_eq!(st.ca, CaMode::Drop);
         assert_eq!(st.at_eof, AtEof::End);
         assert!(!st.eit_from_source);
         assert!(st.pid_map.is_auto());
-        assert_eq!(c.clock.start.as_deref(), Some("2026-10-09T09:00:00"));
+        assert_eq!(c.clock.start.as_deref(), Some("2026-01-01T09:00:00"));
         let mut by_name = RelayOptions::new("x.ts");
         by_name.service_name = Some("ＴＶ１２".into());
         assert_eq!(
@@ -220,8 +230,10 @@ mod tests {
                 .as_deref(),
             Some("ＴＶ１２")
         );
-        // the default keeps the source's copy restriction
+        // the default keeps the source's copy restriction and CA signalling
         let d = RelayOptions::new("x.ts").config().unwrap();
+        assert_eq!(d.services[0].streams[0].ca, CaMode::Keep);
+        assert_eq!(d.network.area_code, 0x5A5);
         assert_eq!(
             d.services[0]
                 .copy_control

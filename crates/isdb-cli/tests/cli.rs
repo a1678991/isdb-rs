@@ -780,8 +780,6 @@ fn have(cmd: &str) -> bool {
 /// recording's audio PES need not start on an ADTS frame), `isdb loopback`
 /// passes, and without `--auto-layout` the default layer B either carries
 /// the recording or is refused with the list of layouts that fit.
-/// On the bench BS recording (18.5 Mbit/s): B 12 seg 64QAM 7/8 chosen,
-/// default layer B (16.85 Mbit/s) refused.
 #[test]
 fn relay_recording() {
     let Some(rec) = relay_recording_path("relay_recording") else {
@@ -903,11 +901,11 @@ fn video_es(gops: usize) -> Vec<u8> {
     v
 }
 
-/// A BS-like recording (network 0x0004, CA descriptor + ECM PID, copy
-/// control) of one program 0x00D3 "テスト局" with video 0x0140, audio
+/// A recording of another network (CA descriptor + ECM PID, copy control;
+/// unscrambled) of one program 0x0101 "テスト局" with video 0x0140, audio
 /// 0x0141 and a caption stream 0x0145 in its PMT, ≈ 8.6 Mbit/s, written
 /// by the isdbt-mux multiplexer.
-fn bs_like_recording(dir: &Path, seconds: f64) -> PathBuf {
+fn foreign_recording(dir: &Path, seconds: f64) -> PathBuf {
     use isdbt_mux::{Config, Multiplexer};
     std::fs::write(dir.join("v.m2v"), video_es(6)).unwrap();
     let a = isdbt_mux::audio::SilentFrame::stereo_48k(384).build();
@@ -915,21 +913,21 @@ fn bs_like_recording(dir: &Path, seconds: f64) -> PathBuf {
     let cfg = Config::from_toml(
         r#"
 [network]
-network_id = 0x0004
-name = "BSデジタル"
+network_id = 0x7C0E
+name = "ソース網"
 area_code = 0x5A5
 remote_control_key_id = 1
 channels = [27]
 
 [transport]
-transport_stream_id = 0x4090
+transport_stream_id = 0x7C0E
 
 [clock]
 source = "fixed"
-start = "2026-10-08T11:59:50"
+start = "2026-01-01T11:59:50"
 
 [[service]]
-service_id = 0x00D3
+service_id = 0x0101
 name = "テスト局"
 provider = "テスト"
 layer = "B"
@@ -959,7 +957,7 @@ copy_control = { recording_control = "copy-one-generation", in_pmt = true, in_sd
 
   [[service.event]]
   event_id = 0x0101
-  start = "2026-10-08T11:00:00"
+  start = "2026-01-01T11:00:00"
   duration = "01:00:00"
   name = "元の番組"
 
@@ -1019,9 +1017,9 @@ fn isdb_cli_layer(
 #[test]
 fn relay_without_toml() {
     let d = tmp("relay-cli");
-    let src = bs_like_recording(&d, 6.0);
+    let src = foreign_recording(&d, 6.0);
     let narrow = ["--layer-b", "12,16qam,1/2,2"]; // 7.49 Mbit/s < ≈ 8.6 needed
-    let clock = ["--clock-start", "2026-10-09T09:00:00"];
+    let clock = ["--clock-start", "2026-01-02T09:00:00"];
 
     // refused without --auto-layout, with the layouts that fit
     let o = run(&[
@@ -1064,11 +1062,14 @@ fn relay_without_toml() {
         "--auto-layout: the relay needs",
         "using B 12seg 16QAM 2/3",
         "[--layer-b 12,16qam,2/3,2]",
-        "program 0x00d3 \"テスト局\" (the only program in the PAT",
+        "program 0x0101 \"テスト局\" (the only program in the PAT",
         "relay 0x0140 -> 0x0111 video",
         "relay 0x0141 -> 0x0112 audio (main)",
         "relay 0x0145 -> 0x0130 captions",
-        "dropped PID 0x0121: ECM",
+        "ECM 0x0121 -> 0x0121",
+        "receivers see CA signalling with a clear payload",
+        "source copy control: copy-one-generation (PMT); relayed as: copy-one-generation (source)",
+        "copy control as the source, CA kept",
         "B 12seg 16QAM 2/3 TI2",
     ] {
         assert!(err.contains(want), "missing {want:?}:\n{err}");
@@ -1133,7 +1134,9 @@ fn relay_without_toml() {
         "--eit-from-source",
         "false",
         "--program",
-        "0xd3",
+        "0x101",
+        "--ca",
+        "drop",
         "--print-config",
     ]);
     assert!(o.status.success());
@@ -1146,7 +1149,8 @@ fn relay_without_toml() {
         "recording_control = \"copy-one-generation\"",
         "at_eof = \"end\"",
         "eit_from_source = false",
-        "program = 0x00D3",
+        "program = 0x0101",
+        "ca = \"drop\"",
     ] {
         assert!(t.contains(want), "missing {want:?}:\n{t}");
     }
@@ -1168,7 +1172,7 @@ fn relay_without_toml() {
         "--print-config",
     ]);
     assert!(!o.status.success());
-    assert!(String::from_utf8_lossy(&o.stderr).contains("0x00d3 \"テスト局\""));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("0x0101 \"テスト局\""));
 
     // the in-memory configuration through the software channel
     let mut args = vec![
@@ -1187,7 +1191,7 @@ fn relay_without_toml() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("[loopback] PASS"), "{err}");
     assert!(
-        err.contains("isdb: relay ") && err.contains("UHF ch44 (NIT), remote key 9, area 0x8d5"),
+        err.contains("isdb: relay ") && err.contains("UHF ch44 (NIT), remote key 9, area 0x5a5"),
         "{err}"
     );
     std::fs::remove_dir_all(&d).unwrap();
@@ -1196,9 +1200,8 @@ fn relay_without_toml() {
 /// Real data, no TOML (opt-in, `ISDB_RS_RELAY_TS`): `isdb mux --relay
 /// <recording> --auto-layout` for 20 s names the selected program, relays
 /// its video to PID 0x0111 with no late PES, validates without errors, and
-/// `isdb loopback --relay … --auto-layout` passes.  (Roles and PIDs of a
-/// BS-like PMT are asserted exactly on the synthetic recording of
-/// `relay_without_toml`.)
+/// `isdb loopback --relay … --auto-layout` passes.  (Roles and PIDs are
+/// asserted exactly on the synthetic recording of `relay_without_toml`.)
 #[test]
 fn relay_recording_without_toml() {
     let Some(rec) = relay_recording_path("relay_recording_without_toml") else {

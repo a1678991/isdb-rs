@@ -1,23 +1,25 @@
 # isdbt-mux example: rebroadcast a recorded program on UHF ch44, remote key 9.
 #
-# A recording of another network (for example a BS recording: BS
-# NIT/SDT, CA descriptors, ECM PID) cannot be registered by a
-# terrestrial receiver if it is relayed as is. `kind = "ts-program"` takes
-# only the program's elementary streams (PES bytes unchanged, PTS/DTS moved
-# onto this multiplex's clock) and this file supplies the terrestrial
-# PSI/SI around them (NIT with ch44 and key 9, SDT, EIT, TOT, BIT, PMT
-# with typed copy control), as for any isdbt-mux service.
+# Relay only a recording you have the rights to, unscrambled
+# (transport_scrambling_control '00'; scrambled input is refused). A
+# recording of another network cannot be registered by a terrestrial
+# receiver if it is relayed as is: its NIT/SDT describe that network.
+# `kind = "ts-program"` takes the program's elementary streams (PES bytes
+# unchanged, PTS/DTS moved onto this multiplex's clock) and this file
+# supplies the terrestrial PSI/SI around them (NIT with ch44 and key 9,
+# SDT, EIT, TOT, BIT, PMT with typed copy control), as for any isdbt-mux
+# service. The source's conditional-access signalling (CA descriptors,
+# ECM, CAT/EMM) is carried by default (`ca` below).
 #
 # Without this file: `isdb tx --relay FILE --auto-layout --hackrf --channel 44
 # --txvga 20 --rf-enable` builds the same configuration in memory
 # (`--print-config` prints it).
 #
-# Transmission parameters are not in this file. The BS recording used on
-# the bench carries 18.53 Mbit/s on average (peaks 19.02 Mbit/s over 1 s,
-# 19.51 over 100 ms, whole 30-minute file) — more than the default layer B (12 seg 64QAM 3/4
-# = 16.85 Mbit/s), which `isdb` refuses with a list of layouts that fit.
-# Use 64QAM 7/8 on the 12 segments (19.66 Mbit/s; partial reception and the
-# one-seg layer A, which carries PAT/NIT/SDT/EIT/TOT/BIT/CAT, unchanged):
+# Transmission parameters are not in this file. A recording above the
+# default layer B rate (12 seg 64QAM 3/4 = 16.85 Mbit/s) is refused with a
+# list of layouts that fit; for example 64QAM 7/8 on the 12 segments
+# (19.66 Mbit/s; partial reception and the one-seg layer A, which carries
+# PAT/NIT/SDT/EIT/TOT/BIT/CAT, unchanged):
 #
 #   isdb mux -c relay-ts.toml --layer-b 12,64qam,7/8,2 --seconds 60 --out-ts check.ts
 #   isdb ts validate check.ts
@@ -32,14 +34,17 @@
 # relative to this file.
 
 [network]
-network_id = 0x7FE0              # B10 Annex N: terrestrial TV range 0x7880–0x7FE8
+# Placeholder in the B10 Annex N terrestrial range 0x7880–0x7FE8 (the
+# allocation within it is ARIB TR-B14's): use an ID not used where the
+# receiver is.
+network_id = 0x79EE
 name = "ベンチ"
-area_code = 0x8D5                # B10 Annex D Table D-2: Kinki wide area (the bench default)
+area_code = 0x5A5                # B10 Annex D Table D-2: set the receiver's area
 remote_control_key_id = 9        # one-touch key 9 → channel 091 on the receiver
 channels = [44]                  # MUST equal the channel `isdb tx` transmits on
 
 [transport]
-transport_stream_id = 0x7FE0
+transport_stream_id = 0x79EE
 
 [clock]
 source = "system"                # TOT and EIT "now" = the wall clock at start
@@ -52,14 +57,17 @@ name = "ベンチ録画"
 layer = "B"
 pmt_pid = 0x01F0
 pcr_pid = 0x01FF                 # dedicated PCR PID: relayed packets keep their payload
-# digital_copy_control_descriptor (B10 §6.2.23) generated here. The source's
-# descriptor bytes (and its CA descriptors) are dropped, but its copy
-# restriction is kept: recording_control = "source" takes the source
-# program's digital_recording_control_data (PMT program loop, else the most
-# restrictive relayed ES loop; copy-free only if the source signals none).
-# Give a Table 6-39 name ("copy-free", "copy-one-generation", "copy-never")
-# to override. copy_control_type defaults to '01' — a Sony BDZ-series
-# recorder refuses '00'.
+# digital_copy_control_descriptor (B10 §6.2.23) generated here.
+# recording_control = "source" (the default of `--relay`) takes the source
+# program's digital_recording_control_data: its PMT program loop, else the
+# most restrictive relayed ES loop, else its SDT, else its EIT p/f
+# (copy-free only if the source signals none); the source's per-component
+# (ES loop) descriptors are kept. A Table 6-39 name ("copy-free",
+# "copy-one-generation", "copy-never") is used as given (ES-loop
+# descriptors then dropped). Either way the start-up report prints the
+# source's value, e.g. "source copy control: copy-one-generation (PMT);
+# relayed as: copy-free (explicit)". copy_control_type defaults to '01'
+# (observed on one Sony BDZ-series recorder: '00' is refused).
 copy_control = { recording_control = "source", in_pmt = true, in_sdt = true }
 
   [[service.stream]]
@@ -69,22 +77,30 @@ copy_control = { recording_control = "source", in_pmt = true, in_sdt = true }
   source = "recording.ts"
   # Program: by default the recording's only program (or the only one whose
   # streams carry packets); a multi-service recording needs one of
-  #   program = 0x00D3                 # program_number (= service_id) in its PAT
+  #   program = 0x0101                 # program_number (= service_id) in its PAT
   #   service_name = "ＴＶ１２"          # its SDT service name ("TV12" matches too)
   # (the error lists the programs with their names and streams).
   # Default selection: video, audio and PES private data (captions,
-  # superimpose, data PES); data carousels (stream_type 0x0D) and ECM/EMM
-  # are not relayed. Narrow it with stream_types = [...] / component_tags =
+  # superimpose, data PES); data carousels (stream_type 0x0D) are not
+  # relayed. Narrow it with stream_types = [...] / component_tags =
   # [...]; include_carousels = true adds 0x05/0x0B–0x0D section streams.
   # Output PIDs (pid_map = "auto", the default): each stream is classified
   # (video / audio, main = lowest component_tag / captions / superimpose /
   # data; rules in SPEC-NOTES) and takes the PID of its role from the plan
   #   pids = { video = 0x0111, audio = [0x0112, 0x0113], captions = 0x0130, superimpose = 0x0138, data = 0x0140 }
-  # (shown with its default values). For the bench BS recording: 0x0140 video →
-  # 0x0111, 0x0141 audio → 0x0112, 0x0145 captions → 0x0130, 0x0138
-  # superimpose → 0x0138. Alternatives: pid_map = "keep" (source PIDs) or an
-  # explicit list, checked against the source PMT:
+  # (shown with its default values), e.g. source video 0x0140 → 0x0111,
+  # audio 0x0141 → 0x0112. Alternatives: pid_map = "keep" (source PIDs) or
+  # an explicit list, checked against the source PMT (ECM / EMM PIDs may
+  # be listed too):
   #   pid_map = [[0x0140, 0x0111], [0x0141, 0x0112], [0x0145, 0x0130], [0x0138, 0x0138]]
+  # Conditional access: "keep" (default) carries the source PMT's
+  # conditional_access_descriptors (program and ES loops), relays the ECM
+  # PIDs they name and the CAT's CA_descriptors with the EMM PIDs present
+  # in the recording (CA_PIDs follow the PID mapping; with "auto" an ECM /
+  # EMM keeps its source PID unless the plan uses it). The payload stays
+  # unscrambled, so receivers see CA signalling with a clear payload.
+  # "drop": none of it.
+  # ca = "keep"
   at_eof = "loop"                # "loop": restart at the first access point, timestamps continuing; "end": stop
   eit_from_source = true         # EIT p/f event name / text / genre / duration from the recording
   rate_check = "error"           # refuse a layer that cannot carry the measured rate ("warn": relay anyway)
@@ -113,4 +129,4 @@ broadcasters = [
 ]
 
 [cat]
-descriptors = []                 # free to air: no CA_descriptor
+descriptors = []                 # none of its own; with ca = "keep" the source CAT's CA_descriptors are added

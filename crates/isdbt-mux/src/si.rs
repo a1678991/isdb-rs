@@ -1106,7 +1106,7 @@ impl SiBuilder {
     /// 32 segments of 3 h × 8 sections, empty segments as one empty section.
     fn eit_schedule(&self, o: &TableOpts, v: u8, now: JstSeconds) -> Result<Vec<Vec<u8>>> {
         let c = &self.cfg;
-        let t0 = if c.eit_schedule.reference == "month" {
+        let t0 = if c.eit_schedule.reference == crate::config::EitScheduleReference::Month {
             let d = jst::to_datetime(now)
                 .ok_or_else(|| MuxError::Config("clock out of range".into()))?;
             let first = isdb_si::time::DateTime {

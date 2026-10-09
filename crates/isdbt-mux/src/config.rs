@@ -163,6 +163,7 @@ pub struct Transport {
 /// Where the JST wall clock comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ClockSource {
     /// System clock at multiplexer creation, then advanced by the stream clock.
     #[default]
@@ -230,7 +231,7 @@ impl Default for Timing {
 }
 
 /// A raw descriptor given as tag + hex body (the bytes after descriptor_length).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawDescriptor {
     /// descriptor_tag.
@@ -428,8 +429,9 @@ table_cfg!(
 table_cfg!(
     /// EIT schedule actual (B10 §5.2.7, Part 2 Annex 1.4.2).
     EitScheduleCfg, enabled = false;
-    /// Segment placement reference: "today" (method 1) or "month" (method 2).
-    reference: String = "today".to_string(),
+    /// Segment placement reference ([`EitScheduleReference`]): `"today"`
+    /// (method 1, default) or `"month"` (method 2).
+    reference: EitScheduleReference = EitScheduleReference::Today,
 );
 table_cfg!(
     /// TOT (B10 §5.2.9).
@@ -451,6 +453,19 @@ table_cfg!(
     /// Broadcaster loop.
     broadcasters: Vec<BroadcasterCfg> = Vec::new(),
 );
+
+/// Where EIT schedule segments are counted from (B10 Part 2 Annex 1.4.2,
+/// `[eit_schedule] reference`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum EitScheduleReference {
+    /// From today 00:00 JST (method 1, default).
+    #[default]
+    Today,
+    /// From the first day of the month 00:00 JST (method 2).
+    Month,
+}
 
 /// A raw section stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,6 +626,7 @@ pub struct ContentAvailabilityCfg {
 /// Kind of elementary stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum StreamKind {
     /// ITU-T H.262 | ISO/IEC 13818-2 video elementary stream file.
     Mpeg2Video,
@@ -627,6 +643,7 @@ pub enum StreamKind {
 /// What a `ts-program` stream does at the end of its file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum AtEof {
     /// Start again at the first random access point, timestamps continuing
     /// (default).
@@ -637,10 +654,37 @@ pub enum AtEof {
     End,
 }
 
+/// What a `ts-program` relay does with the source program's conditional
+/// access signalling (`ca`). The relayed payload is unscrambled in either
+/// case (transport_scrambling_control '00'; scrambled input is refused).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum CaMode {
+    /// Carry it (default): the source PMT's conditional_access_descriptors
+    /// (H.222.0 §2.6.16; program and ES loops) go into the generated PMT,
+    /// the ECM PIDs they point at are relayed, and the source CAT's
+    /// CA_descriptors go into the generated CAT (with the EMM PIDs that are
+    /// present in the source). CA_PIDs follow the PID mapping. Receivers
+    /// see CA signalling with a clear payload.
+    #[default]
+    Keep,
+    /// Drop it: no CA descriptors, ECM or EMM from the source.
+    Drop,
+}
+
+impl CaMode {
+    /// True for the default (`"keep"`).
+    pub fn is_keep(&self) -> bool {
+        *self == CaMode::Keep
+    }
+}
+
 /// What a `ts-program` stream does when its rate exceeds the capacity of
 /// its layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum RateCheck {
     /// Refuse the configuration, listing layer layouts that fit (default).
     #[default]
@@ -762,6 +806,10 @@ pub struct StreamCfg {
     /// choice, see SPEC-NOTES).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pids: Option<PidPlan>,
+    /// `ts-program`: the source's conditional access signalling, `"keep"`
+    /// (default) or `"drop"` ([`CaMode`]).
+    #[serde(default, skip_serializing_if = "CaMode::is_keep")]
+    pub ca: CaMode,
     /// `ts-program`: `"loop"` (default) or `"end"` at the end of the file.
     #[serde(default)]
     pub at_eof: AtEof,
@@ -1078,3 +1126,27 @@ pub fn parse_hex(s: &str) -> Result<Vec<u8>> {
 
 /// The example configuration shipped as `examples/bench.toml`.
 pub const EXAMPLE_TOML: &str = include_str!("../examples/bench.toml");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `[eit_schedule] reference` is one of the B10 Part 2 Annex 1.4.2
+    /// methods; any other string is refused when parsing.
+    #[test]
+    fn eit_schedule_reference_is_validated() {
+        let base = EXAMPLE_TOML;
+        let with = |r: &str| {
+            base.replace(
+                "[eit_schedule]\n",
+                &format!("[eit_schedule]\nreference = \"{r}\"\n"),
+            )
+        };
+        let c = Config::from_toml(&with("month")).unwrap();
+        assert_eq!(c.eit_schedule.reference, EitScheduleReference::Month);
+        let c = Config::from_toml(&with("today")).unwrap();
+        assert_eq!(c.eit_schedule.reference, EitScheduleReference::Today);
+        let e = Config::from_toml(&with("week")).unwrap_err().to_string();
+        assert!(e.contains("week") && e.contains("today"), "{e}");
+    }
+}

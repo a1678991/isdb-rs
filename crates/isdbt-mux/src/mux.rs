@@ -228,12 +228,19 @@ impl Multiplexer {
         let mut notes = Vec::new();
         let mut plans: Vec<(relay::Probe, usize, crate::config::StreamCfg)> = Vec::new();
         let mut expanded = cfg.clone();
+        // CA_descriptors of relayed sources' CATs (ca = "keep")
+        let mut relayed_cat: Vec<crate::config::RawDescriptor> = Vec::new();
         for s in expanded.services.iter_mut() {
             let mut streams = Vec::new();
             let mut events = None;
             // copy restriction of the relayed source(s), for
             // recording_control = "source"
-            let mut source_cc: Vec<Option<relay::SourceCopyControl>> = Vec::new();
+            let mut source_cc: Vec<relay::SourceCopyControl> = Vec::new();
+            let keep_source_cc = s
+                .copy_control
+                .as_ref()
+                .is_some_and(|c| c.recording_control == RecordingControlCfg::Source);
+            let mut es_copy_descriptors = false;
             for st in std::mem::take(&mut s.streams) {
                 if st.kind != StreamKind::TsProgram || st.relay_es.is_some() {
                     streams.push(st);
@@ -247,10 +254,28 @@ impl Multiplexer {
                 })?;
                 let probe = relay::probe(&base_dir.join(src), &st)?;
                 notes.push(probe.report());
-                source_cc.push(probe.source_copy_control);
+                source_cc.push(probe.source_copy_control.clone());
                 let ri = plans.len();
                 for (ei, e) in probe.es.iter().enumerate() {
-                    streams.push(relay::expanded_stream(&st, e, ri, ei)?);
+                    es_copy_descriptors |= !e.copy_descriptors.is_empty();
+                    streams.push(relay::expanded_stream(&st, e, ri, ei, keep_source_cc)?);
+                }
+                // ca = "keep": the source's CA descriptors (CA_PID remapped)
+                s.program_descriptors
+                    .extend(probe.ca.program_descriptors.iter().cloned());
+                for d in &probe.ca.cat_descriptors {
+                    if !relayed_cat.contains(d) {
+                        relayed_cat.push(d.clone());
+                    }
+                }
+                if probe.ca.signalled()
+                    && probe.ca.source_free_ca_mode == Some(true)
+                    && !s.free_ca_mode
+                {
+                    notes.push(format!(
+                        "service {:#06x}: the source SDT signals free_CA_mode 1; this service sends free_CA_mode 0 (service key free_ca_mode)",
+                        s.service_id
+                    ));
                 }
                 if st.eit_from_source {
                     let ev = relay::source_events(&probe);
@@ -286,31 +311,42 @@ impl Multiplexer {
             if let Some(ev) = events {
                 s.events = ev;
             }
-            if let Some(cc) = s.copy_control.as_mut()
-                && cc.recording_control == RecordingControlCfg::Source
-                && !source_cc.is_empty()
-            {
-                // the most restrictive of the relayed sources; a source
-                // without a digital_copy_control_descriptor signals no
-                // restriction (copy-free)
-                let v = source_cc
-                    .iter()
-                    .map(|c| c.map_or(DigitalRecordingControl::CopyFree, |c| c.recording_control))
-                    .max_by_key(|v| v.code())
-                    .unwrap_or(DigitalRecordingControl::CopyFree);
-                cc.recording_control = RecordingControlCfg::Value(v);
+            if !source_cc.is_empty() {
+                // recording_control = "source": the most restrictive of the
+                // relayed sources; a source without a
+                // digital_copy_control_descriptor signals no restriction
+                // (copy-free). Any explicit value is used as given; the
+                // source's value is reported either way.
+                let relayed = match s.copy_control.as_mut() {
+                    Some(cc) => match cc.recording_control {
+                        RecordingControlCfg::Source => {
+                            let v = source_cc
+                                .iter()
+                                .filter_map(|c| c.effective().map(|x| x.0))
+                                .max_by_key(|v| v.code())
+                                .unwrap_or(DigitalRecordingControl::CopyFree);
+                            cc.recording_control = RecordingControlCfg::Value(v);
+                            format!("{} (source)", v.name())
+                        }
+                        RecordingControlCfg::Value(v) => format!("{} (explicit)", v.name()),
+                    },
+                    None => "none (the service has no copy_control)".to_string(),
+                };
+                let es_loops = if !es_copy_descriptors {
+                    String::new()
+                } else if keep_source_cc {
+                    "; per-component (ES loop) copy control: kept".to_string()
+                } else {
+                    "; per-component (ES loop) copy control: dropped (not \"source\")".to_string()
+                };
                 notes.push(format!(
-                    "service {:#06x}: copy_control recording_control = \"source\" -> \"{}\" ({})",
+                    "service {:#06x}: source copy control: {}; relayed as: {relayed}{es_loops}",
                     s.service_id,
-                    v.name(),
                     source_cc
                         .iter()
-                        .map(|c| c.map_or_else(
-                            || "the source signals no digital_copy_control_descriptor".to_string(),
-                            |c| c.describe()
-                        ))
+                        .map(|c| c.describe())
                         .collect::<Vec<_>>()
-                        .join("; ")
+                        .join(", "),
                 ));
             }
             if s.streams
@@ -323,6 +359,7 @@ impl Multiplexer {
                 )));
             }
         }
+        expanded.cat.descriptors.extend(relayed_cat);
         if !plans.is_empty() {
             expanded.validate()?;
         }
@@ -517,6 +554,25 @@ impl Multiplexer {
             }
             media_info.push(infos);
         }
+        // relayed ECM / EMM PIDs (ca = "keep") are not PMT streams
+        for (probe, layer, _) in &plans {
+            for c in &probe.ca.pids {
+                claim(
+                    c.pid,
+                    *layer,
+                    format!(
+                        "ts-program {} {} {:#06x}",
+                        probe.path.display(),
+                        match c.kind {
+                            relay::CaPidKind::Ecm => "ECM",
+                            relay::CaPidKind::Emm => "EMM",
+                        },
+                        c.src_pid
+                    ),
+                    false,
+                )?;
+            }
+        }
 
         // ---- SI
         let events = si::resolve_events(cfg, clock_start)?;
@@ -526,6 +582,22 @@ impl Multiplexer {
             media: media_info,
             events,
         };
+        // Relayed services whose copy control raw configuration can change:
+        // say so, with what is actually sent.
+        for (i, s) in cfg.services.iter().enumerate() {
+            if !s.streams.iter().any(|st| st.relay_es.is_some()) {
+                continue;
+            }
+            let by = copy_control_overrides(cfg, i);
+            if !by.is_empty() {
+                notes.push(format!(
+                    "service {:#06x}: copy control set by raw configuration ({}); as sent: {}",
+                    s.service_id,
+                    by.join(", "),
+                    sent_copy_control(&si, i, clock_start)?
+                ));
+            }
+        }
         let mut kinds = vec![
             TableKind::Pat,
             TableKind::Cat,
@@ -723,7 +795,7 @@ impl Multiplexer {
             ));
             relays.push(Relay::start(
                 probe,
-                &vec![*layer; probe.es.len()],
+                &vec![*layer; probe.es.len() + probe.ca.pids.len()],
                 st.at_eof,
                 t0 + ms(RELAY_START_MS),
                 ms(st.max_early_ms),
@@ -987,17 +1059,18 @@ impl Multiplexer {
                     lag = lag.max(t - h.at);
                 }
                 // A due packet goes out (TBn permitting) at the source's
-                // pace; only at the start of a pass after a loop seam does it
-                // wait while its T-STD buffer would overflow, released once
-                // its PES must leave to complete by its decoding time. An
-                // early packet needs the full model's consent.
+                // pace; while its T-STD buffer would overflow it waits, up
+                // to relay::RETIME_HOLD past its time (slot jitter), or at
+                // the start of a pass after a loop seam until its PES must
+                // leave to complete by its decoding time. An early packet
+                // needs the full model's consent.
                 let ok = match r.es[ei].tstd.as_mut() {
                     Some(ts) => {
                         ts.tb_can_accept(t)
                             && if due {
                                 let send_time =
                                     (h.rest as f64 * 8.0 * HZ as f64 / layer_bps) as u64 * 2;
-                                let fits = !h.seam
+                                let fits = (!h.seam && t >= h.at + relay::RETIME_HOLD)
                                     || ts.can_accept(t, h.len)
                                     || h.decode
                                         .is_none_or(|d| d <= t + relay::HOLD_MARGIN + send_time);
@@ -1323,4 +1396,112 @@ impl Iterator for Multiplexer {
 /// Borrow a frame in the form `isdbt_phy::Transmitter::transmit_frame` takes.
 pub fn layer_slices(f: &[Vec<Packet>; 3]) -> [&[Packet]; 3] {
     [&f[0], &f[1], &f[2]]
+}
+
+/// Raw configuration that can set or change the copy control of service
+/// `i` besides its typed `copy_control` / `content_availability`: raw
+/// 0xC1 / 0xDE descriptors and `add_descriptors`, and `byte_patches`,
+/// `replace_sections` or `extra_sections` of its PMT and of the SDT / EIT.
+fn copy_control_overrides(cfg: &Config, i: usize) -> Vec<String> {
+    let s = &cfg.services[i];
+    let copy = |tag: u8| tag == 0xC1 || tag == 0xDE;
+    let mut v = Vec::new();
+    for d in s.program_descriptors.iter().filter(|d| copy(d.tag)) {
+        v.push(format!("program_descriptors {:#04x}", d.tag));
+    }
+    for d in s.sdt_descriptors.iter().filter(|d| copy(d.tag)) {
+        v.push(format!("sdt_descriptors {:#04x}", d.tag));
+    }
+    for st in s.streams.iter().filter(|st| st.relay_es.is_none()) {
+        for d in st.descriptors.iter().filter(|d| copy(d.tag)) {
+            v.push(format!("stream {:#06x} descriptors {:#04x}", st.pid, d.tag));
+        }
+    }
+    for e in &s.events {
+        for d in e.descriptors.iter().filter(|d| copy(d.tag)) {
+            v.push(format!(
+                "event {:#06x} descriptors {:#04x}",
+                e.event_id, d.tag
+            ));
+        }
+    }
+    for (name, o) in [
+        ("[service.pmt]", s.pmt.opts()),
+        ("[sdt]", cfg.sdt.opts()),
+        ("[eit]", cfg.eit.opts()),
+        ("[eit_schedule]", cfg.eit_schedule.opts()),
+    ] {
+        for a in o.add_descriptors.iter().filter(|a| copy(a.tag)) {
+            v.push(format!("{name} add_descriptors {:#04x}", a.tag));
+        }
+        if !o.byte_patches.is_empty() {
+            v.push(format!("{name} byte_patches"));
+        }
+        if !o.replace_sections.is_empty() {
+            v.push(format!("{name} replace_sections"));
+        }
+        if !o.extra_sections.is_empty() {
+            v.push(format!("{name} extra_sections"));
+        }
+    }
+    v
+}
+
+/// The copy-control descriptors (0xC1, 0xDE) service `i` sends: decoded
+/// from the generated PMT, SDT and EIT p/f sections.
+fn sent_copy_control(si: &SiBuilder, i: usize, now: JstSeconds) -> Result<String> {
+    use isdb_si::Descriptor;
+    use isdb_si::tables::{EitBody, SdtBody};
+    use isdb_ts::psi::Pmt;
+    use isdb_ts::section::Long;
+    use relay::CopySignalPlace as P;
+    let sid = si.cfg.services[i].service_id;
+    let typed = |v: &[isdb_ts::descriptor::Descriptor]| -> Vec<Descriptor> {
+        v.iter()
+            .filter(|d| d.tag == 0xC1 || d.tag == 0xDE)
+            .filter_map(|d| Descriptor::decode_body(d.tag, &d.data).ok())
+            .collect()
+    };
+    let mut found = relay::SourceCopyControl::default();
+    let build = |kind: TableKind| -> Result<Vec<Vec<u8>>> {
+        let o = si.opts(kind);
+        if !o.enabled {
+            return Ok(Vec::new());
+        }
+        let mut v = si.build(kind, now, o.version)?;
+        for x in &o.extra_sections {
+            v.push(crate::config::parse_hex(x)?);
+        }
+        Ok(v)
+    };
+    for sec in build(TableKind::Pmt(i))? {
+        if let Ok(m) = Long::<Pmt>::decode(&sec) {
+            found.push_from(P::PmtProgram, &typed(&m.body.program_info));
+            for st in &m.body.streams {
+                found.push_from(P::PmtEs(st.elementary_pid), &typed(&st.descriptors));
+            }
+        }
+    }
+    for sec in build(TableKind::Sdt)? {
+        if let Ok(t) = Long::<SdtBody>::decode(&sec) {
+            for svc in t.body.services.iter().filter(|x| x.service_id == sid) {
+                found.push_from(P::Sdt, &svc.descriptors);
+            }
+        }
+    }
+    for sec in build(TableKind::EitPf)? {
+        if let Ok(t) = Long::<EitBody>::decode(&sec)
+            && t.header.table_id_extension == sid
+        {
+            let place = if t.header.section_number == 0 {
+                P::EitPresent
+            } else {
+                P::EitFollowing
+            };
+            for e in &t.body.events {
+                found.push_from(place, &e.descriptors);
+            }
+        }
+    }
+    Ok(found.findings_text())
 }

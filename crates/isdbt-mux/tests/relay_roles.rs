@@ -76,18 +76,18 @@ fn source(dir: &Path, name: &str, services: &str, inject: &[Inject], seconds: f6
     let text = format!(
         r#"
 [network]
-network_id = 0x0004
-name = "BSデジタル"
+network_id = 0x7C0E
+name = "ソース網"
 area_code = 0x5A5
 remote_control_key_id = 1
 channels = [27]
 
 [transport]
-transport_stream_id = 0x4090
+transport_stream_id = 0x7C0E
 
 [clock]
 source = "fixed"
-start = "2026-10-08T11:59:50"
+start = "2026-01-01T11:59:50"
 {services}
 "#
     );
@@ -125,18 +125,18 @@ fn relay_text(src: &Path, extra: &str) -> String {
     format!(
         r#"
 [network]
-network_id = 0x7FE0
+network_id = 0x79EE
 name = "ベンチ"
-area_code = 0x8D5
+area_code = 0x5A5
 remote_control_key_id = 9
 channels = [44]
 
 [transport]
-transport_stream_id = 0x7FE0
+transport_stream_id = 0x79EE
 
 [clock]
 source = "fixed"
-start = "2026-10-09T09:00:00"
+start = "2026-01-02T09:00:00"
 
 [[service]]
 service_id = 0x0400
@@ -165,7 +165,7 @@ fn probe(src: &Path, extra: &str) -> isdbt_mux::Result<relay::Probe> {
 
 const PERMUTED: &str = r#"
 [[service]]
-service_id = 0x00D3
+service_id = 0x0101
 name = "ソース"
 layer = "B"
 pmt_pid = 0x0101
@@ -232,7 +232,7 @@ fn roles_and_pid_plan_on_permuted_pids() {
     let notes = mux.notes().join("\n");
     eprintln!("{notes}");
     for want in [
-        "program 0x00d3 \"ソース\" (the only program in the PAT",
+        "program 0x0101 \"ソース\" (the only program in the PAT",
         "relay 0x0901 -> 0x0111 video (stream_type 0x02",
         "relay 0x0310 -> 0x0112 audio (main) (stream_type 0x0f",
         "relay 0x0200 -> 0x0113 audio (secondary) (stream_type 0x0f",
@@ -240,7 +240,7 @@ fn roles_and_pid_plan_on_permuted_pids() {
         "relay 0x0123 -> 0x0138 superimpose (stream_type 0x06 + data_component_id 0x0008 (B24 Vol.1 Part 3 §9.6) + component_tag 0x38",
         "relay 0x0124 -> 0x0139 superimpose #2 (stream_type 0x06 + data_component_id 0x0008 (B24 Vol.1 Part 3 §9.6) + PES without PTS",
         "not relayed: 0x0150 data carousel stream_type 0x0d component_tag 0x40: section / carousel stream",
-        "dropped PID 0x0101: PMT of program 0x00d3",
+        "dropped PID 0x0101: PMT of program 0x0101",
     ] {
         assert!(notes.contains(want), "missing {want:?} in\n{notes}");
     }
@@ -317,7 +317,7 @@ fn roles_and_pid_plan_on_permuted_pids() {
 
 const PROGRAM_A: &str = r#"
 [[service]]
-service_id = 0x00D3
+service_id = 0x0101
 name = "ソースＡ"
 layer = "B"
 pmt_pid = 0x0101
@@ -387,7 +387,7 @@ fn program_selection_in_multi_program_recordings() {
     let e = probe(&src, "").unwrap_err().to_string();
     for want in [
         "the recording has 3 programs (2 with elementary-stream packets)",
-        "0x00d3 \"ソースＡ\" (service_type 0x01, PMT 0x0101): video 0x0140 (0x02), audio 0x0141 (0x0f)",
+        "0x0101 \"ソースＡ\" (service_type 0x01, PMT 0x0101): video 0x0140 (0x02), audio 0x0141 (0x0f)",
         "0x00d4 \"ソースＢ\" (service_type 0x01, PMT 0x0102): video 0x0240 (0x02), audio 0x0241 (0x0f)",
         "0x00d5 \"データ\" (service_type 0xc0, PMT 0x0103): data carousel 0x0340 (0x0d); 0 ES packets",
         "--program / --service-name",
@@ -418,7 +418,7 @@ fn program_selection_in_multi_program_recordings() {
         assert_eq!(m, vec![(0x0240, 0x0111), (0x0241, 0x0112)]);
         assert!(
             p.report()
-                .contains("dropped PID 0x0140: elementary stream of program 0x00d3"),
+                .contains("dropped PID 0x0140: elementary stream of program 0x0101"),
             "{}",
             p.report()
         );
@@ -446,7 +446,7 @@ fn program_selection_in_multi_program_recordings() {
         3.0,
     );
     let p = probe(&src2, "").unwrap();
-    assert_eq!(p.program, 0x00D3);
+    assert_eq!(p.program, 0x0101);
     assert_eq!(
         p.chosen_by,
         "the only program whose elementary streams carry packets"
@@ -462,7 +462,7 @@ fn explicit_pid_map_and_plan_overrides_are_checked() {
         .unwrap_err()
         .to_string();
     assert!(
-        e.contains("pid_map [0x0999, 0x0111]: 0x0999 is not an elementary stream of program 0x00d3 (its PMT lists 0x0200 (stream_type 0x0f), 0x0901"),
+        e.contains("pid_map [0x0999, 0x0111]: 0x0999 is not an elementary stream of program 0x0101 (its PMT lists 0x0200 (stream_type 0x0f), 0x0901"),
         "{e}"
     );
     // an elementary stream that is not relayed
@@ -470,7 +470,7 @@ fn explicit_pid_map_and_plan_overrides_are_checked() {
         .unwrap_err()
         .to_string();
     assert!(
-        e.contains("source PID 0x0150 of program 0x00d3 is not relayed (section / carousel stream"),
+        e.contains("source PID 0x0150 of program 0x0101 is not relayed (section / carousel stream"),
         "{e}"
     );
     // unlisted streams keep their PID: a collision is refused

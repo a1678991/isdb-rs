@@ -97,12 +97,13 @@ fn check_ts_program_keys(st: &StreamCfg, what: &str) -> Result<()> {
         || st.eit_from_source
         || st.rate_check != RateCheck::Error
         || st.max_early_ms != 0
-        || st.probe_seconds.is_some();
+        || st.probe_seconds.is_some()
+        || !st.ca.is_keep();
     if st.kind != StreamKind::TsProgram {
         if relay_keys_set {
             return Err(MuxError::Config(format!(
                 "{what} {:#06x}: program / service_name / stream_types / component_tags / include_carousels / pid_map / pids / \
-                 at_eof / eit_from_source / rate_check / max_early_ms / probe_seconds apply only to kind = \"ts-program\"",
+                 at_eof / eit_from_source / rate_check / max_early_ms / probe_seconds / ca apply only to kind = \"ts-program\"",
                 st.pid
             )));
         }

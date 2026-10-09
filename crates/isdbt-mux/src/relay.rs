@@ -10,20 +10,30 @@
 //!   stream_type ([`DEFAULT_STREAM_TYPES`]: video, audio, PES private data
 //!   for captions / superimpose / data PES) and optionally component_tag;
 //!   section streams (0x05, 0x0B–0x0D carousels) only with
-//!   `include_carousels`. ECM/EMM PIDs are never PMT elementary streams and
-//!   are not relayed; scrambled packets are refused at the probe.
+//!   `include_carousels`. Scrambled packets (transport_scrambling_control
+//!   ≠ '00') are refused at the probe.
+//! * **Conditional access** (`ca`, [`CaMode`]): with `"keep"` (default) the
+//!   source PMT's conditional_access_descriptors (H.222.0 §2.6.16, program
+//!   and relayed ES loops) go into the generated PMT, the ECM PIDs they
+//!   name are relayed packet by packet, and the source CAT's CA_descriptors
+//!   go into the generated CAT with the EMM PIDs present in the source;
+//!   every CA_PID follows the PID mapping ([`SourceCa`]). The payload is
+//!   unscrambled, so receivers see CA signalling with a clear payload.
+//!   `"drop"` relays none of it.
 //! * **PSI/SI**: PAT/PMT/CAT/NIT/SDT/EIT/TOT/BIT are generated from the
 //!   service configuration as for any service (terrestrial delivery, typed
-//!   copy control). Source program descriptors (CA 0x09, copy control 0xC1,
-//!   …) are not carried as bytes, but the source's copy restriction is kept:
-//!   with `recording_control = "source"` (the `--relay` default) the
-//!   service's digital_copy_control_descriptor takes the source program's
-//!   digital_recording_control_data ([`Probe::source_copy_control`]); ES descriptors are carried over *by type* through
-//!   `isdb_si::Descriptor` when meaningful for the new PMT
-//!   ([`carried_over`]: stream_identifier 0x52, video_decode_control 0xC8,
-//!   data_component 0xFD); the others (CA 0x09, per-component copy control
-//!   0xC1, hierarchical 0xC0 with its source PID, unknown tags) are dropped
-//!   and listed in the probe report.
+//!   copy control). The source's copy control is read from its PMT program
+//!   loop, relayed ES loops, SDT and EIT p/f (0xC1 and 0xDE,
+//!   [`SourceCopyControl`]) and reported; with `recording_control =
+//!   "source"` (the `--relay` default) the service's
+//!   digital_copy_control_descriptor takes the source's
+//!   digital_recording_control_data (precedence PMT program loop > ES
+//!   loops > SDT > EIT) and the relayed ES keep their per-component 0xC1;
+//!   an explicit value is used as given. ES descriptors are carried over
+//!   *by type* through `isdb_si::Descriptor` when meaningful for the new
+//!   PMT ([`carried_over`]: stream_identifier 0x52, video_decode_control
+//!   0xC8, data_component 0xFD); the others (hierarchical 0xC0 with its
+//!   source PID, unknown tags) are dropped and listed in the probe report.
 //! * **PES bytes intact**: every source packet of a relayed PID becomes one
 //!   output packet with the same payload bytes (same chunking), only the
 //!   PTS/DTS fields (their 33-bit values; prefix and marker bits kept) are
@@ -39,7 +49,9 @@
 //!   new PCR is this multiplex's frame clock as for every service; a
 //!   packet is sent in the first free slot at or after its time (or up to
 //!   `max_early_ms` before it when the stream's T-STD model accepts it), so
-//!   the ES leave at the source's rate.
+//!   the ES leave at the source's rate. A due packet whose T-STD buffer
+//!   would overflow waits up to [`RETIME_HOLD`] (the output slots are not
+//!   the source's, see there).
 //! * **Cut-in and loop**: a pass starts at the first video PES that begins
 //!   with a sequence_header (an access point; with an open GOP the leading
 //!   B-picture PES that reference the previous GOP are dropped whole) and
@@ -60,14 +72,14 @@ use isdb_ts::cc::Counter;
 use isdb_ts::demux::{Assembled, SectionDemux};
 use isdb_ts::packet::{AdaptationFields, Packet as TsPacket};
 use isdb_ts::pcr::BASE_MODULUS;
-use isdb_ts::psi::{Pat, Pmt};
+use isdb_ts::psi::{Cat, Pat, Pmt};
 use isdb_ts::reader::StreamReader;
 use isdb_ts::section::{Long, Short};
 
 use crate::audio::AdtsEs;
 use crate::config::{
-    AtEof, EventCfg, MediaClass, PidMap, PidPlan, RawDescriptor, StreamCfg, StreamKind, VdcMode,
-    VideoDecodeControlCfg,
+    AtEof, CaMode, EventCfg, MediaClass, PidMap, PidPlan, RawDescriptor, StreamCfg, StreamKind,
+    VdcMode, VideoDecodeControlCfg,
 };
 use crate::error::{MuxError, Result};
 use crate::jst::{self, JstSeconds};
@@ -106,13 +118,26 @@ pub(crate) const HOLD_MARGIN: u64 = HZ / 10;
 /// was multiplexed at the file start for a buffer state the previous
 /// pass's tail does not match. Elsewhere the source timing is kept as is.
 const SEAM_WINDOW: u64 = 2 * HZ;
+/// Outside the seam window, a due packet whose T-STD buffer would overflow
+/// is held at most this long past its source time. The relay's slots are
+/// not the source's: a packet leaves in the first free slot of its layer
+/// at or after its time, so relayed packets arrive 0–1 ms later than the
+/// source's own packets, unevenly, and their spacing shrinks by up to a
+/// few slots. A source multiplexed with no headroom in MBn/EBn (such as
+/// one made by this crate, whose scheduler fills the buffers to their
+/// limits) then overflows the model by a packet or two at those points;
+/// this short hold absorbs that re-timing jitter. A source whose own
+/// timing overflows the model still does after the hold (the relay keeps
+/// the source's pace instead of re-timing to hide it).
+pub const RETIME_HOLD: u64 = HZ / 500;
 
-/// Whether a source ES descriptor is carried over into the new PMT:
+/// Whether a source ES descriptor is carried over by type into the new PMT:
 /// stream_identifier (B10 §6.2.16; links the ES to EIT component
 /// descriptors and data broadcasting), video_decode_control (§6.2.30),
 /// data_component (§6.2.20; tells a receiver which caption / data coding
-/// the PES carries). Everything else describes the source network (CA,
-/// copy control, hierarchy with source PIDs) and is regenerated or dropped.
+/// the PES carries). CA (0x09) and copy control (0xC1) are carried as
+/// bytes depending on `ca` / `recording_control` ([`RelayedEs`]);
+/// everything else (hierarchy with source PIDs, unknown tags) is dropped.
 pub fn carried_over(d: &Descriptor) -> bool {
     matches!(
         d,
@@ -131,62 +156,231 @@ pub enum EsMode {
     Packets,
 }
 
-/// digital_recording_control_data signalled by the relayed source program.
+/// Where a copy-control signal of the source program was found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CopySignalPlace {
+    /// The PMT program loop (B10 §6.2.23: "for the whole event").
+    PmtProgram,
+    /// The ES loop of a relayed elementary stream (source PID).
+    PmtEs(u16),
+    /// The SDT service loop of the program (B10 §5.2.6).
+    Sdt,
+    /// The EIT present event of the program (B10 §5.2.7).
+    EitPresent,
+    /// The EIT following event of the program.
+    EitFollowing,
+}
+
+impl CopySignalPlace {
+    /// Short label: `PMT`, `PMT ES 0x0140`, `SDT`, `EIT present`, `EIT following`.
+    pub fn label(&self) -> String {
+        match self {
+            CopySignalPlace::PmtProgram => "PMT".into(),
+            CopySignalPlace::PmtEs(p) => format!("PMT ES {p:#06x}"),
+            CopySignalPlace::Sdt => "SDT".into(),
+            CopySignalPlace::EitPresent => "EIT present".into(),
+            CopySignalPlace::EitFollowing => "EIT following".into(),
+        }
+    }
+}
+
+/// A copy-control signal of the source program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CopySignal {
+    /// digital_copy_control_descriptor 0xC1 (B10 §6.2.23):
+    /// digital_recording_control_data (Table 6-39).
+    Recording(DigitalRecordingControl),
+    /// content_availability_descriptor 0xDE (B10 §6.2.45).
+    Availability(isdb_si::descriptor::ContentAvailability),
+}
+
+/// One copy-control signal and where it was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCopyFinding {
+    /// Where.
+    pub place: CopySignalPlace,
+    /// What.
+    pub signal: CopySignal,
+}
+
+impl SourceCopyFinding {
+    /// One item for reports, e.g. `PMT copy-one-generation ('10')`.
+    pub fn describe(&self) -> String {
+        match &self.signal {
+            CopySignal::Recording(v) => {
+                format!("{} {} ('{:02b}')", self.place.label(), v.name(), v.code())
+            }
+            CopySignal::Availability(c) => format!(
+                "{} content_availability (0xDE) copy_restriction_mode {}, image_constraint_token {}, retention_mode {}, retention_state {}, encryption_mode {}",
+                self.place.label(),
+                u8::from(c.copy_restriction_mode),
+                u8::from(c.image_constraint_token),
+                u8::from(c.retention_mode),
+                c.retention_state,
+                u8::from(c.encryption_mode)
+            ),
+        }
+    }
+}
+
+/// The copy-control signalling of the relayed source program: every
+/// digital_copy_control_descriptor (0xC1) and content_availability_descriptor
+/// (0xDE) found in its PMT program loop, the ES loops of the relayed
+/// streams, its SDT service loop and its EIT present/following events
+/// (first version of each seen by the probe).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceCopyControl {
-    /// The value (B10 Table 6-39).
-    pub recording_control: DigitalRecordingControl,
-    /// Where it was found: the PMT program loop, or (without one) the most
-    /// restrictive value of the relayed ES loops.
-    pub from_program_loop: bool,
+    /// Everything found, in PMT program, ES, SDT, EIT order.
+    pub findings: Vec<SourceCopyFinding>,
 }
 
 impl SourceCopyControl {
-    /// The value a relay of the source keeps: the PMT program-loop
-    /// descriptor (B10 §6.2.23 "digital copy control information is
-    /// specified for the whole event"), else the most restrictive
-    /// (largest code: '00' free < '01' provider-defined < '10' one
-    /// generation < '11' never) of the relayed streams' ES-loop
-    /// descriptors.
-    pub fn find<'a>(
-        program_info: &[isdb_ts::descriptor::Descriptor],
-        relayed_es: impl IntoIterator<Item = &'a isdb_ts::descriptor::Descriptor>,
-    ) -> Option<Self> {
-        let value =
-            |d: &isdb_ts::descriptor::Descriptor| match Descriptor::decode_body(d.tag, &d.data) {
-                Ok(Descriptor::DigitalCopyControl(c)) => Some(DigitalRecordingControl::from_code(
-                    c.digital_recording_control_data,
-                )),
-                _ => None,
-            };
-        if let Some(v) = program_info.iter().find_map(value) {
-            return Some(Self {
-                recording_control: v,
-                from_program_loop: true,
-            });
-        }
-        relayed_es
-            .into_iter()
-            .filter_map(value)
-            .max_by_key(|v| v.code())
-            .map(|v| Self {
-                recording_control: v,
-                from_program_loop: false,
-            })
+    /// The digital_recording_control_data a relay with `recording_control =
+    /// "source"` keeps, and where it comes from. Precedence: the PMT
+    /// program loop (B10 §6.2.23: the program-loop descriptor applies to
+    /// the whole event), else the most restrictive (largest code: '00'
+    /// free < '01' provider-defined < '10' one generation < '11' never)
+    /// of the relayed ES loops, else the SDT, else the EIT present event,
+    /// else the following event. `None`: no 0xC1 anywhere.
+    pub fn effective(&self) -> Option<(DigitalRecordingControl, CopySignalPlace)> {
+        let pick = |want: &dyn Fn(&CopySignalPlace) -> bool| {
+            self.findings
+                .iter()
+                .filter(|f| want(&f.place))
+                .filter_map(|f| match f.signal {
+                    CopySignal::Recording(v) => Some((v, f.place)),
+                    CopySignal::Availability(_) => None,
+                })
+                .max_by_key(|(v, _)| v.code())
+        };
+        pick(&|p| *p == CopySignalPlace::PmtProgram)
+            .or_else(|| pick(&|p| matches!(p, CopySignalPlace::PmtEs(_))))
+            .or_else(|| pick(&|p| *p == CopySignalPlace::Sdt))
+            .or_else(|| pick(&|p| *p == CopySignalPlace::EitPresent))
+            .or_else(|| pick(&|p| *p == CopySignalPlace::EitFollowing))
     }
 
-    /// One line for reports.
+    /// The effective value for reports: `copy-one-generation (PMT)`, or
+    /// `none signalled`.
     pub fn describe(&self) -> String {
-        format!(
-            "{} ('{:02b}') from the source {}",
-            self.recording_control.name(),
-            self.recording_control.code(),
-            if self.from_program_loop {
-                "PMT program loop"
-            } else {
-                "ES loops (most restrictive)"
-            }
+        match self.effective() {
+            Some((v, place)) => format!("{} ({})", v.name(), place.label()),
+            None => "none signalled".into(),
+        }
+    }
+
+    /// Every finding, `; `-separated (`none` when empty).
+    pub fn findings_text(&self) -> String {
+        if self.findings.is_empty() {
+            return "none".into();
+        }
+        self.findings
+            .iter()
+            .map(SourceCopyFinding::describe)
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    pub(crate) fn push_from<'a>(
+        &mut self,
+        place: CopySignalPlace,
+        ds: impl IntoIterator<Item = &'a Descriptor>,
+    ) {
+        for d in ds {
+            let signal = match d {
+                Descriptor::DigitalCopyControl(c) => CopySignal::Recording(
+                    DigitalRecordingControl::from_code(c.digital_recording_control_data),
+                ),
+                Descriptor::ContentAvailability(c) => CopySignal::Availability(c.clone()),
+                _ => continue,
+            };
+            self.findings.push(SourceCopyFinding { place, signal });
+        }
+    }
+}
+
+/// Kind of a relayed conditional-access PID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CaPidKind {
+    /// ECM: CA_PID of a PMT conditional_access_descriptor (H.222.0 §2.6.16).
+    Ecm,
+    /// EMM: CA_PID of a CAT CA_descriptor (H.222.0 §2.4.4.6).
+    Emm,
+}
+
+/// An ECM or EMM PID relayed with `ca = "keep"`: its packets go out packet
+/// by packet with unchanged payload, like a carousel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelayedCaPid {
+    /// Source PID.
+    pub src_pid: u16,
+    /// Output PID (the CA_PID of the generated descriptor).
+    pub pid: u16,
+    /// ECM or EMM.
+    pub kind: CaPidKind,
+    /// CA_system_ID of the descriptor that names it.
+    pub ca_system_id: u16,
+    /// Mean rate over the probe (bit/s of 188-byte packets).
+    pub mean_bps: f64,
+}
+
+/// The conditional-access signalling of the source program and what the
+/// relay does with it (`ca`, [`CaMode`]).
+#[derive(Debug, Clone, Default)]
+pub struct SourceCa {
+    /// `keep` or `drop`.
+    pub mode: CaMode,
+    /// conditional_access_descriptors of the source PMT program loop, CA_PID
+    /// remapped (empty with `drop`).
+    pub program_descriptors: Vec<RawDescriptor>,
+    /// CA_descriptors of the source CAT, CA_PID remapped (empty with
+    /// `drop` or when the probed part has no CAT).
+    pub cat_descriptors: Vec<RawDescriptor>,
+    /// The source has a CAT in the probed part.
+    pub source_has_cat: bool,
+    /// ECM / EMM PIDs relayed.
+    pub pids: Vec<RelayedCaPid>,
+    /// free_CA_mode of the program in the source SDT, if seen.
+    pub source_free_ca_mode: Option<bool>,
+    /// Remarks for the report (descriptors whose CA_PID is not relayed …).
+    pub remarks: Vec<String>,
+}
+
+impl SourceCa {
+    /// True when the source signals conditional access anywhere (PMT, CAT).
+    pub fn signalled(&self) -> bool {
+        !self.program_descriptors.is_empty()
+            || !self.cat_descriptors.is_empty()
+            || !self.pids.is_empty()
+    }
+}
+
+/// CA_system_ID and CA_PID of a raw conditional_access_descriptor body
+/// (H.222.0 §2.6.16, Table 2-60).
+fn ca_fields(data: &[u8]) -> Option<(u16, u16)> {
+    (data.len() >= 4).then(|| {
+        (
+            u16::from_be_bytes([data[0], data[1]]),
+            u16::from_be_bytes([data[2], data[3]]) & 0x1FFF,
         )
+    })
+}
+
+/// A conditional_access_descriptor with its CA_PID mapped by `map` (the 3
+/// reserved bits and the private data kept).
+fn remap_ca(data: &[u8], map: impl Fn(u16) -> u16) -> RawDescriptor {
+    let mut b = data.to_vec();
+    if let Some((_, pid)) = ca_fields(&b) {
+        let np = map(pid) & 0x1FFF;
+        b[2] = (b[2] & 0xE0) | (np >> 8) as u8;
+        b[3] = np as u8;
+    }
+    RawDescriptor {
+        tag: 0x09,
+        hex: hex(&b),
     }
 }
 
@@ -212,6 +406,14 @@ pub struct RelayedEs {
     pub descriptors: Vec<Descriptor>,
     /// Source ES descriptors not carried over (names).
     pub dropped_descriptors: Vec<String>,
+    /// The source ES loop's conditional_access_descriptors, CA_PID
+    /// remapped (empty with `ca = "drop"`).
+    pub ca_descriptors: Vec<RawDescriptor>,
+    /// The source ES loop's digital_copy_control_descriptors (per-component
+    /// copy control, B10 §6.2.23), as is: carried when the service keeps
+    /// the source's copy control (`recording_control = "source"`), dropped
+    /// otherwise.
+    pub copy_descriptors: Vec<RawDescriptor>,
     /// Carriage.
     pub mode: EsMode,
     /// Facts for the derived SI (video sequence / audio parameters).
@@ -284,13 +486,16 @@ pub struct Probe {
     pub es: Vec<RelayedEs>,
     /// Elementary streams not relayed, with the reason.
     pub skipped: Vec<String>,
-    /// Source program-level descriptors (all dropped).
+    /// Source program-level descriptors not carried as bytes (names):
+    /// everything but the conditional_access_descriptors kept with
+    /// `ca = "keep"` (copy control is regenerated from the typed
+    /// configuration, see `source_copy_control`).
     pub dropped_program_descriptors: Vec<String>,
-    /// The copy restriction the source signals for the relayed program
-    /// (B10 §6.2.23 digital_recording_control_data): `None` when neither
-    /// the PMT program loop nor a relayed ES loop carries a
-    /// digital_copy_control_descriptor.
-    pub source_copy_control: Option<SourceCopyControl>,
+    /// The copy-control signalling of the source program (PMT, relayed ES
+    /// loops, SDT, EIT p/f).
+    pub source_copy_control: SourceCopyControl,
+    /// The source's conditional-access signalling and what is relayed.
+    pub ca: SourceCa,
     /// PCR time measured (s).
     pub span_s: f64,
     /// Mean rate of the relayed packets (bit/s).
@@ -333,6 +538,9 @@ impl Probe {
                 s += &format!("\n    {}", p.describe());
             }
         }
+        if let Some(m) = self.ca.source_free_ca_mode {
+            s += &format!("\n  source SDT free_CA_mode: {}", u8::from(m));
+        }
         for e in &self.es {
             let timing = match (e.source_lead_s, e.source_tstd) {
                 (Some((a, m, b)), Some(v)) => format!(
@@ -363,7 +571,16 @@ impl Probe {
                 e.mean_bps / 1e6,
                 e.descriptors
                     .iter()
-                    .map(|d| d.name())
+                    .map(|d| d.name().to_string())
+                    .chain(e.ca_descriptors.iter().map(|d| {
+                        let b = parse_hex_lossy(&d.hex);
+                        match ca_fields(&b) {
+                            Some((sys, pid)) => format!(
+                                "conditional_access_descriptor (CA_system_id {sys:#06x}, CA_PID {pid:#06x})"
+                            ),
+                            None => "conditional_access_descriptor".to_string(),
+                        }
+                    }))
                     .collect::<Vec<_>>()
                     .join(", "),
                 if e.dropped_descriptors.is_empty() {
@@ -381,16 +598,62 @@ impl Probe {
         }
         if !self.dropped_program_descriptors.is_empty() {
             s += &format!(
-                "\n  source program descriptors dropped: [{}]",
+                "\n  source program descriptors not carried: [{}]",
                 self.dropped_program_descriptors.join(", ")
             );
         }
+        s += &self.ca_report();
         s += &format!(
-            "\n  source copy control: {}",
-            self.source_copy_control
-                .map(|c| c.describe())
-                .unwrap_or_else(|| "none signalled".to_string())
+            "\n  source copy control: {} (found: {})",
+            self.source_copy_control.describe(),
+            self.source_copy_control.findings_text()
         );
+        s
+    }
+
+    fn ca_report(&self) -> String {
+        let ca = &self.ca;
+        let mut s = String::new();
+        let es_ca = self.es.iter().any(|e| !e.ca_descriptors.is_empty());
+        if ca.mode == CaMode::Drop {
+            return "\n  conditional access (ca = \"drop\"): source CA descriptors, ECM and EMM not relayed".into();
+        }
+        if !ca.signalled() && !es_ca {
+            return s;
+        }
+        let list = |v: &[RawDescriptor]| {
+            v.iter()
+                .filter_map(|d| ca_fields(&parse_hex_lossy(&d.hex)))
+                .map(|(sys, pid)| format!("CA_system_id {sys:#06x} CA_PID {pid:#06x}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        s += "\n  conditional access (ca = \"keep\"):";
+        if !ca.program_descriptors.is_empty() {
+            s += &format!(" PMT program loop [{}];", list(&ca.program_descriptors));
+        }
+        if es_ca {
+            s += " ES loops (see the relayed streams);";
+        }
+        if ca.source_has_cat {
+            s += &format!(" CAT [{}];", list(&ca.cat_descriptors));
+        }
+        for c in &ca.pids {
+            s += &format!(
+                " {} {:#06x} -> {:#06x} {:.3} Mbit/s;",
+                match c.kind {
+                    CaPidKind::Ecm => "ECM",
+                    CaPidKind::Emm => "EMM",
+                },
+                c.src_pid,
+                c.pid,
+                c.mean_bps / 1e6
+            );
+        }
+        for r in &ca.remarks {
+            s += &format!(" {r};");
+        }
+        s += " the payload is unscrambled (transport_scrambling_control '00'): receivers see CA signalling with a clear payload";
         s
     }
 }
@@ -897,6 +1160,12 @@ struct Scan {
     tot: Option<(u64, JstSeconds)>,
     pid_packets: Vec<u64>,
     pes_hint: Vec<Option<PesHint>>,
+    /// CAT descriptor loop (first CAT seen).
+    cat: Option<Vec<isdb_ts::descriptor::Descriptor>>,
+    /// SDT actual: service_id → (free_CA_mode, service loop descriptors).
+    sdt_loops: Vec<(u16, bool, Vec<Descriptor>)>,
+    /// EIT p/f actual: (service_id, section_number) → first event's descriptors.
+    eit_loops: Vec<(u16, u8, Vec<Descriptor>)>,
 }
 
 impl Scan {
@@ -967,7 +1236,7 @@ fn component_tag_of(typed: &[Descriptor]) -> Option<u8> {
 /// packet counts and the first PES header of every PID.
 fn scan(pkts: &[Packet]) -> Scan {
     let mut demux = SectionDemux::new();
-    for pid in [0x0000, 0x0011, 0x0012, 0x0014] {
+    for pid in [0x0000, 0x0001, 0x0011, 0x0012, 0x0014] {
         demux.add_pid(pid);
     }
     let mut sc = Scan {
@@ -978,6 +1247,9 @@ fn scan(pkts: &[Packet]) -> Scan {
         tot: None,
         pid_packets: vec![0; 8192],
         pes_hint: vec![None; 8192],
+        cat: None,
+        sdt_loops: Vec::new(),
+        eit_loops: Vec::new(),
     };
     let mut have_pat = false;
     for (i, p) in pkts.iter().enumerate() {
@@ -1021,6 +1293,13 @@ fn scan(pkts: &[Packet]) -> Scan {
                         continue;
                     };
                     for svc in &s.body.services {
+                        if !sc.sdt_loops.iter().any(|x| x.0 == svc.service_id) {
+                            sc.sdt_loops.push((
+                                svc.service_id,
+                                svc.free_ca_mode,
+                                svc.descriptors.clone(),
+                            ));
+                        }
                         if sc.sdt.iter().any(|x| x.0 == svc.service_id) {
                             continue;
                         }
@@ -1041,11 +1320,23 @@ fn scan(pkts: &[Packet]) -> Scan {
                         continue;
                     };
                     let ev = e.body.events.first().and_then(event_of);
+                    let (sid, n) = (e.header.table_id_extension, e.header.section_number);
+                    if n <= 1
+                        && !sc.eit_loops.iter().any(|x| x.0 == sid && x.1 == n)
+                        && let Some(first) = e.body.events.first()
+                    {
+                        sc.eit_loops.push((sid, n, first.descriptors.clone()));
+                    }
                     let x = sc.eit_entry(e.header.table_id_extension);
                     match e.header.section_number {
                         0 if x.1.is_none() => x.1 = ev,
                         1 if x.2.is_none() => x.2 = ev,
                         _ => {}
+                    }
+                }
+                (0x0001, 0x01) if sc.cat.is_none() => {
+                    if let Ok(c) = Long::<Cat>::decode(&sec.data) {
+                        sc.cat = Some(c.body.descriptors);
                     }
                 }
                 (0x0014, 0x73) if sc.tot.is_none() => {
@@ -1198,7 +1489,7 @@ fn rank_and_assign(es: &mut [RelayedEs], plan: Option<&PidPlan>) {
 }
 
 /// Why a source PID that is not relayed is dropped.
-fn drop_reason(sc: &Scan, program: u16, pmt: &Pmt, pmt_pid: u16, pid: u16) -> String {
+fn drop_reason(sc: &Scan, program: u16, pmt: &Pmt, pmt_pid: u16, pid: u16, ca: CaMode) -> String {
     let ca_pid = |d: &isdb_ts::descriptor::Descriptor| match Descriptor::decode_body(d.tag, &d.data)
     {
         Ok(Descriptor::ConditionalAccess(c)) if c.ca_pid == pid => Some(c.ca_system_id),
@@ -1252,7 +1543,17 @@ fn drop_reason(sc: &Scan, program: u16, pmt: &Pmt, pmt_pid: u16, pid: u16) -> St
         .find_map(ca_pid)
     {
         return format!(
-            "ECM (CA_PID of a conditional_access_descriptor, CA_system_id {sys:#06x}): CA is not relayed"
+            "ECM (CA_PID of a conditional_access_descriptor, CA_system_id {sys:#06x}): {}",
+            if ca == CaMode::Drop {
+                "ca = \"drop\""
+            } else {
+                "named only by an elementary stream that is not relayed"
+            }
+        );
+    }
+    if let Some(sys) = sc.cat.iter().flatten().find_map(ca_pid) {
+        return format!(
+            "EMM (CA_PID of a source CAT CA_descriptor, CA_system_id {sys:#06x}): ca = \"drop\""
         );
     }
     if let Some(&(n, _)) = sc.programs.iter().find(|x| x.1 == pid) {
@@ -1322,6 +1623,8 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
     let mut es = Vec::new();
     let mut skipped = Vec::new();
     let mut skipped_why: Vec<(u16, String)> = Vec::new();
+    // per relayed ES: its conditional_access_descriptor bodies (ca = "keep")
+    let mut es_ca_raw: Vec<Vec<Vec<u8>>> = Vec::new();
     for s in &pmt.streams {
         let typed: Vec<Descriptor> = s
             .descriptors
@@ -1365,11 +1668,22 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             skipped_why.push((s.elementary_pid, why));
             continue;
         }
+        let ca_keep = st.ca == CaMode::Keep;
         let (keep, drop): (Vec<_>, Vec<_>) = s.descriptors.iter().partition(|d| {
             Descriptor::decode_body(d.tag, &d.data)
                 .ok()
                 .is_some_and(|x| carried_over(&x))
         });
+        let (special, drop): (Vec<_>, Vec<_>) = drop
+            .into_iter()
+            .partition(|d| d.tag == 0xC1 || (ca_keep && d.tag == 0x09));
+        es_ca_raw.push(
+            special
+                .iter()
+                .filter(|d| d.tag == 0x09)
+                .map(|d| d.data.clone())
+                .collect::<Vec<_>>(),
+        );
         es.push(RelayedEs {
             src_pid: s.elementary_pid,
             pid: s.elementary_pid,
@@ -1383,6 +1697,15 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
                 .filter_map(|d| Descriptor::decode_body(d.tag, &d.data).ok())
                 .collect(),
             dropped_descriptors: drop.iter().map(|d| desc_name(d)).collect(),
+            ca_descriptors: Vec::new(),
+            copy_descriptors: special
+                .iter()
+                .filter(|d| d.tag == 0xC1)
+                .map(|d| RawDescriptor {
+                    tag: 0xC1,
+                    hex: hex(&d.data),
+                })
+                .collect(),
             mode: if carousel {
                 EsMode::Packets
             } else {
@@ -1400,6 +1723,43 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             "program {program:#06x}: no elementary stream selected ({})",
             skipped.join("; ")
         )));
+    }
+
+    // ---- conditional access (ca = "keep"): ECM PIDs of the program loop and
+    // the relayed ES loops, EMM PIDs of the CAT present in the source
+    let ca_keep = st.ca == CaMode::Keep;
+    let mut ca_src: Vec<(u16, CaPidKind, u16)> = Vec::new();
+    let mut ca_remarks: Vec<String> = Vec::new();
+    if ca_keep {
+        let ecm = pmt
+            .program_info
+            .iter()
+            .filter(|d| d.tag == 0x09)
+            .map(|d| d.data.as_slice())
+            .chain(es_ca_raw.iter().flatten().map(Vec::as_slice));
+        for d in ecm {
+            if let Some((sys, pid)) = ca_fields(d)
+                && pid != 0x1FFF
+                && !ca_src.iter().any(|c| c.0 == pid)
+            {
+                ca_src.push((pid, CaPidKind::Ecm, sys));
+            }
+        }
+        for d in sc.cat.iter().flatten().filter(|d| d.tag == 0x09) {
+            let Some((sys, pid)) = ca_fields(&d.data) else {
+                continue;
+            };
+            if pid == 0x1FFF || ca_src.iter().any(|c| c.0 == pid) {
+                continue;
+            }
+            if sc.pid_packets[pid as usize] > 0 {
+                ca_src.push((pid, CaPidKind::Emm, sys));
+            } else {
+                ca_remarks.push(format!(
+                    "EMM PID {pid:#06x} (CA_system_id {sys:#06x}) has no packets in the probed part: CAT descriptor carried as is, nothing relayed"
+                ));
+            }
+        }
     }
 
     // ---- output PIDs
@@ -1424,6 +1784,8 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             for &[a, b] in list {
                 if let Some(e) = es.iter_mut().find(|e| e.src_pid == a) {
                     e.pid = b;
+                } else if ca_src.iter().any(|c| c.0 == a) {
+                    // an ECM / EMM PID: mapped below
                 } else if let Some((_, why)) = skipped_why.iter().find(|x| x.0 == a) {
                     return Err(err(format!(
                         "pid_map [{a:#06x}, {b:#06x}]: source PID {a:#06x} of program {program:#06x} is not relayed ({why}); select it or remove the entry"
@@ -1437,21 +1799,93 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             }
         }
     }
-    for (i, a) in es.iter().enumerate() {
-        if let Some(b) = es[..i].iter().find(|b| b.pid == a.pid) {
+    let mut ca_pids: Vec<RelayedCaPid> = Vec::new();
+    {
+        let reserved: Vec<u16> = match &st.pid_map {
+            PidMap::Auto => st.pids.as_ref().unwrap_or(&default_plan).all().collect(),
+            _ => Vec::new(),
+        };
+        let mut used: Vec<u16> = es.iter().map(|e| e.pid).collect();
+        for &(src, kind, sys) in &ca_src {
+            let listed = match &st.pid_map {
+                PidMap::List(l) => l.iter().find(|x| x[0] == src).map(|x| x[1]),
+                _ => None,
+            };
+            let pid = match (listed, &st.pid_map) {
+                (Some(p), _) => p,
+                // the source PID, or the next free one when an output ES
+                // PID or the role plan already has it
+                (None, PidMap::Auto) => {
+                    let mut p = src;
+                    while used.contains(&p) || reserved.contains(&p) {
+                        p = if p >= 0x1FFE { 0x0030 } else { p + 1 };
+                    }
+                    p
+                }
+                (None, _) => src,
+            };
+            used.push(pid);
+            ca_pids.push(RelayedCaPid {
+                src_pid: src,
+                pid,
+                kind,
+                ca_system_id: sys,
+                mean_bps: 0.0,
+            });
+        }
+    }
+    let out_pids: Vec<(u16, u16)> = es
+        .iter()
+        .map(|e| (e.pid, e.src_pid))
+        .chain(ca_pids.iter().map(|c| (c.pid, c.src_pid)))
+        .collect();
+    for (i, a) in out_pids.iter().enumerate() {
+        if let Some(b) = out_pids[..i].iter().find(|b| b.0 == a.0) {
             return Err(err(format!(
                 "output PID {:#06x} used by source PIDs {:#06x} and {:#06x}; fix pid_map / pids",
-                a.pid, b.src_pid, a.src_pid
+                a.0, b.1, a.1
             )));
         }
+    }
+    let map_ca = |pid: u16| {
+        ca_pids
+            .iter()
+            .find(|c| c.src_pid == pid)
+            .map_or(pid, |c| c.pid)
+    };
+    for (e, raw) in es.iter_mut().zip(&es_ca_raw) {
+        e.ca_descriptors = raw.iter().map(|d| remap_ca(d, map_ca)).collect();
+    }
+    let mut ca = SourceCa {
+        mode: st.ca,
+        source_has_cat: sc.cat.is_some(),
+        source_free_ca_mode: sc.sdt_loops.iter().find(|x| x.0 == program).map(|x| x.1),
+        remarks: ca_remarks,
+        ..Default::default()
+    };
+    if ca_keep {
+        ca.program_descriptors = pmt
+            .program_info
+            .iter()
+            .filter(|d| d.tag == 0x09)
+            .map(|d| remap_ca(&d.data, map_ca))
+            .collect();
+        ca.cat_descriptors = sc
+            .cat
+            .iter()
+            .flatten()
+            .filter(|d| d.tag == 0x09)
+            .map(|d| remap_ca(&d.data, map_ca))
+            .collect();
     }
     let dropped_pids: Vec<(u16, String)> = (0..8192u16)
         .filter(|&p| {
             sc.pid_packets[p as usize] > 0
                 && !es.iter().any(|e| e.src_pid == p)
+                && !ca_pids.iter().any(|c| c.src_pid == p)
                 && !skipped_why.iter().any(|x| x.0 == p)
         })
-        .map(|p| (p, drop_reason(&sc, program, &pmt, pmt_pid, p)))
+        .map(|p| (p, drop_reason(&sc, program, &pmt, pmt_pid, p, st.ca)))
         .collect();
 
     // ---- pass 2: rates, scrambling, stream parameters, cut-in time
@@ -1461,6 +1895,10 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
     let mut idx = vec![usize::MAX; 8192];
     for (i, e) in es.iter().enumerate() {
         idx[e.src_pid as usize] = i;
+    }
+    // ECM / EMM PIDs after the ES: counted (rate, scrambling) only
+    for (k, c) in ca_pids.iter().enumerate() {
+        idx[c.src_pid as usize] = es.len() + k;
     }
     let mut clock = PcrClock::<usize>::new(Some(pmt.pcr_pid));
     for (i, p) in pkts.iter().enumerate() {
@@ -1490,6 +1928,9 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         if p[3] & 0xC0 != 0 {
             scrambled += 1;
             continue;
+        }
+        if ei >= es.len() {
+            continue; // ECM / EMM: sections, no PES analysis
         }
         let Some(pl) = payload(p) else { continue };
         let pusi = p[1] & 0x40 != 0;
@@ -1536,7 +1977,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
     }
     if scrambled > 0 {
         return Err(err(format!(
-            "{scrambled} packets of the selected elementary streams are scrambled (transport_scrambling_control ≠ '00'); scrambled programs are refused: isdb does not descramble (no B-CAS / CAS support)"
+            "{scrambled} packets of the relayed PIDs are scrambled (transport_scrambling_control ≠ '00'); scrambled programs are refused: isdb does not descramble (no B-CAS / CAS support)"
         )));
     }
     let span = match (sel.first(), sel.last()) {
@@ -1544,13 +1985,17 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         _ => return Err(err("selected streams span no PCR time".into())),
     };
     let span_s = span as f64 / HZ as f64;
-    let mut counts = vec![0u64; es.len()];
+    let mut counts = vec![0u64; es.len() + ca_pids.len()];
     for &(_, e) in &sel {
         counts[e] += 1;
     }
     for (e, c) in es.iter_mut().zip(&counts) {
         e.mean_bps = *c as f64 * 1504.0 / span_s;
     }
+    for (c, n) in ca_pids.iter_mut().zip(&counts[es.len()..]) {
+        c.mean_bps = *n as f64 * 1504.0 / span_s;
+    }
+    ca.pids = ca_pids;
     let mean_bps = sel.len() as f64 * 1504.0 / span_s;
     let mut peak = 0f64;
     let mut j = 0;
@@ -1646,13 +2091,35 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         (Some((_, j)), _, _) => Some(j),
         _ => None,
     };
-    let source_copy_control = SourceCopyControl::find(
-        &pmt.program_info,
-        pmt.streams
-            .iter()
-            .filter(|s| es.iter().any(|e| e.src_pid == s.elementary_pid))
-            .flat_map(|s| s.descriptors.iter()),
-    );
+    let typed = |v: &[isdb_ts::descriptor::Descriptor]| -> Vec<Descriptor> {
+        v.iter()
+            .filter(|d| d.tag == 0xC1 || d.tag == 0xDE)
+            .filter_map(|d| Descriptor::decode_body(d.tag, &d.data).ok())
+            .collect()
+    };
+    let mut source_copy_control = SourceCopyControl::default();
+    source_copy_control.push_from(CopySignalPlace::PmtProgram, &typed(&pmt.program_info));
+    for s in pmt
+        .streams
+        .iter()
+        .filter(|s| es.iter().any(|e| e.src_pid == s.elementary_pid))
+    {
+        source_copy_control.push_from(
+            CopySignalPlace::PmtEs(s.elementary_pid),
+            &typed(&s.descriptors),
+        );
+    }
+    if let Some((_, _, ds)) = sc.sdt_loops.iter().find(|x| x.0 == program) {
+        source_copy_control.push_from(CopySignalPlace::Sdt, ds);
+    }
+    for (n, place) in [
+        (0u8, CopySignalPlace::EitPresent),
+        (1, CopySignalPlace::EitFollowing),
+    ] {
+        if let Some((_, _, ds)) = sc.eit_loops.iter().find(|x| x.0 == program && x.1 == n) {
+            source_copy_control.push_from(place, ds);
+        }
+    }
     Ok(Probe {
         path: path.to_path_buf(),
         program,
@@ -1664,8 +2131,14 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         pcr_pid: pmt.pcr_pid,
         es,
         skipped,
-        dropped_program_descriptors: pmt.program_info.iter().map(desc_name).collect(),
+        dropped_program_descriptors: pmt
+            .program_info
+            .iter()
+            .filter(|d| !(ca_keep && d.tag == 0x09))
+            .map(desc_name)
+            .collect(),
         source_copy_control,
+        ca,
         span_s,
         mean_bps,
         peak_1s_bps: peak,
@@ -1679,13 +2152,25 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// Bytes of a hex string written by [`hex`].
+fn parse_hex_lossy(s: &str) -> Vec<u8> {
+    crate::config::parse_hex(s).unwrap_or_default()
+}
+
 /// The stream configuration a relayed ES takes in the service (so the PMT,
 /// EIT component descriptors and validation treat it like any stream).
+///
+/// The ES loop gets the carried typed descriptors, the source's
+/// conditional_access_descriptors kept with `ca = "keep"` (CA_PID
+/// remapped) and, with `keep_copy_control` (the service keeps the source's
+/// copy control, `recording_control = "source"`), the source's
+/// per-component digital_copy_control_descriptors.
 pub fn expanded_stream(
     st: &StreamCfg,
     e: &RelayedEs,
     relay: usize,
     index: usize,
+    keep_copy_control: bool,
 ) -> Result<StreamCfg> {
     let mut x = st.clone();
     x.kind = StreamKind::TsProgram;
@@ -1706,6 +2191,10 @@ pub fn expanded_stream(
             tag: v[0],
             hex: hex(&v[2..]),
         });
+    }
+    x.descriptors.extend(e.ca_descriptors.iter().cloned());
+    if keep_copy_control {
+        x.descriptors.extend(e.copy_descriptors.iter().cloned());
     }
     let video = x.media_class() == MediaClass::Video;
     x.video_decode_control = VideoDecodeControlCfg {
@@ -1729,6 +2218,7 @@ pub fn expanded_stream(
     x.max_early_ms = 0;
     x.at_eof = AtEof::Loop;
     x.rate_check = Default::default();
+    x.ca = CaMode::Keep;
     x.relay_es = Some((relay, index));
     Ok(x)
 }
@@ -1896,8 +2386,8 @@ pub struct RelayStats {
     pub max_lateness: u64,
     /// Delay of the oldest due packet at the last slot (ticks).
     pub lag: u64,
-    /// Slots in which a due packet of a pass start after a loop seam was
-    /// held back because its T-STD buffer would overflow.
+    /// Slots in which a due packet was held back because its T-STD buffer
+    /// would overflow ([`RETIME_HOLD`], or the hold after a loop seam).
     pub tstd_holds: u64,
     /// Relayed packets taken from the source in completed passes.
     pub source_packets: u64,
@@ -2010,6 +2500,30 @@ impl Relay {
                 mode: e.mode,
                 cc: Counter::new(0),
                 tstd: e.tstd.map(|p| Tstd::new(p, start_mux.saturating_sub(HZ))),
+                last_cc: None,
+                last_pkt: None,
+                asm: None,
+                wait_pusi: true,
+                drop_leading_b: false,
+                pass_units: 0,
+                queue: VecDeque::new(),
+                cur: None,
+                first_pts: None,
+                last_pts: None,
+                pts_step: 0,
+                last_decode: None,
+            });
+        }
+        // ECM / EMM PIDs (ca = "keep"): packet by packet, no T-STD model
+        for c in &probe.ca.pids {
+            let i = es.len();
+            index[c.src_pid as usize] = i as u16 + 1;
+            es.push(RelayEs {
+                pid: c.pid,
+                layer: layers[i],
+                mode: EsMode::Packets,
+                cc: Counter::new(0),
+                tstd: None,
                 last_cc: None,
                 last_pkt: None,
                 asm: None,
@@ -2673,6 +3187,8 @@ mod tests {
             rank: 0,
             descriptors: Vec::new(),
             dropped_descriptors: Vec::new(),
+            ca_descriptors: Vec::new(),
+            copy_descriptors: Vec::new(),
             mode: EsMode::Pes,
             info: StreamInfo::None,
             tstd: None,
@@ -2680,6 +3196,61 @@ mod tests {
             source_tstd: None,
             source_lead_s: None,
         }
+    }
+
+    /// H.222.0 Table 2-60: CA_PID is the 13 bits after 3 reserved bits;
+    /// the remap keeps the reserved bits and the private data.
+    #[test]
+    fn spec_table_2_60_ca_pid_remap_keeps_reserved_bits() {
+        let body = [0x00, 0x05, 0xE1, 0x21, 0xAB];
+        assert_eq!(ca_fields(&body), Some((0x0005, 0x0121)));
+        let r = remap_ca(&body, |p| if p == 0x0121 { 0x0901 } else { p });
+        assert_eq!(r.tag, 0x09);
+        assert_eq!(r.hex, "0005e901ab");
+        let null = remap_ca(&[0x00, 0x05, 0xFF, 0xFF], |_| 0x0901);
+        assert_eq!(null.hex, "0005e901", "every CA_PID goes through the map");
+        assert_eq!(ca_fields(&[0x00, 0x05, 0xE1]), None);
+    }
+
+    /// Precedence of the source copy control: PMT program loop > relayed
+    /// ES loops (most restrictive) > SDT > EIT present > EIT following.
+    #[test]
+    fn source_copy_control_precedence() {
+        use DigitalRecordingControl::*;
+        let f = |place, v| SourceCopyFinding {
+            place,
+            signal: CopySignal::Recording(v),
+        };
+        let mut c = SourceCopyControl {
+            findings: vec![
+                f(CopySignalPlace::EitFollowing, CopyNever),
+                f(CopySignalPlace::EitPresent, CopyOneGeneration),
+            ],
+        };
+        assert_eq!(
+            c.effective(),
+            Some((CopyOneGeneration, CopySignalPlace::EitPresent))
+        );
+        c.findings.push(f(CopySignalPlace::Sdt, CopyFree));
+        assert_eq!(c.effective(), Some((CopyFree, CopySignalPlace::Sdt)));
+        c.findings
+            .push(f(CopySignalPlace::PmtEs(0x0140), CopyOneGeneration));
+        c.findings
+            .push(f(CopySignalPlace::PmtEs(0x0141), CopyNever));
+        assert_eq!(
+            c.effective(),
+            Some((CopyNever, CopySignalPlace::PmtEs(0x0141)))
+        );
+        c.findings.push(f(CopySignalPlace::PmtProgram, CopyFree));
+        assert_eq!(c.effective(), Some((CopyFree, CopySignalPlace::PmtProgram)));
+        assert_eq!(c.describe(), "copy-free (PMT)");
+        assert!(
+            c.findings_text()
+                .contains("PMT ES 0x0141 copy-never ('11')"),
+            "{}",
+            c.findings_text()
+        );
+        assert_eq!(SourceCopyControl::default().describe(), "none signalled");
     }
 
     #[test]

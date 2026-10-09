@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use isdbt_core::{Layer, Params};
-use isdbt_mux::config::{AtEof, LayerName, StreamCfg};
+use isdbt_mux::config::{AtEof, CaMode, LayerName, StreamCfg};
 use isdbt_mux::relay_template::{DEFAULT_NAME, RelayOptions};
 use isdbt_mux::{Config, Multiplexer, MuxError};
 
@@ -22,8 +22,8 @@ use crate::phyargs::{channel_hz, describe_params, phy_options};
 /// `--relay` and its options (shared by `tx`, `loopback` and `mux`).
 #[derive(Debug, Clone, Default, Args)]
 pub struct RelayArgs {
-    /// Rebroadcast one program of a recorded TS (e.g. a BS recording) as a
-    /// terrestrial service, without a TOML file: the configuration of
+    /// Rebroadcast one program of a recorded TS (unscrambled; one you have
+    /// the rights to) as a terrestrial service, without a TOML file: the configuration of
     /// isdbt-mux/examples/relay-ts.toml is built in memory (service 0x0400,
     /// PMT 0x01F0, PCR 0x01FF, NIT for --channel), the program and the
     /// stream roles / PIDs are read from the file.
@@ -47,7 +47,8 @@ pub struct RelayArgs {
     #[arg(long, value_name = "1..12", requires = "relay")]
     pub remote_key: Option<u8>,
     /// --relay: area_code of the terrestrial delivery system descriptor
-    /// (12 bits, B10 Annex D; default 0x8D5).
+    /// (12 bits, B10 Annex D Table D-2; default 0x5A5, set it to the
+    /// receiver's area).
     #[arg(long, value_name = "CODE", requires = "relay", value_parser = parse_u16)]
     pub area_code: Option<u16>,
     /// --relay: network / TS / service / provider name (default: the
@@ -55,12 +56,22 @@ pub struct RelayArgs {
     #[arg(long, value_name = "NAME", requires = "relay")]
     pub name: Option<String>,
     /// --relay: digital_recording_control_data of the service. Default: the
-    /// source program's own value (its PMT digital_copy_control_descriptor;
-    /// copy-free only when the source signals none), so a relay never
-    /// weakens the recording's copy restriction. copy_control_type is '01'
-    /// in every case (receivers require it).
+    /// source program's own value (its PMT program loop, else its relayed
+    /// ES loops, else its SDT, else its EIT p/f digital_copy_control_descriptor;
+    /// copy-free only when the source signals none), with its per-component
+    /// (ES loop) descriptors kept. An explicit value is used as given (the
+    /// ES-loop descriptors are then dropped); the source's value is printed
+    /// either way. copy_control_type is '01' in every case.
     #[arg(long, value_enum, value_name = "MODE", requires = "relay")]
     pub copy: Option<CopyArg>,
+    /// --relay: the recording's conditional-access signalling: keep
+    /// (default; PMT conditional_access_descriptors, the ECM PIDs and the
+    /// CAT's CA_descriptors with the EMM PIDs present in the recording are
+    /// relayed, CA_PIDs following the PID mapping) or drop. The payload is
+    /// unscrambled either way (scrambled input is refused), so receivers
+    /// see CA signalling with a clear payload.
+    #[arg(long, value_enum, value_name = "MODE", requires = "relay")]
+    pub ca: Option<CaArg>,
     /// --relay: at the end of the recording loop (default) or end.
     #[arg(long, value_enum, value_name = "WHAT", requires = "relay")]
     pub at_eof: Option<AtEofArg>,
@@ -103,6 +114,15 @@ pub enum CopyArg {
     CopyOneGeneration,
     /// '11' copy forbidden.
     CopyNever,
+}
+
+/// `--ca` values (= `isdbt_mux::config::CaMode`).
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaArg {
+    /// Relay the CA descriptors, ECM and EMM.
+    Keep,
+    /// Drop them.
+    Drop,
 }
 
 /// `--at-eof` values.
@@ -166,6 +186,10 @@ impl RelayArgs {
             Some(CopyArg::CopyNever) => "copy-never",
         }
         .into();
+        o.ca = match self.ca.unwrap_or(CaArg::Keep) {
+            CaArg::Keep => CaMode::Keep,
+            CaArg::Drop => CaMode::Drop,
+        };
         o.at_eof = match self.at_eof.unwrap_or(AtEofArg::Loop) {
             AtEofArg::Loop => AtEof::Loop,
             AtEofArg::End => AtEof::End,
@@ -269,7 +293,7 @@ pub fn print_config(o: &RelayOptions, params: &Params, auto_layout: bool) -> Res
 /// One line: the service a `--relay` builds.
 pub fn summary(src: &Path, o: &RelayOptions) -> String {
     format!(
-        "isdb: relay {}: service 0x0400 \"{}\" on layer {:?}, UHF ch{} (NIT), remote key {}, area {:#05x}, {}",
+        "isdb: relay {}: service 0x0400 \"{}\" on layer {:?}, UHF ch{} (NIT), remote key {}, area {:#05x}, {}, CA {}",
         src.display(),
         o.name,
         o.layer,
@@ -279,7 +303,12 @@ pub fn summary(src: &Path, o: &RelayOptions) -> String {
         if o.recording_control == isdbt_mux::signalling::RecordingControlCfg::SOURCE {
             "copy control as the source".to_string()
         } else {
-            o.recording_control.clone()
+            format!("copy control {} (explicit)", o.recording_control)
+        },
+        if o.ca == CaMode::Drop {
+            "dropped"
+        } else {
+            "kept"
         }
     )
 }
