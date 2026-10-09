@@ -74,9 +74,12 @@ centred 1/7 MHz above the channel centre:
 
 The NIT carries the frequency in 1/7 MHz units (ARIB STD-B10 §6.2.31),
 i.e. `7·(473 + 6·(N − 13)) + 1`. Today Japanese terrestrial television
-uses channels 13–52; `--channel` accepts 13–62. `--freq HZ` sets any
-centre frequency instead (the formula is not in the ARIB specs used here;
-it is the Japanese channel plan).
+uses channels 13–52 (470–710 MHz); `--channel` maps 13–62 and
+`--freq HZ` sets a centre frequency instead (the formula is not in the
+ARIB specs used here; it is the Japanese channel plan). A centre outside
+470–710 MHz (channels 53–62, or any other `--freq`) is refused unless
+`--freq-unrestricted` is given, which allows the HackRF's whole
+1 MHz–6 GHz range for shielded lab setups.
 
 **Choosing a channel.** Use a channel that no station receivable at your
 location uses, so that leakage cannot interfere in either direction, and
@@ -145,7 +148,8 @@ a program of *another* network (e.g. a satellite recording), use
 | `--iq PATH` | — | write baseband to a file (`-` = stdout) instead of a radio |
 | `--iq-format cf32\|cs8` | cf32 | float32 I/Q (GNU Radio) or signed 8-bit I/Q (`hackrf_transfer`, scaled with `--backoff-db`) |
 | `--hackrf` | — | transmit with a HackRF; needs `--channel` or `--freq`, and `--rf-enable` or `--dry-run` |
-| `--channel N` / `--freq HZ` | — | UHF channel 13–62, or a centre frequency in Hz |
+| `--channel N` / `--freq HZ` | — | UHF channel 13–52, or a centre frequency in Hz, within 470–710 MHz |
+| `--freq-unrestricted` | off | allow a centre outside the 470–710 MHz TV band (shielded lab setups only) |
 | `--rf-enable` | off | **actually radiate** (licensed or conducted/shielded use only) |
 | `--dry-run` | off | print the settings and exit without opening the device |
 | `--txvga DB` | 0 | HackRF TX IF gain, 0–47 dB |

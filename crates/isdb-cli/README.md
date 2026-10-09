@@ -101,7 +101,8 @@ Sinks: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdout) or `--hackrf`:
 
 | flag | default | meaning |
 |---|---|---|
-| `--channel N` / `--freq HZ` | — | UHF ch 13..62 → 473 + 6(N−13) + 1/7 MHz |
+| `--channel N` / `--freq HZ` | — | UHF ch 13..62 → 473 + 6(N−13) + 1/7 MHz; the centre must lie in the 470–710 MHz TV band (ch 13–52) |
+| `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (HackRF 1 MHz–6 GHz; shielded lab only) |
 | `--freq-corr-ppm P` | 0 | divide tuning and sample clock by 1 + P·1e-6 |
 | `--txvga DB` | 0 | TX IF gain 0..47 |
 | `--amp` | off | RF amplifier (~+11 dB) |

@@ -31,7 +31,8 @@ below its −5 dBm damage limit (attenuators, splitter), and see
 | `--iq PATH` | — | read baseband from a file (`-` = stdin) |
 | `--iq-format cf32\|cs8` | cf32 | file format |
 | `--hackrf` | — | receive with a HackRF; needs `--channel` or `--freq` |
-| `--channel N` / `--freq HZ` | — | UHF channel 13–62 or centre frequency in Hz |
+| `--channel N` / `--freq HZ` | — | UHF channel 13–52 or centre frequency in Hz, within 470–710 MHz |
+| `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (channels 53–62, other bands) |
 | `--lna DB` | 16 | HackRF LNA gain, 0–40 dB in 8 dB steps |
 | `--vga DB` | 20 | HackRF baseband VGA gain, 0–62 dB in 2 dB steps |
 | `--amp` | off | HackRF RF amplifier |

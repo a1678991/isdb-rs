@@ -153,15 +153,26 @@ pub fn channel_hz(ch: u32) -> Result<u64> {
     Ok(473_000_000 + 6_000_000 * (ch as u64 - 13) + 142_857)
 }
 
+/// The Japanese UHF terrestrial TV band (channels 13–52, edges 470 and
+/// 710 MHz): the centre frequencies `--channel` / `--freq` may select
+/// without `--freq-unrestricted`.
+pub const TV_BAND_HZ: std::ops::RangeInclusive<u64> = 470_000_000..=710_000_000;
+
 /// RF tuning shared by HackRF TX and RX.
 #[derive(Debug, Clone, Args)]
 pub struct TuneArgs {
     /// Japanese UHF channel 13..62 (centre 473 + 6·(ch−13) + 1/7 MHz).
     #[arg(long, conflicts_with = "freq")]
     pub channel: Option<u32>,
-    /// Centre frequency in Hz (alternative to --channel).
+    /// Centre frequency in Hz (alternative to --channel); 470–710 MHz, the
+    /// Japanese UHF TV band, unless --freq-unrestricted.
     #[arg(long)]
     pub freq: Option<u64>,
+    /// Accept a centre frequency (from --freq or --channel) outside the
+    /// 470–710 MHz UHF TV band, up to the HackRF's 1 MHz–6 GHz (shielded
+    /// lab setups only).
+    #[arg(long)]
+    pub freq_unrestricted: bool,
     /// HackRF reference-clock error in ppm (positive = the device clock runs
     /// fast); the tuning frequency and the sample clock are both divided by
     /// (1 + ppm·1e-6) so the signal on air is at the nominal values.
@@ -202,6 +213,15 @@ impl TuneArgs {
         };
         if !(1_000_000..=6_000_000_000).contains(&nominal_hz) {
             bail!("frequency {nominal_hz} Hz outside the HackRF range 1 MHz..6 GHz");
+        }
+        if !self.freq_unrestricted && !TV_BAND_HZ.contains(&nominal_hz) {
+            bail!(
+                "centre frequency {:.6} MHz{} is outside the 470–710 MHz UHF TV band (channels 13–52); add --freq-unrestricted only for a shielded lab setup",
+                nominal_hz as f64 / 1e6,
+                self.channel
+                    .map(|c| format!(" (UHF ch{c})"))
+                    .unwrap_or_default()
+            );
         }
         if !(-200.0..=200.0).contains(&self.freq_corr_ppm) {
             bail!("--freq-corr-ppm {} out of range ±200", self.freq_corr_ppm);
@@ -349,6 +369,7 @@ mod tests {
         let mut t = TuneArgs {
             channel: Some(13),
             freq: None,
+            freq_unrestricted: false,
             freq_corr_ppm: 0.0,
             serial: None,
             bb_filter_hz: 6_000_000,
@@ -368,6 +389,38 @@ mod tests {
         t.freq = Some(500_000_000);
         t.freq_corr_ppm = 0.0;
         assert_eq!(t.tuning().unwrap().set_hz, 500_000_000);
+    }
+
+    #[test]
+    fn freq_restricted_to_the_uhf_tv_band() {
+        let t = |channel: Option<u32>, freq: Option<u64>, unrestricted: bool| {
+            TuneArgs {
+                channel,
+                freq,
+                freq_unrestricted: unrestricted,
+                freq_corr_ppm: 0.0,
+                serial: None,
+                bb_filter_hz: 6_000_000,
+            }
+            .tuning()
+        };
+        // band edges and the channels inside it
+        assert!(t(None, Some(470_000_000), false).is_ok());
+        assert!(t(None, Some(710_000_000), false).is_ok());
+        assert!(t(Some(13), None, false).is_ok());
+        assert!(t(Some(52), None, false).is_ok());
+        // outside: refused unless --freq-unrestricted
+        for f in [469_999_999, 710_000_001, 1_575_420_000, 2_400_000_000] {
+            let e = t(None, Some(f), false).unwrap_err().to_string();
+            assert!(e.contains("--freq-unrestricted"), "{e}");
+            assert_eq!(t(None, Some(f), true).unwrap().nominal_hz, f);
+        }
+        // channel → frequency is unchanged; 53–62 lie above the band
+        let e = t(Some(53), None, false).unwrap_err().to_string();
+        assert!(e.contains("713.142857 MHz (UHF ch53)"), "{e}");
+        assert_eq!(t(Some(62), None, true).unwrap().nominal_hz, 767_142_857);
+        // the HackRF range still applies
+        assert!(t(None, Some(7_000_000_000), true).is_err());
     }
 
     #[test]
