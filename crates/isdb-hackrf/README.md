@@ -25,6 +25,8 @@ No broadcast specification. The surface is the libhackrf C API
 - **Linking:** `build.rs` emits `cargo:rustc-link-lib=dylib=hackrf`, so
   building this crate (and anything depending on it, e.g. `isdb-cli`)
   needs the system library: Arch `hackrf`, Debian/Ubuntu `libhackrf-dev`.
+  The manifest declares `links = "hackrf"`, so Cargo allows only one crate
+  linking libhackrf in a dependency graph.
 
 ## Position in the stack
 

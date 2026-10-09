@@ -36,9 +36,14 @@ ignore = false
 
 [bans]
 multiple-versions = "warn"
-# Path dependencies between workspace crates carry no version yet (needed
-# before publishing; see CONTRIBUTING.md), so wildcards are not banned.
-wildcards = "allow"
+# Every path dependency between workspace crates carries a version, so
+# `cargo package` works and wildcards are banned. allow-wildcard-paths
+# exempts path-only dev-dependencies: isdbt-mux's dev-dependency on
+# isdb-analyze stays version-less on purpose (isdb-analyze depends on
+# isdbt-mux; `cargo package` drops version-less dev-dependencies, which
+# keeps the publish order acyclic).
+wildcards = "deny"
+allow-wildcard-paths = true
 highlight = "all"
 deny = []
 skip = []

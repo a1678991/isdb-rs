@@ -11,19 +11,19 @@ authors = ["a1678991 <a1678991@iroserver.net>"]
 repository = "https://github.com/a1678991/isdb-rs"
 
 [workspace.dependencies]
-isdb-ts = { path = "crates/isdb-ts" }
-isdb-text = { path = "crates/isdb-text" }
-isdb-si = { path = "crates/isdb-si" }
-isdbt-core = { path = "crates/isdbt-core" }
-isdbt-fec = { path = "crates/isdbt-fec" }
-isdbt-ofdm = { path = "crates/isdbt-ofdm" }
+isdb-ts = { version = "0.1.0", path = "crates/isdb-ts" }
+isdb-text = { version = "0.1.0", path = "crates/isdb-text" }
+isdb-si = { version = "0.1.0", path = "crates/isdb-si" }
+isdbt-core = { version = "0.1.0", path = "crates/isdbt-core" }
+isdbt-fec = { version = "0.1.0", path = "crates/isdbt-fec" }
+isdbt-ofdm = { version = "0.1.0", path = "crates/isdbt-ofdm" }
 thiserror = "2"
 num-complex = "0.4"
 rustfft = "6"
 encoding_rs = "0.8"
 proptest = "1"
-isdbt-phy = { path = "crates/isdbt-phy" }
-isdb-hackrf = { path = "crates/isdb-hackrf" }
+isdbt-phy = { version = "0.1.0", path = "crates/isdbt-phy" }
+isdb-hackrf = { version = "0.1.0", path = "crates/isdb-hackrf" }
 clap = { version = "4.6", features = ["derive"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

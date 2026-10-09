@@ -27,7 +27,10 @@ thiserror.workspace = true
 
 [dev-dependencies]
 isdbt-phy.workspace = true
-# relay tests validate the rebroadcast TS with the independent checker
+# relay tests validate the rebroadcast TS with the independent checker.
+# Deliberately path-only (no version): isdb-analyze depends on isdbt-mux,
+# so a versioned dev-dependency would be a publish cycle; `cargo package`
+# drops version-less dev-dependencies from the published manifest.
 isdb-analyze = { path = "../isdb-analyze" }
 
 [lints]

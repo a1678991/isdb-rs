@@ -20,8 +20,8 @@ name = "isdb"
 path = "src/main.rs"
 
 [dependencies]
-isdbt-mux = { path = "../isdbt-mux" }
-isdb-analyze = { path = "../isdb-analyze" }
+isdbt-mux = { version = "0.1.0", path = "../isdbt-mux" }
+isdb-analyze = { version = "0.1.0", path = "../isdb-analyze" }
 isdbt-core.workspace = true
 isdbt-fec.workspace = true
 isdbt-ofdm.workspace = true

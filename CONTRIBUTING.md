@@ -153,7 +153,11 @@ add `#[allow(...)]` to silence a lint without a comment that says why.
 
 New dependencies must pass `make deny` (crates.io only, licences compatible
 with Apache-2.0) and build with the MSRV. Raising the MSRV is a deliberate
-change: say so in the PR and in the changelog.
+change: say so in the PR and in the changelog. A dependency on another
+workspace crate carries `version` next to `path` (`make deny` bans
+wildcards), so `cargo package --workspace` works; the one exception is a
+path-only dev-dependency that would otherwise form a publish cycle
+(isdbt-mux → isdb-analyze).
 
 ### Oracle checks
 

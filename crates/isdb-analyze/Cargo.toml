@@ -22,7 +22,7 @@ isdb-text.workspace = true
 # B32 Part 2 ADTS rule identities / clauses, quality modes and the
 # synthetic SilentFrame of the tests (crate::aac); the header parse is
 # re-implemented independently in crate::aac.
-isdbt-mux = { path = "../isdbt-mux" }
+isdbt-mux = { version = "0.1.0", path = "../isdbt-mux" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

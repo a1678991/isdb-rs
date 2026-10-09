@@ -1,5 +1,7 @@
 [package]
 name = "isdb-hackrf"
+# build.rs links the system libhackrf; only one crate in a graph may.
+links = "hackrf"
 description = "Minimal safe wrapper over libhackrf (system library) for ISDB-T TX/RX streaming"
 version.workspace = true
 edition.workspace = true
