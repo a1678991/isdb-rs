@@ -10,24 +10,21 @@ because `pdftotext` garbles them.
 - Text: "The arrangement of transmission TSPs within a multiplex frame is
   determined in advance to ensure that it is identical to that of the TSs
   that will be reproduced by the model receiver shown in Fig. 3-4." /
-  "Note that a clock written in this section means an FFT sampling clock." /
-  "During the period of one OFDM symbol, data the size of 480 (96 × 5)
-  carriers is input to hierarchical layer A, followed by the input of data
-  the size of 768 (96 × 8) carriers to hierarchical layer B and a null
-  signal the size of 1056 carriers." / "B_X,k = 2 × ([k × Sx × Rx] −
-  [(k−1) × Sx × Rx])" / "Switch S1 is switched over to another hierarchical
-  buffer when data the size of one TS packet (408 bytes*) is input …
-  we assume that data transfer is instantaneous." / "The TS reproduction
-  section checks the TS buffer every TS packet period (408 clocks). If
-  there is more data than the size of one TS packet, this section switches
-  S2 over to the TS buffer position and reads out one TS packet of data.
-  When there is no data in the TS buffer, … transmits a null packet." /
-  "In Mode 1, switching is performed at the beginning of an OFDM frame.
-  Switch S4 … is switched over to the same position as S3 in three TS
-  packet period (408 × 3 clocks) following the switching of S3, that is, at
-  the beginning of an OFDM frame." / "In Modes 2 and 3, switching of S3 and
-  S4 is performed at 1/2 OFDM-frame intervals (102 OFDM-symbol intervals)
-  and 1/4 OFDM-frame intervals (51 OFDM-symbol intervals), respectively."
+  "In Modes 2 and 3, switching of S3 and S4 is performed at 1/2 OFDM-frame
+  intervals (102 OFDM-symbol intervals) and 1/4 OFDM-frame intervals (51
+  OFDM-symbol intervals), respectively."
+- Paraphrase of the rest of §3.2.2: clocks are FFT sampling clocks; in
+  each OFDM symbol the data carriers of layer A, then B (then C) are input
+  one per clock, followed by a null signal for the remaining carriers
+  (Fig. 3-5 example: 480 + 768 carriers, then 1056 null). Layer X stores
+  B_X,k = 2·([k·S_X·R_X] − [(k−1)·S_X·R_X]) bits for its k-th carrier.
+  S1 moves to another layer buffer once one TS packet has been input
+  (408 bytes: a 204-byte TSP at the mother code rate 1/2, the spec's
+  footnote), transfer being instantaneous. The TS
+  reproduction section looks at the selected TS buffer every TS packet
+  period (408 clocks) and reads one packet out if a full one is there,
+  else sends a null packet. In Mode 1, S3 switches at the start of the
+  OFDM frame and S4 follows three TS packet periods (408 × 3 clocks) later.
 - Interpretation (implemented literally in `MultiplexPattern::new`):
   1. Symbol = `fft_size + guard` clocks; the data carriers of segments in
      ascending data-segment order (layer A, B, C) occupy the first clocks,
