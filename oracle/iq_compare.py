@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Carrier-level comparison of two ISDB-T cf32 files (Rust TX vs gr-isdbt TX).
 
   iq_compare.py RUST.cf32 GR.cf32 MODE GI [--offset 1] [--skip 6]

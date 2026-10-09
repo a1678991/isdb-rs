@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Compare a decoded layer TS against the source TS, anchored by content.
 
   ts_compare.py SOURCE.ts DECODED.ts [--cyclic]

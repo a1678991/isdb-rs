@@ -48,7 +48,8 @@ are in [docs/test-data.md](docs/test-data.md).
 
 Differential test of the Rust ISDB-T PHY (`isdbt-fec`, `isdbt-ofdm`, driven
 through `isdbt-phy`) against gr-isdbt (GNU Radio 3.10.9.2, gr-isdbt commit
-`56b2556`, run in a container named `arib-sdr`). gr-isdbt is an oracle only
+`56b2556`, run in the container built from
+[`oracle/Dockerfile`](oracle/Dockerfile)). gr-isdbt is an oracle only
 (rung 4 above): it can show that the two implementations disagree, and ARIB
 STD-B31 v2.2 decides which one is right. No gr-isdbt code is included in
 this repository; the scripts in [`oracle/`](oracle/) import it at run time.
@@ -90,10 +91,11 @@ uncorrectable words summed over the valid frames. MER is the minimum over
 those frames (noise-free float32, so it measures numerical precision only).
 "Carriers ≠" is the `iq_compare.py` result.
 
-Inputs: row 0 used packets of a live terrestrial capture recorded during
-development (`a_in.ts`, `b_in.ts`, 20 frames; not distributed — the
-reproduction below takes your own per-layer files). Rows 1–8 use synthetic TS with a
-unique packet index in each payload (`run_matrix.py`).
+Inputs: row 0 used packets of a live terrestrial capture (`a_in.ts`,
+`b_in.ts`, 20 frames). It is a development result: the capture is not
+distributed, so row 0 cannot be rerun as is; the reproduction below takes
+your own per-layer files. Rows 1–8 use synthetic TS with a unique packet
+index in each payload (`run_matrix.py`) and are the reproducible evidence.
 
 | # | config | layers | gr→Rust: valid fr., packets (mm) | RS (A; B; C) | MER dB | TMCC parity | Rust→gr: packets (mm), gr TMCC | Rust→Rust packets (mm) | carriers ≠ |
 |---|---|---|---|---|---|---|---|---|---|
@@ -106,6 +108,13 @@ unique packet index in each payload (`run_matrix.py`).
 | 6 | `m1g32p_16q23_q78` M1 GI1/32 partial | A 1,16QAM,2/3,16; B 12,QPSK,7/8,8 | 29; 928 / 7308 (0) | 928/0/0; 7308/0/0 | 120.8 / 135.3 | Ok | 959 / 8565 (0); 39 / 0 | 928 / 7308 (0) | 26 AC + 13 TMCC |
 | 7 | `m3g8_3lay` M3 GI1/8 | A 3,QPSK,1/2,4; B 5,16QAM,2/3,2; C 5,64QAM,5/6,1 | 11; 1584 / 7040 / 13200 (0) | 1584/0/0; 7040/0/0; 13200/0/0 | 126.8 / 122.0 / 125.0 | Ok | 1726 / 8313 / 15588 (0); 15 / 0 | 1584 / 7040 / 13200 (0) | 104 AC + 52 TMCC |
 | 8 | `m2g16p_3lay` M2 GI1/16 partial | A 1,QPSK,3/4,2; B 4,16QAM,1/2,8; C 8,64QAM,2/3,4 | 17; 612 / 3264 / 13056 (0) | 612/0/0; 3264/0/0; 13056/0/0 | 132.0 / 132.0 / 133.1 | Ok | 755 / 3454 / 15352 (0); 23 / 0 | 612 / 3264 / 13056 (0) | 52 AC + 26 TMCC |
+
+Rerun on 2026-10-10 in the container built from `oracle/Dockerfile`
+(`python3 oracle/run_matrix.py`, about 100 s): rows 1–3 and 5–8 reproduced
+every packet count, RS total, TMCC result and carrier difference above.
+Row 4 was byte-exact as well, but its Rust→gr direction compared 26164
+packets with no mismatch and TMCC OK 9 / NOT OK 0, so neither D6 start-up
+artefact appeared in that run.
 
 Notes on the matrix:
 
@@ -161,10 +170,9 @@ All four are on the gr-isdbt side, and none required a change to Rust.
   is the code for differential modulation.
 - Rust: sends 000 on coherent segments and 111 on differential segments
   (`tmcc::segment_type_bits`).
-- B31 §3.15.5: "This signal is used to determine whether a segment is a
-  differential or coherent modulation and consists of a 3-bit word. “111”
-  and “000” are assigned to this signal for a differential and coherent
-  modulation, respectively."
+- B31 §3.15.5 defines a 3-bit segment-type word: "“111” and “000” are
+  assigned to this signal for a differential and coherent modulation,
+  respectively."
 - Resolution: Rust is correct. The Rust receiver tolerates gr-isdbt's
   value, since it detects segment kinds from the pilots. The USB tuner decoded
   gr-isdbt output, so that receiver ignores these bits. No change.
@@ -174,11 +182,10 @@ All four are on the gr-isdbt side, and none required a change to Rust.
   carrier in every symbol. Differentially, that is information 0
   throughout.
 - Rust: DBPSK with B'0 = W_i and stuffing 1 (`AcFrame::stuffing`).
-- B31 §3.13.4: "AC is transmitted by means of modulating the pilot carrier
-  of a type similar to CP through DBPSK, and its reference for
-  differential modulation is provided at the top frame symbol … If there
-  is no additional information on broadcasting, information 1 is inserted
-  as stuffing bits."
+- B31 §3.13.4: AC is DBPSK-modulated with its differential reference at
+  the first symbol of the frame, and "If there is no additional
+  information on broadcasting, information 1 is inserted as stuffing
+  bits."
 - Resolution: Rust is correct. No change.
 
 #### D3. TMCC B67 (next-information partial-reception flag)
@@ -200,11 +207,9 @@ All four are on the gr-isdbt side, and none required a change to Rust.
   I > 0 it equals Table 3-12 (for example 109 / 14 / 28 in Mode 3).
 - Rust: adjustment from Table 3-12, which is 0 for I = 0.
 - B31 Table 3-12 lists I = 0 with 0 delay-adjustment symbols and 0 delayed
-  frames in Modes 1, 2 and 3. §3.11.1 adds: "The resulting difference in
-  delay time must be corrected on the transmitting side using the number
-  of symbols or the delay appropriate for each layer shown in Table 3-12,
-  such that the total number of transmission and reception delays is a
-  multiple of the number of frames."
+  frames in Modes 1, 2 and 3. §3.11.1 requires the transmitter to correct
+  each layer's delay by the Table 3-12 amount so that the total
+  transmission and reception delay is a whole number of frames.
 - Effect: an I = 0 layer from gr-isdbt is one frame late relative to the
   other layers. Row 5 shows it: gr→Rust anchors A at source frame 1 and B
   (I = 0) at frame 0, while the Rust loopback has both at frame 0. Each
@@ -260,19 +265,22 @@ that the container sees it):
 | `run_matrix.py` | the whole matrix (rows 1–8) |
 | `rust_tx3/` | stand-alone crate, not a workspace member. `rust_tx3` is `tx_file` with a layer C; `rx_rot` runs the rotation-numbering check. |
 
-The container (`arib-sdr` by default, `ISDB_RS_ORACLE_CONTAINER`) needs GNU
-Radio 3.10 with gr-isdbt (tested: GNU Radio 3.10.9.2, gr-isdbt `56b2556`,
-Ubuntu 24.04) and this repository mounted at `/work`.
+The container is built from [`oracle/Dockerfile`](oracle/Dockerfile)
+(Ubuntu 24.04, GNU Radio 3.10.9.2, gr-isdbt `56b2556` built from upstream)
+and must have this repository mounted at `/work`. It is named
+`isdb-oracle` by default (`ISDB_RS_ORACLE_CONTAINER` overrides the name);
+see [docs/test-data.md](docs/test-data.md#the-gr-isdbt-oracle).
 
 ```sh
 # from the repository root
 cargo build --release -p isdbt-phy --examples
 cargo build --release --manifest-path oracle/rust_tx3/Cargo.toml --target-dir target/oracle
-docker start arib-sdr
+docker build -t isdb-oracle oracle/      # once; later just: docker start isdb-oracle
+docker run -d --name isdb-oracle --user "$(id -u):$(id -g)" -v "$PWD":/work isdb-oracle
 
 # Row 0 layout with your own per-layer TS files a_in.ts / b_in.ts
 mkdir -p target/oracle-matrix/row0 && cd target/oracle-matrix/row0
-D="docker exec -w /work/target/oracle-matrix/row0 arib-sdr python3 /work/oracle"
+D="docker exec -w /work/target/oracle-matrix/row0 isdb-oracle python3 /work/oracle"
 $D/grisdbt_tx.py --out gr_tx.cf32 --mode 3 --guard 8 --oneseg \
     --a 1,4,1,2 --b 12,64,2,2 --a-ts a_in.ts --b-ts b_in.ts
 ../../release/examples/rx_file gr_tx.cf32 rust_rx 2> rust_rx.log

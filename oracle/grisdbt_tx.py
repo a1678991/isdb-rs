@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# This script imports GNU Radio and gr-isdbt (both GPL-3.0) at run time; the
+# combination that runs is therefore covered by GPL-3.0. Neither is part of
+# isdb-rs. See oracle/README.md.
 """Independent-oracle ISDB-T modulator: gr-isdbt turns per-layer TS into cf32 IQ.
 
-Oracle only (README level 5): used to cross-check the Rust demodulator.
-Layer parameters as in grisdbt_rx.py (segs,const,cr_idx,I), layers A, B, C
-(--a/--a-ts, --b/--b-ts, --c/--c-ts).  Run inside the arib-sdr container.
+Oracle only (README "How it is verified", rung 4): used to cross-check the
+Rust demodulator.  Layer parameters as in grisdbt_rx.py (segs,const,cr_idx,I),
+layers A, B, C (--a/--a-ts, --b/--b-ts, --c/--c-ts).  Run inside the oracle
+container (oracle/Dockerfile).
 The output length is set by the shortest layer input (no looping).
 
 The skiphead of 2 data symbols after the frequency interleaver is the one in
-gr-isdbt's own examples/tx_demo.grc and in the earlier bench transmitter that
-real receivers decoded; it makes the OFDM frame
-start 2 symbols after the bit-interleaver output start (cf. B31 Part 2
-Fig. 3-8).
+gr-isdbt's own examples/tx_demo.grc, whose output a consumer USB tuner
+decoded with PER 0 (VERIFICATION.md); it makes the OFDM frame start 2
+symbols after the bit-interleaver output start (cf. B31 Part 2 Fig. 3-8).
 """
 import argparse
 

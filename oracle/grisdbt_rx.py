@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# This script imports GNU Radio and gr-isdbt (both GPL-3.0) at run time; the
+# combination that runs is therefore covered by GPL-3.0. Neither is part of
+# isdb-rs. See oracle/README.md.
 """Independent-oracle ISDB-T receiver: gr-isdbt decodes a cf32 IQ file to TS.
 
-Oracle only (README "How it is verified", level 5): used to cross-check the
+Oracle only (README "How it is verified", rung 4): used to cross-check the
 Rust modulator.  A disagreement is settled by reading ARIB STD-B31, never by
-adopting this chain's behaviour.  Run inside the arib-sdr container:
+adopting this chain's behaviour.  Run inside the oracle container
+(oracle/Dockerfile):
 
   python3 grisdbt_rx.py --iq x.cf32 --layer b --out b.ts \
       --mode 3 --guard 8 --a 1,4,1,2 --b 12,64,2,2      # segs,const,cr_idx,I

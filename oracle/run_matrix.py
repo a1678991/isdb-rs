@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Differential PHY test matrix: Rust isdbt-phy <-> gr-isdbt oracle.
 
 For every configuration:
@@ -11,8 +12,8 @@ For every configuration:
          two modulators' outputs for identical input)
 
 Run on the host from the repository root (gr-isdbt runs via `docker exec`
-in a container, default name `arib-sdr` (env ISDB_RS_ORACLE_CONTAINER), with
-this repository mounted at /work):
+in a container built from oracle/Dockerfile, default name `isdb-oracle`
+(env ISDB_RS_ORACLE_CONTAINER), with this repository mounted at /work):
 
   python3 oracle/run_matrix.py [CFG ...]          # default: all configs
 
@@ -28,15 +29,14 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ISDBT = os.path.dirname(HERE)
-REPO = ISDBT
+REPO = os.path.dirname(HERE)
 OUT = os.path.abspath(os.environ.get("ISDB_RS_ORACLE_OUT", os.path.join(REPO, "target", "oracle-matrix")))
-CONTAINER = os.environ.get("ISDB_RS_ORACLE_CONTAINER", "arib-sdr")
+CONTAINER = os.environ.get("ISDB_RS_ORACLE_CONTAINER", "isdb-oracle")
 CONT = "/work/" + os.path.relpath(OUT, REPO)
 ORC = "/work/" + os.path.relpath(HERE, REPO)
-TX_FILE = os.path.join(ISDBT, "target", "release", "examples", "tx_file")
-RX_FILE = os.path.join(ISDBT, "target", "release", "examples", "rx_file")
-TX3 = os.path.join(ISDBT, "target", "oracle", "release", "rust_tx3")
+TX_FILE = os.path.join(REPO, "target", "release", "examples", "tx_file")
+RX_FILE = os.path.join(REPO, "target", "release", "examples", "rx_file")
+TX3 = os.path.join(REPO, "target", "oracle", "release", "rust_tx3")
 
 TI_LEN = {1: [0, 4, 8, 16], 2: [0, 2, 4, 8], 3: [0, 1, 2, 4]}
 BITS = {"qpsk": 2, "16qam": 4, "64qam": 6}
