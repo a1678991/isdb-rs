@@ -1,0 +1,16 @@
+/target/
+/oracle/rust_tx3/target/
+__pycache__/
+*.pyc
+
+# Specification text extractions (copyrighted; regenerate locally with
+# `pdftotext -layout <pdf> specs/<name>.txt`, see README.md)
+/specs/
+
+# Captures, recordings and IQ data are never committed
+*.ts
+*.m2ts
+*.cf32
+*.cs8
+*.cu8
+*.iq

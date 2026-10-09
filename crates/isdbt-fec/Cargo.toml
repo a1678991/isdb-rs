@@ -1,0 +1,19 @@
+[package]
+name = "isdbt-fec"
+description = "ISDB-T bit-domain channel coding (ARIB STD-B31 §3.2-3.8): TS re-multiplex, RS(204,188), energy dispersal, byte interleave, convolutional code / Viterbi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+isdbt-core.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

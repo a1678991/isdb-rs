@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 139ce1cff4dab4f61e5ce57e77202bc33f87be97eed4babf66196be56e537ff7 # shrinks to p = PesPacket { stream_id: 190, unbounded: false, body: Padding([]) }

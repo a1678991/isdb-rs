@@ -1,0 +1,18 @@
+# Stand-alone helper (not a workspace member): three-layer variant of
+# isdbt-phy's tx_file example (src/main.rs) plus rx_rot (rotation-numbering
+# sensitivity check), used by the oracle differential tests.
+# Build: cargo build --release --manifest-path oracle/rust_tx3/Cargo.toml \
+#            --target-dir target/oracle
+[package]
+name = "rust_tx3"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+isdbt-core = { path = "../../crates/isdbt-core" }
+isdbt-phy = { path = "../../crates/isdbt-phy" }
+isdbt-ofdm = { path = "../../crates/isdbt-ofdm" }
+
+[workspace]

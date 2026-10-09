@@ -1,0 +1,12 @@
+isdb-rs
+Copyright 2026 a1678991 and the isdb-rs contributors
+
+This product is licensed under the Apache License, Version 2.0
+(see the LICENSE file).
+
+The implementation was written from the published specifications
+(ITU-T H.222.0 | ISO/IEC 13818-1, ARIB STD-B10, STD-B24, STD-B31,
+STD-B32). No specification text is distributed with this product;
+clause and table numbers in the source refer to the editions listed in
+SPECS.md. ARIB standards are published by the Association of Radio
+Industries and Businesses; obtain them from https://www.arib.or.jp/.

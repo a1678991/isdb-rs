@@ -1,0 +1,20 @@
+[package]
+name = "arib-si"
+description = "ARIB STD-B10 service information tables and descriptors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+arib-ts.workspace = true
+arib-text.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

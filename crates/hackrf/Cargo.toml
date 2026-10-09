@@ -1,0 +1,18 @@
+[package]
+name = "hackrf"
+description = "Minimal safe wrapper over libhackrf (system library) for ISDB-T TX/RX streaming"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+# Own lints table instead of `[lints] workspace = true`: the workspace denies
+# `unsafe_code`, which this FFI wrapper needs. The workspace's other lint
+# (`missing_docs = "warn"`) is mirrored here.
+[lints.rust]
+missing_docs = "warn"

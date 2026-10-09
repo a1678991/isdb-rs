@@ -1,0 +1,15 @@
+[package]
+name = "isdbt-core"
+description = "ISDB-T transmission parameters (ARIB STD-B31) shared by FEC and OFDM crates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

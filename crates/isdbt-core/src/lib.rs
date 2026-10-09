@@ -1,0 +1,46 @@
+//! ISDB-T transmission parameters, ARIB STD-B31 v2.2 Chapter 3.
+//!
+//! Only quantities stated in the spec text are encoded here; each item
+//! cites its table.  Derived quantities are checked against the spec's own
+//! tables in this crate's tests.
+//!
+//! * [`params`] (re-exported here) — [`Mode`], [`GuardInterval`],
+//!   [`Modulation`], [`CodeRate`], [`TimeInterleave`], [`LayerConfig`] and
+//!   the validated [`Params`] set (§2.3, Tables 3-1..3-5, §3.11.2), with
+//!   frame length, samples and 27 MHz ticks per OFDM frame.
+//! * [`fec_params`] — per-layer figures for the channel coding (Tables
+//!   3-6, 3-7, 3-8): delay adjustment, coded / information bits per frame.
+//! * [`ofdm_params`] — symbol-domain figures (Tables 3-9, 3-12, Fig. 3-23,
+//!   Fig. 3-32, §3.14.1): bit/time-interleave delays, segment arrangement,
+//!   carrier counts, centre carrier.
+//!
+//! The crate is the shared vocabulary of `isdbt-fec`, `isdbt-ofdm`,
+//! `isdbt-phy`, `arib-mux` and `arib-cli`; it does no signal processing.
+//! See `README.md` next to this crate for the verification table and
+//! limitations.
+//!
+//! # Example
+//!
+//! ```
+//! use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+//!
+//! // Mode 3, GI 1/8, partial reception: A = 1 seg QPSK 2/3, B = 12 seg 64QAM 3/4.
+//! let ti = TimeInterleave(2);
+//! let a = LayerConfig { segments: 1, modulation: Modulation::Qpsk, code_rate: CodeRate::R2_3, time_interleave: ti };
+//! let b = LayerConfig { segments: 12, modulation: Modulation::Qam64, code_rate: CodeRate::R3_4, time_interleave: ti };
+//! let p = Params::new(Mode::M3, GuardInterval::G1_8, true, [Some(a), Some(b), None]).unwrap();
+//! assert_eq!((a.tsp_per_frame(p.mode), b.tsp_per_frame(p.mode)), (64, 2592)); // Table 3-3
+//! assert_eq!(p.multiplex_frame_tsps(), 4608); // Table 3-5
+//! assert_eq!(p.frame_ticks_27mhz(), 6_246_072); // 231.336 ms × 27 MHz
+//! ```
+
+pub mod fec_params;
+pub mod ofdm_params;
+pub mod params;
+
+pub use params::*;
+
+// Compile the README's code blocks as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

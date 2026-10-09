@@ -1,0 +1,22 @@
+[package]
+name = "isdbt-phy"
+description = "ISDB-T transmitter/receiver pipelines (ARIB STD-B31): TS packets <-> complex baseband"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+isdbt-core.workspace = true
+isdbt-fec.workspace = true
+isdbt-ofdm.workspace = true
+num-complex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

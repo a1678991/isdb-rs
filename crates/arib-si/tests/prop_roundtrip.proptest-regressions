@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 37f1ed06418ab9f97a643c9984330960b64d1a4d2e082640f345d95669d3ff6a # shrinks to d = Series(Series { series_id: 0, repeat_label: 0, program_pattern: 0, expire_date_valid_flag: false, expire_date: 0, episode_number: 0, last_episode_number: 1, series_name: AribString([]) })

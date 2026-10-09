@@ -1,0 +1,19 @@
+[package]
+name = "arib-text"
+description = "ARIB STD-B24 Vol.1 Part 2 Chapter 7 8-unit character coding (decode/encode)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+encoding_rs.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

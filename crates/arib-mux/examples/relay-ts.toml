@@ -1,0 +1,116 @@
+# arib-mux example: rebroadcast a recorded program on UHF ch44, remote key 9.
+#
+# A recording of another network (for example a BS recording: BS
+# NIT/SDT, CA descriptors, ECM PID) cannot be registered by a
+# terrestrial receiver if it is relayed as is. `kind = "ts-program"` takes
+# only the program's elementary streams (PES bytes unchanged, PTS/DTS moved
+# onto this multiplex's clock) and this file supplies the terrestrial
+# PSI/SI around them (NIT with ch44 and key 9, SDT, EIT, TOT, BIT, PMT
+# with typed copy control), as for any arib-mux service.
+#
+# Without this file: `arib tx --relay FILE --auto-layout --hackrf --channel 44
+# --txvga 20 --rf-enable` builds the same configuration in memory
+# (`--print-config` prints it).
+#
+# Transmission parameters are not in this file. The BS recording used on
+# the bench carries 18.53 Mbit/s on average (peaks 19.02 Mbit/s over 1 s,
+# 19.51 over 100 ms, whole 30-minute file) — more than the default layer B (12 seg 64QAM 3/4
+# = 16.85 Mbit/s), which `arib` refuses with a list of layouts that fit.
+# Use 64QAM 7/8 on the 12 segments (19.66 Mbit/s; partial reception and the
+# one-seg layer A, which carries PAT/NIT/SDT/EIT/TOT/BIT/CAT, unchanged):
+#
+#   arib mux -c relay-ts.toml --layer-b 12,64qam,7/8,2 --seconds 60 --out-ts check.ts
+#   arib ts validate check.ts
+#   arib loopback --mux-config relay-ts.toml --layer-b 12,64qam,7/8,2 --frames 8 --snr-db 25
+#   arib tx --mux-config relay-ts.toml --layer-b 12,64qam,7/8,2 \
+#           --hackrf --channel 44 --txvga 20 --rf-enable --seconds 0
+#
+# (Single 13-segment layer instead, 21.30 Mbit/s, no one-seg layer:
+#  --partial false --layer-a 13,64qam,7/8,2 --layer-b none.)
+#
+# Integers may be written in hex (0x...). Relative `source` paths are
+# relative to this file.
+
+[network]
+network_id = 0x7FE0              # B10 Annex N: terrestrial TV range 0x7880–0x7FE8
+name = "ベンチ"
+area_code = 0x8D5                # B10 Annex D Table D-2: Kinki wide area (the bench default)
+remote_control_key_id = 9        # one-touch key 9 → channel 091 on the receiver
+channels = [44]                  # MUST equal the channel `arib tx` transmits on
+
+[transport]
+transport_stream_id = 0x7FE0
+
+[clock]
+source = "system"                # TOT and EIT "now" = the wall clock at start
+
+[[service]]
+service_id = 0x0400
+service_type = 0x01              # digital TV service (B10 Table 6-25)
+provider = "ベンチ"
+name = "ベンチ録画"
+layer = "B"
+pmt_pid = 0x01F0
+pcr_pid = 0x01FF                 # dedicated PCR PID: relayed packets keep their payload
+# digital_copy_control_descriptor (B10 §6.2.23) generated here. The source's
+# descriptor bytes (and its CA descriptors) are dropped, but its copy
+# restriction is kept: recording_control = "source" takes the source
+# program's digital_recording_control_data (PMT program loop, else the most
+# restrictive relayed ES loop; copy-free only if the source signals none).
+# Give a Table 6-39 name ("copy-free", "copy-one-generation", "copy-never")
+# to override. copy_control_type defaults to '01' — a Sony BDZ-series
+# recorder refuses '00'.
+copy_control = { recording_control = "source", in_pmt = true, in_sdt = true }
+
+  [[service.stream]]
+  kind = "ts-program"
+  # The recording (read in place). Placeholder: point it at your own
+  # recording (relative paths are relative to this file).
+  source = "recording.ts"
+  # Program: by default the recording's only program (or the only one whose
+  # streams carry packets); a multi-service recording needs one of
+  #   program = 0x00D3                 # program_number (= service_id) in its PAT
+  #   service_name = "ＴＶ１２"          # its SDT service name ("TV12" matches too)
+  # (the error lists the programs with their names and streams).
+  # Default selection: video, audio and PES private data (captions,
+  # superimpose, data PES); data carousels (stream_type 0x0D) and ECM/EMM
+  # are not relayed. Narrow it with stream_types = [...] / component_tags =
+  # [...]; include_carousels = true adds 0x05/0x0B–0x0D section streams.
+  # Output PIDs (pid_map = "auto", the default): each stream is classified
+  # (video / audio, main = lowest component_tag / captions / superimpose /
+  # data; rules in SPEC-NOTES) and takes the PID of its role from the plan
+  #   pids = { video = 0x0111, audio = [0x0112, 0x0113], captions = 0x0130, superimpose = 0x0138, data = 0x0140 }
+  # (shown with its default values). For the bench BS recording: 0x0140 video →
+  # 0x0111, 0x0141 audio → 0x0112, 0x0145 captions → 0x0130, 0x0138
+  # superimpose → 0x0138. Alternatives: pid_map = "keep" (source PIDs) or an
+  # explicit list, checked against the source PMT:
+  #   pid_map = [[0x0140, 0x0111], [0x0141, 0x0112], [0x0145, 0x0130], [0x0138, 0x0138]]
+  at_eof = "loop"                # "loop": restart at the first access point, timestamps continuing; "end": stop
+  eit_from_source = true         # EIT p/f event name / text / genre / duration from the recording
+  rate_check = "error"           # refuse a layer that cannot carry the measured rate ("warn": relay anyway)
+  max_early_ms = 0               # 0: strictly at the recording's PCR pace
+  # probe_seconds = 30           # PCR time measured at start (rates, stream parameters, EIT)
+
+  # Used when the recording has no EIT p/f for the program (or eit_from_source = false).
+  [[service.event]]
+  event_id = 0x0001
+  start_offset_s = -60
+  duration = "01:00:00"
+  name = "録画の再送信"
+
+[eit]
+present_running_status = 4
+following_running_status = 1
+
+[tot]
+enabled = true
+
+[bit]
+enabled = true
+broadcast_view_propriety = false
+broadcasters = [
+  { broadcaster_id = 0x01, name = "ベンチ" },
+]
+
+[cat]
+descriptors = []                 # free to air: no CA_descriptor

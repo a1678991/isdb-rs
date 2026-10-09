@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6ec688f39f16f42b605a0e6f7e984d2d749b6356b0d5ec405bc54b37ead2cd24 # shrinks to p = Params { mode: M1, guard: G1_4, partial_reception: false, layers: [Some(LayerConfig { segments: 3, modulation: Dqpsk, code_rate: R1_2, time_interleave: TimeInterleave(0) }), Some(LayerConfig { segments: 1, modulation: Dqpsk, code_rate: R1_2, time_interleave: TimeInterleave(1) }), Some(LayerConfig { segments: 9, modulation: Dqpsk, code_rate: R1_2, time_interleave: TimeInterleave(1) })] }, rel = false, seed = 2720074535110929637
+cc 4c61f4c96df2f6fb26e5693c0b63c75a8d130cafef4476886343b0a7c9658468 # shrinks to p = Params { mode: M1, guard: G1_4, partial_reception: false, layers: [Some(LayerConfig { segments: 4, modulation: Dqpsk, code_rate: R1_2, time_interleave: TimeInterleave(0) }), Some(LayerConfig { segments: 9, modulation: Dqpsk, code_rate: R1_2, time_interleave: TimeInterleave(0) }), None] }, rel = true, seed = 4212462108504935823

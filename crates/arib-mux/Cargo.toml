@@ -1,0 +1,27 @@
+[package]
+name = "arib-mux"
+description = "ARIB ISDB-T service multiplexer: SI/PSI generation, MPEG-2 video/AAC packetisation, CBR OFDM-frame-paced output"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+arib-ts.workspace = true
+arib-si.workspace = true
+arib-text.workspace = true
+isdbt-core.workspace = true
+isdbt-fec.workspace = true
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+isdbt-phy.workspace = true
+# relay tests validate the rebroadcast TS with the independent checker
+arib-analyze = { path = "../arib-analyze" }
+
+[lints]
+workspace = true

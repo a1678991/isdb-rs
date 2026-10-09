@@ -1,0 +1,31 @@
+[package]
+name = "arib-cli"
+description = "arib: ISDB-T streamer (TX/RX) and TS tools built on the spec crates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "arib"
+path = "src/main.rs"
+
+[dependencies]
+arib-mux = { path = "../arib-mux" }
+arib-analyze = { path = "../arib-analyze" }
+isdbt-core.workspace = true
+isdbt-fec.workspace = true
+isdbt-ofdm.workspace = true
+isdbt-phy.workspace = true
+hackrf.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+ctrlc = { workspace = true, features = ["termination"] }
+
+[lints]
+workspace = true

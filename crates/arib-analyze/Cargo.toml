@@ -1,0 +1,24 @@
+[package]
+name = "arib-analyze"
+description = "TS analysis, validation, diff and experiment editing built on the arib-ts/arib-si decoders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+arib-ts.workspace = true
+arib-si.workspace = true
+arib-text.workspace = true
+# B32 Part 2 ADTS rule identities / clauses, quality modes and the
+# synthetic SilentFrame of the tests (crate::aac); the header parse is
+# re-implemented independently in crate::aac.
+arib-mux = { path = "../arib-mux" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true
