@@ -128,7 +128,7 @@ pub struct ValidateArgs {
     #[arg(long, value_parser = parse_u16)]
     pub expect_nid: Option<u16>,
     /// Expected service ids (PAT programs and SDT services), comma separated.
-    #[arg(long, value_parser = parse_u16_list)]
+    #[arg(long, value_parser = parse_u16, value_delimiter = ',', num_args = 1..)]
     pub expect_services: Option<Vec<u16>>,
     /// Frequency (MHz) the NIT terrestrial delivery descriptor must list.
     #[arg(long)]

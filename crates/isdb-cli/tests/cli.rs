@@ -1262,3 +1262,43 @@ fn scrambled_input_is_refused() {
     assert!(!o.status.success());
     std::fs::remove_dir_all(&d).unwrap();
 }
+
+/// `ts validate --expect-services` takes a comma list (and repeats) of
+/// service ids and compares them with the PAT/SDT, without a panic.
+#[test]
+fn ts_validate_expect_services() {
+    let d = tmp("expect-services");
+    let cfg = declared_only_config(&d);
+    // service ids of the example configuration
+    let ids: Vec<String> = std::fs::read_to_string(&cfg)
+        .unwrap()
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("service_id = "))
+        .map(|v| v.split_whitespace().next().unwrap().to_string())
+        .collect();
+    assert!(!ids.is_empty());
+    let full = d.join("full.ts");
+    let o = run(&["mux", "-c", s(&cfg), "--frames", "8", "--out-ts", s(&full)]);
+    assert!(o.status.success());
+    let list = ids.join(",");
+    let o = run(&["ts", "validate", s(&full), "--expect-services", &list]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert_ne!(o.status.code(), Some(101), "panicked");
+    assert!(!out.contains("[expect]"), "{out}");
+    // repeated flags accumulate
+    let mut args = vec!["ts", "validate", s(&full)];
+    for id in &ids {
+        args.extend(["--expect-services", id.as_str()]);
+    }
+    let o = run(&args);
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("[expect]"));
+    // a wrong list is an error finding, not a panic
+    let o = run(&["ts", "validate", s(&full), "--expect-services", "0xFFF0"]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("[expect]") && out.contains("fff0"), "{out}");
+    // a malformed value is a usage error
+    let o = run(&["ts", "validate", s(&full), "--expect-services", "0x10000"]);
+    assert_eq!(o.status.code(), Some(2));
+    std::fs::remove_dir_all(&d).unwrap();
+}
