@@ -1,0 +1,33 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":semanticCommits",
+    ":separateMultipleMajorReleases",
+    ":enableVulnerabilityAlertsWithLabel(security)"
+  ],
+  "timezone": "Asia/Tokyo",
+  "schedule": ["before 9am on saturday"],
+  "prConcurrentLimit": 5,
+  "enabledManagers": ["cargo", "npm", "mise", "github-actions", "custom.regex"],
+  "semanticCommitScope": null,
+  "packageRules": [
+    {
+      "description": "Libraries keep their Cargo.toml ranges; only Cargo.lock moves (the MSRV CI job catches dependencies that need a newer Rust).",
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "update-lockfile"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Development toolchain pinned in rust-toolchain.toml (the MSRV in Cargo.toml is bumped by hand).",
+      "managerFilePatterns": ["/(^|/)rust-toolchain\\.toml$/"],
+      "matchStrings": ["channel\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+      "depNameTemplate": "rust",
+      "packageNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
+    }
+  ]
+}
