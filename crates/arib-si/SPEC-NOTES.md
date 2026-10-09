@@ -32,7 +32,7 @@ Format as in the workspace `SPEC-NOTES.md`.
   1021) and 4093 for EIT/PCAT/BIT/NBIT/LDT/ST.  TOT: only "first two bits …
   '00'" (≤ 1023) is stated.  Codecs accept up to 4093 for every table.
 - Confirmation: none needed for decoding; the sections of a live terrestrial
-  capture (2026-10-07) are all within both readings except EIT (3139 bytes, allowed by both).  Status: interpretation.
+  capture recorded during development are all within both readings except EIT (3139 bytes, allowed by both).  Status: interpretation.
 
 ## arib-si: PCAT content_descriptor_length scope
 - Spec: B10 Part 2 §5.2.12, Table 5-12.
@@ -80,10 +80,10 @@ Format as in the workspace `SPEC-NOTES.md`.
   Table F-2) then APS_control_data (2, Table F-4) when copy_control_type = '01',
   else reserved_future_use (2).  An exact bijection on 0..=15, so the raw field
   stays authoritative.  The ARIB operational guidelines (TR-B14/TR-B15, not
-  available locally) are understood to make this layout normative; the Sony
-  BDZ-series recorder refuses copy_control_type '00' and accepts '01' (bench
-  2026-10-08, see `crates/arib-mux/SPEC-NOTES.md`).  Live terrestrial capture:
-  0b0100 (HD services), 0b1000 (one-seg).
+  available locally) are understood to make this layout normative; a Sony
+  BDZ-series recorder refuses copy_control_type '00' and accepts '01' (see
+  the receiver compatibility notes in `crates/arib-mux/SPEC-NOTES.md`).
+  Live terrestrial capture: 0b0100 (HD services), 0b1000 (one-seg).
 
 ## arib-si: stuffing_section has no fixed form
 - Spec: B10 Part 2 §5.2.11, Table 5-11.
@@ -126,7 +126,7 @@ Format as in the workspace `SPEC-NOTES.md`.
   presence anywhere in the NIT satisfies the check.  The *2 substitution
   cannot be verified from B10, so absence is reported (Kind
   `MandatoryDescriptor`) and the user decides.
-- Finding (live terrestrial capture, 2026-10-07): 217 EIT schedule events
+- Finding (a live terrestrial capture recorded during development): 217 EIT schedule events
   lack a short_event_descriptor: 207 on the two sub-channel services (tables
   0x50/0x51) carry only an event_group_descriptor with group_type 0x1 "Event
   common" referencing the main HD service; 8 events in table 0x58 carry only

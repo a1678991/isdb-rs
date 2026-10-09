@@ -36,7 +36,7 @@ widths, bit-reservoir scaling, the few fixed-width element fields
 `SilentFrame` writes), ISO/IEC 11172-3 (the CRC-16 cited by B32 Part 2
 Appendix 1), ARIB TR-B14 (terrestrial operational guidelines). The
 raw_data_block walk and the ISO/IEC 13818-7 Annex A tables it needs are
-not included (SPEC-NOTES "AAC ADTS: raw_data_block walk removed").
+not included (SPEC-NOTES "AAC ADTS: raw_data_block not parsed").
 
 ## Position in the stack
 
@@ -75,7 +75,8 @@ them at your own MPEG-2 video ES and AAC ADTS files; no media is committed)
 remote key 9; program and PIDs detected from the recording; its `source =
 "recording.ts"` is a placeholder for your own recording). Transmission parameters are
 not in the TOML: they come from `Params` (the `arib` `--mode/--gi/--layer-*`
-options).
+options). Every key, its default and its spec reference:
+[docs/mux-config.md](../../docs/mux-config.md).
 
 ```rust
 use arib_mux::{Config, Multiplexer};
@@ -205,8 +206,9 @@ assert!(full.iter().all(|p| p[0] == 0x47));
   positions, SI layer, no section packing, descriptor order, copy-control
   defaults, etc.) are listed, numbered, at the end of
   [SPEC-NOTES.md](SPEC-NOTES.md), with which ones follow live practice and
-  which the Sony BDZ-series recorder bisection showed to matter (copy_control_type
-  `'00'` in 0xC1 user_defined is refused; `'01'` plays).
+  which a bisection on a Sony BDZ-series recorder showed to matter
+  (copy_control_type `'00'` in 0xC1 user_defined is refused; `'01'`
+  plays).
 
 ## Verification
 
@@ -246,7 +248,7 @@ default `conform` unchanged.
   a constant-rate fullness itself. The raw_data_block rules (coupling
   channel, element order, PCE fields, SBR fill, LC tools, crc_check
   value) are not checked (no ISO/IEC 13818-7 tables; SPEC-NOTES "AAC
-  ADTS: raw_data_block walk removed"). §5.2.3 (3) (a)–(c) (PCE timing on
+  ADTS: raw_data_block not parsed"). §5.2.3 (3) (a)–(c) (PCE timing on
   audio-mode switches) is not checked. Only digital terrestrial TV's
   sampling-frequency list is applied (not BS/CS or V-Low).
 - T-STD: TBsys/Bsys for PSI not modelled; PES header bytes counted with the

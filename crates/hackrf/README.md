@@ -90,10 +90,12 @@ and streaming state of the attached HackRF without any RF activity:
 ## Verification
 
 There are no automated tests: everything requires hardware. The crate is
-exercised on the bench through `arib tx` / `arib rx` (see
-[arib-cli](../arib-cli/README.md); the bench experiment records are not
-published). `cargo test -p hackrf --doc` compiles (but does
-not run) the example above, which needs `libhackrf` at link time.
+exercised on a conducted bench through `arib tx` / `arib rx` (see
+[arib-cli](../arib-cli/README.md) and
+[docs/transmitting.md](../../docs/transmitting.md)); the radio sink of
+`arib-cli` is tested against a mock device. `cargo test -p hackrf --doc`
+compiles (but does not run) the example above, which needs `libhackrf` at
+link time.
 
 ## Known limitations
 

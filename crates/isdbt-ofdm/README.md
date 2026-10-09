@@ -156,12 +156,11 @@ outside the repository.
   emergency-alarm flag and parameter switching with a countdown (gr-isdbt
   has none), Mode 1 with I = 0 or 4, and behaviour under impairments
   (only tested in software loopback).
-- Receiver acceptance of this crate's conformant TMCC (B17–B19, B67,
-  where gr-isdbt deviates) is listed as open in VERIFICATION.md; the
-  2026-10-08 bench, after that document, had a MyGica S270 and the Sony
-  BDZ-series recorder receive `arib tx` over coax (bench logs, not published). Only
-  coherent Mode 3
-  GI 1/8 1 + 12 configurations were exercised there.
+- Real receivers (a MyGica S270 USB tuner and a Sony BDZ-series recorder,
+  over a conducted link) have accepted this crate's conformant TMCC
+  (B17–B19, B67, where gr-isdbt deviates) in one configuration only:
+  coherent Mode 3, GI 1/8, partial reception 1 + 12 segments
+  ([VERIFICATION.md](../../VERIFICATION.md#real-receivers)).
 - `TmccInfo::from_params` never announces a parameter switch; switching
   requires a caller-built `TmccInfo`.
 

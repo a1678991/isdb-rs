@@ -7,10 +7,18 @@ The per-entry reasoning lives in the crate `SPEC-NOTES.md` files
 ([index](SPEC-NOTES.md)). The gr-isdbt differential results are in
 [VERIFICATION.md](VERIFICATION.md).
 
-Compiled 2026-10-08 from the workspace sources, `README.md`, `SPEC-NOTES.md`,
-`VERIFICATION.md`, `crates/*/SPEC-NOTES.md`, the specification PDFs and the
-development bench records (not distributed). Nothing here is new evidence;
-every status is taken from one of those sources.
+The statuses below summarise evidence recorded elsewhere: the tests named in
+each row, the crate `SPEC-NOTES.md` entries, [VERIFICATION.md](VERIFICATION.md)
+(gr-isdbt oracle and real receivers) and the receiver compatibility notes.
+Nothing here is new evidence.
+
+**Obtaining the specifications.** The specification PDFs are copyrighted
+and are not redistributed with this repository. The official download URLs
+and the SHA-256 of the editions the code cites are in [§1.1](#11-documents-used),
+followed by the `pdftotext` commands that produce the greppable text the
+code comments and SPEC-NOTES quote (into the gitignored `specs/`). Real
+captures are not distributed either; how to make and use your own is in
+[docs/test-data.md](docs/test-data.md).
 
 Naming: the crate notes and code say "B31 Part 2" for the B31 v2.2-E1
 **Attachment** ("Operational Guidelines for Digital Terrestrial Television
@@ -34,8 +42,8 @@ the size of the copy the hashes below were taken from.
 | ARIB STD-B24 Fascicle 1 (Vol. 1) | 6.4-E1 (2017-07-27) | Data Coding and Transmission Specification for Digital Broadcasting | https://www.arib.or.jp/english/html/overview/doc/6-STD-B24v6_4-1p3-E1.pdf | `6-STD-B24v6_4-1p3-E1.pdf` | `ARIB-STD-B24-v6.4-vol1.txt` | Part 2 Ch. 7 and Part 3 Table 8-2 implemented (`arib-text`) |
 | ARIB STD-B31 | 2.2-E1 (2014-03-18) | Transmission System for Digital Terrestrial Television Broadcasting | https://www.arib.or.jp/english/html/overview/doc/6-STD-B31v2_2-E1.pdf | `6-STD-B31v2_2-E1.pdf` | `ARIB-STD-B31-v2.2.txt` | implemented (`isdbt-core`, `isdbt-fec`, `isdbt-ofdm`, `isdbt-phy`, `arib-mux`) |
 | ARIB STD-B32 Fascicle 1 (Part 1) | 3.11-E1 (2018-07-26) | Video Coding, Audio Coding, and Multiplexing Specifications for Digital Broadcasting — Part 1: Video Signal and Coding System | https://www.arib.or.jp/english/html/overview/doc/6-STD-B32v3_11-1p3-E1.pdf | `6-STD-B32v3_11-1p3-E1.pdf` | `ARIB-STD-B32-v3.11-part1.txt` | §5.1.1 and Attachment 2 §5.1 used (`arib-mux` video) |
-| ARIB STD-B32 Fascicle 2 (Part 2) | 3.11-E1 | … Part 2: Audio Signal and Coding System | https://www.arib.or.jp/english/html/overview/doc/6-STD-B32v3_11-2p3-E1.pdf | `6-STD-B32v3_11-2p3-E1.pdf` | `ARIB-STD-B32-v3.11-part2.txt` | [updated 2026-10-08: extracted and read] §5.2.1–5.2.3 and Attachment Ch. 3 Table 1 cited in `arib-mux` SPEC-NOTES (AAC restrictions, channel mapping, quality_indicator). [updated 2026-10-09: §5.2.1–5.2.3 enforced by `arib_mux::adts::b32` and `arib ts validate` (`aac.*`); Appendix 1 (CRC coverage), Appendix 2 (buffer sizes), Appendix 3 (adts_buffer_fullness meaning) used; tables checked against PDF pp. 60, 114, 125, 128; see §2.5.1] |
-| ARIB STD-B32 Fascicle 3 (Part 3) | 3.11-E1 | … Part 3: Signal Multiplexing System | https://www.arib.or.jp/english/html/overview/doc/6-STD-B32v3_11-3p3-E1.pdf | `6-STD-B32v3_11-3p3-E1.pdf` | `ARIB-STD-B32-v3.11-part3.txt` | [updated 2026-10-08: extracted and read] §3.1 stream_id and §3.10 (2) stream type identifier table cited in `arib-mux` SPEC-NOTES |
+| ARIB STD-B32 Fascicle 2 (Part 2) | 3.11-E1 | … Part 2: Audio Signal and Coding System | https://www.arib.or.jp/english/html/overview/doc/6-STD-B32v3_11-2p3-E1.pdf | `6-STD-B32v3_11-2p3-E1.pdf` | `ARIB-STD-B32-v3.11-part2.txt` | §5.2.1–5.2.3 header restrictions enforced by `arib_mux::adts::b32` and `arib ts validate` (`aac.*`); channel mapping; Attachment Ch. 3 Table 1 (quality_indicator); Appendix 1 (CRC coverage), Appendix 2 (buffer sizes), Appendix 3 (adts_buffer_fullness meaning); tables checked against PDF pp. 60, 114, 125, 128; see §2.5.1 |
+| ARIB STD-B32 Fascicle 3 (Part 3) | 3.11-E1 | … Part 3: Signal Multiplexing System | https://www.arib.or.jp/english/html/overview/doc/6-STD-B32v3_11-3p3-E1.pdf | `6-STD-B32v3_11-3p3-E1.pdf` | `ARIB-STD-B32-v3.11-part3.txt` | §3.1 stream_id and §3.10 (2) stream type identifier table cited in `arib-mux` SPEC-NOTES |
 | ARIB STD-B21 | 5.12-E2 (2022-10-06) | Receiver for Digital Broadcasting (Desirable Specifications) | https://www.arib.or.jp/english/html/overview/doc/6-STD-B21v5_12-E2.pdf | `6-STD-B21v5_12-E2.pdf` | `ARIB-STD-B21-v5.12.txt` | referenced only (remote-control key, SDTT/CDT origin); no clause implemented |
 | ARIB STD-B25 | 6.7-E1 (2019-01-21) | Conditional Access System Specifications for Digital Broadcasting | https://www.arib.or.jp/english/html/overview/doc/6-STD-B25v6_7-E1.pdf | `6-STD-B25v6_7-E1.pdf` | — | referenced only: descriptors 0xCB/0xCC are left `Unknown` (`arib-si`) |
 | ARIB STD-B19 | 1.0-E3 (1998-05-29) | Camera Positioning Information Conveyed by Ancillary Data Packets | https://www.arib.or.jp/english/html/overview/doc/6-STD-B19v1_0E3.pdf | `6-STD-B19v1_0E3.pdf` | — | **not used.** Studio ancillary-data standard (its scope is equipment per STD-B6 / BTA S-005B). The workspace never cites it ("B19" hits in the code are TMCC bit B19) |
@@ -82,7 +90,7 @@ change the layout whitespace. Clause and table numbers do not depend on it.
 Captures are not committed either: the committed test fixtures are
 synthetic (built with this project's encoders), and the tests that read a
 real capture take its path from `ISDB_RS_CAPTURE_TS` and skip without it
-(README "Tests that use real data").
+([docs/test-data.md](docs/test-data.md)).
 
 Newer Japanese editions exist. Each ARIB English page
 (`https://www.arib.or.jp/english/std_tr/broadcasting/std-<b10|b21|…>.html`,
@@ -96,11 +104,10 @@ The code cites the English editions in the table above.
 
 | Document | Status / where to get it | Crate decisions that depend on it |
 |---|---|---|
-| **ARIB TR-B14** v6.9 (2022-10-06), *地上デジタルテレビジョン放送運用規定* (Operational Guidelines for Digital Terrestrial Television Broadcasting), Japanese, 5 fascicles | Sold by ARIB. Only sample excerpts (cover, foreword, table of contents) are free: `https://www.arib.or.jp/image/kikaku/kikaku_sample/sample-tr-b14-{1..5}-6.9.pdf`. All 5 return 200; `-6-` and `-7-` return 404. The sample TOCs show where the relevant rules sit. Fascicle 4 = Part 4, PSI/SI operation: §6.3 running_status, §13 EIT transmission (H-/M-/L-EIT), §15 definition of on-air/off-air service, §21 digital copy control (§21.2 defaults), §22 PSI/SI layer in hierarchical transmission, §30.4 NIT (§30.4.3.3 partial reception, §30.4.3.4 TS information descriptor), §31.1 BIT, §31.2 SDT. Fascicle 5 = Part 7, transmission operation: §5.2.8 PCR operation, §9.2.1 network / TS / remote-control-key / service id assignments; Part 8, content protection: §5.3.2 output control by the digital copy control and content availability descriptors. Fascicle 1 = Part 2, receiver functional spec: §7.10 copy control | `arib-si`: typed Annex F view of digital_copy_control user_defined ("understood to make this layout normative"). `arib-mux`: all 20 "Operational choices" [updated 2026-10-09: now 30, incl. the `ts-program` caption / superimpose component_tag ranges 0x30–0x37 / 0x38–0x3F and the default relay PID plan 0x0111/0x0112/0x0130/0x0138/0x0140, **from knowledge**], the remote_control_key_id range 1..=12 and the key·10 + index channel numbering (**[TR-B14 practice … from knowledge]**), SI_parameter_descriptor left raw, H-/M-/L-EIT PID-per-layer practice not applied by default, one-seg service_type 0xC0 (`examples/bench*.toml`). `arib-analyze`: the operational split of EIT 0x58–0x5F is not used; the `si.copy_control` warning text. `arib-text`: B10 Annex A defers "the details of the character set" to "the operational guidelines of service providers", so the SI initial state (G3 = Katakana) was fixed from live data instead |
+| **ARIB TR-B14** v6.9 (2022-10-06), *地上デジタルテレビジョン放送運用規定* (Operational Guidelines for Digital Terrestrial Television Broadcasting), Japanese, 5 fascicles | Sold by ARIB. Only sample excerpts (cover, foreword, table of contents) are free: `https://www.arib.or.jp/image/kikaku/kikaku_sample/sample-tr-b14-{1..5}-6.9.pdf`. All 5 return 200; `-6-` and `-7-` return 404. The sample TOCs show where the relevant rules sit. Fascicle 4 = Part 4, PSI/SI operation: §6.3 running_status, §13 EIT transmission (H-/M-/L-EIT), §15 definition of on-air/off-air service, §21 digital copy control (§21.2 defaults), §22 PSI/SI layer in hierarchical transmission, §30.4 NIT (§30.4.3.3 partial reception, §30.4.3.4 TS information descriptor), §31.1 BIT, §31.2 SDT. Fascicle 5 = Part 7, transmission operation: §5.2.8 PCR operation, §9.2.1 network / TS / remote-control-key / service id assignments; Part 8, content protection: §5.3.2 output control by the digital copy control and content availability descriptors. Fascicle 1 = Part 2, receiver functional spec: §7.10 copy control | `arib-si`: typed Annex F view of digital_copy_control user_defined ("understood to make this layout normative"). `arib-mux`: all 30 "Operational choices", incl. the `ts-program` caption / superimpose component_tag ranges 0x30–0x37 / 0x38–0x3F and the default relay PID plan 0x0111/0x0112/0x0130/0x0138/0x0140 (**from knowledge**), the remote_control_key_id range 1..=12 and the key·10 + index channel numbering (**[TR-B14 practice … from knowledge]**), SI_parameter_descriptor left raw, H-/M-/L-EIT PID-per-layer practice not applied by default, one-seg service_type 0xC0 (`examples/bench*.toml`). `arib-analyze`: the operational split of EIT 0x58–0x5F is not used; the `si.copy_control` warning text. `arib-text`: B10 Annex A defers "the details of the character set" to "the operational guidelines of service providers", so the SI initial state (G3 = Katakana) was fixed from live data instead |
 | **ARIB TR-B15** v7.4 (BS / wide-band CS operational guidelines), Japanese | Sample excerpts `https://www.arib.or.jp/image/kikaku/kikaku_sample/sample-tr-b15-{1..4}-7.4.pdf` (200; `-5-` 404) | Named next to TR-B14 as the source that would make the Annex F layout normative (`arib-si/src/values.rs`, `arib-mux/src/signalling.rs`, `arib-analyze/src/validate.rs`) |
 | **ITU-T H.262 \| ISO/IEC 13818-2** (code cites the 07/2000 edition) | ITU-T Recommendation, https://www.itu.int/rec/T-REC-H.262 (200, HTML landing page). No local copy | `arib-mux/src/video.rs`, marked **[H.262 from knowledge]**: start codes, sequence/picture headers and extensions (§6.2.x), display duration §6.3.10, Table 6-3 aspect_ratio_information (→ component_type column), Table 8-13 Rmax per level (T-STD), VUI default transfer_characteristics '00' (video_decode_control) |
-| **ISO/IEC 13818-7** (AAC, ADTS) | ISO catalogue (paid). `https://www.iso.org/standard/43345.html` answered 403 to `curl` (bot filter), so this URL is not verified | `arib-mux/src/adts/`, marked **[from knowledge]**: adts_fixed/variable_header field widths (§6.2.1, Tables 6.4/6.5), ID '1', the bit-reservoir recurrence and /(32·NCC) scaling of adts_buffer_fullness; the CRC-16 itself is ISO/IEC 11172-3 §2.4.3.1 (also not local; its coverage is quoted in B32 Part 2 Appendix 1). Header values and the fullness recurrence were confirmed on a live capture. **Not implemented** (removed 2026-10-09): the raw_data_block syntax and the Annex A Huffman / scalefactor-band tables, which were transcribed from FFmpeg `aactab.c`; restoring CRC verification/insertion needs 13818-7 obtained legally and the tables transcribed independently from it (`arib-mux` SPEC-NOTES "AAC ADTS: raw_data_block walk removed") |
-| **ARIB STD-B32 Parts 2/3** | PDFs **are** local (see 1.1) but were never extracted or read. `arib-mux` SPEC-NOTES lists them as not available | quality_indicator default '01' ("the modes are defined in B32 Part 2, not available"). stream_type 0x02/0x0F taken from H.222.0 Table 2-34 ("**[B32 Part 3 (ARIB stream types) not available]**"). The Part 3 "Stream type identifier" table (Fascicle 3, printed p. 28) does list 0x0F "Audio stream defined in ISO/IEC 13818-7" and 0x1B "AVC video stream prescribed in ITU-T Rec. H.264". Part 2 Chapter 3 defines `quality_indicator`. [Update 2026-10-08: extracted and cited in `arib-mux` SPEC-NOTES; this row is resolved. Findings: stream_type and channel mapping agree; default quality_indicator '01' and unenforced §5.2.2 ADTS restrictions are discrepancies.] [Update 2026-10-09: both discrepancies fixed (§2.5.1).] |
+| **ISO/IEC 13818-7** (AAC, ADTS) | ISO catalogue (paid). `https://www.iso.org/standard/43345.html` answered 403 to `curl` (bot filter), so this URL is not verified | `arib-mux/src/adts/`, marked **[from knowledge]**: adts_fixed/variable_header field widths (§6.2.1, Tables 6.4/6.5), ID '1', the bit-reservoir recurrence and /(32·NCC) scaling of adts_buffer_fullness; the CRC-16 itself is ISO/IEC 11172-3 §2.4.3.1 (also not local; its coverage is quoted in B32 Part 2 Appendix 1). Header values and the fullness recurrence were confirmed on a live capture. **Not implemented:** the raw_data_block syntax and the Annex A Huffman / scalefactor-band tables, so crc_check values are neither verified nor inserted. Implementing them needs 13818-7 obtained legally and the tables transcribed independently from the standard, not from another implementation ([`arib-mux` SPEC-NOTES "AAC ADTS: raw_data_block not parsed"](crates/arib-mux/SPEC-NOTES.md#aac-adts-raw_data_block-not-parsed)) |
 | **JIS X 0208:1990, JIS X 0213:2004, JIS X 0221-1:2001, JIS X 0201-1997** | JIS standards (JSA / JISC). No local copy | `arib-text`: 7 Kanji cells corrected away from the WHATWG/`encoding_rs` index (`tables::KANJI_OVERRIDES`: 1-29, 1-33, 1-34, 1-61, 1-81, 1-82, 2-44), "from general knowledge … (status: pending an authoritative JIS table)". JIS compatible Kanji Plane 1/2 beyond rows 1–84 is unsupported ("incomplete by design") |
 | **ARIB STD-B24 Volumes 2–4** (Fascicles 2(1/2), 2(2/2), 3 of 6.4-E1: XML-based multimedia coding (BML), data transmission, application control) | Fascicle 3 at https://www.arib.or.jp/english/html/overview/doc/6-STD-B24v6_4-3p3-E1.pdf (200). The guessed Fascicle 2 name `…-2p3-E1.pdf` returned 404 (the real file name was not looked up) | None. Data broadcasting / DSM-CC carousels are not implemented. `arib-analyze` only names DSM-CC table_ids and stream_types |
 | **ARIB STD-B1** | Not local | Cited by B10 footnotes as the origin of SDTT (0xC3), CDT (0xC8) and the download content descriptor (0xC9). These stay `Unknown` in `arib-si` |
@@ -114,7 +121,7 @@ The SPEC-NOTES statements that depend on these documents. Search terms used:
 | Statement | File |
 |---|---|
 | "Not available locally: ITU-T H.262 …, ISO/IEC 13818-7 …, ARIB STD-B32 Parts 2/3 …, ARIB TR-B14"; every **[from knowledge]** tag | [crates/arib-mux/SPEC-NOTES.md](crates/arib-mux/SPEC-NOTES.md) (header, video, AAC, T-STD, PMT/EIT descriptor sections) |
-| Operational choices 1–20 "not dictated by the local specs — test on receivers" | [crates/arib-mux/SPEC-NOTES.md](crates/arib-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers) |
+| Operational choices 1–30 "not dictated by the local specs — test on receivers" | [crates/arib-mux/SPEC-NOTES.md](crates/arib-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers) |
 | Annex F layout "understood" normative per TR-B14/TR-B15 | [crates/arib-si/SPEC-NOTES.md](crates/arib-si/SPEC-NOTES.md#arib-si-digital_copy_control_descriptor-4-bit-field-after-the-flags) |
 | SDTT/CDT/0xC9/0xCB/0xCC "To be typed from B21/B25 when those are admitted" | [crates/arib-si/SPEC-NOTES.md](crates/arib-si/SPEC-NOTES.md#arib-si-descriptors-and-tables-defined-outside-b10) |
 | "The operational guideline is not available here" (SI initial state) | [crates/arib-text/SPEC-NOTES.md](crates/arib-text/SPEC-NOTES.md#arib-text-initial-state-for-si-strings) |
@@ -133,9 +140,9 @@ clause.
 |---|---|
 | **S** | spec-vector or unit tests only (values printed in the spec asserted in `spec_*` / unit tests) |
 | **P** | property tests (`prop_*`: lossless `encode(decode(x)) == x`, TX/RX inverse pairs) |
-| **L** | decoded with zero errors and re-encoded byte-identically on a live terrestrial capture during development (2026-10-07, 120,091 packets, 10.777 s; not distributed — rerun with `ISDB_RS_CAPTURE_TS`) |
+| **L** | decoded with zero errors and re-encoded byte-identically on a live terrestrial capture recorded during development (120,091 packets, 10.777 s; not distributed). The figures quoted in this file are from that capture; the same opt-in tests run on your own capture with `ISDB_RS_CAPTURE_TS` ([docs/test-data.md](docs/test-data.md)) |
 | **O** | gr-isdbt oracle, byte-exact in both directions ([VERIFICATION.md](VERIFICATION.md), 8 parameter sets / 9 runs) |
-| **RX** | a real receiver accepted the Rust output. Bench 2026-10-08, configuration **C_bench**: `arib tx` with Mode 3, GI 1/8, partial reception; layer A 1 seg QPSK 2/3 I=2; layer B 12 seg 64QAM 3/4 I=2; multiplex from `arib-mux`, conducted (coax + attenuators). MyGica S270 USB tuner: its 12.0 s capture validates with `arib ts validate`: 0 errors, 5 warnings. Sony BDZ-series recorder: registered and played on ch44 after the 0xC1 fix. RX shows only that the whole chain was accepted in C_bench. It does not test each clause separately |
+| **RX** | a real receiver accepted the Rust output over a conducted link (HackRF → coax → attenuators → receiver), configuration **C_rx**: `arib tx` with Mode 3, GI 1/8, partial reception; layer A 1 seg QPSK 2/3 I=2; layer B 12 seg 64QAM 3/4 I=2; multiplex from `arib-mux`. MyGica S270 USB tuner: its 12.0 s capture validates with `arib ts validate`: 0 errors, 5 warnings. A Sony BDZ-series recorder ("the recorder" below): registered the service in a channel scan and played it, with digital copy control copy_control_type '01' (§3.4). RX shows only that the whole chain was accepted in C_rx; it does not test each clause separately ([VERIFICATION.md](VERIFICATION.md#real-receivers)) |
 | **RX(gr)** | a real receiver accepted *gr-isdbt* output that the Rust chain matches byte-exactly (S270, PER 0) |
 | **—** | not implemented, or deliberately left raw |
 
@@ -155,7 +162,7 @@ clause.
 | §2.4.3 Table 2-1 framing; 192/204-byte units (heuristic, not H.222.0) | `arib_ts::reader` | `autodetects_each_format_with_garbage_prefix`, `resyncs_after_corruption`, `short_and_empty_inputs` | L |
 | §2.1.64 reserved bits = '1' | `check` functions in `arib_ts`, `arib_si::conformance`, `arib_analyze::validate` | `spec_conformance_reserved_bits`, `reserved_bits_are_warnings` | L (no violations in the live PSI) |
 | §2.7.2 PCR interval ≤ 0.1 s | `arib_analyze::validate`; generation in `arib_mux::mux` | `pcr_interval_over_100ms`; `pcr_and_timestamps` (mux) | Validator: L. It flags the live one-seg program, see §3.3. Mux: S, RX |
-| §2.4.2.2 PCR tolerance ±500 ns; eq. 2-4 byte timing | `arib_analyze::validate`, `arib_analyze::timebase`; [added 2026-10-09] `arib_mux::pcrclock` (packet arrival times of a recorded TS: `arib tx --mux-ts` pacing, `ts-program` relay re-timing) | `interpolates_between_pcrs_and_inverts`; `spec_eq_2_4_interpolation`, `wrap_is_continuous_and_anchor_maps_timestamps`, `discontinuity_continues_at_previous_rate`, `relays_a_foreign_program_as_a_terrestrial_service` | estimate (warning only); relay: S, real data (a BS recording) |
+| §2.4.2.2 PCR tolerance ±500 ns; eq. 2-4 byte timing | `arib_analyze::validate`, `arib_analyze::timebase`; `arib_mux::pcrclock` (packet arrival times of a recorded TS: `arib tx --mux-ts` pacing, `ts-program` relay re-timing) | `interpolates_between_pcrs_and_inverts`; `spec_eq_2_4_interpolation`, `wrap_is_continuous_and_anchor_maps_timestamps`, `discontinuity_continues_at_previous_rate`, `relays_a_foreign_program_as_a_terrestrial_service` | estimate (warning only); relay: S, real data (a BS recording) |
 | §2.7.4 PTS spacing ≤ 0.7 s; §2.4.2.6 T-STD delay ≤ 1 s | `arib_analyze::validate`; `arib_mux::tstd` | `pts_interval_over_700ms`; `tb_limits_bursts`, `underflow_detected`, `tables_conform_and_repeat` | S (mux), RX |
 | §2.4.2.3–2.4.2.6 T-STD buffers (TBn/MBn/EBn/Bn) | `arib_mux::tstd` | as above; `bench_media_ffprobe` | S, RX. TBsys/Bsys for PSI are **not modelled** |
 | §2.1.1 access unit | `arib_mux::video` | `ibbp_timestamps` | S, RX |
@@ -168,14 +175,14 @@ clause.
 |---|---|---|---|
 | Part 2 §5.2.4–§5.2.15, Tables 5-3…5-17: NIT, BAT, SDT, EIT, TDT, TOT, RST, ST, PCAT, BIT, NBIT, LDT, stuffing | `arib_si::tables`, `arib_si::any` | `spec_nit`, `spec_bat`, `spec_sdt`, `spec_eit`, `spec_eit_undefined_times`, `spec_tdt`, `spec_tot`, `spec_rst`, `spec_st`, `spec_pcat`, `spec_bit`, `spec_nbit`, `spec_ldt`, `spec_dispatch_errors`, `prop_<table>_roundtrip` (12 tables), `prop_table_decode_is_lossless`, `synthetic_sections_crc_decode_reencode`, `capture_si_sections_crc_decode_reencode` (opt-in) | L for the tables present live: NIT actual 0x40, SDT actual 0x42, EIT p/f 0x4E (PIDs 0x0012 and 0x0027), EIT schedule 0x50/0x51/0x58/0x59, TOT 0x73, BIT 0xC4 (capture inventory; the synthetic fixture covers the same set). S+P only for BAT, TDT, RST, ST, PCAT (content_descriptor_length scope pending), NBIT, LDT. RX for the tables `arib-mux` sends (PAT/CAT/PMT/NIT/SDT/EIT/TOT/BIT) |
 | Part 2 §6.2.1–§6.2.19, §6.2.25 (`descriptor::dvb`); §6.2.20–§6.2.45, §6.2.54 (`descriptor::arib`) | `arib_si::descriptor` | `spec_descriptor_*` (language codes, digital_copy_control, ts_information, logo_transmission, event_group, component_group, ca, emergency, rejects_unaccounted_bytes), `prop_descriptor_roundtrip`, `prop_descriptor_decode_is_lossless`, `prop_strategies_cover_every_typed_descriptor` | L for the descriptors that occur in the capture: 0x09, 0x40, 0x41, 0x48, 0x4D, 0x4E, 0x50, 0x52, 0x54, 0xC1, 0xC4, 0xC7, 0xC8, 0xCD, 0xCE, 0xCF, 0xD6, 0xD7, 0xDE, 0xF6, 0xFA, 0xFB, 0xFD, 0xFE (`arib ts inspect --decode` of the capture). S+P for the rest |
-| Tables 6-5, 6-39, 6-43, 6-45, 6-60, 6-60-1; Annex F Tables F-1/F-2/F-4 (typed values) | `arib_si::values`, `arib_mux::signalling` | `spec_table_6_5_component_type_mpeg2_video`, `spec_table_6_39_digital_recording_control`, `spec_table_6_43_audio_component_type`, `spec_table_6_45_sampling_rate`, `spec_table_6_60_video_encode_format`, `spec_table_6_60_1_transfer_characteristics`, `spec_annex_f_tables_f2_f4`, `spec_6_2_23_maximum_bitrate_unit`, `every_code_round_trips_and_names_are_unique`, `synthetic_pmt_descriptors_decode_to_named_variants`, `copy_control_user_defined` | L. **RX: Annex F copy_control_type is decisive on the BDZ recorder** (§3.4) |
+| Tables 6-5, 6-39, 6-43, 6-45, 6-60, 6-60-1; Annex F Tables F-1/F-2/F-4 (typed values) | `arib_si::values`, `arib_mux::signalling` | `spec_table_6_5_component_type_mpeg2_video`, `spec_table_6_39_digital_recording_control`, `spec_table_6_43_audio_component_type`, `spec_table_6_45_sampling_rate`, `spec_table_6_60_video_encode_format`, `spec_table_6_60_1_transfer_characteristics`, `spec_annex_f_tables_f2_f4`, `spec_6_2_23_maximum_bitrate_unit`, `every_code_round_trips_and_names_are_unique`, `synthetic_pmt_descriptors_decode_to_named_variants`, `copy_control_user_defined` | L. **RX: Annex F copy_control_type is decisive on the recorder** (§3.4) |
 | Annex C MJD/BCD, JST | `arib_si::time`, `arib_mux::jst` | `spec_time_annex_c_example`, `spec_time_jst_example`, `spec_time_duration_example`, `spec_time_bcd`, `spec_time_annex_c_range_exhaustive`, `spec_annex_c_example`, `duration_example`, `mjd_time_rendered_jst` | S (exhaustive over 1900-03-01…2100-02-28), L |
 | §5.1.1 section lengths; §5.1.3 Table 5-2 transmission level and repetition; §5.1.4 "4KB in 32 ms" | `arib_si::conformance`, `arib_analyze::validate`, `arib_mux::mux` | `psi_section_too_long`, `mandatory_sdt_missing`, `frequency_criterion_exceeded_is_warning`, `tables_conform_and_repeat`, `schedule_tdt_pcr_in_video_custom_intervals` | L (validator), S+RX (mux) |
 | Part 1 / Part 2 Table 5-1 PID allocation | `arib_analyze::validate`, `arib_analyze::names` | `table_on_wrong_pid`, `es_on_allocated_si_pid` | L |
 | §6.1 Table 6-1 mandatory descriptors | `arib_si::conformance`, `arib_analyze::validate` | `si_mandatory_descriptor` | L. The live capture fails it in 217 EIT events, see §3.3 |
 | §5.2.4/§5.2.6/§5.2.7 cross-table identities; Appendix §1.4 EIT p/f and schedule guideline | `arib_analyze::validate`; `arib_mux::si` | `sdt_tsid_and_onid_mismatch`, `pat_program_absent_from_sdt`, `eit_pf_two_events_in_present_section`, `eit_present_following` | L, S, RX |
 | §6.2.21 system management, §6.2.31 Tables 6-62/6-63 terrestrial delivery (GI / mode codes, 1/7 MHz unit), §6.2.32 partial reception, §6.2.42 TS information / remote_control_key_id, Annex N network_id | `arib_mux::si`, `arib_mux::signalling` | `spec_b10_table_6_62_6_63`, `derived_nit_values`, `frequency_codes`, `remote_key_range`, `remote_key_range_is_validated` | S, RX |
-| §6.2.30 video_decode_control, §6.2.3 component, §6.2.26 audio component (derived from media) | `arib_mux::signalling`, `arib_mux::validate` | `vdc_resolution`, `bench_toml_redecodes_to_live_values`, `bench_minimal_toml_redecodes_to_derived_values` | S, RX (the BDZ recorder plays with both the derived and the live values) |
+| §6.2.30 video_decode_control, §6.2.3 component, §6.2.26 audio component (derived from media) | `arib_mux::signalling`, `arib_mux::validate` | `vdc_resolution`, `bench_toml_redecodes_to_live_values`, `bench_minimal_toml_redecodes_to_derived_values` | S, RX (the recorder plays with both the derived and the live values) |
 | §6.2.22 hierarchical_transmission | `arib_mux::si` | `hierarchical_descriptor_derived` | S |
 | SDTT 0xC3, CDT 0xC8, download content 0xC9, CA contract 0xCB, CA service 0xCC (syntax in B1/B21/B25) | kept as `AnyTable::Unknown` / `Descriptor::Unknown` (CRC checked) | — | — (deliberately deferred). The live CAT carries a 0xCC that decodes as `Unknown` |
 
@@ -183,7 +190,7 @@ clause.
 
 | Clause / table | Implementation | Tests | Status |
 |---|---|---|---|
-| §7.1, Tables 7-1/7-2/7-3 invocation, designation, final bytes | `arib_text::decode`, `arib_text::sets` | `spec_table_7_1_invocations`, `spec_table_7_2_designations`, `spec_table_7_2_designations_decode`, `spec_table_7_3_final_bytes`, `prop_decode_arbitrary_bytes`, `prop_decode_structured_bytes` | L (all 113 fixture strings: zero issues, round-trip) |
+| §7.1, Tables 7-1/7-2/7-3 invocation, designation, final bytes | `arib_text::decode`, `arib_text::sets` | `spec_table_7_1_invocations`, `spec_table_7_2_designations`, `spec_table_7_2_designations_decode`, `spec_table_7_3_final_bytes`, `prop_decode_arbitrary_bytes`, `prop_decode_structured_bytes` | L (every distinct NIT/SDT/EIT string of the development capture: zero issues, round-trip) |
 | Part 3 Table 8-2 initial state; SI variant with G3 = Katakana | `arib_text::sets::InitialState` | `spec_table_8_2_initial_state`, `prop_round_trip_si`, `prop_round_trip_caption_initial_state` | L (the SI variant is fixed by live data) |
 | Table 7-4 Kanji (JIS X 0208 rows 1–84, Unicode mapping) | `arib_text::tables` | `spec_table_7_4_kanji`, `prop_kana_kanji_compact`, `prop_repertoire_size` | L. The 7 override cells are pending a JIS table |
 | Tables 7-5…7-9 alphanumeric, katakana, hiragana, mosaic, JIS X 0201 katakana | `arib_text::sets`, `arib_text::tables` | `spec_table_7_5_alphanumeric`, `spec_table_7_6_katakana`, `spec_table_7_7_hiragana`, `spec_table_7_8_mosaic_ignored`, `spec_table_7_9_jis_x0201_katakana` | L (alphanumeric, kana); S (mosaic is ignored by design, Annex E.4) |
@@ -194,14 +201,14 @@ clause.
 | DRCS (§7.1.1.5, Annex E.5) | U+FFFD + `IssueKind::Drcs` | `spec_drcs_placeholder` | — (no mapping by design) |
 | JIS compatible Kanji Plane 1 beyond rows 1–84, Plane 2 | `IssueKind::UnsupportedCode` | — | — (no JIS X 0213 table) |
 | Robustness on truncated escape / control sequences | `arib_text::decode` | `spec_truncated_sequences` | S |
-| [added 2026-10-09] Part 1 §3.1 / Part 3 §3.1 definitions (superimpose; synchronous / asynchronous PES), Part 3 Ch. 4 (caption vs superimpose "not classified" in coding), §9.6 footnote 1 (data_component_id 0x0008), Tables 9-15/9-16 (additional_arib_caption_info Timing) | `arib_mux::relay::classify` (roles of relayed `ts-program` streams) | `classification_rules`, `roles_and_pid_plan_on_permuted_pids`, `relay_recording_without_toml` (opt-in) | S, real data (a BS recording: caption and superimpose PIDs classified as expected) |
+| Part 1 §3.1 / Part 3 §3.1 definitions (superimpose; synchronous / asynchronous PES), Part 3 Ch. 4 (caption vs superimpose "not classified" in coding), §9.6 footnote 1 (data_component_id 0x0008), Tables 9-15/9-16 (additional_arib_caption_info Timing) | `arib_mux::relay::classify` (roles of relayed `ts-program` streams) | `classification_rules`, `roles_and_pid_plan_on_permuted_pids`, `relay_recording_without_toml` (opt-in) | S, real data (a BS recording: caption and superimpose PIDs classified as expected) |
 
 ### 2.4 ARIB STD-B31 v2.2
 
 | Clause / table | Implementation | Tests | Status |
 |---|---|---|---|
 | Tables 3-1, 3-2, 3-3, 3-5, 3-6 (segment/carrier parameters, TI lengths, TSPs per frame, frame lengths) | `isdbt_core::params`, `isdbt_core::ofdm_params`, `isdbt_core::fec_params` | `table_3_2`, `table_3_3`, `table_3_5`, `frame_lengths`, `spec_table_3_1_counts`, `segment_ordering_rules`, `coded_bits_consistent_with_rate` | S, O, RX |
-| §3.2 TS re-multiplexing, model receiver (Figs. 3-3/3-4/3-5) | `isdbt_fec::remux::MultiplexPattern`; pacing in `arib_mux::mux` | `spec_fig_3_3_and_3_5_example`, `spec_table_3_5_3_3_single_layer`, `spec_table_3_5_3_3_multi_layer`, `assemble_divide_roundtrip` | S. Fig. 3-3 is only "partially confirmed" (the figure is schematic). The real slot order is "pending real-world check". The oracle runs feed per-layer TS, so they do not exercise it. RX (C_bench pacing accepted) |
+| §3.2 TS re-multiplexing, model receiver (Figs. 3-3/3-4/3-5) | `isdbt_fec::remux::MultiplexPattern`; pacing in `arib_mux::mux` | `spec_fig_3_3_and_3_5_example`, `spec_table_3_5_3_3_single_layer`, `spec_table_3_5_3_3_multi_layer`, `assemble_divide_roundtrip` | S. Fig. 3-3 is only "partially confirmed" (the figure is schematic). The real slot order is "pending real-world check". The oracle runs feed per-layer TS, so they do not exercise it. RX (C_rx pacing accepted) |
 | §3.3 RS(204,188) shortened code (Fig. 3-6) | `isdbt_fec::rs` | `spec_3_3_primitive_element`, `spec_3_3_generator_roots`, `spec_3_3_shortening_equivalence`, `spec_3_3_correct_up_to_8`, `spec_3_3_failure_beyond_8`, `prop_rs_corrects_up_to_8` | O, RX |
 | §3.4 layer division, one-byte frame shift (Fig. 3-7) | `isdbt_fec::layer` | `tx_slot_provenance`, `prop_layer_roundtrip_*` | O |
 | §3.5 energy dispersal (Fig. 3-8 PRBS, OFDM-frame reset) | `isdbt_fec::energy` | `spec_fig_3_8_first_bits`, `spec_fig_3_8_period`, `spec_3_5_sync_skipped_register_advances` | O, RX |
@@ -216,7 +223,7 @@ clause.
 | §3.12 frame structure, SP/CP positions (Figs. 3-29/3-30, Tables 3-14/3-15) | `isdbt_ofdm::frame` | `spec_fig_3_29_3_30_segment_structure`, `spec_tables_3_14_3_15`, `spec_table_3_1_carrier_counts` | O (SP/CP/edge carriers identical) |
 | §3.13 pilot PRBS and amplitudes (Fig. 3-31, Tables 3-16/3-17/3-19) | `isdbt_ofdm::frame` | `spec_table_3_16_prbs_initial_values` | O |
 | §3.14 spectrum arrangement (Fig. 3-32), §3.14.1 Kc, §3.14.2 guard interval | `isdbt_ofdm::ofdm`, `isdbt_ofdm::frame` | `spec_fig_3_32_positions`, `spec_3_14_1_center_carrier`, `spec_frame_sample_counts` | O, RX |
-| §3.15 TMCC (Tables 3-20…3-31) | `isdbt_ofdm::tmcc` | `spec_table_3_21_sync_alternation`, `spec_table_3_22_tmcc_fields`, `prop_tmcc_roundtrip` | O for B20–B66 and B68–B121. The differences in B17–B19 and B67 are gr-isdbt deviations (D1/D3). **RX: the S270 and the BDZ accepted the conformant Rust TMCC in C_bench**, which settles VERIFICATION.md "Open questions" item 2 for that configuration |
+| §3.15 TMCC (Tables 3-20…3-31) | `isdbt_ofdm::tmcc` | `spec_table_3_21_sync_alternation`, `spec_table_3_22_tmcc_fields`, `prop_tmcc_roundtrip` | O for B20–B66 and B68–B121. The differences in B17–B19 and B67 are gr-isdbt deviations (D1/D3). **RX: the S270 and the recorder accepted the conformant Rust TMCC in C_rx** (where gr-isdbt deviates, D1/D3) |
 | §3.15.6.9 difference-set code (184,102) | `isdbt_ofdm::dsc` | `spec_3_15_6_9_generator_divides`, `spec_3_15_6_9_parity_vectors`, `difference_set_is_perfect` | Agrees with gr-isdbt in both directions. The bit order is ambiguous in the text, so it is **pending an off-air frame**. Whether consumer receivers check the parity is unknown |
 | §3.13.4 AC carriers (DBPSK, stuffing 1); §3.16 seismic warning; Attachment §6.2.3.2/§6.3.4.2 serial AC mapping | `isdbt_ofdm::ac` | `spec_3_16_6_seismic_word`, `prop_seismic_roundtrip`, `prop_ac_stream_roundtrip`, `loopback_ac_seismic_and_emergency_flag` | **S + loopback only.** gr-isdbt leaves AC unmodulated (D2). AC parity uses the same bit-order convention as TMCC (pending) |
 | §3.15.6.2/3.15.6.4 emergency flag, transmission-parameter switching countdown | `isdbt_ofdm::tmcc`, `isdbt_ofdm::rx` | `loopback_parameter_switch_reacquires`, `loopback_ac_seismic_and_emergency_flag` | loopback only (gr-isdbt has neither) |
@@ -233,15 +240,15 @@ clause.
 |---|---|---|---|
 | §5.1.1 "vbv_delay shall always be set to 0xFFFF"; one frame per video PES; PTS in every PES | `arib_mux::video` (`force_vbv_delay_ffff`), `arib_mux::mux` | `vbv_rewrite`, `pcr_and_timestamps` ("PTS in every PES (B32 Part 1 §5.1.1)"), `bench_media_ffprobe` | S, RX |
 | Attachment 2 §5.1 field pairs per access unit; PTS_DTS_flags | `arib_mux::video` | `ibbp_timestamps` | S, RX |
-| One-seg H.264 (stream_type 0x1B) and its PES packetisation | `StreamKind::Declared` (listed in the PMT, no packets) | — | — **not packetised**. `arib ts validate` reports `pid.missing` on the one-seg ES PIDs (C_bench capture) |
+| One-seg H.264 (stream_type 0x1B) and its PES packetisation | `StreamKind::Declared` (listed in the PMT, no packets) | — | — **not packetised**. `arib ts validate` reports `pid.missing` on the one-seg ES PIDs (C_rx capture) |
 
 ### 2.5.1 ARIB STD-B32 v3.11 Part 2 (MPEG-2 AAC)
 
 | Clause | Implementation | Tests | Status |
 |---|---|---|---|
-| §5.2.1 ADTS, LC profile, ≤ 5.1 channels; §5.2.2 (1) protection_absent '0', profile 1, sampling_frequency_index 0x3–0x8 (terrestrial TV); §5.2.2 (2) adts_buffer_fullness ≠ 0x7FF, one raw_data_block (header-level checks only; §5.2.2 (3) coupling channel, §5.2.3 (2) element order, §5.2.3 (3)(d) PCE fields and §5.2.3 (4)(a) SBR need a raw_data_block walk and are **not checked** since 2026-10-09) | `arib_mux::adts::b32` (`check_frame`, `conform`; `adts_compliance` policy), `arib_analyze::aac` (`aac.*` findings, header rules parsed independently) | `each_rule_detected`, `conform_passes_conforming_input_unchanged`, `conform_refuses_unprotected_input`, `conform_refuses_protected_input_needing_a_header_rewrite`, `conform_refuses_unfixable_and_warn_passes`, `bench_media_refused_by_conform`, `aac_adts_rules`, `bench_media_aac_conforms_to_b32_part2` | S, L (all 753 live frames pass the header rules); **RX pending** for conforming audio (the BDZ recorder played the non-conforming bench file) |
-| Appendix 1 ADTS CRC coverage (ISO/IEC 11172-3 CRC-16) | `arib_mux::audio::SilentFrame` only (layout known by construction); arbitrary input is no longer CRC-checked or rewritten | `crc16_known_answer`, `silent_frame_crc_matches_appendix_1` | S. (Before the removal of the raw_data_block walk, every crc_check of a live capture was reproduced: 504 full-seg + 249 one-seg frames.) |
-| Appendix 3 adts_buffer_fullness ("6,144 bits per channel"), Description 1 (3) fixed average rate | `arib_mux::adts::b32::cbr_fullness` | `fullness_model_recurrence`, `silent_frame_fullness_is_the_cbr_value` | L (live encoders followed the model during development); R > mean for VBR input is an interpretation; computed values are reported, not inserted (protected frames cannot be rewritten without the walk) |
+| §5.2.1 ADTS, LC profile, ≤ 5.1 channels; §5.2.2 (1) protection_absent '0', profile 1, sampling_frequency_index 0x3–0x8 (terrestrial TV); §5.2.2 (2) adts_buffer_fullness ≠ 0x7FF, one raw_data_block (header-level checks only; §5.2.2 (3) coupling channel, §5.2.3 (2) element order, §5.2.3 (3)(d) PCE fields and §5.2.3 (4)(a) SBR need a raw_data_block parser and are **not checked**) | `arib_mux::adts::b32` (`check_frame`, `conform`; `adts_compliance` policy), `arib_analyze::aac` (`aac.*` findings, header rules parsed independently) | `each_rule_detected`, `conform_passes_conforming_input_unchanged`, `conform_refuses_unprotected_input`, `conform_refuses_protected_input_needing_a_header_rewrite`, `conform_refuses_unfixable_and_warn_passes`, `bench_media_refused_by_conform`, `aac_adts_rules`, `bench_media_aac_conforms_to_b32_part2` | S, L (all 753 live frames pass the header rules); **RX pending** for conforming audio (the recorder played a non-conforming test file: protection_absent '1', adts_buffer_fullness 0x7FF) |
+| Appendix 1 ADTS CRC coverage (ISO/IEC 11172-3 CRC-16) | `arib_mux::audio::SilentFrame` only (layout known by construction); the crc_check of arbitrary input is neither verified nor rewritten (raw_data_block not parsed) | `crc16_known_answer`, `silent_frame_crc_matches_appendix_1` | S. The coverage reading was checked during development against every crc_check of a live capture (504 full-seg + 249 one-seg frames); no in-tree test re-checks it on third-party data |
+| Appendix 3 adts_buffer_fullness ("6,144 bits per channel"), Description 1 (3) fixed average rate | `arib_mux::adts::b32::cbr_fullness` | `fullness_model_recurrence`, `silent_frame_fullness_is_the_cbr_value` | L (live encoders followed the model during development); R > mean for VBR input is an interpretation; computed values are reported, not inserted (a protected frame's header cannot be rewritten without recomputing crc_check, which needs a raw_data_block parser) |
 | Appendix 2 AAC buffer sizes (Rxn/BSn = H.222.0 §2.4.2.3) | `arib_mux::audio::AdtsEs::{rx, bs}`, T-STD | `bench_media_ffprobe`, `pcr_and_timestamps` | S, RX |
 | Attachment Ch. 3 Table 1 quality_indicator modes | `QualityMode::derive` (`audio_quality_indicator = "derived"` default), `QualityMode::contradiction` (`aac.quality_indicator`) | `quality_derivation_table_1`, `audio_quality_indicator_typed`, `aac_quality_indicator_consistency`, `capture_validate_findings` (opt-in) | S, L (live '10' at 192 kbit/s consistent); the Mode 1 bitrate range is ambiguous (SPEC-NOTES) |
 | §5.2.3 (3)(a)–(c) PCE on audio-mode switches / every < 550 ms with downmix; §5.2.1 maximum bit rate "Compliant to ISO/IEC 13818-7"; §5.2.4 downmix | — | — | — (constant-mode files; 13818-7 limit not local) |
@@ -300,7 +307,7 @@ have no external confirmation, because none is possible from the local texts.
 | arib-si | [PCAT content_descriptor_length](crates/arib-si/SPEC-NOTES.md#arib-si-pcat-content_descriptor_length-scope) | **pending** (no PCAT in capture) |
 | arib-si | [video_decode_control last 2 bits](crates/arib-si/SPEC-NOTES.md#arib-si-video_decode_control_descriptor-last-2-bits) | confirmed by the spec's own tables |
 | arib-si | [Semantics stating wrong widths](crates/arib-si/SPEC-NOTES.md#arib-si-semantics-stating-wrong-widths-syntax-table-followed) | confirmed by Part 1 figures |
-| arib-si | [digital_copy_control user_defined](crates/arib-si/SPEC-NOTES.md#arib-si-digital_copy_control_descriptor-4-bit-field-after-the-flags) | interpretation (Annex F typed view); BDZ bench evidence (§3.4) |
+| arib-si | [digital_copy_control user_defined](crates/arib-si/SPEC-NOTES.md#arib-si-digital_copy_control_descriptor-4-bit-field-after-the-flags) | interpretation (Annex F typed view); receiver evidence (§3.4) |
 | arib-si | [stuffing_section](crates/arib-si/SPEC-NOTES.md#arib-si-stuffing_section-has-no-fixed-form) | interpretation |
 | arib-si | [conditional_access_descriptor source](crates/arib-si/SPEC-NOTES.md#arib-si-conditional_access_descriptor-syntax-source) | interpretation (H.222.0 Table 2-58) |
 | arib-si | [Descriptors/tables defined outside B10](crates/arib-si/SPEC-NOTES.md#arib-si-descriptors-and-tables-defined-outside-b10) | deferred (B1/B21/B25) |
@@ -323,8 +330,8 @@ have no external confirmation, because none is possible from the local texts.
 | arib-analyze | [Cross-table identities](crates/arib-analyze/SPEC-NOTES.md#arib-analyze-cross-table-identities) | interpretation |
 | arib-analyze | [PES timing](crates/arib-analyze/SPEC-NOTES.md#arib-analyze-pes-timing) | interpretation |
 | arib-analyze | [Section rewriting in `edit`](crates/arib-analyze/SPEC-NOTES.md#arib-analyze-section-rewriting-in-edit-not-used-by-validation) | confirmed by tests |
-| arib-mux | [Timing model](crates/arib-mux/SPEC-NOTES.md#timing-model-packet-arrival--multiplex-frame-slot) | confirmed (internal); note says pending a receiver; C_bench output accepted (RX) |
-| arib-mux | [PCR packets per frame](crates/arib-mux/SPEC-NOTES.md#pcr-packets-per-frame-at-fixed-positions) | confirmed for the bench pattern |
+| arib-mux | [Timing model](crates/arib-mux/SPEC-NOTES.md#timing-model-packet-arrival--multiplex-frame-slot) | confirmed (internal); C_rx output accepted (RX) |
+| arib-mux | [PCR packets per frame](crates/arib-mux/SPEC-NOTES.md#pcr-packets-per-frame-at-fixed-positions) | confirmed for the C_rx layer pattern |
 | arib-mux | [Layers of PSI/SI](crates/arib-mux/SPEC-NOTES.md#layers-of-psisi) | interpretation; duplicate-packet gap |
 | arib-mux | [Repetition intervals](crates/arib-mux/SPEC-NOTES.md#repetition-intervals) | tested (`tables_conform_and_repeat`) |
 | arib-mux | ["4KB in 32 ms"](crates/arib-mux/SPEC-NOTES.md#4kb-in-32-ms-per-pid) | conservative interpretation |
@@ -334,17 +341,17 @@ have no external confirmation, because none is possible from the local texts.
 | arib-mux | [EIT schedule](crates/arib-mux/SPEC-NOTES.md#eit-schedule) | interpretation (Appendix guideline) |
 | arib-mux | [NIT](crates/arib-mux/SPEC-NOTES.md#nit) | derived values; channel plan **[not in local specs]** |
 | arib-mux | [SDT, BIT, TOT, CAT](crates/arib-mux/SPEC-NOTES.md#sdt-bit-tot-cat) | interpretation; BIT first loop raw (TR-B14) |
-| arib-mux | [Program selection, stream roles and the PID plan](crates/arib-mux/SPEC-NOTES.md#program-selection-stream-roles-and-the-pid-plan-relayclassify-pid_map--auto) | interpretation (B24 Part 3 Ch. 4 / §9.6 / Table 9-16); component_tag ranges **from knowledge** (TR-B14); PID plan operational [added 2026-10-09] |
-| arib-mux | [PMT descriptors from media](crates/arib-mux/SPEC-NOTES.md#pmt-descriptors-derived-from-the-media) | **[H.262 from knowledge]**; stream_type cited from B32 Part 3 §3.10 (2) [updated 2026-10-08] |
-| arib-mux | [EIT component descriptors from media](crates/arib-mux/SPEC-NOTES.md#eit-component-descriptors-derived-from-the-media) | **[H.262 from knowledge]**; channel mapping and quality_indicator cited from B32 Part 2 [updated 2026-10-08]; quality_indicator `derived` from Table 1 (bench → Mode 2, matches live broadcasters) [updated 2026-10-09] |
-| arib-mux | [MPEG-2 video AUs and timestamps](crates/arib-mux/SPEC-NOTES.md#mpeg-2-video-access-units-and-timestamps-h262-from-knowledge) | **[H.262 from knowledge]**; RX (plays on BDZ) |
-| arib-mux | [AAC ADTS: B32 Part 2 §5.2, CRC, adts_buffer_fullness](crates/arib-mux/SPEC-NOTES.md#aac-adts-b32-part-2-52-restrictions-crc-and-adts_buffer_fullness) | rules cited from B32 Part 2; header **[13818-7 from knowledge]**, confirmed on live data (header values, fullness recurrence); raw_data_block walk, CRC verification/insertion removed (FFmpeg-derived tables); VBR fullness rate choice is an interpretation; **RX pending** for conforming audio [updated 2026-10-09] |
+| arib-mux | [Program selection, stream roles and the PID plan](crates/arib-mux/SPEC-NOTES.md#program-selection-stream-roles-and-the-pid-plan-relayclassify-pid_map--auto) | interpretation (B24 Part 3 Ch. 4 / §9.6 / Table 9-16); component_tag ranges **from knowledge** (TR-B14); PID plan operational |
+| arib-mux | [PMT descriptors from media](crates/arib-mux/SPEC-NOTES.md#pmt-descriptors-derived-from-the-media) | **[H.262 from knowledge]**; stream_type cited from B32 Part 3 §3.10 (2) |
+| arib-mux | [EIT component descriptors from media](crates/arib-mux/SPEC-NOTES.md#eit-component-descriptors-derived-from-the-media) | **[H.262 from knowledge]**; channel mapping and quality_indicator cited from B32 Part 2; quality_indicator `derived` from Table 1 (192 kbit/s stereo → Mode 2, as live broadcasters send) |
+| arib-mux | [MPEG-2 video AUs and timestamps](crates/arib-mux/SPEC-NOTES.md#mpeg-2-video-access-units-and-timestamps-h262-from-knowledge) | **[H.262 from knowledge]**; RX (plays on the recorder) |
+| arib-mux | [AAC ADTS: B32 Part 2 §5.2, CRC, adts_buffer_fullness](crates/arib-mux/SPEC-NOTES.md#aac-adts-b32-part-2-52-restrictions-crc-and-adts_buffer_fullness) | rules cited from B32 Part 2; header **[13818-7 from knowledge]**, confirmed on live data (header values, fullness recurrence); raw_data_block not parsed, so crc_check is neither verified nor inserted ([details](crates/arib-mux/SPEC-NOTES.md#aac-adts-raw_data_block-not-parsed)); VBR fullness rate choice is an interpretation; **RX pending** for conforming audio |
 | arib-mux | [T-STD pacing](crates/arib-mux/SPEC-NOTES.md#t-std-pacing) | tested; Rmax **[H.262 Table 8-13 from knowledge]** |
 | arib-mux | [Media looping](crates/arib-mux/SPEC-NOTES.md#media-looping) | implementation choice |
-| arib-mux | [Digital copy control (0xC1)](crates/arib-mux/SPEC-NOTES.md#digital-copy-control-descriptor-0xc1-and-its-user_defined-bits) | **confirmed on a receiver** (BDZ bisection) |
-| arib-mux | [Remote control key (0xCD)](crates/arib-mux/SPEC-NOTES.md#remote-control-key-0xcd-remote_control_key_id) | **[TR-B14 practice, from knowledge]**; bench evidence of collisions |
+| arib-mux | [Digital copy control (0xC1)](crates/arib-mux/SPEC-NOTES.md#digital-copy-control-descriptor-0xc1-and-its-user_defined-bits) | **confirmed on a receiver** (bisection on the recorder) |
+| arib-mux | [Remote control key (0xCD)](crates/arib-mux/SPEC-NOTES.md#remote-control-key-0xcd-remote_control_key_id) | **[TR-B14 practice, from knowledge]**; receiver evidence of collisions |
 | arib-mux | [Raw vs typed descriptors](crates/arib-mux/SPEC-NOTES.md#raw-descriptors-versus-typed-ones) | implementation choice |
-| arib-mux | [Operational choices 1–20](crates/arib-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers) | **pending** TR-B14 / receiver tests (see §4) |
+| arib-mux | [Operational choices 1–30](crates/arib-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers) | **pending** TR-B14 / receiver tests (see §4) |
 | isdbt-fec | [remux: model receiver timing](crates/isdbt-fec/SPEC-NOTES.md#remux-model-receiver-timing-multiplex-frame-pattern) | partially confirmed; **pending** live slot order |
 | isdbt-fec | [remux: null TSP content](crates/isdbt-fec/SPEC-NOTES.md#remux-null-tsp-content-in-the-reproduced-ts) | convention |
 | isdbt-fec | [layer: one-byte shift](crates/isdbt-fec/SPEC-NOTES.md#layer-one-byte-shift-of-the-frame-slot-structure) | confirmed |
@@ -385,26 +392,26 @@ have no external confirmation, because none is possible from the local texts.
 | D5 | Layer C next-information I = 0 code written at B87 instead of B100 (typo) | Table 3-22 | Found by code inspection only; never exercised |
 | D6 | Receiver start-up: first output packet unusable; one "TMCC NOT OK" on frame −1 of a Rust file (row 4) | — | gr acquisition artefact; not a disagreement |
 
-### 3.3 Deviations observed in a live terrestrial broadcast capture (2026-10-07)
+### 3.3 Deviations observed in a live terrestrial broadcast capture
 
 | Finding | Clause | Source |
 |---|---|---|
-| One-seg program 0x09A8, PCR_PID 0x03FF: 46 PCRs in 10.78 s, all 45 intervals 0.231 s (> 0.1 s). This is the only error-level finding on the capture. The interval equals one Mode 3 GI 1/8 frame (231.336 ms, `isdbt-core` `frame_lengths`), i.e. one PCR per multiplex frame. B31 Part 2 §3.2.4 Table 3-5 asks for four per frame in Mode 3 on the partial-reception layer (this comparison is an inference from the two numbers) | H.222.0 §2.7.2; B31 Part 2 §3.2.4 | [arib-analyze SPEC-NOTES](crates/arib-analyze/SPEC-NOTES.md#arib-analyze-pcr-interval-measured-on-pcr-values) |
-| 217 EIT schedule events without short_event_descriptor. 207 on services 0x0829/0x082A (tables 0x50/0x51: 112 + 95) carry only an event_group_descriptor (group_type 0x1 "Event common", referencing 0x0828). 8 events in 0x58 carry only extended_event_descriptors. 2 events in 0x58 carry no descriptor. Reported as a finding, not suppressed | B10 Part 2 §6.1 Table 6-1 ("short_event_descriptor Mandatory in EIT"; footnote *2 substitution cannot be checked) | [arib-si SPEC-NOTES](crates/arib-si/SPEC-NOTES.md#arib-si-table-6-1-mandatory-descriptors-checked) |
-| SDT/EIT running_status 0 ("undefined") in all captured live stations, where Table 5-6 defines 4 = running | B10 Table 5-6 | channel-scan captures of several stations (see §3.4) |
+| The one-seg program's PCR PID: 46 PCRs in 10.78 s, all 45 intervals 0.231 s (> 0.1 s). This is the only error-level finding on the capture. The interval equals one Mode 3 GI 1/8 frame (231.336 ms, `isdbt-core` `frame_lengths`), i.e. one PCR per multiplex frame. B31 Part 2 §3.2.4 Table 3-5 asks for four per frame in Mode 3 on the partial-reception layer (this comparison is an inference from the two numbers) | H.222.0 §2.7.2; B31 Part 2 §3.2.4 | [arib-analyze SPEC-NOTES](crates/arib-analyze/SPEC-NOTES.md#arib-analyze-pcr-interval-measured-on-pcr-values) |
+| 217 EIT schedule events without short_event_descriptor. 207 on two services (tables 0x50/0x51: 112 + 95) carry only an event_group_descriptor (group_type 0x1 "Event common", referencing a third service of the same broadcaster). 8 events in 0x58 carry only extended_event_descriptors. 2 events in 0x58 carry no descriptor. Reported as a finding, not suppressed | B10 Part 2 §6.1 Table 6-1 ("short_event_descriptor Mandatory in EIT"; footnote *2 substitution cannot be checked) | [arib-si SPEC-NOTES](crates/arib-si/SPEC-NOTES.md#arib-si-table-6-1-mandatory-descriptors-checked) |
+| SDT/EIT running_status 0 ("undefined") in every live station captured during development, where Table 5-6 defines 4 = running | B10 Table 5-6 | channel-scan captures of several stations (see §3.4) |
 | video_decode_control transfer_characteristics '11' ("Undefined" in Table 6-60-1; the bits were reserved_future_use before v5) | B10 §6.2.30 | [arib-si SPEC-NOTES](crates/arib-si/SPEC-NOTES.md#arib-si-typed-field-values-values-module) |
 
-A recorder registered a relayed sample of this broadcast, so none of these
+The recorder registered a relayed sample of this broadcast, so none of these
 stops registration.
 
 ### 3.4 Receiver-imposed requirements beyond the specs (receiver compatibility notes)
 
 | Requirement | Local spec position | Evidence | Status |
 |---|---|---|---|
-| **A Sony BDZ-series Blu-ray recorder requires digital_copy_control_descriptor (0xC1) user_defined copy_control_type '01'** (0b01xx, e.g. 0b0100 = '01' + APS '00'). With '00' it refuses playback: "Unsupported signal: This program is not available". The recording_control value (copy-free vs copy-one-generation), PMT+SDT vs PMT+EIT placement, the 0xC8 value and the EIT component_type do not matter | B10 §6.2.23: "user_defined … broadcasting service provider can define it originally"; Annex F (informative) Tables F-1/F-2/F-4 give the layout (F-2: '00' Undefined, '01' Output by encoding to serial interface). Expected to be normative in TR-B14 Part 4 §21 / Part 8 §5.3.2 (not available) | Bisection table in [crates/arib-mux/SPEC-NOTES.md](crates/arib-mux/SPEC-NOTES.md#digital-copy-control-descriptor-0xc1-and-its-user_defined-bits) | confirmed on a receiver. `arib-mux` defaults to '01' + '00'. `arib ts validate` warns `si.copy_control` on '00' (`copy_control_type_00_warns`) |
-| **remote_control_key_id must not collide with local stations.** The bench uses key 9, because key 12 collides with a local station | B10 §6.2.42 gives no range; B21 §4.4.16/§5.2.17 makes no stipulation; assignments are in TR-B14 Part 7 §9.2.1 (not available) | [crates/arib-mux/SPEC-NOTES.md](crates/arib-mux/SPEC-NOTES.md#remote-control-key-0xcd-remote_control_key_id) and choice 19; `examples/bench.toml` | bench evidence; range 1..=12 and channel numbering key·10 + index are **[from knowledge]** |
+| **The recorder (a Sony BDZ-series Blu-ray recorder) requires digital_copy_control_descriptor (0xC1) user_defined copy_control_type '01'** (0b01xx, e.g. 0b0100 = '01' + APS '00'). With '00' it refuses playback: "Unsupported signal: This program is not available". The recording_control value (copy-free vs copy-one-generation), PMT+SDT vs PMT+EIT placement, the 0xC8 value and the EIT component_type do not matter | B10 §6.2.23: "user_defined … broadcasting service provider can define it originally"; Annex F (informative) Tables F-1/F-2/F-4 give the layout (F-2: '00' Undefined, '01' Output by encoding to serial interface). Expected to be normative in TR-B14 Part 4 §21 / Part 8 §5.3.2 (not available) | Bisection table in [crates/arib-mux/SPEC-NOTES.md](crates/arib-mux/SPEC-NOTES.md#digital-copy-control-descriptor-0xc1-and-its-user_defined-bits) | confirmed on a receiver. `arib-mux` defaults to '01' + '00'. `arib ts validate` warns `si.copy_control` on '00' (`copy_control_type_00_warns`) |
+| **remote_control_key_id must not collide with local stations.** If it does, the recorder's scan merges or ignores the service. The examples and `--relay` default to key 9 because the key originally tried was taken by a local station | B10 §6.2.42 gives no range; B21 §4.4.16/§5.2.17 makes no stipulation; assignments are in TR-B14 Part 7 §9.2.1 (not available) | [crates/arib-mux/SPEC-NOTES.md](crates/arib-mux/SPEC-NOTES.md#remote-control-key-0xcd-remote_control_key_id) and choice 19; `examples/bench.toml` | receiver evidence; range 1..=12 and channel numbering key·10 + index are **[from knowledge]** |
 | `[network] channels` must equal the transmit channel, because "receivers retune to the NIT frequency" | B10 §6.2.31 defines the field, not the receiver behaviour | arib-mux choice 20 | stated in the notes; no isolated test recorded |
-| running_status = 4 in our mux coincided with the BDZ recorder showing 休止中 (off air). The station value 0 was adopted. The recorder still showed 休止中 after this change, so the effect was **not isolated** | B10 Table 5-6; TR-B14 Part 4 §6.3 and §15 (not available) | bench observation; arib-mux choice 8 (SDT 0) vs choice 9 (EIT p/f 4/1) | open |
+| running_status = 4 in the SDT of `arib-mux` output coincided with the recorder showing 休止中 (off air). The value live stations send, 0, was adopted. The recorder still showed 休止中 after this change, so the effect was **not isolated** | B10 Table 5-6; TR-B14 Part 4 §6.3 and §15 (not available) | receiver observation; arib-mux choice 8 (SDT 0) vs choice 9 (EIT p/f 4/1) | open |
 
 ---
 
@@ -414,19 +421,19 @@ stops registration.
    independent check left for:
    - the TMCC (184,102) and AC (187,105) difference-set parity bit order
      (`isdbt-ofdm` "dsc", "ac");
-   - the π/4-DQPSK path and the rotation numbering inside a DQPSK group
-     (gr-isdbt has no DQPSK);
+   - the π/4-DQPSK path and the rotation numbering inside a DQPSK group,
+     if the captured broadcast uses DQPSK (gr-isdbt has no DQPSK);
    - AC content.
 
    Japanese broadcasts use partial reception, so a capture would also
    re-check the rotation numbering and the two-symbol frame alignment against
    a broadcast transmitter. No off-air ISDB-T IQ capture has been tested
-   (VERIFICATION.md "Open questions"). The live re-multiplexed slot order
+   ([VERIFICATION.md](VERIFICATION.md#open-questions)). The live re-multiplexed slot order
    (`isdbt-fec` "remux", pending) needs a tuner that exposes the null slots or
    the IIP TSP_counter. An IQ capture would let it be reconstructed after RS
    decoding.
 2. **More configurations on real receivers.** RX in this file covers only
-   C_bench. The other oracle-matrix configurations, Mode 1/2 and three
+   C_rx. The other oracle-matrix configurations, Mode 1/2 and three
    layers, have not been sent to the USB tuner or the recorder. The impairment
    behaviour (AWGN, CFO, sampling offset, multipath) was tested Rust→Rust
    only, not against the oracle.
@@ -457,23 +464,10 @@ stops registration.
      form (17), video decode control (18);
    - remote_control_key_id range and numbering (choice 19) — Part 7 §9.2.1;
    - BIT first loop / SI_parameter_descriptor content — Part 4 §31.1.
-5. **Read the B32 Parts 2/3.** The PDFs were available but not extracted
-   to `specs/`, and
-   `crates/arib-mux/SPEC-NOTES.md` still lists them as "not available".
-   Part 3 has the ARIB stream_type table (0x0F, 0x1B) and the PMT rules.
-   Part 2 has §6.3.3 "Restrictions on ADTS stream format" and Chapter 3
-   "Audio Quality Indication" (`quality_indicator`). These could replace
-   several **[from knowledge]** tags in the video, audio and PMT entries.
-   [Done 2026-10-08: extracted to `specs/`; the B32-related tags in
-   `crates/arib-mux/SPEC-NOTES.md` now cite Part 2 §5.2.1–5.2.3 (MPEG-2
-   AAC; §6.3.3 is the MPEG-4 AAC chapter), Part 2 Attachment Ch. 3 and
-   Part 3 §3.1 / §3.10 (2).] [Done 2026-10-09: the two discrepancies
-   found then are fixed — §5.2.1–5.2.3 are enforced (`adts_compliance`,
-   default `conform`, which since the walk removal passes conforming input
-   unchanged and refuses the rest;
-   `arib ts validate` `aac.*`), and quality_indicator is derived from
-   Attachment Ch. 3 Table 1 (bench → Mode 2). Still open: a receiver
-   check of the conformed bench audio (USB tuner / recorder), see §2.5.1.]
+5. **Conforming AAC audio on a real receiver.** The B32 Part 2 §5.2
+   header rules are enforced (`adts_compliance = "conform"` by default;
+   `arib ts validate` `aac.*`), but the receivers in C_rx were only shown a
+   non-conforming test file (§2.5.1).
 6. **JIS X 0208 / X 0213 / X 0221 tables** to settle the 7 `KANJI_OVERRIDES`
    cells and Plane 1/2 support (`arib-text`).
 7. **Captures with rare H.222.0/B10 features** to settle the pending
@@ -486,10 +480,3 @@ stops registration.
    - broadcast-TS IIP / dummy-byte information (B31 Part 2 Ch. 5);
    - DRCS mapping;
    - T-STD TBsys/Bsys.
-9. **Documentation consistency.**
-   - `VERIFICATION.md` says the oracle statuses went into
-     `crates/isdbt-ofdm/SPEC-NOTES.md` "including a new 'oracle deviations'
-     section". The confirmations are there, but no such section exists.
-   - `VERIFICATION.md` "Open questions" item 2 (do receivers accept
-     conformant TMCC) predates the C_bench results cited in §2 (USB tuner
-     capture, recorder registration and playback).

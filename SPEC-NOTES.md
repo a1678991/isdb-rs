@@ -1,11 +1,14 @@
 # Spec interpretation notes — index
 
-Every place where the spec text (as extracted locally into the gitignored
-`specs/`) is ambiguous,
-garbled by PDF extraction or seemingly inconsistent is recorded in the
+Every place where the specification text is ambiguous, garbled by PDF
+text extraction or seemingly inconsistent is recorded in the
 `SPEC-NOTES.md` of the crate that implements it: spec + clause, quoted
 text, the interpretation adopted, and how it is confirmed (status:
-confirmed | pending real-world check).
+confirmed | pending real-world check). Quotes are from the editions
+listed in [SPECS.md](SPECS.md) (extracted locally into the gitignored
+`specs/` directory; the specifications are not redistributed).
+[SPECS.md §3](SPECS.md#3-interpretations-and-deviations-index) lists
+every entry with its status.
 
 | Crate | Notes | Topics |
 |---|---|---|
@@ -13,7 +16,7 @@ confirmed | pending real-world check).
 | `arib-text` | [crates/arib-text/SPEC-NOTES.md](crates/arib-text/SPEC-NOTES.md) | SI initial state (G3 = Katakana), character widths, Kanji / additional-symbol Unicode mapping, DRCS/macro, control codes |
 | `arib-si` | [crates/arib-si/SPEC-NOTES.md](crates/arib-si/SPEC-NOTES.md) | Annex C time formulas, section length limits, descriptor syntax vs semantics conflicts, descriptors defined outside B10, Table 6-1 mandatory descriptors |
 | `arib-analyze` | [crates/arib-analyze/SPEC-NOTES.md](crates/arib-analyze/SPEC-NOTES.md) | severity classification, Table 5-2 transmission level vs frequency, PCR interval/accuracy, repetition time base, table_id per PID, EIT rules, cross-table identities, PES timing |
-| `arib-mux` | [crates/arib-mux/SPEC-NOTES.md](crates/arib-mux/SPEC-NOTES.md) | timing model, PCR placement, repetition intervals, section packing, NIT/SDT/EIT/BIT/TOT/CAT content, media packetisation, AAC ADTS header rules (and why the raw_data_block walk was removed), relay copy control, T-STD pacing, **receiver compatibility notes**; list of **operational choices** (not dictated by the local specs, ARIB TR-B14 unavailable) to be tested on receivers |
+| `arib-mux` | [crates/arib-mux/SPEC-NOTES.md](crates/arib-mux/SPEC-NOTES.md) | timing model, PCR placement, repetition intervals, section packing, NIT/SDT/EIT/BIT/TOT/CAT content, media packetisation, AAC ADTS header rules (the raw_data_block is not parsed), recorded-program relay (`ts-program`) and its copy control, T-STD pacing, **receiver compatibility notes**; list of **operational choices** (not dictated by the local specs, ARIB TR-B14 unavailable) to be tested on receivers |
 | `isdbt-fec` | [crates/isdbt-fec/SPEC-NOTES.md](crates/isdbt-fec/SPEC-NOTES.md) | remux model receiver, PRBS bit order and frame alignment, delay adjustment, byte-interleave alignment, convolutional taps / puncturing reset, one-frame latency contract |
 | `isdbt-ofdm` | [crates/isdbt-ofdm/SPEC-NOTES.md](crates/isdbt-ofdm/SPEC-NOTES.md) | mapping bit order and delays, DQPSK reference, time/frequency interleave indexing and carrier rotation, pilots, TMCC/AC, difference-set code bit order, frame alignment (`latency`), gr-isdbt deviations |
 
@@ -50,7 +53,9 @@ Format of an entry:
   latency / alignment contract".
 - Confirmation: gr-isdbt's TX applies the same 2-symbol advance
   (`skiphead(2)` after its frequency interleaver); its output was decoded
-  by a MyGica S270 with PER 0, and the Rust TX/RX cross-decode byte-exactly
-  with gr-isdbt in both directions in 8 configurations
-  ([VERIFICATION.md](VERIFICATION.md)). Status: confirmed via the oracle;
-  an off-air capture is still desirable.
+  by a MyGica S270 USB tuner with PER 0, the Rust TX/RX cross-decode
+  byte-exactly with gr-isdbt in both directions in 8 configurations
+  ([VERIFICATION.md](VERIFICATION.md)), and the Rust TX itself was
+  received by the same tuner and a Sony BDZ-series recorder over a
+  conducted link. Status: confirmed via the oracle and real receivers; an
+  off-air capture is still desirable.

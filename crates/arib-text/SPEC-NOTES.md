@@ -21,14 +21,15 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
 - Interpretation: no clause of the available specs states the SI initial
   state. `InitialState::Si` (default) = Table 8-2 except G3 = Katakana;
   `InitialState::Caption` = Table 8-2 exactly.
-- Confirmation: confirmed by real data. The SI strings of a live terrestrial
-  capture (2026-10-07) use G0 Kanji in GL (`40 24` …), hiragana in GR (`b7 e7` …) and alphanumerics after
+- Confirmation: confirmed by real data. The SI strings of a live
+  terrestrial capture recorded during development use G0 Kanji in GL
+  (`40 24` …), hiragana in GR (`b7 e7` …) and alphanumerics after
   bare LS1 without designating anything, and invoke G3 with LS3R and send
   katakana without designating it: audio component text `1b 7c b9 c6 ec aa`
   = ESC 07/12, then 03/9 03/6 06/12 02/10 of Table 7-6 = "ステレオ". With
   G3 = Macro those codes would be macro codes without a default statement
   (Table 7-18 Note 2), i.e. empty text. All distinct SI strings of that
-  capture (NIT/SDT/EIT, 113 at the time) decode with zero issues under this
+  capture (NIT/SDT/EIT) decode with zero issues under this
   state; `tests/synthetic.rs` `capture_si_strings` repeats the check on any
   capture named by `ISDB_RS_CAPTURE_TS`.
 

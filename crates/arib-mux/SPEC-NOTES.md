@@ -3,14 +3,19 @@
 Ground truth: the local texts in `specs/` (H.222.0 05/2006, ARIB STD-B10
 v5.13, B31 v2.2, B32 v3.11 Parts 1–3, B21 v5.12, B24). Not available
 locally: ITU-T H.262 (MPEG-2 video), ISO/IEC 13818-7 (AAC/ADTS), ARIB
-TR-B14 (terrestrial operational guidelines). [corrected 2026-10-08: B32
-Parts 2/3 were listed here as not available; their PDFs were local all
-along and are now extracted to `specs/ARIB-STD-B32-v3.11-part2.txt` /
-`part3.txt`. The entries that were tagged from knowledge for Part 2/3
-content now cite them.] Everything taken from the unavailable documents is
-marked **[from knowledge]**; everything that is a free choice is listed under
-**Operational choices** at the end so it can be tested on real receivers
-(MyGica S270, a Sony BDZ-series recorder).
+TR-B14 (terrestrial operational guidelines). Everything taken from the
+unavailable documents is marked **[from knowledge]**; everything that is a
+free choice is listed under **Operational choices** at the end so it can be
+tested on real receivers. The receivers tested so far are a MyGica S270 USB
+tuner and a Sony BDZ-series Blu-ray recorder ("the recorder" below); see
+"Receiver compatibility notes".
+
+"Bench" below means the conducted test set-up (HackRF → coax →
+attenuators → receiver, `docs/transmitting.md` in the workspace) and the
+media used on it; the "live capture" is a terrestrial broadcast capture
+recorded during development. Neither is distributed; the tests that use
+such data read it from the `ISDB_RS_*` environment variables
+(`docs/test-data.md`).
 
 Format per entry: spec + clause, quoted text, interpretation, confirmation.
 
@@ -203,8 +208,7 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
   parameter video stream defined in ISO/IEC 11172-2", "0x0F Audio stream
   defined in ISO/IEC 13818-7"; H.264 one-seg video would be "0x1B AVC video
   stream prescribed in ITU-T Rec. H.264" (`declared` streams only).
-  Agrees with the implementation. [corrected 2026-10-08: was tagged
-  "B32 Part 3 (ARIB stream types) not available".]
+  Agrees with the implementation.
 
 ## EIT component descriptors derived from the media
 - component_descriptor (§6.2.3, Table 6-5): stream_content 0x1; typed option
@@ -236,8 +240,7 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
   2/1, 2/2 and dual mono (1/0+1/0) use channel_configuration 0 with a PCE.
   Agrees with `AdtsEs::audio_mode`; channel_configuration 0 gives no
   derived audio mode (no PCE parsing), so `derived` emits no audio component
-  descriptor for it. [corrected 2026-10-08: was tagged "channel mapping from
-  ISO/IEC 13818-7, from knowledge".]
+  descriptor for it.
 - quality_indicator: B32 Part 2 Attachment (Operational Guidelines)
   Chapter 3 "Audio Quality Indication", Table 1 (printed p. 74; table
   checked against the PDF page): "00 Reserve"; "01 Mode 1 — Audio quality
@@ -276,12 +279,10 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
   reported as information, not as a warning. Coded channels come from
   channel_configuration (6 → 5; 0 / 7 undetermined, counted as 2).
 - Results: bench `a.m2a` 188.4 kbit/s stereo 48 kHz as the file is (sent
-  with `warn`; 189.1 kbit/s when `conform` still inserted crc_check) →
-  Mode 2 ('10'), the value live broadcasters sends; the live full-seg 191.7 kbit/s
-  (192 kbit/s CBR, 4096 bits/frame) signals '10' → consistent (also
-  `derived` = Mode 2). the live one-seg EIT carries no audio component
-  descriptor. [corrected 2026-10-09: the default was '01' (Mode 1), which
-  claimed Mode 1 for the 189 kbit/s bench audio.] Status: interpretation;
+  with `warn`) → Mode 2 ('10'), the value live broadcasters send; the live
+  full-seg audio, 191.7 kbit/s (192 kbit/s CBR, 4096 bits/frame), signals
+  '10' → consistent (also `derived` = Mode 2). The live one-seg EIT
+  carries no audio component descriptor. Status: interpretation;
   confirmed against live broadcasters for the full-seg service.
 
 ## MPEG-2 video access units and timestamps [H.262 from knowledge]
@@ -304,17 +305,13 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
 - Open GOP at the file start/loop seam: broken_link is set in the first GOP
   header when closed_gop = 0 (`mark_broken_link`), so decoders drop the leading
   B-pictures that would reference the previous loop's last anchor.
-  [corrected 2026-10-09: group_of_pictures_header is time_code (25 bits:
-  drop_frame_flag, hours 5, minutes 6, marker, seconds 6, pictures 6), then
-  closed_gop, broken_link **[H.262 §6.2.2.6 from knowledge]**, i.e. byte 3
-  after the start code holds the last time_code bit (0x80), closed_gop
-  (0x40) and broken_link (0x20). The parser read closed_gop from 0x80 and
-  `mark_broken_link` wrote 0x40 — on an open GOP it set closed_gop instead
-  of broken_link (telling the decoder the leading B-pictures need no
-  previous anchor). Fixed (`video::GOP_CLOSED` / `GOP_BROKEN_LINK`, test
-  `gop_flags_follow_the_25_bit_time_code`); the synthetic test media now
-  code closed_gop as 0x40. The bench `v63p.m2v` output may differ at the
-  loop seam; receiver check pending.]
+  group_of_pictures_header is time_code (25 bits: drop_frame_flag, hours
+  5, minutes 6, marker, seconds 6, pictures 6), then closed_gop,
+  broken_link **[H.262 §6.2.2.6 from knowledge]**, i.e. byte 3 after the
+  start code holds the last time_code bit (0x80), closed_gop (0x40) and
+  broken_link (0x20) (`video::GOP_CLOSED` / `GOP_BROKEN_LINK`, test
+  `gop_flags_follow_the_25_bit_time_code`). A receiver check of an
+  open-GOP loop seam is pending.
 - PES_packet_length 0 is used only for AUs over 65 535 bytes (H.222.0
   §2.4.3.7 allows it for video in TS; B32 Part 3 §3.1 note 3: "the value is
   ‘0’ when the payload of PES packet is video elementary stream, and the
@@ -324,7 +321,7 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
 Code: `src/adts/` (`mod.rs` header, CRC-16, `buffer_channels`; `b32.rs`
 header rules / pass-or-refuse gate / fullness model / quality modes),
 `src/audio.rs` (`AdtsEs::load`, `AdtsCompliance`, `SilentFrame`).
-Header-level only — see "AAC ADTS: raw_data_block walk removed" below.
+Header-level only — see "AAC ADTS: raw_data_block not parsed" below.
 
 **What comes from ISO/IEC 13818-7 (not available locally) — [from
 knowledge], kept minimal:** the adts_fixed_header / adts_variable_header
@@ -413,14 +410,16 @@ unchanged without checks (reproducing old streams on receivers).
 - Interpretation: "headers" = the 56 bits of adts_fixed_header +
   adts_variable_header (crc_check excluded); an element's protected bits
   start **after its 3-bit id_syn_ele** (at element_instance_tag); fill
-  elements are not protected. This reading was settled while the walker
-  existed: of 16 combinations tried, only it reproduced the transmitted
-  crc_check of every frame of a terrestrial capture (504 full-seg, 249
-  one-seg frames; omitting the zero padding failed exactly the frames
+  elements are not protected. This reading was settled during
+  development: of 16 combinations tried, only it reproduced the
+  transmitted crc_check of every frame of the live capture (504 full-seg,
+  249 one-seg frames; omitting the zero padding failed exactly the frames
   with a short CPE), and libfdk-aac (which verifies ADTS CRCs; FFmpeg's
   native decoder does not) accepted frames written under it and rejected
-  single-byte corruptions. Those tests were removed with the walker; no
-  in-tree test re-checks the reading against third-party data now.
+  single-byte corruptions. That check needs a raw_data_block parser, which
+  the workspace does not include (see "AAC ADTS: raw_data_block not
+  parsed"), so no in-tree test re-checks the reading against third-party
+  data.
 - `SilentFrame` (protection_absent '0' by default): crc_check over the 56
   header bits, then the SCE (from element_instance_tag, 4 + 22 bits) zero
   padded to 192, or the CPE (4 + 1 + 2 × 22 bits) zero padded to 192 and
@@ -445,9 +444,8 @@ unchanged without checks (reproducing old streams on receivers).
   (48 kbit/s at 24 kHz, one-seg), prediction error within the truncation
   (−0.25…+0.5 and −0.75…0 fullness units over 504 / 249 frames); their
   maxima 128 = (12288 − 4096)/64 and 160 = (12288 − 2048)/64 are the
-  model's caps (observed with the former walker tests; the header-only
-  recurrence check now runs in `capture_all_frames_conform` when the
-  untracked capture is present).
+  model's caps. The header-only recurrence check runs in
+  `capture_all_frames_conform` when `ISDB_RS_CAPTURE_TS` names a capture.
 - Choice of R: the smallest integer R ≥ the mean frame length for which r
   never goes negative on the periodic trajectory (start full, repeat the
   pass until it repeats, so the values continue across the media loop).
@@ -463,8 +461,8 @@ unchanged without checks (reproducing old streams on receivers).
   values 1..=128, never 0x7FF. A stream with a single frame larger than
   6144·NCC bits has no model (`constant_rate`). Status: model confirmed
   on live data; the R > mean choice for VBR input is an interpretation.
-- Use: the model is **informative only** since the raw_data_block walk
-  was removed (see the next section). `b32::stream_fullness` computes it
+- Use: the model is **informative only**, because the raw_data_block is
+  not parsed (see the next section). `b32::stream_fullness` computes it
   from the headers (frame lengths as they would be with crc_check; NCC
   from channel_configuration via `adts::buffer_channels`: 1–5 → 1–5,
   6 (5.1) → 5 because the LFE has no buffer; 0 needs a PCE and 7 is
@@ -482,11 +480,9 @@ unchanged without checks (reproducing old streams on receivers).
 - `a.m2a` (470 frames, ID 1, LC, 48 kHz, channel_configuration 2):
   violates §5.2.2 (1) protection_absent and §5.2.2 (2)
   adts_buffer_fullness in all 470 frames (the header rules see nothing
-  else). `conform` refuses it; `warn` sends it unchanged (the BDZ-series recorder
-  played it unchanged, bench 2026-10-08). While the walker existed,
-  `conform` inserted crc_check and wrote the model's fullness; that
-  rewritten stream is no longer produced.
-- Terrestrial capture (untracked): full-seg (504 frames, LC 48 kHz
+  else). `conform` refuses it; `warn` sends it unchanged (the recorder
+  played it unchanged).
+- Live capture: full-seg (504 frames, LC 48 kHz
   stereo, 192 kbit/s CBR, crc_check in every frame, fullness 37..=128) and
   one-seg (249 frames, 24 kHz, 48 kbit/s CBR, crc_check, fullness
   85..=160) violate none of the header rules and pass `conform`
@@ -495,44 +491,39 @@ unchanged without checks (reproducing old streams on receivers).
   audio PES gets random_access_indicator (an audio frame start is an
   elementary stream access point, H.222.0 §2.4.3.5).
 
-## AAC ADTS: raw_data_block walk removed
-- **What was removed** (2026-10-09): the raw_data_block syntax walker
-  (`adts/syntax.rs`: element list, individual_channel_stream, section /
-  scale factor / spectral data decoding by Huffman code); the ISO/IEC
-  13818-7 Annex A Huffman codebooks and scalefactor-band (swb_offset)
-  tables it needed (`adts/tables.rs`); CRC verification of input frames
-  (`aac.crc`) and crc_check insertion into input frames (`frame_crc`);
-  the header rewrite of `conform` (crc_check insertion, adts_buffer_fullness
-  from the model, ID '0' → '1'); the rules that read raw_data_block
-  (coupling channel, element order, PCE fields, SBR fill, LC tool set,
-  syntax); the libfdk-aac CRC oracle test program; and a committed fixture
-  of broadcast ADTS frames used as CRC known answers.
-- **Why**: provenance and licence. The Annex A tables were a mechanical
-  transcription of FFmpeg's `libavcodec/aactab.c` (LGPL); this crate is
-  Apache-2.0 only. ARIB STD-B32 does not reproduce those tables, and
-  ISO/IEC 13818-7 itself is not available locally, so no independent
-  source for them exists in the project. The broadcast-derived fixture
-  was removed for the same publication reason.
-- **Restoring it** needs ISO/IEC 13818-7 (2006 or later; paid, from ISO
-  or a national body) obtained legally, and the Annex A tables and the
-  raw_data_block syntax transcribed independently from that text — not
-  from FFmpeg, libfdk-aac, faad2 or another implementation.
-- **Capability changes**:
-  - `adts_compliance = "conform"` refuses protection_absent '1' input
-    (it used to insert crc_check) and refuses protected input that would
-    need a header rewrite — adts_buffer_fullness 0x7FF, ID '0' (it used
-    to rewrite the header and recompute crc_check). Conforming input
-    still passes byte-identically; the fullness model is still computed
-    and reported. `"warn"` and `"pass-through"` are unchanged.
+## AAC ADTS: raw_data_block not parsed
+- **Scope**: only the 56-bit ADTS header is parsed and checked. The
+  raw_data_block (element list, individual_channel_stream, section / scale
+  factor / spectral data with their Huffman codes) is not parsed, so the
+  crate cannot verify crc_check values of input frames, cannot insert
+  crc_check into protection_absent '1' input, cannot rewrite a protected
+  header (adts_buffer_fullness, ID) without invalidating its crc_check,
+  and does not check the B32 Part 2 rules that read the raw_data_block
+  (coupling channel, element order, PCE fields, SBR fill, LC tool set).
+- **Why**: parsing needs the ISO/IEC 13818-7 Annex A Huffman codebooks and
+  scalefactor-band (swb_offset) tables. ARIB STD-B32 does not reproduce
+  them and ISO/IEC 13818-7 is not available to the project, so there is
+  no independent source for them. Copying them from another
+  implementation (FFmpeg, libfdk-aac, faad2, …) is not acceptable: the
+  specifications are the only ground truth, and those sources are under
+  other licences.
+- **Adding it** needs ISO/IEC 13818-7 (2006 or later; sold by ISO or a
+  national body) obtained legally, and the Annex A tables and the
+  raw_data_block syntax transcribed independently from that text.
+- **Consequences**:
+  - `adts_compliance = "conform"` passes header-conforming input
+    byte-identically and refuses protection_absent '1' input and
+    protected input that would need a header rewrite (adts_buffer_fullness
+    0x7FF, ID '0'). The fullness model is computed and reported, never
+    written. `"warn"` sends unchanged and reports; `"pass-through"` sends
+    unchanged unchecked.
   - The B32 Part 2 checks are header-level only, in the multiplexer and
-    in the analyzer (`arib ts validate`: `aac.crc`, `aac.coupling_channel`,
-    `aac.element_order`, `aac.pce`, `aac.sbr_fill`, `aac.lc_tools`,
-    `aac.syntax` are gone; crc_check presence is still counted).
+    in the analyzer (`arib ts validate` `aac.*`; crc_check presence is
+    counted, its value is not verified).
   - Coded channels (for the quality mode and the fullness model) come
-    from channel_configuration instead of the elements; implicit SBR is
-    no longer detected (the analyzer treats a quality_indicator
-    contradiction that disappears at 2 × fs as information when
-    sampling_frequency_index is 0x6–0x8).
+    from channel_configuration; implicit SBR is not detected (the analyzer
+    treats a quality_indicator contradiction that disappears at 2 × fs as
+    information when sampling_frequency_index is 0x6–0x8).
   - `SilentFrame` computes its own crc_check from its known layout and
     defaults to protection_absent '0' with a constant-rate fullness, so
     synthetic streams pass `conform` without a rewrite.
@@ -557,18 +548,18 @@ unchanged without checks (reproducing old streams on receivers).
   arrived before its DTS and its first byte ≤ 1 s before it.
 - Not modelled: TBsys/Bsys for PSI (bursts are at most a few packets).
 - Underflow tolerance: an access unit underflows when less than its bytes
-  minus half a byte has reached EBn/Bn at its decoding time. [changed
-  2026-10-09 from 1e-3 byte: the f64 running sums accumulate ≈ 0.01 byte of
-  rounding after 4 GB (a 30-minute relay reported a 0.012-byte "underflow");
-  buffer contents are whole bytes.]
+  minus half a byte has reached EBn/Bn at its decoding time (buffer
+  contents are whole bytes; the f64 running sums accumulate ≈ 0.01 byte of
+  rounding after 4 GB, which a tighter tolerance reported as an
+  "underflow" in a 30-minute relay).
 
 ## Rebroadcasting a recorded program (`kind = "ts-program"`, `src/relay.rs`)
 - Purpose: a recorded program of another network (bench: a BS
   recording, network_id 0x0004 "BS Digital", PMT with
   conditional_access_descriptor → ECM PID 0x0121 and
   digital_copy_control_descriptor) cannot be registered by a terrestrial
-  receiver when relayed as is (the BDZ-series recorder registers a TS from its
-  terrestrial NIT, bench 2026-10-08). Only
+  receiver when relayed as is (the recorder registers a TS from its
+  terrestrial NIT). Only
   the program's elementary streams are taken; every PSI/SI table is this
   multiplexer's (terrestrial NIT/SDT/EIT/TOT/BIT, PMT with typed copy
   control, CAT from the configuration — empty).
@@ -597,8 +588,7 @@ unchanged without checks (reproducing old streams on receivers).
   "Digital copy control descriptor" and the receiver compatibility notes),
   maximum_bitrate is not carried over. `--copy copy-free |
   copy-one-generation | copy-never` (or a Table 6-39 name in the TOML)
-  overrides it explicitly. Earlier versions defaulted to copy-free, which
-  downgraded the signalling of copy-one-generation recordings. ES descriptors are decoded with
+  overrides it explicitly. ES descriptors are decoded with
   `arib_si::Descriptor` and carried over by type when they describe the
   stream itself: stream_identifier 0x52 (B10 §6.2.16; its component_tag
   becomes the stream's typed `component_tag`, also used by the EIT
@@ -700,8 +690,7 @@ unchanged without checks (reproducing old streams on receivers).
   recording of a partial TS keeps a PAT entry per service but packets of
   one). Otherwise — and when a selection matches nothing or several — the
   error lists every program: number, SDT name and service_type, PMT PID,
-  ES summary by role, ES packet count. [Operational; replaces "first PAT
-  entry", 2026-10-09.]
+  ES summary by role, ES packet count. [Operational.]
 - Roles (`relay::classify`, first matching rule):
   1. stream_type (H.222.0 Table 2-34; B32 Part 3 §3.10 (2) "Table: Stream
      type identifier"): 0x01/0x02/0x1B/0x24 video, 0x03/0x04/0x0F/0x11
@@ -810,14 +799,14 @@ unchanged without checks (reproducing old streams on receivers).
   coded ⌈rate × 4⌉, 0 < rate ≤ 63.75. component_control (per-component loop)
   is rejected with `in_pmt` ("When this descriptor is transmitted by PMT,
   component control flag should always be '0'").
-- Live terrestrial capture (2026-10-07): PMT program loop and every EIT event
+- Live capture: PMT program loop and every EIT event
   `c1 02 a4 42` (copy-one-generation, user_defined 0b0100, maximum_bitrate
   66 = 16.5 Mbit/s); SDT `c1 01 84` (same, no bitrate); one-seg PMT
   `c1 02 a8 02` (user_defined 0b1000 = copy_control_type '10', 0.5 Mbit/s).
-- **Receiver evidence — Sony BDZ-series recorder bisection, bench 2026-10-08** (ch44,
-  remote key 9; each line one change against a playing control that matched
-  the live capture in all three values: 0xC8 = 0x47, EIT component 0xB3, 0xC1
-  copy-one-generation + user_defined 0b0100 in PMT + SDT):
+- **Receiver evidence — bisection on a Sony BDZ-series recorder** (conducted
+  link, remote key 9; each line one change against a playing control that
+  matched the live capture in all three values: 0xC8 = 0x47, EIT component
+  0xB3, 0xC1 copy-one-generation + user_defined 0b0100 in PMT + SDT):
 
   | Variant | Result |
   |---|---|
@@ -841,8 +830,9 @@ unchanged without checks (reproducing old streams on receivers).
   1..=12, the one-touch keys of terrestrial receivers, and receivers number
   the TS's services as 3-digit channels key·10 + service index **[TR-B14
   practice, not available locally; from knowledge]**. Out-of-range values only
-  via `[nit] byte_patches`. Bench default 9 (key 12 collides with a local
-  station on the bench).
+  via `[nit] byte_patches`. The examples and `--relay` use 9; choose a key
+  that no station receivable at the receiver's location uses (a collision
+  was observed on the bench, see "Receiver compatibility notes").
 
 ## Raw descriptors versus typed ones
 - A raw descriptor (`descriptors`, `program_descriptors`, `sdt_descriptors`,
@@ -863,7 +853,7 @@ reception, A 1 seg QPSK 2/3 I=2, B 12 seg 64QAM 3/4 I=2). They are
 requirements of those receivers, not of the specifications, and are
 encoded as defaults or validator warnings:
 
-- **A Sony BDZ-series Blu-ray recorder requires digital_copy_control
+- **The Sony BDZ-series recorder requires digital_copy_control
   user_defined copy_control_type '01'** (B10 Annex F layout; e.g. 0b0100).
   With '00' it refuses playback ("Unsupported signal"). The recording
   mode, the placement (PMT + SDT or PMT + EIT), the 0xC8 value and the EIT
@@ -882,9 +872,9 @@ encoded as defaults or validator warnings:
 
 ## Operational choices (not dictated by the local specs — test on receivers)
 
-**[live]** marks a value that follows live broadcaster practice (terrestrial
-capture 2026-10-07); **[BDZ]** one the Sony BDZ-series recorder bisection of
-2026-10-08 showed to matter.
+**[live]** marks a value that follows live broadcaster practice (the live
+capture); **[recorder]** one the bisection on the Sony BDZ-series recorder
+showed to matter.
 
 1. PCR packet positions: layer-local offset 0, 1, … per service, at
    `N/pcr_per_frame` spacing; dedicated PCR PIDs (bench 0x01FF, 0x01FE).
@@ -904,10 +894,10 @@ capture 2026-10-07); **[BDZ]** one the Sony BDZ-series recorder bisection of
 10. Digital copy control / content availability descriptors: only when
     configured; placement flags (PMT program loop, EIT events, SDT; default
     PMT + EIT). user_defined default copy_control_type '01' + APS '00'
-    (0b0100) **[live] [BDZ: '00' refused]**. bench.toml: copy-one-generation
+    (0b0100) **[live] [recorder: '00' refused]**. bench.toml: copy-one-generation
     **[live]** in PMT + SDT (the live capture also carries it in the EIT, with
     maximum_bitrate 16.5 Mbit/s in PMT and EIT; PMT + EIT also plays on the
-    BDZ). bench-minimal.toml: copy-free in PMT + EIT.
+    recorder). bench-minimal.toml: copy-free in PMT + EIT.
 11. One-seg service in the example: service_type 0xC0, PMT PID 0x1FC8,
     component tags 0x81/0x83, declared without media; full-seg component
     tags 0x00 (video) / 0x10 (audio).
@@ -923,16 +913,16 @@ capture 2026-10-07); **[BDZ]** one the Sony BDZ-series recorder bisection of
 14. RAI on video PES that start with a sequence header; on every audio PES.
 15. Component descriptor "16:9 without pan vectors" when derived; bench.toml
     sets 0xB3 `1080i-16:9-without-pan-vectors` explicitly **[live]** (the
-    bench media declares 4:3; irrelevant to the BDZ). Audio quality_indicator
+    bench media declares 4:3; irrelevant to the recorder). Audio quality_indicator
     derived from B32 Part 2 Attachment Ch. 3 Table 1 with the conservative
     256 kbit/s Mode 1 threshold (bench → '10' Mode 2 **[live]**: the live
-    capture sends '10'); was '01' until 2026-10-09.
+    capture sends '10').
 16. The 1/7 MHz frequency code derived from the UHF channel plan formula.
 17. Null packets: PID 0x1FFF, payload 0xFF, CC 0.
 18. Video decode control: derived by default; bench.toml sends the live byte
-    0x47 explicitly **[live]** (irrelevant to the BDZ).
-19. remote_control_key_id 1..=12 only; bench 9 (TR-B14 practice; key 12 is
-    taken by a local station on the bench).
+    0x47 explicitly **[live]** (irrelevant to the recorder).
+19. remote_control_key_id 1..=12 only (TR-B14 practice); the examples use 9,
+    a key no local station used on the bench.
 20. `[network] channels` must equal the transmit channel (receivers retune to
     the NIT frequency); the example keeps 27.
 21. `ts-program` selection defaults (video, audio, PES private data;

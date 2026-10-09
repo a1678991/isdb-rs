@@ -5,7 +5,7 @@ MPEG-2 transport-stream layer of the workspace: bit I/O, CRC_32, the
 packets, the section envelope, PAT/CAT/PMT, section and PES
 packetisation/reassembly, continuity checking and a sync-acquiring packet
 reader. It is the base every ARIB SI, analysis and multiplexing crate builds
-on, and it implements only what the ISDB-T bench needs from H.222.0.
+on, and it implements what ISDB-T needs from H.222.0.
 
 ## Spec scope
 
@@ -33,8 +33,8 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 
 - Depends on: nothing in the workspace (only `thiserror`).
 - Used by: `arib-si` (section envelope and `Error` for every SI table),
-  `arib-analyze`, `arib-mux`. `arib-cli` declares it as a dependency but its
-  sources reach it only through `arib-analyze` / `arib-mux`. The PHY crates
+  `arib-analyze`, `arib-mux`; `arib-cli` reaches it only through
+  `arib-analyze` / `arib-mux`. The PHY crates
   (`isdbt-*`) do not use it; they carry TS packets as plain `[u8; 188]`.
 
 ## Key types and entry points
@@ -111,14 +111,16 @@ assert_eq!(back.encode().unwrap(), bytes); // encode(decode(x)) == x
 | Test | What it proves | Data |
 |---|---|---|
 | `tests/prop.rs` | `prop_*`: packet, PES, PAT/CAT/PMT `decode(encode(x)) == x` for generated structures; arbitrary packet / PES / PSI body bytes re-encode byte-identically; sections packetised (packed or one-per-packet, any start CC) reassemble to the same sections; PES packetised (with/without PCR) reassembles | synthetic (proptest; regressions in `prop.proptest-regressions`) |
-| `tests/capture.rs` | opt-in, over a descrambled live ISDB-T capture: every packet decodes and re-encodes byte-identically; no sync loss or skipped bytes; every long section on PIDs 0x0000, 0x0001, 0x0010–0x0014, 0x0024 and the PMT PIDs has CRC_32 residue 0; PAT/CAT/PMT and every PES on the PMT's elementary PIDs round-trip byte-identically; spec violations are printed, not asserted | the file named by the environment variable `ISDB_RS_CAPTURE_TS` (no capture is committed); prints `SKIP` and passes when the variable is unset or the file is missing |
+| `tests/capture.rs` | opt-in, over a live ISDB-T capture whose packets are not scrambled: every packet decodes and re-encodes byte-identically; no sync loss or skipped bytes; every long section on PIDs 0x0000, 0x0001, 0x0010–0x0014, 0x0024 and the PMT PIDs has CRC_32 residue 0; PAT/CAT/PMT and every PES on the PMT's elementary PIDs round-trip byte-identically; spec violations are printed, not asserted | the file named by the environment variable `ISDB_RS_CAPTURE_TS` (no capture is committed); prints `SKIP` and passes when the variable is unset or the file is missing |
 | in-crate `#[cfg(test)]` (`crc`, `cc`, `demux`, `packet`, `pes`, `pcr`, `psi`, `reader`, `section`, `packetize`, `bits`, `descriptor`, `stats`) | spec vectors named after the table/clause (`spec_table2_2_header_layout`, `spec_table2_30_pat_layout`, `spec_2_4_3_3_*` continuity rules incl. duplicates and the PCR exception, `spec_table2_21_*` PES fields); CRC check value, zero residue and table vs bitwise; section header split across packets, TEI / pointer_field discards; reader format autodetection behind garbage, resync after corruption; packetiser layouts at boundary lengths; PCR/90 kHz wrap helpers | synthetic |
 
 Run: `cargo test -p arib-ts`; the real-data test with
 `ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test -p arib-ts --test capture -- --nocapture`
-(prints its statistics and violations). On a live terrestrial capture
-(2026-10-07, 120 091 packets) it found no sync loss, 825 sections with valid
-CRC_32 and byte-identical PAT/CAT/PMT and PES round trips.
+(prints its statistics and violations; obtaining a capture:
+[docs/test-data.md](../../docs/test-data.md)). During development, on a
+live terrestrial capture of 120 091 packets, it found no sync loss, 825
+sections with valid CRC_32 and byte-identical PAT/CAT/PMT and PES round
+trips.
 
 ## Known limitations
 
@@ -140,4 +142,4 @@ CRC_32 and byte-identical PAT/CAT/PMT and PES round trips.
 - [SPEC-NOTES.md](SPEC-NOTES.md) — interpretations with quoted spec text and
   confirmation status.
 - Workspace [README](../../README.md) — ground truth, verification levels,
-  conventions.
+  conventions; [docs/architecture.md](../../docs/architecture.md).

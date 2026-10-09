@@ -20,7 +20,7 @@ interpretations it adopts.  Texts: `specs/ITU-T-H.222.0-2006.txt`,
   Appendix guidelines, and timing estimates; **info** = observations.  No
   finding is suppressed because live broadcasts show it; live data decides
   only the classification text in the report.
-- Confirmation: a live terrestrial capture (2026-10-07) produces no error from
+- Confirmation: a live terrestrial capture recorded during development produces no error from
   these classes except the PCR interval below.  Status: interpretation.
 
 ## arib-analyze: B10 Table 5-2 transmission level vs frequency
@@ -75,8 +75,8 @@ interpretations it adopts.  Texts: `specs/ITU-T-H.222.0-2006.txt`,
   stream's time base (eq. 2-4), and packet positions are not time in a
   capture with null packets stripped.  Jumps > 5 s or backwards are counted
   as discontinuities, not intervals.  **error**.
-- Live finding (terrestrial capture, 2026-10-07): the partial-reception
-  program (one-seg, PCR_PID 0x03FF): 46 PCRs in 10.78 s, every interval 0.231
+- Live finding (a terrestrial capture recorded during development): the
+  partial-reception (one-seg) program: 46 PCRs in 10.78 s, every interval 0.231
   s → reported as error (x45). Status: confirmed on live data; kept as error
   (the text is a "shall").
 
@@ -187,13 +187,13 @@ interpretations it adopts.  Texts: `specs/ITU-T-H.222.0-2006.txt`,
   (Informative)" / "Example of service provider define bit of digital copy
   control descriptor"; Table F-2 lists copy_control_type 00 as "Undefined".
 - Interpretation: B10 gives no normative rule on these bits, so the check
-  is **not** derived from a "shall".  It encodes bench evidence: the Sony
+  is **not** derived from a "shall".  It encodes receiver evidence: a Sony
   BDZ-series recorder refuses ("Unsupported signal") a service whose 0xC1
   user_defined carries copy_control_type '00' in the Annex F layout and
   plays it with '01' (user_defined 0b0100, what live broadcasters send);
   see the bisection table in
-  [arib-mux SPEC-NOTES](../arib-mux/SPEC-NOTES.md#digital-copy-control-descriptor-0xc1-and-its-user_defined-bits)
-  (bench 2026-10-08).  The ARIB
+  [arib-mux SPEC-NOTES](../arib-mux/SPEC-NOTES.md#digital-copy-control-descriptor-0xc1-and-its-user_defined-bits).
+  The ARIB
   operational guidelines that may make the layout normative (TR-B14/TR-B15)
   are not available locally.  Severity: **warning** (receiver
   compatibility, not conformance), one finding per table location, for
@@ -242,10 +242,10 @@ interpretations it adopts.  Texts: `specs/ITU-T-H.222.0-2006.txt`,
   6-44. The rules, quotes and their 13818-7 dependencies are listed once,
   in `crates/arib-mux/SPEC-NOTES.md` "AAC ADTS" (the rule set
   `arib_mux::adts::b32::Rule` is shared, with clause and quoted text).
-  Header-level only: the raw_data_block is not walked, so the crc_check
+  Header-level only: the raw_data_block is not parsed, so the crc_check
   value (Appendix 1), coupling channel, element order, PCE, SBR fill and
   LC tool rules are not checked (`arib-mux` SPEC-NOTES "AAC ADTS:
-  raw_data_block walk removed"); `aac.summary` counts the frames that
+  raw_data_block not parsed"); `aac.summary` counts the frames that
   carry a crc_check.
 - Reassembly: PES payload bytes of the PID are concatenated from the first
   PES start; a frame is accepted only when the next syncword follows it
@@ -274,11 +274,11 @@ interpretations it adopts.  Texts: `specs/ITU-T-H.222.0-2006.txt`,
   at sampling_frequency_index 0x6–0x8, where §5.2.3 (4)(a) permits it, a
   contradiction that disappears at 2 × fs is reported as **info** naming
   the ambiguity.
-- Live findings (a live terrestrial capture, 2026-10-07): PID 0x0110 504 frames LC 48 kHz
-  stereo 191.7 kbit/s (192 kbit/s CBR), crc_check in every frame,
-  fullness 37..=128; PID 0x0383 249 frames LC 24 kHz (SBR seen by the
-  former raw_data_block walk), 48.1 kbit/s, crc_check, fullness 85..=160
-  — no violation (crc_check values were verified while the walk existed;
-  now only their presence is counted); EIT quality_indicator '10'
+- Live findings (a live terrestrial capture recorded during development):
+  the full-seg audio PID, 504 frames LC 48 kHz stereo 191.7 kbit/s
+  (192 kbit/s CBR), crc_check in every frame, fullness 37..=128; the
+  one-seg audio PID, 249 frames LC 24 kHz (with SBR), 48.1 kbit/s,
+  crc_check, fullness 85..=160 — no violation (crc_check presence counted;
+  values not verified, see above); EIT quality_indicator '10'
   (Mode 2) for the full-seg services, consistent; the one-seg EIT has no
   audio component descriptor. Status: confirmed on live data.

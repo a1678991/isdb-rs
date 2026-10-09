@@ -1,13 +1,60 @@
-# PHY verification against the gr-isdbt oracle
+# Verification
+
+Every layer of `isdb-rs` has to be checkable without trusting the
+implementation itself. The evidence is organised as a ladder; each rung
+checks something the rung below cannot:
+
+1. **Spec vectors.** Values printed in the specifications (check values,
+   tables, PRBS initial states, constellation points, frame lengths, TSP
+   counts) are asserted directly in tests named after the table
+   (`spec_table_3_3`, `spec_fig_3_15_qpsk`, …).
+2. **Lossless round trips.** Every decoder keeps every bit (reserved bits
+   included), and `encode(decode(x)) == x` is property-tested (`prop_*`,
+   proptest) on generated structures and arbitrary byte input, and run over
+   synthetic multiplexes and, optionally, over your own capture.
+3. **Inverse pairs and software loopback.** Each TX stage has its RX inverse
+   tested as an identity (interleavers, mappers, codes), and the whole PHY
+   runs TX → channel impairments (AWGN, CFO, sample offset, echo) → RX with
+   a byte-exact comparison (`isdbt-ofdm`/`isdbt-phy` loopback tests,
+   `arib loopback`).
+4. **Independent oracle.** gr-isdbt (GNU Radio) is run as a separate program
+   and cross-decodes with the Rust chain in both directions
+   ([below](#phy-differential-test-against-gr-isdbt)). It detects
+   disagreement; the specification decides who is right.
+5. **Real receivers.** Consumer receivers accept the Rust transmitter over a
+   conducted link ([below](#real-receivers)).
+
+Coverage per clause, with the rung that confirms it, is in
+[SPECS.md §2](SPECS.md#2-coverage-matrix).
+
+## Running the tests
+
+```sh
+cargo test --workspace --release        # everything that needs no data or hardware
+cargo test --workspace --doc            # doctests, including every crate README
+# heavy tests, ignored by default
+cargo test --release -p isdbt-ofdm --test loopback -- --ignored --nocapture
+cargo test --release -p isdbt-fec viterbi_throughput -- --ignored --nocapture
+cargo test --release -p arib-cli --test cli -- --ignored mux_ts_producer_throughput --nocapture
+```
+
+Tests that read real data (a terrestrial capture, a recording, media files)
+take the path from an `ISDB_RS_*` environment variable and print `SKIP`
+and pass when it is unset, so a fresh checkout passes without data. The
+variables, what each enables and how to obtain your own capture legally
+are in [docs/test-data.md](docs/test-data.md).
+
+## PHY differential test against gr-isdbt
 
 Differential test of the Rust ISDB-T PHY (`isdbt-fec`, `isdbt-ofdm`, driven
 through `isdbt-phy`) against gr-isdbt (GNU Radio 3.10.9.2, gr-isdbt commit
-`56b2556`, container `arib-sdr`). Per README level 5, gr-isdbt is an
-oracle only: it can show that the two implementations disagree, and ARIB
-STD-B31 v2.2 decides which one is right. Run date: 2026-10-08, Rust tree
-after the Part 2 Figs. 3-8/3-9 alignment change (`isdbt-ofdm/src/latency.rs`).
+`56b2556`, run in a container named `arib-sdr`). gr-isdbt is an oracle only
+(rung 4 above): it can show that the two implementations disagree, and ARIB
+STD-B31 v2.2 decides which one is right. No gr-isdbt code is included in
+this repository; the scripts in [`oracle/`](oracle/) import it at run time.
+The results below are from the run of 2026-10-08.
 
-## Result
+### Result
 
 - **Both directions are byte-exact in every configuration tested.** That is
   9 runs (8 parameter sets: Modes 1/2/3; GI 1/4, 1/8, 1/16, 1/32; QPSK,
@@ -20,20 +67,18 @@ after the Part 2 Figs. 3-8/3-9 alignment change (`isdbt-ofdm/src/latency.rs`).
   of RMS) on every data carrier, SP, CP and band-edge carrier. The only
   carriers that differ are the TMCC and AC carriers, and every differing
   bit is explained by one of the gr-isdbt deviations D1–D3 below.
-- **No discrepancy in the data path, so no Rust code was changed.** The four
-  disagreements found (D1–D4) are all on the gr-isdbt side, as the B31
-  text shows. Receivers do not need any of them to decode (see each
-  entry).
-- **Pending items in SPEC-NOTES are now settled by real-receiver evidence
-  (through the oracle).** These were the carrier-rotation numbering, the
-  2-symbol frame alignment, and the frame alignment of energy dispersal
-  and puncturing. gr-isdbt's output was decoded by a consumer USB tuner
-  (MyGica S270) with PER 0 over a conducted link (Mode 3, GI 1/4, partial
-  reception, A 1 seg QPSK 1/2, B 12 seg 64QAM 3/4). Row `m3g4p_bench`
-  below shows that the Rust chain is byte-exact and carrier-identical with
-  that gr-isdbt chain.
+- **No discrepancy in the data path.** The four disagreements found
+  (D1–D4) are all on the gr-isdbt side, as the B31 text shows. Receivers do
+  not need any of them to decode (see each entry).
+- **Ambiguous spec readings settled.** The carrier-rotation numbering, the
+  2-symbol frame alignment and the frame alignment of energy dispersal and
+  puncturing agree with gr-isdbt, whose output was in turn decoded by a
+  consumer USB tuner (MyGica S270) with PER 0 over a conducted link (Mode 3,
+  GI 1/4, partial reception, A 1 seg QPSK 1/2, B 12 seg 64QAM 3/4). Row
+  `m3g4p_bench` below shows that the Rust chain is byte-exact and
+  carrier-identical with that gr-isdbt configuration.
 
-## Matrix
+### Matrix
 
 Layer spec: `segs, modulation, rate, I` (I is the interleaving length; the
 Rust tools take the TMCC index). "gr→Rust" means gr-isdbt TX
@@ -45,8 +90,9 @@ uncorrectable words summed over the valid frames. MER is the minimum over
 those frames (noise-free float32, so it measures numerical precision only).
 "Carriers ≠" is the `iq_compare.py` result.
 
-Inputs: row 0 used packets of a live terrestrial capture (`a_in.ts`,
-`b_in.ts`, 20 frames; not distributed). Rows 1–8 use synthetic TS with a
+Inputs: row 0 used packets of a live terrestrial capture recorded during
+development (`a_in.ts`, `b_in.ts`, 20 frames; not distributed — the
+reproduction below takes your own per-layer files). Rows 1–8 use synthetic TS with a
 unique packet index in each payload (`run_matrix.py`).
 
 | # | config | layers | gr→Rust: valid fr., packets (mm) | RS (A; B; C) | MER dB | TMCC parity | Rust→gr: packets (mm), gr TMCC | Rust→Rust packets (mm) | carriers ≠ |
@@ -105,11 +151,11 @@ Coverage gaps. These combinations were not tested:
 - Channel impairments (noise, CFO, timing offset, multipath). All runs are
   noise-free.
 
-## Discrepancies
+### Discrepancies
 
 All four are on the gr-isdbt side, and none required a change to Rust.
 
-### D1. TMCC segment-type bits B17–B19 on coherent segments
+#### D1. TMCC segment-type bits B17–B19 on coherent segments
 - gr-isdbt: `tmcc_encoder_impl.cc` sets B17, B18 and B19 to 1 on every
   segment ("Our implementation supports coherent modulation only"). That
   is the code for differential modulation.
@@ -123,7 +169,7 @@ All four are on the gr-isdbt side, and none required a change to Rust.
   value, since it detects segment kinds from the pilots. The USB tuner decoded
   gr-isdbt output, so that receiver ignores these bits. No change.
 
-### D2. AC carriers unmodulated in gr-isdbt
+#### D2. AC carriers unmodulated in gr-isdbt
 - gr-isdbt: `pilot_signals_impl.cc` writes the pilot value W_i on every AC
   carrier in every symbol. Differentially, that is information 0
   throughout.
@@ -135,7 +181,7 @@ All four are on the gr-isdbt side, and none required a change to Rust.
   as stuffing bits."
 - Resolution: Rust is correct. No change.
 
-### D3. TMCC B67 (next-information partial-reception flag)
+#### D3. TMCC B67 (next-information partial-reception flag)
 - gr-isdbt sends B67 = 0 while its current flag B27 = 1. Its next-
   information layer fields (B68–B106) are copies of the current ones.
 - Rust repeats the current information, so B67 = B27.
@@ -147,7 +193,7 @@ All four are on the gr-isdbt side, and none required a change to Rust.
   yet each side's parity checks on the other side's frames. The two
   difference-set encoders therefore agree. No change.
 
-### D4. Time-interleaving delay adjustment for I = 0
+#### D4. Time-interleaving delay adjustment for I = 0
 - gr-isdbt: in `time_interleaver_impl.cc`, the buffer for carrier i holds
   `I·m_i + 1 + sync_delay` with `sync_delay = 204 − ((95·I) % 204)`. That
   is a delay adjustment of 204 symbols (one whole frame) when I = 0. For
@@ -167,7 +213,7 @@ All four are on the gr-isdbt side, and none required a change to Rust.
 - Resolution: Rust is correct. No change. `iq_compare.py --seg-offsets`
   compensates for this.
 
-### Oracle limitations observed (not disagreements)
+#### Oracle limitations observed (not disagreements)
 - D5. A typo in gr-isdbt's TMCC encoder writes layer C's next-information
   I = 0 code at B87 (layer B's next I field) instead of B100. This was
   found by code inspection and not exercised: no test used layer C with
@@ -184,27 +230,25 @@ All four are on the gr-isdbt side, and none required a change to Rust.
     sync-word alternation. With the first or first two frames cut off, gr
     reports OK from its first frame. This is a gr acquisition artefact.
 
-## Agreements that settle pending SPEC-NOTES items
+### Agreements that settle pending SPEC-NOTES items
 
 | Item (crate SPEC-NOTES) | Evidence | New status |
 |---|---|---|
 | Carrier rotation numbering (`isdbt-ofdm`, "AMBIGUOUS") | gr-isdbt rotates by the absolute data-segment number (`rotated[(c − segment) mod nc]`, segment 0..12). The Rust default matches byte-exactly; `GroupRelative` fails every word. The S270 decoded gr-isdbt's partial-reception layer B. | confirmed (coherent groups) |
-| 2-symbol frame alignment, Part 2 Fig. 3-8 (`isdbt-ofdm` latency) | gr-isdbt's `examples/tx_demo.grc` and the earlier gr-isdbt bench transmitter use `skiphead(2)` after the frequency interleaver. The S270 decoded that output with PER 0. Rust agrees in every row. | confirmed |
+| 2-symbol frame alignment, Part 2 Fig. 3-8 (`isdbt-ofdm` latency) | gr-isdbt's `examples/tx_demo.grc` and a gr-isdbt transmitter flowgraph built from it use `skiphead(2)` after the frequency interleaver. The S270 decoded that output with PER 0. Rust agrees in every row. | confirmed |
 | Energy dispersal / puncturing reset at the OFDM frame (`isdbt-fec`) | gr-isdbt's receiver resets the PRBS at the TMCC-derived `frame_begin` tag. Cross-decoding is byte-exact in both directions. | confirmed |
 | Mapping bit order b0.. (`isdbt-ofdm`) | Carrier-identical modulator output for QPSK, 16QAM and 64QAM. | confirmed (DQPSK not covered) |
 | TMCC difference-set code bit order (`isdbt-ofdm`) | Parity agrees with gr-isdbt both ways, on two different information words. | agrees with an independent implementation; off-air check still pending |
 
-These statuses were recorded in
+These statuses are recorded in
 [`crates/isdbt-ofdm/SPEC-NOTES.md`](crates/isdbt-ofdm/SPEC-NOTES.md)
 (including the ["oracle (gr-isdbt) deviations"](crates/isdbt-ofdm/SPEC-NOTES.md#oracle-gr-isdbt-deviations)
 section, which summarises D1–D6) and
-[`crates/isdbt-fec/SPEC-NOTES.md`](crates/isdbt-fec/SPEC-NOTES.md). No code was changed. `cargo test
---release -p isdbt-fec -p isdbt-ofdm` passes, and clippy on both crates is
-clean.
+[`crates/isdbt-fec/SPEC-NOTES.md`](crates/isdbt-fec/SPEC-NOTES.md).
 
-## Reproduction
+### Reproduction
 
-The oracle tools are in `oracle/`. All data goes to `target/oracle-matrix/`
+The oracle tools are in [`oracle/`](oracle/). All data goes to `target/oracle-matrix/`
 (override with `ISDB_RS_ORACLE_OUT`, which must be inside the repository so
 that the container sees it):
 
@@ -249,27 +293,39 @@ cd ../../..
 python3 oracle/run_matrix.py            # or: python3 oracle/run_matrix.py m3g4p_bench
 ```
 
+## Real receivers
+
+The Rust transmitter (`arib tx --mux-config`, spec-conformant TMCC and
+modulated AC, multiplex from `arib-mux`) was received over a conducted link
+(HackRF One → coax → attenuators → receiver):
+
+- **MyGica S270** (USB ISDB-T tuner): decoded with PER 0; `arib ts validate`
+  of its 12 s capture reported 0 errors (5 warnings).
+- **A Sony BDZ-series recorder**: a channel scan registered the service and
+  the recorder played it, once the digital copy control descriptor (0xC1)
+  carried copy_control_type '01' in its user_defined bits. With '00' the
+  recorder refuses playback. `arib-mux` therefore defaults to '01' and
+  `arib ts validate` warns (`si.copy_control`) on '00'.
+
+Only one configuration was shown to these receivers: Mode 3, GI 1/8, partial
+reception, layer A 1 segment QPSK 2/3 TI 2, layer B 12 segments 64QAM 3/4
+TI 2. This also shows that these receivers accept the spec-conformant TMCC
+bits where gr-isdbt deviates (D1, D3). The receiver-specific findings and how
+to reproduce the setup are in
+[docs/transmitting.md](docs/transmitting.md#receiver-compatibility-notes)
+and in the `arib-mux`
+[receiver compatibility notes](crates/arib-mux/SPEC-NOTES.md#receiver-compatibility-notes).
+
 ## Open questions
 
-- An off-air capture of a real broadcaster is still the only independent
-  check for the TMCC/AC parity bit order and for the DQPSK path. Japanese
-  broadcasts use partial reception, so a capture would also re-confirm the
-  rotation numbering. HackRF receive was out of scope here, and no off-air
-  ISDB-T IQ capture has been tested.
-- D3 (B67) and D1 (B17–B19) mean the bench transmitter that real receivers
-  accepted was not TMCC-conformant. Those receivers have therefore not yet
-  been shown to accept the spec-conformant TMCC that Rust sends. Expect
-  that to be fine, but the first Rust over-the-cable test settles it.
-  **Update 2026-10-08: settled for one configuration.** The Rust TX
-  (`arib tx --mux-config`, spec-conformant TMCC and modulated AC) was
-  received over a conducted link by a consumer USB tuner (MyGica S270; PER
-  0; `arib ts validate` of its capture: 0 errors) and was registered by a
-  channel scan and played on a Sony BDZ-series Blu-ray recorder (see the
-  receiver compatibility notes in
-  [`crates/arib-mux/SPEC-NOTES.md`](crates/arib-mux/SPEC-NOTES.md)).
-  Remaining caveat: only Mode 3, GI 1/8, partial reception, layer A 1 seg
-  QPSK 2/3 TI 2, layer B 12 seg 64QAM 3/4 TI 2 was tested on receivers.
-  Other modes, GIs, DQPSK, three-layer and non-partial-reception TMCC have
-  not been shown to a real receiver.
-- Behaviour under impairments (AWGN, CFO, sample-rate offset, multipath)
-  was not differentially tested.
+- **No off-air ISDB-T IQ capture has been tested.** An off-air capture of a
+  real broadcaster is the only independent check left for the TMCC/AC
+  difference-set parity bit order, and for the DQPSK path if the
+  broadcaster uses DQPSK (gr-isdbt has none). Japanese broadcasts use partial reception, so a capture would also
+  re-confirm the rotation numbering and the two-symbol frame alignment
+  against a broadcast transmitter.
+- **Receiver coverage.** Other modes, guard intervals, DQPSK, three-layer
+  and non-partial-reception TMCC have not been shown to a real receiver.
+- **Impairments.** Behaviour under AWGN, CFO, sample-rate offset and
+  multipath was tested Rust → Rust only (software loopback), not
+  differentially against the oracle.

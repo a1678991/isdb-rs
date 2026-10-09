@@ -1,254 +1,296 @@
-# isdb-rs — ARIB ISDB-T transport and transmission in Rust
+# isdb-rs
 
-> **Legal and safety notice.** Radiating on broadcast (UHF TV) frequencies
-> requires a licence — in Japan under the Radio Act (電波法), elsewhere under
-> local law. The transmit path (`arib tx --hackrf`) is intended for shielded
-> or conducted lab setups only: coax with attenuators straight into the
-> receiver, or a shielded enclosure; it radiates only with `--rf-enable`.
-> This project does **not** descramble: it has no B-CAS / conditional-access
-> support and refuses scrambled input (transport_scrambling_control ≠ '00').
-> You are responsible for having the rights to any content you transmit or
-> relay. The software is provided under the Apache License 2.0, without
-> warranty (see [LICENSE](LICENSE)).
+A from-the-specification Rust implementation of Japanese digital terrestrial
+television (ISDB-T): MPEG-2 transport stream and ARIB service information
+codecs, a service multiplexer, a transport-stream analyzer, and the ARIB
+STD-B31 modulator and demodulator, with HackRF I/O. Both directions run on
+the same library — services → TS → OFDM baseband → radio, and radio → OFDM
+→ TS → analysis — so every layer can be checked against its inverse, against
+the specifications' own numbers, and against independent receivers. It is
+meant for receiver testing, protocol study and broadcast-engineering
+experiments on a conducted bench. Only ISDB-T is implemented today; the name
+leaves room for ISDB-S and ISDB-S3.
 
-A from-the-spec implementation of the ISDB-T chain: MPEG-2 TS / ARIB SI
-generation and analysis, and the ARIB STD-B31 modulator/demodulator, so both
-directions (TX: services → IQ → HackRF; RX: IQ → TS → analysis) run on one
-verifiable library. Only ISDB-T is implemented today; the name leaves room
-for ISDB-S / ISDB-S3.
+> [!WARNING]
+> **Legal and RF safety notice**
+>
+> - **A licence is required to transmit.** Radiating on broadcast (UHF TV)
+>   frequencies requires a radio station licence — in Japan under the Radio
+>   Act (電波法), elsewhere under local law. Transmitting without one is
+>   illegal and can disrupt television reception for everyone nearby.
+> - **Conducted or shielded use only.** `arib tx --hackrf` is intended for
+>   lab set-ups in which nothing is radiated: coax from the HackRF through
+>   attenuators straight into the receiver, or a shielded enclosure. No
+>   antenna. It radiates only with `--rf-enable`; without it (or with
+>   `--dry-run`) it prints the RF settings and exits before opening the
+>   device. See [docs/transmitting.md](docs/transmitting.md).
+> - **No descrambling.** There is no B-CAS / conditional-access support, and
+>   scrambled input (transport_scrambling_control ≠ '00') is refused.
+> - **Content rights.** You are responsible for having the rights to any
+>   content you transmit or relay, including recordings.
+> - The software is provided under the Apache License 2.0 **without
+>   warranty** (see [LICENSE](LICENSE)).
 
-## Ground truth
+## Features
 
-The **specifications are the only ground truth**. Other implementations
-(e.g. GNU Radio gr-isdbt) are *not* references: they are prior art whose
-behaviour may be wrong, and they are used only as independent oracles, run
-as separate programs in differential tests once the spec implementation
-exists (a disagreement is resolved by reading the spec, never by copying the
-oracle). No code or tables of other implementations are included.
-
-| Spec | Scope here | Local text extraction (not distributed) |
-|---|---|---|
-| ITU-T H.222.0 (05/2006) \| ISO/IEC 13818-1 | TS packets, adaptation field, PCR, PES, sections, PAT/PMT/CAT, CRC_32 | `specs/ITU-T-H.222.0-2006.txt` |
-| ARIB STD-B10 v5.13 | SI tables (NIT, SDT, EIT, TOT/TDT, BIT, …), descriptors, time coding | `specs/ARIB-STD-B10-v5.13.txt` |
-| ARIB STD-B24 v6.4 Vol.1 Part 2 Ch.7 | 8-unit character coding of SI strings | `specs/ARIB-STD-B24-v6.4-vol1.txt` |
-| ARIB STD-B32 v3.11 Part 1 | video/audio coding constraints, stream types | `specs/ARIB-STD-B32-v3.11-part1.txt` |
-| ARIB STD-B32 v3.11 Part 2 | MPEG-2 AAC restrictions, audio quality_indicator | `specs/ARIB-STD-B32-v3.11-part2.txt` |
-| ARIB STD-B32 v3.11 Part 3 | PES stream_id, PMT stream type identifier table | `specs/ARIB-STD-B32-v3.11-part3.txt` |
-| ARIB STD-B31 v2.2 | ISDB-T transmission: remux, FEC, interleaving, mapping, OFDM frame, TMCC/AC | `specs/ARIB-STD-B31-v2.2.txt` |
-| ARIB STD-B21 v5.12 | receiver behaviour (scan, SI use) | `specs/ARIB-STD-B21-v5.12.txt` |
-
-The specifications are not part of this repository (they are copyrighted
-by their publishers). Download the PDFs from ARIB / ITU (URLs in
-[`SPECS.md`](SPECS.md)) and, if you want greppable text, extract them into
-the gitignored `specs/` directory with `pdftotext -layout <pdf>
-specs/<name>.txt`. Clause/table numbers in code comments refer to these
-editions.
-
-Interpretations of ambiguous or garbled spec text are recorded, with the
-quoted text, the reasoning and the confirmation status, in each crate's
-`crates/<crate>/SPEC-NOTES.md`. The top-level [`SPEC-NOTES.md`](SPEC-NOTES.md)
-is an index of those files plus the decisions that span crates (frame
-alignment).
+- **TS and PSI** (`arib-ts`, ITU-T H.222.0): packets, adaptation field, PCR,
+  PES, section assembly and packetisation, PAT/CAT/PMT, continuity
+  tracking, a resynchronising reader for 188/192/204-byte packets.
+- **ARIB SI** (`arib-si`, ARIB STD-B10): NIT, BAT, SDT, EIT, TDT, TOT, RST,
+  ST, PCAT, BIT, NBIT, LDT and the B10 descriptors as typed, *lossless*
+  codecs (every reserved bit is kept, so `encode(decode(x)) == x`), MJD/BCD
+  time, and a separate conformance checker.
+- **ARIB text** (`arib-text`, ARIB STD-B24): the 8-unit character coding of
+  SI strings — decode to Unicode with every unrepresentable code reported,
+  and encode back.
+- **Multiplexer** (`arib-mux`): a TOML service description (network,
+  services, events, SI tables, experiment overrides) plus MPEG-2 video and
+  AAC ADTS files → a constant-rate multiplex paced to the OFDM frame, with
+  an H.222.0 T-STD buffer model. **TS relay**: rebroadcast one program of a
+  recorded TS (e.g. a satellite recording) as a terrestrial service with
+  its own PSI/SI; the stream roles and PIDs are detected from the recording.
+- **Analyzer** (`arib-analyze`): inspect, validate (every finding cites the
+  clause it comes from), table/field-level diff of two captures, and edits
+  that keep the TS valid (null a PID, remove/replace/insert sections, typed
+  field mutation).
+- **ISDB-T PHY** (`isdbt-core`, `isdbt-fec`, `isdbt-ofdm`, `isdbt-phy`,
+  ARIB STD-B31): Modes 1–3, all guard intervals, up to three hierarchical
+  layers with partial reception, DQPSK/QPSK/16QAM/64QAM, all code rates and
+  time-interleave lengths, TMCC and AC. The receiver does synchronisation,
+  CFO and timing-drift correction, channel estimation, TMCC decoding,
+  soft-decision Viterbi and RS decoding, and reproduces the 13-segment TS.
+- **I/O** (`hackrf`, `arib-cli`): IQ files (cf32 for GNU Radio, cs8 for
+  `hackrf_transfer`) and HackRF One streaming; one `arib` binary with
+  `tx`, `rx`, `loopback`, `mux` and `ts` commands.
 
 ## Crates
-
-Each crate has a README (spec scope, position in the stack, entry points
-with a doctested example, verification, known limitations).
 
 | Crate | Spec | Scope |
 |---|---|---|
 | [`arib-ts`](crates/arib-ts/README.md) | H.222.0 | bit I/O, CRC_32, TS packet / adaptation field / PCR, PES, section assembly and packetisation, PAT/PMT/CAT, TS reader |
-| [`arib-text`](crates/arib-text/README.md) | B24 Vol.1 Pt.2 Ch.7 | ARIB 8-unit string decode/encode |
+| [`arib-text`](crates/arib-text/README.md) | B24 Vol. 1 Part 2 Ch. 7 | ARIB 8-unit string decode/encode |
 | [`arib-si`](crates/arib-si/README.md) | B10 | SI tables, descriptors, MJD/BCD time; lossless typed codecs plus conformance checks |
-| [`arib-analyze`](crates/arib-analyze/README.md) | H.222.0, B10 | TS inspection, spec validation with clause citations, table/field diff of two captures, experiment editing |
-| [`arib-mux`](crates/arib-mux/README.md) | H.222.0, B10, B31 §3.2 and Part 2 §3.2, B32 Pt.1 | service multiplexer: PSI/SI generation, MPEG-2 video / AAC packetisation, rebroadcast of a recorded program (`ts-program`), CBR output paced to the OFDM frame, layer capacities |
-| [`isdbt-core`](crates/isdbt-core/README.md) | B31 §2–3 tables | modes, guard intervals, layer parameters, derived rates |
-| [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS re-multiplex (model receiver), RS(204,188), energy dispersal, delay adjustment, byte interleaving, convolutional code / Viterbi |
-| [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | bit interleaving and mapping/demapping, layer combining, time/frequency interleaving, OFDM frame (SP/CP/TMCC/AC), IFFT/GI, receiver synchronisation and equalisation |
-| [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | TX/RX pipelines: TS packets ↔ complex baseband, IQ file formats |
-| [`hackrf`](crates/hackrf/README.md) | — | minimal safe wrapper over the system libhackrf for TX/RX streaming (FFI) |
-| [`arib-cli`](crates/arib-cli/README.md) | — | the `arib` binary: `tx`, `rx`, `loopback`, `mux`, `ts` |
+| [`arib-analyze`](crates/arib-analyze/README.md) | H.222.0, B10, B32 Part 2 | TS inspection, validation with clause citations, diff of two captures, editing |
+| [`arib-mux`](crates/arib-mux/README.md) | H.222.0, B10, B31, B32 | service multiplexer: PSI/SI generation, MPEG-2 video / AAC packetisation, recorded-program relay, output paced to the OFDM frame |
+| [`isdbt-core`](crates/isdbt-core/README.md) | B31 tables | modes, guard intervals, layer parameters, derived rates and delays |
+| [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS re-multiplexing, RS(204,188), energy dispersal, byte interleaving, convolutional code / Viterbi |
+| [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | mapping, interleaving, OFDM frame with SP/CP/TMCC/AC, IFFT/GI; receiver synchronisation and equalisation |
+| [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | TX/RX pipelines (TS packets ⇄ complex baseband), IQ file formats |
+| [`hackrf`](crates/hackrf/README.md) | — | minimal safe wrapper over the system libhackrf (FFI) |
+| [`arib-cli`](crates/arib-cli/README.md) | — | the `arib` binary |
 
-[`SPECS.md`](SPECS.md) is the inventory of the specifications and of which
-clauses each crate covers.
+How they fit together, the frame/latency contract and the data flow:
+[docs/architecture.md](docs/architecture.md).
 
-## Using it
+## Quick start
 
-```
-cargo build --release -p arib-cli      # → target/release/arib
-```
+Tested on Linux with Rust ≥ 1.88 (edition 2024). The `arib` binary links
+the system `libhackrf` dynamically, so it must be installed even if you
+never attach a radio:
 
-Commands, options and the end-to-end bench recipe (mux → loopback → HackRF
-TX → RX → validate/diff against a capture) are in
-[`crates/arib-cli/README.md`](crates/arib-cli/README.md).
+| System | Package |
+|---|---|
+| Arch Linux | `hackrf` |
+| Debian / Ubuntu | `libhackrf-dev` |
+| Fedora | `hackrf-devel` |
 
-## Architecture
-
-```text
-                       ┌──────────── arib-ts / arib-text / arib-si ────────────┐
-                       │  lossless codecs: packets, PES, sections, SI, strings │
-                       └───────▲──────────────────────────────────────────▲────┘
-                               │ builds with                 decodes with │
-TX                             │                                          │
- TOML + media ─► arib-mux::Multiplexer::next_frame()                      │
-   (or per-layer TS files / PID split / synthetic, in arib-cli)           │
-        │  [Vec<Packet>; 3]: exactly tsp_per_frame 188-byte TSPs per layer│
-        ▼                                                                 │
- isdbt-phy::Transmitter::transmit_frame   (one call = one OFDM frame)     │
-        │  isdbt-fec::LayerEncoder  §3.3–3.8                              │
-        │    RS(204,188) → energy dispersal → delay adj. → byte interleave│
-        │    → convolutional code + puncturing          ⇒ coded bits (u8) │
-        │  isdbt-ofdm::Modulator    §3.9–3.16                             │
-        │    delay adj. + bit interleave + mapping → layer combining      │
-        │    → time / frequency interleave → SP/CP/TMCC/AC frame          │
-        │    → IFFT + guard interval                   ⇒ C32 @ 512/63 MHz │
-        ▼                                                                 │
- IQ file (cf32 / cs8 via isdbt-phy::iq)  or  hackrf::TxStream (cs8)       │
-                                                                          │
-RX                                                                        │
- IQ file  or  hackrf::RxStream                                            │
-        │                                                                 │
- isdbt-phy::Receiver / PipelinedReceiver::push(samples)                   │
-        │  isdbt-ofdm::Demodulator: sync, CFO, channel estimation,        │
-        │    TMCC decode → Params, inverse chain   ⇒ DemodFrame (f32 LLRs)│
-        │  isdbt-phy::FrameDecoder → isdbt-fec::LayerDecoder:             │
-        │    depuncture + Viterbi → byte deinterleave → descramble        │
-        │    → RS decode                           ⇒ per-layer TSPs       │
-        │  isdbt-fec::MultiplexPattern::reproduce_ts  (§3.2.2 model       │
-        │    receiver: multiplex frame with null TSPs in unused slots)    │
-        ▼                                                                 │
- RxFrame { tx_frame, valid, layers, ts, tmcc, metrics, rs }               │
-        ▼                                                                 │
- TS file ─► arib-analyze (scan → inspect / validate / diff / edit) ───────┘
+```sh
+git clone https://github.com/a1678991/isdb-rs && cd isdb-rs
+cargo build --release -p arib-cli          # → target/release/arib
+export PATH="$PWD/target/release:$PATH"
 ```
 
-`isdbt-core` (parameters and spec tables) is used by every PHY crate;
-`arib-cli` wires all of the above into the `arib` binary (threads, pacing,
-radio control, reports).
+Everything below works without a radio and without any captured data.
 
-**Frame and latency contract.** Everything is clocked by the OFDM frame
-(204 symbols). Per frame and active layer, the multiplexer delivers and the
-transmitter consumes exactly `tsp_per_frame` TSPs (Table 3-3 × segments;
-the §3.2 multiplex frame for the 13-segment TS). The modulator holds one
-frame (Part 2 Fig. 3-8 one-frame buffer, the 2-symbol bit-interleave
-advance): the call that receives input frame `k+1` emits on-air frame `k`,
-so the first emitted frame is on-air frame −1. The demodulator outputs the
-LLRs of data frame `m − L` with on-air frame `m`, where
-`L = isdbt_ofdm::latency::latency_frames` (the largest Table 3-12 delay of
-the active layers; layers with less time interleaving are aligned by a
-receiver FIFO), and the FEC pair adds `isdbt_fec::layer::LATENCY_FRAMES` = 1
-(§3.6 delay adjustment + byte interleaving), so `RxFrame::tx_frame =
-frame_number − L − 1` and `valid` turns true once every deinterleaver is
-primed. Energy dispersal and puncturing restart at every OFDM frame. On the
-TX side, `Transmitter::preroll` discards `1 + L + 1` frames so the first
-emitted frame is ordinary OFDM, `lead_frames` (2) null frames let a receiver
-that locks one frame late still output every packet, and `flush_frames`
-(`1 + L + 1 + 1`) null frames after the data push the last packets through
-the interleavers and the receiver's channel-estimation look-ahead. Details:
-[SPEC-NOTES.md](SPEC-NOTES.md) (cross-crate decision) and the
-`isdbt_ofdm::latency` module docs.
+Software loopback — modulate deterministic test packets, demodulate them
+again and compare every packet:
+
+```sh
+arib loopback --synthetic                  # ends with "[loopback] PASS"
+arib loopback --synthetic --frames 8 --snr-db 22 --cfo-carriers 2.3
+```
+
+Print the annotated example multiplex configuration (it references media
+files you supply; see [docs/mux-config.md](docs/mux-config.md)):
+
+```sh
+arib mux --print-config-example > bench.toml
+```
+
+Generate a transport stream from a media-free configuration and analyse it:
+
+```sh
+cat > test.toml <<'EOF'
+[network]
+network_id = 0x7FE0
+name = "テスト"
+area_code = 0x8D5
+remote_control_key_id = 9
+channels = [27]
+
+[transport]
+transport_stream_id = 0x7FE0
+
+[clock]
+source = "fixed"
+start = "2026-01-01T12:00:00"
+
+[[service]]
+service_id = 0x0400
+name = "テストHD"
+provider = "テスト"
+layer = "B"
+pmt_pid = 0x01F0
+pcr_pid = 0x01FF
+copy_control = { recording_control = "copy-free" }
+
+  [[service.stream]]
+  kind = "declared"          # listed in the PMT, no media needed
+  pid = 0x0111
+  stream_type = 0x02
+  component_tag = 0x00
+
+  [[service.event]]
+  event_id = 0x0001
+  start_offset_s = -600
+  duration = "01:00:00"
+  name = "試験放送"
+EOF
+arib mux -c test.toml --seconds 5 --out-ts test.ts
+arib ts inspect test.ts                    # PIDs, PCR, programs, decoded SI
+arib ts validate test.ts                   # 0 errors (one warning: the declared stream has no packets)
+```
+
+Then put it through the PHY in files and back:
+
+```sh
+arib tx --mux-config test.toml --iq test.cf32 --seconds 3   # ≈ 195 MB of cf32
+arib rx --iq test.cf32 --out rx.ts --json
+arib ts diff test.ts rx.ts                 # every section identical
+```
+
+Next steps: [docs/getting-started.md](docs/getting-started.md) (a longer
+walk-through), [docs/transmitting.md](docs/transmitting.md) (bench set-up,
+HackRF, relaying a recording), [docs/receiving.md](docs/receiving.md),
+[docs/analysis.md](docs/analysis.md), [docs/mux-config.md](docs/mux-config.md),
+[docs/test-data.md](docs/test-data.md), [docs/glossary.md](docs/glossary.md).
 
 ## How it is verified
 
-Every layer must be verifiable without trusting the implementation itself:
+The specifications are the only ground truth. Other implementations are
+never copied; they serve only as independent oracles, and a disagreement
+is settled by reading the spec. Every layer is checked without trusting the
+implementation itself:
 
-1. **Spec vectors** — values printed in the specs (check values, tables,
-   PRBS initial states, constellation points, frame lengths, TSP counts) are
-   asserted directly in tests that cite the table.
-2. **Lossless round trips** — decoders keep every bit (reserved bits
-   included); `encode(decode(x)) == x` is property-tested (proptest) and run
-   over synthetic multiplexes and (optionally) over every section of a real
-   capture (during development, all 144 distinct SI sections of a live
-   terrestrial capture decoded and re-encoded byte-identically).
-3. **Inverse pairs** — each TX stage has its RX inverse tested as an
-   identity (interleavers, mappers, codes), and the whole PHY is tested as
-   TX → channel impairments → RX, byte-exact.
-4. **Real-world data** — live ISDB-T transport-stream captures must
-   parse with zero errors (optional tests, pointed at your own capture with
-   environment variables; see below); consumer receivers (a USB tuner and a
-   Blu-ray recorder, see the receiver compatibility notes in
-   [`crates/arib-mux/SPEC-NOTES.md`](crates/arib-mux/SPEC-NOTES.md)) must
-   accept our TX over a conducted link. (No off-air ISDB-T IQ capture has
-   been tested yet; see the open questions in
-   [`VERIFICATION.md`](VERIFICATION.md).)
-5. **Independent oracles** — gr-isdbt (TX↔RX cross-decoding) and ffprobe
-   (media) are run differentially as external programs. They detect
-   disagreement; the spec decides who is right.
+1. **Spec vectors** — numbers printed in the specs (check values, tables,
+   PRBS states, constellation points, frame lengths, TSP counts) are
+   asserted directly in tests named after the table.
+2. **Lossless round trips** — decoders keep every bit, and
+   `encode(decode(x)) == x` is property-tested and run over synthetic
+   multiplexes and, optionally, over every section of your own capture.
+3. **Inverse pairs** — each TX stage is tested against its RX inverse, and
+   the whole PHY as TX → impairments (noise, CFO, timing offset, echo) → RX,
+   byte-exact.
+4. **Differential oracle** — the Rust TX and RX cross-decode byte-exactly
+   with GNU Radio's gr-isdbt in both directions in 8 parameter sets; every
+   place where the two differ is a gr-isdbt deviation from B31.
+5. **Real receivers** — over a conducted link, a MyGica S270 USB tuner
+   decoded the Rust TX with zero packet errors, and a Sony BDZ-series
+   recorder registered and played the service.
 
-The gr-isdbt differential results (both directions byte-exact in 8
-configurations, and the gr-isdbt deviations from B31 found on the way) are in
-[`VERIFICATION.md`](VERIFICATION.md).
+Results, reproduction steps and open questions:
+[VERIFICATION.md](VERIFICATION.md). Field *values* (reserved bits, allowed
+table_id per PID, repetition rates) are checked by validators kept
+separate from the lossless codecs, so non-conforming captures can still be
+decoded, edited and re-encoded.
 
-Conformance of field *values* (reserved bits = '1', allowed table_id per
-PID, repetition rates) lives in validators, separately from the lossless
-codecs, so captures that violate the spec can still be decoded and edited.
+## Specifications
+
+| Spec | Used for |
+|---|---|
+| ITU-T H.222.0 (05/2006) \| ISO/IEC 13818-1 | transport stream, PES, PSI, T-STD |
+| ARIB STD-B10 v5.13 | service information |
+| ARIB STD-B24 v6.4 Vol. 1 | 8-unit character coding |
+| ARIB STD-B31 v2.2 | ISDB-T transmission |
+| ARIB STD-B32 v3.11 Parts 1–3 | video/audio coding constraints, stream types |
+
+The specification PDFs are **not** redistributed here (they are
+copyrighted). ITU-T recommendations and the English translations of the
+ARIB standards are free downloads; [SPECS.md](SPECS.md) lists the URLs,
+the SHA-256 hashes of the editions used, how to extract greppable text into
+the gitignored `specs/` directory, which clauses each crate implements and
+how each is confirmed. Clause and table numbers in code comments refer to
+these editions. Where the text is ambiguous or garbled, the reading adopted
+is recorded with the quoted text in the crates' `SPEC-NOTES.md`
+([index](SPEC-NOTES.md)).
+
+## Status and limitations
+
+The library and CLI generate, transmit, receive and analyse ISDB-T end to
+end, but some parts have had less independent checking than others:
+
+- **One receiver configuration.** Real receivers have only been shown Mode
+  3, GI 1/8, partial reception, layer A 1 segment QPSK 2/3, layer B 12
+  segments 64QAM 3/4 (time-interleave index 2), on two receivers. Other
+  modes and layouts are verified by the oracle and loopback only.
+- **No off-air capture yet.** No IQ capture of a real broadcaster has been
+  decoded. The TMCC/AC parity bit order agrees with gr-isdbt but is not
+  settled by the spec text alone.
+- **DQPSK, AC content, the emergency-alarm flag and parameter switching**
+  are verified by self-consistent loopback only (gr-isdbt implements none
+  of them).
+- **ARIB TR-B14** (terrestrial operational guidelines) is not available to
+  the project, so operational values (PCR positions, SI layer placement,
+  remote-control key range, PID plan, …) are documented choices, listed in
+  the [arib-mux notes](crates/arib-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers).
+- **AAC is checked at the header level only.** ADTS headers are checked
+  against ARIB STD-B32 Part 2; crc_check values are neither verified nor
+  inserted, because parsing the raw_data_block needs ISO/IEC 13818-7, which
+  the project does not have. Non-conforming AAC is refused by default.
+- **Media**: MPEG-2 video and AAC ADTS files only; H.264 one-seg streams
+  can be declared in the PMT but are not packetised.
+- **Not implemented**: duplicate packets for a PID on two layers, the
+  broadcast-TS information packet (IIP), SFN synchronisation, data
+  broadcasting (BML/DSM-CC), DRCS glyphs, ISDB-T<sub>SB</sub>.
+- **Radio**: HackRF One only. The demodulator runs at about 1.4× real time
+  on a Ryzen 9 7950X, so live reception needs a fast machine.
+
+## Roadmap
+
+- Decode an off-air ISDB-T IQ capture (TMCC/AC parity order, slot order of
+  the re-multiplexed TS) and test more configurations and receivers.
+- Replace operational choices with TR-B14 values where they can be
+  confirmed.
+- AAC raw_data_block parsing (crc_check verification) once it can be
+  written from ISO/IEC 13818-7 itself; H.264 one-seg packetisation.
+- ISDB-S (ARIB STD-B20) and ISDB-S3 (ARIB STD-B44) transmission, reusing
+  the TS/SI crates — not started.
 
 ## Development
 
-Toolchain: Rust ≥ 1.88, edition 2024 (`Cargo.toml`). The dev profile
-builds the `isdbt-*` crates and all dependencies with `opt-level = 3`
-(`Cargo.toml`): unoptimised, the modulator reaches only ≈ 0.2× real time
-and a HackRF fed by `cargo run -p arib-cli -- tx …` underruns ≈ 75 % of its
-USB buffers (details in `crates/arib-cli/README.md`). The `hackrf` crate
-links the system `libhackrf` dynamically (`crates/hackrf/build.rs`; Arch
-package `hackrf`, Debian/Ubuntu `libhackrf-dev`), so the library must be
-installed to link `arib` and the `hackrf` tests/examples even when no radio
-is attached; no test opens a device.
+Contribution rules (specifications as ground truth, SPEC-NOTES entries,
+RF safety for hardware tests, toolchain, hooks and commit format) are in
+[CONTRIBUTING.md](CONTRIBUTING.md); security issues go through
+[SECURITY.md](SECURITY.md); changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
 
-```text
-cargo build --workspace                       # libraries, examples, the arib binary
-cargo build --release -p arib-cli             # → target/release/arib
-cargo test --workspace                        # all tests ([profile.test] is opt-level 2)
-cargo test --workspace --release              # same, faster PHY loopbacks
-cargo test --workspace --doc                  # doctests, incl. every crate README's code blocks
+```sh
+cargo test --workspace --release           # all tests; no radio or data needed
+cargo test --workspace --doc               # doctests, including every crate README
 cargo clippy --workspace --all-targets
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
-Heavy tests are `#[ignore]`d and run explicitly, in release:
-
-```text
-cargo test --release -p isdbt-ofdm --test loopback -- --ignored --nocapture   # stress (long echo, seeds) + real-time factor
-cargo test --release -p isdbt-fec viterbi_throughput -- --ignored --nocapture
-cargo test --release -p arib-cli --test cli -- --ignored mux_ts_producer_throughput --nocapture   # producer ≥ 2× real time
-```
-
-**Tests that use real data (optional).** Captures, recordings and media
-are never committed. The tests that use them read a path from an
-environment variable and skip themselves (printing `SKIP`) when it is unset
-or the file is missing, so a fresh checkout passes with no data:
-
-| Variable | Points at | Tests |
-|---|---|---|
-| `ISDB_RS_CAPTURE_TS` | an unscrambled terrestrial ISDB-T capture (188-byte TS) | `arib-ts` `tests/capture.rs`, `arib-si` `tests/capture.rs`, `arib-text` `capture_si_strings`, `arib-analyze` `tests/real_data.rs`, `arib-mux` `tests/adts.rs` `capture_all_frames_conform` |
-| `ISDB_RS_OUR_TS` | a TS produced by `arib mux` (compared with the capture) | `arib-analyze` `ours_vs_capture`, `transplant_nit_between_captures_is_crc_and_cc_clean` |
-| `ISDB_RS_RELAY_TS` | an unscrambled recording you may relay, for `ts-program` | `arib-cli` `relay_recording`, `relay_recording_without_toml` |
-| `ISDB_RS_MEDIA_DIR` | a directory with bench media (`v63p.m2v` MPEG-2 video, `a.m2a` ADTS AAC) | `arib-mux` `tests/media.rs` (also needs `ffprobe`) and `tests/adts.rs` `bench_media_refused_by_conform`, `arib-cli` `loopback_with_in_process_multiplexer` (media part), `bench_media_aac_conforms_to_b32_part2` |
-
-The exact variable set per test is documented in each crate's README.
-Fixtures that are committed are synthetic: generated by this project's own
-encoders.
-
-**gr-isdbt oracle.** `oracle/` holds the differential test against GNU
-Radio gr-isdbt (an external GPL-3.0 program that is *not* distributed here;
-the scripts import it at run time): `grisdbt_tx.py` / `grisdbt_rx.py` (run
-inside a container with GNU Radio 3.10 and gr-isdbt), `ts_compare.py`,
-`iq_compare.py`, `run_matrix.py` (the whole matrix) and `rust_tx3/` (a
-stand-alone crate, not a workspace member: a three-layer `tx_file` and the
-rotation-numbering check `rx_rot`). They drive the `isdbt-phy` examples
-`tx_file` / `rx_file`. The container is expected to have this repository
-mounted at `/work` (name `arib-sdr` by default, `ISDB_RS_ORACLE_CONTAINER`);
-output goes to `target/oracle-matrix/` (`ISDB_RS_ORACLE_OUT`).
-Reproduction commands and results: [VERIFICATION.md](VERIFICATION.md).
-
-## Conventions
-
-- Every public item's doc comment names its clause/table, e.g.
-  `/// ARIB STD-B10 §5.2.6, Table 5-5`.
-- Spec-vector tests are named `spec_<table>_…`; property tests `prop_…`.
-- No `unsafe` outside FFI crates; no panics on malformed input in decoders
-  (return `arib_ts::Error`).
-- Soft bits are `f32` LLRs, `ln P(b=0)/P(b=1)` (positive ⇒ 0).
+The dev profile builds the signal-processing crates and all dependencies
+with `opt-level = 3`, because unoptimised the modulator runs at ≈ 0.2× real
+time and a HackRF would underrun; use `--release` for transmissions anyway.
+Heavy tests are `#[ignore]`d; tests that use real captures, recordings or
+media are opt-in through `ISDB_RS_*` environment variables and print
+`SKIP` otherwise ([docs/test-data.md](docs/test-data.md)). Conventions:
+every public item's doc comment names its clause or table; spec-vector
+tests are named `spec_<table>_…` and property tests `prop_…`; no `unsafe`
+outside the `hackrf` FFI crate; decoders never panic on malformed input;
+soft bits are `f32` LLRs `ln P(b=0)/P(b=1)`.
 
 ## License
 

@@ -32,7 +32,12 @@ terrestrial norm: `--mode 3`, `--gi 8`, `--partial true`, layer A =
 (`--layer-a/--layer-b/--layer-c`, `none` for unused) with MOD
 `dqpsk|qpsk|16qam|64qam`, RATE `1/2|2/3|3/4|5/6|7/8` and TI the TMCC
 time-interleave index 0..3. `arib <cmd> --help` is the authoritative option
-list; the sections below explain behaviour.
+list; the sections below explain behaviour. Task-oriented guides are in the
+workspace [`docs/`](../../docs/getting-started.md): getting started,
+[transmitting](../../docs/transmitting.md) (bench set-up, levels, channel
+plan, receiver compatibility notes), [receiving](../../docs/receiving.md),
+[analysis](../../docs/analysis.md) and the multiplexer
+[configuration reference](../../docs/mux-config.md).
 
 ## Commands
 
@@ -180,15 +185,17 @@ B10 table entries (numbers are rejected with an error listing the names):
 | `component_type = "derived"` \| `"1080i-16:9-without-pan-vectors"` … (video) \| `{ audio_mode = "2/0", dialog_control, for_disabilities }` (audio) | 0x50 / 0xC4 (EIT) | B10 Tables 6-5 / 6-43 |
 | `copy_control = { recording_control = "copy-free" \| "provider-defined" \| "copy-one-generation" \| "copy-never" \| "source" (ts-program services: the source program's value), copy_control_type = "serial-output-encoded", aps_control_data = "copy-free", maximum_bitrate_mbps, component_control, in_pmt, in_sdt, in_eit }` | 0xC1 | B10 Table 6-39, Annex F Tables F-2/F-4 |
 | `remote_control_key_id = 1..=12` | 0xCD (NIT) | B10 §6.2.42 |
-| `audio_quality_indicator = "derived"` \| `"mode-1"` \| `"mode-2"` \| `"mode-3"` (aac-adts) | 0xC4 quality_indicator (EIT) | B10 Table 6-44, B32 Part 2 Attachment Ch. 3 Table 1 (`derived`: < 32 kHz → Mode 3, ≥ 256 kbit/s per stereo pair → Mode 1, ≥ 144 → Mode 2, else Mode 3; the bench `a.m2a` gives Mode 2) |
+| `audio_quality_indicator = "derived"` \| `"mode-1"` \| `"mode-2"` \| `"mode-3"` (aac-adts) | 0xC4 quality_indicator (EIT) | B10 Table 6-44, B32 Part 2 Attachment Ch. 3 Table 1 (`derived`: < 32 kHz → Mode 3, ≥ 256 kbit/s per stereo pair → Mode 1, ≥ 144 → Mode 2, else Mode 3; 192 kbit/s stereo gives Mode 2) |
 
 `crates/arib-mux/examples/bench.toml` uses the values live broadcasters
 send; `bench-minimal.toml` the derived / copy-free variants. Both reference
 the placeholder media paths `media/video.m2v` / `media/audio.m2a` (relative
 to the TOML; point them at your own files, no media is committed). A raw descriptor
 (`descriptors`, `add_descriptors`) with the tag of an active typed one in the
-same loop is rejected at load (set the typed one `off`). Background and the
-BDZ-series recorder bisection: [`../arib-mux/SPEC-NOTES.md`](../arib-mux/SPEC-NOTES.md).
+same loop is rejected at load (set the typed one `off`). Every key:
+[`docs/mux-config.md`](../../docs/mux-config.md). Background and the
+receiver bisection behind the copy-control default:
+[`../arib-mux/SPEC-NOTES.md`](../arib-mux/SPEC-NOTES.md).
 
 AAC input is checked against ARIB STD-B32 Part 2 §5.2 (`adts_compliance`
 per `aac-adts` stream, overridden for all by `--adts-compliance`):
@@ -204,8 +211,10 @@ constant-rate adts_buffer_fullness itself (MPEG-2 AAC LC, 48 kHz, ≤ 5.1,
 CBR). For a 0x7FF input the refusal also prints the constant-rate
 fullness model. `warn` sends the file unchanged and prints each violation;
 `pass-through` sends it unchanged unchecked (e.g. to reproduce an old
-non-conforming stream on a receiver). The bench `a.m2a` has no crc_check
-and fullness 0x7FF, so `bench.toml` needs `--adts-compliance warn`:
+non-conforming stream on a receiver). Audio without crc_check and with
+fullness 0x7FF — e.g. FFmpeg's ADTS output — therefore needs
+`--adts-compliance warn` (or `adts_compliance = "warn"` in the TOML, which
+`loopback` and `tx --mux-config` also read):
 
 ```text
 arib mux -c bench.toml --seconds 20 --out-ts raw.ts --adts-compliance warn  # file as is
@@ -238,8 +247,9 @@ the stream has no PCR). Input packets may be 188/192/204 bytes (autodetected).
   rules) is not checked. `aac.quality_indicator` compares the EIT/PMT
   audio component descriptor's quality_indicator with the measured rate
   (Table 1 contradictions are warnings); `aac.summary` (info) gives
-  profile, rate, frames with crc_check and fullness range. Live terrestrial
-  capture: no AAC finding, '10' consistent.
+  profile, rate, frames with crc_check and fullness range. (A live
+  terrestrial capture recorded during development gave no AAC finding and
+  a consistent '10'.)
 * `diff A B` — table/field-level comparison of two captures plus PID
   inventory (e.g. ours vs a live station; `--all` lists every EIT schedule
   section).
@@ -347,7 +357,7 @@ the measured mean / peak rates and layer usage.
 | `--name S` | source SDT name, else ベンチ | network / TS / service / provider / broadcaster name |
 | `--copy copy-free\|copy-one-generation\|copy-never` | the source program's digital_recording_control_data (copy-free only if the source signals none) | digital copy control (copy_control_type '01'); without `--copy` the relay keeps the recording's copy restriction |
 | `--at-eof loop\|end` | loop | at the end of the recording |
-| `--eit-from-source [BOOL]` | true | EIT p/f event name / text / genre from the recording |
+| `--eit-from-source [BOOL]` | true | EIT p/f event name / text / genre from the recording (the TOML key `eit_from_source` itself defaults to false; `--relay` sets it) |
 | `--clock-start JST` | system clock | fixed stream clock (reproducible output) |
 | `--print-config` | — | print the resolved TOML (header: the transmission options, after `--auto-layout`) and exit; save, edit, run with `--mux-config` / `-c` |
 
@@ -356,14 +366,14 @@ measured mean rate + PCR/PSI/SI exceeds its layer, use the first suggested
 layout that only changes that layer (the most robust modulation / code
 rate that fits, configured GI first; partial reception and the one-seg
 layer A kept) and print the choice, instead of refusing with the list of
-layouts. The bench BS recording needs 18.92 Mbit/s over the first 30 s (18.53
-over the whole file; peaks 19.02 Mbit/s over 1 s, 19.51 over 100 ms):
-the default B (12 seg 64QAM 3/4 = 16.85 Mbit/s) is refused and
-`--auto-layout` picks B 12 seg 64QAM 7/8 (19.66 Mbit/s), which carries all
-30 minutes with 0 late PES and at most 64 ms behind the PCR schedule
-(5.5 % null fill); a single 13-segment 64QAM 7/8 layer (`--partial false
---layer-a 13,64qam,7/8,2 --layer-b none`, 21.30 Mbit/s) leaves 12.7 %
-spare.
+layouts. For example, a 30-minute BS recording used during development
+needed 18.92 Mbit/s over the first 30 s (18.53 over the whole file; peaks
+19.02 Mbit/s over 1 s, 19.51 over 100 ms): the default B (12 seg 64QAM 3/4
+= 16.85 Mbit/s) was refused and `--auto-layout` picked B 12 seg 64QAM 7/8
+(19.66 Mbit/s), which carried all 30 minutes with 0 late PES and at most
+64 ms behind the PCR schedule (5.5 % null fill); a single 13-segment 64QAM
+7/8 layer (`--partial false --layer-a 13,64qam,7/8,2 --layer-b none`,
+21.30 Mbit/s) leaves 12.7 % spare.
 
 ```text
 # check (no radiation): the probe report, the layer usage, the TS itself
@@ -381,16 +391,9 @@ arib tx --mux-config relay.toml --layer-b 12,64qam,7/8,2 \
 per relay the lag behind the PCR schedule, late PES, the source's peak
 rates and the loop period.
 
-## Replacing the old Python tools
-
-| old | new |
-|---|---|
-| `oneseg_tx.py` | `arib tx` |
-| `live_padder.py` | `arib tx --feed live` (null padding is built in; no separate relay padder) |
-| `oneseg_loopback.py` | `arib loopback` |
-| `oneseg_airtest.py` | `arib rx --hackrf` — an RF loopback needs a second radio (or TX and RX on separate devices: `arib tx --hackrf --serial A …` and `arib rx --hackrf --serial B …`) |
-
-The old tools and their full mapping are not part of this repository.
+An RF loopback needs two radios: `arib tx --hackrf --serial A …` and
+`arib rx --hackrf --serial B …`, connected through attenuators
+([docs/transmitting.md](../../docs/transmitting.md#bench-set-up)).
 
 ## Architecture
 
@@ -408,20 +411,19 @@ rx:  source (file / HackRF RX callback) ─► PipelinedReceiver
 loopback: producer ─► Channel ─► PipelinedReceiver ─► Verifier
 ```
 
-Throughput (Mode 3, GI 1/8, default layers, file I/O, measured 2026-10-08 on
-the development machine): `tx --synthetic --iq` of 20 s of signal took
-4.9 s (≈ 4× real time); `rx --iq` of that file took 14.0 s (≈ 1.4× real
-time; the demodulator is the bottleneck).
+Throughput (Mode 3, GI 1/8, default layers, file I/O, measured on a
+Ryzen 9 7950X): `tx --synthetic --iq` of 20 s of signal took 4.9 s (≈ 4×
+real time); `rx --iq` of that file took 14.0 s (≈ 1.4× real time; the
+demodulator is the bottleneck).
 
-**Build profile matters for the radio.** Measured 2026-10-09 (Ryzen 9
-7950X): `tx --mux-ts <BS recording, 19.1 Mbit/s> --iq /dev/null` runs
-at 4.1× real time in a release build (input 0.3 ms + modulation 54 ms per
-231 ms frame) but at **0.18× in an unoptimised dev build** — under a
-simulated real-time HackRF (cs8 on stdout consumed at 512/63 MS/s in
-256 KiB buffers) the dev build reproduced the reported starvation exactly
-("2.8 s on air, 12 frames (10 data)", 73 % of the USB buffers underrun),
-the same with `--mux-config` (so not an input problem), and the release
-build had 0 underruns. The workspace `Cargo.toml` therefore builds the
+**Build profile matters for the radio.** On the same machine,
+`tx --mux-ts <BS recording, 19.1 Mbit/s> --iq /dev/null` runs at 4.1× real
+time in a release build (input 0.3 ms + modulation 54 ms per 231 ms frame)
+but at **0.18× in an unoptimised build**. Under a simulated real-time
+HackRF (cs8 on stdout consumed at 512/63 MS/s in 256 KiB buffers) the
+unoptimised build underran 73 % of the USB buffers ("2.8 s on air, 12
+frames (10 data)"), the same with `--mux-config` (so not an input
+problem), and the release build had 0 underruns. The workspace `Cargo.toml` therefore builds the
 signal-processing crates (`isdbt-*`) and all dependencies with
 `opt-level = 3` in the dev profile too: `cargo run -p arib-cli -- tx …`
 now runs at 3.2× real time (0 underruns in the same simulation). Prefer
@@ -440,17 +442,19 @@ against a mock device):
 | `tests/cli.rs` `mux_ts_is_split_by_pid` | `--mux-ts` routing by `--a-pids`, order preserved |
 | `tests/cli.rs` `mux_ts_file_is_paced_by_its_pcr` | an 8 Mbit/s PCR-timed file into the 16.85 Mbit/s layer B: ≈ 50 % null fill, `tx` → `rx` returns every data packet in order |
 | `tests/cli.rs` `mux_ts_over_capacity_is_refused_with_layouts_that_fit` | a 19.1 Mbit/s file is refused with the computed capacities and `--layer-b 12,64qam,7/8,2` / the 13-segment layout; the suggested layout and `--allow-overrate` run |
-| `tests/cli.rs` `mux_ts_producer_throughput` (ignored) | producer ≥ 2× real time for a 19.5 Mbit/s `--mux-ts` file (regression benchmark of the 2026-10-09 starvation report) |
-| `tests/cli.rs` `relay_recording` | opt-in real data (`ISDB_RS_RELAY_TS` names a recording): the first 60 s through `examples/relay-ts.toml` (placeholder `source` replaced) with `--auto-layout` → video on 0x0111, 0 late PES, T-STD ok, `ts validate` without errors, ffmpeg decodes it (at most the AAC resync at the cut-in), `loopback` PASS; without `--auto-layout` the default layer B either carries it or is refused with the layouts that fit (bench BS recording: refused, B 12 seg 64QAM 7/8 chosen). Prints `SKIP` and passes when the variable is unset or the file is missing |
+| `tests/cli.rs` `mux_ts_producer_throughput` (ignored) | producer ≥ 2× real time for a 19.5 Mbit/s `--mux-ts` file (regression benchmark against HackRF underruns) |
+| `tests/cli.rs` `relay_recording` | opt-in real data (`ISDB_RS_RELAY_TS` names a recording): the first 60 s through `examples/relay-ts.toml` (placeholder `source` replaced) with `--auto-layout` → video on 0x0111, 0 late PES, T-STD ok, `ts validate` without errors, ffmpeg decodes it (at most the AAC resync at the cut-in), `loopback` PASS; without `--auto-layout` the default layer B either carries it or is refused with the layouts that fit (the development BS recording: refused, B 12 seg 64QAM 7/8 chosen). Prints `SKIP` and passes when the variable is unset or the file is missing |
 | `tests/cli.rs` `relay_without_toml` | `--relay` on a synthetic BS-like recording (≈ 8.6 Mbit/s, CA + ECM, captions in the PMT): refused on B 12 seg 16QAM 1/2 with the layouts that fit; `--auto-layout` picks B 12 seg 16QAM 2/3 and prints it; program / roles / PIDs (0x0140→0x0111 video, 0x0141→0x0112 main audio, 0x0145→0x0130 captions) and the ECM drop in the report; `ts validate` clean; `--print-config` TOML (header with the chosen `--layer-b`) run with `mux -c` gives a byte-identical TS; every option lands in the printed TOML; `tx` takes the NIT channel from `--channel` / `--freq`; an unknown `--service-name` lists the programs; `loopback --relay --auto-layout` PASS |
-| `tests/cli.rs` `relay_recording_without_toml` | opt-in real data (`ISDB_RS_RELAY_TS`): `mux --relay <recording> --auto-layout --seconds 20` names the program, relays the video to 0x0111 with 0 late PES, `ts validate` 0 errors; `loopback --relay … --auto-layout` PASS (on the bench BS recording also: B 12 seg 64QAM 7/8, 0x0140→0x0111 video, 0x0141→0x0112 main audio, 0x0145→0x0130 captions, 0x0138→0x0138 superimpose, ECM dropped). Prints `SKIP` and passes without the variable |
+| `tests/cli.rs` `relay_recording_without_toml` | opt-in real data (`ISDB_RS_RELAY_TS`): `mux --relay <recording> --auto-layout --seconds 20` names the program, relays the video to 0x0111 with 0 late PES, `ts validate` 0 errors; `loopback --relay … --auto-layout` PASS (on the development BS recording also: B 12 seg 64QAM 7/8, 0x0140→0x0111 video, 0x0141→0x0112 main audio, 0x0145→0x0130 captions, 0x0138→0x0138 superimpose, ECM dropped). Prints `SKIP` and passes without the variable |
 | `tests/cli.rs` `live_feed_with_stalling_input_stays_cbr_and_lossless` | `--feed live` pads with nulls at constant rate and loses no input |
 | `tests/cli.rs` `loopback_passes_with_impairments`, `loopback_with_file_inputs_and_detects_loss` | loopback verdicts: PASS under impairments, FAIL with lost packets counted |
 | `tests/cli.rs` `hackrf_tx_refuses_without_rf_enable` | `--dry-run` prints the RF settings and refuses; no `--rf-enable` ⇒ rejected |
+| `tests/cli.rs` `scrambled_input_is_refused` | a TS with one scrambled packet (transport_scrambling_control ≠ '00') is refused: `arib` neither descrambles nor transmits scrambled content |
 | `tests/cli.rs` `endless_input_into_iq_file_is_refused_without_seconds` | `tx --synthetic --iq FILE` without `--seconds` is refused before the file is created; with `--seconds` it runs |
-| `tests/cli.rs` `mux_config_and_ts_tools_smoke`, `loopback_with_in_process_multiplexer` | `arib mux` / `ts inspect` and `loopback --mux-config` on `bench.toml` with media streams replaced by `declared` streams; the media variant runs only when `ISDB_RS_MEDIA_DIR` names a directory with `v63p.m2v` and `a.m2a` (prints `SKIP` otherwise) |
+| `tests/cli.rs` `mux_config_and_ts_tools_smoke`, `loopback_with_in_process_multiplexer` | `arib mux` / `ts inspect` and `loopback --mux-config` on `bench.toml` with media streams replaced by `declared` streams; the media variant runs only when `ISDB_RS_MEDIA_DIR` names a directory with `v63p.m2v` and `a.m2a` (prints `SKIP` otherwise; [docs/test-data.md](../../docs/test-data.md#making-a-media-directory) shows how to make one) |
 | `tests/cli.rs` `bench_media_aac_conforms_to_b32_part2` | `arib mux` on `bench.toml` with the real `a.m2a`: the default `conform` refuses it (crc_check cannot be inserted); with `--adts-compliance warn` `arib ts validate` reports the file's protection_absent / adts_buffer_fullness errors and quality_indicator '10' (Mode 2) consistent (opt-in: `ISDB_RS_MEDIA_DIR` with `v63p.m2v` and `a.m2a`; prints `SKIP` otherwise) |
 | `src/*` unit tests | `--relay` numbers (hex/decimal), NIT channel from `--freq`, service layer from the layout; PCR pacing of the PID split (frames carry only the packets due; over capacity: everything sent, lag measured), layer-spec parsing and defaults, UHF channel centres and ppm correction, cs8 scaling/clip count, AWGN/CFO channel, verifier anchoring, producer lead/data/flush sequence and stop, file/loop/live sources, PID split, radio sink prefill/drain/abort/underruns (mock radio), `clap` definition consistency, `--seconds` default 0 for every `tx` input and for `rx`, the `--iq` bound check (regular file refused; stdout, FIFO, `/dev/null` accepted), which `--mux-config` / `--relay` configurations end by themselves |
 
-Workspace overview, architecture and development notes:
-[`../../README.md`](../../README.md).
+Workspace overview: [`../../README.md`](../../README.md); architecture and
+the frame/latency contract: [`docs/architecture.md`](../../docs/architecture.md);
+optional real-data tests: [`docs/test-data.md`](../../docs/test-data.md).

@@ -30,7 +30,7 @@ Typed descriptor tags are listed in `descriptor::TYPED_TAGS`.
 - Depends on: `arib-ts` (bit I/O, section envelope `Long`/`Short`,
   `Error`), `arib-text` (`AribString`).
 - Used by: `arib-analyze` (inspection, validation, diff, mutation),
-  `arib-mux` (PSI/SI generation), `arib-cli`.
+  `arib-mux` (PSI/SI generation); `arib-cli` through those.
 
 ## Key types and entry points
 
@@ -108,11 +108,12 @@ assert!(dev.iter().any(|d| d.kind == conformance::Kind::ReservedBits));
 encoders and `arib-text` (fictional names and texts only), so every test in
 this crate except the opt-in `tests/capture.rs` runs without external data.
 `tests/capture.rs` (and the capture tests of `arib-ts`, `arib-text` and
-`arib-analyze`) read the descrambled terrestrial capture named by
-`ISDB_RS_CAPTURE_TS`. On a live terrestrial capture (2026-10-07) all 144
-distinct SI sections decoded typed (no `Unknown` table or descriptor) and
-re-encoded byte-identically; the only conformance deviations were the 217
-EIT events without a short event descriptor described in SPEC-NOTES.
+`arib-analyze`) read the terrestrial capture named by
+`ISDB_RS_CAPTURE_TS` ([docs/test-data.md](../../docs/test-data.md)).
+During development, on a live terrestrial capture, all 144 distinct SI
+sections decoded typed (no `Unknown` table or descriptor) and re-encoded
+byte-identically; the only conformance deviations were the 217 EIT events
+without a short event descriptor described in SPEC-NOTES.
 
 ```text
 cargo test -p arib-si

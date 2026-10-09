@@ -16,7 +16,7 @@ still needs a real-world capture or receiver check.
   byte-exact cross-decoding in both directions and carrier-identical
   modulator output for identical input (VERIFICATION.md).  gr-isdbt's own
   output (same bit order) was decoded by a MyGica S270 with PER 0 for QPSK
-  and 64QAM (bench record 2026-10-07, not published).  DQPSK is not
+  and 64QAM over a conducted link.  DQPSK is not
   covered (gr-isdbt has no DQPSK).
 
 ## mapping: which branches are delayed (Fig. 3-18)
@@ -117,8 +117,8 @@ still needs a real-world capture or receiver check.
   = 0..12), the Rust chain cross-decodes byte-exactly with it, and with
   `GroupRelative` every layer-B/C RS word of the same gr-isdbt file fails
   (`oracle/rust_tx3` `rx_rot`).  gr-isdbt's partial-reception output was
-  decoded by a MyGica S270 (layer B 64QAM, PER 0; bench record
-  2026-10-07), so a real receiver uses
+  decoded by a MyGica S270 (layer B 64QAM, PER 0, conducted link), so a
+  real receiver uses
   the data-segment number too.  Differential (DQPSK) groups not covered.
 
 ## freq_interleave: Table 3-13 direction

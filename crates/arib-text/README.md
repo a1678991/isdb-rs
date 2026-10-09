@@ -28,8 +28,8 @@ accordance with the 8-unit character code specified in sub-clause 7.1").
   table, `thiserror`).
 - Used by: `arib-si` (every string field is an `AribString`),
   `arib-analyze` (decoded strings in reports, typed `--set` mutations),
-  `arib-mux` (encodes configured names and event text); `arib-cli` declares
-  it as a dependency but its sources do not use it directly.
+  `arib-mux` (encodes configured names and event text); `arib-cli` reaches
+  it only through those.
 
 ## Key types and entry points
 
@@ -94,10 +94,12 @@ assert_eq!(bytes.decode().text, "ニュース TEST！ 7:00");
 | `tests/synthetic.rs` | `si_style_byte_sequences`: hand-built SI-style byte sequences (LS3R/LS1R/LS2R into GR, LS2/LS3 into GL, SS2/SS3, G0–G3 re-designated to the additional symbols set and back, additional Kanji row 85, JIS X 0201 katakana, SSZ/MSZ/NSZ, APR) decode to the expected fictional text with zero issues and round-trip; `encoder_strings`: fictional SI texts (names, event text with line breaks, items, symbols) encode, decode with zero issues and back to the same text, and the output uses LS0/LS1/LS3R, MSZ/NSZ, APR and an additional-symbols designation; `capture_si_strings` (opt-in): extracts the NIT/SDT/EIT strings of a real capture (own CRC and section parser, no `arib-ts`) and requires at least one string, zero issues and round trip for all | synthetic; `capture_si_strings` reads the file named by `ISDB_RS_CAPTURE_TS` and prints `SKIP` on stderr (test passes) when the variable is unset or the file is missing |
 
 Print the decoded strings for a human check:
-`cargo test -p arib-text --test synthetic -- --nocapture`. On a live
-terrestrial capture (2026-10-07) `capture_si_strings` found 100 distinct SI
-strings, all decoded with zero issues and round-tripped:
-`ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test -p arib-text --test synthetic capture`.
+`cargo test -p arib-text --test synthetic -- --nocapture`. Run
+`capture_si_strings` on your own capture with
+`ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test -p arib-text --test synthetic capture`
+([docs/test-data.md](../../docs/test-data.md)); during development, on a
+live terrestrial capture, it found 100 distinct SI strings, all decoded
+with zero issues and round-tripped.
 
 ## Known limitations
 
