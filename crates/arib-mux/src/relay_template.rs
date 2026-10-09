@@ -223,7 +223,11 @@ mod tests {
         // the default keeps the source's copy restriction
         let d = RelayOptions::new("x.ts").config().unwrap();
         assert_eq!(
-            d.services[0].copy_control.as_ref().unwrap().recording_control,
+            d.services[0]
+                .copy_control
+                .as_ref()
+                .unwrap()
+                .recording_control,
             crate::signalling::RecordingControlCfg::Source
         );
         // an unknown copy-control name is refused by the typed config

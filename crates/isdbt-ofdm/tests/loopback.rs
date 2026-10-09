@@ -3,14 +3,26 @@
 mod common;
 
 use common::{Channel, Rng};
-use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+use isdbt_core::{
+    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave,
+};
 use isdbt_ofdm::ac::AcFrame;
 use isdbt_ofdm::latency::end_to_end_frames;
 use isdbt_ofdm::tmcc::TmccInfo;
 use isdbt_ofdm::{C32, DemodConfig, Demodulator, Modulator};
 
-fn layer(segments: usize, modulation: Modulation, code_rate: CodeRate, ti: u8) -> Option<LayerConfig> {
-    Some(LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave(ti) })
+fn layer(
+    segments: usize,
+    modulation: Modulation,
+    code_rate: CodeRate,
+    ti: u8,
+) -> Option<LayerConfig> {
+    Some(LayerConfig {
+        segments,
+        modulation,
+        code_rate,
+        time_interleave: TimeInterleave(ti),
+    })
 }
 
 struct Report {
@@ -35,10 +47,17 @@ fn run_sfo(params: Params, frames: usize, ch: Channel, skip: usize, seed: u64, p
     let mut tx = Vec::new();
     for _ in 0..frames {
         let bits = Layer::ALL.map(|l| rng.bits(m.bits_per_frame(l)));
-        tx.extend(m.modulate_frame([&bits[0], &bits[1], &bits[2]], &tmcc, &ac).unwrap());
+        tx.extend(
+            m.modulate_frame([&bits[0], &bits[1], &bits[2]], &tmcc, &ac)
+                .unwrap(),
+        );
         inputs.push(bits);
     }
-    let tx = if ppm != 0.0 { common::resample_ppm(&tx, ppm) } else { tx };
+    let tx = if ppm != 0.0 {
+        common::resample_ppm(&tx, ppm)
+    } else {
+        tx
+    };
     let rx = ch.apply(&tx[skip..], &mut rng);
     let mut d = Demodulator::new(DemodConfig::default());
     let mut out = Vec::new();
@@ -47,20 +66,36 @@ fn run_sfo(params: Params, frames: usize, ch: Channel, skip: usize, seed: u64, p
     }
     let frame_len = params.samples_per_frame() as i64;
     let lat = end_to_end_frames(&params);
-    let mut rep = Report { bit_errors: [0; 3], bits: [0; 3], frames_checked: 0, cfo: 0.0, start_err: 0, mer: [None; 3] };
+    let mut rep = Report {
+        bit_errors: [0; 3],
+        bits: [0; 3],
+        frames_checked: 0,
+        cfo: 0.0,
+        start_err: 0,
+        mer: [None; 3],
+    };
     assert!(!out.is_empty(), "no frames demodulated");
     for f in &out {
         if std::env::var("LOOPBACK_DEBUG").is_ok() {
             eprintln!(
                 "frame {} start {} parity {:?} mer {:?} drift {:.4} corr {:.2} cfo {:.4} n0 {:.2e}",
-                f.frame_number, f.start_sample, f.tmcc.parity, f.metrics.mer_db, f.metrics.timing_drift,
-                f.metrics.timing_correction, f.metrics.cfo_carriers, f.metrics.n0
+                f.frame_number,
+                f.start_sample,
+                f.tmcc.parity,
+                f.metrics.mer_db,
+                f.metrics.timing_drift,
+                f.metrics.timing_correction,
+                f.metrics.cfo_carriers,
+                f.metrics.n0
             );
         }
     }
     for f in &out {
         assert!(f.tmcc.parity.is_ok(), "TMCC parity {:?}", f.tmcc.parity);
-        assert_eq!(f.tmcc.info.params(params.mode, params.guard).unwrap(), params);
+        assert_eq!(
+            f.tmcc.info.params(params.mode, params.guard).unwrap(),
+            params
+        );
         assert_eq!(f.params, params);
         let rel = f.start_sample as i64 - ch.offset as i64 + skip as i64;
         // With a sampling-clock offset the TX frame f starts at f·len/(1+ppm).
@@ -80,7 +115,11 @@ fn run_sfo(params: Params, frames: usize, ch: Channel, skip: usize, seed: u64, p
                 let input = &inputs[src as usize][l.index()];
                 assert_eq!(llr.len(), input.len());
                 rep.bits[l.index()] += input.len();
-                rep.bit_errors[l.index()] += llr.iter().zip(input).filter(|(x, b)| u8::from(**x < 0.0) != **b).count();
+                rep.bit_errors[l.index()] += llr
+                    .iter()
+                    .zip(input)
+                    .filter(|(x, b)| u8::from(**x < 0.0) != **b)
+                    .count();
             }
         }
     }
@@ -107,7 +146,10 @@ fn channel(mode: Mode, offset: usize) -> Channel {
         offset,
         cfo_carriers: 2.3,
         fft_size: mode.fft_size(),
-        taps: vec![(0, C32::new(1.0, 0.0)), (7 * mode.scale(), C32::new(0.12, -0.16))],
+        taps: vec![
+            (0, C32::new(1.0, 0.0)),
+            (7 * mode.scale(), C32::new(0.12, -0.16)),
+        ],
         snr_db: 30.0,
         k_total: mode.total_carriers(),
     }
@@ -119,7 +161,11 @@ fn loopback_mode3_hierarchical() {
         Mode::M3,
         GuardInterval::G1_8,
         true,
-        [layer(1, Modulation::Qpsk, CodeRate::R2_3, 2), layer(12, Modulation::Qam64, CodeRate::R3_4, 2), None],
+        [
+            layer(1, Modulation::Qpsk, CodeRate::R2_3, 2),
+            layer(12, Modulation::Qam64, CodeRate::R3_4, 2),
+            None,
+        ],
     )
     .unwrap();
     let lat = end_to_end_frames(&p);
@@ -160,7 +206,11 @@ fn loopback_mode2_long_interleave() {
         Mode::M2,
         GuardInterval::G1_4,
         false,
-        [layer(2, Modulation::Qam16, CodeRate::R1_2, 1), layer(11, Modulation::Qam64, CodeRate::R7_8, 3), None],
+        [
+            layer(2, Modulation::Qam16, CodeRate::R1_2, 1),
+            layer(11, Modulation::Qam64, CodeRate::R7_8, 3),
+            None,
+        ],
     )
     .unwrap();
     let lat = end_to_end_frames(&p);
@@ -195,7 +245,11 @@ fn loopback_ac_seismic_and_emergency_flag() {
         Mode::M1,
         GuardInterval::G1_8,
         true,
-        [layer(1, Modulation::Qpsk, CodeRate::R2_3, 0), layer(12, Modulation::Qam64, CodeRate::R3_4, 0), None],
+        [
+            layer(1, Modulation::Qpsk, CodeRate::R2_3, 0),
+            layer(12, Modulation::Qam64, CodeRate::R3_4, 0),
+            None,
+        ],
     )
     .unwrap();
     let mut rng = Rng(11);
@@ -206,14 +260,20 @@ fn loopback_ac_seismic_and_emergency_flag() {
         start_end: 0,
         update: 2,
         signal_id: 0,
-        detail: SeismicDetail::Warning { current_time: 123_456_789, page: SeismicPage::Areas(!(1u64 << 40) & ((1 << 56) - 1)) }
-            .to_bits(),
+        detail: SeismicDetail::Warning {
+            current_time: 123_456_789,
+            page: SeismicPage::Areas(!(1u64 << 40) & ((1 << 56) - 1)),
+        }
+        .to_bits(),
     };
     let mut tx = Vec::new();
     for f in 0..4u64 {
         let bits = Layer::ALL.map(|l| rng.bits(m.bits_per_frame(l)));
         let ac = AcFrame::with_seismic(m.layout(), &warning, f % 2 == 1);
-        tx.extend(m.modulate_frame([&bits[0], &bits[1], &bits[2]], &tmcc, &ac).unwrap());
+        tx.extend(
+            m.modulate_frame([&bits[0], &bits[1], &bits[2]], &tmcc, &ac)
+                .unwrap(),
+        );
     }
     let rx = channel(Mode::M1, 999).apply(&tx, &mut rng);
     let mut d = Demodulator::new(DemodConfig::default());
@@ -226,7 +286,14 @@ fn loopback_ac_seismic_and_emergency_flag() {
         let s = f.seismic.expect("seismic word");
         assert!(s.crc_ok);
         assert_eq!(s.warning, warning);
-        assert_eq!(s.config_id, if f.tmcc.sync_odd == Some(true) { [1, 1, 0] } else { [0, 0, 1] });
+        assert_eq!(
+            s.config_id,
+            if f.tmcc.sync_odd == Some(true) {
+                [1, 1, 0]
+            } else {
+                [0, 0, 1]
+            }
+        );
         // Other AC carriers carry stuffing 1s.
         for (a, bits) in lay.ac.iter().zip(&f.ac_bits) {
             if a.seg != 0 {
@@ -245,14 +312,24 @@ fn stress_long_echo_and_seeds() {
         Mode::M3,
         GuardInterval::G1_8,
         true,
-        [layer(1, Modulation::Qpsk, CodeRate::R2_3, 2), layer(12, Modulation::Qam64, CodeRate::R3_4, 2), None],
+        [
+            layer(1, Modulation::Qpsk, CodeRate::R2_3, 2),
+            layer(12, Modulation::Qam64, CodeRate::R3_4, 2),
+            None,
+        ],
     )
     .unwrap();
     let lat = end_to_end_frames(&p);
     let mut total = [0usize; 3];
     let mut bits = [0usize; 3];
     for seed in 10..16 {
-        let r = run(p.clone(), lat + 3, channel(Mode::M3, 1000 + seed as usize * 37), 0, seed);
+        let r = run(
+            p.clone(),
+            lat + 3,
+            channel(Mode::M3, 1000 + seed as usize * 37),
+            0,
+            seed,
+        );
         for i in 0..3 {
             total[i] += r.bit_errors[i];
             bits[i] += r.bits[i];
@@ -269,13 +346,19 @@ fn stress_long_echo_and_seeds() {
     };
     let r = run(p.clone(), lat + 3, ch, 0, 99);
     let ber = r.bit_errors[1] as f64 / r.bits[1] as f64;
-    eprintln!("long echo: errors {:?} / {:?} (layer B BER {ber:.2e}), cfo {:.4}", r.bit_errors, r.bits, r.cfo);
+    eprintln!(
+        "long echo: errors {:?} / {:?} (layer B BER {ber:.2e}), cfo {:.4}",
+        r.bit_errors, r.bits, r.cfo
+    );
     assert!(ber < 1e-4);
     assert_eq!(r.bit_errors[0], 0);
     // Mode 3 with a 20 ppm sampling-clock offset (0.18 samples/symbol).
     let r = run_sfo(p.clone(), lat + 4, channel(Mode::M3, 777), 0, 5, 20.0);
     let ber = r.bit_errors[1] as f64 / r.bits[1] as f64;
-    eprintln!("mode 3, 20 ppm: errors {:?} / {:?} (layer B BER {ber:.2e}), mer {:?}", r.bit_errors, r.bits, r.mer);
+    eprintln!(
+        "mode 3, 20 ppm: errors {:?} / {:?} (layer B BER {ber:.2e}), mer {:?}",
+        r.bit_errors, r.bits, r.mer
+    );
     assert_eq!(r.bit_errors[0], 0);
     assert!(ber < 1e-4);
 }
@@ -289,7 +372,11 @@ fn loopback_sampling_clock_offset() {
         Mode::M1,
         GuardInterval::G1_8,
         true,
-        [layer(1, Modulation::Qpsk, CodeRate::R1_2, 1), layer(12, Modulation::Qam16, CodeRate::R1_2, 1), None],
+        [
+            layer(1, Modulation::Qpsk, CodeRate::R1_2, 1),
+            layer(12, Modulation::Qam16, CodeRate::R1_2, 1),
+            None,
+        ],
     )
     .unwrap();
     let lat = end_to_end_frames(&p);
@@ -315,7 +402,11 @@ fn loopback_parameter_switch_reacquires() {
         Mode::M1,
         GuardInterval::G1_8,
         true,
-        [layer(1, Modulation::Dqpsk, CodeRate::R1_2, 0), layer(12, Modulation::Qam16, CodeRate::R2_3, 1), None],
+        [
+            layer(1, Modulation::Dqpsk, CodeRate::R1_2, 0),
+            layer(12, Modulation::Qam16, CodeRate::R2_3, 1),
+            None,
+        ],
     )
     .unwrap();
     let mut rng = Rng(31);
@@ -326,7 +417,10 @@ fn loopback_parameter_switch_reacquires() {
         let ac = AcFrame::stuffing(m.layout());
         for _ in 0..frames {
             let bits = Layer::ALL.map(|l| rng.bits(m.bits_per_frame(l)));
-            tx.extend(m.modulate_frame([&bits[0], &bits[1], &bits[2]], &tmcc, &ac).unwrap());
+            tx.extend(
+                m.modulate_frame([&bits[0], &bits[1], &bits[2]], &tmcc, &ac)
+                    .unwrap(),
+            );
         }
     }
     let rx = channel(Mode::M1, 500).apply(&tx, &mut rng);
@@ -349,7 +443,11 @@ fn loopback_chunking_and_noise_lead_in() {
         Mode::M1,
         GuardInterval::G1_4,
         false,
-        [layer(5, Modulation::Qpsk, CodeRate::R1_2, 0), layer(8, Modulation::Qam64, CodeRate::R5_6, 0), None],
+        [
+            layer(5, Modulation::Qpsk, CodeRate::R1_2, 0),
+            layer(8, Modulation::Qam64, CodeRate::R5_6, 0),
+            None,
+        ],
     )
     .unwrap();
     let mut rng = Rng(77);
@@ -360,7 +458,10 @@ fn loopback_chunking_and_noise_lead_in() {
     let mut inputs = Vec::new();
     for _ in 0..4 {
         let bits = Layer::ALL.map(|l| rng.bits(m.bits_per_frame(l)));
-        tx.extend(m.modulate_frame([&bits[0], &bits[1], &bits[2]], &tmcc, &ac).unwrap());
+        tx.extend(
+            m.modulate_frame([&bits[0], &bits[1], &bits[2]], &tmcc, &ac)
+                .unwrap(),
+        );
         inputs.push(bits);
     }
     let ch = channel(Mode::M1, 150_000);
@@ -376,12 +477,26 @@ fn loopback_chunking_and_noise_lead_in() {
     let lat = end_to_end_frames(&p);
     let mut checked = 0;
     for f in &frames {
-        let idx = ((f.start_sample as f64 - ch.offset as f64) / p.samples_per_frame() as f64).round() as usize;
+        let idx = ((f.start_sample as f64 - ch.offset as f64) / p.samples_per_frame() as f64)
+            .round() as usize;
         if f.valid && idx >= lat {
             for l in [Layer::A, Layer::B] {
-                let hard: Vec<u8> = f.llr[l.index()].as_ref().unwrap().iter().map(|&x| u8::from(x < 0.0)).collect();
-                let errs = hard.iter().zip(&inputs[idx - lat][l.index()]).filter(|(a, b)| a != b).count();
-                assert_eq!(errs, 0, "frame {} start {} layer {l}", f.frame_number, f.start_sample);
+                let hard: Vec<u8> = f.llr[l.index()]
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|&x| u8::from(x < 0.0))
+                    .collect();
+                let errs = hard
+                    .iter()
+                    .zip(&inputs[idx - lat][l.index()])
+                    .filter(|(a, b)| a != b)
+                    .count();
+                assert_eq!(
+                    errs, 0,
+                    "frame {} start {} layer {l}",
+                    f.frame_number, f.start_sample
+                );
             }
             checked += 1;
         }
@@ -398,7 +513,11 @@ fn perf_realtime_factor() {
         Mode::M3,
         GuardInterval::G1_8,
         true,
-        [layer(1, Modulation::Qpsk, CodeRate::R2_3, 2), layer(12, Modulation::Qam64, CodeRate::R3_4, 2), None],
+        [
+            layer(1, Modulation::Qpsk, CodeRate::R2_3, 2),
+            layer(12, Modulation::Qam64, CodeRate::R3_4, 2),
+            None,
+        ],
     )
     .unwrap();
     let mut rng = Rng(1);
@@ -406,7 +525,9 @@ fn perf_realtime_factor() {
     let tmcc = TmccInfo::from_params(&p);
     let ac = AcFrame::stuffing(m.layout());
     let frames = 4;
-    let bits: Vec<_> = (0..frames).map(|_| Layer::ALL.map(|l| rng.bits(m.bits_per_frame(l)))).collect();
+    let bits: Vec<_> = (0..frames)
+        .map(|_| Layer::ALL.map(|l| rng.bits(m.bits_per_frame(l))))
+        .collect();
     let t0 = std::time::Instant::now();
     let mut tx = Vec::new();
     for b in &bits {
@@ -419,7 +540,11 @@ fn perf_realtime_factor() {
     let n = d.push(&rx).len();
     let t_rx = t1.elapsed().as_secs_f64();
     let air = frames as f64 * p.frame_seconds();
-    eprintln!("TX {:.2}× real time, RX {:.2}× real time ({n} frames, {air:.3} s of signal)", air / t_tx, air / t_rx);
+    eprintln!(
+        "TX {:.2}× real time, RX {:.2}× real time ({n} frames, {air:.3} s of signal)",
+        air / t_tx,
+        air / t_rx
+    );
 }
 
 /// Acquisition helpers on carrier-domain symbols: SP phase, segment kinds,
@@ -444,9 +569,13 @@ fn acquisition_helpers() {
     let tmcc = TmccInfo::from_params(&p);
     let ac = AcFrame::stuffing(m.layout());
     let bits = Layer::ALL.map(|l| rng.bits(m.bits_per_frame(l)));
-    let sy = m.modulate_frame_carriers([&bits[0], &bits[1], &bits[2]], &tmcc, &ac).unwrap();
-    let noisy: Vec<Vec<C32>> =
-        sy[5..45].iter().map(|s| s.iter().map(|&v| v + rng.cgauss(0.01)).collect()).collect();
+    let sy = m
+        .modulate_frame_carriers([&bits[0], &bits[1], &bits[2]], &tmcc, &ac)
+        .unwrap();
+    let noisy: Vec<Vec<C32>> = sy[5..45]
+        .iter()
+        .map(|s| s.iter().map(|&v| v + rng.cgauss(0.01)).collect())
+        .collect();
     let layout = FrameLayout::from_params(&p);
     let (c, conf) = detect_sp_phase(&layout, &noisy).unwrap();
     // List index j holds frame symbol n = j + 5, so n mod 4 = (j + c) mod 4 with c = 1.
@@ -454,7 +583,11 @@ fn acquisition_helpers() {
     assert!(conf > 0.9);
     let (kinds, _) = detect_kinds(p.mode, &noisy);
     for (s, kind) in kinds.iter().enumerate() {
-        let want = if p.segment_is_differential(s) { SegmentKind::Differential } else { SegmentKind::Coherent };
+        let want = if p.segment_is_differential(s) {
+            SegmentKind::Differential
+        } else {
+            SegmentKind::Coherent
+        };
         assert_eq!(*kind, want, "segment {s}");
     }
     // Integer CFO: shift the band by +5 bins in a full N-bin spectrum.
@@ -478,11 +611,24 @@ fn acquisition_helpers() {
 #[test]
 fn modulator_alignment_option() {
     use isdbt_ofdm::ModulatorOptions;
-    let p = Params::new(Mode::M1, GuardInterval::G1_8, false, [layer(13, Modulation::Qpsk, CodeRate::R1_2, 0), None, None])
-        .unwrap();
+    let p = Params::new(
+        Mode::M1,
+        GuardInterval::G1_8,
+        false,
+        [layer(13, Modulation::Qpsk, CodeRate::R1_2, 0), None, None],
+    )
+    .unwrap();
     let aligned = Modulator::new(p.clone());
-    assert_eq!((aligned.onair_frame_index(), aligned.buffer_frames()), (-1, 1));
-    let legacy =
-        Modulator::with_options(p, ModulatorOptions { bit_interleave_frame_alignment: false, ..ModulatorOptions::default() });
+    assert_eq!(
+        (aligned.onair_frame_index(), aligned.buffer_frames()),
+        (-1, 1)
+    );
+    let legacy = Modulator::with_options(
+        p,
+        ModulatorOptions {
+            bit_interleave_frame_alignment: false,
+            ..ModulatorOptions::default()
+        },
+    );
     assert_eq!((legacy.onair_frame_index(), legacy.buffer_frames()), (0, 0));
 }

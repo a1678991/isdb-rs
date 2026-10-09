@@ -149,7 +149,10 @@ impl Tracker {
                         self.copies = 0;
                         Continuity::Discontinuity { expected, got: cc }
                     } else {
-                        Continuity::NoPayloadChanged { previous: prev, got: cc }
+                        Continuity::NoPayloadChanged {
+                            previous: prev,
+                            got: cc,
+                        }
                     }
                 }
                 _ => Continuity::NoPayload,
@@ -167,11 +170,19 @@ impl Tracker {
             Continuity::Continuous
         } else if cc == prev {
             self.copies = self.copies.saturating_add(1);
-            if self.copies == 1 { Continuity::Duplicate } else { Continuity::ExcessDuplicate }
+            if self.copies == 1 {
+                Continuity::Duplicate
+            } else {
+                Continuity::ExcessDuplicate
+            }
         } else {
             self.last = Some(cc);
             self.copies = 0;
-            if discontinuity { Continuity::Discontinuity { expected, got: cc } } else { Continuity::Break { expected, got: cc } }
+            if discontinuity {
+                Continuity::Discontinuity { expected, got: cc }
+            } else {
+                Continuity::Break { expected, got: cc }
+            }
         }
     }
 }
@@ -254,18 +265,33 @@ impl CcChecker {
         if h.pid == PID_NULL {
             return None;
         }
-        let ev = |kind| Some(CcEvent { packet_index: index, pid: h.pid, kind });
+        let ev = |kind| {
+            Some(CcEvent {
+                packet_index: index,
+                pid: h.pid,
+                kind,
+            })
+        };
         if h.transport_error_indicator {
             return ev(CcEventKind::TransportError);
         }
-        let st = self.pids.entry(h.pid).or_insert_with(|| PidState { tracker: Tracker::new(), prev: [0; PACKET_SIZE] });
+        let st = self.pids.entry(h.pid).or_insert_with(|| PidState {
+            tracker: Tracker::new(),
+            prev: [0; PACKET_SIZE],
+        });
         let c = st.tracker.update(&h, disc);
         let out = match c {
             Continuity::First | Continuity::Continuous | Continuity::NoPayload => None,
-            Continuity::NoPayloadChanged { previous, got } => ev(CcEventKind::NoPayloadChanged { previous, got }),
-            Continuity::Duplicate => ev(CcEventKind::Duplicate { identical: same_except_pcr(&st.prev, pkt) }),
+            Continuity::NoPayloadChanged { previous, got } => {
+                ev(CcEventKind::NoPayloadChanged { previous, got })
+            }
+            Continuity::Duplicate => ev(CcEventKind::Duplicate {
+                identical: same_except_pcr(&st.prev, pkt),
+            }),
             Continuity::ExcessDuplicate => ev(CcEventKind::ExcessDuplicate),
-            Continuity::Discontinuity { expected, got } => ev(CcEventKind::Discontinuity { expected, got }),
+            Continuity::Discontinuity { expected, got } => {
+                ev(CcEventKind::Discontinuity { expected, got })
+            }
             Continuity::Break { expected, got } => ev(CcEventKind::Break { expected, got }),
         };
         if h.has_payload() && !c.is_repeat() {
@@ -278,7 +304,11 @@ impl CcChecker {
 /// Byte equality except the 6-byte PCR field (§2.4.3.3 duplicate rule).
 fn same_except_pcr(a: &[u8; PACKET_SIZE], b: &[u8; PACKET_SIZE]) -> bool {
     let has_pcr = |p: &[u8; PACKET_SIZE]| p[3] & 0x20 != 0 && p[4] >= 7 && p[5] & 0x10 != 0;
-    if has_pcr(a) && has_pcr(b) { a[..6] == b[..6] && a[12..] == b[12..] } else { a == b }
+    if has_pcr(a) && has_pcr(b) {
+        a[..6] == b[..6] && a[12..] == b[12..]
+    } else {
+        a == b
+    }
 }
 
 #[cfg(test)]
@@ -319,17 +349,38 @@ mod tests {
         let mut ch = CcChecker::new();
         let a = pkt(0x100, 5, true);
         assert_eq!(ch.push(0, &a), None);
-        assert_eq!(ch.push(1, &a).unwrap().kind, CcEventKind::Duplicate { identical: true });
+        assert_eq!(
+            ch.push(1, &a).unwrap().kind,
+            CcEventKind::Duplicate { identical: true }
+        );
         assert_eq!(ch.push(2, &a).unwrap().kind, CcEventKind::ExcessDuplicate);
         let e = ch.push(3, &pkt(0x100, 8, true)).unwrap();
-        assert_eq!((e.packet_index, e.kind), (3, CcEventKind::Break { expected: 6, got: 8 }));
+        assert_eq!(
+            (e.packet_index, e.kind),
+            (
+                3,
+                CcEventKind::Break {
+                    expected: 6,
+                    got: 8
+                }
+            )
+        );
         assert_eq!(ch.push(4, &pkt(0x100, 9, true)), None);
         // duplicate with different data
         let mut b = pkt(0x100, 9, true);
         b[100] ^= 1;
-        assert_eq!(ch.push(5, &b).unwrap().kind, CcEventKind::Duplicate { identical: false });
+        assert_eq!(
+            ch.push(5, &b).unwrap().kind,
+            CcEventKind::Duplicate { identical: false }
+        );
         // AF-only packet with changed counter
-        assert_eq!(ch.push(6, &pkt(0x100, 3, false)).unwrap().kind, CcEventKind::NoPayloadChanged { previous: 9, got: 3 });
+        assert_eq!(
+            ch.push(6, &pkt(0x100, 3, false)).unwrap().kind,
+            CcEventKind::NoPayloadChanged {
+                previous: 9,
+                got: 3
+            }
+        );
         assert_eq!(ch.push(7, &pkt(0x100, 10, true)), None);
     }
 
@@ -341,7 +392,10 @@ mod tests {
                 0x20,
                 false,
                 2,
-                Some(AdaptationFields { pcr: Some(Pcr::from_ticks(t)), ..Default::default() }),
+                Some(AdaptationFields {
+                    pcr: Some(Pcr::from_ticks(t)),
+                    ..Default::default()
+                }),
                 &[7; 100],
             )
             .unwrap()
@@ -350,7 +404,10 @@ mod tests {
         };
         let mut ch = CcChecker::new();
         ch.push(0, &mk(1000));
-        assert_eq!(ch.push(1, &mk(2000)).unwrap().kind, CcEventKind::Duplicate { identical: true });
+        assert_eq!(
+            ch.push(1, &mk(2000)).unwrap().kind,
+            CcEventKind::Duplicate { identical: true }
+        );
     }
 
     /// §2.4.3.5: discontinuity_indicator resets the expectation; null PID exempt.
@@ -362,13 +419,22 @@ mod tests {
             0x100,
             false,
             9,
-            Some(AdaptationFields { discontinuity_indicator: true, ..Default::default() }),
+            Some(AdaptationFields {
+                discontinuity_indicator: true,
+                ..Default::default()
+            }),
             &[0; 10],
         )
         .unwrap()
         .encode()
         .unwrap();
-        assert_eq!(ch.push(1, &d).unwrap().kind, CcEventKind::Discontinuity { expected: 2, got: 9 });
+        assert_eq!(
+            ch.push(1, &d).unwrap().kind,
+            CcEventKind::Discontinuity {
+                expected: 2,
+                got: 9
+            }
+        );
         assert_eq!(ch.push(2, &pkt(0x100, 10, true)), None);
         let n = Packet::null().encode().unwrap();
         for i in 0..3 {

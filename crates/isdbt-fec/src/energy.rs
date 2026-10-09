@@ -62,7 +62,9 @@ impl Prbs {
 
     /// Register contents as the 15-character string, stage 1 first.
     pub fn state_string(&self) -> String {
-        (0..15).map(|i| if self.reg >> i & 1 == 1 { '1' } else { '0' }).collect()
+        (0..15)
+            .map(|i| if self.reg >> i & 1 == 1 { '1' } else { '0' })
+            .collect()
     }
 
     /// One clock: output = stage14 ⊕ stage15, which also enters stage 1.
@@ -90,7 +92,9 @@ impl Prbs {
 /// stream byte *i* (sync-byte positions included, where it is not applied).
 pub fn frame_sequence(slots: usize) -> Vec<u8> {
     let mut p = Prbs::new();
-    (0..slots * TRANSMISSION_TSP).map(|_| p.next_byte()).collect()
+    (0..slots * TRANSMISSION_TSP)
+        .map(|_| p.next_byte())
+        .collect()
 }
 
 /// Apply energy dispersal to one layer frame held in the §3.4 "shifted"
@@ -101,7 +105,10 @@ pub fn frame_sequence(slots: usize) -> Vec<u8> {
 pub fn disperse_frame(frame: &mut [u8], prbs: &[u8]) {
     assert_eq!(frame.len() % TRANSMISSION_TSP, 0);
     assert!(prbs.len() >= frame.len());
-    for (slot, seq) in frame.chunks_exact_mut(TRANSMISSION_TSP).zip(prbs.chunks_exact(TRANSMISSION_TSP)) {
+    for (slot, seq) in frame
+        .chunks_exact_mut(TRANSMISSION_TSP)
+        .zip(prbs.chunks_exact(TRANSMISSION_TSP))
+    {
         for (b, &p) in slot[..TRANSMISSION_TSP - 1].iter_mut().zip(seq) {
             *b ^= p;
         }
@@ -173,6 +180,10 @@ mod tests {
         assert_eq!(f[204], seq[204]);
         assert_eq!(&f[..2], &[0x03, 0xF6]);
         disperse_frame(&mut f, &seq);
-        assert!(f.iter().enumerate().all(|(i, &b)| b == if i == 203 || i == 407 { 0x47 } else { 0 }));
+        assert!(
+            f.iter()
+                .enumerate()
+                .all(|(i, &b)| b == if i == 203 || i == 407 { 0x47 } else { 0 })
+        );
     }
 }

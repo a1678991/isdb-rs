@@ -19,10 +19,10 @@
 //!    coherent segments (linear at run edges), after removing the mean
 //!    phase slope (timing offset) of the grid.
 
-use crate::frame::{pilot_value, FrameLayout, SegmentKind};
 use crate::C32;
-use isdbt_core::ofdm_params::segment_at_position;
+use crate::frame::{FrameLayout, SegmentKind, pilot_value};
 use isdbt_core::SEGMENTS;
+use isdbt_core::ofdm_params::segment_at_position;
 
 /// A grid carrier whose estimate comes from a continual pilot.
 #[derive(Debug, Clone, Copy)]
@@ -64,7 +64,8 @@ impl ChannelEstimator {
             let k0 = pos * c;
             segments.push(k0);
             let upper = k0 + c;
-            let upper_is_sp = pos + 1 < SEGMENTS && layout.kinds[segment_at_position(pos + 1)] == SegmentKind::Coherent;
+            let upper_is_sp = pos + 1 < SEGMENTS
+                && layout.kinds[segment_at_position(pos + 1)] == SegmentKind::Coherent;
             if !upper_is_sp {
                 continual.push(ContinualGrid { k: upper });
             }
@@ -78,7 +79,15 @@ impl ChannelEstimator {
             }
         }
         let inv_pilot = layout.w.iter().map(|&w| 1.0 / pilot_value(w).re).collect();
-        Self { segments, c, continual, runs, inv_pilot, grid: vec![C32::default(); k_total / 3 + 2], h: vec![C32::default(); k_total] }
+        Self {
+            segments,
+            c,
+            continual,
+            runs,
+            inv_pilot,
+            grid: vec![C32::default(); k_total / 3 + 2],
+            h: vec![C32::default(); k_total],
+        }
     }
 
     /// True if there is no coherent segment.
@@ -95,7 +104,12 @@ impl ChannelEstimator {
     /// least-squares straight line through its `2w` nearest SP
     /// occurrences evaluated at `t` (`w = 1`: linear interpolation between
     /// the two nearest; larger `w` trades Doppler tolerance for noise).
-    pub fn estimate<'a>(&mut self, ring: impl Fn(i32) -> Option<&'a [C32]>, phase_t: usize, w: usize) {
+    pub fn estimate<'a>(
+        &mut self,
+        ring: impl Fn(i32) -> Option<&'a [C32]>,
+        phase_t: usize,
+        w: usize,
+    ) {
         if self.segments.is_empty() {
             return;
         }
@@ -121,7 +135,8 @@ impl ChannelEstimator {
         let span = 2 * w - 1;
         for cg in &self.continual {
             let k = cg.k;
-            let pts = (-span..=span).filter_map(|d| ring(d).map(|y| (d as f32, y[k] * self.inv_pilot[k])));
+            let pts = (-span..=span)
+                .filter_map(|d| ring(d).map(|y| (d as f32, y[k] * self.inv_pilot[k])));
             self.grid[k / 3] = ls_line_at_zero(pts).unwrap_or(y0[k]);
         }
         // 3. Mean phase slope over grid pairs, removed before interpolation.

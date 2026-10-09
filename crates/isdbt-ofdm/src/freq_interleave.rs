@@ -56,7 +56,9 @@ pub fn segment_groups(params: &Params) -> Vec<(usize, usize, bool)> {
         groups.push((0, 1, false));
         start = 1;
     }
-    let nd = (start..13).take_while(|&s| params.segment_is_differential(s)).count();
+    let nd = (start..13)
+        .take_while(|&s| params.segment_is_differential(s))
+        .count();
     if nd > 0 {
         groups.push((start, nd, true));
     }

@@ -62,7 +62,9 @@ pub mod rs;
 #[cfg(test)]
 pub(crate) mod testutil;
 
-pub use layer::{DecodedFrame, LayerDecoder, LayerEncoder, RsStats, RsStatus, null_transmission_tsp};
+pub use layer::{
+    DecodedFrame, LayerDecoder, LayerEncoder, RsStats, RsStatus, null_transmission_tsp,
+};
 pub use remux::MultiplexPattern;
 
 use isdbt_core::Layer;

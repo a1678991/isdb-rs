@@ -27,10 +27,21 @@ pub struct Timebase {
 impl Timebase {
     /// Build from the PCRs of `pid` (or the PID with most PCRs if `None`).
     pub fn from_stats(stats: &Stats, pid: Option<u16>, nominal_bps: Option<f64>) -> Self {
-        let pid = pid.filter(|p| stats.pids.get(p).is_some_and(|s| s.pcrs.len() >= 2)).or_else(|| {
-            stats.pids.iter().filter(|(_, s)| s.pcrs.len() >= 2).max_by_key(|(_, s)| s.pcrs.len()).map(|(p, _)| *p)
-        });
-        let mut tb = Timebase { pcr_pid: pid, nominal_bps, ..Default::default() };
+        let pid = pid
+            .filter(|p| stats.pids.get(p).is_some_and(|s| s.pcrs.len() >= 2))
+            .or_else(|| {
+                stats
+                    .pids
+                    .iter()
+                    .filter(|(_, s)| s.pcrs.len() >= 2)
+                    .max_by_key(|(_, s)| s.pcrs.len())
+                    .map(|(p, _)| *p)
+            });
+        let mut tb = Timebase {
+            pcr_pid: pid,
+            nominal_bps,
+            ..Default::default()
+        };
         let Some(pid) = pid else { return tb };
         let pcrs = &stats.pids[&pid].pcrs;
         let mut t = 0f64;
@@ -109,7 +120,9 @@ impl Timebase {
     /// First packet index at or after time `t` (inverse of [`Self::time`]).
     pub fn index_at(&self, t: f64) -> Option<u64> {
         if self.samples.len() < 2 {
-            return self.nominal_bps.map(|r| (t * r / (188.0 * 8.0)).ceil().max(0.0) as u64);
+            return self
+                .nominal_bps
+                .map(|r| (t * r / (188.0 * 8.0)).ceil().max(0.0) as u64);
         }
         let s = &self.samples;
         let i = s.partition_point(|&(_, x)| x < t);
@@ -132,7 +145,10 @@ impl Timebase {
         if packets == 0 {
             return Some(0.0);
         }
-        Some(self.time(packets - 1)? - self.time(0)? + self.packet_seconds(packets - 1).unwrap_or(0.0))
+        Some(
+            self.time(packets - 1)? - self.time(0)?
+                + self.packet_seconds(packets - 1).unwrap_or(0.0),
+        )
     }
 
     /// Approximate duration of one packet around `idx`.
@@ -164,7 +180,9 @@ mod tests {
         let base = PCR_MODULUS - 27_000 * 3;
         for i in 0..100u64 {
             let p = if i % 10 == 0 {
-                Packet::pcr_only(0x100, 0, Pcr::from_ticks(base + i / 10 * 27_000)).encode().unwrap()
+                Packet::pcr_only(0x100, 0, Pcr::from_ticks(base + i / 10 * 27_000))
+                    .encode()
+                    .unwrap()
             } else {
                 Packet::null().encode().unwrap()
             };

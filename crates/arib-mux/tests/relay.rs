@@ -606,7 +606,9 @@ fn source_copy_control_is_preserved() {
     let (mux, out) = run(&cfg, 3.0);
     let notes = mux.notes().join("\n");
     assert!(
-        notes.contains("source copy control: copy-one-generation ('10') from the source PMT program loop"),
+        notes.contains(
+            "source copy control: copy-one-generation ('10') from the source PMT program loop"
+        ),
         "{notes}"
     );
     assert!(
@@ -628,7 +630,10 @@ fn source_copy_control_is_preserved() {
     // "source" without a ts-program stream is a configuration error
     let bad = Config::from_toml(
         &text
-            .replace("kind = \"ts-program\"", "kind = \"declared\"\n  pid = 0x0111\n  stream_type = 0x02")
+            .replace(
+                "kind = \"ts-program\"",
+                "kind = \"declared\"\n  pid = 0x0111\n  stream_type = 0x02",
+            )
             .replace("pid_map = [[0x0140, 0x0111], [0x0141, 0x0112]]\n", "")
             .replace("eit_from_source = true\n", ""),
     );

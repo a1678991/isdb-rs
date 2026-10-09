@@ -191,7 +191,11 @@ pub fn assemble_pid(pkts: &[Pkt], pid: u16) -> Vec<Occurrence> {
         }
         for o in a.push(i as u64, p) {
             if let Assembled::Section(s) = o {
-                v.push(Occurrence { start: s.start_packet, end: s.end_packet, bytes: s.data });
+                v.push(Occurrence {
+                    start: s.start_packet,
+                    end: s.end_packet,
+                    bytes: s.data,
+                });
             }
         }
     }
@@ -229,8 +233,17 @@ pub struct Request {
 
 /// Rewrite the sections of `pid`: `f(occurrence)` returns the output
 /// sections replacing it (`None` = keep unchanged); `extra` are inserted.
-pub fn rewrite_pid(pkts: &mut [Pkt], pid: u16, mut f: impl FnMut(&Occurrence) -> Result<Option<Vec<Vec<u8>>>>, extra: Vec<Request>, policy: NullSlots) -> Result<PidRewrite> {
-    let mut rep = PidRewrite { pid, ..Default::default() };
+pub fn rewrite_pid(
+    pkts: &mut [Pkt],
+    pid: u16,
+    mut f: impl FnMut(&Occurrence) -> Result<Option<Vec<Vec<u8>>>>,
+    extra: Vec<Request>,
+    policy: NullSlots,
+) -> Result<PidRewrite> {
+    let mut rep = PidRewrite {
+        pid,
+        ..Default::default()
+    };
     let mut originals = Vec::new();
     let mut first_cc = None;
     for (i, p) in pkts.iter().enumerate() {
@@ -253,7 +266,11 @@ pub fn rewrite_pid(pkts: &mut [Pkt], pid: u16, mut f: impl FnMut(&Occurrence) ->
     let mut reqs: Vec<Request> = Vec::new();
     for o in &occ {
         match f(o)? {
-            None => reqs.push(Request { earliest: o.start, deadline: o.end, bytes: o.bytes.clone() }),
+            None => reqs.push(Request {
+                earliest: o.start,
+                deadline: o.end,
+                bytes: o.bytes.clone(),
+            }),
             Some(v) => {
                 if v.is_empty() {
                     rep.removed += 1;
@@ -262,9 +279,16 @@ pub fn rewrite_pid(pkts: &mut [Pkt], pid: u16, mut f: impl FnMut(&Occurrence) ->
                 }
                 for b in v {
                     if arib_ts::section::total_len(&b) != Some(b.len()) {
-                        bail!("replacement is not one complete section ({} bytes)", b.len());
+                        bail!(
+                            "replacement is not one complete section ({} bytes)",
+                            b.len()
+                        );
                     }
-                    reqs.push(Request { earliest: o.start, deadline: o.end, bytes: b });
+                    reqs.push(Request {
+                        earliest: o.start,
+                        deadline: o.end,
+                        bytes: b,
+                    });
                 }
             }
         }
@@ -275,9 +299,21 @@ pub fn rewrite_pid(pkts: &mut [Pkt], pid: u16, mut f: impl FnMut(&Occurrence) ->
     let total_reqs = reqs.len();
     let mut q: VecDeque<Request> = reqs.into();
     let orig_set: BTreeSet<u64> = originals.iter().copied().collect();
-    let nulls: Vec<u64> = if policy == NullSlots::Never { Vec::new() } else { pkts.iter().enumerate().filter(|(_, p)| pid_of(p) == PID_NULL).map(|(i, _)| i as u64).collect() };
+    let nulls: Vec<u64> = if policy == NullSlots::Never {
+        Vec::new()
+    } else {
+        pkts.iter()
+            .enumerate()
+            .filter(|(_, p)| pid_of(p) == PID_NULL)
+            .map(|(i, _)| i as u64)
+            .collect()
+    };
     // merged slot positions
-    let mut slots: Vec<(u64, bool)> = originals.iter().map(|&i| (i, true)).chain(nulls.iter().map(|&i| (i, false))).collect();
+    let mut slots: Vec<(u64, bool)> = originals
+        .iter()
+        .map(|&i| (i, true))
+        .chain(nulls.iter().map(|&i| (i, false)))
+        .collect();
     slots.sort_unstable();
     let mut cc = Counter::new(first_cc.unwrap_or(0));
     let mut cur: Option<(Vec<u8>, u64)> = None;
@@ -294,7 +330,11 @@ pub fn rewrite_pid(pkts: &mut [Pkt], pid: u16, mut f: impl FnMut(&Occurrence) ->
                 NullSlots::Never => continue,
                 NullSlots::Always => {}
                 NullSlots::WhenNeeded => {
-                    let dl = cur.as_ref().map(|c| c.1).or_else(|| q.front().map(|r| r.deadline)).unwrap_or(0);
+                    let dl = cur
+                        .as_ref()
+                        .map(|c| c.1)
+                        .or_else(|| q.front().map(|r| r.deadline))
+                        .unwrap_or(0);
                     if dl > idx {
                         continue;
                     }
@@ -315,7 +355,8 @@ pub fn rewrite_pid(pkts: &mut [Pkt], pid: u16, mut f: impl FnMut(&Occurrence) ->
                 }
                 fill = false;
             } else {
-                let can_start = q.front().is_some_and(|r| r.earliest <= idx) && rem.len() <= PAYLOAD_CAPACITY - 2;
+                let can_start = q.front().is_some_and(|r| r.earliest <= idx)
+                    && rem.len() <= PAYLOAD_CAPACITY - 2;
                 if can_start {
                     pusi = true;
                     payload.push(rem.len() as u8); // pointer_field (§2.4.4.2)
@@ -328,7 +369,10 @@ pub fn rewrite_pid(pkts: &mut [Pkt], pid: u16, mut f: impl FnMut(&Occurrence) ->
             pusi = true;
             payload.push(0);
         }
-        while fill && payload.len() < PAYLOAD_CAPACITY && q.front().is_some_and(|r| r.earliest <= idx) {
+        while fill
+            && payload.len() < PAYLOAD_CAPACITY
+            && q.front().is_some_and(|r| r.earliest <= idx)
+        {
             let r = q.pop_front().unwrap();
             rep.max_delay_packets = rep.max_delay_packets.max(idx - r.earliest);
             let room = PAYLOAD_CAPACITY - payload.len();
@@ -342,7 +386,10 @@ pub fn rewrite_pid(pkts: &mut [Pkt], pid: u16, mut f: impl FnMut(&Occurrence) ->
             }
         }
         payload.resize(PAYLOAD_CAPACITY, 0xFF); // §2.4.4 stuffing after a section end
-        let p = Packet::with_payload(pid, pusi, cc.next(true), &payload).map_err(|e| anyhow!("{e}"))?.encode().map_err(|e| anyhow!("{e}"))?;
+        let p = Packet::with_payload(pid, pusi, cc.next(true), &payload)
+            .map_err(|e| anyhow!("{e}"))?
+            .encode()
+            .map_err(|e| anyhow!("{e}"))?;
         out.push((idx, p));
         used.insert(idx);
         if !orig {
@@ -374,9 +421,17 @@ pub fn replace_map(orig_sns: &BTreeSet<u8>, repl: &[Vec<u8>], sec: &[u8]) -> Vec
     match sn_of(sec) {
         None => repl.to_vec(),
         Some(k) => {
-            let mut v: Vec<Vec<u8>> = repl.iter().filter(|r| sn_of(r) == Some(k)).cloned().collect();
+            let mut v: Vec<Vec<u8>> = repl
+                .iter()
+                .filter(|r| sn_of(r) == Some(k))
+                .cloned()
+                .collect();
             if orig_sns.iter().next() == Some(&k) {
-                v.extend(repl.iter().filter(|r| sn_of(r).is_none_or(|s| !orig_sns.contains(&s))).cloned());
+                v.extend(
+                    repl.iter()
+                        .filter(|r| sn_of(r).is_none_or(|s| !orig_sns.contains(&s)))
+                        .cloned(),
+                );
             }
             v
         }
@@ -388,8 +443,19 @@ fn target_pids(pkts: &[Pkt], t: &Target) -> Vec<u16> {
     if !t.pids.is_empty() {
         return t.pids.clone();
     }
-    let cap = scan::scan_packets(pkts, &scan::ScanOptions { skip_packet_checks: true, ..Default::default() });
-    let set: BTreeSet<u16> = cap.slots.keys().filter(|k| k.table_id == t.table_id && (t.ext.is_none() || k.ext == t.ext)).map(|k| k.pid).collect();
+    let cap = scan::scan_packets(
+        pkts,
+        &scan::ScanOptions {
+            skip_packet_checks: true,
+            ..Default::default()
+        },
+    );
+    let set: BTreeSet<u16> = cap
+        .slots
+        .keys()
+        .filter(|k| k.table_id == t.table_id && (t.ext.is_none() || k.ext == t.ext))
+        .map(|k| k.pid)
+        .collect();
     set.into_iter().collect()
 }
 
@@ -408,19 +474,45 @@ pub fn describe(op: &EditOp) -> String {
     match op {
         EditOp::NullPids(p) => format!("null PIDs {p:04x?}"),
         EditOp::Remove(s) => format!("remove sections {}", sel(s)),
-        EditOp::Replace { sel: s, sections } => format!("replace sections {} with {} section(s)", sel(s), sections.len()),
-        EditOp::Insert { pid, sections, interval_s, offset_s } => format!("insert {} section(s) on pid {pid:#06x} every {interval_s} s from {offset_s} s", sections.len()),
+        EditOp::Replace { sel: s, sections } => format!(
+            "replace sections {} with {} section(s)",
+            sel(s),
+            sections.len()
+        ),
+        EditOp::Insert {
+            pid,
+            sections,
+            interval_s,
+            offset_s,
+        } => format!(
+            "insert {} section(s) on pid {pid:#06x} every {interval_s} s from {offset_s} s",
+            sections.len()
+        ),
         EditOp::Mutate(e) => {
-            let path: Vec<String> = e.path.iter().map(|s| match &s.sel {
-                Some(x) => format!("{}[{x}]", s.name),
-                None => s.name.clone(),
-            }).collect();
+            let path: Vec<String> = e
+                .path
+                .iter()
+                .map(|s| match &s.sel {
+                    Some(x) => format!("{}[{x}]", s.name),
+                    None => s.name.clone(),
+                })
+                .collect();
             let (op, v) = match &e.op {
                 crate::mutate::Op::Set(v) => ("=", v),
                 crate::mutate::Op::Add(v) => (".add=", v),
                 crate::mutate::Op::Del(v) => (".del=", v),
             };
-            format!("set {}{}{}{}{op}{v}", e.table, e.tid.map(|t| format!("@{t:#04x}")).unwrap_or_default(), e.ext.map(|x| format!("[{x:#06x}]")).unwrap_or_default(), if path.is_empty() { String::new() } else { format!(".{}", path.join(".")) })
+            format!(
+                "set {}{}{}{}{op}{v}",
+                e.table,
+                e.tid.map(|t| format!("@{t:#04x}")).unwrap_or_default(),
+                e.ext.map(|x| format!("[{x:#06x}]")).unwrap_or_default(),
+                if path.is_empty() {
+                    String::new()
+                } else {
+                    format!(".{}", path.join("."))
+                }
+            )
         }
     }
 }
@@ -429,27 +521,61 @@ pub fn describe(op: &EditOp) -> String {
 pub fn apply(pkts: &mut [Pkt], ops: &[EditOp], opts: &EditOptions) -> Result<Vec<StepReport>> {
     let mut reports = Vec::new();
     for op in ops {
-        let mut r = StepReport { op: describe(op), ..Default::default() };
+        let mut r = StepReport {
+            op: describe(op),
+            ..Default::default()
+        };
         match op {
             EditOp::NullPids(p) => r.nulled_packets = null_pids(pkts, p),
             EditOp::Remove(sel) => {
                 let s = *sel;
-                r.rewrites.push(rewrite_pid(pkts, sel.pid, |o| Ok(s.matches(s.pid, &o.bytes).then(Vec::new)), vec![], opts.null_slots)?);
+                r.rewrites.push(rewrite_pid(
+                    pkts,
+                    sel.pid,
+                    |o| Ok(s.matches(s.pid, &o.bytes).then(Vec::new)),
+                    vec![],
+                    opts.null_slots,
+                )?);
             }
             EditOp::Replace { sel, sections } => {
                 let occ = assemble_pid(pkts, sel.pid);
-                let sns: BTreeSet<u8> = occ.iter().filter(|o| sel.matches(sel.pid, &o.bytes)).filter(|o| o.bytes[1] & 0x80 != 0).map(|o| o.bytes[6]).collect();
+                let sns: BTreeSet<u8> = occ
+                    .iter()
+                    .filter(|o| sel.matches(sel.pid, &o.bytes))
+                    .filter(|o| o.bytes[1] & 0x80 != 0)
+                    .map(|o| o.bytes[6])
+                    .collect();
                 if !occ.iter().any(|o| sel.matches(sel.pid, &o.bytes)) {
                     bail!("no section matches {sel:?}; use insert to add a new table");
                 }
                 let s = *sel;
-                r.rewrites.push(rewrite_pid(pkts, sel.pid, |o| Ok(s.matches(s.pid, &o.bytes).then(|| replace_map(&sns, sections, &o.bytes))), vec![], opts.null_slots)?);
+                r.rewrites.push(rewrite_pid(
+                    pkts,
+                    sel.pid,
+                    |o| {
+                        Ok(s.matches(s.pid, &o.bytes)
+                            .then(|| replace_map(&sns, sections, &o.bytes)))
+                    },
+                    vec![],
+                    opts.null_slots,
+                )?);
             }
-            EditOp::Insert { pid, sections, interval_s, offset_s } => {
+            EditOp::Insert {
+                pid,
+                sections,
+                interval_s,
+                offset_s,
+            } => {
                 if *interval_s <= 0.0 {
                     bail!("interval must be positive");
                 }
-                let cap = scan::scan_packets(pkts, &scan::ScanOptions { skip_packet_checks: true, ..Default::default() });
+                let cap = scan::scan_packets(
+                    pkts,
+                    &scan::ScanOptions {
+                        skip_packet_checks: true,
+                        ..Default::default()
+                    },
+                );
                 let tb: Timebase = crate::inspect::timebase(&cap, opts.nominal_bps);
                 if !tb.known() {
                     bail!("no PCR in the stream: give a nominal bit rate to time insertions");
@@ -461,11 +587,21 @@ pub fn apply(pkts: &mut [Pkt], ops: &[EditOp], opts: &EditOptions) -> Result<Vec
                 while t <= end {
                     let at = tb.index_at(t).unwrap_or(n).min(n);
                     for s in sections {
-                        extra.push(Request { earliest: at, deadline: at, bytes: s.clone() });
+                        extra.push(Request {
+                            earliest: at,
+                            deadline: at,
+                            bytes: s.clone(),
+                        });
                     }
                     t += interval_s;
                 }
-                r.rewrites.push(rewrite_pid(pkts, *pid, |_| Ok(None), extra, opts.null_slots)?);
+                r.rewrites.push(rewrite_pid(
+                    pkts,
+                    *pid,
+                    |_| Ok(None),
+                    extra,
+                    opts.null_slots,
+                )?);
             }
             EditOp::Mutate(expr) => {
                 let t = expr.target()?;
@@ -485,7 +621,8 @@ pub fn apply(pkts: &mut [Pkt], ops: &[EditOp], opts: &EditOptions) -> Result<Vec
                             if let Some(v) = cache.get(&o.bytes) {
                                 return Ok(Some(vec![v.clone()]));
                             }
-                            let v = crate::mutate::apply_to_section(expr, pid, &o.bytes).with_context(|| format!("on pid {pid:#06x} packet {}", o.start))?;
+                            let v = crate::mutate::apply_to_section(expr, pid, &o.bytes)
+                                .with_context(|| format!("on pid {pid:#06x} packet {}", o.start))?;
                             cache.insert(o.bytes.clone(), v.clone());
                             Ok(Some(vec![v]))
                         },
@@ -506,7 +643,13 @@ pub fn apply(pkts: &mut [Pkt], ops: &[EditOp], opts: &EditOptions) -> Result<Vec
 pub fn sections_from_capture(cap: &scan::Capture, sel: &Selector) -> Vec<Vec<u8>> {
     cap.slots
         .iter()
-        .filter(|(k, s)| k.pid == sel.pid && k.table_id == sel.table_id && sel.ext.is_none_or(|e| k.ext == Some(e)) && sel.sn.is_none_or(|n| k.sn == Some(n)) && !s.latest.is_empty())
+        .filter(|(k, s)| {
+            k.pid == sel.pid
+                && k.table_id == sel.table_id
+                && sel.ext.is_none_or(|e| k.ext == Some(e))
+                && sel.sn.is_none_or(|n| k.sn == Some(n))
+                && !s.latest.is_empty()
+        })
         .map(|(_, s)| s.latest.clone())
         .collect()
 }
@@ -539,13 +682,27 @@ pub fn sections_from_hex(text: &str, sel: Option<&Selector>) -> Result<Vec<(u16,
 
 /// Load replacement sections from a `.ts` capture or a hex fixture.
 pub fn load_sections(path: &Path, sel: &Selector) -> Result<Vec<Vec<u8>>> {
-    let is_ts = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ts") || e.eq_ignore_ascii_case("m2ts") || e.eq_ignore_ascii_case("mts"));
+    let is_ts = path.extension().is_some_and(|e| {
+        e.eq_ignore_ascii_case("ts")
+            || e.eq_ignore_ascii_case("m2ts")
+            || e.eq_ignore_ascii_case("mts")
+    });
     let v = if is_ts {
-        let cap = scan::scan_path(path, &scan::ScanOptions { skip_packet_checks: true, ..Default::default() })?;
+        let cap = scan::scan_path(
+            path,
+            &scan::ScanOptions {
+                skip_packet_checks: true,
+                ..Default::default()
+            },
+        )?;
         sections_from_capture(&cap, sel)
     } else {
-        let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        sections_from_hex(&text, Some(sel))?.into_iter().map(|x| x.1).collect()
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        sections_from_hex(&text, Some(sel))?
+            .into_iter()
+            .map(|x| x.1)
+            .collect()
     };
     if v.is_empty() {
         bail!("no section matching {sel:?} in {}", path.display());
@@ -558,16 +715,31 @@ pub fn load_sections(path: &Path, sel: &Selector) -> Result<Vec<Vec<u8>>> {
 /// the latest section of each slot.
 pub fn extract(cap: &scan::Capture, pid: Option<u16>, tid: Option<u8>, all_bodies: bool) -> String {
     let mut out = String::new();
-    out.push_str(&format!("# sections of {} (pid table_id hex)\n", cap.source));
+    out.push_str(&format!(
+        "# sections of {} (pid table_id hex)\n",
+        cap.source
+    ));
     let mut seen: BTreeMap<(u16, Vec<u8>), ()> = BTreeMap::new();
     for (k, s) in &cap.slots {
         if pid.is_some_and(|p| p != k.pid) || tid.is_some_and(|t| t != k.table_id) {
             continue;
         }
-        let bodies: Vec<&Vec<u8>> = if all_bodies && !s.versions.is_empty() { s.versions.iter().flat_map(|v| v.bodies.iter().map(|b| &b.bytes)).collect() } else { vec![&s.latest] };
+        let bodies: Vec<&Vec<u8>> = if all_bodies && !s.versions.is_empty() {
+            s.versions
+                .iter()
+                .flat_map(|v| v.bodies.iter().map(|b| &b.bytes))
+                .collect()
+        } else {
+            vec![&s.latest]
+        };
         for b in bodies {
             if seen.insert((k.pid, b.clone()), ()).is_none() {
-                out.push_str(&format!("{:#06x} {:#04x} {}\n", k.pid, k.table_id, crate::tree::hex(b)));
+                out.push_str(&format!(
+                    "{:#06x} {:#04x} {}\n",
+                    k.pid,
+                    k.table_id,
+                    crate::tree::hex(b)
+                ));
             }
         }
     }

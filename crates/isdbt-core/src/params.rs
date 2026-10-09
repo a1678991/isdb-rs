@@ -183,7 +183,11 @@ impl TimeInterleave {
         if self.0 > 3 {
             return None;
         }
-        let i = if self.0 == 0 { 0 } else { 1usize << (self.0 - 1) };
+        let i = if self.0 == 0 {
+            0
+        } else {
+            1usize << (self.0 - 1)
+        };
         Some(i * 4 / mode.scale())
     }
 }
@@ -273,7 +277,11 @@ impl Params {
         partial_reception: bool,
         layers: [Option<LayerConfig>; 3],
     ) -> Result<Self, ParamError> {
-        let used: Vec<_> = layers.iter().take_while(|l| l.is_some()).flatten().collect();
+        let used: Vec<_> = layers
+            .iter()
+            .take_while(|l| l.is_some())
+            .flatten()
+            .collect();
         if layers.iter().flatten().count() != used.len() {
             return Err(ParamError("layers must be used contiguously from A".into()));
         }
@@ -288,25 +296,37 @@ impl Params {
             return Err(ParamError("layer with 0 segments".into()));
         }
         if partial_reception && used[0].segments != 1 {
-            return Err(ParamError("partial reception requires layer A = 1 segment".into()));
+            return Err(ParamError(
+                "partial reception requires layer A = 1 segment".into(),
+            ));
         }
         let skip = usize::from(partial_reception);
         let mut seen_coherent = false;
         for l in &used[skip..] {
             if l.modulation.is_differential() && seen_coherent {
-                return Err(ParamError("differential layer after a coherent layer".into()));
+                return Err(ParamError(
+                    "differential layer after a coherent layer".into(),
+                ));
             }
             seen_coherent |= !l.modulation.is_differential();
         }
         if used.iter().any(|l| l.time_interleave.0 > 3) {
             return Err(ParamError("time interleave index must be 0..=3".into()));
         }
-        Ok(Self { mode, guard, partial_reception, layers })
+        Ok(Self {
+            mode,
+            guard,
+            partial_reception,
+            layers,
+        })
     }
 
     /// Configured layers with their identifiers, in data-segment order.
     pub fn active_layers(&self) -> impl Iterator<Item = (Layer, &LayerConfig)> {
-        Layer::ALL.into_iter().zip(self.layers.iter()).filter_map(|(id, l)| l.as_ref().map(|l| (id, l)))
+        Layer::ALL
+            .into_iter()
+            .zip(self.layers.iter())
+            .filter_map(|(id, l)| l.as_ref().map(|l| (id, l)))
     }
 
     /// Layer owning data segment `seg` (0..13), in the §3.11.2 numbering.
@@ -323,7 +343,10 @@ impl Params {
 
     /// Number of differentially modulated segments, nd (Table 3-2).
     pub fn differential_segments(&self) -> usize {
-        self.active_layers().filter(|(_, l)| l.modulation.is_differential()).map(|(_, l)| l.segments).sum()
+        self.active_layers()
+            .filter(|(_, l)| l.modulation.is_differential())
+            .map(|(_, l)| l.segments)
+            .sum()
     }
 
     /// Transmission TSPs per multiplex frame, n of Table 3-5:
@@ -362,7 +385,12 @@ mod tests {
     use super::*;
 
     fn layer(segments: usize, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
-        LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave(0) }
+        LayerConfig {
+            segments,
+            modulation,
+            code_rate,
+            time_interleave: TimeInterleave(0),
+        }
     }
 
     /// Table 3-5: transmission TSPs per multiplex frame.
@@ -373,11 +401,25 @@ mod tests {
             (Mode::M2, [2560, 2304, 2176, 2112]),
             (Mode::M3, [5120, 4608, 4352, 4224]),
         ];
-        let gis = [GuardInterval::G1_4, GuardInterval::G1_8, GuardInterval::G1_16, GuardInterval::G1_32];
+        let gis = [
+            GuardInterval::G1_4,
+            GuardInterval::G1_8,
+            GuardInterval::G1_16,
+            GuardInterval::G1_32,
+        ];
         for (mode, row) in want {
             for (gi, n) in gis.iter().zip(row) {
-                let p = Params::new(mode, *gi, false, [Some(layer(13, Modulation::Qpsk, CodeRate::R1_2)), None, None])
-                    .unwrap();
+                let p = Params::new(
+                    mode,
+                    *gi,
+                    false,
+                    [
+                        Some(layer(13, Modulation::Qpsk, CodeRate::R1_2)),
+                        None,
+                        None,
+                    ],
+                )
+                .unwrap();
                 assert_eq!(p.multiplex_frame_tsps(), n, "{mode:?} {gi:?}");
             }
         }
@@ -389,9 +431,21 @@ mod tests {
         use CodeRate::*;
         use Modulation::*;
         let rows = [
-            (Dqpsk, R1_2, 12), (Dqpsk, R2_3, 16), (Dqpsk, R3_4, 18), (Dqpsk, R5_6, 20), (Dqpsk, R7_8, 21),
-            (Qam16, R1_2, 24), (Qam16, R2_3, 32), (Qam16, R3_4, 36), (Qam16, R5_6, 40), (Qam16, R7_8, 42),
-            (Qam64, R1_2, 36), (Qam64, R2_3, 48), (Qam64, R3_4, 54), (Qam64, R5_6, 60), (Qam64, R7_8, 63),
+            (Dqpsk, R1_2, 12),
+            (Dqpsk, R2_3, 16),
+            (Dqpsk, R3_4, 18),
+            (Dqpsk, R5_6, 20),
+            (Dqpsk, R7_8, 21),
+            (Qam16, R1_2, 24),
+            (Qam16, R2_3, 32),
+            (Qam16, R3_4, 36),
+            (Qam16, R5_6, 40),
+            (Qam16, R7_8, 42),
+            (Qam64, R1_2, 36),
+            (Qam64, R2_3, 48),
+            (Qam64, R3_4, 54),
+            (Qam64, R5_6, 60),
+            (Qam64, R7_8, 63),
         ];
         for (m, r, mode1) in rows {
             for mode in [Mode::M1, Mode::M2, Mode::M3] {
@@ -404,11 +458,26 @@ mod tests {
     /// 53.0145 ms (Mode 1, 1/32).
     #[test]
     fn frame_lengths() {
-        let mk = |m, g| Params::new(m, g, false, [Some(layer(13, Modulation::Qpsk, CodeRate::R1_2)), None, None]).unwrap();
+        let mk = |m, g| {
+            Params::new(
+                m,
+                g,
+                false,
+                [
+                    Some(layer(13, Modulation::Qpsk, CodeRate::R1_2)),
+                    None,
+                    None,
+                ],
+            )
+            .unwrap()
+        };
         assert!((mk(Mode::M3, GuardInterval::G1_4).frame_seconds() - 0.25704).abs() < 1e-12);
         assert!((mk(Mode::M3, GuardInterval::G1_8).frame_seconds() - 0.231336).abs() < 1e-12);
         assert!((mk(Mode::M1, GuardInterval::G1_32).frame_seconds() - 0.0530145).abs() < 1e-12);
-        assert_eq!(mk(Mode::M3, GuardInterval::G1_4).frame_ticks_27mhz(), 6_940_080);
+        assert_eq!(
+            mk(Mode::M3, GuardInterval::G1_4).frame_ticks_27mhz(),
+            6_940_080
+        );
     }
 
     /// Table 3-2: carriers and time-interleave lengths.

@@ -10,7 +10,7 @@
 
 use crate::dsc::{self, ParityStatus};
 use crate::frame::FrameLayout;
-use crate::tmcc::{sync_word, BitReader, BitWriter};
+use crate::tmcc::{BitReader, BitWriter, sync_word};
 
 /// AC content of one OFDM frame: for each AC carrier of the layout (in
 /// ascending frequency, [`FrameLayout::ac`]) the bits B0..B203 (B0 is
@@ -24,7 +24,9 @@ pub struct AcFrame {
 impl AcFrame {
     /// All-stuffing content (§3.13.4): every bit 1.
     pub fn stuffing(layout: &FrameLayout) -> Self {
-        Self { carriers: vec![[1u8; 204]; layout.ac.len()] }
+        Self {
+            carriers: vec![[1u8; 204]; layout.ac.len()],
+        }
     }
 
     /// Map a serial AC data stream (Attachment §6.2.3.2/§6.3.4.2): bits
@@ -43,7 +45,9 @@ impl AcFrame {
     /// Inverse of [`Self::from_stream`] (B1..B203 of all carriers, symbol-major).
     pub fn to_stream(&self) -> Vec<u8> {
         let n = self.carriers.len();
-        (0..n * 203).map(|idx| self.carriers[idx % n][1 + idx / n]).collect()
+        (0..n * 203)
+            .map(|idx| self.carriers[idx % n][1 + idx / n])
+            .collect()
     }
 
     /// Stuffing everywhere except the AC carriers of segment No. 0, which
@@ -208,7 +212,9 @@ impl SeismicDetail {
             }
             7 => {
                 r.get(32);
-                Some(SeismicDetail::NotAvailable { broadcaster_id: r.get(11) as u16 })
+                Some(SeismicDetail::NotAvailable {
+                    broadcaster_id: r.get(11) as u16,
+                })
             }
             _ => None,
         }
@@ -275,7 +281,10 @@ impl SeismicWarning {
         let mut word = [0u8; 187];
         word.copy_from_slice(&bits[17..204]);
         let parity = dsc::decode(&mut word);
-        let mut r = BitReader { bits: &word, pos: 0 };
+        let mut r = BitReader {
+            bits: &word,
+            pos: 0,
+        };
         let start_end = r.get(2) as u8;
         let update = r.get(2) as u8;
         let signal_id = r.get(3) as u8;
@@ -283,7 +292,12 @@ impl SeismicWarning {
         // CRC over B21..B111 = word[4..95]; CRC bits B112..B121 = word[95..105].
         let crc_ok = crc10(&word[4..95]).as_slice() == &word[95..105];
         SeismicDecoded {
-            warning: SeismicWarning { start_end, update, signal_id, detail },
+            warning: SeismicWarning {
+                start_end,
+                update,
+                signal_id,
+                detail,
+            },
             config_id: [bits[1], bits[2], bits[3]],
             crc_ok,
             parity,

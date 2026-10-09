@@ -26,15 +26,38 @@ pub const AUDIO_PID: u16 = 0x0110;
 pub const PPS: u64 = 2000;
 
 pub fn si_header(tid: u8, ext: u16, version: u8) -> LongHeader {
-    LongHeader { private_indicator: true, ..LongHeader::new(tid, ext, version) }
+    LongHeader {
+        private_indicator: true,
+        ..LongHeader::new(tid, ext, version)
+    }
 }
 
 pub fn pat() -> Vec<u8> {
-    Pat::section(TSID, 1, vec![PatEntry::new(0, 0x0010), PatEntry::new(SID, PMT_PID)]).encode().unwrap()
+    Pat::section(
+        TSID,
+        1,
+        vec![PatEntry::new(0, 0x0010), PatEntry::new(SID, PMT_PID)],
+    )
+    .encode()
+    .unwrap()
 }
 
 pub fn pmt() -> Vec<u8> {
-    Pmt::section(SID, 1, Pmt::new(PCR_PID, vec![], vec![PmtStream::new(0x0F, AUDIO_PID, vec![arib_ts::descriptor::Descriptor::new(0x52, [0x10])])])).encode().unwrap()
+    Pmt::section(
+        SID,
+        1,
+        Pmt::new(
+            PCR_PID,
+            vec![],
+            vec![PmtStream::new(
+                0x0F,
+                AUDIO_PID,
+                vec![arib_ts::descriptor::Descriptor::new(0x52, [0x10])],
+            )],
+        ),
+    )
+    .encode()
+    .unwrap()
 }
 
 pub fn cat() -> Vec<u8> {
@@ -42,7 +65,12 @@ pub fn cat() -> Vec<u8> {
 }
 
 pub fn tds(gi: u8) -> Descriptor {
-    Descriptor::TerrestrialDeliverySystem(d::TerrestrialDeliverySystem { area_code: 0x8D5, guard_interval: gi, transmission_mode: 2, frequencies: vec![3354] })
+    Descriptor::TerrestrialDeliverySystem(d::TerrestrialDeliverySystem {
+        area_code: 0x8D5,
+        guard_interval: gi,
+        transmission_mode: 2,
+        frequencies: vec![3354],
+    })
 }
 
 pub fn nit_with(version: u8, gi: u8) -> Vec<u8> {
@@ -51,8 +79,13 @@ pub fn nit_with(version: u8, gi: u8) -> Vec<u8> {
         body: NitBody(NetworkLoops {
             reserved_future_use_1: 0xF,
             descriptors: vec![
-                Descriptor::NetworkName(d::NetworkName { name: AribString::encode("テスト").unwrap() }),
-                Descriptor::SystemManagement(d::SystemManagement { system_management_id: 0x0301, additional_identification_info: vec![] }),
+                Descriptor::NetworkName(d::NetworkName {
+                    name: AribString::encode("テスト").unwrap(),
+                }),
+                Descriptor::SystemManagement(d::SystemManagement {
+                    system_management_id: 0x0301,
+                    additional_identification_info: vec![],
+                }),
             ],
             reserved_future_use_2: 0xF,
             transport_streams: vec![TransportStreamEntry {
@@ -60,12 +93,20 @@ pub fn nit_with(version: u8, gi: u8) -> Vec<u8> {
                 original_network_id: ONID,
                 reserved_future_use: 0xF,
                 descriptors: vec![
-                    Descriptor::ServiceList(d::ServiceList { services: vec![d::ServiceListEntry { service_id: SID, service_type: 0x01 }] }),
+                    Descriptor::ServiceList(d::ServiceList {
+                        services: vec![d::ServiceListEntry {
+                            service_id: SID,
+                            service_type: 0x01,
+                        }],
+                    }),
                     tds(gi),
                     Descriptor::TsInformation(d::TsInformation {
                         remote_control_key_id: 10,
                         ts_name: AribString::encode("テスト").unwrap(),
-                        transmission_types: vec![d::TransmissionType { transmission_type_info: 0x0F, service_ids: vec![SID] }],
+                        transmission_types: vec![d::TransmissionType {
+                            transmission_type_info: 0x0F,
+                            service_ids: vec![SID],
+                        }],
                         reserved_future_use: vec![],
                     }),
                 ],
@@ -96,7 +137,11 @@ pub fn sdt_with(tsid: u16, onid: u16, sids: &[u16]) -> Vec<u8> {
                     eit_present_following_flag: true,
                     running_status: 4,
                     free_ca_mode: false,
-                    descriptors: vec![Descriptor::Service(d::Service { service_type: 0x01, provider_name: AribString::encode("P").unwrap(), service_name: AribString::encode("S").unwrap() })],
+                    descriptors: vec![Descriptor::Service(d::Service {
+                        service_type: 0x01,
+                        provider_name: AribString::encode("P").unwrap(),
+                        service_name: AribString::encode("S").unwrap(),
+                    })],
                 })
                 .collect(),
         },
@@ -110,7 +155,17 @@ pub fn sdt() -> Vec<u8> {
 }
 
 pub fn jst(h: u8, m: u8, s: u8) -> MjdTime {
-    MjdTime::from_jst(DateTime { date: Date { year: 2026, month: 10, day: 7 }, hour: h, minute: m, second: s }).unwrap()
+    MjdTime::from_jst(DateTime {
+        date: Date {
+            year: 2026,
+            month: 10,
+            day: 7,
+        },
+        hour: h,
+        minute: m,
+        second: s,
+    })
+    .unwrap()
 }
 
 pub fn event(id: u16, h: u8) -> EitEvent {
@@ -120,14 +175,28 @@ pub fn event(id: u16, h: u8) -> EitEvent {
         duration: BcdDuration::from_hms(1, 0, 0).unwrap(),
         running_status: 0,
         free_ca_mode: false,
-        descriptors: vec![Descriptor::ShortEvent(d::ShortEvent { language: *b"jpn", event_name: AribString::encode("番組").unwrap(), text: AribString::encode("").unwrap() })],
+        descriptors: vec![Descriptor::ShortEvent(d::ShortEvent {
+            language: *b"jpn",
+            event_name: AribString::encode("番組").unwrap(),
+            text: AribString::encode("").unwrap(),
+        })],
     }
 }
 
 pub fn eit_pf(sn: u8, events: Vec<EitEvent>) -> Vec<u8> {
     Eit {
-        header: LongHeader { section_number: sn, last_section_number: 1, ..si_header(0x4E, SID, 1) },
-        body: EitBody { transport_stream_id: TSID, original_network_id: ONID, segment_last_section_number: 1, last_table_id: 0x4E, events },
+        header: LongHeader {
+            section_number: sn,
+            last_section_number: 1,
+            ..si_header(0x4E, SID, 1)
+        },
+        body: EitBody {
+            transport_stream_id: TSID,
+            original_network_id: ONID,
+            segment_last_section_number: 1,
+            last_table_id: 0x4E,
+            events,
+        },
     }
     .encode()
     .unwrap()
@@ -135,13 +204,35 @@ pub fn eit_pf(sn: u8, events: Vec<EitEvent>) -> Vec<u8> {
 
 pub fn tot(sec: u32) -> Vec<u8> {
     let t = jst(12, (sec / 60) as u8, (sec % 60) as u8);
-    arib_si::tables::Tot { header: ShortHeader { table_id: 0x73, private_indicator: true, reserved1: 3 }, body: TotBody { jst_time: t, reserved: 0xF, descriptors: vec![] } }.encode().unwrap()
+    arib_si::tables::Tot {
+        header: ShortHeader {
+            table_id: 0x73,
+            private_indicator: true,
+            reserved1: 3,
+        },
+        body: TotBody {
+            jst_time: t,
+            reserved: 0xF,
+            descriptors: vec![],
+        },
+    }
+    .encode()
+    .unwrap()
 }
 
 pub fn bit() -> Vec<u8> {
     Bit {
         header: si_header(0xC4, ONID, 1),
-        body: BitBody { reserved_future_use: 0x7, broadcast_view_propriety: true, first_descriptors: vec![], broadcasters: vec![BitBroadcaster { broadcaster_id: 1, reserved_future_use: 0xF, descriptors: vec![] }] },
+        body: BitBody {
+            reserved_future_use: 0x7,
+            broadcast_view_propriety: true,
+            first_descriptors: vec![],
+            broadcasters: vec![BitBroadcaster {
+                broadcaster_id: 1,
+                reserved_future_use: 0xF,
+                descriptors: vec![],
+            }],
+        },
     }
     .encode()
     .unwrap()
@@ -172,7 +263,12 @@ pub struct Spec {
 }
 
 pub fn item(pid: u16, period_ms: u64, phase_ms: u64, s: Vec<u8>) -> Item {
-    Item { pid, period_ms, phase_ms, make: Box::new(move |_| vec![s.clone()]) }
+    Item {
+        pid,
+        period_ms,
+        phase_ms,
+        make: Box::new(move |_| vec![s.clone()]),
+    }
 }
 
 /// The default valid stream: PAT/PMT 100 ms (well inside), CAT 500 ms,
@@ -187,8 +283,20 @@ pub fn default_spec(seconds: u64) -> Spec {
             item(0x0001, 500, 7, cat()),
             item(0x0010, 1000, 11, nit()),
             item(0x0011, 1000, 13, sdt()),
-            Item { pid: 0x0012, period_ms: 1000, phase_ms: 17, make: Box::new(|_| vec![eit_pf(0, vec![event(1, 12)]), eit_pf(1, vec![event(2, 13)])]) },
-            Item { pid: 0x0014, period_ms: 5000, phase_ms: 19, make: Box::new(|n| vec![tot(n as u32 * 5)]) },
+            Item {
+                pid: 0x0012,
+                period_ms: 1000,
+                phase_ms: 17,
+                make: Box::new(|_| {
+                    vec![eit_pf(0, vec![event(1, 12)]), eit_pf(1, vec![event(2, 13)])]
+                }),
+            },
+            Item {
+                pid: 0x0014,
+                period_ms: 5000,
+                phase_ms: 19,
+                make: Box::new(|n| vec![tot(n as u32 * 5)]),
+            },
         ],
         audio_period_ms: 64,
         audio_payload: adts_frame(|_| {}),
@@ -224,7 +332,11 @@ pub fn build(spec: &Spec) -> Vec<Pkt> {
         if t_ms >= next_pcr && spec.pcr_period_ms > 0 {
             let ticks = i * 27_000_000 / PPS;
             let c = cc.entry(PCR_PID).or_default();
-            out.push(Packet::pcr_only(PCR_PID, c.next(false), Pcr::from_ticks(ticks)).encode().unwrap());
+            out.push(
+                Packet::pcr_only(PCR_PID, c.next(false), Pcr::from_ticks(ticks))
+                    .encode()
+                    .unwrap(),
+            );
             next_pcr += spec.pcr_period_ms;
             continue;
         }
@@ -234,14 +346,23 @@ pub fn build(spec: &Spec) -> Vec<Pkt> {
                 reps[k] += 1;
                 let c = cc.entry(it.pid).or_default();
                 queue.extend(packetize_sections(it.pid, &secs, spec.packing, c).unwrap());
-                next[k] = if it.period_ms == 0 { u64::MAX } else { next[k] + it.period_ms };
+                next[k] = if it.period_ms == 0 {
+                    u64::MAX
+                } else {
+                    next[k] + it.period_ms
+                };
             }
         }
         if spec.audio_period_ms > 0 && t_ms >= next_audio {
             // PTS 0.5 s ahead of the PCR time at this packet.
             let pts = (i * 90_000 / PPS + 45_000) & ((1 << 33) - 1);
-            let h = PesHeader { pts_dts: PtsDts::pts_only(pts), ..Default::default() };
-            let pes = PesPacket::new(0xC0, h, spec.audio_payload.clone()).encode().unwrap();
+            let h = PesHeader {
+                pts_dts: PtsDts::pts_only(pts),
+                ..Default::default()
+            };
+            let pes = PesPacket::new(0xC0, h, spec.audio_payload.clone())
+                .encode()
+                .unwrap();
             let c = cc.entry(AUDIO_PID).or_default();
             queue.extend(arib_ts::pes::packetize(AUDIO_PID, &pes, None, c).unwrap());
             next_audio += spec.audio_period_ms;
@@ -263,6 +384,13 @@ pub fn validate(p: &[Pkt]) -> arib_analyze::validate::ValidationReport {
     arib_analyze::validate::validate(&scan(p), &Default::default())
 }
 
-pub fn has(r: &arib_analyze::validate::ValidationReport, sev: arib_analyze::validate::Severity, check: &str, clause_part: &str) -> bool {
-    r.findings.iter().any(|f| f.severity == sev && f.check == check && f.clause.contains(clause_part))
+pub fn has(
+    r: &arib_analyze::validate::ValidationReport,
+    sev: arib_analyze::validate::Severity,
+    check: &str,
+    clause_part: &str,
+) -> bool {
+    r.findings
+        .iter()
+        .any(|f| f.severity == sev && f.check == check && f.clause.contains(clause_part))
 }

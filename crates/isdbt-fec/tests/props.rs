@@ -3,19 +3,39 @@
 
 use isdbt_core::{CodeRate, LayerConfig, Mode, Modulation, TRANSMISSION_TSP, TSP, TimeInterleave};
 use isdbt_fec::byte_interleave::{ByteDeinterleaver, ByteInterleaver, PAIR_LATENCY_BYTES};
-use isdbt_fec::conv::{ConvEncoder, DEFAULT_TRACEBACK, Puncturing, decode_punctured, encode_punctured};
+use isdbt_fec::conv::{
+    ConvEncoder, DEFAULT_TRACEBACK, Puncturing, decode_punctured, encode_punctured,
+};
 use isdbt_fec::{LayerDecoder, LayerEncoder, rs};
 use proptest::prelude::*;
 
-const MODS: [Modulation; 4] = [Modulation::Dqpsk, Modulation::Qpsk, Modulation::Qam16, Modulation::Qam64];
-const RATES: [CodeRate; 5] = [CodeRate::R1_2, CodeRate::R2_3, CodeRate::R3_4, CodeRate::R5_6, CodeRate::R7_8];
+const MODS: [Modulation; 4] = [
+    Modulation::Dqpsk,
+    Modulation::Qpsk,
+    Modulation::Qam16,
+    Modulation::Qam64,
+];
+const RATES: [CodeRate; 5] = [
+    CodeRate::R1_2,
+    CodeRate::R2_3,
+    CodeRate::R3_4,
+    CodeRate::R5_6,
+    CodeRate::R7_8,
+];
 
 fn lc(segments: usize, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
-    LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave(0) }
+    LayerConfig {
+        segments,
+        modulation,
+        code_rate,
+        time_interleave: TimeInterleave(0),
+    }
 }
 
 fn llr_of(bits: &[u8]) -> Vec<f32> {
-    bits.iter().map(|&b| if b == 0 { 20.0 } else { -20.0 }).collect()
+    bits.iter()
+        .map(|&b| if b == 0 { 20.0 } else { -20.0 })
+        .collect()
 }
 
 /// Deterministic frame contents from a seed (splitmix64).
@@ -52,12 +72,18 @@ fn layer_roundtrip(mode: Mode, l: &LayerConfig, seed: u64, frames: usize) {
         let f = frame(seed ^ (k as u64) << 32, t);
         let bits = enc.encode_frame_188(&f).unwrap();
         assert_eq!(bits.len(), l.coded_bits_per_frame(mode));
-        assert_eq!(bits.len(), mode.data_carriers_per_segment() * l.modulation.bits_per_symbol() * l.segments * 204);
+        assert_eq!(
+            bits.len(),
+            mode.data_carriers_per_segment() * l.modulation.bits_per_symbol() * l.segments * 204
+        );
         let out = dec.decode_frame(&llr_of(&bits)).unwrap();
         assert_eq!(out.tsps.len(), t);
         if let Some(p) = prev {
             assert_eq!(out.stats.clean, t, "{mode:?} {l:?} frame {k}");
-            assert!(out.tsps_188() == p, "{mode:?} {l:?} frame {k}: payload mismatch");
+            assert!(
+                out.tsps_188() == p,
+                "{mode:?} {l:?} frame {k}: payload mismatch"
+            );
         }
         prev = Some(f);
     }
@@ -94,7 +120,10 @@ fn layer_mid_stream_join() {
     let t = l.tsp_per_frame(mode);
     let mut enc = LayerEncoder::new(mode, &l);
     let frames: Vec<_> = (0..5).map(|k| frame(77 + k, t)).collect();
-    let coded: Vec<_> = frames.iter().map(|f| enc.encode_frame_188(f).unwrap()).collect();
+    let coded: Vec<_> = frames
+        .iter()
+        .map(|f| enc.encode_frame_188(f).unwrap())
+        .collect();
     let v = isdbt_fec::conv::ViterbiDecoder::new_unknown_state(DEFAULT_TRACEBACK);
     let mut dec = LayerDecoder::with_viterbi(mode, &l, v);
     let first = dec.decode_frame(&llr_of(&coded[2])).unwrap();
@@ -130,7 +159,13 @@ fn layer_with_channel_errors() {
             .map(|&b| {
                 let r = rnd() % 1000;
                 let v = if b == 0 { 4.0 } else { -4.0 };
-                if r < 3 { -v } else if r < 33 { 0.0 } else { v }
+                if r < 3 {
+                    -v
+                } else if r < 33 {
+                    0.0
+                } else {
+                    v
+                }
             })
             .collect();
         let out = dec.decode_frame(&llr).unwrap();

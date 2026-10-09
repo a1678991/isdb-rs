@@ -13,7 +13,10 @@ fn main() {
         "group" => RotationNumbering::GroupRelative,
         r => panic!("rotation {r}"),
     };
-    let mut rx = isdbt_phy::Receiver::new(DemodConfig { rotation, ..DemodConfig::default() });
+    let mut rx = isdbt_phy::Receiver::new(DemodConfig {
+        rotation,
+        ..DemodConfig::default()
+    });
     let mut f = std::fs::File::open(&a[1]).unwrap();
     let mut buf = vec![0u8; 8 << 20];
     let mut tot = [[0usize; 3]; 3];
@@ -23,7 +26,10 @@ fn main() {
         if n == 0 {
             break;
         }
-        for fr in rx.push(&isdbt_phy::iq::cf32_from_bytes(&buf[..n - n % 8])).unwrap() {
+        for fr in rx
+            .push(&isdbt_phy::iq::cf32_from_bytes(&buf[..n - n % 8]))
+            .unwrap()
+        {
             if !fr.valid {
                 continue;
             }
@@ -37,5 +43,8 @@ fn main() {
             }
         }
     }
-    println!("rotation {:?}: {valid} valid frames; RS (clean, corrected bytes, uncorrectable) A {:?} B {:?} C {:?}", rotation, tot[0], tot[1], tot[2]);
+    println!(
+        "rotation {:?}: {valid} valid frames; RS (clean, corrected bytes, uncorrectable) A {:?} B {:?} C {:?}",
+        rotation, tot[0], tot[1], tot[2]
+    );
 }

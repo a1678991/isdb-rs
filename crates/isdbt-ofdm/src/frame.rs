@@ -10,8 +10,8 @@
 //! frequency), `k = position(seg)·C + c`, plus the extra continual
 //! carrier `k = 13·C` at the upper band edge (K = 13·C + 1 carriers).
 
-use crate::tables;
 use crate::C32;
+use crate::tables;
 use isdbt_core::ofdm_params::{segment_at_position, segment_position};
 use isdbt_core::{Mode, Params, SEGMENTS};
 
@@ -86,7 +86,9 @@ pub fn prbs_segment_init(mode: Mode, seg: usize) -> [u8; 11] {
 /// W_i for carriers 0..C of segment `seg` (§3.13.1, Table 3-16 init).
 pub fn segment_w(mode: Mode, seg: usize) -> Vec<u8> {
     let mut st = prbs_segment_init(mode, seg);
-    (0..mode.carriers_per_segment()).map(|_| prbs_step(&mut st)).collect()
+    (0..mode.carriers_per_segment())
+        .map(|_| prbs_step(&mut st))
+        .collect()
 }
 
 /// Table 3-19: W value of the rightmost continual carrier (1 ↔ (−4/3, 0)).
@@ -99,7 +101,14 @@ pub fn edge_w(mode: Mode) -> u8 {
 
 /// BPSK pilot value for W (Table 3-17): 1 → −4/3, 0 → +4/3.
 pub fn pilot_value(w: u8) -> C32 {
-    C32::new(if w == 0 { PILOT_AMPLITUDE } else { -PILOT_AMPLITUDE }, 0.0)
+    C32::new(
+        if w == 0 {
+            PILOT_AMPLITUDE
+        } else {
+            -PILOT_AMPLITUDE
+        },
+        0.0,
+    )
 }
 
 /// TMCC carrier positions `c` of segment `seg` (Tables 3-14/3-15).
@@ -252,8 +261,16 @@ impl FrameLayout {
                         }
                         CarrierRole::Sp => sp[phase].push(k),
                         CarrierRole::Cp if phase == 0 => cp.push(k),
-                        CarrierRole::Tmcc if phase == 0 => tmcc.push(TmccCarrier { k, seg: seg as u8, kind }),
-                        CarrierRole::Ac(a) if phase == 0 => ac.push(AcCarrier { k, seg: seg as u8, kind: *a }),
+                        CarrierRole::Tmcc if phase == 0 => tmcc.push(TmccCarrier {
+                            k,
+                            seg: seg as u8,
+                            kind,
+                        }),
+                        CarrierRole::Ac(a) if phase == 0 => ac.push(AcCarrier {
+                            k,
+                            seg: seg as u8,
+                            kind: *a,
+                        }),
                         _ => {}
                     }
                 }
@@ -262,7 +279,18 @@ impl FrameLayout {
         }
         w.push(edge_w(mode));
         assert_eq!(w.len(), k_total);
-        Self { mode, kinds, k_total, data, sp, cp, edge: (k_total - 1) as u32, tmcc, ac, w }
+        Self {
+            mode,
+            kinds,
+            k_total,
+            data,
+            sp,
+            cp,
+            edge: (k_total - 1) as u32,
+            tmcc,
+            ac,
+            w,
+        }
     }
 
     /// Layout for `params` (segment kinds from the layer modulations).

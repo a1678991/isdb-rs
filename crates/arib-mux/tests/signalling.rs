@@ -217,38 +217,28 @@ fn audio_quality_indicator_typed() {
     let r = run_example(
         &extra_into(
             arib_mux::config::EXAMPLE_TOML,
-            &format!(
-                "{QI_LINE}\n=>\n  audio_quality_indicator = \"mode-1\""
-            ),
+            &format!("{QI_LINE}\n=>\n  audio_quality_indicator = \"mode-1\""),
         ),
         "sig_quality",
         6,
     );
     let s = collect(&r);
     assert!(!s.eit_quality.is_empty() && s.eit_quality.iter().all(|&q| q == 0b01));
-    let e = cfg_err(&format!(
-        "{QI_LINE}\n=>\n  audio_quality_indicator = 2"
-    ));
+    let e = cfg_err(&format!("{QI_LINE}\n=>\n  audio_quality_indicator = 2"));
     assert!(
         e.contains("\"mode-2\"") && e.contains("not a number"),
         "{e}"
     );
-    let e = cfg_err(&format!(
-        "{QI_LINE}\n=>\n  audio_quality_indicator = 0"
-    ));
+    let e = cfg_err(&format!("{QI_LINE}\n=>\n  audio_quality_indicator = 0"));
     assert!(e.contains("reserved"), "{e}");
     let e = cfg_err(&format!(
         "{QI_LINE}\n=>\n  audio_quality_indicator = \"mode-4\""
     ));
     assert!(e.contains("mode-3"), "{e}");
-    let e = cfg_err(&format!(
-        "{AC_LINE}\n=>\n  adts_compliance = \"strict\""
-    ));
+    let e = cfg_err(&format!("{AC_LINE}\n=>\n  adts_compliance = \"strict\""));
     assert!(e.contains("conform") && e.contains("pass-through"), "{e}");
     assert_eq!(
-        cfg_err(&format!(
-            "{AC_LINE}\n=>\n  adts_compliance = \"warn\""
-        )),
+        cfg_err(&format!("{AC_LINE}\n=>\n  adts_compliance = \"warn\"")),
         ""
     );
     let e = cfg_err(&format!(

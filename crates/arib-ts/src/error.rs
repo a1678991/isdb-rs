@@ -48,6 +48,9 @@ pub enum Error {
 impl Error {
     /// Convenience constructor for [`Error::Invalid`].
     pub fn invalid(what: &'static str, detail: impl Into<String>) -> Self {
-        Error::Invalid { what, detail: detail.into() }
+        Error::Invalid {
+            what,
+            detail: detail.into(),
+        }
     }
 }

@@ -129,8 +129,14 @@ fn list_keys(items: &[Node], leaf: &str) -> Vec<String> {
         return items
             .iter()
             .map(|x| {
-                let Node::Struct(name, _) = x else { unreachable!() };
-                let base = if name == "Unknown" || name == "Undecodable" { format!("tag={}", elem_key(x, "tag").unwrap_or_default()) } else { name.clone() };
+                let Node::Struct(name, _) = x else {
+                    unreachable!()
+                };
+                let base = if name == "Unknown" || name == "Undecodable" {
+                    format!("tag={}", elem_key(x, "tag").unwrap_or_default())
+                } else {
+                    name.clone()
+                };
                 let n = seen.entry(base.clone()).or_default();
                 *n += 1;
                 if *n == 1 { base } else { format!("{base}#{n}") }
@@ -141,7 +147,10 @@ fn list_keys(items: &[Node], leaf: &str) -> Vec<String> {
         for f in ID_FIELDS {
             let keys: Vec<Option<String>> = items.iter().map(|x| elem_key(x, f)).collect();
             if keys.iter().all(Option::is_some) {
-                let ks: Vec<String> = keys.into_iter().map(|k| format!("{f}={}", k.unwrap())).collect();
+                let ks: Vec<String> = keys
+                    .into_iter()
+                    .map(|k| format!("{f}={}", k.unwrap()))
+                    .collect();
                 let uniq: BTreeSet<&String> = ks.iter().collect();
                 if uniq.len() == ks.len() {
                     return ks;
@@ -154,7 +163,11 @@ fn list_keys(items: &[Node], leaf: &str) -> Vec<String> {
 
 fn short(n: &Node, k: &str) -> String {
     let s = tree::scalar(n, k);
-    if s.chars().count() > 400 { format!("{}…", s.chars().take(400).collect::<String>()) } else { s }
+    if s.chars().count() > 400 {
+        format!("{}…", s.chars().take(400).collect::<String>())
+    } else {
+        s
+    }
 }
 
 /// Field-level diff of two trees.
@@ -169,16 +182,30 @@ pub fn diff_nodes(path: &str, a: &Node, b: &Node, out: &mut Vec<FieldChange>) {
                 }
             }
             for k in names {
-                let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                let p = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
                 match (tree::get(a, k), tree::get(b, k)) {
                     (Some(x), Some(y)) => diff_nodes(&p, x, y, out),
-                    (Some(x), None) => out.push(FieldChange { path: p, a: Some(short(x, k)), b: None }),
-                    (None, Some(y)) => out.push(FieldChange { path: p, a: None, b: Some(short(y, k)) }),
+                    (Some(x), None) => out.push(FieldChange {
+                        path: p,
+                        a: Some(short(x, k)),
+                        b: None,
+                    }),
+                    (None, Some(y)) => out.push(FieldChange {
+                        path: p,
+                        a: None,
+                        b: Some(short(y, k)),
+                    }),
                     (None, None) => {}
                 }
             }
         }
-        (Node::List(la), Node::List(lb)) if la.iter().chain(lb).any(|x| matches!(x, Node::Struct(..))) => {
+        (Node::List(la), Node::List(lb))
+            if la.iter().chain(lb).any(|x| matches!(x, Node::Struct(..))) =>
+        {
             let ka = list_keys(la, leaf);
             let kb = list_keys(lb, leaf);
             let mut order: Vec<&String> = ka.iter().collect();
@@ -193,20 +220,36 @@ pub fn diff_nodes(path: &str, a: &Node, b: &Node, out: &mut Vec<FieldChange>) {
                 let y = kb.iter().position(|q| q == k).map(|i| &lb[i]);
                 match (x, y) {
                     (Some(x), Some(y)) => diff_nodes(&p, x, y, out),
-                    (Some(x), None) => out.push(FieldChange { path: p, a: Some(short(x, "")), b: None }),
-                    (None, Some(y)) => out.push(FieldChange { path: p, a: None, b: Some(short(y, "")) }),
+                    (Some(x), None) => out.push(FieldChange {
+                        path: p,
+                        a: Some(short(x, "")),
+                        b: None,
+                    }),
+                    (None, Some(y)) => out.push(FieldChange {
+                        path: p,
+                        a: None,
+                        b: Some(short(y, "")),
+                    }),
                     _ => {}
                 }
             }
         }
         (Node::Text(_, ra), Node::Text(_, rb)) => {
             if ra != rb {
-                out.push(FieldChange { path: path.into(), a: Some(short(a, leaf)), b: Some(short(b, leaf)) });
+                out.push(FieldChange {
+                    path: path.into(),
+                    a: Some(short(a, leaf)),
+                    b: Some(short(b, leaf)),
+                });
             }
         }
         _ => {
             if a != b {
-                out.push(FieldChange { path: path.into(), a: Some(short(a, leaf)), b: Some(short(b, leaf)) });
+                out.push(FieldChange {
+                    path: path.into(),
+                    a: Some(short(a, leaf)),
+                    b: Some(short(b, leaf)),
+                });
             }
         }
     }
@@ -230,7 +273,10 @@ fn side(cap: &Capture, nominal: Option<f64>) -> (Side, crate::timebase::Timebase
     )
 }
 
-fn pair_keys(a: &[SlotKey], b: &[SlotKey]) -> Vec<(Option<SlotKey>, Option<SlotKey>, &'static str)> {
+fn pair_keys(
+    a: &[SlotKey],
+    b: &[SlotKey],
+) -> Vec<(Option<SlotKey>, Option<SlotKey>, &'static str)> {
     let mut out = Vec::new();
     let mut ua: Vec<SlotKey> = Vec::new();
     let bset: BTreeSet<SlotKey> = b.iter().copied().collect();
@@ -247,7 +293,10 @@ fn pair_keys(a: &[SlotKey], b: &[SlotKey]) -> Vec<(Option<SlotKey>, Option<SlotK
     type Proj = fn(&SlotKey) -> (Option<u16>, u8, Option<u16>, Option<u8>);
     let passes: [(Proj, &'static str); 3] = [
         (|k| (None, k.table_id, k.ext, k.sn), "pid differs"),
-        (|k| (Some(k.pid), k.table_id, None, k.sn), "table_id_extension differs"),
+        (
+            |k| (Some(k.pid), k.table_id, None, k.sn),
+            "table_id_extension differs",
+        ),
         (|k| (None, k.table_id, None, k.sn), "loose"),
     ];
     for (proj, label) in passes {
@@ -255,7 +304,12 @@ fn pair_keys(a: &[SlotKey], b: &[SlotKey]) -> Vec<(Option<SlotKey>, Option<SlotK
         for k in &ua {
             let pk = proj(k);
             let ca: Vec<&SlotKey> = ua.iter().filter(|x| proj(x) == pk).collect();
-            let cb: Vec<usize> = ub.iter().enumerate().filter(|(_, x)| proj(x) == pk).map(|(i, _)| i).collect();
+            let cb: Vec<usize> = ub
+                .iter()
+                .enumerate()
+                .filter(|(_, x)| proj(x) == pk)
+                .map(|(i, _)| i)
+                .collect();
             if ca.len() == 1 && cb.len() == 1 {
                 let kb = ub.remove(cb[0]);
                 out.push((Some(*k), Some(kb), label));
@@ -281,8 +335,17 @@ pub fn diff(a: &Capture, b: &Capture, opts: &DiffOptions) -> DiffReport {
     let (sb, tb) = side(b, opts.nominal_bps);
     let ka = inspect::pid_kinds(a);
     let kb = inspect::pid_kinds(b);
-    let pids: BTreeSet<u16> = a.stats.pids.keys().chain(b.stats.pids.keys()).copied().collect();
-    let rate = |n: u64, d: Option<f64>| d.filter(|&d| d > 0.0).map(|d| n as f64 * 1504.0 / d / 1000.0);
+    let pids: BTreeSet<u16> = a
+        .stats
+        .pids
+        .keys()
+        .chain(b.stats.pids.keys())
+        .copied()
+        .collect();
+    let rate = |n: u64, d: Option<f64>| {
+        d.filter(|&d| d > 0.0)
+            .map(|d| n as f64 * 1504.0 / d / 1000.0)
+    };
     let pids = pids
         .into_iter()
         .map(|pid| {
@@ -290,7 +353,14 @@ pub fn diff(a: &Capture, b: &Capture, opts: &DiffOptions) -> DiffReport {
             let pb = b.stats.pids.get(&pid).map_or(0, |s| s.packets);
             PidDiff {
                 pid,
-                kind: (ka.get(&pid).cloned().or_else(|| (pa > 0).then(|| "unreferenced".into())), kb.get(&pid).cloned().or_else(|| (pb > 0).then(|| "unreferenced".into()))),
+                kind: (
+                    ka.get(&pid)
+                        .cloned()
+                        .or_else(|| (pa > 0).then(|| "unreferenced".into())),
+                    kb.get(&pid)
+                        .cloned()
+                        .or_else(|| (pb > 0).then(|| "unreferenced".into())),
+                ),
                 packets: (pa, pb),
                 kbps: (rate(pa, sa.duration_s), rate(pb, sb.duration_s)),
             }
@@ -308,8 +378,12 @@ pub fn diff(a: &Capture, b: &Capture, opts: &DiffOptions) -> DiffReport {
         let mut changes = Vec::new();
         let identical = matches!((s_a, s_b), (Some(p), Some(q)) if p.latest == q.latest);
         if let (Some(p), Some(q), false) = (s_a, s_b, identical) {
-            let na = decode::decode(x.unwrap().pid, &p.latest).map(|t| t.tree()).unwrap_or_else(|e| Node::Str(format!("decode error: {e}")));
-            let nb = decode::decode(y.unwrap().pid, &q.latest).map(|t| t.tree()).unwrap_or_else(|e| Node::Str(format!("decode error: {e}")));
+            let na = decode::decode(x.unwrap().pid, &p.latest)
+                .map(|t| t.tree())
+                .unwrap_or_else(|e| Node::Str(format!("decode error: {e}")));
+            let nb = decode::decode(y.unwrap().pid, &q.latest)
+                .map(|t| t.tree())
+                .unwrap_or_else(|e| Node::Str(format!("decode error: {e}")));
             diff_nodes("", &na, &nb, &mut changes);
         }
         sections.push(SectionDiff {
@@ -317,14 +391,25 @@ pub fn diff(a: &Capture, b: &Capture, opts: &DiffOptions) -> DiffReport {
             key_b: y,
             pairing,
             table: names::table_name(tid),
-            count: (s_a.map_or(0, |s| s.occurrences.len()), s_b.map_or(0, |s| s.occurrences.len())),
+            count: (
+                s_a.map_or(0, |s| s.occurrences.len()),
+                s_b.map_or(0, |s| s.occurrences.len()),
+            ),
             interval: (ia, ib),
-            length: (s_a.map_or(0, |s| s.latest.len()), s_b.map_or(0, |s| s.latest.len())),
+            length: (
+                s_a.map_or(0, |s| s.latest.len()),
+                s_b.map_or(0, |s| s.latest.len()),
+            ),
             identical,
             changes,
         });
     }
-    DiffReport { a: sa, b: sb, pids, sections }
+    DiffReport {
+        a: sa,
+        b: sb,
+        pids,
+        sections,
+    }
 }
 
 fn f(v: Option<f64>, p: usize) -> String {
@@ -336,8 +421,24 @@ impl DiffReport {
     /// EIT schedule sub_tables are summarised.
     pub fn to_text(&self, all: bool) -> String {
         let mut o = String::new();
-        let _ = writeln!(o, "A: {} — {} packets, {} s, {} Mbit/s, {} null", self.a.source, self.a.packets, f(self.a.duration_s, 3), f(self.a.rate_bps.map(|r| r / 1e6), 6), self.a.null_packets);
-        let _ = writeln!(o, "B: {} — {} packets, {} s, {} Mbit/s, {} null", self.b.source, self.b.packets, f(self.b.duration_s, 3), f(self.b.rate_bps.map(|r| r / 1e6), 6), self.b.null_packets);
+        let _ = writeln!(
+            o,
+            "A: {} — {} packets, {} s, {} Mbit/s, {} null",
+            self.a.source,
+            self.a.packets,
+            f(self.a.duration_s, 3),
+            f(self.a.rate_bps.map(|r| r / 1e6), 6),
+            self.a.null_packets
+        );
+        let _ = writeln!(
+            o,
+            "B: {} — {} packets, {} s, {} Mbit/s, {} null",
+            self.b.source,
+            self.b.packets,
+            f(self.b.duration_s, 3),
+            f(self.b.rate_bps.map(|r| r / 1e6), 6),
+            self.b.null_packets
+        );
         let _ = writeln!(o, "\n-- PIDs (kbit/s A | B) --");
         for p in &self.pids {
             let _ = writeln!(
@@ -357,7 +458,9 @@ impl DiffReport {
         for s in &self.sections {
             let k = s.key_a.or(s.key_b).unwrap();
             if !all && (0x50..=0x6F).contains(&k.table_id) {
-                let e = sched.entry((k.pid, k.table_id, k.ext.unwrap_or(0))).or_default();
+                let e = sched
+                    .entry((k.pid, k.table_id, k.ext.unwrap_or(0)))
+                    .or_default();
                 match s.pairing {
                     "only A" => e.0 += 1,
                     "only B" => e.1 += 1,
@@ -392,11 +495,20 @@ impl DiffReport {
                 s.length.1
             );
             for c in &s.changes {
-                let _ = writeln!(o, "    {}: {} → {}", c.path, c.a.as_deref().unwrap_or("(absent)"), c.b.as_deref().unwrap_or("(absent)"));
+                let _ = writeln!(
+                    o,
+                    "    {}: {} → {}",
+                    c.path,
+                    c.a.as_deref().unwrap_or("(absent)"),
+                    c.b.as_deref().unwrap_or("(absent)")
+                );
             }
         }
         for ((pid, tid, ext), (oa, ob, same, diff)) in sched {
-            let _ = writeln!(o, "pid={pid:#06x} tid={tid:#04x} ext={ext:#06x} EIT schedule: {oa} sections only in A, {ob} only in B, {same} identical, {diff} differ");
+            let _ = writeln!(
+                o,
+                "pid={pid:#06x} tid={tid:#04x} ext={ext:#06x} EIT schedule: {oa} sections only in A, {ob} only in B, {same} identical, {diff} differ"
+            );
         }
         o
     }
@@ -407,22 +519,59 @@ mod tests {
     use super::*;
 
     fn s(name: &str, f: Vec<(&str, Node)>) -> Node {
-        Node::Struct(name.into(), f.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+        Node::Struct(
+            name.into(),
+            f.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+        )
     }
 
     #[test]
     fn descriptor_lists_match_by_type_and_ids_by_value() {
-        let d = |gi: i128| s("TerrestrialDeliverySystem", vec![("tag", Node::Int(0xFA)), ("guard_interval", Node::Int(gi))]);
-        let n = s("NetworkName", vec![("tag", Node::Int(0x40)), ("name", Node::Str("x".into()))]);
-        let ts = |id: i128, ds: Vec<Node>| s("TransportStreamEntry", vec![("transport_stream_id", Node::Int(id)), ("descriptors", Node::List(ds))]);
-        let a = s("T", vec![("ts", Node::List(vec![ts(1, vec![d(2)]), ts(2, vec![])]))]);
-        let b = s("T", vec![("ts", Node::List(vec![ts(2, vec![]), ts(1, vec![n.clone(), d(1)])]))]);
+        let d = |gi: i128| {
+            s(
+                "TerrestrialDeliverySystem",
+                vec![("tag", Node::Int(0xFA)), ("guard_interval", Node::Int(gi))],
+            )
+        };
+        let n = s(
+            "NetworkName",
+            vec![("tag", Node::Int(0x40)), ("name", Node::Str("x".into()))],
+        );
+        let ts = |id: i128, ds: Vec<Node>| {
+            s(
+                "TransportStreamEntry",
+                vec![
+                    ("transport_stream_id", Node::Int(id)),
+                    ("descriptors", Node::List(ds)),
+                ],
+            )
+        };
+        let a = s(
+            "T",
+            vec![("ts", Node::List(vec![ts(1, vec![d(2)]), ts(2, vec![])]))],
+        );
+        let b = s(
+            "T",
+            vec![(
+                "ts",
+                Node::List(vec![ts(2, vec![]), ts(1, vec![n.clone(), d(1)])]),
+            )],
+        );
         let mut out = Vec::new();
         diff_nodes("", &a, &b, &mut out);
         assert_eq!(out.len(), 2, "{out:?}");
-        assert_eq!(out[0].path, "ts[transport_stream_id=0x01].descriptors[TerrestrialDeliverySystem].guard_interval");
-        assert_eq!((out[0].a.as_deref(), out[0].b.as_deref()), (Some("2"), Some("1")));
-        assert_eq!(out[1].path, "ts[transport_stream_id=0x01].descriptors[NetworkName]");
+        assert_eq!(
+            out[0].path,
+            "ts[transport_stream_id=0x01].descriptors[TerrestrialDeliverySystem].guard_interval"
+        );
+        assert_eq!(
+            (out[0].a.as_deref(), out[0].b.as_deref()),
+            (Some("2"), Some("1"))
+        );
+        assert_eq!(
+            out[1].path,
+            "ts[transport_stream_id=0x01].descriptors[NetworkName]"
+        );
         assert!(out[1].a.is_none());
     }
 }

@@ -135,7 +135,9 @@ impl AdtsTrack {
         let mut pos = 0;
         loop {
             let skip_from = pos;
-            while pos + 1 < self.buf.len() && !(self.buf[pos] == 0xFF && self.buf[pos + 1] & 0xF6 == 0xF0) {
+            while pos + 1 < self.buf.len()
+                && !(self.buf[pos] == 0xFF && self.buf[pos + 1] & 0xF6 == 0xF0)
+            {
                 pos += 1;
             }
             if pos > skip_from {
@@ -145,7 +147,9 @@ impl AdtsTrack {
                     self.resyncs += 1;
                 }
             }
-            let Some(h) = header(&self.buf[pos..]) else { break };
+            let Some(h) = header(&self.buf[pos..]) else {
+                break;
+            };
             if h.frame_length < 7 + 2 * (!h.protection_absent) as usize {
                 pos += 1; // not a frame start
                 continue;
@@ -171,7 +175,11 @@ impl AdtsTrack {
         let n = self.frames - 1;
         self.rules
             .entry(rule)
-            .or_insert_with(|| RuleCount { frames: 0, first_frame: n, example: example() })
+            .or_insert_with(|| RuleCount {
+                frames: 0,
+                first_frame: n,
+                example: example(),
+            })
             .frames += 1;
     }
 
@@ -184,7 +192,10 @@ impl AdtsTrack {
                 self.first = Some(h);
                 self.coded_channels = arib_mux::adts::buffer_channels(h.channel_configuration);
             }
-            Some(a) if a.sampling_frequency_index != h.sampling_frequency_index || a.channel_configuration != h.channel_configuration => {
+            Some(a)
+                if a.sampling_frequency_index != h.sampling_frequency_index
+                    || a.channel_configuration != h.channel_configuration =>
+            {
                 self.parameter_changes += 1
             }
             _ => {}
@@ -193,7 +204,9 @@ impl AdtsTrack {
             self.add(Rule::Id, || "ID '0' (MPEG-4 ADTS)".into());
         }
         if h.protection_absent {
-            self.add(Rule::ProtectionAbsent, || "protection_absent '1' (no crc_check)".into());
+            self.add(Rule::ProtectionAbsent, || {
+                "protection_absent '1' (no crc_check)".into()
+            });
         } else {
             self.crc_frames += 1;
         }
@@ -201,26 +214,37 @@ impl AdtsTrack {
             self.add(Rule::Profile, || format!("profile {}", h.profile));
         }
         if !b32::TERRESTRIAL_SFI.contains(&h.sampling_frequency_index) {
-            self.add(Rule::SamplingFrequency, || format!("sampling_frequency_index {:#x}", h.sampling_frequency_index));
+            self.add(Rule::SamplingFrequency, || {
+                format!("sampling_frequency_index {:#x}", h.sampling_frequency_index)
+            });
         }
         if h.channel_configuration > 6 {
-            self.add(Rule::ChannelConfiguration, || format!("channel_configuration {}", h.channel_configuration));
+            self.add(Rule::ChannelConfiguration, || {
+                format!("channel_configuration {}", h.channel_configuration)
+            });
         }
         if h.buffer_fullness == 0x7FF {
-            self.add(Rule::BufferFullness, || "adts_buffer_fullness 0x7FF (variable rate)".into());
+            self.add(Rule::BufferFullness, || {
+                "adts_buffer_fullness 0x7FF (variable rate)".into()
+            });
         } else {
             let (lo, hi) = self.fullness.unwrap_or((u16::MAX, 0));
             self.fullness = Some((lo.min(h.buffer_fullness), hi.max(h.buffer_fullness)));
         }
         if h.raw_data_blocks != 0 {
-            self.add(Rule::RawDataBlocks, || format!("number_of_raw_data_blocks_in_frame {}", h.raw_data_blocks));
+            self.add(Rule::RawDataBlocks, || {
+                format!("number_of_raw_data_blocks_in_frame {}", h.raw_data_blocks)
+            });
         }
     }
 
     /// Sampling frequency of the first frame (Hz).
     pub fn sampling_frequency(&self) -> Option<u32> {
-        self.first
-            .and_then(|h| arib_mux::adts::SAMPLING_FREQUENCIES.get(h.sampling_frequency_index as usize).copied())
+        self.first.and_then(|h| {
+            arib_mux::adts::SAMPLING_FREQUENCIES
+                .get(h.sampling_frequency_index as usize)
+                .copied()
+        })
     }
 
     /// Mean bit rate of the frames (bit/s).
@@ -273,14 +297,36 @@ mod tests {
         };
         let x = header(&h.encode_fixed_variable()).unwrap();
         assert_eq!(
-            (x.id, x.layer, x.protection_absent, x.profile, x.sampling_frequency_index, x.channel_configuration),
+            (
+                x.id,
+                x.layer,
+                x.protection_absent,
+                x.profile,
+                x.sampling_frequency_index,
+                x.channel_configuration
+            ),
             (1, 0, false, 2, 0xB, 5)
         );
-        assert_eq!((x.frame_length, x.buffer_fullness, x.raw_data_blocks), (0x1234, 0x5A5, 3));
+        assert_eq!(
+            (x.frame_length, x.buffer_fullness, x.raw_data_blocks),
+            (0x1234, 0x5A5, 3)
+        );
         // bench a.m2a first header
         let a = header(&[0xFF, 0xF9, 0x4C, 0x80, 0x36, 0x5F, 0xFC]).unwrap();
-        assert_eq!((a.id, a.protection_absent, a.profile, a.sampling_frequency_index, a.channel_configuration), (1, true, 1, 3, 2));
-        assert_eq!((a.frame_length, a.buffer_fullness, a.raw_data_blocks), (434, 0x7FF, 0));
+        assert_eq!(
+            (
+                a.id,
+                a.protection_absent,
+                a.profile,
+                a.sampling_frequency_index,
+                a.channel_configuration
+            ),
+            (1, true, 1, 3, 2)
+        );
+        assert_eq!(
+            (a.frame_length, a.buffer_fullness, a.raw_data_blocks),
+            (434, 0x7FF, 0)
+        );
     }
 
     #[test]
@@ -312,7 +358,11 @@ mod tests {
         t.push_start(&es[..400]);
         t.push(&es[700..]);
         assert_eq!((t.frames, t.resyncs), (1, 1));
-        assert!(t.rules.keys().all(|r| matches!(r, Rule::ProtectionAbsent | Rule::BufferFullness)));
+        assert!(
+            t.rules
+                .keys()
+                .all(|r| matches!(r, Rule::ProtectionAbsent | Rule::BufferFullness))
+        );
         assert_eq!(t.coded_channels, Some(2));
     }
 
@@ -336,7 +386,11 @@ mod tests {
         // layer ≠ '00' is not taken for a syncword
         assert_eq!(es(&|h| h.layer = 2).frames, 0);
         for (cc, n) in [(1u8, Some(1u32)), (6, Some(5)), (0, None), (7, None)] {
-            assert_eq!(es(&|h| h.channel_configuration = cc).coded_channels, n, "cc {cc}");
+            assert_eq!(
+                es(&|h| h.channel_configuration = cc).coded_channels,
+                n,
+                "cc {cc}"
+            );
         }
     }
 }

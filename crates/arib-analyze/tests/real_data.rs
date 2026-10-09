@@ -60,9 +60,17 @@ fn pat(p: &[Pkt]) -> (Long<Pat>, Vec<u16>) {
 
 #[test]
 fn capture_inspect_decodes_everything() {
-    let Some((path, _)) = load(CAPTURE) else { return };
+    let Some((path, _)) = load(CAPTURE) else {
+        return;
+    };
     let cap = arib_analyze::scan_path(&path, &Default::default()).unwrap();
-    let r = arib_analyze::inspect::inspect(&cap, &arib_analyze::inspect::InspectOptions { decode_sections: true, nominal_bps: None });
+    let r = arib_analyze::inspect::inspect(
+        &cap,
+        &arib_analyze::inspect::InspectOptions {
+            decode_sections: true,
+            nominal_bps: None,
+        },
+    );
     println!("{}", r.to_text());
     assert_eq!(r.section_error_count, 0);
     assert!(r.sections.iter().all(|s| s.decode_error.is_none()));
@@ -73,8 +81,13 @@ fn capture_inspect_decodes_everything() {
         use arib_analyze::tree::{Node, get};
         match n {
             Node::Struct(name, f) => {
-                let tag = get(n, "tag").map(|t| arib_analyze::tree::scalar(t, "tag")).unwrap_or_default();
-                if name == "RawSection" || name == "Undecodable" || (name == "Unknown" && !matches!(tag.as_str(), "0xc9" | "0xcb" | "0xcc")) {
+                let tag = get(n, "tag")
+                    .map(|t| arib_analyze::tree::scalar(t, "tag"))
+                    .unwrap_or_default();
+                if name == "RawSection"
+                    || name == "Undecodable"
+                    || (name == "Unknown" && !matches!(tag.as_str(), "0xc9" | "0xcb" | "0xcc"))
+                {
                     bad.push(format!("{name} {tag}"));
                 }
                 f.iter().for_each(|(_, v)| walk(v, bad));
@@ -92,7 +105,12 @@ fn capture_inspect_decodes_everything() {
     // and terrestrial delivery system descriptors (B10 Part 2 Table 6-1,
     // TR-B14); SDT names the services; EIT p/f events have titles.
     assert!(r.si.transport_stream_id.is_some());
-    assert!(r.si.networks[0].name.as_deref().is_some_and(|n| !n.is_empty()));
+    assert!(
+        r.si.networks[0]
+            .name
+            .as_deref()
+            .is_some_and(|n| !n.is_empty())
+    );
     let ts = &r.si.networks[0].transport_streams[0];
     let ts_name = &ts.ts_info.as_ref().unwrap().ts_name;
     assert!(!ts_name.is_empty());
@@ -102,35 +120,71 @@ fn capture_inspect_decodes_everything() {
     assert!(r.si.present_following.iter().all(|e| e.title.is_some()));
     assert!(r.si.time.as_ref().unwrap().tot.is_some());
     // JSON serialises (with the decoded strings)
-    assert!(serde_json::to_string(&r).unwrap().contains(ts_name.as_str()));
+    assert!(
+        serde_json::to_string(&r)
+            .unwrap()
+            .contains(ts_name.as_str())
+    );
 }
 
 #[test]
 fn capture_validate_findings() {
-    let Some((path, _)) = load(CAPTURE) else { return };
+    let Some((path, _)) = load(CAPTURE) else {
+        return;
+    };
     let cap = arib_analyze::scan_path(&path, &Default::default()).unwrap();
     let r = arib_analyze::validate::validate(&cap, &Default::default());
     println!("{}", r.to_text(Severity::Info));
     // Live operational practice (e.g. PCR intervals) is classified and
     // printed, not asserted. Sections and continuity must be clean.
-    assert!(!r.findings.iter().any(|f| f.check.starts_with("section.") && f.severity == Severity::Error));
-    assert!(!r.findings.iter().any(|f| f.check == "transport.cc" && f.severity == Severity::Error));
+    assert!(
+        !r.findings
+            .iter()
+            .any(|f| f.check.starts_with("section.") && f.severity == Severity::Error)
+    );
+    assert!(
+        !r.findings
+            .iter()
+            .any(|f| f.check == "transport.cc" && f.severity == Severity::Error)
+    );
     // Live AAC (B32 Part 2 §5.2) violates no rule.
-    assert!(!r.findings.iter().any(|f| f.check.starts_with("aac.") && f.severity > Severity::Info), "{}", r.to_text(Severity::Warning));
+    assert!(
+        !r.findings
+            .iter()
+            .any(|f| f.check.starts_with("aac.") && f.severity > Severity::Info),
+        "{}",
+        r.to_text(Severity::Warning)
+    );
 }
 
 #[test]
 fn capture_identity_rewrite_keeps_sections() {
     let Some((_, p)) = load(CAPTURE) else { return };
     let (_, pmts) = pat(&p);
-    for pid in [0x0000u16, 0x0001, 0x0010, 0x0011, 0x0012, 0x0014, 0x0024, 0x0027].into_iter().chain(pmts) {
+    for pid in [
+        0x0000u16, 0x0001, 0x0010, 0x0011, 0x0012, 0x0014, 0x0024, 0x0027,
+    ]
+    .into_iter()
+    .chain(pmts)
+    {
         let mut q = p.clone();
-        let r = edit::rewrite_pid(&mut q, pid, |_| Ok(None), vec![], NullSlots::WhenNeeded).unwrap();
-        let a: Vec<Vec<u8>> = edit::assemble_pid(&p, pid).into_iter().map(|o| o.bytes).collect();
-        let b: Vec<Vec<u8>> = edit::assemble_pid(&q, pid).into_iter().map(|o| o.bytes).collect();
+        let r =
+            edit::rewrite_pid(&mut q, pid, |_| Ok(None), vec![], NullSlots::WhenNeeded).unwrap();
+        let a: Vec<Vec<u8>> = edit::assemble_pid(&p, pid)
+            .into_iter()
+            .map(|o| o.bytes)
+            .collect();
+        let b: Vec<Vec<u8>> = edit::assemble_pid(&q, pid)
+            .into_iter()
+            .map(|o| o.bytes)
+            .collect();
         assert_eq!(a, b, "pid {pid:#06x}");
         let same = q.iter().zip(&p).filter(|(x, y)| x == y).count();
-        println!("pid {pid:#06x}: {} sections, packets byte-identical {same}/{} {r:?}", a.len(), p.len());
+        println!(
+            "pid {pid:#06x}: {} sections, packets byte-identical {same}/{} {r:?}",
+            a.len(),
+            p.len()
+        );
     }
 }
 
@@ -140,25 +194,57 @@ fn capture_edit_round_trips() {
     let base = scan(&p);
     let (pat, pmts) = pat(&p);
     // null an elementary PID of the first PMT: gone, positions kept
-    let pmt = edit::assemble_pid(&p, pmts[0]).into_iter().find(|o| o.bytes.first() == Some(&0x02)).unwrap();
-    let es = Long::<arib_ts::psi::Pmt>::decode(&pmt.bytes).unwrap().body.streams[0].elementary_pid;
+    let pmt = edit::assemble_pid(&p, pmts[0])
+        .into_iter()
+        .find(|o| o.bytes.first() == Some(&0x02))
+        .unwrap();
+    let es = Long::<arib_ts::psi::Pmt>::decode(&pmt.bytes)
+        .unwrap()
+        .body
+        .streams[0]
+        .elementary_pid;
     let mut q = p.clone();
-    edit::apply(&mut q, &[EditOp::NullPids(vec![es])], &EditOptions::default()).unwrap();
+    edit::apply(
+        &mut q,
+        &[EditOp::NullPids(vec![es])],
+        &EditOptions::default(),
+    )
+    .unwrap();
     let c = scan(&q);
     assert!(!c.stats.pids.contains_key(&es));
     assert_eq!(c.packets, base.packets);
     // NIT field mutation (guard_interval to a different value): the diff
     // shows exactly that field
     let tsid = pat.header.table_id_extension;
-    let nit = edit::assemble_pid(&p, 0x0010).into_iter().find(|o| o.bytes.first() == Some(&0x40)).unwrap();
-    let AnyTable::Nit(nit) = AnyTable::decode(0x0010, &nit.bytes).unwrap() else { panic!() };
-    let gi = nit.body.0.transport_streams.iter().find(|t| t.transport_stream_id == tsid).unwrap().descriptors.iter().find_map(|d| match d {
-        Descriptor::TerrestrialDeliverySystem(t) => Some(t.guard_interval),
-        _ => None,
-    }).unwrap();
+    let nit = edit::assemble_pid(&p, 0x0010)
+        .into_iter()
+        .find(|o| o.bytes.first() == Some(&0x40))
+        .unwrap();
+    let AnyTable::Nit(nit) = AnyTable::decode(0x0010, &nit.bytes).unwrap() else {
+        panic!()
+    };
+    let gi = nit
+        .body
+        .0
+        .transport_streams
+        .iter()
+        .find(|t| t.transport_stream_id == tsid)
+        .unwrap()
+        .descriptors
+        .iter()
+        .find_map(|d| match d {
+            Descriptor::TerrestrialDeliverySystem(t) => Some(t.guard_interval),
+            _ => None,
+        })
+        .unwrap();
     let expr = format!("nit.ts[{tsid:#06x}].desc[0xFA].guard_interval={}", gi ^ 1);
     let mut q = p.clone();
-    edit::apply(&mut q, &[EditOp::Mutate(Expr::parse(&expr).unwrap())], &EditOptions::default()).unwrap();
+    edit::apply(
+        &mut q,
+        &[EditOp::Mutate(Expr::parse(&expr).unwrap())],
+        &EditOptions::default(),
+    )
+    .unwrap();
     let c = scan(&q);
     let d = arib_analyze::diff::diff(&base, &c, &Default::default());
     let changed: Vec<_> = d.sections.iter().filter(|s| !s.identical).collect();
@@ -166,27 +252,62 @@ fn capture_edit_round_trips() {
     assert_eq!(changed[0].changes.len(), 1, "{:?}", changed[0].changes);
     assert!(changed[0].changes[0].path.ends_with("guard_interval"));
     let r = arib_analyze::validate::validate(&c, &Default::default());
-    assert!(!r.findings.iter().any(|f| (f.check.starts_with("section.") || f.check == "transport.cc") && f.severity == Severity::Error), "{}", r.to_text(Severity::Error));
+    assert!(
+        !r.findings.iter().any(
+            |f| (f.check.starts_with("section.") || f.check == "transport.cc")
+                && f.severity == Severity::Error
+        ),
+        "{}",
+        r.to_text(Severity::Error)
+    );
 }
 
 #[test]
 fn transplant_nit_between_captures_is_crc_and_cc_clean() {
-    let (Some((pa, _)), Some((_, pb))) = (load(OURS), load(CAPTURE)) else { return };
+    let (Some((pa, _)), Some((_, pb))) = (load(OURS), load(CAPTURE)) else {
+        return;
+    };
     let sel = Selector::parse("0x10:0x40").unwrap();
     let nit_a = edit::load_sections(&pa, &sel).unwrap();
     let mut q = pb.clone();
-    let rep = edit::apply(&mut q, &[EditOp::Replace { sel, sections: nit_a.clone() }], &EditOptions::default()).unwrap();
+    let rep = edit::apply(
+        &mut q,
+        &[EditOp::Replace {
+            sel,
+            sections: nit_a.clone(),
+        }],
+        &EditOptions::default(),
+    )
+    .unwrap();
     println!("{:?}", rep);
     let c = scan(&q);
-    assert_eq!(c.slots.iter().find(|(k, _)| k.table_id == 0x40).unwrap().1.latest, nit_a[0]);
+    assert_eq!(
+        c.slots
+            .iter()
+            .find(|(k, _)| k.table_id == 0x40)
+            .unwrap()
+            .1
+            .latest,
+        nit_a[0]
+    );
     let r = arib_analyze::validate::validate(&c, &Default::default());
-    let bad: Vec<_> = r.findings.iter().filter(|f| f.check.starts_with("section.crc") || f.check == "section.assembly" || (f.check == "transport.cc" && f.severity == Severity::Error)).collect();
+    let bad: Vec<_> = r
+        .findings
+        .iter()
+        .filter(|f| {
+            f.check.starts_with("section.crc")
+                || f.check == "section.assembly"
+                || (f.check == "transport.cc" && f.severity == Severity::Error)
+        })
+        .collect();
     assert!(bad.is_empty(), "{bad:?}");
 }
 
 #[test]
 fn ours_vs_capture() {
-    let (Some(pa), Some(pb)) = (path(OURS), path(CAPTURE)) else { return };
+    let (Some(pa), Some(pb)) = (path(OURS), path(CAPTURE)) else {
+        return;
+    };
     let a = arib_analyze::scan_path(&pa, &Default::default()).unwrap();
     let b = arib_analyze::scan_path(&pb, &Default::default()).unwrap();
     let ra = arib_analyze::inspect::inspect(&a, &Default::default());

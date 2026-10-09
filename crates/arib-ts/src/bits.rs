@@ -84,7 +84,11 @@ impl<'a> BitReader<'a> {
         }
         let start = self.bit / 8;
         if start + n > self.data.len() {
-            return Err(Error::Truncated { what: self.what, need: start + n, have: self.data.len() });
+            return Err(Error::Truncated {
+                what: self.what,
+                need: start + n,
+                have: self.data.len(),
+            });
         }
         self.bit += n * 8;
         Ok(&self.data[start..start + n])
@@ -101,7 +105,10 @@ impl<'a> BitReader<'a> {
         if self.remaining_bits() != 0 {
             return Err(Error::invalid(
                 self.what,
-                format!("{} trailing bits not described by the syntax", self.remaining_bits()),
+                format!(
+                    "{} trailing bits not described by the syntax",
+                    self.remaining_bits()
+                ),
             ));
         }
         Ok(())
@@ -125,7 +132,11 @@ impl BitWriter {
     pub fn write(&mut self, what: &'static str, n: u32, v: u64) -> Result<()> {
         assert!(n <= 64);
         if n < 64 && v >> n != 0 {
-            return Err(Error::Overflow { what, value: v, bits: n });
+            return Err(Error::Overflow {
+                what,
+                value: v,
+                bits: n,
+            });
         }
         for i in (0..n).rev() {
             if self.bit & 7 == 0 {
@@ -158,7 +169,10 @@ impl BitWriter {
 
     /// Finish; panics unless byte aligned (every ARIB/MPEG syntax is).
     pub fn into_bytes(self) -> Vec<u8> {
-        assert!(self.bit & 7 == 0, "BitWriter finished at unaligned position");
+        assert!(
+            self.bit & 7 == 0,
+            "BitWriter finished at unaligned position"
+        );
         self.buf
     }
 }

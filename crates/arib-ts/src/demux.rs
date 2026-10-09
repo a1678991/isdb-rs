@@ -123,7 +123,11 @@ pub struct SectionAssembler {
 impl SectionAssembler {
     /// Assembler for `pid`.
     pub fn new(pid: u16) -> Self {
-        Self { pid, cc: Tracker::new(), partial: None }
+        Self {
+            pid,
+            cc: Tracker::new(),
+            partial: None,
+        }
     }
 
     /// PID served.
@@ -138,12 +142,23 @@ impl SectionAssembler {
     }
 
     fn event(&self, index: u64, kind: DemuxEventKind, out: &mut Vec<Assembled>) {
-        out.push(Assembled::Event(DemuxEvent { pid: self.pid, packet_index: index, kind }));
+        out.push(Assembled::Event(DemuxEvent {
+            pid: self.pid,
+            packet_index: index,
+            kind,
+        }));
     }
 
     fn discard(&mut self, index: u64, reason: DiscardReason, out: &mut Vec<Assembled>) {
         if let Some(p) = self.partial.take() {
-            self.event(index, DemuxEventKind::Discarded { bytes: p.data.len(), reason }, out);
+            self.event(
+                index,
+                DemuxEventKind::Discarded {
+                    bytes: p.data.len(),
+                    reason,
+                },
+                out,
+            );
         }
     }
 
@@ -182,10 +197,19 @@ impl SectionAssembler {
         }
         let Some(payload) = v.payload else { return };
         if v.header.payload_unit_start_indicator {
-            let Some((&ptr, rest)) = payload.split_first() else { return };
+            let Some((&ptr, rest)) = payload.split_first() else {
+                return;
+            };
             let ptr_us = ptr as usize;
             if ptr_us > rest.len() {
-                self.event(index, DemuxEventKind::PointerOutOfRange { pointer: ptr, available: rest.len() }, out);
+                self.event(
+                    index,
+                    DemuxEventKind::PointerOutOfRange {
+                        pointer: ptr,
+                        available: rest.len(),
+                    },
+                    out,
+                );
                 self.discard(index, DiscardReason::PointerMismatch, out);
                 return;
             }
@@ -218,9 +242,18 @@ impl SectionAssembler {
     /// payload) shall be 0xFF stuffing (§2.4.4).
     fn complete(&mut self, index: u64, mut p: Partial, t: usize, out: &mut Vec<Assembled>) {
         let extra = p.data.split_off(t);
-        out.push(Assembled::Section(Section { pid: self.pid, start_packet: p.start_packet, end_packet: index, data: p.data }));
+        out.push(Assembled::Section(Section {
+            pid: self.pid,
+            start_packet: p.start_packet,
+            end_packet: index,
+            data: p.data,
+        }));
         if !extra.iter().all(|&b| b == 0xFF) {
-            self.event(index, DemuxEventKind::UnexpectedBytes { bytes: extra.len() }, out);
+            self.event(
+                index,
+                DemuxEventKind::UnexpectedBytes { bytes: extra.len() },
+                out,
+            );
         }
     }
 
@@ -235,11 +268,19 @@ impl SectionAssembler {
             }
             match crate::section::total_len(b) {
                 Some(t) if t <= b.len() => {
-                    out.push(Assembled::Section(Section { pid: self.pid, start_packet: index, end_packet: index, data: b[..t].to_vec() }));
+                    out.push(Assembled::Section(Section {
+                        pid: self.pid,
+                        start_packet: index,
+                        end_packet: index,
+                        data: b[..t].to_vec(),
+                    }));
                     b = &b[t..];
                 }
                 _ => {
-                    self.partial = Some(Partial { start_packet: index, data: b.to_vec() });
+                    self.partial = Some(Partial {
+                        start_packet: index,
+                        data: b.to_vec(),
+                    });
                     return;
                 }
             }
@@ -262,7 +303,9 @@ impl SectionDemux {
 
     /// Start assembling sections on `pid` (no-op if already present).
     pub fn add_pid(&mut self, pid: u16) {
-        self.assemblers.entry(pid).or_insert_with(|| SectionAssembler::new(pid));
+        self.assemblers
+            .entry(pid)
+            .or_insert_with(|| SectionAssembler::new(pid));
     }
 
     /// True if `pid` is being assembled.
@@ -295,11 +338,22 @@ mod tests {
     fn pkt(pid: u16, pusi: bool, cc: u8, payload: &[u8]) -> [u8; PACKET_SIZE] {
         let mut p = payload.to_vec();
         p.resize(184, 0xFF);
-        Packet::with_payload(pid, pusi, cc, &p).unwrap().encode().unwrap()
+        Packet::with_payload(pid, pusi, cc, &p)
+            .unwrap()
+            .encode()
+            .unwrap()
     }
 
     fn sections(out: &[Assembled]) -> Vec<&Section> {
-        out.iter().filter_map(|a| if let Assembled::Section(s) = a { Some(s) } else { None }).collect()
+        out.iter()
+            .filter_map(|a| {
+                if let Assembled::Section(s) = a {
+                    Some(s)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     #[test]
@@ -384,7 +438,16 @@ mod tests {
         // packet with cc=1 lost; cc=2 arrives
         out.extend(a.push(2, &pkt(0x11, false, 2, &s1[367..])));
         assert!(sections(&out).is_empty());
-        assert!(out.iter().any(|e| matches!(e, Assembled::Event(DemuxEvent { kind: DemuxEventKind::Discarded { reason: DiscardReason::ContinuityBreak, bytes: 183 }, .. }))));
+        assert!(out.iter().any(|e| matches!(
+            e,
+            Assembled::Event(DemuxEvent {
+                kind: DemuxEventKind::Discarded {
+                    reason: DiscardReason::ContinuityBreak,
+                    bytes: 183
+                },
+                ..
+            })
+        )));
         let mut p3 = vec![0u8];
         p3.extend_from_slice(&s2);
         let out = a.push(3, &pkt(0x11, true, 3, &p3));
@@ -403,7 +466,16 @@ mod tests {
         let mut bad = pkt(0x11, false, 1, &s1[183..367]);
         bad[1] |= 0x80;
         let out = a.push(1, &bad);
-        assert!(matches!(&out[..], [Assembled::Event(DemuxEvent { kind: DemuxEventKind::Discarded { reason: DiscardReason::TransportError, .. }, .. })]));
+        assert!(matches!(
+            &out[..],
+            [Assembled::Event(DemuxEvent {
+                kind: DemuxEventKind::Discarded {
+                    reason: DiscardReason::TransportError,
+                    ..
+                },
+                ..
+            })]
+        ));
         assert!(a.push(2, &pkt(0x11, false, 2, &s1[367..])).is_empty());
     }
 
@@ -435,7 +507,16 @@ mod tests {
         let mut p1 = vec![0u8];
         p1.extend_from_slice(&s2);
         let out = a.push(1, &pkt(0x11, true, 1, &p1));
-        assert!(out.iter().any(|e| matches!(e, Assembled::Event(DemuxEvent { kind: DemuxEventKind::Discarded { reason: DiscardReason::PointerMismatch, .. }, .. }))));
+        assert!(out.iter().any(|e| matches!(
+            e,
+            Assembled::Event(DemuxEvent {
+                kind: DemuxEventKind::Discarded {
+                    reason: DiscardReason::PointerMismatch,
+                    ..
+                },
+                ..
+            })
+        )));
         assert_eq!(sections(&out)[0].data, s2);
     }
 }

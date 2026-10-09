@@ -166,7 +166,8 @@ impl P<'_> {
                         }
                         let h = std::str::from_utf8(&self.s[st..self.i]).unwrap_or("");
                         self.i += 1;
-                        char::from_u32(u32::from_str_radix(h, 16).unwrap_or(0xFFFD)).unwrap_or('\u{FFFD}')
+                        char::from_u32(u32::from_str_radix(h, 16).unwrap_or(0xFFFD))
+                            .unwrap_or('\u{FFFD}')
                     }
                     other => other as char,
                 };
@@ -205,11 +206,17 @@ impl P<'_> {
             Some(c) if c == b'-' || c.is_ascii_digit() => {
                 let st = self.i;
                 self.i += 1;
-                while self.i < self.s.len() && (self.s[self.i].is_ascii_alphanumeric() || self.s[self.i] == b'.' || self.s[self.i] == b'_') {
+                while self.i < self.s.len()
+                    && (self.s[self.i].is_ascii_alphanumeric()
+                        || self.s[self.i] == b'.'
+                        || self.s[self.i] == b'_')
+                {
                     self.i += 1;
                 }
                 let t = std::str::from_utf8(&self.s[st..self.i]).unwrap_or("0");
-                t.parse::<i128>().map(Node::Int).unwrap_or_else(|_| Node::Str(t.to_string()))
+                t.parse::<i128>()
+                    .map(Node::Int)
+                    .unwrap_or_else(|_| Node::Str(t.to_string()))
             }
             Some(_) => {
                 let name = self.ident();
@@ -281,7 +288,11 @@ impl P<'_> {
 
 /// Parse `format!("{:?}", x)` of a derive(Debug) value into a raw tree.
 pub fn parse_debug(s: &str) -> Node {
-    P { s: s.as_bytes(), i: 0 }.value()
+    P {
+        s: s.as_bytes(),
+        i: 0,
+    }
+    .value()
 }
 
 /// Build the normalised tree of any decoded value.
@@ -309,7 +320,9 @@ const BYTE_FIELDS: &[&str] = &[
 ];
 
 fn ints(v: &[Node]) -> Option<Vec<i128>> {
-    v.iter().map(|n| if let Node::Int(i) = n { Some(*i) } else { None }).collect()
+    v.iter()
+        .map(|n| if let Node::Int(i) = n { Some(*i) } else { None })
+        .collect()
 }
 
 fn code3(v: &[Node]) -> Option<String> {
@@ -322,7 +335,10 @@ fn code3(v: &[Node]) -> Option<String> {
 }
 
 fn field_int(fields: &[(String, Node)], k: &str) -> Option<i128> {
-    fields.iter().find(|(n, _)| n == k).and_then(|(_, v)| if let Node::Int(i) = v { Some(*i) } else { None })
+    fields
+        .iter()
+        .find(|(n, _)| n == k)
+        .and_then(|(_, v)| if let Node::Int(i) = v { Some(*i) } else { None })
 }
 
 fn bcd2(b: u32) -> String {
@@ -346,8 +362,13 @@ pub fn normalize(n: Node, field: &str) -> Node {
                     }
                 }
                 "MjdTime" => {
-                    if let (Some(mjd), Some(bcd)) = (field_int(&fields, "mjd"), field_int(&fields, "bcd_hms")) {
-                        let t = arib_si::time::MjdTime { mjd: mjd as u16, bcd_hms: bcd as u32 };
+                    if let (Some(mjd), Some(bcd)) =
+                        (field_int(&fields, "mjd"), field_int(&fields, "bcd_hms"))
+                    {
+                        let t = arib_si::time::MjdTime {
+                            mjd: mjd as u16,
+                            bcd_hms: bcd as u32,
+                        };
                         return Node::Str(if t.is_undefined() {
                             "undefined".into()
                         } else if let Some(dt) = t.to_jst() {
@@ -375,7 +396,9 @@ pub fn normalize(n: Node, field: &str) -> Node {
                 }
                 // arib-ts raw descriptor (PMT/CAT loops): decode with the
                 // typed B10 descriptor decoders.
-                "Descriptor" if fields.len() == 2 && fields[0].0 == "tag" && fields[1].0 == "data" => {
+                "Descriptor"
+                    if fields.len() == 2 && fields[0].0 == "tag" && fields[1].0 == "data" =>
+                {
                     if let (Node::Int(tag), Node::List(d)) = (&fields[0].1, &fields[1].1)
                         && let Some(d) = ints(d)
                     {
@@ -384,7 +407,11 @@ pub fn normalize(n: Node, field: &str) -> Node {
                             Ok(td) => descriptor(&td),
                             Err(e) => Node::Struct(
                                 "Undecodable".into(),
-                                vec![("tag".into(), Node::Int(*tag)), ("data".into(), Node::Bytes(data)), ("error".into(), Node::Str(e.to_string()))],
+                                vec![
+                                    ("tag".into(), Node::Int(*tag)),
+                                    ("data".into(), Node::Bytes(data)),
+                                    ("error".into(), Node::Str(e.to_string())),
+                                ],
                             ),
                         };
                     }
@@ -394,7 +421,11 @@ pub fn normalize(n: Node, field: &str) -> Node {
             let fields: Vec<(String, Node)> = fields
                 .into_iter()
                 .map(|(k, v)| {
-                    let ctx = if k.chars().all(|c| c.is_ascii_digit()) { field.to_string() } else { k.clone() };
+                    let ctx = if k.chars().all(|c| c.is_ascii_digit()) {
+                        field.to_string()
+                    } else {
+                        k.clone()
+                    };
                     let v = normalize(v, &ctx);
                     (k, v)
                 })
@@ -412,7 +443,9 @@ pub fn normalize(n: Node, field: &str) -> Node {
             Node::Struct(name, fields)
         }
         Node::List(v) => {
-            let is_code = field.contains("language") || field.contains("country_code") || field.contains("country_codes");
+            let is_code = field.contains("language")
+                || field.contains("country_code")
+                || field.contains("country_codes");
             if is_code && let Some(c) = code3(&v) {
                 return Node::Str(c);
             }
@@ -468,7 +501,11 @@ pub fn scalar(n: &Node, k: &str) -> String {
         Node::Bool(b) => b.to_string(),
         Node::Int(i) => {
             if hex_field(k) && *i >= 0 {
-                if *i > 0xFF { format!("{i:#06x}") } else { format!("{i:#04x}") }
+                if *i > 0xFF {
+                    format!("{i:#06x}")
+                } else {
+                    format!("{i:#04x}")
+                }
             } else if k == "frequencies" || k == "frequency" {
                 format!("{i} ({:.6} MHz)", *i as f64 / 7.0)
             } else {
@@ -489,7 +526,10 @@ pub fn scalar(n: &Node, k: &str) -> String {
             format!("[{}]", items.join(", "))
         }
         Node::Struct(name, f) => {
-            let items: Vec<String> = f.iter().map(|(fk, v)| format!("{fk}: {}", scalar(v, fk))).collect();
+            let items: Vec<String> = f
+                .iter()
+                .map(|(fk, v)| format!("{fk}: {}", scalar(v, fk)))
+                .collect();
             format!("{name} {{ {} }}", items.join(", "))
         }
     }
@@ -497,7 +537,11 @@ pub fn scalar(n: &Node, k: &str) -> String {
 
 fn is_scalar(n: &Node) -> bool {
     match n {
-        Node::List(v) => v.iter().all(|x| matches!(x, Node::Int(_) | Node::Str(_) | Node::Bool(_))) && v.len() <= 32,
+        Node::List(v) => {
+            v.iter()
+                .all(|x| matches!(x, Node::Int(_) | Node::Str(_) | Node::Bool(_)))
+                && v.len() <= 32
+        }
         Node::Struct(..) => false,
         _ => true,
     }
@@ -578,26 +622,43 @@ mod tests {
     #[derive(Debug)]
     enum E {
         A(Inner),
-        B { x: Option<u8>, y: Option<u8>, s: String },
+        B {
+            x: Option<u8>,
+            y: Option<u8>,
+            s: String,
+        },
         U,
     }
 
     #[test]
     fn parses_debug_and_normalises() {
         let v = vec![
-            E::A(Inner { name: arib_text::AribString::encode("ABC").unwrap(), language: *b"jpn", data: vec![1, 0xAB], ids: vec![0x400, 2] }),
-            E::B { x: Some(3), y: None, s: "q\"z\\".into() },
+            E::A(Inner {
+                name: arib_text::AribString::encode("ABC").unwrap(),
+                language: *b"jpn",
+                data: vec![1, 0xAB],
+                ids: vec![0x400, 2],
+            }),
+            E::B {
+                x: Some(3),
+                y: None,
+                s: "q\"z\\".into(),
+            },
             E::U,
         ];
         let n = of(&v);
         let Node::List(items) = n else { panic!() };
-        let Node::Struct(name, f) = &items[0] else { panic!() };
+        let Node::Struct(name, f) = &items[0] else {
+            panic!()
+        };
         assert_eq!(name, "A");
         assert!(matches!(&f[0].1, Node::Text(t, _) if t == "ABC"));
         assert_eq!(f[1].1, Node::Str("jpn".into()));
         assert_eq!(f[2].1, Node::Bytes(vec![1, 0xAB]));
         assert_eq!(f[3].1, Node::List(vec![Node::Int(0x400), Node::Int(2)]));
-        let Node::Struct(_, f) = &items[1] else { panic!() };
+        let Node::Struct(_, f) = &items[1] else {
+            panic!()
+        };
         assert_eq!(f[0].1, Node::Int(3));
         assert_eq!(f[1].1, Node::Null);
         assert_eq!(f[2].1, Node::Str("q\"z\\".into()));

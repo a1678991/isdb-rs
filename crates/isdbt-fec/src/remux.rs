@@ -116,11 +116,18 @@ impl MultiplexPattern {
                     while bits >= PACKET_BITS * (packets + 1) {
                         packets += 1;
                         let input_clock = symbol * sym + offset + i;
-                        events.push(Completion { time: input_clock + u64::from(strict), layer: id });
+                        events.push(Completion {
+                            time: input_clock + u64::from(strict),
+                            layer: id,
+                        });
                     }
                 }
             }
-            assert_eq!(packets as usize, l.tsp_per_frame(mode), "Table 3-3 count for layer {id}");
+            assert_eq!(
+                packets as usize,
+                l.tsp_per_frame(mode),
+                "Table 3-3 count for layer {id}"
+            );
             offset += carriers;
         }
         assert!(offset <= sym, "data carriers exceed the symbol period");
@@ -138,8 +145,14 @@ impl MultiplexPattern {
         for j in 0..n {
             let t = (S4_DELAY_CLOCKS + TSP_PERIOD_CLOCKS * j) as u64;
             let q = ((TSP_PERIOD_CLOCKS * j) as u64 / interval_clocks) as usize;
-            if q > 0 && heads[q - 1] < sections[q - 1].len() && (TSP_PERIOD_CLOCKS * j) as u64 % interval_clocks == 0 {
-                panic!("model receiver: section {} not drained when S4 switched", q - 1);
+            if q > 0
+                && heads[q - 1] < sections[q - 1].len()
+                && (TSP_PERIOD_CLOCKS * j) as u64 % interval_clocks == 0
+            {
+                panic!(
+                    "model receiver: section {} not drained when S4 switched",
+                    q - 1
+                );
             }
             let sec = &sections[q];
             let h = &mut heads[q];
@@ -153,7 +166,11 @@ impl MultiplexPattern {
             }
         }
         for (q, sec) in sections.iter().enumerate() {
-            assert_eq!(heads[q], sec.len(), "model receiver: packets left in section {q} at frame end");
+            assert_eq!(
+                heads[q],
+                sec.len(),
+                "model receiver: packets left in section {q} at frame end"
+            );
         }
         Self { slots, counts }
     }
@@ -186,10 +203,18 @@ impl MultiplexPattern {
     /// TX re-multiplexer (§3.2.1): build one multiplex frame from per-layer
     /// packet sequences (each exactly `count(layer)` long, in layer order),
     /// filling null slots with `null()`.
-    pub fn assemble<P: Clone>(&self, layers: [&[P]; 3], mut null: impl FnMut() -> P) -> Result<Vec<P>, FecError> {
+    pub fn assemble<P: Clone>(
+        &self,
+        layers: [&[P]; 3],
+        mut null: impl FnMut() -> P,
+    ) -> Result<Vec<P>, FecError> {
         for l in Layer::ALL {
             if layers[l.index()].len() != self.count(l) {
-                return Err(FecError::LayerCount { layer: l, expected: self.count(l), got: layers[l.index()].len() });
+                return Err(FecError::LayerCount {
+                    layer: l,
+                    expected: self.count(l),
+                    got: layers[l.index()].len(),
+                });
             }
         }
         let mut next = [0usize; 3];
@@ -211,7 +236,10 @@ impl MultiplexPattern {
     /// into the per-layer sequences, dropping null slots.
     pub fn divide<P: Clone>(&self, frame: &[P]) -> Result<[Vec<P>; 3], FecError> {
         if frame.len() != self.len() {
-            return Err(FecError::FrameLength { expected: self.len(), got: frame.len() });
+            return Err(FecError::FrameLength {
+                expected: self.len(),
+                got: frame.len(),
+            });
         }
         let mut out: [Vec<P>; 3] = Default::default();
         for (s, p) in self.slots.iter().zip(frame) {
@@ -247,7 +275,12 @@ mod tests {
     use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Modulation, TimeInterleave};
 
     fn lc(segments: usize, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
-        LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave(0) }
+        LayerConfig {
+            segments,
+            modulation,
+            code_rate,
+            time_interleave: TimeInterleave(0),
+        }
     }
 
     fn fig_3_5_params() -> Params {
@@ -255,7 +288,11 @@ mod tests {
             Mode::M1,
             GuardInterval::G1_8,
             false,
-            [Some(lc(5, Modulation::Dqpsk, CodeRate::R1_2)), Some(lc(8, Modulation::Qam64, CodeRate::R7_8)), None],
+            [
+                Some(lc(5, Modulation::Dqpsk, CodeRate::R1_2)),
+                Some(lc(8, Modulation::Qam64, CodeRate::R7_8)),
+                None,
+            ],
         )
         .unwrap()
     }

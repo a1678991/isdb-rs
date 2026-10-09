@@ -4,9 +4,9 @@
 //! frame synchronisation.  ISDB-T specific positions come from
 //! [`crate::frame`] (Tables 3-14/3-15) and [`crate::tmcc`] (Table 3-20).
 
-use crate::frame::{ac1_positions, ac2_positions, tmcc_positions, FrameLayout, SegmentKind};
-use crate::ofdm::carrier_bin;
 use crate::C32;
+use crate::frame::{FrameLayout, SegmentKind, ac1_positions, ac2_positions, tmcc_positions};
+use crate::ofdm::carrier_bin;
 use isdbt_core::ofdm_params::segment_position;
 use isdbt_core::{GuardInterval, Mode, SEGMENTS};
 
@@ -28,14 +28,23 @@ pub struct ModeGuess {
 /// All modes.
 pub const MODES: [Mode; 3] = [Mode::M1, Mode::M2, Mode::M3];
 /// All guard intervals.
-pub const GUARDS: [GuardInterval; 4] = [GuardInterval::G1_4, GuardInterval::G1_8, GuardInterval::G1_16, GuardInterval::G1_32];
+pub const GUARDS: [GuardInterval; 4] = [
+    GuardInterval::G1_4,
+    GuardInterval::G1_8,
+    GuardInterval::G1_16,
+    GuardInterval::G1_32,
+];
 
 /// Samples needed by [`detect_mode`] to test every candidate with at
 /// least `symbols` symbols.
 pub fn samples_needed(modes: &[Mode], guards: &[GuardInterval], symbols: usize) -> usize {
     modes
         .iter()
-        .flat_map(|m| guards.iter().map(move |g| (symbols + 1) * (m.fft_size() + g.samples(*m)) + m.fft_size()))
+        .flat_map(|m| {
+            guards
+                .iter()
+                .map(move |g| (symbols + 1) * (m.fft_size() + g.samples(*m)) + m.fft_size())
+        })
         .max()
         .unwrap_or(0)
 }
@@ -120,7 +129,10 @@ pub fn continual_metric(spectra: &[Vec<C32>]) -> Vec<f32> {
             den[b] += p.norm_sqr();
         }
     }
-    num.iter().zip(&den).map(|(n, &d)| if d > 0.0 { n.norm() / d } else { 0.0 }).collect()
+    num.iter()
+        .zip(&den)
+        .map(|(n, &d)| if d > 0.0 { n.norm() / d } else { 0.0 })
+        .collect()
 }
 
 /// Integer CFO in carrier spacings from full-band FFT spectra (natural
@@ -142,7 +154,10 @@ pub fn integer_cfo(mode: Mode, spectra: &[Vec<C32>], max_shift: usize) -> (i64, 
     let mut best = (0i64, f32::MIN);
     let max = max_shift as i64;
     for d in -max..=max {
-        let score: f32 = pattern.iter().map(|&b| metric[(b + d).rem_euclid(n) as usize]).sum();
+        let score: f32 = pattern
+            .iter()
+            .map(|&b| metric[(b + d).rem_euclid(n) as usize])
+            .sum();
         if score > best.1 {
             best = (d, score);
         }
@@ -154,7 +169,10 @@ pub fn integer_cfo(mode: Mode, spectra: &[Vec<C32>], max_shift: usize) -> (i64, 
 /// carriers): a segment is differential if the positions that are
 /// continual only in a differential segment (CP, AC2, differential TMCC;
 /// Table 3-14) are coherent over time.
-pub fn detect_kinds(mode: Mode, spectra: &[Vec<C32>]) -> ([SegmentKind; SEGMENTS], [f32; SEGMENTS]) {
+pub fn detect_kinds(
+    mode: Mode,
+    spectra: &[Vec<C32>],
+) -> ([SegmentKind; SEGMENTS], [f32; SEGMENTS]) {
     let metric = continual_metric(spectra);
     let c = mode.carriers_per_segment();
     let mut kinds = [SegmentKind::Coherent; SEGMENTS];
@@ -167,8 +185,16 @@ pub fn detect_kinds(mode: Mode, spectra: &[Vec<C32>]) -> ([SegmentKind; SEGMENTS
             .copied()
             .collect();
         let pos: Vec<u16> = std::iter::once(0u16)
-            .chain(ac2_positions(mode, seg, SegmentKind::Differential).iter().copied())
-            .chain(tmcc_positions(mode, seg, SegmentKind::Differential).iter().copied())
+            .chain(
+                ac2_positions(mode, seg, SegmentKind::Differential)
+                    .iter()
+                    .copied(),
+            )
+            .chain(
+                tmcc_positions(mode, seg, SegmentKind::Differential)
+                    .iter()
+                    .copied(),
+            )
             .filter(|p| !excl.contains(p))
             .collect();
         let s = pos.iter().map(|&p| metric[base + p as usize]).sum::<f32>() / pos.len() as f32;
@@ -183,7 +209,12 @@ pub fn detect_kinds(mode: Mode, spectra: &[Vec<C32>]) -> ([SegmentKind; SEGMENTS
 /// Soft DBPSK value of the TMCC carriers between two consecutive
 /// symbols: `Σ_c Re(y_j[c]·y*_{j−1}[c])`, optionally restricted to one
 /// segment kind (negative ⇒ bit 1).
-pub fn tmcc_soft(layout: &FrameLayout, y: &[C32], y_prev: &[C32], kind: Option<SegmentKind>) -> f32 {
+pub fn tmcc_soft(
+    layout: &FrameLayout,
+    y: &[C32],
+    y_prev: &[C32],
+    kind: Option<SegmentKind>,
+) -> f32 {
     layout
         .tmcc
         .iter()
@@ -227,6 +258,10 @@ pub fn detect_sp_phase(layout: &FrameLayout, spectra: &[Vec<C32>]) -> Option<(us
         // n mod 4 = p = (j + c) mod 4  ⇒  c = (p − j) mod 4.
         votes[(best.0 + 4 - j % 4) % 4] += 1;
     }
-    let (c, n) = votes.iter().enumerate().max_by_key(|e| e.1).map(|(c, &n)| (c, n))?;
+    let (c, n) = votes
+        .iter()
+        .enumerate()
+        .max_by_key(|e| e.1)
+        .map(|(c, &n)| (c, n))?;
     Some((c, n as f32 / spectra.len().max(1) as f32))
 }

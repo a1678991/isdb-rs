@@ -36,8 +36,8 @@ use crate::config::{ClockSource, Config, StreamKind};
 use crate::error::{MuxError, Result};
 use crate::jst::{self, JstSeconds};
 use crate::relay::{self, Relay, RelayStats};
-use crate::signalling::RecordingControlCfg;
 use crate::si::{self, SiBuilder, StreamInfo, TableKind};
+use crate::signalling::RecordingControlCfg;
 use crate::tstd::{Tstd, TstdParams, TstdViolations};
 use crate::video::VideoEs;
 
@@ -295,9 +295,7 @@ impl Multiplexer {
                 // restriction (copy-free)
                 let v = source_cc
                     .iter()
-                    .map(|c| {
-                        c.map_or(DigitalRecordingControl::CopyFree, |c| c.recording_control)
-                    })
+                    .map(|c| c.map_or(DigitalRecordingControl::CopyFree, |c| c.recording_control))
                     .max_by_key(|v| v.code())
                     .unwrap_or(DigitalRecordingControl::CopyFree);
                 cc.recording_control = RecordingControlCfg::Value(v);

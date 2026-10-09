@@ -41,7 +41,11 @@ pub struct PatEntry {
 impl PatEntry {
     /// Entry with reserved bits '111'.
     pub fn new(program_number: u16, pid: u16) -> Self {
-        Self { program_number, reserved: 0b111, pid }
+        Self {
+            program_number,
+            reserved: 0b111,
+            pid,
+        }
     }
 }
 
@@ -55,17 +59,26 @@ pub struct Pat {
 impl Pat {
     /// network_PID (entry with program_number 0x0000), if present.
     pub fn network_pid(&self) -> Option<u16> {
-        self.entries.iter().find(|e| e.program_number == 0).map(|e| e.pid)
+        self.entries
+            .iter()
+            .find(|e| e.program_number == 0)
+            .map(|e| e.pid)
     }
 
     /// `(program_number, program_map_PID)` of every program (number ≠ 0).
     pub fn programs(&self) -> impl Iterator<Item = (u16, u16)> + '_ {
-        self.entries.iter().filter(|e| e.program_number != 0).map(|e| (e.program_number, e.pid))
+        self.entries
+            .iter()
+            .filter(|e| e.program_number != 0)
+            .map(|e| (e.program_number, e.pid))
     }
 
     /// A single-section PAT (`transport_stream_id` in table_id_extension).
     pub fn section(transport_stream_id: u16, version: u8, entries: Vec<PatEntry>) -> Long<Pat> {
-        Long { header: LongHeader::new(TABLE_ID_PAT, transport_stream_id, version), body: Pat { entries } }
+        Long {
+            header: LongHeader::new(TABLE_ID_PAT, transport_stream_id, version),
+            body: Pat { entries },
+        }
     }
 }
 
@@ -76,12 +89,19 @@ impl LongBody for Pat {
 
     fn decode(_: &LongHeader, body: &[u8]) -> Result<Self> {
         if body.len() & 3 != 0 {
-            return Err(Error::invalid("program_association_section", format!("program loop is {} bytes, not a multiple of 4", body.len())));
+            return Err(Error::invalid(
+                "program_association_section",
+                format!("program loop is {} bytes, not a multiple of 4", body.len()),
+            ));
         }
         let mut r = BitReader::new(body, "program_association_section");
         let mut entries = Vec::with_capacity(body.len() / 4);
         while r.remaining_bits() > 0 {
-            entries.push(PatEntry { program_number: r.u16()?, reserved: r.read(3)? as u8, pid: r.read(13)? as u16 });
+            entries.push(PatEntry {
+                program_number: r.u16()?,
+                reserved: r.read(3)? as u8,
+                pid: r.read(13)? as u16,
+            });
         }
         Ok(Self { entries })
     }
@@ -108,7 +128,10 @@ pub struct Cat {
 impl Cat {
     /// A single-section CAT with the 18 reserved bits set to '1'.
     pub fn section(version: u8, descriptors: Vec<Descriptor>) -> Long<Cat> {
-        Long { header: LongHeader::new(TABLE_ID_CAT, 0xFFFF, version), body: Cat { descriptors } }
+        Long {
+            header: LongHeader::new(TABLE_ID_CAT, 0xFFFF, version),
+            body: Cat { descriptors },
+        }
     }
 }
 
@@ -118,7 +141,9 @@ impl LongBody for Cat {
     }
 
     fn decode(_: &LongHeader, body: &[u8]) -> Result<Self> {
-        Ok(Self { descriptors: descriptor::parse_loop(body)? })
+        Ok(Self {
+            descriptors: descriptor::parse_loop(body)?,
+        })
     }
 
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
@@ -145,7 +170,13 @@ pub struct PmtStream {
 impl PmtStream {
     /// Entry with reserved bits all '1'.
     pub fn new(stream_type: u8, elementary_pid: u16, descriptors: Vec<Descriptor>) -> Self {
-        Self { stream_type, reserved_pid: 0b111, elementary_pid, reserved_info: 0b1111, descriptors }
+        Self {
+            stream_type,
+            reserved_pid: 0b111,
+            elementary_pid,
+            reserved_info: 0b1111,
+            descriptors,
+        }
     }
 }
 
@@ -167,12 +198,21 @@ pub struct Pmt {
 impl Pmt {
     /// PMT body with reserved bits all '1'.
     pub fn new(pcr_pid: u16, program_info: Vec<Descriptor>, streams: Vec<PmtStream>) -> Self {
-        Self { reserved_pcr: 0b111, pcr_pid, reserved_info: 0b1111, program_info, streams }
+        Self {
+            reserved_pcr: 0b111,
+            pcr_pid,
+            reserved_info: 0b1111,
+            program_info,
+            streams,
+        }
     }
 
     /// A PMT section for `program_number` (in table_id_extension).
     pub fn section(program_number: u16, version: u8, body: Pmt) -> Long<Pmt> {
-        Long { header: LongHeader::new(TABLE_ID_PMT, program_number, version), body }
+        Long {
+            header: LongHeader::new(TABLE_ID_PMT, program_number, version),
+            body,
+        }
     }
 }
 
@@ -187,9 +227,12 @@ impl LongBody for Pmt {
         let pcr_pid = r.read(13)? as u16;
         let reserved_info = r.read(4)? as u8;
         let pil = r.read(12)? as usize;
-        let program_info = descriptor::parse_loop(
-            r.bytes(pil).map_err(|_| Error::invalid("program_info_length", format!("{pil} runs past the section")))?,
-        )?;
+        let program_info = descriptor::parse_loop(r.bytes(pil).map_err(|_| {
+            Error::invalid(
+                "program_info_length",
+                format!("{pil} runs past the section"),
+            )
+        })?)?;
         let mut streams = Vec::new();
         while r.remaining_bits() > 0 {
             let stream_type = r.u8()?;
@@ -197,12 +240,24 @@ impl LongBody for Pmt {
             let elementary_pid = r.read(13)? as u16;
             let reserved_info = r.read(4)? as u8;
             let n = r.read(12)? as usize;
-            let descriptors = descriptor::parse_loop(
-                r.bytes(n).map_err(|_| Error::invalid("ES_info_length", format!("{n} runs past the section")))?,
-            )?;
-            streams.push(PmtStream { stream_type, reserved_pid, elementary_pid, reserved_info, descriptors });
+            let descriptors = descriptor::parse_loop(r.bytes(n).map_err(|_| {
+                Error::invalid("ES_info_length", format!("{n} runs past the section"))
+            })?)?;
+            streams.push(PmtStream {
+                stream_type,
+                reserved_pid,
+                elementary_pid,
+                reserved_info,
+                descriptors,
+            });
         }
-        Ok(Self { reserved_pcr, pcr_pid, reserved_info, program_info, streams })
+        Ok(Self {
+            reserved_pcr,
+            pcr_pid,
+            reserved_info,
+            program_info,
+            streams,
+        })
     }
 
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
@@ -227,15 +282,26 @@ impl LongBody for Pmt {
     }
 }
 
-fn check_envelope<B: LongBody>(v: &mut Vec<Violation>, s: &Long<B>, table_id: u8, clause: &'static str) {
+fn check_envelope<B: LongBody>(
+    v: &mut Vec<Violation>,
+    s: &Long<B>,
+    table_id: u8,
+    clause: &'static str,
+) {
     let h = &s.header;
-    require(v, h.table_id == table_id, clause, || format!("table_id {:#04x}, shall be {table_id:#04x}", h.table_id));
-    require(v, !h.private_indicator, clause, || "bit after section_syntax_indicator shall be '0'".into());
+    require(v, h.table_id == table_id, clause, || {
+        format!("table_id {:#04x}, shall be {table_id:#04x}", h.table_id)
+    });
+    require(v, !h.private_indicator, clause, || {
+        "bit after section_syntax_indicator shall be '0'".into()
+    });
     reserved_ones(v, h.reserved1 as u64, 2, "reserved before section_length");
     match s.encode() {
         Ok(b) => {
             let sl = b.len() - 3;
-            require(v, sl <= PSI_MAX_SECTION_LENGTH, clause, || format!("section_length {sl} exceeds 1021"));
+            require(v, sl <= PSI_MAX_SECTION_LENGTH, clause, || {
+                format!("section_length {sl} exceeds 1021")
+            });
         }
         Err(e) => v.push(Violation::new(clause, format!("not encodable: {e}"))),
     }
@@ -253,15 +319,26 @@ fn assignable_pid(pid: u16) -> bool {
 pub fn check_pat(s: &Long<Pat>) -> Vec<Violation> {
     let mut v = Vec::new();
     check_envelope(&mut v, s, TABLE_ID_PAT, "§2.4.4.5");
-    reserved_ones(&mut v, s.header.reserved2 as u64, 2, "reserved before version_number");
+    reserved_ones(
+        &mut v,
+        s.header.reserved2 as u64,
+        2,
+        "reserved before version_number",
+    );
     let mut seen = std::collections::HashSet::new();
     for e in &s.body.entries {
         reserved_ones(&mut v, e.reserved as u64, 3, "program loop reserved");
         require(&mut v, seen.insert(e.program_number), "§2.4.4.5", || {
-            format!("program_number {:#06x} appears more than once", e.program_number)
+            format!(
+                "program_number {:#06x} appears more than once",
+                e.program_number
+            )
         });
         require(&mut v, assignable_pid(e.pid), "§2.4.4.5 Table 2-3", || {
-            format!("program_number {:#06x} → PID {:#06x} not in 0x0010..0x1FFE", e.program_number, e.pid)
+            format!(
+                "program_number {:#06x} → PID {:#06x} not in 0x0010..0x1FFE",
+                e.program_number, e.pid
+            )
         });
     }
     v
@@ -286,22 +363,56 @@ pub fn check_pmt(s: &Long<Pmt>) -> Vec<Violation> {
     let c = "§2.4.4.9";
     check_envelope(&mut v, s, TABLE_ID_PMT, c);
     let h = &s.header;
-    reserved_ones(&mut v, h.reserved2 as u64, 2, "reserved before version_number");
-    require(&mut v, h.section_number == 0, c, || format!("section_number {}, shall be 0x00", h.section_number));
-    require(&mut v, h.last_section_number == 0, c, || format!("last_section_number {}, shall be 0x00", h.last_section_number));
+    reserved_ones(
+        &mut v,
+        h.reserved2 as u64,
+        2,
+        "reserved before version_number",
+    );
+    require(&mut v, h.section_number == 0, c, || {
+        format!("section_number {}, shall be 0x00", h.section_number)
+    });
+    require(&mut v, h.last_section_number == 0, c, || {
+        format!(
+            "last_section_number {}, shall be 0x00",
+            h.last_section_number
+        )
+    });
     let b = &s.body;
     reserved_ones(&mut v, b.reserved_pcr as u64, 3, "reserved before PCR_PID");
-    reserved_ones(&mut v, b.reserved_info as u64, 4, "reserved before program_info_length");
-    require(&mut v, matches!(b.pcr_pid, 0x0000 | 0x0001 | 0x0010..=0x1FFF), "§2.4.4.9 Table 2-3", || {
-        format!("PCR_PID {:#06x} may not carry a PCR", b.pcr_pid)
-    });
+    reserved_ones(
+        &mut v,
+        b.reserved_info as u64,
+        4,
+        "reserved before program_info_length",
+    );
+    require(
+        &mut v,
+        matches!(b.pcr_pid, 0x0000 | 0x0001 | 0x0010..=0x1FFF),
+        "§2.4.4.9 Table 2-3",
+        || format!("PCR_PID {:#06x} may not carry a PCR", b.pcr_pid),
+    );
     let pil = descriptor::loop_len(&b.program_info);
-    require(&mut v, pil < 1024, c, || format!("program_info_length {pil}: first two bits shall be '00'"));
+    require(&mut v, pil < 1024, c, || {
+        format!("program_info_length {pil}: first two bits shall be '00'")
+    });
     for st in &b.streams {
-        reserved_ones(&mut v, st.reserved_pid as u64, 3, "reserved before elementary_PID");
-        reserved_ones(&mut v, st.reserved_info as u64, 4, "reserved before ES_info_length");
+        reserved_ones(
+            &mut v,
+            st.reserved_pid as u64,
+            3,
+            "reserved before elementary_PID",
+        );
+        reserved_ones(
+            &mut v,
+            st.reserved_info as u64,
+            4,
+            "reserved before ES_info_length",
+        );
         let n = descriptor::loop_len(&st.descriptors);
-        require(&mut v, n < 1024, c, || format!("ES_info_length {n}: first two bits shall be '00'"));
+        require(&mut v, n < 1024, c, || {
+            format!("ES_info_length {n}: first two bits shall be '00'")
+        });
     }
     v
 }
@@ -314,7 +425,11 @@ mod tests {
     /// network_PID.
     #[test]
     fn spec_table2_30_pat_layout() {
-        let s = Pat::section(0x7FD5, 3, vec![PatEntry::new(0, 0x0010), PatEntry::new(0x0428, 0x01F0)]);
+        let s = Pat::section(
+            0x7FD5,
+            3,
+            vec![PatEntry::new(0, 0x0010), PatEntry::new(0x0428, 0x01F0)],
+        );
         let b = s.encode().unwrap();
         // header: 00 B0 11 7F D5 C7 00 00 ; body: 0000 E010 0428 E1F0 ; CRC
         assert_eq!(&b[..8], &[0x00, 0xB0, 0x11, 0x7F, 0xD5, 0xC7, 0x00, 0x00]);
@@ -322,7 +437,10 @@ mod tests {
         let d = Long::<Pat>::decode(&b).unwrap();
         assert_eq!(d, s);
         assert_eq!(d.body.network_pid(), Some(0x10));
-        assert_eq!(d.body.programs().collect::<Vec<_>>(), vec![(0x0428, 0x01F0)]);
+        assert_eq!(
+            d.body.programs().collect::<Vec<_>>(),
+            vec![(0x0428, 0x01F0)]
+        );
         assert!(check_pat(&d).is_empty());
         // reserved bits kept verbatim and flagged by the checker
         let mut s2 = s.clone();
@@ -352,21 +470,33 @@ mod tests {
         let body = Pmt::new(
             0x01FF,
             vec![Descriptor::new(0xC1, [0x84])],
-            vec![PmtStream::new(0x02, 0x0111, vec![]), PmtStream::new(0x0F, 0x0112, vec![Descriptor::new(0x52, [0x10])])],
+            vec![
+                PmtStream::new(0x02, 0x0111, vec![]),
+                PmtStream::new(0x0F, 0x0112, vec![Descriptor::new(0x52, [0x10])]),
+            ],
         );
         let s = Pmt::section(0x0428, 0, body);
         let b = s.encode().unwrap();
         assert_eq!(&b[8..12], &[0xE1, 0xFF, 0xF0, 0x03]);
         assert_eq!(&b[12..15], &[0xC1, 0x01, 0x84]);
         assert_eq!(&b[15..20], &[0x02, 0xE1, 0x11, 0xF0, 0x00]);
-        assert_eq!(&b[20..28], &[0x0F, 0xE1, 0x12, 0xF0, 0x03, 0x52, 0x01, 0x10]);
+        assert_eq!(
+            &b[20..28],
+            &[0x0F, 0xE1, 0x12, 0xF0, 0x03, 0x52, 0x01, 0x10]
+        );
         let d = Long::<Pmt>::decode(&b).unwrap();
         assert_eq!(d, s);
         assert!(check_pmt(&d).is_empty(), "{:?}", check_pmt(&d));
         let mut s2 = s.clone();
         s2.header.section_number = 1;
         s2.header.last_section_number = 1;
-        assert_eq!(check_pmt(&s2).iter().filter(|v| v.clause == "§2.4.4.9").count(), 2);
+        assert_eq!(
+            check_pmt(&s2)
+                .iter()
+                .filter(|v| v.clause == "§2.4.4.9")
+                .count(),
+            2
+        );
         // truncated ES loop
         let bad = crate::section::build_long(&s.header, &b[8..b.len() - 6]).unwrap();
         assert!(Long::<Pmt>::decode(&bad).is_err());

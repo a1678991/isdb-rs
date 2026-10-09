@@ -127,8 +127,21 @@ pub struct Tally {
 }
 
 impl Tally {
-    fn add(m: &mut BTreeMap<String, Tally>, key: String, clause: &str, pid: u16, packet: u64, example: impl FnOnce() -> String) {
-        let t = m.entry(key).or_insert_with(|| Tally { count: 0, first_packet: packet, pid, example: example(), clause: clause.into() });
+    fn add(
+        m: &mut BTreeMap<String, Tally>,
+        key: String,
+        clause: &str,
+        pid: u16,
+        packet: u64,
+        example: impl FnOnce() -> String,
+    ) {
+        let t = m.entry(key).or_insert_with(|| Tally {
+            count: 0,
+            first_packet: packet,
+            pid,
+            example: example(),
+            clause: clause.into(),
+        });
         t.count += 1;
     }
 }
@@ -232,7 +245,10 @@ struct Scanner {
 impl Scanner {
     fn new(opts: ScanOptions, source: String) -> Self {
         let mut s = Scanner {
-            cap: Capture { source, ..Default::default() },
+            cap: Capture {
+                source,
+                ..Default::default()
+            },
             opts,
             demux: SectionDemux::new(),
             other_pids: BTreeSet::new(),
@@ -284,7 +300,10 @@ impl Scanner {
                 if let Ok(p) = Long::<Pmt>::decode(sec) {
                     let prog = p.header.table_id_extension;
                     let ca = |ds: &[arib_ts::descriptor::Descriptor]| -> Vec<u16> {
-                        ds.iter().filter(|d| matches!(d.tag, 0x09 | 0xF6) && d.data.len() >= 4).map(|d| u16::from_be_bytes([d.data[2], d.data[3]]) & 0x1FFF).collect()
+                        ds.iter()
+                            .filter(|d| matches!(d.tag, 0x09 | 0xF6) && d.data.len() >= 4)
+                            .map(|d| u16::from_be_bytes([d.data[2], d.data[3]]) & 0x1FFF)
+                            .collect()
                     };
                     for c in ca(&p.body.program_info) {
                         self.add_other_pid(c);
@@ -320,30 +339,69 @@ impl Scanner {
             match Packet::decode(pkt) {
                 Ok(p) => {
                     for v in arib_ts::packet::check(&p) {
-                        let kind = v.message.split(|c: char| c.is_ascii_digit()).next().unwrap_or("").to_string();
-                        Tally::add(&mut self.cap.packet_violations, format!("{} {kind}", v.clause), v.clause, pid, index, || v.message.clone());
+                        let kind = v
+                            .message
+                            .split(|c: char| c.is_ascii_digit())
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        Tally::add(
+                            &mut self.cap.packet_violations,
+                            format!("{} {kind}", v.clause),
+                            v.clause,
+                            pid,
+                            index,
+                            || v.message.clone(),
+                        );
                     }
                 }
                 Err(e) => {
-                    Tally::add(&mut self.cap.packet_violations, "decode".into(), "§2.4.3.2 Table 2-2", pid, index, || e.to_string());
+                    Tally::add(
+                        &mut self.cap.packet_violations,
+                        "decode".into(),
+                        "§2.4.3.2 Table 2-2",
+                        pid,
+                        index,
+                        || e.to_string(),
+                    );
                 }
             }
         }
         if self.demux.has_pid(pid) {
             if self.cap.section_pids.contains(&pid) {
-                self.cap.section_pid_packets.entry(pid).or_default().push(index);
+                self.cap
+                    .section_pid_packets
+                    .entry(pid)
+                    .or_default()
+                    .push(index);
             }
             for a in self.demux.push(index, pkt) {
                 match a {
                     Assembled::Section(s) => self.section(pid, s.start_packet, s.data),
                     Assembled::Event(e) => {
                         let (key, clause) = match &e.kind {
-                            DemuxEventKind::Discarded { reason, .. } => (format!("discarded partial section ({reason:?})"), "§2.4.4"),
-                            DemuxEventKind::PointerOutOfRange { .. } => ("pointer_field beyond payload".to_string(), "§2.4.4.2"),
-                            DemuxEventKind::UnexpectedBytes { .. } => ("bytes after section end are not 0xFF stuffing".to_string(), "§2.4.4"),
-                            DemuxEventKind::BadStuffing => ("non-0xFF byte after stuffing started".to_string(), "§2.4.4"),
+                            DemuxEventKind::Discarded { reason, .. } => {
+                                (format!("discarded partial section ({reason:?})"), "§2.4.4")
+                            }
+                            DemuxEventKind::PointerOutOfRange { .. } => {
+                                ("pointer_field beyond payload".to_string(), "§2.4.4.2")
+                            }
+                            DemuxEventKind::UnexpectedBytes { .. } => (
+                                "bytes after section end are not 0xFF stuffing".to_string(),
+                                "§2.4.4",
+                            ),
+                            DemuxEventKind::BadStuffing => {
+                                ("non-0xFF byte after stuffing started".to_string(), "§2.4.4")
+                            }
                         };
-                        Tally::add(&mut self.cap.demux_events, format!("{key} pid={pid:#06x}"), clause, pid, e.packet_index, || format!("{:?}", e.kind));
+                        Tally::add(
+                            &mut self.cap.demux_events,
+                            format!("{key} pid={pid:#06x}"),
+                            clause,
+                            pid,
+                            e.packet_index,
+                            || format!("{:?}", e.kind),
+                        );
                     }
                 }
             }
@@ -363,7 +421,10 @@ impl Scanner {
             && let Some(pl) = v.payload
         {
             if pkt[1] & 0x40 != 0 {
-                if pl.len() >= 9 && pl[..3] == arib_ts::pes::START_CODE_PREFIX && 9 + pl[8] as usize <= pl.len() {
+                if pl.len() >= 9
+                    && pl[..3] == arib_ts::pes::START_CODE_PREFIX
+                    && 9 + pl[8] as usize <= pl.len()
+                {
                     a.push_start(&pl[9 + pl[8] as usize..]);
                 }
             } else {
@@ -380,7 +441,9 @@ impl Scanner {
             if data.len() > 3 && data[1] & 0x80 != 0 {
                 match split_long_unchecked(&data) {
                     Ok((h, _, 0)) => {
-                        if o.seen.insert((h.table_id_extension, h.version_number, h.section_number)) {
+                        if o.seen
+                            .insert((h.table_id_extension, h.version_number, h.section_number))
+                        {
                             o.distinct += 1;
                         }
                     }
@@ -392,7 +455,12 @@ impl Scanner {
         let err = |cap: &mut Capture, msg: String| {
             cap.section_error_count += 1;
             if cap.section_errors.len() < 1000 {
-                cap.section_errors.push(SectionError { pid, packet: start, table_id: tid, message: msg });
+                cap.section_errors.push(SectionError {
+                    pid,
+                    packet: start,
+                    table_id: tid,
+                    message: msg,
+                });
             }
         };
         // ST (B10 §5.2.11) has no fixed form: always short, no CRC.
@@ -403,10 +471,18 @@ impl Scanner {
             match split_long_unchecked(&data) {
                 Ok((h, _, residue)) => {
                     if residue != 0 {
-                        err(&mut self.cap, format!("CRC_32 mismatch (residue {residue:#010x})"));
+                        err(
+                            &mut self.cap,
+                            format!("CRC_32 mismatch (residue {residue:#010x})"),
+                        );
                         return;
                     }
-                    key = SlotKey { pid, table_id: tid, ext: Some(h.table_id_extension), sn: Some(h.section_number) };
+                    key = SlotKey {
+                        pid,
+                        table_id: tid,
+                        ext: Some(h.table_id_extension),
+                        sn: Some(h.section_number),
+                    };
                     header = Some(h);
                 }
                 Err(e) => {
@@ -419,18 +495,31 @@ impl Scanner {
                 err(&mut self.cap, "CRC_32 mismatch (TOT)".into());
                 return;
             }
-            key = SlotKey { pid, table_id: tid, ext: None, sn: None };
+            key = SlotKey {
+                pid,
+                table_id: tid,
+                ext: None,
+                sn: None,
+            };
         }
         let slot = self.cap.slots.entry(key).or_default();
         slot.occurrences.push(start);
         if let Some(h) = header {
-            let vi = match slot.versions.iter().position(|v| v.version == h.version_number && v.cni == h.current_next_indicator) {
-                Some(i) => i,
-                None => {
-                    slot.versions.push(VersionRec { version: h.version_number, cni: h.current_next_indicator, lsns: BTreeSet::new(), bodies: Vec::new() });
-                    slot.versions.len() - 1
-                }
-            };
+            let vi =
+                match slot.versions.iter().position(|v| {
+                    v.version == h.version_number && v.cni == h.current_next_indicator
+                }) {
+                    Some(i) => i,
+                    None => {
+                        slot.versions.push(VersionRec {
+                            version: h.version_number,
+                            cni: h.current_next_indicator,
+                            lsns: BTreeSet::new(),
+                            bodies: Vec::new(),
+                        });
+                        slot.versions.len() - 1
+                    }
+                };
             let v = &mut slot.versions[vi];
             v.lsns.insert(h.last_section_number);
             match v.bodies.iter_mut().find(|b| b.bytes == data) {
@@ -438,7 +527,12 @@ impl Scanner {
                     b.count += 1;
                     b.last = start;
                 }
-                None => v.bodies.push(BodyRec { bytes: data.clone(), count: 1, first: start, last: start }),
+                None => v.bodies.push(BodyRec {
+                    bytes: data.clone(),
+                    count: 1,
+                    first: start,
+                    last: start,
+                }),
             }
         } else if slot.latest != data {
             slot.short_changes += 1;
@@ -492,10 +586,29 @@ fn pes_header(t: &mut PesTrack, index: u64, pid: u16, pl: &[u8]) {
                 t.dts.push((index, d));
             }
             let len = u16::from_be_bytes([pl[4], pl[5]]);
-            let pkt = arib_ts::pes::PesPacket { stream_id: sid, unbounded: len == 0, body: arib_ts::pes::PesBody::Header { header: h, data: Vec::new() } };
+            let pkt = arib_ts::pes::PesPacket {
+                stream_id: sid,
+                unbounded: len == 0,
+                body: arib_ts::pes::PesBody::Header {
+                    header: h,
+                    data: Vec::new(),
+                },
+            };
             for v in arib_ts::pes::check(&pkt) {
-                let kind = v.message.split(|c: char| c.is_ascii_digit()).next().unwrap_or("").to_string();
-                Tally::add(&mut t.violations, format!("{} {kind}", v.clause), v.clause, pid, index, || v.message.clone());
+                let kind = v
+                    .message
+                    .split(|c: char| c.is_ascii_digit())
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                Tally::add(
+                    &mut t.violations,
+                    format!("{} {kind}", v.clause),
+                    v.clause,
+                    pid,
+                    index,
+                    || v.message.clone(),
+                );
             }
         }
         Err(e) => {
@@ -503,7 +616,10 @@ fn pes_header(t: &mut PesTrack, index: u64, pid: u16, pl: &[u8]) {
             if fits {
                 t.header_errors += 1;
                 if t.first_error.is_none() {
-                    t.first_error = Some(format!("flags byte {:#04x}, PES_header_data_length {}: {e}", pl[7], pl[8]));
+                    t.first_error = Some(format!(
+                        "flags byte {:#04x}, PES_header_data_length {}: {e}",
+                        pl[7], pl[8]
+                    ));
                 }
             } else {
                 t.header_truncated += 1;
@@ -600,7 +716,9 @@ pub fn scan_packets(pkts: &[[u8; PACKET_SIZE]], opts: &ScanOptions) -> Capture {
 
 /// Read a whole file as 188-byte packets (framing autodetected; 192/204
 /// prefixes/trailers dropped).
-pub fn read_packets(path: &Path) -> std::io::Result<(Vec<[u8; PACKET_SIZE]>, Option<PacketFormat>)> {
+pub fn read_packets(
+    path: &Path,
+) -> std::io::Result<(Vec<[u8; PACKET_SIZE]>, Option<PacketFormat>)> {
     let buf = std::fs::read(path)?;
     let mut r = SliceReader::new(&buf);
     let v: Vec<[u8; PACKET_SIZE]> = r.by_ref().map(|p| *p.packet).collect();
@@ -635,6 +753,8 @@ impl Capture {
                 }
             }
         }
-        m.into_iter().map(|(k, (_, pid, p))| (k, (pid, p))).collect()
+        m.into_iter()
+            .map(|(k, (_, pid, p))| (k, (pid, p)))
+            .collect()
     }
 }

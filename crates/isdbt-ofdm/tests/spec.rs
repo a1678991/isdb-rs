@@ -5,30 +5,40 @@
 mod common;
 
 use isdbt_core::ofdm_params::{segment_carrier_counts, segment_position, time_interleave_m};
-use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave, SEGMENTS};
-use isdbt_ofdm::ac::{crc10, AcFrame, SeismicDetail, SeismicPage, SeismicWarning};
+use isdbt_core::{
+    CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, SEGMENTS, TimeInterleave,
+};
+use isdbt_ofdm::ac::{AcFrame, SeismicDetail, SeismicPage, SeismicWarning, crc10};
 use isdbt_ofdm::dsc;
 use isdbt_ofdm::frame::{
-    edge_w, is_sp, pilot_value, prbs_init, prbs_segment_init, prbs_step, segment_roles, AcKind, CarrierRole,
-    FrameLayout, SegmentKind,
+    AcKind, CarrierRole, FrameLayout, SegmentKind, edge_w, is_sp, pilot_value, prbs_init,
+    prbs_segment_init, prbs_step, segment_roles,
 };
-use isdbt_ofdm::freq_interleave::{randomize_table, FrequencyInterleaver};
-use isdbt_ofdm::mapping::{constellation_point, constellation_point_raw, dqpsk_phase, normalization, CarrierMapper};
+use isdbt_ofdm::freq_interleave::{FrequencyInterleaver, randomize_table};
+use isdbt_ofdm::mapping::{
+    CarrierMapper, constellation_point, constellation_point_raw, dqpsk_phase, normalization,
+};
 use isdbt_ofdm::tables;
-use isdbt_ofdm::tmcc::{decode_frame, sync_word, TmccInfo, W0};
-use isdbt_ofdm::{Modulator, C32};
+use isdbt_ofdm::tmcc::{TmccInfo, W0, decode_frame, sync_word};
+use isdbt_ofdm::{C32, Modulator};
 
 const MODES: [Mode; 3] = [Mode::M1, Mode::M2, Mode::M3];
 
 fn label(s: &str) -> u8 {
-    s.bytes().filter(|b| *b == b'0' || *b == b'1').fold(0, |a, b| (a << 1) | (b - b'0'))
+    s.bytes()
+        .filter(|b| *b == b'0' || *b == b'1')
+        .fold(0, |a, b| (a << 1) | (b - b'0'))
 }
 
 /// Fig. 3-15: QPSK constellation (b0 → I, b1 → Q).
 #[test]
 fn spec_fig_3_15_qpsk() {
     for (l, i, q) in [("00", 1, 1), ("10", -1, 1), ("11", -1, -1), ("01", 1, -1)] {
-        assert_eq!(constellation_point_raw(Modulation::Qpsk, label(l)), (i, q), "{l}");
+        assert_eq!(
+            constellation_point_raw(Modulation::Qpsk, label(l)),
+            (i, q),
+            "{l}"
+        );
     }
 }
 
@@ -45,7 +55,11 @@ fn spec_fig_3_17_16qam() {
     let mut seen = std::collections::HashSet::new();
     for (r, row) in rows.iter().enumerate() {
         for (c, l) in row.iter().enumerate() {
-            assert_eq!(constellation_point_raw(Modulation::Qam16, label(l)), (lv[3 - c], lv[r]), "{l}");
+            assert_eq!(
+                constellation_point_raw(Modulation::Qam16, label(l)),
+                (lv[3 - c], lv[r]),
+                "{l}"
+            );
             seen.insert(label(l));
         }
     }
@@ -69,7 +83,11 @@ fn spec_fig_3_19_64qam() {
     let mut seen = std::collections::HashSet::new();
     for (r, row) in rows.iter().enumerate() {
         for (c, l) in row.split_whitespace().enumerate() {
-            assert_eq!(constellation_point_raw(Modulation::Qam64, label(l)), (lv[7 - c], lv[r]), "{l}");
+            assert_eq!(
+                constellation_point_raw(Modulation::Qam64, label(l)),
+                (lv[7 - c], lv[r]),
+                "{l}"
+            );
             seen.insert(label(l));
         }
     }
@@ -81,7 +99,10 @@ fn spec_fig_3_19_64qam() {
 fn spec_table_3_11_unit_power() {
     for m in [Modulation::Qpsk, Modulation::Qam16, Modulation::Qam64] {
         let n = 1u32 << m.bits_per_symbol();
-        let p: f32 = (0..n).map(|l| constellation_point(m, l as u8).norm_sqr()).sum::<f32>() / n as f32;
+        let p: f32 = (0..n)
+            .map(|l| constellation_point(m, l as u8).norm_sqr())
+            .sum::<f32>()
+            / n as f32;
         assert!((p - 1.0).abs() < 1e-6, "{m:?} {p}");
     }
     // DQPSK points of Fig. 3-13 have |Z| = √2 → 1 after Z/√2.
@@ -107,13 +128,26 @@ fn spec_table_3_10_dqpsk() {
     let mut m = CarrierMapper::new(Mode::M1, &layer);
     let mut rng = common::Rng(5);
     let r2 = 2f32.sqrt();
-    let fig: Vec<(f32, f32)> = vec![(1., 1.), (1., -1.), (-1., 1.), (-1., -1.), (r2, 0.), (-r2, 0.), (0., r2), (0., -r2)];
+    let fig: Vec<(f32, f32)> = vec![
+        (1., 1.),
+        (1., -1.),
+        (-1., 1.),
+        (-1., -1.),
+        (r2, 0.),
+        (-r2, 0.),
+        (0., r2),
+        (0., -r2),
+    ];
     let mut out = vec![C32::default(); 96];
     for _ in 0..10 {
         m.map_symbol(&rng.bits(192), &mut out);
         for z in &out {
             let z = z / normalization(Modulation::Dqpsk);
-            assert!(fig.iter().any(|&(i, q)| (z.re - i).abs() < 1e-5 && (z.im - q).abs() < 1e-5), "{z}");
+            assert!(
+                fig.iter()
+                    .any(|&(i, q)| (z.re - i).abs() < 1e-5 && (z.im - q).abs() < 1e-5),
+                "{z}"
+            );
         }
     }
 }
@@ -126,7 +160,10 @@ fn spec_table_3_13_permutations() {
         let t = randomize_table(mode);
         let mut s: Vec<u16> = t.to_vec();
         s.sort_unstable();
-        assert!(s.iter().enumerate().all(|(i, &v)| v as usize == i), "{mode:?}");
+        assert!(
+            s.iter().enumerate().all(|(i, &v)| v as usize == i),
+            "{mode:?}"
+        );
         assert_eq!(t.len(), mode.data_carriers_per_segment());
     }
     let m1 = randomize_table(Mode::M1);
@@ -138,7 +175,15 @@ fn spec_table_3_13_permutations() {
         assert_eq!(m2[b], a);
     }
     let m3 = randomize_table(Mode::M3);
-    for (b, a) in [(0, 62), (2, 371), (137, 3), (146, 383), (249, 0), (272, 1), (383, 51)] {
+    for (b, a) in [
+        (0, 62),
+        (2, 371),
+        (137, 3),
+        (146, 383),
+        (249, 0),
+        (272, 1),
+        (383, 51),
+    ] {
         assert_eq!(m3[b], a);
     }
 }
@@ -187,7 +232,15 @@ fn spec_fig_3_26_3_27_frequency_interleave() {
     // S13 = (seg 0, i 13) → segment 0, position 1 → rotation 0 → T[1] = 93.
     assert_eq!(fi.permutation()[13], 93);
     // Partial reception: segment 0 only rotated (k = 0) and randomised.
-    let p = params(Mode::M1, true, [Some((1, Modulation::Qpsk)), Some((12, Modulation::Qam64)), None]);
+    let p = params(
+        Mode::M1,
+        true,
+        [
+            Some((1, Modulation::Qpsk)),
+            Some((12, Modulation::Qam64)),
+            None,
+        ],
+    );
     let fi = FrequencyInterleaver::new(&p);
     assert_eq!(fi.permutation()[1], 93);
     // Coherent group = data segments 1..12 (n = 12): S'_0 of the group
@@ -207,8 +260,13 @@ fn spec_table_3_1_carrier_counts() {
             for seg in 0..SEGMENTS {
                 for phase in 0..4 {
                     let r = segment_roles(mode, seg, kind, phase);
-                    let count = |f: &dyn Fn(&CarrierRole) -> bool| r.iter().filter(|x| f(x)).count();
-                    assert_eq!(count(&|x| *x == CarrierRole::Data), want.data, "{mode:?} {seg} {kind:?}");
+                    let count =
+                        |f: &dyn Fn(&CarrierRole) -> bool| r.iter().filter(|x| f(x)).count();
+                    assert_eq!(
+                        count(&|x| *x == CarrierRole::Data),
+                        want.data,
+                        "{mode:?} {seg} {kind:?}"
+                    );
                     assert_eq!(count(&|x| *x == CarrierRole::Sp), want.sp);
                     assert_eq!(count(&|x| *x == CarrierRole::Cp), want.cp);
                     assert_eq!(count(&|x| *x == CarrierRole::Tmcc), want.tmcc);
@@ -222,19 +280,39 @@ fn spec_table_3_1_carrier_counts() {
         let c = segment_carrier_counts(mode, false);
         assert_eq!((c.data, c.sp, c.tmcc, c.ac1), (96 * s, 9 * s, s, 2 * s));
         let d = segment_carrier_counts(mode, true);
-        assert_eq!((d.cp, d.tmcc, d.ac2), (1, 5 * s, [4, 9, 19][mode.number() as usize - 1]));
+        assert_eq!(
+            (d.cp, d.tmcc, d.ac2),
+            (1, 5 * s, [4, 9, 19][mode.number() as usize - 1])
+        );
         // Whole band, mixed kinds (Table 3-2): nd = 5 differential segments.
-        let p = params(mode, false, [Some((5, Modulation::Dqpsk)), Some((8, Modulation::Qam16)), None]);
+        let p = params(
+            mode,
+            false,
+            [
+                Some((5, Modulation::Dqpsk)),
+                Some((8, Modulation::Qam16)),
+                None,
+            ],
+        );
         let lay = FrameLayout::from_params(&p);
         let (ns, nd) = (8, 5);
         assert_eq!(lay.w.len(), k);
         assert_eq!(lay.sp[1].len(), 9 * s * ns);
         assert_eq!(lay.cp.len() + 1, nd + 1);
         assert_eq!(lay.tmcc.len(), s * ns + 5 * s * nd);
-        assert_eq!(lay.ac.iter().filter(|a| a.kind == AcKind::Ac1).count(), 2 * s * 13);
-        assert_eq!(lay.ac.iter().filter(|a| a.kind == AcKind::Ac2).count(), d.ac2 * nd);
+        assert_eq!(
+            lay.ac.iter().filter(|a| a.kind == AcKind::Ac1).count(),
+            2 * s * 13
+        );
+        assert_eq!(
+            lay.ac.iter().filter(|a| a.kind == AcKind::Ac2).count(),
+            d.ac2 * nd
+        );
         let roles = lay.roles(2);
-        assert_eq!(roles.iter().filter(|r| **r == CarrierRole::Data).count(), 96 * s * 13);
+        assert_eq!(
+            roles.iter().filter(|r| **r == CarrierRole::Data).count(),
+            96 * s * 13
+        );
         assert_eq!(roles[k - 1], CarrierRole::EdgeCp);
     }
 }
@@ -253,7 +331,24 @@ fn spec_tables_3_14_3_15() {
     assert_eq!(tables::DIFF_TMCC_M3[12][19], 429);
     assert_eq!(tables::DIFF_AC2_M3[1][18], 398);
     assert_eq!(tables::DIFF_AC2_M3[0][9], 216);
-    assert_eq!(tables::COH_TMCC_M1, [[49], [47], [31], [44], [83], [86], [61], [17], [85], [25], [101], [70], [23]]);
+    assert_eq!(
+        tables::COH_TMCC_M1,
+        [
+            [49],
+            [47],
+            [31],
+            [44],
+            [83],
+            [86],
+            [61],
+            [17],
+            [85],
+            [25],
+            [101],
+            [70],
+            [23]
+        ]
+    );
     assert_eq!(tables::COH_TMCC_M3[0], [101, 131, 286, 349]);
     assert_eq!(tables::COH_AC1_M3[6][7], 352);
     assert_eq!(tables::COH_TMCC_M2[10], [61, 193]);
@@ -263,7 +358,9 @@ fn spec_tables_3_14_3_15() {
 /// fill the rest in ascending order. Fig. 3-29: CP at carrier 0.
 #[test]
 fn spec_fig_3_29_3_30_segment_structure() {
-    assert!(is_sp(0, 0) && is_sp(12, 0) && is_sp(3, 1) && is_sp(6, 2) && is_sp(9, 3) && is_sp(0, 4));
+    assert!(
+        is_sp(0, 0) && is_sp(12, 0) && is_sp(3, 1) && is_sp(6, 2) && is_sp(9, 3) && is_sp(0, 4)
+    );
     assert!(!is_sp(3, 0) && !is_sp(0, 1));
     let p = params(Mode::M1, false, [Some((13, Modulation::Qpsk)), None, None]);
     let lay = FrameLayout::from_params(&p);
@@ -289,7 +386,12 @@ fn spec_table_3_16_prbs_initial_values() {
     // 0 has reached D9 (step 9).
     let mut st = [1u8; 11];
     let first: Vec<u8> = (0..21).map(|_| prbs_step(&mut st)).collect();
-    assert_eq!(first, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    assert_eq!(
+        first,
+        [
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1
+        ]
+    );
     for mode in MODES {
         let c = mode.carriers_per_segment();
         let mut st = [1u8; 11];
@@ -309,11 +411,17 @@ fn spec_table_3_16_prbs_initial_values() {
         assert_eq!(&lay.w[..13 * c], &w_all[..]);
     }
     assert_eq!(prbs_init(tables::PRBS_INIT_M1[9]), prbs_init("11011001111"));
-    assert_eq!(prbs_init(tables::PRBS_INIT_M3[12]), prbs_init("00010011100"));
+    assert_eq!(
+        prbs_init(tables::PRBS_INIT_M3[12]),
+        prbs_init("00010011100")
+    );
     // Table 3-17 / 3-19 amplitudes.
     assert_eq!(pilot_value(1), C32::new(-4.0 / 3.0, 0.0));
     assert_eq!(pilot_value(0), C32::new(4.0 / 3.0, 0.0));
-    assert_eq!([edge_w(Mode::M1), edge_w(Mode::M2), edge_w(Mode::M3)], [1, 0, 0]);
+    assert_eq!(
+        [edge_w(Mode::M1), edge_w(Mode::M2), edge_w(Mode::M3)],
+        [1, 0, 0]
+    );
     let _ = segment_position(0);
 }
 
@@ -322,14 +430,30 @@ fn spec_table_3_16_prbs_initial_values() {
 #[test]
 fn spec_table_3_21_sync_alternation() {
     assert_eq!(W0, [0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0]);
-    assert_eq!(sync_word(true), [1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1]);
-    let p = params(Mode::M1, true, [Some((1, Modulation::Dqpsk)), Some((12, Modulation::Qam64)), None]);
+    assert_eq!(
+        sync_word(true),
+        [1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1]
+    );
+    let p = params(
+        Mode::M1,
+        true,
+        [
+            Some((1, Modulation::Dqpsk)),
+            Some((12, Modulation::Qam64)),
+            None,
+        ],
+    );
     let mut m = Modulator::new(p.clone());
     let tmcc = TmccInfo::from_params(&p);
     let ac = AcFrame::stuffing(m.layout());
-    let zero: Vec<Vec<u8>> = isdbt_core::Layer::ALL.iter().map(|&l| vec![0; m.bits_per_frame(l)]).collect();
+    let zero: Vec<Vec<u8>> = isdbt_core::Layer::ALL
+        .iter()
+        .map(|&l| vec![0; m.bits_per_frame(l)])
+        .collect();
     for frame in 0..4 {
-        let sy = m.modulate_frame_carriers([&zero[0], &zero[1], &zero[2]], &tmcc, &ac).unwrap();
+        let sy = m
+            .modulate_frame_carriers([&zero[0], &zero[1], &zero[2]], &tmcc, &ac)
+            .unwrap();
         for t in m.layout().tmcc.clone() {
             let k = t.k as usize;
             // B'0 = W (reference).
@@ -340,7 +464,14 @@ fn spec_table_3_21_sync_alternation() {
             }
             let d = decode_frame(&bits);
             assert_eq!(d.sync_odd, Some(frame % 2 == 1));
-            assert_eq!(d.segment_type, if t.kind == SegmentKind::Differential { [1, 1, 1] } else { [0, 0, 0] });
+            assert_eq!(
+                d.segment_type,
+                if t.kind == SegmentKind::Differential {
+                    [1, 1, 1]
+                } else {
+                    [0, 0, 0]
+                }
+            );
             assert_eq!(d.parity, dsc::ParityStatus::Ok);
             assert_eq!(d.info, tmcc);
             assert_eq!(d.info.params(p.mode, p.guard).unwrap(), p);
@@ -359,10 +490,22 @@ fn spec_table_3_21_sync_alternation() {
 /// Table 3-22..3-31: field placement of the TMCC information.
 #[test]
 fn spec_table_3_22_tmcc_fields() {
-    let p = params(Mode::M3, true, [Some((1, Modulation::Qpsk)), Some((12, Modulation::Qam64)), None]);
+    let p = params(
+        Mode::M3,
+        true,
+        [
+            Some((1, Modulation::Qpsk)),
+            Some((12, Modulation::Qam64)),
+            None,
+        ],
+    );
     let info = TmccInfo::from_params(&p);
     let b = info.frame_bits(false, false);
-    let field = |a: usize, z: usize| b[a..=z].iter().fold(String::new(), |s, &x| s + if x == 1 { "1" } else { "0" });
+    let field = |a: usize, z: usize| {
+        b[a..=z]
+            .iter()
+            .fold(String::new(), |s, &x| s + if x == 1 { "1" } else { "0" })
+    };
     assert_eq!(field(20, 21), "00"); // television
     assert_eq!(field(22, 25), "1111"); // no switching
     assert_eq!(field(26, 26), "0");
@@ -437,7 +580,12 @@ fn spec_3_16_6_seismic_word() {
         assert_eq!(d.warning, w);
     }
     let na = SeismicWarning::not_available(0x5a5);
-    assert_eq!(na.typed_detail(), Some(SeismicDetail::NotAvailable { broadcaster_id: 0x5a5 }));
+    assert_eq!(
+        na.typed_detail(),
+        Some(SeismicDetail::NotAvailable {
+            broadcaster_id: 0x5a5
+        })
+    );
     assert!(na.detail[..32].iter().all(|&b| b == 1));
 }
 
@@ -445,17 +593,26 @@ fn spec_3_16_6_seismic_word() {
 #[test]
 fn spec_frame_sample_counts() {
     for mode in MODES {
-        for gi in [GuardInterval::G1_4, GuardInterval::G1_8, GuardInterval::G1_16, GuardInterval::G1_32] {
+        for gi in [
+            GuardInterval::G1_4,
+            GuardInterval::G1_8,
+            GuardInterval::G1_16,
+            GuardInterval::G1_32,
+        ] {
             let p = Params::new(
                 mode,
                 gi,
                 false,
-                [Some(LayerConfig {
-                    segments: 13,
-                    modulation: Modulation::Qpsk,
-                    code_rate: CodeRate::R1_2,
-                    time_interleave: TimeInterleave(0),
-                }), None, None],
+                [
+                    Some(LayerConfig {
+                        segments: 13,
+                        modulation: Modulation::Qpsk,
+                        code_rate: CodeRate::R1_2,
+                        time_interleave: TimeInterleave(0),
+                    }),
+                    None,
+                    None,
+                ],
             )
             .unwrap();
             let mut m = Modulator::new(p.clone());
@@ -469,7 +626,10 @@ fn spec_frame_sample_counts() {
             let ng = gi.samples(mode);
             assert_eq!(&s[..ng], &s[n..n + ng]);
             let us = s.len() as f64 * 63.0 / 512.0;
-            let want = [64.26e3, 57.834e3, 54.621e3, 53.0145e3][[4, 8, 16, 32].iter().position(|&d| d == gi.denominator()).unwrap()]
+            let want = [64.26e3, 57.834e3, 54.621e3, 53.0145e3][[4, 8, 16, 32]
+                .iter()
+                .position(|&d| d == gi.denominator())
+                .unwrap()]
                 * mode.scale() as f64;
             assert!((us - want).abs() < 1e-6, "{us} {want}");
         }

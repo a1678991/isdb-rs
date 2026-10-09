@@ -65,7 +65,10 @@ const TABLE_3_12: [[(usize, usize, usize); 4]; 3] = [
 ];
 
 fn table_3_12(mode: Mode, length: usize) -> Option<(usize, usize, usize)> {
-    TABLE_3_12[mode.number() as usize - 1].iter().copied().find(|e| e.0 == length)
+    TABLE_3_12[mode.number() as usize - 1]
+        .iter()
+        .copied()
+        .find(|e| e.0 == length)
 }
 
 /// Number of delay-adjustment symbols applied before time interleaving for
@@ -132,7 +135,14 @@ pub fn segment_carrier_counts(mode: Mode, differential: bool) -> SegmentCarrierC
             ac2: [4, 9, 19][mode.number() as usize - 1],
         }
     } else {
-        SegmentCarrierCounts { data: 96 * s, sp: 9 * s, cp: 0, tmcc: s, ac1: 2 * s, ac2: 0 }
+        SegmentCarrierCounts {
+            data: 96 * s,
+            sp: 9 * s,
+            cp: 0,
+            tmcc: s,
+            ac1: 2 * s,
+            ac2: 0,
+        }
     }
 }
 
@@ -151,14 +161,17 @@ impl Params {
 
     /// Time-interleave length I of `layer` (0 if the layer is unused).
     pub fn time_interleave_length(&self, layer: crate::Layer) -> usize {
-        self.layers[layer.index()].and_then(|l| l.time_interleave.length(self.mode)).unwrap_or(0)
+        self.layers[layer.index()]
+            .and_then(|l| l.time_interleave.length(self.mode))
+            .unwrap_or(0)
     }
 
     /// Total symbol-domain latency of `layer` from bits entering the
     /// carrier modulator to LLRs leaving the bit deinterleaver, in OFDM
     /// symbols: 2 (bit interleave, §3.9.2) + 204 × Table 3-12 frames.
     pub fn symbol_domain_delay_symbols(&self, layer: crate::Layer) -> usize {
-        let frames = time_interleave_delayed_frames(self.mode, self.time_interleave_length(layer)).unwrap_or(0);
+        let frames = time_interleave_delayed_frames(self.mode, self.time_interleave_length(layer))
+            .unwrap_or(0);
         BIT_INTERLEAVE_TOTAL_SYMBOLS + frames * SYMBOLS_PER_FRAME
     }
 }
@@ -179,18 +192,35 @@ mod tests {
     /// Table 3-9: adjustment + 120-symbol interleave delay = 2 OFDM symbols.
     #[test]
     fn spec_table_3_9_total_two_symbols() {
-        assert_eq!(bit_delay_adjustment_bits(Mode::M1, Modulation::Qpsk, 1), 144);
-        assert_eq!(bit_delay_adjustment_bits(Mode::M3, Modulation::Qam64, 12), 4608 * 12 - 720);
+        assert_eq!(
+            bit_delay_adjustment_bits(Mode::M1, Modulation::Qpsk, 1),
+            144
+        );
+        assert_eq!(
+            bit_delay_adjustment_bits(Mode::M3, Modulation::Qam64, 12),
+            4608 * 12 - 720
+        );
         for mode in [Mode::M1, Mode::M2, Mode::M3] {
-            for m in [Modulation::Dqpsk, Modulation::Qpsk, Modulation::Qam16, Modulation::Qam64] {
+            for m in [
+                Modulation::Dqpsk,
+                Modulation::Qpsk,
+                Modulation::Qam16,
+                Modulation::Qam64,
+            ] {
                 let s = m.bits_per_symbol();
                 assert_eq!(bit_interleave_delays(m).len(), s);
-                assert_eq!(*bit_interleave_delays(m).last().unwrap(), BIT_INTERLEAVE_MAX_DELAY);
+                assert_eq!(
+                    *bit_interleave_delays(m).last().unwrap(),
+                    BIT_INTERLEAVE_MAX_DELAY
+                );
                 for n in 1..=13 {
                     let adj = bit_delay_adjustment_bits(mode, m, n);
                     assert_eq!(adj % s, 0);
                     let total = adj / s + BIT_INTERLEAVE_MAX_DELAY;
-                    assert_eq!(total, BIT_INTERLEAVE_TOTAL_SYMBOLS * mode.data_carriers_per_segment() * n);
+                    assert_eq!(
+                        total,
+                        BIT_INTERLEAVE_TOTAL_SYMBOLS * mode.data_carriers_per_segment() * n
+                    );
                 }
             }
         }
@@ -204,7 +234,11 @@ mod tests {
                 let i = TimeInterleave(k).length(mode).unwrap();
                 let adj = time_interleave_adjustment_symbols(mode, i).unwrap();
                 let frames = time_interleave_delayed_frames(mode, i).unwrap();
-                assert_eq!(adj + TIME_INTERLEAVE_M_MAX * i, frames * SYMBOLS_PER_FRAME, "{mode:?} I={i}");
+                assert_eq!(
+                    adj + TIME_INTERLEAVE_M_MAX * i,
+                    frames * SYMBOLS_PER_FRAME,
+                    "{mode:?} I={i}"
+                );
             }
         }
         // Fig. 3-23: m_i takes every value 0..95 once per 96 carriers.
@@ -231,7 +265,10 @@ mod tests {
         for mode in [Mode::M1, Mode::M2, Mode::M3] {
             for diff in [false, true] {
                 let c = segment_carrier_counts(mode, diff);
-                assert_eq!(c.data + c.sp + c.cp + c.tmcc + c.ac1 + c.ac2, mode.carriers_per_segment());
+                assert_eq!(
+                    c.data + c.sp + c.cp + c.tmcc + c.ac1 + c.ac2,
+                    mode.carriers_per_segment()
+                );
             }
         }
     }

@@ -9,9 +9,11 @@
 //! first).  As an integer label, b0 is the most significant bit, so the
 //! label reads like the figures' "(b0,b1,…)".
 
-use crate::delay::MultiDelay;
 use crate::C32;
-use isdbt_core::ofdm_params::{bit_delay_adjustment_bits, bit_interleave_delays, BIT_INTERLEAVE_MAX_DELAY};
+use crate::delay::MultiDelay;
+use isdbt_core::ofdm_params::{
+    BIT_INTERLEAVE_MAX_DELAY, bit_delay_adjustment_bits, bit_interleave_delays,
+};
 use isdbt_core::{LayerConfig, Mode, Modulation};
 
 /// Normalisation factor of Table 3-11 (`Z/√2`, `Z/√2`, `Z/√10`, `Z/√42`).
@@ -166,7 +168,10 @@ impl CarrierMapper {
             per_symbol,
             lines: MultiDelay::with_contents(
                 delays.clone(),
-                delays.iter().map(|&d| (0..d).map(|_| rng.bit()).collect()).collect(),
+                delays
+                    .iter()
+                    .map(|&d| (0..d).map(|_| rng.bit()).collect())
+                    .collect(),
             ),
             staged_in: vec![0; s],
             staged_out: vec![0; s],
@@ -174,7 +179,10 @@ impl CarrierMapper {
                 (0..per_symbol)
                     .map(|_| {
                         let v = rng.next_u32();
-                        (if v & 1 == 0 { 1.0 } else { -1.0 }, if v & 2 == 0 { 1.0 } else { -1.0 })
+                        (
+                            if v & 1 == 0 { 1.0 } else { -1.0 },
+                            if v & 2 == 0 { 1.0 } else { -1.0 },
+                        )
                     })
                     .collect()
             } else {
@@ -245,7 +253,11 @@ pub struct Demapper {
 impl Demapper {
     /// Demapper for `m` (DQPSK uses the QPSK grid on the differential product).
     pub fn new(m: Modulation) -> Self {
-        Self { m, nb: m.bits_per_symbol() / 2, table: axis_table(m) }
+        Self {
+            m,
+            nb: m.bits_per_symbol() / 2,
+            table: axis_table(m),
+        }
     }
 
     /// Modulation.
@@ -283,13 +295,16 @@ impl Demapper {
     /// Nearest constellation point (normalised) to `z`.
     pub fn nearest(&self, z: C32) -> C32 {
         let pick = |v: f32| {
-            self.table.iter().map(|&(l, _)| l).fold(f32::NAN, |best, l| {
-                if best.is_nan() || (v - l).abs() < (v - best).abs() {
-                    l
-                } else {
-                    best
-                }
-            })
+            self.table
+                .iter()
+                .map(|&(l, _)| l)
+                .fold(f32::NAN, |best, l| {
+                    if best.is_nan() || (v - l).abs() < (v - best).abs() {
+                        l
+                    } else {
+                        best
+                    }
+                })
         };
         C32::new(pick(z.re), pick(z.im))
     }
@@ -305,7 +320,9 @@ pub fn hard_label(m: Modulation, z: C32) -> u8 {
     let mut llr = [0f32; 6];
     let s = m.bits_per_symbol();
     demap(m, z, 1.0, &mut llr[..s]);
-    llr[..s].iter().fold(0u8, |a, &l| (a << 1) | u8::from(l < 0.0))
+    llr[..s]
+        .iter()
+        .fold(0u8, |a, &l| (a << 1) | u8::from(l < 0.0))
 }
 
 /// Differential detection for π/4-shift DQPSK (inverse of the Fig. 3-12
@@ -335,9 +352,17 @@ pub struct BitDeinterleaver {
 impl BitDeinterleaver {
     /// Deinterleaver for modulation `m`.
     pub fn new(m: Modulation) -> Self {
-        let delays: Vec<usize> = bit_interleave_delays(m).iter().map(|d| BIT_INTERLEAVE_MAX_DELAY - d).collect();
+        let delays: Vec<usize> = bit_interleave_delays(m)
+            .iter()
+            .map(|d| BIT_INTERLEAVE_MAX_DELAY - d)
+            .collect();
         let s = m.bits_per_symbol();
-        Self { s, lines: MultiDelay::new(delays, 0.0), staged_in: vec![0.0; s], staged_out: vec![0.0; s] }
+        Self {
+            s,
+            lines: MultiDelay::new(delays, 0.0),
+            staged_in: vec![0.0; s],
+            staged_out: vec![0.0; s],
+        }
     }
 
     /// Process LLRs of consecutive carrier symbols in place (`S` per symbol).
@@ -359,7 +384,11 @@ mod tests {
     fn demap_signs_match_labels() {
         for m in [Modulation::Qpsk, Modulation::Qam16, Modulation::Qam64] {
             for label in 0..(1u8 << m.bits_per_symbol()) {
-                assert_eq!(hard_label(m, constellation_point(m, label)), label, "{m:?} {label}");
+                assert_eq!(
+                    hard_label(m, constellation_point(m, label)),
+                    label,
+                    "{m:?} {label}"
+                );
             }
         }
     }

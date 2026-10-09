@@ -17,7 +17,10 @@ pub struct Violation {
 impl Violation {
     /// Construct a violation.
     pub fn new(clause: &'static str, message: impl Into<String>) -> Self {
-        Self { clause, message: message.into() }
+        Self {
+            clause,
+            message: message.into(),
+        }
     }
 }
 
@@ -28,7 +31,12 @@ impl std::fmt::Display for Violation {
 }
 
 /// Push a violation unless `ok`.
-pub(crate) fn require(out: &mut Vec<Violation>, ok: bool, clause: &'static str, msg: impl FnOnce() -> String) {
+pub(crate) fn require(
+    out: &mut Vec<Violation>,
+    ok: bool,
+    clause: &'static str,
+    msg: impl FnOnce() -> String,
+) {
     if !ok {
         out.push(Violation::new(clause, msg()));
     }
@@ -38,7 +46,11 @@ pub(crate) fn require(out: &mut Vec<Violation>, ok: bool, clause: &'static str, 
 /// be set to '1'" — push a violation if the `bits`-wide `value` is not all
 /// ones.
 pub(crate) fn reserved_ones(out: &mut Vec<Violation>, value: u64, bits: u32, name: &str) {
-    let ones = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+    let ones = if bits == 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
     require(out, value == ones, "§2.1.64", || {
         format!("{name}: reserved bits are {value:#b}, shall be all '1' ({bits} bits)")
     });

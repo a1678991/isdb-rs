@@ -25,19 +25,20 @@
 pub mod acquire;
 pub mod chanest;
 
-use crate::ac::{is_seismic_config, SeismicDecoded, SeismicWarning};
+use crate::C32;
+use crate::ac::{SeismicDecoded, SeismicWarning, is_seismic_config};
 use crate::combine::layer_segments;
 use crate::delay::{Fifo, MultiDelay};
 use crate::frame::{FrameLayout, SegmentKind};
 use crate::freq_interleave::{FrequencyInterleaver, RotationNumbering};
 use crate::latency::{latency_frames, rx_alignment_symbols};
-use crate::mapping::{dqpsk_differential, BitDeinterleaver, Demapper};
-use crate::ofdm::{carrier_bin, OfdmRx};
+use crate::mapping::{BitDeinterleaver, Demapper, dqpsk_differential};
+use crate::ofdm::{OfdmRx, carrier_bin};
 use crate::time_interleave::rx_delays;
-use crate::tmcc::{decode_frame, sync_word, TmccDecoded};
-use crate::C32;
+use crate::tmcc::{TmccDecoded, decode_frame, sync_word};
 use acquire::{
-    detect_kinds, detect_mode, detect_sp_phase, integer_cfo, samples_needed, tmcc_soft, ModeGuess, GUARDS, MODES,
+    GUARDS, MODES, ModeGuess, detect_kinds, detect_mode, detect_sp_phase, integer_cfo,
+    samples_needed, tmcc_soft,
 };
 use chanest::ChannelEstimator;
 use isdbt_core::{GuardInterval, Layer, Mode, Modulation, Params, SYMBOLS_PER_FRAME};
@@ -176,9 +177,17 @@ fn interp_table() -> &'static [Vec<f32>] {
                 let taps: Vec<f64> = (0..2 * INTERP_HALF)
                     .map(|t| {
                         let d = mu - (t as f64 - (h - 1.0));
-                        let sinc = if d.abs() < 1e-12 { 1.0 } else { (std::f64::consts::PI * d).sin() / (std::f64::consts::PI * d) };
+                        let sinc = if d.abs() < 1e-12 {
+                            1.0
+                        } else {
+                            (std::f64::consts::PI * d).sin() / (std::f64::consts::PI * d)
+                        };
                         let u = d / h;
-                        let w = if u.abs() >= 1.0 { 0.0 } else { i0(beta * (1.0 - u * u).sqrt()) / i0b };
+                        let w = if u.abs() >= 1.0 {
+                            0.0
+                        } else {
+                            i0(beta * (1.0 - u * u).sqrt()) / i0b
+                        };
                         sinc * w
                     })
                     .collect();
@@ -211,7 +220,17 @@ impl Extractor {
         let n = mode.fft_size();
         let ng = guard.samples(mode);
         let backoff = ((ng as f32 * backoff_frac) as usize).min(ng);
-        Self { mode, n, ng, backoff, pos: start as f64, rate: 1.0, cfo, fft: OfdmRx::new(mode), tmp: vec![C32::default(); n] }
+        Self {
+            mode,
+            n,
+            ng,
+            backoff,
+            pos: start as f64,
+            rate: 1.0,
+            cfo,
+            fft: OfdmRx::new(mode),
+            tmp: vec![C32::default(); n],
+        }
     }
 
     /// GI start (rounded) of the next symbol.
@@ -221,7 +240,11 @@ impl Extractor {
 
     /// Absolute input sample index needed (exclusive) for the next symbol.
     fn needs(&self) -> u64 {
-        (self.pos + (self.n + self.ng) as f64 * self.rate).ceil().max(0.0) as u64 + INTERP_HALF as u64 + 1
+        (self.pos + (self.n + self.ng) as f64 * self.rate)
+            .ceil()
+            .max(0.0) as u64
+            + INTERP_HALF as u64
+            + 1
     }
 
     /// Move the timing of the following symbols by `c` samples.
@@ -294,7 +317,9 @@ impl Extractor {
 
     /// Band carriers 0..K from the last extracted spectrum.
     fn carriers(&self) -> Vec<C32> {
-        (0..self.mode.total_carriers()).map(|k| self.tmp[carrier_bin(self.mode, k)]).collect()
+        (0..self.mode.total_carriers())
+            .map(|k| self.tmp[carrier_bin(self.mode, k)])
+            .collect()
     }
 }
 
@@ -384,14 +409,22 @@ pub struct Demodulator {
 
 impl std::fmt::Debug for Demodulator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Demodulator").field("state", &self.state()).finish()
+        f.debug_struct("Demodulator")
+            .field("state", &self.state())
+            .finish()
     }
 }
 
 impl Demodulator {
     /// New receiver.
     pub fn new(cfg: DemodConfig) -> Self {
-        Self { cfg, buf: VecDeque::new(), base: 0, acq: None, track: None }
+        Self {
+            cfg,
+            buf: VecDeque::new(),
+            base: 0,
+            acq: None,
+            track: None,
+        }
     }
 
     /// Current state.
@@ -448,7 +481,8 @@ impl Demodulator {
         match detect_mode(&window, &modes, &guards) {
             Some(g) if g.metric > 0.3 => {
                 let start = self.base + g.offset as u64;
-                let ex = Extractor::new(g.mode, g.guard, start, g.cfo_frac, self.cfg.timing_backoff);
+                let ex =
+                    Extractor::new(g.mode, g.guard, start, g.cfo_frac, self.cfg.timing_backoff);
                 self.acq = Some(Box::new(Acq {
                     guess: g,
                     ex,
@@ -598,9 +632,15 @@ impl Demodulator {
         let cont = continual_list(&layout);
         let n = params.mode.fft_size();
         let kc = (layout.k_total / 2) as f64;
-        let drifts: Vec<f64> =
-            acq.spectra[f..].windows(2).map(|w| timing_drift(&cont, kc, n, &w[1], &w[0])).collect();
-        let d0 = if drifts.is_empty() { 0.0 } else { drifts.iter().sum::<f64>() / drifts.len() as f64 };
+        let drifts: Vec<f64> = acq.spectra[f..]
+            .windows(2)
+            .map(|w| timing_drift(&cont, kc, n, &w[1], &w[0]))
+            .collect();
+        let d0 = if drifts.is_empty() {
+            0.0
+        } else {
+            drifts.iter().sum::<f64>() / drifts.len() as f64
+        };
         let mut ex = acq.ex;
         let p = (ex.n + ex.ng) as f64;
         ex.rate = 1.0 + d0 / p;
@@ -667,7 +707,11 @@ impl Demodulator {
                 t.bad_frames += 1;
             }
             let changed = fr.tmcc.parity.is_ok()
-                && fr.tmcc.info.params(t.params.mode, t.params.guard).is_ok_and(|p| p != t.params);
+                && fr
+                    .tmcc
+                    .info
+                    .params(t.params.mode, t.params.guard)
+                    .is_ok_and(|p| p != t.params);
             let lost = t.bad_frames >= 4;
             out.push(fr);
             if changed || lost {
@@ -768,7 +812,11 @@ impl Track {
                 cnt += 1;
             }
             let n0 = e / (2.0 * cnt as f32);
-            self.n0 = if self.n0 == 0.0 { n0 } else { 0.95 * self.n0 + 0.05 * n0 };
+            self.n0 = if self.n0 == 0.0 {
+                n0
+            } else {
+                0.95 * self.n0 + 0.05 * n0
+            };
             // TMCC / AC soft DBPSK values.
             if n >= 1 {
                 self.tmcc_soft[n] = [
@@ -792,7 +840,8 @@ impl Track {
                 if jj < first.max(frame0) as i64 {
                     return None;
                 }
-                ring.get((jj as u64 - first) as usize).map(|e| e.2.as_slice())
+                ring.get((jj as u64 - first) as usize)
+                    .map(|e| e.2.as_slice())
             };
             self.est.estimate(get, phase, self.sp_w);
         }
@@ -843,7 +892,8 @@ impl Track {
             let s = l.s;
             for (idx, q) in (l.first * nc..(l.first + l.count) * nc).enumerate() {
                 let (z, w) = self.deint[q];
-                l.demapper.demap(z, w, &mut l.llr_tmp[idx * s..(idx + 1) * s]);
+                l.demapper
+                    .demap(z, w, &mut l.llr_tmp[idx * s..(idx + 1) * s]);
             }
             l.bitdi.process(&mut l.llr_tmp);
             l.align.process(&mut l.llr_tmp);

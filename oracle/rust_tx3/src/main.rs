@@ -22,7 +22,12 @@ fn parse_layer(s: &str) -> LayerConfig {
         "7/8" => CodeRate::R7_8,
         r => panic!("rate {r}"),
     };
-    LayerConfig { segments: f[0].parse().unwrap(), modulation, code_rate, time_interleave: TimeInterleave(f[3].parse().unwrap()) }
+    LayerConfig {
+        segments: f[0].parse().unwrap(),
+        modulation,
+        code_rate,
+        time_interleave: TimeInterleave(f[3].parse().unwrap()),
+    }
 }
 
 fn load(p: &str) -> Vec<[u8; 188]> {
@@ -53,13 +58,21 @@ fn main() {
     let mut out = std::io::BufWriter::new(std::fs::File::create(&a[1]).unwrap());
     let mut idx = [0usize; 3];
     for _ in 0..frames {
-        let f: Vec<Vec<[u8; 188]>> =
-            (0..3).map(|l| (0..n[l]).map(|k| ts[l][(idx[l] + k) % ts[l].len().max(1)]).collect()).collect();
+        let f: Vec<Vec<[u8; 188]>> = (0..3)
+            .map(|l| {
+                (0..n[l])
+                    .map(|k| ts[l][(idx[l] + k) % ts[l].len().max(1)])
+                    .collect()
+            })
+            .collect();
         for l in 0..3 {
             idx[l] += n[l];
         }
         let s = tx.transmit_frame([&f[0], &f[1], &f[2]]).unwrap();
         out.write_all(&isdbt_phy::iq::cf32_to_bytes(&s)).unwrap();
     }
-    eprintln!("rust_tx3: {frames} frames, TSP/frame A {} B {} C {} -> {}", n[0], n[1], n[2], a[1]);
+    eprintln!(
+        "rust_tx3: {frames} frames, TSP/frame A {} B {} C {} -> {}",
+        n[0], n[1], n[2], a[1]
+    );
 }

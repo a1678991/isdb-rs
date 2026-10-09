@@ -49,7 +49,13 @@ impl Paths {
             start[j] = acc;
             acc += len[j];
         }
-        Self { buf: vec![0; acc], start, len, pos: [0; DEPTH], path: 0 }
+        Self {
+            buf: vec![0; acc],
+            start,
+            len,
+            pos: [0; DEPTH],
+            path: 0,
+        }
     }
 
     fn process(&mut self, data: &mut [u8]) {
@@ -59,7 +65,11 @@ impl Paths {
             if l != 0 {
                 let idx = self.start[j] + self.pos[j];
                 std::mem::swap(b, &mut self.buf[idx]);
-                self.pos[j] = if self.pos[j] + 1 == l { 0 } else { self.pos[j] + 1 };
+                self.pos[j] = if self.pos[j] + 1 == l {
+                    0
+                } else {
+                    self.pos[j] + 1
+                };
             }
             self.path = if j + 1 == DEPTH { 0 } else { j + 1 };
         }
@@ -125,7 +135,12 @@ mod tests {
             let mut v = vec![0u8; n];
             v[p] = 0xAA;
             ByteInterleaver::new().process(&mut v);
-            let out: Vec<usize> = v.iter().enumerate().filter(|(_, b)| **b == 0xAA).map(|(i, _)| i).collect();
+            let out: Vec<usize> = v
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| **b == 0xAA)
+                .map(|(i, _)| i)
+                .collect();
             assert_eq!(out, vec![p + 204 * j], "path {j}");
         }
     }
@@ -152,6 +167,9 @@ mod tests {
         for c in v.chunks_mut(333) {
             dl.process(c);
         }
-        assert_eq!(&v[PAIR_LATENCY_BYTES..], &orig[..orig.len() - PAIR_LATENCY_BYTES]);
+        assert_eq!(
+            &v[PAIR_LATENCY_BYTES..],
+            &orig[..orig.len() - PAIR_LATENCY_BYTES]
+        );
     }
 }

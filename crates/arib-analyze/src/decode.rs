@@ -40,7 +40,11 @@ pub fn decode(pid: u16, sec: &[u8]) -> arib_ts::Result<Table> {
             }
             Ok(Table::Si(t))
         }
-        None => Err(arib_ts::Error::Truncated { what: "section", need: 1, have: 0 }),
+        None => Err(arib_ts::Error::Truncated {
+            what: "section",
+            need: 1,
+            have: 0,
+        }),
     }
 }
 
@@ -79,7 +83,10 @@ impl Table {
                     "RawSection".into(),
                     vec![
                         ("table_id".into(), Node::Int(r.table_id as i128)),
-                        ("long_header".into(), r.long_header.as_ref().map(tree::of).unwrap_or(Node::Null)),
+                        (
+                            "long_header".into(),
+                            r.long_header.as_ref().map(tree::of).unwrap_or(Node::Null),
+                        ),
                         ("bytes".into(), Node::Bytes(r.bytes.clone())),
                     ],
                 ),

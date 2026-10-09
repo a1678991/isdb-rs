@@ -41,5 +41,7 @@ pub fn combine<T: Copy>(params: &Params, layers: [&[T]; 3], out: &mut [T]) {
 pub fn split<'a, T: Copy>(params: &Params, data: &'a [T]) -> [Option<&'a [T]>; 3] {
     let nc = params.mode.data_carriers_per_segment();
     assert_eq!(data.len(), 13 * nc);
-    Layer::ALL.map(|layer| layer_segments(params, layer).map(|(first, n)| &data[first * nc..(first + n) * nc]))
+    Layer::ALL.map(|layer| {
+        layer_segments(params, layer).map(|(first, n)| &data[first * nc..(first + n) * nc])
+    })
 }

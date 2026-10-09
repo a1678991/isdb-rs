@@ -14,8 +14,8 @@
 //! Multi-bit fields are written most significant bit first in ascending
 //! B order (the tables print "B28–B30 = 001" with B28 leftmost).
 
-use crate::dsc::{self, ParityStatus};
 use crate::Error;
+use crate::dsc::{self, ParityStatus};
 use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
 
 /// Sync word w0 (§3.15.4).
@@ -46,7 +46,12 @@ pub struct TmccLayer {
 
 impl TmccLayer {
     /// Unused hierarchical layer / no next information: all ones.
-    pub const UNUSED: Self = Self { modulation: 0b111, code_rate: 0b111, interleave: 0b111, segments: 0b1111 };
+    pub const UNUSED: Self = Self {
+        modulation: 0b111,
+        code_rate: 0b111,
+        interleave: 0b111,
+        segments: 0b1111,
+    };
 
     /// Codes for a configured layer.
     pub fn from_config(l: &LayerConfig) -> Self {
@@ -63,7 +68,12 @@ impl TmccLayer {
             CodeRate::R5_6 => 3,
             CodeRate::R7_8 => 4,
         };
-        Self { modulation, code_rate, interleave: l.time_interleave.0, segments: l.segments as u8 }
+        Self {
+            modulation,
+            code_rate,
+            interleave: l.time_interleave.0,
+            segments: l.segments as u8,
+        }
     }
 
     /// True if every field has its "unused" code.
@@ -93,10 +103,16 @@ impl TmccLayer {
             v => return Err(Error::Tmcc(format!("reserved code-rate code {v:03b}"))),
         };
         if self.interleave > 3 {
-            return Err(Error::Tmcc(format!("reserved/unused interleave code {:03b}", self.interleave)));
+            return Err(Error::Tmcc(format!(
+                "reserved/unused interleave code {:03b}",
+                self.interleave
+            )));
         }
         if !(1..=13).contains(&self.segments) {
-            return Err(Error::Tmcc(format!("reserved segment count code {:04b}", self.segments)));
+            return Err(Error::Tmcc(format!(
+                "reserved segment count code {:04b}",
+                self.segments
+            )));
         }
         Ok(Some(LayerConfig {
             segments: self.segments as usize,
@@ -119,13 +135,18 @@ pub struct TmccParams {
 
 impl TmccParams {
     /// "No next information": flag 1 and all layers unused (§3.15.6.4–8).
-    pub const NONE: Self = Self { partial_reception: true, layers: [TmccLayer::UNUSED; 3] };
+    pub const NONE: Self = Self {
+        partial_reception: true,
+        layers: [TmccLayer::UNUSED; 3],
+    };
 
     /// From validated parameters.
     pub fn from_params(p: &Params) -> Self {
         Self {
             partial_reception: p.partial_reception,
-            layers: p.layers.map(|l| l.as_ref().map_or(TmccLayer::UNUSED, TmccLayer::from_config)),
+            layers: p
+                .layers
+                .map(|l| l.as_ref().map_or(TmccLayer::UNUSED, TmccLayer::from_config)),
         }
     }
 
@@ -135,7 +156,8 @@ impl TmccParams {
         for (dst, l) in layers.iter_mut().zip(&self.layers) {
             *dst = l.to_config()?;
         }
-        Params::new(mode, guard, self.partial_reception, layers).map_err(|e| Error::Tmcc(e.to_string()))
+        Params::new(mode, guard, self.partial_reception, layers)
+            .map_err(|e| Error::Tmcc(e.to_string()))
     }
 }
 
@@ -215,13 +237,24 @@ impl TmccInfo {
                 interleave: r.get(3) as u8,
                 segments: r.get(4) as u8,
             });
-            TmccParams { partial_reception, layers }
+            TmccParams {
+                partial_reception,
+                layers,
+            }
         };
         let current = tp();
         let next = tp();
         let phase_shift_correction = r.get(3) as u8;
         let reserved = r.get(12) as u16;
-        Self { system_id, switching_countdown, emergency_alarm, current, next, phase_shift_correction, reserved }
+        Self {
+            system_id,
+            switching_countdown,
+            emergency_alarm,
+            current,
+            next,
+            phase_shift_correction,
+            reserved,
+        }
     }
 
     /// Full 204-bit TMCC frame B0..B203 for a segment of the given type in

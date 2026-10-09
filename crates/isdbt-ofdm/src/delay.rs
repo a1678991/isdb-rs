@@ -22,7 +22,12 @@ impl<T: Copy> MultiDelay<T> {
             base.push(acc);
             acc += d;
         }
-        Self { delays, base, buf: vec![fill; acc], t: 0 }
+        Self {
+            delays,
+            base,
+            buf: vec![fill; acc],
+            t: 0,
+        }
     }
 
     /// Lines with the given delays, line `i` initially holding `fills[i]`.
@@ -34,7 +39,12 @@ impl<T: Copy> MultiDelay<T> {
             base.push(buf.len());
             buf.extend(std::iter::repeat_n(f, d));
         }
-        Self { delays, base, buf, t: 0 }
+        Self {
+            delays,
+            base,
+            buf,
+            t: 0,
+        }
     }
 
     /// Lines with the given delays and explicit initial contents:
@@ -49,7 +59,12 @@ impl<T: Copy> MultiDelay<T> {
             base.push(buf.len());
             buf.extend(c);
         }
-        Self { delays, base, buf, t: 0 }
+        Self {
+            delays,
+            base,
+            buf,
+            t: 0,
+        }
     }
 
     /// Number of lines.
@@ -107,7 +122,9 @@ pub struct Fifo<T> {
 impl<T: Copy> Fifo<T> {
     /// FIFO pre-filled with `len` copies of `fill`.
     pub fn new(len: usize, fill: T) -> Self {
-        Self { buf: std::iter::repeat_n(fill, len).collect() }
+        Self {
+            buf: std::iter::repeat_n(fill, len).collect(),
+        }
     }
 
     /// Push a block and pop the same number of elements.
@@ -135,7 +152,17 @@ mod tests {
             m.push(&[t, t, t], &mut out);
             got.push(out);
         }
-        assert_eq!(got, vec![[0, -1, -1], [1, 0, -1], [2, 1, -1], [3, 2, 0], [4, 3, 1], [5, 4, 2]]);
+        assert_eq!(
+            got,
+            vec![
+                [0, -1, -1],
+                [1, 0, -1],
+                [2, 1, -1],
+                [3, 2, 0],
+                [4, 3, 1],
+                [5, 4, 2]
+            ]
+        );
     }
 
     #[test]

@@ -29,10 +29,18 @@ pub enum Packing {
 /// Packetize `sections` (each a complete section, `3 + section_length`
 /// bytes) onto `pid`, drawing continuity_counter values from `cc`
 /// (H.222.0 §2.4.4.1–2.4.4.2, §2.4.3.3).
-pub fn packetize_sections(pid: u16, sections: &[Vec<u8>], packing: Packing, cc: &mut Counter) -> Result<Vec<[u8; PACKET_SIZE]>> {
+pub fn packetize_sections(
+    pid: u16,
+    sections: &[Vec<u8>],
+    packing: Packing,
+    cc: &mut Counter,
+) -> Result<Vec<[u8; PACKET_SIZE]>> {
     for s in sections {
         if crate::section::total_len(s) != Some(s.len()) {
-            return Err(Error::invalid("section_length", "buffer is not one complete section"));
+            return Err(Error::invalid(
+                "section_length",
+                "buffer is not one complete section",
+            ));
         }
     }
     let mut out = Vec::new();
@@ -55,7 +63,9 @@ pub fn packetize_sections(pid: u16, sections: &[Vec<u8>], packing: Packing, cc: 
                 idx += 1;
                 if s.len() <= room {
                     payload.extend_from_slice(s);
-                    let more = packing == Packing::Packed && idx < sections.len() && payload.len() < PAYLOAD_CAPACITY;
+                    let more = packing == Packing::Packed
+                        && idx < sections.len()
+                        && payload.len() < PAYLOAD_CAPACITY;
                     if !more {
                         break;
                     }
@@ -112,7 +122,10 @@ mod tests {
         assert_eq!(p[0][4], 0); // pointer_field
         assert_eq!(p[1][1] & 0x40, 0);
         assert_eq!(p[2][4], 0);
-        assert_eq!(p.iter().map(|x| x[3] & 0xF).collect::<Vec<_>>(), vec![15, 0, 1]);
+        assert_eq!(
+            p.iter().map(|x| x[3] & 0xF).collect::<Vec<_>>(),
+            vec![15, 0, 1]
+        );
         assert!(p[1][4 + 312 - 183..].iter().all(|&b| b == 0xFF));
         assert_eq!(reassemble(&p, 0x11), s);
     }
@@ -133,7 +146,12 @@ mod tests {
     fn boundary_lengths_roundtrip() {
         for n in 170..200 {
             for packing in [Packing::Packed, Packing::OnePerPacket] {
-                let s = vec![sec(0x42, n), sec(0x42, n + 1), sec(0x50, 3), sec(0x51, n * 2)];
+                let s = vec![
+                    sec(0x42, n),
+                    sec(0x42, n + 1),
+                    sec(0x50, 3),
+                    sec(0x51, n * 2),
+                ];
                 let mut cc = Counter::new(3);
                 let p = packetize_sections(0x13, &s, packing, &mut cc).unwrap();
                 assert_eq!(reassemble(&p, 0x13), s, "n={n} {packing:?}");

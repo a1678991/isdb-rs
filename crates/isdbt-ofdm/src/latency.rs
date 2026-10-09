@@ -69,7 +69,11 @@ pub const MODULATOR_BUFFER_FRAMES: usize = 1;
 /// Latency `L` in on-air frames from modulator input frame to LLR output,
 /// the same for all layers: `max_l F_l` (Table 3-12).
 pub fn latency_frames(params: &Params) -> usize {
-    params.active_layers().map(|(id, _)| ti_frames(params, id)).max().unwrap_or(0)
+    params
+        .active_layers()
+        .map(|(id, _)| ti_frames(params, id))
+        .max()
+        .unwrap_or(0)
 }
 
 /// End-to-end delay in modulator calls: [`MODULATOR_BUFFER_FRAMES`] + L.
@@ -85,7 +89,10 @@ pub fn rx_alignment_symbols(params: &Params, layer: Layer) -> usize {
 /// Coded bits per OFDM frame of `layer` (`nc·S·N·204`; 0 if unused).
 pub fn bits_per_frame(params: &Params, layer: Layer) -> usize {
     params.layers[layer.index()].map_or(0, |l| {
-        params.mode.data_carriers_per_segment() * l.modulation.bits_per_symbol() * l.segments * SYMBOLS_PER_FRAME
+        params.mode.data_carriers_per_segment()
+            * l.modulation.bits_per_symbol()
+            * l.segments
+            * SYMBOLS_PER_FRAME
     })
 }
 

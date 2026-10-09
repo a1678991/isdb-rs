@@ -91,7 +91,10 @@ pub struct ShortHeader {
 pub fn split_long(sec: &[u8]) -> Result<(LongHeader, &[u8])> {
     let (h, body, residue) = split_long_unchecked(sec)?;
     if residue != 0 {
-        return Err(Error::Crc { what: "long section", residue });
+        return Err(Error::Crc {
+            what: "long section",
+            residue,
+        });
     }
     Ok((h, body))
 }
@@ -103,18 +106,28 @@ pub fn split_long_unchecked(sec: &[u8]) -> Result<(LongHeader, &[u8], u32)> {
     let table_id = r.u8()?;
     let ssi = r.bool()?;
     if !ssi {
-        return Err(Error::invalid("long section header", "section_syntax_indicator is 0"));
+        return Err(Error::invalid(
+            "long section header",
+            "section_syntax_indicator is 0",
+        ));
     }
     let private_indicator = r.bool()?;
     let reserved1 = r.read(2)? as u8;
     let section_length = r.read(12)? as usize;
     if section_length < 9 {
-        return Err(Error::invalid("long section header", format!("section_length {section_length} < 9")));
+        return Err(Error::invalid(
+            "long section header",
+            format!("section_length {section_length} < 9"),
+        ));
     }
     if sec.len() != 3 + section_length {
         return Err(Error::invalid(
             "long section header",
-            format!("buffer is {} bytes, section_length says {}", sec.len(), 3 + section_length),
+            format!(
+                "buffer is {} bytes, section_length says {}",
+                sec.len(),
+                3 + section_length
+            ),
         ));
     }
     let table_id_extension = r.u16()?;
@@ -141,7 +154,11 @@ pub fn split_long_unchecked(sec: &[u8]) -> Result<(LongHeader, &[u8], u32)> {
 pub fn build_long(h: &LongHeader, body: &[u8]) -> Result<Vec<u8>> {
     let section_length = 5 + body.len() + 4;
     if section_length > MAX_SECTION_LENGTH {
-        return Err(Error::Overflow { what: "section_length", value: section_length as u64, bits: 12 });
+        return Err(Error::Overflow {
+            what: "section_length",
+            value: section_length as u64,
+            bits: 12,
+        });
     }
     let mut w = BitWriter::new();
     w.write("table_id", 8, h.table_id as u64)?;
@@ -168,7 +185,10 @@ pub fn split_short(sec: &[u8], has_crc: bool) -> Result<(ShortHeader, &[u8])> {
     let mut r = BitReader::new(sec, "short section header");
     let table_id = r.u8()?;
     if r.bool()? {
-        return Err(Error::invalid("short section header", "section_syntax_indicator is 1"));
+        return Err(Error::invalid(
+            "short section header",
+            "section_syntax_indicator is 1",
+        ));
     }
     let private_indicator = r.bool()?;
     let reserved1 = r.read(2)? as u8;
@@ -176,17 +196,31 @@ pub fn split_short(sec: &[u8], has_crc: bool) -> Result<(ShortHeader, &[u8])> {
     if sec.len() != 3 + section_length {
         return Err(Error::invalid(
             "short section header",
-            format!("buffer is {} bytes, section_length says {}", sec.len(), 3 + section_length),
+            format!(
+                "buffer is {} bytes, section_length says {}",
+                sec.len(),
+                3 + section_length
+            ),
         ));
     }
-    let h = ShortHeader { table_id, private_indicator, reserved1 };
+    let h = ShortHeader {
+        table_id,
+        private_indicator,
+        reserved1,
+    };
     if has_crc {
         if section_length < 4 {
-            return Err(Error::invalid("short section header", "too short for CRC_32"));
+            return Err(Error::invalid(
+                "short section header",
+                "too short for CRC_32",
+            ));
         }
         let residue = crc32(sec);
         if residue != 0 {
-            return Err(Error::Crc { what: "short section", residue });
+            return Err(Error::Crc {
+                what: "short section",
+                residue,
+            });
         }
         Ok((h, &sec[3..sec.len() - 4]))
     } else {
@@ -198,7 +232,11 @@ pub fn split_short(sec: &[u8], has_crc: bool) -> Result<(ShortHeader, &[u8])> {
 pub fn build_short(h: &ShortHeader, body: &[u8], has_crc: bool) -> Result<Vec<u8>> {
     let section_length = body.len() + if has_crc { 4 } else { 0 };
     if section_length > MAX_SECTION_LENGTH {
-        return Err(Error::Overflow { what: "section_length", value: section_length as u64, bits: 12 });
+        return Err(Error::Overflow {
+            what: "section_length",
+            value: section_length as u64,
+            bits: 12,
+        });
     }
     let mut w = BitWriter::new();
     w.write("table_id", 8, h.table_id as u64)?;
@@ -253,9 +291,15 @@ impl<B: LongBody> Long<B> {
     pub fn decode(sec: &[u8]) -> Result<Self> {
         let (header, body) = split_long(sec)?;
         if !B::accepts_table_id(header.table_id) {
-            return Err(Error::invalid("table_id", format!("{:#04x} not accepted here", header.table_id)));
+            return Err(Error::invalid(
+                "table_id",
+                format!("{:#04x} not accepted here", header.table_id),
+            ));
         }
-        Ok(Self { body: B::decode(&header, body)?, header })
+        Ok(Self {
+            body: B::decode(&header, body)?,
+            header,
+        })
     }
 
     /// Encode to complete section bytes with fresh section_length/CRC_32.
@@ -280,9 +324,15 @@ impl<B: ShortBody> Short<B> {
     pub fn decode(sec: &[u8]) -> Result<Self> {
         let (header, body) = split_short(sec, B::HAS_CRC)?;
         if !B::accepts_table_id(header.table_id) {
-            return Err(Error::invalid("table_id", format!("{:#04x} not accepted here", header.table_id)));
+            return Err(Error::invalid(
+                "table_id",
+                format!("{:#04x} not accepted here", header.table_id),
+            ));
         }
-        Ok(Self { body: B::decode(&header, body)?, header })
+        Ok(Self {
+            body: B::decode(&header, body)?,
+            header,
+        })
     }
 
     /// Encode to complete section bytes.
@@ -321,7 +371,11 @@ mod tests {
 
     #[test]
     fn short_roundtrip() {
-        let h = ShortHeader { table_id: 0x73, private_indicator: true, reserved1: 3 };
+        let h = ShortHeader {
+            table_id: 0x73,
+            private_indicator: true,
+            reserved1: 3,
+        };
         let s = build_short(&h, &[0xC0, 0x79, 0x12, 0x45, 0, 0xF0, 0], true).unwrap();
         let (h2, b) = split_short(&s, true).unwrap();
         assert_eq!(h, h2);

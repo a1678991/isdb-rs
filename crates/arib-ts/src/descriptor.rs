@@ -21,7 +21,10 @@ pub struct Descriptor {
 impl Descriptor {
     /// New descriptor.
     pub fn new(tag: u8, data: impl Into<Vec<u8>>) -> Self {
-        Self { tag, data: data.into() }
+        Self {
+            tag,
+            data: data.into(),
+        }
     }
 
     /// Encoded size (2 + data length).
@@ -32,7 +35,11 @@ impl Descriptor {
     /// Append tag, length and data.
     pub fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         if self.data.len() > 255 {
-            return Err(Error::Overflow { what: "descriptor_length", value: self.data.len() as u64, bits: 8 });
+            return Err(Error::Overflow {
+                what: "descriptor_length",
+                value: self.data.len() as u64,
+                bits: 8,
+            });
         }
         out.push(self.tag);
         out.push(self.data.len() as u8);
@@ -47,13 +54,24 @@ pub fn parse_loop(mut b: &[u8]) -> Result<Vec<Descriptor>> {
     let mut v = Vec::new();
     while !b.is_empty() {
         if b.len() < 2 {
-            return Err(Error::Truncated { what: "descriptor header", need: 2, have: b.len() });
+            return Err(Error::Truncated {
+                what: "descriptor header",
+                need: 2,
+                have: b.len(),
+            });
         }
         let n = b[1] as usize;
         if b.len() < 2 + n {
-            return Err(Error::Truncated { what: "descriptor_length", need: 2 + n, have: b.len() });
+            return Err(Error::Truncated {
+                what: "descriptor_length",
+                need: 2 + n,
+                have: b.len(),
+            });
         }
-        v.push(Descriptor { tag: b[0], data: b[2..2 + n].to_vec() });
+        v.push(Descriptor {
+            tag: b[0],
+            data: b[2..2 + n].to_vec(),
+        });
         b = &b[2 + n..];
     }
     Ok(v)
@@ -145,7 +163,13 @@ mod tests {
     fn spec_2_6_descriptor_format_and_table2_45_ranges() {
         let b = [0x09, 0x04, 0x00, 0x05, 0xE1, 0x00, 0x52, 0x01, 0xAA];
         let ds = parse_loop(&b).unwrap();
-        assert_eq!(ds, vec![Descriptor::new(0x09, [0x00, 0x05, 0xE1, 0x00]), Descriptor::new(0x52, [0xAA])]);
+        assert_eq!(
+            ds,
+            vec![
+                Descriptor::new(0x09, [0x00, 0x05, 0xE1, 0x00]),
+                Descriptor::new(0x52, [0xAA])
+            ]
+        );
         assert_eq!(encode_loop(&ds).unwrap(), b);
         assert!(parse_loop(&b[..8]).is_err());
         assert!(parse_loop(&[0x09]).is_err());

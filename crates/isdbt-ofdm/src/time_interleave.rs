@@ -11,8 +11,10 @@
 //! `A + 95·I` = (Table 3-12 frames) × 204 symbols in total.
 
 use crate::delay::MultiDelay;
-use isdbt_core::ofdm_params::{time_interleave_adjustment_symbols, time_interleave_m, TIME_INTERLEAVE_M_MAX};
 use isdbt_core::Params;
+use isdbt_core::ofdm_params::{
+    TIME_INTERLEAVE_M_MAX, time_interleave_adjustment_symbols, time_interleave_m,
+};
 
 fn layer_length_and_adjust(params: &Params, seg: usize) -> (usize, usize) {
     let layer = params.layer_of_segment(seg);
@@ -59,7 +61,10 @@ impl<T: Copy> TimeInterleaver<T> {
     pub fn new(params: &Params, fill: T) -> Self {
         let d = tx_delays(params);
         let n = d.len();
-        Self { lines: MultiDelay::new(d, fill), tmp: vec![fill; n] }
+        Self {
+            lines: MultiDelay::new(d, fill),
+            tmp: vec![fill; n],
+        }
     }
 
     /// Interleaver whose lines for data segment `seg` start filled with
@@ -68,7 +73,10 @@ impl<T: Copy> TimeInterleaver<T> {
         let d = tx_delays(params);
         let nc = params.mode.data_carriers_per_segment();
         let fills: Vec<T> = (0..d.len()).map(|q| fill(q / nc)).collect();
-        Self { lines: MultiDelay::with_fills(d, &fills), tmp: fills }
+        Self {
+            lines: MultiDelay::with_fills(d, &fills),
+            tmp: fills,
+        }
     }
 
     /// Interleaver with explicit initial line contents: `init(q, delay)`
@@ -78,7 +86,10 @@ impl<T: Copy> TimeInterleaver<T> {
         let d = tx_delays(params);
         let contents: Vec<Vec<T>> = d.iter().enumerate().map(|(q, &dq)| init(q, dq)).collect();
         // Scratch is sized on the first `process` call.
-        Self { lines: MultiDelay::with_contents(d, contents), tmp: Vec::new() }
+        Self {
+            lines: MultiDelay::with_contents(d, contents),
+            tmp: Vec::new(),
+        }
     }
 
     /// Process one combined OFDM symbol in place.
@@ -103,7 +114,10 @@ impl<T: Copy> TimeDeinterleaver<T> {
     pub fn new(params: &Params, fill: T) -> Self {
         let d = rx_delays(params);
         let n = d.len();
-        Self { lines: MultiDelay::new(d, fill), tmp: vec![fill; n] }
+        Self {
+            lines: MultiDelay::new(d, fill),
+            tmp: vec![fill; n],
+        }
     }
 
     /// Process one combined OFDM symbol in place.

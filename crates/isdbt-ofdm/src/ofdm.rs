@@ -43,7 +43,10 @@ pub struct OfdmTx {
 
 impl std::fmt::Debug for OfdmTx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OfdmTx").field("mode", &self.mode).field("ng", &self.ng).finish()
+        f.debug_struct("OfdmTx")
+            .field("mode", &self.mode)
+            .field("ng", &self.ng)
+            .finish()
     }
 }
 
@@ -77,7 +80,8 @@ impl OfdmTx {
         for (k, &c) in carriers.iter().enumerate() {
             self.buf[carrier_bin(self.mode, k)] = c * self.scale;
         }
-        self.fft.process_with_scratch(&mut self.buf, &mut self.scratch);
+        self.fft
+            .process_with_scratch(&mut self.buf, &mut self.scratch);
         out.extend_from_slice(&self.buf[self.n - self.ng..]);
         out.extend_from_slice(&self.buf);
     }
@@ -103,7 +107,11 @@ impl OfdmRx {
         let n = mode.fft_size();
         let fft = FftPlanner::new().plan_fft_forward(n);
         let scratch = vec![C32::default(); fft.get_inplace_scratch_len()];
-        Self { fft, scratch, scale: (mode.total_carriers() as f32).sqrt() / n as f32 }
+        Self {
+            fft,
+            scratch,
+            scale: (mode.total_carriers() as f32).sqrt() / n as f32,
+        }
     }
 
     /// Transform `buf` (N samples) in place into scaled bins.

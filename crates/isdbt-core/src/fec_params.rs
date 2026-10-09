@@ -57,7 +57,10 @@ impl LayerConfig {
     /// of the bit vector handed from the inner coder (§3.8) to the carrier
     /// modulator (§3.9).
     pub fn coded_bits_per_frame(&self, mode: Mode) -> usize {
-        mode.data_carriers_per_segment() * self.modulation.bits_per_symbol() * self.segments * SYMBOLS_PER_FRAME
+        mode.data_carriers_per_segment()
+            * self.modulation.bits_per_symbol()
+            * self.segments
+            * SYMBOLS_PER_FRAME
     }
 
     /// Information (pre-inner-code) bits per OFDM frame:
@@ -72,25 +75,71 @@ mod tests {
     use super::*;
     use crate::params::TimeInterleave;
 
-    const MODS: [Modulation; 4] = [Modulation::Dqpsk, Modulation::Qpsk, Modulation::Qam16, Modulation::Qam64];
-    const RATES: [CodeRate; 5] = [CodeRate::R1_2, CodeRate::R2_3, CodeRate::R3_4, CodeRate::R5_6, CodeRate::R7_8];
+    const MODS: [Modulation; 4] = [
+        Modulation::Dqpsk,
+        Modulation::Qpsk,
+        Modulation::Qam16,
+        Modulation::Qam64,
+    ];
+    const RATES: [CodeRate; 5] = [
+        CodeRate::R1_2,
+        CodeRate::R2_3,
+        CodeRate::R3_4,
+        CodeRate::R5_6,
+        CodeRate::R7_8,
+    ];
 
     /// Table 3-7, all three mode columns as printed (Mode 1 / Mode 2 / Mode 3
     /// coefficient of N) and the §3.6 rule "all delays ... are one frame".
     #[test]
     fn spec_table_3_7_delay_adjustment() {
         let printed: [(Modulation, [[usize; 3]; 5]); 3] = [
-            (Modulation::Qpsk, [[12, 24, 48], [16, 32, 64], [18, 36, 72], [20, 40, 80], [21, 42, 84]]),
-            (Modulation::Qam16, [[24, 48, 96], [32, 64, 128], [36, 72, 144], [40, 80, 160], [42, 84, 168]]),
-            (Modulation::Qam64, [[36, 72, 144], [48, 96, 192], [54, 108, 216], [60, 120, 240], [63, 126, 252]]),
+            (
+                Modulation::Qpsk,
+                [
+                    [12, 24, 48],
+                    [16, 32, 64],
+                    [18, 36, 72],
+                    [20, 40, 80],
+                    [21, 42, 84],
+                ],
+            ),
+            (
+                Modulation::Qam16,
+                [
+                    [24, 48, 96],
+                    [32, 64, 128],
+                    [36, 72, 144],
+                    [40, 80, 160],
+                    [42, 84, 168],
+                ],
+            ),
+            (
+                Modulation::Qam64,
+                [
+                    [36, 72, 144],
+                    [48, 96, 192],
+                    [54, 108, 216],
+                    [60, 120, 240],
+                    [63, 126, 252],
+                ],
+            ),
         ];
         for (m, rows) in printed {
             for (r, cols) in RATES.iter().zip(rows) {
                 for (mode, coef) in [Mode::M1, Mode::M2, Mode::M3].into_iter().zip(cols) {
                     for n in 1..=13 {
-                        let l = LayerConfig { segments: n, modulation: m, code_rate: *r, time_interleave: TimeInterleave(0) };
+                        let l = LayerConfig {
+                            segments: n,
+                            modulation: m,
+                            code_rate: *r,
+                            time_interleave: TimeInterleave(0),
+                        };
                         assert_eq!(l.delay_adjustment_tsps(mode), coef * n - 11);
-                        assert_eq!(l.delay_adjustment_tsps(mode) + BYTE_INTERLEAVE_DELAY_TSPS, l.tsp_per_frame(mode));
+                        assert_eq!(
+                            l.delay_adjustment_tsps(mode) + BYTE_INTERLEAVE_DELAY_TSPS,
+                            l.tsp_per_frame(mode)
+                        );
                     }
                 }
             }
@@ -104,9 +153,17 @@ mod tests {
         for mode in [Mode::M1, Mode::M2, Mode::M3] {
             for m in MODS {
                 for r in RATES {
-                    let l = LayerConfig { segments: 3, modulation: m, code_rate: r, time_interleave: TimeInterleave(0) };
+                    let l = LayerConfig {
+                        segments: 3,
+                        modulation: m,
+                        code_rate: r,
+                        time_interleave: TimeInterleave(0),
+                    };
                     let (num, den) = r.ratio();
-                    assert_eq!(l.coded_bits_per_frame(mode) * num, l.info_bits_per_frame(mode) * den);
+                    assert_eq!(
+                        l.coded_bits_per_frame(mode) * num,
+                        l.info_bits_per_frame(mode) * den
+                    );
                 }
             }
         }

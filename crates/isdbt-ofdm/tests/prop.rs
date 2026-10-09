@@ -5,67 +5,90 @@ mod common;
 
 use common::Rng;
 use isdbt_core::ofdm_params::time_interleave_delayed_frames;
-use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+use isdbt_core::{
+    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave,
+};
 use isdbt_ofdm::ac::{AcFrame, SeismicWarning};
 use isdbt_ofdm::combine::layer_segments;
 use isdbt_ofdm::dsc;
 use isdbt_ofdm::frame::FrameLayout;
 use isdbt_ofdm::freq_interleave::{FrequencyInterleaver, RotationNumbering};
 use isdbt_ofdm::latency::end_to_end_frames;
-use isdbt_ofdm::mapping::{constellation_point, dqpsk_differential, hard_label, BitDeinterleaver, CarrierMapper, Demapper};
+use isdbt_ofdm::mapping::{
+    BitDeinterleaver, CarrierMapper, Demapper, constellation_point, dqpsk_differential, hard_label,
+};
 use isdbt_ofdm::time_interleave::{TimeDeinterleaver, TimeInterleaver};
-use isdbt_ofdm::tmcc::{decode_frame, TmccInfo};
-use isdbt_ofdm::{DemodConfig, Demodulator, Modulator, C32};
+use isdbt_ofdm::tmcc::{TmccInfo, decode_frame};
+use isdbt_ofdm::{C32, DemodConfig, Demodulator, Modulator};
 use proptest::prelude::*;
 
-const MODS: [Modulation; 4] = [Modulation::Dqpsk, Modulation::Qpsk, Modulation::Qam16, Modulation::Qam64];
+const MODS: [Modulation; 4] = [
+    Modulation::Dqpsk,
+    Modulation::Qpsk,
+    Modulation::Qam16,
+    Modulation::Qam64,
+];
 const MODES: [Mode; 3] = [Mode::M1, Mode::M2, Mode::M3];
-const GUARDS: [GuardInterval; 4] = [GuardInterval::G1_4, GuardInterval::G1_8, GuardInterval::G1_16, GuardInterval::G1_32];
+const GUARDS: [GuardInterval; 4] = [
+    GuardInterval::G1_4,
+    GuardInterval::G1_8,
+    GuardInterval::G1_16,
+    GuardInterval::G1_32,
+];
 
 /// Random valid parameters (segment split, modulations respecting the
 /// partial-reception → differential → coherent order).
 fn arb_params(max_ti: u8) -> impl Strategy<Value = Params> {
-    (0usize..3, 0usize..4, any::<bool>(), 1usize..=3, any::<u64>()).prop_map(move |(m, g, pr, nl, seed)| {
-        let mut rng = Rng(seed);
-        let mode = MODES[m];
-        loop {
-            let nl = if pr { nl.max(2) } else { nl };
-            let mut cuts: Vec<usize> = Vec::new();
-            let mut remaining = 13;
-            for i in 0..nl {
-                let left = nl - i - 1;
-                let n = if i == nl - 1 {
-                    remaining
-                } else if pr && i == 0 {
-                    1
-                } else {
-                    1 + (rng.next_u64() as usize) % (remaining - left)
-                };
-                cuts.push(n);
-                remaining -= n;
-            }
-            let mut layers = [None; 3];
-            let mut coherent_seen = false;
-            for (i, &n) in cuts.iter().enumerate() {
-                let mut md = MODS[(rng.next_u64() % 4) as usize];
-                if md.is_differential() && coherent_seen && !(pr && i == 0) {
-                    md = Modulation::Qam16;
+    (
+        0usize..3,
+        0usize..4,
+        any::<bool>(),
+        1usize..=3,
+        any::<u64>(),
+    )
+        .prop_map(move |(m, g, pr, nl, seed)| {
+            let mut rng = Rng(seed);
+            let mode = MODES[m];
+            loop {
+                let nl = if pr { nl.max(2) } else { nl };
+                let mut cuts: Vec<usize> = Vec::new();
+                let mut remaining = 13;
+                for i in 0..nl {
+                    let left = nl - i - 1;
+                    let n = if i == nl - 1 {
+                        remaining
+                    } else if pr && i == 0 {
+                        1
+                    } else {
+                        1 + (rng.next_u64() as usize) % (remaining - left)
+                    };
+                    cuts.push(n);
+                    remaining -= n;
                 }
-                if !(pr && i == 0) {
-                    coherent_seen |= !md.is_differential();
+                let mut layers = [None; 3];
+                let mut coherent_seen = false;
+                for (i, &n) in cuts.iter().enumerate() {
+                    let mut md = MODS[(rng.next_u64() % 4) as usize];
+                    if md.is_differential() && coherent_seen && !(pr && i == 0) {
+                        md = Modulation::Qam16;
+                    }
+                    if !(pr && i == 0) {
+                        coherent_seen |= !md.is_differential();
+                    }
+                    layers[i] = Some(LayerConfig {
+                        segments: n,
+                        modulation: md,
+                        code_rate: CodeRate::R1_2,
+                        time_interleave: TimeInterleave(
+                            (rng.next_u64() % (max_ti as u64 + 1)) as u8,
+                        ),
+                    });
                 }
-                layers[i] = Some(LayerConfig {
-                    segments: n,
-                    modulation: md,
-                    code_rate: CodeRate::R1_2,
-                    time_interleave: TimeInterleave((rng.next_u64() % (max_ti as u64 + 1)) as u8),
-                });
+                if let Ok(p) = Params::new(mode, GUARDS[g], pr, layers) {
+                    return p;
+                }
             }
-            if let Ok(p) = Params::new(mode, GUARDS[g], pr, layers) {
-                return p;
-            }
-        }
-    })
+        })
 }
 
 proptest! {

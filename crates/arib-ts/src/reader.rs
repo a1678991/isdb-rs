@@ -33,7 +33,11 @@ pub enum PacketFormat {
 
 impl PacketFormat {
     /// All formats in autodetection order.
-    pub const ALL: [PacketFormat; 3] = [PacketFormat::Ts188, PacketFormat::Ts192, PacketFormat::Ts204];
+    pub const ALL: [PacketFormat; 3] = [
+        PacketFormat::Ts188,
+        PacketFormat::Ts192,
+        PacketFormat::Ts204,
+    ];
 
     /// Bytes per unit.
     pub const fn size(self) -> usize {
@@ -86,7 +90,13 @@ pub struct Synchronizer {
 impl Synchronizer {
     /// Autodetecting synchronizer requiring `count` (≥ 1) consecutive syncs.
     pub fn new(count: usize) -> Self {
-        Self { count: count.max(1), forced: None, format: None, synced: false, stats: ReaderStats::default() }
+        Self {
+            count: count.max(1),
+            forced: None,
+            format: None,
+            synced: false,
+            stats: ReaderStats::default(),
+        }
     }
 
     /// Current format (after the first acquisition).
@@ -106,9 +116,18 @@ impl Synchronizer {
             if let Some(f) = self.format {
                 order.push(f);
             }
-            order.extend(PacketFormat::ALL.iter().copied().filter(|f| Some(*f) != self.format));
+            order.extend(
+                PacketFormat::ALL
+                    .iter()
+                    .copied()
+                    .filter(|f| Some(*f) != self.format),
+            );
         }
-        let limit = if eof { v.len() } else { v.len().saturating_sub(self.lookahead()) + 1 };
+        let limit = if eof {
+            v.len()
+        } else {
+            v.len().saturating_sub(self.lookahead()) + 1
+        };
         for p in 0..limit {
             for &f in &order {
                 let (size, off) = (f.size(), f.sync_offset());
@@ -116,7 +135,11 @@ impl Synchronizer {
                     continue;
                 }
                 let avail = (v.len() - p) / size;
-                let need = if eof { self.count.min(avail) } else { self.count };
+                let need = if eof {
+                    self.count.min(avail)
+                } else {
+                    self.count
+                };
                 if need > 0 && (0..need).all(|k| v[p + k * size + off] == SYNC_BYTE) {
                     return Ok((f, p));
                 }
@@ -206,7 +229,12 @@ impl<'a> SliceReader<'a> {
 
     /// Reader with an explicit synchronizer configuration.
     pub fn with_sync(buf: &'a [u8], sync: Synchronizer) -> Self {
-        Self { buf, pos: 0, index: 0, sync }
+        Self {
+            buf,
+            pos: 0,
+            index: 0,
+            sync,
+        }
     }
 }
 
@@ -217,7 +245,8 @@ impl<'a> Iterator for SliceReader<'a> {
         let f = self.sync.next_unit(self.buf, &mut self.pos, true)?;
         let unit = &self.buf[self.pos..self.pos + f.size()];
         let off = f.sync_offset();
-        let packet: &[u8; PACKET_SIZE] = unit[off..off + PACKET_SIZE].try_into().expect("188 bytes");
+        let packet: &[u8; PACKET_SIZE] =
+            unit[off..off + PACKET_SIZE].try_into().expect("188 bytes");
         let r = PacketRef {
             index: self.index,
             offset: (self.pos + off) as u64,
@@ -286,7 +315,15 @@ impl<R: Read> StreamReader<R> {
 
     /// Reader with an explicit synchronizer configuration.
     pub fn with_sync(src: R, sync: Synchronizer) -> Self {
-        Self { src, buf: Vec::new(), pos: 0, base: 0, eof: false, index: 0, sync }
+        Self {
+            src,
+            buf: Vec::new(),
+            pos: 0,
+            base: 0,
+            eof: false,
+            index: 0,
+            sync,
+        }
     }
 
     fn fill(&mut self) -> io::Result<()> {
@@ -354,7 +391,10 @@ mod tests {
             // payload with occasional sync-byte emulation
             let mut payload: Vec<u8> = (0..184).map(|k| (k * 3 + i) as u8).collect();
             payload[0] = i as u8;
-            let p = Packet::with_payload(0x100 + i as u16, false, (i & 15) as u8, &payload).unwrap().encode().unwrap();
+            let p = Packet::with_payload(0x100 + i as u16, false, (i & 15) as u8, &payload)
+                .unwrap()
+                .encode()
+                .unwrap();
             match fmt {
                 PacketFormat::Ts188 => v.extend_from_slice(&p),
                 PacketFormat::Ts192 => {

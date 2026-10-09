@@ -35,7 +35,12 @@ impl Intervals {
         }
         let min = v.iter().copied().fold(f64::INFINITY, f64::min);
         let max = v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        Some(Intervals { n: v.len(), min, mean: v.iter().sum::<f64>() / v.len() as f64, max })
+        Some(Intervals {
+            n: v.len(),
+            min,
+            mean: v.iter().sum::<f64>() / v.len() as f64,
+            max,
+        })
     }
 }
 
@@ -265,13 +270,21 @@ pub struct InspectOptions {
 /// Choose the time base: PCR_PID of the first program, else the PID with
 /// most PCRs.
 pub fn timebase(cap: &Capture, nominal_bps: Option<f64>) -> Timebase {
-    let pcr_pid = cap.pmts().values().map(|(_, p)| p.body.pcr_pid).find(|&p| p != 0x1FFF);
+    let pcr_pid = cap
+        .pmts()
+        .values()
+        .map(|(_, p)| p.body.pcr_pid)
+        .find(|&p| p != 0x1FFF);
     Timebase::from_stats(&cap.stats, pcr_pid, nominal_bps)
 }
 
 /// Intervals between `occurrences` (packet indices) in seconds, and the
 /// edge gaps to the capture start/end.
-pub fn occurrence_intervals(tb: &Timebase, occ: &[u64], packets: u64) -> (Option<Intervals>, Option<(f64, f64)>) {
+pub fn occurrence_intervals(
+    tb: &Timebase,
+    occ: &[u64],
+    packets: u64,
+) -> (Option<Intervals>, Option<(f64, f64)>) {
     if !tb.known() || occ.is_empty() {
         return (None, None);
     }
@@ -279,13 +292,19 @@ pub fn occurrence_intervals(tb: &Timebase, occ: &[u64], packets: u64) -> (Option
     let d: Vec<f64> = t.windows(2).map(|w| w[1] - w[0]).collect();
     let start = tb.time(0).unwrap_or(0.0);
     let end = tb.time(packets.saturating_sub(1)).unwrap_or(0.0);
-    (Intervals::of(&d), Some((t[0] - start, end - t[t.len() - 1])))
+    (
+        Intervals::of(&d),
+        Some((t[0] - start, end - t[t.len() - 1])),
+    )
 }
 
 fn pcr_report(cap: &Capture, pid: u16) -> PcrReport {
     let pcrs = &cap.stats.pids[&pid].pcrs;
     let tb = Timebase::from_stats(&cap.stats, Some(pid), None);
-    let samples: Vec<(u64, f64)> = pcrs.iter().filter_map(|&(i, _)| tb.time(i).map(|t| (i, t))).collect();
+    let samples: Vec<(u64, f64)> = pcrs
+        .iter()
+        .filter_map(|&(i, _)| tb.time(i).map(|t| (i, t)))
+        .collect();
     let d: Vec<f64> = samples.windows(2).map(|w| w[1].1 - w[0].1).collect();
     let over = d.iter().filter(|&&x| x > 0.1).count();
     // Least-squares fit t = a + b·idx; residuals in ns.
@@ -296,7 +315,10 @@ fn pcr_report(cap: &Capture, pid: u16) -> PcrReport {
         let sxx: f64 = samples.iter().map(|s| (s.0 as f64 - mx).powi(2)).sum();
         let sxy: f64 = samples.iter().map(|s| (s.0 as f64 - mx) * (s.1 - my)).sum();
         let b = if sxx > 0.0 { sxy / sxx } else { 0.0 };
-        let r: Vec<f64> = samples.iter().map(|s| (s.1 - (my + b * (s.0 as f64 - mx))) * 1e9).collect();
+        let r: Vec<f64> = samples
+            .iter()
+            .map(|s| (s.1 - (my + b * (s.0 as f64 - mx))) * 1e9)
+            .collect();
         let max = r.iter().fold(0f64, |m, &x| m.max(x.abs()));
         let rms = (r.iter().map(|x| x * x).sum::<f64>() / n).sqrt();
         (Some(max), Some(rms))
@@ -334,17 +356,38 @@ pub fn pid_kinds(cap: &Capture) -> BTreeMap<u16, String> {
     }
     for (prog, (_, pmt)) in cap.pmts() {
         if pmt.body.pcr_pid != 0x1FFF {
-            m.entry(pmt.body.pcr_pid).or_insert_with(|| format!("PCR (program {prog:#06x})"));
+            m.entry(pmt.body.pcr_pid)
+                .or_insert_with(|| format!("PCR (program {prog:#06x})"));
         }
         for s in &pmt.body.streams {
-            m.insert(s.elementary_pid, format!("ES {:#04x} {} (program {prog:#06x})", s.stream_type, names::stream_type_name(s.stream_type)));
+            m.insert(
+                s.elementary_pid,
+                format!(
+                    "ES {:#04x} {} (program {prog:#06x})",
+                    s.stream_type,
+                    names::stream_type_name(s.stream_type)
+                ),
+            );
         }
         let ca = |ds: &[arib_ts::descriptor::Descriptor], m: &mut BTreeMap<u16, String>| {
             // conditional_access_descriptor (H.222.0 §2.6.16) / access_control_descriptor (B10 §6.2.54)
-            for d in ds.iter().filter(|d| matches!(d.tag, 0x09 | 0xF6) && d.data.len() >= 4) {
+            for d in ds
+                .iter()
+                .filter(|d| matches!(d.tag, 0x09 | 0xF6) && d.data.len() >= 4)
+            {
                 let pid = u16::from_be_bytes([d.data[2], d.data[3]]) & 0x1FFF;
                 if pid != 0x1FFF {
-                    m.insert(pid, format!("{} (program {prog:#06x})", if d.tag == 0x09 { "ECM" } else { "access control" }));
+                    m.insert(
+                        pid,
+                        format!(
+                            "{} (program {prog:#06x})",
+                            if d.tag == 0x09 {
+                                "ECM"
+                            } else {
+                                "access control"
+                            }
+                        ),
+                    );
                 }
             }
         };
@@ -353,22 +396,45 @@ pub fn pid_kinds(cap: &Capture) -> BTreeMap<u16, String> {
             ca(&s.descriptors, &mut m);
         }
     }
-    if let Some(c) = cap.slots.iter().find(|(k, _)| k.pid == 1 && k.table_id == 1).and_then(|(_, s)| arib_ts::section::Long::<arib_ts::psi::Cat>::decode(&s.latest).ok()) {
-        for d in c.body.descriptors.iter().filter(|d| matches!(d.tag, 0x09 | 0xF6) && d.data.len() >= 4) {
+    if let Some(c) = cap
+        .slots
+        .iter()
+        .find(|(k, _)| k.pid == 1 && k.table_id == 1)
+        .and_then(|(_, s)| arib_ts::section::Long::<arib_ts::psi::Cat>::decode(&s.latest).ok())
+    {
+        for d in c
+            .body
+            .descriptors
+            .iter()
+            .filter(|d| matches!(d.tag, 0x09 | 0xF6) && d.data.len() >= 4)
+        {
             let pid = u16::from_be_bytes([d.data[2], d.data[3]]) & 0x1FFF;
             if pid != 0x1FFF {
-                m.insert(pid, format!("EMM ({} in CAT)", if d.tag == 0x09 { "CA_descriptor" } else { "access_control_descriptor" }));
+                m.insert(
+                    pid,
+                    format!(
+                        "EMM ({} in CAT)",
+                        if d.tag == 0x09 {
+                            "CA_descriptor"
+                        } else {
+                            "access_control_descriptor"
+                        }
+                    ),
+                );
             }
         }
     }
     for &(pid, tid) in cap.other_sections.keys() {
-        m.entry(pid).or_insert_with(|| format!("sections {}", names::table_name(tid)));
+        m.entry(pid)
+            .or_insert_with(|| format!("sections {}", names::table_name(tid)));
     }
     m
 }
 
 fn rate_kbps(packets: u64, duration: Option<f64>) -> Option<f64> {
-    duration.filter(|&d| d > 0.0).map(|d| packets as f64 * 1504.0 / d / 1000.0)
+    duration
+        .filter(|&d| d > 0.0)
+        .map(|d| packets as f64 * 1504.0 / d / 1000.0)
 }
 
 fn pts_span(v: &[(u64, u64)]) -> Option<f64> {
@@ -380,7 +446,11 @@ fn pts_span(v: &[(u64, u64)]) -> Option<f64> {
     let mut cur = 0i64;
     for w in v.windows(2) {
         let d = ts90k_wrap_diff(w[1].1, w[0].1);
-        let s = if d > BASE_MODULUS / 2 { d as i64 - BASE_MODULUS as i64 } else { d as i64 };
+        let s = if d > BASE_MODULUS / 2 {
+            d as i64 - BASE_MODULUS as i64
+        } else {
+            d as i64
+        };
         cur += s;
         lo = lo.min(cur);
         hi = hi.max(cur);
@@ -401,7 +471,10 @@ pub fn inspect(cap: &Capture, opts: &InspectOptions) -> InspectReport {
         .iter()
         .map(|(&pid, s)| PidReport {
             pid,
-            kind: kinds.get(&pid).cloned().unwrap_or_else(|| "unreferenced".into()),
+            kind: kinds
+                .get(&pid)
+                .cloned()
+                .unwrap_or_else(|| "unreferenced".into()),
             packets: s.packets,
             share_pct: 100.0 * s.packets as f64 / cap.packets.max(1) as f64,
             rate_kbps: rate_kbps(s.packets, duration),
@@ -424,9 +497,22 @@ pub fn inspect(cap: &Capture, opts: &InspectOptions) -> InspectReport {
             CcEventKind::NoPayloadChanged { .. } => "counter changed without payload",
             CcEventKind::TransportError => "transport_error_indicator",
         };
-        cc.entry((kind.into(), e.pid)).or_insert(CcSummary { kind: kind.into(), pid: e.pid, count: 0, first_packet: e.packet_index }).count += 1;
+        cc.entry((kind.into(), e.pid))
+            .or_insert(CcSummary {
+                kind: kind.into(),
+                pid: e.pid,
+                count: 0,
+                first_packet: e.packet_index,
+            })
+            .count += 1;
     }
-    let pcr = cap.stats.pids.iter().filter(|(_, s)| !s.pcrs.is_empty()).map(|(&p, _)| pcr_report(cap, p)).collect();
+    let pcr = cap
+        .stats
+        .pids
+        .iter()
+        .filter(|(_, s)| !s.pcrs.is_empty())
+        .map(|(&p, _)| pcr_report(cap, p))
+        .collect();
     let mut programs = Vec::new();
     for (prog, (pmt_pid, pmt)) in cap.pmts() {
         let streams = pmt
@@ -434,7 +520,11 @@ pub fn inspect(cap: &Capture, opts: &InspectOptions) -> InspectReport {
             .streams
             .iter()
             .map(|s| {
-                let pk = cap.stats.pids.get(&s.elementary_pid).map_or(0, |x| x.packets);
+                let pk = cap
+                    .stats
+                    .pids
+                    .get(&s.elementary_pid)
+                    .map_or(0, |x| x.packets);
                 let t = cap.pes.get(&s.elementary_pid);
                 EsReport {
                     pid: s.elementary_pid,
@@ -443,7 +533,9 @@ pub fn inspect(cap: &Capture, opts: &InspectOptions) -> InspectReport {
                     packets: pk,
                     rate_kbps: rate_kbps(pk, duration),
                     pes_count: t.map_or(0, |t| t.pes_count),
-                    stream_ids: t.map(|t| t.stream_ids.iter().copied().collect()).unwrap_or_default(),
+                    stream_ids: t
+                        .map(|t| t.stream_ids.iter().copied().collect())
+                        .unwrap_or_default(),
                     pts_first_last: t.and_then(|t| Some((t.pts.first()?.1, t.pts.last()?.1))),
                     pts_span_s: t.and_then(|t| pts_span(&t.pts)),
                     dts_first_last: t.and_then(|t| Some((t.dts.first()?.1, t.dts.last()?.1))),
@@ -497,7 +589,14 @@ pub fn inspect(cap: &Capture, opts: &InspectOptions) -> InspectReport {
     let other_sections = cap
         .other_sections
         .iter()
-        .map(|(&(pid, tid), o)| OtherSectionReport { pid, table_id: tid, table: names::table_name(tid), count: o.count, distinct: o.distinct, crc_errors: o.crc_errors })
+        .map(|(&(pid, tid), o)| OtherSectionReport {
+            pid,
+            table_id: tid,
+            table: names::table_name(tid),
+            count: o.count,
+            distinct: o.distinct,
+            crc_errors: o.crc_errors,
+        })
         .collect();
     InspectReport {
         source: cap.source.clone(),
@@ -525,7 +624,8 @@ pub fn inspect(cap: &Capture, opts: &InspectOptions) -> InspectReport {
 }
 
 fn opt_f(v: Option<f64>, scale: f64, prec: usize) -> String {
-    v.map(|x| format!("{:.*}", prec, x * scale)).unwrap_or_else(|| "-".into())
+    v.map(|x| format!("{:.*}", prec, x * scale))
+        .unwrap_or_else(|| "-".into())
 }
 
 fn ivl(i: &Option<Intervals>) -> String {
@@ -553,13 +653,22 @@ impl InspectReport {
             o,
             "duration {} s (time base: PCR of {}), packet rate {} Mbit/s, null packets {}{}",
             opt_f(self.duration_s, 1.0, 3),
-            self.timebase_pcr_pid.map_or("none".into(), |p| format!("{p:#06x}")),
+            self.timebase_pcr_pid
+                .map_or("none".into(), |p| format!("{p:#06x}")),
             opt_f(self.rate_bps, 1e-6, 6),
             self.null_packets,
-            if self.null_packets == 0 { " (stripped or VBR: packet positions are not CBR time)" } else { "" }
+            if self.null_packets == 0 {
+                " (stripped or VBR: packet positions are not CBR time)"
+            } else {
+                ""
+            }
         );
         let _ = writeln!(o, "\n-- PIDs --");
-        let _ = writeln!(o, "{:>6} {:>9} {:>6} {:>10} {:>5} {:>5} {:>5} {:>5}  kind", "pid", "packets", "%", "kbit/s", "tei", "scr", "cc", "pcr");
+        let _ = writeln!(
+            o,
+            "{:>6} {:>9} {:>6} {:>10} {:>5} {:>5} {:>5} {:>5}  kind",
+            "pid", "packets", "%", "kbit/s", "tei", "scr", "cc", "pcr"
+        );
         for p in &self.pids {
             let _ = writeln!(
                 o,
@@ -578,7 +687,11 @@ impl InspectReport {
         if !self.cc.is_empty() {
             let _ = writeln!(o, "\n-- continuity events (H.222.0 §2.4.3.3) --");
             for c in &self.cc {
-                let _ = writeln!(o, "pid {:#06x}: {} x{} (first at packet {})", c.pid, c.kind, c.count, c.first_packet);
+                let _ = writeln!(
+                    o,
+                    "pid {:#06x}: {} x{} (first at packet {})",
+                    c.pid, c.kind, c.count, c.first_packet
+                );
             }
         }
         let _ = writeln!(o, "\n-- PCR (H.222.0 §2.7.2: interval ≤ 0.1 s) --");
@@ -598,7 +711,11 @@ impl InspectReport {
         }
         let _ = writeln!(o, "\n-- programs --");
         for p in &self.programs {
-            let _ = writeln!(o, "program {:#06x}: PMT pid {:#06x} v{}, PCR_PID {:#06x}", p.program_number, p.pmt_pid, p.version, p.pcr_pid);
+            let _ = writeln!(
+                o,
+                "program {:#06x}: PMT pid {:#06x} v{}, PCR_PID {:#06x}",
+                p.program_number, p.pmt_pid, p.version, p.pcr_pid
+            );
             for d in &p.descriptors {
                 let _ = writeln!(o, "    {}", tree::scalar(d, ""));
             }
@@ -626,12 +743,28 @@ impl InspectReport {
             }
         }
         self.si_text(&mut o);
-        let _ = writeln!(o, "\n-- sections (interval min/mean/max; edge gaps start/end) --");
+        let _ = writeln!(
+            o,
+            "\n-- sections (interval min/mean/max; edge gaps start/end) --"
+        );
         for s in &self.sections {
             let vers: Vec<String> = s
                 .versions
                 .iter()
-                .map(|v| format!("v{}{} lsn{:?} x{}{}", v.version, if v.cni { "" } else { "(next)" }, v.lsn, v.count, if v.bodies > 1 { format!(" BODIES={}", v.bodies) } else { String::new() }))
+                .map(|v| {
+                    format!(
+                        "v{}{} lsn{:?} x{}{}",
+                        v.version,
+                        if v.cni { "" } else { "(next)" },
+                        v.lsn,
+                        v.count,
+                        if v.bodies > 1 {
+                            format!(" BODIES={}", v.bodies)
+                        } else {
+                            String::new()
+                        }
+                    )
+                })
                 .collect();
             let _ = writeln!(
                 o,
@@ -641,9 +774,12 @@ impl InspectReport {
                 s.count,
                 s.latest_length,
                 ivl(&s.interval),
-                s.edge_gaps_s.map_or("-".into(), |(a, b)| format!("{a:.2}/{b:.2}")),
+                s.edge_gaps_s
+                    .map_or("-".into(), |(a, b)| format!("{a:.2}/{b:.2}")),
                 vers.join(" "),
-                s.decode_error.as_ref().map_or(String::new(), |e| format!(" DECODE ERROR: {e}"))
+                s.decode_error
+                    .as_ref()
+                    .map_or(String::new(), |e| format!(" DECODE ERROR: {e}"))
             );
             if let Some(d) = &s.decoded {
                 let mut t = String::new();
@@ -654,19 +790,31 @@ impl InspectReport {
         if !self.other_sections.is_empty() {
             let _ = writeln!(o, "\n-- sections on other PIDs (counted only) --");
             for s in &self.other_sections {
-                let _ = writeln!(o, "pid {:#06x} tid {:#04x} {}: {} sections, {} distinct, {} CRC errors", s.pid, s.table_id, s.table, s.count, s.distinct, s.crc_errors);
+                let _ = writeln!(
+                    o,
+                    "pid {:#06x} tid {:#04x} {}: {} sections, {} distinct, {} CRC errors",
+                    s.pid, s.table_id, s.table, s.count, s.distinct, s.crc_errors
+                );
             }
         }
         if self.section_error_count > 0 {
             let _ = writeln!(o, "\n-- section errors: {} --", self.section_error_count);
             for e in self.section_errors.iter().take(20) {
-                let _ = writeln!(o, "pid {:#06x} tid {:#04x} packet {}: {}", e.pid, e.table_id, e.packet, e.message);
+                let _ = writeln!(
+                    o,
+                    "pid {:#06x} tid {:#04x} packet {}: {}",
+                    e.pid, e.table_id, e.packet, e.message
+                );
             }
         }
         if !self.demux_events.is_empty() || !self.packet_violations.is_empty() {
             let _ = writeln!(o, "\n-- assembler events / packet rule violations --");
             for t in self.demux_events.iter().chain(&self.packet_violations) {
-                let _ = writeln!(o, "H.222.0 {} x{} (first pid {:#06x} packet {}): {}", t.clause, t.count, t.pid, t.first_packet, t.example);
+                let _ = writeln!(
+                    o,
+                    "H.222.0 {} x{} (first pid {:#06x} packet {}): {}",
+                    t.clause, t.count, t.pid, t.first_packet, t.example
+                );
             }
         }
         o
@@ -678,9 +826,14 @@ impl InspectReport {
         let _ = writeln!(
             o,
             "PAT: transport_stream_id {} network_PID {} programs {}",
-            s.transport_stream_id.map_or("-".into(), |t| format!("{t:#06x}")),
+            s.transport_stream_id
+                .map_or("-".into(), |t| format!("{t:#06x}")),
             s.network_pid.map_or("-".into(), |t| format!("{t:#06x}")),
-            s.programs.iter().map(|(p, pid)| format!("{p:#06x}→{pid:#06x}")).collect::<Vec<_>>().join(" ")
+            s.programs
+                .iter()
+                .map(|(p, pid)| format!("{p:#06x}→{pid:#06x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
         );
         for n in &s.networks {
             let _ = writeln!(
@@ -690,11 +843,16 @@ impl InspectReport {
                 n.network_id,
                 n.version,
                 n.name.as_deref().unwrap_or("-"),
-                n.system_management_id.map_or("-".into(), |x| format!("{x:#06x}")),
+                n.system_management_id
+                    .map_or("-".into(), |x| format!("{x:#06x}")),
                 n.other_descriptors.join(", ")
             );
             for t in &n.transport_streams {
-                let _ = writeln!(o, "  TS {:#06x} onid {:#06x}", t.transport_stream_id, t.original_network_id);
+                let _ = writeln!(
+                    o,
+                    "  TS {:#06x} onid {:#06x}",
+                    t.transport_stream_id, t.original_network_id
+                );
                 if let Some(d) = &t.delivery {
                     let _ = writeln!(
                         o,
@@ -705,7 +863,10 @@ impl InspectReport {
                         d.transmission_mode_name,
                         d.transmission_mode,
                         d.frequencies,
-                        d.frequencies_mhz.iter().map(|f| format!("{f:.6}")).collect::<Vec<_>>()
+                        d.frequencies_mhz
+                            .iter()
+                            .map(|f| format!("{f:.6}"))
+                            .collect::<Vec<_>>()
                     );
                 }
                 if let Some(i) = &t.ts_info {
@@ -714,14 +875,25 @@ impl InspectReport {
                         "    TS info: remote key {} name {:?} types {}",
                         i.remote_control_key_id,
                         i.ts_name,
-                        i.transmission_types.iter().map(|(t, v)| format!("{t:#04x}:{v:04x?}")).collect::<Vec<_>>().join(" ")
+                        i.transmission_types
+                            .iter()
+                            .map(|(t, v)| format!("{t:#04x}:{v:04x?}"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
                     );
                 }
                 if let Some(p) = &t.partial_reception {
                     let _ = writeln!(o, "    partial reception: {p:04x?}");
                 }
                 if let Some(l) = &t.service_list {
-                    let _ = writeln!(o, "    service list: {}", l.iter().map(|(a, b)| format!("{a:#06x}/{b:#04x}")).collect::<Vec<_>>().join(" "));
+                    let _ = writeln!(
+                        o,
+                        "    service list: {}",
+                        l.iter()
+                            .map(|(a, b)| format!("{a:#06x}/{b:#04x}"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
                 }
                 if !t.other_descriptors.is_empty() {
                     let _ = writeln!(o, "    other: {}", t.other_descriptors.join(", "));
@@ -747,12 +919,26 @@ impl InspectReport {
             );
         }
         for b in &s.bits {
-            let _ = writeln!(o, "BIT onid {:#06x} v{} broadcast_view_propriety {} first: {}", b.original_network_id, b.version, b.broadcast_view_propriety, b.first_descriptors.join(", "));
+            let _ = writeln!(
+                o,
+                "BIT onid {:#06x} v{} broadcast_view_propriety {} first: {}",
+                b.original_network_id,
+                b.version,
+                b.broadcast_view_propriety,
+                b.first_descriptors.join(", ")
+            );
             for p in &b.si_parameter {
                 let _ = writeln!(o, "    SI param tid {:#04x}: {}", p.0, p.1);
             }
             for br in &b.broadcasters {
-                let _ = writeln!(o, "  broadcaster {:#04x} {:?} {} {}", br.broadcaster_id, br.name.as_deref().unwrap_or("-"), br.extended.as_deref().unwrap_or(""), br.other_descriptors.join(", "));
+                let _ = writeln!(
+                    o,
+                    "  broadcaster {:#04x} {:?} {} {}",
+                    br.broadcaster_id,
+                    br.name.as_deref().unwrap_or("-"),
+                    br.extended.as_deref().unwrap_or(""),
+                    br.other_descriptors.join(", ")
+                );
                 for p in &br.si_parameter {
                     let _ = writeln!(o, "    SI param tid {:#04x}: {}", p.0, p.1);
                 }
@@ -785,7 +971,13 @@ impl InspectReport {
             );
         }
         if let Some(t) = &s.time {
-            let _ = writeln!(o, "TOT {} TDT {} {}", t.tot.as_deref().unwrap_or("-"), t.tdt.as_deref().unwrap_or("-"), t.local_time_offsets.join("; "));
+            let _ = writeln!(
+                o,
+                "TOT {} TDT {} {}",
+                t.tot.as_deref().unwrap_or("-"),
+                t.tdt.as_deref().unwrap_or("-"),
+                t.local_time_offsets.join("; ")
+            );
         }
     }
 }

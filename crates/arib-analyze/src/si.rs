@@ -19,7 +19,9 @@ pub fn time_str(t: MjdTime) -> String {
     if t.is_undefined() {
         return "undefined".into();
     }
-    t.to_jst().map(|d| format!("{d} JST")).unwrap_or_else(|| format!("invalid({:010x})", t.to_u40()))
+    t.to_jst()
+        .map(|d| format!("{d} JST"))
+        .unwrap_or_else(|| format!("invalid({:010x})", t.to_u40()))
 }
 
 /// Render a BCD duration.
@@ -249,7 +251,9 @@ fn delivery(d: &arib_si::descriptor::TerrestrialDeliverySystem) -> Delivery {
 }
 
 fn si_param(ts: &[arib_si::descriptor::TableDescription]) -> Vec<(u8, String)> {
-    ts.iter().map(|t| (t.table_id, crate::tree::hex(&t.description))).collect()
+    ts.iter()
+        .map(|t| (t.table_id, crate::tree::hex(&t.description)))
+        .collect()
 }
 
 /// Build the summary from the latest version of every SI sub_table.
@@ -264,11 +268,17 @@ pub fn summarize(cap: &Capture) -> SiSummary {
     let mut tdt = None;
     let mut lto = Vec::new();
     for (k, slot) in &cap.slots {
-        let Ok(t) = AnyTable::decode(k.pid, &slot.latest) else { continue };
+        let Ok(t) = AnyTable::decode(k.pid, &slot.latest) else {
+            continue;
+        };
         match t {
             AnyTable::Nit(n) => {
                 let ext = n.header.table_id_extension;
-                let net = match s.networks.iter_mut().position(|x| x.network_id == ext && x.table_id == n.header.table_id) {
+                let net = match s
+                    .networks
+                    .iter_mut()
+                    .position(|x| x.network_id == ext && x.table_id == n.header.table_id)
+                {
                     Some(i) => &mut s.networks[i],
                     None => {
                         s.networks.push(Network {
@@ -286,8 +296,12 @@ pub fn summarize(cap: &Capture) -> SiSummary {
                 for d in &n.body.0.descriptors {
                     match d {
                         Descriptor::NetworkName(x) => net.name = Some(text(&x.name)),
-                        Descriptor::SystemManagement(x) => net.system_management_id = Some(x.system_management_id),
-                        o => net.other_descriptors.push(format!("{} ({:#04x})", o.name(), o.tag())),
+                        Descriptor::SystemManagement(x) => {
+                            net.system_management_id = Some(x.system_management_id)
+                        }
+                        o => net
+                            .other_descriptors
+                            .push(format!("{} ({:#04x})", o.name(), o.tag())),
                     }
                 }
                 for ts in &n.body.0.transport_streams {
@@ -302,20 +316,39 @@ pub fn summarize(cap: &Capture) -> SiSummary {
                     };
                     for d in &ts.descriptors {
                         match d {
-                            Descriptor::TerrestrialDeliverySystem(x) => e.delivery = Some(delivery(x)),
+                            Descriptor::TerrestrialDeliverySystem(x) => {
+                                e.delivery = Some(delivery(x))
+                            }
                             Descriptor::TsInformation(x) => {
                                 e.ts_info = Some(TsInfo {
                                     remote_control_key_id: x.remote_control_key_id,
                                     ts_name: text(&x.ts_name),
-                                    transmission_types: x.transmission_types.iter().map(|t| (t.transmission_type_info, t.service_ids.clone())).collect(),
+                                    transmission_types: x
+                                        .transmission_types
+                                        .iter()
+                                        .map(|t| (t.transmission_type_info, t.service_ids.clone()))
+                                        .collect(),
                                 })
                             }
-                            Descriptor::PartialReception(x) => e.partial_reception = Some(x.service_ids.clone()),
-                            Descriptor::ServiceList(x) => e.service_list = Some(x.services.iter().map(|s| (s.service_id, s.service_type)).collect()),
-                            o => e.other_descriptors.push(format!("{} ({:#04x})", o.name(), o.tag())),
+                            Descriptor::PartialReception(x) => {
+                                e.partial_reception = Some(x.service_ids.clone())
+                            }
+                            Descriptor::ServiceList(x) => {
+                                e.service_list = Some(
+                                    x.services
+                                        .iter()
+                                        .map(|s| (s.service_id, s.service_type))
+                                        .collect(),
+                                )
+                            }
+                            o => {
+                                e.other_descriptors
+                                    .push(format!("{} ({:#04x})", o.name(), o.tag()))
+                            }
                         }
                     }
-                    net.transport_streams.retain(|x| x.transport_stream_id != e.transport_stream_id);
+                    net.transport_streams
+                        .retain(|x| x.transport_stream_id != e.transport_stream_id);
                     net.transport_streams.push(e);
                 }
             }
@@ -342,10 +375,17 @@ pub fn summarize(cap: &Capture) -> SiSummary {
                                 i.provider = Some(text(&x.provider_name));
                                 i.name = Some(text(&x.service_name));
                             }
-                            o => i.other_descriptors.push(format!("{} ({:#04x})", o.name(), o.tag())),
+                            o => {
+                                i.other_descriptors
+                                    .push(format!("{} ({:#04x})", o.name(), o.tag()))
+                            }
                         }
                     }
-                    s.services.retain(|x| !(x.service_id == i.service_id && x.transport_stream_id == i.transport_stream_id && x.table_id == i.table_id));
+                    s.services.retain(|x| {
+                        !(x.service_id == i.service_id
+                            && x.transport_stream_id == i.transport_stream_id
+                            && x.table_id == i.table_id)
+                    });
                     s.services.push(i);
                 }
             }
@@ -362,32 +402,52 @@ pub fn summarize(cap: &Capture) -> SiSummary {
                     if let Descriptor::SiParameter(x) = d {
                         bi.si_parameter = si_param(&x.tables);
                     }
-                    bi.first_descriptors.push(format!("{} ({:#04x})", d.name(), d.tag()));
+                    bi.first_descriptors
+                        .push(format!("{} ({:#04x})", d.name(), d.tag()));
                 }
                 for br in &b.body.broadcasters {
-                    let mut e = Broadcaster { broadcaster_id: br.broadcaster_id, name: None, extended: None, si_parameter: vec![], other_descriptors: vec![] };
+                    let mut e = Broadcaster {
+                        broadcaster_id: br.broadcaster_id,
+                        name: None,
+                        extended: None,
+                        si_parameter: vec![],
+                        other_descriptors: vec![],
+                    };
                     for d in &br.descriptors {
                         match d {
                             Descriptor::BroadcasterName(x) => e.name = Some(text(&x.name)),
                             Descriptor::ExtendedBroadcaster(x) => {
                                 e.extended = Some(match &x.body {
-                                    ExtendedBroadcasterBody::TerrestrialTv(t) | ExtendedBroadcasterBody::TerrestrialSound(t) => format!(
+                                    ExtendedBroadcasterBody::TerrestrialTv(t)
+                                    | ExtendedBroadcasterBody::TerrestrialSound(t) => format!(
                                         "type {:#x} terrestrial_broadcaster_id {:#06x} affiliations {:02x?} broadcasters {:?}",
                                         x.broadcaster_type(),
                                         t.terrestrial_broadcaster_id,
                                         t.affiliation_ids,
-                                        t.broadcasters.iter().map(|n| format!("{:#06x}/{:#04x}", n.original_network_id, n.broadcaster_id)).collect::<Vec<_>>()
+                                        t.broadcasters
+                                            .iter()
+                                            .map(|n| format!(
+                                                "{:#06x}/{:#04x}",
+                                                n.original_network_id, n.broadcaster_id
+                                            ))
+                                            .collect::<Vec<_>>()
                                     ),
-                                    ExtendedBroadcasterBody::Other { broadcaster_type, .. } => format!("type {broadcaster_type:#x}"),
+                                    ExtendedBroadcasterBody::Other {
+                                        broadcaster_type, ..
+                                    } => format!("type {broadcaster_type:#x}"),
                                 })
                             }
                             Descriptor::SiParameter(x) => e.si_parameter = si_param(&x.tables),
-                            o => e.other_descriptors.push(format!("{} ({:#04x})", o.name(), o.tag())),
+                            o => {
+                                e.other_descriptors
+                                    .push(format!("{} ({:#04x})", o.name(), o.tag()))
+                            }
                         }
                     }
                     bi.broadcasters.push(e);
                 }
-                s.bits.retain(|x| x.original_network_id != bi.original_network_id);
+                s.bits
+                    .retain(|x| x.original_network_id != bi.original_network_id);
                 s.bits.push(bi);
             }
             AnyTable::Eit(e) if matches!(e.header.table_id, 0x4E | 0x4F) => {
@@ -410,16 +470,31 @@ pub fn summarize(cap: &Capture) -> SiSummary {
                         running_status: names::running_status_name(ev.running_status),
                         title,
                         text: txt,
-                        descriptors: ev.descriptors.iter().map(|d| format!("{} ({:#04x})", d.name(), d.tag())).collect(),
+                        descriptors: ev
+                            .descriptors
+                            .iter()
+                            .map(|d| format!("{} ({:#04x})", d.name(), d.tag()))
+                            .collect(),
                     });
                 }
             }
             AnyTable::Eit(e) => {
                 let key = (e.header.table_id, e.header.table_id_extension);
-                let i = match s.schedules.iter().position(|x| (x.table_id, x.service_id) == key) {
+                let i = match s
+                    .schedules
+                    .iter()
+                    .position(|x| (x.table_id, x.service_id) == key)
+                {
                     Some(i) => i,
                     None => {
-                        s.schedules.push(ScheduleInfo { table_id: key.0, service_id: key.1, sections: 0, events: 0, first_start: None, last_start: None });
+                        s.schedules.push(ScheduleInfo {
+                            table_id: key.0,
+                            service_id: key.1,
+                            sections: 0,
+                            events: 0,
+                            first_start: None,
+                            last_start: None,
+                        });
                         s.schedules.len() - 1
                     }
                 };
@@ -449,7 +524,11 @@ pub fn summarize(cap: &Capture) -> SiSummary {
                                 "{} region {} {}{:04x} change {} next {:04x}",
                                 String::from_utf8_lossy(&e.country_code),
                                 e.country_region_id,
-                                if e.local_time_offset_polarity { "-" } else { "+" },
+                                if e.local_time_offset_polarity {
+                                    "-"
+                                } else {
+                                    "+"
+                                },
                                 e.local_time_offset.0,
                                 time_str(e.time_of_change),
                                 e.next_time_offset.0
@@ -463,9 +542,14 @@ pub fn summarize(cap: &Capture) -> SiSummary {
         }
     }
     s.networks.sort_by_key(|n| (n.table_id, n.network_id));
-    s.present_following.sort_by_key(|e| (e.table_id, e.service_id, e.section_number));
+    s.present_following
+        .sort_by_key(|e| (e.table_id, e.service_id, e.section_number));
     if tot.is_some() || tdt.is_some() {
-        s.time = Some(TimeInfo { tot, tdt, local_time_offsets: lto });
+        s.time = Some(TimeInfo {
+            tot,
+            tdt,
+            local_time_offsets: lto,
+        });
     }
     s
 }

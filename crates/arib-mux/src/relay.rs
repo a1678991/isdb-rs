@@ -54,8 +54,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, sync_channel};
 
 use arib_si::Descriptor;
-use arib_si::values::{CodedValue, DigitalRecordingControl};
 use arib_si::tables::{EitBody, SdtBody, TdtBody, TotBody};
+use arib_si::values::{CodedValue, DigitalRecordingControl};
 use arib_ts::cc::Counter;
 use arib_ts::demux::{Assembled, SectionDemux};
 use arib_ts::packet::{AdaptationFields, Packet as TsPacket};
@@ -152,12 +152,13 @@ impl SourceCopyControl {
         program_info: &[arib_ts::descriptor::Descriptor],
         relayed_es: impl IntoIterator<Item = &'a arib_ts::descriptor::Descriptor>,
     ) -> Option<Self> {
-        let value = |d: &arib_ts::descriptor::Descriptor| match Descriptor::decode_body(d.tag, &d.data) {
-            Ok(Descriptor::DigitalCopyControl(c)) => {
-                Some(DigitalRecordingControl::from_code(c.digital_recording_control_data))
-            }
-            _ => None,
-        };
+        let value =
+            |d: &arib_ts::descriptor::Descriptor| match Descriptor::decode_body(d.tag, &d.data) {
+                Ok(Descriptor::DigitalCopyControl(c)) => Some(DigitalRecordingControl::from_code(
+                    c.digital_recording_control_data,
+                )),
+                _ => None,
+            };
         if let Some(v) = program_info.iter().find_map(value) {
             return Some(Self {
                 recording_control: v,

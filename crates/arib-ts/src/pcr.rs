@@ -48,7 +48,11 @@ impl Pcr {
     /// split per equations 2-2/2-3, reserved bits '111111'.
     pub fn from_ticks(ticks: u64) -> Self {
         let t = ticks % PCR_MODULUS;
-        Self { base: t / 300, reserved: 0x3F, extension: (t % 300) as u16 }
+        Self {
+            base: t / 300,
+            reserved: 0x3F,
+            extension: (t % 300) as u16,
+        }
     }
 
     /// `PCR_base × 300 + PCR_ext` (equation 2-1), in 27 MHz ticks.
@@ -67,14 +71,22 @@ impl Pcr {
         let base = r.read(33)?;
         let reserved = r.read(6)? as u8;
         let extension = r.read(9)? as u16;
-        Ok(Self { base, reserved, extension })
+        Ok(Self {
+            base,
+            reserved,
+            extension,
+        })
     }
 
     /// Append the 6-byte field.
     pub fn write(&self, w: &mut BitWriter) -> Result<()> {
         w.write("program_clock_reference_base", 33, self.base)?;
         w.write("PCR reserved", 6, self.reserved as u64)?;
-        w.write("program_clock_reference_extension", 9, self.extension as u64)
+        w.write(
+            "program_clock_reference_extension",
+            9,
+            self.extension as u64,
+        )
     }
 
     /// Encode to 6 bytes.
@@ -123,7 +135,11 @@ pub fn ts90k_signed_diff(a: u64, b: u64) -> i64 {
 }
 
 fn signed(d: u64, m: u64) -> i64 {
-    if d > m / 2 { d as i64 - m as i64 } else { d as i64 }
+    if d > m / 2 {
+        d as i64 - m as i64
+    } else {
+        d as i64
+    }
 }
 
 /// A 33-bit value coded as in PTS/DTS (H.222.0 §2.4.3.6 Table 2-21) and
@@ -156,7 +172,11 @@ impl Timestamp {
 
     /// Timestamp with the given prefix, value reduced modulo 2^33, markers '1'.
     pub fn new(prefix: u8, value: u64) -> Self {
-        Self { prefix, value: value & (BASE_MODULUS - 1), markers: 0b111 }
+        Self {
+            prefix,
+            value: value & (BASE_MODULUS - 1),
+            markers: 0b111,
+        }
     }
 
     /// Read the 40-bit field.
@@ -168,14 +188,22 @@ impl Timestamp {
         let m1 = r.read(1)?;
         let lo = r.read(15)?;
         let m2 = r.read(1)?;
-        Ok(Self { prefix, value: (hi << 30) | (mid << 15) | lo, markers: ((m0 << 2) | (m1 << 1) | m2) as u8 })
+        Ok(Self {
+            prefix,
+            value: (hi << 30) | (mid << 15) | lo,
+            markers: ((m0 << 2) | (m1 << 1) | m2) as u8,
+        })
     }
 
     /// Write the 40-bit field.
     pub fn write(&self, w: &mut BitWriter) -> Result<()> {
         w.write("timestamp prefix", 4, self.prefix as u64)?;
         if self.value >> 33 != 0 {
-            return Err(crate::Error::Overflow { what: "33-bit timestamp", value: self.value, bits: 33 });
+            return Err(crate::Error::Overflow {
+                what: "33-bit timestamp",
+                value: self.value,
+                bits: 33,
+            });
         }
         w.write("timestamp[32..30]", 3, self.value >> 30)?;
         w.write("marker_bit", 1, (self.markers as u64 >> 2) & 1)?;
@@ -184,7 +212,11 @@ impl Timestamp {
         w.write("timestamp[14..0]", 15, self.value & 0x7FFF)?;
         w.write("marker_bit", 1, self.markers as u64 & 1)?;
         if self.markers >> 3 != 0 {
-            return Err(crate::Error::Overflow { what: "timestamp markers", value: self.markers as u64, bits: 3 });
+            return Err(crate::Error::Overflow {
+                what: "timestamp markers",
+                value: self.markers as u64,
+                bits: 3,
+            });
         }
         Ok(())
     }
@@ -209,10 +241,22 @@ mod tests {
         assert_eq!(p.extension, 299);
         assert_eq!(p.ticks(), t);
         // base = 1, reserved = '111111', ext = 0x1FF: bit layout check.
-        let raw = Pcr { base: 1, reserved: 0x3F, extension: 0x1FF }.encode().unwrap();
+        let raw = Pcr {
+            base: 1,
+            reserved: 0x3F,
+            extension: 0x1FF,
+        }
+        .encode()
+        .unwrap();
         // 33 bits of base: 0..0 1, then 6 ones, then 9 ones = low 16 bits all set
         assert_eq!(raw, [0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF]);
-        let raw = Pcr { base: (1 << 33) - 1, reserved: 0, extension: 0 }.encode().unwrap();
+        let raw = Pcr {
+            base: (1 << 33) - 1,
+            reserved: 0,
+            extension: 0,
+        }
+        .encode()
+        .unwrap();
         assert_eq!(raw, [0xFF, 0xFF, 0xFF, 0xFF, 0x80, 0x00]);
         assert_eq!(Pcr::decode(&raw).unwrap().base, (1 << 33) - 1);
         // modulus: base wraps at 2^33 (eq. 2-2)

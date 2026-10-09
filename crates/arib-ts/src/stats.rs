@@ -63,7 +63,8 @@ impl Stats {
         s.tei += h.transport_error_indicator as u64;
         s.scrambled += (h.transport_scrambling_control != 0) as u64;
         s.pusi += h.payload_unit_start_indicator as u64;
-        s.adaptation_only += (h.adaptation_field_control == crate::packet::afc::ADAPTATION_ONLY) as u64;
+        s.adaptation_only +=
+            (h.adaptation_field_control == crate::packet::afc::ADAPTATION_ONLY) as u64;
         match View::parse(pkt) {
             Ok(v) => {
                 s.discontinuity += v.discontinuity_indicator() as u64;
@@ -89,16 +90,27 @@ mod tests {
     #[test]
     fn counts() {
         let mut st = Stats::new();
-        let a = Packet::with_payload(0x100, true, 0, &[0; 184]).unwrap().encode().unwrap();
-        let b = Packet::pcr_only(0x100, 0, Pcr::from_ticks(27_000_000)).encode().unwrap();
-        let c = Packet::with_payload(0x100, false, 2, &[0; 184]).unwrap().encode().unwrap();
+        let a = Packet::with_payload(0x100, true, 0, &[0; 184])
+            .unwrap()
+            .encode()
+            .unwrap();
+        let b = Packet::pcr_only(0x100, 0, Pcr::from_ticks(27_000_000))
+            .encode()
+            .unwrap();
+        let c = Packet::with_payload(0x100, false, 2, &[0; 184])
+            .unwrap()
+            .encode()
+            .unwrap();
         let mut d = Packet::null().encode().unwrap();
         d[1] |= 0x80;
         for (i, p) in [a, b, c, d].iter().enumerate() {
             st.push(i as u64, p);
         }
         let s = &st.pids[&0x100];
-        assert_eq!((s.packets, s.pusi, s.adaptation_only, s.cc_events), (3, 1, 1, 1));
+        assert_eq!(
+            (s.packets, s.pusi, s.adaptation_only, s.cc_events),
+            (3, 1, 1, 1)
+        );
         assert_eq!(s.pcrs, vec![(1, Pcr::from_ticks(27_000_000))]);
         assert_eq!(st.pids[&0x1FFF].tei, 1);
         assert_eq!(st.cc_events.len(), 1);

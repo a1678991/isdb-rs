@@ -3,25 +3,55 @@
 //! model-receiver self-consistency (asserted inside `MultiplexPattern::new`),
 //! Mode 2/3 sub-frame periodicity implied by the S3/S4 switching interval.
 
-use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+use isdbt_core::{
+    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave,
+};
 use isdbt_fec::MultiplexPattern;
 
 const MODES: [Mode; 3] = [Mode::M1, Mode::M2, Mode::M3];
-const GIS: [GuardInterval; 4] = [GuardInterval::G1_4, GuardInterval::G1_8, GuardInterval::G1_16, GuardInterval::G1_32];
-const MODS: [Modulation; 4] = [Modulation::Dqpsk, Modulation::Qpsk, Modulation::Qam16, Modulation::Qam64];
-const RATES: [CodeRate; 5] = [CodeRate::R1_2, CodeRate::R2_3, CodeRate::R3_4, CodeRate::R5_6, CodeRate::R7_8];
+const GIS: [GuardInterval; 4] = [
+    GuardInterval::G1_4,
+    GuardInterval::G1_8,
+    GuardInterval::G1_16,
+    GuardInterval::G1_32,
+];
+const MODS: [Modulation; 4] = [
+    Modulation::Dqpsk,
+    Modulation::Qpsk,
+    Modulation::Qam16,
+    Modulation::Qam64,
+];
+const RATES: [CodeRate; 5] = [
+    CodeRate::R1_2,
+    CodeRate::R2_3,
+    CodeRate::R3_4,
+    CodeRate::R5_6,
+    CodeRate::R7_8,
+];
 
 fn lc(segments: usize, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
-    LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave(0) }
+    LayerConfig {
+        segments,
+        modulation,
+        code_rate,
+        time_interleave: TimeInterleave(0),
+    }
 }
 
 fn check(p: &Params) -> MultiplexPattern {
     let pat = MultiplexPattern::new(p);
     assert_eq!(pat.len(), p.multiplex_frame_tsps(), "Table 3-5 n");
     for (id, l) in p.active_layers() {
-        assert_eq!(pat.count(id), l.tsp_per_frame(p.mode), "Table 3-3 count, layer {id}");
+        assert_eq!(
+            pat.count(id),
+            l.tsp_per_frame(p.mode),
+            "Table 3-3 count, layer {id}"
+        );
     }
-    let used: usize = p.active_layers().map(|(_, l)| l.tsp_per_frame(p.mode)).sum();
+    let used: usize = p
+        .active_layers()
+        .map(|(_, l)| l.tsp_per_frame(p.mode))
+        .sum();
     assert_eq!(pat.null_count(), pat.len() - used);
     // §3.2.2.2: S3/S4 switch every 204/scale symbols, and each interval
     // carries an integral number of every layer's packets, so the pattern
@@ -30,7 +60,11 @@ fn check(p: &Params) -> MultiplexPattern {
     let k = p.mode.scale();
     let sub = pat.len() / k;
     for q in 1..k {
-        assert_eq!(&pat.slots()[..sub], &pat.slots()[q * sub..(q + 1) * sub], "{p:?} sub-frame {q}");
+        assert_eq!(
+            &pat.slots()[..sub],
+            &pat.slots()[q * sub..(q + 1) * sub],
+            "{p:?} sub-frame {q}"
+        );
     }
     pat
 }
@@ -60,7 +94,12 @@ fn spec_table_3_5_3_3_multi_layer() {
                 for ra in RATES {
                     for mb in MODS {
                         for rb in RATES {
-                            let p = Params::new(mode, gi, true, [Some(lc(1, ma, ra)), Some(lc(12, mb, rb)), None]);
+                            let p = Params::new(
+                                mode,
+                                gi,
+                                true,
+                                [Some(lc(1, ma, ra)), Some(lc(12, mb, rb)), None],
+                            );
                             if let Ok(p) = p {
                                 check(&p);
                             }
@@ -77,8 +116,17 @@ fn spec_table_3_5_3_3_multi_layer() {
                         (CodeRate::R1_2, CodeRate::R2_3, CodeRate::R7_8),
                         (CodeRate::R7_8, CodeRate::R3_4, CodeRate::R5_6),
                     ] {
-                        let p = Params::new(mode, gi, false, [Some(lc(sa, ma, ra)), Some(lc(sb, mb, rb)), Some(lc(sc, mc, rc))])
-                            .unwrap();
+                        let p = Params::new(
+                            mode,
+                            gi,
+                            false,
+                            [
+                                Some(lc(sa, ma, ra)),
+                                Some(lc(sb, mb, rb)),
+                                Some(lc(sc, mc, rc)),
+                            ],
+                        )
+                        .unwrap();
                         check(&p);
                     }
                 }
@@ -99,7 +147,11 @@ fn pattern_independent_of_tie_rule() {
                         mode,
                         gi,
                         true,
-                        [Some(lc(1, Modulation::Qpsk, CodeRate::R2_3)), Some(lc(12, mb, rb)), None],
+                        [
+                            Some(lc(1, Modulation::Qpsk, CodeRate::R2_3)),
+                            Some(lc(12, mb, rb)),
+                            None,
+                        ],
                     )
                     .unwrap();
                     let a = MultiplexPattern::new(&p);
@@ -130,19 +182,31 @@ fn print_reference_patterns() {
         Mode::M1,
         GuardInterval::G1_8,
         false,
-        [Some(lc(5, Modulation::Dqpsk, CodeRate::R1_2)), Some(lc(8, Modulation::Qam64, CodeRate::R7_8)), None],
+        [
+            Some(lc(5, Modulation::Dqpsk, CodeRate::R1_2)),
+            Some(lc(8, Modulation::Qam64, CodeRate::R7_8)),
+            None,
+        ],
     )
     .unwrap();
     let pat = check(&p);
     let all = render(&pat, pat.len());
-    println!("Fig. 3-5 config (Mode 1 GI 1/8, DQPSK 1/2 x5 + 64QAM 7/8 x8): first 40 {} last 12 {}", &all[..40], &all[all.len() - 12..]);
+    println!(
+        "Fig. 3-5 config (Mode 1 GI 1/8, DQPSK 1/2 x5 + 64QAM 7/8 x8): first 40 {} last 12 {}",
+        &all[..40],
+        &all[all.len() - 12..]
+    );
     for gi in [GuardInterval::G1_4, GuardInterval::G1_8] {
         for ra in [CodeRate::R1_2, CodeRate::R2_3] {
             let p = Params::new(
                 Mode::M3,
                 gi,
                 true,
-                [Some(lc(1, Modulation::Qpsk, ra)), Some(lc(12, Modulation::Qam64, CodeRate::R3_4)), None],
+                [
+                    Some(lc(1, Modulation::Qpsk, ra)),
+                    Some(lc(12, Modulation::Qam64, CodeRate::R3_4)),
+                    None,
+                ],
             )
             .unwrap();
             let pat = check(&p);
@@ -156,8 +220,14 @@ fn print_reference_patterns() {
                 pat.null_count(),
                 render(&pat, 60)
             );
-            let a_pos: Vec<usize> =
-                pat.slots().iter().enumerate().filter(|(_, s)| **s == Some(Layer::A)).map(|(i, _)| i).take(12).collect();
+            let a_pos: Vec<usize> = pat
+                .slots()
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| **s == Some(Layer::A))
+                .map(|(i, _)| i)
+                .take(12)
+                .collect();
             println!("  first A slots: {a_pos:?}");
         }
     }

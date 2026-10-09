@@ -4,9 +4,9 @@
 
 use anyhow::{Context, Result, bail};
 use std::io::Read;
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, sync_channel};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// 188-byte packet.

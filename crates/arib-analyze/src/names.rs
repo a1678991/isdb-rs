@@ -196,7 +196,13 @@ pub struct Criterion {
 /// SPEC-NOTES.md).
 pub fn criterion(tid: u8) -> Option<Criterion> {
     use Level::*;
-    let c = |level, s: Option<f64>, text| Some(Criterion { level, max_interval_s: s, text });
+    let c = |level, s: Option<f64>, text| {
+        Some(Criterion {
+            level,
+            max_interval_s: s,
+            text,
+        })
+    };
     match tid {
         0x00 => c(Mandatory, Some(0.1), "Once or more/100m sec."),
         0x01 => c(Mandatory, Some(1.0), "Once or more/1 sec."),
@@ -209,7 +215,9 @@ pub fn criterion(tid: u8) -> Option<Criterion> {
         0x4C => c(Optional, Some(30.0), "Once or more/30 sec."),
         0x4E => c(Mandatory, Some(2.0), "Once or more/2 sec."),
         0x4F => c(Optional, Some(10.0), "Once or more/10 sec."),
-        0x50 | 0x51 | 0x60 | 0x61 => c(Optional, Some(10.0), "Once or more/10 sec. (within 8 days)"),
+        0x50 | 0x51 | 0x60 | 0x61 => {
+            c(Optional, Some(10.0), "Once or more/10 sec. (within 8 days)")
+        }
         0x52..=0x5F | 0x62..=0x6F => c(Optional, Some(30.0), "Once or more/30 sec. (after 8 days)"),
         0x70 => c(MandatoryTdtOrTot, Some(30.0), "Once or more/30 sec."),
         0x71 | 0x72 | 0xC2 => c(Optional, None, "Optional"),

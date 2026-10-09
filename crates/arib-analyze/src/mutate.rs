@@ -83,12 +83,17 @@ pub struct Target {
 impl Target {
     /// Whether a section on `pid` matches.
     pub fn matches(&self, pid: u16, sec: &[u8]) -> bool {
-        if sec.is_empty() || sec[0] != self.table_id || !(self.pids.is_empty() || self.pids.contains(&pid)) {
+        if sec.is_empty()
+            || sec[0] != self.table_id
+            || !(self.pids.is_empty() || self.pids.contains(&pid))
+        {
             return false;
         }
         match self.ext {
             None => true,
-            Some(e) => sec.len() >= 5 && sec[1] & 0x80 != 0 && u16::from_be_bytes([sec[3], sec[4]]) == e,
+            Some(e) => {
+                sec.len() >= 5 && sec[1] & 0x80 != 0 && u16::from_be_bytes([sec[3], sec[4]]) == e
+            }
         }
     }
 }
@@ -96,7 +101,11 @@ impl Target {
 /// Parse an integer (decimal or 0x hex).
 pub fn int(s: &str) -> Result<u64> {
     let s = s.trim();
-    let r = if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) { u64::from_str_radix(h, 16) } else { s.parse() };
+    let r = if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(h, 16)
+    } else {
+        s.parse()
+    };
     r.with_context(|| format!("not an integer: {s:?}"))
 }
 
@@ -123,17 +132,27 @@ fn split_top(s: &str, sep: char) -> Vec<String> {
 fn seg(s: &str) -> Result<Seg> {
     match s.find('[') {
         Some(i) => {
-            let sel = s[i + 1..].strip_suffix(']').ok_or_else(|| anyhow!("unbalanced [] in {s:?}"))?;
-            Ok(Seg { name: s[..i].to_string(), sel: Some(sel.to_string()) })
+            let sel = s[i + 1..]
+                .strip_suffix(']')
+                .ok_or_else(|| anyhow!("unbalanced [] in {s:?}"))?;
+            Ok(Seg {
+                name: s[..i].to_string(),
+                sel: Some(sel.to_string()),
+            })
         }
-        None => Ok(Seg { name: s.to_string(), sel: None }),
+        None => Ok(Seg {
+            name: s.to_string(),
+            sel: None,
+        }),
     }
 }
 
 impl Expr {
     /// Parse `table.path=value`.
     pub fn parse(s: &str) -> Result<Self> {
-        let (lhs, rhs) = s.split_once('=').ok_or_else(|| anyhow!("expression needs '=': {s:?}"))?;
+        let (lhs, rhs) = s
+            .split_once('=')
+            .ok_or_else(|| anyhow!("expression needs '=': {s:?}"))?;
         let mut parts = split_top(lhs.trim(), '.');
         let head = parts.remove(0);
         let hs = seg(&head)?;
@@ -155,12 +174,22 @@ impl Expr {
             }
             _ => Op::Set(v),
         };
-        Ok(Expr { table, tid, ext, path, op })
+        Ok(Expr {
+            table,
+            tid,
+            ext,
+            path,
+            op,
+        })
     }
 
     /// Sections this expression applies to.
     pub fn target(&self) -> Result<Target> {
-        let t = |pids: &[u16], tid: u8| Target { pids: pids.to_vec(), table_id: self.tid.unwrap_or(tid), ext: self.ext };
+        let t = |pids: &[u16], tid: u8| Target {
+            pids: pids.to_vec(),
+            table_id: self.tid.unwrap_or(tid),
+            ext: self.ext,
+        };
         Ok(match self.table.as_str() {
             "pat" => t(&[0x0000], 0x00),
             "cat" => t(&[0x0001], 0x01),
@@ -184,22 +213,43 @@ impl Expr {
             Table::Pat(x) => {
                 if p.is_empty() {
                     // pat.add=PN:PID / pat.del=PN
-                    return list(&mut x.body.entries, &Seg { name: "entries".into(), sel: None }, &[], op, |e| e.program_number as u64, pat_entry, |_, _, _| bail!("no fields"));
+                    return list(
+                        &mut x.body.entries,
+                        &Seg {
+                            name: "entries".into(),
+                            sel: None,
+                        },
+                        &[],
+                        op,
+                        |e| e.program_number as u64,
+                        pat_entry,
+                        |_, _, _| bail!("no fields"),
+                    );
                 }
                 if header(&mut x.header, p, op)? {
                     return Ok(());
                 }
                 match p[0].name.as_str() {
-                    "entries" | "programs" => list(&mut x.body.entries, &p[0], &p[1..], op, |e| e.program_number as u64, pat_entry, |e, r, op| {
-                        let v = leaf(r, op)?;
-                        match r[0].name.as_str() {
-                            "program_number" => e.program_number = val(v)?,
-                            "pid" => e.pid = val(v)?,
-                            "reserved" => e.reserved = val(v)?,
-                            f => bail!("PAT entry has no field {f:?} (program_number, pid, reserved)"),
-                        }
-                        Ok(())
-                    }),
+                    "entries" | "programs" => list(
+                        &mut x.body.entries,
+                        &p[0],
+                        &p[1..],
+                        op,
+                        |e| e.program_number as u64,
+                        pat_entry,
+                        |e, r, op| {
+                            let v = leaf(r, op)?;
+                            match r[0].name.as_str() {
+                                "program_number" => e.program_number = val(v)?,
+                                "pid" => e.pid = val(v)?,
+                                "reserved" => e.reserved = val(v)?,
+                                f => bail!(
+                                    "PAT entry has no field {f:?} (program_number, pid, reserved)"
+                                ),
+                            }
+                            Ok(())
+                        },
+                    ),
                     f => bail!("PAT has no field {f:?}"),
                 }
             }
@@ -222,7 +272,9 @@ impl Expr {
                     "pcr_pid" => b.pcr_pid = val(leaf(p, op)?)?,
                     "reserved_pcr" => b.reserved_pcr = val(leaf(p, op)?)?,
                     "reserved_info" => b.reserved_info = val(leaf(p, op)?)?,
-                    "desc" | "descriptors" | "program_info" => ts_desc_loop(&mut b.program_info, &p[0], &p[1..], op)?,
+                    "desc" | "descriptors" | "program_info" => {
+                        ts_desc_loop(&mut b.program_info, &p[0], &p[1..], op)?
+                    }
                     "streams" | "es" => list(
                         &mut b.streams,
                         &p[0],
@@ -230,12 +282,20 @@ impl Expr {
                         op,
                         |s| s.elementary_pid as u64,
                         |v| {
-                            let (t, pid) = v.split_once(':').ok_or_else(|| anyhow!("stream as TYPE:PID"))?;
-                            Ok(arib_ts::psi::PmtStream::new(int(t)? as u8, int(pid)? as u16, vec![]))
+                            let (t, pid) = v
+                                .split_once(':')
+                                .ok_or_else(|| anyhow!("stream as TYPE:PID"))?;
+                            Ok(arib_ts::psi::PmtStream::new(
+                                int(t)? as u8,
+                                int(pid)? as u16,
+                                vec![],
+                            ))
                         },
                         |s, r, op| {
                             match r[0].name.as_str() {
-                                "desc" | "descriptors" => return ts_desc_loop(&mut s.descriptors, &r[0], &r[1..], op),
+                                "desc" | "descriptors" => {
+                                    return ts_desc_loop(&mut s.descriptors, &r[0], &r[1..], op);
+                                }
                                 _ => {}
                             }
                             let v = leaf(r, op)?;
@@ -266,14 +326,22 @@ fn need(p: &[Seg], names: &[&str]) -> Result<()> {
 }
 
 fn pat_entry(v: &str) -> Result<arib_ts::psi::PatEntry> {
-    let (a, b) = v.split_once(':').ok_or_else(|| anyhow!("PAT entry as PROGRAM:PID"))?;
+    let (a, b) = v
+        .split_once(':')
+        .ok_or_else(|| anyhow!("PAT entry as PROGRAM:PID"))?;
     Ok(arib_ts::psi::PatEntry::new(int(a)? as u16, int(b)? as u16))
 }
 
 /// The value of a scalar leaf: exactly one segment, no selector, `Set`.
 fn leaf<'a>(p: &[Seg], op: &'a Op) -> Result<&'a str> {
     if p.len() != 1 || p[0].sel.is_some() {
-        bail!("{} is not a scalar field path", p.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("."));
+        bail!(
+            "{} is not a scalar field path",
+            p.iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(".")
+        );
     }
     match op {
         Op::Set(v) => Ok(v),
@@ -289,7 +357,24 @@ fn header(h: &mut LongHeader, p: &[Seg], op: &Op) -> Result<bool> {
     let f = p[0].name.as_str();
     let known = matches!(
         f,
-        "version" | "version_number" | "tidext" | "table_id_extension" | "network_id" | "transport_stream_id_ext" | "program_number" | "service_id" | "cni" | "current_next_indicator" | "sn" | "section_number" | "lsn" | "last_section_number" | "table_id" | "private_indicator" | "reserved1" | "reserved2"
+        "version"
+            | "version_number"
+            | "tidext"
+            | "table_id_extension"
+            | "network_id"
+            | "transport_stream_id_ext"
+            | "program_number"
+            | "service_id"
+            | "cni"
+            | "current_next_indicator"
+            | "sn"
+            | "section_number"
+            | "lsn"
+            | "last_section_number"
+            | "table_id"
+            | "private_indicator"
+            | "reserved1"
+            | "reserved2"
     );
     if !known {
         return Ok(false);
@@ -303,7 +388,12 @@ fn header(h: &mut LongHeader, p: &[Seg], op: &Op) -> Result<bool> {
             }
             h.version_number = x
         }
-        "tidext" | "table_id_extension" | "network_id" | "transport_stream_id_ext" | "program_number" | "service_id" => h.table_id_extension = val(v)?,
+        "tidext"
+        | "table_id_extension"
+        | "network_id"
+        | "transport_stream_id_ext"
+        | "program_number"
+        | "service_id" => h.table_id_extension = val(v)?,
         "cni" | "current_next_indicator" => h.current_next_indicator = val(v)?,
         "sn" | "section_number" => h.section_number = val(v)?,
         "lsn" | "last_section_number" => h.last_section_number = val(v)?,
@@ -321,7 +411,9 @@ fn select<T>(v: &[T], sel: &str, id: &impl Fn(&T) -> u64) -> Result<usize> {
     let sel = sel.trim();
     if sel.starts_with("0x") || sel.starts_with("0X") {
         let want = int(sel)?;
-        v.iter().position(|x| id(x) == want).ok_or_else(|| anyhow!("no element with id {sel}"))
+        v.iter()
+            .position(|x| id(x) == want)
+            .ok_or_else(|| anyhow!("no element with id {sel}"))
     } else {
         let i: usize = sel.parse().with_context(|| format!("bad index {sel:?}"))?;
         if i >= v.len() {
@@ -413,9 +505,14 @@ impl FromVal for bool {
 impl FromVal for AribString {
     fn from_val(s: &str) -> Result<Self> {
         if let Some(h) = s.strip_prefix("hex:") {
-            return Ok(AribString(crate::tree::unhex(h).ok_or_else(|| anyhow!("bad hex"))?));
+            return Ok(AribString(
+                crate::tree::unhex(h).ok_or_else(|| anyhow!("bad hex"))?,
+            ));
         }
-        let t = s.strip_prefix('"').and_then(|x| x.strip_suffix('"')).unwrap_or(s);
+        let t = s
+            .strip_prefix('"')
+            .and_then(|x| x.strip_suffix('"'))
+            .unwrap_or(s);
         AribString::encode(t).map_err(|e| anyhow!("ARIB encode of {t:?}: {e:?}"))
     }
 }
@@ -466,13 +563,24 @@ impl FromVal for MjdTime {
             return Ok(MjdTime::from_u40(int(s)?));
         }
         let s = s.trim_end_matches(" JST");
-        let (d, t) = s.split_once([' ', 'T']).ok_or_else(|| anyhow!("time as YYYY-MM-DD HH:MM:SS"))?;
+        let (d, t) = s
+            .split_once([' ', 'T'])
+            .ok_or_else(|| anyhow!("time as YYYY-MM-DD HH:MM:SS"))?;
         let dp: Vec<&str> = d.split('-').collect();
         let tp: Vec<&str> = t.split(':').collect();
         if dp.len() != 3 || tp.len() != 3 {
             bail!("time as YYYY-MM-DD HH:MM:SS");
         }
-        let dt = DateTime { date: Date { year: dp[0].parse()?, month: dp[1].parse()?, day: dp[2].parse()? }, hour: tp[0].parse()?, minute: tp[1].parse()?, second: tp[2].parse()? };
+        let dt = DateTime {
+            date: Date {
+                year: dp[0].parse()?,
+                month: dp[1].parse()?,
+                day: dp[2].parse()?,
+            },
+            hour: tp[0].parse()?,
+            minute: tp[1].parse()?,
+            second: tp[2].parse()?,
+        };
         MjdTime::from_jst(dt).map_err(|e| anyhow!("{e}"))
     }
 }
@@ -490,7 +598,8 @@ impl FromVal for BcdDuration {
         if p.len() != 3 {
             bail!("duration as HH:MM:SS");
         }
-        BcdDuration::from_hms(p[0].parse()?, p[1].parse()?, p[2].parse()?).map_err(|e| anyhow!("{e}"))
+        BcdDuration::from_hms(p[0].parse()?, p[1].parse()?, p[2].parse()?)
+            .map_err(|e| anyhow!("{e}"))
     }
 }
 
@@ -500,7 +609,9 @@ impl FromVal for BcdOffset {
         if s.starts_with("0x") {
             return Ok(BcdOffset(int(s)? as u16));
         }
-        let (h, m) = s.split_once(':').ok_or_else(|| anyhow!("offset as HH:MM"))?;
+        let (h, m) = s
+            .split_once(':')
+            .ok_or_else(|| anyhow!("offset as HH:MM"))?;
         BcdOffset::from_hm(h.parse()?, m.parse()?).map_err(|e| anyhow!("{e}"))
     }
 }
@@ -524,7 +635,12 @@ fn desc_select(v: &[Descriptor], sel: &str) -> Result<usize> {
             None => (sel, 0),
         };
         let tag = int(t)? as u8;
-        v.iter().enumerate().filter(|(_, d)| d.tag() == tag).nth(k).map(|(i, _)| i).ok_or_else(|| anyhow!("no descriptor with tag {sel}"))
+        v.iter()
+            .enumerate()
+            .filter(|(_, d)| d.tag() == tag)
+            .nth(k)
+            .map(|(i, _)| i)
+            .ok_or_else(|| anyhow!("no descriptor with tag {sel}"))
     } else {
         let i: usize = sel.parse()?;
         if i >= v.len() {
@@ -571,8 +687,19 @@ pub fn desc_loop(v: &mut Vec<Descriptor>, seg: &Seg, rest: &[Seg], op: &Op) -> R
 
 /// Mutate an `arib-ts` raw descriptor loop (PMT/CAT) through the typed B10
 /// descriptors.
-fn ts_desc_loop(v: &mut Vec<arib_ts::descriptor::Descriptor>, seg: &Seg, rest: &[Seg], op: &Op) -> Result<()> {
-    let mut typed: Vec<Descriptor> = v.iter().map(|x| Descriptor::decode_body(x.tag, &x.data).map_err(|e| anyhow!("descriptor {:#04x}: {e}", x.tag))).collect::<Result<_>>()?;
+fn ts_desc_loop(
+    v: &mut Vec<arib_ts::descriptor::Descriptor>,
+    seg: &Seg,
+    rest: &[Seg],
+    op: &Op,
+) -> Result<()> {
+    let mut typed: Vec<Descriptor> = v
+        .iter()
+        .map(|x| {
+            Descriptor::decode_body(x.tag, &x.data)
+                .map_err(|e| anyhow!("descriptor {:#04x}: {e}", x.tag))
+        })
+        .collect::<Result<_>>()?;
     desc_loop(&mut typed, seg, rest, op)?;
     *v = typed
         .iter()
@@ -600,7 +727,15 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
     let f = p[0].name.as_str();
     match dsc {
         Descriptor::TerrestrialDeliverySystem(x) => match f {
-            "frequencies" | "frequency" if p[0].sel.is_some() || !matches!(op, Op::Set(_)) => list(&mut x.frequencies, &p[0], &p[1..], op, |&f| f as u64, val, |_, _, _| bail!("scalar element")),
+            "frequencies" | "frequency" if p[0].sel.is_some() || !matches!(op, Op::Set(_)) => list(
+                &mut x.frequencies,
+                &p[0],
+                &p[1..],
+                op,
+                |&f| f as u64,
+                val,
+                |_, _, _| bail!("scalar element"),
+            ),
             "frequencies" | "frequency" => {
                 x.frequencies = val(leaf(p, op)?)?;
                 Ok(())
@@ -619,16 +754,37 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                 &p[1..],
                 op,
                 |t| t.transmission_type_info as u64,
-                |s| Ok(d::TransmissionType { transmission_type_info: val(s)?, service_ids: vec![] }),
+                |s| {
+                    Ok(d::TransmissionType {
+                        transmission_type_info: val(s)?,
+                        service_ids: vec![],
+                    })
+                },
                 |t, r, op| match r[0].name.as_str() {
-                    "service_ids" if r[0].sel.is_some() || !matches!(op, Op::Set(_)) => list(&mut t.service_ids, &r[0], &r[1..], op, |&s| s as u64, val, |_, _, _| bail!("scalar element")),
+                    "service_ids" if r[0].sel.is_some() || !matches!(op, Op::Set(_)) => list(
+                        &mut t.service_ids,
+                        &r[0],
+                        &r[1..],
+                        op,
+                        |&s| s as u64,
+                        val,
+                        |_, _, _| bail!("scalar element"),
+                    ),
                     _ => fields!(t, r, op; transmission_type_info, service_ids),
                 },
             ),
             _ => fields!(x, p, op; remote_control_key_id, ts_name, reserved_future_use),
         },
         Descriptor::PartialReception(x) => match f {
-            "service_ids" if p[0].sel.is_some() || !matches!(op, Op::Set(_)) => list(&mut x.service_ids, &p[0], &p[1..], op, |&s| s as u64, val, |_, _, _| bail!("scalar element")),
+            "service_ids" if p[0].sel.is_some() || !matches!(op, Op::Set(_)) => list(
+                &mut x.service_ids,
+                &p[0],
+                &p[1..],
+                op,
+                |&s| s as u64,
+                val,
+                |_, _, _| bail!("scalar element"),
+            ),
             _ => fields!(x, p, op; service_ids),
         },
         Descriptor::ServiceList(x) => list(
@@ -638,8 +794,13 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
             op,
             |s| s.service_id as u64,
             |s| {
-                let (a, b) = s.split_once(':').ok_or_else(|| anyhow!("service as SID:TYPE"))?;
-                Ok(d::ServiceListEntry { service_id: val(a)?, service_type: val(b)? })
+                let (a, b) = s
+                    .split_once(':')
+                    .ok_or_else(|| anyhow!("service as SID:TYPE"))?;
+                Ok(d::ServiceListEntry {
+                    service_id: val(a)?,
+                    service_type: val(b)?,
+                })
             },
             |e, r, op| fields!(e, r, op; service_id, service_type),
         ),
@@ -647,22 +808,42 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
         Descriptor::BouquetName(x) => fields!(x, p, op; name),
         Descriptor::BroadcasterName(x) => fields!(x, p, op; name),
         Descriptor::Service(x) => fields!(x, p, op; service_type, provider_name, service_name),
-        Descriptor::SystemManagement(x) => fields!(x, p, op; system_management_id, additional_identification_info),
+        Descriptor::SystemManagement(x) => {
+            fields!(x, p, op; system_management_id, additional_identification_info)
+        }
         Descriptor::ShortEvent(x) => fields!(x, p, op; language, event_name, text),
-        Descriptor::Component(x) => fields!(x, p, op; reserved_future_use, stream_content, component_type, component_tag, language, text),
+        Descriptor::Component(x) => {
+            fields!(x, p, op; reserved_future_use, stream_content, component_type, component_tag, language, text)
+        }
         Descriptor::StreamIdentifier(x) => fields!(x, p, op; component_tag),
         Descriptor::CaIdentifier(x) => fields!(x, p, op; ca_system_ids),
-        Descriptor::ConditionalAccess(x) => fields!(x, p, op; ca_system_id, reserved, ca_pid | "pid", private_data),
-        Descriptor::AccessControl(x) => fields!(x, p, op; ca_system_id, transmission_type, pid, private_data),
-        Descriptor::DigitalCopyControl(x) => fields!(x, p, op; digital_recording_control_data, user_defined, maximum_bitrate),
+        Descriptor::ConditionalAccess(x) => {
+            fields!(x, p, op; ca_system_id, reserved, ca_pid | "pid", private_data)
+        }
+        Descriptor::AccessControl(x) => {
+            fields!(x, p, op; ca_system_id, transmission_type, pid, private_data)
+        }
+        Descriptor::DigitalCopyControl(x) => {
+            fields!(x, p, op; digital_recording_control_data, user_defined, maximum_bitrate)
+        }
         Descriptor::ContentAvailability(x) => {
             fields!(x, p, op; reserved_future_use, copy_restriction_mode, image_constraint_token, retention_mode, retention_state, encryption_mode, reserved_future_use_bytes)
         }
-        Descriptor::VideoDecodeControl(x) => fields!(x, p, op; still_picture_flag, sequence_end_code_flag, video_encode_format, transfer_characteristics),
-        Descriptor::HierarchicalTransmission(x) => fields!(x, p, op; reserved_future_use_1, quality_level, reserved_future_use_2, reference_pid),
-        Descriptor::DataComponent(x) => fields!(x, p, op; data_component_id, additional_data_component_info),
-        Descriptor::AudioComponent(x) => fields!(x, p, op; reserved_future_use_1, stream_content, component_type, component_tag, stream_type, simulcast_group_tag, main_component_flag, quality_indicator, sampling_rate, reserved_future_use_2, language, text),
-        Descriptor::Series(x) => fields!(x, p, op; series_id, repeat_label, program_pattern, expire_date_valid_flag, expire_date, episode_number, last_episode_number, series_name),
+        Descriptor::VideoDecodeControl(x) => {
+            fields!(x, p, op; still_picture_flag, sequence_end_code_flag, video_encode_format, transfer_characteristics)
+        }
+        Descriptor::HierarchicalTransmission(x) => {
+            fields!(x, p, op; reserved_future_use_1, quality_level, reserved_future_use_2, reference_pid)
+        }
+        Descriptor::DataComponent(x) => {
+            fields!(x, p, op; data_component_id, additional_data_component_info)
+        }
+        Descriptor::AudioComponent(x) => {
+            fields!(x, p, op; reserved_future_use_1, stream_content, component_type, component_tag, stream_type, simulcast_group_tag, main_component_flag, quality_indicator, sampling_rate, reserved_future_use_2, language, text)
+        }
+        Descriptor::Series(x) => {
+            fields!(x, p, op; series_id, repeat_label, program_pattern, expire_date_valid_flag, expire_date, episode_number, last_episode_number, series_name)
+        }
         Descriptor::ParentalRating(x) => list(
             &mut x.ratings,
             &p[0],
@@ -670,8 +851,13 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
             op,
             |r| r.rating as u64,
             |s| {
-                let (c, r) = s.split_once(':').ok_or_else(|| anyhow!("rating as CCC:RATING"))?;
-                Ok(d::ParentalRatingEntry { country_code: val(c)?, rating: val(r)? })
+                let (c, r) = s
+                    .split_once(':')
+                    .ok_or_else(|| anyhow!("rating as CCC:RATING"))?;
+                Ok(d::ParentalRatingEntry {
+                    country_code: val(c)?,
+                    rating: val(r)?,
+                })
             },
             |e, r, op| fields!(e, r, op; country_code, rating),
         ),
@@ -693,7 +879,10 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                 |t| t.table_id as u64,
                 |s| {
                     let (t, h) = s.split_once(':').unwrap_or((s, ""));
-                    Ok(d::TableDescription { table_id: val(t)?, description: val(h)? })
+                    Ok(d::TableDescription {
+                        table_id: val(t)?,
+                        description: val(h)?,
+                    })
                 },
                 |t, r, op| fields!(t, r, op; table_id, description),
             ),
@@ -704,7 +893,8 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                 return fields!(x, p, op; reserved_future_use);
             }
             match &mut x.body {
-                d::ExtendedBroadcasterBody::TerrestrialTv(t) | d::ExtendedBroadcasterBody::TerrestrialSound(t) => match f {
+                d::ExtendedBroadcasterBody::TerrestrialTv(t)
+                | d::ExtendedBroadcasterBody::TerrestrialSound(t) => match f {
                     "affiliation_ids" => {
                         t.affiliation_ids = val(leaf(p, op)?)?;
                         Ok(())
@@ -716,14 +906,21 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                         op,
                         |b| b.original_network_id as u64,
                         |s| {
-                            let (a, b) = s.split_once(':').ok_or_else(|| anyhow!("broadcaster as ONID:BID"))?;
-                            Ok(d::NetworkBroadcaster { original_network_id: val(a)?, broadcaster_id: val(b)? })
+                            let (a, b) = s
+                                .split_once(':')
+                                .ok_or_else(|| anyhow!("broadcaster as ONID:BID"))?;
+                            Ok(d::NetworkBroadcaster {
+                                original_network_id: val(a)?,
+                                broadcaster_id: val(b)?,
+                            })
                         },
                         |b, r, op| fields!(b, r, op; original_network_id, broadcaster_id),
                     ),
                     _ => fields!(t, p, op; terrestrial_broadcaster_id, private_data),
                 },
-                d::ExtendedBroadcasterBody::Other { .. } => bail!("broadcaster_type other than 0x1/0x2: replace the descriptor with hex"),
+                d::ExtendedBroadcasterBody::Other { .. } => {
+                    bail!("broadcaster_type other than 0x1/0x2: replace the descriptor with hex")
+                }
             }
         }
         Descriptor::Unknown { data, .. } => {
@@ -733,7 +930,11 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
             *data = val(leaf(p, op)?)?;
             Ok(())
         }
-        other => bail!("{} fields are not editable by path; replace it with desc[0x{:02x}]=<hex>", other.name(), other.tag()),
+        other => bail!(
+            "{} fields are not editable by path; replace it with desc[0x{:02x}]=<hex>",
+            other.name(),
+            other.tag()
+        ),
     }
 }
 
@@ -755,8 +956,15 @@ fn network_loops(n: &mut arib_si::tables::NetworkLoops, p: &[Seg], op: &Op) -> R
             op,
             |t| t.transport_stream_id as u64,
             |s| {
-                let (a, b) = s.split_once(':').ok_or_else(|| anyhow!("TS as TSID:ONID"))?;
-                Ok(arib_si::tables::TransportStreamEntry { transport_stream_id: val(a)?, original_network_id: val(b)?, reserved_future_use: 0xF, descriptors: vec![] })
+                let (a, b) = s
+                    .split_once(':')
+                    .ok_or_else(|| anyhow!("TS as TSID:ONID"))?;
+                Ok(arib_si::tables::TransportStreamEntry {
+                    transport_stream_id: val(a)?,
+                    original_network_id: val(b)?,
+                    reserved_future_use: 0xF,
+                    descriptors: vec![],
+                })
             },
             |t, r, op| {
                 if is_desc(&r[0].name) {
@@ -847,7 +1055,9 @@ fn si_table(a: &mut AnyTable, p: &[Seg], op: &Op) -> Result<()> {
                         fields!(e, r, op; event_id, start_time, duration, running_status, free_ca_mode)
                     },
                 ),
-                _ => fields!(t.body, p, op; transport_stream_id | "tsid", original_network_id | "onid", segment_last_section_number, last_table_id),
+                _ => {
+                    fields!(t.body, p, op; transport_stream_id | "tsid", original_network_id | "onid", segment_last_section_number, last_table_id)
+                }
             }
         }
         AnyTable::Tot(t) => match p[0].name.as_str() {
@@ -867,7 +1077,13 @@ fn si_table(a: &mut AnyTable, p: &[Seg], op: &Op) -> Result<()> {
                     &p[1..],
                     op,
                     |b| b.broadcaster_id as u64,
-                    |s| Ok(arib_si::tables::BitBroadcaster { broadcaster_id: val(s)?, reserved_future_use: 0xF, descriptors: vec![] }),
+                    |s| {
+                        Ok(arib_si::tables::BitBroadcaster {
+                            broadcaster_id: val(s)?,
+                            reserved_future_use: 0xF,
+                            descriptors: vec![],
+                        })
+                    },
                     |b, r, op| {
                         if is_desc(&r[0].name) {
                             return desc_loop(&mut b.descriptors, &r[0], &r[1..], op);
@@ -893,17 +1109,33 @@ pub fn apply_to_section(expr: &Expr, pid: u16, sec: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arib_si::tables::{Nit, NitBody, NetworkLoops, TransportStreamEntry};
+    use arib_si::tables::{NetworkLoops, Nit, NitBody, TransportStreamEntry};
 
     fn nit() -> Vec<u8> {
-        let tds = Descriptor::TerrestrialDeliverySystem(d::TerrestrialDeliverySystem { area_code: 0x8D5, guard_interval: 2, transmission_mode: 2, frequencies: vec![3354] });
+        let tds = Descriptor::TerrestrialDeliverySystem(d::TerrestrialDeliverySystem {
+            area_code: 0x8D5,
+            guard_interval: 2,
+            transmission_mode: 2,
+            frequencies: vec![3354],
+        });
         let n = Nit {
-            header: LongHeader { table_id: 0x40, private_indicator: true, ..LongHeader::new(0x40, 0x7FD5, 3) },
+            header: LongHeader {
+                table_id: 0x40,
+                private_indicator: true,
+                ..LongHeader::new(0x40, 0x7FD5, 3)
+            },
             body: NitBody(NetworkLoops {
                 reserved_future_use_1: 0xF,
-                descriptors: vec![Descriptor::NetworkName(d::NetworkName { name: AribString::encode("ABC").unwrap() })],
+                descriptors: vec![Descriptor::NetworkName(d::NetworkName {
+                    name: AribString::encode("ABC").unwrap(),
+                })],
                 reserved_future_use_2: 0xF,
-                transport_streams: vec![TransportStreamEntry { transport_stream_id: 0x7FD5, original_network_id: 0x7FD5, reserved_future_use: 0xF, descriptors: vec![tds] }],
+                transport_streams: vec![TransportStreamEntry {
+                    transport_stream_id: 0x7FD5,
+                    original_network_id: 0x7FD5,
+                    reserved_future_use: 0xF,
+                    descriptors: vec![tds],
+                }],
             }),
         };
         n.encode().unwrap()
@@ -918,7 +1150,13 @@ mod tests {
         let e = Expr::parse("nit.ts[0].desc[0xFA].guard_interval=2").unwrap();
         assert_eq!(e.table, "nit");
         assert_eq!(e.path.len(), 3);
-        assert_eq!(e.path[1], Seg { name: "desc".into(), sel: Some("0xFA".into()) });
+        assert_eq!(
+            e.path[1],
+            Seg {
+                name: "desc".into(),
+                sel: Some("0xFA".into())
+            }
+        );
         assert_eq!(e.op, Op::Set("2".into()));
         let e = Expr::parse("pat.add=0x0928:0x1fff").unwrap();
         assert!(e.path.is_empty());
@@ -931,37 +1169,101 @@ mod tests {
     #[test]
     fn nit_field_mutations_reencode() {
         let b = nit();
-        let out = apply_to_section(&Expr::parse("nit.ts[0].desc[0xFA].guard_interval=1").unwrap(), 0x10, &b).unwrap();
+        let out = apply_to_section(
+            &Expr::parse("nit.ts[0].desc[0xFA].guard_interval=1").unwrap(),
+            0x10,
+            &b,
+        )
+        .unwrap();
         let n = decoded(&out);
-        let Descriptor::TerrestrialDeliverySystem(t) = &n.body.0.transport_streams[0].descriptors[0] else { panic!() };
+        let Descriptor::TerrestrialDeliverySystem(t) =
+            &n.body.0.transport_streams[0].descriptors[0]
+        else {
+            panic!()
+        };
         assert_eq!(t.guard_interval, 1);
         let out = apply_to_section(&Expr::parse("nit.version=24").unwrap(), 0x10, &out).unwrap();
         assert_eq!(decoded(&out).header.version_number, 24);
-        let out = apply_to_section(&Expr::parse("nit.desc[0x40].name=\"近畿\"").unwrap(), 0x10, &out).unwrap();
-        let Descriptor::NetworkName(nn) = &decoded(&out).body.0.descriptors[0] else { panic!() };
+        let out = apply_to_section(
+            &Expr::parse("nit.desc[0x40].name=\"近畿\"").unwrap(),
+            0x10,
+            &out,
+        )
+        .unwrap();
+        let Descriptor::NetworkName(nn) = &decoded(&out).body.0.descriptors[0] else {
+            panic!()
+        };
         assert_eq!(nn.name.to_string_lossy(), "近畿");
-        let out = apply_to_section(&Expr::parse("nit.ts[0x7fd5].desc.add=cd0a0a40000f00000828ffff").unwrap(), 0x10, &out);
-        assert!(out.is_err(), "malformed TS info hex must be rejected by the typed decoder");
-        let out = apply_to_section(&Expr::parse("nit.ts[0x7fd5].desc[0xFA].frequencies.add=3564").unwrap(), 0x10, &nit()).unwrap();
-        let Descriptor::TerrestrialDeliverySystem(t) = &decoded(&out).body.0.transport_streams[0].descriptors[0] else { panic!() };
+        let out = apply_to_section(
+            &Expr::parse("nit.ts[0x7fd5].desc.add=cd0a0a40000f00000828ffff").unwrap(),
+            0x10,
+            &out,
+        );
+        assert!(
+            out.is_err(),
+            "malformed TS info hex must be rejected by the typed decoder"
+        );
+        let out = apply_to_section(
+            &Expr::parse("nit.ts[0x7fd5].desc[0xFA].frequencies.add=3564").unwrap(),
+            0x10,
+            &nit(),
+        )
+        .unwrap();
+        let Descriptor::TerrestrialDeliverySystem(t) =
+            &decoded(&out).body.0.transport_streams[0].descriptors[0]
+        else {
+            panic!()
+        };
         assert_eq!(t.frequencies, vec![3354, 3564]);
         // width overflow is caught by the encoder
-        assert!(apply_to_section(&Expr::parse("nit.ts[0].desc[0xFA].guard_interval=4").unwrap(), 0x10, &nit()).is_err());
+        assert!(
+            apply_to_section(
+                &Expr::parse("nit.ts[0].desc[0xFA].guard_interval=4").unwrap(),
+                0x10,
+                &nit()
+            )
+            .is_err()
+        );
         // unknown field lists alternatives
-        let e = apply_to_section(&Expr::parse("nit.ts[0].desc[0xFA].gaurd=1").unwrap(), 0x10, &nit()).unwrap_err();
+        let e = apply_to_section(
+            &Expr::parse("nit.ts[0].desc[0xFA].gaurd=1").unwrap(),
+            0x10,
+            &nit(),
+        )
+        .unwrap_err();
         assert!(e.to_string().contains("guard_interval"), "{e}");
     }
 
     #[test]
     fn pat_add_del() {
-        let p = arib_ts::psi::Pat::section(0x7FD5, 0, vec![arib_ts::psi::PatEntry::new(0, 0x10), arib_ts::psi::PatEntry::new(0x0408, 0x1F0)]).encode().unwrap();
+        let p = arib_ts::psi::Pat::section(
+            0x7FD5,
+            0,
+            vec![
+                arib_ts::psi::PatEntry::new(0, 0x10),
+                arib_ts::psi::PatEntry::new(0x0408, 0x1F0),
+            ],
+        )
+        .encode()
+        .unwrap();
         let out = apply_to_section(&Expr::parse("pat.add=0x0928:0x1fff").unwrap(), 0, &p).unwrap();
         let d = arib_ts::section::Long::<arib_ts::psi::Pat>::decode(&out).unwrap();
-        assert_eq!(d.body.programs().collect::<Vec<_>>(), vec![(0x0408, 0x1F0), (0x0928, 0x1FFF)]);
+        assert_eq!(
+            d.body.programs().collect::<Vec<_>>(),
+            vec![(0x0408, 0x1F0), (0x0928, 0x1FFF)]
+        );
         let out = apply_to_section(&Expr::parse("pat.del=0x0408").unwrap(), 0, &out).unwrap();
         let d = arib_ts::section::Long::<arib_ts::psi::Pat>::decode(&out).unwrap();
-        assert_eq!(d.body.programs().collect::<Vec<_>>(), vec![(0x0928, 0x1FFF)]);
-        let out = apply_to_section(&Expr::parse("pat.entries[0x0928].pid=0x01f0").unwrap(), 0, &out).unwrap();
+        assert_eq!(
+            d.body.programs().collect::<Vec<_>>(),
+            vec![(0x0928, 0x1FFF)]
+        );
+        let out = apply_to_section(
+            &Expr::parse("pat.entries[0x0928].pid=0x01f0").unwrap(),
+            0,
+            &out,
+        )
+        .unwrap();
         let d = arib_ts::section::Long::<arib_ts::psi::Pat>::decode(&out).unwrap();
         assert_eq!(d.body.programs().collect::<Vec<_>>(), vec![(0x0928, 0x1F0)]);
     }

@@ -656,7 +656,10 @@ fn loopback_with_in_process_multiplexer() {
         assert!(text.contains("adts_compliance = \"conform\""));
         std::fs::write(
             &bench,
-            text.replace("adts_compliance = \"conform\"", "adts_compliance = \"warn\""),
+            text.replace(
+                "adts_compliance = \"conform\"",
+                "adts_compliance = \"warn\"",
+            ),
         )
         .unwrap();
         let o = run(&[
@@ -723,7 +726,10 @@ fn bench_media_aac_conforms_to_b32_part2() {
     let ts = d.join("refused.ts");
     let o = run(&["mux", "-c", s(&cfg), "--seconds", "1", "--out-ts", s(&ts)]);
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!o.status.success() && err.contains("crc_check cannot be inserted"), "{err}");
+    assert!(
+        !o.status.success() && err.contains("crc_check cannot be inserted"),
+        "{err}"
+    );
     let f = findings(&["--adts-compliance", "warn"]);
     for check in ["aac.protection_absent", "aac.adts_buffer_fullness"] {
         assert!(

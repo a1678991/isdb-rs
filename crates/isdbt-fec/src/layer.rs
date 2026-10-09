@@ -67,7 +67,9 @@
 use isdbt_core::{LayerConfig, Mode, TRANSMISSION_TSP, TSP};
 
 use crate::byte_interleave::{ByteDeinterleaver, ByteInterleaver};
-use crate::conv::{ConvEncoder, DEFAULT_TRACEBACK, Puncturing, ViterbiDecoder, depuncture, encode_punctured};
+use crate::conv::{
+    ConvEncoder, DEFAULT_TRACEBACK, Puncturing, ViterbiDecoder, depuncture, encode_punctured,
+};
 use crate::delay::DelayLine;
 use crate::energy::{disperse_frame, frame_sequence};
 use crate::{FecError, rs};
@@ -106,7 +108,9 @@ fn unpack_bits(bytes: &[u8], out: &mut Vec<u8>) {
 }
 
 fn pack_bits(bits: &[u8]) -> Vec<u8> {
-    bits.chunks_exact(8).map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | (b & 1))).collect()
+    bits.chunks_exact(8)
+        .map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | (b & 1)))
+        .collect()
 }
 
 /// RS-protected null transmission TSP (H.222.0 null packet, see
@@ -182,7 +186,10 @@ impl LayerEncoder {
     /// bits (values 0/1) in the order fed to the carrier modulator (§3.9).
     pub fn encode_frame(&mut self, tsps: &[[u8; TRANSMISSION_TSP]]) -> Result<Vec<u8>, FecError> {
         if tsps.len() != self.tsps {
-            return Err(FecError::FrameLength { expected: self.tsps, got: tsps.len() });
+            return Err(FecError::FrameLength {
+                expected: self.tsps,
+                got: tsps.len(),
+            });
         }
         let mut bytes = std::mem::take(&mut self.bytes);
         tsps_to_slots(tsps, &mut bytes);
@@ -243,7 +250,10 @@ pub struct DecodedFrame {
 impl DecodedFrame {
     /// The 188-byte TSPs (parity stripped).
     pub fn tsps_188(&self) -> Vec<[u8; TSP]> {
-        self.tsps.iter().map(|t| t[..TSP].try_into().expect("188")).collect()
+        self.tsps
+            .iter()
+            .map(|t| t[..TSP].try_into().expect("188"))
+            .collect()
     }
 }
 
@@ -298,7 +308,10 @@ impl LayerDecoder {
     /// erased bits). Returns the T TSPs of the previous TX frame.
     pub fn decode_frame(&mut self, llrs: &[f32]) -> Result<DecodedFrame, FecError> {
         if llrs.len() != self.coded_bits {
-            return Err(FecError::FrameLength { expected: self.coded_bits, got: llrs.len() });
+            return Err(FecError::FrameLength {
+                expected: self.coded_bits,
+                got: llrs.len(),
+            });
         }
         let mut pairs = std::mem::take(&mut self.pairs);
         pairs.clear();
@@ -335,7 +348,11 @@ impl LayerDecoder {
             }
             tsps.push(t);
         }
-        Ok(DecodedFrame { tsps, status, stats })
+        Ok(DecodedFrame {
+            tsps,
+            status,
+            stats,
+        })
     }
 }
 
@@ -363,7 +380,12 @@ mod tests {
     #[test]
     fn tx_slot_provenance() {
         let mode = Mode::M1;
-        let l = LayerConfig { segments: 2, modulation: Modulation::Qpsk, code_rate: CodeRate::R2_3, time_interleave: TimeInterleave(0) };
+        let l = LayerConfig {
+            segments: 2,
+            modulation: Modulation::Qpsk,
+            code_rate: CodeRate::R2_3,
+            time_interleave: TimeInterleave(0),
+        };
         let t = l.tsp_per_frame(mode);
         let mut delay = DelayLine::new(l.delay_adjustment_tsps(mode));
         let mut il = ByteInterleaver::new();
@@ -383,7 +405,11 @@ mod tests {
                 for b in 0..TRANSMISSION_TSP {
                     let j = b % 12;
                     let src = m + 11 - j;
-                    let want = if src < t { pre[k - 1][src * 204 + b] } else { pre[k][(src - t) * 204 + b] };
+                    let want = if src < t {
+                        pre[k - 1][src * 204 + b]
+                    } else {
+                        pre[k][(src - t) * 204 + b]
+                    };
                     assert_eq!(post[k][m * 204 + b], want, "k {k} m {m} b {b}");
                 }
             }
@@ -417,7 +443,12 @@ mod tests {
         ];
         let mut rng = XorShift::new(8);
         for (mode, segments, modulation, code_rate) in cfgs {
-            let l = LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave(0) };
+            let l = LayerConfig {
+                segments,
+                modulation,
+                code_rate,
+                time_interleave: TimeInterleave(0),
+            };
             let mut enc = LayerEncoder::new(mode, &l);
             let mut dec = LayerDecoder::new(mode, &l);
             let t = enc.tsps_per_frame();
@@ -426,7 +457,10 @@ mod tests {
                 let r = max_run(&bits);
                 assert!(r <= 64, "{mode:?} {l:?} frame {k}: run of {r} equal bits");
                 if k == 0 {
-                    let llr: Vec<f32> = bits.iter().map(|&b| if b == 0 { 10.0 } else { -10.0 }).collect();
+                    let llr: Vec<f32> = bits
+                        .iter()
+                        .map(|&b| if b == 0 { 10.0 } else { -10.0 })
+                        .collect();
                     let out = dec.decode_frame(&llr).unwrap();
                     let null = null_transmission_tsp();
                     assert!(out.tsps[11..].iter().all(|p| *p == null), "{mode:?} {l:?}");
@@ -439,7 +473,12 @@ mod tests {
     /// at RX frame k+1 with the same slot index, for a layer with T = 12.
     #[test]
     fn one_frame_latency_small_layer() {
-        let l = LayerConfig { segments: 1, modulation: Modulation::Dqpsk, code_rate: CodeRate::R1_2, time_interleave: TimeInterleave(0) };
+        let l = LayerConfig {
+            segments: 1,
+            modulation: Modulation::Dqpsk,
+            code_rate: CodeRate::R1_2,
+            time_interleave: TimeInterleave(0),
+        };
         let mut enc = LayerEncoder::new(Mode::M1, &l);
         let mut dec = LayerDecoder::new(Mode::M1, &l);
         assert_eq!(enc.tsps_per_frame(), 12);
@@ -449,7 +488,10 @@ mod tests {
             let f = rand_frame(&mut rng, 12);
             let bits = enc.encode_frame_188(&f).unwrap();
             assert_eq!(bits.len(), 96 * 2 * 204);
-            let llr: Vec<f32> = bits.iter().map(|&b| if b == 0 { 10.0 } else { -10.0 }).collect();
+            let llr: Vec<f32> = bits
+                .iter()
+                .map(|&b| if b == 0 { 10.0 } else { -10.0 })
+                .collect();
             let out = dec.decode_frame(&llr).unwrap();
             if let Some(p) = prev {
                 assert_eq!(out.tsps_188(), p);

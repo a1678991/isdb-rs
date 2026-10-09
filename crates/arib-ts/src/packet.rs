@@ -86,7 +86,11 @@ impl Header {
     /// Decode the first 4 bytes of `b` (Table 2-2).
     pub fn decode(b: &[u8]) -> Result<Self> {
         if b.len() < 4 {
-            return Err(Error::Truncated { what: "transport_packet header", need: 4, have: b.len() });
+            return Err(Error::Truncated {
+                what: "transport_packet header",
+                need: 4,
+                have: b.len(),
+            });
         }
         Ok(Self {
             sync_byte: b[0],
@@ -108,8 +112,16 @@ impl Header {
         w.bool(self.payload_unit_start_indicator);
         w.bool(self.transport_priority);
         w.write("PID", 13, self.pid as u64)?;
-        w.write("transport_scrambling_control", 2, self.transport_scrambling_control as u64)?;
-        w.write("adaptation_field_control", 2, self.adaptation_field_control as u64)?;
+        w.write(
+            "transport_scrambling_control",
+            2,
+            self.transport_scrambling_control as u64,
+        )?;
+        w.write(
+            "adaptation_field_control",
+            2,
+            self.adaptation_field_control as u64,
+        )?;
         w.write("continuity_counter", 4, self.continuity_counter as u64)?;
         let v = w.into_bytes();
         Ok([v[0], v[1], v[2], v[3]])
@@ -203,22 +215,46 @@ impl AdaptationFieldExtension {
         let pw_flag = r.bool()?;
         let ss_flag = r.bool()?;
         let reserved = r.read(5)? as u8;
-        let ltw = if ltw_flag { Some(Ltw { valid: r.bool()?, offset: r.read(15)? as u16 }) } else { None };
-        let piecewise_rate = if pw_flag {
-            Some(PiecewiseRate { reserved: r.read(2)? as u8, rate: r.read(22)? as u32 })
+        let ltw = if ltw_flag {
+            Some(Ltw {
+                valid: r.bool()?,
+                offset: r.read(15)? as u16,
+            })
         } else {
             None
         };
-        let seamless_splice = if ss_flag { Some(Timestamp::read(&mut r)?) } else { None };
+        let piecewise_rate = if pw_flag {
+            Some(PiecewiseRate {
+                reserved: r.read(2)? as u8,
+                rate: r.read(22)? as u32,
+            })
+        } else {
+            None
+        };
+        let seamless_splice = if ss_flag {
+            Some(Timestamp::read(&mut r)?)
+        } else {
+            None
+        };
         let reserved_bytes = r.rest()?.to_vec();
-        Ok(Self { reserved, ltw, piecewise_rate, seamless_splice, reserved_bytes })
+        Ok(Self {
+            reserved,
+            ltw,
+            piecewise_rate,
+            seamless_splice,
+            reserved_bytes,
+        })
     }
 
     fn write(&self, w: &mut BitWriter) -> Result<()> {
         w.bool(self.ltw.is_some());
         w.bool(self.piecewise_rate.is_some());
         w.bool(self.seamless_splice.is_some());
-        w.write("adaptation_field_extension reserved", 5, self.reserved as u64)?;
+        w.write(
+            "adaptation_field_extension reserved",
+            5,
+            self.reserved as u64,
+        )?;
         if let Some(l) = self.ltw {
             w.bool(l.valid);
             w.write("ltw_offset", 15, l.offset as u64)?;
@@ -250,7 +286,10 @@ impl AdaptationFields {
         1 + self.pcr.map_or(0, |_| Pcr::LEN)
             + self.opcr.map_or(0, |_| Pcr::LEN)
             + self.splice_countdown.map_or(0, |_| 1)
-            + self.transport_private_data.as_ref().map_or(0, |d| 1 + d.len())
+            + self
+                .transport_private_data
+                .as_ref()
+                .map_or(0, |d| 1 + d.len())
             + self.extension.as_ref().map_or(0, |e| 1 + e.length())
             + self.stuffing.len()
     }
@@ -262,13 +301,20 @@ impl AdaptationField {
     /// field and its total size including the length byte.
     pub fn decode(b: &[u8]) -> Result<(Self, usize)> {
         let Some(&afl) = b.first() else {
-            return Err(Error::Truncated { what: "adaptation_field_length", need: 1, have: 0 });
+            return Err(Error::Truncated {
+                what: "adaptation_field_length",
+                need: 1,
+                have: 0,
+            });
         };
         let afl = afl as usize;
         if 1 + afl > b.len() {
             return Err(Error::invalid(
                 "adaptation_field_length",
-                format!("{afl} runs past the packet ({} bytes available)", b.len() - 1),
+                format!(
+                    "{afl} runs past the packet ({} bytes available)",
+                    b.len() - 1
+                ),
             ));
         }
         if afl == 0 {
@@ -283,12 +329,33 @@ impl AdaptationField {
         let splicing_point_flag = r.bool()?;
         let private_flag = r.bool()?;
         let ext_flag = r.bool()?;
-        let pcr = if pcr_flag { Some(Pcr::decode(r.bytes(Pcr::LEN)?)?) } else { None };
-        let opcr = if opcr_flag { Some(Pcr::decode(r.bytes(Pcr::LEN)?)?) } else { None };
-        let splice_countdown = if splicing_point_flag { Some(r.u8()? as i8) } else { None };
+        let pcr = if pcr_flag {
+            Some(Pcr::decode(r.bytes(Pcr::LEN)?)?)
+        } else {
+            None
+        };
+        let opcr = if opcr_flag {
+            Some(Pcr::decode(r.bytes(Pcr::LEN)?)?)
+        } else {
+            None
+        };
+        let splice_countdown = if splicing_point_flag {
+            Some(r.u8()? as i8)
+        } else {
+            None
+        };
         let transport_private_data = if private_flag {
             let n = r.u8()? as usize;
-            Some(r.bytes(n).map_err(|_| Error::invalid("transport_private_data_length", "private data extends beyond the adaptation field"))?.to_vec())
+            Some(
+                r.bytes(n)
+                    .map_err(|_| {
+                        Error::invalid(
+                            "transport_private_data_length",
+                            "private data extends beyond the adaptation field",
+                        )
+                    })?
+                    .to_vec(),
+            )
         } else {
             None
         };
@@ -301,7 +368,10 @@ impl AdaptationField {
                 ));
             }
             let e = r.bytes(n).map_err(|_| {
-                Error::invalid("adaptation_field_extension_length", "extension runs past the adaptation field")
+                Error::invalid(
+                    "adaptation_field_extension_length",
+                    "extension runs past the adaptation field",
+                )
             })?;
             Some(AdaptationFieldExtension::decode(e)?)
         } else {
@@ -348,7 +418,11 @@ impl AdaptationField {
         };
         let len = f.length();
         if len > 255 {
-            return Err(Error::Overflow { what: "adaptation_field_length", value: len as u64, bits: 8 });
+            return Err(Error::Overflow {
+                what: "adaptation_field_length",
+                value: len as u64,
+                bits: 8,
+            });
         }
         let mut w = BitWriter::new();
         w.write("adaptation_field_length", 8, len as u64)?;
@@ -414,7 +488,10 @@ impl AdaptationField {
     pub fn stuffed(fields: Option<AdaptationFields>, total: usize) -> Result<Self> {
         match fields {
             None if total == 1 => Ok(AdaptationField::Empty),
-            None if total == 0 => Err(Error::invalid("adaptation_field", "size 0 cannot hold adaptation_field_length")),
+            None if total == 0 => Err(Error::invalid(
+                "adaptation_field",
+                "size 0 cannot hold adaptation_field_length",
+            )),
             None => Self::stuffed(Some(AdaptationFields::default()), total),
             Some(mut f) => {
                 f.stuffing.clear();
@@ -449,7 +526,10 @@ impl Packet {
     /// Decode a 188-byte packet losslessly.
     pub fn decode(b: &[u8]) -> Result<Self> {
         if b.len() != PACKET_SIZE {
-            return Err(Error::invalid("transport_packet", format!("{} bytes, shall be 188", b.len())));
+            return Err(Error::invalid(
+                "transport_packet",
+                format!("{} bytes, shall be 188", b.len()),
+            ));
         }
         let header = Header::decode(b)?;
         let rest = &b[4..];
@@ -459,7 +539,11 @@ impl Packet {
         } else {
             (None, 0)
         };
-        Ok(Self { header, adaptation_field, payload: rest[n..].to_vec() })
+        Ok(Self {
+            header,
+            adaptation_field,
+            payload: rest[n..].to_vec(),
+        })
     }
 
     /// Encode to 188 bytes.  Errors if the adaptation field presence
@@ -483,7 +567,10 @@ impl Packet {
         }
         v.extend_from_slice(&self.payload);
         if v.len() != PACKET_SIZE {
-            return Err(Error::invalid("transport_packet", format!("encodes to {} bytes, shall be 188", v.len())));
+            return Err(Error::invalid(
+                "transport_packet",
+                format!("encodes to {} bytes, shall be 188", v.len()),
+            ));
         }
         let mut out = [0u8; PACKET_SIZE];
         out.copy_from_slice(&v);
@@ -498,7 +585,11 @@ impl Packet {
         if payload.len() == PAYLOAD_CAPACITY {
             let mut header = Header::new(pid, afc::PAYLOAD_ONLY, cc);
             header.payload_unit_start_indicator = pusi;
-            Ok(Self { header, adaptation_field: None, payload: payload.to_vec() })
+            Ok(Self {
+                header,
+                adaptation_field: None,
+                payload: payload.to_vec(),
+            })
         } else {
             Self::with_adaptation(pid, pusi, cc, None, payload)
         }
@@ -508,24 +599,44 @@ impl Packet {
     /// if `None`) followed by `payload`; stuffing bytes fill the adaptation
     /// field so the packet is exactly 188 bytes.  An empty `payload` gives
     /// adaptation_field_control '10' (adaptation_field_length 183).
-    pub fn with_adaptation(pid: u16, pusi: bool, cc: u8, fields: Option<AdaptationFields>, payload: &[u8]) -> Result<Self> {
+    pub fn with_adaptation(
+        pid: u16,
+        pusi: bool,
+        cc: u8,
+        fields: Option<AdaptationFields>,
+        payload: &[u8],
+    ) -> Result<Self> {
         if payload.len() > PAYLOAD_CAPACITY - 1 {
             return Err(Error::invalid(
                 "data_byte",
-                format!("{} payload bytes leave no room for an adaptation field", payload.len()),
+                format!(
+                    "{} payload bytes leave no room for an adaptation field",
+                    payload.len()
+                ),
             ));
         }
-        let afc = if payload.is_empty() { afc::ADAPTATION_ONLY } else { afc::ADAPTATION_AND_PAYLOAD };
+        let afc = if payload.is_empty() {
+            afc::ADAPTATION_ONLY
+        } else {
+            afc::ADAPTATION_AND_PAYLOAD
+        };
         let af = AdaptationField::stuffed(fields, PAYLOAD_CAPACITY - payload.len())?;
         let mut header = Header::new(pid, afc, cc);
         header.payload_unit_start_indicator = pusi;
-        Ok(Self { header, adaptation_field: Some(af), payload: payload.to_vec() })
+        Ok(Self {
+            header,
+            adaptation_field: Some(af),
+            payload: payload.to_vec(),
+        })
     }
 
     /// Adaptation-field-only packet ('10', adaptation_field_length 183)
     /// carrying `pcr` (§2.4.3.4/§2.4.3.5).
     pub fn pcr_only(pid: u16, cc: u8, pcr: Pcr) -> Self {
-        let fields = AdaptationFields { pcr: Some(pcr), ..Default::default() };
+        let fields = AdaptationFields {
+            pcr: Some(pcr),
+            ..Default::default()
+        };
         Self::with_adaptation(pid, false, cc, Some(fields), &[]).expect("PCR fits in 183 bytes")
     }
 
@@ -533,7 +644,11 @@ impl Packet {
     /// transport_scrambling_control '00', adaptation_field_control '01'
     /// (§2.4.3.3); data_bytes "may be assigned any value" — 0xFF here.
     pub fn null() -> Self {
-        Self { header: Header::new(PID_NULL, afc::PAYLOAD_ONLY, 0), adaptation_field: None, payload: vec![0xFF; PAYLOAD_CAPACITY] }
+        Self {
+            header: Header::new(PID_NULL, afc::PAYLOAD_ONLY, 0),
+            adaptation_field: None,
+            payload: vec![0xFF; PAYLOAD_CAPACITY],
+        }
     }
 
     /// The data_bytes if adaptation_field_control is '01' or '11'.
@@ -560,7 +675,10 @@ impl<'a> View<'a> {
     /// the packet.
     pub fn parse(b: &'a [u8]) -> Result<Self> {
         if b.len() != PACKET_SIZE {
-            return Err(Error::invalid("transport_packet", format!("{} bytes, shall be 188", b.len())));
+            return Err(Error::invalid(
+                "transport_packet",
+                format!("{} bytes, shall be 188", b.len()),
+            ));
         }
         let header = Header::decode(b)?;
         let mut pos = 4;
@@ -568,29 +686,42 @@ impl<'a> View<'a> {
         if header.has_adaptation_field() {
             let afl = b[4] as usize;
             if 5 + afl > PACKET_SIZE {
-                return Err(Error::invalid("adaptation_field_length", format!("{afl} runs past the packet")));
+                return Err(Error::invalid(
+                    "adaptation_field_length",
+                    format!("{afl} runs past the packet"),
+                ));
             }
             adaptation_field = Some(&b[4..5 + afl]);
             pos = 5 + afl;
         }
         let payload = header.has_payload().then(|| &b[pos..]);
-        Ok(Self { header, adaptation_field, payload })
+        Ok(Self {
+            header,
+            adaptation_field,
+            payload,
+        })
     }
 
     /// discontinuity_indicator ('0' when absent).
     pub fn discontinuity_indicator(&self) -> bool {
-        self.adaptation_field.is_some_and(|a| a.len() > 1 && a[1] & 0x80 != 0)
+        self.adaptation_field
+            .is_some_and(|a| a.len() > 1 && a[1] & 0x80 != 0)
     }
 
     /// random_access_indicator ('0' when absent).
     pub fn random_access_indicator(&self) -> bool {
-        self.adaptation_field.is_some_and(|a| a.len() > 1 && a[1] & 0x40 != 0)
+        self.adaptation_field
+            .is_some_and(|a| a.len() > 1 && a[1] & 0x40 != 0)
     }
 
     /// The PCR if PCR_flag is set and the field fits.
     pub fn pcr(&self) -> Option<Pcr> {
         let a = self.adaptation_field?;
-        if a.len() >= 2 + Pcr::LEN && a[1] & 0x10 != 0 { Pcr::decode(&a[2..2 + Pcr::LEN]).ok() } else { None }
+        if a.len() >= 2 + Pcr::LEN && a[1] & 0x10 != 0 {
+            Pcr::decode(&a[2..2 + Pcr::LEN]).ok()
+        } else {
+            None
+        }
     }
 }
 
@@ -608,46 +739,92 @@ impl<'a> View<'a> {
 pub fn check(p: &Packet) -> Vec<Violation> {
     let mut v = Vec::new();
     let h = &p.header;
-    require(&mut v, h.sync_byte == SYNC_BYTE, "§2.4.3.3", || format!("sync_byte {:#04x}, shall be 0x47", h.sync_byte));
-    require(&mut v, h.adaptation_field_control != afc::RESERVED, "§2.4.3.3 Table 2-5", || {
-        "adaptation_field_control '00' is reserved; decoders shall discard the packet".into()
+    require(&mut v, h.sync_byte == SYNC_BYTE, "§2.4.3.3", || {
+        format!("sync_byte {:#04x}, shall be 0x47", h.sync_byte)
     });
+    require(
+        &mut v,
+        h.adaptation_field_control != afc::RESERVED,
+        "§2.4.3.3 Table 2-5",
+        || "adaptation_field_control '00' is reserved; decoders shall discard the packet".into(),
+    );
     if let Some(af) = &p.adaptation_field {
         let len = af.length();
         if h.adaptation_field_control == afc::ADAPTATION_AND_PAYLOAD {
-            require(&mut v, len <= 182, "§2.4.3.5", || format!("adaptation_field_length {len} with AFC '11', shall be 0..182"));
+            require(&mut v, len <= 182, "§2.4.3.5", || {
+                format!("adaptation_field_length {len} with AFC '11', shall be 0..182")
+            });
         } else if h.adaptation_field_control == afc::ADAPTATION_ONLY {
-            require(&mut v, len == 183, "§2.4.3.5", || format!("adaptation_field_length {len} with AFC '10', shall be 183"));
+            require(&mut v, len == 183, "§2.4.3.5", || {
+                format!("adaptation_field_length {len} with AFC '10', shall be 183")
+            });
         }
     }
     if !h.has_payload() && !p.payload.is_empty() {
         v.push(Violation::new(
             "§2.4.3.2 Table 2-2",
-            format!("{} bytes after the adaptation field are not described by the syntax (no payload)", p.payload.len()),
+            format!(
+                "{} bytes after the adaptation field are not described by the syntax (no payload)",
+                p.payload.len()
+            ),
         ));
     }
     if h.pid == PID_NULL {
-        require(&mut v, !h.payload_unit_start_indicator, "§2.4.3.3", || "null packet with payload_unit_start_indicator '1'".into());
-        require(&mut v, h.transport_scrambling_control == 0, "§2.4.3.3", || {
-            format!("null packet transport_scrambling_control '{:02b}', shall be '00'", h.transport_scrambling_control)
+        require(&mut v, !h.payload_unit_start_indicator, "§2.4.3.3", || {
+            "null packet with payload_unit_start_indicator '1'".into()
         });
-        require(&mut v, h.adaptation_field_control == afc::PAYLOAD_ONLY, "§2.4.3.3", || {
-            format!("null packet adaptation_field_control '{:02b}', shall be '01'", h.adaptation_field_control)
-        });
+        require(
+            &mut v,
+            h.transport_scrambling_control == 0,
+            "§2.4.3.3",
+            || {
+                format!(
+                    "null packet transport_scrambling_control '{:02b}', shall be '00'",
+                    h.transport_scrambling_control
+                )
+            },
+        );
+        require(
+            &mut v,
+            h.adaptation_field_control == afc::PAYLOAD_ONLY,
+            "§2.4.3.3",
+            || {
+                format!(
+                    "null packet adaptation_field_control '{:02b}', shall be '01'",
+                    h.adaptation_field_control
+                )
+            },
+        );
     }
-    let Some(f) = p.adaptation_field.as_ref().and_then(|a| a.fields()) else { return v };
+    let Some(f) = p.adaptation_field.as_ref().and_then(|a| a.fields()) else {
+        return v;
+    };
     if let Some(pcr) = f.pcr {
         let ok_pid = matches!(h.pid, 0x0000 | 0x0001 | 0x0010..=0x1FFE);
-        require(&mut v, ok_pid, "§2.4.3.3 Table 2-3 NOTE", || format!("PCR on PID {:#06x}", h.pid));
+        require(&mut v, ok_pid, "§2.4.3.3 Table 2-3 NOTE", || {
+            format!("PCR on PID {:#06x}", h.pid)
+        });
         check_pcr(&mut v, &pcr, "PCR");
     }
     if let Some(opcr) = f.opcr {
-        require(&mut v, f.pcr.is_some(), "§2.4.3.5", || "OPCR present without PCR".into());
+        require(&mut v, f.pcr.is_some(), "§2.4.3.5", || {
+            "OPCR present without PCR".into()
+        });
         check_pcr(&mut v, &opcr, "OPCR");
     }
-    require(&mut v, f.stuffing.iter().all(|&b| b == 0xFF), "§2.4.3.5", || "adaptation field stuffing_byte not 0xFF".into());
+    require(
+        &mut v,
+        f.stuffing.iter().all(|&b| b == 0xFF),
+        "§2.4.3.5",
+        || "adaptation field stuffing_byte not 0xFF".into(),
+    );
     if let Some(e) = &f.extension {
-        reserved_ones(&mut v, e.reserved as u64, 5, "adaptation_field_extension reserved");
+        reserved_ones(
+            &mut v,
+            e.reserved as u64,
+            5,
+            "adaptation_field_extension reserved",
+        );
         if let Some(pw) = e.piecewise_rate {
             reserved_ones(&mut v, pw.reserved as u64, 2, "piecewise_rate reserved");
         }
@@ -655,17 +832,24 @@ pub fn check(p: &Packet) -> Vec<Violation> {
             require(&mut v, f.splice_countdown.is_some(), "§2.4.3.5", || {
                 "seamless_splice_flag '1' without splicing_point_flag".into()
             });
-            require(&mut v, ss.markers == 0b111, "§2.4.3.7", || format!("DTS_next_AU marker bits {:03b}", ss.markers));
+            require(&mut v, ss.markers == 0b111, "§2.4.3.7", || {
+                format!("DTS_next_AU marker bits {:03b}", ss.markers)
+            });
         }
-        require(&mut v, e.reserved_bytes.iter().all(|&b| b == 0xFF), "§2.1.64", || {
-            "adaptation_field_extension reserved bytes not 0xFF".into()
-        });
+        require(
+            &mut v,
+            e.reserved_bytes.iter().all(|&b| b == 0xFF),
+            "§2.1.64",
+            || "adaptation_field_extension reserved bytes not 0xFF".into(),
+        );
     }
     v
 }
 
 fn check_pcr(v: &mut Vec<Violation>, p: &Pcr, name: &'static str) {
-    require(v, p.extension < 300, "§2.4.2.2 eq. 2-3", || format!("{name} extension {} ≥ 300", p.extension));
+    require(v, p.extension < 300, "§2.4.2.2 eq. 2-3", || {
+        format!("{name} extension {} ≥ 300", p.extension)
+    });
     reserved_ones(v, p.reserved as u64, 6, name);
 }
 
@@ -687,7 +871,9 @@ mod tests {
         assert_eq!(h.continuity_counter, 0xA);
         assert_eq!(h.encode().unwrap(), [0x47, 0x5F, 0xFF, 0x9A]);
         let h = Header::decode(&[0x47, 0xA0, 0x00, 0x30]).unwrap();
-        assert!(h.transport_error_indicator && h.transport_priority && !h.payload_unit_start_indicator);
+        assert!(
+            h.transport_error_indicator && h.transport_priority && !h.payload_unit_start_indicator
+        );
         assert_eq!(h.adaptation_field_control, afc::ADAPTATION_AND_PAYLOAD);
     }
 
@@ -737,7 +923,10 @@ mod tests {
         assert_eq!(p.encode().unwrap(), raw);
         let c = check(&p);
         assert!(c.iter().any(|v| v.clause == "§2.4.3.3 Table 2-5"));
-        assert!(c.iter().any(|v| v.message.contains("null packet adaptation_field_control")));
+        assert!(
+            c.iter()
+                .any(|v| v.message.contains("null packet adaptation_field_control"))
+        );
         raw[3] = 0x50;
         raw[1] |= 0x40;
         let c = check(&Packet::decode(&raw).unwrap());
@@ -753,14 +942,24 @@ mod tests {
             discontinuity_indicator: true,
             random_access_indicator: true,
             elementary_stream_priority_indicator: false,
-            pcr: Some(Pcr { base: 0x1_0000_0001, reserved: 0x3F, extension: 0x123 }),
+            pcr: Some(Pcr {
+                base: 0x1_0000_0001,
+                reserved: 0x3F,
+                extension: 0x123,
+            }),
             opcr: Some(Pcr::from_ticks(42)),
             splice_countdown: Some(-3),
             transport_private_data: Some(vec![1, 2, 3]),
             extension: Some(AdaptationFieldExtension {
                 reserved: 0x1F,
-                ltw: Some(Ltw { valid: true, offset: 0x7FFF }),
-                piecewise_rate: Some(PiecewiseRate { reserved: 3, rate: 0x3F_FFFF }),
+                ltw: Some(Ltw {
+                    valid: true,
+                    offset: 0x7FFF,
+                }),
+                piecewise_rate: Some(PiecewiseRate {
+                    reserved: 3,
+                    rate: 0x3F_FFFF,
+                }),
                 seamless_splice: Some(Timestamp::new(0b0000, 0x1_2345_6789)),
                 reserved_bytes: vec![0xFF, 0xFF],
             }),
@@ -786,7 +985,11 @@ mod tests {
             0x30,
             true,
             1,
-            Some(AdaptationFields { discontinuity_indicator: true, pcr: Some(Pcr::from_ticks(99)), ..Default::default() }),
+            Some(AdaptationFields {
+                discontinuity_indicator: true,
+                pcr: Some(Pcr::from_ticks(99)),
+                ..Default::default()
+            }),
             &[1, 2, 3],
         )
         .unwrap();

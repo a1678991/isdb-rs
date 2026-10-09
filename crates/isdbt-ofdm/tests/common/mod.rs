@@ -104,9 +104,17 @@ pub fn resample_ppm(x: &[C32], ppm: f64) -> Vec<C32> {
                 continue;
             }
             let d = t - m as f64;
-            let sinc = if d.abs() < 1e-12 { 1.0 } else { (std::f64::consts::PI * d).sin() / (std::f64::consts::PI * d) };
+            let sinc = if d.abs() < 1e-12 {
+                1.0
+            } else {
+                (std::f64::consts::PI * d).sin() / (std::f64::consts::PI * d)
+            };
             let u = d / half as f64;
-            let w = if u.abs() >= 1.0 { 0.0 } else { bessel_i0(beta * (1.0 - u * u).sqrt()) / i0b };
+            let w = if u.abs() >= 1.0 {
+                0.0
+            } else {
+                bessel_i0(beta * (1.0 - u * u).sqrt()) / i0b
+            };
             acc += x[m as usize] * (sinc * w) as f32;
         }
         out.push(acc);

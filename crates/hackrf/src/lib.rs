@@ -55,8 +55,14 @@ fn check(call: &'static str, rc: c_int) -> Result<()> {
         return Ok(());
     }
     // SAFETY: hackrf_error_name returns a static NUL-terminated string.
-    let name = unsafe { CStr::from_ptr(ffi::hackrf_error_name(rc)) }.to_string_lossy().into_owned();
-    Err(Error { call, code: rc, name })
+    let name = unsafe { CStr::from_ptr(ffi::hackrf_error_name(rc)) }
+        .to_string_lossy()
+        .into_owned();
+    Err(Error {
+        call,
+        code: rc,
+        name,
+    })
 }
 
 static LIB_USERS: Mutex<usize> = Mutex::new(0);
@@ -83,7 +89,9 @@ fn lib_release() {
 /// libhackrf version string.
 pub fn library_version() -> String {
     // SAFETY: returns a static string.
-    unsafe { CStr::from_ptr(ffi::hackrf_library_version()) }.to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr(ffi::hackrf_library_version()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Streaming counters shared with the USB callback thread.
@@ -116,7 +124,8 @@ unsafe extern "C" fn tx_cb(t: *mut ffi::hackrf_transfer) -> c_int {
     // registered and which outlives streaming (freed only after stop).
     let t = unsafe { &mut *t };
     let ctx = unsafe { &mut *(t.tx_ctx as *mut TxCtx) };
-    let out = unsafe { std::slice::from_raw_parts_mut(t.buffer as *mut i8, t.buffer_length as usize) };
+    let out =
+        unsafe { std::slice::from_raw_parts_mut(t.buffer as *mut i8, t.buffer_length as usize) };
     let mut filled = 0;
     let mut starved = false;
     while filled < out.len() {
@@ -157,7 +166,8 @@ unsafe extern "C" fn rx_cb(t: *mut ffi::hackrf_transfer) -> c_int {
     // SAFETY: as in tx_cb, rx_ctx is our live RxCtx.
     let t = unsafe { &mut *t };
     let ctx = unsafe { &*(t.rx_ctx as *const RxCtx) };
-    let data = unsafe { std::slice::from_raw_parts(t.buffer as *const i8, t.valid_length as usize) };
+    let data =
+        unsafe { std::slice::from_raw_parts(t.buffer as *const i8, t.valid_length as usize) };
     ctx.counters.buffers.fetch_add(1, Ordering::Relaxed);
     match ctx.tx.try_send(data.to_vec()) {
         Ok(()) => 0,
@@ -221,13 +231,18 @@ impl Device {
             lib_release();
             return Err(e);
         }
-        Ok(Self { dev, stream: Stream::None })
+        Ok(Self {
+            dev,
+            stream: Stream::None,
+        })
     }
 
     /// Board id byte.
     pub fn board_id(&mut self) -> Result<u8> {
         let mut v = 0u8;
-        check("hackrf_board_id_read", unsafe { ffi::hackrf_board_id_read(self.dev, &mut v) })?;
+        check("hackrf_board_id_read", unsafe {
+            ffi::hackrf_board_id_read(self.dev, &mut v)
+        })?;
         Ok(v)
     }
 
@@ -237,12 +252,16 @@ impl Device {
         check("hackrf_version_string_read", unsafe {
             ffi::hackrf_version_string_read(self.dev, buf.as_mut_ptr(), 254)
         })?;
-        Ok(unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned())
+        Ok(unsafe { CStr::from_ptr(buf.as_ptr()) }
+            .to_string_lossy()
+            .into_owned())
     }
 
     /// Centre frequency in Hz.
     pub fn set_freq(&mut self, hz: u64) -> Result<()> {
-        check("hackrf_set_freq", unsafe { ffi::hackrf_set_freq(self.dev, hz) })
+        check("hackrf_set_freq", unsafe {
+            ffi::hackrf_set_freq(self.dev, hz)
+        })
     }
 
     /// Exact rational sample rate `freq_hz / divider` (e.g. 512 MHz / 63 for ISDB-T).
@@ -266,27 +285,37 @@ impl Device {
 
     /// RF amplifier (TX PA / RX LNA front-end amp, ~11 dB).
     pub fn set_amp_enable(&mut self, on: bool) -> Result<()> {
-        check("hackrf_set_amp_enable", unsafe { ffi::hackrf_set_amp_enable(self.dev, on as u8) })
+        check("hackrf_set_amp_enable", unsafe {
+            ffi::hackrf_set_amp_enable(self.dev, on as u8)
+        })
     }
 
     /// TX IF gain 0–47 dB.
     pub fn set_txvga_gain(&mut self, db: u32) -> Result<()> {
-        check("hackrf_set_txvga_gain", unsafe { ffi::hackrf_set_txvga_gain(self.dev, db) })
+        check("hackrf_set_txvga_gain", unsafe {
+            ffi::hackrf_set_txvga_gain(self.dev, db)
+        })
     }
 
     /// RX LNA gain 0–40 dB, 8 dB steps.
     pub fn set_lna_gain(&mut self, db: u32) -> Result<()> {
-        check("hackrf_set_lna_gain", unsafe { ffi::hackrf_set_lna_gain(self.dev, db) })
+        check("hackrf_set_lna_gain", unsafe {
+            ffi::hackrf_set_lna_gain(self.dev, db)
+        })
     }
 
     /// RX baseband (VGA) gain 0–62 dB, 2 dB steps.
     pub fn set_vga_gain(&mut self, db: u32) -> Result<()> {
-        check("hackrf_set_vga_gain", unsafe { ffi::hackrf_set_vga_gain(self.dev, db) })
+        check("hackrf_set_vga_gain", unsafe {
+            ffi::hackrf_set_vga_gain(self.dev, db)
+        })
     }
 
     /// Antenna-port bias tee; keep off unless powering an active antenna.
     pub fn set_antenna_enable(&mut self, on: bool) -> Result<()> {
-        check("hackrf_set_antenna_enable", unsafe { ffi::hackrf_set_antenna_enable(self.dev, on as u8) })
+        check("hackrf_set_antenna_enable", unsafe {
+            ffi::hackrf_set_antenna_enable(self.dev, on as u8)
+        })
     }
 
     /// True while libhackrf reports the device streaming.
@@ -299,8 +328,15 @@ impl Device {
         self.stop()?;
         let (sender, rx) = sync_channel(depth);
         let counters = Arc::new(Counters::default());
-        let ctx = Box::into_raw(Box::new(TxCtx { rx, pending: Vec::new(), pos: 0, counters: counters.clone() }));
-        if let Err(e) = check("hackrf_start_tx", unsafe { ffi::hackrf_start_tx(self.dev, tx_cb, ctx as *mut c_void) }) {
+        let ctx = Box::into_raw(Box::new(TxCtx {
+            rx,
+            pending: Vec::new(),
+            pos: 0,
+            counters: counters.clone(),
+        }));
+        if let Err(e) = check("hackrf_start_tx", unsafe {
+            ffi::hackrf_start_tx(self.dev, tx_cb, ctx as *mut c_void)
+        }) {
             drop(unsafe { Box::from_raw(ctx) });
             return Err(e);
         }
@@ -313,8 +349,13 @@ impl Device {
         self.stop()?;
         let (tx, receiver) = sync_channel(depth);
         let counters = Arc::new(Counters::default());
-        let ctx = Box::into_raw(Box::new(RxCtx { tx, counters: counters.clone() }));
-        if let Err(e) = check("hackrf_start_rx", unsafe { ffi::hackrf_start_rx(self.dev, rx_cb, ctx as *mut c_void) }) {
+        let ctx = Box::into_raw(Box::new(RxCtx {
+            tx,
+            counters: counters.clone(),
+        }));
+        if let Err(e) = check("hackrf_start_rx", unsafe {
+            ffi::hackrf_start_rx(self.dev, rx_cb, ctx as *mut c_void)
+        }) {
             drop(unsafe { Box::from_raw(ctx) });
             return Err(e);
         }

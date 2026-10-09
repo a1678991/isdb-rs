@@ -3,14 +3,14 @@
 
 use crate::ac::AcFrame;
 use crate::combine::combine;
-use crate::frame::{pilot_value, Dbpsk, FrameLayout, SegmentKind};
+use crate::frame::{Dbpsk, FrameLayout, SegmentKind, pilot_value};
 use crate::freq_interleave::{FrequencyInterleaver, RotationNumbering};
 use crate::latency::bits_per_frame;
-use crate::mapping::{constellation_point, dqpsk_phase, normalization, CarrierMapper, FillRng};
+use crate::mapping::{CarrierMapper, FillRng, constellation_point, dqpsk_phase, normalization};
 use crate::ofdm::OfdmTx;
 use crate::time_interleave::TimeInterleaver;
 use crate::tmcc::TmccInfo;
-use crate::{Error, C32};
+use crate::{C32, Error};
 use isdbt_core::{Layer, Params, SYMBOLS_PER_FRAME};
 
 /// Modulator options.
@@ -30,7 +30,10 @@ pub struct ModulatorOptions {
 
 impl Default for ModulatorOptions {
     fn default() -> Self {
-        Self { rotation: RotationNumbering::default(), bit_interleave_frame_alignment: true }
+        Self {
+            rotation: RotationNumbering::default(),
+            bit_interleave_frame_alignment: true,
+        }
     }
 }
 
@@ -73,7 +76,13 @@ impl Modulator {
 
     /// Modulator with an explicit carrier-rotation numbering.
     pub fn with_numbering(params: Params, numbering: RotationNumbering) -> Self {
-        Self::with_options(params, ModulatorOptions { rotation: numbering, ..ModulatorOptions::default() })
+        Self::with_options(
+            params,
+            ModulatorOptions {
+                rotation: numbering,
+                ..ModulatorOptions::default()
+            },
+        )
     }
 
     /// Modulator with explicit options.
@@ -114,7 +123,10 @@ impl Modulator {
                 let mut v = vec![C32::default(); len];
                 // End at this position's mapper start-up reference.
                 let (first, _) = crate::combine::layer_segments(&params, layer).expect("active");
-                let r = mappers[layer.index()].as_ref().expect("mapper").dqpsk_reference(q - first * nc)
+                let r = mappers[layer.index()]
+                    .as_ref()
+                    .expect("mapper")
+                    .dqpsk_reference(q - first * nc)
                     / normalization(m);
                 let (mut i, mut qq) = (r.re.round(), r.im.round());
                 for slot in v.iter_mut().rev() {
@@ -138,7 +150,9 @@ impl Modulator {
                 v
             } else {
                 let labels = 1u32 << m.bits_per_symbol();
-                (0..len).map(|_| constellation_point(m, (next() % labels) as u8)).collect()
+                (0..len)
+                    .map(|_| constellation_point(m, (next() % labels) as u8))
+                    .collect()
             };
             fill_seqs.push(seq);
         }
@@ -222,7 +236,11 @@ impl Modulator {
         for layer in Layer::ALL {
             let expected = self.bits_per_frame(layer);
             if layer_bits[layer.index()].len() != expected {
-                return Err(Error::BitCount { layer, expected, got: layer_bits[layer.index()].len() });
+                return Err(Error::BitCount {
+                    layer,
+                    expected,
+                    got: layer_bits[layer.index()].len(),
+                });
             }
         }
         if ac.carriers.len() != self.layout.ac.len() {
@@ -238,7 +256,12 @@ impl Modulator {
         let nc = self.params.mode.data_carriers_per_segment();
         let k_total = self.layout.k_total;
         let mut layer_sym: [Vec<C32>; 3] = std::array::from_fn(|l| {
-            vec![C32::default(); self.mappers[l].as_ref().map_or(0, |m| m.symbols_per_ofdm_symbol())]
+            vec![
+                C32::default();
+                self.mappers[l]
+                    .as_ref()
+                    .map_or(0, |m| m.symbols_per_ofdm_symbol())
+            ]
         });
         let mut combined = vec![C32::default(); 13 * nc];
         let mut interleaved = vec![C32::default(); 13 * nc];
@@ -260,7 +283,11 @@ impl Modulator {
                 }
             }
             // §3.10 combine, §3.11.1 time interleave, §3.11.2 frequency interleave.
-            combine(&self.params, [&layer_sym[0], &layer_sym[1], &layer_sym[2]], &mut combined);
+            combine(
+                &self.params,
+                [&layer_sym[0], &layer_sym[1], &layer_sym[2]],
+                &mut combined,
+            );
             self.ti.process(&mut combined);
             self.fi.interleave(&combined, &mut interleaved);
             // §3.12–3.14 frame structure.
@@ -278,7 +305,11 @@ impl Modulator {
             let e = self.layout.edge as usize;
             sym[e] = pilot_value(self.layout.w[e]);
             for (i, t) in self.layout.tmcc.iter().enumerate() {
-                let bits = if t.kind == SegmentKind::Differential { &tmcc_diff } else { &tmcc_coh };
+                let bits = if t.kind == SegmentKind::Differential {
+                    &tmcc_diff
+                } else {
+                    &tmcc_coh
+                };
                 sym[t.k as usize] = if n == 0 {
                     let (enc, v) = Dbpsk::start(self.layout.w[t.k as usize]);
                     tmcc_enc.push(enc);
@@ -304,7 +335,12 @@ impl Modulator {
 
     /// Build one frame of complex baseband samples at 512/63 MHz
     /// (204 × (Ng + N) samples).
-    pub fn modulate_frame(&mut self, layer_bits: [&[u8]; 3], tmcc: &TmccInfo, ac: &AcFrame) -> Result<Vec<C32>, Error> {
+    pub fn modulate_frame(
+        &mut self,
+        layer_bits: [&[u8]; 3],
+        tmcc: &TmccInfo,
+        ac: &AcFrame,
+    ) -> Result<Vec<C32>, Error> {
         let symbols = self.modulate_frame_carriers(layer_bits, tmcc, ac)?;
         let mut out = Vec::with_capacity(self.params.samples_per_frame());
         for s in &symbols {

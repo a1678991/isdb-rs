@@ -83,9 +83,24 @@ pub struct PunctureSpec {
 
 /// Table 3-8, transcribed (rows 1/2, 2/3, 3/4, 5/6, 7/8).
 pub const TABLE_3_8: [PunctureSpec; 5] = [
-    PunctureSpec { rate: CodeRate::R1_2, x: "1", y: "1", sequence: &[('X', 1), ('Y', 1)] },
-    PunctureSpec { rate: CodeRate::R2_3, x: "10", y: "11", sequence: &[('X', 1), ('Y', 1), ('Y', 2)] },
-    PunctureSpec { rate: CodeRate::R3_4, x: "101", y: "110", sequence: &[('X', 1), ('Y', 1), ('Y', 2), ('X', 3)] },
+    PunctureSpec {
+        rate: CodeRate::R1_2,
+        x: "1",
+        y: "1",
+        sequence: &[('X', 1), ('Y', 1)],
+    },
+    PunctureSpec {
+        rate: CodeRate::R2_3,
+        x: "10",
+        y: "11",
+        sequence: &[('X', 1), ('Y', 1), ('Y', 2)],
+    },
+    PunctureSpec {
+        rate: CodeRate::R3_4,
+        x: "101",
+        y: "110",
+        sequence: &[('X', 1), ('Y', 1), ('Y', 2), ('X', 3)],
+    },
     PunctureSpec {
         rate: CodeRate::R5_6,
         x: "10101",
@@ -96,13 +111,25 @@ pub const TABLE_3_8: [PunctureSpec; 5] = [
         rate: CodeRate::R7_8,
         x: "1000101",
         y: "1111010",
-        sequence: &[('X', 1), ('Y', 1), ('Y', 2), ('Y', 3), ('Y', 4), ('X', 5), ('Y', 6), ('X', 7)],
+        sequence: &[
+            ('X', 1),
+            ('Y', 1),
+            ('Y', 2),
+            ('Y', 3),
+            ('Y', 4),
+            ('X', 5),
+            ('Y', 6),
+            ('X', 7),
+        ],
     },
 ];
 
 /// The Table 3-8 row for `rate`.
 pub fn puncture_spec(rate: CodeRate) -> &'static PunctureSpec {
-    TABLE_3_8.iter().find(|s| s.rate == rate).expect("all rates tabulated")
+    TABLE_3_8
+        .iter()
+        .find(|s| s.rate == rate)
+        .expect("all rates tabulated")
 }
 
 /// Compiled puncturing: for each transmitted bit of a period, the index of
@@ -121,8 +148,15 @@ impl Puncturing {
     /// From Table 3-8 for `rate`.
     pub fn new(rate: CodeRate) -> Self {
         let s = puncture_spec(rate);
-        let order = s.sequence.iter().map(|&(c, i)| 2 * (i - 1) + usize::from(c == 'Y')).collect();
-        Self { period: s.x.len(), order }
+        let order = s
+            .sequence
+            .iter()
+            .map(|&(c, i)| 2 * (i - 1) + usize::from(c == 'Y'))
+            .collect();
+        Self {
+            period: s.x.len(),
+            order,
+        }
     }
     /// Transmitted bits per period.
     pub fn out_per_period(&self) -> usize {
@@ -135,7 +169,11 @@ impl Puncturing {
 /// puncturing pattern starts at its first position at the beginning of
 /// `bits`: call once per frame to obtain the §3.8 frame-synchronous reset.
 pub fn encode_punctured(enc: &mut ConvEncoder, punct: &Puncturing, bits: &[u8], out: &mut Vec<u8>) {
-    assert_eq!(bits.len() % punct.period, 0, "frame must hold whole puncturing periods");
+    assert_eq!(
+        bits.len() % punct.period,
+        0,
+        "frame must hold whole puncturing periods"
+    );
     let mut mother = [0u8; 14];
     out.reserve(bits.len() / punct.period * punct.out_per_period());
     for blk in bits.chunks_exact(punct.period) {
@@ -154,10 +192,17 @@ pub fn encode_punctured(enc: &mut ConvEncoder, punct: &Puncturing, bits: &[u8], 
 /// must hold whole periods.
 pub fn depuncture(punct: &Puncturing, llrs: &[f32], out: &mut Vec<f32>) {
     let n = punct.out_per_period();
-    assert_eq!(llrs.len() % n, 0, "frame must hold whole puncturing periods");
+    assert_eq!(
+        llrs.len() % n,
+        0,
+        "frame must hold whole puncturing periods"
+    );
     let base = out.len();
     out.resize(base + llrs.len() / n * 2 * punct.period, 0.0);
-    for (blk, dst) in llrs.chunks_exact(n).zip(out[base..].chunks_exact_mut(2 * punct.period)) {
+    for (blk, dst) in llrs
+        .chunks_exact(n)
+        .zip(out[base..].chunks_exact_mut(2 * punct.period))
+    {
         for (&l, &k) in blk.iter().zip(&punct.order) {
             dst[k] = l;
         }
@@ -179,7 +224,10 @@ fn tables() -> &'static Tables {
     use std::sync::OnceLock;
     static T: OnceLock<Tables> = OnceLock::new();
     T.get_or_init(|| {
-        let mut t = Tables { sx: [[[0.0; HALF]; 2]; 2], sy: [[[0.0; HALF]; 2]; 2] };
+        let mut t = Tables {
+            sx: [[[0.0; HALF]; 2]; 2],
+            sy: [[[0.0; HALF]; 2]; 2],
+        };
         for u in 0..2u8 {
             for b in 0..2u8 {
                 for j in 0..HALF {
@@ -218,7 +266,12 @@ impl ViterbiDecoder {
         let mut pm = [-1.0e6f32; STATES];
         pm[0] = 0.0;
         let traceback = traceback.max(1);
-        Self { pm, decisions: Vec::new(), traceback, block: 4096.max(traceback) }
+        Self {
+            pm,
+            decisions: Vec::new(),
+            traceback,
+            block: 4096.max(traceback),
+        }
     }
 
     /// Decoder that assumes an unknown start state (all metrics equal), for
@@ -353,7 +406,13 @@ mod tests {
     use super::*;
     use crate::testutil::XorShift;
 
-    const RATES: [CodeRate; 5] = [CodeRate::R1_2, CodeRate::R2_3, CodeRate::R3_4, CodeRate::R5_6, CodeRate::R7_8];
+    const RATES: [CodeRate; 5] = [
+        CodeRate::R1_2,
+        CodeRate::R2_3,
+        CodeRate::R3_4,
+        CodeRate::R5_6,
+        CodeRate::R7_8,
+    ];
 
     /// Fig. 3-10 / §3.8: impulse response of X and Y equals the generator
     /// taps 171₈ = 1111001₂ and 133₈ = 1011011₂ (MSB = undelayed input).
@@ -394,7 +453,10 @@ mod tests {
             }
             assert_eq!(derived, s.sequence, "{:?}", s.rate);
         }
-        assert_eq!(Puncturing::new(CodeRate::R7_8).order, vec![0, 1, 3, 5, 7, 8, 11, 12]);
+        assert_eq!(
+            Puncturing::new(CodeRate::R7_8).order,
+            vec![0, 1, 3, 5, 7, 8, 11, 12]
+        );
         assert_eq!(Puncturing::new(CodeRate::R3_4).order, vec![0, 1, 3, 4]);
     }
 
@@ -409,7 +471,9 @@ mod tests {
     }
 
     fn noiseless(bits: &[u8]) -> Vec<f32> {
-        bits.iter().map(|&b| if b == 0 { 8.0 } else { -8.0 }).collect()
+        bits.iter()
+            .map(|&b| if b == 0 { 8.0 } else { -8.0 })
+            .collect()
     }
 
     /// Viterbi decodes noiseless streams exactly for every rate.
@@ -423,7 +487,11 @@ mod tests {
                 let mut coded = Vec::new();
                 encode_punctured(&mut ConvEncoder::new(), &p, &bits, &mut coded);
                 for tb in [8, DEFAULT_TRACEBACK] {
-                    assert_eq!(decode_punctured(r, &noiseless(&coded), tb), bits, "{r:?} len {len} tb {tb}");
+                    assert_eq!(
+                        decode_punctured(r, &noiseless(&coded), tb),
+                        bits,
+                        "{r:?} len {len} tb {tb}"
+                    );
                 }
             }
         }
@@ -452,7 +520,11 @@ mod tests {
     #[test]
     fn viterbi_awgn_improves_ber() {
         let mut rng = XorShift::new(3);
-        for (rate, ebn0_db) in [(CodeRate::R1_2, 4.0f64), (CodeRate::R3_4, 5.0), (CodeRate::R7_8, 5.0)] {
+        for (rate, ebn0_db) in [
+            (CodeRate::R1_2, 4.0f64),
+            (CodeRate::R3_4, 5.0),
+            (CodeRate::R7_8, 5.0),
+        ] {
             let p = Puncturing::new(rate);
             let n = p.period * 40000;
             let bits: Vec<u8> = (0..n).map(|_| (rng.next() & 1) as u8).collect();
@@ -477,7 +549,10 @@ mod tests {
             let ber = err as f64 / n as f64;
             println!("{rate:?} Eb/N0 {ebn0_db} dB: raw BER {raw_ber:.2e}, decoded BER {ber:.2e}");
             assert!(raw_ber > 3e-3, "{rate:?} channel too clean: {raw_ber}");
-            assert!(ber < raw_ber / 20.0, "{rate:?}: coded BER {ber} vs raw {raw_ber}");
+            assert!(
+                ber < raw_ber / 20.0,
+                "{rate:?}: coded BER {ber} vs raw {raw_ber}"
+            );
         }
     }
 
@@ -492,7 +567,10 @@ mod tests {
         let p = Puncturing::new(CodeRate::R1_2);
         let mut coded = Vec::new();
         encode_punctured(&mut ConvEncoder::new(), &p, &bits, &mut coded);
-        let llr: Vec<f32> = coded.iter().map(|&b| if b == 0 { 1.0 } else { -1.0 } + 0.6 * rng.gauss() as f32).collect();
+        let llr: Vec<f32> = coded
+            .iter()
+            .map(|&b| if b == 0 { 1.0 } else { -1.0 } + 0.6 * rng.gauss() as f32)
+            .collect();
         let t = std::time::Instant::now();
         let mut v = ViterbiDecoder::new(DEFAULT_TRACEBACK);
         let mut out = Vec::with_capacity(n);
@@ -500,6 +578,9 @@ mod tests {
         v.flush(&mut out);
         let dt = t.elapsed().as_secs_f64();
         let err = out.iter().zip(&bits).filter(|(a, b)| a != b).count();
-        println!("viterbi: {n} bits in {dt:.3} s = {:.1} Mbit/s decoded (errors {err})", n as f64 / dt / 1e6);
+        println!(
+            "viterbi: {n} bits in {dt:.3} s = {:.1} Mbit/s decoded (errors {err})",
+            n as f64 / dt / 1e6
+        );
     }
 }

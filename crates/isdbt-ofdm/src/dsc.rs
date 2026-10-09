@@ -24,10 +24,15 @@ pub const N: usize = 273;
 /// Parity bits.
 pub const PARITY: usize = 82;
 /// Exponents of g(x).
-pub const G_EXPONENTS: [usize; 18] = [82, 77, 76, 71, 67, 66, 56, 52, 48, 40, 36, 34, 24, 22, 18, 10, 4, 0];
+pub const G_EXPONENTS: [usize; 18] = [
+    82, 77, 76, 71, 67, 66, 56, 52, 48, 40, 36, 34, 24, 22, 18, 10, 4, 0,
+];
 
 fn g_low() -> u128 {
-    G_EXPONENTS.iter().filter(|&&e| e < PARITY).fold(0u128, |a, &e| a | (1u128 << e))
+    G_EXPONENTS
+        .iter()
+        .filter(|&&e| e < PARITY)
+        .fold(0u128, |a, &e| a | (1u128 << e))
 }
 
 const MASK: u128 = (1u128 << PARITY) - 1;
@@ -107,7 +112,9 @@ fn gf_pow(a: u16, mut e: u32, poly: u16) -> u16 {
 fn primitive_poly() -> u16 {
     (1u16..0x1000)
         .step_by(2)
-        .find(|&p| gf_pow(2, 4095, p) == 1 && [3u32, 5, 7, 13].iter().all(|q| gf_pow(2, 4095 / q, p) != 1))
+        .find(|&p| {
+            gf_pow(2, 4095, p) == 1 && [3u32, 5, 7, 13].iter().all(|q| gf_pow(2, 4095 / q, p) != 1)
+        })
         .expect("primitive polynomial")
 }
 
@@ -177,7 +184,10 @@ pub fn decode(word: &mut [u8]) -> ParityStatus {
             let mut votes = 0;
             for &dm in d {
                 let s = (deg + N - dm) % N;
-                let sum: u8 = d.iter().map(|&dj| snapshot[(dj + s) % N]).fold(0, |a, b| a ^ b);
+                let sum: u8 = d
+                    .iter()
+                    .map(|&dj| snapshot[(dj + s) % N])
+                    .fold(0, |a, b| a ^ b);
                 votes += sum as usize;
             }
             if votes > d.len() / 2 {
