@@ -1,3 +1,5 @@
+[日本語版 README](README.ja.md)
+
 # isdb-rs
 
 A from-the-specification Rust implementation of Japanese digital terrestrial
@@ -280,7 +282,7 @@ end, but some parts have had less independent checking than others:
 - **Media**: MPEG-2 video and AAC ADTS files only; H.264 one-seg streams
   can be declared in the PMT but are not packetised.
 - **Not implemented**: duplicate packets for a PID on two layers, the
-  broadcast-TS information packet (IIP), SFN synchronisation, data
+  ISDB-T information packet (IIP), SFN synchronisation, data
   broadcasting (BML/DSM-CC), DRCS glyphs, ISDB-T<sub>SB</sub>.
 - **Radio**: HackRF One is the only backend (others plug into
   `isdb-radio` without CLI changes). The demodulator runs at about 1.4× real time

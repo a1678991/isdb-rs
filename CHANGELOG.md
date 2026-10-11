@@ -71,6 +71,9 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
 - `oracle/Dockerfile`: a reproducible gr-isdbt oracle container (Ubuntu
   24.04, GNU Radio 3.10, gr-isdbt built from upstream at a pinned commit),
   and `oracle/README.md` with the licensing of the oracle scripts.
+- `README.ja.md`: a Japanese translation of the root README, linked from
+  the first line of `README.md` (the documents it links to stay in
+  English).
 
 ### Changed
 
