@@ -101,6 +101,7 @@ pub mod jst;
 pub mod mux;
 pub mod output;
 pub mod pcrclock;
+pub mod playback;
 pub mod relay;
 pub mod relay_rate;
 pub mod relay_template;

@@ -704,6 +704,49 @@ unchanged without checks (reproducing old streams on receivers).
   after their decoding time raises an alert
   (`Multiplexer::take_alerts`, at most one per relay per minute of stream
   time).
+- Playback control (`src/playback.rs`; `Multiplexer::enable_playback_control`,
+  `pause`, `resume`, `seek`, `set_rate`). [Operational: no specification
+  covers trick play on a broadcast multiplex.] Units are timed in content
+  time (pass-local PCR time + pass offset); a piecewise-linear `Timeline`
+  maps it to mux time. Uncontrolled, it is the constant shift of the plain
+  relay, and the output is byte-identical to it. Every PTS/DTS is mapped,
+  and each packet keeps its source arrival→decoding distance (arrival =
+  mapped decoding time − source lead), so the T-STD behaviour of the source
+  is kept at every rate.
+  - A rate change starts a segment at the largest content time already sent
+    (what is in the receiver's buffers keeps its timing), no sooner than the
+    source's longest lead from now (the buffers hold less after fast play;
+    without this the units at the new rate were due at once and, on a BS
+    recording, 124 PES were late after 16× → 1×).
+  - Pause stops starting units; resume delays everything from the least
+    advanced stream's last sent content (audio is sent closer to its
+    decoding than video; delaying from the video's point left the audio in
+    between on its old, past times: 148 late PES).
+  - Seek: the reader thread restarts at a seek-index offset (one per 0.5 s
+    from the whole-file scan, `relay_rate::Scan::index`; chunks carry the
+    reader generation and stale ones are dropped); queued units are
+    dropped, the unit being sent completes, and the new pass starts at its
+    access point with content times after everything read and mux times
+    after everything sent. Under control a loop is anchored the same way.
+  - Rates above 1: video PES (one picture or field pair each) are kept in
+    decoding order within a byte budget of 85 % of the source's bytes ÷
+    rate (capped at four of the largest picture), I always when the budget
+    allows, P only after a kept reference, B only between two, and only a
+    frame period from a kept picture's output PTS (a display shows one per
+    period; without it ffmpeg found pictures within one frame period).
+    Audio: AAC is re-packetised one ADTS frame per PES (the source's PES
+    are not frame-aligned on BS: 12 of 1534 started on a syncword; the
+    PES PTS belongs to the first frame starting in it, H.222.0 §2.4.3.7);
+    each output frame period shows the frame whose mapped span contains its
+    start, so frames are skipped above 1× and repeated below, contiguously.
+  - Earliest decoding time first: under control the relay sends the due
+    packet with the earliest decoding time (not the earliest source time),
+    so audio does not wait behind the kept pictures, which come closer
+    together than in the source (27 audio PES late at 2–16× without it, 0
+    with it).
+  - Pause leaves a PTS gap as long as the pause (H.222.0 §2.7.4: 0.7 s);
+    nothing is sent for the relayed streams while paused. A still picture
+    and silent audio would avoid it; not implemented.
 - EIT (`eit_from_source`): the source EIT p/f actual (table 0x4E,
   service_id = program) present and following events: event_id, duration,
   short_event name/text (decoded by `isdb-text`, re-encoded by the SI
@@ -1013,3 +1056,7 @@ showed to matter.
     (`relay::RETIME_HOLD`) while its T-STD buffer would overflow — above
     the ≈ 0.7 ms slot jitter measured on a relay of this crate's own
     output, small against the 0.1 s release margin of the seam hold.
+34. Playback control: the rate ladder 0.25, 0.5, 1, 1.5, 2, 4, 8, 16×
+    (`playback::RATES`), the 85 % fast-play byte budget, the frame-period
+    picture spacing, audio frame skipping / repetition rather than muting,
+    and pause as "send nothing" (receivers keep the last picture).

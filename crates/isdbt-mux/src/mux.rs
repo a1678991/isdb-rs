@@ -35,6 +35,7 @@ use crate::audio::AdtsEs;
 use crate::config::{ClockSource, Config, StreamKind};
 use crate::error::{MuxError, Result};
 use crate::jst::{self, JstSeconds};
+use crate::playback::PlaybackStatus;
 use crate::relay::{self, Relay, RelayStats};
 use crate::si::{self, SiBuilder, StreamInfo, TableKind};
 use crate::signalling::RecordingControlCfg;
@@ -870,6 +871,84 @@ impl Multiplexer {
         std::mem::take(&mut self.alerts)
     }
 
+    /// Enable interactive playback of the `ts-program` relays (pause,
+    /// seek, play rate; [`crate::playback`]). Call before the first frame:
+    /// AAC audio is then re-packetised one ADTS frame per PES so that
+    /// frames can be skipped or repeated. Without relays it does nothing.
+    pub fn enable_playback_control(&mut self) -> Result<()> {
+        if self.frame > 0 {
+            return Err(MuxError::Config(
+                "playback control must be enabled before the first frame".into(),
+            ));
+        }
+        for r in &mut self.relays {
+            r.enable_control();
+        }
+        Ok(())
+    }
+
+    fn now(&self) -> u64 {
+        self.slot_time(self.frame, 0)
+    }
+
+    /// Pause the relays: the units being sent complete, then their slots
+    /// carry nulls (PSI/SI and PCR continue, so receivers stay locked and
+    /// show the last picture). False without playback control.
+    pub fn pause(&mut self) -> bool {
+        let now = self.now();
+        self.relays.iter_mut().fold(false, |a, r| r.pause(now) | a)
+    }
+
+    /// Resume after [`Self::pause`]: what follows is shown later by the
+    /// time spent paused.
+    pub fn resume(&mut self) -> bool {
+        let now = self.now();
+        self.relays.iter_mut().fold(false, |a, r| r.resume(now) | a)
+    }
+
+    /// Pause when playing, resume when paused; returns the new pause state
+    /// (None without playback control).
+    pub fn toggle_pause(&mut self) -> Option<bool> {
+        let paused = self.playback_status().first()?.paused;
+        if paused {
+            self.resume();
+        } else {
+            self.pause();
+        }
+        Some(!paused)
+    }
+
+    /// Jump `delta_s` seconds (negative: back) from the position shown, to
+    /// the access point that follows; returns the file position reading
+    /// continues from, per relay.
+    pub fn seek(&mut self, delta_s: f64) -> Vec<f64> {
+        self.relays
+            .iter_mut()
+            .filter_map(|r| r.seek(delta_s))
+            .collect()
+    }
+
+    /// Play at `rate` (> 0) times real time from what is sent next: above 1
+    /// video pictures and audio frames are skipped to stay within the
+    /// source's rate on air, below 1 pictures are shown longer and audio
+    /// frames repeated. False without playback control.
+    pub fn set_rate(&mut self, rate: f64) -> bool {
+        if !(rate > 0.0 && rate.is_finite()) {
+            return false;
+        }
+        self.relays
+            .iter_mut()
+            .fold(false, |a, r| r.set_rate(rate) | a)
+    }
+
+    /// Playback state per relay under playback control.
+    pub fn playback_status(&self) -> Vec<PlaybackStatus> {
+        self.relays
+            .iter()
+            .filter_map(|r| r.playback_status())
+            .collect()
+    }
+
     /// One status line per `ts-program` relay.
     pub fn relay_status(&self) -> Vec<String> {
         self.relays.iter().map(|r| r.status()).collect()
@@ -1082,7 +1161,7 @@ impl Multiplexer {
             if !r.es.iter().any(|e| e.layer == layer) {
                 continue;
             }
-            r.fill(t + r.early);
+            r.fill(t);
             if let Some(f) = r.failure.take()
                 && self.stats.errors.len() < 100
             {
@@ -1090,6 +1169,7 @@ impl Multiplexer {
             }
             let r = &mut self.relays[ri];
             let (early, lead) = (r.early, r.lead);
+            let controlled = r.controlled();
             let mut lag = 0;
             for ei in 0..r.es.len() {
                 if r.es[ei].layer != layer {
@@ -1128,8 +1208,16 @@ impl Multiplexer {
                     }
                     None => due,
                 };
-                if ok && best.is_none_or(|b| h.at < b.0) {
-                    best = Some((h.at, ri, ei));
+                // under playback control the earliest decoding deadline goes
+                // first (kept fast-play pictures arrive closer together than
+                // in the source; audio must not wait behind them)
+                let key = if controlled {
+                    h.decode.unwrap_or(h.at)
+                } else {
+                    h.at
+                };
+                if ok && best.is_none_or(|b| key < b.0) {
+                    best = Some((key, ri, ei));
                 }
             }
             r.stats.lag = lag;

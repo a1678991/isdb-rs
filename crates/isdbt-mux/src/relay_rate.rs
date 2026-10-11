@@ -22,7 +22,7 @@
 
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use isdb_ts::reader::StreamReader;
@@ -84,6 +84,36 @@ impl RateProfile {
             self.min_lead_s
                 .map_or("none".to_string(), |s| format!("{:.3} s", s))
         )
+    }
+}
+
+/// Spacing of the [`SeekPoint`]s of a scan (27 MHz ticks).
+const SEEK_SPACING: u64 = HZ / 2;
+
+/// A byte offset of the source and its PCR-derived time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeekPoint {
+    /// Time from the first PCR of the file (27 MHz, discontinuities
+    /// bridged as by [`PcrClock`]).
+    pub t: u64,
+    /// Byte offset of a packet's sync byte timed at `t`.
+    pub offset: u64,
+}
+
+/// The whole-file scan of a source: its rate profile and a seek index.
+#[derive(Debug, Clone)]
+pub struct Scan {
+    /// Rates.
+    pub profile: RateProfile,
+    /// One point every 0.5 s of PCR time, from the start.
+    pub index: Arc<[SeekPoint]>,
+}
+
+impl Scan {
+    /// The last seek point at or before time `t` (the first if none).
+    pub fn seek_point(&self, t: u64) -> Option<SeekPoint> {
+        let k = self.index.partition_point(|p| p.t <= t);
+        self.index.get(k.saturating_sub(1)).copied()
     }
 }
 
@@ -197,6 +227,10 @@ impl Bins {
 /// Read the whole of `path` and bin the packets of `pids`, timed by the
 /// PCRs of `pcr_pid` ([`PcrClock`]).
 pub fn bin_file(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<Bins> {
+    bin_and_index(path, pcr_pid, pids).map(|x| x.0)
+}
+
+fn bin_and_index(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<(Bins, Vec<SeekPoint>)> {
     let media = |msg: String| MuxError::Media {
         path: path.display().to_string(),
         msg,
@@ -211,12 +245,17 @@ pub fn bin_file(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<Bins> {
     // being received
     let mut decode: Vec<Option<i64>> = vec![None; pids.len()];
     // item: (slot, PTS/DTS of a PES start: Some(Some(ts)), a start without
-    // one: Some(None), a continuation: None)
-    let mut clock = PcrClock::<(u16, Option<Option<u64>>)>::new(Some(pcr_pid));
+    // one: Some(None), a continuation: None; byte offset)
+    type Item = (u16, Option<Option<u64>>, u64);
+    let mut clock = PcrClock::<Item>::new(Some(pcr_pid));
     let mut bins = Bins::default();
-    let mut drain = |clock: &mut PcrClock<(u16, Option<Option<u64>>)>, bins: &mut Bins| {
+    let mut index: Vec<SeekPoint> = Vec::new();
+    let mut drain = |clock: &mut PcrClock<Item>, bins: &mut Bins| {
         while let Some(x) = clock.pop() {
-            let (s, start) = x.item;
+            let (s, start, offset) = x.item;
+            if index.last().is_none_or(|p| x.t >= p.t + SEEK_SPACING) {
+                index.push(SeekPoint { t: x.t, offset });
+            }
             if s == u16::MAX {
                 continue;
             }
@@ -229,16 +268,17 @@ pub fn bin_file(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<Bins> {
         }
     };
     while let Some(p) = r.next_packet().map_err(MuxError::Io)? {
+        let offset = p.offset;
         let p = *p.packet();
         let s = slot[packet_pid(&p) as usize];
         let start =
             (s != u16::MAX && pids[s as usize].pes && p[1] & 0x40 != 0).then(|| pes_decode_ts(&p));
-        clock.push(&p, (s, start));
+        clock.push(&p, (s, start, offset));
         drain(&mut clock, &mut bins);
     }
     clock.finish();
     drain(&mut clock, &mut bins);
-    Ok(bins)
+    Ok((bins, index))
 }
 
 /// DTS, else PTS, of the PES header starting in this packet's payload.
@@ -268,13 +308,13 @@ fn pes_decode_ts(p: &[u8; 188]) -> Option<u64> {
 
 type CacheKey = (PathBuf, u64, Option<SystemTime>, u16, Vec<ScanPid>);
 
-/// Profiles already measured in this process: building a multiplexer
-/// twice (`--auto-layout` retries with another layout) reads the file once.
-static CACHE: Mutex<Vec<(CacheKey, RateProfile)>> = Mutex::new(Vec::new());
+/// Scans already made in this process: building a multiplexer twice
+/// (`--auto-layout` retries with another layout) reads the file once.
+static CACHE: Mutex<Vec<(CacheKey, Scan)>> = Mutex::new(Vec::new());
 
-/// [`RateProfile`] of the packets of `pids` over the whole of `path`
-/// (memoised per file, size and modification time).
-pub fn scan(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<RateProfile> {
+/// [`Scan`] of the packets of `pids` over the whole of `path` (memoised
+/// per file, size and modification time).
+pub fn scan(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<Scan> {
     let meta = std::fs::metadata(path).map_err(|e| MuxError::Media {
         path: path.display().to_string(),
         msg: e.to_string(),
@@ -293,9 +333,13 @@ pub fn scan(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<RateProfile> 
     {
         return Ok(p);
     }
-    let p = bin_file(path, pcr_pid, pids)?.profile();
+    let (bins, index) = bin_and_index(path, pcr_pid, pids)?;
+    let p = Scan {
+        profile: bins.profile(),
+        index: index.into(),
+    };
     if let Ok(mut c) = CACHE.lock() {
-        c.push((key, p));
+        c.push((key, p.clone()));
     }
     Ok(p)
 }

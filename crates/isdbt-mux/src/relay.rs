@@ -86,6 +86,7 @@ use crate::error::{MuxError, Result};
 use crate::jst::{self, JstSeconds};
 use crate::mux::Packet;
 use crate::pcrclock::{Anchor, HZ, PcrClock, Timed, packet_pid};
+use crate::playback::{AudioSlots, PlaybackStatus, Seg, Slot, Timeline, VideoThinning};
 use crate::si::StreamInfo;
 use crate::tstd::{Tstd, TstdParams};
 use crate::video::{GOP_CLOSED, SequenceInfo, VideoEs};
@@ -506,6 +507,8 @@ pub struct Probe {
     /// The relayed packets over the whole file: the rate the relay needs
     /// (the capacity check and `--auto-layout` use it, not the probe's mean).
     pub rate: crate::relay_rate::RateProfile,
+    /// Byte offsets of the file every 0.5 s of PCR time (for seeking).
+    pub seek_index: std::sync::Arc<[crate::relay_rate::SeekPoint]>,
     /// Source EIT present event of the program.
     pub present: Option<SourceEvent>,
     /// Source EIT following event.
@@ -2138,7 +2141,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             pes: false,
         }))
         .collect();
-    let rate = crate::relay_rate::scan(path, pmt.pcr_pid, &scan_pids)?;
+    let scanned = crate::relay_rate::scan(path, pmt.pcr_pid, &scan_pids)?;
     Ok(Probe {
         path: path.to_path_buf(),
         program,
@@ -2161,7 +2164,8 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         span_s,
         mean_bps,
         peak_1s_bps: peak,
-        rate,
+        rate: scanned.profile,
+        seek_index: scanned.index,
         present,
         following,
         source_now,
@@ -2297,34 +2301,68 @@ pub fn source_events(p: &Probe) -> Vec<EventCfg> {
 // ---------------------------------------------------------------------------
 
 enum Chunk {
-    Packets(Vec<Packet>),
-    Eof,
+    /// Packets read after the seek of the generation given.
+    Packets(u64, Vec<Packet>),
+    /// End of file (of that generation's reading).
+    Eof(u64),
     /// A read error: the relay stops with this message.
     Error(String),
 }
 
-fn spawn_reader(path: &Path, at_eof: AtEof) -> Result<Receiver<Chunk>> {
-    let open = |path: &Path| {
-        std::fs::File::open(path).map_err(|e| MuxError::Media {
-            path: path.display().to_string(),
-            msg: e.to_string(),
-        })
+/// A command to the reader thread.
+enum ReaderCmd {
+    /// Continue from byte `offset`; the packets that follow carry `epoch`.
+    Seek { epoch: u64, offset: u64 },
+}
+
+/// The reader thread: the file's packets in batches, from the start again
+/// after each end of file (`at_eof = "loop"`), or, after the end with
+/// `"end"`, waiting for a seek. A seek restarts reading at a byte offset.
+fn spawn_reader(
+    path: &Path,
+    at_eof: AtEof,
+) -> Result<(Receiver<Chunk>, std::sync::mpsc::Sender<ReaderCmd>)> {
+    use std::io::{Seek, SeekFrom};
+    let open = |path: &Path, offset: u64| {
+        std::fs::File::open(path)
+            .and_then(|mut f| f.seek(SeekFrom::Start(offset)).map(|_| f))
+            .map_err(|e| MuxError::Media {
+                path: path.display().to_string(),
+                msg: e.to_string(),
+            })
     };
-    let mut f = open(path)?;
+    let mut f = open(path, 0)?;
     let (tx, rx) = sync_channel::<Chunk>(8);
+    let (ctl, cmds) = std::sync::mpsc::channel::<ReaderCmd>();
     let path = path.to_path_buf();
     std::thread::Builder::new()
         .name(format!("relay {}", path.display()))
         .spawn(move || {
-            loop {
+            let mut epoch = 0u64;
+            'file: loop {
                 let mut r = StreamReader::new(BufReader::with_capacity(1 << 20, f));
                 let mut batch = Vec::with_capacity(BATCH);
                 loop {
+                    if batch.is_empty()
+                        && let Ok(ReaderCmd::Seek { epoch: g, offset }) = cmds.try_recv()
+                    {
+                        epoch = g;
+                        match open(&path, offset) {
+                            Ok(x) => f = x,
+                            Err(e) => {
+                                let _ = tx.send(Chunk::Error(format!("seeking: {e}")));
+                                return;
+                            }
+                        }
+                        continue 'file;
+                    }
                     match r.next_packet() {
                         Ok(Some(p)) => {
                             batch.push(*p.packet());
                             if batch.len() == BATCH
-                                && tx.send(Chunk::Packets(std::mem::take(&mut batch))).is_err()
+                                && tx
+                                    .send(Chunk::Packets(epoch, std::mem::take(&mut batch)))
+                                    .is_err()
                             {
                                 return;
                             }
@@ -2332,7 +2370,7 @@ fn spawn_reader(path: &Path, at_eof: AtEof) -> Result<Receiver<Chunk>> {
                         Ok(None) => break,
                         Err(e) => {
                             if !batch.is_empty() {
-                                let _ = tx.send(Chunk::Packets(std::mem::take(&mut batch)));
+                                let _ = tx.send(Chunk::Packets(epoch, std::mem::take(&mut batch)));
                             }
                             let _ = tx
                                 .send(Chunk::Error(format!("{}: read error: {e}", path.display())));
@@ -2340,13 +2378,25 @@ fn spawn_reader(path: &Path, at_eof: AtEof) -> Result<Receiver<Chunk>> {
                         }
                     }
                 }
-                if !batch.is_empty() && tx.send(Chunk::Packets(batch)).is_err() {
+                if !batch.is_empty() && tx.send(Chunk::Packets(epoch, batch)).is_err() {
                     return;
                 }
-                if tx.send(Chunk::Eof).is_err() || at_eof == AtEof::End {
+                if tx.send(Chunk::Eof(epoch)).is_err() {
                     return;
                 }
-                match open(&path) {
+                let offset = if at_eof == AtEof::End {
+                    // wait for a seek; none comes unless playback is controlled
+                    match cmds.recv() {
+                        Ok(ReaderCmd::Seek { epoch: g, offset }) => {
+                            epoch = g;
+                            offset
+                        }
+                        Err(_) => return,
+                    }
+                } else {
+                    0
+                };
+                match open(&path, offset) {
                     Ok(x) => f = x,
                     Err(e) => {
                         let _ = tx.send(Chunk::Error(format!("reopening for the next pass: {e}")));
@@ -2356,7 +2406,7 @@ fn spawn_reader(path: &Path, at_eof: AtEof) -> Result<Receiver<Chunk>> {
             }
         })
         .map_err(MuxError::Io)?;
-    Ok(rx)
+    Ok((rx, ctl))
 }
 
 struct InChunk {
@@ -2377,7 +2427,10 @@ struct Assembly {
 #[derive(Debug, Clone, Copy)]
 struct OutChunk {
     len: usize,
-    /// Mux time (27 MHz) at which the source would deliver it.
+    /// Content time (27 MHz: pass-local source time + pass offset) at which
+    /// the source delivers it.
+    src: i64,
+    /// Mux time (27 MHz) at which it is due (set when the unit is prepared).
     at: u64,
     rai: bool,
     pusi: bool,
@@ -2385,12 +2438,41 @@ struct OutChunk {
     seam: bool,
 }
 
+/// What a queued unit is, for playback control.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum UnitKind {
+    /// A PES as received; for video, its first picture_coding_type.
+    Pes { picture: Option<u8> },
+    /// One ADTS frame re-packetised as its own PES (playback control);
+    /// `dur` ticks long; `copy`: a repetition made for slow motion.
+    AudioFrame { dur: i64, copy: bool },
+    /// One packet's payload (carousels, ECM / EMM).
+    Packet,
+}
+
 /// A PES (or, for carousels, one packet's payload) ready to send.
+#[derive(Clone)]
 struct OutPes {
     bytes: Vec<u8>,
     chunks: Vec<OutChunk>,
-    /// Rebased decoding time (DTS, else PTS) in mux 27 MHz ticks.
+    /// PTS / DTS in content time (27 MHz), written into `bytes` through
+    /// the playback timeline when the unit is prepared.
+    pts: Option<i64>,
+    dts: Option<i64>,
+    /// Mux decoding time (DTS, else PTS), once prepared.
     decode: Option<u64>,
+    kind: UnitKind,
+    /// The playback-control generation it was prepared for.
+    prepared: Option<u64>,
+    /// Thinning decision already taken (playback control).
+    kept: bool,
+}
+
+impl OutPes {
+    /// Decoding time in content time.
+    fn decode_c(&self) -> Option<i64> {
+        self.dts.or(self.pts)
+    }
 }
 
 /// Counters of one relay.
@@ -2412,6 +2494,12 @@ pub struct RelayStats {
     pub cc_errors: u64,
     /// Source duplicate packets skipped (H.222.0 §2.4.3.3).
     pub duplicates: u64,
+    /// Video pictures skipped by playback control (rate above 1).
+    pub skipped_pictures: u64,
+    /// Audio frames skipped by playback control (rate above 1).
+    pub skipped_audio_frames: u64,
+    /// Audio frames repeated by playback control (rate below 1).
+    pub repeated_audio_frames: u64,
     /// Packets with transport_error_indicator.
     pub tei: u64,
     /// Scrambled packets.
@@ -2475,6 +2563,74 @@ pub(crate) struct RelayEs {
     pts_step: i64,
     /// Latest decoding time (pass-local continuous ticks) queued this pass.
     last_decode: Option<i64>,
+    /// AAC ADTS stream: re-packetised frame by frame under playback control.
+    adts: Option<AdtsSplit>,
+    /// Output audio frame periods (playback control).
+    slots: AudioSlots,
+    /// Mux decoding time of the last unit sent.
+    last_out_decode: Option<i64>,
+    /// Largest content time of this stream sent (playback control).
+    c_sent: Option<i64>,
+}
+
+/// ADTS frames out of a PES stream whose PES need not start on a frame
+/// (playback control): each frame becomes its own PES so that frames can
+/// be skipped or repeated.
+#[derive(Debug, Clone, Default)]
+struct AdtsSplit {
+    /// ES bytes not yet cut into frames.
+    buf: Vec<u8>,
+    /// Content arrival time of the source packet that carried each run of
+    /// `buf` (start offset in `buf`, time).
+    runs: Vec<(usize, i64)>,
+    /// PTS (content time) of the first frame starting at or after `buf`
+    /// offset `.0`, from the PES that carried it.
+    pts: Option<(usize, i64)>,
+    /// PTS of the last frame cut.
+    last_pts: Option<i64>,
+    /// stream_id of the PES.
+    stream_id: u8,
+}
+
+/// Playback control of a relay ([`crate::playback`]).
+struct Control {
+    /// Bumped by every control change: prepared heads are prepared again.
+    epoch: u64,
+    /// Mux time of the pause, while paused.
+    paused: Option<u64>,
+    rate: f64,
+    /// Largest content time sent (PTS, DTS, arrival).
+    c_sent: Option<i64>,
+    /// Largest mux decoding time sent.
+    o_sent: Option<i64>,
+    /// Largest content time read (arrival, PTS, DTS) in the current pass.
+    c_read: i64,
+    /// The next pass starts a new timeline segment at its access point,
+    /// shown no earlier than this mux time (a seek, or a loop under control).
+    anchor: Option<i64>,
+    /// Units of the current pass decoded before this content time are
+    /// dropped (they belong before its access point).
+    floor: Option<i64>,
+    /// Content time at the start of each pass, its pass offset and the file
+    /// time where it starts reading (for the position shown).
+    passes: Vec<(i64, i64, u64)>,
+    /// File time where the current pass starts reading.
+    pass_file_t: u64,
+    /// Reader generation (seeks).
+    reader_gen: u64,
+    video: VideoThinning,
+    /// Video frame period (ticks) and the output PTS of the last pictures
+    /// kept: above rate 1 a picture is kept only a frame period away from
+    /// them (a display shows one picture per frame period).
+    frame: i64,
+    shown: VecDeque<i64>,
+}
+
+/// The current playback position of a relay.
+fn position(passes: &[(i64, i64, u64)], c: i64) -> f64 {
+    let k = passes.partition_point(|p| p.0 <= c);
+    let (_, off, file_t) = passes[k.saturating_sub(1)];
+    (file_t as i64 + c - off) as f64 / HZ as f64
 }
 
 /// A running relay of one source program.
@@ -2503,6 +2659,26 @@ pub(crate) struct Relay {
     pass_packets: u64,
     pub(crate) stats: RelayStats,
     pub(crate) failure: Option<String>,
+    /// Commands to the reader thread (seeks).
+    reader: std::sync::mpsc::Sender<ReaderCmd>,
+    /// Content time → mux time; set at the first access point. Without
+    /// playback control it is the constant shift `base`.
+    timeline: Option<Timeline>,
+    /// Playback control, once enabled ([`Relay::enable_control`]).
+    ctl: Option<Control>,
+    /// Mux time of the latest slot seen.
+    now: u64,
+    /// Byte offsets of the file (seeks).
+    seek_index: std::sync::Arc<[crate::relay_rate::SeekPoint]>,
+    /// Length of the file (PCR ticks).
+    duration: u64,
+    /// stream_type of each relayed ES (AAC ADTS 0x0F is re-packetised under
+    /// playback control).
+    stream_types: Vec<u8>,
+    /// Longest arrival→decoding lead of the source's PES (probe; ticks).
+    max_lead: i64,
+    /// Video frame period (ticks; 1/29.97 s when unknown).
+    frame_period: i64,
 }
 
 /// Head of a relayed PID's queue.
@@ -2550,6 +2726,10 @@ impl Relay {
                 last_pts: None,
                 pts_step: 0,
                 last_decode: None,
+                adts: None,
+                slots: AudioSlots::default(),
+                last_out_decode: None,
+                c_sent: None,
             });
         }
         // ECM / EMM PIDs (ca = "keep"): packet by packet, no T-STD model
@@ -2574,15 +2754,20 @@ impl Relay {
                 last_pts: None,
                 pts_step: 0,
                 last_decode: None,
+                adts: None,
+                slots: AudioSlots::default(),
+                last_out_decode: None,
+                c_sent: None,
             });
         }
         let video = probe
             .es
             .iter()
             .position(|e| e.stream_type == 0x02 || e.stream_type == 0x01);
+        let (rx, reader) = spawn_reader(&probe.path, at_eof)?;
         Ok(Self {
             name: probe.path.display().to_string(),
-            rx: spawn_reader(&probe.path, at_eof)?,
+            rx,
             pcr_pid: probe.pcr_pid,
             at_eof,
             es,
@@ -2605,15 +2790,33 @@ impl Relay {
             pass_packets: 0,
             stats: RelayStats::default(),
             failure: None,
+            reader,
+            timeline: None,
+            ctl: None,
+            now: start_mux,
+            seek_index: probe.seek_index.clone(),
+            duration: (probe.rate.span_s * HZ as f64) as u64,
+            stream_types: probe.es.iter().map(|e| e.stream_type).collect(),
+            max_lead: probe
+                .es
+                .iter()
+                .filter_map(|e| e.source_lead_s.map(|l| l.2))
+                .fold(None, |m: Option<f64>, l| Some(m.map_or(l, |m| m.max(l))))
+                .map_or(HZ as i64 / 2, |l| (l * HZ as f64) as i64),
+            frame_period: probe
+                .es
+                .iter()
+                .find_map(|e| match &e.info {
+                    StreamInfo::Video { seq, .. } => Some((seq.frame_period_54mhz() / 2) as i64),
+                    _ => None,
+                })
+                .unwrap_or(900_900),
         })
     }
 
-    fn shift(&self) -> i64 {
-        self.base.unwrap_or(0) + self.pass_offset as i64
-    }
-
-    fn to_mux(&self, t: u64) -> u64 {
-        (t as i64 + self.shift()).max(0) as u64
+    /// Content time of pass-local time `t`.
+    fn content(&self, t: u64) -> i64 {
+        t as i64 + self.pass_offset as i64
     }
 
     /// True once the file ended (`at_eof = "end"`) and every PES is sent.
@@ -2625,13 +2828,22 @@ impl Relay {
                 .all(|e| e.queue.is_empty() && e.cur.is_none())
     }
 
-    /// Read and time the source until its packets up to mux time `until`
-    /// (plus the look-ahead a PES needs to complete) are queued.
-    pub(crate) fn fill(&mut self, until: u64) {
-        let until = until + LOOKAHEAD;
-        while !self.reading_done && (self.base.is_none() || self.to_mux(self.read_t) < until) {
+    /// Read and time the source until its packets due by the slot at mux
+    /// time `t` (plus the early window and the look-ahead a PES needs to
+    /// complete) are queued. Nothing is read while paused.
+    pub(crate) fn fill(&mut self, t: u64) {
+        self.now = t;
+        if self.ctl.as_ref().is_some_and(|c| c.paused.is_some()) {
+            return;
+        }
+        let until = (t + self.early + LOOKAHEAD) as i64;
+        while !self.reading_done && self.read_more(until) {
+            let epoch = self.ctl.as_ref().map_or(0, |c| c.reader_gen);
             match self.rx.recv() {
-                Ok(Chunk::Packets(v)) => {
+                Ok(Chunk::Packets(g, v)) => {
+                    if g != epoch {
+                        continue; // read before a seek
+                    }
                     for p in v {
                         self.clock.push(&p, p);
                         while let Some(x) = self.clock.pop() {
@@ -2639,7 +2851,11 @@ impl Relay {
                         }
                     }
                 }
-                Ok(Chunk::Eof) => self.end_pass(),
+                Ok(Chunk::Eof(g)) => {
+                    if g == epoch {
+                        self.end_pass();
+                    }
+                }
                 Ok(Chunk::Error(m)) => {
                     self.failure = Some(m);
                     self.reading_done = true;
@@ -2647,6 +2863,16 @@ impl Relay {
                 Err(_) => self.reading_done = true,
             }
         }
+    }
+
+    fn read_more(&self, until: i64) -> bool {
+        let Some(tl) = &self.timeline else {
+            return true; // up to the first access point
+        };
+        if !self.started && self.ctl.as_ref().is_some_and(|c| c.anchor.is_some()) {
+            return true; // up to the access point of a seek
+        }
+        tl.map(self.content(self.read_t)) < until
     }
 
     fn damage(&mut self, ei: usize) {
@@ -2686,8 +2912,38 @@ impl Relay {
         if self.base.is_none() {
             // multiple of 300 ticks: the PTS/DTS shift is then exact in 90 kHz
             let b = self.start_mux as i64 - t as i64;
-            self.base = Some(b.div_euclid(300) * 300);
+            let b = b.div_euclid(300) * 300;
+            self.base = Some(b);
+            self.timeline = Some(Timeline::new(0, b));
+            if let Some(c) = self.ctl.as_mut() {
+                c.passes.push((t as i64, 0, c.pass_file_t));
+            }
+            return;
         }
+        let now = self.now as i64;
+        let (Some(c), Some(tl)) = (self.ctl.as_mut(), self.timeline.as_mut()) else {
+            return;
+        };
+        let Some(not_before) = c.anchor.take() else {
+            return;
+        };
+        // A seek, or a loop under playback control: the new pass's content
+        // times continue after everything read so far, and its access point
+        // is shown as soon as possible but after everything already sent.
+        let off = (c.c_read + HZ as i64 - t as i64).max(0);
+        let off = off.div_euclid(300) * 300 + 300;
+        self.pass_offset = off as u64;
+        let c0 = off + t as i64;
+        let o0 = not_before.max(now);
+        tl.push(Seg {
+            c0,
+            o0: o0.div_euclid(300) * 300 + 300,
+            rate: c.rate,
+        });
+        c.floor = Some(c0);
+        c.passes.push((c0, off, c.pass_file_t));
+        c.video.reset();
+        c.epoch += 1;
     }
 
     fn process(&mut self, x: Timed<Packet>) {
@@ -2752,6 +3008,10 @@ impl Relay {
             self.start_pass(x.t);
         }
         self.count_rate(x.t);
+        let src = self.content(x.t);
+        if let Some(c) = self.ctl.as_mut() {
+            c.c_read = c.c_read.max(src);
+        }
         let chunk = InChunk {
             len: pl.len(),
             t: x.t,
@@ -2759,19 +3019,24 @@ impl Relay {
             pusi,
         };
         if self.es[ei].mode == EsMode::Packets {
-            let at = self.to_mux(x.t);
             self.pass_last_t = self.pass_last_t.max(x.t);
             self.stats.units_in += 1;
             self.es[ei].queue.push_back(OutPes {
                 bytes: pl.to_vec(),
                 chunks: vec![OutChunk {
                     len: chunk.len,
-                    at,
+                    src,
+                    at: 0,
                     rai,
                     pusi,
                     seam: false,
                 }],
+                pts: None,
+                dts: None,
                 decode: None,
+                kind: UnitKind::Packet,
+                prepared: None,
+                kept: false,
             });
             return;
         }
@@ -2805,14 +3070,8 @@ impl Relay {
         }
     }
 
-    /// Rebase PTS/DTS in place by `shift` (27 MHz); returns the pass-local
-    /// continuous (PTS, DTS).
-    fn rebase(
-        bytes: &mut [u8],
-        anchor: Anchor,
-        shift: i64,
-        escr: &mut u64,
-    ) -> (Option<i64>, Option<i64>) {
+    /// The pass-local continuous (PTS, DTS) of a PES header.
+    fn pes_times(bytes: &[u8], anchor: Anchor, escr: &mut u64) -> (Option<i64>, Option<i64>) {
         if bytes.len() < 9
             || !isdb_ts::pes::has_optional_header(bytes[3])
             || bytes[6] & 0xC0 != 0x80
@@ -2823,26 +3082,33 @@ impl Relay {
         if bytes[7] & 0x20 != 0 {
             *escr += 1;
         }
-        let mut one = |off: usize| -> Option<i64> {
-            if bytes.len() < off + 5 {
-                return None;
-            }
-            let cont = anchor.map90(read_ts(&bytes[off..off + 5]));
-            write_ts(
-                &mut bytes[off..off + 5],
-                (cont + shift)
-                    .div_euclid(300)
-                    .rem_euclid(BASE_MODULUS as i64) as u64,
-            );
-            Some(cont)
+        let one = |off: usize| -> Option<i64> {
+            (bytes.len() >= off + 5).then(|| anchor.map90(read_ts(&bytes[off..off + 5])))
         };
         let pts = if flags & 2 != 0 { one(9) } else { None };
         let dts = if flags == 3 { one(14) } else { None };
         (pts, dts)
     }
 
+    /// Write mux times (27 MHz) as the PTS / DTS of a PES header laid out
+    /// as [`Self::pes_times`] reads it (33-bit values; prefix and marker
+    /// bits kept).
+    fn write_times(bytes: &mut [u8], pts: Option<i64>, dts: Option<i64>) {
+        let v = |x: i64| x.div_euclid(300).rem_euclid(BASE_MODULUS as i64) as u64;
+        if let Some(p) = pts
+            && bytes.len() >= 14
+        {
+            write_ts(&mut bytes[9..14], v(p));
+        }
+        if let Some(d) = dts
+            && bytes.len() >= 19
+        {
+            write_ts(&mut bytes[14..19], v(d));
+        }
+    }
+
     fn finish_pes(&mut self, ei: usize, at_eof: bool) {
-        let Some(mut a) = self.es[ei].asm.take() else {
+        let Some(a) = self.es[ei].asm.take() else {
             return;
         };
         let len = if a.bytes.len() >= 6 {
@@ -2859,7 +3125,6 @@ impl Relay {
             self.stats.pes_dropped += 1;
             return;
         }
-        let shift = self.shift();
         let Some(anchor) = a.anchor else {
             self.stats.pes_dropped += 1;
             return;
@@ -2880,7 +3145,21 @@ impl Relay {
                 }
             }
         }
-        let (pts, dts) = Self::rebase(&mut a.bytes, anchor, shift, &mut self.stats.escr);
+        let (pts, dts) = Self::pes_times(&a.bytes, anchor, &mut self.stats.escr);
+        let off = self.pass_offset as i64;
+        // under playback control, a new pass starts at its access point:
+        // units decoded before it are dropped
+        if let Some(c) = self.ctl.as_mut() {
+            if let (Some(f), Some(d)) = (c.floor, dts.or(pts))
+                && d + off < f
+            {
+                self.stats.pes_dropped += 1;
+                return;
+            }
+            for v in [pts, dts].into_iter().flatten() {
+                c.c_read = c.c_read.max(v + off);
+            }
+        }
         let e = &mut self.es[ei];
         if let Some(p) = pts {
             if let Some(l) = e.last_pts
@@ -2894,17 +3173,17 @@ impl Relay {
         if let Some(d) = dts.or(pts) {
             e.last_decode = Some(e.last_decode.map_or(d, |l| l.max(d)));
         }
-        let decode = dts.or(pts).map(|c| (c + shift).max(0) as u64);
-        let mut chunks = Vec::with_capacity(a.chunks.len());
-        let seam_end = if self.stats.passes > 0 {
+        let seam_end = if self.stats.passes > 0 && self.ctl.is_none() {
             self.pass_first_t.unwrap_or(0) + SEAM_WINDOW
         } else {
             0
         };
+        let mut chunks = Vec::with_capacity(a.chunks.len());
         for c in &a.chunks {
             chunks.push(OutChunk {
                 len: c.len,
-                at: (c.t as i64 + shift).max(0) as u64,
+                src: c.t as i64 + off,
+                at: 0,
                 rai: c.rai,
                 pusi: c.pusi,
                 seam: c.t < seam_end,
@@ -2912,12 +3191,165 @@ impl Relay {
             self.pass_last_t = self.pass_last_t.max(c.t);
         }
         e.pass_units += 1;
-        e.queue.push_back(OutPes {
+        self.stats.units_in += 1;
+        let unit = OutPes {
+            kind: UnitKind::Pes {
+                picture: if is_video {
+                    picture_coding_type(&a.bytes)
+                } else {
+                    None
+                },
+            },
             bytes: a.bytes,
             chunks,
-            decode,
-        });
-        self.stats.units_in += 1;
+            pts: pts.map(|v| v + off),
+            dts: dts.map(|v| v + off),
+            decode: None,
+            prepared: None,
+            kept: false,
+        };
+        if self.ctl.is_some() && self.stream_types[ei] == 0x0F {
+            self.split_adts(ei, unit);
+        } else {
+            self.es[ei].queue.push_back(unit);
+        }
+    }
+
+    /// Cut an AAC PES into one PES per ADTS frame (playback control). The
+    /// PES's PTS belongs to the first frame starting in it (H.222.0
+    /// §2.4.3.7); the frames after it are one frame period apart.
+    fn split_adts(&mut self, ei: usize, u: OutPes) {
+        let e = &mut self.es[ei];
+        let Some(es0) = pes_es_start(&u.bytes) else {
+            return;
+        };
+        let sp = e.adts.get_or_insert_with(AdtsSplit::default);
+        sp.stream_id = u.bytes[3];
+        let start = sp.buf.len();
+        if let Some(p) = u.pts {
+            sp.pts = Some((start, p));
+        }
+        // content arrival time of each source packet's bytes
+        let mut pos = 0usize;
+        for c in &u.chunks {
+            let end = pos + c.len;
+            if end > es0 {
+                sp.runs.push((start + pos.saturating_sub(es0), c.src));
+            }
+            pos = end;
+        }
+        sp.buf.extend_from_slice(&u.bytes[es0.min(u.bytes.len())..]);
+        loop {
+            let sp = e.adts.as_mut().expect("set above");
+            // resynchronise on a syncword
+            let Some(s) = (0..sp.buf.len()).find(|&i| adts_len(&sp.buf[i..]).is_some()) else {
+                let keep = sp.buf.len().min(6);
+                let cut = sp.buf.len() - keep;
+                Self::consume(sp, cut);
+                return;
+            };
+            Self::consume(sp, s);
+            let Some(n) = adts_len(&sp.buf) else { return };
+            if sp.buf.len() < n {
+                return; // the rest comes with the next PES
+            }
+            if sp.buf.len() >= n + 2 && adts_len(&sp.buf[n..]).is_none() {
+                Self::consume(sp, 1); // a false syncword
+                continue;
+            }
+            let fs = [
+                96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000,
+            ]
+            .get(((sp.buf[2] >> 2) & 0x0F) as usize)
+            .copied()
+            .unwrap_or(48000);
+            let dur = (1024 * HZ as i64 + fs / 2) / fs;
+            let pts = match sp.pts {
+                Some((0, p)) => {
+                    sp.pts = None;
+                    Some(p)
+                }
+                _ => sp.last_pts.map(|l| l + dur),
+            };
+            let src = sp
+                .runs
+                .iter()
+                .take_while(|r| r.0 == 0 || r.0 < n)
+                .last()
+                .map_or(0, |r| r.1);
+            let frame = sp.buf[..n].to_vec();
+            let stream_id = sp.stream_id;
+            Self::consume(sp, n);
+            let Some(pts) = pts else { continue };
+            sp.last_pts = Some(pts);
+            // PES: header with PTS only, data_alignment_indicator = 1
+            let mut b = vec![0, 0, 1, stream_id, 0, 0, 0x84, 0x80, 5, 0x21, 0, 1, 0, 1];
+            let plen = (b.len() - 6 + frame.len()) as u16;
+            b[4..6].copy_from_slice(&plen.to_be_bytes());
+            b.extend_from_slice(&frame);
+            let chunks = b
+                .chunks(184)
+                .enumerate()
+                .map(|(k, c)| OutChunk {
+                    len: c.len(),
+                    src,
+                    at: 0,
+                    rai: false,
+                    pusi: k == 0,
+                    seam: false,
+                })
+                .collect();
+            e.queue.push_back(OutPes {
+                bytes: b,
+                chunks,
+                pts: Some(pts),
+                dts: None,
+                decode: None,
+                kind: UnitKind::AudioFrame { dur, copy: false },
+                prepared: None,
+                kept: false,
+            });
+        }
+    }
+
+    /// Drop the first `n` bytes of a splitter's buffer.
+    fn consume(sp: &mut AdtsSplit, n: usize) {
+        if n == 0 {
+            return;
+        }
+        sp.buf.drain(..n);
+        // the run covering the new first byte starts at 0
+        let k = sp.runs.partition_point(|r| r.0 <= n);
+        sp.runs.drain(..k.saturating_sub(1));
+        for r in &mut sp.runs {
+            r.0 = r.0.saturating_sub(n);
+        }
+        if let Some((at, p)) = sp.pts {
+            sp.pts = (at >= n).then(|| (at - n, p)).or(Some((0, p)));
+        }
+    }
+
+    /// Per-pass state back to the start of a pass.
+    fn reset_pass(&mut self) {
+        self.win_1s.clear();
+        self.win_100ms.clear();
+        self.clock = PcrClock::new(Some(self.pcr_pid));
+        self.started = false;
+        self.pass_first_t = None;
+        self.pass_last_t = 0;
+        self.read_t = 0;
+        for e in &mut self.es {
+            e.last_cc = None;
+            e.last_pkt = None;
+            e.asm = None;
+            e.wait_pusi = true;
+            e.drop_leading_b = false;
+            e.pass_units = 0;
+            e.first_pts = None;
+            e.last_pts = None;
+            e.last_decode = None;
+            e.adts = None;
+        }
     }
 
     fn end_pass(&mut self) {
@@ -2941,6 +3373,18 @@ impl Relay {
         self.stats.source_packets += std::mem::take(&mut self.pass_packets);
         self.win_1s.clear();
         self.win_100ms.clear();
+        if let Some(c) = self.ctl.as_mut() {
+            // under playback control the next pass is anchored like a seek
+            if self.at_eof == AtEof::End {
+                self.reading_done = true;
+                return;
+            }
+            let tl = self.timeline.as_ref().expect("started");
+            c.anchor = Some(tl.map(c.c_read));
+            c.pass_file_t = 0;
+            self.reset_pass();
+            return;
+        }
         if self.period.is_none() {
             // Loop period P (pass-local ticks): the next pass starts
             // arriving after the last packet of this one, after the last
@@ -2978,26 +3422,133 @@ impl Relay {
         }
         // next pass: same file, same pass-local times, one period later
         self.pass_offset += self.period.unwrap_or(0);
-        self.clock = PcrClock::new(Some(self.pcr_pid));
-        self.started = false;
-        self.pass_first_t = None;
-        self.pass_last_t = 0;
-        self.read_t = 0;
-        for e in &mut self.es {
-            e.last_cc = None;
-            e.last_pkt = None;
-            e.asm = None;
-            e.wait_pusi = true;
-            e.drop_leading_b = false;
-            e.pass_units = 0;
-            e.first_pts = None;
-            e.last_pts = None;
-            e.last_decode = None;
+        self.reset_pass();
+    }
+
+    /// Map the head unit of `ei` onto the timeline (PTS/DTS written, due
+    /// times set), applying playback control: skipped video pictures and
+    /// audio frames are dropped here, repeated audio frames copied. False
+    /// when nothing can start now (empty queue, paused, no timeline yet).
+    fn prepare(&mut self, ei: usize) -> bool {
+        let video = self.video;
+        let Self {
+            es,
+            timeline,
+            ctl,
+            stats,
+            ..
+        } = self;
+        let Some(tl) = timeline.as_ref() else {
+            return false;
+        };
+        let epoch = ctl.as_ref().map_or(0, |c| c.epoch);
+        if ctl.as_ref().is_some_and(|c| c.paused.is_some()) {
+            return false;
+        }
+        let e = &mut es[ei];
+        loop {
+            let Some(u) = e.queue.front_mut() else {
+                return false;
+            };
+            if u.prepared == Some(epoch) {
+                return true;
+            }
+            match u.kind {
+                UnitKind::Packet => {
+                    for c in &mut u.chunks {
+                        c.at = tl.map(c.src).max(0) as u64;
+                    }
+                }
+                UnitKind::Pes { picture } => {
+                    let Some(d) = u.decode_c() else {
+                        for c in &mut u.chunks {
+                            c.at = tl.map(c.src).max(0) as u64;
+                        }
+                        u.prepared = Some(epoch);
+                        return true;
+                    };
+                    if let Some(c) = ctl.as_mut() {
+                        if Some(ei) == video && !u.kept {
+                            let rate = tl.rate_at(d);
+                            let shown = u.pts.map(|p| tl.map(p));
+                            let spaced = rate <= 1.0
+                                || shown.is_none_or(|p| {
+                                    c.shown.iter().all(|&k| (p - k).abs() >= c.frame * 9 / 10)
+                                });
+                            if !c.video.decide(picture, u.bytes.len(), rate, spaced) {
+                                e.queue.pop_front();
+                                stats.skipped_pictures += 1;
+                                continue;
+                            }
+                            u.kept = true;
+                            if let Some(p) = shown {
+                                if c.shown.len() >= 8 {
+                                    c.shown.pop_front();
+                                }
+                                c.shown.push_back(p);
+                            }
+                        }
+                        if e.last_out_decode.is_some_and(|l| tl.map(d) <= l) {
+                            // behind what was sent (a seek or rate change)
+                            e.queue.pop_front();
+                            stats.pes_dropped += 1;
+                            continue;
+                        }
+                    }
+                    let out = tl.map(d);
+                    let (pts, dts) = (u.pts.map(|v| tl.map(v)), u.dts.map(|v| tl.map(v)));
+                    Self::write_times(&mut u.bytes, pts, dts);
+                    for c in &mut u.chunks {
+                        c.at = (out - (d - c.src)).max(0) as u64;
+                    }
+                    u.decode = Some(out.max(0) as u64);
+                }
+                UnitKind::AudioFrame { dur, copy } => {
+                    if copy {
+                        e.queue.pop_front(); // a repetition prepared for an older timeline
+                        continue;
+                    }
+                    let c = u.pts.expect("audio frames carry a PTS");
+                    match e.slots.peek(tl.map(c), tl.map(c + dur), dur) {
+                        Slot::Skip => {
+                            e.queue.pop_front();
+                            stats.skipped_audio_frames += 1;
+                            continue;
+                        }
+                        Slot::Emit { pts, again } => {
+                            let set = |u: &mut OutPes| {
+                                Self::write_times(&mut u.bytes, Some(pts), None);
+                                for ch in &mut u.chunks {
+                                    ch.at = (pts - (c - ch.src)).max(0) as u64;
+                                }
+                                u.decode = Some(pts.max(0) as u64);
+                                u.prepared = Some(epoch);
+                            };
+                            if again {
+                                let mut cp = u.clone();
+                                cp.kind = UnitKind::AudioFrame { dur, copy: true };
+                                set(&mut cp);
+                                u.prepared = None;
+                                e.queue.push_front(cp);
+                                stats.repeated_audio_frames += 1;
+                            } else {
+                                set(u);
+                            }
+                            return true;
+                        }
+                    }
+                }
+            }
+            u.prepared = Some(epoch);
+            return true;
         }
     }
 
-    /// Next chunk of `ei` to send, if any is queued.
-    pub(crate) fn head(&self, ei: usize) -> Option<Head> {
+    /// Next chunk of `ei` to send, if any can go now.
+    pub(crate) fn head(&mut self, ei: usize) -> Option<Head> {
+        if self.es[ei].cur.is_none() && !self.prepare(ei) {
+            return None;
+        }
         let e = &self.es[ei];
         match &e.cur {
             Some((u, i, pos)) => Some(Head {
@@ -3028,6 +3579,24 @@ impl Relay {
             if let (Some(ts), Some(d), EsMode::Pes) = (e.tstd.as_mut(), u.decode, e.mode) {
                 ts.add_au(d, u.bytes.len());
             }
+            if let Some(c) = self.ctl.as_mut() {
+                if let Some(d) = u.decode {
+                    let d = d as i64;
+                    e.last_out_decode = Some(d);
+                    c.o_sent = Some(c.o_sent.map_or(d, |o| o.max(d)));
+                    if let UnitKind::AudioFrame { dur, .. } = u.kind {
+                        e.slots.commit(d, dur);
+                    }
+                }
+                let content = [u.pts, u.dts, u.chunks.last().map(|c| c.src)]
+                    .into_iter()
+                    .flatten()
+                    .max();
+                if let Some(v) = content {
+                    c.c_sent = Some(c.c_sent.map_or(v, |o| o.max(v)));
+                    e.c_sent = Some(e.c_sent.map_or(v, |o| o.max(v)));
+                }
+            }
             e.cur = Some((u, 0, 0));
         }
         let (u, i, pos) = e.cur.as_mut().expect("current unit");
@@ -3057,6 +3626,158 @@ impl Relay {
             e.cur = None;
         }
         Ok(pkt.encode()?)
+    }
+
+    // ---- playback control
+
+    /// Under playback control.
+    pub(crate) fn controlled(&self) -> bool {
+        self.ctl.is_some()
+    }
+
+    /// Enable playback control (before the first frame).
+    pub(crate) fn enable_control(&mut self) {
+        self.ctl.get_or_insert(Control {
+            epoch: 0,
+            paused: None,
+            rate: 1.0,
+            c_sent: None,
+            o_sent: None,
+            c_read: 0,
+            anchor: None,
+            floor: None,
+            passes: Vec::new(),
+            pass_file_t: 0,
+            reader_gen: 0,
+            video: VideoThinning::default(),
+            frame: self.frame_period,
+            shown: VecDeque::new(),
+        });
+    }
+
+    /// Content time from which a control change applies: after everything
+    /// already sent (the receiver's buffers keep their timing).
+    fn boundary(&self) -> Option<i64> {
+        let c = self.ctl.as_ref()?;
+        c.c_sent
+            .or_else(|| self.timeline.as_ref().map(|t| t.last().c0))
+    }
+
+    /// Pause at mux time `now` (the unit being sent completes).
+    pub(crate) fn pause(&mut self, now: u64) -> bool {
+        let Some(c) = self.ctl.as_mut() else {
+            return false;
+        };
+        if c.paused.is_none() {
+            c.paused = Some(now);
+            c.epoch += 1;
+        }
+        true
+    }
+
+    /// Resume at mux time `now`: everything not yet sent is shown that much
+    /// later. The delay applies from the stream that is least far ahead
+    /// (audio is sent closer to its decoding than video), so that every
+    /// stream's next unit is delayed.
+    pub(crate) fn resume(&mut self, now: u64) -> bool {
+        let b = self
+            .es
+            .iter()
+            .filter(|e| e.mode == EsMode::Pes)
+            .filter_map(|e| e.c_sent)
+            .min()
+            .or_else(|| self.boundary());
+        let Some(c) = self.ctl.as_mut() else {
+            return false;
+        };
+        let Some(p) = c.paused.take() else {
+            return true;
+        };
+        let d = now.saturating_sub(p) as i64;
+        if let (Some(tl), Some(b)) = (self.timeline.as_mut(), b) {
+            tl.change(b, d.div_euclid(300) * 300, Some(c.rate));
+        }
+        c.video.reset();
+        c.epoch += 1;
+        true
+    }
+
+    /// Play `rate` times faster than real time from what is sent next.
+    /// What follows starts no sooner than the source's longest lead from
+    /// now: the receiver's buffers then hold less than the source keeps in
+    /// them (after fast play, or at the start), and the units at the new
+    /// rate need that time to arrive (a short still picture instead of
+    /// late PES).
+    pub(crate) fn set_rate(&mut self, rate: f64) -> bool {
+        let b = self.boundary();
+        let (now, lead) = (self.now as i64, self.max_lead);
+        let Some(c) = self.ctl.as_mut() else {
+            return false;
+        };
+        c.rate = rate;
+        if c.paused.is_none()
+            && let (Some(tl), Some(b)) = (self.timeline.as_mut(), b)
+        {
+            let gap = (now + lead - tl.map(b)).max(0);
+            tl.change(b, gap.div_euclid(300) * 300, Some(rate));
+        }
+        c.video.reset();
+        c.epoch += 1;
+        true
+    }
+
+    /// Jump `delta_s` seconds from the position shown; returns the file
+    /// position (s) reading continues from.
+    pub(crate) fn seek(&mut self, delta_s: f64) -> Option<f64> {
+        let pos = self.playback_status()?.position_s;
+        let dur = self.duration as f64 / HZ as f64;
+        let target = (pos + delta_s).clamp(0.0, (dur - 1.0).max(0.0));
+        let p = {
+            let k = self
+                .seek_index
+                .partition_point(|x| x.t as f64 <= target * HZ as f64);
+            *self.seek_index.get(k.saturating_sub(1))?
+        };
+        let now = self.now as i64;
+        let c = self.ctl.as_mut()?;
+        c.reader_gen += 1;
+        self.reader
+            .send(ReaderCmd::Seek {
+                epoch: c.reader_gen,
+                offset: p.offset,
+            })
+            .ok()?;
+        c.anchor = Some(c.o_sent.unwrap_or(now).max(now));
+        c.pass_file_t = p.t;
+        c.epoch += 1;
+        // what is queued is not sent; the unit being sent completes
+        for e in &mut self.es {
+            e.queue.clear();
+        }
+        self.reading_done = false;
+        self.pass_packets = 0;
+        self.reset_pass();
+        Some(p.t as f64 / HZ as f64)
+    }
+
+    /// Position shown, rate and pause state (under playback control).
+    pub(crate) fn playback_status(&self) -> Option<PlaybackStatus> {
+        let c = self.ctl.as_ref()?;
+        let dur = self.duration as f64 / HZ as f64;
+        let position_s = match (&self.timeline, c.passes.is_empty()) {
+            (Some(tl), false) => {
+                let shown = tl.inverse(c.paused.unwrap_or(self.now) as i64);
+                let shown = c.c_sent.map_or(shown, |s| shown.min(s));
+                position(&c.passes, shown).clamp(0.0, dur)
+            }
+            _ => 0.0,
+        };
+        Some(PlaybackStatus {
+            position_s,
+            duration_s: dur,
+            rate: c.rate,
+            paused: c.paused.is_some(),
+        })
     }
 
     /// One-line status.
