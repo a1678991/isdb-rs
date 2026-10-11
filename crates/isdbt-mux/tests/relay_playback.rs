@@ -10,6 +10,7 @@ mod common;
 use common::{bench_params, synth_audio, tmpdir};
 use isdbt_mux::{Config, Multiplexer, Packet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const HZ: f64 = 27e6;
 const VIDEO: u16 = 0x0111;
@@ -68,12 +69,17 @@ source = "fixed"
 start = "2026-01-01T12:00:00"
 "#;
 
-/// A 40 s source (its media loop: 46 GOPs ≈ 20 s, twice).
-fn source(dir: &Path) -> PathBuf {
+/// A 40 s source (its media loop: 46 GOPs ≈ 20 s, twice), made once for
+/// all the tests of this file (they run in parallel).
+fn source() -> PathBuf {
+    static SOURCE: OnceLock<PathBuf> = OnceLock::new();
+    SOURCE
+        .get_or_init(|| make_source(&tmpdir("relay-playback")))
+        .clone()
+}
+
+fn make_source(dir: &Path) -> PathBuf {
     let path = dir.join("playback-source.ts");
-    if path.exists() {
-        return path;
-    }
     std::fs::write(dir.join("v.m2v"), video(46)).unwrap();
     std::fs::write(dir.join("a.adts"), synth_audio(937)).unwrap();
     let text = format!(
@@ -234,8 +240,7 @@ fn position(m: &Multiplexer) -> f64 {
 
 #[test]
 fn normal_play_under_control_is_clean() {
-    let dir = tmpdir("relay-playback");
-    let mut m = relay(&source(&dir));
+    let mut m = relay(&source());
     let mut r = Run::default();
     run(&mut m, 8.0, &mut r);
     check(&m, &r, "1×");
@@ -245,8 +250,7 @@ fn normal_play_under_control_is_clean() {
 
 #[test]
 fn pause_sends_nothing_and_resume_continues() {
-    let dir = tmpdir("relay-playback");
-    let mut m = relay(&source(&dir));
+    let mut m = relay(&source());
     let mut r = Run::default();
     run(&mut m, 4.0, &mut r);
     let before = position(&m);
@@ -275,8 +279,7 @@ fn pause_sends_nothing_and_resume_continues() {
 
 #[test]
 fn fast_play_skips_and_stays_in_time() {
-    let dir = tmpdir("relay-playback");
-    let mut m = relay(&source(&dir));
+    let mut m = relay(&source());
     let mut r = Run::default();
     run(&mut m, 3.0, &mut r);
     for rate in [2.0, 4.0] {
@@ -299,8 +302,7 @@ fn fast_play_skips_and_stays_in_time() {
 
 #[test]
 fn slow_play_repeats_audio() {
-    let dir = tmpdir("relay-playback");
-    let mut m = relay(&source(&dir));
+    let mut m = relay(&source());
     let mut r = Run::default();
     run(&mut m, 3.0, &mut r);
     assert!(m.set_rate(0.5));
@@ -316,8 +318,7 @@ fn slow_play_repeats_audio() {
 
 #[test]
 fn seek_forward_and_back() {
-    let dir = tmpdir("relay-playback");
-    let mut m = relay(&source(&dir));
+    let mut m = relay(&source());
     let mut r = Run::default();
     run(&mut m, 4.0, &mut r);
     let p0 = position(&m);
