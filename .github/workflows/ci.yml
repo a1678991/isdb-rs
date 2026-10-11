@@ -133,7 +133,8 @@ jobs:
         with:
           persist-credentials: false
       # Deliberately no libhackrf-dev: `--no-default-features` drops the
-      # `hackrf` feature, so nothing may link the system library.
+      # `hackrf` feature (isdb-cli forwards it to isdb-radio, the only crate
+      # that depends on isdb-hackrf), so nothing may link the system library.
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -145,3 +146,9 @@ jobs:
         run: cargo clippy -p isdb-cli --no-default-features --all-targets --locked -- -D warnings
       - name: test (no default features)
         run: cargo test -p isdb-cli --no-default-features --locked
+      # isdb-radio without any backend: the registry must still compile and
+      # name the missing feature (its `hackrf_left_out` test).
+      - name: clippy isdb-radio (no backends, -D warnings)
+        run: cargo clippy -p isdb-radio --no-default-features --all-targets --locked -- -D warnings
+      - name: test isdb-radio (no backends)
+        run: cargo test -p isdb-radio --no-default-features --locked
