@@ -65,12 +65,52 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   (`ISDB_RS_ORACLE_CONTAINER` still overrides it).
 - `ts-program` relay, conditional access: input must be unscrambled
   (transport_scrambling_control '00') and scrambled input is refused; the
-  tool never descrambles. The source program's CA_descriptor and ECM are
-  now kept by default (`ca = "keep"`); `ca = "drop"` removes them on
-  explicit request.
-- `ts-program` relay, copy control: the relayed service preserves the
-  source's digital copy control by default. Relaxing it is possible only
-  explicitly, and the source value is then reported as an `info` line.
+  tool never descrambles. The source's CA signalling is now kept by default
+  (`ca = "keep"`, CLI `--ca keep`): the PMT's conditional_access_descriptors
+  (program and relayed ES loops) and the ECM PIDs, and the CAT's
+  CA_descriptors with the EMM PIDs present in the source, following the PID
+  mapping. `ca = "drop"` (`--ca drop`) removes them on explicit request.
+- `ts-program` relay, copy control: the source value is detected from the
+  PMT program loop, the relayed ES loops, the SDT and EIT p/f (0xC1 and
+  0xDE; precedence PMT > ES > SDT > EIT, per-component ES-loop 0xC1 kept)
+  and preserved by default. An explicit value is used as given, and an
+  `info` line prints the source value next to what is relayed. Raw
+  descriptors, byte patches or section replacements that can set a relayed
+  service's copy control are reported with the value actually sent.
+- `isdb tx`/`rx`: `--freq` and `--channel` are limited to 470–710 MHz (UHF
+  channels 13–52) unless `--freq-unrestricted` is given.
+- `isdb-cli`: HackRF support is the optional `hackrf` feature (default on);
+  `cargo build -p isdb-cli --no-default-features` builds without libhackrf
+  (all file-based commands work). CI has a `no-hackrf` job.
+- `isdb-hackrf`: minimum libhackrf 2022.09.1; older libraries are refused
+  at open.
+- Neutral default identifiers in examples, the relay template and tests:
+  network_id / transport_stream_id 0x79EE (placeholder; choose an ID not
+  used where your receiver is), area_code 0x5A5.
+- **Breaking:**
+  - `isdbt_core::Params` and `LayerConfig` fields are private, with
+    accessors (construction is validated); `ParamError` is an enum.
+  - `isdbt_phy::PipelinedReceiver::new` returns a `Result`.
+  - Public error enums and growing configuration enums are
+    `#[non_exhaustive]`.
+  - `isdbt_mux::relay::Probe::source_copy_control` is a
+    `SourceCopyControl` with findings (no `Option`);
+    `relay::expanded_stream` takes `keep_copy_control`; stream
+    configurations have a `ca` field; `[eit_schedule] reference` is a
+    validated enum (`"today"` | `"month"`).
+
+### Fixed
+
+- `ts-program` relay: a due packet whose T-STD buffer would overflow now
+  waits up to 2 ms (`relay::RETIME_HOLD`), so output slot jitter no longer
+  overflows MBn for sources multiplexed without buffer headroom.
+- `ts-program` relay: read errors on the recording are reported instead of
+  being treated as end of file.
+- `isdb-hackrf`: the callback context is kept alive when
+  `hackrf_stop_tx`/`hackrf_stop_rx` fails, closing a possible
+  use-after-free.
+- `isdb ts validate --expect-services` parses its argument without
+  panicking.
 
 ### Removed
 

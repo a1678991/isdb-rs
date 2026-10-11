@@ -12,8 +12,9 @@ in the [glossary](glossary.md).
 ## Prerequisites
 
 - **Rust ≥ 1.88** (edition 2024), e.g. from [rustup](https://rustup.rs).
-- **libhackrf**, the HackRF host library. The `isdb` binary links it
-  dynamically, so it is needed even when no radio is attached:
+- **libhackrf** 2022.09.1 or later, the HackRF host library, for the
+  `hackrf` cargo feature of `isdb-cli` (on by default). The default build
+  links it dynamically, so it is needed even when no radio is attached:
 
   | System | Package |
   |---|---|
@@ -22,7 +23,9 @@ in the [glossary](glossary.md).
   | Fedora | `hackrf-devel` |
 
   The library crates (`isdb-ts`, `isdb-si`, `isdbt-phy`, …) do not need it;
-  only `isdb-hackrf` and `isdb-cli` do.
+  only `isdb-hackrf` and the default `isdb-cli` build do. Without it, build
+  with `--no-default-features`: everything on this page works, and only
+  `--hackrf` is unavailable.
 - Optional: `ffmpeg` / `ffprobe` to make test media and to check the
   multiplexer's output.
 
@@ -114,14 +117,14 @@ only stream is *declared* in the PMT without any media:
 ```sh
 cat > test.toml <<'EOF'
 [network]
-network_id = 0x7FE0
+network_id = 0x79EE            # placeholder: pick an ID unused where you are
 name = "テスト"
 area_code = 0x5A5
 remote_control_key_id = 9
 channels = [27]
 
 [transport]
-transport_stream_id = 0x7FE0
+transport_stream_id = 0x79EE
 
 [clock]
 source = "fixed"

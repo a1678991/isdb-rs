@@ -114,7 +114,7 @@ it is unset or the file is missing, so a fresh checkout passes with no data:
 | `ISDB_RS_CAPTURE_TS` | a terrestrial ISDB-T capture; the tests that parse PES payloads need them unscrambled (transport_scrambling_control '00') |
 | `ISDB_RS_OUR_TS` | a TS produced by `isdb mux`, compared with the capture |
 | `ISDB_RS_RELAY_TS` | an unscrambled recording (transport_scrambling_control '00') that you have the rights to relay (`ts-program`) |
-| `ISDB_RS_MEDIA_DIR` | bench media: `v63p.m2v` (MPEG-2 video), `a.m2a` (ADTS AAC); some tests also need `ffprobe` |
+| `ISDB_RS_MEDIA_DIR` | your own media: `video.m2v` (MPEG-2 video ES), `audio.m2a` (AAC ADTS); some tests also need `ffprobe` |
 
 Which tests read which variable is listed in
 [docs/test-data.md](docs/test-data.md) and in each crate's README. New
@@ -127,9 +127,12 @@ unset, never fail for missing data).
   selects the pinned toolchain (with rustfmt and clippy) automatically. The
   minimum supported Rust version is `rust-version` in `Cargo.toml` (1.88);
   `make msrv` needs it installed: `rustup toolchain install 1.88 --profile minimal`.
-- **libhackrf**: `crates/isdb-hackrf` links the system library even when no
-  radio is attached (Arch `hackrf`, Debian/Ubuntu `libhackrf-dev`, Homebrew
-  `hackrf`).
+- **libhackrf** (2022.09.1 or later; older releases are refused at open):
+  needed only for the `hackrf` feature of `isdb-cli`, which is on by
+  default and links the system library even when no radio is attached
+  (Arch `hackrf`, Debian/Ubuntu `libhackrf-dev`, Homebrew `hackrf`).
+  `cargo build -p isdb-cli --no-default-features` builds without it; CI
+  checks that build in the `no-hackrf` job.
 - **Harness tools** (recommended): install [mise](https://mise.jdx.dev/),
   then run `mise install` in the repository. It installs the pinned
   node/pnpm (commitlint), lefthook, cargo-deny, actionlint, zizmor, pinact and
@@ -150,6 +153,9 @@ Managed by lefthook (`lefthook.yaml`, installed into `.git/hooks` by
 | `pre-push` | refuses direct pushes to `main` |
 
 Skip once with `LEFTHOOK=0 git commit …` (CI runs the same checks anyway).
+In a linked git worktree (`git worktree add`), lefthook's handling of
+partially staged files fails; stage whole files, commit from the main
+checkout, or skip the hook once and run `make lint` yourself.
 
 ### Checks
 

@@ -19,7 +19,7 @@ gr-isdbt differential test.
 | `ISDB_RS_CAPTURE_TS` | a terrestrial ISDB-T transport-stream capture (188/192/204-byte packets) | `isdb-ts` `tests/capture.rs` (every packet and section round-trips byte-identically, CRCs valid); `isdb-si` `tests/capture.rs` (every distinct SI section decodes typed and re-encodes byte-identically); `isdb-text` `capture_si_strings` (every NIT/SDT/EIT string decodes without issues and round-trips); `isdb-analyze` `tests/real_data.rs` (inspect decodes everything, validate, identity and mutation edits stay clean); `isdbt-mux` `tests/adts.rs` `capture_all_frames_conform` (every ADTS frame passes the B32 Part 2 header rules) |
 | `ISDB_RS_OUR_TS` | a TS written by `isdb mux` (together with `ISDB_RS_CAPTURE_TS`) | `isdb-analyze` `ours_vs_capture` (prints a diff report of ours against the capture), `transplant_nit_between_captures_is_crc_and_cc_clean` |
 | `ISDB_RS_RELAY_TS` | a recorded TS that you have the rights to relay, unscrambled (transport_scrambling_control '00') | `isdb-cli` `relay_recording` and `relay_recording_without_toml` (the recording through `ts-program` / `--relay`: video on 0x0111, no late PES, T-STD clean, `ts validate` without errors, ffmpeg decodes it, `loopback` passes; the decode check uses `ffmpeg` when installed) |
-| `ISDB_RS_MEDIA_DIR` | a directory with `v63p.m2v` (MPEG-2 video ES) and `a.m2a` (AAC ADTS) | `isdbt-mux` `tests/media.rs` (10 s of `bench.toml` with real media; needs `ffprobe`), `tests/adts.rs` `bench_media_refused_by_conform`; `isdb-cli` `loopback_with_in_process_multiplexer` (media part), `bench_media_aac_conforms_to_b32_part2` |
+| `ISDB_RS_MEDIA_DIR` | a directory with `video.m2v` (MPEG-2 video ES) and `audio.m2a` (AAC ADTS) | `isdbt-mux` `tests/media.rs` `media_ffprobe` (10 s of `bench.toml` with your media; needs `ffprobe`), `tests/adts.rs` `media_audio_gate_follows_header_report`; `isdb-cli` `loopback_with_in_process_multiplexer` (media part), `media_aac_gate_matches_b32_part2_report` |
 | `ISDB_RS_ORACLE_CONTAINER` | name of the running oracle container (default `isdb-oracle`) | `oracle/run_matrix.py` |
 | `ISDB_RS_ORACLE_OUT` | output directory of the oracle matrix, inside the repository (default `target/oracle-matrix`) | `oracle/run_matrix.py` |
 
@@ -44,26 +44,28 @@ for your own capture.
 
 ## Making a media directory
 
-The `ISDB_RS_MEDIA_DIR` tests were written for 10 s of 1440×1080
-interlaced MPEG-2 video and 10 s of 48 kHz stereo AAC at about 192 kbit/s
-*without* ADTS crc_check (several of them check that such audio is refused
-by the default `adts_compliance = "conform"` and accepted with `warn`).
-FFmpeg produces exactly such files:
+The `ISDB_RS_MEDIA_DIR` tests take their expectations from the media files
+themselves (picture size from the sequence header; sampling frequency,
+channels, rate and B32 Part 2 rule violations from the ADTS headers), so
+any MPEG-2 video elementary stream and any AAC ADTS file work. Audio with
+violations, for example without crc_check, is expected to be refused by
+the default `adts_compliance = "conform"` and accepted with `warn`;
+conforming audio is expected to pass unchanged. FFmpeg makes a suitable
+pair of test files:
 
 ```sh
 mkdir -p media
 ffmpeg -f lavfi -i testsrc2=size=1440x1080:rate=30000/1001 -t 10 -vf setfield=tff \
     -c:v mpeg2video -b:v 12M -maxrate 12M -bufsize 7M -g 15 -bf 2 \
-    -flags +ilme+ildct -aspect 16:9 -f mpeg2video media/v63p.m2v
+    -flags +ilme+ildct -aspect 16:9 -f mpeg2video media/video.m2v
 ffmpeg -f lavfi -i sine=frequency=1000:sample_rate=48000 -ac 2 -t 10 \
-    -c:a aac -b:a 192k -f adts media/a.m2a
+    -c:a aac -b:a 192k -f adts media/audio.m2a
 ISDB_RS_MEDIA_DIR=$PWD/media cargo test --release -p isdbt-mux --test media --test adts
-ISDB_RS_MEDIA_DIR=$PWD/media cargo test --release -p isdb-cli --test cli bench_media
+ISDB_RS_MEDIA_DIR=$PWD/media cargo test --release -p isdb-cli --test cli media
 ```
 
-(Checked with FFmpeg 9.0: all media tests pass. The FFmpeg AAC encoder
-writes 470 frames for 10 s, ID '0', protection_absent '1' and
-adts_buffer_fullness 0x7FF, which is what the tests expect.)
+(Checked with FFmpeg 9.0: all media tests pass. FFmpeg's ADTS has no
+crc_check, so the tests exercise the refusal path.)
 
 ## Capturing your own data
 

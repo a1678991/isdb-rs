@@ -23,7 +23,9 @@ leaves room for ISDB-S and ISDB-S3.
 >   attenuators straight into the receiver, or a shielded enclosure. No
 >   antenna. It radiates only with `--rf-enable`; without it (or with
 >   `--dry-run`) it prints the RF settings and exits before opening the
->   device. See [docs/transmitting.md](docs/transmitting.md).
+>   device. The centre frequency is limited to the UHF TV band, 470–710 MHz
+>   (channels 13–52), unless `--freq-unrestricted` is given. See
+>   [docs/transmitting.md](docs/transmitting.md).
 > - **No descrambling.** There is no B-CAS / conditional-access support and
 >   the tool never descrambles. Input must be unscrambled
 >   (transport_scrambling_control '00'); scrambled input is refused. A
@@ -98,9 +100,10 @@ How they fit together, the frame/latency contract and the data flow:
 
 ## Quick start
 
-Tested on Linux with Rust ≥ 1.88 (edition 2024). The `isdb` binary links
-the system `libhackrf` dynamically, so it must be installed even if you
-never attach a radio:
+Tested on Linux with Rust ≥ 1.88 (edition 2024). HackRF support is the
+`hackrf` cargo feature of `isdb-cli`, on by default; it links the system
+`libhackrf` (2022.09.1 or later) dynamically, so the default build needs
+the library installed even if you never attach a radio:
 
 | System | Package |
 |---|---|
@@ -113,6 +116,11 @@ git clone https://github.com/a1678991/isdb-rs && cd isdb-rs
 cargo build --release -p isdb-cli          # → target/release/isdb
 export PATH="$PWD/target/release:$PATH"
 ```
+
+Without libhackrf, build with
+`cargo build --release -p isdb-cli --no-default-features`: every
+file-based command (`tx --iq`, `rx --iq`, `loopback`, `mux`, `ts`) works,
+and `--hackrf` fails with a message naming the feature.
 
 Everything below works without a radio and without any captured data.
 
@@ -136,14 +144,14 @@ Generate a transport stream from a media-free configuration and analyse it:
 ```sh
 cat > test.toml <<'EOF'
 [network]
-network_id = 0x7FE0
+network_id = 0x79EE            # placeholder: pick an ID unused where you are
 name = "テスト"
 area_code = 0x5A5
 remote_control_key_id = 9
 channels = [27]
 
 [transport]
-transport_stream_id = 0x7FE0
+transport_stream_id = 0x79EE
 
 [clock]
 source = "fixed"
