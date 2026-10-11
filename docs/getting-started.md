@@ -56,6 +56,23 @@ the modulator needs it to keep up with a radio.
 | `isdb loopback` | `tx` → software channel (noise, CFO, timing offset) → `rx`, comparing every packet |
 | `isdb mux` | service multiplexer: TOML description (+ media) → transport stream |
 | `isdb ts` | transport-stream analysis: `inspect`, `validate`, `diff`, `edit`, `extract` |
+| `isdb completions` | shell completion script for bash or zsh (also fish, elvish, PowerShell) |
+
+Optionally, install shell completions (details in the
+[CLI README](../crates/isdb-cli/README.md#isdb-completions--shell-completions)):
+
+```sh
+# bash (bash-completion loads it on demand)
+mkdir -p ~/.local/share/bash-completion/completions
+isdb completions bash > ~/.local/share/bash-completion/completions/isdb
+
+# zsh: ~/.zfunc must be on $fpath before compinit runs in ~/.zshrc:
+#   fpath=(~/.zfunc $fpath); autoload -Uz compinit && compinit
+mkdir -p ~/.zfunc && isdb completions zsh > ~/.zfunc/_isdb
+```
+
+The script is generated from the installed binary, so regenerate it after
+upgrading `isdb`.
 
 ## First loopback
 

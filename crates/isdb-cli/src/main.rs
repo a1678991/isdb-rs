@@ -6,6 +6,7 @@
 //! * `isdb ts`, `isdb mux` — TS analysis / service multiplexing
 //! * `--relay FILE` (`tx`, `loopback`, `mux`) — rebroadcast a recorded
 //!   program without a TOML file
+//! * `isdb completions SHELL` — shell completion script (bash, zsh, …)
 //!
 //! The binary adds I/O, threading, pacing, radio control and reporting on
 //! top of the library crates (`isdbt-phy`, `isdbt-mux`, `isdb-analyze`,
@@ -13,7 +14,9 @@
 //! thread architecture and the test inventory are in this crate's
 //! `README.md`.
 
-use clap::{Parser, Subcommand};
+use std::io::Write;
+
+use clap::{CommandFactory, Parser, Subcommand};
 
 mod channel;
 mod input;
@@ -51,6 +54,16 @@ enum Command {
     Ts(ts::TsArgs),
     /// Service multiplexer.
     Mux(mux::MuxArgs),
+    /// Shell completions: print the completion script for SHELL to stdout.
+    ///
+    /// The script is generated from this binary's own command line, so
+    /// regenerate it after upgrading `isdb`. It completes subcommands,
+    /// options and fixed option values; file names come from the shell.
+    Completions {
+        /// Shell to generate the script for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -70,13 +83,20 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Ts(a) => ts::run(a),
         Command::Mux(a) => mux::run(a),
+        Command::Completions { shell } => {
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "isdb", &mut script);
+            // Written here rather than by `generate`, which panics on a
+            // write error such as a closed pipe.
+            std::io::stdout().lock().write_all(&script)?;
+            Ok(())
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     #[test]
     fn cli_definition_is_consistent() {

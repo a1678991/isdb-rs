@@ -57,6 +57,9 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   only with `--rf-enable`), `rx`, `loopback` (software channel with
   impairments), `mux` (including `--relay` of a recording) and `ts`
   (inspect, validate, diff, edit).
+- `isdb-cli`: `isdb completions SHELL` prints a shell completion script
+  (bash, zsh; also fish, elvish, PowerShell) generated with
+  `clap_complete` from the binary's own command line.
 - Verification: spec-vector tests, property-tested lossless round trips,
   TX→RX loopbacks, opt-in tests on real captures (`ISDB_RS_*` environment
   variables) and a differential test against gr-isdbt (`oracle/`,

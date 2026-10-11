@@ -28,6 +28,7 @@ isdbt-ofdm.workspace = true
 isdbt-phy.workspace = true
 isdb-radio.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

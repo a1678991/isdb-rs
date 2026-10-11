@@ -631,6 +631,34 @@ fn endless_input_into_iq_file_is_refused_without_seconds() {
     std::fs::remove_dir_all(&d).unwrap();
 }
 
+#[test]
+fn completions_cover_every_subcommand() {
+    const SUBCOMMANDS: [&str; 6] = ["tx", "rx", "loopback", "ts", "mux", "completions"];
+    let o = run(&["completions", "bash"]);
+    assert!(o.status.success());
+    let bash = String::from_utf8(o.stdout).unwrap();
+    assert!(
+        bash.contains("_isdb()") && bash.contains("complete -F _isdb"),
+        "{bash}"
+    );
+    for sub in SUBCOMMANDS {
+        assert!(bash.contains(&format!("isdb,{sub})")), "bash: {sub}");
+    }
+    assert!(bash.contains("--radio"), "bash: --radio");
+
+    let o = run(&["completions", "zsh"]);
+    assert!(o.status.success());
+    let zsh = String::from_utf8(o.stdout).unwrap();
+    assert!(zsh.starts_with("#compdef isdb\n"), "{zsh}");
+    for sub in SUBCOMMANDS {
+        assert!(zsh.contains(&format!("'{sub}:")), "zsh: {sub}");
+    }
+    assert!(zsh.contains("--radio="), "zsh: --radio");
+
+    // Not a shell: a usage error.
+    assert_eq!(run(&["completions", "csh"]).status.code(), Some(2));
+}
+
 fn bench_toml() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../isdbt-mux/examples/bench.toml")
 }

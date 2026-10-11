@@ -79,7 +79,7 @@ leaves room for ISDB-S and ISDB-S3.
   GNU Radio, cs8 for `hackrf_transfer`) and radio streaming through
   device-neutral IQ sink/source traits with one backend per device
   (HackRF One today, `--radio hackrf`); one `isdb` binary with `tx`, `rx`,
-  `loopback`, `mux` and `ts` commands.
+  `loopback`, `mux`, `ts` and `completions` commands.
 
 ## Crates
 
