@@ -11,8 +11,8 @@
 # service. The source's conditional-access signalling (CA descriptors,
 # ECM, CAT/EMM) is carried by default (`ca` below).
 #
-# Without this file: `isdb tx --relay FILE --auto-layout --hackrf --channel 44
-# --txvga 20 --rf-enable` builds the same configuration in memory
+# Without this file: `isdb tx --relay FILE --auto-layout --radio hackrf
+# --channel 44 --gain txvga=20 --rf-enable` builds the same configuration in memory
 # (`--print-config` prints it).
 #
 # Transmission parameters are not in this file. A recording above the
@@ -25,7 +25,7 @@
 #   isdb ts validate check.ts
 #   isdb loopback --mux-config relay-ts.toml --layer-b 12,64qam,7/8,2 --frames 8 --snr-db 25
 #   isdb tx --mux-config relay-ts.toml --layer-b 12,64qam,7/8,2 \
-#           --hackrf --channel 44 --txvga 20 --rf-enable --seconds 0
+#           --radio hackrf --channel 44 --gain txvga=20 --rf-enable --seconds 0
 #
 # (Single 13-segment layer instead, 21.30 Mbit/s, no one-seg layer:
 #  --partial false --layer-a 13,64qam,7/8,2 --layer-b none.)

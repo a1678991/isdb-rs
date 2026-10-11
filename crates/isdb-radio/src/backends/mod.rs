@@ -1,0 +1,105 @@
+//! The backend registry: which radios this build supports.
+
+use crate::Backend;
+use anyhow::{Result, bail};
+
+#[cfg(feature = "hackrf")]
+mod hackrf;
+
+/// Every backend this crate knows, compiled in or not: (name, `isdb-radio`
+/// cargo feature enabling it). `isdb-cli` forwards each of these features
+/// as its own feature of the same name (its `Cargo.toml`), which the error
+/// of [`backend`] says.
+const KNOWN: &[(&str, &str)] = &[("hackrf", "hackrf")];
+
+/// The backends compiled into this build.
+const COMPILED: &[&dyn Backend] = &[
+    #[cfg(feature = "hackrf")]
+    &hackrf::HackRf,
+];
+
+/// The backends compiled into this build.
+pub fn backends() -> Vec<&'static dyn Backend> {
+    COMPILED.to_vec()
+}
+
+/// The compiled-in backend called `name`.
+///
+/// Fails for an unknown name or a backend left out of this build, listing
+/// the compiled-in backends and the cargo feature enabling each known one.
+pub fn backend(name: &str) -> Result<&'static dyn Backend> {
+    let compiled = backends();
+    if let Some(b) = compiled.iter().find(|b| b.name() == name) {
+        return Ok(*b);
+    }
+    let feature =
+        |f: &str| format!("isdb-radio feature `{f}`, forwarded by isdb-cli feature `{f}`");
+    let head = match KNOWN.iter().find(|(k, _)| *k == name) {
+        Some((_, f)) => format!("radio backend {name:?} is not compiled in ({})", feature(f)),
+        None => format!("unknown radio backend {name:?}"),
+    };
+    let list = |it: &mut dyn Iterator<Item = &(&str, &str)>| {
+        it.map(|(n, f)| format!("{n} ({})", feature(f)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if compiled.is_empty() {
+        bail!(
+            "{head}; this build has no radio backends; known: {}",
+            list(&mut KNOWN.iter())
+        );
+    }
+    let is_compiled = |n: &str| compiled.iter().any(|b| b.name() == n);
+    let mut msg = format!(
+        "{head}; compiled in: {}",
+        list(&mut KNOWN.iter().filter(|(n, _)| is_compiled(n)))
+    );
+    let missing = list(&mut KNOWN.iter().filter(|(n, _)| !is_compiled(n)));
+    if !missing.is_empty() {
+        msg += &format!("; not compiled in: {missing}");
+    }
+    bail!("{msg}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_compiled_backend_is_known_and_found() {
+        for b in backends() {
+            assert!(KNOWN.iter().any(|(n, _)| *n == b.name()), "{}", b.name());
+            assert_eq!(backend(b.name()).unwrap().name(), b.name());
+        }
+    }
+
+    #[test]
+    fn unknown_backend_names_the_features() {
+        let e = backend("pluto").unwrap_err().to_string();
+        assert!(e.starts_with("unknown radio backend \"pluto\"; "), "{e}");
+        let hackrf = "hackrf (isdb-radio feature `hackrf`, forwarded by isdb-cli feature `hackrf`)";
+        if backends().is_empty() {
+            assert!(
+                e.ends_with(&format!(
+                    "this build has no radio backends; known: {hackrf}"
+                )),
+                "{e}"
+            );
+        } else {
+            assert!(e.contains(&format!("compiled in: {hackrf}")), "{e}");
+        }
+    }
+
+    #[cfg(not(feature = "hackrf"))]
+    #[test]
+    fn hackrf_left_out() {
+        let e = backend("hackrf").unwrap_err().to_string();
+        assert!(
+            e.starts_with(
+                "radio backend \"hackrf\" is not compiled in (isdb-radio feature `hackrf`, \
+                 forwarded by isdb-cli feature `hackrf`); this build has no radio backends"
+            ),
+            "{e}"
+        );
+    }
+}

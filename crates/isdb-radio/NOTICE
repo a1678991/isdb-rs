@@ -1,0 +1,26 @@
+isdb-rs
+Copyright 2026 a1678991 and the isdb-rs contributors
+
+This product is licensed under the Apache License, Version 2.0
+(see the LICENSE file).
+
+Specifications. The implementation was written from the published
+specifications ITU-T H.222.0 | ISO/IEC 13818-1 and ARIB STD-B10, STD-B24,
+STD-B31 and STD-B32, in the editions listed in SPECS.md. The copyright in
+those specifications belongs to their publishers (ITU, ISO/IEC, and the
+Association of Radio Industries and Businesses, ARIB). The specification
+documents and text extractions of them are not distributed with this
+product. The SPEC-NOTES.md files, the other documentation and the source
+comments contain short quotations from the specifications, each attributed
+by clause or table, as commentary on how the text is interpreted.
+
+Third-party material:
+
+- libhackrf, Copyright (c) Great Scott Gadgets, Jared Boone, Benjamin
+  Vernoux and contributors, BSD-3-Clause. The FFI declarations in
+  crates/isdb-hackrf/src/ffi.rs are derived from libhackrf's public header
+  hackrf.h. libhackrf itself is not included; it is linked dynamically
+  from the system.
+- GNU Radio and gr-isdbt, GPL-3.0. Used only as an external test oracle by
+  the scripts in oracle/, which import them at run time. Neither is
+  included in or distributed with this product.

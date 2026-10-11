@@ -26,7 +26,7 @@ isdbt-core.workspace = true
 isdbt-fec.workspace = true
 isdbt-ofdm.workspace = true
 isdbt-phy.workspace = true
-isdb-hackrf = { workspace = true, optional = true }
+isdb-radio.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -34,12 +34,17 @@ serde_json.workspace = true
 toml.workspace = true
 ctrlc = { workspace = true, features = ["termination"] }
 
+[dev-dependencies]
+# In-memory sink and radio for the tx stream tests (no device, no libhackrf).
+isdb-radio = { workspace = true, features = ["mock"] }
+
 [features]
 default = ["hackrf"]
-# HackRF TX/RX (`--hackrf`): links the system libhackrf through isdb-hackrf.
-# Without it (`--no-default-features`) every file-based command still works
-# and `--hackrf` fails with a message saying the feature is missing.
-hackrf = ["dep:isdb-hackrf"]
+# The HackRF radio backend (`--radio hackrf`): links the system libhackrf
+# through isdb-radio and isdb-hackrf. Without it (`--no-default-features`)
+# every file-based command still works and `--radio` fails with a message
+# naming the feature to enable.
+hackrf = ["isdb-radio/hackrf"]
 
 [lints]
 workspace = true

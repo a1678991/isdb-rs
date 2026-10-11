@@ -18,7 +18,7 @@
 //!
 //! Entry points: [`Transmitter`] (one OFDM frame per call),
 //! [`Receiver`] / [`PipelinedReceiver`] (push samples, get [`RxFrame`]s),
-//! [`FrameDecoder`] (LLRs → packets) and [`iq`] (cf32 / HackRF cs8 sample
+//! [`FrameDecoder`] (LLRs → packets) and [`iq`] (cf32 / cs8 sample
 //! formats).  The crate README describes the stream-boundary rules, the
 //! `tx_file` / `rx_file` examples and how the pipelines are verified.
 //!
@@ -214,7 +214,7 @@ impl Transmitter {
     /// interleaver / delay-adjustment fill is not energy-dispersed: its long
     /// runs of zero bits map to identical carriers and still give ~37 dB
     /// PAPR in on-air frames 0–1 (Mode 3, I = 2), which an 8-bit DAC
-    /// (HackRF) clips.  After the pre-roll every emitted symbol is ordinary
+    /// clips.  After the pre-roll every emitted symbol is ordinary
     /// OFDM carrying null packets until real input arrives.
     pub fn preroll(&mut self) -> Result<()> {
         for _ in 0..self.preroll_frames() {

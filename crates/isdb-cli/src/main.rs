@@ -1,7 +1,7 @@
 //! `isdb`: ISDB-T streamer (ARIB STD-B31) and TS tools.
 //!
-//! * `isdb tx` — transport streams → ISDB-T baseband → IQ file or HackRF
-//! * `isdb rx` — IQ file or HackRF → demodulated TS + reception report
+//! * `isdb tx` — transport streams → ISDB-T baseband → IQ file or radio
+//! * `isdb rx` — IQ file or radio → demodulated TS + reception report
 //! * `isdb loopback` — software TX → impaired channel → RX, byte-exact check
 //! * `isdb ts`, `isdb mux` — TS analysis / service multiplexing
 //! * `--relay FILE` (`tx`, `loopback`, `mux`) — rebroadcast a recorded
@@ -9,7 +9,7 @@
 //!
 //! The binary adds I/O, threading, pacing, radio control and reporting on
 //! top of the library crates (`isdbt-phy`, `isdbt-mux`, `isdb-analyze`,
-//! `isdb-hackrf`); it holds no spec logic.  Options, the bench recipe, the
+//! `isdb-radio`); it holds no spec logic and no device code.  Options, the bench recipe, the
 //! thread architecture and the test inventory are in this crate's
 //! `README.md`.
 
@@ -22,7 +22,6 @@ mod loopback;
 mod mux;
 mod phyargs;
 mod producer;
-mod radio;
 mod relay;
 mod rx;
 mod sink;
@@ -42,9 +41,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Transmit: per-layer TS (or one TS split by PID) → ISDB-T → IQ file / HackRF.
+    /// Transmit: per-layer TS (or one TS split by PID) → ISDB-T → IQ file / radio.
     Tx(tx::TxArgs),
-    /// Receive: IQ file / HackRF → ISDB-T demodulation → TS, with status.
+    /// Receive: IQ file / radio → ISDB-T demodulation → TS, with status.
     Rx(rx::RxArgs),
     /// Software loopback TX → channel impairments → RX, verifying delivery.
     Loopback(loopback::LoopbackArgs),

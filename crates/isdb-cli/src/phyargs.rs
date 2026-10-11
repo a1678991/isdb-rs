@@ -1,8 +1,9 @@
 //! Command-line description of ISDB-T transmission parameters and of the
-//! RF tuning shared by `tx` and `rx`.
+//! RF tuning shared by `tx --radio` and `rx --radio`.
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
+use isdb_radio::{DeviceSpec, RadioConfig};
 use isdbt_core::*;
 
 /// Transmission parameters (what TMCC signals, ARIB STD-B31 §3.15).
@@ -158,7 +159,7 @@ pub fn channel_hz(ch: u32) -> Result<u64> {
 /// without `--freq-unrestricted`.
 pub const TV_BAND_HZ: std::ops::RangeInclusive<u64> = 470_000_000..=710_000_000;
 
-/// RF tuning shared by HackRF TX and RX.
+/// RF tuning shared by `tx --radio` and `rx --radio`.
 #[derive(Debug, Clone, Args)]
 pub struct TuneArgs {
     /// Japanese UHF channel 13..62 (centre 473 + 6·(ch−13) + 1/7 MHz).
@@ -169,36 +170,36 @@ pub struct TuneArgs {
     #[arg(long)]
     pub freq: Option<u64>,
     /// Accept a centre frequency (from --freq or --channel) outside the
-    /// 470–710 MHz UHF TV band, up to the HackRF's 1 MHz–6 GHz (shielded
-    /// lab setups only).
+    /// 470–710 MHz UHF TV band (shielded lab setups only); the radio's own
+    /// tuning range still applies.
     #[arg(long)]
     pub freq_unrestricted: bool,
-    /// HackRF reference-clock error in ppm (positive = the device clock runs
-    /// fast); the tuning frequency and the sample clock are both divided by
-    /// (1 + ppm·1e-6) so the signal on air is at the nominal values.
+    /// Reference-clock error of the radio in ppm (positive = the device
+    /// clock runs fast); the tuning frequency and the sample clock are both
+    /// divided by (1 + ppm·1e-6) so the signal on air is at the nominal
+    /// values.
     #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
     pub freq_corr_ppm: f64,
-    /// HackRF serial number (default: the first device).
-    #[arg(long)]
-    pub serial: Option<String>,
-    /// Baseband filter bandwidth in Hz (MAX2837 steps; 6 MHz passes the
-    /// 5.57 MHz ISDB-T band).
+    /// Analog (baseband filter) bandwidth request in Hz; the backend chooses
+    /// how to honour it and reports the bandwidth it programmed. 6 MHz
+    /// passes the 5.57 MHz ISDB-T band.
     #[arg(long, default_value_t = 6_000_000)]
     pub bb_filter_hz: u32,
 }
 
-/// Device settings derived from [`TuneArgs`].
+/// Frequency and sample-clock request derived from [`TuneArgs`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tuning {
     /// Nominal centre frequency.
     pub nominal_hz: u64,
-    /// Frequency programmed into the device.
+    /// Frequency to program into the radio (ppm-corrected).
     pub set_hz: u64,
     /// Channel number if given.
     pub channel: Option<u32>,
-    /// `hackrf_set_sample_rate_manual` numerator (divider 63).
+    /// Sample-rate request as a rational number `rate_num / rate_den` Hz
+    /// (ppm-corrected): the ISDB-T 512/63 MHz clock.
     pub rate_num: u32,
-    /// Divider.
+    /// Denominator of the sample-rate request.
     pub rate_den: u32,
 }
 
@@ -211,9 +212,6 @@ impl TuneArgs {
             (None, None) => bail!("give --channel N or --freq HZ"),
             (Some(_), Some(_)) => bail!("--channel and --freq are exclusive"),
         };
-        if !(1_000_000..=6_000_000_000).contains(&nominal_hz) {
-            bail!("frequency {nominal_hz} Hz outside the HackRF range 1 MHz..6 GHz");
-        }
         if !self.freq_unrestricted && !TV_BAND_HZ.contains(&nominal_hz) {
             bail!(
                 "centre frequency {:.6} MHz{} is outside the 470–710 MHz UHF TV band (channels 13–52); add --freq-unrestricted only for a shielded lab setup",
@@ -235,24 +233,43 @@ impl TuneArgs {
             rate_den: SAMPLE_RATE_DEN as u32,
         })
     }
+
+    /// The radio configuration for `spec` with `gains` (passed through
+    /// unparsed).
+    pub fn radio_config(
+        &self,
+        spec: &DeviceSpec,
+        gains: &[(String, String)],
+    ) -> Result<(RadioConfig, Tuning)> {
+        let t = self.tuning()?;
+        Ok((
+            RadioConfig {
+                center_hz: t.set_hz,
+                nominal_hz: t.nominal_hz,
+                rate_num: t.rate_num,
+                rate_den: t.rate_den,
+                bandwidth_hz: self.bb_filter_hz,
+                args: spec.args.clone(),
+                gains: gains.to_vec(),
+            },
+            t,
+        ))
+    }
 }
 
 impl Tuning {
-    /// Human-readable description.
-    pub fn describe(&self) -> String {
-        let ch = self
-            .channel
+    /// ` (UHF ch13)` when tuned by channel, else empty.
+    pub fn channel_label(&self) -> String {
+        self.channel
             .map(|c| format!(" (UHF ch{c})"))
-            .unwrap_or_default();
-        format!(
-            "centre {:.6} MHz{ch}, programmed {} Hz; sample rate {}/{} Hz = {:.6} MHz",
-            self.nominal_hz as f64 / 1e6,
-            self.set_hz,
-            self.rate_num,
-            self.rate_den,
-            self.rate_num as f64 / self.rate_den as f64 / 1e6
-        )
+            .unwrap_or_default()
     }
+}
+
+/// Parse a `--gain NAME=VALUE` argument (the backend checks the name and
+/// the value).
+pub fn parse_gain(s: &str) -> Result<(String, String)> {
+    isdb_radio::parse_key_value(s)
 }
 
 /// Parse a PID list such as `0x1fc8,0x0000,16`.
@@ -371,7 +388,6 @@ mod tests {
             freq: None,
             freq_unrestricted: false,
             freq_corr_ppm: 0.0,
-            serial: None,
             bb_filter_hz: 6_000_000,
         };
         let n = t.tuning().unwrap();
@@ -399,7 +415,6 @@ mod tests {
                 freq,
                 freq_unrestricted: unrestricted,
                 freq_corr_ppm: 0.0,
-                serial: None,
                 bb_filter_hz: 6_000_000,
             }
             .tuning()
@@ -419,8 +434,29 @@ mod tests {
         let e = t(Some(53), None, false).unwrap_err().to_string();
         assert!(e.contains("713.142857 MHz (UHF ch53)"), "{e}");
         assert_eq!(t(Some(62), None, true).unwrap().nominal_hz, 767_142_857);
-        // the HackRF range still applies
-        assert!(t(None, Some(7_000_000_000), true).is_err());
+        // the device range is the radio backend's to check, not the CLI's
+        assert!(t(None, Some(7_000_000_000), true).is_ok());
+    }
+
+    #[test]
+    fn radio_config_carries_tuning_args_and_gains() {
+        let a = TuneArgs {
+            channel: Some(13),
+            freq: None,
+            freq_unrestricted: false,
+            freq_corr_ppm: 10.0,
+            bb_filter_hz: 5_000_000,
+        };
+        let spec: DeviceSpec = "x:serial=1".parse().unwrap();
+        let gains = vec![parse_gain("g=3").unwrap()];
+        let (c, t) = a.radio_config(&spec, &gains).unwrap();
+        assert_eq!((c.center_hz, c.nominal_hz), (473_138_126, 473_142_857));
+        assert_eq!((c.rate_num, c.rate_den), (511_994_880, 63));
+        assert_eq!(c.bandwidth_hz, 5_000_000);
+        assert_eq!(c.args, spec.args);
+        assert_eq!(c.gains, vec![("g".to_string(), "3".to_string())]);
+        assert_eq!(t.channel_label(), " (UHF ch13)");
+        assert!(parse_gain("gain").is_err());
     }
 
     #[test]

@@ -493,31 +493,123 @@ fn loopback_with_file_inputs_and_detects_loss() {
     std::fs::remove_dir_all(&d).unwrap();
 }
 
+#[cfg(feature = "hackrf")]
 #[test]
-fn hackrf_tx_refuses_without_rf_enable() {
+fn radio_tx_refuses_without_rf_enable() {
     // --dry-run prints the RF settings and exits before touching a device.
     let o = run(&[
         "tx",
-        "--hackrf",
+        "--radio",
+        "hackrf",
         "--channel",
         "13",
-        "--txvga",
-        "20",
+        "--gain",
+        "txvga=20",
         "--synthetic",
         "--dry-run",
     ]);
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("473.142857 MHz (UHF ch13)"), "{err}");
-    assert!(err.contains("TX VGA       20 dB"));
-    assert!(err.contains("RF amp       off"));
-    assert!(err.contains("not transmitting"));
+    assert!(err.contains("hackrf TX settings (UHF ch13):"), "{err}");
+    assert!(err.contains("centre 473.142857 MHz"), "{err}");
+    assert!(err.contains("TX VGA       20 dB"), "{err}");
+    assert!(err.contains("RF amp       off"), "{err}");
+    assert!(err.contains("not transmitting"), "{err}");
+    assert!(
+        err.contains("use --rf-enable instead of --dry-run"),
+        "{err}"
+    );
     // Without --rf-enable or --dry-run the command line is rejected.
     assert!(
-        !run(&["tx", "--hackrf", "--channel", "13", "--synthetic"])
+        !run(&["tx", "--radio", "hackrf", "--channel", "13", "--synthetic"])
             .status
             .success()
     );
+}
+
+#[cfg(feature = "hackrf")]
+#[test]
+fn radio_rejects_unknown_backends_gains_and_ranges() {
+    let dry = |extra: &[&str]| {
+        let mut args = vec!["tx", "--channel", "13", "--synthetic", "--dry-run"];
+        args.extend_from_slice(extra);
+        let o = run(&args);
+        assert!(!o.status.success(), "{extra:?}");
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    let e = dry(&["--radio", "pluto"]);
+    assert!(e.contains("unknown radio backend \"pluto\""), "{e}");
+    assert!(
+        e.contains(
+            "compiled in: hackrf (isdb-radio feature `hackrf`, forwarded by isdb-cli feature `hackrf`)"
+        ),
+        "{e}"
+    );
+    let e = dry(&["--radio", "hackrf", "--gain", "bogus=1"]);
+    assert!(e.contains("no gain \"bogus\""), "{e}");
+    assert!(e.contains("txvga=0..47 dB (default 0)"), "{e}");
+    let e = dry(&["--radio", "hackrf", "--gain", "txvga=48"]);
+    assert!(e.contains("outside 0..47"), "{e}");
+    let e = dry(&["--radio", "hackrf:colour=red"]);
+    assert!(e.contains("unknown device argument \"colour\""), "{e}");
+    let e = dry(&["--radio", "hackrf", "--bb-filter-hz", "30000000"]);
+    assert!(
+        e.contains("above the largest HackRF (MAX2837) bandwidth"),
+        "{e}"
+    );
+    let e = dry(&["--radio", "hackrf", "--backoff-db", "41"]);
+    assert!(e.contains("backoff 41 dB outside 0..40"), "{e}");
+    // RX gains are checked before a device is opened, too.
+    let o = run(&[
+        "rx",
+        "--radio",
+        "hackrf",
+        "--channel",
+        "27",
+        "--gain",
+        "lna=12",
+    ]);
+    assert!(!o.status.success());
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains("lna=12: must be 0..40 dB in 8 dB steps"), "{e}");
+}
+
+#[cfg(not(feature = "hackrf"))]
+#[test]
+fn radio_without_backends_names_the_feature() {
+    for args in [
+        &[
+            "tx",
+            "--radio",
+            "hackrf",
+            "--channel",
+            "13",
+            "--synthetic",
+            "--dry-run",
+        ][..],
+        &["rx", "--radio", "hackrf", "--channel", "13"],
+    ] {
+        let o = run(args);
+        assert!(!o.status.success());
+        let e = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            e.contains(
+                "radio backend \"hackrf\" is not compiled in (isdb-radio feature `hackrf`, \
+                 forwarded by isdb-cli feature `hackrf`); this build has no radio backends"
+            ),
+            "{e}"
+        );
+        // A dry run without a backend prints no settings.
+        assert!(!e.contains("TX settings"), "{e}");
+    }
+}
+
+#[test]
+fn backend_features_are_forwarded() {
+    // isdb-radio's "unknown backend" error names the isdb-cli feature
+    // forwarding each backend feature under the same name.
+    let toml = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+    assert!(toml.contains(r#"hackrf = ["isdb-radio/hackrf"]"#), "{toml}");
 }
 
 #[test]

@@ -1,0 +1,36 @@
+[package]
+name = "isdb-radio"
+description = "Device-neutral SDR layer for ISDB-T streaming: IQ sink/source traits, device selection, a backend registry (HackRF is one backend), a shared transmit queue and sample quantisation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-radio"
+readme = "README.md"
+keywords = ["sdr", "radio", "isdb-t", "iq", "baseband"]
+categories = ["hardware-support"]
+# Ship sources and docs only.
+include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+isdbt-ofdm.workspace = true
+isdbt-phy.workspace = true
+isdb-hackrf = { workspace = true, optional = true }
+anyhow.workspace = true
+
+[features]
+default = ["hackrf"]
+# HackRF backend (`--radio hackrf`): links the system libhackrf through
+# isdb-hackrf. Without it no backend links a system library.
+hackrf = ["dep:isdb-hackrf"]
+# In-memory sink and radio (`isdb_radio::mock`) for tests of code driving
+# an IqSink.
+mock = []
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true

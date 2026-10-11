@@ -1,11 +1,11 @@
-//! `isdb rx`: IQ file or HackRF → ISDB-T demodulation → TS, with status.
+//! `isdb rx`: IQ file or radio → ISDB-T demodulation → TS, with status.
 
-use crate::phyargs::{TuneArgs, describe_params};
-use crate::radio::RxRfSettings;
+use crate::phyargs::{TuneArgs, describe_params, parse_gain};
 use crate::sink::IqFormat;
 use crate::source::{Packet, is_null};
 use anyhow::{Context, Result, bail};
 use clap::Args;
+use isdb_radio::{DeviceSpec, IqSource, RxOptions};
 use isdbt_core::{Params, sample_rate_hz};
 use isdbt_ofdm::rx::RxState;
 use isdbt_ofdm::{C32, DemodConfig};
@@ -14,9 +14,14 @@ use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Seconds of signal the radio's receive queue holds before the backend
+/// drops buffers (reported as overruns); each backend converts this to
+/// its own buffer count.
+const RX_QUEUE_SECONDS: f64 = 1.0;
+
 /// `isdb rx` arguments.
 #[derive(Debug, Args)]
-#[command(group(clap::ArgGroup::new("source").required(true).args(["iq", "hackrf"])))]
+#[command(group(clap::ArgGroup::new("source").required(true).args(["iq", "radio"])))]
 pub struct RxArgs {
     /// Read baseband from this file ("-" = stdin) at 512/63 MHz.
     #[arg(long, value_name = "PATH")]
@@ -24,22 +29,26 @@ pub struct RxArgs {
     /// IQ file format.
     #[arg(long, value_enum, default_value_t = IqFormat::Cf32)]
     pub iq_format: IqFormat,
-    /// Receive with a HackRF (needs --channel/--freq).
-    #[arg(long)]
-    pub hackrf: bool,
+    /// Receive with a radio: BACKEND[:key=value,...], the backend name and
+    /// its device arguments (needs --channel/--freq).  An unknown backend
+    /// lists the compiled-in ones.
+    #[arg(long, value_name = "SPEC")]
+    pub radio: Option<DeviceSpec>,
     #[command(flatten)]
     pub tune: TuneArgs,
-    /// HackRF LNA gain, 0..40 dB in 8 dB steps.
-    #[arg(long, default_value_t = 16)]
-    pub lna: u32,
-    /// HackRF baseband VGA gain, 0..62 dB in 2 dB steps.
-    #[arg(long, default_value_t = 20)]
-    pub vga: u32,
-    /// Enable the HackRF RF amplifier.
-    #[arg(long)]
-    pub amp: bool,
+    /// Radio gain NAME=VALUE (repeatable).  Names, ranges and defaults are
+    /// the backend's: an unknown name lists them, the settings printed at
+    /// start show the values used.
+    #[arg(
+        long,
+        value_name = "NAME=VALUE",
+        value_parser = parse_gain,
+        requires = "radio",
+        conflicts_with = "iq"
+    )]
+    pub gain: Vec<(String, String)>,
     /// Duration bound in seconds of signal.  Default 0 = unbounded: the
-    /// whole file for --iq, until Ctrl-C / SIGTERM for --hackrf.
+    /// whole file for --iq, until Ctrl-C / SIGTERM for --radio.
     #[arg(long, value_name = "S")]
     pub seconds: Option<f64>,
     /// Write the reproduced single TS (§3.2.2, valid frames only).
@@ -259,20 +268,6 @@ pub fn params_json(p: &Params) -> Value {
     })
 }
 
-/// A source of baseband chunks.
-pub trait IqSource {
-    /// Next chunk; `None` at end.
-    fn read(&mut self, stop: &AtomicBool) -> Result<Option<Vec<C32>>>;
-    /// Status fragment.
-    fn status(&self) -> String {
-        String::new()
-    }
-    /// Stop the device (radio) and return a summary.
-    fn finish(&mut self) -> Result<String> {
-        Ok(String::new())
-    }
-}
-
 /// cf32/cs8 file or stdin.
 pub struct FileIqSource {
     r: Box<dyn Read + Send>,
@@ -468,20 +463,28 @@ pub fn run(a: RxArgs) -> Result<()> {
     let seconds = crate::tx::resolve_seconds(a.seconds)?;
     let max_samples = (seconds > 0.0).then(|| (seconds * fs).round() as u64);
     let stop = crate::stop::flag();
-    let (mut src, input_desc): (Box<dyn IqSource>, String) = if a.hackrf {
-        let rf = RxRfSettings {
-            tuning: a.tune.tuning()?,
-            lna_db: a.lna,
-            vga_db: a.vga,
-            amp: a.amp,
-            bb_filter_hz: a.tune.bb_filter_hz,
-            serial: a.tune.serial.clone(),
+    let (mut src, input_desc): (Box<dyn IqSource>, String) = if let Some(spec) = &a.radio {
+        let backend = isdb_radio::backend(&spec.backend)?;
+        let (cfg, tuning) = a.tune.radio_config(spec, &a.gain)?;
+        let settings = backend.describe_rx(&cfg)?;
+        eprintln!(
+            "{} RX settings{}:\n{settings}",
+            backend.name(),
+            tuning.channel_label()
+        );
+        let opts = RxOptions {
+            queue_seconds: RX_QUEUE_SECONDS,
         };
-        rf.check()?;
-        eprintln!("HackRF RX settings:\n{}", rf.describe());
-        let (src, info) = crate::radio::open_rx(&rf, 64)?;
+        let (src, info) = backend.open_rx(&cfg, &opts)?;
         eprintln!("  opened: {info}");
-        (src, format!("HackRF {}", rf.tuning.describe()))
+        (
+            src,
+            format!(
+                "radio {spec}{}, {}",
+                tuning.channel_label(),
+                cfg.describe_tuning()
+            ),
+        )
     } else {
         let p = a.iq.as_deref().expect("clap group");
         (
@@ -493,7 +496,7 @@ pub fn run(a: RxArgs) -> Result<()> {
         "isdb rx: {input_desc}; {}",
         match max_samples {
             Some(_) => format!("for {seconds} s"),
-            None if a.hackrf => "unbounded; stop with Ctrl-C".into(),
+            None if a.radio.is_some() => "unbounded; stop with Ctrl-C".into(),
             None => "until end of input".into(),
         }
     );
@@ -586,26 +589,31 @@ mod tests {
         .unwrap()
         .a;
         assert_eq!(a.iq_format, IqFormat::Cs8);
-        assert_eq!((a.lna, a.vga, a.amp), (16, 20, false));
+        assert_eq!((a.radio.as_ref(), a.gain.len()), (None, 0));
         assert!(T::try_parse_from(["rx"]).is_err());
-        assert!(T::try_parse_from(["rx", "--iq", "x", "--hackrf"]).is_err());
-        let h = T::try_parse_from(["rx", "--hackrf", "--channel", "27", "--lna", "24"])
-            .unwrap()
-            .a;
+        assert!(T::try_parse_from(["rx", "--iq", "x", "--radio", "sdr"]).is_err());
+        // Gains reach the backend unparsed (it validates names and steps).
+        let h = T::try_parse_from([
+            "rx",
+            "--radio",
+            "sdr:serial=1",
+            "--channel",
+            "27",
+            "--gain",
+            "lna=12",
+        ])
+        .unwrap()
+        .a;
+        assert_eq!(h.radio.as_ref().unwrap().to_string(), "sdr:serial=1");
+        assert_eq!(h.gain, vec![("lna".into(), "12".into())]);
         assert_eq!(h.tune.tuning().unwrap().nominal_hz, 557_142_857);
         // Default: no bound (whole file / until Ctrl-C), same as tx.
         for s in [a.seconds, h.seconds] {
             assert_eq!(crate::tx::resolve_seconds(s).unwrap(), 0.0);
         }
-        let bad = RxRfSettings {
-            tuning: h.tune.tuning().unwrap(),
-            lna_db: 12,
-            vga_db: 20,
-            amp: false,
-            bb_filter_hz: 6_000_000,
-            serial: None,
-        };
-        assert!(bad.check().is_err());
+        // Gains need a radio and the NAME=VALUE form.
+        assert!(T::try_parse_from(["rx", "--iq", "x", "--gain", "lna=16"]).is_err());
+        assert!(T::try_parse_from(["rx", "--radio", "sdr", "--gain", "16"]).is_err());
     }
 
     #[test]

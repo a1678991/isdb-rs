@@ -1,86 +1,30 @@
-//! Baseband sinks for `isdb tx`: IQ files (cf32 / cs8), memory (tests) and
-//! the radio (see [`crate::radio`]).
+//! IQ file sink for `isdb tx` (cf32 / cs8). The sink trait and the radio
+//! sinks are in `isdb_radio`.
 
 use anyhow::{Context, Result};
+use isdb_radio::{Cs8, IqSink, Quantizer};
 use isdbt_ofdm::C32;
 use std::io::Write;
 use std::sync::atomic::AtomicBool;
-#[cfg(test)]
-use std::sync::{Arc, Mutex};
 
 /// IQ sample file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum IqFormat {
     /// Interleaved little-endian f32 I/Q (GNU Radio complex).
     Cf32,
-    /// Interleaved signed 8-bit I/Q (HackRF / hackrf_transfer).
+    /// Interleaved signed 8-bit I/Q (tx writes it with --backoff-db scaling).
     Cs8,
-}
-
-/// Scaling of the unit-mean-power OFDM signal into signed 8-bit samples:
-/// RMS amplitude = 127 · 10^(−backoff/20), with saturation counting.
-#[derive(Debug, Clone)]
-pub struct Cs8Scaler {
-    /// Multiplier applied to the samples.
-    pub scale: f32,
-    /// Saturated I or Q components so far.
-    pub clipped: u64,
-    /// Components converted so far.
-    pub components: u64,
-}
-
-impl Cs8Scaler {
-    /// Scaler for `backoff_db` below full scale.
-    pub fn new(backoff_db: f32) -> Self {
-        Self {
-            scale: 127.0 * 10f32.powf(-backoff_db / 20.0),
-            clipped: 0,
-            components: 0,
-        }
-    }
-
-    /// Convert one block.
-    pub fn convert(&mut self, s: &[C32]) -> Vec<i8> {
-        let mut out = Vec::new();
-        self.clipped += isdbt_phy::iq::cs8_from_samples(s, self.scale, &mut out) as u64;
-        self.components += 2 * s.len() as u64;
-        out
-    }
-
-    /// Clip summary.
-    pub fn describe(&self) -> String {
-        let r = if self.components > 0 {
-            self.clipped as f64 / self.components as f64
-        } else {
-            0.0
-        };
-        format!(
-            "clipped {} of {} components ({:.2e})",
-            self.clipped, self.components, r
-        )
-    }
-}
-
-/// Where `isdb tx` sends the baseband.
-pub trait IqSink {
-    /// Write one frame of samples (blocking as the device needs).
-    fn write(&mut self, samples: &[C32], stop: &AtomicBool) -> Result<()>;
-    /// Status fragment for periodic lines.
-    fn status(&mut self) -> String {
-        String::new()
-    }
-    /// End of transmission; `aborted` = stopped by signal or error (do not
-    /// wait for queued samples).  Returns a summary line.
-    fn finish(&mut self, aborted: bool) -> Result<String>;
-    /// True if the sink consumes in real time (paces the producer itself).
-    fn realtime(&self) -> bool;
 }
 
 /// IQ file / stdout sink.
 pub struct FileSink {
     w: std::io::BufWriter<Box<dyn Write + Send>>,
     format: IqFormat,
-    scaler: Cs8Scaler,
+    quantizer: Quantizer<Cs8>,
+    /// cs8 components of the current write.
+    buf: Vec<i8>,
+    /// Bytes of the current write.
+    bytes: Vec<u8>,
     samples: u64,
     path: String,
 }
@@ -96,7 +40,9 @@ impl FileSink {
         Ok(Self {
             w: std::io::BufWriter::with_capacity(1 << 22, w),
             format,
-            scaler: Cs8Scaler::new(backoff_db),
+            quantizer: Quantizer::new(backoff_db),
+            buf: Vec::new(),
+            bytes: Vec::new(),
             samples: 0,
             path: path.into(),
         })
@@ -105,21 +51,28 @@ impl FileSink {
 
 impl IqSink for FileSink {
     fn write(&mut self, s: &[C32], _stop: &AtomicBool) -> Result<()> {
+        // Both buffers are reused across writes.
+        self.bytes.clear();
         match self.format {
-            IqFormat::Cf32 => self.w.write_all(&isdbt_phy::iq::cf32_to_bytes(s))?,
+            IqFormat::Cf32 => {
+                for c in s {
+                    self.bytes.extend_from_slice(&c.re.to_le_bytes());
+                    self.bytes.extend_from_slice(&c.im.to_le_bytes());
+                }
+            }
             IqFormat::Cs8 => {
-                let v = self.scaler.convert(s);
-                let b: Vec<u8> = v.iter().map(|&x| x as u8).collect();
-                self.w.write_all(&b)?
+                self.quantizer.convert_into(s, &mut self.buf);
+                self.bytes.extend(self.buf.iter().map(|&x| x as u8));
             }
         }
+        self.w.write_all(&self.bytes)?;
         self.samples += s.len() as u64;
         Ok(())
     }
 
     fn status(&mut self) -> String {
         match self.format {
-            IqFormat::Cs8 => format!(" {}", self.scaler.describe()),
+            IqFormat::Cs8 => format!(" {}", self.quantizer.describe()),
             IqFormat::Cf32 => String::new(),
         }
     }
@@ -127,7 +80,7 @@ impl IqSink for FileSink {
     fn finish(&mut self, _aborted: bool) -> Result<String> {
         self.w.flush()?;
         let extra = if self.format == IqFormat::Cs8 {
-            format!("; {}", self.scaler.describe())
+            format!("; {}", self.quantizer.describe())
         } else {
             String::new()
         };
@@ -142,45 +95,40 @@ impl IqSink for FileSink {
     }
 }
 
-/// In-memory sink (tests).
-#[cfg(test)]
-#[derive(Clone, Default)]
-pub struct MemorySink {
-    /// Everything written.
-    pub samples: Arc<Mutex<Vec<C32>>>,
-}
-
-#[cfg(test)]
-impl IqSink for MemorySink {
-    fn write(&mut self, s: &[C32], _stop: &AtomicBool) -> Result<()> {
-        self.samples.lock().unwrap().extend_from_slice(s);
-        Ok(())
-    }
-
-    fn finish(&mut self, _aborted: bool) -> Result<String> {
-        Ok(format!(
-            "{} samples in memory",
-            self.samples.lock().unwrap().len()
-        ))
-    }
-
-    fn realtime(&self) -> bool {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn cs8_scaling_and_clip_count() {
-        let mut s = Cs8Scaler::new(0.0);
-        assert!((s.scale - 127.0).abs() < 1e-4);
-        let v = s.convert(&[C32::new(0.5, -0.5), C32::new(1.5, -2.0)]);
-        assert_eq!(v, vec![64, -64, 127, -127]);
-        assert_eq!((s.clipped, s.components), (2, 4));
-        let s = Cs8Scaler::new(20.0);
-        assert!((s.scale - 12.7).abs() < 1e-4);
+    fn cs8_file_bytes() {
+        // The cs8 file holds the Quantizer<Cs8> output byte for byte: the
+        // same scaling the radio backends with 8-bit samples apply.
+        let dir = std::env::temp_dir().join(format!("isdb-sink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("x.cs8");
+        let x = [
+            C32::new(0.5, -0.5),
+            C32::new(1.5, -2.0),
+            C32::new(0.01, 0.0),
+        ];
+        let mut s = FileSink::create(p.to_str().unwrap(), IqFormat::Cs8, 0.0).unwrap();
+        s.write(&x, &AtomicBool::new(false)).unwrap();
+        let fin = s.finish(false).unwrap();
+        assert!(fin.contains("wrote 3 samples (Cs8)"), "{fin}");
+        assert!(fin.contains("clipped 2 of 6 components"), "{fin}");
+        drop(s);
+        let b = std::fs::read(&p).unwrap();
+        assert_eq!(b, [64, 192, 127, 129, 1, 0]);
+        // cf32 holds the isdbt-phy file encoding.
+        let p = dir.join("x.cf32");
+        let mut s = FileSink::create(p.to_str().unwrap(), IqFormat::Cf32, 0.0).unwrap();
+        s.write(&x, &AtomicBool::new(false)).unwrap();
+        s.write(&x[..1], &AtomicBool::new(false)).unwrap();
+        s.finish(false).unwrap();
+        drop(s);
+        let mut want = isdbt_phy::iq::cf32_to_bytes(&x);
+        want.extend(isdbt_phy::iq::cf32_to_bytes(&x[..1]));
+        assert_eq!(std::fs::read(&p).unwrap(), want);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

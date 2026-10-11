@@ -295,7 +295,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "isdb-analyze",
- "isdb-hackrf",
+ "isdb-radio",
  "isdbt-core",
  "isdbt-fec",
  "isdbt-mux",
@@ -311,6 +311,16 @@ name = "isdb-hackrf"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "isdb-radio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "isdb-hackrf",
+ "isdbt-ofdm",
+ "isdbt-phy",
 ]
 
 [[package]]

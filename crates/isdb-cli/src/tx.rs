@@ -1,13 +1,13 @@
-//! `isdb tx`: transport streams → ISDB-T baseband → IQ file or HackRF.
+//! `isdb tx`: transport streams → ISDB-T baseband → IQ file or radio.
 
 use crate::input::{FrameInput, InputArgs};
-use crate::phyargs::{PhyArgs, TuneArgs, describe_params};
+use crate::phyargs::{PhyArgs, TuneArgs, describe_params, parse_gain};
 use crate::producer::{self, EndReason, FrameKind, ProducerConfig};
-use crate::radio::{RadioSink, TxRfSettings};
-use crate::sink::{FileSink, IqFormat, IqSink};
+use crate::sink::{FileSink, IqFormat};
 use crate::source::Feed;
 use anyhow::{Result, bail};
 use clap::Args;
+use isdb_radio::{DeviceSpec, IqSink, TxOptions};
 use isdbt_core::Params;
 use isdbt_phy::Transmitter;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 pub const LEGAL_NOTICE: &str = "\
 LEGAL / SAFETY NOTICE
   Radiating on broadcast (UHF TV) frequencies requires a licence: in Japan
-  under the Radio Act (電波法), elsewhere under local law. `isdb tx --hackrf`
+  under the Radio Act (電波法), elsewhere under local law. `isdb tx --radio`
   is intended for shielded or conducted lab setups only (coax with
   attenuators into the receiver, or a shielded enclosure), and radiates only
   with --rf-enable. isdb does not descramble: it has no B-CAS / conditional
@@ -28,7 +28,7 @@ LEGAL / SAFETY NOTICE
 
 /// `isdb tx` arguments.
 #[derive(Debug, Args)]
-#[command(group(clap::ArgGroup::new("sink").args(["iq", "hackrf"])))]
+#[command(group(clap::ArgGroup::new("sink").args(["iq", "radio"])))]
 #[command(after_help = LEGAL_NOTICE)]
 pub struct TxArgs {
     #[command(flatten)]
@@ -36,32 +36,40 @@ pub struct TxArgs {
     #[command(flatten)]
     pub input: InputArgs,
     /// Write baseband to this file ("-" = stdout) instead of a radio.
-    #[arg(long, value_name = "PATH", required_unless_present_any = ["hackrf", "print_config"])]
+    #[arg(long, value_name = "PATH", required_unless_present_any = ["radio", "print_config"])]
     pub iq: Option<String>,
-    /// IQ file format (cs8 uses --backoff-db scaling like the radio).
+    /// IQ file format (cs8 uses --backoff-db scaling like an 8-bit radio).
     #[arg(long, value_enum, default_value_t = IqFormat::Cf32)]
     pub iq_format: IqFormat,
-    /// Transmit with a HackRF (needs --rf-enable and --channel/--freq).
-    #[arg(long, requires = "rf_enable_or_dry")]
-    pub hackrf: bool,
+    /// Transmit with a radio: BACKEND[:key=value,...], the backend name and
+    /// its device arguments (needs --rf-enable or --dry-run, and
+    /// --channel/--freq).  An unknown backend lists the compiled-in ones.
+    #[arg(long, value_name = "SPEC", requires = "rf_enable_or_dry")]
+    pub radio: Option<DeviceSpec>,
     #[command(flatten)]
     pub tune: TuneArgs,
-    /// HackRF TX IF gain, 0..47 dB.
-    #[arg(long, default_value_t = 0)]
-    pub txvga: u32,
-    /// Enable the HackRF RF amplifier (~+11 dB).  Off by default.
-    #[arg(long)]
-    pub amp: bool,
-    /// OFDM RMS level below cs8 full scale in dB (radio and cs8 files);
-    /// clipped components are counted.
+    /// Radio gain NAME=VALUE (repeatable).  Names, ranges and defaults are
+    /// the backend's: an unknown name lists them, --dry-run shows the
+    /// values used.
+    #[arg(
+        long,
+        value_name = "NAME=VALUE",
+        value_parser = parse_gain,
+        requires = "radio",
+        conflicts_with = "iq"
+    )]
+    pub gain: Vec<(String, String)>,
+    /// OFDM RMS level below integer full scale in dB (radios with integer
+    /// samples and cs8 files); clipped components are counted.
     #[arg(long, default_value_t = 10.0)]
     pub backoff_db: f32,
     /// Actually radiate (licensed or shielded/conducted lab use only; see
-    /// the notice below).  `--hackrf` requires this or `--dry-run`.
+    /// the notice below).  `--radio` requires this or `--dry-run`.
     #[arg(long, group = "rf_enable_or_dry")]
     pub rf_enable: bool,
-    /// Print the settings and exit (also the behaviour of --hackrf without
-    /// --rf-enable).
+    /// With --radio: validate and print the radio settings, then exit
+    /// without opening the device (--radio needs this or --rf-enable).
+    /// With --iq: exit before writing anything.
     #[arg(long, group = "rf_enable_or_dry")]
     pub dry_run: bool,
     /// Duration bound in seconds of air time, lead-in and flush included.
@@ -347,20 +355,25 @@ pub fn run(a: TxArgs) -> Result<()> {
         params.samples_per_frame()
     );
     let stop = crate::stop::flag();
-    let mut sink: Box<dyn IqSink> = if a.hackrf {
-        let rf = TxRfSettings {
-            tuning: a.tune.tuning()?,
-            txvga_db: a.txvga,
-            amp: a.amp,
-            bb_filter_hz: a.tune.bb_filter_hz,
+    let mut sink: Box<dyn IqSink> = if let Some(spec) = &a.radio {
+        let backend = isdb_radio::backend(&spec.backend)?;
+        let (cfg, tuning) = a.tune.radio_config(spec, &a.gain)?;
+        let opts = TxOptions {
+            prefill_frames: a.prefill_frames,
+            frame_seconds: frame_s,
             backoff_db: a.backoff_db,
-            serial: a.tune.serial.clone(),
         };
-        rf.check()?;
-        eprintln!("HackRF TX settings:\n{}", rf.describe());
+        let settings = backend.describe_tx(&cfg, &opts)?;
+        eprintln!(
+            "{} TX settings{}:\n{settings}",
+            backend.name(),
+            tuning.channel_label()
+        );
+        // clap admits --radio only with exactly one of --rf-enable and
+        // --dry-run; the gate does not rely on it.
         if !a.rf_enable || a.dry_run {
             bail!(
-                "not transmitting: add --rf-enable to radiate with the settings above (coax/attenuator or shielded setup only)"
+                "dry run, not transmitting: use --rf-enable instead of --dry-run to radiate with the settings above (coax/attenuator or shielded setup only)"
             );
         }
         if seconds == 0.0 {
@@ -373,9 +386,9 @@ pub fn run(a: TxArgs) -> Result<()> {
                 }
             );
         }
-        let (dev, info) = crate::radio::open_tx(&rf)?;
+        let (sink, info) = backend.open_tx(&cfg, &opts)?;
         eprintln!("  opened: {info}");
-        Box::new(RadioSink::new(dev, a.backoff_db, a.prefill_frames, frame_s))
+        sink
     } else {
         let path = a.iq.as_deref().expect("clap group");
         if a.dry_run {
@@ -443,10 +456,9 @@ pub fn run(a: TxArgs) -> Result<()> {
 mod tests {
     use super::*;
     use crate::input::SyntheticInput;
-    use crate::radio::RadioTx;
-    use crate::radio::mock::MockRadio;
-    use crate::sink::MemorySink;
     use clap::Parser;
+    use isdb_radio::mock::{MemorySink, MockRadio};
+    use isdb_radio::{Cs8, Quantizer, QueuedSink, RadioTx};
 
     #[derive(Parser)]
     struct T {
@@ -467,28 +479,56 @@ mod tests {
         assert_eq!(a.phy.layer_a, "1,qpsk,2/3,2");
         assert_eq!(a.phy.layer_b, "12,64qam,3/4,2");
         assert_eq!(
-            (a.txvga, a.amp, a.backoff_db, a.rf_enable),
-            (0, false, 10.0, false)
+            (a.radio, a.gain.len(), a.backoff_db, a.rf_enable),
+            (None, 0, 10.0, false)
         );
         assert_eq!(a.input.feed, Feed::File);
         // A sink is required, and only one.
         assert!(parse(&["--synthetic"]).is_err());
-        assert!(parse(&["--iq", "x", "--hackrf", "--rf-enable", "--synthetic"]).is_err());
-        // --hackrf needs --rf-enable (or an explicit --dry-run).
-        assert!(parse(&["--hackrf", "--channel", "13", "--synthetic"]).is_err());
+        assert!(parse(&["--iq", "x", "--radio", "sdr", "--rf-enable", "--synthetic"]).is_err());
+        // --radio needs --rf-enable (or an explicit --dry-run).
+        assert!(parse(&["--radio", "sdr", "--channel", "13", "--synthetic"]).is_err());
+        // The device spec and the gains reach the backend unparsed.
         let h = parse(&[
-            "--hackrf",
+            "--radio",
+            "sdr:serial=0000abcd",
             "--channel",
             "13",
             "--rf-enable",
-            "--txvga",
-            "20",
+            "--gain",
+            "if=20",
+            "--gain",
+            "amp=on",
             "--b-ts",
             "-",
         ])
         .unwrap();
-        assert_eq!((h.tune.channel, h.txvga), (Some(13), 20));
-        assert!(parse(&["--hackrf", "--channel", "13", "--dry-run", "--synthetic"]).is_ok());
+        let spec = h.radio.as_ref().unwrap();
+        assert_eq!(
+            (spec.backend.as_str(), spec.get("serial")),
+            ("sdr", Some("0000abcd"))
+        );
+        assert_eq!(h.tune.channel, Some(13));
+        assert_eq!(
+            h.gain,
+            vec![("if".into(), "20".into()), ("amp".into(), "on".into())]
+        );
+        assert!(
+            parse(&[
+                "--radio",
+                "sdr",
+                "--channel",
+                "13",
+                "--dry-run",
+                "--synthetic"
+            ])
+            .is_ok()
+        );
+        // Malformed specs and gains are command-line errors; gains need a radio.
+        assert!(parse(&["--radio", "sdr:serial", "--dry-run", "--synthetic"]).is_err());
+        assert!(parse(&["--radio", "", "--dry-run", "--synthetic"]).is_err());
+        assert!(parse(&["--radio", "sdr", "--dry-run", "--gain", "20", "--synthetic"]).is_err());
+        assert!(parse(&["--iq", "x", "--gain", "if=20", "--synthetic"]).is_err());
         // --mux-ts excludes per-layer inputs; PID lists require it.
         assert!(parse(&["--iq", "x", "--mux-ts", "m.ts", "--b-ts", "b.ts"]).is_err());
         assert!(parse(&["--iq", "x", "--a-pids", "0x1fc8", "--b-ts", "b.ts"]).is_err());
@@ -528,8 +568,23 @@ mod tests {
             &["--iq", "x", "--b-ts", "-", "--feed", "live"],
             &["--iq", "x", "--mux-config", "m.toml"],
             &["--iq", "x", "--relay", "r.ts"],
-            &["--hackrf", "--channel", "13", "--rf-enable", "--synthetic"],
-            &["--hackrf", "--channel", "13", "--dry-run", "--b-ts", "b.ts"],
+            &[
+                "--radio",
+                "sdr",
+                "--channel",
+                "13",
+                "--rf-enable",
+                "--synthetic",
+            ],
+            &[
+                "--radio",
+                "sdr",
+                "--channel",
+                "13",
+                "--dry-run",
+                "--b-ts",
+                "b.ts",
+            ],
         ] {
             let a = parse(args).unwrap();
             assert_eq!(a.seconds, None, "{args:?}");
@@ -588,6 +643,20 @@ mod tests {
         .unwrap()
     }
 
+    /// The queued radio sink of the backends over an in-memory radio
+    /// consuming `rate` samples/s.
+    fn radio_sink(p: &Params, rate: f64) -> QueuedSink<MockRadio<Cs8>> {
+        QueuedSink::new(
+            MockRadio::new(rate),
+            &TxOptions {
+                prefill_frames: 2,
+                frame_seconds: p.frame_seconds(),
+                backoff_db: 10.0,
+            },
+        )
+        .unwrap()
+    }
+
     #[test]
     fn stream_to_memory_and_mock_radio_agree() {
         let p = mode1();
@@ -618,8 +687,9 @@ mod tests {
         let samples = mem.samples.lock().unwrap().clone();
         assert_eq!(samples.len(), 8 * p.samples_per_frame());
 
-        // The same transmission through the radio sink: identical cs8 bytes.
-        let mut radio = RadioSink::new(MockRadio::new(64e6), 10.0, 2, p.frame_seconds());
+        // The same transmission through the radio sink (prefill, queue,
+        // drain): exactly the cs8 quantisation of those samples.
+        let mut radio = radio_sink(&p, 64e6);
         let rep2 = stream(
             &p,
             Box::new(SyntheticInput::new()),
@@ -628,14 +698,15 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
+        assert!(rep2.sink.contains("queue drained"), "{}", rep2.sink);
         assert!(
             rep2.sink.contains("device stopped streaming: yes"),
             "{}",
             rep2.sink
         );
+        assert_eq!(radio.radio().starts, 1);
         let sent = radio.radio().sent.lock().unwrap().clone();
-        let mut sc = crate::sink::Cs8Scaler::new(10.0);
-        assert_eq!(sent, sc.convert(&samples));
+        assert_eq!(sent, Quantizer::<Cs8>::new(10.0).convert(&samples));
     }
 
     #[test]
@@ -656,16 +727,11 @@ mod tests {
             s2.store(true, Ordering::SeqCst);
         });
         // Real-time mock radio: the producer is throttled by back-pressure.
-        let mut radio = RadioSink::new(
-            MockRadio::new(isdbt_core::sample_rate_hz()),
-            10.0,
-            2,
-            p.frame_seconds(),
-        );
+        let mut radio = radio_sink(&p, isdbt_core::sample_rate_hz());
         let rep = stream(&p, Box::new(SyntheticInput::new()), &mut radio, &opts, stop).unwrap();
         assert_eq!(rep.end, Some(EndReason::Stopped));
-        assert!(rep.sink.contains("stopped immediately"));
-        assert!(!radio.radio().is_streaming());
+        assert!(rep.sink.contains("stopped immediately"), "{}", rep.sink);
+        assert!(!radio.radio_mut().is_streaming());
         // Bounded by back-pressure: ≈ 0.3 s + queue, far below unbounded.
         assert!(rep.frames < 40, "{} frames", rep.frames);
     }

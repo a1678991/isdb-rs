@@ -1,4 +1,9 @@
-//! Sample-format conversion for IQ files and the HackRF wire format.
+//! Conversion between complex samples and the interleaved I/Q sample
+//! formats used by IQ files and radios:
+//!
+//! * **cf32**: little-endian `f32` I then Q (GNU Radio `gr_complex`).
+//! * **cs8**: signed 8-bit I then Q; also the file format of
+//!   `hackrf_transfer` and the sample format of 8-bit radios.
 
 use isdbt_ofdm::C32;
 
@@ -26,8 +31,8 @@ pub fn cf32_to_bytes(s: &[C32]) -> Vec<u8> {
     v
 }
 
-/// Samples → interleaved signed 8-bit I/Q (HackRF "cs8"), scaled by
-/// `scale` (full scale = 127) with saturation; returns the number of
+/// Samples → cs8 (interleaved signed 8-bit I/Q), scaled by `scale` (full
+/// scale = 127) with rounding and saturation; returns the number of
 /// clipped components alongside.
 pub fn cs8_from_samples(s: &[C32], scale: f32, out: &mut Vec<i8>) -> usize {
     out.clear();
@@ -45,7 +50,7 @@ pub fn cs8_from_samples(s: &[C32], scale: f32, out: &mut Vec<i8>) -> usize {
     clipped
 }
 
-/// Interleaved signed 8-bit I/Q → samples scaled to ±1.
+/// cs8 (interleaved signed 8-bit I/Q) → samples scaled to ±1 (÷128).
 pub fn samples_from_cs8(b: &[i8]) -> Vec<C32> {
     b.as_chunks::<2>()
         .0
