@@ -3,6 +3,7 @@
 //! yields exactly the packet count each layer carries per OFDM frame
 //! (Table 3-3 × N); missing packets are H.222.0 null packets.
 
+use crate::keys::Command;
 use crate::phyargs::parse_pids;
 use crate::source::{
     Feed, Packet, PacketStream, check_feed, is_null, null_packet, path_opener, pid, queue_depth,
@@ -39,6 +40,15 @@ pub trait FrameInput: Send {
     /// stop request ends the transmission).
     fn endless(&self) -> bool {
         false
+    }
+    /// Enable playback control ([`Self::control`]) before the first frame;
+    /// false when the input has none.
+    fn enable_control(&mut self) -> Result<bool> {
+        Ok(false)
+    }
+    /// Apply a playback command; the line to show (the new state).
+    fn control(&mut self, _cmd: Command) -> String {
+        "this input has no playback control".into()
     }
 }
 
@@ -557,6 +567,16 @@ pub fn mux_config_ends(cfg: &isdbt_mux::Config) -> bool {
 }
 
 impl MuxConfigInput {
+    /// The playback state of the relays (empty without playback control).
+    fn playback(&self) -> String {
+        self.mux
+            .playback_status()
+            .iter()
+            .map(isdbt_mux::playback::PlaybackStatus::describe)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// Build the multiplexer from a TOML file (relative media paths are
     /// resolved against the file's directory).
     pub fn open(path: &std::path::Path, params: &Params) -> Result<Self> {
@@ -618,9 +638,42 @@ impl FrameInput for MuxConfigInput {
         self.endless
     }
 
+    fn enable_control(&mut self) -> Result<bool> {
+        self.mux.enable_playback_control()?;
+        Ok(!self.mux.playback_status().is_empty())
+    }
+
+    fn control(&mut self, cmd: Command) -> String {
+        let rate = self.mux.playback_status().first().map_or(1.0, |p| p.rate);
+        let note = match cmd {
+            Command::TogglePause => {
+                self.mux.toggle_pause();
+                String::new()
+            }
+            Command::Seek(d) => match self.mux.seek(d).first() {
+                Some(t) => format!(" (seek {d:+} s: reading from {t:.1} s)"),
+                None => " (no seek point)".into(),
+            },
+            Command::Faster | Command::Slower => {
+                match isdbt_mux::playback::next_rate(rate, cmd == Command::Faster) {
+                    Some(r) => {
+                        self.mux.set_rate(r);
+                        String::new()
+                    }
+                    None => " (no further rate)".into(),
+                }
+            }
+        };
+        format!("{}{note}", self.playback())
+    }
+
     fn status(&self) -> String {
         let st = self.mux.stats();
         let mut s = format!(" | mux late PES {} errors {}", st.late_pes, st.errors.len());
+        let pb = self.playback();
+        if !pb.is_empty() {
+            s = format!(" | {pb}{s}");
+        }
         for r in self.mux.relay_status() {
             s += &format!(" | {r}");
         }

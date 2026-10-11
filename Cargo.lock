@@ -311,6 +311,7 @@ dependencies = [
  "isdbt-mux",
  "isdbt-ofdm",
  "isdbt-phy",
+ "nix",
  "serde",
  "serde_json",
  "toml",

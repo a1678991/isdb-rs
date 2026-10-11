@@ -1,8 +1,9 @@
 //! `isdb tx`: transport streams → ISDB-T baseband → IQ file or radio.
 
 use crate::input::{FrameInput, InputArgs};
+use crate::keys::{Command, Keys};
 use crate::phyargs::{PhyArgs, TuneArgs, describe_params, parse_gain};
-use crate::producer::{self, EndReason, FrameKind, ProducerConfig};
+use crate::producer::{self, EndReason, FrameKind, ProducedFrame, ProducerConfig};
 use crate::sink::{FileSink, IqFormat};
 use crate::source::Feed;
 use anyhow::{Result, bail};
@@ -35,6 +36,24 @@ pub struct TxArgs {
     pub phy: PhyArgs,
     #[command(flatten)]
     pub input: InputArgs,
+    /// Replay a baseband file instead of modulating TS input: cf32 or cs8
+    /// at 512/63 MHz centred on the signal (as `isdb tx --iq` or
+    /// `hackrf_transfer -r` write it). Its parameters and frame start are
+    /// found by the receiver (the PHY options are not used); it is scaled
+    /// to unit RMS. Ends at its end (`--feed loop` repeats it).
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["a_ts", "b_ts", "c_ts", "mux_ts", "synthetic", "mux_config", "relay"])]
+    pub iq_in: Option<std::path::PathBuf>,
+    /// Format of --iq-in.
+    #[arg(long, value_enum, default_value_t = IqFormat::Cf32, requires = "iq_in")]
+    pub iq_in_format: IqFormat,
+    /// Playback keys (--relay and --iq-in, when stdin is a terminal):
+    /// ←/→ seek by this many seconds.
+    #[arg(long, value_name = "S", default_value_t = 10.0)]
+    pub seek_step: f64,
+    /// Do not read playback keys from the terminal (space pause/resume,
+    /// ←/→ seek, ↑/↓ play rate).
+    #[arg(long)]
+    pub no_keys: bool,
     /// Write baseband to this file ("-" = stdout) instead of a radio.
     #[arg(long, value_name = "PATH", required_unless_present_any = ["radio", "print_config"])]
     pub iq: Option<String>,
@@ -148,6 +167,9 @@ fn ratio(n: u64, d: u64) -> f64 {
 }
 
 fn null_fill(real: &[u64; 3], nulls: &[u64; 3], params: &Params) -> String {
+    if real.iter().chain(nulls).all(|&n| n == 0) {
+        return "-".into(); // no packets (IQ playback, lead-in only)
+    }
     params
         .active_layers()
         .map(|(id, _)| {
@@ -185,12 +207,26 @@ fn describe_speed(speed: Option<f64>, frames: u64, input: Duration, modulate: Du
 }
 
 /// Run a transmission from `input` into `sink`.
+#[cfg(test)]
 pub fn stream(
     params: &Params,
     input: Box<dyn FrameInput>,
     sink: &mut dyn IqSink,
     opts: &TxOpts,
     stop: Arc<AtomicBool>,
+) -> Result<TxReport> {
+    stream_controlled(params, input, sink, opts, stop, None)
+}
+
+/// Run a transmission from `input` into `sink`, with playback commands
+/// applied to the input.
+fn stream_controlled(
+    params: &Params,
+    input: Box<dyn FrameInput>,
+    sink: &mut dyn IqSink,
+    opts: &TxOpts,
+    stop: Arc<AtomicBool>,
+    controls: Option<std::sync::mpsc::Receiver<Command>>,
 ) -> Result<TxReport> {
     let cfg = ProducerConfig {
         params: params.clone(),
@@ -201,7 +237,20 @@ pub fn stream(
         record: false,
         depth: opts.queue_frames,
     };
-    let (frames, worker) = producer::spawn(cfg, input, stop.clone());
+    let (frames, worker) = producer::spawn(cfg, input, stop.clone(), controls);
+    drive(params, frames, worker, sink, opts, &stop)
+}
+
+/// Hand the produced frames to `sink` with status lines until the producer
+/// ends, the sink fails or a stop is requested.
+fn drive(
+    params: &Params,
+    frames: std::sync::mpsc::Receiver<ProducedFrame>,
+    worker: std::thread::JoinHandle<Result<EndReason>>,
+    sink: &mut dyn IqSink,
+    opts: &TxOpts,
+    stop: &AtomicBool,
+) -> Result<TxReport> {
     let frame_s = params.frame_seconds();
     let mut rep = TxReport::default();
     let (mut iv_real, mut iv_nulls) = ([0u64; 3], [0u64; 3]);
@@ -218,7 +267,7 @@ pub fn stream(
             aborted = true;
             break;
         }
-        if let Err(e) = sink.write(&f.samples, &stop) {
+        if let Err(e) = sink.write(&f.samples, stop) {
             aborted = true;
             err = Some(e);
             break;
@@ -324,12 +373,22 @@ fn check_iq_bound(path: &str, endless: bool, seconds: Option<f64>) -> Result<()>
 
 /// Entry point.
 pub fn run(a: TxArgs) -> Result<()> {
-    let params = a.phy.params()?;
-    let (params, prepared) = match crate::relay::prepare(&a.input, params, || {
-        crate::relay::tx_channel(a.tune.channel, a.tune.freq)
-    })? {
-        crate::relay::Prepared::Exit => return Ok(()),
-        crate::relay::Prepared::Ready(p, i) => (p, i),
+    if !(a.seek_step > 0.0 && a.seek_step.is_finite()) {
+        bail!("--seek-step must be a positive number of seconds");
+    }
+    // --iq-in: the parameters are the file's
+    let iq = match &a.iq_in {
+        Some(path) => Some(crate::iqplay::IqFile::detect(path, a.iq_in_format)?),
+        None => None,
+    };
+    let (params, prepared) = match &iq {
+        Some(f) => (f.params.clone(), None),
+        None => match crate::relay::prepare(&a.input, a.phy.params()?, || {
+            crate::relay::tx_channel(a.tune.channel, a.tune.freq)
+        })? {
+            crate::relay::Prepared::Exit => return Ok(()),
+            crate::relay::Prepared::Ready(p, i) => (p, i),
+        },
     };
     let tx = Transmitter::new(params.clone());
     let frame_s = params.frame_seconds();
@@ -339,6 +398,19 @@ pub fn run(a: TxArgs) -> Result<()> {
         Some(i) => i.endless(),
         None => a.input.synthetic || a.input.feed == Feed::Loop,
     };
+    if let Some(f) = &iq {
+        eprintln!(
+            "isdb tx: --iq-in {}: {} whole frames ({:.1} s) from sample {}, level ×{:.3} to unit RMS (parameters from its TMCC)",
+            a.iq_in
+                .as_deref()
+                .unwrap_or(std::path::Path::new(""))
+                .display(),
+            f.frames,
+            f.seconds(),
+            f.first_sample,
+            f.scale
+        );
+    }
     eprintln!("isdb tx: {}", describe_params(&params));
     eprintln!(
         "  per frame: {} | frame {:.4} s, {} samples at 512/63 MHz",
@@ -398,8 +470,13 @@ pub fn run(a: TxArgs) -> Result<()> {
         Box::new(FileSink::create(path, a.iq_format, a.backoff_db)?)
     };
     let opts = TxOpts {
-        lead_frames: a.lead_frames.unwrap_or(tx.lead_frames()),
-        flush: !a.no_flush,
+        // a replayed file carries its own lead-in and flush
+        lead_frames: if iq.is_some() {
+            0
+        } else {
+            a.lead_frames.unwrap_or(tx.lead_frames())
+        },
+        flush: !a.no_flush && iq.is_none(),
         max_frames: (seconds > 0.0).then(|| producer::frames_for_seconds(&params, seconds)),
         pace: a.realtime || producer::default_pace(a.input.feed, sink.realtime()),
         queue_frames: a.queue_frames,
@@ -423,12 +500,46 @@ pub fn run(a: TxArgs) -> Result<()> {
             ""
         }
     );
-    let input = match prepared {
-        Some(i) => i,
-        None => a.input.open(&params)?,
+    let keys_hint = |k: &Option<Keys>| {
+        if k.is_some() {
+            eprintln!("  keys: {}", crate::keys::help(a.seek_step));
+        }
     };
-    eprintln!("  input: {}", input.describe());
-    let rep = stream(&params, input, sink.as_mut(), &opts, stop)?;
+    let iq_play = iq.is_some();
+    let (rep, keys) = if let Some(f) = iq {
+        let mut keys = (!a.no_keys).then(|| Keys::start(a.seek_step)).flatten();
+        keys_hint(&keys);
+        let cfg = crate::iqplay::PlayConfig {
+            max_frames: opts.max_frames,
+            looped: a.input.feed == Feed::Loop,
+            pace: opts.pace,
+            depth: opts.queue_frames,
+        };
+        let (frames, worker) =
+            crate::iqplay::spawn(f, cfg, stop.clone(), keys.as_mut().and_then(Keys::take_rx));
+        (
+            drive(&params, frames, worker, sink.as_mut(), &opts, &stop)?,
+            keys,
+        )
+    } else {
+        let mut input = match prepared {
+            Some(i) => i,
+            None => a.input.open(&params)?,
+        };
+        eprintln!("  input: {}", input.describe());
+        let mut keys = if !a.no_keys && input.enable_control()? {
+            Keys::start(a.seek_step)
+        } else {
+            None
+        };
+        keys_hint(&keys);
+        let controls = keys.as_mut().and_then(Keys::take_rx);
+        (
+            stream_controlled(&params, input, sink.as_mut(), &opts, stop, controls)?,
+            keys,
+        )
+    };
+    drop(keys); // the terminal back to its mode
     crate::source::check_not_scrambled()?;
     eprintln!(
         "[tx] done ({:?}): {} frames = {:.2} s on air ({} lead, {} data, {} flush)",
@@ -439,7 +550,7 @@ pub fn run(a: TxArgs) -> Result<()> {
         rep.data,
         rep.flush
     );
-    for (id, _) in params.active_layers() {
+    for (id, _) in params.active_layers().filter(|_| !iq_play) {
         let i = id.index();
         eprintln!(
             "[tx]   layer {id}: {} input packets, {} null padding ({:.1}% null fill)",

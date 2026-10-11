@@ -35,6 +35,10 @@ serde_json.workspace = true
 toml.workspace = true
 ctrlc = { workspace = true, features = ["termination"] }
 
+[target.'cfg(unix)'.dependencies]
+# Terminal mode for the playback keys of `isdb tx`.
+nix.workspace = true
+
 [dev-dependencies]
 # In-memory sink and radio for the tx stream tests (no device, no libhackrf).
 isdb-radio = { workspace = true, features = ["mock"] }

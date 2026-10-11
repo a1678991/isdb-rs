@@ -13,6 +13,7 @@
 //! input packet.
 
 use crate::input::FrameInput;
+use crate::keys::Command;
 use crate::source::{Feed, Packet};
 use anyhow::Result;
 use isdbt_core::{Layer, Params};
@@ -94,11 +95,13 @@ pub fn frames_for_seconds(params: &Params, seconds: f64) -> u64 {
     (seconds / params.frame_seconds()).ceil().max(1.0) as u64
 }
 
-/// Start the producer thread.
+/// Start the producer thread. `controls` (playback keys) are applied to
+/// the input before each data frame.
 pub fn spawn(
     cfg: ProducerConfig,
     mut input: Box<dyn FrameInput>,
     stop: Arc<AtomicBool>,
+    controls: Option<Receiver<Command>>,
 ) -> (Receiver<ProducedFrame>, JoinHandle<Result<EndReason>>) {
     let (out, rx) = sync_channel::<ProducedFrame>(cfg.depth.max(1));
     let h = std::thread::Builder::new()
@@ -184,6 +187,9 @@ pub fn spawn(
                     return Ok(EndReason::Stopped);
                 }
                 pace(index);
+                for cmd in controls.iter().flat_map(Receiver::try_iter) {
+                    eprintln!("[tx] {}", input.control(cmd));
+                }
                 let ti = Instant::now();
                 let Some(fp) = input.take_frame(counts, &stop) else {
                     if stop.load(Ordering::Relaxed) {
@@ -291,6 +297,7 @@ mod tests {
             cfg,
             Box::new(SyntheticInput::new()),
             Arc::new(AtomicBool::new(false)),
+            None,
         );
         let frames: Vec<_> = rx.iter().collect();
         assert_eq!(h.join().unwrap().unwrap(), EndReason::Limit);
@@ -328,7 +335,7 @@ mod tests {
             record: false,
             depth: 1,
         };
-        let (rx, h) = spawn(cfg, Box::new(SyntheticInput::new()), stop.clone());
+        let (rx, h) = spawn(cfg, Box::new(SyntheticInput::new()), stop.clone(), None);
         let first = rx.recv().unwrap();
         assert_eq!(first.kind, FrameKind::Data);
         stop.store(true, Ordering::SeqCst);

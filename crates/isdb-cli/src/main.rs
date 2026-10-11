@@ -20,6 +20,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 
 mod channel;
 mod input;
+mod iqplay;
+mod keys;
 mod loopback;
 #[allow(missing_docs)]
 mod mux;

@@ -117,6 +117,18 @@ Sinks: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdout) or
 | `--queue-frames`, `--prefill-frames` | 4 / 2 | frames produced ahead of the sink; frames converted before the radio starts |
 | `--status-secs` | 5 | status line interval (0 = final summary only) |
 | `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity (otherwise refused with layouts that fit) |
+| `--iq-in PATH`, `--iq-in-format cf32\|cs8` | — / cf32 | replay a baseband file instead of modulating TS input: parameters and frame start found by the receiver from its TMCC, scaled to unit RMS, no lead-in or flush added; `--feed loop` repeats it |
+| `--seek-step S` | 10 | seconds per ←/→ playback key |
+| `--no-keys` | off | do not read playback keys from the terminal |
+
+**Playback keys** (`--relay` / `ts-program` relays of `--mux-config`, and
+`--iq-in`; when stdin is a terminal, put in non-canonical mode without
+echo and restored at exit; Ctrl-C still stops): space pauses / resumes,
+←/→ seek by `--seek-step`, ↑/↓ step the play rate through 0.25, 0.5, 1,
+1.5, 2, 4, 8, 16× (relays only). The relay engine is
+`isdbt_mux::playback` (`Multiplexer::pause`, `resume`, `seek`,
+`set_rate`); what each key does on air is described in
+[docs/transmitting.md](https://github.com/a1678991/isdb-rs/blob/main/docs/transmitting.md#playback-keys).
 
 Status lines (every `--status-secs`): air time, frames, null fill per layer,
 input counters (`--mux-ts`: dropped nulls, frames closed by a full layer,
@@ -499,7 +511,9 @@ tx:  reader thread(s) ─packets (bounded, ~2 s)─► producer thread
        (FrameInput: per-layer / PID split (PCR-paced for files) /
         in-process isdbt-mux (its ts-program relays have their own
         reader thread) / synthetic; feed policy)
-     producer: Transmitter (pre-roll, lead, data, finish + flush)
+     producer: Transmitter (pre-roll, lead, data, finish + flush);
+       playback keys (keys thread) applied to the input between frames
+       --iq-in: playback thread (file frames, null frames when paused)
        ─frames (bounded, --queue-frames 4)─► main thread: dyn IqSink
      IqSink: FileSink (cf32/cs8) | isdb-radio backend (Backend::open_tx),
        e.g. hackrf: cs8 quantiser → libhackrf TX callback

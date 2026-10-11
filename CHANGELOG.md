@@ -60,6 +60,19 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
 - `isdb-cli`: `isdb completions SHELL` prints a shell completion script
   (bash, zsh; also fish, elvish, PowerShell) generated with
   `clap_complete` from the binary's own command line.
+- `isdb tx` playback keys (when stdin is a terminal; `--no-keys`,
+  `--seek-step S`): space pauses / resumes, ←/→ seek, ↑/↓ change the play
+  rate (0.25–16×) of `--relay` and `ts-program` relays. The engine is
+  `isdbt_mux::playback` with `Multiplexer::enable_playback_control`,
+  `pause`, `resume`, `seek`, `set_rate` and `playback_status`: PSI/SI and
+  PCR continue in every state, fast play skips video pictures and audio
+  frames within the source's own rate, slow play repeats audio frames, and
+  seeks use a 0.5 s index from the whole-file scan. Uncontrolled relay
+  output is unchanged (byte-identical).
+- `isdb tx --iq-in FILE [--iq-in-format cf32|cs8]`: replay a baseband
+  file to a radio or file; the receiver finds its parameters and frame
+  start, and the playback keys pause (null frames with the same
+  parameters) and seek it.
 - Verification: spec-vector tests, property-tested lossless round trips,
   TX→RX loopbacks, opt-in tests on real captures (`ISDB_RS_*` environment
   variables) and a differential test against gr-isdbt (`oracle/`,

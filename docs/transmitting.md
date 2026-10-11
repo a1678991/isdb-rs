@@ -129,6 +129,7 @@ Exactly one input:
 | `--a-ts/--b-ts/--c-ts PATH` | per-layer transport streams (`-` = stdin, FIFOs fine), e.g. from `isdb mux --out-a/--out-b`; a layer without input carries null packets |
 | `--mux-ts PATH --a-pids … [--c-pids …]` | one TS split into layers by PID: the listed PIDs go to A / C, every other PID to B, input null packets are dropped |
 | `--synthetic` | deterministic test packets (PID 0x0100/0x0200/0x0300); never ends |
+| `--iq-in PATH [--iq-in-format cf32\|cs8]` | replay a baseband file instead of modulating TS (e.g. one written by `isdb tx --iq`); its parameters come from its TMCC ([below](#playback-keys)) |
 
 `--feed` sets how file and pipe inputs are consumed: `file` (default; read
 ahead, end at EOF), `loop` (rewind at EOF; continuity counters jump), or
@@ -169,6 +170,8 @@ a program of *another* network (e.g. a satellite recording), use
 | `--prefill-frames N` | 2 | frames converted before the radio starts streaming |
 | `--status-secs S` | 5 | status line interval (0 = final summary only) |
 | `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity |
+| `--seek-step S` | 10 | seconds per ←/→ key ([playback keys](#playback-keys)) |
+| `--no-keys` | off | do not read playback keys from the terminal |
 
 `--radio` names a backend of `isdb-radio`; the compiled-in backends with
 their device arguments and gains are listed in the
@@ -362,6 +365,61 @@ isdb tx --mux-config relay.toml --layer-b 12,64qam,7/8,2 --radio hackrf --channe
 
 `crates/isdbt-mux/examples/relay-ts.toml` is the same configuration with
 comments; the `ts-program` keys are described in [mux-config.md](mux-config.md).
+
+## Playback keys
+
+With `--relay` (or a `--mux-config` with `ts-program` relays) and with
+`--iq-in`, `isdb tx` reads keys from the terminal (when stdin is one;
+`--no-keys` turns this off). Ctrl-C stops as before.
+
+| Key | `--relay` | `--iq-in` |
+|---|---|---|
+| space | pause / resume | pause / resume |
+| ← / → | seek back / forward `--seek-step` seconds (default 10) | the same, by whole frames |
+| ↑ / ↓ | next faster / slower play rate: 0.25, 0.5, 1, 1.5, 2, 4, 8, 16× | — (the rate of an IQ file is fixed) |
+
+Each key prints the new state (`[tx] playing 01:22.8 / 30:02.0 at 2×`),
+and the status lines show it. The producer runs a few frames ahead of the
+radio, and the receiver plays what is already in its buffers, so a key
+takes effect after about a second.
+
+**Relay.** The relay keeps sending PSI/SI and PCR in every state, so a
+receiver stays tuned:
+
+- *Pause*: the PES being sent complete, then the relayed streams send
+  nothing; the receiver shows the last picture and is silent. On resume
+  everything that follows is shown later by the pause. While paused the
+  stream's PTS stop, so a pause longer than 0.7 s leaves a PTS gap that
+  H.222.0 §2.7.4 does not allow (`isdb ts validate` reports it); the
+  MyGica S270 capture of a paused relay decoded without errors.
+- *Seek*: reading continues from the file position (a 0.5 s index made by
+  the start-up scan), at the next access point (sequence header), as for a
+  loop. The receiver shows the last picture for about a second.
+- *Play rate*: above 1×, the relay skips video pictures (whole PES, only
+  ones no kept picture refers to, at most 85 % of the source's bytes
+  divided by the rate, at least a frame period apart) and audio frames
+  (one per output frame period), so it never needs more than the source's
+  own rate on air. Below 1×, pictures are shown longer and audio frames
+  repeated. After a rate change the picture holds for up to the source's
+  longest arrival-to-decoding lead (about 0.5 s) while the receiver's
+  buffers refill.
+- Under playback control AAC audio is re-packetised one ADTS frame per PES
+  (the source's PES bytes otherwise go out unchanged), and the relay sends
+  the packet with the earliest decoding time first.
+
+On the bench (MyGica S270, the recording of the relay section, 110 s of
+pause, 1.5×, 2×, 0.5×, 1× and three seeks over RF) every PES arrived before
+its decoding time (video ≥ 0.23 s, audio ≥ 0.046 s ahead), PER 0.
+
+**IQ file.** `--iq-in` replays a cf32 or cs8 file at 512/63 MHz (as `isdb
+tx --iq` or `hackrf_transfer -r` write it). At start the receiver finds
+the transmission parameters (TMCC) and the start of the OFDM frames in
+its first seconds; the PHY options are not used, and the file is scaled to
+unit RMS. It plays to its end (`--feed loop` repeats it); no lead-in or
+flush is added. Pause sends null frames modulated with the file's
+parameters, so the receiver stays locked. Pause and seek splice frames,
+which breaks time interleaving: the receiver loses about one frame's
+packets at each splice (≈ 2800 on a 12-segment layer).
 
 ## Receiver compatibility notes
 

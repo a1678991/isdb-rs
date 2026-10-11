@@ -259,7 +259,7 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
         record: true,
         depth: 2,
     };
-    let (frames, worker) = producer::spawn(cfg, input, stop.clone());
+    let (frames, worker) = producer::spawn(cfg, input, stop.clone(), None);
     let mut ch = Channel::new(
         a.snr_db,
         a.cfo_carriers,
