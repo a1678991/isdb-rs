@@ -27,7 +27,8 @@ Packets of uncorrectable RS words are marked with
 ## Position in the stack
 
 - Depends on: `isdbt-core` (parameters), `isdbt-fec`, `isdbt-ofdm`.
-- Used by: `isdb-cli` (`isdb tx`, `isdb rx`, `isdb loopback`); `isdbt-mux`
+- Used by: `isdb-cli` (`isdb tx`, `isdb rx`, `isdb loopback`);
+  `isdb-radio` (`iq` cs8 conversion for 8-bit radios); `isdbt-mux`
   only as a dev-dependency (its tests feed the multiplexer's frames to a
   `Transmitter`); the stand-alone oracle crate `oracle/rust_tx3`.
 
@@ -42,7 +43,7 @@ Packets of uncorrectable RS words are marked with
 | `PipelinedReceiver` | the same on two worker threads (demodulation, decoding) with bounded queues: `push(Vec<C32>)`, `try_recv()`, `finish()` |
 | `FrameDecoder` | the channel-decoding half alone: `DemodFrame` (LLRs) → `RxFrame` |
 | `RxFrame` | `tx_frame`, `valid`, per-layer packets and `RsStats`, the reproduced TS `ts`, TMCC, `Params`, demodulator `Metrics`, `start_sample` |
-| `iq` | `cf32_from_bytes` / `cf32_to_bytes` (interleaved little-endian f32, GNU Radio complex); `cs8_from_samples` (HackRF signed 8-bit, scaled, saturating, returns the clip count) / `samples_from_cs8` |
+| `iq` | `cf32_from_bytes` / `cf32_to_bytes` (interleaved little-endian f32, GNU Radio complex); `cs8_from_samples` (signed 8-bit, as `hackrf_transfer` files and 8-bit radios use; scaled, rounded, saturating, returns the clip count) / `samples_from_cs8` |
 
 Software loopback of one data frame (Mode 1, one 13-segment layer); every
 input packet comes out of the receiver:

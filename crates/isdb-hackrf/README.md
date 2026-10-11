@@ -3,7 +3,8 @@
 Minimal safe wrapper over the system `libhackrf` (FFI) for continuous TX
 and RX streaming with a HackRF One: open a device, tune it, start a stream
 and exchange interleaved signed 8-bit I/Q buffers over bounded channels.
-It knows nothing about ISDB-T; `isdb-cli` uses it to put the baseband from
+It knows nothing about ISDB-T; the `hackrf` backend of `isdb-radio`
+(`isdb tx/rx --radio hackrf`) uses it to put the baseband from
 `isdbt-phy` on air and to receive it.
 
 > **Transmitting needs a licence.** This crate has no RF gate:
@@ -29,13 +30,14 @@ No broadcast specification. The surface is the libhackrf C API
 - **Sample rate:** `set_sample_rate_manual(freq_hz, divider)` sets an exact
   rational rate, e.g. 512 MHz / 63 for ISDB-T.
 - **Linking:** `build.rs` emits `cargo:rustc-link-lib=dylib=hackrf`, so
-  building this crate (and anything depending on it, e.g. `isdb-cli`)
+  building this crate (and anything depending on it, e.g. `isdb-radio`
+  and `isdb-cli` with their default `hackrf` feature)
   needs the system library: Arch `hackrf`, Debian/Ubuntu `libhackrf-dev`,
   Homebrew `hackrf` (for a library outside the linker's default search
   path, add `RUSTFLAGS="-L <dir>"`). On docs.rs (`DOCS_RS` set) nothing is
   linked. The manifest declares `links = "hackrf"`, so Cargo allows only
-  one crate linking libhackrf in a dependency graph. `isdb-cli` can be
-  built without this crate (`--no-default-features`).
+  one crate linking libhackrf in a dependency graph. `isdb-radio` and
+  `isdb-cli` can be built without this crate (`--no-default-features`).
 - **Minimum libhackrf: 2022.09.1.** From that release on `hackrf_stop_tx`
   / `hackrf_stop_rx` wait until every in-flight USB transfer has completed
   or been cancelled (`cancel_transfers` waits on `active_transfers` in the
@@ -52,7 +54,9 @@ No broadcast specification. The surface is the libhackrf C API
 ## Position in the stack
 
 - Depends on: `thiserror` and the system `libhackrf` only.
-- Used by: `isdb-cli` (`isdb tx --hackrf`, `isdb rx --hackrf`).
+- Used by: `isdb-radio`, as an optional dependency behind its `hackrf`
+  feature (`isdb tx --radio hackrf`, `isdb rx --radio hackrf`). No other
+  workspace crate depends on it directly.
 
 ## Key types and entry points
 
@@ -123,8 +127,8 @@ and streaming state of the attached HackRF without any RF activity:
 There are no automated tests: everything requires hardware. The crate is
 exercised on a conducted bench through `isdb tx` / `isdb rx` (see
 [isdb-cli](https://github.com/a1678991/isdb-rs/blob/main/crates/isdb-cli/README.md) and
-[docs/transmitting.md](https://github.com/a1678991/isdb-rs/blob/main/docs/transmitting.md)); the radio sink of
-`isdb-cli` is tested against a mock device. `cargo test -p isdb-hackrf --doc`
+[docs/transmitting.md](https://github.com/a1678991/isdb-rs/blob/main/docs/transmitting.md)); the HackRF sink of
+`isdb-radio` is tested against an in-memory radio. `cargo test -p isdb-hackrf --doc`
 compiles (but does not run) the example above, which needs `libhackrf` at
 link time.
 

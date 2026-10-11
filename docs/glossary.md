@@ -177,6 +177,16 @@ here: FFT size × carrier spacing.
 `cf32` = interleaved little-endian 32-bit float I/Q (GNU Radio "complex");
 `cs8` = interleaved signed 8-bit I/Q (the HackRF's native format).
 
+**Radio backend** — the code in `isdb-radio` that drives one kind of SDR
+(today `hackrf`), selected with `--radio NAME[:key=value,...]`; its gains
+are set with `--gain NAME=VALUE` and its settings are printed by
+`--dry-run`. Each backend is behind its own cargo feature.
+
+**Backoff** — how far the OFDM RMS level sits below integer full scale
+(`--backoff-db`, default 10 dB) when samples are quantised for a radio with
+integer samples or a cs8 file; OFDM peaks above full scale are clipped and
+counted.
+
 **MER, modulation error ratio** — the ratio of signal power to the error of
 the received constellation points, in dB; a measure of signal quality per
 layer.

@@ -1,7 +1,8 @@
 # Transmitting
 
 `isdb tx` turns transport streams into an ISDB-T signal and sends it to an
-IQ file or a HackRF One. This page covers the conducted bench set-up, the
+IQ file or a radio (`--radio`; HackRF One is the backend available
+today). This page covers the conducted bench set-up, the
 levels and channel plan, the `isdb tx` inputs and options, relaying a
 recorded program, and what real receivers turned out to need.
 
@@ -11,18 +12,20 @@ recorded program, and what real receivers turned out to need.
 > Radiating on UHF television frequencies requires a radio station licence
 > (in Japan under the Radio Act, 電波法; elsewhere under local law).
 > Unlicensed transmission is illegal and interferes with television
-> reception around you. Use `isdb tx --hackrf` only in a **conducted**
+> reception around you. Use `isdb tx --radio` only in a **conducted**
 > set-up (coax and attenuators into the receiver, nothing radiating) or in
-> a **shielded enclosure**. Never connect an antenna to the HackRF while
+> a **shielded enclosure**. Never connect an antenna to the radio while
 > transmitting. You are responsible for the rights to any content you
 > transmit or relay; `isdb` does not descramble and refuses scrambled
 > input.
 
-`isdb tx --hackrf` radiates only with `--rf-enable`. Without it, or with
-`--dry-run`, it prints the RF settings and exits with "not transmitting"
-before the device is opened, so you can check every setting first. Every
-exit path stops streaming and switches the HackRF's RF amplifier off; a
-normal end prints `device stopped streaming: yes`.
+`isdb tx --radio` radiates only with `--rf-enable`, whatever the backend;
+without `--rf-enable` or `--dry-run` the command line is rejected. With
+`--dry-run` it prints the backend's settings (after validating the device
+arguments, gains and tuning range) and exits with "not transmitting"
+before the device is opened, so you can check every setting first. With HackRF every exit path stops streaming and switches
+the RF amplifier off; a normal end prints `device stopped streaming:
+yes`.
 
 ## Bench set-up
 
@@ -34,7 +37,8 @@ HackRF One ──SMA coax── fixed attenuators ── DC block ── F/IEC a
 - **Attenuation.** A TV tuner is specified for roughly −75 dBm to −20 dBm
   at its input (ARIB STD-B21 §5.2.5: minimum input level −75 dBm or lower,
   maximum −20 dBm or higher). The HackRF can deliver far more than the
-  maximum, so start with the RF amplifier off, a low `--txvga` and plenty
+  maximum, so start with the RF amplifier off (`--gain amp=off`, the
+  default), a low `--gain txvga=N` and plenty
   of attenuation, then raise the TX gain until the receiver's
   signal-quality indicator is comfortably good. Aim for the middle of the
   range rather than the top: overload produces errors that look like a
@@ -78,8 +82,8 @@ uses channels 13–52 (470–710 MHz); `--channel` maps 13–62 and
 `--freq HZ` sets a centre frequency instead (the formula is not in the
 ARIB specs used here; it is the Japanese channel plan). A centre outside
 470–710 MHz (channels 53–62, or any other `--freq`) is refused unless
-`--freq-unrestricted` is given, which allows the HackRF's whole
-1 MHz–6 GHz range for shielded lab setups.
+`--freq-unrestricted` is given, which leaves only the radio backend's own
+range (HackRF: 1 MHz–6 GHz) for shielded lab setups.
 
 **Choosing a channel.** Use a channel that no station receivable at your
 location uses, so that leakage cannot interfere in either direction, and
@@ -91,7 +95,7 @@ service on a channel with no signal.
 
 Each OFDM frame is 204 symbols. In Mode 3 with GI 1/8 a frame lasts
 231.336 ms and has 1 880 064 samples at 512/63 MHz ≈ 8.127 MS/s, the rate
-used for files and for the HackRF. The defaults are the Japanese
+used for files and for radios. The defaults are the Japanese
 broadcast parameters:
 
 | Option | Default | Meaning |
@@ -108,7 +112,8 @@ A layer is `SEGMENTS,MODULATION,CODE_RATE,TI` (modulation
 index 0–3). The start-up line prints the TSPs and the TS rate of every
 layer; the rates follow from ARIB STD-B31 Table 3-3.
 
-The level in the HackRF's 8-bit DAC is set by `--backoff-db` (default
+The level in an integer-sample radio such as the HackRF (8-bit DAC) and
+in cs8 files is set by `--backoff-db` (default
 10 dB): the OFDM RMS sits that far below full scale (RMS 40 of 127), which
 leaves headroom for OFDM's peaks. Clipped components are counted and
 reported; a few in 10⁵ are normal at 10 dB.
@@ -147,17 +152,15 @@ a program of *another* network (e.g. a satellite recording), use
 |---|---|---|
 | `--iq PATH` | — | write baseband to a file (`-` = stdout) instead of a radio |
 | `--iq-format cf32\|cs8` | cf32 | float32 I/Q (GNU Radio) or signed 8-bit I/Q (`hackrf_transfer`, scaled with `--backoff-db`) |
-| `--hackrf` | — | transmit with a HackRF; needs `--channel` or `--freq`, and `--rf-enable` or `--dry-run` |
+| `--radio NAME[:key=value,...]` | — | transmit with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`); needs `--channel` or `--freq`, and `--rf-enable` or `--dry-run`. An unknown name lists the compiled-in backends and their cargo features |
 | `--channel N` / `--freq HZ` | — | UHF channel 13–52, or a centre frequency in Hz, within 470–710 MHz |
-| `--freq-unrestricted` | off | allow a centre outside the 470–710 MHz TV band (shielded lab setups only) |
+| `--freq-unrestricted` | off | allow a centre outside the 470–710 MHz TV band (shielded lab setups only); the backend's own range still applies (HackRF 1 MHz–6 GHz) |
 | `--rf-enable` | off | **actually radiate** (licensed or conducted/shielded use only) |
 | `--dry-run` | off | print the settings and exit without opening the device |
-| `--txvga DB` | 0 | HackRF TX IF gain, 0–47 dB |
-| `--amp` | off | HackRF RF amplifier (≈ +11 dB) |
-| `--backoff-db DB` | 10 | OFDM RMS below cs8 full scale (radio and cs8 files) |
+| `--gain NAME=VALUE` | backend's | radio gain, repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF: `txvga=0..47` dB TX IF gain (0), `amp=on\|off` RF amplifier ≈ +11 dB (off) |
+| `--backoff-db DB` | 10 | OFDM RMS below integer full scale (radios with integer samples, e.g. HackRF cs8, and cs8 files) |
 | `--freq-corr-ppm P` | 0 | reference-clock correction (positive = the device clock runs fast) |
-| `--serial S` | first device | select a HackRF by serial number |
-| `--bb-filter-hz HZ` | 6 000 000 | MAX2837 baseband filter (6 MHz passes the 5.57 MHz ISDB-T band) |
+| `--bb-filter-hz HZ` | 6 000 000 | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth (HackRF: the largest MAX2837 setting ≤ the request). 6 MHz passes the 5.57 MHz ISDB-T band |
 | `--seconds S` | 0 | bound on air time including lead-in and flush; `0` = unbounded (until the input ends, or Ctrl-C / SIGTERM) |
 | `--lead-frames N` | 2 | null frames before the data |
 | `--no-flush` | off | omit the null frames that flush the interleavers at the end |
@@ -166,6 +169,12 @@ a program of *another* network (e.g. a satellite recording), use
 | `--prefill-frames N` | 2 | frames converted before the radio starts streaming |
 | `--status-secs S` | 5 | status line interval (0 = final summary only) |
 | `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity |
+
+`--radio` names a backend of `isdb-radio`; the compiled-in backends with
+their device arguments and gains are listed in the
+[isdb-radio README](../crates/isdb-radio/README.md#backends), and adding
+one (e.g. a PlutoSDR) needs no change to the CLI
+([isdb-cli README](../crates/isdb-cli/README.md#radio-backends)).
 
 An input that never ends (`--synthetic`, `--mux-config`, `--relay`,
 `--feed loop`) written to a regular `--iq` file is refused unless
@@ -205,44 +214,45 @@ unoptimised build runs at ≈ 0.2×; use `cargo build --release`.
 Then check the RF settings, still without radiating:
 
 ```sh
-isdb tx --mux-config bench.toml --hackrf --channel 27 --txvga 20 --dry-run
+isdb tx --mux-config bench.toml --radio hackrf --channel 27 --gain txvga=20 --dry-run
 ```
 
 ```text
-HackRF TX settings:
+hackrf TX settings (UHF ch27):
   device       HackRF (first found)
-  tuning       centre 557.142857 MHz (UHF ch27), programmed 557142857 Hz; sample rate 512000000/63 Hz = 8.126984 MHz
+  tuning       centre 557.142857 MHz, programmed 557142857 Hz; sample rate 512000000/63 Hz = 8.126984 MHz
   bb filter    6.00 MHz requested
   TX VGA       20 dB
   RF amp       off
   backoff      10.0 dB below cs8 full scale (RMS 40.2 of 127)
-Error: not transmitting: add --rf-enable to radiate with the settings above (coax/attenuator or shielded setup only)
+Error: dry run, not transmitting: use --rf-enable instead of --dry-run to radiate with the settings above (coax/attenuator or shielded setup only)
 ```
 
 ## Transmitting (conducted bench only)
 
 ```sh
 # the multiplexer in-process, until Ctrl-C
-isdb tx --mux-config bench.toml --hackrf --channel 27 --txvga 20 --rf-enable
+isdb tx --mux-config bench.toml --radio hackrf --channel 27 --gain txvga=20 --rf-enable
 
 # per-layer files, looped, at most 10 minutes
-isdb tx --hackrf --channel 27 --txvga 20 --rf-enable --seconds 600 \
+isdb tx --radio hackrf --channel 27 --gain txvga=20 --rf-enable --seconds 600 \
     --b-ts service.ts --a-ts oneseg.ts --feed loop
 
 # a live multiplex from a FIFO, split by PID, padded with nulls when it lags
-isdb tx --hackrf --channel 27 --txvga 20 --rf-enable \
+isdb tx --radio hackrf --channel 27 --gain txvga=20 --rf-enable \
     --mux-ts /tmp/live.fifo --feed live --a-pids 0x0000,0x0010,0x0011,0x0012,0x0014,0x1fc8,0x1fc9
 ```
 
 The status lines show air time, frames, null fill per layer, input
 counters (for `--mux-config`: late PES and errors; for `--mux-ts`: the
 PCR-measured input rate per layer and the lag behind the PCR schedule),
-the producer speed and, for the radio, USB buffers and underruns.
+the producer speed and the radio's own counters (HackRF: USB buffers and
+underruns).
 
 Typical end-to-end check with a second HackRF:
 
 ```sh
-isdb rx --hackrf --serial <RX-SERIAL> --channel 27 --seconds 30 --out ours.ts --json
+isdb rx --radio hackrf:serial=<RX-SERIAL> --channel 27 --seconds 30 --out ours.ts --json
 isdb ts validate ours.ts
 isdb ts diff ours.ts check.ts
 ```
@@ -296,8 +306,8 @@ Check it without a radio, then transmit:
 isdb mux --relay FILE --auto-layout --seconds 60 --out-ts check.ts   # probe report + TS
 isdb ts validate check.ts
 isdb loopback --relay FILE --auto-layout --frames 8 --snr-db 25
-isdb tx --relay FILE --auto-layout --hackrf --channel 27 --txvga 20 --dry-run
-isdb tx --relay FILE --auto-layout --hackrf --channel 27 --txvga 20 --rf-enable
+isdb tx --relay FILE --auto-layout --radio hackrf --channel 27 --gain txvga=20 --dry-run
+isdb tx --relay FILE --auto-layout --radio hackrf --channel 27 --gain txvga=20 --rf-enable
 ```
 
 At start the probe report lists the source program, each source PID → role
@@ -338,7 +348,7 @@ To keep and tweak the generated configuration:
 
 ```sh
 isdb mux --relay FILE --auto-layout --print-config > relay.toml
-isdb tx --mux-config relay.toml --layer-b 12,64qam,7/8,2 --hackrf --channel 27 --txvga 20 --rf-enable
+isdb tx --mux-config relay.toml --layer-b 12,64qam,7/8,2 --radio hackrf --channel 27 --gain txvga=20 --rf-enable
 ```
 
 `crates/isdbt-mux/examples/relay-ts.toml` is the same configuration with

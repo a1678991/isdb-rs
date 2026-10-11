@@ -32,6 +32,7 @@ Coverage per clause, with the rung that confirms it, is in
 ```sh
 cargo test --workspace --release        # everything that needs no data or hardware
 cargo test --workspace --doc            # doctests, including every crate README
+cargo test -p isdb-cli -p isdb-radio --no-default-features   # no radio backend, no libhackrf
 # heavy tests, ignored by default
 cargo test --release -p isdbt-ofdm --test loopback -- --ignored --nocapture
 cargo test --release -p isdbt-fec viterbi_throughput -- --ignored --nocapture

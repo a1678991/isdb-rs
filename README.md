@@ -3,7 +3,7 @@
 A from-the-specification Rust implementation of Japanese digital terrestrial
 television (ISDB-T): MPEG-2 transport stream and ARIB service information
 codecs, a service multiplexer, a transport-stream analyzer, and the ARIB
-STD-B31 modulator and demodulator, with HackRF I/O. Both directions run on
+STD-B31 modulator and demodulator, with SDR I/O (HackRF One today). Both directions run on
 the same library — services → TS → OFDM baseband → radio, and radio → OFDM
 → TS → analysis — so every layer can be checked against its inverse, against
 the specifications' own numbers, and against independent receivers. It is
@@ -18,12 +18,12 @@ leaves room for ISDB-S and ISDB-S3.
 >   frequencies requires a radio station licence — in Japan under the Radio
 >   Act (電波法), elsewhere under local law. Transmitting without one is
 >   illegal and can disrupt television reception for everyone nearby.
-> - **Conducted or shielded use only.** `isdb tx --hackrf` is intended for
->   lab set-ups in which nothing is radiated: coax from the HackRF through
+> - **Conducted or shielded use only.** `isdb tx --radio` is intended for
+>   lab set-ups in which nothing is radiated: coax from the radio through
 >   attenuators straight into the receiver, or a shielded enclosure. No
->   antenna. It radiates only with `--rf-enable`; without it (or with
->   `--dry-run`) it prints the RF settings and exits before opening the
->   device. The centre frequency is limited to the UHF TV band, 470–710 MHz
+>   antenna. It radiates only with `--rf-enable`: `--radio` without
+>   `--rf-enable` or `--dry-run` is rejected, and `--dry-run` prints the RF
+>   settings and exits before opening the device. The centre frequency is limited to the UHF TV band, 470–710 MHz
 >   (channels 13–52), unless `--freq-unrestricted` is given. See
 >   [docs/transmitting.md](docs/transmitting.md).
 > - **No descrambling.** There is no B-CAS / conditional-access support and
@@ -75,9 +75,11 @@ leaves room for ISDB-S and ISDB-S3.
   time-interleave lengths, TMCC and AC. The receiver does synchronisation,
   CFO and timing-drift correction, channel estimation, TMCC decoding,
   soft-decision Viterbi and RS decoding, and reproduces the 13-segment TS.
-- **I/O** (`isdb-hackrf`, `isdb-cli`): IQ files (cf32 for GNU Radio, cs8 for
-  `hackrf_transfer`) and HackRF One streaming; one `isdb` binary with
-  `tx`, `rx`, `loopback`, `mux` and `ts` commands.
+- **I/O** (`isdb-radio`, `isdb-hackrf`, `isdb-cli`): IQ files (cf32 for
+  GNU Radio, cs8 for `hackrf_transfer`) and radio streaming through
+  device-neutral IQ sink/source traits with one backend per device
+  (HackRF One today, `--radio hackrf`); one `isdb` binary with `tx`, `rx`,
+  `loopback`, `mux` and `ts` commands.
 
 ## Crates
 
@@ -92,7 +94,8 @@ leaves room for ISDB-S and ISDB-S3.
 | [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS re-multiplexing, RS(204,188), energy dispersal, byte interleaving, convolutional code / Viterbi |
 | [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | mapping, interleaving, OFDM frame with SP/CP/TMCC/AC, IFFT/GI; receiver synchronisation and equalisation |
 | [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | TX/RX pipelines (TS packets ⇄ complex baseband), IQ file formats |
-| [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | minimal safe wrapper over the system libhackrf (FFI) |
+| [`isdb-radio`](crates/isdb-radio/README.md) | — | device-neutral SDR layer: IQ sink/source traits, `--radio` device selection, backend registry (HackRF behind the `hackrf` feature), integer sample quantiser |
+| [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | minimal safe wrapper over the system libhackrf (FFI), used by the `isdb-radio` HackRF backend |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary |
 
 How they fit together, the frame/latency contract and the data flow:
@@ -101,7 +104,8 @@ How they fit together, the frame/latency contract and the data flow:
 ## Quick start
 
 Tested on Linux with Rust ≥ 1.88 (edition 2024). HackRF support is the
-`hackrf` cargo feature of `isdb-cli`, on by default; it links the system
+`hackrf` cargo feature of `isdb-cli` (forwarded to the `isdb-radio`
+backend), on by default; it links the system
 `libhackrf` (2022.09.1 or later) dynamically, so the default build needs
 the library installed even if you never attach a radio:
 
@@ -120,7 +124,7 @@ export PATH="$PWD/target/release:$PATH"
 Without libhackrf, build with
 `cargo build --release -p isdb-cli --no-default-features`: every
 file-based command (`tx --iq`, `rx --iq`, `loopback`, `mux`, `ts`) works,
-and `--hackrf` fails with a message naming the feature.
+and `--radio hackrf` fails with a message naming the feature.
 
 Everything below works without a radio and without any captured data.
 
@@ -193,7 +197,7 @@ isdb ts diff test.ts rx.ts                 # every section identical
 
 Next steps: [docs/getting-started.md](docs/getting-started.md) (a longer
 walk-through), [docs/transmitting.md](docs/transmitting.md) (bench set-up,
-HackRF, relaying a recording), [docs/receiving.md](docs/receiving.md),
+radios, relaying a recording), [docs/receiving.md](docs/receiving.md),
 [docs/analysis.md](docs/analysis.md), [docs/mux-config.md](docs/mux-config.md),
 [docs/test-data.md](docs/test-data.md), [docs/glossary.md](docs/glossary.md).
 
@@ -278,7 +282,8 @@ end, but some parts have had less independent checking than others:
 - **Not implemented**: duplicate packets for a PID on two layers, the
   broadcast-TS information packet (IIP), SFN synchronisation, data
   broadcasting (BML/DSM-CC), DRCS glyphs, ISDB-T<sub>SB</sub>.
-- **Radio**: HackRF One only. The demodulator runs at about 1.4× real time
+- **Radio**: HackRF One is the only backend (others plug into
+  `isdb-radio` without CLI changes). The demodulator runs at about 1.4× real time
   on a current 16-core desktop CPU, so live reception needs a fast machine.
 
 ## Roadmap

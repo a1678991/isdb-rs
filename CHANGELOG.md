@@ -39,7 +39,21 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   IQ file formats (cf32/cs8).
 - `isdb-hackrf`: minimal safe wrapper over the system libhackrf for TX/RX
   streaming.
-- `isdb-cli`: the `isdb` binary — `tx` (to an IQ file or a HackRF; radiates
+- `isdb-radio`: device-neutral SDR layer between `isdbt-phy` and a radio —
+  the `IqSink` / `IqSource` traits, `DeviceSpec`
+  (`NAME[:key=value,...]`), `RadioConfig`, `TxOptions` (digital backoff,
+  checked to 0–40 dB, and transmit-queue sizing) and `RxOptions`
+  (receive-queue length in seconds), the `Backend` trait with a registry
+  of compiled-in backends (an unknown or left-out backend is reported
+  with the `isdb-radio` feature enabling it and the `isdb-cli` feature
+  forwarding it), the `Quantizer` for integer sample formats, the
+  `QueuedSink` transmit path shared by backends with integer samples
+  (`RadioTx`), and an in-memory sink and radio for tests (feature
+  `mock`). The HackRF backend (feature `hackrf`, default on) moved here
+  from `isdb-cli`; it validates its device arguments, gains, the
+  1 MHz–6 GHz / 2–20 Msps range and the baseband filter request without
+  opening the device.
+- `isdb-cli`: the `isdb` binary — `tx` (to an IQ file or a radio; radiates
   only with `--rf-enable`), `rx`, `loopback` (software channel with
   impairments), `mux` (including `--relay` of a recording) and `ts`
   (inspect, validate, diff, edit).
@@ -79,15 +93,47 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   service's copy control are reported with the value actually sent.
 - `isdb tx`/`rx`: `--freq` and `--channel` are limited to 470–710 MHz (UHF
   channels 13–52) unless `--freq-unrestricted` is given.
-- `isdb-cli`: HackRF support is the optional `hackrf` feature (default on);
+- `isdb-cli`: HackRF support is the optional `hackrf` feature (default on),
+  which forwards to `isdb-radio/hackrf`; `isdb-cli` no longer depends on
+  `isdb-hackrf` directly and contains no device code.
   `cargo build -p isdb-cli --no-default-features` builds without libhackrf
-  (all file-based commands work). CI has a `no-hackrf` job.
+  (all file-based commands work). CI has a `no-hackrf` job, which also
+  checks `isdb-radio` without any backend.
 - `isdb-hackrf`: minimum libhackrf 2022.09.1; older libraries are refused
   at open.
 - Neutral default identifiers in examples, the relay template and tests:
   network_id / transport_stream_id 0x79EE (placeholder; choose an ID not
   used where your receiver is), area_code 0x5A5.
 - **Breaking:**
+  - `isdb tx` / `isdb rx` radio options, with no aliases for the old
+    spellings: `--hackrf` is now `--radio SPEC` with SPEC
+    `NAME[:key=value,...]` (`--radio hackrf`); `--serial S` is now the
+    device argument `--radio hackrf:serial=S`; `--txvga N`, `--amp`,
+    `--lna N` and `--vga N` are now the repeatable
+    `--gain NAME=VALUE` (TX `txvga=0..47`, `amp=on|off`; RX `lna=0..40`
+    in 8 dB steps, `vga=0..62` in 2 dB steps, `amp=on|off`), validated by
+    the backend. `--bb-filter-hz` is an analog bandwidth request that the
+    backend rounds to a supported value. The `--dry-run` text starts with
+    `<backend> TX settings:` (` (UHF chN)` with `--channel`), and the
+    tuning line no longer repeats the channel. `--backoff-db`, `--rf-enable`,
+    `--dry-run`, `--prefill-frames`, `--channel`, `--freq`,
+    `--freq-unrestricted` and `--freq-corr-ppm` are unchanged.
+  - `isdb tx --dry-run` / `isdb rx` with `--radio` in a build without the
+    backend (e.g. `--no-default-features`) fail at the backend lookup and
+    no longer print the settings first.
+  - The device's frequency range (HackRF 1 MHz–6 GHz) is checked by the
+    backend on the programmed, `--freq-corr-ppm`-corrected frequency
+    instead of the nominal one. `--bb-filter-hz` above 28 MHz is refused
+    by the HackRF backend (libhackrf would program 0 Hz).
+  - `isdb rx --json`: the `input` string of a radio reception is
+    `radio SPEC[ (UHF chN)], centre … MHz, programmed … Hz; sample rate …`
+    instead of `HackRF …`.
+  - The header of a relay `--print-config` suggests
+    `isdb tx --mux-config THIS.toml … --radio SPEC --channel N --rf-enable`
+    (no `--hackrf`, no `--txvga 20` hint).
+  - The radio TX status lines count `buffers` instead of `usb buffers`, and
+    the `--dry-run` refusal reads `dry run, not transmitting: use
+    --rf-enable instead of --dry-run …`.
   - `isdbt_core::Params` and `LayerConfig` fields are private, with
     accessors (construction is validated); `ParamError` is an enum.
   - `isdbt_phy::PipelinedReceiver::new` returns a `Result`.
@@ -114,6 +160,9 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
 
 ### Removed
 
+- `isdb tx` / `isdb rx` flags `--serial`, `--txvga`, `--lna`, `--vga` and
+  `--amp` (and `--hackrf`): use `--radio hackrf:serial=S` and
+  `--gain NAME=VALUE` (see Changed).
 - Insertion of AAC crc_check into unprotected ADTS input. Computing the
   CRC needs a raw_data_block parser written from ISO/IEC 13818-7, which
   the project does not have, so the default `adts_compliance = "conform"`

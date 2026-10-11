@@ -1,7 +1,7 @@
 # isdb — ISDB-T streamer and TS tools
 
 `isdb` drives the spec crates of this workspace from the command line:
-transport streams → ARIB STD-B31 baseband → IQ file or HackRF, and back,
+transport streams → ARIB STD-B31 baseband → IQ file or radio, and back,
 plus the service multiplexer and TS analysis tools.
 
 ```text
@@ -9,14 +9,16 @@ cargo build --release -p isdb-cli      # → target/release/isdb
 cargo build --release -p isdb-cli --no-default-features   # without libhackrf
 ```
 
-The `hackrf` cargo feature (default on) links the system libhackrf
-(≥ 2022.09.1) through `isdb-hackrf`. Built without it, every file-based
-command works and `--hackrf` fails with a message naming the feature
-(`--dry-run` still prints the settings).
+Radios are selected with `--radio NAME[:key=value,...]` and reached
+through `isdb-radio`; this crate contains no device code. The `hackrf`
+cargo feature (default on) forwards to `isdb-radio/hackrf`, which links
+the system libhackrf (≥ 2022.09.1) through `isdb-hackrf`. Built without
+it, every file-based command works and `--radio hackrf` (also with
+`--dry-run`) fails with a message naming the feature.
 
 > **Legal and safety notice** (also printed by `isdb tx --help`):
 > radiating on broadcast frequencies requires a licence (in Japan the
-> Radio Act, elsewhere local law). `isdb tx --hackrf` is for shielded or
+> Radio Act, elsewhere local law). `isdb tx --radio` is for shielded or
 > conducted (coax + attenuator) lab setups only and radiates only with
 > `--rf-enable`. `isdb` does not descramble (no B-CAS / CAS support) and
 > refuses scrambled input; you are responsible for the rights to any
@@ -26,10 +28,12 @@ Position in the stack: the only binary crate, on top of every library
 crate. It calls `isdbt-phy` (`Transmitter`, `PipelinedReceiver`, `iq`),
 `isdbt-core`/`isdbt-fec`/`isdbt-ofdm` (parameters, multiplex pattern,
 demodulator configuration), `isdbt-mux` (`Multiplexer`), `isdb-analyze`
-(`isdb ts`) and `isdb-hackrf`; `isdb-ts`/`isdb-si`/`isdb-text` are reached only
-through `isdbt-mux`/`isdb-analyze` (not direct dependencies). It adds
-I/O, threading, pacing, radio control and reporting; no spec logic lives
-here (no SPEC-NOTES of its own).
+(`isdb ts`) and `isdb-radio` (`IqSink` / `IqSource`, the backend
+registry); `isdb-ts`/`isdb-si`/`isdb-text` and `isdb-hackrf` are reached
+only through `isdbt-mux`/`isdb-analyze`/`isdb-radio` (not direct
+dependencies). It adds I/O, threading, pacing, the `--rf-enable` gate and
+reporting; no spec logic and no device code lives here (no SPEC-NOTES of
+its own).
 
 Transmission parameters (`tx`, `loopback`, `mux`) default to the Japanese
 terrestrial norm: `--mode 3`, `--gi 8`, `--partial true`, layer A =
@@ -96,19 +100,20 @@ Feed policy `--feed`:
   ratio is reported per status line; ends when the writer closes. With
   `--iq` the frames are paced to real time (also `--realtime`).
 
-Sinks: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdout) or `--hackrf`:
+Sinks: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdout) or
+`--radio SPEC`:
 
 | flag | default | meaning |
 |---|---|---|
+| `--radio NAME[:key=value,...]` | — | radio backend and its device arguments, e.g. `hackrf`, `hackrf:serial=0000abcd`; an unknown name lists the compiled-in backends and their cargo features |
 | `--channel N` / `--freq HZ` | — | UHF ch 13..62 → 473 + 6(N−13) + 1/7 MHz; the centre must lie in the 470–710 MHz TV band (ch 13–52) |
-| `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (HackRF 1 MHz–6 GHz; shielded lab only) |
+| `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (shielded lab only); the backend's own range still applies (HackRF 1 MHz–6 GHz) |
 | `--freq-corr-ppm P` | 0 | divide tuning and sample clock by 1 + P·1e-6 |
-| `--txvga DB` | 0 | TX IF gain 0..47 |
-| `--amp` | off | RF amplifier (~+11 dB) |
-| `--backoff-db DB` | 10 | OFDM RMS below cs8 full scale (radio and cs8 files); clipped components counted |
-| `--rf-enable` | — | **required to radiate**. `--hackrf` without it, or with `--dry-run`, prints the RF settings and exits with an error ("not transmitting") before opening the device |
+| `--gain NAME=VALUE` | backend's | repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF TX: `txvga=0..47` dB (0), `amp=on\|off` (RF amplifier ≈ +11 dB, off) |
+| `--backoff-db DB` | 10 | OFDM RMS below integer full scale (radios with integer samples, e.g. HackRF cs8, and cs8 files); clipped components counted |
+| `--rf-enable` | — | **required to radiate**. `--radio` needs `--rf-enable` or `--dry-run` (otherwise the command line is rejected); with `--dry-run` it prints the backend's settings and exits with an error ("not transmitting") before opening the device |
 | `--seconds S` | 0 | bound on air time incl. lead-in/flush; `0` = unbounded: until the input ends (`file` at EOF, `live` when the writer closes, `--relay --at-eof end`) or Ctrl-C / SIGTERM — `--synthetic`, `--mux-config`, `--relay` and `--feed loop` never end. The start-up line says `duration: unbounded (…); stop with Ctrl-C`. An endless input into an `--iq` regular file is refused without `--seconds` (the file would fill the disk; `--seconds 0` forces it); stdout, FIFOs and devices such as `/dev/null` need none |
-| `--serial S`, `--bb-filter-hz` | first / 6 MHz | device selection, MAX2837 filter |
+| `--bb-filter-hz HZ` | 6 MHz | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth (HackRF: the largest MAX2837 setting ≤ the request) |
 | `--queue-frames`, `--prefill-frames` | 4 / 2 | frames produced ahead of the sink; frames converted before the radio starts |
 | `--status-secs` | 5 | status line interval (0 = final summary only) |
 | `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity (otherwise refused with layouts that fit) |
@@ -120,14 +125,17 @@ the PCR-measured input rate per layer against its capacity, the PCR lag;
 **producer speed** (`producer 4.1× real time (input 0.3 + modulate 54 ms/frame)`:
 the on-air time of the frames produced in the interval divided by the time
 spent assembling and modulating them; waiting on the queue is not
-counted), and for the radio USB buffers and underruns. A producer below
+counted), and the radio's own counters (HackRF: USB buffers and
+underruns). A producer below
 1× with a real-time sink prints a warning with the per-stage times.
 
-The RF settings are printed before the device is opened. SIGINT/SIGTERM stop
-immediately (queued samples are discarded); a normal end drains the queue.
-Every exit path stops streaming, turns the amp off and prints
-`device stopped streaming: yes` (error if not). Underruns (USB buffers sent
-as zeros) are reported in the status lines and at the end.
+The backend's settings (`Backend::describe_tx`, which also validates the
+device arguments, gains, tuning range and `--backoff-db`) are printed before the device is
+opened. SIGINT/SIGTERM stop immediately (queued samples are discarded); a
+normal end drains the queue. With HackRF every exit path stops streaming,
+turns the amp off and prints `device stopped streaming: yes` (error if
+not); underruns (USB buffers sent as zeros) are reported in the status
+lines and at the end.
 
 On-air sequence: `Transmitter::preroll` (frames modulated and discarded, so
 the first emitted frame already carries null packets instead of the delay
@@ -139,13 +147,15 @@ packet), the data, then `Transmitter::flush_frames` null frames (`--no-flush`
 to omit) that push the last input packets through the interleavers and the
 receiver look-ahead.
 
-### `isdb rx` — IQ / HackRF → TS
+### `isdb rx` — IQ / radio → TS
 
 * Source: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdin, 512/63 MHz) or
-  `--hackrf` with `--channel/--freq`, `--freq-corr-ppm`, `--serial`,
-  `--bb-filter-hz`, `--lna` (16), `--vga` (20), `--amp`. `--seconds` bounds
-  the signal time (default `0` = unbounded: the whole file for `--iq`,
-  until Ctrl-C / SIGTERM for `--hackrf`).
+  `--radio SPEC` with `--channel/--freq`, `--freq-corr-ppm`,
+  `--bb-filter-hz` and repeatable `--gain NAME=VALUE` (HackRF RX:
+  `lna=0..40` in 8 dB steps (16), `vga=0..62` in 2 dB steps (20),
+  `amp=on|off` (off)). `--seconds` bounds the signal time (default `0` =
+  unbounded: the whole file for `--iq`, until Ctrl-C / SIGTERM for
+  `--radio`).
 * Outputs (valid frames only): `--out PATH` the §3.2.2 reproduced single TS,
   `--a-out/--b-out/--c-out` per-layer packets, `--strip-nulls`.
 * Status lines every `--status-secs` (1) seconds of signal: lock state,
@@ -274,11 +284,11 @@ only):
 
 ```text
 # check the settings without radiating
-isdb tx --hackrf --channel 13 --txvga 20 --b-ts service.ts --a-ts oneseg.ts --dry-run
+isdb tx --radio hackrf --channel 13 --gain txvga=20 --b-ts service.ts --a-ts oneseg.ts --dry-run
 # radiate until Ctrl-C (the files loop)
-isdb tx --hackrf --channel 13 --txvga 20 --rf-enable --b-ts service.ts --a-ts oneseg.ts --feed loop
+isdb tx --radio hackrf --channel 13 --gain txvga=20 --rf-enable --b-ts service.ts --a-ts oneseg.ts --feed loop
 # relay a live mux from a FIFO, at most 10 minutes
-isdb tx --hackrf --channel 13 --txvga 20 --rf-enable --seconds 600 \
+isdb tx --radio hackrf --channel 13 --gain txvga=20 --rf-enable --seconds 600 \
     --mux-ts /tmp/live.fifo --feed live --a-pids 0x0000,0x0010,0x0011,0x0012,0x0014,0x1fc8,0x1fc9
 
 # file round trip
@@ -291,7 +301,7 @@ isdb tx --b-ts b.ts --iq x.cs8 --iq-format cs8 --backoff-db 10
 isdb tx --synthetic --iq syn.cf32 --seconds 5
 
 # receive with a (second) HackRF
-isdb rx --hackrf --channel 13 --lna 16 --vga 20 --seconds 30 --out rx.ts
+isdb rx --radio hackrf --channel 13 --gain lna=16 --gain vga=20 --seconds 30 --out rx.ts
 
 # software loopback through 22 dB SNR, 2.3 carriers CFO, mid-frame start
 isdb loopback --frames 8 --snr-db 22 --cfo-carriers 2.3 --sample-offset -700000
@@ -314,12 +324,12 @@ isdb ts validate full.ts
 isdb loopback --mux-config bench.toml --frames 8 --snr-db 25
 
 # 3. check the RF settings (no radiation), then transmit until Ctrl-C
-isdb tx --mux-config bench.toml --hackrf --channel 13 --txvga 20 --dry-run
-isdb tx --mux-config bench.toml --hackrf --channel 13 --txvga 20 --rf-enable
-#    (amp stays off unless --amp; --seconds S to bound the transmission)
+isdb tx --mux-config bench.toml --radio hackrf --channel 13 --gain txvga=20 --dry-run
+isdb tx --mux-config bench.toml --radio hackrf --channel 13 --gain txvga=20 --rf-enable
+#    (amp stays off unless --gain amp=on; --seconds S to bound the transmission)
 
 # 4. receive with a second HackRF (or the tuner), then compare
-isdb rx --hackrf --serial <RX> --channel 13 --seconds 30 --out ours.ts --json
+isdb rx --radio hackrf:serial=<RX> --channel 13 --seconds 30 --out ours.ts --json
 isdb ts validate ours.ts
 isdb ts diff ours.ts live-capture.ts
 ```
@@ -331,7 +341,7 @@ you have the rights to relay) as a terrestrial service on UHF ch44,
 remote key 9, in one line:
 
 ```text
-isdb tx --relay FILE --auto-layout --hackrf --channel 44 --txvga 20 --rf-enable
+isdb tx --relay FILE --auto-layout --radio hackrf --channel 44 --gain txvga=20 --rf-enable
 ```
 
 It runs until Ctrl-C (the recording loops; `--seconds S` to bound,
@@ -399,16 +409,57 @@ isdb loopback --relay FILE --auto-layout --frames 8 --snr-db 25
 # keep and tweak the configuration
 isdb mux --relay FILE --auto-layout --print-config > relay.toml
 isdb tx --mux-config relay.toml --layer-b 12,64qam,7/8,2 \
-        --hackrf --channel 44 --txvga 20 --rf-enable
+        --radio hackrf --channel 44 --gain txvga=20 --rf-enable
 ```
 
 (Runs until Ctrl-C; the recording loops.) The status line shows
 per relay the lag behind the PCR schedule, late PES, the source's peak
 rates and the loop period.
 
-An RF loopback needs two radios: `isdb tx --hackrf --serial A …` and
-`isdb rx --hackrf --serial B …`, connected through attenuators
+An RF loopback needs two radios: `isdb tx --radio hackrf:serial=A …` and
+`isdb rx --radio hackrf:serial=B …`, connected through attenuators
 ([docs/transmitting.md](https://github.com/a1678991/isdb-rs/blob/main/docs/transmitting.md#bench-set-up)).
+
+## Radio backends
+
+`--radio NAME[:key=value,...]` names a backend of the
+[`isdb-radio`](https://github.com/a1678991/isdb-rs/blob/main/crates/isdb-radio/README.md)
+registry and its device arguments; `--gain NAME=VALUE` are its gains.
+`isdb` computes only what is device-independent — the centre frequency
+(`--channel`/`--freq`, the 470–710 MHz check, `--freq-corr-ppm`), the
+512/63 MHz sample rate and the `--bb-filter-hz` request — into an
+`isdb_radio::RadioConfig`, puts `--backoff-db` and `--prefill-frames` into
+`isdb_radio::TxOptions` (`rx`: a 1 s receive queue in
+`isdb_radio::RxOptions`), and passes the arguments and gains through as
+strings for the backend to validate. The `--rf-enable` /
+`--dry-run` gate applies to every backend. The compiled-in backends, their
+device arguments and gains are listed in the `isdb-radio` README; today
+that is `hackrf` (cargo feature `hackrf`, default on).
+
+Adding a device (for example a PlutoSDR) touches only `isdb-radio`:
+
+1. Implement `isdb_radio::Backend` in
+   `crates/isdb-radio/src/backends/<name>.rs`. `describe_tx` /
+   `describe_rx` validate the device arguments, gains, tuning range and
+   sample rate without hardware and return the settings text (what
+   `--dry-run` prints); `open_tx` / `open_rx` open the device and return a
+   `Box<dyn IqSink>` / `Box<dyn IqSource>`. A device fed with buffers of
+   integer samples implements `isdb_radio::RadioTx` (its `IntFormat`, e.g.
+   `Cs8`) and returns an `isdb_radio::QueuedSink`, which quantises with
+   `TxOptions::backoff_db` and provides the prefill, back-pressure, stall
+   detection, drain and underrun counting; `open_rx` converts
+   `RxOptions::queue_seconds` to its own buffer count.
+2. Put it behind its own cargo feature of `isdb-radio` (the driver crate
+   as an optional dependency) and register it in `backends/mod.rs`: the
+   `#[cfg(feature = "<name>")]` module, an entry in `COMPILED`, and
+   `("<name>", "<feature>")` in `KNOWN`, so a build without it names the
+   feature. Add its row to the README's backend table.
+3. To build it into `isdb`, forward the feature in
+   `crates/isdb-cli/Cargo.toml` (`<name> = ["isdb-radio/<name>"]`), as
+   `hackrf` is.
+
+No CLI source changes: `--radio <name>:key=value`, `--gain`, the dry run,
+status lines and summaries reach the new backend through the traits.
 
 ## Architecture
 
@@ -418,10 +469,12 @@ tx:  reader thread(s) ─packets (bounded, ~2 s)─► producer thread
         in-process isdbt-mux (its ts-program relays have their own
         reader thread) / synthetic; feed policy)
      producer: Transmitter (pre-roll, lead, data, finish + flush)
-       ─frames (bounded, --queue-frames 4)─► main thread: sink
-     sink: FileSink (cf32/cs8) | RadioSink → libhackrf TX callback
+       ─frames (bounded, --queue-frames 4)─► main thread: dyn IqSink
+     IqSink: FileSink (cf32/cs8) | isdb-radio backend (Backend::open_tx),
+       e.g. hackrf: cs8 quantiser → libhackrf TX callback
        (starts after --prefill-frames 2; back-pressure paces the producer)
-rx:  source (file / HackRF RX callback) ─► PipelinedReceiver
+rx:  dyn IqSource (file | Backend::open_rx, e.g. HackRF RX callback)
+       ─► PipelinedReceiver
        (demod thread ─► FEC-decode thread) ─► outputs + status
 loopback: producer ─► Channel ─► PipelinedReceiver ─► Verifier
 ```
@@ -449,8 +502,9 @@ asserts ≥ 2× real time for a 19.5 Mbit/s `--mux-ts` file.
 
 ## Verification
 
-`cargo test -p isdb-cli` (no radio needed; the radio sink is tested
-against a mock device):
+`cargo test -p isdb-cli` (no radio needed; the real-time streaming path is
+tested through the `isdb-radio` `QueuedSink` that the radio backends
+transmit with, over the in-memory `mock::MockRadio`):
 
 | Test | What it proves |
 |---|---|
@@ -464,12 +518,14 @@ against a mock device):
 | `tests/cli.rs` `relay_recording_without_toml` | opt-in real data (`ISDB_RS_RELAY_TS`): `mux --relay <recording> --auto-layout --seconds 20` names the program, relays the video to 0x0111 with 0 late PES, `ts validate` 0 errors; `loopback --relay … --auto-layout` PASS. Prints `SKIP` and passes without the variable |
 | `tests/cli.rs` `live_feed_with_stalling_input_stays_cbr_and_lossless` | `--feed live` pads with nulls at constant rate and loses no input |
 | `tests/cli.rs` `loopback_passes_with_impairments`, `loopback_with_file_inputs_and_detects_loss` | loopback verdicts: PASS under impairments, FAIL with lost packets counted |
-| `tests/cli.rs` `hackrf_tx_refuses_without_rf_enable` | `--dry-run` prints the RF settings and refuses; no `--rf-enable` ⇒ rejected |
+| `tests/cli.rs` `radio_tx_refuses_without_rf_enable` | `--radio hackrf --dry-run` prints the backend's settings and refuses; no `--rf-enable` ⇒ rejected |
+| `tests/cli.rs` `radio_rejects_unknown_backends_gains_and_ranges` | an unknown backend lists the compiled-in ones with their features; unknown or out-of-range `--gain` values (TX and RX) and unknown device arguments are rejected before a device is opened |
+| `tests/cli.rs` `radio_without_backends_names_the_feature` | `--no-default-features` build: `tx`/`rx --radio hackrf` name the `hackrf` feature |
 | `tests/cli.rs` `scrambled_input_is_refused` | a TS with one scrambled packet (transport_scrambling_control ≠ '00') is refused: `isdb` neither descrambles nor transmits scrambled content |
 | `tests/cli.rs` `endless_input_into_iq_file_is_refused_without_seconds` | `tx --synthetic --iq FILE` without `--seconds` is refused before the file is created; with `--seconds` it runs |
 | `tests/cli.rs` `mux_config_and_ts_tools_smoke`, `loopback_with_in_process_multiplexer` | `isdb mux` / `ts inspect` and `loopback --mux-config` on `bench.toml` with media streams replaced by `declared` streams; the media variant runs only when `ISDB_RS_MEDIA_DIR` names a directory with `video.m2v` and `audio.m2a` (prints `SKIP` otherwise; [docs/test-data.md](https://github.com/a1678991/isdb-rs/blob/main/docs/test-data.md#making-a-media-directory) shows how to make one) |
 | `tests/cli.rs` `media_aac_gate_matches_b32_part2_report` | `isdb mux` on `bench.toml` with your own `audio.m2a`, expectations taken from its ADTS headers: the default `conform` succeeds exactly when no error-severity B32 Part 2 rule is violated (refusal says "crc_check cannot be inserted" for protection_absent '1'); with `--adts-compliance warn` `isdb ts validate` reports each violated per-frame rule as an `aac.*` error and the quality_indicator Table 1 derives from the file's rate (opt-in: `ISDB_RS_MEDIA_DIR` with `video.m2v` and `audio.m2a`; prints `SKIP` otherwise) |
-| `src/*` unit tests | `--relay` numbers (hex/decimal), NIT channel from `--freq`, service layer from the layout; PCR pacing of the PID split (frames carry only the packets due; over capacity: everything sent, lag measured), layer-spec parsing and defaults, UHF channel centres and ppm correction, cs8 scaling/clip count, AWGN/CFO channel, verifier anchoring, producer lead/data/flush sequence and stop, file/loop/live sources, PID split, radio sink prefill/drain/abort/underruns (mock radio), `clap` definition consistency, `--seconds` default 0 for every `tx` input and for `rx`, the `--iq` bound check (regular file refused; stdout, FIFO, `/dev/null` accepted), which `--mux-config` / `--relay` configurations end by themselves |
+| `src/*` unit tests | `--relay` numbers (hex/decimal), NIT channel from `--freq`, service layer from the layout; PCR pacing of the PID split (frames carry only the packets due; over capacity: everything sent, lag measured), layer-spec parsing and defaults, UHF channel centres and ppm correction, the band check, the `RadioConfig` built from the tuning / `--radio` arguments / `--gain` list, cs8 file bytes, AWGN/CFO channel, verifier anchoring, producer lead/data/flush sequence and stop, file/loop/live sources, PID split, streaming into memory and through the queued radio sink over the mock radio (prefill and drain; cs8 bytes equal to the quantised samples; stop aborts), `clap` definition consistency, `--seconds` default 0 for every `tx` input and for `rx`, the `--iq` bound check (regular file refused; stdout, FIFO, `/dev/null` accepted), which `--mux-config` / `--relay` configurations end by themselves |
 
 Workspace overview: [`../../README.md`](https://github.com/a1678991/isdb-rs/blob/main/README.md); architecture and
 the frame/latency contract: [`docs/architecture.md`](https://github.com/a1678991/isdb-rs/blob/main/docs/architecture.md);

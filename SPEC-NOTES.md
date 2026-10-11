@@ -20,9 +20,9 @@ every entry with its status.
 | `isdbt-fec` | [crates/isdbt-fec/SPEC-NOTES.md](crates/isdbt-fec/SPEC-NOTES.md) | remux model receiver, PRBS bit order and frame alignment, delay adjustment, byte-interleave alignment, convolutional taps / puncturing reset, one-frame latency contract |
 | `isdbt-ofdm` | [crates/isdbt-ofdm/SPEC-NOTES.md](crates/isdbt-ofdm/SPEC-NOTES.md) | mapping bit order and delays, DQPSK reference, time/frequency interleave indexing and carrier rotation, pilots, TMCC/AC, difference-set code bit order, frame alignment (`latency`), gr-isdbt deviations |
 
-`isdbt-core`, `isdbt-phy`, `isdb-hackrf` and `isdb-cli` have no notes of their
-own: they take parameters from the spec tables or wire the crates above
-together.
+`isdbt-core`, `isdbt-phy`, `isdb-radio`, `isdb-hackrf` and `isdb-cli` have
+no notes of their own: they take parameters from the spec tables, connect
+the baseband to a radio, or wire the crates above together.
 
 Format of an entry:
 

@@ -47,6 +47,7 @@ graph TD
   phy[isdbt-phy<br/>TX/RX pipelines]
   mux[isdbt-mux<br/>multiplexer]
   ana[isdb-analyze<br/>analyzer]
+  radio[isdb-radio<br/>IQ sink/source, radio backends]
   hrf[isdb-hackrf<br/>libhackrf FFI]
   cli[isdb-cli<br/>the isdb binary]
 
@@ -66,20 +67,30 @@ graph TD
   phy --> core
   phy --> fec
   phy --> ofdm
+  radio --> phy
+  radio --> ofdm
+  radio -. "hackrf feature" .-> hrf
   cli --> mux
   cli --> ana
   cli --> phy
   cli --> fec
   cli --> ofdm
   cli --> core
-  cli --> hrf
+  cli --> radio
 ```
 
 Arrows point to dependencies. The TS/SI side (`isdb-ts`, `isdb-text`,
 `isdb-si`, `isdbt-mux`, `isdb-analyze`) and the PHY side (`isdbt-core`,
 `isdbt-fec`, `isdbt-ofdm`, `isdbt-phy`) meet in only two places: `isdbt-mux` uses `isdbt-core` and
 `isdbt-fec` for the frame clock and the §3.2 multiplex-frame slot pattern,
-and `isdb-cli` wires everything together. The PHY crates carry TS packets
+and `isdb-cli` wires everything together. `isdb-radio` is the only
+crate that knows about radios: it defines the device-neutral `IqSink` /
+`IqSource` traits, the `--radio NAME[:key=value,...]` device selection,
+the `RadioConfig` / `TxOptions` / `RxOptions` handed to a backend, the
+`QueuedSink` transmit path shared by every backend with integer samples,
+and the registry of backends, each behind its own cargo feature
+(`hackrf` → `isdb-hackrf`, the FFI wrapper).
+The CLI never names a device. The PHY crates carry TS packets
 as plain `[u8; 188]` and do not depend on `isdb-ts`. `isdb-analyze` uses
 `isdbt-mux` only for the ARIB STD-B32 Part 2 ADTS rule identities and
 quality modes; it parses ADTS headers itself.
@@ -105,10 +116,10 @@ TX                             │                                          │
         │    → time / frequency interleave → SP/CP/TMCC/AC frame          │
         │    → IFFT + guard interval                   ⇒ C32 @ 512/63 MHz │
         ▼                                                                 │
- IQ file (cf32 / cs8 via isdbt-phy::iq)  or  isdb_hackrf::TxStream (cs8)  │
+ isdb_radio::IqSink: IQ file (cf32 / cs8)  or  radio backend (e.g. cs8)   │
                                                                           │
 RX                                                                        │
- IQ file  or  isdb_hackrf::RxStream                                       │
+ isdb_radio::IqSource: IQ file  or  radio backend                         │
         │                                                                 │
  isdbt-phy::Receiver / PipelinedReceiver::push(samples)                   │
         │  isdbt-ofdm::Demodulator: sync, CFO, channel estimation,        │
@@ -163,16 +174,27 @@ tx:  reader thread(s) ─packets (bounded, ~2 s)─► producer thread
         in-process isdbt-mux (its ts-program relays have their own
         reader thread) / synthetic; feed policy)
      producer: Transmitter (pre-roll, lead, data, finish + flush)
-       ─frames (bounded, --queue-frames 4)─► main thread: sink
-     sink: file sink (cf32/cs8) | radio sink → libhackrf TX callback
-       (starts after --prefill-frames 2; back-pressure paces the producer)
-rx:  source (file / HackRF RX callback) ─► PipelinedReceiver
+       ─frames (bounded, --queue-frames 4)─► main thread: dyn IqSink
+     IqSink: file sink (cf32/cs8)
+           | isdb-radio backend (Backend::open_tx), e.g. hackrf:
+             QueuedSink: cs8 quantiser → buffer queue → libhackrf TX
+             callback (starts after --prefill-frames 2; back-pressure
+             paces the producer; stall detection, drain on finish)
+rx:  dyn IqSource: file
+           | isdb-radio backend (Backend::open_rx), e.g. hackrf:
+             libhackrf RX callback → buffer queue (RxOptions: 1 s)
+             → cs8 → C32
+       ─► PipelinedReceiver
        (demod thread ─► FEC-decode thread) ─► outputs + status
 loopback: producer ─► software channel ─► PipelinedReceiver ─► verifier
 ```
 
-`isdb-cli` adds I/O, threading, pacing, radio control and reporting; no
-spec logic lives there.
+`isdb-cli` adds I/O, threading, pacing, the `--rf-enable` / `--dry-run`
+gate and reporting; no spec logic and no device code lives there. Before
+transmitting or receiving it prints the backend's `describe_tx` /
+`describe_rx` text (which validates the frequency range, sample rate,
+device arguments and `--gain NAME=VALUE` values without opening the
+device) and, once the device is open, the backend's "opened:" line.
 
 ## Frame and latency contract
 

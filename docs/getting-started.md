@@ -13,7 +13,8 @@ in the [glossary](glossary.md).
 
 - **Rust ≥ 1.88** (edition 2024), e.g. from [rustup](https://rustup.rs).
 - **libhackrf** 2022.09.1 or later, the HackRF host library, for the
-  `hackrf` cargo feature of `isdb-cli` (on by default). The default build
+  `hackrf` cargo feature of `isdb-cli` (on by default; it enables the
+  HackRF backend of `isdb-radio`). The default build
   links it dynamically, so it is needed even when no radio is attached:
 
   | System | Package |
@@ -23,9 +24,10 @@ in the [glossary](glossary.md).
   | Fedora | `hackrf-devel` |
 
   The library crates (`isdb-ts`, `isdb-si`, `isdbt-phy`, …) do not need it;
-  only `isdb-hackrf` and the default `isdb-cli` build do. Without it, build
-  with `--no-default-features`: everything on this page works, and only
-  `--hackrf` is unavailable.
+  only `isdb-hackrf`, `isdb-radio` with its default `hackrf` feature and
+  the default `isdb-cli` build do. Without it, build with
+  `--no-default-features`: everything on this page works, and only
+  `--radio hackrf` is unavailable.
 - Optional: `ffmpeg` / `ffprobe` to make test media and to check the
   multiplexer's output.
 
@@ -49,8 +51,8 @@ the modulator needs it to keep up with a radio.
 
 | Command | What it does |
 |---|---|
-| `isdb tx` | transport streams → ISDB-T baseband → IQ file or HackRF |
-| `isdb rx` | IQ file or HackRF → ISDB-T demodulation → transport stream |
+| `isdb tx` | transport streams → ISDB-T baseband → IQ file or radio (`--radio hackrf`) |
+| `isdb rx` | IQ file or radio → ISDB-T demodulation → transport stream |
 | `isdb loopback` | `tx` → software channel (noise, CFO, timing offset) → `rx`, comparing every packet |
 | `isdb mux` | service multiplexer: TOML description (+ media) → transport stream |
 | `isdb ts` | transport-stream analysis: `inspect`, `validate`, `diff`, `edit`, `extract` |
@@ -266,7 +268,7 @@ set to 0xFFFF as B32 Part 1 requires).
 
 ## Next steps
 
-- [transmitting.md](transmitting.md) — bench set-up, `isdb tx --hackrf`,
+- [transmitting.md](transmitting.md) — bench set-up, `isdb tx --radio`,
   relaying a recording, receiver compatibility notes.
 - [receiving.md](receiving.md) — `isdb rx` in detail.
 - [mux-config.md](mux-config.md) — every multiplexer configuration key.

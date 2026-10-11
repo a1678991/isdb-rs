@@ -64,10 +64,12 @@ run the transmit path on hardware must:
 
 1. Use a **conducted or shielded** setup only: coax with attenuators straight
    into the receiver, or a shielded enclosure. No antenna on the TX port.
-2. Check the settings first without radiating: `isdb tx --hackrf … --dry-run`
-   (or without `--rf-enable`), which prints the RF settings and exits.
-3. Add `--rf-enable` only on that bench; start with low TX VGA and leave the
-   RF amplifier off (`--amp` is opt-in). Bound runs with `--seconds` where
+2. Check the settings first without radiating: `isdb tx --radio hackrf …
+   --dry-run`, which prints the backend's settings and exits (`--radio`
+   without `--rf-enable` or `--dry-run` is rejected).
+3. Add `--rf-enable` only on that bench; start with a low TX gain
+   (`--gain txvga=N` on a HackRF) and leave the RF amplifier off
+   (`--gain amp=on` is opt-in). Bound runs with `--seconds` where
    practical.
 4. Only transmit or relay content you have the rights to. The project does
    not descramble and refuses scrambled input; changes that add
@@ -96,7 +98,10 @@ retransmits a recorded program, so changes to it must keep these rules:
 Rules for code changes:
 
 - Nothing may radiate without the explicit `--rf-enable` flag; keep every
-  exit path stopping the stream and switching the amplifier off.
+  exit path stopping the stream and switching the amplifier off. The gate
+  lives in `isdb-cli` and applies to every backend; `isdb-radio` backends
+  must validate everything in `describe_tx` / `describe_rx` (what
+  `--dry-run` prints) and open no device there.
 - Tests, examples run by tests, and CI never open a radio device. Hardware
   checks are manual and are described in the PR (setup, attenuation,
   channel, gains).
@@ -128,11 +133,13 @@ unset, never fail for missing data).
   minimum supported Rust version is `rust-version` in `Cargo.toml` (1.88);
   `make msrv` needs it installed: `rustup toolchain install 1.88 --profile minimal`.
 - **libhackrf** (2022.09.1 or later; older releases are refused at open):
-  needed only for the `hackrf` feature of `isdb-cli`, which is on by
-  default and links the system library even when no radio is attached
-  (Arch `hackrf`, Debian/Ubuntu `libhackrf-dev`, Homebrew `hackrf`).
+  needed only for the `hackrf` feature of `isdb-radio` (forwarded by the
+  `hackrf` feature of `isdb-cli`), which is on by default and links the
+  system library even when no radio is attached (Arch `hackrf`,
+  Debian/Ubuntu `libhackrf-dev`, Homebrew `hackrf`).
   `cargo build -p isdb-cli --no-default-features` builds without it; CI
-  checks that build in the `no-hackrf` job.
+  checks that build, and `isdb-radio` without any backend, in the
+  `no-hackrf` job.
 - **Harness tools** (recommended): install [mise](https://mise.jdx.dev/),
   then run `mise install` in the repository. It installs the pinned
   node/pnpm (commitlint), lefthook, cargo-deny, actionlint, zizmor, pinact and
