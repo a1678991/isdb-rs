@@ -62,7 +62,7 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   variables) and a differential test against gr-isdbt (`oracle/`,
   `VERIFICATION.md`).
 - Repository harness: pinned toolchain, rustfmt/clippy/cargo-deny
-  configuration, git hooks (lefthook, commitlint), a Makefile as the single
+  configuration, git hooks (lefthook, commitlint), mise tasks as the single
   check entry point, CI workflows (lint, test, doc, cargo-deny, MSRV) and
   Renovate.
 - `oracle/Dockerfile`: a reproducible gr-isdbt oracle container (Ubuntu
@@ -144,6 +144,11 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
     `relay::expanded_stream` takes `keep_copy_control`; stream
     configurations have a `ca` field; `[eit_schedule] reference` is a
     validated enum (`"today"` | `"month"`).
+- Repository harness: mise is the single task runner. The Makefile is
+  replaced by mise tasks (`mise.toml`) with the same names and commands
+  (`mise run check`, `mise run lint`, `mise run test`, …; `mise tasks`
+  replaces `make help`), and the git hooks and CI call them. The `CARGO`
+  override of the Makefile is gone.
 
 ### Fixed
 

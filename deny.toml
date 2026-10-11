@@ -1,5 +1,5 @@
 # cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/).
-# Run with `make deny` (CI) or `make deny-offline` (pre-commit, no
+# Run with `mise run deny` (CI) or `mise run deny-offline` (pre-commit, no
 # advisory-database fetch).
 
 [graph]

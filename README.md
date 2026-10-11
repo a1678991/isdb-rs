@@ -299,14 +299,14 @@ end, but some parts have had less independent checking than others:
 
 ## Development
 
-The [Makefile](Makefile) is the single entry point for checks, and CI runs
-the same targets:
+[mise](https://mise.jdx.dev/) is the single task runner for checks (tasks
+in [mise.toml](mise.toml)), and CI runs the same tasks:
 
 ```sh
-make check                                 # everything CI runs: lint, test, doc, deny, msrv, oracle helper
-make test                                  # unit, integration and doc tests; no radio or data needed
-make lint                                  # rustfmt check + clippy -D warnings
-make help                                  # all targets
+mise run check                             # everything CI runs: lint, test, doc, deny, msrv, oracle helper
+mise run test                              # unit, integration and doc tests; no radio or data needed
+mise run lint                              # rustfmt check + clippy -D warnings
+mise tasks                                 # all tasks
 ```
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the rules (specifications as ground
@@ -319,7 +319,7 @@ commit format; the code layout is in
 
 Use `--release` builds for anything real time: unoptimised, the modulator
 runs at ≈ 0.2× real time and a HackRF would underrun. Heavy tests are
-`#[ignore]`d (`make test-ignored`); tests that use real captures,
+`#[ignore]`d (`mise run test-ignored`); tests that use real captures,
 recordings or media are opt-in through `ISDB_RS_*` environment variables
 and print `SKIP` otherwise ([docs/test-data.md](docs/test-data.md)).
 

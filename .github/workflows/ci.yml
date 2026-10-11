@@ -1,6 +1,7 @@
-# Rust checks. Every step calls a Makefile target, so `make check` locally
-# runs the same commands. Toolchains come from rust-toolchain.toml (dev)
-# and `rust-version` in Cargo.toml (MSRV); harness tools from mise.toml.
+# Rust checks. Every step outside the no-hackrf job calls a mise task, so
+# `mise run check` locally runs the same commands. Toolchains come from
+# rust-toolchain.toml (dev) and `rust-version` in Cargo.toml (MSRV); harness
+# tools from mise.toml.
 name: CI
 
 on:
@@ -20,6 +21,10 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: short
+  # `mise run` would otherwise install every tool in mise.toml (node, pnpm,
+  # linters) first; the Rust tasks need only the rustup toolchain, and the
+  # deny job installs cargo-deny through mise-action.
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
 
 jobs:
   fmt:
@@ -32,7 +37,11 @@ jobs:
           persist-credentials: false
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - run: make fmt-check
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install: false
+          cache: false
+      - run: mise run fmt-check
 
   clippy:
     name: clippy
@@ -44,6 +53,10 @@ jobs:
           persist-credentials: false
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install: false
+          cache: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
@@ -51,9 +64,9 @@ jobs:
             oracle/rust_tx3 -> ../../target/oracle
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: clippy (workspace, -D warnings)
-        run: make clippy
+        run: mise run clippy
       - name: clippy (oracle/rust_tx3 helper)
-        run: make oracle
+        run: mise run oracle
 
   test:
     name: test
@@ -68,12 +81,16 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libhackrf-dev
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install: false
+          cache: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Debug profile ([profile.test] is opt-level 2, the PHY crates opt-level
       # 3); #[ignore]d stress/throughput tests are not run in CI.
-      - run: make test
+      - run: mise run test
 
   doc:
     name: rustdoc
@@ -85,10 +102,14 @@ jobs:
           persist-credentials: false
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install: false
+          cache: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: make doc
+      - run: mise run doc
 
   deny:
     name: cargo-deny
@@ -103,7 +124,7 @@ jobs:
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: make deny
+      - run: mise run deny
 
   msrv:
     name: MSRV
@@ -118,11 +139,15 @@ jobs:
           msrv=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)
           test -n "$msrv"
           rustup toolchain install "$msrv" --profile minimal
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install: false
+          cache: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> target/msrv"
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: make msrv
+      - run: mise run msrv
 
   no-hackrf:
     name: isdb-cli without libhackrf

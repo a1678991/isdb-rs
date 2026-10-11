@@ -131,7 +131,7 @@ unset, never fail for missing data).
 - **Rust**: install [rustup](https://rustup.rs/); `rust-toolchain.toml`
   selects the pinned toolchain (with rustfmt and clippy) automatically. The
   minimum supported Rust version is `rust-version` in `Cargo.toml` (1.88);
-  `make msrv` needs it installed: `rustup toolchain install 1.88 --profile minimal`.
+  `mise run msrv` needs it installed: `rustup toolchain install 1.88 --profile minimal`.
 - **libhackrf** (2022.09.1 or later; older releases are refused at open):
   needed only for the `hackrf` feature of `isdb-radio` (forwarded by the
   `hackrf` feature of `isdb-cli`), which is on by default and links the
@@ -140,13 +140,16 @@ unset, never fail for missing data).
   `cargo build -p isdb-cli --no-default-features` builds without it; CI
   checks that build, and `isdb-radio` without any backend, in the
   `no-hackrf` job.
-- **Harness tools** (recommended): install [mise](https://mise.jdx.dev/),
-  then run `mise install` in the repository. It installs the pinned
-  node/pnpm (commitlint), lefthook, cargo-deny, actionlint, zizmor, pinact and
-  shellcheck, runs `pnpm install` and installs the git hooks
-  (`lefthook install`).
-- Without mise: `cargo install --locked cargo-deny` is enough for every
-  `make` target; the git hooks then need lefthook and pnpm installed by hand.
+- **mise** (task runner and harness tools): install
+  [mise](https://mise.jdx.dev/), then run `mise install` in the repository.
+  It installs the pinned node/pnpm (commitlint), lefthook, cargo-deny,
+  actionlint, zizmor, pinact and shellcheck, runs `pnpm install` and installs
+  the git hooks (`lefthook install`). Every check is a mise task
+  ([Checks](#checks)); the Rust tasks are plain cargo/rustup underneath.
+- Without the pinned harness tools: `mise run --skip-tools <task>` does not
+  install missing tools and uses whatever is on `PATH`, so
+  `cargo install --locked cargo-deny` is enough for every Rust task; the git
+  hooks then need lefthook and pnpm installed by hand.
 
 ### Git hooks
 
@@ -155,42 +158,45 @@ Managed by lefthook (`lefthook.yaml`, installed into `.git/hooks` by
 
 | Hook | Runs |
 |---|---|
-| `pre-commit` | `make fmt` on staged `*.rs` (re-staged), `make clippy` when Rust files or manifests change, `make deny-offline` when manifests or `deny.toml` change, actionlint / zizmor / pinact on workflow changes, `mise lock` on `mise.toml` changes |
+| `pre-commit` | `mise run fmt` on staged `*.rs` (re-staged), `mise run clippy` when Rust files or manifests change, `mise run deny-offline` when manifests or `deny.toml` change, actionlint / zizmor / pinact on workflow changes, `mise lock` on `mise.toml` changes |
 | `commit-msg` | commitlint (Conventional Commits) |
 | `pre-push` | refuses direct pushes to `main` |
 
 Skip once with `LEFTHOOK=0 git commit …` (CI runs the same checks anyway).
 In a linked git worktree (`git worktree add`), lefthook's handling of
 partially staged files fails; stage whole files, commit from the main
-checkout, or skip the hook once and run `make lint` yourself.
+checkout, or skip the hook once and run `mise run lint` yourself.
 
 ### Checks
 
-The Makefile is the single entry point; CI runs the same targets.
+mise is the single task runner (tasks in `mise.toml`) and CI runs the same
+tasks; `mise tasks` lists them with their descriptions. The tasks that
+`check` and `lint` depend on run in parallel (up to mise's `jobs` setting).
 
 | Command | What it does |
 |---|---|
-| `make check` | everything CI runs (below) |
-| `make lint` | `fmt-check` + `clippy` |
-| `make fmt` / `make fmt-check` | rustfmt (workspace and `oracle/rust_tx3`) |
-| `make clippy` | clippy on all targets, `-D warnings` |
-| `make test` | unit, integration and doc tests (ignored tests excluded) |
-| `make test-release` | the same in release (faster PHY loopbacks) |
-| `make test-ignored` | heavy stress/throughput tests, release (not in CI) |
-| `make doc` | rustdoc with `-D warnings` |
-| `make deny` | cargo-deny: advisories, bans, licences, sources |
-| `make msrv` | `cargo +<rust-version> check` on every target |
-| `make oracle` | clippy on the stand-alone `oracle/rust_tx3` helper |
+| `mise run check` | everything CI runs (below) |
+| `mise run lint` | `fmt-check` + `clippy` |
+| `mise run fmt` / `mise run fmt-check` | rustfmt (workspace and `oracle/rust_tx3`) |
+| `mise run clippy` | clippy on all targets, `-D warnings` |
+| `mise run test` | unit, integration and doc tests (ignored tests excluded) |
+| `mise run test-release` | the same in release (faster PHY loopbacks) |
+| `mise run test-ignored` | heavy stress/throughput tests, release (not in CI) |
+| `mise run doc` | rustdoc with `-D warnings` |
+| `mise run deny` | cargo-deny: advisories, bans, licences, sources |
+| `mise run deny-offline` | the same without the advisory database fetch (pre-commit) |
+| `mise run msrv` | `cargo +<rust-version> check` on every target |
+| `mise run oracle` | clippy on the stand-alone `oracle/rust_tx3` helper |
 
 Lints are configured once in `[workspace.lints]` (`Cargo.toml`); every crate
 opts in with `[lints] workspace = true`. `unsafe_code` is denied everywhere
 except the FFI crate `isdb-hackrf`, which allows it in `src/lib.rs`. Do not
 add `#[allow(...)]` to silence a lint without a comment that says why.
 
-New dependencies must pass `make deny` (crates.io only, licences compatible
+New dependencies must pass `mise run deny` (crates.io only, licences compatible
 with Apache-2.0) and build with the MSRV. Raising the MSRV is a deliberate
 change: say so in the PR and in the changelog. A dependency on another
-workspace crate carries `version` next to `path` (`make deny` bans
+workspace crate carries `version` next to `path` (`mise run deny` bans
 wildcards), so `cargo package --workspace` works; the one exception is a
 path-only dev-dependency that would otherwise form a publish cycle
 (isdbt-mux → isdb-analyze).

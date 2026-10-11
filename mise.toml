@@ -1,6 +1,15 @@
-# Tool versions for the repository harness (hooks, CI linters, cargo-deny).
-# The Rust toolchain itself is pinned in rust-toolchain.toml (rustup), and
-# the Rust build/check commands live in the Makefile.
+# Tool versions for the repository harness (hooks, CI linters, cargo-deny)
+# and the task runner for every check. The Rust toolchain itself is pinned
+# in rust-toolchain.toml (rustup); the Rust build/check tasks below are
+# plain cargo/rustup underneath, so they need nothing beyond that toolchain
+# plus cargo-deny for `deny` / `deny-offline` (`mise install`, or
+# `cargo install --locked cargo-deny`). `mise tasks` lists every task.
+#
+#   mise run check   everything CI runs: lint, test, doc, deny, msrv, oracle
+#   mise run lint    fmt-check + clippy (what the pre-commit hook runs, roughly)
+#
+# `depends` run in parallel (cargo serialises jobs that share a target
+# directory); every task is self-contained, so the order does not matter.
 [tools]
 node = "24"
 pnpm = "12.10.0"
@@ -36,3 +45,69 @@ run = "pinact run"
 [tasks."actions:pinact:check"]
 description = "verify GitHub Actions are pinned (CI mode)"
 run = "pinact run --check"
+
+# --- Rust workspace -------------------------------------------------------
+
+[tasks.check]
+description = "everything CI runs"
+depends = ["lint", "test", "doc", "deny", "msrv", "oracle"]
+
+[tasks.lint]
+description = "formatting check + clippy -D warnings"
+depends = ["fmt-check", "clippy"]
+
+[tasks.fmt]
+description = "format all Rust sources (workspace + oracle helper)"
+run = [
+  "cargo fmt --all",
+  "cargo fmt --manifest-path oracle/rust_tx3/Cargo.toml",
+]
+
+[tasks.fmt-check]
+description = "verify formatting"
+run = [
+  "cargo fmt --all --check",
+  "cargo fmt --manifest-path oracle/rust_tx3/Cargo.toml --check",
+]
+
+[tasks.clippy]
+description = "clippy on all targets, warnings are errors"
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+
+[tasks.test]
+description = "unit, integration and doc tests ([profile.test] is opt-level 2; #[ignore]d tests excluded)"
+run = "cargo test --workspace --locked"
+
+[tasks.test-release]
+description = "the same tests in release (faster PHY loopbacks)"
+run = "cargo test --workspace --locked --release"
+
+[tasks.test-ignored]
+description = "heavy #[ignore]d stress/throughput tests, release (not in CI)"
+run = "cargo test --workspace --locked --release -- --ignored"
+
+[tasks.doc]
+description = "rustdoc with warnings as errors"
+env = { RUSTDOCFLAGS = "-D warnings" }
+run = "cargo doc --workspace --no-deps --locked"
+
+[tasks.deny]
+description = "cargo-deny: advisories, bans, licenses, sources"
+run = "cargo deny --locked check"
+
+[tasks.deny-offline]
+description = "cargo-deny without the advisory database fetch (pre-commit)"
+run = "cargo deny --locked check bans licenses sources"
+
+# MSRV: single source of truth is `rust-version` in the workspace Cargo.toml.
+[tasks.msrv]
+description = "type-check every target with the MSRV toolchain (rustup toolchain install <rust-version>)"
+run = '''
+msrv=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)
+test -n "$msrv"
+cargo "+$msrv" check --workspace --all-targets --locked --target-dir target/msrv
+'''
+
+[tasks.oracle]
+description = "build-check and clippy the stand-alone oracle/rust_tx3 helper"
+run = "cargo clippy --manifest-path oracle/rust_tx3/Cargo.toml --target-dir target/oracle --all-targets --locked -- -D warnings"

@@ -10,16 +10,16 @@ pre-commit:
   jobs:
     - name: rustfmt
       glob: "*.rs"
-      run: make fmt
+      run: mise run fmt
       stage_fixed: true
     # Fast path: incremental clippy over the workspace (tests, doc, MSRV and
-    # the full cargo-deny run are left to CI / `make check`).
+    # the full cargo-deny run are left to CI / `mise run check`).
     - name: clippy
       glob: "{*.rs,**/Cargo.toml,Cargo.lock}"
-      run: make clippy
+      run: mise run clippy
     - name: cargo-deny
       glob: "{**/Cargo.toml,Cargo.lock,deny.toml}"
-      run: make deny-offline
+      run: mise run deny-offline
     - name: actionlint
       glob: ".github/workflows/*.{yml,yaml}"
       run: mise run actions:actionlint
