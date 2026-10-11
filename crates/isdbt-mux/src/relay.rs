@@ -503,6 +503,9 @@ pub struct Probe {
     pub mean_bps: f64,
     /// Largest rate over a 1 s window (bit/s).
     pub peak_1s_bps: f64,
+    /// The relayed packets over the whole file: the rate the relay needs
+    /// (the capacity check and `--auto-layout` use it, not the probe's mean).
+    pub rate: crate::relay_rate::RateProfile,
     /// Source EIT present event of the program.
     pub present: Option<SourceEvent>,
     /// Source EIT following event.
@@ -533,6 +536,7 @@ impl Probe {
             self.peak_1s_bps / 1e6,
             self.span_s
         );
+        s += &format!("\n  {}", self.rate.describe());
         if self.source_programs.len() > 1 {
             s += "\n  source programs:";
             for p in &self.source_programs {
@@ -1587,7 +1591,8 @@ pub fn select_source_program(path: &Path, st: &StreamCfg) -> Result<(u16, Option
 
 /// Read the beginning of `path` and decide what `st` relays: program, ES,
 /// roles and output PIDs, carried descriptors, stream parameters, rates,
-/// source EIT p/f.
+/// source EIT p/f; then read the whole file once for the rate the relay
+/// needs ([`crate::relay_rate`]).
 pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
     let probe_s = st.probe_seconds.unwrap_or(DEFAULT_PROBE_SECONDS);
     let pkts = read_probe_packets(path, probe_s)?;
@@ -2121,6 +2126,19 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             source_copy_control.push_from(place, ds);
         }
     }
+    // ---- pass 3: the whole file, for the rate the relay needs
+    let scan_pids: Vec<crate::relay_rate::ScanPid> = es
+        .iter()
+        .map(|e| crate::relay_rate::ScanPid {
+            pid: e.src_pid,
+            pes: e.mode == EsMode::Pes,
+        })
+        .chain(ca.pids.iter().map(|c| crate::relay_rate::ScanPid {
+            pid: c.src_pid,
+            pes: false,
+        }))
+        .collect();
+    let rate = crate::relay_rate::scan(path, pmt.pcr_pid, &scan_pids)?;
     Ok(Probe {
         path: path.to_path_buf(),
         program,
@@ -2143,6 +2161,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         span_s,
         mean_bps,
         peak_1s_bps: peak,
+        rate,
         present,
         following,
         source_now,

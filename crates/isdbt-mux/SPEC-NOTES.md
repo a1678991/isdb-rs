@@ -682,13 +682,28 @@ unchanged without checks (reproducing old streams on receivers).
   the relayed stream then reports overflows too (the 2 ms hold does not
   re-time it to hide them). The model is approximate for such audio: each
   PES is one access unit removed at its PTS.
-- Rate check: need = the relayed packets' mean rate over the probe + the
-  layer's PCR packets + its PSI/SI (each section stream's packets per
-  repetition interval); above the layer's Table 3-3 capacity →
-  configuration error listing `capacity::suggest` layouts
-  (`rate_check = "warn"` relays anyway, falling behind); 1-s peak + overhead
-  above it → warning. E.g. a recording of about 18.5 Mbit/s: B 12 seg
-  64QAM 3/4 = 16.85 refused; 7/8 = 19.66 carries it.
+- Rate check: need = the rate the relayed packets need over the *whole*
+  file (`relay_rate`) + the layer's PCR packets + its PSI/SI (each section
+  stream's packets per repetition interval); above the layer's Table 3-3
+  capacity → configuration error listing `capacity::suggest` layouts
+  (`rate_check = "warn"` relays anyway, falling behind). The whole-file
+  need is the smallest constant rate at which the relayed packets, served
+  first-in first-out in source order (as the relay sends them), each
+  arrive by the decoding time (DTS, else PTS) of their PES + 2 ms (the
+  relay's slot jitter); a packet with no decoding time (ECM / EMM,
+  carousels, PES without PTS) by 1 s after its source time. It is computed
+  on 1 ms bins of source PCR time, by bisection to 1 kbit/s. The probe's
+  mean is not used: a recording that starts with a quieter part (the tail
+  of the previous programme) measured 16.94 Mbit/s over its first 30 s and
+  18.8–18.9 Mbit/s for minutes after; sized from the probe, the relay fell
+  up to 1.7 s behind on B 12 seg 64QAM 5/6 (18.72 Mbit/s) and its audio,
+  whose arrival→decode lead (0.11–0.19 s) is the shortest, left after its
+  PTS, which a receiver drops; its whole-file need (18.86 + 0.04 Mbit/s)
+  picks 7/8 = 19.66. The scan reads the file once per process (memoised by
+  path, size and modification time). At run time, a relay whose PES leave
+  after their decoding time raises an alert
+  (`Multiplexer::take_alerts`, at most one per relay per minute of stream
+  time).
 - EIT (`eit_from_source`): the source EIT p/f actual (table 0x4E,
   service_id = program) present and following events: event_id, duration,
   short_event name/text (decoded by `isdb-text`, re-encoded by the SI
@@ -961,8 +976,9 @@ showed to matter.
     capped at a 0.5 s PTS gap) and the T-STD hold in the first 2 s after a
     seam (released 100 ms + 2 × the PES's remaining send time before
     decoding).
-25. `ts-program` rate check: mean + PCR/PSI/SI estimate → error; 1-s peak →
-    warning; layouts suggested: same mode, the most robust code rate per
+25. `ts-program` rate check: the whole-file need (every packet by its
+    PES's decoding time + 2 ms, untimed packets within 1 s, FIFO at a
+    constant rate) + PCR/PSI/SI estimate → error; layouts suggested: same mode, the most robust code rate per
     layout, a single 13-segment layer, GI 1/16 and 1/32.
 26. `examples/relay-ts.toml`: program and PIDs from the recording
     (`pid_map = "auto"`: 0x0111/0x0112/0x0130/0x0138 for video / main
@@ -984,7 +1000,7 @@ showed to matter.
 30. No-TOML relay names: network / TS / service / provider / broadcaster
     = the source SDT service name (else "ベンチ"); `--auto-layout` picks
     the most robust modulation / code rate of the relay's layer that
-    carries the mean rate + PCR/PSI/SI (configured GI first, then 1/16,
+    carries the whole-file need + PCR/PSI/SI (configured GI first, then 1/16,
     1/32), never switching to a single 13-segment layer by itself.
 31. `ts-program` conditional access: `ca = "keep"` by default (owner
     decision): CA descriptors, ECM and CAT/EMM relayed with CA_PIDs

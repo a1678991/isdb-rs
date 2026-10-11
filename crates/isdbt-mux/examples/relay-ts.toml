@@ -103,9 +103,9 @@ copy_control = { recording_control = "source", in_pmt = true, in_sdt = true }
   # ca = "keep"
   at_eof = "loop"                # "loop": restart at the first access point, timestamps continuing; "end": stop
   eit_from_source = true         # EIT p/f event name / text / genre / duration from the recording
-  rate_check = "error"           # refuse a layer that cannot carry the measured rate ("warn": relay anyway)
+  rate_check = "error"           # refuse a layer that cannot carry the rate the whole file needs ("warn": relay anyway)
   max_early_ms = 0               # 0: strictly at the recording's PCR pace
-  # probe_seconds = 30           # PCR time measured at start (rates, stream parameters, EIT)
+  # probe_seconds = 30           # PCR time probed at start (stream parameters, EIT; the rate check reads the whole file)
 
   # Used when the recording has no EIT p/f for the program (or eit_from_source = false).
   [[service.event]]

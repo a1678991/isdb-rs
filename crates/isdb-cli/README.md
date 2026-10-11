@@ -416,8 +416,10 @@ copy-free (explicit)`.
 | `--clock-start JST` | system clock | fixed stream clock (reproducible output) |
 | `--print-config` | — | print the resolved TOML (header: the transmission options, after `--auto-layout`) and exit; save, edit, run with `--mux-config` / `-c` |
 
-`--auto-layout` (with `--relay` or `--mux-config`): when the relay's
-measured mean rate + PCR/PSI/SI exceeds its layer, use the first suggested
+`--auto-layout` (with `--relay` or `--mux-config`): when the rate the
+relay needs over the whole recording (every packet in time for its
+decoding; the file is read once at start) + PCR/PSI/SI exceeds its layer,
+use the first suggested
 layout that only changes that layer (the most robust modulation / code
 rate that fits, configured GI first; partial reception and the one-seg
 layer A kept) and print the choice, instead of refusing with the list of
@@ -441,7 +443,9 @@ isdb tx --mux-config relay.toml --layer-b 12,64qam,7/8,2 \
 
 (Runs until Ctrl-C; the recording loops.) The status line shows
 per relay the lag behind the PCR schedule, late PES, the source's peak
-rates and the loop period.
+rates and the loop period. PES that leave after their decoding time —
+receivers drop them, audio first — print a `mux warning` (at most once a
+minute per relay).
 
 An RF loopback needs two radios: `isdb tx --radio hackrf:serial=A …` and
 `isdb rx --radio hackrf:serial=B …`, connected through attenuators

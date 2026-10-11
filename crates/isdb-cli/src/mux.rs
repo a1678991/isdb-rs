@@ -175,6 +175,9 @@ pub fn run(args: MuxArgs) -> Result<()> {
             break;
         }
         let (full, layers) = mux.next_frame_full();
+        for w in mux.take_alerts() {
+            eprintln!("warning: {w}");
+        }
         writer.write_frame(&full, &layers)?;
         if args.report {
             times.extend((0..full.len()).map(|j| mux.slot_time(k, j)));

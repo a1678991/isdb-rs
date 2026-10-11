@@ -599,6 +599,9 @@ impl FrameInput for MuxConfigInput {
             return None;
         }
         let layers = self.mux.next_frame();
+        for w in self.mux.take_alerts() {
+            eprintln!("isdb: mux warning: {w}");
+        }
         debug_assert!(
             (0..3).all(|l| layers[l].len() == counts[l]),
             "multiplexer frame size"

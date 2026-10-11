@@ -162,7 +162,7 @@ impl RelayOptions {
             "  eit_from_source = {}         # EIT p/f event name / text / genre / duration from the recording\n",
             self.eit_from_source
         );
-        t += "  rate_check = \"error\"           # refuse a layer that cannot carry the measured rate\n";
+        t += "  rate_check = \"error\"           # refuse a layer that cannot carry the rate the whole file needs\n";
         t += "  max_early_ms = 0\n\n";
         t += "  # Used when the recording has no EIT p/f for the program (or eit_from_source = false).\n";
         t += "  [[service.event]]\n  event_id = 0x0001\n  start_offset_s = -60\n  duration = \"01:00:00\"\n  name = \"録画の再送信\"\n\n";

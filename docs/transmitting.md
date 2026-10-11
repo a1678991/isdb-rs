@@ -314,8 +314,10 @@ At start the probe report lists the source program, each source PID → role
 (and the rule that decided it) → output PID with its rate, the relayed
 ECM / EMM PIDs, the dropped PIDs with the reason, the source's copy
 control (every 0xC1 / 0xDE found in its PMT, SDT and EIT p/f), and the
-measured mean and peak rates against the layer capacity. The status line shows, per relay, the lag behind the PCR
-schedule, late PES, peak rates and the loop period. The recording loops
+rate the whole recording needs against the layer capacity. The status line shows, per relay, the lag behind the PCR
+schedule, late PES, peak rates and the loop period; PES that leave after
+their decoding time (receivers drop them, audio first) also print a
+`mux warning`, at most once a minute per relay. The recording loops
 until Ctrl-C (`--at-eof end` stops after one pass; `--seconds S` bounds
 the air time).
 
@@ -334,9 +336,16 @@ the air time).
 | `--print-config` | — | print the generated TOML and exit (save it, edit it, run it with `--mux-config` / `-c`) |
 
 **Capacity.** HD recordings often exceed the default layer B
-(12 segments 64QAM 3/4 = 16.85 Mbit/s). Such a relay is refused with a list
+(12 segments 64QAM 3/4 = 16.85 Mbit/s). The rate checked is what the whole
+recording needs, not the mean of its first seconds: the file is read once
+at start, and the need is the smallest constant rate that delivers every
+relayed packet by the decoding time of its PES (`whole file: …` in the
+probe report). The relay keeps the recording's pace, so on a layer below
+that rate it falls further behind for as long as the recording stays
+above it, and its PES — audio first, whose lead before decoding is the
+shortest — arrive too late to be played. Such a relay is refused with a list
 of layouts that fit; `--auto-layout` takes the first one that changes only
-the relay's layer (the most robust code rate that carries the mean rate
+the relay's layer (the most robust code rate that carries that rate
 plus PCR and SI, the configured GI first; partial reception and the one-seg
 layer kept) and prints the choice. For example, a recording of about
 18.5 Mbit/s is refused on 3/4 and carried on 12 segments 64QAM 7/8

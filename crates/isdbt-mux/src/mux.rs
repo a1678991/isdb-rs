@@ -169,11 +169,19 @@ pub struct Multiplexer {
     warnings: Vec<String>,
     notes: Vec<String>,
     relays: Vec<Relay>,
+    /// Run-time warnings not yet taken ([`Multiplexer::take_alerts`]).
+    alerts: Vec<String>,
+    /// Per relay: late PES count at its last late-PES alert, and the mux
+    /// time (s) of that alert.
+    late_alerts: Vec<(u64, Option<f64>)>,
 }
 
 /// Delay from the first multiplex slot to the first relayed packet: the
 /// PAT/PMT/PCR of the first frame go out before it.
 const RELAY_START_MS: u32 = 100;
+
+/// Stream time between two late-PES alerts of one relay (s).
+const LATE_ALERT_INTERVAL_S: f64 = 60.0;
 
 fn ms(x: u32) -> u64 {
     x as u64 * HZ / 1000
@@ -750,17 +758,24 @@ impl Multiplexer {
                     / frame_s;
             let overhead = pcr_bps + section_bps[*layer];
             let cap = crate::capacity::layer_bps(params, id);
-            let need = probe.mean_bps + overhead;
+            // the rate that delivers every relayed packet by its decoding
+            // time over the whole file (crate::relay_rate), not the mean of
+            // the probed start: the relay keeps the source's pace, so a
+            // layer below the source's sustained rate makes it fall ever
+            // further behind and its PES (audio first) arrive too late
+            let rate = &probe.rate;
+            let need = rate.required_bps + overhead;
             if need > cap {
                 let msg = crate::capacity::over_capacity_message(
                     params,
                     id,
                     need,
                     &format!(
-                        "ts-program {} ({:.2} Mbit/s mean over {:.1} s + {:.2} Mbit/s PCR/PSI/SI on layer {id})",
+                        "ts-program {} ({:.2} Mbit/s to deliver every packet by its decoding time over the whole file ({:.1} s, mean {:.2} Mbit/s) + {:.2} Mbit/s PCR/PSI/SI on layer {id})",
                         probe.path.display(),
-                        probe.mean_bps / 1e6,
-                        probe.span_s,
+                        rate.required_bps / 1e6,
+                        rate.span_s,
+                        rate.mean_bps / 1e6,
                         overhead / 1e6
                     ),
                 );
@@ -770,28 +785,21 @@ impl Multiplexer {
                             layer: id,
                             need_bps: need,
                             message: format!(
-                                "{msg}\n  (rate_check = \"warn\" relays it anyway; it then falls behind its PCR schedule)"
+                                "{msg}\n  (rate_check = \"warn\" relays it anyway; it then falls behind its PCR schedule and its PES, audio first, arrive after their decoding time)"
                             ),
                         });
                     }
                     crate::config::RateCheck::Warn => warnings.push(msg),
                 }
-            } else if probe.peak_1s_bps + overhead > cap {
-                warnings.push(format!(
-                    "ts-program {}: 1-s peaks {:.2} Mbit/s (+ {:.2} PCR/SI) exceed layer {id}'s {:.2} Mbit/s; packets are delayed during peaks (lag in the relay status)",
-                    probe.path.display(),
-                    probe.peak_1s_bps / 1e6,
-                    overhead / 1e6,
-                    cap / 1e6
-                ));
             }
             notes.push(format!(
-                "ts-program {}: layer {id} {:.2} Mbit/s = {:.1} % used by relay + PCR/SI ({:.2} + {:.2} Mbit/s)",
+                "ts-program {}: layer {id} {:.2} Mbit/s = {:.1} % needed by relay + PCR/SI ({:.2} + {:.2} Mbit/s; whole-file mean {:.2} Mbit/s)",
                 probe.path.display(),
                 cap / 1e6,
                 100.0 * need / cap,
-                probe.mean_bps / 1e6,
-                overhead / 1e6
+                rate.required_bps / 1e6,
+                overhead / 1e6,
+                rate.mean_bps / 1e6
             ));
             relays.push(Relay::start(
                 probe,
@@ -837,7 +845,9 @@ impl Multiplexer {
             stats: MuxStats::default(),
             warnings,
             notes,
+            late_alerts: vec![(0, None); relays.len()],
             relays,
+            alerts: Vec::new(),
         })
     }
 
@@ -851,6 +861,13 @@ impl Multiplexer {
     /// one of them has ended (`at_eof = "end"`) and been sent.
     pub fn relays_finished(&self) -> bool {
         !self.relays.is_empty() && self.relays.iter().all(|r| r.finished())
+    }
+
+    /// Run-time warnings raised since the last call: a `ts-program` relay
+    /// whose PES leave after their decoding time (at most one per relay
+    /// per minute of stream time while it lasts).
+    pub fn take_alerts(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.alerts)
     }
 
     /// One status line per `ts-program` relay.
@@ -990,7 +1007,32 @@ impl Multiplexer {
         }
         self.frame += 1;
         self.stats.frames = self.frame;
+        self.check_relay_lateness();
         out
+    }
+
+    /// Alert when a relay's PES start leaving after their decoding time:
+    /// the layer carries less than the source needs at this point, the
+    /// relay falls behind its PCR schedule, and receivers drop the late
+    /// access units — audio first, its arrival→decode lead being the
+    /// shortest.
+    fn check_relay_lateness(&mut self) {
+        let now = self.frame as f64 * self.params.frame_seconds();
+        for (r, (seen, last)) in self.relays.iter().zip(&mut self.late_alerts) {
+            let late = r.stats.late_pes;
+            if late == *seen || last.is_some_and(|l| now - l < LATE_ALERT_INTERVAL_S) {
+                continue;
+            }
+            self.alerts.push(format!(
+                "relay {}: {} PES so far left after their decoding time (lag {:.3} s, max {:.3} s): receivers drop them, audio first; the layer carries less than the source needs here (choose a layout with more capacity)",
+                r.name,
+                late,
+                r.stats.lag as f64 / HZ as f64,
+                r.stats.max_lateness as f64 / HZ as f64
+            ));
+            *seen = late;
+            *last = Some(now);
+        }
     }
 
     fn decide(

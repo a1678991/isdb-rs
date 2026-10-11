@@ -150,6 +150,10 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
     `relay::expanded_stream` takes `keep_copy_control`; stream
     configurations have a `ca` field; `[eit_schedule] reference` is a
     validated enum (`"today"` | `"month"`).
+  - `isdbt_mux::relay::Probe` has a `rate` field (the whole-file
+    `relay_rate::RateProfile`), and the `ts-program` rate check uses its
+    `required_bps` instead of the probe's `mean_bps`: a layer accepted
+    before may now be refused (it could not carry the recording).
 - Repository harness: mise is the single task runner. The Makefile is
   replaced by mise tasks (`mise.toml`) with the same names and commands
   (`mise run check`, `mise run lint`, `mise run test`, …; `mise tasks`
@@ -158,6 +162,19 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
 
 ### Fixed
 
+- `ts-program` relay: the rate check and `--auto-layout` use the rate the
+  whole recording needs (`relay_rate`: the smallest constant rate that
+  delivers every relayed packet by its PES's decoding time, read once over
+  the whole file) instead of the mean over the probed first 30 s. A
+  recording that started quieter than it went on was put on a layer below
+  its sustained rate; the relay then fell up to seconds behind its PCR
+  schedule and receivers dropped its late audio after a few minutes while
+  the video kept playing. The probe report adds a `whole file:` line, and
+  the 1-s peak warning is gone (the need covers the peaks).
+- `ts-program` relay: PES that leave after their decoding time raise a
+  run-time warning (`Multiplexer::take_alerts`, printed by `isdb tx`,
+  `loopback` and `mux`; at most once a minute per relay), not only a
+  counter in the status line.
 - `isdb-ts`: `StreamReader` no longer zero-fills a 64 KiB scratch buffer
   for every packet; reading is about ten times faster.
 - `ts-program` relay: a due packet whose T-STD buffer would overflow now

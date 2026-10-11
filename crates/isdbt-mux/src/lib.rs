@@ -102,6 +102,7 @@ pub mod mux;
 pub mod output;
 pub mod pcrclock;
 pub mod relay;
+pub mod relay_rate;
 pub mod relay_template;
 pub mod si;
 pub mod signalling;
