@@ -158,6 +158,8 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
 
 ### Fixed
 
+- `isdb-ts`: `StreamReader` no longer zero-fills a 64 KiB scratch buffer
+  for every packet; reading is about ten times faster.
 - `ts-program` relay: a due packet whose T-STD buffer would overflow now
   waits up to 2 ms (`relay::RETIME_HOLD`), so output slot jitter no longer
   overflows MBn for sources multiplexed without buffer headroom.

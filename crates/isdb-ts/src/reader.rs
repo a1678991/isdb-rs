@@ -60,6 +60,8 @@ impl PacketFormat {
 
 /// Largest unit size.
 const MAX_UNIT: usize = 204;
+/// Bytes requested from the source per read.
+const READ_CHUNK: usize = 64 * 1024;
 
 /// Counters kept by the readers (sync per H.222.0 §2.4.3.3 / Table 2-1).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -334,17 +336,20 @@ impl<R: Read> StreamReader<R> {
             self.pos = 0;
         }
         let want = (self.sync.count + 2) * MAX_UNIT;
-        let mut chunk = [0u8; 64 * 1024];
+        // Called once per packet: read straight into the buffer, and only
+        // when it runs short (no per-call scratch buffer to initialise).
         while !self.eof && self.buf.len() - self.pos < want {
-            let n = match self.src.read(&mut chunk) {
-                Ok(n) => n,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            let old = self.buf.len();
+            self.buf.resize(old + READ_CHUNK, 0);
+            let r = self.src.read(&mut self.buf[old..]);
+            let n = *r.as_ref().unwrap_or(&0);
+            self.buf.truncate(old + n);
+            match r {
+                Ok(0) => self.eof = true,
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(e),
-            };
-            if n == 0 {
-                self.eof = true;
             }
-            self.buf.extend_from_slice(&chunk[..n]);
         }
         Ok(())
     }
