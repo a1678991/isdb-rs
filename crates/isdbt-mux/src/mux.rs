@@ -77,6 +77,9 @@ struct SectionStream {
     version: u8,
     last: Option<Vec<Vec<u8>>>,
     window: VecDeque<u64>,
+    /// Packets allowed on this PID per `si_window` (B10 §5.1.4 for SI; a
+    /// carousel's `bitrate_kbps`).
+    max_window: usize,
 }
 
 enum Media {
@@ -165,7 +168,6 @@ pub struct Multiplexer {
     clock_start: JstSeconds,
     lead: u64,
     si_window: u64,
-    si_max_packets: usize,
     stats: MuxStats,
     warnings: Vec<String>,
     notes: Vec<String>,
@@ -424,9 +426,19 @@ impl Multiplexer {
                     st.pid,
                     layer,
                     format!("service {:#06x} stream", s.service_id),
-                    false,
+                    st.kind == StreamKind::BmlCarousel,
                 )?;
                 match st.kind {
+                    StreamKind::BmlCarousel => {
+                        let c = crate::carousel::load(
+                            st,
+                            s.hybridcast.as_ref(),
+                            base_dir,
+                            &format!("service {:#06x} stream {:#06x}", s.service_id, st.pid),
+                        )?;
+                        notes.extend(c.report.iter().cloned());
+                        infos.push(StreamInfo::Carousel(std::sync::Arc::new(c)));
+                    }
                     StreamKind::TsProgram => {
                         let (ri, ei) = st.relay_es.ok_or_else(|| {
                             MuxError::Config("ts-program stream not expanded".into())
@@ -618,12 +630,22 @@ impl Multiplexer {
             TableKind::Tdt,
             TableKind::Bit,
         ];
-        for i in 0..cfg.services.len() {
+        for (i, s) in cfg.services.iter().enumerate() {
             kinds.push(TableKind::Pmt(i));
+            for (k, st) in s.streams.iter().enumerate() {
+                if st.kind == StreamKind::BmlCarousel {
+                    kinds.push(TableKind::Carousel(i, k));
+                }
+            }
+            if s.hybridcast.is_some() {
+                kinds.push(TableKind::Ait(i));
+            }
         }
         for i in 0..cfg.raw_tables.len() {
             kinds.push(TableKind::Raw(i));
         }
+        let si_window_ticks = ms(cfg.timing.si_window_ms);
+        let si_max_packets = (cfg.timing.si_max_bytes as usize / 188).max(1);
         let margin = cfg.timing.interval_margin.clamp(0.1, 1.0);
         let frame_ticks = params.frame_ticks_27mhz();
         let mut sections = Vec::new();
@@ -656,7 +678,27 @@ impl Multiplexer {
             // Build once now so configuration errors surface at start-up.
             let secs = si.build(kind, clock_start, o.version)?;
             let pkts: usize = secs.iter().map(|x| (x.len() + 1).div_ceil(184)).sum();
-            section_bps[layer] += pkts as f64 * 1504.0 * HZ as f64 / (interval as f64 * margin);
+            // A carousel is limited to its own rate (packets per window).
+            let max_window = match kind {
+                TableKind::Carousel(i, k) => {
+                    let kbps = cfg.services[i].streams[k]
+                        .bml
+                        .as_ref()
+                        .map_or(1000, |b| b.bitrate_kbps)
+                        .max(1) as f64;
+                    ((kbps * 1000.0 / 8.0 / 188.0) * (si_window_ticks as f64 / HZ as f64)).floor()
+                        as usize
+                }
+                _ => si_max_packets,
+            }
+            .max(1);
+            let rate = pkts as f64 * 1504.0 * HZ as f64 / (interval as f64 * margin);
+            section_bps[layer] += match kind {
+                TableKind::Carousel(..) => {
+                    rate.min(max_window as f64 * 1504.0 * HZ as f64 / si_window_ticks as f64)
+                }
+                _ => rate,
+            };
             // Stagger the first transmissions two layer slots apart.
             let layer_slot =
                 frame_ticks / pattern.count(isdbt_core::Layer::ALL[layer]).max(1) as u64;
@@ -675,6 +717,7 @@ impl Multiplexer {
                 version: o.version & 0x1F,
                 last: None,
                 window: VecDeque::new(),
+                max_window,
             });
         }
 
@@ -841,8 +884,7 @@ impl Multiplexer {
             start_pcr,
             clock_start,
             lead,
-            si_window: ms(cfg.timing.si_window_ms),
-            si_max_packets: (cfg.timing.si_max_bytes as usize / 188).max(1),
+            si_window: si_window_ticks,
             stats: MuxStats::default(),
             warnings,
             notes,
@@ -1298,7 +1340,6 @@ impl Multiplexer {
 
     fn emit_section(&mut self, layer: usize, t: u64) -> Option<Packet> {
         let window = self.si_window;
-        let maxp = self.si_max_packets;
         let mut cands: Vec<(u64, usize)> = Vec::new();
         for (i, s) in self.sections.iter_mut().enumerate() {
             while s.window.front().is_some_and(|&x| x + window <= t) {
@@ -1313,7 +1354,8 @@ impl Multiplexer {
         cands.sort();
         for (_, i) in cands {
             let pid = self.sections[i].pid;
-            // B10 §5.1.4 "4KB in 32 ms" per PID
+            let maxp = self.sections[i].max_window;
+            // B10 §5.1.4 "4KB in 32 ms" per PID (a carousel: its own rate)
             let in_window: usize = self
                 .sections
                 .iter()

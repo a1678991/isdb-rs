@@ -24,6 +24,8 @@ isdbt-fec.workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
+# EUC-JP transcoding of BML sources authored in UTF-8 (`bml.source_encoding`)
+encoding_rs.workspace = true
 
 [dev-dependencies]
 isdbt-phy.workspace = true

@@ -8,6 +8,7 @@ use crate::config::{
 use crate::error::{MuxError, Result};
 use crate::si::{Target, parse_target};
 use crate::signalling::{ComponentTypeCfg, VdcMode};
+use isdb_si::values::CodedValue;
 
 /// A descriptor the typed configuration generates in a loop.
 struct Typed {
@@ -286,10 +287,116 @@ impl Config {
             })?);
             check_loop(&format!("{svc} PMT program loop"), &prog, &raw)?;
 
+            // ---- Hybridcast
+            if let Some(h) = &s.hybridcast {
+                let what = format!("{svc} hybridcast");
+                crate::hybridcast::check(h, &what)?;
+                let has_carousel = s
+                    .streams
+                    .iter()
+                    .any(|st| st.kind == StreamKind::BmlCarousel);
+                match h.carriage {
+                    crate::config::AitCarriage::Carousel => {
+                        if !has_carousel {
+                            return Err(MuxError::Config(format!(
+                                "{what}: carriage = \"carousel\" puts the AIT into the service's bml-carousel; add a [[service.stream]] kind = \"bml-carousel\" (or set carriage = \"es\" with pid and data_component_id)"
+                            )));
+                        }
+                        if h.pid.is_some() || h.data_component_id.is_some() {
+                            return Err(MuxError::Config(format!(
+                                "{what}: pid / data_component_id apply to carriage = \"es\""
+                            )));
+                        }
+                    }
+                    crate::config::AitCarriage::Es => {
+                        let pid = h.pid.ok_or_else(|| {
+                            MuxError::Config(format!("{what}: carriage = \"es\" needs pid"))
+                        })?;
+                        if !(0x0010..=0x1FFE).contains(&pid) {
+                            return Err(MuxError::Config(format!(
+                                "{what}: pid {pid:#06x} outside 0x0010–0x1FFE (H.222.0 Table 2-3)"
+                            )));
+                        }
+                        if h.data_component_id.is_none() {
+                            return Err(MuxError::Config(format!(
+                                "{what}: carriage = \"es\" needs data_component_id (the value of ARIB TR-B14 / B24 Vol. 4 §7.3; B24 v6.4 leaves it \"[T B D]\")"
+                            )));
+                        }
+                        if s.streams.iter().any(|st| st.pid == pid) {
+                            return Err(MuxError::Config(format!(
+                                "{what}: pid {pid:#06x} is also a stream of the service"
+                            )));
+                        }
+                    }
+                }
+            }
             // ---- PMT ES loops, typed option sanity
             for st in &s.streams {
                 let what = format!("{svc} stream {:#06x}", st.pid);
                 check_ts_program_keys(st, &format!("{svc} stream"))?;
+                if st.bml.is_some() && st.kind != StreamKind::BmlCarousel {
+                    return Err(MuxError::Config(format!(
+                        "{what}: bml options apply only to kind = \"bml-carousel\""
+                    )));
+                }
+                if st.kind == StreamKind::BmlCarousel {
+                    let bml = st.bml.clone().unwrap_or_default();
+                    if bml.block_size == 0 || bml.block_size > isdb_si::dsmcc::MAX_BLOCK_SIZE {
+                        return Err(MuxError::Config(format!(
+                            "{what}: bml.block_size {} outside 1..={} (a DDB section is at most 4096 bytes, B24 Vol. 3 §6.5)",
+                            bml.block_size,
+                            isdb_si::dsmcc::MAX_BLOCK_SIZE
+                        )));
+                    }
+                    if bml.data_event_id > 0xF || bml.pmt_data_event_id > 0xF {
+                        return Err(MuxError::Config(format!(
+                            "{what}: bml.data_event_id / pmt_data_event_id are 4 bits (0..15)"
+                        )));
+                    }
+                    if bml.download_id > 0x0FFF_FFFF {
+                        return Err(MuxError::Config(format!(
+                            "{what}: bml.download_id is 28 bits (data_event_id takes bits 31–28)"
+                        )));
+                    }
+                    if bml.transaction_number > 0x3FFF_FFFF {
+                        return Err(MuxError::Config(format!(
+                            "{what}: bml.transaction_number is 30 bits"
+                        )));
+                    }
+                    if bml.reserved_future_use > 0xF {
+                        return Err(MuxError::Config(format!(
+                            "{what}: bml.reserved_future_use is 4 bits"
+                        )));
+                    }
+                    if bml.document_resolution.name() == "reserved" {
+                        return Err(MuxError::Config(format!(
+                            "{what}: bml.document_resolution is a reserved code"
+                        )));
+                    }
+                    if bml.cycle_ms == 0 || bml.dii_interval_ms == 0 || bml.bitrate_kbps == 0 {
+                        return Err(MuxError::Config(format!(
+                            "{what}: bml.cycle_ms, dii_interval_ms and bitrate_kbps must be > 0"
+                        )));
+                    }
+                    crate::carousel::bml_versions(&bml, &what)?;
+                    if st.source.is_none()
+                        && bml.modules.is_empty()
+                        && !s.hybridcast.as_ref().is_some_and(|h| {
+                            h.launcher && h.carriage == crate::config::AitCarriage::Carousel
+                        })
+                    {
+                        return Err(MuxError::Config(format!(
+                            "{what}: bml-carousel needs source = <directory of BML files> (or a [service.hybridcast] launcher)"
+                        )));
+                    }
+                    if let Some(t) = st.stream_type
+                        && !matches!(t, 0x0B | 0x0D)
+                    {
+                        return Err(MuxError::Config(format!(
+                            "{what}: a data carousel has stream_type 0x0B or 0x0D (B24 Vol. 3 Table 4-1), not {t:#04x}"
+                        )));
+                    }
+                }
                 st.video_decode_control.check(&what)?;
                 if st.kind == StreamKind::AacAdts
                     && st.video_decode_control.mode == VdcMode::Explicit
@@ -313,6 +420,11 @@ impl Config {
                     // declared streams have no media and get no EIT component
                     // descriptor; their component_type is unused
                     (StreamKind::Declared, _) => {}
+                    (StreamKind::BmlCarousel, _) => {
+                        return Err(MuxError::Config(format!(
+                            "{what}: a bml-carousel has no component_type (its EIT descriptor is the data content descriptor)"
+                        )));
+                    }
                     (StreamKind::TsProgram, _) => {
                         return Err(MuxError::Config(format!(
                             "{what}: component_type of a ts-program stream is derived from the relayed streams"
@@ -330,11 +442,18 @@ impl Config {
                     }
                 }
                 let mut es = Vec::new();
-                if st.component_tag.is_some() {
+                if st.component_tag.is_some() || st.kind == StreamKind::BmlCarousel {
                     es.push(typed(
                         0x52,
                         "stream_identifier_descriptor (component_tag)",
                         "remove component_tag",
+                    ));
+                }
+                if st.kind == StreamKind::BmlCarousel {
+                    es.push(typed(
+                        0xFD,
+                        "data_component_descriptor (bml)",
+                        "it is always generated for a bml-carousel; use [service.pmt] byte_patches/replace_sections",
                     ));
                 }
                 let vdc_active = st.video_decode_control.mode == VdcMode::Explicit
@@ -410,6 +529,17 @@ impl Config {
                         name,
                         off: format!("set eit_component = false on stream {:#06x}", st.pid),
                     });
+                }
+                if s.streams.iter().any(|st| {
+                    st.kind == StreamKind::BmlCarousel
+                        && st.bml.clone().unwrap_or_default().entry_point
+                        && st.bml.clone().unwrap_or_default().eit_data_content
+                }) {
+                    ev.push(typed(
+                        0xC7,
+                        "data_content_descriptor (bml)",
+                        "set bml.eit_data_content = false on the bml-carousel stream",
+                    ));
                 }
                 if !e.content.is_empty() {
                     ev.push(typed(

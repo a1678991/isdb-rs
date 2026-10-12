@@ -1,0 +1,66 @@
+# isdbt-mux example: an HD service with BML data broadcasting.
+#
+#   isdb mux -c crates/isdbt-mux/examples/bml-data.toml --seconds 5 --out-ts /tmp/bml.ts --report
+#
+# The files of the `bml/` directory next to this file become one DSM-CC
+# data carousel (ARIB STD-B24 Vol. 3 Ch. 6): module 0x0000 is a
+# multipart/mixed entity (Vol. 2 §9.1.2) holding every file, with the
+# application/X-arib-resourceList first and startup.bml (the document a
+# receiver launches first, §9.2.2). The PMT lists the component with
+# stream_type 0x0D, a stream_identifier (component_tag 0x40) and a data
+# component descriptor (0xFD, data_component_id 0x000C, B24 Vol. 2 §9.3.2);
+# the EIT events carry a data content descriptor (0xC7, §9.3.3).
+#
+# BML documents are EUC-JP (ASCII is a subset): write Japanese text in
+# EUC-JP or keep to ASCII. Every key is described in docs/mux-config.md.
+
+[network]
+network_id = 0x79EE
+name = "ベンチ"
+area_code = 0x8D5                # B10 Annex D Table D-2: Kinki wide area (from a live Osaka NIT)
+remote_control_key_id = 9
+channels = [44]
+
+[transport]
+transport_stream_id = 0x79EE
+
+[clock]
+source = "fixed"
+start = "2026-01-01T12:00:00"
+
+[[service]]
+service_id = 0x0400
+name = "ベンチHD"
+provider = "ベンチ"
+layer = "B"
+pmt_pid = 0x01F0
+pcr_pid = 0x01FF
+copy_control = { recording_control = "copy-free" }
+
+[[service.stream]]  # video, declared only (no media needed)
+kind = "declared"
+pid = 0x0111
+stream_type = 0x02
+component_tag = 0x00
+
+[[service.stream]]  # the data broadcasting component
+kind = "bml-carousel"
+pid = 0x0140
+component_tag = 0x40  # entry component (TR-B14 convention)
+source = "bml"  # directory of the BML files
+
+[service.stream.bml]  # all optional; defaults shown
+data_component_id = 0x000C  # B10 Annex J: terrestrial A profile
+document_resolution = "960x540"
+auto_start = true
+bitrate_kbps = 1000  # rate limit of the carousel PID
+cycle_ms = 500  # the carousel repeats at most every 0.5 s
+dii_interval_ms = 500  # a DII at least this often (live: 0.5–0.6 s)
+source_encoding = "utf-8"    # the files in bml/ are UTF-8; transcoded to EUC-JP on load
+# bml_version = "3.0"         # the terrestrial BML version (live); "" = receiver default
+
+[[service.event]]
+event_id = 0x0001
+start_offset_s = -600
+duration = "01:00:00"
+name = "データ放送試験"

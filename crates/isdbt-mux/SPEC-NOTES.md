@@ -853,6 +853,183 @@ unchanged without checks (reproducing old streams on receivers).
   reorder delay); the shorter stream has a gap at the seam (bench: video
   10.010 s vs audio 10.027 s → 17 ms video gap).
 
+## BML data broadcasting: the data carousel (`kind = "bml-carousel"`, `src/carousel.rs`)
+- Spec: B24 Vol. 3 Ch. 6 (Tables 6-1, 6-3, 6-21, 6-22, 6-24; §6.2.3
+  descriptors), Vol. 3 Annex C; Vol. 2 §9.1.2 (resource-to-module
+  mapping), §9.1.2.3 (resource list), §9.2 (namespace, startup document),
+  §9.3 (PSI/SI); B10 §6.2.20 / §6.2.28 / Annex J.
+- Text: Table 6-24 "[section_syntax_indicator] must be set to 1 to
+  transmit DII messages and DDB messages", private_indicator "stores the
+  complement value", table_id_extension = "the least significant two
+  bytes of the transaction_id" (DII) / "the module_id" (DDB),
+  version_number "set to 0" (DII; "Version management of DII message is
+  made by transaction_id") / "the least significant 5 bits of the
+  moduleVersion" (DDB), section_number = "the least significant eight
+  bits of the block number"; §6.3.1 "only the DDB messages having the
+  same downloadId must be included in the same PID packets"; Annex C "The
+  DII and DDB belonging to one carousel are transmitted in one ES"; §6.2.1
+  windowSize / ackPeriod / tCDownloadWindow "not used … set to 0",
+  compatibilityDescriptor "descriptorCount is set to 0x0000 and then the
+  field length is 4-byte"; Vol. 2 §9.2.2 "must contain a module to which
+  the 0x0000 module number is assigned. When a module with 0X0000 module
+  number is in an entity format, a BML/B-XML document whose <resourceName>
+  is 'startup.bml' is launched first"; §9.1.2.2 the RFC 2068 entity
+  grammar, "each entity-header of body-part must contain Content-Type:
+  and Content-Location:"; Table 9-2 resourceOffset "the offset in bytes
+  of the beginning of body-part of the resource from the beginning of the
+  module", header_length "does not include the length of CRLF (two bytes)
+  which is inserted as a delimiter before entity-body"; Vol. 3 Table 4-1
+  stream_type "0x0B, 0x0D" for a data carousel.
+- Interpretation: one carousel per `bml-carousel` stream on its PID; the
+  DII and all DDBs of a cycle are one section list, with the DII inserted
+  again after every `bitrate_kbps × dii_interval_ms` of DDB bytes (so a
+  receiver sees a DII within the interval whatever the module sizes).
+  compatibilityDescriptor is coded as `compatibilityDescriptorLength =
+  0x0002, descriptorCount = 0x0000` (ISO/IEC 13818-6 length semantics:
+  "the length of the remainder"; 4 bytes as B24 says). The default
+  blockSize 4066 = 4096 − 30 (section header 8, download data header 12,
+  moduleId/moduleVersion/reserved/blockNumber 6, CRC 4): the largest
+  block a 4096-byte section carries; the TR-B14 value is understood to be
+  the same **[from knowledge]**. A module is limited to 256 blocks: the
+  8-bit section_number would otherwise repeat within one sub-table (the
+  B24 text does not define the wrap), and B24 Vol. 2 App. 3 Table 5-26
+  gives 1024 KB as the monomedia buffer. Multipart modules carry the
+  resource list first (Vol. 2 App. 2 A2-6.2.2 / App. 3 A3-6.4.2: "must
+  contain a resource list at the beginning" for real-time modules); the
+  resource list's body-part is named `X-arib-resourceList`
+  (`Content-Location` is required by §9.1.2.2 and no name is fixed). Media
+  types from Table 9-6 by extension; `image/X-arib-png` for `.png` (the
+  operated basic-service list, App. 2 Table 4-2, has the X-arib form, not
+  `image/png`). Files are sent as they are: BML text must already be EUC-JP
+  (§5.2.1 "For BML documents written in EUC-JP, the character encoding
+  identifier must be set to EUC-JP"; App. 3 A3-4.1.1). The PMT carries
+  stream_type 0x0D (Table 4-1: 0x0D also when other DSM-CC data such as
+  event messages are present), a stream_identifier and the data component
+  descriptor with additional_arib_bxml_info (Vol. 2 Table 9-12 +
+  Vol. 3 C.1); the EIT the data content descriptor with arib_bxml_info
+  (Table 9-13 + Vol. 3 C.2.1: num_of_carousels = every `bml-carousel` of
+  the service, component_size present, the other optional fields absent).
+  The DII repetition, cycle time, data_event_id, component_tag 0x40 of the
+  entry component, the terrestrial bml-version and the use of the
+  Control descriptor are TR-B14's (not available): defaults are
+  operational choices below.
+- Live comparison (a terrestrial recording of a Kyoto station, 2021,
+  with four carousels: the entry component 0x40 and three content
+  components 0x50/0x60/0x61, all stream_type 0x0D): every structure this
+  crate generates matched byte for byte in layout — the DSM-CC section
+  header (private_indicator 0, DII version 0, DDB version = moduleVersion
+  bits 4–0, section_number = blockNumber bits 7–0), the message headers
+  (transaction_id '10' + number, reserved 0xFF, adaptationLength 0),
+  blockSize 4066, compatibilityDescriptor `0002 0000`, the multipart
+  entity (module header, `--boundary` lines, three body-part headers,
+  blank CRLF, data, CRLF, close delimiter) and the resource list (26 bytes
+  for one resource: infoLength 24, resourceOffset = the body-part start
+  after the delimiter line, header_length = the three header lines
+  without the blank CRLF, type value 0x1401, reserved bit 1). The live
+  values adopted as defaults **[live]**: `Content-Type: multipart/mixed;
+  boundary="IETF_RFC1945_Multipart_Mixed"` also in the DII Type
+  descriptor, resource list `Content-Location: resourceList`,
+  `text/X-arib-bml;charset="euc-jp"` and
+  `text/X-arib-ecmascript;charset="euc-jp"` without a space, extensions
+  `.ecm` and `.btb`, downloadId 0x0FFFFFFF, tCDownloadScenario
+  0xFFFFFFFF, the 0xF0 private descriptor (flag 1) on the entry carousel
+  only, PMT info `33 3F 00 03 00 00 FF BF` for the entry component
+  (960x540, default_version_flag 0 with bml 3.0, independent 1,
+  style_for_tv 1, data_event_id 0xF, event_section 1, ondemand 1) and
+  `1F FF BF` for the others, EIT 0xC7 with the four carousels (size /
+  transaction / timeout / leak absent) and component_ref listing the
+  video, audio and other carousel tags, DII every 0.5–0.6 s, the 1444-byte
+  entry module every 0.16 s at 89 kbit/s, content carousels at
+  0.3–0.9 Mbit/s. The live entry startup.bml declares `<?xml version="1.0"
+  encoding="EUC-JP"?>`, `<!DOCTYPE bml PUBLIC "+//ARIB STD-B24:1999//DTD
+  BML Document//JA" "http://www.arib.or.jp/B24/DTD/bml_1_1.dtd">` and
+  `<?bml bml-version="3.0"?>`, and keeps the broadcast on screen with
+  `video/X-arib-mpeg2` / `audio/X-arib-mpeg2-aac` objects (`data="/-1"`);
+  the example and the Hybridcast launcher follow it. Three more
+  terrestrial stations (Sun TV, NHK General Osaka, ABC; October 2026
+  recordings) send the same PMT info bytes `33 3F 00 03 00 00 FF BF` /
+  `1F FF BF`, the same prologue and the same resource-list layout. They
+  differ among themselves in what receivers evidently tolerate: Sun TV and
+  NHK zlib-compress every module (0xC2 with the original size) and send no
+  Type descriptor at all, their module-level entity headers add
+  `Content-Length`, `Content-Encoding: none` and an empty
+  `Content-Location`, ABC omits `Content-Location` on the startup.bml
+  body-part and names the list `res0.lst`, boundaries vary
+  (`MEDIACAST_MP`, `DATA_BROADCAST`, `Boundary_20031201`), downloadId
+  bits 31–28 carry data_event_id 1, 8 or 9, NHK's entry carousel has an
+  extra module 0xFFFF with a root certificate descriptor (0xCA), NHK's EIT
+  carries 0xC7 only for captions (data_component_id 0x0008), and ABC's
+  entry body is `invisible="invisible"` (video / audio objects only,
+  launching the content documents by script). Not adopted: compression,
+  the estimated download time descriptor (0x07); the EIT auto_start_flag
+  is 0 on every station while the PMT's is 1 (this crate sends the
+  configured `auto_start` in both).
+- Confirmation: `tests/bml.rs` (sections reassemble to the files, the
+  resource list offsets point at the body-parts, DII / DDB header mapping,
+  PMT / EIT descriptors decode to the configured values, DII ≤ 0.5 s
+  apart, cycle ≤ 1 s, PID within 21 packets per 32 ms, `isdb-analyze`
+  validation without errors) and the live comparison above (L). Status:
+  layouts confirmed on live data (L) and the carousel displayed by a Sony
+  BDZ-ZW1500 (RX) when the service carries a registered station's identity
+  on its channel (receiver compatibility notes below). A first attempt
+  with the B24 generic `-//ARIB//DTD BML 1.0//JA` / bml-version 1.0
+  declaration and default_version_flag 1 lit the recorder's data mark but
+  opened no page; whether that declaration alone would have failed under
+  a registered identity was not re-tested, the live forms replaced it.
+
+## Hybridcast: the AIT (`[service.hybridcast]`, `src/hybridcast.rs`)
+- Spec: B24 Vol. 4 Ch. 5 (Tables 5-1 … 5-7), §7 (Table 7-1), Annex A
+  Fig. A-2; IPTVFJ STD-0010 §7.1.3, §7.4.1; STD-0013 §5.2, §6.1.3,
+  §6.1.5, §8.1.3.3, §8.2.3.10, §8.2.4.2.17.1; B10 Part 1 Table 5-5 (AIT
+  descriptor tags).
+- Text: Vol. 4 §5.1 application_type "0x0010 Integrated Broadcast
+  Broadband HTML5 application"; Table 5-2 organization_id 16 bits,
+  application_id 32 bits; §5.3.1 "The application descriptor is always
+  placed one every application"; §5.3.3 "one simple application location
+  descriptor must be paced every application"; §5.3.4 "When this
+  descriptor is not placed, the application boundary becomes infinite";
+  STD-0013 §5.2.1 "A value assigned by the IPTV Forum to service providers
+  shall be used for organization_id … value '0' cannot be entered in an
+  AIT"; §5.2.2 "application_profile … 0x0002 … version.major,
+  version.minor and version.micro … 0x01"; §5.2.3 control codes 0x01 /
+  0x02 / 0x04, "0x05 (PREFETCH) shall not be used"; §8.2.3.10 "processing
+  for interpreting the section-format AIT fetched from a data carousel is
+  mandatory"; §6.1.3 example `replaceApplication(0x0001, 0x00000001,
+  'arib-dc://-1.-1.-1/40/9FFF/app1.ait')`; §8.1.3.4 "all arguments of the
+  startAITControlledApp() function are required"; STD-0010 §7.1.3 "In
+  cases where application control information is included in a component
+  that also transmits data broadcasting content, no related information is
+  placed in the PMT … it is necessary in operation to specify additional
+  rules, such as transmitting AIT in a module of a specific module_id";
+  §7.4.1 the URL is URL_base + URL_extension + initial_path.
+- Interpretation: one AIT, one application; the URL split at the last
+  `/` into URL_base and initial_path (no URL_extension); common-loop
+  transport protocol descriptor with label 0; the boundary descriptor
+  with one permission_bitmap (0x1FFF: STD-0013 Table 8-55 "all") and the
+  URL origin; autostart_priority only when configured. Tags 0x15 and 0x37
+  follow B10 Part 1 Table 5-5 (the Vol. 4 English text misprints 0x05 and
+  0x36). Carriage in the carousel (the STD-0013 Phase 1 path) puts the
+  section bytes in module 0x9FFF as resource `app1.ait` after the
+  STD-0013 example; the TR-B14 rule for the receiver's monitored AIT is
+  not local, so the generated launcher names the AIT explicitly in
+  `startAITControlledApp`. The launcher's prologue uses the Vol. 2 App. 2
+  Annex B.2 declaration (`-//ARIB//DTD BML 1.0//JA`, bml-version 1.0);
+  the terrestrial DOCTYPE / version come from a live terrestrial
+  recording (`+//ARIB STD-B24:1999//DTD BML Document//JA`, `bml_1_1.dtd`,
+  bml-version 3.0 **[live]**) and are configurable (`launcher_prologue`). The dedicated-PID carriage uses
+  stream_type 0x05 (H.222.0 private sections; B24 names none) and needs
+  the data_component_id from the user (Vol. 4 Fig. A-2 "[T B D]"). The
+  media type `application/X-arib-ait` of the section-form resource is this
+  project's name (STD-0013 gives only `application/X-arib-ait+xml` for the
+  XML form).
+- Confirmation: `tests/bml.rs` (the AIT decodes to the configured
+  organization / application / URL / profile / boundary, in the carousel
+  module and on its own PID; the launcher contains the
+  `startAITControlledApp` call; validation clean). Status: interpretation;
+  **pending** a Hybridcast receiver (whether a receiver accepts an
+  organization_id not registered with the IPTV Forum, and which AIT module
+  it monitors, cannot be settled from the local texts).
+
 ## Digital copy control descriptor (0xC1) and its user_defined bits
 - Spec: B10 §6.2.23 Tables 6-38/6-39; Annex F (informative) Tables F-1–F-4.
 - Text: "user_defined: This is a 4-bit field, and broadcasting service
@@ -949,6 +1126,27 @@ encoded as defaults or validator warnings:
 - A consumer USB tuner (MyGica S270) decoded the TX with PER 0 and its
   capture validates with 0 errors; its `dvbv5-scan` section filter fails
   for driver reasons unrelated to the TS (SPECS.md §4).
+- **The Sony BDZ-ZW1500 starts its BML browser only for a service whose
+  identity matches its channel memory** (2026-10-12). A `bml-carousel`
+  under the placeholder network (0x79EE, key 9, ch44) lit the "d" mark
+  but d did nothing (no "data fetching" message); a live station's own
+  carousel relayed unchanged into that network behaved the same. The
+  station's recording re-emitted with its own network_id, TS / service
+  IDs, remote key, PMT / PCR PIDs and BIT broadcaster entry on its own
+  channel opened its data broadcasting; with this crate's carousel in
+  place of the station's, our `examples/bml/startup.bml` was displayed
+  over the picture, and so was a service made entirely here (own MPEG-2
+  / AAC files, the two example pages, keys and page transition working).
+  The same identity on another channel gave "channel suspended" with no
+  picture, sound or d mark: a known network is bound to its channel-table
+  frequency. So the "BML data broadcasting" entry
+  above is confirmed on a receiver (RX) under a registered identity, and
+  testing needs a shielded re-emission of a registered station
+  (`docs/transmitting.md`). The Hybridcast launcher page loads and its
+  script runs on that recorder; `getBrowserSupport('ARIB', 'APIGroup',
+  'AITControlledApp.Start')` returns no support there and the page shows
+  "This receiver has no Hybridcast engine", so the AIT path is untested
+  beyond the carousel delivering the launcher and the AIT module.
 
 ## Operational choices (not dictated by the local specs — test on receivers)
 
@@ -1060,3 +1258,44 @@ showed to matter.
     (`playback::RATES`), the 85 % fast-play byte budget, the frame-period
     picture spacing, audio frame skipping / repetition rather than muting,
     and pause as "send nothing" (receivers keep the last picture).
+35. `bml-carousel` defaults: component_tag 0x40 (entry component
+    **[live]**), stream_type 0x0D **[live]**, data_component_id 0x000C
+    **[live]**, DII data_event_id 0 with PMT data_event_id 0xF **[live]**,
+    downloadId 0x0FFFFFFF **[live]**, transaction number 0, moduleVersion
+    0, blockSize 4066 **[live]**, document_resolution 960x540 **[live]**,
+    bml version 3.0 with default_version_flag 0 **[live]**, independent
+    and style_for_tv 1 **[live]**, ondemand_retrieval 1 **[live]**,
+    event_section 0 (live 1, with event messages), reserved_future_use
+    '1111' **[live]**, DII at most 0.5 s apart and cycle ≤ 0.5 s (live:
+    DII every 0.5–0.6 s), 1 Mbit/s PID rate (live content carousels
+    0.3–0.9 Mbit/s), tCDownloadScenario 0xFFFFFFFF **[live]**,
+    compatibilityDescriptor `0002 0000` **[live]**.
+36. `bml-carousel` module layout: one multipart module 0x0000 with every
+    file (startup.bml first), resource list first in every multipart
+    module (`Content-Location: resourceList` **[live]**), Type
+    `multipart/mixed; boundary="IETF_RFC1945_Multipart_Mixed"` (no Name)
+    for multipart modules **[live]**, Type + Name (the file name) for a
+    directly mapped single file; text sources sent as they are, or
+    transcoded from UTF-8 to EUC-JP with `source_encoding = "utf-8"` (B24
+    Vol. 2 §5.2.1 fixes EUC-JP for the document; the encoder is
+    `encoding_rs`, JIS X 0208 repertoire); no Control descriptor unless
+    `control_descriptor = true` (live sends none **[live]**); the 0xF0
+    private descriptor on the entry carousel **[live]**.
+37. EIT data content descriptor: one per entry `bml-carousel`, language
+    "jpn" **[live]**, empty text **[live]**, every carousel of the service
+    listed (component_size present here, absent live), component_ref = the
+    other components with a tag (video, audio, other carousels)
+    **[live]**, auto_start as in the PMT (live EIT: 0).
+38. Hybridcast AIT defaults: application_type 0x0010, AUTOSTART,
+    profile 0x0002 / 1.1.1 **[STD-0013]**, service_bound 1, visibility
+    '11', application_priority 1, permission_bitmap 0x1FFF with the URL
+    origin as the boundary, no autostart_priority, version 0.
+39. Hybridcast carriage: in the carousel by default, module 0x9FFF,
+    resource `app1.ait` (the STD-0013 §6.1.3 example path), media type
+    `application/X-arib-ait`, no resource list in that module; the
+    launcher `startup.bml` (the live terrestrial prologue **[live]**,
+    broadcast video / audio objects **[live]**,
+    `getBrowserSupport('ARIB', 'APIGroup', 'AITControlledApp.Start')`
+    check, `startAITControlledApp(org, app, uri)`, ASCII only). The
+    dedicated-PID carriage: stream_type 0x05, 1 s repetition, the service's
+    layer.

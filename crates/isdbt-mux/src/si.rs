@@ -2,14 +2,20 @@
 //! typed codecs of `isdb-ts` and `isdb-si`, plus the experiment overrides
 //! of [`crate::config::TableOpts`].
 
+use std::sync::Arc;
+
 use isdb_si::Descriptor;
+use isdb_si::bxml::{
+    AdditionalAribBxmlInfo, AdditionalAribCarouselInfo, AribBxmlInfo, BxmlEntry, BxmlEntryPoint,
+    CarouselInfo, TRANSMISSION_FORMAT_CAROUSEL,
+};
 use isdb_si::descriptor::{
     AudioComponent, BroadcasterName, Component, Content, ContentAvailability, ContentItem,
-    ExtendedBroadcaster, ExtendedBroadcasterBody, HierarchicalTransmission, LocalTimeOffset,
-    LocalTimeOffsetEntry, NetworkBroadcaster, NetworkName, PartialReception,
-    Service as ServiceDescriptor, ServiceList, ServiceListEntry, ShortEvent, StreamIdentifier,
-    SystemManagement, TerrestrialBroadcaster, TerrestrialDeliverySystem, TransmissionType,
-    TsInformation,
+    DataComponent, DataContent, ExtendedBroadcaster, ExtendedBroadcasterBody,
+    HierarchicalTransmission, LocalTimeOffset, LocalTimeOffsetEntry, NetworkBroadcaster,
+    NetworkName, PartialReception, Service as ServiceDescriptor, ServiceList, ServiceListEntry,
+    ShortEvent, StreamIdentifier, SystemManagement, TerrestrialBroadcaster,
+    TerrestrialDeliverySystem, TransmissionType, TsInformation,
 };
 use isdb_si::tables::{
     BitBody, BitBroadcaster, EitBody, EitEvent, NetworkLoops, NitBody, SdtBody, SdtService,
@@ -19,6 +25,7 @@ use isdb_si::time::BcdOffset;
 use isdb_si::values::{AudioMode, CodedValue};
 
 use crate::adts::b32::QualityMode;
+use crate::carousel::{self, Carousel};
 use isdb_text::AribString;
 use isdb_ts::descriptor::Descriptor as RawDesc;
 use isdb_ts::psi::{Cat, Pat, PatEntry, Pmt, PmtStream};
@@ -26,7 +33,8 @@ use isdb_ts::section::{Long, LongBody, LongHeader, Short, ShortBody, ShortHeader
 use isdbt_core::{CodeRate, GuardInterval, Mode, Modulation, Params};
 
 use crate::config::{
-    AddDescriptor, Config, LayerName, RawDescriptor, StreamKind, TableOpts, parse_hex,
+    AddDescriptor, AitCarriage, BmlCfg, Config, LayerName, RawDescriptor, StreamCfg, StreamKind,
+    TableOpts, parse_hex,
 };
 use crate::error::{MuxError, Result};
 use crate::jst::{self, JstSeconds};
@@ -81,6 +89,11 @@ pub enum TableKind {
     Bit,
     /// Raw table stream index.
     Raw(usize),
+    /// BML data carousel (DII + DDBs) of stream `k` of service `i`.
+    Carousel(usize, usize),
+    /// Hybridcast AIT of service `i` as its own component
+    /// (`carriage = "es"`).
+    Ait(usize),
 }
 
 impl TableKind {
@@ -98,6 +111,8 @@ impl TableKind {
             TableKind::Tdt => "TDT".into(),
             TableKind::Bit => "BIT".into(),
             TableKind::Raw(i) => format!("raw[{i}]"),
+            TableKind::Carousel(i, k) => format!("carousel[{i}.{k}]"),
+            TableKind::Ait(i) => format!("AIT[{i}]"),
         }
     }
 }
@@ -121,6 +136,8 @@ pub enum StreamInfo {
         /// B32 Part 2 Attachment Ch. 3 Table 1 mode derived from the ES.
         quality: QualityMode,
     },
+    /// A BML data carousel (`bml-carousel`), loaded from its files.
+    Carousel(Arc<Carousel>),
     /// No media.
     None,
 }
@@ -315,7 +332,11 @@ pub fn validate_targets(kind: TableKind, opts: &TableOpts) -> Result<()> {
             TableKind::Sdt => matches!(t, Target::Service(_)),
             TableKind::EitPf | TableKind::EitSchedule => matches!(t, Target::Event(..)),
             TableKind::Bit => matches!(t, Target::First | Target::Broadcaster(_)),
-            TableKind::Pat | TableKind::Tdt | TableKind::Raw(_) => false,
+            TableKind::Pat
+            | TableKind::Tdt
+            | TableKind::Raw(_)
+            | TableKind::Carousel(..)
+            | TableKind::Ait(_) => false,
         };
         if !ok {
             return Err(MuxError::Config(format!(
@@ -541,6 +562,36 @@ impl SiBuilder {
                 replace_sections: c.raw_tables[i].sections.clone(),
                 ..Default::default()
             },
+            TableKind::Carousel(i, k) => {
+                let s = &c.services[i];
+                let st = &s.streams[k];
+                TableOpts {
+                    enabled: true,
+                    interval_ms: Some(st.bml.as_ref().map_or(500, |b| b.cycle_ms)),
+                    layer: Some(st.layer.unwrap_or(s.layer)),
+                    pid: Some(st.pid),
+                    ..Default::default()
+                }
+            }
+            TableKind::Ait(i) => {
+                let s = &c.services[i];
+                let h = s.hybridcast.as_ref();
+                TableOpts {
+                    enabled: h.is_some_and(|h| h.carriage == AitCarriage::Es),
+                    interval_ms: h.map(|h| h.interval_ms),
+                    layer: Some(h.and_then(|h| h.layer).unwrap_or(s.layer)),
+                    pid: h.and_then(|h| h.pid),
+                    ..Default::default()
+                }
+            }
+        }
+    }
+
+    /// The carousel stream `k` of service `i` carries, if loaded.
+    pub fn carousel(&self, i: usize, k: usize) -> Option<&Carousel> {
+        match self.media.get(i).and_then(|m| m.get(k)) {
+            Some(StreamInfo::Carousel(c)) => Some(c),
+            _ => None,
         }
     }
 
@@ -556,6 +607,12 @@ impl SiBuilder {
             TableKind::Tot | TableKind::Tdt => pid::TOT,
             TableKind::Bit => pid::BIT,
             TableKind::Raw(i) => self.cfg.raw_tables[i].pid,
+            TableKind::Carousel(i, k) => self.cfg.services[i].streams[k].pid,
+            TableKind::Ait(i) => self.cfg.services[i]
+                .hybridcast
+                .as_ref()
+                .and_then(|h| h.pid)
+                .unwrap_or(0x1FFF),
         }
     }
 
@@ -580,6 +637,8 @@ impl SiBuilder {
                 }
             }
             TableKind::Raw(i) => self.cfg.raw_tables[i].layer.index(),
+            TableKind::Carousel(i, k) => self.stream_layer(i, k),
+            TableKind::Ait(i) => self.cfg.services[i].layer.index(),
             _ => control_layer(&self.params),
         }
     }
@@ -594,7 +653,7 @@ impl SiBuilder {
             TableKind::EitSchedule => 10_000,
             TableKind::Tot | TableKind::Tdt => 30_000,
             TableKind::Bit => 20_000,
-            TableKind::Raw(_) => 1_000,
+            TableKind::Raw(_) | TableKind::Carousel(..) | TableKind::Ait(_) => 1_000,
         }
     }
 
@@ -629,6 +688,22 @@ impl SiBuilder {
             ),
             TableKind::Bit => self.bit(&o, v),
             TableKind::Raw(_) => unreachable!("raw tables always have replace_sections"),
+            // The carousel's own versions (transaction_id, moduleVersion)
+            // are configured; the stream version is not applied.
+            TableKind::Carousel(i, k) => post(
+                self.carousel(i, k)
+                    .ok_or_else(|| MuxError::Config(format!("{} not loaded", kind.name())))?
+                    .sections
+                    .clone(),
+                &o,
+                true,
+            ),
+            TableKind::Ait(i) => {
+                let h = self.cfg.services[i].hybridcast.as_ref().ok_or_else(|| {
+                    MuxError::Config(format!("{} without [service.hybridcast]", kind.name()))
+                })?;
+                post(vec![crate::hybridcast::ait_section(h)?], &o, true)
+            }
         }
     }
 
@@ -742,11 +817,52 @@ impl SiBuilder {
                     },
                 ))?);
             }
+            if st.kind == StreamKind::BmlCarousel {
+                // B24 Vol. 2 §9.3.2: data component descriptor with
+                // additional_arib_bxml_info; the component_tag of the
+                // entry component (stream identifier first, above)
+                if st.component_tag.is_none() {
+                    ds.insert(
+                        0,
+                        to_raw(&Descriptor::StreamIdentifier(StreamIdentifier {
+                            component_tag: carousel::DEFAULT_COMPONENT_TAG,
+                        }))?,
+                    );
+                }
+                let bml = st.bml.clone().unwrap_or_default();
+                ds.push(to_raw(&Descriptor::DataComponent(DataComponent {
+                    data_component_id: bml.data_component_id,
+                    additional_data_component_info: additional_bxml_info(&bml, s.service_id)?,
+                }))?);
+            }
             for d in &st.descriptors {
                 ds.push(RawDesc::new(d.tag, parse_hex(&d.hex)?));
             }
             add_into_raw(&mut ds, &o.add_descriptors, |t| *t == Target::Es(st.pid))?;
             streams.push(PmtStream::new(stream_type(st), st.pid, ds));
+        }
+        if let Some(h) = &s.hybridcast
+            && h.carriage == AitCarriage::Es
+        {
+            // B24 Vol. 4 §7.3: the AIT component with ait_identifier_info
+            let pid = h.pid.ok_or_else(|| {
+                MuxError::Config(format!(
+                    "service {:#06x} hybridcast: carriage = \"es\" needs pid",
+                    s.service_id
+                ))
+            })?;
+            let dcid = h.data_component_id.ok_or_else(|| {
+                MuxError::Config(format!(
+                    "service {:#06x} hybridcast: carriage = \"es\" needs data_component_id",
+                    s.service_id
+                ))
+            })?;
+            let mut ds = vec![to_raw(&Descriptor::DataComponent(DataComponent {
+                data_component_id: dcid,
+                additional_data_component_info: crate::hybridcast::ait_identifier_info(h)?,
+            }))?];
+            add_into_raw(&mut ds, &o.add_descriptors, |t| *t == Target::Es(pid))?;
+            streams.push(PmtStream::new(AIT_STREAM_TYPE, pid, ds));
         }
         encode_long(
             vec![Pmt::section(
@@ -999,8 +1115,55 @@ impl SiBuilder {
                         }));
                     }
                 }
-                StreamInfo::None => {}
+                StreamInfo::None | StreamInfo::Carousel(_) => {}
             }
+        }
+        for (k, st) in s.streams.iter().enumerate() {
+            if st.kind != StreamKind::BmlCarousel {
+                continue;
+            }
+            let bml = st.bml.clone().unwrap_or_default();
+            if !(bml.entry_point && bml.eit_data_content) {
+                continue;
+            }
+            // B10 §6.2.28 / B24 Vol. 2 §9.3.3: the entry component, every
+            // carousel of the service's BML content, and component_ref = the
+            // other components the content uses (live broadcasts list the
+            // video, audio and other carousel tags)
+            let mut carousels = Vec::new();
+            let mut refs = Vec::new();
+            for (k2, other) in s.streams.iter().enumerate() {
+                let is_bml = other.kind == StreamKind::BmlCarousel;
+                let tag = other.component_tag.unwrap_or(if is_bml {
+                    carousel::DEFAULT_COMPONENT_TAG
+                } else {
+                    0
+                });
+                if k2 != k && (other.component_tag.is_some() || is_bml) {
+                    refs.push(tag);
+                }
+                if !is_bml {
+                    continue;
+                }
+                let other_bml = other.bml.clone().unwrap_or_default();
+                carousels.push(CarouselInfo {
+                    component_tag: tag,
+                    event_section: other_bml.event_section,
+                    reserved: 0b111,
+                    component_size: self.carousel(i, k2).map(|c| c.component_size),
+                    transaction_id: None,
+                    timeout_dii: None,
+                    leak_rate: None,
+                });
+            }
+            ds.push(Descriptor::DataContent(DataContent {
+                data_component_id: bml.data_component_id,
+                entry_component: st.component_tag.unwrap_or(carousel::DEFAULT_COMPONENT_TAG),
+                selector: bxml_info(&bml, carousels, s.service_id)?,
+                component_refs: refs,
+                language: *b"jpn",
+                text: AribString(Vec::new()),
+            }));
         }
         if !ec.content.is_empty() {
             ds.push(Descriptor::Content(Content {
@@ -1300,12 +1463,79 @@ impl SiBuilder {
 
 /// stream_type of a configured stream (H.222.0 Table 2-34: 0x02 = ITU-T
 /// H.262 video, 0x0F = ISO/IEC 13818-7 audio with ADTS transport syntax).
-pub fn stream_type(s: &crate::config::StreamCfg) -> u8 {
+pub fn stream_type(s: &StreamCfg) -> u8 {
     s.stream_type.unwrap_or(match s.kind {
         StreamKind::Mpeg2Video => 0x02,
         StreamKind::AacAdts => 0x0F,
         StreamKind::Declared | StreamKind::TsProgram => 0x06,
+        // B24 Vol. 3 Table 4-1: data carousel "0x0B, 0x0D" (0x0D when the
+        // stream also carries other DSM-CC data such as event messages)
+        StreamKind::BmlCarousel => 0x0D,
     })
+}
+
+/// stream_type of a dedicated AIT component: ISO/IEC 13818-1
+/// private_sections (H.222.0 Table 2-34). B24 Vol. 4 does not name one;
+/// 0x05 is the H.222.0 value for a private section stream.
+pub const AIT_STREAM_TYPE: u8 = 0x05;
+
+/// additional_arib_bxml_info() of a `bml-carousel` (B24 Vol. 2 Table 9-12
+/// with Vol. 3 Annex C.1).
+pub fn additional_bxml_info(bml: &BmlCfg, sid: u16) -> Result<Vec<u8>> {
+    let what = format!("service {sid:#06x} bml");
+    let versions = carousel::bml_versions(bml, &what)?;
+    let entry = if bml.entry_point {
+        BxmlEntry::Entry(BxmlEntryPoint {
+            auto_start: bml.auto_start,
+            document_resolution: bml.document_resolution.code(),
+            use_xml: false,
+            independent: bml.independent,
+            style_for_tv: bml.style_for_tv,
+            reserved: bml.reserved_future_use & 0xF,
+            versions,
+        })
+    } else {
+        BxmlEntry::NotEntry { reserved: 0x1F }
+    };
+    Ok(AdditionalAribBxmlInfo {
+        transmission_format: TRANSMISSION_FORMAT_CAROUSEL,
+        entry,
+        carousel: Some(AdditionalAribCarouselInfo {
+            data_event_id: bml.pmt_data_event_id & 0xF,
+            event_section: bml.event_section,
+            reserved: 0b111,
+        }),
+        ondemand_retrieval: bml.ondemand_retrieval,
+        file_storable: false,
+        reserved: 0x3F,
+    }
+    .encode()?)
+}
+
+/// arib_bxml_info() selector of the EIT data content descriptor (B24
+/// Vol. 2 Table 9-13 with Vol. 3 Annex C.2.1).
+pub fn bxml_info(bml: &BmlCfg, carousels: Vec<CarouselInfo>, sid: u16) -> Result<Vec<u8>> {
+    let what = format!("service {sid:#06x} bml");
+    Ok(AribBxmlInfo {
+        transmission_format: TRANSMISSION_FORMAT_CAROUSEL,
+        reserved_1: true,
+        auto_start: bml.auto_start,
+        document_resolution: bml.document_resolution.code(),
+        use_xml: false,
+        independent: bml.independent,
+        content_id: None,
+        associated_contents: false,
+        reserved_2: true,
+        style_for_tv: bml.style_for_tv,
+        update: false,
+        language: *b"jpn",
+        versions: carousel::bml_versions(bml, &what)?,
+        carousels,
+        ondemand_retrieval: bml.ondemand_retrieval,
+        file_storable: false,
+        reserved_3: 0x3F,
+    }
+    .encode()?)
 }
 
 #[cfg(test)]

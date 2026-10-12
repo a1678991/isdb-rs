@@ -19,6 +19,7 @@ and the code disagree, the code wins.
 - [`[[service]]`](#service)
 - [`[[service.stream]]`](#servicestream)
 - [`[[service.event]]`](#serviceevent)
+- [`[service.hybridcast]`](#servicehybridcast)
 - [Typed signalling options](#typed-signalling-options)
 - [Table options](#table-options)
 - [`[[raw_table]]`](#raw_table)
@@ -63,6 +64,8 @@ Ready-made configurations:
 | `isdb mux --print-config-example` | the annotated example, identical to [`crates/isdbt-mux/examples/bench.toml`](../crates/isdbt-mux/examples/bench.toml): a full-segment HD service with MPEG-2 video and AAC from files, plus a declared one-seg service, with the values live terrestrial broadcasters send |
 | [`examples/bench-minimal.toml`](../crates/isdbt-mux/examples/bench-minimal.toml) | the same with every receiver-facing value derived from the media and copy-free |
 | [`examples/relay-ts.toml`](../crates/isdbt-mux/examples/relay-ts.toml) | rebroadcast one program of a recorded TS (`kind = "ts-program"`) |
+| [`examples/bml-data.toml`](../crates/isdbt-mux/examples/bml-data.toml) | BML data broadcasting: the files of [`examples/bml/`](../crates/isdbt-mux/examples/bml/) as a data carousel (`kind = "bml-carousel"`): a menu page (`startup.bml`, picture in the upper-right quarter, menu column, text strip, up/down + Enter and the four colour keys) and an information page (`info.bml`, four tabs, Back / colour keys), written in UTF-8 and transcoded (`source_encoding = "utf-8"`); the pages use the idioms of live stations (a focused `div` with `onkeydown`, `document.currentEvent.keyCode` 1/2/18/19/21–24, `normalStyle`, `firstChild.data`, `browser.Ureg`, `browser.launchDocument(uri, "cut")`) |
+| [`examples/hybridcast.toml`](../crates/isdbt-mux/examples/hybridcast.toml) | start a Hybridcast HTML5 application from a URL (`[service.hybridcast]`, AIT in the carousel with a generated launcher) |
 | `isdb mux --relay FILE --print-config` | the relay configuration built for a given recording, with the chosen layout in a header comment |
 
 The two `bench*.toml` examples reference the placeholder media paths
@@ -199,6 +202,7 @@ One service (program). Repeat the table for each service.
 | `program_descriptors` | array of `{ tag = u8, hex = "…" }` | `[]` | PMT program_info | Raw descriptors (body bytes after descriptor_length). |
 | `sdt_descriptors` | array of `{ tag, hex }` | `[]` | SDT service loop | Raw, after the generated service_descriptor. |
 | `pmt` | table | see [table options](#table-options) | | `[service.pmt]`: the PMT's options. |
+| `hybridcast` | table | none | B24 Vol. 4; IPTVFJ STD-0010/0013 | `[service.hybridcast]`: the AIT naming the Hybridcast application to start. See [`[service.hybridcast]`](#servicehybridcast). |
 | `stream` | array of tables | `[]` | | `[[service.stream]]`, below. |
 | `event` | array of tables | `[]` | | `[[service.event]]`, below. |
 
@@ -212,6 +216,7 @@ One elementary stream of the enclosing service. `kind` selects what it is:
 | `"aac-adts"` | An ISO/IEC 13818-7 AAC file in ADTS frames, checked against B32 Part 2 §5.2 (`adts_compliance`). Default stream_type 0x0F. |
 | `"declared"` | Listed in the PMT only; no packets are sent. Needs `stream_type`. Use it for streams you cannot packetise (for example a one-seg H.264 stream, stream_type 0x1B) or to build a test multiplex without media. |
 | `"ts-program"` | One program of a recorded transport stream, rebroadcast as this service: its PES bytes are sent unchanged at the recording's own PCR pace, PTS/DTS are rebased onto this multiplex, and all PSI/SI is generated here. See [ts-program keys](#ts-program-keys). |
+| `"bml-carousel"` | BML data broadcasting: the files of a directory as a DSM-CC data carousel (ARIB STD-B24 Vol. 3 Ch. 6), signalled in the PMT (stream_type 0x0D, stream_identifier, data_component_descriptor with additional_arib_bxml_info, B24 Vol. 2 §9.3.2) and in the EIT (data_content_descriptor, §9.3.3). See [bml-carousel keys](#bml-carousel-keys). |
 
 Media files are looped; the timestamps continue across the seam.
 
@@ -222,8 +227,8 @@ Media files are looped; the timestamps continue across the seam.
 | `kind` | see above | required | | |
 | `pid` | u16 | required (not for `ts-program`) | H.222.0 Table 2-3 | 0x0010–0x1FFE. A PID used on two layers is rejected. |
 | `stream_type` | u8 | 0x02 (`mpeg2-video`), 0x0F (`aac-adts`); required for `declared` | H.222.0 Table 2-34; B32 Part 3 §3.10 (2) | |
-| `component_tag` | u8 | none | stream_identifier_descriptor 0x52, §6.2.16 | Also the component_tag of the EIT component descriptors. |
-| `source` | path | none | | Media file; required for `mpeg2-video`, `aac-adts` and `ts-program`. |
+| `component_tag` | u8 | none (`bml-carousel`: 0x40) | stream_identifier_descriptor 0x52, §6.2.16 | Also the component_tag of the EIT component descriptors. A `bml-carousel` always gets one; 0x40 is the entry-component convention of terrestrial data broadcasting (TR-B14, from knowledge). |
+| `source` | path | none | | Media file; required for `mpeg2-video`, `aac-adts` and `ts-program`. For `bml-carousel`: the directory of the BML files. |
 | `layer` | `"A"` \| `"B"` \| `"C"` | the service's layer | | For hierarchical (high/low quality) services whose components sit on different layers. |
 | `hierarchical` | `{ reference_pid = u16, high_quality = bool }` | none | hierarchical_transmission_descriptor 0xC0, §6.2.22 | `reference_pid`: the stream of the other quality level in the same service. `high_quality` (quality_level '1') defaults to the stream on the less robust layer (B31 Part 2 Table 3-2 ranking). |
 | `descriptors` | array of `{ tag, hex }` | `[]` | PMT ES_info | Raw descriptors. |
@@ -288,6 +293,189 @@ prints one line `source copy control: …; relayed as: …`. Background and rule
 | `ca` | `"keep"` \| `"drop"` | `"keep"` | The source's conditional-access signalling. `keep`: the source PMT's conditional_access_descriptors (program and ES loops) go into the generated PMT, the ECM PIDs they name are relayed packet by packet, and the source CAT's CA_descriptors go into the generated CAT, with the EMM PIDs present in the source relayed. The payload stays unscrambled (transport_scrambling_control '00'; scrambled input is refused), so receivers see CA signalling with a clear payload. `drop`: none of it. CLI: `--ca keep\|drop`. |
 | `max_early_ms` | u32 | `0` | A packet may be sent up to this long before its PCR-derived time when the stream's T-STD model accepts it (smooths rate peaks into idle slots). 0 = strictly at the recording's pace. |
 | `probe_seconds` | f64, 1..600 | `30` | Seconds of the source's PCR time measured at start for the stream parameters, program selection, the source EIT and the probe report's rates (the rate check reads the whole file). |
+
+### `bml-carousel` keys
+
+A `bml-carousel` stream sends the files of `source` as one DSM-CC data
+carousel: a DownloadInfoIndication (DII, table_id 0x3B) listing the
+modules and the DownloadDataBlocks (DDB, 0x3C) of each module, on the
+stream's PID (B24 Vol. 3 Ch. 6, Table 6-24). By default every file goes
+into module 0x0000 as a `multipart/mixed` entity (B24 Vol. 2 §9.1.2 (2):
+each body-part with `Content-Type`, `Content-Location` and
+`Content-Length`) whose first body-part is the
+`application/X-arib-resourceList` (§9.1.2.3); `startup.bml`, the document
+a receiver launches first (§9.2.2), must be among the files unless a
+[Hybridcast launcher](#servicehybridcast) generates it. Resources are
+addressed as `arib-dc://…/<component_tag>/<moduleId>/<file>`. Media
+types come from the file extension (B24 Vol. 2 Table 9-6, written as
+live carousels write them): `bml` → `text/X-arib-bml;charset="euc-jp"`,
+`css`, `js`/`es`/`ecm` (`text/X-arib-ecmascript;charset="euc-jp"`),
+`jpg`/`jpeg`, `png` (`image/X-arib-png`), `mng`, `aif`/`aiff`, `aac`,
+`clt`/`clut`, `btable`/`btb`, `drcs`, `ait`; anything else needs
+`bml.types`. BML documents are EUC-JP (ASCII is a subset); the files are
+sent as they are unless `bml.source_encoding = "utf-8"`, which transcodes
+the text files from UTF-8 (the shipped example is written that way). A terrestrial document starts with
+`<?xml version="1.0" encoding="EUC-JP"?>`, `<!DOCTYPE bml PUBLIC
+"+//ARIB STD-B24:1999//DTD BML Document//JA"
+"http://www.arib.or.jp/B24/DTD/bml_1_1.dtd">` and
+`<?bml bml-version="3.0"?>` (the forms a live broadcast sends; see
+[`examples/bml/startup.bml`](../crates/isdbt-mux/examples/bml/startup.bml),
+whose body also keeps the broadcast video and audio on screen with
+`video/X-arib-mpeg2` / `audio/X-arib-mpeg2-aac` objects). The PID's rate is limited to `bml.bitrate_kbps`; the whole carousel
+repeats within `bml.cycle_ms` when the rate allows, with a DII at least
+every `bml.dii_interval_ms`. A module is limited to 256 DDBs (≈ 1 MB at
+the default block size: the DDB section_number is 8 bits). The start-up
+report lists the modules, their resources and the cycle time.
+
+Receivers may refuse to start their BML browser for a network they do not
+know (see [receiver-relevant settings](#receiver-relevant-settings)); the
+following fragment is the form that opened on a Sony recorder: a local
+station's recording re-emitted with its own identifiers on its own
+channel, the carousel replacing the station's (`pid_map = "keep"` keeps
+the other PIDs; the carousel takes the station's entry PID and tag):
+
+```toml
+[network]
+network_id = 0x7FD3            # the station's, from its NIT
+name = "近畿広域３"
+area_code = 0x8D5
+remote_control_key_id = 6
+ts_name = "ＡＢＣテレビ"
+channels = [15]                # the station's own channel; shielded bench only
+transmission_types = [ { info = 0x0F, layer = "B" }, { info = 0xAF, layer = "A" } ]
+
+[transport]
+transport_stream_id = 0x7FD3
+
+[[service]]
+service_id = 0x0818
+name = "ＡＢＣテレビ１"
+layer = "B"
+pmt_pid = 0x0818
+pcr_pid = 0x0100
+copy_control = { recording_control = "source" }
+
+  [[service.stream]]
+  kind = "ts-program"
+  source = "recording.ts"
+  program = 0x0818
+  pid_map = "keep"
+  eit_from_source = true
+
+  [[service.stream]]
+  kind = "bml-carousel"
+  pid = 0x1100
+  component_tag = 0x40
+  source = "bml"
+
+[bit]
+broadcasters = [ { broadcaster_id = 0xFF, terrestrial = { terrestrial_broadcaster_id = 0x7FD3, affiliation_ids = [5] } } ]
+```
+
+Options go in `[service.stream.bml]` (or `bml = { … }`); all are optional.
+
+| Key | Type | Default | Spec | Notes |
+|---|---|---|---|---|
+| `data_component_id` | u16 | `0x000C` | B10 Annex J Table J-1 | 0x000C terrestrial A profile, 0x000D C profile (one-seg), 0x0007 BS/CS BML. Used in the PMT 0xFD and EIT 0xC7. |
+| `data_event_id` | u8 (4 bits) | `0` | B24 Vol. 3 Fig. 6-1 | Bits 31–28 of the downloadId. |
+| `pmt_data_event_id` | u8 (4 bits) | `0xF` | Vol. 3 Annex C.1 | data_event_id of the PMT carousel info; all ones = the DIIs of any data_event_id are valid **[live]**. |
+| `download_id` | u32 (28 bits) | `0x0FFFFFFF` | Vol. 3 §6.2.1 | Bits 27–0 of the downloadId **[live]**. |
+| `transaction_number` | u32 (30 bits) | `0` | Vol. 3 Fig. 6-2 | DII version (transaction_id bits 29–0; bits 31–30 are '10'). The DII section's version_number is 0 (Table 6-24). |
+| `module_version` | u8 | `0` | Vol. 3 Table 6-1 | moduleVersion of every module (DDB version_number = its low 5 bits). |
+| `block_size` | u16, 1..=4066 | `4066` | Vol. 3 §6.2.1 | Bytes per DDB; 4066 fills the 4096-byte section (TR-B14 practice, from knowledge; the arithmetic is the spec's). |
+| `entry_point` | bool | `true` | Vol. 2 Table 9-12 entry_point_flag | This component carries the first document (module 0x0000 / startup.bml). |
+| `auto_start` | bool | `true` | auto_start_flag | Invoke it immediately. |
+| `document_resolution` | name | `"960x540"` | Table 9-12 document_resolution | `"mixed"` ('0000'), `"1920x1080"`, `"1280x720"`, `"960x540"`, `"720x480-16:9"`, `"720x480-4:3"`, `"320x240"`, `"unspecified"` ('1111'). |
+| `bml_version` | `"major.minor"` | `"3.0"` | Table 9-12/9-13 bml_major/minor_version | default_version_flag 0 with the numbers in the PMT and EIT info; `"3.0"` is what terrestrial broadcasts send **[live]** and what the `<?bml bml-version?>` of their documents says. `""` = default_version_flag 1. |
+| `control_descriptor` | bool | `false` | Vol. 2 §9.3.5 Table 9-15 | Also put the version in a DII Control descriptor on the BML modules. Live carousels send none. |
+| `independent` | bool | `true` | independent_flag | **[live]** |
+| `style_for_tv` | bool | `true` | style_for_tv_flag | **[live]** |
+| `event_section` | bool | `false` | event_section_flag | Event messages in this component (none are sent). |
+| `ondemand_retrieval` | bool | `true` | ondemand_retrieval_flag | **[live]** |
+| `reserved_future_use` | u8 (4 bits) | `0xF` | Table 9-12 | The reserved bits after style_for_tv_flag ('1111' per B24). TR-B14 is understood to carry Hybridcast's start_priority in them (position not in the local texts): an experiment knob. |
+| `return_to_entry` | bool | the descriptor on an entry component | Vol. 2 §9.3.4 arib_bxml_privatedata_descriptor (0xF0) | The descriptor with return_to_entry_flag 1 in the DII private area (**[live]** on the entry carousel); `false` = none. |
+| `dii_interval_ms` | u32 | `500` | — | DIIs are interleaved with the DDBs at this spacing at `bitrate_kbps`. Live carousels repeat the DII every 0.5–0.6 s. |
+| `cycle_ms` | u32 | `500` | — | Maximum time between two carousel starts; the cycle restarts right away when the rate makes it longer. |
+| `bitrate_kbps` | u32 | `1000` | B10 §5.1.4 (SI rule, applied by choice) | Packets of the PID per `[timing] si_window_ms` are capped at this rate. |
+| `eit_data_content` | bool | `true` | B10 §6.2.28; Vol. 2 §9.3.3 | Generate the EIT data_content_descriptor (entry component, every carousel of the service with its component_size). Only with `entry_point`. |
+| `types` | table `{ ext = "media type" }` | `{}` | Vol. 2 Table 9-6 | Media types by extension, added to the built-in list. Types outside Table 9-6 cannot appear in a resource list (`resource_list = false` on that module). |
+| `source_encoding` | `"euc-jp"` \| `"utf-8"` | `"euc-jp"` | Vol. 2 §5.2.1 | `"utf-8"`: every `text/*` resource (BML, CSS, ECMAScript) is transcoded to EUC-JP on load and an `encoding="UTF-8"` XML declaration becomes `EUC-JP`; a character outside JIS X 0208 is an error naming it. `"euc-jp"`: sent as they are. |
+| `modules` | array of tables | one module 0x0000 with every file | Vol. 2 §9.1.2 | Each: `id` (u16), `files` (paths relative to `source`), `multipart` (bool, default false: one file alone is sent as the module itself, "direct mapping", with Type and Name descriptors), `resource_list` (bool, default true), `name` (Name descriptor; default none: the module is addressed by its 4-digit hex id). |
+
+## `[service.hybridcast]`
+
+One AIT (ARIB STD-B24 Vol. 4 Ch. 5, application_type 0x0010) with one
+HTML5 application: the receiver fetches `url` and starts it
+(application_control_code AUTOSTART). The AIT holds a transport protocol
+descriptor (protocol_id 0x0003 HTTP/HTTPS, URL_base), an application
+descriptor (profile, version, service_bound, visibility, priority), a
+simple application location descriptor (initial_path) and an application
+boundary and permission descriptor (IPTVFJ STD-0013 §5.2, §8.2.4.2.17.1;
+B24 Vol. 4 Annex A Fig. A-2 shows this set). Two carriages:
+
+- `carriage = "carousel"` (default): the AIT section is a resource of a
+  module of the service's `bml-carousel` (STD-0013 Phase 1: "the
+  section-format AIT fetched from a data carousel", §8.2.3.10; B24 Vol. 4
+  §7.2). The service needs a `bml-carousel` stream. Unless its files have
+  a `startup.bml`, a launcher is generated that calls
+  `browser.startAITControlledApp(organization_id, application_id,
+  "arib-dc://-1.-1.-1/<component_tag>/<module_id>/<resource>")` on load
+  (STD-0013 §6.1.5 / §8.1.3.3). The module and resource names follow the
+  STD-0013 §6.1.3 example (`/40/9FFF/app1.ait`); the convention TR-B14
+  fixes for the receiver's constantly monitored AIT is not in the local
+  texts, so a BML of your own should name the AIT explicitly as the
+  launcher does.
+- `carriage = "es"`: the AIT on its own PID (stream_type 0x05) with a
+  data_component_descriptor carrying ait_identifier_info (B24 Vol. 4 §7.3;
+  STD-0010 §7.1.3 "Section transmission of AIT"). B24 v6.4 leaves the
+  data_component_id "[T B D]", so it must be given.
+
+What a receiver does with an AIT (which organization_id values it accepts,
+TLS requirements of the application server, the start priority against
+the BML content) is the IPTV Forum's and the maker's policy
+(STD-0013 §8), not this file's.
+
+| Key | Type | Default | Spec | Notes |
+|---|---|---|---|---|
+| `url` | string | required | B24 Vol. 4 §5.3.2 URL_base, §5.3.3 initial_path; STD-0010 §7.4.1 | `http://` or `https://`, ASCII. Split at the last `/`: URL_base up to and including it, initial_path the rest. |
+| `organization_id` | u16, ≠ 0 | required | Vol. 4 Table 5-2; STD-0013 §5.2.1 | "assigned by the IPTV Forum"; 0 "cannot be entered in an AIT". |
+| `application_id` | u32 | required | Table 5-2 | Unique within the organization. |
+| `application_type` | u16 | `0x0010` | Vol. 4 §5.1 | HTML5. |
+| `control_code` | `"autostart"` \| `"present"` \| `"kill"` | `"autostart"` | Vol. 4 §5.1; STD-0013 §5.2.3 | `"prefetch"` is refused (STD-0013: "shall not be used"). |
+| `profile` | u16 | `0x0002` | STD-0013 §5.2.2 | application_profile. |
+| `profile_version` | `"major.minor.micro"` | `"1.1.1"` | STD-0013 §5.2.2 | |
+| `service_bound` | bool | `true` | Vol. 4 §5.3.1 | The application ends on a service change. |
+| `visibility` | `"visible"` \| `"applications-only"` \| `"invisible"` | `"visible"` | Vol. 4 §5.3.1 | '11', '01', '00'. |
+| `priority` | u8 | `1` | application_priority | |
+| `permission_bitmap` | u16, upper 3 bits '000' | `0x1FFF` | Vol. 4 §5.3.4; STD-0013 §8.2.4.2.17.1 | 0x1FFF every permission, 0 none; '001' layouts (per-function bits) are accepted as given. |
+| `boundaries` | array of strings | the origin of `url` | STD-0013 §6.1.3.1 | managed_URL entries: `scheme://domain[/path]`. |
+| `autostart_priority` | u8 | none | Vol. 4 §5.3.5 | Adds the autostart_priority_descriptor. |
+| `ait_version` | u8 (5 bits) | `0` | Vol. 4 §5.1 | version_number of the AIT (and of ait_identifier_info). |
+| `carriage` | `"carousel"` \| `"es"` | `"carousel"` | see above | |
+| `module_id` | u16 | `0x9FFF` | STD-0013 §6.1.3 example | carousel: the AIT module (multipart, no resource list). Must not be a `bml.modules` id. |
+| `resource` | string | `"app1.ait"` | same | carousel: resource name of the AIT (media type `application/X-arib-ait`, a name the texts do not fix). |
+| `launcher` | bool | `true` | STD-0013 §6.1.5 | carousel: generate `startup.bml` when the files have none. |
+| `launcher_prologue` | string | the live terrestrial form | Vol. 2 §5.2, §10.2 | XML declaration + DOCTYPE + `<?bml bml-version?>` of the launcher. Default `+//ARIB STD-B24:1999//DTD BML Document//JA` / `bml_1_1.dtd`, bml-version 3.0 **[live]**. |
+| `pid` | u16 | none | | es: required. |
+| `data_component_id` | u16 | none | Vol. 4 §7.3 | es: required (not in the local texts). |
+| `interval_ms` | u32 | `1000` | — | es: AIT repetition. |
+| `layer` | `"A"` \| `"B"` \| `"C"` | the service's | | es: layer of the AIT PID. |
+| `application_priority` | u8 (2 bits) | `0` | Vol. 4 Table 7-1 | es: application_priority of ait_identifier_info. |
+
+```toml
+[[service]]
+# …
+  [service.hybridcast]
+  url = "https://example.com/hybridcast/app1/index.html"
+  organization_id = 1
+  application_id = 1
+
+  [[service.stream]]
+  kind = "bml-carousel"
+  pid = 0x0140
+  component_tag = 0x40
+  # source = "bml"   # your BML files; without them only the launcher and the AIT are sent
+```
 
 Service-level settings that matter for a relay: give the service a
 dedicated `pcr_pid`, and use `copy_control = { recording_control = "source" }`
@@ -571,8 +759,24 @@ message naming the table, service and stream, when:
   component (0xC4) descriptors collide only on the same component_tag.
   Descriptors that are always generated (0x40 network name, 0x48 service,
   0x4D short event, 0xFA terrestrial delivery system, 0xCD TS information,
-  0x41 service list) can only be changed with `byte_patches` /
-  `replace_sections`;
+  0x41 service list; 0x52 and 0xFD of a `bml-carousel`) can only be changed
+  with `byte_patches` / `replace_sections`;
+- a `bml-carousel` has no `source` and no `modules` (and no Hybridcast
+  launcher), `startup.bml` is missing from module 0x0000 with
+  `entry_point = true`, a file has no media type (the message lists the
+  extensions), a resource name is not a B24 Vol. 2 §9.2.1.2 name, a module
+  id is listed twice, a module needs more than 256 DDBs, `block_size` is
+  outside 1..=4066, `data_event_id` / `download_id` / `transaction_number`
+  / `reserved_future_use` exceed their widths, `document_resolution` is
+  reserved, `stream_type` is not 0x0B / 0x0D, `component_type` is given,
+  or `bml` options are set on another kind;
+- `[service.hybridcast]`: `organization_id` is 0, `url` is not an ASCII
+  `http://` / `https://` URL, `control_code` is `"prefetch"` or a number,
+  `permission_bitmap` has upper bits set, `boundaries` entries lack a
+  scheme, `carriage = "carousel"` without a `bml-carousel` stream (or with
+  `pid` / `data_component_id`), `module_id` equal to a bml module,
+  `carriage = "es"` without `pid` or `data_component_id` or with a PID of a
+  stream;
 - `copy_control.component_control` is combined with `in_pmt = true`;
   `aps_control_data` is given with a `copy_control_type` other than
   `"serial-output-encoded"`; `user_defined` is given together with
@@ -624,6 +828,15 @@ and the
 - **Choose a `remote_control_key_id` that no local station uses.** A key
   that collides with a station already registered on the receiver can make
   its scan merge or ignore the service.
+- **Data broadcasting only under a registered broadcaster's identity.** A
+  Sony BDZ-ZW1500 shows the "d" mark for any service with a
+  `bml-carousel` but starts its BML browser only when the network_id, TS
+  and service IDs and the frequency match a station in its channel
+  memory. The shipped examples (placeholder network 0x79EE) therefore
+  show the mark and nothing more on it. To see the page, re-emit a
+  recording of a local station with that station's identifiers on its own
+  channel and add the `bml-carousel` to that service (details in
+  [transmitting.md](transmitting.md#receiver-compatibility-notes)).
 
 See also: [getting-started.md](getting-started.md),
 [analysis.md](analysis.md), [glossary.md](glossary.md),

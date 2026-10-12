@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE bml PUBLIC "+//ARIB STD-B24:1999//DTD BML Document//JA" "http://www.arib.or.jp/B24/DTD/bml_1_1.dtd">
+<?bml bml-version="3.0"?>
+<bml>
+<head>
+<title>isdb-rs データ放送 情報ページ</title>
+<style>
+<![CDATA[
+body {
+	resolution:960x540;
+	display-aspect-ratio:16v9;
+	used-key-list:basic data-button;
+	background-color-index:0;
+}
+p {
+	font-size:24px;
+	line-height:32px;
+	color-index:7;
+	background-color-index:0;
+}
+#fcs {
+	left:0px;
+	top:0px;
+	width:960px;
+	height:540px;
+	nav-index:0;
+}
+#tab {
+	left:20px;
+	top:16px;
+	width:440px;
+	height:40px;
+	font-size:30px;
+	line-height:40px;
+	color-index:3;
+}
+.line {
+	left:20px;
+	width:920px;
+	height:32px;
+}
+.key {
+	top:490px;
+	width:200px;
+	height:36px;
+	font-size:20px;
+	line-height:36px;
+	color-index:7;
+	text-align:center;
+}
+]]>
+</style>
+<script>
+<![CDATA[
+var tab = 0;
+var titles = new Array("番組情報", "ニュース", "天気予報", "このページについて");
+var lines = new Array(
+	new Array("isdb-rs 試験放送", "この多重は isdbt-mux が生成しています。", "映像と音声は録画からの中継です。", "", ""),
+	new Array("isdb-rs がデータ放送に対応しました。", "DSM-CC データカルーセルで BML を送出します。", "PMT と EIT に B24 第2編 9.3 の記述子を付けます。", "", ""),
+	new Array("今日の天気: 晴れ", "降水確率: 10%", "最高気温: 24℃ / 最低気温: 15℃", "（固定のサンプル文です）", ""),
+	new Array("ARIB STD-B24 第2編 BML / 第3編 データカルーセル", "ソースは UTF-8 で書き、送出時に EUC-JP へ変換", "カラーキー: 青=メニュー 赤=前 緑=次", "戻るキーでもメニューへ戻ります", "")
+);
+function G(id) { return document.getElementById(id); }
+function paint() {
+	var i;
+	G("tab").firstChild.data = titles[tab] + "（" + (tab + 1) + "/4）";
+	for (i = 0; i < 5; i++) {
+		var t = lines[tab][i];
+		if (t == "") { t = "　"; }
+		G("l" + i).firstChild.data = t;
+	}
+}
+function init() {
+	var u = parseInt(browser.Ureg[1], 10);
+	if (u >= 0 && u <= 3) { tab = u; }
+	paint();
+	G("fcs").focus();
+}
+function menu() {
+	browser.launchDocument("/40/0000/startup.bml", "cut");
+}
+function keydown() {
+	var c = parseInt(document.currentEvent.keyCode, 10);
+	if (c == 19 || c == 21 || c == 18) {
+		menu();
+	} else if (c == 22 || c == 3 || c == 1) {
+		tab = (tab + 3) % 4;
+		paint();
+	} else if (c == 23 || c == 4 || c == 2) {
+		tab = (tab + 1) % 4;
+		paint();
+	}
+}
+]]>
+</script>
+</head>
+<body id="body" onload="init();">
+	<div id="stream" style="left:480px; top:0px; width:480px; height:270px">
+		<object id="Vstream" type="video/X-arib-mpeg2" data="/-1" remain="remain" style="left:0px; top:0px; width:480px; height:270px;"/>
+		<object id="Astream" type="audio/X-arib-mpeg2-aac" data="/-1" remain="remain" streamstatus="play"/>
+	</div>
+	<div id="fcs" onkeydown="keydown();"></div>
+	<p id="tab">番組情報</p>
+	<p id="l0" class="line" style="top:290px;">　</p>
+	<p id="l1" class="line" style="top:330px;">　</p>
+	<p id="l2" class="line" style="top:370px;">　</p>
+	<p id="l3" class="line" style="top:410px;">　</p>
+	<p id="l4" class="line" style="top:450px;">　</p>
+	<p class="key" style="left:20px; background-color-index:4;">青　メニュー</p>
+	<p class="key" style="left:260px; background-color-index:1;">赤　前のページ</p>
+	<p class="key" style="left:500px; background-color-index:2;">緑　次のページ</p>
+	<p class="key" style="left:740px; background-color-index:3; color-index:0;">戻る　メニュー</p>
+</body>
+</bml>

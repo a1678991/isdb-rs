@@ -1,0 +1,73 @@
+# isdbt-mux example: start a Hybridcast (HTML5) application from the
+# broadcast signal.
+#
+#   isdb mux -c crates/isdbt-mux/examples/hybridcast.toml --seconds 5 --out-ts /tmp/hc.ts --report
+#
+# [service.hybridcast] builds an AIT (ARIB STD-B24 Vol. 4 Ch. 5) with one
+# AUTOSTART application whose start URL is `url`. With the default
+# carriage = "carousel" (IPTVFJ STD-0013 Phase 1: section-format AIT in a
+# data carousel) the AIT goes into module 0x9FFF of the service's
+# bml-carousel as the resource `app1.ait`, and — since the carousel has no
+# startup.bml of its own — a launcher startup.bml is generated that calls
+# browser.startAITControlledApp(organization_id, application_id,
+# "arib-dc://-1.-1.-1/40/9FFF/app1.ait") (STD-0013 §6.1.5 / §8.1.3.3).
+#
+# The receiver-side policy (which organization_id values a receiver
+# accepts, TLS requirements of the application server) is the IPTV Forum's
+# and the receiver maker's, not this file's. See docs/mux-config.md.
+
+[network]
+network_id = 0x79EE
+name = "ベンチ"
+area_code = 0x8D5                # B10 Annex D Table D-2: Kinki wide area (from a live Osaka NIT)
+remote_control_key_id = 9
+channels = [44]
+
+[transport]
+transport_stream_id = 0x79EE
+
+[clock]
+source = "fixed"
+start = "2026-01-01T12:00:00"
+
+[[service]]
+service_id = 0x0400
+name = "ベンチHD"
+provider = "ベンチ"
+layer = "B"
+pmt_pid = 0x01F0
+pcr_pid = 0x01FF
+copy_control = { recording_control = "copy-free" }
+
+[service.hybridcast]
+url = "https://example.com/hybridcast/app1/index.html"
+organization_id = 1  # assigned by the IPTV Forum; a placeholder
+application_id = 1
+# control_code = "autostart"    # or "present" / "kill"
+# profile = 0x0002              # STD-0013 §5.2.2
+# profile_version = "1.1.1"
+# boundaries = ["https://example.com"]   # default: the origin of url
+# permission_bitmap = 0x1FFF
+# carriage = "carousel"         # or "es" (own PID: pid = …, data_component_id = …)
+# module_id = 0x9FFF
+# resource = "app1.ait"
+# launcher = true
+
+[[service.stream]]
+kind = "declared"
+pid = 0x0111
+stream_type = 0x02
+component_tag = 0x00
+
+[[service.stream]]  # carries the launcher and the AIT
+kind = "bml-carousel"
+pid = 0x0140
+component_tag = 0x40
+# source = "bml"                # add your own BML files (with a startup.bml
+# that calls startAITControlledApp itself)
+
+[[service.event]]
+event_id = 0x0001
+start_offset_s = -600
+duration = "01:00:00"
+name = "ハイブリッドキャスト試験"

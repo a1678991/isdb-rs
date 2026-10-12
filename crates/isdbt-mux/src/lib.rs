@@ -5,6 +5,9 @@
 //!   experiment overrides per table.
 //! * [`si`] — PSI/SI generation (PAT, PMT, CAT, NIT, SDT, EIT p/f and
 //!   schedule, TOT/TDT, BIT) with the typed codecs of `isdb-ts`/`isdb-si`.
+//! * [`carousel`], [`hybridcast`] — BML data broadcasting (files → DSM-CC
+//!   data carousel, ARIB STD-B24 Vol. 2/3) and the Hybridcast AIT naming
+//!   the HTML5 application to start (B24 Vol. 4, IPTVFJ STD-0010/0013).
 //! * [`signalling`] — typed receiver-facing signalling values (video
 //!   decode control, EIT component types, digital copy control, remote
 //!   control key) with spec-table names.
@@ -95,8 +98,10 @@ pub mod adts;
 pub mod analysis;
 pub mod audio;
 pub mod capacity;
+pub mod carousel;
 pub mod config;
 pub mod error;
+pub mod hybridcast;
 pub mod jst;
 pub mod mux;
 pub mod output;

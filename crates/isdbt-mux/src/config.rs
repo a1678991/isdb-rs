@@ -10,6 +10,7 @@
 //! common [`TableOpts`] fields (raw descriptors, header fields, byte
 //! patches, whole transplanted sections).
 
+use isdb_si::values::{ApplicationControlCode, ApplicationVisibility, DocumentResolution};
 use serde::{Deserialize, Serialize};
 
 pub use crate::audio::AdtsCompliance;
@@ -583,6 +584,11 @@ pub struct Service {
     /// PMT table options.
     #[serde(default)]
     pub pmt: PmtCfg,
+    /// Hybridcast application signalling: an AIT (ARIB STD-B24 Vol. 4;
+    /// IPTVFJ STD-0010 / STD-0013) naming the HTML5 application URL the
+    /// receiver starts ([`HybridcastCfg`]).
+    #[serde(default)]
+    pub hybridcast: Option<HybridcastCfg>,
     /// Elementary streams.
     #[serde(default, rename = "stream")]
     pub streams: Vec<StreamCfg>,
@@ -638,6 +644,12 @@ pub enum StreamKind {
     /// service's elementary streams ([`crate::relay`]): PES bytes kept,
     /// PTS/DTS rebased onto this multiplex, PSI/SI generated here.
     TsProgram,
+    /// A BML data broadcasting component: the files of a directory sent as
+    /// a DSM-CC data carousel (ARIB STD-B24 Vol. 3 Ch. 6; [`crate::carousel`]),
+    /// signalled with a data component descriptor (B24 Vol. 2 §9.3.2) and
+    /// an EIT data content descriptor (§9.3.3). Options in `bml`
+    /// ([`BmlCfg`]).
+    BmlCarousel,
 }
 
 /// What a `ts-program` stream does at the end of its file.
@@ -833,6 +845,10 @@ pub struct StreamCfg {
     /// the rate check and stream parameters (default 30).
     #[serde(default)]
     pub probe_seconds: Option<f64>,
+    /// `bml-carousel`: carousel and BML signalling options ([`BmlCfg`];
+    /// every key optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bml: Option<BmlCfg>,
     /// Set by the multiplexer on the streams it expands a `ts-program`
     /// into: (relay index, elementary stream index).
     #[serde(skip)]
@@ -846,7 +862,7 @@ impl StreamCfg {
         match self.kind {
             StreamKind::Mpeg2Video => MediaClass::Video,
             StreamKind::AacAdts => MediaClass::Audio,
-            StreamKind::Declared => MediaClass::Other,
+            StreamKind::Declared | StreamKind::BmlCarousel => MediaClass::Other,
             StreamKind::TsProgram => match self.stream_type {
                 Some(0x01 | 0x02 | 0x1B | 0x24) => MediaClass::Video,
                 Some(0x03 | 0x04 | 0x0F | 0x11) => MediaClass::Audio,
@@ -1057,6 +1073,353 @@ pub struct EventCfg {
     /// Raw event descriptors.
     #[serde(default)]
     pub descriptors: Vec<RawDescriptor>,
+}
+
+/// Options of a `bml-carousel` stream (`[service.stream.bml]`; ARIB
+/// STD-B24 Vol. 2 §9.3, Vol. 3 Ch. 6 and Annex C). Every key has a
+/// default; the values that the ARIB operational guideline TR-B14 (not
+/// available to this project) fixes are marked in the docs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BmlCfg {
+    /// data_component_id of the data component / data content descriptors
+    /// (B10 Annex J Table J-1: 0x000C terrestrial A profile, 0x000D
+    /// C profile (one-seg), 0x0007 BS/CS BML). Default 0x000C.
+    pub data_component_id: u16,
+    /// data_event_id (4 bits) in the downloadId (B24 Vol. 3 Fig. 6-1).
+    /// Default 0.
+    pub data_event_id: u8,
+    /// data_event_id of the PMT additional_arib_carousel_info (B24 Vol. 3
+    /// Annex C.1): "all the bits set to 1" = the DIIs of any data_event_id
+    /// are valid. Default 0xF (what live terrestrial carousels send).
+    pub pmt_data_event_id: u8,
+    /// Bits 27–0 of the downloadId. Default 0x0FFFFFFF (live value).
+    pub download_id: u32,
+    /// Transaction Number (DII version, transaction_id bits 29–0; B24
+    /// Vol. 3 Fig. 6-2). Default 0.
+    pub transaction_number: u32,
+    /// moduleVersion of every module. Default 0.
+    pub module_version: u8,
+    /// blockSize of the DDBs. Default 4066 (the largest block that fits
+    /// the 4096-byte DSM-CC section; [`isdb_si::dsmcc::MAX_BLOCK_SIZE`]).
+    pub block_size: u16,
+    /// entry_point_flag: this component carries the document invoked
+    /// first (module 0x0000 / `startup.bml`, B24 Vol. 2 §9.2.2). Default
+    /// true.
+    pub entry_point: bool,
+    /// auto_start_flag: invoke the first document immediately. Default
+    /// true.
+    pub auto_start: bool,
+    /// document_resolution (B24 Vol. 2 Table 9-12; [`DocumentResolution`]
+    /// names). Default `"960x540"`.
+    #[serde(with = "crate::signalling::named")]
+    pub document_resolution: DocumentResolution,
+    /// BML version `"major.minor"` sent explicitly (default_version_flag 0)
+    /// in the PMT and EIT info and in a DII Control descriptor. Default
+    /// `"3.0"`, the terrestrial value (live PMT and `<?bml bml-version?>`);
+    /// `""` = default_version_flag 1 (the receiver's operational default).
+    pub bml_version: Option<String>,
+    /// Put a Control descriptor (B24 Vol. 2 §9.3.5 Table 9-15: the BML
+    /// version) in the DII module information of BML modules. Default
+    /// false: live carousels send none (the PMT carries the version).
+    pub control_descriptor: bool,
+    /// independent_flag. Default true (live value).
+    pub independent: bool,
+    /// style_for_tv_flag. Default true (live value).
+    pub style_for_tv: bool,
+    /// event_section_flag of the PMT and EIT carousel info: event messages
+    /// are transmitted in this component. Default false (none are).
+    pub event_section: bool,
+    /// ondemand_retrieval_flag of the PMT and EIT info. Default true (live
+    /// value).
+    pub ondemand_retrieval: bool,
+    /// The 4 reserved_future_use bits after style_for_tv_flag in
+    /// additional_arib_bxml_info (B24 Vol. 2 Table 9-12), spec value
+    /// '1111'. TR-B14 is understood to define Hybridcast's
+    /// `start_priority` inside them (position not in the local texts).
+    pub reserved_future_use: u8,
+    /// return_to_entry_flag of the DII arib_bxml_privatedata_descriptor
+    /// (B24 Vol. 2 §9.3.4). Default: the descriptor with flag 1 on an entry
+    /// component, none otherwise (live practice); `false` = none.
+    pub return_to_entry: Option<bool>,
+    /// Maximum interval between two DIIs (ms); DIIs are interleaved with
+    /// the DDBs at this spacing at the configured rate. Default 500 (live
+    /// carousels repeat the DII every 0.5–0.6 s).
+    pub dii_interval_ms: u32,
+    /// Maximum time between two starts of the carousel cycle (ms); the
+    /// cycle restarts right away when the rate makes it longer. Default
+    /// 500 (a live entry carousel repeats its module every 0.16 s and the
+    /// content carousels every 0.5–1.5 s).
+    pub cycle_ms: u32,
+    /// Rate limit of the carousel PID (kbit/s of 188-byte packets),
+    /// applied over `[timing] si_window_ms`. Default 1000 (the B10 §5.1.4
+    /// "1 Mbit per 1 sec for every PID" rule of SI, applied here as an
+    /// operational choice).
+    pub bitrate_kbps: u32,
+    /// Generate the EIT data content descriptor (0xC7, B10 §6.2.28 with
+    /// the arib_bxml_info selector) for this component. Default true
+    /// (only with `entry_point`).
+    pub eit_data_content: bool,
+    /// Media types by file extension (without the dot), added to or
+    /// replacing the built-in Table 9-6 mapping ([`crate::carousel::media_type`]).
+    pub types: std::collections::BTreeMap<String, String>,
+    /// Character encoding of the `text/*` source files ([`SourceEncoding`]):
+    /// `"euc-jp"` (default) sends them as they are; `"utf-8"` transcodes
+    /// them to EUC-JP on load and rewrites an `encoding="UTF-8"` XML
+    /// declaration (B24 Vol. 2 §5.2.1: terrestrial BML is EUC-JP).
+    pub source_encoding: SourceEncoding,
+    /// Explicit module layout. Default: one module (moduleId 0x0000) with
+    /// every file of `source` as a multipart entity.
+    pub modules: Vec<BmlModuleCfg>,
+}
+
+impl Default for BmlCfg {
+    fn default() -> Self {
+        Self {
+            data_component_id: isdb_si::bxml::DATA_COMPONENT_ID_TERRESTRIAL_A,
+            data_event_id: 0,
+            pmt_data_event_id: 0xF,
+            download_id: 0x0FFF_FFFF,
+            transaction_number: 0,
+            module_version: 0,
+            block_size: isdb_si::dsmcc::MAX_BLOCK_SIZE,
+            entry_point: true,
+            auto_start: true,
+            document_resolution: DocumentResolution::R960x540,
+            bml_version: Some("3.0".into()),
+            control_descriptor: false,
+            independent: true,
+            style_for_tv: true,
+            event_section: false,
+            ondemand_retrieval: true,
+            reserved_future_use: 0xF,
+            return_to_entry: None,
+            dii_interval_ms: 500,
+            cycle_ms: 500,
+            bitrate_kbps: 1000,
+            eit_data_content: true,
+            types: Default::default(),
+            source_encoding: SourceEncoding::EucJp,
+            modules: Vec::new(),
+        }
+    }
+}
+
+/// Character encoding of a `bml-carousel`'s text sources (`bml.source_encoding`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum SourceEncoding {
+    /// The files are already EUC-JP (or ASCII); sent unchanged.
+    #[default]
+    EucJp,
+    /// The files are UTF-8; `text/*` resources are transcoded to EUC-JP.
+    #[serde(rename = "utf-8")]
+    Utf8,
+}
+
+/// One module of a `bml-carousel` (`[service.stream.bml] modules`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BmlModuleCfg {
+    /// moduleId.
+    pub id: u16,
+    /// Files (relative to `source`), each a resource of the module. One
+    /// file without `multipart` is sent as the module itself (B24 Vol. 2
+    /// §9.1.2 (1) "Direct mapping", Type and Name descriptors in the DII);
+    /// otherwise the files form a `multipart/mixed` entity (§9.1.2 (2))
+    /// with an `application/X-arib-resourceList` first.
+    pub files: Vec<String>,
+    /// Pack a single file as a multipart entity too (so that it is
+    /// addressed as `/<component_tag>/<moduleId>/<file>`). Default false.
+    #[serde(default)]
+    pub multipart: bool,
+    /// Put the resource list (B24 Vol. 2 §9.1.2.3) first in a multipart
+    /// module. Default true.
+    #[serde(default = "yes")]
+    pub resource_list: bool,
+    /// Name descriptor of the module (moduleName of the namespace, B24
+    /// Vol. 2 §9.2.1.2); default none: the module is addressed by its
+    /// 4-digit hexadecimal moduleId.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Where the Hybridcast AIT is carried (`[service.hybridcast] carriage`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum AitCarriage {
+    /// As a resource of a module of the service's `bml-carousel` (the
+    /// IPTVFJ STD-0013 Phase 1 carriage: "section-format AIT transmitted
+    /// in a data carousel", §8.2.3.10; B24 Vol. 4 §7.2). Default.
+    #[default]
+    Carousel,
+    /// As its own section component listed in the PMT (B24 Vol. 4 §7.1 /
+    /// §7.3: data component descriptor with ait_identifier_info; IPTVFJ
+    /// STD-0010 §7.1.3 "Section transmission of AIT").
+    Es,
+}
+
+/// Hybridcast application signalling of a service (`[service.hybridcast]`):
+/// one AIT (ARIB STD-B24 Vol. 4 Ch. 5) with one HTML5 application
+/// (application_type 0x0010) started from `url`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridcastCfg {
+    /// The application's start URL (`http://` or `https://`). Split into
+    /// the transport protocol descriptor's URL_base (up to and including
+    /// the last `/`) and the simple application location descriptor's
+    /// initial_path (the rest), B24 Vol. 4 §5.3.2–5.3.3 / IPTVFJ STD-0010
+    /// §7.4.1.
+    pub url: String,
+    /// organization_id (16 bits; "assigned by the IPTV Forum", never 0 —
+    /// IPTVFJ STD-0013 §5.2.1).
+    pub organization_id: u16,
+    /// application_id (32 bits, unique within the organization).
+    pub application_id: u32,
+    /// application_type. Default 0x0010 (HTML5).
+    #[serde(default = "default_application_type")]
+    pub application_type: u16,
+    /// application_control_code ([`ApplicationControlCode`] names:
+    /// `"autostart"`, `"present"`, `"kill"`; STD-0013 §5.2.3 forbids
+    /// `"prefetch"`). Default `"autostart"`.
+    #[serde(default = "default_autostart", with = "crate::signalling::named")]
+    pub control_code: ApplicationControlCode,
+    /// application_profile. Default 0x0002 (STD-0013 §5.2.2).
+    #[serde(default = "default_profile")]
+    pub profile: u16,
+    /// Profile version `"major.minor.micro"`. Default `"1.1.1"` (STD-0013
+    /// §5.2.2).
+    #[serde(default = "default_profile_version")]
+    pub profile_version: String,
+    /// service_bound_flag. Default true.
+    #[serde(default = "yes")]
+    pub service_bound: bool,
+    /// visibility ([`ApplicationVisibility`] names). Default `"visible"`.
+    #[serde(default = "default_visible", with = "crate::signalling::named")]
+    pub visibility: ApplicationVisibility,
+    /// application_priority. Default 1.
+    #[serde(default = "one_u8")]
+    pub priority: u8,
+    /// permission_bitmap of the application boundary and permission
+    /// descriptor (STD-0013 §8.2.4.2.17.1: upper 3 bits '000' with 0x1FFF
+    /// = every permission, 0 = none). Default 0x1FFF.
+    #[serde(default = "default_permission")]
+    pub permission_bitmap: u16,
+    /// managed_URL entries of the boundary descriptor (scheme + domain,
+    /// optionally a path; STD-0013 §6.1.3.1). Default: the origin of
+    /// `url`.
+    #[serde(default)]
+    pub boundaries: Vec<String>,
+    /// autostart_priority_descriptor value (B24 Vol. 4 §5.3.5); none = no
+    /// descriptor ("the priority is the lowest including data
+    /// broadcasting").
+    #[serde(default)]
+    pub autostart_priority: Option<u8>,
+    /// AIT version_number. Default 0.
+    #[serde(default)]
+    pub ait_version: u8,
+    /// Where the AIT goes ([`AitCarriage`]). Default `"carousel"`.
+    #[serde(default)]
+    pub carriage: AitCarriage,
+    /// `carriage = "carousel"`: moduleId of the AIT module in the
+    /// service's `bml-carousel`. Default 0x9FFF (the module of the STD-0013
+    /// §6.1.3 example URI `arib-dc://-1.-1.-1/40/9FFF/app1.ait`; TR-B14's
+    /// convention for the constantly monitored AIT is not in the local
+    /// texts).
+    #[serde(default = "default_ait_module")]
+    pub module_id: u16,
+    /// `carriage = "carousel"`: resource name of the AIT in that module.
+    /// Default `"app1.ait"` (same example).
+    #[serde(default = "default_ait_resource")]
+    pub resource: String,
+    /// `carriage = "carousel"`: generate a `startup.bml` that calls
+    /// `browser.startAITControlledApp(organization_id, application_id,
+    /// "arib-dc://-1.-1.-1/<component_tag>/<module>/<resource>")` (STD-0013
+    /// §6.1.5 / §8.1.3.3) when the carousel's files have none. Default
+    /// true.
+    #[serde(default = "yes")]
+    pub launcher: bool,
+    /// Prologue of the generated launcher (XML declaration, DOCTYPE and
+    /// `<?bml bml-version?>`). Default: the terrestrial form a live
+    /// broadcast sends (`+//ARIB STD-B24:1999//DTD BML Document//JA`,
+    /// `bml_1_1.dtd`, bml-version 3.0; [`crate::hybridcast::LAUNCHER_PROLOGUE`]).
+    #[serde(default)]
+    pub launcher_prologue: Option<String>,
+    /// `carriage = "es"`: PID of the AIT component. Required then.
+    #[serde(default)]
+    pub pid: Option<u16>,
+    /// `carriage = "es"`: data_component_id of the PMT data component
+    /// descriptor carrying ait_identifier_info (B24 Vol. 4 §7.3). Required
+    /// then: B24 v6.4 leaves the value "[T B D]" and the local texts do
+    /// not give it.
+    #[serde(default)]
+    pub data_component_id: Option<u16>,
+    /// `carriage = "es"`: repetition interval of the AIT (ms). Default
+    /// 1000.
+    #[serde(default = "default_ait_interval")]
+    pub interval_ms: u32,
+    /// `carriage = "es"`: layer of the AIT component (default: the
+    /// service's layer).
+    #[serde(default)]
+    pub layer: Option<LayerName>,
+    /// `carriage = "es"`: application_priority of ait_identifier_info
+    /// (2 bits; "When priority is not appointed, it is 00"). Default 0.
+    #[serde(default)]
+    pub application_priority: u8,
+}
+
+impl HybridcastCfg {
+    /// profile_version as (major, minor, micro).
+    pub fn profile_version(&self) -> Result<(u8, u8, u8)> {
+        let bad = || {
+            MuxError::Config(format!(
+                "hybridcast profile_version {:?}: give \"major.minor.micro\" (0..255 each)",
+                self.profile_version
+            ))
+        };
+        let v: Vec<u8> = self
+            .profile_version
+            .split('.')
+            .map(|x| x.trim().parse::<u8>().map_err(|_| bad()))
+            .collect::<Result<_>>()?;
+        match v.as_slice() {
+            [a, b, c] => Ok((*a, *b, *c)),
+            _ => Err(bad()),
+        }
+    }
+}
+
+fn default_application_type() -> u16 {
+    isdb_si::ait::APPLICATION_TYPE_HTML5
+}
+fn default_autostart() -> ApplicationControlCode {
+    ApplicationControlCode::Autostart
+}
+fn default_profile() -> u16 {
+    0x0002
+}
+fn default_profile_version() -> String {
+    "1.1.1".into()
+}
+fn default_visible() -> ApplicationVisibility {
+    ApplicationVisibility::Visible
+}
+fn one_u8() -> u8 {
+    1
+}
+fn default_permission() -> u16 {
+    0x1FFF
+}
+fn default_ait_module() -> u16 {
+    0x9FFF
+}
+fn default_ait_resource() -> String {
+    "app1.ait".into()
+}
+fn default_ait_interval() -> u32 {
+    1000
 }
 
 fn yes() -> bool {

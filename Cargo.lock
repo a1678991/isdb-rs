@@ -381,6 +381,7 @@ dependencies = [
 name = "isdbt-mux"
 version = "0.1.0"
 dependencies = [
+ "encoding_rs",
  "isdb-analyze",
  "isdb-si",
  "isdb-text",
