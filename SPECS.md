@@ -16,7 +16,9 @@ Nothing here is new evidence.
 and are not redistributed with this repository. The official download URLs
 and the SHA-256 of the editions the code cites are in [§1.1](#11-documents-used),
 followed by the `pdftotext` commands that produce the greppable text the
-code comments and SPEC-NOTES quote (into the gitignored `specs/`). Real
+code comments and SPEC-NOTES quote (into the gitignored `specs/`). The
+IPTV Forum Japan documents kept locally for future work are in
+[§1.3](#13-iptv-forum-japan-specifications-local-not-yet-used). Real
 captures are not distributed either; how to make and use your own is in
 [docs/test-data.md](docs/test-data.md).
 
@@ -128,6 +130,126 @@ The SPEC-NOTES statements that depend on these documents. Search terms used:
 | "The operational guideline is not available here" (SI initial state) | [crates/isdb-text/SPEC-NOTES.md](crates/isdb-text/SPEC-NOTES.md#isdb-text-initial-state-for-si-strings) |
 | JIS X 0221 / X 0213 "not available locally … from general knowledge" | [crates/isdb-text/SPEC-NOTES.md](crates/isdb-text/SPEC-NOTES.md#isdb-text-kanji-set-rows-184--jis-x-0208-unicode-mapping) |
 | "The ARIB operational split of 0x58–0x5F … is not in B10 and is not used" | [crates/isdb-analyze/SPEC-NOTES.md](crates/isdb-analyze/SPEC-NOTES.md#isdb-analyze-eit-within-8-days-table_ids) |
+
+### 1.3 IPTV Forum Japan specifications (local, not yet used)
+
+These are the IPTV Forum Japan (IPTVFJ) standards (STD) and documents (DOC)
+that are free to download. They were collected on 2026-10-12 so they are
+available for future work: IP retransmission of terrestrial, BS and
+advanced-BS broadcasts (STD-0005, 0009, 0014, 0015, 0016), Hybridcast
+(STD-0010, 0011, 0013) and IPTV delivery. **No code cites them yet.** No
+row of §2 depends on them. When a crate starts to rely on one, move its row
+to §1.1.
+
+The list of files is shown after the form at
+https://www.iptvforum.jp/download/ (name, contact details and an agreement
+to the personal-information terms). The file URLs below answer without that
+form. On 2026-10-12 every URL returned HTTP 200 with
+`Content-Type: application/pdf`, and the remote `Content-Length` equalled
+the size of the downloaded file. Japanese is the original. The English
+translations listed are the ones IPTVFJ publishes, and several are older
+editions than the Japanese ones.
+
+| Document | Lang | Edition (date) | Title | Official download | `specs/` text |
+|---|---|---|---|---|---|
+| IPTVFJ STD-0001 | ja | 1.1 (2009-09-16) | IPTV規定 概説 | https://www.iptvforum.jp/download/docs/files/IPTVOutline11.pdf | `IPTVFJ-STD-0001-v1.1-ja.txt` |
+| IPTVFJ STD-0001 | en | 1.1 (2009-09-16) | Overview | https://www.iptvforum.jp/download/docs/files/IPTVOutline11e.pdf | `IPTVFJ-STD-0001-v1.1-en.txt` |
+| IPTVFJ STD-0002 | ja | 1.2 (2012-04-16) | VOD仕様 | https://www.iptvforum.jp/download/docs/files/VOD12.pdf | `IPTVFJ-STD-0002-v1.2-ja.txt` |
+| IPTVFJ STD-0002 | en | 1.1 (2010-07-30) | VOD Specifications | https://www.iptvforum.jp/download/docs/files/VOD11e.pdf | `IPTVFJ-STD-0002-v1.1-en.txt` |
+| IPTVFJ STD-0003 | ja | 1.0 (2009-07-23) | ダウンロード仕様 | https://www.iptvforum.jp/download/docs/files/Download10.pdf | `IPTVFJ-STD-0003-v1.0-ja.txt` |
+| IPTVFJ STD-0004 Fascicle 1 | ja | 2.0 (2016-11-18) | IP放送仕様 第1分冊 | https://www.iptvforum.jp/download/docs/files/IPBroadcast20-1.pdf | `IPTVFJ-STD-0004-v2.0-ja-1.txt` |
+| IPTVFJ STD-0004 Fascicle 2 | ja | 2.0 (2016-11-18) | IP放送仕様 第2分冊 | https://www.iptvforum.jp/download/docs/files/IPBroadcast20-2.pdf | `IPTVFJ-STD-0004-v2.0-ja-2.txt` |
+| IPTVFJ STD-0004 Fascicle 3 | ja | 2.0 (2016-11-18) | IP放送仕様 第3分冊 | https://www.iptvforum.jp/download/docs/files/IPBroadcast20-3.pdf | `IPTVFJ-STD-0004-v2.0-ja-3.txt` |
+| IPTVFJ STD-0004 | en | 1.2 (2010-07-30) | IP Broadcasting Specifications | https://www.iptvforum.jp/download/docs/files/IPBroadcast12e.pdf | `IPTVFJ-STD-0004-v1.2-en.txt` |
+| IPTVFJ STD-0005 | ja | 1.6 (2025-06-12) | 地上デジタルテレビジョン放送IP再放送運用規定（IP再多重方式） | https://www.iptvforum.jp/download/docs/files/6627dda433291f08e7f7f32a361dbcfebdbce0da.pdf | `IPTVFJ-STD-0005-v1.6-ja.txt` |
+| IPTVFJ STD-0006 | ja | 1.5 (2022-10-28) | CDNスコープサービスアプローチ仕様 | https://www.iptvforum.jp/download/docs/files/STD-0006v1.5.pdf | `IPTVFJ-STD-0006-v1.5-ja.txt` |
+| IPTVFJ STD-0006 | en | 1.3 (2010-07-30) | CDN Scope Service Approach Specifications | https://www.iptvforum.jp/download/docs/files/CDNScope13e.pdf | `IPTVFJ-STD-0006-v1.3-en.txt` |
+| IPTVFJ STD-0007 | ja | 1.2 (2012-04-16) | インターネットスコープサービスアプローチ仕様 | https://www.iptvforum.jp/download/docs/files/InternetScope12.pdf | `IPTVFJ-STD-0007-v1.2-ja.txt` |
+| IPTVFJ STD-0008 | ja | 2.1 (2012-04-23) | 放送連携サービスアプローチ仕様 | https://www.iptvforum.jp/download/docs/files/BCConvergence21.pdf | `IPTVFJ-STD-0008-v2.1-ja.txt` |
+| IPTVFJ STD-0008 | en | 1.0 (2008-11-28) | Specifications of IPTV Service Approach by Integration with Broadcasting | https://www.iptvforum.jp/download/docs/files/BCConvergence10e.pdf | `IPTVFJ-STD-0008-v1.0-en.txt` |
+| IPTVFJ STD-0009 | ja | 1.4 (2022-10-28) | BSデジタル放送IP再放送運用規定（IP再多重方式） | https://www.iptvforum.jp/download/docs/files/STD-0009v1.4.pdf | `IPTVFJ-STD-0009-v1.4-ja.txt` |
+| IPTVFJ STD-0010 | ja | 2.4 (2022-01-21) | 放送通信連携システム仕様 | https://www.iptvforum.jp/download/docs/files/STD-0010_v2.4.pdf | `IPTVFJ-STD-0010-v2.4-ja.txt` |
+| IPTVFJ STD-0010 | en | 2.4 (2022-01-21) | Integrated Broadcast-Broadband System Specification | https://www.iptvforum.jp/download/docs/files/STD-0010en_v2.4.pdf | `IPTVFJ-STD-0010-v2.4-en.txt` |
+| IPTVFJ STD-0011 | ja | 2.7 (2022-01-21) | HTML5ブラウザ仕様 | https://www.iptvforum.jp/download/docs/files/STD-0011_v2.7.pdf | `IPTVFJ-STD-0011-v2.7-ja.txt` |
+| IPTVFJ STD-0011 | en | 2.7 (2022-01-21) | HTML5 Browser Specification | https://www.iptvforum.jp/download/docs/files/STD-0011en_v2.7.pdf | `IPTVFJ-STD-0011-v2.7-en.txt` |
+| IPTVFJ STD-0012 | ja | 1.0 (2013-02-27) | 事業者間連携メタデータ運用規定 | https://www.iptvforum.jp/download/docs/files/B2BMetadataDistribution10.pdf | `IPTVFJ-STD-0012-v1.0-ja.txt` |
+| IPTVFJ STD-0013 | ja | 2.10 (2022-01-21) | ハイブリッドキャスト運用規定 | https://www.iptvforum.jp/download/docs/files/STD-0013_v2.10.pdf | `IPTVFJ-STD-0013-v2.10-ja.txt` |
+| IPTVFJ STD-0013 | en | 2.10 (2022-01-21) | Hybridcast Operational Guideline | https://www.iptvforum.jp/download/docs/files/STD-0013en_v2.10.pdf | `IPTVFJ-STD-0013-v2.10-en.txt` |
+| IPTVFJ STD-0014 | ja | 1.0 (2018-11-16) | 高度BSデジタル放送IP再放送運用規定 | https://www.iptvforum.jp/download/docs/files/IPTVFJ-STD0014-1.0.pdf | `IPTVFJ-STD-0014-v1.0-ja.txt` |
+| IPTVFJ STD-0015 | ja | 1.0 (2022-10-28) | 地上デジタルテレビジョン放送IP再放送運用規定（IPパススルー方式） | https://www.iptvforum.jp/download/docs/files/STD-0015v1.0.pdf | `IPTVFJ-STD-0015-v1.0-ja.txt` |
+| IPTVFJ STD-0016 | ja | 1.0 (2022-10-28) | BSデジタル放送IP再放送運用規定（IPパススルー方式） | https://www.iptvforum.jp/download/docs/files/STD-0016v1.0.pdf | `IPTVFJ-STD-0016-v1.0-ja.txt` |
+| IPTVFJ DOC-0001 (1) | ja | 1.1 (2009-10-17) | CDNスコープVOD・IP放送テスト仕様 (1) テスト項目表 | https://www.iptvforum.jp/download/docs/files/Test_CDNScope11.pdf | `IPTVFJ-DOC-0001-v1.1-ja-1.txt` |
+| IPTVFJ DOC-0001 (2) | ja | 1.1 (2009-10-17) | CDNスコープVOD・IP放送テスト仕様 (2) テストシナリオ | https://www.iptvforum.jp/download/docs/files/Scenario_CDNScope11.pdf | `IPTVFJ-DOC-0001-v1.1-ja-2.txt` |
+| IPTVFJ DOC-0002 | ja | 1.0 (2013-04-19) | Hybridcast技術仕様サービスガイドライン | https://www.iptvforum.jp/download/docs/files/HybridcastServiceGuideline10.pdf | `IPTVFJ-DOC-0002-v1.0-ja.txt` |
+
+Each date is the one the document's cover gives for its own edition. For
+DOC-0001 the cover says 1.1 was revised on 2009-10-17, and the colophon at
+the end of part (2) says it was issued on 2009-11-10. On the STD-0002
+Japanese cover, `pdftotext` puts a stray `1` in front of single-digit
+months ("2012 年 14 月 16 日"). The rendered page reads 2012-04-16.
+
+SHA-256 of the PDF files:
+
+```
+f8d1fb8e75d8e9a5079f3d791df6947fc03befda208040a2efb8b9704b18ee14  IPTVOutline11.pdf
+ed262a690534df1b77a74495bceabde1fc5180262b619d1b0e2b0a599b3febde  IPTVOutline11e.pdf
+646c6b737091c971aa018966549701098c0cf623599642c1b6d0937ecbb65c58  VOD12.pdf
+7130c216f4d3955376d43849000775fce8af0e4e1ab59dd80158ece2442c5243  VOD11e.pdf
+eba5b1261e5d7ddf891dd84a9188649f61fc8ad94e3c77c2c7110d39e3207fc0  Download10.pdf
+4029d5783dbd00187110d651e92ad7da925a06d83e75c82dc84fcbc26edb1d09  IPBroadcast20-1.pdf
+ea5c8da9071d20e42b490ef6e8863d808beb2d0a788b6543f20161616de857ce  IPBroadcast20-2.pdf
+12639654f7400190689531b3555cb54494138a73e1a5195defdbeb761901877b  IPBroadcast20-3.pdf
+381666ed4d2d9388a919ca22412ee01843611303831bb4985fa0efcf89631b65  IPBroadcast12e.pdf
+7f9b284fe185bcc72474c3c175ec9a6face902b31c24d3ebaee48783194ef0b7  6627dda433291f08e7f7f32a361dbcfebdbce0da.pdf
+e467984c6f7f12e27c70f9db46744484b2d979ceb6acf0dddaf1c2c9f19f8572  STD-0006v1.5.pdf
+7fc47612ef0a3ba37fc7b40c5ab5ecc2411e5e1f108b717d003ecc253e45be79  CDNScope13e.pdf
+6f13151b6a1b0b73d18faf5983ccaeb2723f29169817a4881cd1058a016e24ce  InternetScope12.pdf
+a1ab8571ec501bda4f87f9671214da3e2d0ac5d411e51615ac68844e7c131e36  BCConvergence21.pdf
+f4eec6c67c3b4d9550736b748732714aaddeee6a4377b3f4c1d3cbf6889321eb  BCConvergence10e.pdf
+df2d9f2cb94f9190241abff9f08a1846de28104d9810eaa602dff2ec7759e694  STD-0009v1.4.pdf
+4d77ca3e5149c10e89f62c0c7e780a83824f7df93049c66ff7c1a2860e3ff6ee  STD-0010_v2.4.pdf
+163accc79162753999c7797de0e89ae43b4f90cf4d9af3e68503cbbd474003e0  STD-0010en_v2.4.pdf
+f51a386705be195da82b25002ec61cf4c06e2822ed91678fe26661ef80d675fd  STD-0011_v2.7.pdf
+c2a480e9f65aab6edb006d463b719834687d633cb2c061190cd0590a893d4702  STD-0011en_v2.7.pdf
+31b6c75940dfc3fdac9a1741757c3221e2d8cb2fb2a1921b0053f1341762a877  B2BMetadataDistribution10.pdf
+c7bfa2a274ed523d6300e549efd400b02ee222e5a6483620842425b468d731ff  STD-0013_v2.10.pdf
+995074ae997d9e11849d0f5bad86cf13247bbe99b6264107c4172ec35384308d  STD-0013en_v2.10.pdf
+70fd8545b3e13f1208bf250e436f9e71a880b63601a30572dc7afecdeac2f752  IPTVFJ-STD0014-1.0.pdf
+e6c11d8ada867886343c17e0decf1c4129280c6f19927f65c8acf1dd9eb7cb79  STD-0015v1.0.pdf
+97a4fbcd0605e7354f092f699face173024d2f46bc4b40d6e63a44093819b078  STD-0016v1.0.pdf
+0c2c2789fcb2b3e18dc6d647941057e13882c36eef995b9d1ffbda91ac5d62cb  Test_CDNScope11.pdf
+63e37030fdb56489681570c70b94ff21863337d306ff552addcdea091eab8065  Scenario_CDNScope11.pdf
+1414e0b3a56ac887ea3046943227075bf48503e9a46451a464fbc0e1a02ff7bf  HybridcastServiceGuideline10.pdf
+```
+
+**Not committed**, for the same reason as §1.1: the documents are
+IPTVFJ's copyright, so the PDFs and their text stay in the gitignored
+`specs/`.
+
+**TLS.** `www.iptvforum.jp` sends its leaf certificate twice and leaves out
+the intermediate "GlobalSign GCC R3 DV TLS CA 2020" (checked with
+`openssl s_client` on 2026-10-12). Browsers fetch the intermediate through
+the AIA extension. Plain `curl` fails with "unable to get local issuer
+certificate". Do not use `-k`. Add the intermediate to a CA bundle instead.
+It is valid until 2029-03-18 and chains to GlobalSign Root CA - R3.
+
+```sh
+PDFS=/path/to/spec-pdfs   # any directory outside the repository
+mkdir -p "$PDFS" specs
+curl -sSf http://secure.globalsign.com/cacert/gsgccr3dvtlsca2020.crt \
+  | openssl x509 -inform der > "$PDFS/gsgccr3dvtlsca2020.pem"
+openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt "$PDFS/gsgccr3dvtlsca2020.pem"
+cat /etc/ssl/certs/ca-certificates.crt "$PDFS/gsgccr3dvtlsca2020.pem" > "$PDFS/ca.pem"
+# download each URL in the table above, then compare against the hashes
+(cd "$PDFS" && curl -sSfL --cacert ca.pem -O <url> …)
+(cd "$PDFS" && sha256sum *.pdf)
+# extract to the `specs/` text name in the table, e.g.
+pdftotext -layout "$PDFS"/STD-0010_v2.4.pdf specs/IPTVFJ-STD-0010-v2.4-ja.txt
+```
+
+Every PDF has a text layer: `pdftotext` 26.08.0 gave between about 970 and
+8,200 characters per page, so no OCR is needed. The copies in this checkout
+are in `specs/pdf/` (gitignored).
 
 ---
 
