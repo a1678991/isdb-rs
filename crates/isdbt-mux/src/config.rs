@@ -1163,6 +1163,12 @@ pub struct BmlCfg {
     /// Media types by file extension (without the dot), added to or
     /// replacing the built-in Table 9-6 mapping ([`crate::carousel::media_type`]).
     pub types: std::collections::BTreeMap<String, String>,
+    /// Watch the source files and rebuild the carousel when they change:
+    /// the changed modules get moduleVersion + 1 and the DII a new
+    /// transaction number, so receivers see a module update (B24 Vol. 3
+    /// §6.2.1 transaction_id / moduleVersion). Checked once per second of
+    /// stream time; a change must be stable for two checks. Default true.
+    pub watch: bool,
     /// Character encoding of the `text/*` source files ([`SourceEncoding`]):
     /// `"euc-jp"` (default) sends them as they are; `"utf-8"` transcodes
     /// them to EUC-JP on load and rewrites an `encoding="UTF-8"` XML
@@ -1199,6 +1205,7 @@ impl Default for BmlCfg {
             bitrate_kbps: 1000,
             eit_data_content: true,
             types: Default::default(),
+            watch: true,
             source_encoding: SourceEncoding::EucJp,
             modules: Vec::new(),
         }

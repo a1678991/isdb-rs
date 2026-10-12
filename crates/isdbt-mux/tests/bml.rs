@@ -740,3 +740,161 @@ fn configuration_errors() {
     let e = load_err(&config("", "source = \"bml\"", ""));
     assert!(e.contains("256 blocks"), "{e}");
 }
+
+/// `bml.watch`: a file changed on disk is sent in the next cycles with
+/// moduleVersion + 1 on its module and a new DII transaction number; an
+/// unchanged carousel keeps its versions; a half-written file (seen in only
+/// one poll) is not sent.
+#[test]
+fn watched_files_update_the_carousel_on_air() {
+    let dir = tmpdir("bml-watch");
+    let bml = dir.join("bml");
+    std::fs::create_dir_all(&bml).unwrap();
+    std::fs::write(bml.join("startup.bml"), STARTUP).unwrap();
+    std::fs::write(bml.join("a.css"), "p { color-index: 7; }").unwrap();
+    let cfg = Config::from_toml(&config(HYBRIDCAST, "source = \"bml\"", "")).unwrap();
+    let params = bench_params();
+    let mut mux = Multiplexer::new(&cfg, &params, &dir).unwrap();
+    let n = mux.pattern().len();
+    let run = |mux: &mut Multiplexer, frames: u64| -> Run {
+        let mut full = Vec::new();
+        let mut times = Vec::new();
+        let k0 = mux.frames();
+        for k in k0..k0 + frames {
+            let (f, _) = mux.next_frame_full();
+            times.extend((0..n).map(|j| mux.slot_time(k, j)));
+            full.extend(f);
+        }
+        let report = analyze(&full, &times, clocks_to_ticks(408));
+        Run {
+            full,
+            times,
+            report,
+            notes: Vec::new(),
+        }
+    };
+    let versions = |secs: &[(u64, Vec<u8>)]| -> (Vec<u16>, Vec<(u16, u8)>) {
+        let mut tx: Vec<u16> = secs
+            .iter()
+            .filter(|(_, s)| s[0] == 0x3B)
+            .map(|(_, s)| Dii::decode(s).unwrap().header.table_id_extension)
+            .collect();
+        tx.sort();
+        tx.dedup();
+        let mut mv: Vec<(u16, u8)> = secs
+            .iter()
+            .filter(|(_, s)| s[0] == 0x3C)
+            .map(|(_, s)| {
+                let d = Ddb::decode(s).unwrap();
+                (d.body.module_id, d.body.module_version)
+            })
+            .collect();
+        mv.sort();
+        mv.dedup();
+        (tx, mv)
+    };
+    // 1. steady state: transaction 0, every module at version 0
+    let r1 = run(&mut mux, 10);
+    let (tx, mv) = versions(&sections(&r1, 0x0140));
+    assert_eq!(tx, vec![0]);
+    assert_eq!(mv, vec![(0x0000, 0), (0x9FFF, 0)]);
+    assert!(mux.take_alerts().is_empty());
+    // 2. a file changes: within a few seconds the carousel carries it with
+    //    module 0 at version 1 and transaction 1; the AIT module keeps 0
+    std::fs::write(
+        bml.join("a.css"),
+        "p { color-index: 7; background-color-index: 1; }",
+    )
+    .unwrap();
+    let r2 = run(&mut mux, 14); // ≈ 3.2 s: two polls one second apart, then the rebuild
+    let secs = sections(&r2, 0x0140);
+    let (tx, mv) = versions(&secs);
+    assert_eq!(tx, vec![0, 1], "DII transactions seen");
+    assert!(
+        mv.contains(&(0x0000, 1)) && mv.contains(&(0x9FFF, 0)),
+        "{mv:?}"
+    );
+    let alerts = mux.take_alerts();
+    assert!(
+        alerts
+            .iter()
+            .any(|a| a.contains("rebuilt") && a.contains("0x0000 (version 1)")),
+        "{alerts:?}"
+    );
+    // the new DII describes the new module; its DDBs reassemble to the new file
+    let dii = secs
+        .iter()
+        .filter(|(_, s)| s[0] == 0x3B)
+        .map(|(_, s)| Dii::decode(s).unwrap())
+        .find(|d| d.header.table_id_extension == 1)
+        .unwrap();
+    assert_eq!(dii.body.transaction_id, 0x8000_0001);
+    let m0 = dii.body.modules.iter().find(|m| m.module_id == 0).unwrap();
+    assert_eq!(m0.module_version, 1);
+    let new_secs: Vec<(u64, Vec<u8>)> = secs
+        .iter()
+        .filter(|(_, s)| {
+            s[0] != 0x3C
+                || Ddb::decode(s).unwrap().body.module_version == m0.module_version
+                || Ddb::decode(s).unwrap().body.module_id != 0
+        })
+        .cloned()
+        .collect();
+    let mods = modules(&new_secs, &dii);
+    let res = parse_multipart(&mods[&0]).unwrap();
+    assert_eq!(res[1].name, "a.css");
+    assert_eq!(
+        res[1].data,
+        b"p { color-index: 7; background-color-index: 1; }"
+    );
+    // 3. no further change: versions stay
+    let r3 = run(&mut mux, 10);
+    let (tx, mv) = versions(&sections(&r3, 0x0140));
+    assert_eq!(tx, vec![1]);
+    assert_eq!(mv, vec![(0x0000, 1), (0x9FFF, 0)]);
+    // the whole run (steady, update, steady) is one continuous, valid stream
+    let mut all = r1.full.clone();
+    all.extend(r2.full.iter().cloned());
+    all.extend(r3.full.iter().cloned());
+    let r4 = run(&mut mux, 12); // past the 10 s NIT interval for the validator
+    all.extend(r4.full.iter().cloned());
+    no_validation_errors(&all, "across a watched update");
+}
+
+#[test]
+fn watch_can_be_switched_off() {
+    let dir = tmpdir("bml-nowatch");
+    let bml = dir.join("bml");
+    std::fs::create_dir_all(&bml).unwrap();
+    std::fs::write(bml.join("startup.bml"), STARTUP).unwrap();
+    let cfg = Config::from_toml(&config("", "source = \"bml\"", "watch = false")).unwrap();
+    let mut mux = Multiplexer::new(&cfg, &bench_params(), &dir).unwrap();
+    for _ in 0..8 {
+        mux.next_frame();
+    }
+    std::fs::write(
+        bml.join("startup.bml"),
+        format!("{STARTUP}<!-- changed -->"),
+    )
+    .unwrap();
+    let n = mux.pattern().len();
+    let mut full = Vec::new();
+    let mut times = Vec::new();
+    for k in 8..22 {
+        let (f, _) = mux.next_frame_full();
+        times.extend((0..n).map(|j| mux.slot_time(k, j)));
+        full.extend(f);
+    }
+    let r = Run {
+        full,
+        times,
+        report: analyze(&[], &[], 1),
+        notes: Vec::new(),
+    };
+    for (_, s) in sections(&r, 0x0140) {
+        if s[0] == 0x3B {
+            assert_eq!(Dii::decode(&s).unwrap().header.table_id_extension, 0);
+        }
+    }
+    assert!(mux.take_alerts().is_empty());
+}

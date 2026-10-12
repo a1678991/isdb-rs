@@ -17,7 +17,9 @@
 //! belonging to one carousel are transmitted in one ES"); the DII is
 //! repeated between the DDBs at the configured interval.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use isdb_si::bxml::{BmlControl, BmlVersions};
 use isdb_si::dsmcc::{
@@ -358,6 +360,23 @@ fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .map(|i| i + from)
 }
 
+/// What a carousel is built from, kept so that it can be rebuilt when
+/// its files change (`bml.watch`).
+#[derive(Debug, Clone)]
+pub struct CarouselSource {
+    /// The stream configuration (`bml` options, `source`, component_tag).
+    pub stream: StreamCfg,
+    /// The service's Hybridcast configuration, if any.
+    pub hybridcast: Option<HybridcastCfg>,
+    /// Directory `source` is relative to.
+    pub base_dir: PathBuf,
+    /// Name for messages.
+    pub what: String,
+}
+
+/// The files a carousel was built from: (name, modification time, size).
+pub type Snapshot = Vec<(String, Option<SystemTime>, u64)>;
+
 /// A loaded carousel: its modules and the sections of one cycle.
 #[derive(Debug, Clone)]
 pub struct Carousel {
@@ -367,8 +386,12 @@ pub struct Carousel {
     pub download_id: u32,
     /// transaction_id of the DII.
     pub transaction_id: u32,
+    /// Transaction Number (transaction_id bits 29–0) of this build.
+    pub transaction_number: u32,
     /// Modules.
     pub modules: Vec<Module>,
+    /// moduleVersion per moduleId of this build.
+    pub module_versions: BTreeMap<u16, u8>,
     /// The DII section.
     pub dii: Vec<u8>,
     /// Sections of one cycle: the DDBs of every module in order with the
@@ -378,6 +401,48 @@ pub struct Carousel {
     pub component_size: u32,
     /// Lines for the start-up report.
     pub report: Vec<String>,
+    /// What it was built from.
+    pub source: CarouselSource,
+    /// The source files as they were when it was built.
+    pub snapshot: Snapshot,
+}
+
+/// Modification time and size of every source file of `src` (the listed
+/// files, or every file of the directory for the default layout).
+pub fn snapshot(src: &CarouselSource) -> Result<Snapshot> {
+    let bml = src.stream.bml.clone().unwrap_or_default();
+    let Some(dir) = src.stream.source.as_ref().map(|d| src.base_dir.join(d)) else {
+        return Ok(Vec::new());
+    };
+    let io = |e: std::io::Error| MuxError::Media {
+        path: dir.display().to_string(),
+        msg: e.to_string(),
+    };
+    let mut names: Vec<String> = if bml.modules.is_empty() {
+        let mut v = Vec::new();
+        for e in std::fs::read_dir(&dir).map_err(io)? {
+            let e = e.map_err(io)?;
+            if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                v.push(e.file_name().to_string_lossy().into_owned());
+            }
+        }
+        v
+    } else {
+        bml.modules
+            .iter()
+            .flat_map(|m| m.files.iter().cloned())
+            .collect()
+    };
+    names.sort();
+    let mut out = Vec::with_capacity(names.len());
+    for n in names {
+        let p = dir.join(&n);
+        match std::fs::metadata(&p) {
+            Ok(m) => out.push((n, m.modified().ok(), m.len())),
+            Err(_) => out.push((n, None, 0)),
+        }
+    }
+    Ok(out)
 }
 
 /// Read the files of a `bml-carousel` stream and build its sections.
@@ -389,6 +454,30 @@ pub fn load(
     base_dir: &Path,
     what: &str,
 ) -> Result<Carousel> {
+    build(
+        &CarouselSource {
+            stream: st.clone(),
+            hybridcast: hybridcast.cloned(),
+            base_dir: base_dir.to_path_buf(),
+            what: what.to_string(),
+        },
+        None,
+    )
+}
+
+/// Build (or, with `prev`, rebuild) a carousel from its source. On a
+/// rebuild every module whose bytes or descriptors changed gets
+/// moduleVersion + 1 (a new module starts at the configured version), and
+/// the DII gets transaction number + 1 when anything in it changed; an
+/// unchanged carousel keeps its versions (B24 Vol. 3 §6.2: "the version
+/// number is incremented by one when content of one or more DII messages
+/// have been changed"; §6.3.1 moduleVersion).
+pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> {
+    let st = &src.stream;
+    let hybridcast = src.hybridcast.as_ref();
+    let base_dir = src.base_dir.as_path();
+    let what = src.what.as_str();
+    let snap = snapshot(src)?;
     let bml = st.bml.clone().unwrap_or_default();
     let component_tag = st.component_tag.unwrap_or(DEFAULT_COMPONENT_TAG);
     let dir = st.source.as_ref().map(|s| base_dir.join(s));
@@ -638,9 +727,44 @@ pub fn load(
         }
     }
 
+    // ---- versions: changed modules + 1, the DII transaction + 1 on any change
+    let mut module_versions = BTreeMap::new();
+    let mut changed = Vec::new();
+    for m in &modules {
+        let v = match prev.and_then(|p| {
+            p.modules
+                .iter()
+                .find(|x| x.id == m.id)
+                .map(|x| (x, p.module_versions.get(&m.id).copied()))
+        }) {
+            Some((old, Some(v))) if old.bytes == m.bytes && old.info == m.info => v,
+            Some((_, Some(v))) => {
+                changed.push(m.id);
+                v.wrapping_add(1)
+            }
+            _ => {
+                if prev.is_some() {
+                    changed.push(m.id);
+                }
+                bml.module_version
+            }
+        };
+        module_versions.insert(m.id, v);
+    }
+    let removed = prev.is_some_and(|p| {
+        p.modules
+            .iter()
+            .any(|x| !modules.iter().any(|m| m.id == x.id))
+    });
+    let transaction_number = match prev {
+        Some(p) if changed.is_empty() && !removed => p.transaction_number,
+        Some(p) => (p.transaction_number + 1) & 0x3FFF_FFFF,
+        None => bml.transaction_number,
+    };
+
     // ---- sections
     let did = download_id(bml.data_event_id, bml.download_id);
-    let tid = transaction_id(bml.transaction_number);
+    let tid = transaction_id(transaction_number);
     let component_size: usize = modules.iter().map(|m| m.bytes.len()).sum();
     let bytes_per_s = bml.bitrate_kbps.max(1) as f64 * 1000.0 / 8.0;
     let cycle_s = (component_size as f64 * 1.1 / bytes_per_s).max(bml.cycle_ms as f64 / 1000.0);
@@ -651,7 +775,7 @@ pub fn load(
         dii.modules.push(DiiModule {
             module_id: m.id,
             module_size: m.bytes.len() as u32,
-            module_version: bml.module_version,
+            module_version: module_versions[&m.id],
             info: m.info.clone(),
         });
     }
@@ -669,7 +793,7 @@ pub fn load(
     })?;
     let mut ddbs = Vec::new();
     for m in &modules {
-        for s in module_blocks(did, m.id, bml.module_version, bml.block_size, &m.bytes)
+        for s in module_blocks(did, m.id, module_versions[&m.id], bml.block_size, &m.bytes)
             .map_err(|e| MuxError::Config(format!("{what}: module {:#06x}: {e}", m.id)))?
         {
             ddbs.push(s.encode()?);
@@ -686,6 +810,17 @@ pub fn load(
         }
         acc += d.len();
         sections.push(d);
+    }
+    if prev.is_some() {
+        report.push(format!(
+            "{what}: carousel rebuilt, transaction {transaction_number}: modules changed {}{}",
+            changed
+                .iter()
+                .map(|id| format!("{id:#06x} (version {})", module_versions[id]))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if removed { ", modules removed" } else { "" }
+        ));
     }
     report.insert(
         0,
@@ -712,11 +847,15 @@ pub fn load(
         component_tag,
         download_id: did,
         transaction_id: tid,
+        transaction_number,
         modules,
+        module_versions,
         dii: dii_bytes,
         sections,
         component_size: component_size as u32,
         report,
+        source: src.clone(),
+        snapshot: snap,
     })
 }
 

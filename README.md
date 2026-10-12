@@ -300,8 +300,8 @@ end, but some parts have had less independent checking than others:
   accepts is IPTV Forum policy.
 - **Not implemented**: duplicate packets for a PID on two layers, SFN
   synchronisation (only the IIP's `network_synchronization_information`
-  syntax is handled), AC data in the broadcasting TS, run-time carousel
-  updates / data events / event messages, DRCS glyphs, ISDB-T<sub>SB</sub>.
+  syntax is handled), AC data in the broadcasting TS, data events and
+  event messages of data broadcasting, DRCS glyphs, ISDB-T<sub>SB</sub>.
 - **Radio**: HackRF One is the only backend (others plug into
   `isdb-radio` without CLI changes). The demodulator runs at about 1.4× real time
   on a current 16-core desktop CPU, so live reception needs a fast machine.

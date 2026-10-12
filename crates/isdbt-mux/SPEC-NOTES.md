@@ -977,6 +977,34 @@ unchanged without checks (reproducing old streams on receivers).
   opened no page; whether that declaration alone would have failed under
   a registered identity was not re-tested, the live forms replaced it.
 
+## BML data broadcasting: module updates on air (`bml.watch`)
+- Spec: B24 Vol. 3 §6.2 (transaction_id), §6.2.1 (moduleVersion),
+  §6.3.1; Vol. 2 §9.1.3 (receiver behaviour on DII / module changes,
+  `ModuleUpdated` event).
+- Text: §6.2 "This version number is common to all DII messages of the
+  data carousel and the version number is incremented by one when content
+  of one or more DII messages have been changed"; Table 6-1 "moduleVersion:
+  This 8-bit field indicates the version of this module"; Table 6-24 the
+  DDB section version_number is "the least significant 5 bits of the
+  moduleVersion".
+- Interpretation: the source files are compared (name, size,
+  modification time) once per second of stream time at the start of a
+  carousel cycle; a difference must be seen twice (two polls one second
+  apart) before the rebuild, so that a file still being written is not
+  sent. On a rebuild a module whose bytes or descriptors differ gets
+  moduleVersion + 1 (wrapping at 256; the DDB version_number wraps at 32
+  as the spec's 5-bit mapping implies), a new or removed module changes
+  the DII, and the DII's Transaction Number is incremented when any of its
+  content changed; downloadId and data_event_id stay (no data event is
+  signalled, the update is a module update). Unchanged modules keep their
+  version, so a receiver re-fetches only what changed. The EIT's
+  component_size follows and bumps the EIT version as any other change.
+- Confirmation: `watched_files_update_the_carousel_on_air`,
+  `watch_can_be_switched_off` (the DDBs of the new version reassemble to
+  the edited file; the AIT module keeps version 0; validation clean).
+  Status: interpretation; the receiver reaction (reload through
+  `ModuleUpdated`) **pending** on the recorder.
+
 ## Hybridcast: the AIT (`[service.hybridcast]`, `src/hybridcast.rs`)
 - Spec: B24 Vol. 4 Ch. 5 (Tables 5-1 … 5-7), §7 (Table 7-1), Annex A
   Fig. A-2; IPTVFJ STD-0010 §7.1.3, §7.4.1; STD-0013 §5.2, §6.1.3,
@@ -1281,6 +1309,9 @@ showed to matter.
     `encoding_rs`, JIS X 0208 repertoire); no Control descriptor unless
     `control_descriptor = true` (live sends none **[live]**); the 0xF0
     private descriptor on the entry carousel **[live]**.
+36a. `bml.watch` on by default: 1 s poll, two-poll debounce, module
+    version + 1 per changed module, transaction + 1 per changed DII;
+    a rebuild error keeps the carousel on air and raises one alert.
 37. EIT data content descriptor: one per entry `bml-carousel`, language
     "jpn" **[live]**, empty text **[live]**, every carousel of the service
     listed (component_size present here, absent live), component_ref = the

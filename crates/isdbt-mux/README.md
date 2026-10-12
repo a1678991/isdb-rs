@@ -305,10 +305,10 @@ default `conform` unchanged.
   is read once).
 - Sections always start in a fresh packet (no packing); TR-B14 per-layer EIT
   PIDs are not applied by default.
-- Data broadcasting: a static carousel (no module updates or data events
-  at run time, no event messages, no stored services / compression); BML
-  files are sent as they are (no EUC-JP conversion, no BML syntax check);
-  one module ≤ 256 DDBs. The carousel, PMT / EIT signalling and document
+- Data broadcasting: module updates follow the source files (`bml.watch`)
+  but there are no data events, event messages, stored services or
+  compression; BML files are sent as they are (UTF-8 sources transcoded
+  with `source_encoding`, no BML syntax check); one module ≤ 256 DDBs. The carousel, PMT / EIT signalling and document
   prologue follow a live terrestrial recording byte for byte in layout
   (SPEC-NOTES "BML data broadcasting"); the Hybridcast start_priority bit,
   the monitored-AIT module convention and the AIT data_component_id stay

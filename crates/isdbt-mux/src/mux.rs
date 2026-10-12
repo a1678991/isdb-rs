@@ -177,7 +177,20 @@ pub struct Multiplexer {
     /// Per relay: late PES count at its last late-PES alert, and the mux
     /// time (s) of that alert.
     late_alerts: Vec<(u64, Option<f64>)>,
+    /// `bml.watch`: per carousel (service, stream), the next poll time and a
+    /// changed snapshot waiting to be seen a second time.
+    carousel_watch: std::collections::HashMap<(usize, usize), CarouselWatch>,
 }
+
+/// File-watch state of one carousel ([`Multiplexer::poll_carousel`]).
+#[derive(Debug, Default)]
+struct CarouselWatch {
+    next_check: u64,
+    pending: Option<crate::carousel::Snapshot>,
+}
+
+/// Stream time between two checks of a carousel's source files.
+const CAROUSEL_POLL: u64 = HZ;
 
 /// Delay from the first multiplex slot to the first relayed packet: the
 /// PAT/PMT/PCR of the first frame go out before it.
@@ -891,7 +904,58 @@ impl Multiplexer {
             late_alerts: vec![(0, None); relays.len()],
             relays,
             alerts: Vec::new(),
+            carousel_watch: Default::default(),
         })
+    }
+
+    /// `bml.watch`: at most once per [`CAROUSEL_POLL`], compare the source
+    /// files of carousel `(i, k)` with the snapshot it was built from. A
+    /// change seen in two consecutive checks (so a file being written is
+    /// not sent half-way) rebuilds the carousel with new module versions
+    /// and transaction number; the next cycle sends it. A rebuild error
+    /// keeps the carousel on air and is reported once as an alert.
+    fn poll_carousel(&mut self, i: usize, k: usize, t: u64) {
+        let Some(cur) = self.si.carousel(i, k) else {
+            return;
+        };
+        if !cur.source.stream.bml.as_ref().is_none_or(|b| b.watch) {
+            return;
+        }
+        let w = self.carousel_watch.entry((i, k)).or_default();
+        if t < w.next_check {
+            return;
+        }
+        w.next_check = t + CAROUSEL_POLL;
+        let snap = match crate::carousel::snapshot(&cur.source) {
+            Ok(s) => s,
+            Err(e) => {
+                if w.pending.take().is_some() {
+                    self.alerts.push(format!("{}: {e}", cur.source.what));
+                }
+                return;
+            }
+        };
+        if snap == cur.snapshot {
+            w.pending = None;
+            return;
+        }
+        if w.pending.as_ref() != Some(&snap) {
+            w.pending = Some(snap);
+            return;
+        }
+        w.pending = None;
+        match crate::carousel::build(&cur.source, Some(cur)) {
+            Ok(new) => {
+                for line in new.report.iter().filter(|l| l.contains("rebuilt")) {
+                    self.alerts.push(line.clone());
+                }
+                self.si.media[i][k] = StreamInfo::Carousel(std::sync::Arc::new(new));
+            }
+            Err(e) => self.alerts.push(format!(
+                "{}: not rebuilt, the carousel on air is kept: {e}",
+                cur.source.what
+            )),
+        }
     }
 
     /// Informational messages from start-up (ts-program probe reports,
@@ -1306,6 +1370,9 @@ impl Multiplexer {
             let now = self.jst_at(t);
             let kind = s.kind;
             let mut version = s.version;
+            if let TableKind::Carousel(ci, ck) = kind {
+                self.poll_carousel(ci, ck, t);
+            }
             let mut secs = self.si.build(kind, now, version)?;
             if let Some(last) = &self.sections[i].last
                 && *last != secs

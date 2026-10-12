@@ -99,8 +99,10 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   mapping), signalled with stream_type 0x0D, a stream_identifier
   (component_tag 0x40) and a data component descriptor carrying
   additional_arib_bxml_info in the PMT and a data content descriptor in
-  the EIT; DII / cycle / rate options and `source_encoding = "utf-8"`
-  (BML / CSS / script sources transcoded to EUC-JP on load) under
+  the EIT; DII / cycle / rate options, `source_encoding = "utf-8"`
+  (BML / CSS / script sources transcoded to EUC-JP on load) and `watch`
+  (files edited while on air are re-sent with moduleVersion + 1 and a new
+  DII transaction, so pages subscribed to `ModuleUpdated` reload) under
   `[service.stream.bml]` (`docs/mux-config.md`). The example pages
   (`examples/bml/startup.bml`, `info.bml`) show the usual layout — picture
   in the upper-right quarter, menu, text strip — with remote-key

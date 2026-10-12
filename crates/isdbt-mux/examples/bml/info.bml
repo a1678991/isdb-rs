@@ -70,6 +70,11 @@ function paint() {
 		G("l" + i).firstChild.data = t;
 	}
 }
+function moduleUpdated() {
+	if (document.currentEvent.status == 0) {
+		browser.reloadActiveDocument();
+	}
+}
 function init() {
 	var u = parseInt(browser.Ureg[1], 10);
 	if (u >= 0 && u <= 3) { tab = u; }
@@ -93,6 +98,9 @@ function keydown() {
 }
 ]]>
 </script>
+<bevent>
+	<beitem id="MUP" type="ModuleUpdated" module_ref="/40/0000" subscribe="subscribe" onoccur="moduleUpdated();"/>
+</bevent>
 </head>
 <body id="body" onload="init();">
 	<div id="stream" style="left:480px; top:0px; width:480px; height:270px">

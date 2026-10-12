@@ -325,7 +325,11 @@ whose body also keeps the broadcast video and audio on screen with
 repeats within `bml.cycle_ms` when the rate allows, with a DII at least
 every `bml.dii_interval_ms`. A module is limited to 256 DDBs (≈ 1 MB at
 the default block size: the DDB section_number is 8 bits). The start-up
-report lists the modules, their resources and the cycle time.
+report lists the modules, their resources and the cycle time. While
+`isdb tx` runs, editing a file in the directory updates the carousel on
+air (`watch`): the changed module's version and the DII transaction
+number advance, and a page that subscribes to `ModuleUpdated` (as the
+examples do) reloads itself.
 
 Receivers may refuse to start their BML browser for a network they do not
 know (see [receiver-relevant settings](#receiver-relevant-settings)); the
@@ -399,6 +403,7 @@ Options go in `[service.stream.bml]` (or `bml = { … }`); all are optional.
 | `bitrate_kbps` | u32 | `1000` | B10 §5.1.4 (SI rule, applied by choice) | Packets of the PID per `[timing] si_window_ms` are capped at this rate. |
 | `eit_data_content` | bool | `true` | B10 §6.2.28; Vol. 2 §9.3.3 | Generate the EIT data_content_descriptor (entry component, every carousel of the service with its component_size). Only with `entry_point`. |
 | `types` | table `{ ext = "media type" }` | `{}` | Vol. 2 Table 9-6 | Media types by extension, added to the built-in list. Types outside Table 9-6 cannot appear in a resource list (`resource_list = false` on that module). |
+| `watch` | bool | `true` | Vol. 3 §6.2.1 (transaction_id), §6.3.1 (moduleVersion) | Watch the source files while on air: a change (size or modification time) seen in two checks one second apart rebuilds the carousel; changed modules get moduleVersion + 1, the DII a new transaction number, and the next cycle carries them, so receivers raise `ModuleUpdated` (the example pages reload themselves on it). A file that fails to load (unknown type, bad UTF-8) is reported and the carousel on air is kept. |
 | `source_encoding` | `"euc-jp"` \| `"utf-8"` | `"euc-jp"` | Vol. 2 §5.2.1 | `"utf-8"`: every `text/*` resource (BML, CSS, ECMAScript) is transcoded to EUC-JP on load and an `encoding="UTF-8"` XML declaration becomes `EUC-JP`; a character outside JIS X 0208 is an error naming it. `"euc-jp"`: sent as they are. |
 | `modules` | array of tables | one module 0x0000 with every file | Vol. 2 §9.1.2 | Each: `id` (u16), `files` (paths relative to `source`), `multipart` (bool, default false: one file alone is sent as the module itself, "direct mapping", with Type and Name descriptors), `resource_list` (bool, default true), `name` (Name descriptor; default none: the module is addressed by its 4-digit hex id). |
 
