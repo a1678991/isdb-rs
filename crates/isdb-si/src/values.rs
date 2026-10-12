@@ -196,6 +196,74 @@ coded_enum! {
 }
 
 coded_enum! {
+    /// document_resolution (4 bits) of additional_arib_bxml_info() /
+    /// arib_bxml_info() — ARIB STD-B24 Vol. 2 §9.3.2 Table 9-12 and §9.3.3
+    /// Table 9-13 "Document Resolution" (resolution and
+    /// display-aspect-ratio of the BML content).
+    pub enum DocumentResolution: "document_resolution", "B24 Vol. 2 §9.3.2 Table 9-12", 4 bits {
+        /// '0000' documents with different resolutions / aspect ratios, or
+        /// none specified.
+        Mixed = 0b0000 => "mixed", "BML/B-XML documents with different resolutions and aspect ratios (or none specified)";
+        /// '0001' 1920x1080 (16:9).
+        R1920x1080 = 0b0001 => "1920x1080", "1920x1080 (16:9)";
+        /// '0010' 1280x720 (16:9).
+        R1280x720 = 0b0010 => "1280x720", "1280x720 (16:9)";
+        /// '0011' 960x540 (16:9).
+        R960x540 = 0b0011 => "960x540", "960x540 (16:9)";
+        /// '0100' 720x480 (16:9).
+        R720x480Wide = 0b0100 => "720x480-16:9", "720x480 (16:9)";
+        /// '0101' 720x480 (4:3).
+        R720x480 = 0b0101 => "720x480-4:3", "720x480 (4:3)";
+        /// '0110' 320x240 (4:3).
+        R320x240 = 0b0110 => "320x240", "320x240 (4:3)";
+        /// '1111' only documents with no resolution nor aspect ratio
+        /// specified.
+        Unspecified = 0b1111 => "unspecified", "only BML/B-XML documents with no resolutions nor aspect ratios specified";
+    }
+    reserved
+    /// '0111'–'1110' "Reserved for future use".
+    Reserved => "Reserved for future use";
+}
+
+coded_enum! {
+    /// application_control_code of the AIT application loop — ARIB STD-B24
+    /// Vol. 4 §5.1 Table 5-1 semantics (the default semantics "when it is
+    /// not specified to every application form"; Hybridcast uses 0x01,
+    /// 0x02 and 0x04 only, IPTVFJ STD-0013 §5.2.3).
+    pub enum ApplicationControlCode: "application_control_code", "B24 Vol. 4 §5.1", 8 bits {
+        /// 0x01 AUTOSTART.
+        Autostart = 0x01 => "autostart", "AUTOSTART: start the application";
+        /// 0x02 PRESENT.
+        Present = 0x02 => "present", "PRESENT: the application is in a feasible state";
+        /// 0x04 KILL.
+        Kill = 0x04 => "kill", "KILL: end the application";
+        /// 0x05 PREFETCH.
+        Prefetch = 0x05 => "prefetch", "PREFETCH: acquire and hold the application";
+    }
+    reserved
+    /// Any other value (not defined; a receiver "shall disregard" the
+    /// application, STD-0013 §5.2.3).
+    Reserved => "not defined";
+}
+
+coded_enum! {
+    /// visibility (2 bits) of the AIT application descriptor — ARIB
+    /// STD-B24 Vol. 4 §5.3.1 Table 5-3 semantics.
+    pub enum ApplicationVisibility: "visibility", "B24 Vol. 4 §5.3.1", 2 bits {
+        /// '00' invisible (except error reporting such as the log output).
+        Invisible = 0b00 => "invisible", "treated as invisible excluding exceptional error reporting such as the log output";
+        /// '01' invisible to the user, visible to other applications
+        /// through the API.
+        ApplicationsOnly = 0b01 => "applications-only", "unable to be seen by a user, but visible from other application through API";
+        /// '11' visible to the user and other applications.
+        Visible = 0b11 => "visible", "visible for both a user and other application";
+    }
+    reserved
+    /// '10' "Reserved for future use".
+    Reserved => "Reserved for future use";
+}
+
+coded_enum! {
     /// digital_recording_control_data of the digital copy control
     /// descriptor — ARIB STD-B10 Part 2 §6.2.23, Table 6-39 "Digital copy
     /// control information".
@@ -576,6 +644,11 @@ mod tests {
         check::<AudioMode>();
         check::<AudioForDisabilities>();
         check::<SamplingRate>();
+        check::<DocumentResolution>();
+        check::<ApplicationVisibility>();
+        for c in 0..=255u8 {
+            assert_eq!(ApplicationControlCode::from_code(c).code(), c);
+        }
         for c in 0..=255u8 {
             assert_eq!(AudioComponentType::from_code(c).code(), c);
         }

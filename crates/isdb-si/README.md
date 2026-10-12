@@ -22,6 +22,9 @@ descriptor.
 | Time | Part 2 §5.2.7–§5.2.9, §6.2.25, Annex C; JST = UTC+9 (§3.1) | `time` |
 | Typed field values | Part 2 Tables 6-5, 6-39, 6-43, 6-45, 6-60, 6-60-1; Annex F Tables F-2/F-4; §6.2.23 maximum_bitrate unit | `values` |
 | Value conformance | Part 2 §3.1 reserved bits, §5.1.1 / per-table length limits, Table 5-1 placement, Table 6-1 unconditional mandatory descriptors | `conformance` |
+| Data carousel (ARIB STD-B24 Vol. 3 Ch. 6) | DII / DDB messages and the DSM-CC section mapping (Tables 6-1, 6-3, 6-21, 6-22, 6-24), module information / private descriptors (§6.2.3; Vol. 2 §9.3.4) | `dsmcc` |
+| AIT (ARIB STD-B24 Vol. 4 Ch. 5; B10 Part 1 Table 5-5 tags) | application_information_section, application / transport protocol / simple application location / boundary and permission / autostart priority descriptors | `ait` |
+| BML signalling (B24 Vol. 2 §9.3, Vol. 3 Annex C, Vol. 4 Table 7-1) | additional_arib_bxml_info (PMT 0xFD), arib_bxml_info (EIT 0xC7 selector), ait_identifier_info, Control descriptor data | `bxml` |
 
 Typed descriptor tags are listed in `descriptor::TYPED_TAGS`.
 
@@ -50,6 +53,16 @@ Typed descriptor tags are listed in `descriptor::TYPED_TAGS`.
   date_to_mjd, weekday, mjd_to_week}`.
 - `conformance::check(pid, &table)` / `conformance::check_descriptors` →
   `Vec<Deviation>` (clause, `Kind`, location, message).
+- `dsmcc::{Dii, Ddb}` = `Long<DiiBody>` / `Long<DdbBody>` with
+  `DiiBody::section()`, `DdbBody::section(last_block)` and
+  `dsmcc::module_blocks` (module bytes → DDB sections);
+  `dsmcc::ModuleDescriptor` (Type, Name, Info, Module_link, CRC32,
+  CompressionType, Control, DataEncoding, arib_bxml_privatedata, Unknown).
+- `ait::Ait` = `Long<AitBody>` (application_type in the header's
+  table_id_extension), `ait::AitDescriptor`, `ait::HttpSelector`.
+- `bxml::{AdditionalAribBxmlInfo, AribBxmlInfo, AitIdentifierInfo,
+  BmlControl}` — decode / encode of the bytes the data component and data
+  content descriptors keep raw.
 - `values::*` — enums with the exact printed codes; reserved codes decode to
   a `Reserved`/`Extension` variant carrying the value, so the typed view
   never fails.
@@ -127,6 +140,11 @@ ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test -p isdb-si --test capture -- -
   standards: SDTT (0xC3), CDT (0xC8), download content (0xC9), CA contract
   information (0xCB), CA service (0xCC) stay `Unknown` until ARIB STD-B21 /
   B25 are admitted as ground truth.
+- `AnyTable` does not dispatch DII / DDB / AIT (their PIDs come from the
+  PMT, not B10 Table 5-1); decode them with `dsmcc::Dii`, `dsmcc::Ddb`
+  and `ait::Ait` directly. The DSM-CC event message (table_id 0x3D), the
+  stored-service resource list and the AIT descriptors 0x32–0x37 are kept
+  raw.
 - PCAT `content_descriptor_length` scope is a literal reading, unconfirmed
   (no PCAT in any capture).
 - Conditional Table 6-1 rules ("for digital terrestrial broadcasting",

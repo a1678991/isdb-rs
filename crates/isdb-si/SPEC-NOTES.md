@@ -172,3 +172,39 @@ Format as in the workspace `SPEC-NOTES.md`.
   the printed text with "[sic]".  Status: interpretation (typo).
 - Table 6-45 '000' "Reserved for future use" and '100' "Reserved" both map
   to `SamplingRate::Reserved`.
+
+## isdb-si: DSM-CC compatibilityDescriptor length and DDB section numbers
+- Spec: ARIB STD-B24 Vol. 3 §6.2.1 (Table 6-1 semantics), §6.5 Table 6-24.
+- Text: "compatibilityDescriptor(): The compatibilityDescriptor() structure
+  specified in ISO/IEC 13818-6 is contained in this field. When the content
+  of the compatibilityDescriptor() structure is not needed, descriptorCount
+  is set to 0x0000 and then the field length is 4-byte." Table 6-24:
+  section_number "the least significant eight bits of the block number of
+  the DDB"; last_section_number "the last section number of the sub-table".
+- Interpretation: `DiiBody::compatibility` holds the bytes after
+  compatibilityDescriptorLength; the empty form is coded as length 0x0002
+  followed by descriptorCount 0x0000 (ISO/IEC 13818-6, not local: the
+  length counts the bytes that follow it), which is the 4-byte structure
+  B24 describes and is read correctly both by decoders that skip `length`
+  bytes and by decoders that read the count. The decoder accepts any
+  length. A module is limited to 256 blocks when sections are generated
+  (`module_blocks`): B24 does not say how section_number wraps for a
+  larger module, and one sub-table would otherwise carry two different
+  sections under one section_number.
+- Confirmation: none possible from the text (no data-broadcasting
+  capture). Status: interpretation.
+
+## isdb-si: AIT descriptor tags 0x15 and 0x37
+- Spec: ARIB STD-B24 Vol. 4 §5.3.3 / §5.3.11; ARIB STD-B10 Part 1
+  Table 5-5 "Allocation of tag values of descriptors used in AIT".
+- Text: Vol. 4 §5.3.3 "descriptor_tag: 0x05 is appointed to indicate this
+  descriptor" (simple application location); §5.3.11 "0x36" (application
+  expiration). B10 Part 1 Table 5-5: 0x15 simple_application_location_descriptor,
+  0x36 simple_playback_application_location_descriptor, 0x37
+  application_expiration_descriptor.
+- Interpretation: the B10 table is followed (0x15, 0x37); the Vol. 4 values
+  are misprints of the English edition (0x05 would collide with nothing in
+  the AIT space but 0x36 would collide with §5.3.10, and 0x15 is also the
+  ETSI TS 102 809 value the ARIB AIT derives from).
+- Confirmation: B10 Part 1 Table 5-5. Status: confirmed by a second
+  statement of the specs.

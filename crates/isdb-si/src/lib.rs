@@ -15,6 +15,14 @@
 //! * [`conformance`] — spec-value checks, separate from the codecs.
 //! * [`values`] — typed views of table-coded field values (B10 Tables
 //!   6-5, 6-39, 6-43, 6-45, 6-60, 6-60-1; Annex F), next to the raw fields.
+//! * [`dsmcc`] — the DSM-CC data carousel sections of ARIB data
+//!   broadcasting (DII / DDB, ARIB STD-B24 Vol. 3 Ch. 6) and the DII module
+//!   descriptors.
+//! * [`ait`] — the Application Information Table of Hybridcast (ARIB
+//!   STD-B24 Vol. 4 Ch. 5; IPTVFJ STD-0010 / STD-0013).
+//! * [`bxml`] — the BML signalling structures inside the data component /
+//!   data content descriptors and the AIT identifier info (B24 Vol. 2
+//!   §9.3, Vol. 3 Annex C, Vol. 4 Table 7-1).
 //!
 //! Codecs are lossless: reserved bits are kept, lengths and CRC_32 are
 //! recomputed, and `encode(decode(x)) == x` for every valid section.
@@ -50,9 +58,12 @@
 //! # Ok::<(), isdb_ts::Error>(())
 //! ```
 
+pub mod ait;
 pub mod any;
+pub mod bxml;
 pub mod conformance;
 pub mod descriptor;
+pub mod dsmcc;
 pub mod tables;
 pub mod time;
 pub mod values;
