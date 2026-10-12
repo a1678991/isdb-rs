@@ -316,6 +316,25 @@ modulated AC, multiplex from `isdbt-mux`) was received over a conducted link
   recorder refuses playback. `isdbt-mux` therefore defaults to '01' and
   `isdb ts validate` warns (`si.copy_control`) on '00'.
 
+- **Sony BDZ-ZW1500, data broadcasting (2026-10-12)**: with a local
+  station's recording re-emitted under that station's own identifiers on
+  its own channel (shielded bench), the recorder ran its BML browser on the
+  station's relayed carousel and, with the carousel replaced by
+  `isdbt-mux`'s `bml-carousel` carrying `examples/bml/startup.bml`,
+  displayed our page over the picture. Under the placeholder network
+  (0x79EE) or on another channel it never started the browser (d mark
+  only, or "channel suspended"), including for the station's own
+  carousel relayed unchanged: the gate is the receiver's channel memory,
+  not the carousel. A service made entirely by this project (FFmpeg
+  MPEG-2 video and AAC, the two example pages with remote-key navigation
+  and a page transition) under the same identity worked the same way;
+  the same identity on another channel gave "channel suspended" with no
+  picture or sound. The generated Hybridcast launcher page loads and runs
+  its script on it: its `getBrowserSupport('ARIB', 'APIGroup',
+  'AITControlledApp.Start')` check reports no support, and the page says
+  "This receiver has no Hybridcast engine"; starting the application
+  itself needs a Hybridcast-capable TV.
+
 Only one configuration was shown to these receivers: Mode 3, GI 1/8, partial
 reception, layer A 1 segment QPSK 2/3 TI 2, layer B 12 segments 64QAM 3/4
 TI 2. This also shows that these receivers accept the spec-conformant TMCC

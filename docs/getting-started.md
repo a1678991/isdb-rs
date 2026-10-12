@@ -175,7 +175,11 @@ isdb mux -c test.toml --seconds 5 --out-ts test.ts --report
 
 The multiplexer generates PAT, CAT, PMT, NIT, SDT, EIT present/following,
 TOT and BIT at the repetition rates of ARIB STD-B10, a PCR four times per
-frame, and null packets for the rest. `--report` measures the result
+frame, and null packets for the rest. Two more shipped examples add BML
+data broadcasting (`examples/bml-data.toml`, the files of
+`examples/bml/` as a data carousel) and a Hybridcast application started
+from a URL (`examples/hybridcast.toml`); see
+[mux-config.md](mux-config.md#bml-carousel-keys). `--report` measures the result
 (section intervals, PCR spacing, timestamps, continuity) independently of
 the generator. Every key of the file is described in
 [mux-config.md](mux-config.md).

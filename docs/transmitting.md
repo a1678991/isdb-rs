@@ -464,6 +464,29 @@ specifications, and the defaults follow them.
   ("running") the recorder listed the service as off air (休止中). The SDT
   now sends 0, as the live stations do, but the recorder still showed the
   service as off air afterwards, so the cause is not isolated.
+- **Data broadcasting needs a registered broadcaster identity.** On a
+  Sony BDZ-ZW1500 a `bml-carousel` under the placeholder network
+  (network_id 0x79EE, key 9, ch44) lit the "d" mark but the d button never
+  started the BML browser (no "data fetching" message), and the same held
+  for a live station's own carousel relayed packet for packet into that
+  network. Re-emitting a local station's recording with its own
+  identifiers (network_id, TS and service IDs, remote key, PMT and PCR
+  PIDs, BIT broadcaster entry) on **its own channel** opened its live
+  data broadcasting, and replacing only the carousel with this crate's
+  (`examples/bml/startup.bml`) displayed our page over the picture; a
+  service made entirely here (MPEG-2 video and AAC files, the two example
+  pages with colour-key navigation) under the same identity worked the
+  same way. The same identity on another channel (ch44) showed "this
+  channel is suspended" with neither picture, sound nor d mark, so the
+  recorder binds a known network to the frequency in its channel table
+  and matches the service against it before it allows anything. To test BML or Hybridcast on such a receiver, re-emit a
+  recording of a station the receiver has registered, on that station's
+  channel, in a shielded bench with the antenna disconnected; see
+  [mux-config.md](mux-config.md#bml-carousel-keys) for the configuration
+  (`pid_map = "keep"`, the station's IDs, a `bml-carousel` on the entry
+  PID). The Hybridcast launcher loads on the same recorder and reports
+  "This receiver has no Hybridcast engine"; the application start needs
+  a Hybridcast TV.
 
 Other modes, guard intervals, DQPSK, three-layer and non-partial-reception
 configurations have not yet been shown to a real receiver

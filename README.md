@@ -66,7 +66,12 @@ leaves room for ISDB-S and ISDB-S3.
   an unscrambled recorded TS (for example one you produced yourself) as a
   terrestrial service with its own PSI/SI; the stream roles and PIDs are
   detected from the recording, and the source's copy control and
-  conditional-access signalling are kept by default.
+  conditional-access signalling are kept by default. **Data broadcasting
+  and Hybridcast**: the files of a directory as a BML data carousel
+  (DSM-CC DII/DDB, ARIB STD-B24 Vol. 2/3) with the PMT and EIT signalling,
+  and an AIT (B24 Vol. 4, IPTVFJ STD-0010/0013) that names the HTML5
+  application URL a Hybridcast receiver starts, carried in the carousel
+  with a generated launcher or on its own PID.
 - **Analyzer** (`isdb-analyze`): inspect, validate (every finding cites the
   clause it comes from), table/field-level diff of two captures, and edits
   that keep the TS valid (null a PID, remove/replace/insert sections, typed
@@ -89,9 +94,9 @@ leaves room for ISDB-S and ISDB-S3.
 |---|---|---|
 | [`isdb-ts`](crates/isdb-ts/README.md) | H.222.0 | bit I/O, CRC_32, TS packet / adaptation field / PCR, PES, section assembly and packetisation, PAT/PMT/CAT, TS reader |
 | [`isdb-text`](crates/isdb-text/README.md) | B24 Vol. 1 Part 2 Ch. 7 | ARIB 8-unit string decode/encode |
-| [`isdb-si`](crates/isdb-si/README.md) | B10 | SI tables, descriptors, MJD/BCD time; lossless typed codecs plus conformance checks |
+| [`isdb-si`](crates/isdb-si/README.md) | B10, B24 Vol. 2–4 | SI tables, descriptors, MJD/BCD time; lossless typed codecs plus conformance checks; DSM-CC data carousel (DII/DDB), AIT and BML signalling structures |
 | [`isdb-analyze`](crates/isdb-analyze/README.md) | H.222.0, B10, B32 Part 2 | TS inspection, validation with clause citations, diff of two captures, editing |
-| [`isdbt-mux`](crates/isdbt-mux/README.md) | H.222.0, B10, B31, B32 | service multiplexer: PSI/SI generation, MPEG-2 video / AAC packetisation, recorded-program relay, output paced to the OFDM frame |
+| [`isdbt-mux`](crates/isdbt-mux/README.md) | H.222.0, B10, B24, B31, B32, IPTVFJ STD-0010/0013 | service multiplexer: PSI/SI generation, MPEG-2 video / AAC packetisation, recorded-program relay, BML data carousel and Hybridcast AIT, output paced to the OFDM frame |
 | [`isdbt-core`](crates/isdbt-core/README.md) | B31 tables | modes, guard intervals, layer parameters, derived rates and delays |
 | [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS re-multiplexing, RS(204,188), energy dispersal, byte interleaving, convolutional code / Viterbi |
 | [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | mapping, interleaving, OFDM frame with SP/CP/TMCC/AC, IFFT/GI; receiver synchronisation and equalisation |
@@ -281,10 +286,22 @@ end, but some parts have had less independent checking than others:
   the project does not have. Non-conforming AAC is refused by default.
 - **Media**: MPEG-2 video and AAC ADTS files only; H.264 one-seg streams
   can be declared in the PMT but are not packetised.
+- **Data broadcasting works on a receiver only under a registered
+  broadcaster's identity.** The carousel and its signalling follow ARIB
+  STD-B24 Vol. 2–4 (layouts checked against four live terrestrial
+  stations) and a Sony recorder displayed this project's BML page, but
+  only when the service carried a local station's own network / service
+  IDs on that station's channel; under the placeholder network it shows
+  the "d" mark and never starts the BML browser. Hybridcast (IPTVFJ
+  STD-0010/0013) is implemented per the texts; the values without a local
+  source (start_priority bit, monitored AIT module, AIT
+  data_component_id) are documented defaults, no Hybridcast-capable
+  receiver has been tested, and which organization_id values a receiver
+  accepts is IPTV Forum policy.
 - **Not implemented**: duplicate packets for a PID on two layers, SFN
   synchronisation (only the IIP's `network_synchronization_information`
-  syntax is handled), AC data in the broadcasting TS, data broadcasting
-  (BML/DSM-CC), DRCS glyphs, ISDB-T<sub>SB</sub>.
+  syntax is handled), AC data in the broadcasting TS, run-time carousel
+  updates / data events / event messages, DRCS glyphs, ISDB-T<sub>SB</sub>.
 - **Radio**: HackRF One is the only backend (others plug into
   `isdb-radio` without CLI changes). The demodulator runs at about 1.4× real time
   on a current 16-core desktop CPU, so live reception needs a fast machine.

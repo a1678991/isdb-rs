@@ -84,6 +84,43 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   by layer and recovers the transmission parameters from the IIP, so a
   `Transmitter` can be configured from the stream. `isdbt-phy` now
   depends on `isdb-ts` (CRC_32).
+- `isdb-si`: `dsmcc` (DSM-CC data carousel DII / DDB sections and the DII
+  module descriptors, ARIB STD-B24 Vol. 3 Ch. 6), `ait` (the Application
+  Information Table and its descriptors, B24 Vol. 4 Ch. 5, tags per B10
+  Part 1 Table 5-5) and `bxml` (additional_arib_bxml_info,
+  arib_bxml_info, ait_identifier_info, the BML Control descriptor data;
+  B24 Vol. 2 §9.3, Vol. 3 Annex C, Vol. 4 Table 7-1), all lossless, with
+  the `DocumentResolution`, `ApplicationControlCode` and
+  `ApplicationVisibility` value tables.
+- `isdbt-mux`: BML data broadcasting — `[[service.stream]] kind =
+  "bml-carousel"` sends the files of a directory as a data carousel
+  (module 0x0000 as a `multipart/mixed` entity with the
+  `application/X-arib-resourceList`, or explicit `modules` with direct
+  mapping), signalled with stream_type 0x0D, a stream_identifier
+  (component_tag 0x40) and a data component descriptor carrying
+  additional_arib_bxml_info in the PMT and a data content descriptor in
+  the EIT; DII / cycle / rate options and `source_encoding = "utf-8"`
+  (BML / CSS / script sources transcoded to EUC-JP on load) under
+  `[service.stream.bml]` (`docs/mux-config.md`). The example pages
+  (`examples/bml/startup.bml`, `info.bml`) show the usual layout — picture
+  in the upper-right quarter, menu, text strip — with remote-key
+  navigation (arrows, Enter, Back, the four colour keys) and a page
+  transition, modelled on live stations' documents. The layouts and the default operational values
+  (bml version 3.0, data_event_id 0xF in the PMT, the multipart boundary
+  and media type spellings, DII repetition) follow a live terrestrial
+  recording. Example `examples/bml-data.toml` with
+  `examples/bml/startup.bml` (the terrestrial document prologue, the
+  broadcast video / audio kept on screen). Shown on a Sony BDZ-ZW1500
+  under a local station's identity (`docs/transmitting.md`).
+- `isdbt-mux`: Hybridcast — `[service.hybridcast]` with `url`,
+  `organization_id` and `application_id` builds an AIT (application_type
+  0x0010, AUTOSTART, profile 0x0002 / 1.1.1, HTTP transport protocol,
+  simple application location, boundary and permission descriptors per
+  IPTVFJ STD-0013) and carries it as a resource of the service's
+  bml-carousel (module 0x9FFF / `app1.ait`, with a generated `startup.bml`
+  launcher calling `startAITControlledApp` unless the files have one) or,
+  with `carriage = "es"`, on its own PID with ait_identifier_info in the
+  PMT. Example `examples/hybridcast.toml`.
 - Verification: spec-vector tests, property-tested lossless round trips,
   TX→RX loopbacks, opt-in tests on real captures (`ISDB_RS_*` environment
   variables) and a differential test against gr-isdbt (`oracle/`,

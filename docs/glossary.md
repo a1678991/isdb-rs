@@ -15,6 +15,11 @@ digital broadcasting systems: ISDB-T (terrestrial, B31), ISDB-S (satellite,
 B20) and ISDB-S3 (advanced wide-band satellite, B44). This project
 implements ISDB-T.
 
+**IPTV Forum Japan (IPTVFJ)** — the industry forum that publishes the
+Hybridcast specifications: STD-0010 (system), STD-0011 (HTML5 browser) and
+STD-0013 (operational guideline). Organization identifiers for Hybridcast
+applications are assigned by it.
+
 **TR-B14** — ARIB's operational guidelines for digital terrestrial
 television (in Japanese, sold by ARIB). Many concrete values used by
 broadcasters (PCR placement, PID and component_tag assignments, remote
@@ -226,3 +231,36 @@ is refused. The *CA_descriptor* (0x09, in the CAT or PMT) and the *ECM*
 (entitlement control message) PID it points to are the conditional-access
 signalling of a program; when a program is relayed they are kept by
 default (`ca = "keep"`).
+
+## Data broadcasting and Hybridcast (B24 Vol. 2–4, IPTVFJ)
+
+**BML, Broadcast Markup Language** — the XML-based page language of ARIB
+data broadcasting (B24 Vol. 2): documents (`text/X-arib-bml`, EUC-JP),
+style sheets, scripts and images delivered in a data carousel and shown by
+the receiver's BML browser; `startup.bml` in module 0x0000 is the document
+launched first. The multiplexer's `bml-carousel` stream kind sends such
+files.
+
+**Data carousel, DII, DDB** — the DSM-CC download protocol as ARIB uses it
+(B24 Vol. 3 Ch. 6): the files are *modules*, each cut into blocks sent as
+DownloadDataBlock sections (DDB, table_id 0x3C) and described by a
+DownloadInfoIndication (DII, 0x3B) that lists the modules with their sizes,
+versions and descriptors (Type, Name, …). Everything is repeated
+cyclically so a receiver can join at any time.
+
+**Module, resource** — a module is one unit of the carousel (moduleId); it
+is either one file ("direct mapping") or a `multipart/mixed` entity
+holding several *resources*, each named by its `Content-Location` and
+addressed as `arib-dc://…/<component_tag>/<moduleId>/<resource>`.
+
+**Hybridcast** — the Japanese broadcast–broadband system (IPTVFJ STD-0010):
+HTML5 applications started from the broadcast and run by the receiver's
+HTML5 engine next to the programme.
+
+**AIT, Application Information Table** — the table (table_id 0x74, B24
+Vol. 4 Ch. 5) that names the applications of a service with their
+`organization_id` / `application_id`, control code (AUTOSTART, PRESENT,
+KILL), transport (the HTTP URL base) and start path. In Japanese
+operation the section-format AIT travels inside the BML data carousel
+(STD-0013) or is fetched over HTTP in XML form; the multiplexer's
+`[service.hybridcast]` builds it.

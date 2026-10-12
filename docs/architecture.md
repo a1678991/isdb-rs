@@ -166,6 +166,15 @@ relayed service keeps the source's digital copy control and its
 CA_descriptor/ECM (`ca = "keep"`; `"drop"` removes them on request), and an
 explicitly relaxed copy control is reported together with the source value.
 
+A `bml-carousel` stream is a section stream like the SI tables: its files
+are packed into DSM-CC modules at start (one `multipart/mixed` entity per
+module with the resource list, or one file per module), the DII and the
+DDBs of one cycle form the section list, repeated at the configured cycle
+with the DII re-inserted at its own interval, and the PID is rate-limited
+over the same 32 ms window as the SI. `[service.hybridcast]` adds the AIT
+either as a resource of that carousel (with a generated `startup.bml`
+launcher) or as a further section stream on its own PID.
+
 ### The CLI
 
 ```text
