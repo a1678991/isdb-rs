@@ -233,7 +233,8 @@ clause.
 | Part 2 §3.2.1 Tables 3-1/3-3 PSI/SI layer placement; Table 3-2 robustness rank | `isdbt_mux::si` | `spec_b31_part2_table_3_2` | S, RX |
 | Part 2 §3.2.4 Table 3-5 PCR packets per frame on the partial-reception layer | `isdbt_mux::mux` | `pcr_and_timestamps` | S, RX |
 | Part 2 §3.2.2 duplicate packets for a PID carried on two layers | — (configuration rejected) | — | — (gap, `isdbt-mux` SPEC-NOTES "Layers of PSI/SI") |
-| Part 2 Ch. 5 §5.5 broadcast-TS additional information (dummy-byte part, IIP ISDB-T_Information_Packet); Ch. 4 SFN synchronisation | — | — | — (no code cites or implements them) |
+| Part 2 Ch. 5 §5.5 broadcasting-TS additional information: §5.5.2 Tables 5-6/5-7 ISDB-T_information in the dummy-byte part and the optional shortened (204,196) RS parity; §5.5.3 Tables 5-8/5-9 IIP, Tables 5-10/5-11 modulation_control_configuration_information, Tables 5-12/5-13 network_synchronization_information | `isdbt_phy::broadcast_ts` (`IsdbtInformation`, `parity`, `Iip`, `ModulationControl`, `NetworkSync`, `BroadcastTsWriter`, `BroadcastTsReader`) | `spec_table_5_7_layout`, `spec_table_5_7_layer_indicator`, `spec_5_5_2_rs_204_196_parity`, `spec_table_5_10_modulation_control`, `spec_table_5_12_network_sync`, `spec_table_5_8_iip_packet`, `spec_5_5_writer_frame_structure`, `reader_recovers_frames`, `transmitter_configured_from_the_iip_delivers_every_packet` | S, loopback (writer → reader → `Transmitter` configured from the IIP → `Receiver`). No studio broadcasting-TS feed has been tested; the IIP slot and PID 0x1FF0 are operational choices and the Table 5-7 '0010' duplicate is read as '0100' ([isdbt-phy SPEC-NOTES](crates/isdbt-phy/SPEC-NOTES.md)) |
+| Part 2 Ch. 4 SFN synchronisation (delay control operation); Ch. 6 AC data in the broadcasting TS; §5.5.3 sub-IIP packets (Fig. 5-11) | — (Table 5-12 syntax only; `AC_data` bytes kept raw; one IIP per frame) | — | — |
 
 ### 2.5 ARIB STD-B32 v3.11 Part 1
 
@@ -381,6 +382,16 @@ have no external confirmation, because none is possible from the local texts.
 | isdbt-ofdm | [dsc: difference-set bit order](crates/isdbt-ofdm/SPEC-NOTES.md#dsc-difference-set-code-bit-order-ambiguous) | agrees with gr-isdbt; **off-air pending** |
 | isdbt-ofdm | [ac: content, seismic word](crates/isdbt-ofdm/SPEC-NOTES.md#ac-content-order-and-seismic-word) | **pending** (parity bit order) |
 | isdbt-ofdm | [latency: two-symbol frame alignment](crates/isdbt-ofdm/SPEC-NOTES.md#latency-frame-alignment-of-the-bit-interleaving-delay-part-2-figs-3-83-9) | confirmed (oracle, S270(gr)) |
+| isdbt-phy | [broadcast_ts: which slot carries the IIP](crates/isdbt-phy/SPEC-NOTES.md#broadcast_ts-which-slot-carries-the-iip) | operational choice (first null slot) |
+| isdbt-phy | [broadcast_ts: Table 5-7 layer_indicator '0010' printed twice](crates/isdbt-phy/SPEC-NOTES.md#broadcast_ts-table-5-7-layer_indicator-0010-printed-twice) | interpretation (typo; AC = '0100') |
+| isdbt-phy | [broadcast_ts: the IIP PID](crates/isdbt-phy/SPEC-NOTES.md#broadcast_ts-the-iip-pid) | **[from knowledge]** 0x1FF0; **pending** |
+| isdbt-phy | [broadcast_ts: which frame the IIP describes](crates/isdbt-phy/SPEC-NOTES.md#broadcast_ts-which-frame-the-iip-describes) | interpretation (next frame); **pending** a studio feed |
+| isdbt-phy | [broadcast_ts: IIP_packet_pointer counting](crates/isdbt-phy/SPEC-NOTES.md#broadcast_ts-iip_packet_pointer-counting) | confirmed ("last TSP = 0") |
+| isdbt-phy | [broadcast_ts: the optional (204,196) parity](crates/isdbt-phy/SPEC-NOTES.md#broadcast_ts-the-optional-204196-parity) | confirmed (syndromes); always added |
+| isdbt-phy | [broadcast_ts: stuffing of the AC bytes](crates/isdbt-phy/SPEC-NOTES.md#broadcast_ts-stuffing-of-the-ac-bytes) | convention (0xFF) |
+| isdbt-phy | [broadcast_ts: "no network synchronisation information"](crates/isdbt-phy/SPEC-NOTES.md#broadcast_ts-no-network-synchronisation-information--length-0-or-id-0xff) | interpretation (both forms accepted) |
+| isdbt-phy | [broadcast_ts: reserved bits of Table 5-10](crates/isdbt-phy/SPEC-NOTES.md#broadcast_ts-reserved-bits-of-table-5-10) | convention (all 1) |
+| isdbt-phy | [broadcast_ts: CRC_32 ranges](crates/isdbt-phy/SPEC-NOTES.md#broadcast_ts-crc_32-ranges) | confirmed (text); SFN range **pending** |
 
 ### 3.2 gr-isdbt deviations from B31 (oracle side; [VERIFICATION.md](VERIFICATION.md#discrepancies))
 
@@ -464,7 +475,12 @@ stops registration.
      (13), RAI placement (14), component/quality_indicator (15), null packet
      form (17), video decode control (18);
    - remote_control_key_id range and numbering (choice 19) — Part 7 §9.2.1;
-   - BIT first loop / SI_parameter_descriptor content — Part 4 §31.1.
+   - BIT first loop / SI_parameter_descriptor content — Part 4 §31.1;
+   - the IIP PID (0x1FF0) and which null slot of the multiplex frame
+     carries the IIP (`isdbt-phy` SPEC-NOTES) — Part 7 (transmission
+     operation); a studio broadcasting-TS feed (B31 Part 2 Fig. 5-1
+     I/F (2)) would settle both and the "IIP describes the next frame"
+     reading.
 5. **Conforming AAC audio on a real receiver.** The B32 Part 2 §5.2
    header rules are enforced (`adts_compliance = "conform"` by default;
    `isdb ts validate` `aac.*`), but the receivers in C_rx were only shown a
@@ -478,6 +494,8 @@ stops registration.
    - duplicate packets for a PID on two layers (B31 Part 2 §3.2.2);
    - one-seg H.264 packetisation (only `StreamKind::Declared`);
    - SDTT/CDT and the CA descriptors (B1/B21/B25);
-   - broadcast-TS IIP / dummy-byte information (B31 Part 2 Ch. 5);
+   - broadcasting-TS sub-IIP reassembly (Fig. 5-11), AC data in the
+     dummy bytes (B31 Part 2 Ch. 6) and the SFN delay control of Ch. 4
+     (the §5.5 syntax itself is implemented in `isdbt-phy`);
    - DRCS mapping;
    - T-STD TBsys/Bsys.

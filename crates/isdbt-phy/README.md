@@ -5,7 +5,9 @@ stream packets ⇄ complex baseband at 512/63 MHz. The crate wires the
 bit-domain channel coding of [`isdbt-fec`](https://github.com/a1678991/isdb-rs/tree/main/crates/isdbt-fec) and the
 symbol-domain processing of [`isdbt-ofdm`](https://github.com/a1678991/isdb-rs/tree/main/crates/isdbt-ofdm) into one
 frame-synchronous TX and one RX object, adds the stream-boundary rules
-(pre-roll, lead-in, flush) and IQ sample-format conversion. It contains no
+(pre-roll, lead-in, flush), IQ sample-format conversion and the 204-byte
+*broadcasting TS* of B31 Part 2 §5.5 (the studio-to-transmitter interface
+with ISDB-T_information in the dummy bytes and the IIP). It contains no
 signal processing of its own.
 
 ## Spec scope
@@ -20,13 +22,15 @@ composition of:
 | Mapping … OFDM frame, IFFT/GI; synchronisation, demodulation | §3.9–3.16 | `isdbt_ofdm` |
 | TMCC current/next information | §3.15.6 | `isdbt_ofdm::tmcc` |
 | Null packets for empty slots and filler frames | ITU-T H.222.0 §2.4.3.3 | `isdbt_fec::remux::null_tsp` |
+| Broadcasting-TS additional information: `ISDB-T_information` in the dummy-byte part, the optional shortened RS(204,196) parity, the IIP (`modulation_control_configuration_information`, `network_synchronization_information`) | Part 2 §5.5 (Tables 5-5 .. 5-13) | `isdbt_phy::broadcast_ts` |
 
 Packets of uncorrectable RS words are marked with
 `transport_error_indicator = 1` (H.222.0 §2.4.3.3).
 
 ## Position in the stack
 
-- Depends on: `isdbt-core` (parameters), `isdbt-fec`, `isdbt-ofdm`.
+- Depends on: `isdbt-core` (parameters), `isdbt-fec`, `isdbt-ofdm`,
+  `isdb-ts` (CRC_32 of the IIP).
 - Used by: `isdb-cli` (`isdb tx`, `isdb rx`, `isdb loopback`);
   `isdb-radio` (`iq` cs8 conversion for 8-bit radios); `isdbt-mux`
   only as a dev-dependency (its tests feed the multiplexer's frames to a
@@ -44,6 +48,9 @@ Packets of uncorrectable RS words are marked with
 | `FrameDecoder` | the channel-decoding half alone: `DemodFrame` (LLRs) → `RxFrame` |
 | `RxFrame` | `tx_frame`, `valid`, per-layer packets and `RsStats`, the reproduced TS `ts`, TMCC, `Params`, demodulator `Metrics`, `start_sample` |
 | `iq` | `cf32_from_bytes` / `cf32_to_bytes` (interleaved little-endian f32, GNU Radio complex); `cs8_from_samples` (signed 8-bit, as `hackrf_transfer` files and 8-bit radios use; scaled, rounded, saturating, returns the clip count) / `samples_from_cs8` |
+| `broadcast_ts::BroadcastTsWriter` | per-layer packets or a multiplex frame → 204-byte broadcasting TSPs: `ISDB-T_information` on every slot (layer, TSP counter, frame head / parity flags, countdown), the IIP in the first null slot, RS(204,196) parity |
+| `broadcast_ts::BroadcastTsReader` / `BroadcastFrame` | broadcasting TSPs → frames delimited at `frame_head_packet_flag`: `divide()` by `layer_indicator` (the input of `Transmitter::transmit_frame`), `params()` from the IIP, `slots()`, parity and counter checks |
+| `broadcast_ts::{IsdbtInformation, Iip, ModulationControl, NetworkSync}` | lossless codecs of Tables 5-6, 5-8, 5-10 and 5-12 |
 
 Software loopback of one data frame (Mode 1, one 13-segment layer); every
 input packet comes out of the receiver:
@@ -153,6 +160,8 @@ rx_file IN.cf32 OUT_PREFIX
 | `tests/stream.rs` `lead_and_flush_deliver_every_packet` | with pre-roll, `lead_frames` and `finish` + flush, every input packet of every frame is received, in order, for Mode 1 I = 3, Mode 3 I = 2 and Mode 3 I = 0 |
 | `tests/stream.rs` `preroll_removes_fill_peaks` | PAPR < 15 dB with pre-roll (the un-pre-rolled figure is printed only) |
 | `tests/stream.rs` `pipelined_receiver_matches_inline` | `PipelinedReceiver` returns the same frames as `Receiver` |
+| `tests/broadcast_ts.rs` `transmitter_configured_from_the_iip_delivers_every_packet` | three frames through `BroadcastTsWriter` → `BroadcastTsReader` → a `Transmitter` built from the IIP's parameters alone → `Receiver`: every packet of both layers is received, and the receiver's reproduced TS has the slot arrangement the dummy-byte `layer_indicator`s announced |
+| `src/broadcast_ts.rs` `spec_table_5_7_*`, `spec_5_5_2_rs_204_196_parity`, `spec_table_5_10_modulation_control`, `spec_table_5_12_network_sync`, `spec_table_5_8_iip_packet`, `spec_5_5_writer_frame_structure`, `reader_recovers_frames` | the byte / bit layouts of Tables 5-6 .. 5-12 against hand-derived values, both CRC_32 ranges, the RS(204,196) syndromes by independent evaluation, one IIP per frame with `IIP_packet_pointer` = TSPs to the next head − 1, TSP counter and frame flags, frame delimiting and the IIP-of-the-previous-frame rule |
 
 The PHY as a whole was cross-decoded against gr-isdbt in both directions,
 byte-exact in 8 parameter sets, using `examples/tx_file.rs` /
@@ -176,9 +185,15 @@ cargo test --release -p isdbt-phy
 - Impairment behaviour (noise, CFO, sample-rate offset, multipath) is
   tested only in software loopback, not against the gr-isdbt oracle or
   off-air signals (VERIFICATION.md "Open questions").
-- This crate has no SPEC-NOTES of its own; interpretations live in
+- Broadcasting TS: one IIP packet per frame (no sub-IIP reassembly across
+  frames), no AC data in the dummy bytes, the SFN delay control of Part 2
+  Ch. 4 itself is not implemented (only the Table 5-12 syntax), and no
+  studio broadcasting-TS feed has been tested: the IIP slot (first null
+  slot) and PID (0x1FF0) are operational choices.
+- The pipeline interpretations live in
   [isdbt-fec](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-fec/SPEC-NOTES.md),
   [isdbt-ofdm](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-ofdm/SPEC-NOTES.md) and the workspace index
-  [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/SPEC-NOTES.md).
+  [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/SPEC-NOTES.md); this crate's own
+  [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/crates/isdbt-phy/SPEC-NOTES.md) covers the broadcasting TS.
 
 See also the workspace [README](https://github.com/a1678991/isdb-rs/blob/main/README.md).

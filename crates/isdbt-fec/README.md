@@ -143,8 +143,10 @@ and puncturing reset points.
   the start and end of Fig. 3-3, but "#1151 = TSP_A" is not reproducible
   and Part 2 Fig. 3-8 is treated as schematic. Status in SPEC-NOTES:
   pending a real-world check against a broadcast's re-multiplexed TS.
-- No ISDB-T information packet (IIP) or 204-byte broadcast-TS interface;
-  the 16 bytes after each TSP are always the RS parity.
+- The 16 bytes after each TSP are always the RS(204,188) parity. The
+  204-byte *broadcasting* TS of Part 2 §5.5 (8 dummy bytes of
+  ISDB-T_information, 8 bytes of (204,196) parity, and the IIP) is
+  `isdbt_phy::broadcast_ts`, not this crate.
 - The encoder start-up content and the null packet bytes used in null
   slots (H.222.0 null, 0xFF payload) are implementation choices, not spec
   text.

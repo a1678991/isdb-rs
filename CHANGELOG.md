@@ -73,6 +73,17 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   file to a radio or file; the receiver finds its parameters and frame
   start, and the playback keys pause (null frames with the same
   parameters) and seek it.
+- `isdbt-phy`: `broadcast_ts` — the 204-byte broadcasting TS of ARIB
+  STD-B31 Part 2 §5.5 (studio-to-transmitter interface): lossless codecs
+  of `ISDB-T_information` in the dummy bytes of each TSP (Table 5-6), the
+  optional shortened RS(204,196) parity, and the IIP (Table 5-8) with
+  `modulation_control_configuration_information` (Table 5-10, carrying the
+  TMCC information) and `network_synchronization_information` (Table
+  5-12, SFN delay control); `BroadcastTsWriter` wraps multiplex frames
+  with one IIP per frame, `BroadcastTsReader` delimits frames, splits them
+  by layer and recovers the transmission parameters from the IIP, so a
+  `Transmitter` can be configured from the stream. `isdbt-phy` now
+  depends on `isdb-ts` (CRC_32).
 - Verification: spec-vector tests, property-tested lossless round trips,
   TX→RX loopbacks, opt-in tests on real captures (`ISDB_RS_*` environment
   variables) and a differential test against gr-isdbt (`oracle/`,

@@ -19,10 +19,13 @@ every entry with its status.
 | `isdbt-mux` | [crates/isdbt-mux/SPEC-NOTES.md](crates/isdbt-mux/SPEC-NOTES.md) | timing model, PCR placement, repetition intervals, section packing, NIT/SDT/EIT/BIT/TOT/CAT content, media packetisation, AAC ADTS header rules (the raw_data_block is not parsed), recorded-program relay (`ts-program`) and its copy-control and conditional-access signalling, T-STD pacing, **receiver compatibility notes**; list of **operational choices** (not dictated by the local specs, ARIB TR-B14 unavailable) to be tested on receivers |
 | `isdbt-fec` | [crates/isdbt-fec/SPEC-NOTES.md](crates/isdbt-fec/SPEC-NOTES.md) | remux model receiver, PRBS bit order and frame alignment, delay adjustment, byte-interleave alignment, convolutional taps / puncturing reset, one-frame latency contract |
 | `isdbt-ofdm` | [crates/isdbt-ofdm/SPEC-NOTES.md](crates/isdbt-ofdm/SPEC-NOTES.md) | mapping bit order and delays, DQPSK reference, time/frequency interleave indexing and carrier rotation, pilots, TMCC/AC, difference-set code bit order, frame alignment (`latency`), gr-isdbt deviations |
+| `isdbt-phy` | [crates/isdbt-phy/SPEC-NOTES.md](crates/isdbt-phy/SPEC-NOTES.md) | broadcasting TS (B31 Part 2 §5.5): the IIP's slot and PID, the Table 5-7 layer_indicator typo, which frame the IIP describes, IIP_packet_pointer, the optional (204,196) parity, stuffing / reserved conventions, CRC_32 ranges, what is not implemented (sub-IIP, AC data, SFN delay control) |
 
-`isdbt-core`, `isdbt-phy`, `isdb-radio`, `isdb-hackrf` and `isdb-cli` have
-no notes of their own: they take parameters from the spec tables, connect
-the baseband to a radio, or wire the crates above together.
+`isdbt-core`, `isdb-radio`, `isdb-hackrf` and `isdb-cli` have no notes of
+their own: they take parameters from the spec tables, connect the
+baseband to a radio, or wire the crates above together (`isdbt-phy`'s
+pipeline composition has none either; its notes cover only the
+broadcasting TS).
 
 Format of an entry:
 

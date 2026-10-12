@@ -18,8 +18,9 @@
 //!
 //! Entry points: [`Transmitter`] (one OFDM frame per call),
 //! [`Receiver`] / [`PipelinedReceiver`] (push samples, get [`RxFrame`]s),
-//! [`FrameDecoder`] (LLRs → packets) and [`iq`] (cf32 / cs8 sample
-//! formats).  The crate README describes the stream-boundary rules, the
+//! [`FrameDecoder`] (LLRs → packets), [`broadcast_ts`] (the 204-byte
+//! studio-to-transmitter TS with ISDB-T_information and IIP, B31 Part 2
+//! §5.5) and [`iq`] (cf32 / cs8 sample formats).  The crate README describes the stream-boundary rules, the
 //! `tx_file` / `rx_file` examples and how the pipelines are verified.
 //!
 //! # Example
@@ -70,6 +71,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+pub mod broadcast_ts;
 pub mod iq;
 
 use isdbt_core::{Layer, Params, TSP};
@@ -99,6 +101,10 @@ pub enum Error {
     /// Input does not match the configured layers.
     #[error("{0}")]
     Input(String),
+    /// Broadcasting-TS additional information (B31 Part 2 §5.5) that
+    /// cannot be encoded or does not parse ([`broadcast_ts`]).
+    #[error("broadcast TS: {0}")]
+    BroadcastTs(String),
     /// A [`PipelinedReceiver`] worker thread panicked (its frames after
     /// the panic are missing).
     #[error("receiver worker thread {0} panicked")]

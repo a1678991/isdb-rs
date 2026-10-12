@@ -95,7 +95,7 @@ leaves room for ISDB-S and ISDB-S3.
 | [`isdbt-core`](crates/isdbt-core/README.md) | B31 tables | modes, guard intervals, layer parameters, derived rates and delays |
 | [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS re-multiplexing, RS(204,188), energy dispersal, byte interleaving, convolutional code / Viterbi |
 | [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | mapping, interleaving, OFDM frame with SP/CP/TMCC/AC, IFFT/GI; receiver synchronisation and equalisation |
-| [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | TX/RX pipelines (TS packets ⇄ complex baseband), IQ file formats |
+| [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | TX/RX pipelines (TS packets ⇄ complex baseband), IQ file formats, the broadcasting TS with ISDB-T_information and IIP (Part 2 §5.5) |
 | [`isdb-radio`](crates/isdb-radio/README.md) | — | device-neutral SDR layer: IQ sink/source traits, `--radio` device selection, backend registry (HackRF behind the `hackrf` feature), integer sample quantiser |
 | [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | minimal safe wrapper over the system libhackrf (FFI), used by the `isdb-radio` HackRF backend |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary |
@@ -281,9 +281,10 @@ end, but some parts have had less independent checking than others:
   the project does not have. Non-conforming AAC is refused by default.
 - **Media**: MPEG-2 video and AAC ADTS files only; H.264 one-seg streams
   can be declared in the PMT but are not packetised.
-- **Not implemented**: duplicate packets for a PID on two layers, the
-  ISDB-T information packet (IIP), SFN synchronisation, data
-  broadcasting (BML/DSM-CC), DRCS glyphs, ISDB-T<sub>SB</sub>.
+- **Not implemented**: duplicate packets for a PID on two layers, SFN
+  synchronisation (only the IIP's `network_synchronization_information`
+  syntax is handled), AC data in the broadcasting TS, data broadcasting
+  (BML/DSM-CC), DRCS glyphs, ISDB-T<sub>SB</sub>.
 - **Radio**: HackRF One is the only backend (others plug into
   `isdb-radio` without CLI changes). The demodulator runs at about 1.4× real time
   on a current 16-core desktop CPU, so live reception needs a fast machine.

@@ -408,6 +408,7 @@ dependencies = [
 name = "isdbt-phy"
 version = "0.1.0"
 dependencies = [
+ "isdb-ts",
  "isdbt-core",
  "isdbt-fec",
  "isdbt-ofdm",

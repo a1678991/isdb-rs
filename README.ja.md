@@ -166,7 +166,7 @@ isdb ts diff test.ts rx.ts                 # every section identical
 - **ARIB TR-B14**（地上デジタルテレビジョン放送の運用規定）をプロジェクトでは入手できないため、運用上の値（PCR の位置、SI の階層配置、リモコンキー番号の範囲、PID の割り当て、…）は文書化したうえでの選択であり、[isdbt-mux のノート](crates/isdbt-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers) に一覧があります。
 - **AAC はヘッダのレベルでのみチェックしています。** ADTS ヘッダは ARIB STD-B32 Part 2 に照らしてチェックします。crc_check の値は検証も挿入もしません。raw_data_block の解析には ISO/IEC 13818-7 が必要ですが、プロジェクトはこれを持っていないためです。規格に適合しない AAC は既定で拒否します。
 - **メディア**：MPEG-2 映像と AAC ADTS ファイルのみです。H.264 のワンセグストリームは PMT で宣言できますが、パケット化はしません。
-- **未実装**：同一 PID のパケットを 2 つの階層で重複して送ること、ISDB-T 情報パケット（IIP）、SFN 同期、データ放送（BML／DSM-CC）、DRCS（外字）、ISDB-T<sub>SB</sub>。
+- **未実装**：同一 PID のパケットを 2 つの階層で重複して送ること、SFN 同期（IIP の `network_synchronization_information` の構文のみ扱います）、放送 TS 上の AC データ、データ放送（BML／DSM-CC）、DRCS（外字）、ISDB-T<sub>SB</sub>。
 - **無線機**：バックエンドは HackRF One のみです（他のバックエンドは CLI を変更せずに `isdb-radio` へ追加できます）。復調器は現行の 16 コアのデスクトップ CPU で実時間の約 1.4 倍の速さで動作するため、リアルタイム受信には高速なマシンが必要です。
 
 ## ロードマップ
