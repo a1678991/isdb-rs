@@ -51,6 +51,7 @@ graph TD
   hrf[isdb-hackrf<br/>libhackrf FFI]
   iio[isdb-iio<br/>libiio FFI]
   iq[isdb-iq<br/>IQ recordings, SigMF, survey]
+  fe[isdb-frontend<br/>IQ → symbols, FPGA model]
   cli[isdb-cli<br/>the isdb binary]
 
   si --> ts
@@ -81,6 +82,9 @@ graph TD
   cli --> core
   cli --> radio
   cli --> iq
+  cli --> fe
+  fe --> iq
+  radio --> fe
 ```
 
 Arrows point to dependencies. The TS/SI side (`isdb-ts`, `isdb-text`,
@@ -98,7 +102,12 @@ The CLI never names a device. `isdb-iq` stands apart from both sides:
 IQ recordings of any system (sample formats, SigMF metadata) and the
 survey of a single-carrier recording, used by `isdb capture` and `isdb iq
 survey`; the radio's raw captures (`Backend::capture`) reach it only
-through the CLI. The PHY crates carry TS packets
+through the CLI. `isdb-frontend` is the first stage of the satellite
+receivers (IQ to symbols): a bit-exact fixed-point model whose FPGA
+implementation lives in `fpga/` (Amaranth, outside cargo). `isdb-radio`
+depends on it for the stages a radio can run itself (`Offload`,
+`Backend::capture_symbols`: the FPGA's discovery and configuration
+words), and `isdb symbols` picks the FPGA or the CPU at run time. The PHY crates carry TS packets
 as plain `[u8; 188]` and do not depend on `isdb-ts`. `isdb-analyze` uses
 `isdbt-mux` only for the ARIB STD-B32 Part 2 ADTS rule identities and
 quality modes; it parses ADTS headers itself.

@@ -21,9 +21,11 @@ every entry with its status.
 | `isdbt-ofdm` | [crates/isdbt-ofdm/SPEC-NOTES.md](crates/isdbt-ofdm/SPEC-NOTES.md) | mapping bit order and delays, DQPSK reference, time/frequency interleave indexing and carrier rotation, pilots, TMCC/AC, difference-set code bit order, frame alignment (`latency`), gr-isdbt deviations |
 | `isdbt-phy` | [crates/isdbt-phy/SPEC-NOTES.md](crates/isdbt-phy/SPEC-NOTES.md) | broadcasting TS (B31 Part 2 §5.5): the IIP's slot and PID, the Table 5-7 layer_indicator typo, which frame the IIP describes, IIP_packet_pointer, the optional (204,196) parity, stuffing / reserved conventions, CRC_32 ranges, what is not implemented (sub-IIP, AC data, SFN delay control) |
 
-`isdbt-core`, `isdb-radio`, `isdb-hackrf`, `isdb-iio`, `isdb-iq` and
-`isdb-cli` have no notes of their own: they take parameters from the spec
-tables, connect the baseband to a radio, record and survey IQ (`isdb-iq`
+`isdbt-core`, `isdb-radio`, `isdb-hackrf`, `isdb-iio`, `isdb-iq`,
+`isdb-frontend` and `isdb-cli` have no notes of their own: they take
+parameters from the spec tables, connect the baseband to a radio, record
+and survey IQ or turn it into symbols with this project's own format
+(`isdb-frontend` defines format version 1 itself; `isdb-iq`
 quotes two symbol rates; the satellite channel plans of `isdb-cli` are
 listed in [SPECS.md §1.2](SPECS.md#12-referenced-but-not-available-locally)),
 or wire the crates above together (`isdbt-phy`'s

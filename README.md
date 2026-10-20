@@ -90,7 +90,7 @@ demodulator.
   through device-neutral IQ sink/source traits with one backend per device
   (HackRF One, `--radio hackrf`; ADALM-Pluto and compatibles such as the
   PlutoSky R2 over USB or Ethernet, `--radio pluto`); one `isdb` binary with `tx`, `rx`,
-  `loopback`, `mux`, `ts`, `capture`, `iq` and `completions` commands.
+  `loopback`, `mux`, `ts`, `capture`, `iq`, `symbols` and `completions` commands.
 - **Satellite IF recordings** (`isdb-iq`, `isdb capture`, `isdb iq
   survey`): receive-only captures at any rate the radio supports, in one
   contiguous piece (a Pluto takes up to 16.5 M 16-bit samples through
@@ -101,6 +101,14 @@ demodulator.
   with SigMF metadata, BS / 110° CS channel names at their IF, and a
   survey that finds the symbol rate, the carrier offset and the system
   (ISDB-S, ISDB-S3) of a recording.
+- **Satellite symbol front end** (`isdb-frontend`, `fpga/`, `isdb
+  symbols`, `isdb iq symbols`): matched filtering, timing recovery and
+  AGC from IQ to 5- or 6-bit symbols. It exists as a bit-exact
+  fixed-point model on the CPU and as the same stage in Amaranth HDL for
+  the PlutoSky R2's FPGA, which halves what crosses the link (about
+  43 MB/s instead of 80) for continuous ISDB-S / ISDB-S3 reception. The
+  HDL matches the model bit for bit in simulation but is not yet in a
+  bitstream; until then the CPU runs it on one contiguous capture.
 
 ## Crates
 
@@ -119,6 +127,7 @@ demodulator.
 | [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | minimal safe wrapper over the system libhackrf (FFI), used by the `isdb-radio` HackRF backend |
 | [`isdb-iio`](crates/isdb-iio/README.md) | — | minimal safe wrapper over the system libiio 0.x (FFI), used by the `isdb-radio` Pluto backend |
 | [`isdb-iq`](crates/isdb-iq/README.md) | — (quotes the ISDB-S / ISDB-S3 symbol rates) | IQ recordings independent of the system: sample formats, SigMF metadata, single-carrier survey (symbol rate, carrier offset, band, system) |
+| [`isdb-frontend`](crates/isdb-frontend/README.md) | — (rates from `isdb-iq`) | single-carrier front end IQ → symbols for ISDB-S / ISDB-S3: bit-exact fixed-point model of the FPGA stage, floating-point reference, `Symbols` boundary format, FPGA control map; the HDL is in [`fpga/`](fpga/README.md) |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary |
 
 How they fit together, the frame/latency contract and the data flow:

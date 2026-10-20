@@ -24,8 +24,9 @@
 - **多重化器**（`isdbt-mux`）：TOML によるサービス記述（ネットワーク、サービス、イベント、SI テーブル、実験用の上書き設定）と MPEG-2 映像および AAC ADTS ファイルから、OFDM フレームに合わせて送出される固定レートの多重を生成します。H.222.0 の T-STD バッファモデルを備えます。**TS 中継**：スクランブルされていない録画 TS（たとえば自分で作成したもの）の 1 番組を、独自の PSI/SI を持つ地上デジタル放送のサービスとして再送信します。ストリームの役割と PID は録画から検出され、元のコピー制御と限定受信の信号は既定で保持されます。**データ放送とハイブリッドキャスト**：ディレクトリ内のファイルを BML データカルーセル（DSM-CC の DII／DDB、ARIB STD-B24 第 2・3 編）として PMT／EIT の信号とともに送出し、ハイブリッドキャスト受信機が起動する HTML5 アプリケーションの URL を示す AIT（B24 第 4 編、IPTVFJ STD-0010／0013）を、生成したランチャーとともにカルーセル内で、または独立した PID で伝送します。
 - **解析器**（`isdb-analyze`）：内容の表示（inspect）、検証（validate。各指摘には根拠となる条項を明記）、2 つのキャプチャのテーブル／フィールド単位の差分、および TS の正当性を保ったままの編集（PID のヌル化、セクションの削除・置換・挿入、型付きのフィールド変更）。
 - **ISDB-T 物理層**（`isdbt-core`、`isdbt-fec`、`isdbt-ofdm`、`isdbt-phy`、ARIB STD-B31）：モード 1〜3、すべてのガードインターバル、部分受信を含む最大 3 階層の階層伝送、DQPSK／QPSK／16QAM／64QAM、すべての符号化率と時間インターリーブ長、TMCC と AC。受信側は同期、CFO（キャリア周波数オフセット）とタイミングドリフトの補正、伝送路推定、TMCC 復号、軟判定ビタビ復号と RS 復号を行い、13 セグメントの TS を再生します。
-- **入出力**（`isdb-radio`、`isdb-hackrf`、`isdb-iio`、`isdb-cli`）：IQ ファイル（GNU Radio 向けの cf32、`hackrf_transfer` 向けの cs8）と、デバイス非依存の IQ シンク／ソーストレイトを介した無線機とのストリーミング（デバイスごとに 1 つのバックエンド。HackRF One は `--radio hackrf`、ADALM-Pluto とその互換機（USB または Ethernet 接続の PlutoSky R2 など）は `--radio pluto`）。`tx`、`rx`、`loopback`、`mux`、`ts`、`capture`、`iq`、`completions` の各コマンドを持つ単一の `isdb` バイナリ。
+- **入出力**（`isdb-radio`、`isdb-hackrf`、`isdb-iio`、`isdb-cli`）：IQ ファイル（GNU Radio 向けの cf32、`hackrf_transfer` 向けの cs8）と、デバイス非依存の IQ シンク／ソーストレイトを介した無線機とのストリーミング（デバイスごとに 1 つのバックエンド。HackRF One は `--radio hackrf`、ADALM-Pluto とその互換機（USB または Ethernet 接続の PlutoSky R2 など）は `--radio pluto`）。`tx`、`rx`、`loopback`、`mux`、`ts`、`capture`、`iq`、`symbols`、`completions` の各コマンドを持つ単一の `isdb` バイナリ。
 - **衛星 IF の録音**（`isdb-iq`、`isdb capture`、`isdb iq survey`）：無線機が対応する任意のサンプルレートでの受信専用キャプチャ。一括で連続した録音（Pluto では libiio 経由で 16 ビット最大 1650 万サンプル、Tezuka の maia-sdr レコーダーで 16 ビット 3355 万サンプル、8 ビット 6710 万サンプル＝40 Msps で 1.7 秒）と、欠落箇所をすべて記録するストリーミング録音（Gigabit Ethernet で欠落なしは約 40 MB/s まで、例えば 8 ビット 20 Msps）、SigMF メタデータ、BS／110 度 CS のチャンネル名による IF 周波数指定、録音からシンボルレート・搬送波オフセット・方式（ISDB-S、ISDB-S3）を求める解析。
+- **衛星のシンボル・フロントエンド**（`isdb-frontend`、`fpga/`、`isdb symbols`、`isdb iq symbols`）：IQ から 5 または 6 ビットのシンボルへの整合フィルタ、タイミング再生、AGC。CPU 上のビット精度の固定小数点モデルと、PlutoSky R2 の FPGA 向けの同じ処理（Amaranth HDL）の両方があり、FPGA 側はリンクを流れるデータ量を約半分（80 MB/s から約 43 MB/s）にして ISDB-S／ISDB-S3 の連続受信を可能にします。HDL はシミュレーションでモデルとビット単位で一致しますが、まだビットストリームには組み込んでいません。それまでは CPU が 1 回の連続キャプチャに対して処理します。
 
 ## クレート
 
@@ -44,6 +45,7 @@
 | [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | システムの libhackrf に対する最小限の安全なラッパー（FFI）。`isdb-radio` の HackRF バックエンドが使用 |
 | [`isdb-iio`](crates/isdb-iio/README.md) | — | システムの libiio 0.x に対する最小限の安全なラッパー（FFI）。`isdb-radio` の Pluto バックエンドが使用 |
 | [`isdb-iq`](crates/isdb-iq/README.md) | —（ISDB-S／ISDB-S3 のシンボルレートを引用） | 方式に依存しない IQ 録音：サンプル形式、SigMF メタデータ、単一キャリア信号の解析（シンボルレート、搬送波オフセット、帯域、方式） |
+| [`isdb-frontend`](crates/isdb-frontend/README.md) | —（レートは `isdb-iq` から） | ISDB-S／ISDB-S3 の単一キャリア・フロントエンド（IQ → シンボル）：FPGA 処理のビット精度の固定小数点モデル、浮動小数点の参照実装、`Symbols` 境界の形式、FPGA の制御レジスタ。HDL は [`fpga/`](fpga/README.md) |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | `isdb` バイナリ |
 
 各クレートの関係、フレーム／レイテンシの約束事、データの流れについては [docs/architecture.md](docs/architecture.md) を参照してください。

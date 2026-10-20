@@ -614,6 +614,115 @@ Ethernet does not fit as samples (≥ 78 / 70 MB/s in 8 bits against
 MB/s); it needs fewer bits leaving the board (soft bits narrower than
 8 bits, or decoded packets) or a network path that does not go through
 the CPU. Offline work uses one-shot recordings (1.68 s at 40 Msps).
+(Measured with Tezuka's services running; with them stopped the ceiling
+is about 72 MB/s, and 5- or 6-bit symbols fit: next section.)
+
+## Symbol front end: IQ to symbols on the CPU and in the FPGA
+
+Measured and built on 2026-10-20 (PlutoSky R2, Tezuka v0.3.24, the same
+satellite IF, receive only) to stream ISDB-S / ISDB-S3 continuously:
+the front end of `isdb-frontend` (mixer, polyphase root-raised-cosine
+matched filter, non-data-aided timing recovery, AGC, n-bit output) as a
+bit-exact fixed-point model and the same stage in Amaranth HDL
+(`fpga/`).
+
+**Link ceiling with Tezuka's services stopped.** Tezuka starts a DATV
+stack (`pluto_stream`, the `zynqrx` DVB-S2 receiver, MQTT, GPS and NFS
+helpers). With those stopped (board ≈ 99 % idle, no QSPI interrupts;
+`/mnt/jffs2/autorun.sh` on this board stops them at every boot),
+streamed captures (`isdb capture --radio pluto:…,recorder=stream,bits=8
+--discard`, BS-1):
+
+| 8-bit rate | MB/s | 30 s | 300 s |
+|---|---|---|---|
+| 20 Msps | 40 | no loss | no loss |
+| 24 / 28 Msps | 48 / 56 | no loss | 28 Msps: 2 losses (while the host compiled and ran analyses) |
+| 32 Msps | 64 | no loss | no loss |
+| 36 Msps | 72 | no loss | no loss |
+| 40 Msps | 80 | losses from the first buffers | – |
+
+16-bit samples: no loss up to 16 Msps (64 MB/s); losses at 18 Msps
+(72 MB/s). A raw TCP send from the board with the tools on it (`dd` into
+`socat` with 64 KiB buffers): 59.8 MB/s with one stream (58 % of the two
+CPUs), 69.5 MB/s with two streams pinned to the two CPUs (89 %); `socat`
+with its default 8 KiB buffer reaches 32.7 MB/s. UDP through `socat`
+(one datagram per write) stays below 21 MB/s. This host's interface has
+an MTU of 1460, so 1500-byte frames from the board are dropped (TCP
+adapts through its MSS). So the board's CPU sets a ceiling near 70 MB/s
+whatever the transport, below the 78 MB/s that 8-bit IQ for ISDB-S needs
+((1 + 0.35)·28.86 Msps).
+
+**Sample rate and analog bandwidth.** The 40 Msps recordings of the
+previous section used `isdb capture`'s default analog bandwidth,
+0.8 × the rate (32 MHz), which cuts the band edges. 8PSK
+decision-directed MER of BS-1 after the front end (32 taps):
+
+| Recording | 8PSK MER |
+|---|---|
+| 57.72 Msps 16-bit (46 MHz) / 61.44 Msps 16-bit (49 MHz) | 14.86 / 15.23 dB |
+| 40 Msps 8-bit, 56 MHz | 14.94 dB |
+| 40 Msps 8-bit, 40 MHz | 13.86 dB |
+| 40 Msps 8-bit, 32 MHz (maia and libiio) | 13.01 / 13.02 dB |
+| 36 Msps 8-bit, 56 MHz (fits the link as IQ) | 13.99 dB |
+
+**Front end on the recordings** (`isdb-frontend` `examples/analyze.rs`,
+40 Msps, 56 MHz):
+
+- **ISDB-S (BS-1):** the timing loop settles at +0.68 ppm (the board's
+  clock offset). The fixed-point and floating-point outputs agree within
+  0.01 dB. MER against taps: 8 / 12 / 16 / 24 / 32 taps give
+  13.75 / 14.33 / 14.65 / 14.86 / 14.94 dB.
+- **ISDB-S3 (BS-7, roll-off 0.03):** the non-data-aided timing
+  detector's slope shrinks with the roll-off:
+  - at a loop bandwidth of 2·10⁻⁴ R it wanders (−265 ppm with 32 taps);
+  - at 2·10⁻⁵ to 10⁻⁶ R it locks at +0.68 ppm with a period jitter of
+    3·10⁻⁴ to 6·10⁻⁵ samples;
+  - ring MER barely changes from 24 to 64 taps.
+
+  The constellation is not identified without TMCC (three-ring fit
+  shares 0.18 / 0.33 / 0.49), so its MER is not given.
+- **Output quantiser** (no clipping):
+
+  | Bits | ISDB-S 8PSK MER change | ISDB-S3 ring MER change | ISDB-S / ISDB-S3 MB/s |
+  |---|---|---|---|
+  | 4 | −1.12 dB | −0.45 dB | 29.0 / 33.9 |
+  | 5 | −0.32 dB | −0.07 dB | 36.2 / 42.4 |
+  | 6 | −0.07 dB | −0.01 dB | 43.4 / 50.8 |
+
+  Chosen: 6 bits for ISDB-S, 5 for ISDB-S3 (≈ 43 MB/s, 60 % of the
+  ceiling).
+
+The opt-in tests `isdb-frontend` `tests/captures.rs` (`ISDB_RS_ISDBS_IQ`,
+`ISDB_RS_ISDBS3_IQ`) check this on any recording: timing lock within
+5 ppm of the survey, fixed point within 0.1 dB of floating point,
+ISDB-S MER above 10 dB, and a lossless read-back of the words.
+
+**FPGA implementation.** `fpga/` (Amaranth 0.5.10):
+
+- **Simulation:** reproduces the model bit for bit. Every symbol's
+  phase, filter outputs, gain, period, scaled outputs, output components,
+  timing and AGC errors, and every output word are compared on:
+  - recordings of BS-1 (32 taps, 2887 symbols) and BS-7 (64 taps,
+    2532 symbols);
+  - synthetic signals (16 and 32 taps);
+  - with sample strobes 4–7 cycles apart;
+  - with the coefficients loaded through the port;
+  - with the whole configuration sent as the host's `gpio_out` command
+    words (ID word and a register readback checked).
+
+  One-LSB changes to a coefficient, a loop gain, the AGC target or the
+  NCO step make the comparison fail, so it is not vacuous.
+- **Resources:** Yosys `synth_xilinx` estimates 46 DSP48E1, 3.6k LUT,
+  4.5k FF and 9 RAMB18 for 32 taps, beside Tezuka's 106 / 220 DSP and
+  23k / 53k LUT.
+- **Not done:** a bitstream, timing closure and a hardware test (they
+  need Vivado; `fpga/README.md` lists the steps). On the current
+  bitstream, `isdb symbols --probe` reads `up_adc_gpio_in` = 0: no front
+  end. `isdb symbols` falls back to the CPU on one contiguous capture
+  (0.2 s of BS-1: 8PSK MER 14.84 dB, words read back without loss).
+- **Configuration cost:** an iiod register access takes 0.62 ms (500
+  reads), so configuring 32 taps (about 4,250 commands) takes about
+  2.6 s.
 
 ## Open questions
 

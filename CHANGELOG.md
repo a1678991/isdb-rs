@@ -106,6 +106,38 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   `--overwrite`) and `isdb iq survey` (text or `--json`). `--freq` of
   `capture` takes channel names: `chN` (UHF), `bsN` and `ndN` (BS and
   110° CS at their satellite IF).
+- `isdb-frontend`: single-carrier receive front end for ISDB-S and
+  ISDB-S3 (IQ to symbols at one per symbol):
+  - a bit-exact fixed-point model of format version 1: 32-bit NCO mixer,
+    64-phase polyphase root-raised-cosine matched filter with its
+    derivative, non-data-aided timing recovery with a PI loop applied six
+    symbols late, AGC, n-bit output;
+  - a floating-point reference;
+  - the `Symbols` boundary: 16-bit words in blocks with sync, sequence
+    number, gain, period, header check and a CRC-16 trailer, and a
+    `Reader` that reports every loss;
+  - `Design::for_system` with the settings measured on the satellite IF;
+  - ring / PSK MER and SQNR metrics;
+  - the FPGA's register map and command words over the AD9361 core's
+    general purpose registers (`control`);
+  - JSON test vectors for the HDL.
+- `fpga/`: the same front end in Amaranth HDL (`SymbolsRx`: core,
+  command decoder on `up_adc_gpio_out`, ID word on `up_adc_gpio_in`,
+  output selection before the RX DMA's packer). It matches the model bit
+  for bit in simulation, and Yosys estimates 46 DSP48E1 and 3.6k LUT for
+  32 taps. `mise run fpga:test`, `fpga:estimate` and `fpga:verilog`. Not
+  yet built into a bitstream.
+- `isdb-radio`: `Offload` (stages a radio runs itself), probed by
+  `Backend::offloads` without changing the device, and
+  `Backend::capture_symbols`. The Pluto backend reads the front end's ID
+  word, configures it through the command register (checked by a
+  readback), streams the 16-bit words and switches back to IQ afterwards.
+- `isdb-cli`: `isdb symbols` (receive only). It uses the radio's FPGA
+  front end when its bitstream has one (`--offload auto|fpga|cpu`,
+  `--probe`). Otherwise it runs the CPU front end on one contiguous IQ
+  capture (40 Msps and 56 MHz analog bandwidth by default). Also `isdb iq
+  symbols`: the CPU front end on a recording, or `--read` a words file
+  (blocks, losses, ring MER).
 - `isdb-cli`: the `isdb` binary — `tx` (to an IQ file or a radio; radiates
   only with `--rf-enable`), `rx`, `loopback` (software channel with
   impairments), `mux` (including `--relay` of a recording) and `ts`
