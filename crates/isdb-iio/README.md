@@ -1,11 +1,11 @@
 # isdb-iio
 
 Minimal safe wrapper over the system `libiio` (FFI, 0.x API) for attribute
-access, continuous TX and RX streaming and one-shot RX captures of 16-bit I/Q with an AD936x
+and register access, continuous TX and RX streaming and one-shot RX captures of I/Q with an AD936x
 radio such as the ADALM-Pluto or a PlutoSky R2: connect to an IIO context
-(USB, Ethernet or local), read and write device and channel attributes,
-start a stream and exchange interleaved `i16` buffers over bounded
-channels. It knows nothing about ISDB-T or the AD936x; the `pluto` backend
+(USB, Ethernet or local), read and write device and channel attributes
+and registers, start a stream and exchange interleaved `i16` buffers (or,
+for RX, the raw bytes of any channel layout) over bounded channels. It knows nothing about ISDB-T or the AD936x; the `pluto` backend
 of `isdb-radio` (`isdb tx/rx --radio pluto`) uses it to put the baseband
 from `isdbt-phy` on air and to receive it.
 
@@ -21,17 +21,23 @@ No broadcast specification. The surface is the libiio 0.x C API
 (`create_context_from_uri`, `context_destroy`, `context_get_description`,
 `context_get_attr_value`, `context_set_timeout`, `context_find_device`,
 `device_find_channel`, `device_attr_read`/`write`,
-`device_debug_attr_read`/`write`, `device_set_kernel_buffers_count`,
+`device_debug_attr_read`/`write`, `device_reg_read`/`write`,
+`device_set_kernel_buffers_count`,
 `device_get_sample_size`, `channel_attr_read`/`write` (text, `longlong`,
 `double`), `channel_enable`/`disable`, `device_create_buffer`,
 `buffer_push`/`refill`/`cancel`/`start`/`end`/`destroy`, `strerror`,
 `library_get_version`), declared by hand in `src/ffi.rs`.
 
-- **Sample format:** interleaved `i16`, one component per enabled channel
-  per sample in channel order (I then Q for an AD936x port); only devices
-  whose enabled channels are all stored in 16 bits are accepted. Buffers
-  are little-endian on the wire and converted to native order. The
-  AD936x-specific scaling (12-bit samples, left-aligned on TX) is the
+- **Sample format:** `start_tx` / `start_rx` exchange interleaved `i16`,
+  one component per enabled channel per sample in channel order (I then Q
+  for an AD936x port), and accept only devices whose enabled channels are
+  all stored in 16 bits. Buffers are little-endian on the wire and
+  converted to native order. `start_rx_raw` and `capture` hand over the
+  bytes as the device stored them, whatever the channel layout: a
+  bitstream may pack samples its own way (Tezuka puts 8-bit I and Q in
+  one 16-bit word when `voltage0` is the only channel enabled, and 12-bit
+  samples with sync bursts when `voltage1` is), which the caller decodes.
+  The AD936x-specific scaling (12-bit samples, left-aligned on TX) is the
   backend's.
 - **libiio version:** the 0.x API, 0.21 or later (tested: libiio 0.26 on
   the host, iiod 0.25 in Pluto firmware v0.38, network backend). libiio
@@ -65,7 +71,9 @@ No broadcast specification. The surface is the libiio 0.x C API
 | `Channel` | `read`/`write` (text), `read_i64`/`write_i64`, `read_f64`/`write_f64` |
 | `Context::start_tx(device, channels, samples, kernel_buffers, depth) -> TxStream` | `sender: SyncSender<Vec<i16>>` (drop it to end the stream) + `counters` |
 | `Context::start_rx(device, channels, samples, kernel_buffers, depth) -> RxStream` | `receiver: Receiver<Vec<i16>>` + `counters` |
-| `Context::capture(device, channels, samples, kernel_buffers) -> Vec<i16>` | one buffer, refilled once: `samples` contiguous samples (one DMA transfer), without a stream thread |
+| `Context::start_rx_raw(device, channels, samples, kernel_buffers, depth) -> RawRxStream` | `receiver: Receiver<Vec<u8>>`, `sample_bytes` + `counters`; never drops a buffer (a full queue makes the stream wait, so a slow consumer shows as a device overflow) |
+| `Context::capture(device, channels, samples, kernel_buffers) -> Vec<u8>` | one buffer, refilled once: `samples` contiguous samples (one DMA transfer) as raw bytes, without a stream thread |
+| `Device::reg_read(address)`, `reg_write(address, value)` | register access (`direct_reg_access`; ADI: bit 31 selects the HDL core, e.g. the ADC core's overflow bit at `0x80000088`) |
 | `Context::stop`, `is_streaming` | stop every stream (returns the first error a stream thread ended with) |
 | `Counters` | atomics: `buffers`, `underruns` (TX), `overruns` (RX), `finished` |
 | `library_version()` | information |
@@ -102,7 +110,11 @@ any RF activity: `cargo run -p isdb-iio --example info -- ip:192.168.2.1`.
   the last buffer and pushes `kernel_buffers` zero buffers, so the queued
   samples leave the kernel queue before `finished` is set. RX: the thread
   refills and `try_send`s a copy of each buffer; a full queue drops it and
-  counts an overrun.
+  counts an overrun. Raw RX: the thread waits (polling the stop flag every
+  millisecond) until the queue takes the buffer, so nothing is dropped on
+  the host and back-pressure reaches the device, whose kernel blocks then
+  fill and whose DMA overflows (ADI ADC cores report it in their status
+  register).
 - **Stopping.** `stop` sets the stream's stop flag and waits up to 3 s for
   the thread, which notices it after the push or refill in progress (one
   buffer of signal); only then does it cancel the buffer
@@ -141,7 +153,11 @@ without gaps and is demodulated by `isdb rx`, including a broadcast
 received through a cable feed (VERIFICATION.md "Broadcast reception").
 `capture` took single buffers of up to 16 515 072 samples at 57.72 and
 61.44 Msps whose symbol-rate line stays continuous across the whole
-buffer (VERIFICATION.md "Satellite IF survey"). `cargo test -p isdb-iio
+buffer (VERIFICATION.md "Satellite IF survey"). `start_rx_raw` and
+`reg_read` / `reg_write` carried Tezuka's 8- and 12-bit packed streams
+and the ADC core's overflow bit; checked against the sync counters of the
+12-bit stream, every loss was flagged (VERIFICATION.md "8-bit captures
+and streaming over Gigabit Ethernet"). `cargo test -p isdb-iio
 --doc` compiles (but does not run) the example above, which needs libiio
 at link time.
 
@@ -150,12 +166,22 @@ at link time.
 - Only the calls listed above are wrapped (no scanning for contexts, no
   triggers, no cyclic buffers, no per-channel demultiplexing or format
   conversion, no events).
-- RX copies each buffer into a new `Vec<i16>` (no buffer pool).
+- RX copies each buffer into a new `Vec<i16>` (`Vec<u8>` for raw
+  streams; no buffer pool).
 - `depth` counts queued `Vec<i16>` buffers, not samples: on TX they are
   the caller's buffers (any length), on RX one per IIO buffer.
 - Device-side underflows and overflows (DMA starved or full because the
   host or the link is too slow) are not visible to these counters; a
   stream that cannot keep up shows as pacing below real time (TX) or
-  missing samples (RX).
+  missing samples (RX). The caller can read the device's own status with
+  `Device::reg_read` (the `pluto` backend of `isdb-radio` does, for
+  streamed captures).
+- Throughput over the network backend (iiod 0.26 on a PlutoSky R2 with
+  Tezuka v0.3.24, Gigabit Ethernet, `start_rx_raw` with 1 Mi-sample
+  buffers): about 63–66 MB/s at most. 40 MB/s (CS8 at 20 Msps) ran 5 min
+  without loss; 48, 56 and 64 MB/s lost samples 9, 7 and 14 times in
+  5 min; 80 MB/s (CS8 at 40 Msps) loses continuously (VERIFICATION.md
+  "8-bit captures and streaming over Gigabit Ethernet"). `iio_readdev` 0.26 reached only
+  about 38 MB/s on the same link.
 - No SPEC-NOTES (no specification involved); see the workspace index
   [SPEC-NOTES.md](https://github.com/a1678991/isdb-rs/blob/main/SPEC-NOTES.md) and [README](https://github.com/a1678991/isdb-rs/blob/main/README.md).

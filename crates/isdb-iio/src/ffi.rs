@@ -72,6 +72,8 @@ unsafe extern "C" {
         attr: *const c_char,
         src: *const c_char,
     ) -> isize;
+    pub fn iio_device_reg_read(dev: *mut iio_device, address: u32, value: *mut u32) -> c_int;
+    pub fn iio_device_reg_write(dev: *mut iio_device, address: u32, value: u32) -> c_int;
     pub fn iio_device_set_kernel_buffers_count(dev: *const iio_device, nb_buffers: c_uint)
     -> c_int;
     pub fn iio_device_get_sample_size(dev: *const iio_device) -> isize;

@@ -679,7 +679,15 @@ fn capture_dry_run_validates_without_a_device() {
         ),
         (
             &["--radio", "pluto:buffer=65536", "--freq", "bs1"][..],
-            "(known: uri, channel, recorder)",
+            "buffer applies to recorder=stream only",
+        ),
+        (
+            &["--radio", "pluto:loopback=on", "--freq", "bs1"][..],
+            "(known: uri, channel, recorder, bits, buffer (recorder=stream))",
+        ),
+        (
+            &["--radio", "pluto:recorder=stream", "--freq", "bs1"][..],
+            "a streamed capture needs --samples or --seconds",
         ),
         (
             &["--radio", "pluto", "--freq", "bs2"][..],
@@ -781,6 +789,10 @@ fn iq_survey_finds_rate_carrier_and_system() {
     assert!(t.contains("system         ISDB-S\n"), "{t}");
 }
 
+/// The opt-in radio tests may name the same device: one at a time.
+#[cfg(feature = "pluto")]
+static RADIO: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Opt-in hardware test (receive only): `ISDB_RS_PLUTO_URI` names a
 /// PlutoSDR-family radio, e.g. `ip:192.0.2.30`; `ISDB_RS_PLUTO_CAPTURE_FREQ`
 /// the frequency or channel to capture (default `bs1`, the BS-1 satellite
@@ -793,6 +805,9 @@ fn capture_from_a_pluto() {
         eprintln!("SKIP capture_from_a_pluto: ISDB_RS_PLUTO_URI not set (e.g. ip:192.0.2.30)");
         return;
     };
+    let _radio = RADIO
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let freq = std::env::var("ISDB_RS_PLUTO_CAPTURE_FREQ").unwrap_or_else(|_| "bs1".into());
     let dir = tmp("capture-pluto");
     let out = dir.join("c.sigmf-data");
@@ -842,6 +857,125 @@ fn capture_from_a_pluto() {
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("--overwrite replaces it"));
     assert_eq!(std::fs::metadata(&out).unwrap().len(), 2 * 4 * 262_144);
+}
+
+/// Opt-in hardware test (receive only) of what needs the Tezuka firmware:
+/// `ISDB_RS_TEZUKA_URI` names a PlutoSDR-family radio running Tezuka
+/// (e.g. `ip:192.0.2.30`), `ISDB_RS_PLUTO_CAPTURE_FREQ` the frequency
+/// (default `bs1`). Takes an 8-bit libiio buffer, a 1 s 8-bit stream and
+/// maia-sdr recordings in 8 and 12 bits, and checks each file against its
+/// metadata; the signal itself is not checked.
+#[cfg(feature = "pluto")]
+#[test]
+fn tezuka_captures() {
+    let Some(uri) = std::env::var_os("ISDB_RS_TEZUKA_URI") else {
+        eprintln!("SKIP tezuka_captures: ISDB_RS_TEZUKA_URI not set (e.g. ip:192.0.2.30)");
+        return;
+    };
+    let _radio = RADIO
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let freq = std::env::var("ISDB_RS_PLUTO_CAPTURE_FREQ").unwrap_or_else(|_| "bs1".into());
+    let dir = tmp("capture-tezuka");
+    let uri = uri.to_string_lossy();
+    // (device arguments, rate, length option, data type, full scale,
+    // capture method contains)
+    for (i, (args, rate, len, datatype, full_scale, method)) in [
+        (
+            "bits=8",
+            "40M",
+            ["--samples", "1Mi"],
+            "ci8",
+            None,
+            "libiio single buffer",
+        ),
+        (
+            "recorder=stream,bits=8",
+            "10M",
+            ["--seconds", "1"],
+            "ci8",
+            None,
+            "libiio stream",
+        ),
+        (
+            "recorder=maia,bits=8",
+            "40M",
+            ["--samples", "4Mi"],
+            "ci8",
+            None,
+            "IQ8bit",
+        ),
+        (
+            "recorder=maia,bits=12",
+            "40M",
+            ["--samples", "4Mi"],
+            "ci16_le",
+            Some(2048.0),
+            "IQ12bit",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let out = dir.join(format!("t{i}.sigmf-data"));
+        let radio = format!("pluto:uri={uri},{args}");
+        let o = run(&[
+            "capture",
+            "--radio",
+            &radio,
+            "--freq",
+            &freq,
+            "--rate",
+            rate,
+            len[0],
+            len[1],
+            "-o",
+            s(&out),
+        ]);
+        assert!(o.status.success(), "{args}");
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(format!("t{i}.sigmf-meta"))).unwrap(),
+        )
+        .unwrap();
+        let g = &meta["global"];
+        assert_eq!(g["core:datatype"], datatype, "{args}");
+        let want_rate = if rate == "40M" { 40e6 } else { 10e6 };
+        assert!(
+            (g["core:sample_rate"].as_f64().unwrap() / want_rate - 1.0).abs() < 10e-6,
+            "{args}: {g:?}"
+        );
+        assert_eq!(g["isdb:full_scale"].as_f64(), full_scale, "{args}");
+        let c = meta["captures"].as_array().unwrap();
+        assert!(
+            c[0]["isdb:capture_method"]
+                .as_str()
+                .unwrap()
+                .contains(method),
+            "{args}: {c:?}"
+        );
+        let bytes = std::fs::metadata(&out).unwrap().len();
+        let bps = if datatype == "ci8" { 2 } else { 4 };
+        let want = match len {
+            ["--samples", "1Mi"] => 1 << 20,
+            ["--samples", _] => 4 << 20,
+            // A stream writes what it did not discard around losses.
+            _ => {
+                let discarded: u64 = c
+                    .iter()
+                    .flat_map(|s| {
+                        [
+                            s["isdb:samples_discarded"].as_u64(),
+                            s["isdb:samples_discarded_after"].as_u64(),
+                        ]
+                    })
+                    .flatten()
+                    .sum();
+                assert!(c[1..].iter().all(|s| s["isdb:gap_before"] == true));
+                10_000_000 - discarded
+            }
+        };
+        assert_eq!(bytes, want * bps, "{args}");
+    }
 }
 
 #[cfg(not(any(feature = "hackrf", feature = "pluto")))]

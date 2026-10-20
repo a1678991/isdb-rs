@@ -1,6 +1,6 @@
-//! `isdb capture`: receive one contiguous block of raw IQ samples from a
-//! radio at any rate it supports and save it with SigMF metadata. Receive
-//! only; nothing is transmitted.
+//! `isdb capture`: receive raw IQ samples from a radio at any rate it
+//! supports, in one contiguous piece or streamed with its losses marked,
+//! and save them with SigMF metadata. Receive only; nothing is transmitted.
 
 use crate::bands::{Freq, parse_count, parse_hz};
 use crate::phyargs::parse_gain;
@@ -8,16 +8,18 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use isdb_iq::sigmf::{Meta, Segment};
 use isdb_iq::{SampleFormat, meta_path_for};
-use isdb_radio::{Capture, DeviceSpec, RadioConfig};
+use isdb_radio::{Capture, CaptureFormat, DeviceSpec, RadioConfig};
 use serde_json::json;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// `isdb capture` arguments.
 #[derive(Debug, Args)]
 pub struct CaptureArgs {
     /// The radio: BACKEND[:key=value,...] (e.g.
-    /// `pluto:uri=ip:192.0.2.30`, `pluto:uri=ip:192.0.2.30,recorder=maia`).
+    /// `pluto:uri=ip:192.0.2.30`, `pluto:uri=ip:192.0.2.30,recorder=maia,bits=8`,
+    /// `pluto:uri=ip:192.0.2.30,recorder=stream`).
     #[arg(long, value_name = "SPEC")]
     pub radio: DeviceSpec,
     /// Centre frequency: Hz (`1049480000`, `1049.48M`) or a channel name:
@@ -30,9 +32,14 @@ pub struct CaptureArgs {
     #[arg(long, value_name = "SPS", value_parser = parse_hz)]
     pub rate: f64,
     /// Samples per segment (`4Mi`, `16515072`); default: the largest the
-    /// radio captures contiguously.
-    #[arg(long, value_name = "N", value_parser = parse_count)]
+    /// radio captures in one piece. A streamed capture needs this or
+    /// `--seconds`.
+    #[arg(long, value_name = "N", value_parser = parse_count, conflicts_with = "seconds")]
     pub samples: Option<usize>,
+    /// Seconds of signal per segment at the requested rate, instead of
+    /// `--samples`.
+    #[arg(long, value_name = "S")]
+    pub seconds: Option<f64>,
     /// Analog bandwidth request in Hz; default 0.8 × the sample rate.
     #[arg(long, value_name = "HZ", value_parser = parse_hz)]
     pub bw: Option<f64>,
@@ -42,18 +49,24 @@ pub struct CaptureArgs {
     pub gain: Vec<(String, String)>,
     /// Number of captures written one after another into the same file.
     /// Samples between them are lost: each capture is its own SigMF
-    /// capture segment, marked `isdb:gap_before` from the second on.
+    /// capture segment, marked `isdb:gap_before` from the second on (as is
+    /// every loss a streamed capture reports).
     #[arg(long, value_name = "N", default_value_t = 1)]
     pub segments: usize,
     /// Free text for the SigMF `core:description` (do not put station
     /// names in recordings you share).
     #[arg(long, value_name = "TEXT")]
     pub description: Option<String>,
-    /// Output data file (cs16, little-endian I/Q). The SigMF metadata goes
+    /// Output data file (interleaved I/Q: cs16 little-endian, or cs8 with
+    /// `bits=8`; the SigMF datatype says which). The SigMF metadata goes
     /// next to it: `NAME.sigmf-meta` for `NAME.sigmf-data`, else the file
     /// name with `.sigmf-meta` appended.
-    #[arg(short, long, value_name = "PATH")]
-    pub out: PathBuf,
+    #[arg(short, long, value_name = "PATH", required_unless_present = "discard")]
+    pub out: Option<PathBuf>,
+    /// Receive without writing anything: a test of the radio link (rate
+    /// sustained, losses), which prints what a capture would record.
+    #[arg(long, conflicts_with_all = ["out", "overwrite", "survey"])]
+    pub discard: bool,
     /// Replace existing output files.
     #[arg(long)]
     pub overwrite: bool,
@@ -88,22 +101,25 @@ impl CaptureArgs {
     }
 }
 
-/// The SigMF metadata of `caps` (one segment each, with its number of
-/// samples; the samples themselves are not used) taken with `a`.
-pub fn metadata(a: &CaptureArgs, caps: &[(Capture, u64)]) -> Result<Meta> {
-    let (first, _) = caps.first().context("no capture")?;
-    let mut m = Meta::new(
-        SampleFormat::Cs16 {
-            full_scale: first.full_scale,
-        },
-        first.sample_rate_hz,
-    );
+/// The SigMF sample format of a capture.
+fn sample_format(f: CaptureFormat) -> SampleFormat {
+    match f {
+        CaptureFormat::Cs8 => SampleFormat::Cs8,
+        CaptureFormat::Cs16 { full_scale } => SampleFormat::Cs16 { full_scale },
+    }
+}
+
+/// The SigMF metadata of `caps` (one or more segments each: one per
+/// capture, and one more after each loss inside a capture) taken with `a`.
+pub fn metadata(a: &CaptureArgs, caps: &[Capture]) -> Result<Meta> {
+    let first = caps.first().context("no capture")?;
+    let mut m = Meta::new(sample_format(first.format), first.sample_rate_hz);
     m.recorder = Some(format!("isdb capture {}", env!("CARGO_PKG_VERSION")));
     m.hw = Some(format!("{} ({})", first.device, a.radio.backend));
     m.description.clone_from(&a.description);
     let mut start = 0u64;
-    for (i, (c, n)) in caps.iter().enumerate() {
-        if c.full_scale != first.full_scale || c.sample_rate_hz != first.sample_rate_hz {
+    for (i, c) in caps.iter().enumerate() {
+        if c.format != first.format || c.sample_rate_hz != first.sample_rate_hz {
             bail!("captures with different formats or rates cannot share a file");
         }
         let mut extra = serde_json::Map::new();
@@ -117,18 +133,71 @@ pub fn metadata(a: &CaptureArgs, caps: &[(Capture, u64)]) -> Result<Meta> {
             extra.insert("isdb:channel".into(), json!(ch.to_string()));
             extra.insert("isdb:channel_rf_hz".into(), json!(ch.rf_hz()?));
         }
-        if i > 0 {
-            extra.insert("isdb:gap_before".into(), json!(true));
+        let segment = |at: u64, gap: Option<u64>| {
+            let mut extra = extra.clone();
+            if let Some(discarded) = gap {
+                extra.insert("isdb:gap_before".into(), json!(true));
+                if discarded > 0 {
+                    extra.insert("isdb:samples_discarded".into(), json!(discarded));
+                }
+            }
+            Segment {
+                sample_start: start + at,
+                frequency: Some(a.freq.hz as f64),
+                datetime: (at == 0).then(|| isdb_iq::iso8601_utc(c.time)),
+                extra,
+            }
+        };
+        m.captures.push(segment(0, (i > 0).then_some(0)));
+        for g in c.gaps.iter().filter(|g| g.at > 0 && g.at < c.samples) {
+            m.captures.push(segment(g.at, Some(g.discarded)));
         }
-        m.captures.push(Segment {
-            sample_start: start,
-            frequency: Some(a.freq.hz as f64),
-            datetime: Some(isdb_iq::iso8601_utc(c.time)),
-            extra,
-        });
-        start += n;
+        // A loss found after the last sample written (the capture ended in
+        // the samples discarded around it) has no segment to start: its
+        // count goes on the capture's last segment.
+        let after: u64 = c
+            .gaps
+            .iter()
+            .filter(|g| g.at >= c.samples)
+            .map(|g| g.discarded)
+            .sum();
+        if after > 0 {
+            let last = m.captures.last_mut().expect("pushed above");
+            last.extra
+                .insert("isdb:samples_discarded_after".into(), json!(after));
+        }
+        start += c.samples;
     }
     Ok(m)
+}
+
+/// A writer that prints the progress of a long capture every few seconds.
+struct Progress<'a> {
+    inner: &'a mut dyn Write,
+    bytes: u64,
+    start: Instant,
+    last: Instant,
+}
+
+impl Write for Progress<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.bytes += n as u64;
+        if self.last.elapsed() >= Duration::from_secs(5) {
+            self.last = Instant::now();
+            let t = self.start.elapsed().as_secs_f64();
+            eprintln!(
+                "[capture] {:.1} MB written in {t:.1} s ({:.1} MB/s)",
+                self.bytes as f64 / 1e6,
+                self.bytes as f64 / t / 1e6
+            );
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn create(path: &Path, overwrite: bool) -> Result<std::fs::File> {
@@ -152,54 +221,77 @@ fn create(path: &Path, overwrite: bool) -> Result<std::fs::File> {
     })
 }
 
-/// Capture the segments into `data` and write their metadata.
-fn write_captures(
+/// Capture the segments into `data` (nothing with `None`) and return
+/// them.
+fn take_captures(
     a: &CaptureArgs,
     backend: &dyn isdb_radio::Backend,
     cfg: &RadioConfig,
-    samples: usize,
-    data: std::fs::File,
-    mut meta_file: std::fs::File,
-    meta_path: &Path,
-) -> Result<()> {
-    let mut data = std::io::BufWriter::new(data);
+    samples: u64,
+    data: Option<std::fs::File>,
+) -> Result<Vec<Capture>> {
+    let stop = crate::stop::flag();
+    let path = a.out.as_deref().unwrap_or(Path::new("-"));
+    let mut sink = std::io::sink();
+    let mut file;
+    let inner: &mut dyn Write = match data {
+        Some(f) => {
+            file = std::io::BufWriter::with_capacity(8 << 20, f);
+            &mut file
+        }
+        None => &mut sink,
+    };
     let mut caps = Vec::with_capacity(a.segments);
     for i in 0..a.segments {
-        let t = std::time::Instant::now();
-        let mut c = backend.capture(cfg, samples)?;
-        let n = c.iq.len() / 2;
+        if stop.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        let t = Instant::now();
+        let mut out = Progress {
+            inner: &mut *inner,
+            bytes: 0,
+            start: t,
+            last: t,
+        };
+        let c = backend
+            .capture(cfg, samples, &mut out, &stop)
+            .with_context(|| format!("capture into {}", path.display()))?;
+        let secs = t.elapsed().as_secs_f64();
+        let lost: u64 = c.gaps.iter().map(|g| g.discarded).sum();
         eprintln!(
-            "[capture] segment {}/{}: {} samples at {:.2} Hz, LO {} Hz, {}, {} ({:.2} s)",
+            "[capture] segment {}/{}: {} samples ({}) at {:.2} Hz, LO {} Hz, {}, {} ({secs:.2} s, {:.1} MB/s); {}",
             i + 1,
             a.segments,
-            n,
+            c.samples,
+            sample_format(c.format),
             c.sample_rate_hz,
             c.lo_hz,
             c.gain,
             c.method,
-            t.elapsed().as_secs_f64()
+            out.bytes as f64 / secs / 1e6,
+            if c.gaps.is_empty() {
+                "no loss reported".to_string()
+            } else {
+                format!(
+                    "{} loss(es) reported (after sample {}), {lost} samples discarded around them",
+                    c.gaps.len(),
+                    c.gaps
+                        .iter()
+                        .map(|g| g.at.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
         );
-        let bytes: Vec<u8> = c.iq.iter().flat_map(|v| v.to_le_bytes()).collect();
-        data.write_all(&bytes)
-            .with_context(|| format!("write {}", a.out.display()))?;
-        // Keep the metadata only: the samples are on disk.
-        c.iq = Vec::new();
-        caps.push((c, n as u64));
+        caps.push(c);
     }
-    data.flush()
-        .with_context(|| format!("write {}", a.out.display()))?;
-    let total: u64 = caps.iter().map(|(_, n)| n).sum();
-    let m = metadata(a, &caps)?;
-    meta_file
-        .write_all(m.to_json().as_bytes())
-        .with_context(|| format!("write {}", meta_path.display()))?;
-    eprintln!(
-        "[capture] done: {total} samples ({:.1} ms) in {}; device {}",
-        total as f64 / m.sample_rate * 1e3,
-        a.out.display(),
-        caps[0].0.device
-    );
-    Ok(())
+    inner
+        .flush()
+        .with_context(|| format!("write {}", path.display()))?;
+    if caps.is_empty() {
+        bail!("stopped before the first capture");
+    }
+    Ok(caps)
 }
 
 /// Run `isdb capture`.
@@ -213,7 +305,15 @@ pub fn run(a: &CaptureArgs) -> Result<()> {
         .capture_limit(&cfg)?
         .with_context(|| format!("radio backend {:?} cannot capture", backend.name()))?;
     let settings = backend.describe_capture(&cfg)?;
-    let samples = a.samples.unwrap_or(limit);
+    let samples = match (a.samples, a.seconds) {
+        (Some(n), _) => n as u64,
+        (None, Some(t)) if t.is_finite() && t > 0.0 => (t * cfg.sample_rate_hz()).round() as u64,
+        (None, Some(t)) => bail!("--seconds {t}: must be > 0"),
+        (None, None) if limit == u64::MAX => {
+            bail!("a streamed capture needs --samples or --seconds")
+        }
+        (None, None) => limit,
+    };
     if samples == 0 || samples > limit {
         bail!(
             "--samples {samples}: {} captures at most {limit} contiguous samples ({why}); use --segments for more (with gaps)",
@@ -223,36 +323,61 @@ pub fn run(a: &CaptureArgs) -> Result<()> {
     let label = a.freq.channel.map(|c| c.label()).unwrap_or_default();
     eprintln!("{} capture settings{label}:\n{settings}", backend.name());
     eprintln!(
-        "  capture      {} segment(s) of {samples} samples ({:.1} ms each at the requested rate); at most {limit} ({why})",
+        "  capture      {} segment(s) of {samples} samples ({:.1} ms each at the requested rate); {}",
         a.segments,
-        samples as f64 / cfg.sample_rate_hz() * 1e3
+        samples as f64 / cfg.sample_rate_hz() * 1e3,
+        if limit == u64::MAX {
+            why
+        } else {
+            format!("at most {limit} ({why})")
+        }
     );
-    let meta_path = meta_path_for(&a.out);
-    eprintln!(
-        "  output       {} + {}",
-        a.out.display(),
-        meta_path.display()
-    );
+    let Some(out) = a.out.as_deref() else {
+        eprintln!("  output       none (--discard)");
+        if a.dry_run {
+            eprintln!("dry run: radio not opened");
+            return Ok(());
+        }
+        take_captures(a, backend, &cfg, samples, None)?;
+        return Ok(());
+    };
+    let meta_path = meta_path_for(out);
+    eprintln!("  output       {} + {}", out.display(), meta_path.display());
     if a.dry_run {
         eprintln!("dry run: radio not opened");
         return Ok(());
     }
-    let data = create(&a.out, a.overwrite)?;
-    let meta_file = match create(&meta_path, a.overwrite) {
+    let data = create(out, a.overwrite)?;
+    let mut meta_file = match create(&meta_path, a.overwrite) {
         Ok(f) => f,
         Err(e) => {
-            let _ = std::fs::remove_file(&a.out);
+            let _ = std::fs::remove_file(out);
             return Err(e);
         }
     };
     // A failed capture leaves no partial recording behind.
-    if let Err(e) = write_captures(a, backend, &cfg, samples, data, meta_file, &meta_path) {
-        let _ = std::fs::remove_file(&a.out);
+    let written = take_captures(a, backend, &cfg, samples, Some(data)).and_then(|caps| {
+        let m = metadata(a, &caps)?;
+        meta_file
+            .write_all(m.to_json().as_bytes())
+            .with_context(|| format!("write {}", meta_path.display()))?;
+        let total: u64 = caps.iter().map(|c| c.samples).sum();
+        eprintln!(
+            "[capture] done: {total} samples ({:.1} ms) in {}, {} SigMF segment(s); device {}",
+            total as f64 / m.sample_rate * 1e3,
+            out.display(),
+            m.captures.len(),
+            caps[0].device
+        );
+        Ok(())
+    });
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(out);
         let _ = std::fs::remove_file(&meta_path);
         return Err(e);
     }
     if a.survey {
-        crate::iq::survey_file(&a.out, None, None, None, 0, false)?;
+        crate::iq::survey_file(out, None, None, None, 0, false)?;
     }
     Ok(())
 }
@@ -261,6 +386,7 @@ pub fn run(a: &CaptureArgs) -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+    use isdb_radio::CaptureGap;
 
     #[derive(Parser)]
     struct T {
@@ -340,9 +466,10 @@ mod tests {
             "--radio", "pluto", "--freq", "nd2", "--rate", "61.44M", "-o", "z",
         ])
         .unwrap();
-        let cap = |t: f64| Capture {
-            iq: vec![0; 8],
-            full_scale: 2048.0,
+        let cap = |t: f64, gaps: Vec<CaptureGap>| Capture {
+            format: CaptureFormat::Cs16 { full_scale: 2048.0 },
+            samples: 4,
+            gaps,
             sample_rate_hz: 61_440_000.0,
             lo_hz: 1_612_999_998,
             rf_bandwidth_hz: Some(49_152_000),
@@ -351,7 +478,11 @@ mod tests {
             method: "libiio single buffer".into(),
             time: t,
         };
-        let m = metadata(&a, &[(cap(1_792_484_130.0), 4), (cap(1_792_484_131.0), 4)]).unwrap();
+        let m = metadata(
+            &a,
+            &[cap(1_792_484_130.0, vec![]), cap(1_792_484_131.0, vec![])],
+        )
+        .unwrap();
         assert_eq!(m.format, SampleFormat::AD936X_CS16);
         assert_eq!(m.captures.len(), 2);
         assert_eq!(m.captures[1].sample_start, 4);
@@ -364,6 +495,7 @@ mod tests {
         assert_eq!(m.captures[0].extra["isdb:lo_hz"], json!(1_612_999_998u64));
         assert!(!m.captures[0].extra.contains_key("isdb:gap_before"));
         assert_eq!(m.captures[1].extra["isdb:gap_before"], json!(true));
+        assert!(!m.captures[1].extra.contains_key("isdb:samples_discarded"));
         assert_eq!(
             m.captures[1].datetime.as_deref(),
             Some("2026-10-20T08:15:31.000Z")
@@ -371,5 +503,90 @@ mod tests {
         let back = Meta::from_json(&m.to_json()).unwrap();
         assert_eq!(back, m);
         assert_eq!(back.segment_ranges(8), vec![0..4, 4..8]);
+
+        // A streamed cs8 capture with a loss after 3 samples (and one
+        // reported after the last sample, which leaves nothing to mark).
+        let mut c = cap(1_792_484_130.0, vec![]);
+        c.format = CaptureFormat::Cs8;
+        c.samples = 10;
+        c.gaps = vec![
+            CaptureGap {
+                at: 3,
+                discarded: 1000,
+            },
+            CaptureGap {
+                at: 10,
+                discarded: 7,
+            },
+        ];
+        let m = metadata(&a, &[c.clone()]).unwrap();
+        assert_eq!(m.format, SampleFormat::Cs8);
+        assert_eq!(m.captures.len(), 2);
+        assert_eq!(
+            m.captures[1].extra["isdb:samples_discarded_after"],
+            json!(7)
+        );
+        assert!(
+            !m.captures[0]
+                .extra
+                .contains_key("isdb:samples_discarded_after")
+        );
+        assert_eq!(m.captures[1].sample_start, 3);
+        assert_eq!(m.captures[1].extra["isdb:gap_before"], json!(true));
+        assert_eq!(m.captures[1].extra["isdb:samples_discarded"], json!(1000));
+        assert_eq!(m.captures[1].datetime, None);
+        assert_eq!(m.segment_ranges(10), vec![0..3, 3..10]);
+        // Formats cannot mix in one file.
+        assert!(metadata(&a, &[c, cap(0.0, vec![])]).is_err());
+    }
+
+    #[test]
+    fn discard_and_seconds() {
+        let a = args(&[
+            "--radio",
+            "pluto:recorder=stream,bits=8",
+            "--freq",
+            "bs1",
+            "--rate",
+            "40M",
+            "--seconds",
+            "2.5",
+            "--discard",
+        ])
+        .unwrap();
+        assert!(a.discard && a.out.is_none());
+        assert_eq!(a.seconds, Some(2.5));
+        // --discard and --out exclude each other; one of them is needed;
+        // --samples and --seconds exclude each other.
+        for bad in [
+            vec![
+                "--radio",
+                "pluto",
+                "--freq",
+                "bs1",
+                "--rate",
+                "1M",
+                "--discard",
+                "-o",
+                "x",
+            ],
+            vec!["--radio", "pluto", "--freq", "bs1", "--rate", "1M"],
+            vec![
+                "--radio",
+                "pluto",
+                "--freq",
+                "bs1",
+                "--rate",
+                "1M",
+                "--samples",
+                "1Mi",
+                "--seconds",
+                "1",
+                "-o",
+                "x",
+            ],
+        ] {
+            assert!(args(&bad).is_err(), "{bad:?}");
+        }
     }
 }

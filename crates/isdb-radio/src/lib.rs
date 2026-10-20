@@ -17,10 +17,12 @@
 //!   touching hardware ([`Backend::describe_tx`] / [`Backend::describe_rx`],
 //!   which is what a dry run prints) and opens the device
 //!   ([`Backend::open_tx`] / [`Backend::open_rx`]). A backend can
-//!   also take one contiguous [`Capture`] of raw samples
-//!   ([`Backend::capture`], up to [`Backend::capture_limit`]), at any
-//!   rate the device supports: the way to record signals of other systems
-//!   (ISDB-S, ISDB-S3) faster than the host link can stream.
+//!   also take a [`Capture`] of raw samples ([`Backend::capture`], up to
+//!   [`Backend::capture_limit`]) at any rate the device supports, in one
+//!   contiguous piece or streamed with its losses reported
+//!   ([`CaptureGap`]): the way to record signals of other systems
+//!   (ISDB-S, ISDB-S3), in one piece when they are faster than the host
+//!   link can stream.
 //! * [`backends`] / [`backend`]: the backends compiled into this build.
 //! * [`Quantizer`]: scaling of the unit-RMS OFDM signal into integer
 //!   samples (e.g. [`Cs8`]) with a backoff below full scale and a count of
@@ -254,16 +256,54 @@ impl RxOptions {
     }
 }
 
-/// Samples captured in one piece by [`Backend::capture`], as the device
-/// delivered them, with the settings read back from it.
+/// How the bytes [`Backend::capture`] writes encode the samples:
+/// interleaved I, Q components.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CaptureFormat {
+    /// Signed 8-bit components; 128 is full scale.
+    Cs8,
+    /// Signed 16-bit little-endian components.
+    Cs16 {
+        /// The component value of 1.0: 2048 for 12-bit samples
+        /// sign-extended in 16 bits (Pluto through libiio), 32768 for
+        /// samples left-aligned in 16 bits (Tezuka's maia-sdr recorder).
+        full_scale: f32,
+    },
+}
+
+impl CaptureFormat {
+    /// Bytes per complex sample.
+    pub fn bytes_per_sample(&self) -> usize {
+        match self {
+            Self::Cs8 => 2,
+            Self::Cs16 { .. } => 4,
+        }
+    }
+}
+
+/// Samples lost inside one [`Capture`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureGap {
+    /// Samples written before the gap.
+    pub at: u64,
+    /// Samples received around the loss but not written, because the
+    /// device reports a loss without its exact position: the samples
+    /// before `at` and from `at` on are each contiguous, and an unknown
+    /// number of samples (at least one) is missing in between.
+    pub discarded: u64,
+}
+
+/// One capture taken by [`Backend::capture`]: what was written and the
+/// settings read back from the device.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Capture {
-    /// Interleaved I, Q components, contiguous in time.
-    pub iq: Vec<i16>,
-    /// The component value of 1.0: 2048 for 12-bit samples sign-extended
-    /// in `i16` (Pluto through libiio), 32768 for samples left-aligned in
-    /// 16 bits (Tezuka's maia-sdr recorder).
-    pub full_scale: f32,
+    /// How the written bytes encode the samples.
+    pub format: CaptureFormat,
+    /// Samples written.
+    pub samples: u64,
+    /// Where samples were lost, in order (empty for a capture taken in one
+    /// piece).
+    pub gaps: Vec<CaptureGap>,
     /// Sample rate the device ran at, Hz (read back).
     pub sample_rate_hz: f64,
     /// LO frequency read back, Hz.
@@ -310,20 +350,30 @@ pub trait Backend: Sync {
     fn describe_capture(&self, cfg: &RadioConfig) -> Result<String> {
         self.describe_rx(cfg)
     }
-    /// The largest number of samples [`Backend::capture`] takes in one
-    /// contiguous piece with `cfg`, with a line saying where the limit
-    /// comes from; a backend that captures validates `cfg` as
-    /// [`Backend::describe_capture`] does. `None` (the default): the
-    /// backend cannot capture.
-    fn capture_limit(&self, cfg: &RadioConfig) -> Result<Option<(usize, String)>> {
+    /// The largest number of samples [`Backend::capture`] takes with
+    /// `cfg`, with a line saying where the limit comes from ([`u64::MAX`]
+    /// for a capture streamed for as long as wanted); a backend that
+    /// captures validates `cfg` as [`Backend::describe_capture`] does.
+    /// `None` (the default): the backend cannot capture.
+    fn capture_limit(&self, cfg: &RadioConfig) -> Result<Option<(u64, String)>> {
         let _ = cfg;
         Ok(None)
     }
-    /// Receive `samples` contiguous samples in one piece (no streaming
-    /// queue, so nothing can overrun), then release the device. Refuses
-    /// more than [`Backend::capture_limit`].
-    fn capture(&self, cfg: &RadioConfig, samples: usize) -> Result<Capture> {
-        let _ = (cfg, samples);
+    /// Receive `samples` samples and write their bytes to `out` as they
+    /// arrive, then release the device. Refuses more than
+    /// [`Backend::capture_limit`]. A capture taken in one piece (one DMA
+    /// transfer) is contiguous. A streamed one spans `samples` sample
+    /// periods: it reports where the device lost samples
+    /// ([`Capture::gaps`]), writes fewer samples when it does, and ends
+    /// early once `stop` is set.
+    fn capture(
+        &self,
+        cfg: &RadioConfig,
+        samples: u64,
+        out: &mut dyn std::io::Write,
+        stop: &AtomicBool,
+    ) -> Result<Capture> {
+        let _ = (cfg, samples, out, stop);
         bail!("radio backend {:?} cannot capture", self.name())
     }
 }

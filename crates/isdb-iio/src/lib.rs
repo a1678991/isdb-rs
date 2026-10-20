@@ -1,6 +1,8 @@
 //! Safe, minimal wrapper over the system `libiio` (0.x API) for attribute
-//! access and continuous TX/RX streaming of 16-bit I/Q, as used with the
-//! ADALM-Pluto family of AD936x radios.
+//! and register access and continuous TX/RX streaming of 16-bit I/Q, as
+//! used with the ADALM-Pluto family of AD936x radios, plus raw RX streams
+//! and captures of the bytes as the device stores them (for packed
+//! formats such as Tezuka's 8- and 12-bit modes).
 //!
 //! A [`Context`] is one connection to an IIO context (`ip:192.168.2.1`,
 //! `usb:1.2.5`, `local:`, …). Attributes are read and written through
@@ -198,6 +200,26 @@ pub struct RxStream {
     pub counters: Arc<Counters>,
 }
 
+/// Consumer side of a raw RX stream ([`Context::start_rx_raw`]).
+pub struct RawRxStream {
+    /// Received buffers, the bytes exactly as the device stored them.
+    pub receiver: Receiver<Vec<u8>>,
+    /// Bytes per sample (all enabled channels).
+    pub sample_bytes: usize,
+    /// Live counters (`overruns` stays 0: a raw stream waits for its
+    /// consumer instead of dropping).
+    pub counters: Arc<Counters>,
+}
+
+impl std::fmt::Debug for RawRxStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawRxStream")
+            .field("sample_bytes", &self.sample_bytes)
+            .field("counters", &self.counters)
+            .finish_non_exhaustive()
+    }
+}
+
 impl std::fmt::Debug for TxStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TxStream")
@@ -239,6 +261,23 @@ impl BufPtr {
             let end = ffi::iio_buffer_end(self.0.as_ptr()).cast::<i16>();
             let len = usize::try_from(end.offset_from(start)).unwrap_or(0);
             std::slice::from_raw_parts_mut(start, len)
+        }
+    }
+}
+
+impl BufPtr {
+    /// The buffer's memory as bytes.
+    ///
+    /// # Safety
+    ///
+    /// As for [`BufPtr::components`].
+    unsafe fn bytes<'a>(self) -> &'a [u8] {
+        // SAFETY: start..end is the buffer's sample memory.
+        unsafe {
+            let start = ffi::iio_buffer_start(self.0.as_ptr()).cast::<u8>();
+            let end = ffi::iio_buffer_end(self.0.as_ptr()).cast::<u8>();
+            let len = usize::try_from(end.offset_from(start)).unwrap_or(0);
+            std::slice::from_raw_parts(start, len)
         }
     }
 }
@@ -368,15 +407,18 @@ impl Context {
 
     /// Enable `channels` (outputs for TX, inputs for RX) of `device` and
     /// create a buffer of `samples` samples over `kernel_buffers` kernel
-    /// blocks. Every enabled channel must be stored in 16 bits.
+    /// blocks. Unless `raw`, every enabled channel must be stored in 16
+    /// bits. Returns the buffer, the enabled channels and the bytes per
+    /// sample.
     fn open_stream(
         &self,
         device: &str,
         channels: &[&str],
         output: bool,
+        raw: bool,
         samples: usize,
         kernel_buffers: u32,
-    ) -> Result<(BufPtr, Vec<NonNull<ffi::iio_channel>>)> {
+    ) -> Result<(BufPtr, Vec<NonNull<ffi::iio_channel>>, usize)> {
         let dev = self.device(device)?;
         let what = || format!("{device} in {}", self.uri);
         if channels.is_empty() || samples == 0 {
@@ -402,7 +444,11 @@ impl Context {
         };
         // SAFETY: valid device.
         let size = unsafe { ffi::iio_device_get_sample_size(dev.dev.as_ptr()) };
-        if size != 2 * channels.len() as isize {
+        if if raw {
+            size <= 0
+        } else {
+            size != 2 * channels.len() as isize
+        } {
             disable(&enabled);
             return Err(Error {
                 call: "iio_device_get_sample_size",
@@ -424,7 +470,7 @@ impl Context {
         // SAFETY: valid device with its channels enabled; not cyclic.
         let buf = unsafe { ffi::iio_device_create_buffer(dev.dev.as_ptr(), samples, false) };
         match NonNull::new(buf) {
-            Some(b) => Ok((BufPtr(b), enabled)),
+            Some(b) => Ok((BufPtr(b), enabled, size as usize)),
             None => {
                 let e = last_error("iio_device_create_buffer", what());
                 disable(&enabled);
@@ -450,7 +496,8 @@ impl Context {
         kernel_buffers: u32,
         depth: usize,
     ) -> Result<TxStream> {
-        let (buf, enabled) = self.open_stream(device, channels, true, samples, kernel_buffers)?;
+        let (buf, enabled, _) =
+            self.open_stream(device, channels, true, false, samples, kernel_buffers)?;
         let (sender, rx) = sync_channel(depth);
         let counters = Arc::new(Counters::default());
         let stop = Arc::new(AtomicBool::new(false));
@@ -480,7 +527,8 @@ impl Context {
         kernel_buffers: u32,
         depth: usize,
     ) -> Result<RxStream> {
-        let (buf, enabled) = self.open_stream(device, channels, false, samples, kernel_buffers)?;
+        let (buf, enabled, _) =
+            self.open_stream(device, channels, false, false, samples, kernel_buffers)?;
         let (tx, receiver) = sync_channel(depth);
         let counters = Arc::new(Counters::default());
         let stop = Arc::new(AtomicBool::new(false));
@@ -499,10 +547,55 @@ impl Context {
         Ok(RxStream { receiver, counters })
     }
 
+    /// Start receiving the raw bytes of `channels` (inputs) of `device` in
+    /// buffers of `samples` samples, `kernel_buffers` of them in the
+    /// kernel, with up to `depth` buffers queued for the consumer.
+    ///
+    /// Unlike [`Context::start_rx`], the channels may have any storage
+    /// size (a device may pack samples in its own way, such as Tezuka's
+    /// 8-bit I/Q in one 16-bit channel), and the stream never drops a
+    /// buffer: when the queue is full the stream thread waits, the device's
+    /// kernel blocks fill up and the device itself overflows, which a
+    /// device may report (an ADI ADC core in its status register, see
+    /// [`Device::reg_read`]).
+    pub fn start_rx_raw(
+        &mut self,
+        device: &str,
+        channels: &[&str],
+        samples: usize,
+        kernel_buffers: u32,
+        depth: usize,
+    ) -> Result<RawRxStream> {
+        let (buf, enabled, sample_bytes) =
+            self.open_stream(device, channels, false, true, samples, kernel_buffers)?;
+        let (tx, receiver) = sync_channel(depth);
+        let counters = Arc::new(Counters::default());
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let (counters, stop) = (counters.clone(), stop.clone());
+            let what = format!("{device} in {}", self.uri);
+            std::thread::Builder::new()
+                .name("iio-rx-raw".into())
+                .spawn(move || {
+                    let r = raw_rx_loop(buf, &tx, &counters, &stop, &what);
+                    counters.finished.store(true, Ordering::SeqCst);
+                    r
+                })
+        };
+        self.add_stream(buf, enabled, stop, thread, counters.clone())?;
+        Ok(RawRxStream {
+            receiver,
+            sample_bytes,
+            counters,
+        })
+    }
+
     /// Capture one buffer of `samples` samples from `channels` (inputs) of
     /// `device`: create the buffer over `kernel_buffers` kernel blocks,
-    /// refill it once and return its interleaved components (one `i16`
-    /// per enabled channel per sample, in channel order).
+    /// refill it once and return its bytes as the device stored them
+    /// (16-bit channels: little-endian, interleaved in channel order).
+    /// The channels may have any storage size, as for
+    /// [`Context::start_rx_raw`].
     ///
     /// The samples of one refill are one DMA block, so they are contiguous
     /// in time; two calls are not. How large a buffer the device can
@@ -516,8 +609,9 @@ impl Context {
         channels: &[&str],
         samples: usize,
         kernel_buffers: u32,
-    ) -> Result<Vec<i16>> {
-        let (buf, enabled) = self.open_stream(device, channels, false, samples, kernel_buffers)?;
+    ) -> Result<Vec<u8>> {
+        let (buf, enabled, _) =
+            self.open_stream(device, channels, false, true, samples, kernel_buffers)?;
         // SAFETY: the buffer is live and used by this thread only.
         let rc = unsafe { ffi::iio_buffer_refill(buf.0.as_ptr()) };
         let r = check(
@@ -528,10 +622,7 @@ impl Context {
         .map(|_| {
             // SAFETY: the only slice of the buffer, dropped before it is
             // destroyed below.
-            unsafe { buf.components() }
-                .iter()
-                .map(|&x| i16::from_le(x))
-                .collect()
+            unsafe { buf.bytes() }.to_vec()
         });
         // SAFETY: nothing else uses the buffer; destroyed once.
         unsafe { ffi::iio_buffer_destroy(buf.0.as_ptr()) };
@@ -734,6 +825,44 @@ fn tx_loop(
     }
 }
 
+/// Raw RX stream thread: refill the buffer and queue a copy of its bytes,
+/// waiting (not dropping) while the queue is full.
+fn raw_rx_loop(
+    buf: BufPtr,
+    tx: &SyncSender<Vec<u8>>,
+    counters: &Counters,
+    stop: &AtomicBool,
+    what: &str,
+) -> Result<()> {
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        // SAFETY: the buffer is live and no slice of it is held.
+        let rc = unsafe { ffi::iio_buffer_refill(buf.0.as_ptr()) };
+        if rc < 0 && stop.load(Ordering::SeqCst) {
+            return Ok(()); // cancelled by stop()
+        }
+        check("iio_buffer_refill", || what.to_string(), rc)?;
+        // SAFETY: the only slice of the buffer, dropped before the refill.
+        let mut data = unsafe { buf.bytes() }.to_vec();
+        counters.buffers.fetch_add(1, Ordering::Relaxed);
+        loop {
+            match tx.try_send(data) {
+                Ok(()) => break,
+                Err(TrySendError::Full(d)) => {
+                    if stop.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    data = d;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(TrySendError::Disconnected(_)) => return Ok(()),
+            }
+        }
+    }
+}
+
 /// RX stream thread: refill the buffer and queue a copy of it.
 fn rx_loop(
     buf: BufPtr,
@@ -850,6 +979,33 @@ impl<'a> Device<'a> {
         let rc =
             unsafe { ffi::iio_device_debug_attr_write(self.dev.as_ptr(), a.as_ptr(), v.as_ptr()) };
         check("iio_device_debug_attr_write", || self.what(attr), rc).map(|_| ())
+    }
+
+    /// Read a device register (libiio's `direct_reg_access`; ADI drivers
+    /// map addresses with bit 31 set to the HDL core, the others to the
+    /// converter's SPI registers).
+    pub fn reg_read(&self, address: u32) -> Result<u32> {
+        let mut value = 0u32;
+        // SAFETY: valid device and out pointer.
+        let rc = unsafe { ffi::iio_device_reg_read(self.dev.as_ptr(), address, &mut value) };
+        check(
+            "iio_device_reg_read",
+            || self.what(&format!("register {address:#010x}")),
+            rc as isize,
+        )?;
+        Ok(value)
+    }
+
+    /// Write a device register (see [`Device::reg_read`]).
+    pub fn reg_write(&self, address: u32, value: u32) -> Result<()> {
+        // SAFETY: valid device.
+        let rc = unsafe { ffi::iio_device_reg_write(self.dev.as_ptr(), address, value) };
+        check(
+            "iio_device_reg_write",
+            || self.what(&format!("register {address:#010x}")),
+            rc as isize,
+        )
+        .map(|_| ())
     }
 }
 

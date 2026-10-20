@@ -297,16 +297,21 @@ the stream has no PCR). Input packets may be 188/192/204 bytes (autodetected).
 
 ### `isdb capture` — radio → raw IQ recording (receive only)
 
-Captures one contiguous block of raw samples from a radio at any rate it
-supports (not only 512/63 MHz) and writes it as cs16 (little-endian I/Q)
-with [SigMF](https://sigmf.org) metadata next to it: `NAME.sigmf-meta` for
+Captures raw samples from a radio at any rate it supports (not only
+512/63 MHz), in one contiguous piece or streamed for as long as wanted,
+and writes them as cs16 (little-endian I/Q) or cs8 with
+[SigMF](https://sigmf.org) metadata next to them: `NAME.sigmf-meta` for
 `-o NAME.sigmf-data`, else the file name with `.sigmf-meta` appended. It
 never transmits and has no `--rf-enable`.
 
 ```sh
 isdb capture --radio pluto:uri=ip:192.0.2.30 --freq bs1 --rate 57.72M -o bs1.sigmf-data
-isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia --freq nd2 --rate 61.44M \
-    -o nd2.sigmf-data --survey
+isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --freq nd2 --rate 40M \
+    -o nd2.sigmf-data --survey                   # 64 Mi samples (1.7 s) in one piece
+isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=stream,bits=8 --freq ch27 \
+    --rate 16M --seconds 600 -o ch27.sigmf-data  # streamed, losses marked
+isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=stream,bits=8 --freq bs1 \
+    --rate 32M --seconds 60 --discard           # link test: rate and losses, no file
 ```
 
 - `--freq` is a frequency (`1049480000`, `1049.48M`) or a channel name:
@@ -317,13 +322,27 @@ isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia --freq nd2 --rate 61.
   `61.44M` is the AD936x maximum); the rate the device runs at is read
   back. `--bw` defaults to 0.8 × the rate, `--gain` takes the backend's
   gains (Pluto: `agc=…`, `gain=dB`).
-- `--samples` defaults to the largest contiguous capture of the backend
-  (`isdb_radio::Backend::capture_limit`) and more is refused. Pluto:
-  16 515 072 samples through libiio (63 MiB, 282 ms at 57.72 Msps),
-  33 554 432 with `recorder=maia` (Tezuka's maia-sdr recorder, 581 ms).
-  Longer recordings take `--segments N`: N captures one after another into
-  the same file, each its own SigMF capture segment, the 2nd and later
-  marked `isdb:gap_before` (samples between them are lost).
+- `--samples` (or `--seconds` at the requested rate) defaults to the
+  largest capture of the backend (`isdb_radio::Backend::capture_limit`)
+  and more is refused; a streamed capture needs one of them. Pluto (the
+  `recorder` and `bits` device arguments, `isdb-radio` README): through
+  libiio 16 515 072 samples in 16 bits (282 ms at 57.72 Msps) or
+  33 030 144 in 8 bits; with `recorder=maia` (Tezuka's maia-sdr recorder,
+  128 MiB) 33 554 432 / 44 739 242 / 67 108 864 samples in 16 / 12 /
+  8 bits (0.58 / 0.78 / 1.16 s at 57.72 Msps, 1.68 s in 8 bits at
+  40 Msps); with `recorder=stream` unbounded, as fast as the link carries
+  (Pluto over Gigabit Ethernet: about 63–66 MB/s at most, without loss
+  for minutes up to about 40 MB/s, e.g. 8-bit samples at 20 Msps).
+- `--segments N` takes N captures one after another into the same file,
+  each its own SigMF capture segment, the 2nd and later marked
+  `isdb:gap_before` (samples between them are lost). A streamed capture
+  that loses samples adds a segment after each loss, also marked
+  `isdb:gap_before`, with `isdb:samples_discarded`: the samples received
+  around the loss but not written, because the radio reports a loss
+  without its position (`isdb:samples_discarded_after` when the capture
+  ended among them). Within a segment the samples are contiguous.
+- `--discard` receives without writing anything: a test of the radio
+  link (the rate it sustains and its losses).
 - The metadata records the sample rate and LO read back, the RF
   bandwidth, the gain (AGC mode and the gain at the end), the device
   identity, the capture method, the host time and the channel name
@@ -332,6 +351,8 @@ isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia --freq nd2 --rate 61.
 - Existing outputs are kept unless `--overwrite`; a failed capture
   removes its partial outputs; `--dry-run` prints the settings without
   opening the radio; `--survey` runs `isdb iq survey` on the result.
+  A long capture prints its progress every 5 s; Ctrl-C ends a stream
+  early and keeps what it wrote.
 
 ### `isdb iq survey` — what a single-carrier recording contains
 
@@ -632,9 +653,10 @@ transmit with, over the in-memory `mock::MockRadio`):
 | `tests/cli.rs` `radio_tx_refuses_without_rf_enable` | `--radio hackrf --dry-run` prints the backend's settings and refuses; no `--rf-enable` ⇒ rejected |
 | `tests/cli.rs` `radio_rejects_unknown_backends_gains_and_ranges` | an unknown backend lists the compiled-in ones with their features; unknown or out-of-range `--gain` values (TX and RX) and unknown device arguments are rejected before a device is opened |
 | `tests/cli.rs` `pluto_dry_run_validates_without_a_device` | `--radio pluto:…` dry runs print the settings (attenuation, default maximum; loopback; cs12 level) and reject out-of-range attenuation, HackRF gain names, a third channel, a 50 MHz bandwidth, `loopback` on RX and manual gain with AGC, without connecting |
-| `tests/cli.rs` `capture_dry_run_validates_without_a_device` | `capture --dry-run` with `--freq bs1` / `nd24` prints the tuning (BS-1 IF 1049.48 MHz, ND24 IF 2053 MHz), the method (libiio buffer / maia-sdr at the `ip:` host) and the limit (16 515 072 / 33 554 432 samples), writes nothing; refuses more samples than the limit, `buffer` (a streaming argument), `bs2`, a 60 MHz bandwidth and a backend that cannot capture |
+| `tests/cli.rs` `capture_dry_run_validates_without_a_device` | `capture --dry-run` with `--freq bs1` / `nd24` prints the tuning (BS-1 IF 1049.48 MHz, ND24 IF 2053 MHz), the method (libiio buffer / maia-sdr at the `ip:` host) and the limit (16 515 072 / 33 554 432 samples), writes nothing; refuses more samples than the limit, `buffer` without `recorder=stream`, `loopback` (a TX argument), a stream without `--samples` / `--seconds`, `bs2`, a 60 MHz bandwidth and a backend that cannot capture |
 | `tests/cli.rs` `iq_survey_finds_rate_carrier_and_system` | `iq survey` on a synthetic QPSK file at 28.86 Mbaud, 61.44 Msps, −115 kHz: a raw file needs `--format`/`--rate`; the JSON names ISDB-S and gives the rate and the offset within one FFT bin; with SigMF metadata the format, rate, centre and channel come from it |
 | `tests/cli.rs` `capture_from_a_pluto` | opt-in hardware, receive only (`ISDB_RS_PLUTO_URI`, optionally `ISDB_RS_PLUTO_CAPTURE_FREQ`, default `bs1`): two 256 Ki-sample segments at 61.44 Msps; data size, SigMF datatype, full scale 2048, rate read back within 10 ppm, the second segment's start and gap marker, the capture method; an existing output is not overwritten. Prints `SKIP` without the variable |
+| `tests/cli.rs` `tezuka_captures` | opt-in hardware, receive only, Tezuka firmware (`ISDB_RS_TEZUKA_URI`, optionally `ISDB_RS_PLUTO_CAPTURE_FREQ`): an 8-bit libiio buffer (1 Mi samples at 40 Msps), a 1 s 8-bit stream at 10 Msps, maia-sdr recordings in 8 and 12 bits (4 Mi samples at 40 Msps); for each the SigMF datatype and full scale, the capture method and the file size against the samples written (a stream's discarded samples subtracted). Prints `SKIP` without the variable |
 | `tests/cli.rs` `radio_without_backends_names_the_feature` | `--no-default-features` build: `tx`/`rx --radio hackrf` and `--radio pluto` name their features |
 | `tests/cli.rs` `scrambled_input_is_refused` | a TS with one scrambled packet (transport_scrambling_control ≠ '00') is refused: `isdb` neither descrambles nor transmits scrambled content |
 | `tests/cli.rs` `completions_cover_every_subcommand` | `completions bash` defines `_isdb` and dispatches every subcommand; `completions zsh` starts with `#compdef isdb` and lists every subcommand; both complete `--radio`; an unknown shell is a usage error |

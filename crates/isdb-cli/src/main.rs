@@ -97,7 +97,10 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Ts(a) => ts::run(a),
         Command::Mux(a) => mux::run(a),
-        Command::Capture(a) => capture::run(&a),
+        Command::Capture(a) => {
+            stop::install()?;
+            capture::run(&a)
+        }
         Command::Iq(a) => iq::run(&a),
         Command::Completions { shell } => {
             let mut script = Vec::new();

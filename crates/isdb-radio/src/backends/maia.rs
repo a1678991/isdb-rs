@@ -2,25 +2,96 @@
 //! `recorder=maia`).
 //!
 //! maia-sdr (in the Tezuka firmware for PlutoSDR-family boards) records the
-//! AD936x RX samples by DMA into a 128 MiB buffer in the board's DDR, at
-//! the rate and LO libiio programmed. Its HTTP server (port 80) is used
+//! AD936x RX1 samples by DMA into a buffer in the board's DDR, at the rate
+//! and LO libiio programmed. The buffer is 128 MiB from 0x06000000: the
+//! device tree reserves 256 MiB (`maia_sdr_recording`, and
+//! `/sys/class/maia-sdr/maia-sdr-recording/device/recording_size` says
+//! 0x10000000), but the gateware's DMA stops at the end address it was
+//! built with, 0x0E000000 in maia-hdl's `maia_iio_lite` configuration,
+//! which Tezuka v0.3.24 uses ("size only 0x8000000"). Every mode stopped
+//! at exactly 128 MiB on a PlutoSky R2. Its HTTP server (port 80) is used
 //! as observed with maia-httpd 0.6.0 (Tezuka v0.3.24):
 //!
 //! * `GET /api`: the whole state as JSON (`ddc.enabled`, `recorder.state`);
-//! * `PATCH /api/recorder` with `{"mode":"IQ16bit","maximum_duration":S,
+//! * `PATCH /api/recorder` with `{"mode":M,"maximum_duration":S,
 //!   "prepend_timestamp":false}`, then `{"state_change":"Start"}`; the
-//!   state returns to `Stopped` when the duration or the buffer is used up;
-//! * `GET /recording`: a tar of `NAME.sigmf-meta` and `NAME.sigmf-data`
-//!   (`ci16_le`, 12-bit samples left-aligned in 16 bits).
+//!   state returns to `Stopped` when the duration or the buffer is used up
+//!   (`maximum_duration` is the setting last written, not a capacity);
+//! * `GET /recording`: a tar of `NAME.sigmf-meta` and `NAME.sigmf-data`.
+//!
+//! The modes, as measured (BS-1 at 40 Msps, against 16-bit captures of
+//! the same signal):
+//!
+//! | `mode` | in DDR | `sigmf-data` | value of 1.0 |
+//! |---|---|---|---|
+//! | `IQ16bit` | 4 bytes/sample | `ci16_le`, 12 bits left-aligned (low 4 bits 0) | 32768 |
+//! | `IQ12bit` | 3 bytes/sample | `ci16_le`, unpacked by maia-httpd, sign-extended | 2048 |
+//! | `IQ8bit` | 2 bytes/sample | `ci8`, the 12-bit sample / 16 rounded down (mean −0.47 LSB) | 128 |
 
+use crate::CaptureFormat;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
-/// Samples of the recorder buffer in 16-bit mode: 128 MiB / 4 bytes.
-pub(crate) const MAX_SAMPLES: usize = 33_554_432;
+/// Bytes of the recorder buffer (Tezuka v0.3.24: the `maia_iio_lite`
+/// gateware's DMA range).
+pub(crate) const BUFFER_BYTES: u64 = 128 << 20;
+
+/// A recorder mode: 8, 12 or 16 bits per component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Mode(pub(crate) u8);
+
+impl Mode {
+    /// The API name (`IQ16bit`).
+    fn name(self) -> &'static str {
+        match self.0 {
+            8 => "IQ8bit",
+            12 => "IQ12bit",
+            _ => "IQ16bit",
+        }
+    }
+
+    /// Bytes per sample in the DDR buffer.
+    fn stored_bytes(self) -> u64 {
+        match self.0 {
+            8 => 2,
+            12 => 3,
+            _ => 4,
+        }
+    }
+
+    /// The samples the buffer holds.
+    pub(crate) fn max_samples(self) -> u64 {
+        BUFFER_BYTES / self.stored_bytes()
+    }
+
+    /// The format of the downloaded samples.
+    pub(crate) fn format(self) -> CaptureFormat {
+        match self.0 {
+            8 => CaptureFormat::Cs8,
+            12 => CaptureFormat::Cs16 { full_scale: 2048.0 },
+            _ => CaptureFormat::Cs16 {
+                full_scale: 32768.0,
+            },
+        }
+    }
+
+    /// The SigMF datatype of the downloaded samples.
+    fn datatype(self) -> &'static str {
+        if self.0 == 8 { "ci8" } else { "ci16_le" }
+    }
+
+    /// How the samples were made, for the capture method.
+    pub(crate) fn describe(self) -> &'static str {
+        match self.0 {
+            8 => "IQ8bit: 12-bit samples / 16 rounded down, mean -0.5 LSB",
+            12 => "IQ12bit: 12-bit samples, sign-extended on download",
+            _ => "IQ16bit: 12-bit samples left-aligned",
+        }
+    }
+}
 
 /// One HTTP/1.1 request with `Connection: close`; the body of a 200
 /// response.
@@ -106,10 +177,22 @@ fn untar(t: &[u8]) -> Result<Vec<(String, &[u8])>> {
 }
 
 /// Record `samples` samples at the programmed `rate_hz` with the maia-sdr
-/// recorder of `host`: interleaved components (12 bits left-aligned).
-pub(crate) fn record(host: &str, rate_hz: f64, samples: usize) -> Result<Vec<i16>> {
-    if samples > MAX_SAMPLES {
-        bail!("maia-sdr recorder holds at most {MAX_SAMPLES} samples of 16 bits");
+/// recorder of `host` in `mode` and write their bytes ([`Mode::format`])
+/// to `out`.
+pub(crate) fn record(
+    host: &str,
+    rate_hz: f64,
+    samples: u64,
+    mode: Mode,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if samples > mode.max_samples() {
+        bail!(
+            "maia-sdr recorder holds at most {} samples in {} ({} MiB)",
+            mode.max_samples(),
+            mode.name(),
+            BUFFER_BYTES >> 20
+        );
     }
     let api = json(host, "GET", "/api", None)?;
     if api["ddc"]["enabled"].as_bool() == Some(true) {
@@ -123,7 +206,7 @@ pub(crate) fn record(host: &str, rate_hz: f64, samples: usize) -> Result<Vec<i16
     }
     let seconds = samples as f64 / rate_hz;
     let settings = serde_json::json!({
-        "mode": "IQ16bit",
+        "mode": mode.name(),
         "prepend_timestamp": false,
         // A little longer than needed; the excess is cut off below.
         "maximum_duration": seconds * 1.01 + 0.001,
@@ -165,10 +248,12 @@ pub(crate) fn record(host: &str, rate_hz: f64, samples: usize) -> Result<Vec<i16
     let meta: Value = serde_json::from_slice(get(".sigmf-meta")?)
         .context("maia-sdr recording metadata is not JSON")?;
     let g = &meta["global"];
-    if g["core:datatype"].as_str() != Some("ci16_le") {
+    if g["core:datatype"].as_str() != Some(mode.datatype()) {
         bail!(
-            "maia-sdr recording datatype {} (want ci16_le)",
-            g["core:datatype"]
+            "maia-sdr {} recording datatype {} (want {})",
+            mode.name(),
+            g["core:datatype"],
+            mode.datatype()
         );
     }
     let rec_rate = g["core:sample_rate"].as_f64().unwrap_or(0.0);
@@ -176,23 +261,43 @@ pub(crate) fn record(host: &str, rate_hz: f64, samples: usize) -> Result<Vec<i16
         bail!("maia-sdr recorded at {rec_rate} Hz, the device was set to {rate_hz:.2} Hz");
     }
     let data = get(".sigmf-data")?;
-    if data.len() < samples * 4 {
+    let bytes = usize::try_from(samples)? * mode.format().bytes_per_sample();
+    if data.len() < bytes {
         bail!(
             "maia-sdr recorded {} samples, {samples} requested",
-            data.len() / 4
+            data.len() / mode.format().bytes_per_sample()
         );
     }
-    Ok(data[..samples * 4]
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|&b| i16::from_le_bytes(b))
-        .collect())
+    out.write_all(&data[..bytes])
+        .context("write the maia-sdr recording")?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modes() {
+        assert_eq!(Mode(16).max_samples(), 33_554_432);
+        assert_eq!(Mode(12).max_samples(), 44_739_242);
+        assert_eq!(Mode(8).max_samples(), 67_108_864);
+        assert_eq!(Mode(8).format(), CaptureFormat::Cs8);
+        assert_eq!(
+            Mode(12).format(),
+            CaptureFormat::Cs16 { full_scale: 2048.0 }
+        );
+        assert_eq!(
+            Mode(16).format(),
+            CaptureFormat::Cs16 {
+                full_scale: 32768.0
+            }
+        );
+        assert_eq!(
+            (Mode(8).name(), Mode(12).name(), Mode(16).name()),
+            ("IQ8bit", "IQ12bit", "IQ16bit")
+        );
+    }
 
     #[test]
     fn untar_reads_ustar_entries() {

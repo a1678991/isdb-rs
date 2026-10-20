@@ -17,13 +17,34 @@
 //!     powers the TX LO down, so nothing is radiated; an `isdb rx` on the
 //!     same device then receives the transmission. Default `off`. Closing
 //!     the TX turns the loopback off again.
-//!   * Capture only (`isdb capture`), `recorder`: `iio` (default) takes
-//!     one libiio buffer of up to 16 515 072 samples (63 MiB, the largest
-//!     iiod allocated on a PlutoSky R2 with Tezuka v0.3.24); `maia` drives
-//!     Tezuka's maia-sdr recorder over HTTP (port 80 of the `ip:` host),
-//!     up to 33 554 432 samples (its 128 MiB buffer), RX1 only. Both are
-//!     contiguous by construction (one DMA transfer). `buffer` does not
-//!     apply.
+//!   * Capture only (`isdb capture`):
+//!     * `recorder`: `iio` (default) takes one libiio buffer of up to
+//!       63 MiB (the largest iiod allocated on a PlutoSky R2 with Tezuka
+//!       v0.3.24); `maia` drives Tezuka's maia-sdr recorder over HTTP
+//!       (port 80 of the `ip:` host), up to its 128 MiB DDR buffer, RX1
+//!       only. Both are contiguous by construction (one DMA transfer).
+//!       `stream` streams libiio buffers for as long as wanted, with
+//!       losses reported (below).
+//!     * `bits`: `16` (default), `12` (`maia` only) or `8` (RX1 only;
+//!       through libiio it needs Tezuka, whose bitstream packs 8-bit I and
+//!       Q into one 16-bit word when `voltage0` is the only channel
+//!       enabled: `{Q, I}`, each the 12-bit sample / 16 rounded with
+//!       first-order error feedback and saturated, full scale 128).
+//!       Samples per capture: `iio` 16 515 072 (16 bits) or 33 030 144
+//!       (8 bits); `maia` 33 554 432 / 44 739 242 / 67 108 864
+//!       (16 / 12 / 8 bits).
+//!     * `buffer` (`recorder=stream` only): samples per libiio buffer, as
+//!       for streaming (default 1048576).
+//!
+//!     A streamed capture checks the overflow bit of the ADC core
+//!     (`cf-ad9361-lpc` register 0x80000088 bit 2, write 1 to clear)
+//!     after every buffer. The bit says that samples were lost since the
+//!     last check, not where: the buffers before the check that found it
+//!     are contiguous, and the loss lies before the end of the buffers
+//!     still queued in the device, in iiod and on the host. So the capture
+//!     drops the buffer that found it and as many more as can be queued
+//!     ([`CaptureGap::discarded`]), and the samples written after a gap
+//!     are contiguous again.
 //! * TX gains: `att` 0..89.75 dB of attenuation in 0.25 dB steps (default
 //!   89.75, the minimum output power).
 //! * RX gains: `agc` `manual|slow_attack|fast_attack|hybrid` (default
@@ -52,8 +73,8 @@
 
 use super::maia;
 use crate::{
-    Backend, Capture, Cs12, IqSink, IqSource, Quantizer, QueuedSink, RadioConfig, RadioTx,
-    RxOptions, StreamCounters, TxOptions, TxStream,
+    Backend, Capture, CaptureFormat, CaptureGap, Cs12, IqSink, IqSource, Quantizer, QueuedSink,
+    RadioConfig, RadioTx, RxOptions, StreamCounters, TxOptions, TxStream,
 };
 use anyhow::{Context as _, Result, bail};
 use isdb_iio::Context;
@@ -85,10 +106,19 @@ const MAX_RATE_ERROR_PPM: f64 = 10.0;
 const MAX_LO_ERROR_HZ: u64 = 1000;
 /// Default manual RX gain in dB.
 const DEFAULT_RX_GAIN_DB: i32 = 30;
-/// Largest single libiio RX buffer: larger ones fail with ENOMEM in iiod
-/// (one buffer of 63 MiB; measured on a PlutoSky R2 with Tezuka v0.3.24,
-/// with 1 and 4 kernel blocks alike).
-const MAX_IIO_CAPTURE_SAMPLES: usize = 16_515_072;
+/// Largest single libiio RX buffer in bytes: larger ones fail with ENOMEM
+/// in iiod (16 515 072 samples of 4 bytes, 63 MiB; measured on a PlutoSky
+/// R2 with Tezuka v0.3.24, with 1 and 4 kernel blocks alike).
+const MAX_IIO_CAPTURE_BYTES: u64 = 66_060_288;
+/// Samples per libiio buffer of a streamed capture (`recorder=stream`).
+const DEFAULT_STREAM_BUFFER_SAMPLES: usize = 1_048_576;
+/// Buffers a streamed capture queues on the host.
+const STREAM_DEPTH: usize = 8;
+/// The ADC core's interface status register (ADI `up_adc_common`
+/// `REG_STATUS`, 0x0022 × 4, through the HDL-core bit 31) and its
+/// overflow bit (sticky, write 1 to clear).
+const ADC_STATUS_REG: u32 = 0x8000_0088;
+const ADC_STATUS_OVERFLOW: u32 = 0x4;
 /// Settling time between programming the RX and capturing (LO lock, AGC).
 const CAPTURE_SETTLE: Duration = Duration::from_millis(100);
 
@@ -116,6 +146,8 @@ enum Recorder {
     Iio,
     /// Tezuka's maia-sdr recorder over its HTTP API.
     Maia,
+    /// libiio buffers streamed for as long as wanted.
+    Stream,
 }
 
 /// Device arguments.
@@ -125,8 +157,12 @@ struct DeviceArgs {
     /// 1 or 2.
     channel: u8,
     buffer: usize,
+    /// `buffer` was given.
+    buffer_given: bool,
     loopback: bool,
     recorder: Recorder,
+    /// Bits per component of a capture: 8, 12 or 16.
+    bits: u8,
 }
 
 impl DeviceArgs {
@@ -138,6 +174,16 @@ impl DeviceArgs {
     /// The streaming channels (I, Q) of the selected port.
     fn stream_channels(&self) -> [&'static str; 2] {
         [["voltage0", "voltage1"], ["voltage2", "voltage3"]][usize::from(self.channel - 1)]
+    }
+
+    /// The channels a capture enables: `voltage0` alone selects Tezuka's
+    /// 8-bit packing.
+    fn capture_channels(&self) -> &'static [&'static str] {
+        match (self.bits, self.channel) {
+            (8, _) => &["voltage0"],
+            (_, 1) => &["voltage0", "voltage1"],
+            _ => &["voltage2", "voltage3"],
+        }
     }
 }
 
@@ -156,13 +202,15 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
         uri: DEFAULT_URI.into(),
         channel: 1,
         buffer: DEFAULT_BUFFER_SAMPLES,
+        buffer_given: false,
         loopback: false,
         recorder: Recorder::Iio,
+        bits: 16,
     };
     let known = match dir {
         Dir::Tx => "uri, channel, buffer, loopback",
         Dir::Rx => "uri, channel, buffer",
-        Dir::Capture => "uri, channel, recorder",
+        Dir::Capture => "uri, channel, recorder, bits, buffer (recorder=stream)",
     };
     for (k, v) in &cfg.args {
         match k.as_str() {
@@ -175,7 +223,7 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
                     _ => bail!("{NAME}: channel={v}: want 1 or 2"),
                 }
             }
-            "buffer" if dir != Dir::Capture => {
+            "buffer" => {
                 let n: usize = v
                     .parse()
                     .with_context(|| format!("{NAME}: buffer={v}: not a number of samples"))?;
@@ -187,19 +235,83 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
                     );
                 }
                 a.buffer = n;
+                a.buffer_given = true;
             }
             "loopback" if dir == Dir::Tx => a.loopback = on_off(k, v)?,
             "recorder" if dir == Dir::Capture => {
                 a.recorder = match v.as_str() {
                     "iio" => Recorder::Iio,
                     "maia" => Recorder::Maia,
-                    _ => bail!("{NAME}: recorder={v}: want iio or maia"),
+                    "stream" => Recorder::Stream,
+                    _ => bail!("{NAME}: recorder={v}: want iio, maia or stream"),
+                }
+            }
+            "bits" if dir == Dir::Capture => {
+                a.bits = match v.as_str() {
+                    "8" => 8,
+                    "12" => 12,
+                    "16" => 16,
+                    _ => bail!("{NAME}: bits={v}: want 8, 12 or 16"),
                 }
             }
             _ => bail!("{NAME}: unknown device argument {k:?} (known: {known})"),
         }
     }
+    if dir == Dir::Capture {
+        if a.buffer_given && a.recorder != Recorder::Stream {
+            bail!("{NAME}: buffer applies to recorder=stream only");
+        }
+        if !a.buffer_given {
+            a.buffer = DEFAULT_STREAM_BUFFER_SAMPLES;
+        }
+        if a.bits == 12 && a.recorder != Recorder::Maia {
+            bail!("{NAME}: bits=12 needs recorder=maia");
+        }
+        if (a.bits == 8 || a.recorder == Recorder::Maia) && a.channel != 1 {
+            bail!(
+                "{NAME}: {} records RX1 only",
+                if a.recorder == Recorder::Maia {
+                    "the maia-sdr recorder"
+                } else {
+                    "bits=8"
+                }
+            );
+        }
+    }
     Ok(a)
+}
+
+/// What a capture with `dev` writes and how many samples it can take.
+fn capture_plan(dev: &DeviceArgs) -> (CaptureFormat, u64, String) {
+    let format = match dev.bits {
+        8 => CaptureFormat::Cs8,
+        _ => CaptureFormat::Cs16 { full_scale: 2048.0 },
+    };
+    let bytes = format.bytes_per_sample() as u64;
+    match dev.recorder {
+        Recorder::Iio => (
+            format,
+            MAX_IIO_CAPTURE_BYTES / bytes,
+            "one libiio buffer (63 MiB, the largest iiod allocated on a PlutoSky R2 with Tezuka v0.3.24; recorder=maia takes 2x)".into(),
+        ),
+        Recorder::Maia => {
+            let m = maia::Mode(dev.bits);
+            (
+                m.format(),
+                m.max_samples(),
+                format!(
+                    "the maia-sdr recorder buffer ({} MiB in DDR, {})",
+                    maia::BUFFER_BYTES >> 20,
+                    m.describe()
+                ),
+            )
+        }
+        Recorder::Stream => (
+            format,
+            u64::MAX,
+            "streamed libiio buffers, losses reported".into(),
+        ),
+    }
 }
 
 /// The tuning, sample rate and bandwidth ranges.
@@ -425,8 +537,9 @@ impl Backend for Pluto {
 
     fn describe_capture(&self, cfg: &RadioConfig) -> Result<String> {
         let s = rx_settings_for(cfg, Dir::Capture)?;
+        let (format, _, _) = capture_plan(&s.dev);
         Ok(format!(
-            "{}\n  RX gain      {}\n  recorder     {}",
+            "{}\n  RX gain      {}\n  recorder     {}\n  samples      {}",
             describe_device(&s.dev, "RX", cfg),
             describe_rx_gain(&s),
             match s.dev.recorder {
@@ -435,72 +548,106 @@ impl Backend for Pluto {
                     "maia-sdr recorder at http://{}/",
                     s.dev.uri.strip_prefix("ip:").unwrap_or("?")
                 ),
+                Recorder::Stream => format!(
+                    "libiio stream, buffers of {} samples, {KERNEL_BUFFERS} in the kernel, ADC overflow bit checked after each",
+                    s.dev.buffer
+                ),
+            },
+            match (format, s.dev.recorder) {
+                (CaptureFormat::Cs8, Recorder::Maia) => "cs8 (maia-sdr IQ8bit)",
+                (CaptureFormat::Cs8, _) => "cs8 (Tezuka 8-bit packing)",
+                (_, Recorder::Maia) if s.dev.bits == 12 =>
+                    "cs16, 12 bits sign-extended (maia-sdr IQ12bit)",
+                (_, Recorder::Maia) => "cs16, 12 bits left-aligned (maia-sdr IQ16bit)",
+                _ => "cs16, 12 bits sign-extended",
             }
         ))
     }
 
-    fn capture_limit(&self, cfg: &RadioConfig) -> Result<Option<(usize, String)>> {
+    fn capture_limit(&self, cfg: &RadioConfig) -> Result<Option<(u64, String)>> {
         let s = rx_settings_for(cfg, Dir::Capture)?;
-        Ok(Some(match s.dev.recorder {
-            Recorder::Iio => (
-                MAX_IIO_CAPTURE_SAMPLES,
-                "one libiio buffer (63 MiB, the largest iiod allocated on a PlutoSky R2 with Tezuka v0.3.24; recorder=maia takes 2x)".into(),
-            ),
-            Recorder::Maia => (
-                maia::MAX_SAMPLES,
-                "the maia-sdr recorder buffer (128 MiB of 16-bit samples, Tezuka)".into(),
-            ),
-        }))
+        let (_, limit, why) = capture_plan(&s.dev);
+        Ok(Some((limit, why)))
     }
 
-    fn capture(&self, cfg: &RadioConfig, samples: usize) -> Result<Capture> {
+    fn capture(
+        &self,
+        cfg: &RadioConfig,
+        samples: u64,
+        out: &mut dyn std::io::Write,
+        stop: &AtomicBool,
+    ) -> Result<Capture> {
         let s = rx_settings_for(cfg, Dir::Capture)?;
-        let (limit, why) = self
-            .capture_limit(cfg)?
-            .expect("the pluto backend captures");
+        let (format, limit, why) = capture_plan(&s.dev);
         if samples == 0 || samples > limit {
-            bail!("{NAME}: capture of {samples} samples: 1..={limit} in one piece ({why})");
+            bail!("{NAME}: capture of {samples} samples: 1..={limit} ({why})");
         }
         let host = match s.dev.recorder {
-            Recorder::Iio => None,
-            Recorder::Maia => {
-                if s.dev.channel != 1 {
-                    bail!("{NAME}: the maia-sdr recorder records RX1 only");
-                }
-                Some(s.dev.uri.strip_prefix("ip:").with_context(|| {
-                    format!(
-                        "{NAME}: recorder=maia needs a network uri (ip:HOST), not {}",
-                        s.dev.uri
-                    )
-                })?)
-            }
+            Recorder::Maia => Some(s.dev.uri.strip_prefix("ip:").with_context(|| {
+                format!(
+                    "{NAME}: recorder=maia needs a network uri (ip:HOST), not {}",
+                    s.dev.uri
+                )
+            })?),
+            _ => None,
         };
-        let ctx = open(&s.dev.uri)?;
+        let mut ctx = open(&s.dev.uri)?;
         let device = device_info(&ctx);
+        if s.dev.bits == 8
+            && s.dev.recorder != Recorder::Maia
+            && !ctx
+                .attr("fw_version")
+                .is_some_and(|v| v.starts_with("tezuka"))
+        {
+            bail!(
+                "{NAME}: bits=8 through libiio needs Tezuka's 8-bit packing (firmware {}); use recorder=maia or bits=16",
+                ctx.attr("fw_version").unwrap_or_else(|| "?".into())
+            );
+        }
         let mut info = String::new();
         configure_rx(&ctx, cfg, &s, &mut info)
             .with_context(|| format!("configure Pluto {} for RX", s.dev.uri))?;
         std::thread::sleep(CAPTURE_SETTLE);
-        let phy = ctx.device(PHY)?;
-        let rates = phy.read("rx_path_rates")?;
-        let rate = path_rate(&rates, "RXSAMP")
-            .with_context(|| format!("{PHY} rx_path_rates {rates:?}: no RX rate"))?;
+        let rate = {
+            let rates = ctx.device(PHY)?.read("rx_path_rates")?;
+            path_rate(&rates, "RXSAMP")
+                .with_context(|| format!("{PHY} rx_path_rates {rates:?}: no RX rate"))?
+        };
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64());
-        let (iq, full_scale, method) = match host {
-            None => (
-                ctx.capture(RX_DEV, &s.dev.stream_channels(), samples, 1)
-                    .with_context(|| format!("capture {samples} samples in one libiio buffer"))?,
-                2048.0,
-                "libiio single buffer",
-            ),
-            Some(h) => (
-                maia::record(h, rate, samples)?,
-                32768.0,
-                "maia-sdr recorder",
-            ),
+        let (written, gaps, method) = match (s.dev.recorder, host) {
+            (Recorder::Maia, Some(h)) => {
+                let m = maia::Mode(s.dev.bits);
+                maia::record(h, rate, samples, m, out)?;
+                (
+                    samples,
+                    Vec::new(),
+                    format!("maia-sdr recorder {}", m.describe()),
+                )
+            }
+            (Recorder::Stream, _) => {
+                let (n, gaps) = stream_capture(&mut ctx, &s.dev, samples, format, out, stop)?;
+                (
+                    n,
+                    gaps,
+                    format!(
+                        "libiio stream (buffers of {} samples, {KERNEL_BUFFERS} kernel blocks; ADC overflow bit checked after every buffer)",
+                        s.dev.buffer
+                    ),
+                )
+            }
+            _ => {
+                let n = usize::try_from(samples)?;
+                let bytes = ctx
+                    .capture(RX_DEV, s.dev.capture_channels(), n, 1)
+                    .with_context(|| format!("capture {samples} samples in one libiio buffer"))?;
+                out.write_all(&bytes[..n * format.bytes_per_sample()])
+                    .context("write the capture")?;
+                (samples, Vec::new(), "libiio single buffer".to_string())
+            }
         };
+        let phy = ctx.device(PHY)?;
         let ch = phy.channel(s.dev.phy_channel(), false)?;
         let gain_db = ch.read_f64("hardwaregain")?;
         let gain = match s.agc {
@@ -508,14 +655,15 @@ impl Backend for Pluto {
             m => format!("AGC {m}, {gain_db} dB at the end"),
         };
         Ok(Capture {
-            iq,
-            full_scale,
+            format,
+            samples: written,
+            gaps,
             sample_rate_hz: rate,
             lo_hz: u64::try_from(phy.channel(RX_LO, true)?.read_i64("frequency")?)?,
             rf_bandwidth_hz: u64::try_from(ch.read_i64("rf_bandwidth")?).ok(),
             gain,
             device,
-            method: method.into(),
+            method,
             time,
         })
     }
@@ -546,6 +694,82 @@ impl Backend for Pluto {
             info,
         ))
     }
+}
+
+/// Stream `samples` samples of `format` from the RX into `out` until
+/// done or `stop`; returns the samples written and the gaps (see the module
+/// documentation for how a loss is placed). The samples discarded around
+/// a loss count towards `samples`, so the capture spans `samples` sample
+/// periods whatever it loses.
+fn stream_capture(
+    ctx: &mut Context,
+    dev: &DeviceArgs,
+    samples: u64,
+    format: CaptureFormat,
+    out: &mut dyn std::io::Write,
+    stop: &AtomicBool,
+) -> Result<(u64, Vec<CaptureGap>)> {
+    let bps = format.bytes_per_sample();
+    let stream = ctx
+        .start_rx_raw(
+            RX_DEV,
+            dev.capture_channels(),
+            dev.buffer,
+            KERNEL_BUFFERS,
+            STREAM_DEPTH,
+        )
+        .with_context(|| port_hint(dev, "RX"))?;
+    if stream.sample_bytes != bps {
+        bail!(
+            "{RX_DEV} delivers {} bytes per sample, {bps} expected",
+            stream.sample_bytes
+        );
+    }
+    // The bit is set whenever no transfer runs: clear it now that one does.
+    ctx.device(RX_DEV)?
+        .reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW)?;
+    // Buffers that may hold samples from before an unseen loss: the
+    // device's kernel blocks, iiod's and the client's buffer, one in the
+    // network and the host queue.
+    let window = KERNEL_BUFFERS as u64 + 3 + STREAM_DEPTH as u64;
+    let (mut written, mut received, mut discard) = (0u64, 0u64, 0u64);
+    let mut gaps = Vec::<CaptureGap>::new();
+    let timeout = Duration::from_secs(10);
+    let r = (|| -> Result<()> {
+        while received < samples && !stop.load(Ordering::SeqCst) {
+            let data = match stream.receiver.recv_timeout(timeout) {
+                Ok(d) => d,
+                Err(RecvTimeoutError::Timeout) => bail!("no samples from {RX_DEV} for {timeout:?}"),
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            let rx = ctx.device(RX_DEV)?;
+            if rx.reg_read(ADC_STATUS_REG)? & ADC_STATUS_OVERFLOW != 0 {
+                rx.reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW)?;
+                if discard == 0 {
+                    gaps.push(CaptureGap {
+                        at: written,
+                        discarded: 0,
+                    });
+                }
+                discard = window;
+            }
+            let n = ((data.len() / bps) as u64).min(samples - received);
+            received += n;
+            if discard > 0 {
+                discard -= 1;
+                gaps.last_mut().expect("a gap is open").discarded += n;
+                continue;
+            }
+            out.write_all(&data[..n as usize * bps])
+                .context("write the capture")?;
+            written += n;
+        }
+        Ok(())
+    })();
+    let stopped = ctx.stop();
+    r?;
+    stopped?;
+    Ok((written, gaps))
 }
 
 fn describe_rx_gain(s: &RxSettings) -> String {
@@ -931,8 +1155,10 @@ mod tests {
                 uri: "ip:pluto.local".into(),
                 channel: 1,
                 buffer: 262_144,
+                buffer_given: false,
                 loopback: false,
                 recorder: Recorder::Iio,
+                bits: 16,
             }
         );
         let s = tx_settings(&cfg(
@@ -974,50 +1200,108 @@ mod tests {
 
     #[test]
     fn capture_arguments_and_limits() {
+        let limit = |args: &[(&str, &str)]| Pluto.capture_limit(&cfg(args, &[]));
         let c = cfg(&[("uri", "ip:192.0.2.30"), ("recorder", "maia")], &[]);
         let s = rx_settings_for(&c, Dir::Capture).unwrap();
-        assert_eq!(s.dev.recorder, Recorder::Maia);
+        assert_eq!((s.dev.recorder, s.dev.bits), (Recorder::Maia, 16));
         let (n, why) = Pluto.capture_limit(&c).unwrap().unwrap();
         assert_eq!(n, 33_554_432);
-        assert!(why.contains("maia-sdr"), "{why}");
-        let (n, _) = Pluto.capture_limit(&cfg(&[], &[])).unwrap().unwrap();
-        assert_eq!(n, 16_515_072);
-        // Streaming and capture arguments do not mix.
-        for (bad, known) in [
-            (("buffer", "65536"), "uri, channel, recorder"),
-            (("loopback", "on"), "uri, channel, recorder"),
+        assert!(why.contains("maia-sdr") && why.contains("128 MiB"), "{why}");
+        // Samples per capture by recorder and bits.
+        for (args, n) in [
+            (vec![], 16_515_072),
+            (vec![("bits", "8")], 33_030_144),
+            (vec![("recorder", "maia"), ("bits", "12")], 44_739_242),
+            (vec![("recorder", "maia"), ("bits", "8")], 67_108_864),
+            (vec![("recorder", "stream")], u64::MAX),
+            (vec![("recorder", "stream"), ("bits", "8")], u64::MAX),
         ] {
-            let e = Pluto
-                .capture_limit(&cfg(&[bad], &[]))
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains(known), "{e}");
+            assert_eq!(limit(&args).unwrap().unwrap().0, n, "{args:?}");
+        }
+        let s = rx_settings_for(&cfg(&[("bits", "8")], &[]), Dir::Capture).unwrap();
+        assert_eq!(s.dev.capture_channels(), ["voltage0"]);
+        assert_eq!(capture_plan(&s.dev).0, CaptureFormat::Cs8);
+        let s = rx_settings_for(&cfg(&[("channel", "2")], &[]), Dir::Capture).unwrap();
+        assert_eq!(s.dev.capture_channels(), ["voltage2", "voltage3"]);
+        assert_eq!(
+            capture_plan(&s.dev).0,
+            CaptureFormat::Cs16 { full_scale: 2048.0 }
+        );
+        let s = rx_settings_for(
+            &cfg(&[("recorder", "stream"), ("buffer", "65536")], &[]),
+            Dir::Capture,
+        )
+        .unwrap();
+        assert_eq!(s.dev.buffer, 65_536);
+        let s = rx_settings_for(&cfg(&[("recorder", "stream")], &[]), Dir::Capture).unwrap();
+        assert_eq!(s.dev.buffer, DEFAULT_STREAM_BUFFER_SAMPLES);
+        // Refused combinations, and streaming arguments that do not apply.
+        for (args, msg) in [
+            (
+                vec![("buffer", "65536")],
+                "buffer applies to recorder=stream only",
+            ),
+            (
+                vec![("loopback", "on")],
+                "uri, channel, recorder, bits, buffer",
+            ),
+            (vec![("bits", "12")], "bits=12 needs recorder=maia"),
+            (
+                vec![("bits", "12"), ("recorder", "stream")],
+                "bits=12 needs recorder=maia",
+            ),
+            (vec![("bits", "10")], "want 8, 12 or 16"),
+            (
+                vec![("bits", "8"), ("channel", "2")],
+                "bits=8 records RX1 only",
+            ),
+            (
+                vec![("recorder", "maia"), ("channel", "2")],
+                "maia-sdr recorder records RX1 only",
+            ),
+            (vec![("recorder", "x")], "want iio, maia or stream"),
+        ] {
+            let e = limit(&args).unwrap_err().to_string();
+            assert!(e.contains(msg), "{args:?}: {e}");
         }
         assert!(rx_settings(&cfg(&[("recorder", "iio")], &[])).is_err());
-        assert!(
-            Pluto
-                .capture_limit(&cfg(&[("recorder", "x")], &[]))
-                .is_err()
-        );
+        assert!(rx_settings(&cfg(&[("bits", "8")], &[])).is_err());
         let d = Pluto.describe_capture(&c).unwrap();
         assert!(
             d.contains("recorder     maia-sdr recorder at http://192.0.2.30/"),
             "{d}"
         );
+        assert!(
+            d.contains("samples      cs16, 12 bits left-aligned (maia-sdr IQ16bit)"),
+            "{d}"
+        );
+        let d = Pluto
+            .describe_capture(&cfg(&[("recorder", "stream"), ("bits", "8")], &[]))
+            .unwrap();
+        assert!(
+            d.contains("libiio stream, buffers of 1048576 samples"),
+            "{d}"
+        );
+        assert!(d.contains("cs8 (Tezuka 8-bit packing)"), "{d}");
         assert!(Pluto.describe_rx(&c).is_err());
-        // Refused before touching a device: too large, empty, RX2 with maia,
-        // maia over USB.
+        // Refused before touching a device: too large, empty, maia over USB.
+        let stop = AtomicBool::new(false);
         for (args, n) in [
             (vec![], 16_515_073),
             (vec![], 0),
             (vec![("recorder", "maia"), ("uri", "ip:h")], 33_554_433),
             (
-                vec![("recorder", "maia"), ("uri", "ip:h"), ("channel", "2")],
-                1024,
+                vec![("recorder", "maia"), ("uri", "ip:h"), ("bits", "8")],
+                67_108_865,
             ),
             (vec![("recorder", "maia"), ("uri", "usb:1.2.3")], 1024),
         ] {
-            assert!(Pluto.capture(&cfg(&args, &[]), n).is_err(), "{args:?} {n}");
+            assert!(
+                Pluto
+                    .capture(&cfg(&args, &[]), n, &mut std::io::sink(), &stop)
+                    .is_err(),
+                "{args:?} {n}"
+            );
         }
     }
 
