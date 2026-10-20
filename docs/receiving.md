@@ -1,7 +1,7 @@
 # Receiving
 
 `isdb rx` demodulates an ISDB-T signal from an IQ file or a radio
-(`--radio`; HackRF One today) and
+(`--radio`; HackRF One or an ADALM-Pluto / PlutoSky R2) and
 writes the transport stream it carries. It needs no configuration: the
 mode, guard interval and layer parameters are detected from the signal
 (guard-interval correlation and the TMCC).
@@ -13,6 +13,7 @@ isdb rx --iq capture.cf32 --out out.ts                  # float32 I/Q (GNU Radio
 isdb rx --iq capture.cs8 --iq-format cs8 --out out.ts   # signed 8-bit I/Q (hackrf_transfer)
 some-producer | isdb rx --iq - --out out.ts              # stdin
 isdb rx --radio hackrf --channel 27 --seconds 30 --out out.ts # live, from a HackRF
+isdb rx --radio pluto:uri=ip:192.0.2.30 --channel 27 --out out.ts # a Pluto over Ethernet
 ```
 
 IQ files must be complex baseband centred on the ISDB-T signal at
@@ -23,7 +24,8 @@ of channel N is 473 + 6·(N − 13) + 1/7 MHz ([transmitting.md](transmitting.md
 
 Receiving is not transmitting, but the bench rules still apply when the
 signal comes from your own transmitter: keep a HackRF's RX input well
-below its −5 dBm damage limit (attenuators, splitter), and see
+below its −5 dBm damage limit (attenuators, splitter; an AD936x's limit is
+in the same range), and see
 [transmitting.md](transmitting.md#bench-set-up). For off-air captures, see
 [test-data.md](test-data.md#capturing-your-own-data).
 
@@ -31,10 +33,10 @@ below its −5 dBm damage limit (attenuators, splitter), and see
 |---|---|---|
 | `--iq PATH` | — | read baseband from a file (`-` = stdin) |
 | `--iq-format cf32\|cs8` | cf32 | file format |
-| `--radio NAME[:key=value,...]` | — | receive with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`); needs `--channel` or `--freq`. An unknown name lists the compiled-in backends |
+| `--radio NAME[:key=value,...]` | — | receive with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`); needs `--channel` or `--freq`. An unknown name lists the compiled-in backends |
 | `--channel N` / `--freq HZ` | — | UHF channel 13–52 or centre frequency in Hz, within 470–710 MHz |
 | `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (channels 53–62, other bands); the backend's own range still applies |
-| `--gain NAME=VALUE` | backend's | radio gain, repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF: `lna=0..40` dB in 8 dB steps (16), `vga=0..62` dB baseband VGA in 2 dB steps (20), `amp=on\|off` RF amplifier (off) |
+| `--gain NAME=VALUE` | backend's | radio gain, repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF: `lna=0..40` dB in 8 dB steps (16), `vga=0..62` dB baseband VGA in 2 dB steps (20), `amp=on\|off` RF amplifier (off). Pluto: `agc=manual\|slow_attack\|fast_attack\|hybrid` (slow_attack), `gain=dB` manual gain (implies `agc=manual`; the range depends on the LO and is checked at open) |
 | `--freq-corr-ppm P` | 0 | reference-clock correction (tuning and sample clock) |
 | `--bb-filter-hz HZ` | 6 MHz | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth |
 | `--seconds S` | 0 | bound on signal time; `0` = the whole file, or until Ctrl-C / SIGTERM with `--radio` |
@@ -78,10 +80,10 @@ isdb rx: test.cf32 (Cf32); until end of input
 | `M3 GI1/8` | mode and guard interval detected from the signal |
 | `frames v/n valid` | OFDM frames in this interval, and how many were valid: the TMCC was decoded and every deinterleaver of the active layers was primed. After lock, the first frames are not valid because time interleaving delays data by up to several frames |
 | `MER A … B … dB` | modulation error ratio per layer, from the equalised carriers. A noise-free cf32 file gives ≈ 120 dB (float precision), a cs8 file at the default back-off ≈ 41 dB (8-bit quantisation); in the software channel's white noise the default 64QAM 3/4 layer still decodes without packet loss at 18 dB SNR, with RS corrections (`isdb loopback --snr-db` to try) |
-| `CFO … car` | carrier frequency offset in carrier spacings (Mode 1: 3.968 kHz, Mode 2: 1.984 kHz, Mode 3: 0.992 kHz). On a bench, a steady CFO is mostly the HackRF clock error: CFO × spacing / f_c gives the ppm for `--freq-corr-ppm` |
+| `CFO … car` | carrier frequency offset in carrier spacings (Mode 1: 3.968 kHz, Mode 2: 1.984 kHz, Mode 3: 0.992 kHz). On a bench, a steady CFO is mostly the radio's clock error: CFO × spacing / f_c gives the ppm for `--freq-corr-ppm` |
 | `RS clean/corr/uncorr` | per layer, packets whose RS(204,188) word was error-free, corrected (up to 8 bytes), or uncorrectable |
 | `TMCC parity failed n` | frames whose TMCC failed the difference-set parity check (shown only when non-zero) |
-| `overruns` | with `--radio hackrf`: USB buffers dropped because the demodulator fell behind |
+| `overruns` | with `--radio`: buffers (HackRF USB transfers, Pluto IIO buffers) dropped because the demodulator fell behind |
 
 The final summary repeats the totals; `--json` prints them as one object:
 `frames`, `valid_frames`, `tmcc_parity_failed`, `params` (mode, guard

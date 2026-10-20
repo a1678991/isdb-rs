@@ -68,9 +68,10 @@ run the transmit path on hardware must:
    --dry-run`, which prints the backend's settings and exits (`--radio`
    without `--rf-enable` or `--dry-run` is rejected).
 3. Add `--rf-enable` only on that bench; start with a low TX gain
-   (`--gain txvga=N` on a HackRF) and leave the RF amplifier off
-   (`--gain amp=on` is opt-in). Bound runs with `--seconds` where
-   practical.
+   (`--gain txvga=N` on a HackRF, a high `--gain att=N` on a Pluto) and
+   leave the RF amplifier off (`--gain amp=on` is opt-in). Bound runs with
+   `--seconds` where practical. A Pluto can be tested without radiating
+   with `loopback=on` (TX LO powered down, digital TX→RX loopback).
 4. Only transmit or relay content you have the rights to. The project does
    not descramble and refuses scrambled input; changes that add
    descrambling or conditional-access (B-CAS) support will not be accepted.
@@ -137,9 +138,13 @@ unset, never fail for missing data).
   `hackrf` feature of `isdb-cli`), which is on by default and links the
   system library even when no radio is attached (Arch `hackrf`,
   Debian/Ubuntu `libhackrf-dev`, Homebrew `hackrf`).
-  `cargo build -p isdb-cli --no-default-features` builds without it; CI
-  checks that build, and `isdb-radio` without any backend, in the
-  `no-hackrf` job.
+- **libiio** (0.x API, 0.21 or later; libiio 1.x is not supported): needed
+  only for the `pluto` feature of `isdb-radio` (forwarded by the `pluto`
+  feature of `isdb-cli`), also on by default (Arch `libiio`,
+  Debian/Ubuntu `libiio-dev`, Fedora `libiio-devel`, Homebrew `libiio`).
+- `cargo build -p isdb-cli --no-default-features` builds without either
+  library; CI checks that build, and `isdb-radio` without any backend, in
+  the `no-radio-libs` job.
 - **mise** (task runner and harness tools): install
   [mise](https://mise.jdx.dev/), then run `mise install` in the repository.
   It installs the pinned node/pnpm (commitlint), lefthook, cargo-deny,

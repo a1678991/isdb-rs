@@ -180,10 +180,12 @@ here: FFT size × carrier spacing.
 
 **IQ, baseband, cf32, cs8** — complex samples of the signal around 0 Hz.
 `cf32` = interleaved little-endian 32-bit float I/Q (GNU Radio "complex");
-`cs8` = interleaved signed 8-bit I/Q (the HackRF's native format).
+`cs8` = interleaved signed 8-bit I/Q (the HackRF's native format);
+`cs12` = 12-bit I/Q left-aligned in 16-bit words (what a Pluto's AD936x
+DAC takes).
 
 **Radio backend** — the code in `isdb-radio` that drives one kind of SDR
-(today `hackrf`), selected with `--radio NAME[:key=value,...]`; its gains
+(`hackrf`, `pluto`), selected with `--radio NAME[:key=value,...]`; its gains
 are set with `--gain NAME=VALUE` and its settings are printed by
 `--dry-run`. Each backend is behind its own cargo feature.
 

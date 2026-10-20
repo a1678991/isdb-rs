@@ -1,8 +1,8 @@
 # Transmitting
 
 `isdb tx` turns transport streams into an ISDB-T signal and sends it to an
-IQ file or a radio (`--radio`; HackRF One is the backend available
-today). This page covers the conducted bench set-up, the
+IQ file or a radio (`--radio`; the backends are HackRF One, `hackrf`,
+and the ADALM-Pluto family, `pluto`, see [below](#adalm-pluto-and-plutosky-r2)). This page covers the conducted bench set-up, the
 levels and channel plan, the `isdb tx` inputs and options, relaying a
 recorded program, and what real receivers turned out to need.
 
@@ -24,8 +24,9 @@ without `--rf-enable` or `--dry-run` the command line is rejected. With
 `--dry-run` it prints the backend's settings (after validating the device
 arguments, gains and tuning range) and exits with "not transmitting"
 before the device is opened, so you can check every setting first. With HackRF every exit path stops streaming and switches
-the RF amplifier off; a normal end prints `device stopped streaming:
-yes`.
+the RF amplifier off; with a Pluto every exit path stops streaming, sets
+the maximum TX attenuation and powers the TX LO down. A normal end prints
+`device stopped streaming: yes`.
 
 ## Bench set-up
 
@@ -62,6 +63,59 @@ HackRF One ──SMA coax── fixed attenuators ── DC block ── F/IEC a
   the nominal values; measure P with `isdb rx` (the CFO figure) or a
   reference receiver.
 
+### ADALM-Pluto and PlutoSky R2
+
+The `pluto` backend drives an AD936x radio running ADI's Pluto firmware
+(ADALM-Pluto, PlutoSky R2 and other compatibles) through libiio, over USB
+or Ethernet: `--radio pluto:uri=ip:ADDRESS` (default `ip:pluto.local`).
+Device arguments, gains and ranges are listed in the
+[`isdb-radio` README](../crates/isdb-radio/README.md#backends).
+
+- **Ethernet.** Gigabit Ethernet carries 512/63 MHz (32.5 MB/s) in one
+  direction. Give the Pluto a static address on your LAN from its shell
+  (over SSH: `192.168.2.1` on USB, or its current
+  Ethernet address): `fw_setenv ipaddr_eth 192.0.2.30;
+  fw_setenv netmask_eth 255.255.0.0`, then `reboot`. The firmware writes
+  `/etc/network/interfaces` from these variables at every boot (default
+  `192.168.1.10/24`, which may collide with another device on a home
+  network); it has no gateway setting, so the host must be on the same
+  subnet. Check with `iio_info -u ip:192.0.2.30`.
+- **Level.** The TX attenuation defaults to its maximum (`att=89.75`).
+  At `att=0` and full scale the AD9361 delivers several dBm (more on
+  PlutoSky variants with the 10 dB PA), so start high (`--gain att=60`)
+  with the attenuators of the bench above and lower it step by step. The
+  DAC has 12 bits: `--backoff-db 10` puts the RMS at 647 of 2047.
+- **Clock.** The AD936x derives the LO and the sample clock from one
+  40 MHz reference, so one `--freq-corr-ppm` corrects both (the
+  firmware's own `xo_correction` only spans ±0.5 ppm). The integer-Hz
+  clock chain runs 512/63 MHz at 8 126 983.94 Hz (−0.02 ppm), which the
+  open line reports.
+- **PlutoSky R2 reference.** Its 40 MHz VCTCXO is tuned only by the
+  charge pump of an ADF4001 PLL locked to the 10 MHz input. The vendor
+  firmware (ADI-based, in flash) and Tezuka before v0.3.22 keep that pump
+  active with no 10 MHz connected, so it drags the oscillator around:
+  the received signal then has about 1 rad of common phase jitter between
+  OFDM symbols at UHF (and a wandering offset, +11 ppm on average on the
+  unit tested), and `isdb rx` never frame-locks. Boot
+  [Tezuka](https://github.com/F5OEO/tezuka_fw) v0.3.22 or later from the
+  SD card (it three-states the pump without a reference and locks when one
+  is connected), or connect a 10 MHz reference. With Tezuka v0.3.24 and no
+  reference the unit tested was 0.6 ppm off and decoded broadcast
+  channels; one boot in two failed the AD9361 data-interface calibration
+  ("Tuning TX FAILED!" in `dmesg`, no `cf-ad9361-lpc` device), which a
+  reboot cleared.
+- **Self-test without radiating.** `--radio pluto:uri=…,loopback=on`
+  powers the TX LO down and routes the TX samples digitally into the
+  device's own RX path (the AD936x data-port loopback); `isdb rx --radio
+  pluto:uri=…` then receives them. `--rf-enable` is still required. Over
+  Ethernet the RX side drops about a third of its samples while TX also
+  streams (with ADI's firmware iiod runs on one enabled CPU and cannot
+  serve 65 MB/s; not yet retested on Tezuka, which enables both), so
+  the receiver does not lock; TX and RX each keep real time on their own.
+- **Ports.** Never transmit into an open TX port or an antenna; connect
+  the attenuators (or a dummy load) first. `channel=2` selects TX2/RX2
+  (firmware mode `2r2t`).
+
 ## Channel plan
 
 Japanese UHF television channels are 6 MHz wide. The ISDB-T signal is
@@ -83,7 +137,8 @@ uses channels 13–52 (470–710 MHz); `--channel` maps 13–62 and
 ARIB specs used here; it is the Japanese channel plan). A centre outside
 470–710 MHz (channels 53–62, or any other `--freq`) is refused unless
 `--freq-unrestricted` is given, which leaves only the radio backend's own
-range (HackRF: 1 MHz–6 GHz) for shielded lab setups.
+range (HackRF: 1 MHz–6 GHz; Pluto: TX 47 MHz–6 GHz, RX 70 MHz–6 GHz) for
+shielded lab setups.
 
 **Choosing a channel.** Use a channel that no station receivable at your
 location uses, so that leakage cannot interfere in either direction, and
@@ -112,9 +167,10 @@ A layer is `SEGMENTS,MODULATION,CODE_RATE,TI` (modulation
 index 0–3). The start-up line prints the TSPs and the TS rate of every
 layer; the rates follow from ARIB STD-B31 Table 3-3.
 
-The level in an integer-sample radio such as the HackRF (8-bit DAC) and
-in cs8 files is set by `--backoff-db` (default
-10 dB): the OFDM RMS sits that far below full scale (RMS 40 of 127), which
+The level in an integer-sample radio such as the HackRF (8-bit DAC) or a
+Pluto (12-bit DAC) and in cs8 files is set by `--backoff-db` (default
+10 dB): the OFDM RMS sits that far below full scale (RMS 40 of 127; 647
+of 2047 for a Pluto), which
 leaves headroom for OFDM's peaks. Clipped components are counted and
 reported; a few in 10⁵ are normal at 10 dB.
 
@@ -153,15 +209,15 @@ a program of *another* network (e.g. a satellite recording), use
 |---|---|---|
 | `--iq PATH` | — | write baseband to a file (`-` = stdout) instead of a radio |
 | `--iq-format cf32\|cs8` | cf32 | float32 I/Q (GNU Radio) or signed 8-bit I/Q (`hackrf_transfer`, scaled with `--backoff-db`) |
-| `--radio NAME[:key=value,...]` | — | transmit with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`); needs `--channel` or `--freq`, and `--rf-enable` or `--dry-run`. An unknown name lists the compiled-in backends and their cargo features |
+| `--radio NAME[:key=value,...]` | — | transmit with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`); needs `--channel` or `--freq`, and `--rf-enable` or `--dry-run`. An unknown name lists the compiled-in backends and their cargo features |
 | `--channel N` / `--freq HZ` | — | UHF channel 13–52, or a centre frequency in Hz, within 470–710 MHz |
-| `--freq-unrestricted` | off | allow a centre outside the 470–710 MHz TV band (shielded lab setups only); the backend's own range still applies (HackRF 1 MHz–6 GHz) |
+| `--freq-unrestricted` | off | allow a centre outside the 470–710 MHz TV band (shielded lab setups only); the backend's own range still applies (HackRF 1 MHz–6 GHz, Pluto 47 MHz–6 GHz) |
 | `--rf-enable` | off | **actually radiate** (licensed or conducted/shielded use only) |
 | `--dry-run` | off | print the settings and exit without opening the device |
-| `--gain NAME=VALUE` | backend's | radio gain, repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF: `txvga=0..47` dB TX IF gain (0), `amp=on\|off` RF amplifier ≈ +11 dB (off) |
-| `--backoff-db DB` | 10 | OFDM RMS below integer full scale (radios with integer samples, e.g. HackRF cs8, and cs8 files) |
+| `--gain NAME=VALUE` | backend's | radio gain, repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF: `txvga=0..47` dB TX IF gain (0), `amp=on\|off` RF amplifier ≈ +11 dB (off). Pluto: `att=0..89.75` dB attenuation in 0.25 dB steps (89.75) |
+| `--backoff-db DB` | 10 | OFDM RMS below integer full scale (radios with integer samples, e.g. HackRF cs8, Pluto cs12, and cs8 files) |
 | `--freq-corr-ppm P` | 0 | reference-clock correction (positive = the device clock runs fast) |
-| `--bb-filter-hz HZ` | 6 000 000 | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth (HackRF: the largest MAX2837 setting ≤ the request). 6 MHz passes the 5.57 MHz ISDB-T band |
+| `--bb-filter-hz HZ` | 6 000 000 | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth (HackRF: the largest MAX2837 setting ≤ the request; Pluto: the AD936x RF bandwidth, 0.2–40 MHz). 6 MHz passes the 5.57 MHz ISDB-T band |
 | `--seconds S` | 0 | bound on air time including lead-in and flush; `0` = unbounded (until the input ends, or Ctrl-C / SIGTERM) |
 | `--lead-frames N` | 2 | null frames before the data |
 | `--no-flush` | off | omit the null frames that flush the interleavers at the end |
@@ -250,7 +306,7 @@ The status lines show air time, frames, null fill per layer, input
 counters (for `--mux-config`: late PES and errors; for `--mux-ts`: the
 PCR-measured input rate per layer and the lag behind the PCR schedule),
 the producer speed and the radio's own counters (HackRF: USB buffers and
-underruns).
+underruns; Pluto: IIO buffers and underruns).
 
 Typical end-to-end check with a second HackRF:
 

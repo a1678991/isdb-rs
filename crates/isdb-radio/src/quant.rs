@@ -33,6 +33,36 @@ impl IntFormat for Cs8 {
     }
 }
 
+/// Interleaved 12-bit I/Q (`cs12`, I first) left-aligned in `i16` (the
+/// value times 16), full scale 2047: the AD936x DAC takes bits 15..4 of
+/// each 16-bit component (`le:S16/16` channels of `cf-ad9361-dds-core-lpc`).
+/// Rounding and saturation happen at 12 bits, so the clip count is exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cs12;
+
+impl IntFormat for Cs12 {
+    type Component = i16;
+    const BITS: u32 = 12;
+    const NAME: &'static str = "cs12";
+
+    fn convert(samples: &[C32], scale: f32, out: &mut Vec<i16>) -> usize {
+        const FULL: f32 = 2047.0;
+        out.clear();
+        out.reserve(samples.len() * 2);
+        let mut clipped = 0;
+        for c in samples {
+            for v in [c.re, c.im] {
+                let x = (v * scale).round();
+                if !(-FULL..=FULL).contains(&x) {
+                    clipped += 1;
+                }
+                out.push((x.clamp(-FULL, FULL) as i16) << 4);
+            }
+        }
+        clipped
+    }
+}
+
 /// Scaling of the unit-mean-power OFDM signal into `F` samples: RMS
 /// amplitude = full scale · 10^(−backoff/20), with saturation counting.
 ///
@@ -135,6 +165,24 @@ mod tests {
         assert_eq!(
             Quantizer::<Cs8>::new(10.0).describe_level(),
             "10.0 dB below cs8 full scale (RMS 40.2 of 127)"
+        );
+    }
+
+    #[test]
+    fn cs12_is_left_aligned_and_clips_at_12_bits() {
+        assert_eq!(Quantizer::<Cs12>::full_scale(), 2047.0);
+        let mut s = Quantizer::<Cs12>::new(0.0);
+        let v = s.convert(&[C32::new(0.5, -0.5), C32::new(1.5, -2.0), C32::new(0.0, 1.0)]);
+        // 0.5 · 2047 = 1023.5 → 1024 (rounded half away from zero), × 16.
+        assert_eq!(
+            v,
+            vec![1024 << 4, -1024 << 4, 2047 << 4, -2047 << 4, 0, 2047 << 4]
+        );
+        assert_eq!((s.clipped(), s.components()), (2, 6));
+        assert!(v.iter().all(|x| x % 16 == 0));
+        assert_eq!(
+            Quantizer::<Cs12>::new(10.0).describe_level(),
+            "10.0 dB below cs12 full scale (RMS 647.3 of 2047)"
         );
     }
 

@@ -6,15 +6,17 @@ plus the service multiplexer and TS analysis tools.
 
 ```text
 cargo build --release -p isdb-cli      # → target/release/isdb
-cargo build --release -p isdb-cli --no-default-features   # without libhackrf
+cargo build --release -p isdb-cli --no-default-features   # without libhackrf and libiio
 ```
 
 Radios are selected with `--radio NAME[:key=value,...]` and reached
-through `isdb-radio`; this crate contains no device code. The `hackrf`
-cargo feature (default on) forwards to `isdb-radio/hackrf`, which links
-the system libhackrf (≥ 2022.09.1) through `isdb-hackrf`. Built without
-it, every file-based command works and `--radio hackrf` (also with
-`--dry-run`) fails with a message naming the feature.
+through `isdb-radio`; this crate contains no device code. Two cargo
+features (both default on) forward to the backends of `isdb-radio`:
+`hackrf` links the system libhackrf (≥ 2022.09.1) through `isdb-hackrf`,
+`pluto` (ADALM-Pluto family, e.g. a PlutoSky R2 over Ethernet) the system
+libiio 0.x through `isdb-iio`. Built without one, every file-based
+command works and `--radio` with that backend (also with `--dry-run`)
+fails with a message naming the feature.
 
 > **Legal and safety notice** (also printed by `isdb tx --help`):
 > radiating on broadcast frequencies requires a licence (in Japan the
@@ -29,7 +31,7 @@ crate. It calls `isdbt-phy` (`Transmitter`, `PipelinedReceiver`, `iq`),
 `isdbt-core`/`isdbt-fec`/`isdbt-ofdm` (parameters, multiplex pattern,
 demodulator configuration), `isdbt-mux` (`Multiplexer`), `isdb-analyze`
 (`isdb ts`) and `isdb-radio` (`IqSink` / `IqSource`, the backend
-registry); `isdb-ts`/`isdb-si`/`isdb-text` and `isdb-hackrf` are reached
+registry); `isdb-ts`/`isdb-si`/`isdb-text`, `isdb-hackrf` and `isdb-iio` are reached
 only through `isdbt-mux`/`isdb-analyze`/`isdb-radio` (not direct
 dependencies). It adds I/O, threading, pacing, the `--rf-enable` gate and
 reporting; no spec logic and no device code lives here (no SPEC-NOTES of
@@ -105,15 +107,15 @@ Sinks: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdout) or
 
 | flag | default | meaning |
 |---|---|---|
-| `--radio NAME[:key=value,...]` | — | radio backend and its device arguments, e.g. `hackrf`, `hackrf:serial=0000abcd`; an unknown name lists the compiled-in backends and their cargo features |
+| `--radio NAME[:key=value,...]` | — | radio backend and its device arguments, e.g. `hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`; an unknown name lists the compiled-in backends and their cargo features |
 | `--channel N` / `--freq HZ` | — | UHF ch 13..62 → 473 + 6(N−13) + 1/7 MHz; the centre must lie in the 470–710 MHz TV band (ch 13–52) |
-| `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (shielded lab only); the backend's own range still applies (HackRF 1 MHz–6 GHz) |
+| `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (shielded lab only); the backend's own range still applies (HackRF 1 MHz–6 GHz, Pluto TX 47 MHz–6 GHz) |
 | `--freq-corr-ppm P` | 0 | divide tuning and sample clock by 1 + P·1e-6 |
-| `--gain NAME=VALUE` | backend's | repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF TX: `txvga=0..47` dB (0), `amp=on\|off` (RF amplifier ≈ +11 dB, off) |
-| `--backoff-db DB` | 10 | OFDM RMS below integer full scale (radios with integer samples, e.g. HackRF cs8, and cs8 files); clipped components counted |
+| `--gain NAME=VALUE` | backend's | repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF TX: `txvga=0..47` dB (0), `amp=on\|off` (RF amplifier ≈ +11 dB, off); Pluto TX: `att=0..89.75` dB attenuation in 0.25 dB steps (89.75) |
+| `--backoff-db DB` | 10 | OFDM RMS below integer full scale (radios with integer samples, e.g. HackRF cs8, Pluto cs12, and cs8 files); clipped components counted |
 | `--rf-enable` | — | **required to radiate**. `--radio` needs `--rf-enable` or `--dry-run` (otherwise the command line is rejected); with `--dry-run` it prints the backend's settings and exits with an error ("not transmitting") before opening the device |
 | `--seconds S` | 0 | bound on air time incl. lead-in/flush; `0` = unbounded: until the input ends (`file` at EOF, `live` when the writer closes, `--relay --at-eof end`) or Ctrl-C / SIGTERM — `--synthetic`, `--mux-config`, `--relay` and `--feed loop` never end. The start-up line says `duration: unbounded (…); stop with Ctrl-C`. An endless input into an `--iq` regular file is refused without `--seconds` (the file would fill the disk; `--seconds 0` forces it); stdout, FIFOs and devices such as `/dev/null` need none |
-| `--bb-filter-hz HZ` | 6 MHz | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth (HackRF: the largest MAX2837 setting ≤ the request) |
+| `--bb-filter-hz HZ` | 6 MHz | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth (HackRF: the largest MAX2837 setting ≤ the request; Pluto: the AD936x RF bandwidth, 0.2–40 MHz TX / 56 MHz RX) |
 | `--queue-frames`, `--prefill-frames` | 4 / 2 | frames produced ahead of the sink; frames converted before the radio starts |
 | `--status-secs` | 5 | status line interval (0 = final summary only) |
 | `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity (otherwise refused with layouts that fit) |
@@ -138,7 +140,7 @@ the PCR-measured input rate per layer against its capacity, the PCR lag;
 the on-air time of the frames produced in the interval divided by the time
 spent assembling and modulating them; waiting on the queue is not
 counted), and the radio's own counters (HackRF: USB buffers and
-underruns). A producer below
+underruns; Pluto: IIO buffers and underruns). A producer below
 1× with a real-time sink prints a warning with the per-stage times.
 
 The backend's settings (`Backend::describe_tx`, which also validates the
@@ -146,7 +148,8 @@ device arguments, gains, tuning range and `--backoff-db`) are printed before the
 opened. SIGINT/SIGTERM stop immediately (queued samples are discarded); a
 normal end drains the queue. With HackRF every exit path stops streaming,
 turns the amp off and prints `device stopped streaming: yes` (error if
-not); underruns (USB buffers sent as zeros) are reported in the status
+not); with a Pluto it stops streaming, sets the maximum attenuation and
+powers the TX LO down; underruns (USB buffers sent as zeros) are reported in the status
 lines and at the end.
 
 On-air sequence: `Transmitter::preroll` (frames modulated and discarded, so
@@ -165,7 +168,8 @@ receiver look-ahead.
   `--radio SPEC` with `--channel/--freq`, `--freq-corr-ppm`,
   `--bb-filter-hz` and repeatable `--gain NAME=VALUE` (HackRF RX:
   `lna=0..40` in 8 dB steps (16), `vga=0..62` in 2 dB steps (20),
-  `amp=on|off` (off)). `--seconds` bounds the signal time (default `0` =
+  `amp=on|off` (off); Pluto RX: `agc=manual|slow_attack|fast_attack|hybrid`
+  (slow_attack), `gain=dB` (manual gain)). `--seconds` bounds the signal time (default `0` =
   unbounded: the whole file for `--iq`, until Ctrl-C / SIGTERM for
   `--radio`).
 * Outputs (valid frames only): `--out PATH` the §3.2.2 reproduced single TS,
@@ -462,6 +466,12 @@ minute per relay).
 An RF loopback needs two radios: `isdb tx --radio hackrf:serial=A …` and
 `isdb rx --radio hackrf:serial=B …`, connected through attenuators
 ([docs/transmitting.md](https://github.com/a1678991/isdb-rs/blob/main/docs/transmitting.md#bench-set-up)).
+A Pluto can also loop back digitally without radiating:
+`isdb tx --radio pluto:uri=…,loopback=on … --rf-enable` keeps the TX LO
+powered down and feeds the samples into its own RX path, where
+`isdb rx --radio pluto:uri=…` receives them (over Ethernet the RX side
+drops samples while both directions stream; see the `isdb-radio`
+README).
 
 ## Radio backends
 
@@ -476,10 +486,11 @@ registry and its device arguments; `--gain NAME=VALUE` are its gains.
 `isdb_radio::RxOptions`), and passes the arguments and gains through as
 strings for the backend to validate. The `--rf-enable` /
 `--dry-run` gate applies to every backend. The compiled-in backends, their
-device arguments and gains are listed in the `isdb-radio` README; today
-that is `hackrf` (cargo feature `hackrf`, default on).
+device arguments and gains are listed in the `isdb-radio` README: `hackrf`
+and `pluto` (cargo features of the same names, default on).
 
-Adding a device (for example a PlutoSDR) touches only `isdb-radio`:
+Adding a device touches only `isdb-radio` (the `pluto` backend is an
+example of one added this way):
 
 1. Implement `isdb_radio::Backend` in
    `crates/isdb-radio/src/backends/<name>.rs`. `describe_tx` /
@@ -488,7 +499,7 @@ Adding a device (for example a PlutoSDR) touches only `isdb-radio`:
    `--dry-run` prints); `open_tx` / `open_rx` open the device and return a
    `Box<dyn IqSink>` / `Box<dyn IqSource>`. A device fed with buffers of
    integer samples implements `isdb_radio::RadioTx` (its `IntFormat`, e.g.
-   `Cs8`) and returns an `isdb_radio::QueuedSink`, which quantises with
+   `Cs8` or `Cs12`) and returns an `isdb_radio::QueuedSink`, which quantises with
    `TxOptions::backoff_db` and provides the prefill, back-pressure, stall
    detection, drain and underrun counting; `open_rx` converts
    `RxOptions::queue_seconds` to its own buffer count.
@@ -516,9 +527,11 @@ tx:  reader thread(s) ─packets (bounded, ~2 s)─► producer thread
        --iq-in: playback thread (file frames, null frames when paused)
        ─frames (bounded, --queue-frames 4)─► main thread: dyn IqSink
      IqSink: FileSink (cf32/cs8) | isdb-radio backend (Backend::open_tx),
-       e.g. hackrf: cs8 quantiser → libhackrf TX callback
+       e.g. hackrf: cs8 quantiser → libhackrf TX callback;
+       pluto: cs12 quantiser → isdb-iio TX thread (iio_buffer_push)
        (starts after --prefill-frames 2; back-pressure paces the producer)
-rx:  dyn IqSource (file | Backend::open_rx, e.g. HackRF RX callback)
+rx:  dyn IqSource (file | Backend::open_rx, e.g. HackRF RX callback,
+       Pluto isdb-iio RX thread)
        ─► PipelinedReceiver
        (demod thread ─► FEC-decode thread) ─► outputs + status
 loopback: producer ─► Channel ─► PipelinedReceiver ─► Verifier
@@ -565,7 +578,8 @@ transmit with, over the in-memory `mock::MockRadio`):
 | `tests/cli.rs` `loopback_passes_with_impairments`, `loopback_with_file_inputs_and_detects_loss` | loopback verdicts: PASS under impairments, FAIL with lost packets counted |
 | `tests/cli.rs` `radio_tx_refuses_without_rf_enable` | `--radio hackrf --dry-run` prints the backend's settings and refuses; no `--rf-enable` ⇒ rejected |
 | `tests/cli.rs` `radio_rejects_unknown_backends_gains_and_ranges` | an unknown backend lists the compiled-in ones with their features; unknown or out-of-range `--gain` values (TX and RX) and unknown device arguments are rejected before a device is opened |
-| `tests/cli.rs` `radio_without_backends_names_the_feature` | `--no-default-features` build: `tx`/`rx --radio hackrf` name the `hackrf` feature |
+| `tests/cli.rs` `pluto_dry_run_validates_without_a_device` | `--radio pluto:…` dry runs print the settings (attenuation, default maximum; loopback; cs12 level) and reject out-of-range attenuation, HackRF gain names, a third channel, a 50 MHz bandwidth, `loopback` on RX and manual gain with AGC, without connecting |
+| `tests/cli.rs` `radio_without_backends_names_the_feature` | `--no-default-features` build: `tx`/`rx --radio hackrf` and `--radio pluto` name their features |
 | `tests/cli.rs` `scrambled_input_is_refused` | a TS with one scrambled packet (transport_scrambling_control ≠ '00') is refused: `isdb` neither descrambles nor transmits scrambled content |
 | `tests/cli.rs` `completions_cover_every_subcommand` | `completions bash` defines `_isdb` and dispatches every subcommand; `completions zsh` starts with `#compdef isdb` and lists every subcommand; both complete `--radio`; an unknown shell is a usage error |
 | `tests/cli.rs` `endless_input_into_iq_file_is_refused_without_seconds` | `tx --synthetic --iq FILE` without `--seconds` is refused before the file is created; with `--seconds` it runs |

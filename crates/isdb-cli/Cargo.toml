@@ -9,7 +9,7 @@ authors.workspace = true
 repository.workspace = true
 documentation = "https://github.com/a1678991/isdb-rs/blob/main/crates/isdb-cli/README.md"
 readme = "README.md"
-keywords = ["isdb-t", "sdr", "hackrf", "mpeg-ts", "arib"]
+keywords = ["isdb-t", "sdr", "hackrf", "pluto", "mpeg-ts"]
 categories = ["command-line-utilities", "multimedia::video", "hardware-support"]
 # Ship sources, examples and docs only: tests (and any local captures
 # next to them) stay out of the .crate.
@@ -44,12 +44,15 @@ nix.workspace = true
 isdb-radio = { workspace = true, features = ["mock"] }
 
 [features]
-default = ["hackrf"]
+default = ["hackrf", "pluto"]
 # The HackRF radio backend (`--radio hackrf`): links the system libhackrf
 # through isdb-radio and isdb-hackrf. Without it (`--no-default-features`)
 # every file-based command still works and `--radio` fails with a message
 # naming the feature to enable.
 hackrf = ["isdb-radio/hackrf"]
+# The ADALM-Pluto family backend (`--radio pluto`, e.g. a PlutoSky R2 over
+# Ethernet): links the system libiio 0.x through isdb-radio and isdb-iio.
+pluto = ["isdb-radio/pluto"]
 
 [lints]
 workspace = true

@@ -5,17 +5,21 @@ use anyhow::{Result, bail};
 
 #[cfg(feature = "hackrf")]
 mod hackrf;
+#[cfg(feature = "pluto")]
+mod pluto;
 
 /// Every backend this crate knows, compiled in or not: (name, `isdb-radio`
 /// cargo feature enabling it). `isdb-cli` forwards each of these features
 /// as its own feature of the same name (its `Cargo.toml`), which the error
 /// of [`backend`] says.
-const KNOWN: &[(&str, &str)] = &[("hackrf", "hackrf")];
+const KNOWN: &[(&str, &str)] = &[("hackrf", "hackrf"), ("pluto", "pluto")];
 
 /// The backends compiled into this build.
 const COMPILED: &[&dyn Backend] = &[
     #[cfg(feature = "hackrf")]
     &hackrf::HackRf,
+    #[cfg(feature = "pluto")]
+    &pluto::Pluto,
 ];
 
 /// The backends compiled into this build.
@@ -73,20 +77,21 @@ mod tests {
         }
     }
 
+    const HACKRF: &str =
+        "hackrf (isdb-radio feature `hackrf`, forwarded by isdb-cli feature `hackrf`)";
+    const PLUTO: &str = "pluto (isdb-radio feature `pluto`, forwarded by isdb-cli feature `pluto`)";
+
     #[test]
     fn unknown_backend_names_the_features() {
-        let e = backend("pluto").unwrap_err().to_string();
-        assert!(e.starts_with("unknown radio backend \"pluto\"; "), "{e}");
-        let hackrf = "hackrf (isdb-radio feature `hackrf`, forwarded by isdb-cli feature `hackrf`)";
+        let e = backend("sdr").unwrap_err().to_string();
+        assert!(e.starts_with("unknown radio backend \"sdr\"; "), "{e}");
         if backends().is_empty() {
             assert!(
                 e.ends_with(&format!(
-                    "this build has no radio backends; known: {hackrf}"
+                    "this build has no radio backends; known: {HACKRF}, {PLUTO}"
                 )),
                 "{e}"
             );
-        } else {
-            assert!(e.contains(&format!("compiled in: {hackrf}")), "{e}");
         }
     }
 
@@ -97,9 +102,42 @@ mod tests {
         assert!(
             e.starts_with(
                 "radio backend \"hackrf\" is not compiled in (isdb-radio feature `hackrf`, \
-                 forwarded by isdb-cli feature `hackrf`); this build has no radio backends"
+                 forwarded by isdb-cli feature `hackrf`)"
             ),
             "{e}"
         );
+    }
+
+    #[cfg(not(feature = "pluto"))]
+    #[test]
+    fn pluto_left_out() {
+        let e = backend("pluto").unwrap_err().to_string();
+        assert!(
+            e.starts_with(
+                "radio backend \"pluto\" is not compiled in (isdb-radio feature `pluto`, \
+                 forwarded by isdb-cli feature `pluto`)"
+            ),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn compiled_and_missing_are_listed_apart() {
+        let e = backend("sdr").unwrap_err().to_string();
+        match (backend("hackrf").is_ok(), backend("pluto").is_ok()) {
+            (true, true) => assert!(
+                e.ends_with(&format!("compiled in: {HACKRF}, {PLUTO}")),
+                "{e}"
+            ),
+            (true, false) => assert!(
+                e.ends_with(&format!("compiled in: {HACKRF}; not compiled in: {PLUTO}")),
+                "{e}"
+            ),
+            (false, true) => assert!(
+                e.ends_with(&format!("compiled in: {PLUTO}; not compiled in: {HACKRF}")),
+                "{e}"
+            ),
+            (false, false) => assert!(e.contains("this build has no radio backends"), "{e}"),
+        }
     }
 }

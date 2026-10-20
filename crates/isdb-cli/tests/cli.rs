@@ -537,8 +537,8 @@ fn radio_rejects_unknown_backends_gains_and_ranges() {
         assert!(!o.status.success(), "{extra:?}");
         String::from_utf8_lossy(&o.stderr).into_owned()
     };
-    let e = dry(&["--radio", "pluto"]);
-    assert!(e.contains("unknown radio backend \"pluto\""), "{e}");
+    let e = dry(&["--radio", "sdr"]);
+    assert!(e.contains("unknown radio backend \"sdr\""), "{e}");
     assert!(
         e.contains(
             "compiled in: hackrf (isdb-radio feature `hackrf`, forwarded by isdb-cli feature `hackrf`)"
@@ -574,33 +574,99 @@ fn radio_rejects_unknown_backends_gains_and_ranges() {
     assert!(e.contains("lna=12: must be 0..40 dB in 8 dB steps"), "{e}");
 }
 
-#[cfg(not(feature = "hackrf"))]
+#[cfg(feature = "pluto")]
+#[test]
+fn pluto_dry_run_validates_without_a_device() {
+    // The address is TEST-NET-1 (RFC 5737): a dry run never connects.
+    let dry = |extra: &[&str]| {
+        let mut args = vec!["tx", "--channel", "13", "--synthetic", "--dry-run"];
+        args.extend_from_slice(extra);
+        let o = run(&args);
+        assert!(!o.status.success(), "{extra:?}");
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    let e = dry(&[
+        "--radio",
+        "pluto:uri=ip:192.0.2.1,loopback=on",
+        "--gain",
+        "att=30",
+    ]);
+    assert!(e.contains("pluto TX settings (UHF ch13):"), "{e}");
+    assert!(e.contains("device       Pluto ip:192.0.2.1, TX1"), "{e}");
+    assert!(e.contains("TX atten     30 dB"), "{e}");
+    assert!(e.contains("nothing radiated"), "{e}");
+    assert!(e.contains("below cs12 full scale"), "{e}");
+    assert!(e.contains("not transmitting"), "{e}");
+    // The default attenuation is the maximum.
+    let e = dry(&["--radio", "pluto:uri=ip:192.0.2.1"]);
+    assert!(e.contains("TX atten     89.75 dB (maximum)"), "{e}");
+    let e = dry(&["--radio", "pluto", "--gain", "att=90"]);
+    assert!(
+        e.contains("att=90: must be 0..89.75 dB in 0.25 dB steps"),
+        "{e}"
+    );
+    let e = dry(&["--radio", "pluto", "--gain", "txvga=20"]);
+    assert!(e.contains("no gain \"txvga\""), "{e}");
+    let e = dry(&["--radio", "pluto:channel=3"]);
+    assert!(e.contains("channel=3: want 1 or 2"), "{e}");
+    let e = dry(&["--radio", "pluto", "--bb-filter-hz", "50000000"]);
+    assert!(e.contains("RF bandwidth 50000000 Hz outside"), "{e}");
+    // RX: loopback is a TX argument; manual gain and AGC exclude each other.
+    for (extra, want) in [
+        (
+            &["--radio", "pluto:loopback=on"][..],
+            "unknown device argument \"loopback\"",
+        ),
+        (
+            &[
+                "--radio",
+                "pluto",
+                "--gain",
+                "agc=fast_attack",
+                "--gain",
+                "gain=20",
+            ][..],
+            "cannot be combined with agc=fast_attack",
+        ),
+    ] {
+        let mut args = vec!["rx", "--channel", "27"];
+        args.extend_from_slice(extra);
+        let o = run(&args);
+        assert!(!o.status.success(), "{extra:?}");
+        let e = String::from_utf8_lossy(&o.stderr);
+        assert!(e.contains(want), "{e}");
+    }
+}
+
+#[cfg(not(any(feature = "hackrf", feature = "pluto")))]
 #[test]
 fn radio_without_backends_names_the_feature() {
-    for args in [
-        &[
-            "tx",
-            "--radio",
-            "hackrf",
-            "--channel",
-            "13",
-            "--synthetic",
-            "--dry-run",
-        ][..],
-        &["rx", "--radio", "hackrf", "--channel", "13"],
-    ] {
-        let o = run(args);
-        assert!(!o.status.success());
-        let e = String::from_utf8_lossy(&o.stderr);
-        assert!(
-            e.contains(
-                "radio backend \"hackrf\" is not compiled in (isdb-radio feature `hackrf`, \
-                 forwarded by isdb-cli feature `hackrf`); this build has no radio backends"
-            ),
-            "{e}"
-        );
-        // A dry run without a backend prints no settings.
-        assert!(!e.contains("TX settings"), "{e}");
+    for name in ["hackrf", "pluto"] {
+        for args in [
+            &[
+                "tx",
+                "--radio",
+                name,
+                "--channel",
+                "13",
+                "--synthetic",
+                "--dry-run",
+            ][..],
+            &["rx", "--radio", name, "--channel", "13"],
+        ] {
+            let o = run(args);
+            assert!(!o.status.success());
+            let e = String::from_utf8_lossy(&o.stderr);
+            assert!(
+                e.contains(&format!(
+                    "radio backend \"{name}\" is not compiled in (isdb-radio feature `{name}`, \
+                     forwarded by isdb-cli feature `{name}`); this build has no radio backends"
+                )),
+                "{e}"
+            );
+            // A dry run without a backend prints no settings.
+            assert!(!e.contains("TX settings"), "{e}");
+        }
     }
 }
 
@@ -610,6 +676,7 @@ fn backend_features_are_forwarded() {
     // forwarding each backend feature under the same name.
     let toml = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
     assert!(toml.contains(r#"hackrf = ["isdb-radio/hackrf"]"#), "{toml}");
+    assert!(toml.contains(r#"pluto = ["isdb-radio/pluto"]"#), "{toml}");
 }
 
 #[test]

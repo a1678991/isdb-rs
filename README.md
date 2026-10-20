@@ -5,7 +5,7 @@
 A from-the-specification Rust implementation of Japanese digital terrestrial
 television (ISDB-T): MPEG-2 transport stream and ARIB service information
 codecs, a service multiplexer, a transport-stream analyzer, and the ARIB
-STD-B31 modulator and demodulator, with SDR I/O (HackRF One today). Both directions run on
+STD-B31 modulator and demodulator, with SDR I/O (HackRF One and the ADALM-Pluto family). Both directions run on
 the same library — services → TS → OFDM baseband → radio, and radio → OFDM
 → TS → analysis — so every layer can be checked against its inverse, against
 the specifications' own numbers, and against independent receivers. It is
@@ -41,11 +41,12 @@ leaves room for ISDB-S and ISDB-S3.
 >   warranty** (see [LICENSE](LICENSE)).
 > - **No affiliation.** isdb-rs is an independent project. It is not
 >   affiliated with, endorsed by or sponsored by ARIB, ITU, ISO/IEC, Great
->   Scott Gadgets, Sony, MyGica or any broadcaster. These names, and
->   product names such as HackRF and BDZ, are used only to identify the
->   standards implemented and the equipment tested; they may be trademarks
->   of their respective owners (HackRF is a trademark of Great Scott
->   Gadgets).
+>   Scott Gadgets, Analog Devices, OpenSourceSDRLab, Sony, MyGica or any
+>   broadcaster. These names, and product names such as HackRF,
+>   ADALM-Pluto, PlutoSky and BDZ, are used only to identify the standards
+>   implemented and the equipment tested; they may be trademarks of their
+>   respective owners (HackRF is a trademark of Great Scott Gadgets,
+>   ADALM-Pluto of Analog Devices).
 
 ## Features
 
@@ -82,10 +83,11 @@ leaves room for ISDB-S and ISDB-S3.
   time-interleave lengths, TMCC and AC. The receiver does synchronisation,
   CFO and timing-drift correction, channel estimation, TMCC decoding,
   soft-decision Viterbi and RS decoding, and reproduces the 13-segment TS.
-- **I/O** (`isdb-radio`, `isdb-hackrf`, `isdb-cli`): IQ files (cf32 for
-  GNU Radio, cs8 for `hackrf_transfer`) and radio streaming through
-  device-neutral IQ sink/source traits with one backend per device
-  (HackRF One today, `--radio hackrf`); one `isdb` binary with `tx`, `rx`,
+- **I/O** (`isdb-radio`, `isdb-hackrf`, `isdb-iio`, `isdb-cli`): IQ files
+  (cf32 for GNU Radio, cs8 for `hackrf_transfer`) and radio streaming
+  through device-neutral IQ sink/source traits with one backend per device
+  (HackRF One, `--radio hackrf`; ADALM-Pluto and compatibles such as the
+  PlutoSky R2 over USB or Ethernet, `--radio pluto`); one `isdb` binary with `tx`, `rx`,
   `loopback`, `mux`, `ts` and `completions` commands.
 
 ## Crates
@@ -101,8 +103,9 @@ leaves room for ISDB-S and ISDB-S3.
 | [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS re-multiplexing, RS(204,188), energy dispersal, byte interleaving, convolutional code / Viterbi |
 | [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | mapping, interleaving, OFDM frame with SP/CP/TMCC/AC, IFFT/GI; receiver synchronisation and equalisation |
 | [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | TX/RX pipelines (TS packets ⇄ complex baseband), IQ file formats, the broadcasting TS with ISDB-T_information and IIP (Part 2 §5.5) |
-| [`isdb-radio`](crates/isdb-radio/README.md) | — | device-neutral SDR layer: IQ sink/source traits, `--radio` device selection, backend registry (HackRF behind the `hackrf` feature), integer sample quantiser |
+| [`isdb-radio`](crates/isdb-radio/README.md) | — | device-neutral SDR layer: IQ sink/source traits, `--radio` device selection, backend registry (HackRF behind the `hackrf` feature, ADALM-Pluto behind `pluto`), integer sample quantisers |
 | [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | minimal safe wrapper over the system libhackrf (FFI), used by the `isdb-radio` HackRF backend |
+| [`isdb-iio`](crates/isdb-iio/README.md) | — | minimal safe wrapper over the system libiio 0.x (FFI), used by the `isdb-radio` Pluto backend |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary |
 
 How they fit together, the frame/latency contract and the data flow:
@@ -110,17 +113,18 @@ How they fit together, the frame/latency contract and the data flow:
 
 ## Quick start
 
-Tested on Linux with Rust ≥ 1.88 (edition 2024). HackRF support is the
-`hackrf` cargo feature of `isdb-cli` (forwarded to the `isdb-radio`
-backend), on by default; it links the system
-`libhackrf` (2022.09.1 or later) dynamically, so the default build needs
-the library installed even if you never attach a radio:
+Tested on Linux with Rust ≥ 1.88 (edition 2024). Radio support is two
+cargo features of `isdb-cli` (forwarded to the `isdb-radio` backends),
+both on by default: `hackrf` links the system `libhackrf` (2022.09.1 or
+later) and `pluto` the system `libiio` (0.x, 0.21 or later) dynamically,
+so the default build needs both libraries installed even if you never
+attach a radio:
 
-| System | Package |
+| System | Packages |
 |---|---|
-| Arch Linux | `hackrf` |
-| Debian / Ubuntu | `libhackrf-dev` |
-| Fedora | `hackrf-devel` |
+| Arch Linux | `hackrf libiio` |
+| Debian / Ubuntu | `libhackrf-dev libiio-dev` |
+| Fedora | `hackrf-devel libiio-devel` |
 
 ```sh
 git clone https://github.com/a1678991/isdb-rs && cd isdb-rs
@@ -128,10 +132,12 @@ cargo build --release -p isdb-cli          # → target/release/isdb
 export PATH="$PWD/target/release:$PATH"
 ```
 
-Without libhackrf, build with
-`cargo build --release -p isdb-cli --no-default-features`: every
+Without either library, build with
+`cargo build --release -p isdb-cli --no-default-features` (add
+`--features hackrf` or `--features pluto` for one of them): every
 file-based command (`tx --iq`, `rx --iq`, `loopback`, `mux`, `ts`) works,
-and `--radio hackrf` fails with a message naming the feature.
+and `--radio` with a left-out backend fails with a message naming the
+feature.
 
 Everything below works without a radio and without any captured data.
 
@@ -302,8 +308,13 @@ end, but some parts have had less independent checking than others:
   synchronisation (only the IIP's `network_synchronization_information`
   syntax is handled), AC data in the broadcasting TS, data events and
   event messages of data broadcasting, DRCS glyphs, ISDB-T<sub>SB</sub>.
-- **Radio**: HackRF One is the only backend (others plug into
-  `isdb-radio` without CLI changes). The demodulator runs at about 1.4× real time
+- **Radio**: HackRF One and the ADALM-Pluto family are the backends
+  (others plug into `isdb-radio` without CLI changes). A Pluto streams one
+  direction at a time at 512/63 MHz over Ethernet: TX and RX together
+  exceed what its iiod serves with ADI's firmware (one CPU enabled), and
+  the receive side then drops samples. A PlutoSky R2 needs Tezuka
+  firmware v0.3.22 or later to receive (its factory firmware leaves the
+  reference oscillator wandering). The demodulator runs at about 1.4× real time
   on a current 16-core desktop CPU, so live reception needs a fast machine.
 
 ## Roadmap

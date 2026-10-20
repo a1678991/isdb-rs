@@ -1,4 +1,4 @@
-# Rust checks. Every step outside the no-hackrf job calls a mise task, so
+# Rust checks. Every step outside the no-radio-libs job calls a mise task, so
 # `mise run check` locally runs the same commands. Toolchains come from
 # rust-toolchain.toml (dev) and `rust-version` in Cargo.toml (MSRV); harness
 # tools from mise.toml.
@@ -76,9 +76,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # crates/isdb-hackrf links the system libhackrf (no test opens a device).
-      - name: Install libhackrf
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libhackrf-dev
+      # crates/isdb-hackrf and crates/isdb-iio link the system libhackrf and
+      # libiio (no test opens a device).
+      - name: Install libhackrf and libiio
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libhackrf-dev libiio-dev
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
@@ -149,17 +150,18 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: mise run msrv
 
-  no-hackrf:
-    name: isdb-cli without libhackrf
+  no-radio-libs:
+    name: isdb-cli without libhackrf and libiio
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Deliberately no libhackrf-dev: `--no-default-features` drops the
-      # `hackrf` feature (isdb-cli forwards it to isdb-radio, the only crate
-      # that depends on isdb-hackrf), so nothing may link the system library.
+      # Deliberately no libhackrf-dev or libiio-dev: `--no-default-features`
+      # drops the `hackrf` and `pluto` features (isdb-cli forwards them to
+      # isdb-radio, the only crate that depends on isdb-hackrf and isdb-iio),
+      # so nothing may link either system library.
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -172,7 +174,8 @@ jobs:
       - name: test (no default features)
         run: cargo test -p isdb-cli --no-default-features --locked
       # isdb-radio without any backend: the registry must still compile and
-      # name the missing feature (its `hackrf_left_out` test).
+      # name the missing features (its `hackrf_left_out` / `pluto_left_out`
+      # tests).
       - name: clippy isdb-radio (no backends, -D warnings)
         run: cargo clippy -p isdb-radio --no-default-features --all-targets --locked -- -D warnings
       - name: test isdb-radio (no backends)

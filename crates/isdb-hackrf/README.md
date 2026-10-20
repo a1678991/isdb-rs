@@ -117,8 +117,9 @@ and streaming state of the attached HackRF without any RF activity:
   process aborts (`panic = "abort"`, or a panic inside the `extern "C"`
   callbacks, which aborts since Rust 1.81); the device is then released by
   the OS. `Device` is `Send` but not `Sync`.
-- **unsafe.** This is the only crate that allows `unsafe_code`, all of it
-  FFI calls and the callback-context pointers. It uses the workspace lint
+- **unsafe.** This and `isdb-iio` are the only crates that allow
+  `unsafe_code`; here all of it is FFI calls and the callback-context
+  pointers. It uses the workspace lint
   table (`[lints] workspace = true`) and lifts `unsafe_code` with
   `#![allow(unsafe_code)]` in `src/lib.rs`.
 

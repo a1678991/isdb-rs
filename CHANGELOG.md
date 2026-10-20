@@ -53,6 +53,25 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   from `isdb-cli`; it validates its device arguments, gains, the
   1 MHz–6 GHz / 2–20 Msps range and the baseband filter request without
   opening the device.
+- `isdb-iio`: minimal safe wrapper over the system libiio (0.x API) —
+  contexts by URI (USB, Ethernet, local), device, channel and debug
+  attributes, and TX/RX streams of interleaved `i16` on their own threads
+  with bounded queues, underrun/overrun counters, a drain on TX end and a
+  stop that cancels a blocked buffer only as a fallback.
+- `isdb-radio`: the `pluto` backend (feature `pluto`, default on) for
+  AD936x radios with ADI's Pluto firmware (ADALM-Pluto, PlutoSky R2, …)
+  over libiio, e.g. `--radio pluto:uri=ip:192.0.2.30` over Ethernet. Device
+  arguments `uri`, `channel` (TX1/RX1 or TX2/RX2), `buffer` and, on TX,
+  `loopback` (digital TX→RX loopback with the TX LO powered down, for
+  tests without radiating); TX gain `att` (attenuation, default the
+  maximum 89.75 dB), RX gains `agc` and `gain`. The programmed LO, the
+  sample rate the clock chain runs at (512/63 MHz: −0.02 ppm) and the RF
+  bandwidth are read back and reported; a rate more than 10 ppm off is
+  refused. Opening the TX sets the maximum attenuation and switches the
+  DDS off first; closing it restores the maximum attenuation and powers
+  the TX LO down. The `Cs12` sample format (12-bit, left-aligned in
+  `i16`) is the DAC format of its `QueuedSink`.
+- `isdb-cli`: the `pluto` feature (default on) forwarding `isdb-radio/pluto`.
 - `isdb-cli`: the `isdb` binary — `tx` (to an IQ file or a radio; radiates
   only with `--rf-enable`), `rx`, `loopback` (software channel with
   impairments), `mux` (including `--relay` of a recording) and `ts`

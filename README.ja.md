@@ -4,7 +4,7 @@
 
 > この文書は [README.md](README.md) の日本語訳です。リンク先のドキュメントは英語版のみで、内容に相違がある場合は英語版が優先します。
 
-規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（現時点では HackRF One）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。現在実装しているのは ISDB-T のみですが、名称は ISDB-S と ISDB-S3 を将来扱う余地を残しています。
+規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（HackRF One と ADALM-Pluto 系）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。現在実装しているのは ISDB-T のみですが、名称は ISDB-S と ISDB-S3 を将来扱う余地を残しています。
 
 > [!WARNING]
 > **法令および電波安全に関する注意**
@@ -14,7 +14,7 @@
 > - **スクランブル解除は行いません。** B-CAS／限定受信方式（CAS）には対応しておらず、本ツールがスクランブルを解除することはありません。入力はスクランブルされていないもの（transport_scrambling_control '00'）でなければならず、スクランブルされた入力は拒否します。中継する番組は、既定で元のコピー制御の信号と CA_descriptor／ECM を保持します。
 > - **コンテンツの権利。** 送信または中継するコンテンツ（録画物を含む）について必要な権利を有していることは、利用者の責任です。放送事業者の番組の再送信は、同軸ケーブルを用いた私的なものであっても、お住まいの地域では制限されている場合があります。
 > - 本ソフトウェアは Apache License 2.0 の下で**無保証**で提供されます（[LICENSE](LICENSE) を参照）。
-> - **提携関係はありません。** isdb-rs は独立したプロジェクトです。ARIB、ITU、ISO/IEC、Great Scott Gadgets、Sony、MyGica およびいかなる放送事業者とも提携関係になく、これらから承認や後援を受けてもいません。これらの名称、および HackRF や BDZ などの製品名は、実装した規格と試験に用いた機器を識別する目的でのみ使用しています。これらはそれぞれの権利者の商標である場合があります（HackRF は Great Scott Gadgets の商標です）。
+> - **提携関係はありません。** isdb-rs は独立したプロジェクトです。ARIB、ITU、ISO/IEC、Great Scott Gadgets、Analog Devices、OpenSourceSDRLab、Sony、MyGica およびいかなる放送事業者とも提携関係になく、これらから承認や後援を受けてもいません。これらの名称、および HackRF、ADALM-Pluto、PlutoSky や BDZ などの製品名は、実装した規格と試験に用いた機器を識別する目的でのみ使用しています。これらはそれぞれの権利者の商標である場合があります（HackRF は Great Scott Gadgets の、ADALM-Pluto は Analog Devices の商標です）。
 
 ## 機能
 
@@ -24,7 +24,7 @@
 - **多重化器**（`isdbt-mux`）：TOML によるサービス記述（ネットワーク、サービス、イベント、SI テーブル、実験用の上書き設定）と MPEG-2 映像および AAC ADTS ファイルから、OFDM フレームに合わせて送出される固定レートの多重を生成します。H.222.0 の T-STD バッファモデルを備えます。**TS 中継**：スクランブルされていない録画 TS（たとえば自分で作成したもの）の 1 番組を、独自の PSI/SI を持つ地上デジタル放送のサービスとして再送信します。ストリームの役割と PID は録画から検出され、元のコピー制御と限定受信の信号は既定で保持されます。**データ放送とハイブリッドキャスト**：ディレクトリ内のファイルを BML データカルーセル（DSM-CC の DII／DDB、ARIB STD-B24 第 2・3 編）として PMT／EIT の信号とともに送出し、ハイブリッドキャスト受信機が起動する HTML5 アプリケーションの URL を示す AIT（B24 第 4 編、IPTVFJ STD-0010／0013）を、生成したランチャーとともにカルーセル内で、または独立した PID で伝送します。
 - **解析器**（`isdb-analyze`）：内容の表示（inspect）、検証（validate。各指摘には根拠となる条項を明記）、2 つのキャプチャのテーブル／フィールド単位の差分、および TS の正当性を保ったままの編集（PID のヌル化、セクションの削除・置換・挿入、型付きのフィールド変更）。
 - **ISDB-T 物理層**（`isdbt-core`、`isdbt-fec`、`isdbt-ofdm`、`isdbt-phy`、ARIB STD-B31）：モード 1〜3、すべてのガードインターバル、部分受信を含む最大 3 階層の階層伝送、DQPSK／QPSK／16QAM／64QAM、すべての符号化率と時間インターリーブ長、TMCC と AC。受信側は同期、CFO（キャリア周波数オフセット）とタイミングドリフトの補正、伝送路推定、TMCC 復号、軟判定ビタビ復号と RS 復号を行い、13 セグメントの TS を再生します。
-- **入出力**（`isdb-radio`、`isdb-hackrf`、`isdb-cli`）：IQ ファイル（GNU Radio 向けの cf32、`hackrf_transfer` 向けの cs8）と、デバイス非依存の IQ シンク／ソーストレイトを介した無線機とのストリーミング（デバイスごとに 1 つのバックエンド。現時点では HackRF One、`--radio hackrf`）。`tx`、`rx`、`loopback`、`mux`、`ts`、`completions` の各コマンドを持つ単一の `isdb` バイナリ。
+- **入出力**（`isdb-radio`、`isdb-hackrf`、`isdb-iio`、`isdb-cli`）：IQ ファイル（GNU Radio 向けの cf32、`hackrf_transfer` 向けの cs8）と、デバイス非依存の IQ シンク／ソーストレイトを介した無線機とのストリーミング（デバイスごとに 1 つのバックエンド。HackRF One は `--radio hackrf`、ADALM-Pluto とその互換機（USB または Ethernet 接続の PlutoSky R2 など）は `--radio pluto`）。`tx`、`rx`、`loopback`、`mux`、`ts`、`completions` の各コマンドを持つ単一の `isdb` バイナリ。
 
 ## クレート
 
@@ -39,21 +39,22 @@
 | [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS 再多重、RS(204,188)、エネルギー拡散、バイトインターリーブ、畳み込み符号／ビタビ復号 |
 | [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | マッピング、インターリーブ、SP/CP/TMCC/AC を含む OFDM フレーム、IFFT/GI。受信側の同期と等化 |
 | [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | 送信／受信パイプライン（TS パケット ⇄ 複素ベースバンド）、IQ ファイル形式 |
-| [`isdb-radio`](crates/isdb-radio/README.md) | — | デバイス非依存の SDR 層：IQ シンク／ソーストレイト、`--radio` によるデバイス選択、バックエンドのレジストリ（HackRF は `hackrf` フィーチャで有効化）、整数サンプルの量子化器 |
+| [`isdb-radio`](crates/isdb-radio/README.md) | — | デバイス非依存の SDR 層：IQ シンク／ソーストレイト、`--radio` によるデバイス選択、バックエンドのレジストリ（HackRF は `hackrf`、ADALM-Pluto は `pluto` フィーチャで有効化）、整数サンプルの量子化器 |
 | [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | システムの libhackrf に対する最小限の安全なラッパー（FFI）。`isdb-radio` の HackRF バックエンドが使用 |
+| [`isdb-iio`](crates/isdb-iio/README.md) | — | システムの libiio 0.x に対する最小限の安全なラッパー（FFI）。`isdb-radio` の Pluto バックエンドが使用 |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | `isdb` バイナリ |
 
 各クレートの関係、フレーム／レイテンシの約束事、データの流れについては [docs/architecture.md](docs/architecture.md) を参照してください。
 
 ## クイックスタート
 
-Linux 上の Rust 1.88 以上（edition 2024）で動作確認しています。HackRF への対応は `isdb-cli` の `hackrf` cargo フィーチャ（`isdb-radio` のバックエンドへ転送されます）で、既定で有効です。システムの `libhackrf`（2022.09.1 以降）に動的リンクするため、無線機を一切接続しない場合でも、既定のビルドにはこのライブラリのインストールが必要です。
+Linux 上の Rust 1.88 以上（edition 2024）で動作確認しています。無線機への対応は `isdb-cli` の 2 つの cargo フィーチャ（`isdb-radio` のバックエンドへ転送されます）で、どちらも既定で有効です。`hackrf` はシステムの `libhackrf`（2022.09.1 以降）に、`pluto`（ADALM-Pluto 系、PlutoSky R2 など。USB または Ethernet）はシステムの `libiio`（0.x、0.21 以降）に動的リンクするため、無線機を一切接続しない場合でも、既定のビルドには両方のライブラリのインストールが必要です。
 
 | システム | パッケージ |
 |---|---|
-| Arch Linux | `hackrf` |
-| Debian / Ubuntu | `libhackrf-dev` |
-| Fedora | `hackrf-devel` |
+| Arch Linux | `hackrf libiio` |
+| Debian / Ubuntu | `libhackrf-dev libiio-dev` |
+| Fedora | `hackrf-devel libiio-devel` |
 
 ```sh
 git clone https://github.com/a1678991/isdb-rs && cd isdb-rs
@@ -61,7 +62,7 @@ cargo build --release -p isdb-cli          # → target/release/isdb
 export PATH="$PWD/target/release:$PATH"
 ```
 
-libhackrf がない場合は `cargo build --release -p isdb-cli --no-default-features` でビルドしてください。ファイルを扱うコマンド（`tx --iq`、`rx --iq`、`loopback`、`mux`、`ts`）はすべて動作し、`--radio hackrf` はフィーチャ名を示すメッセージとともに失敗します。
+どちらのライブラリもない場合は `cargo build --release -p isdb-cli --no-default-features` でビルドしてください（片方だけなら `--features hackrf` または `--features pluto` を追加）。ファイルを扱うコマンド（`tx --iq`、`rx --iq`、`loopback`、`mux`、`ts`）はすべて動作し、組み込まれていないバックエンドを `--radio` で指定するとフィーチャ名を示すメッセージとともに失敗します。
 
 以下はすべて、無線機もキャプチャデータもなしで動作します。
 
@@ -168,7 +169,7 @@ isdb ts diff test.ts rx.ts                 # every section identical
 - **メディア**：MPEG-2 映像と AAC ADTS ファイルのみです。H.264 のワンセグストリームは PMT で宣言できますが、パケット化はしません。
 - **データ放送は、登録済み放送局の識別子のもとでのみ受信機で動作します。** カルーセルとその信号は ARIB STD-B24 第 2〜4 編に従い（配置は地上 4 局の実録画と照合）、ソニーのレコーダーは本プロジェクトの BML ページを表示しましたが、それはサービスが地域局自身のネットワーク／サービス ID をその局のチャンネルで名乗っている場合に限られます。プレースホルダのネットワークでは「d」マークは点灯しますが BML ブラウザは起動しません。ハイブリッドキャスト（IPTVFJ STD-0010／0013）は規格書どおりに実装していますが、出典のない値（start_priority ビット、監視対象の AIT モジュール、AIT の data_component_id）は文書化した既定値であり、ハイブリッドキャスト対応受信機での試験はまだなく、受信機が受け付ける organization_id は IPTV フォーラムの運用に依存します。
 - **未実装**：同一 PID のパケットを 2 つの階層で重複して送ること、SFN 同期（IIP の `network_synchronization_information` の構文のみ扱います）、放送 TS 上の AC データ、データ放送のデータイベントとイベントメッセージ、DRCS（外字）、ISDB-T<sub>SB</sub>。
-- **無線機**：バックエンドは HackRF One のみです（他のバックエンドは CLI を変更せずに `isdb-radio` へ追加できます）。復調器は現行の 16 コアのデスクトップ CPU で実時間の約 1.4 倍の速さで動作するため、リアルタイム受信には高速なマシンが必要です。
+- **無線機**：バックエンドは HackRF One と ADALM-Pluto 系です（他のバックエンドは CLI を変更せずに `isdb-radio` へ追加できます）。Pluto は Ethernet 経由で 512/63 MHz の送信または受信を一度に一方向だけ扱えます。送受信を同時に行うと、ADI のファームウェア（有効な CPU は 1 つ）で動く iiod の処理能力を超え、受信側でサンプルが欠落します。PlutoSky R2 の受信には Tezuka ファームウェア v0.3.22 以降が必要です（工場出荷時のファームウェアでは基準発振器の周波数が安定しません）。復調器は現行の 16 コアのデスクトップ CPU で実時間の約 1.4 倍の速さで動作するため、リアルタイム受信には高速なマシンが必要です。
 
 ## ロードマップ
 

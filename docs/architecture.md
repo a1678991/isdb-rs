@@ -32,7 +32,7 @@ are in each crate's README.
   transmitter and the receiver all work in whole OFDM frames (204 symbols)
   with exactly known packet counts and latencies.
 - **No panics on malformed input** in decoders; no `unsafe` outside the
-  `isdb-hackrf` FFI crate.
+  `isdb-hackrf` and `isdb-iio` FFI crates.
 
 ## Crate graph
 
@@ -49,6 +49,7 @@ graph TD
   ana[isdb-analyze<br/>analyzer]
   radio[isdb-radio<br/>IQ sink/source, radio backends]
   hrf[isdb-hackrf<br/>libhackrf FFI]
+  iio[isdb-iio<br/>libiio FFI]
   cli[isdb-cli<br/>the isdb binary]
 
   si --> ts
@@ -70,6 +71,7 @@ graph TD
   radio --> phy
   radio --> ofdm
   radio -. "hackrf feature" .-> hrf
+  radio -. "pluto feature" .-> iio
   cli --> mux
   cli --> ana
   cli --> phy
@@ -89,7 +91,7 @@ crate that knows about radios: it defines the device-neutral `IqSink` /
 the `RadioConfig` / `TxOptions` / `RxOptions` handed to a backend, the
 `QueuedSink` transmit path shared by every backend with integer samples,
 and the registry of backends, each behind its own cargo feature
-(`hackrf` → `isdb-hackrf`, the FFI wrapper).
+(`hackrf` → `isdb-hackrf`, `pluto` → `isdb-iio`, the FFI wrappers).
 The CLI never names a device. The PHY crates carry TS packets
 as plain `[u8; 188]` and do not depend on `isdb-ts`. `isdb-analyze` uses
 `isdbt-mux` only for the ARIB STD-B32 Part 2 ADTS rule identities and
@@ -188,11 +190,14 @@ tx:  reader thread(s) ─packets (bounded, ~2 s)─► producer thread
            | isdb-radio backend (Backend::open_tx), e.g. hackrf:
              QueuedSink: cs8 quantiser → buffer queue → libhackrf TX
              callback (starts after --prefill-frames 2; back-pressure
-             paces the producer; stall detection, drain on finish)
+             paces the producer; stall detection, drain on finish);
+             pluto: the same QueuedSink with a cs12 quantiser → the
+             isdb-iio TX thread (iio_buffer_push)
 rx:  dyn IqSource: file
            | isdb-radio backend (Backend::open_rx), e.g. hackrf:
              libhackrf RX callback → buffer queue (RxOptions: 1 s)
-             → cs8 → C32
+             → cs8 → C32; pluto: isdb-iio RX thread (iio_buffer_refill)
+             → buffer queue → 12-bit → C32
        ─► PipelinedReceiver
        (demod thread ─► FEC-decode thread) ─► outputs + status
 loopback: producer ─► software channel ─► PipelinedReceiver ─► verifier

@@ -85,7 +85,7 @@ mod spec;
 
 pub use backends::{backend, backends};
 pub use isdbt_ofdm::C32;
-pub use quant::{Cs8, IntFormat, Quantizer};
+pub use quant::{Cs8, Cs12, IntFormat, Quantizer};
 pub use queued::{QueuedSink, RadioTx, StreamCounters, TxStream};
 pub use spec::{DeviceSpec, parse_key_value};
 

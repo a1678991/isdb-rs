@@ -325,11 +325,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "isdb-iio"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "isdb-radio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "isdb-hackrf",
+ "isdb-iio",
  "isdbt-ofdm",
  "isdbt-phy",
 ]

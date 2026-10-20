@@ -3,7 +3,7 @@
 This walk-through builds the `isdb` command-line tool, runs the ISDB-T
 modulator and demodulator in a software loopback, generates a transport
 stream with the multiplexer, and analyses it. Nothing here needs a radio or
-any captured data. For transmitting with a HackRF, continue with
+any captured data. For transmitting with a HackRF or a Pluto, continue with
 [transmitting.md](transmitting.md) — and read its safety section first.
 
 Terms such as TS, PSI/SI, TMCC, layer and partial reception are explained
@@ -13,21 +13,24 @@ in the [glossary](glossary.md).
 
 - **Rust ≥ 1.88** (edition 2024), e.g. from [rustup](https://rustup.rs).
 - **libhackrf** 2022.09.1 or later, the HackRF host library, for the
-  `hackrf` cargo feature of `isdb-cli` (on by default; it enables the
-  HackRF backend of `isdb-radio`). The default build
-  links it dynamically, so it is needed even when no radio is attached:
+  `hackrf` cargo feature of `isdb-cli`, and **libiio** 0.x (0.21 or
+  later), the ADALM-Pluto host library, for its `pluto` feature (both on
+  by default; they enable the HackRF and Pluto backends of `isdb-radio`).
+  The default build links both dynamically, so they are needed even when
+  no radio is attached:
 
-  | System | Package |
+  | System | Packages |
   |---|---|
-  | Arch Linux | `hackrf` |
-  | Debian / Ubuntu | `libhackrf-dev` |
-  | Fedora | `hackrf-devel` |
+  | Arch Linux | `hackrf libiio` |
+  | Debian / Ubuntu | `libhackrf-dev libiio-dev` |
+  | Fedora | `hackrf-devel libiio-devel` |
 
-  The library crates (`isdb-ts`, `isdb-si`, `isdbt-phy`, …) do not need it;
-  only `isdb-hackrf`, `isdb-radio` with its default `hackrf` feature and
-  the default `isdb-cli` build do. Without it, build with
-  `--no-default-features`: everything on this page works, and only
-  `--radio hackrf` is unavailable.
+  The library crates (`isdb-ts`, `isdb-si`, `isdbt-phy`, …) do not need
+  them; only `isdb-hackrf`, `isdb-iio`, `isdb-radio` with its default
+  features and the default `isdb-cli` build do. Without them, build with
+  `--no-default-features` (add `--features hackrf` or `--features pluto`
+  for one): everything on this page works, and only `--radio` is
+  unavailable.
 - Optional: `ffmpeg` / `ffprobe` to make test media and to check the
   multiplexer's output.
 
@@ -51,7 +54,7 @@ the modulator needs it to keep up with a radio.
 
 | Command | What it does |
 |---|---|
-| `isdb tx` | transport streams → ISDB-T baseband → IQ file or radio (`--radio hackrf`) |
+| `isdb tx` | transport streams → ISDB-T baseband → IQ file or radio (`--radio hackrf`, `--radio pluto`) |
 | `isdb rx` | IQ file or radio → ISDB-T demodulation → transport stream |
 | `isdb loopback` | `tx` → software channel (noise, CFO, timing offset) → `rx`, comparing every packet |
 | `isdb mux` | service multiplexer: TOML description (+ media) → transport stream |

@@ -1,0 +1,25 @@
+[package]
+name = "isdb-iio"
+# build.rs links the system libiio; only one crate in a graph may.
+links = "iio"
+description = "Minimal safe wrapper over libiio 0.x (system library) for AD936x (ADALM-Pluto) TX/RX streaming"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-iio"
+readme = "README.md"
+keywords = ["iio", "pluto", "sdr", "ffi", "ad9361"]
+categories = ["hardware-support", "api-bindings"]
+# Ship sources, examples and docs only.
+include = ["/build.rs", "/src/**", "/examples/**", "/README.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+thiserror.workspace = true
+
+# The workspace denies `unsafe_code`; this FFI wrapper lifts that for itself
+# with `#![allow(unsafe_code)]` in src/lib.rs.
+[lints]
+workspace = true
