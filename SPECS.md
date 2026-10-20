@@ -18,7 +18,9 @@ and the SHA-256 of the editions the code cites are in [§1.1](#11-documents-used
 followed by the `pdftotext` commands that produce the greppable text the
 code comments and SPEC-NOTES quote (into the gitignored `specs/`). The
 IPTV Forum Japan documents kept locally for future work are in
-[§1.3](#13-iptv-forum-japan-specifications-local-not-yet-used). Real
+[§1.3](#13-iptv-forum-japan-specifications-local), and the
+satellite (ISDB-S, ISDB-S3) documents in
+[§1.4](#14-satellite-transmission-isdb-s-isdb-s3-local-not-yet-implemented). Real
 captures are not distributed either; how to make and use your own is in
 [docs/test-data.md](docs/test-data.md).
 
@@ -114,6 +116,9 @@ The code cites the English editions in the table above.
 |---|---|---|
 | **ARIB TR-B14** v6.9 (2022-10-06), *地上デジタルテレビジョン放送運用規定* (Operational Guidelines for Digital Terrestrial Television Broadcasting), Japanese, 5 fascicles | Sold by ARIB. Only sample excerpts (cover, foreword, table of contents) are free: `https://www.arib.or.jp/image/kikaku/kikaku_sample/sample-tr-b14-{1..5}-6.9.pdf`. All 5 return 200; `-6-` and `-7-` return 404. The sample TOCs show where the relevant rules sit. Fascicle 4 = Part 4, PSI/SI operation: §6.3 running_status, §13 EIT transmission (H-/M-/L-EIT), §15 definition of on-air/off-air service, §21 digital copy control (§21.2 defaults), §22 PSI/SI layer in hierarchical transmission, §30.4 NIT (§30.4.3.3 partial reception, §30.4.3.4 TS information descriptor), §31.1 BIT, §31.2 SDT. Fascicle 5 = Part 7, transmission operation: §5.2.8 PCR operation, §9.2.1 network / TS / remote-control-key / service id assignments; Part 8, content protection: §5.3.2 output control by the digital copy control and content availability descriptors. Fascicle 1 = Part 2, receiver functional spec: §7.10 copy control | `isdb-si`: typed Annex F view of digital_copy_control user_defined ("understood to make this layout normative"). `isdbt-mux`: all 30 "Operational choices", incl. the `ts-program` caption / superimpose component_tag ranges 0x30–0x37 / 0x38–0x3F and the default relay PID plan 0x0111/0x0112/0x0130/0x0138/0x0140 (**from knowledge**), the remote_control_key_id range 1..=12 and the key·10 + index channel numbering (**[TR-B14 practice … from knowledge]**), SI_parameter_descriptor left raw, H-/M-/L-EIT PID-per-layer practice not applied by default, one-seg service_type 0xC0 (`examples/bench*.toml`). `isdb-analyze`: the operational split of EIT 0x58–0x5F is not used; the `si.copy_control` warning text. `isdb-text`: B10 Annex A defers "the details of the character set" to "the operational guidelines of service providers", so the SI initial state (G3 = Katakana) was fixed from live data instead |
 | **ARIB TR-B15** v7.4 (BS / wide-band CS operational guidelines), Japanese | Sample excerpts `https://www.arib.or.jp/image/kikaku/kikaku_sample/sample-tr-b15-{1..4}-7.4.pdf` (200; `-5-` 404) | Named next to TR-B14 as the source that would make the Annex F layout normative (`isdb-si/src/values.rs`, `isdbt-mux/src/signalling.rs`, `isdb-analyze/src/validate.rs`) |
+| **ARIB STD-B20** v3.0 (2001-05-31), *衛星デジタル放送の伝送方式* (ISDB-S), Japanese only | Free to ARIB members only; sold to non-members through the ARIB Web Store (https://webstore.arib.or.jp/en/products/detail.php?product_id=104; page https://www.arib.or.jp/english/std_tr/broadcasting/std-b20.html, checked 2026-10-20). Not bought (decision of 2026-10-20) | ISDB-S (planned). BO.1408-1 and MIC Ordinance No. 87 annexed tables 45–51 (§1.4) cover most of it. Whatever neither settles is inferred from live signals and recorded as an interpretation |
+| **MIC Notification No. 304 of 2011** (ＴＭＣＣ情報の構成を定める件), Japanese | Not found online in full; only amendment tables (§1.4) | ISDB-S TMCC information layout (annexed table 2) and ISDB-S3 TMCC (annexed table 3). Until found: BO.1408 Figs. 7–10 (ISDB-S) and B44 (ISDB-S3), checked against the live signal |
+| **ISO/IEC 23008-1:2017** (MMT) | ISO catalogue (paid); normative reference of STD-B60 §2 | MMT protocol under MMT-SI (planned, ISDB-S3) |
 | **ITU-T H.262 \| ISO/IEC 13818-2** (code cites the 07/2000 edition) | ITU-T Recommendation, https://www.itu.int/rec/T-REC-H.262 (200, HTML landing page). No local copy | `isdbt-mux/src/video.rs`, marked **[H.262 from knowledge]**: start codes, sequence/picture headers and extensions (§6.2.x), display duration §6.3.10, Table 6-3 aspect_ratio_information (→ component_type column), Table 8-13 Rmax per level (T-STD), VUI default transfer_characteristics '00' (video_decode_control) |
 | **ISO/IEC 13818-7** (AAC, ADTS) | ISO catalogue (paid). `https://www.iso.org/standard/43345.html` answered 403 to `curl` (bot filter), so this URL is not verified | `isdbt-mux/src/adts/`, marked **[from knowledge]**: adts_fixed/variable_header field widths (§6.2.1, Tables 6.4/6.5), ID '1', the bit-reservoir recurrence and /(32·NCC) scaling of adts_buffer_fullness; the CRC-16 itself is ISO/IEC 11172-3 §2.4.3.1 (also not local; its coverage is quoted in B32 Part 2 Appendix 1). Header values and the fullness recurrence were confirmed on the one-seg audio of a live capture. **Not implemented:** the raw_data_block syntax and the Annex A Huffman / scalefactor-band tables, so crc_check values are neither verified nor inserted. Implementing them needs 13818-7 obtained legally and the tables transcribed independently from the standard, not from another implementation ([`isdbt-mux` SPEC-NOTES "AAC ADTS: raw_data_block not parsed"](crates/isdbt-mux/SPEC-NOTES.md#aac-adts-raw_data_block-not-parsed)) |
 | **JIS X 0208:1990, JIS X 0213:2004, JIS X 0221-1:2001, JIS X 0201-1997** | JIS standards (JSA / JISC). No local copy | `isdb-text`: 7 Kanji cells corrected away from the WHATWG/`encoding_rs` index (`tables::KANJI_OVERRIDES`: 1-29, 1-33, 1-34, 1-61, 1-81, 1-82, 2-44), "from general knowledge … (status: pending an authoritative JIS table)". JIS compatible Kanji Plane 1/2 beyond rows 1–84 is unsupported ("incomplete by design") |
@@ -255,6 +260,84 @@ pdftotext -layout "$PDFS"/STD-0010_v2.4.pdf specs/IPTVFJ-STD-0010-v2.4-ja.txt
 Every PDF has a text layer: `pdftotext` 26.08.0 gave between about 970 and
 8,200 characters per page, so no OCR is needed. The copies in this checkout
 are in `specs/pdf/` (gitignored).
+
+### 1.4 Satellite transmission (ISDB-S, ISDB-S3): local, not yet implemented
+
+Collected on 2026-10-20 for the planned ISDB-S and ISDB-S3 receivers. No
+code cites them yet. Each URL was fetched with `curl` that day and returned
+HTTP 200 with `Content-Type: application/pdf` (the ordinance: the e-Gov
+API's XML and JPEG attachments).
+
+| Document | Edition | Title | Official download | `specs/` text | Role |
+|---|---|---|---|---|---|
+| ITU-R BO.1408-1 | 04/2002 | Transmission system for advanced multimedia services provided by integrated services digital broadcasting in a broadcasting-satellite channel | https://www.itu.int/dms_pubrec/itu-r/rec/bo/R-REC-BO.1408-1-200204-I!!PDF-E.pdf (landing page https://www.itu.int/rec/R-REC-BO.1408-1-200204-I/en) | `ITU-R-BO.1408-1.txt` | ISDB-S (the system of ARIB STD-B20): RS, framing, PRBS, interleaving, TMCC information, inner code, Table 3 parameters |
+| ITU-R BO.2098-0 | 12/2016 | Transmission system for UHDTV satellite broadcasting | https://www.itu.int/dms_pubrec/itu-r/rec/bo/R-REC-BO.2098-0-201612-I!!PDF-E.pdf (landing page https://www.itu.int/rec/R-REC-BO.2098/en) | `ITU-R-BO.2098-0.txt` | ISDB-S3 summary ("System F", Annex 1); cites B44 2.0-E1 |
+| ARIB STD-B44 | 2.1-E1 (2016-03-25) | Transmission System for Advanced Wide Band Digital Satellite Broadcasting (ISDB-S3) | https://www.arib.or.jp/english/html/overview/doc/6-STD-B44v2_1-E1.pdf | `ARIB-STD-B44-v2.1.txt` | ISDB-S3 in full. The latest edition in either language (the Japanese 2.1 has the same date). 2.0-E1 (2014-07-31, the edition BO.2098 cites) is also local as `ARIB-STD-B44-v2.0.txt` |
+| ARIB STD-B60 | 1.14-E1 (2019-12-05) | MMT-Based Media Transport Scheme in Digital Broadcasting Systems | https://www.arib.or.jp/english/html/overview/doc/6-STD-B60_v1_14-E1.pdf | `ARIB-STD-B60-v1.14.txt` | MMT-SI of ISDB-S3 services. The Japanese original is at 2.0 (2025-03-25) |
+| ARIB STD-B32 Part 3 | 3.11-E1 | (already in §1.1) | (§1.1) | `ARIB-STD-B32-v3.11-part3.txt` | §2.3 and §3.5 (TLV packet), §3.9 (MMTP packet), §3.10 (TLV-NIT): the TLV layer of ISDB-S3 |
+| MIC Ordinance No. 87 of 2011 (標準テレビジョン放送等のうちデジタル放送に関する送信の標準方式, 平成二十三年総務省令第八十七号), law ID `423M60000008087`, Japanese | revision of 2024-05-23 (`423M60000008087_20240523_506M60000008047`) | The legal transmission standard for Japanese digital broadcasting | XML: https://laws.e-gov.go.jp/api/2/law_data/423M60000008087?response_format=xml; figures: `https://laws.e-gov.go.jp/api/2/attachment/423M60000008087_20240523_506M60000008047?src=./pict/<file>`; viewer: https://laws.e-gov.go.jp/law/423M60000008087 | `MIC-Ordinance-87-2011-r20240523.txt` (text of the XML; `[FIG …]` marks each figure) | Chapter 5 §2 (Arts. 50–56, annexed tables 45–51) = ISDB-S; Chapter 5 §3 / Chapter 6 §5 (annexed tables 59-2 to 68) = ISDB-S3. B44 names this ordinance and STD-B20 as the definition of BS / wide-band CS digital broadcasting |
+
+**The ordinance fills most of BO.1408's gaps.** Annexed tables 45–51 are in
+Japanese and partly figures, but they settle points that BO.1408 leaves to
+"the system" (that is, to STD-B20, which is sold, Japanese only):
+
+- frame layout (table 45 figure, table 51 figure): a 192-symbol header
+  (W1, 2 bytes; TMCC, 8 bytes; W2 or W3, 2 bytes; BPSK after the r = 1/2
+  inner code), then 192 blocks of 203 main-signal symbols each followed by
+  4 burst symbols: 192 + 192 × 207 = 39 936 symbols;
+- the 12 header bytes replace the first byte of slots 1–12 of each frame
+  (table 45 note 4); the coded W1/W2/W3 end in the 20 bits ECD28h / 0B677h
+  / F4988h (table 45 note 1);
+- burst randomisation (table 51): PRBS X⁹ + X⁴ + 1, initial state
+  `111101101`, restarted every frame, clocked during burst symbols only;
+- TMCC energy dispersal (table 50): per superframe, from the third byte,
+  W1/W2/W3 skipped but the PRBS keeps running;
+- bit-to-symbol mapping (table 46, table 49 note 3): BPSK sends C0 then C1;
+  QPSK [P1 P0] and 8PSK [C2 C1 C0] absolute phases; 8PSK takes B1 uncoded
+  (C2) and B0 into the K = 7 code;
+- puncturing (table 49 note 4) with the pattern phase aligned to the slot
+  start (note 5);
+- the minimum slot unit per combination, with dummy slots (table 48,
+  別記 3): BPSK 1/2: 4 (1 valid), QPSK 1/2: 2 (1), 2/3: 3 (2), 3/4: 4 (3),
+  5/6: 6 (5), 7/8: 8 (7), TC8PSK 2/3: 1 (1).
+
+Still missing: the TMCC information layout itself. Art. 54(3) delegates it
+to MIC Notification No. 304 of 2011 (ＴＭＣＣ情報の構成を定める件), whose
+annexed table 2 covers Chapter 5 §2. Only amendment tables are online
+(https://www.soumu.go.jp/main_content/000353387.pdf,
+https://www.soumu.go.jp/main_content/000260769.pdf), and they elide that
+table ("（略）"). BO.1408 Figs. 7–10 and Appendix 1 are the source until it
+is found. The same amendment changes the ISDB-S3 table (annexed table 3):
+16APSK is added and the code-rate values are renumbered from 0111
+(93/120 inserted). B44 2.1-E1 has to be checked against it.
+
+SHA-256 of the files:
+
+```
+8c5744c06bb4c2bc70211b528a884b1cd85e31af6aef4b8404f50fce76c3a39f  R-REC-BO.1408-1-200204-I!!PDF-E.pdf
+f73ff79a27a6c414147d5143fd107245785095d47e43378384aef7e044cfa3ab  R-REC-BO.2098-0-201612-I!!PDF-E.pdf
+0a6cecc2024814494475071d70370fb61e8f498859d4078a66b0670e57de9162  6-STD-B44v2_0-E1.pdf
+2915d9842bb00f58686f400a4b1ff5fb253de04f374b5c0ba72d4745043779f6  6-STD-B44v2_1-E1.pdf
+ebb5bb48a8e02b406445452272d1a13d82459efbeca2a4d1006a283ac2b1c99e  6-STD-B60_v1_14-E1.pdf
+c1fd9a88767beca0fa17d1ca15099c495132770f64a09278c5cf8053956f7742  6-STD-B32v3_11-3p3-E1.pdf
+e72b695e70639bb1d37a515711937aeacc1bd8600c2377e93847b1310dc490a2  423M60000008087_20240523_506M60000008047.xml
+```
+
+```sh
+pdftotext -layout "$PDFS"/'R-REC-BO.1408-1-200204-I!!PDF-E.pdf' specs/ITU-R-BO.1408-1.txt
+pdftotext -layout "$PDFS"/'R-REC-BO.2098-0-201612-I!!PDF-E.pdf' specs/ITU-R-BO.2098-0.txt
+pdftotext -layout "$PDFS"/6-STD-B44v2_0-E1.pdf    specs/ARIB-STD-B44-v2.0.txt
+pdftotext -layout "$PDFS"/6-STD-B44v2_1-E1.pdf    specs/ARIB-STD-B44-v2.1.txt
+pdftotext -layout "$PDFS"/6-STD-B60_v1_14-E1.pdf  specs/ARIB-STD-B60-v1.14.txt
+pdftotext -layout "$PDFS"/6-STD-B32v3_11-3p3-E1.pdf specs/ARIB-STD-B32-v3.11-part3.txt
+```
+
+The ordinance's text extraction strips the XML tags and keeps one line per
+article paragraph, item and table cell. The figures referenced by annexed
+tables 45–51 and 59-2–68 are kept next to the XML in
+`specs/pdf/mic-ordinance-87-2011/pict/`. Statutes and ministerial
+notifications are not subject to copyright in Japan (Copyright Act
+Art. 13), but they are kept with the other specifications for consistency.
 
 ---
 
