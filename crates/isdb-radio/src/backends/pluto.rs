@@ -73,10 +73,12 @@
 
 use super::maia;
 use crate::{
-    Backend, Capture, CaptureFormat, CaptureGap, Cs12, IqSink, IqSource, Quantizer, QueuedSink,
-    RadioConfig, RadioTx, RxOptions, StreamCounters, TxOptions, TxStream,
+    Backend, Capture, CaptureFormat, CaptureGap, Cs12, IqSink, IqSource, Offload, Quantizer,
+    QueuedSink, RadioConfig, RadioTx, RxOptions, StreamCounters, SymbolsCapture, TxOptions,
+    TxStream,
 };
 use anyhow::{Context as _, Result, bail};
+use isdb_frontend::control::{self, Encoder, GPIO_IN_REG, GPIO_OUT_REG, Identity, Op, reg};
 use isdb_iio::Context;
 use isdbt_ofdm::C32;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -668,6 +670,112 @@ impl Backend for Pluto {
         })
     }
 
+    fn offloads(&self, cfg: &RadioConfig) -> Result<Vec<Offload>> {
+        let s = rx_settings_for(cfg, Dir::Capture)?;
+        let ctx = open(&s.dev.uri)?;
+        Ok(probe_front_end(&ctx)?
+            .map(|id| Offload::Symbols {
+                version: id.version,
+                taps: id.taps,
+            })
+            .into_iter()
+            .collect())
+    }
+
+    fn capture_symbols(
+        &self,
+        cfg: &RadioConfig,
+        params: &isdb_frontend::Params,
+        words: u64,
+        out: &mut dyn std::io::Write,
+        stop: &AtomicBool,
+    ) -> Result<SymbolsCapture> {
+        params.validate()?;
+        let s = rx_settings_for(cfg, Dir::Capture)?;
+        let mut ctx = open(&s.dev.uri)?;
+        let device = device_info(&ctx);
+        let id = probe_front_end(&ctx)?.with_context(|| {
+            format!(
+                "{NAME}: this bitstream has no symbol front end (up_adc_gpio_in has no ID word)"
+            )
+        })?;
+        if !id.supports(params) {
+            bail!(
+                "{NAME}: the device's front end is format {} with {} taps; the parameters need format {} with {} taps",
+                id.version,
+                id.taps,
+                isdb_frontend::params::FORMAT_VERSION,
+                params.taps()
+            );
+        }
+        let mut info = String::new();
+        configure_rx(&ctx, cfg, &s, &mut info)
+            .with_context(|| format!("configure Pluto {} for RX", s.dev.uri))?;
+        std::thread::sleep(CAPTURE_SETTLE);
+        let rate = {
+            let rates = ctx.device(PHY)?.read("rx_path_rates")?;
+            path_rate(&rates, "RXSAMP")
+                .with_context(|| format!("{PHY} rx_path_rates {rates:?}: no RX rate"))?
+        };
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64());
+        // Configure through the command register; check one register.
+        let t0 = std::time::Instant::now();
+        let mut enc = {
+            let rx = ctx.device(RX_DEV)?;
+            let mut enc = Encoder::new(rx.reg_read(GPIO_OUT_REG)?);
+            let cmds = enc.configure(params);
+            for &w in &cmds {
+                rx.reg_write(GPIO_OUT_REG, w)?;
+            }
+            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Addr, u32::from(reg::KP)))?;
+            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Read, 0))?;
+            let kp = rx.reg_read(GPIO_IN_REG)?;
+            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Nop, 0))?;
+            if kp != i32::from(params.kp) as u32 {
+                bail!(
+                    "{NAME}: front end register kp reads {kp:#x} after writing {:#x}",
+                    params.kp
+                );
+            }
+            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Ctrl, control::ctrl::START))?;
+            rx.reg_write(
+                GPIO_OUT_REG,
+                enc.word(Op::Ctrl, control::ctrl::RUN | control::ctrl::SYMBOLS),
+            )?;
+            enc
+        };
+        let config_s = t0.elapsed().as_secs_f64();
+        let streamed = stream_words(&mut ctx, &s.dev, words, out, stop);
+        // Back to IQ samples, whatever happened.
+        let restored = ctx
+            .device(RX_DEV)
+            .and_then(|d| d.reg_write(GPIO_OUT_REG, enc.word(Op::Ctrl, 0)));
+        let (written, overflows) = streamed?;
+        restored?;
+        let phy = ctx.device(PHY)?;
+        let ch = phy.channel(s.dev.phy_channel(), false)?;
+        let gain_db = ch.read_f64("hardwaregain")?;
+        Ok(SymbolsCapture {
+            words: written,
+            overflows,
+            sample_rate_hz: rate,
+            lo_hz: u64::try_from(phy.channel(RX_LO, true)?.read_i64("frequency")?)?,
+            rf_bandwidth_hz: u64::try_from(ch.read_i64("rf_bandwidth")?).ok(),
+            gain: match s.agc {
+                "manual" => format!("manual {gain_db} dB"),
+                m => format!("AGC {m}, {gain_db} dB at the end"),
+            },
+            device,
+            method: format!(
+                "FPGA symbol front end (format {}, {} taps), configured in {config_s:.1} s; libiio stream of 16-bit words",
+                id.version, id.taps
+            ),
+            time,
+        })
+    }
+
     fn open_rx(&self, cfg: &RadioConfig, opts: &RxOptions) -> Result<(Box<dyn IqSource>, String)> {
         let s = rx_settings(cfg)?;
         opts.validate()?;
@@ -694,6 +802,67 @@ impl Backend for Pluto {
             info,
         ))
     }
+}
+
+/// The symbol front end the bitstream reports in `up_adc_gpio_in`, if any
+/// (one register read; nothing is written).
+fn probe_front_end(ctx: &Context) -> Result<Option<Identity>> {
+    Ok(Identity::parse(ctx.device(RX_DEV)?.reg_read(GPIO_IN_REG)?))
+}
+
+/// Stream `words` 16-bit words from `voltage0` of the RX (the front end's
+/// output while it is selected) into `out` until done or `stop`; returns
+/// the words written and the buffers after which the ADC core reported an
+/// overflow.
+fn stream_words(
+    ctx: &mut Context,
+    dev: &DeviceArgs,
+    words: u64,
+    out: &mut dyn std::io::Write,
+    stop: &AtomicBool,
+) -> Result<(u64, u64)> {
+    let stream = ctx
+        .start_rx_raw(
+            RX_DEV,
+            &["voltage0"],
+            dev.buffer,
+            KERNEL_BUFFERS,
+            STREAM_DEPTH,
+        )
+        .with_context(|| port_hint(dev, "RX"))?;
+    if stream.sample_bytes != 2 {
+        bail!(
+            "{RX_DEV} delivers {} bytes per word, 2 expected",
+            stream.sample_bytes
+        );
+    }
+    ctx.device(RX_DEV)?
+        .reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW)?;
+    let (mut written, mut overflows) = (0u64, 0u64);
+    let timeout = Duration::from_secs(10);
+    let r = (|| -> Result<()> {
+        while written < words && !stop.load(Ordering::SeqCst) {
+            let data = match stream.receiver.recv_timeout(timeout) {
+                Ok(d) => d,
+                Err(RecvTimeoutError::Timeout) => bail!("no words from {RX_DEV} for {timeout:?}"),
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            let rx = ctx.device(RX_DEV)?;
+            if rx.reg_read(ADC_STATUS_REG)? & ADC_STATUS_OVERFLOW != 0 {
+                rx.reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW)?;
+                overflows += 1;
+            }
+            let n = ((data.len() / 2) as u64).min(words - written);
+            out.write_all(&data[..n as usize * 2])
+                .context("write the words")?;
+            written += n;
+        }
+        Ok(())
+    })();
+    let stopped = ctx.stop();
+    r?;
+    stopped?;
+    Ok((written, overflows))
 }
 
 /// Stream `samples` samples of `format` from the RX into `out` until

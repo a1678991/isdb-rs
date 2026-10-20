@@ -23,6 +23,12 @@
 //!   ([`CaptureGap`]): the way to record signals of other systems
 //!   (ISDB-S, ISDB-S3), in one piece when they are faster than the host
 //!   link can stream.
+//! * [`Offload`]: a receive stage a radio can run itself ([`Backend::offloads`],
+//!   probed without changing anything), so that less data crosses the
+//!   link. The first one is the single-carrier front end of
+//!   `isdb_frontend` (IQ to `Symbols`), whose output
+//!   [`Backend::capture_symbols`] streams; the host runs the same stage on
+//!   the CPU when the radio does not offer it.
 //! * [`backends`] / [`backend`]: the backends compiled into this build.
 //! * [`Quantizer`]: scaling of the unit-RMS OFDM signal into integer
 //!   samples (e.g. [`Cs8`]) with a backoff below full scale and a count of
@@ -323,6 +329,46 @@ pub struct Capture {
     pub time: f64,
 }
 
+/// A receive stage a radio can run itself instead of the host CPU, with
+/// the same output bit for bit (more will follow: soft bits, packets).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Offload {
+    /// The single-carrier front end of `isdb_frontend` (IQ to `Symbols`),
+    /// format `version`, `taps` taps per phase.
+    Symbols {
+        /// Format version (`isdb_frontend::params::FORMAT_VERSION`).
+        version: u16,
+        /// Taps per phase of the device's filter banks.
+        taps: usize,
+    },
+}
+
+/// One stream of `Symbols` words taken by [`Backend::capture_symbols`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SymbolsCapture {
+    /// 16-bit words written.
+    pub words: u64,
+    /// Device buffers after which the DMA reported an overflow (the words
+    /// carry their own sequence numbers; `isdb_frontend::format::Reader`
+    /// finds what was lost).
+    pub overflows: u64,
+    /// Sample rate the device ran at, Hz (read back).
+    pub sample_rate_hz: f64,
+    /// LO frequency read back, Hz.
+    pub lo_hz: u64,
+    /// Analog bandwidth read back, Hz, if the device reports it.
+    pub rf_bandwidth_hz: Option<u64>,
+    /// Gain mode and value after the capture.
+    pub gain: String,
+    /// One line identifying the device.
+    pub device: String,
+    /// How the words were taken and how long the configuration took.
+    pub method: String,
+    /// Host time (seconds since the Unix epoch) of the request.
+    pub time: f64,
+}
+
 /// One kind of radio.
 ///
 /// Gains not given in [`RadioConfig::gains`] take the backend's defaults;
@@ -375,6 +421,27 @@ pub trait Backend: Sync {
     ) -> Result<Capture> {
         let _ = (cfg, samples, out, stop);
         bail!("radio backend {:?} cannot capture", self.name())
+    }
+    /// The stages the device can run itself with `cfg`, found without
+    /// changing its state (default: none).
+    fn offloads(&self, cfg: &RadioConfig) -> Result<Vec<Offload>> {
+        let _ = cfg;
+        Ok(Vec::new())
+    }
+    /// Run the device's [`Offload::Symbols`] stage with `params` and write
+    /// `words` 16-bit `Symbols` words (little-endian) to `out` as they
+    /// arrive, or until `stop`. Fails when the device does not offer the
+    /// stage with `params`' format and taps.
+    fn capture_symbols(
+        &self,
+        cfg: &RadioConfig,
+        params: &isdb_frontend::Params,
+        words: u64,
+        out: &mut dyn std::io::Write,
+        stop: &AtomicBool,
+    ) -> Result<SymbolsCapture> {
+        let _ = (cfg, params, words, out, stop);
+        bail!("radio backend {:?} has no symbol front end", self.name())
     }
 }
 

@@ -15,6 +15,7 @@ categories = ["hardware-support"]
 include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
 
 [dependencies]
+isdb-frontend.workspace = true
 isdbt-ofdm.workspace = true
 isdbt-phy.workspace = true
 isdb-hackrf = { workspace = true, optional = true }
