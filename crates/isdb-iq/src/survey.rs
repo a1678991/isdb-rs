@@ -19,7 +19,8 @@
 //!   |f| < R/2 (z⁴, z⁸) or R/4 (z²): Δf is then found within ±R/(2k)
 //!   (±1.8 MHz for 8PSK at 28.86 Mbaud), ±R/8 for z². π/2-shift BPSK
 //!   (ISDB-S3's TMCC) puts its z² line at 2Δf ± R/2 instead; that line is
-//!   searched separately (k = 2, shift ±R/2, within R/4 of it).
+//!   searched separately (k = 2, shift ±R/2, within R/4 of it, less when
+//!   the two windows would meet across fs/2).
 //!
 //! Each line is reported with its level above the median of the bins
 //! searched, in dB; a line that does not stand clear of the median (a few
@@ -392,8 +393,13 @@ pub fn survey(x: &[C32], fs: f64, opts: &Options) -> Survey {
             offset_hz: line.freq_hz / f64::from(k),
         });
         if let (2, Some(r)) = (k, rate) {
+            // The windows at ±R/2 wrap around fs; keep them apart, or at
+            // fs < 2R both see both lines (at 40 Msps and R = 33.76 Mbaud
+            // the +R/2 window would reach the −R/2 line through fs/2).
+            let apart = r.rem_euclid(fs);
+            let half = (r / 4.0).min(0.49 * apart.min(fs - apart));
             for shift in [r / 2.0, -r / 2.0] {
-                let line = line_near(shift, r / 4.0);
+                let line = line_near(shift, half);
                 carrier_lines.push(CarrierLine {
                     k,
                     shift_hz: shift,
@@ -528,9 +534,16 @@ mod tests {
 
     #[test]
     fn pi2_bpsk_carrier_line() {
-        // π/2-shift BPSK (s_n = j^n b_n) at the ISDB-S3 rate, offset +60 kHz.
+        // π/2-shift BPSK (s_n = j^n b_n) at the ISDB-S3 rate, offset +60 kHz,
+        // at the AD936x maximum and at 40 Msps (where the ±R/2 windows
+        // would otherwise meet across fs/2).
+        for fs in [61.44e6, 40e6] {
+            pi2_bpsk_at(fs);
+        }
+    }
+
+    fn pi2_bpsk_at(fs: f64) {
         let r = 33.7561e6;
-        let fs = 61.44e6;
         let sps = fs / r;
         let mut x = psk(2, sps, 0.0, 1 << 18);
         for (i, v) in x.iter_mut().enumerate() {
@@ -557,6 +570,10 @@ mod tests {
             .max_by(|a, b| a.line.level_db.total_cmp(&b.line.level_db))
             .unwrap();
         assert!((pi2.offset_hz - 60e3).abs() < res, "{pi2:?}");
+        // Each window holds its own line: both give the offset.
+        for c in s.carrier_lines.iter().filter(|c| c.shift_hz != 0.0) {
+            assert!((c.offset_hz - 60e3).abs() < res, "fs {fs}: {c:?}");
+        }
         let plain = s
             .carrier_lines
             .iter()
