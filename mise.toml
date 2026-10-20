@@ -111,3 +111,31 @@ cargo "+$msrv" check --workspace --all-targets --locked --target-dir target/msrv
 [tasks.oracle]
 description = "build-check and clippy the stand-alone oracle/rust_tx3 helper"
 run = "cargo clippy --manifest-path oracle/rust_tx3/Cargo.toml --target-dir target/oracle --all-targets --locked -- -D warnings"
+
+# --- FPGA (fpga/: Amaranth HDL, built outside cargo; needs uv) ------------
+
+[tasks."fpga:vectors"]
+description = "write the FPGA test vectors from the Rust front-end model into fpga/build"
+run = [
+  "mkdir -p fpga/build",
+  "cargo run -q --release --locked -p isdb-frontend --example vectors -- fpga/build/vec-1-s-t16.json - s 16 3000 5 8",
+  "cargo run -q --release --locked -p isdb-frontend --example vectors -- fpga/build/vec-2-s3-t32.json - s3 32 3000 6 8",
+]
+
+[tasks."fpga:test"]
+description = "simulate the FPGA front end against the Rust model, bit for bit"
+depends = ["fpga:vectors"]
+dir = "fpga"
+run = "uv run --locked python -m unittest discover -s tests -v"
+
+[tasks."fpga:verilog"]
+description = "Verilog of the 32-tap front end block for a vendor flow (fpga/build/isdb_symbols_rx.v)"
+depends = ["fpga:vectors"]
+dir = "fpga"
+run = "uv run --locked python synth/verilog.py build/vec-2-s3-t32.json 32 build/isdb_symbols_rx.v"
+
+[tasks."fpga:estimate"]
+description = "Yosys synth_xilinx resource estimate of the 32-tap front end"
+depends = ["fpga:vectors"]
+dir = "fpga"
+run = "uv run --locked python synth/estimate.py build/vec-2-s3-t32.json 32"

@@ -15,6 +15,6 @@ export default {
   rules: {
     "subject-case": [0],
     "body-max-line-length": [2, "always", 200],
-    "scope-enum": [2, "always", [...crates, "oracle", "workspace", "ci", "deps"]],
+    "scope-enum": [2, "always", [...crates, "fpga", "oracle", "workspace", "ci", "deps"]],
   },
 };

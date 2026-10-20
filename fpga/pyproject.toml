@@ -1,0 +1,18 @@
+[project]
+name = "isdb-fpga"
+version = "0.1.0"
+description = "FPGA implementations of isdb-rs receive stages (Amaranth HDL), verified bit for bit against the Rust reference models"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+  "amaranth==0.5.10",
+]
+
+[dependency-groups]
+dev = [
+  # Synthesis for resource estimates (WebAssembly Yosys, user space).
+  "yowasp-yosys==0.70.0.0.post1259",
+]
+
+[tool.uv]
+package = false

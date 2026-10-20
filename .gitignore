@@ -40,3 +40,7 @@ node_modules/
 
 # OS
 .DS_Store
+
+# FPGA (fpga/): the uv environment and generated vectors, netlists, Verilog
+fpga/.venv/
+fpga/build/
