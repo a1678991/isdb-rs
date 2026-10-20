@@ -60,5 +60,6 @@ Format of an entry:
   byte-exactly with gr-isdbt in both directions in 8 configurations
   ([VERIFICATION.md](VERIFICATION.md)), and the Rust TX itself was
   received by the same tuner and a Sony BDZ-series recorder over a
-  conducted link. Status: confirmed via the oracle and real receivers; an
-  off-air capture is still desirable.
+  conducted link. Status: confirmed via the oracle and real receivers, and
+  by a broadcast decoded RS-clean in both layers
+  ([VERIFICATION.md](VERIFICATION.md#broadcast-reception)).

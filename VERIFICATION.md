@@ -23,6 +23,9 @@ checks something the rung below cannot:
    disagreement; the specification decides who is right.
 5. **Real receivers.** Consumer receivers accept the Rust transmitter over a
    conducted link ([below](#real-receivers)).
+6. **A broadcast transmitter.** The Rust receiver decodes a real
+   broadcaster's signal ([below](#broadcast-reception)), which checks the
+   receive chain against a transmitter this project did not build.
 
 Coverage per clause, with the rung that confirms it, is in
 [SPECS.md §2](SPECS.md#2-coverage-matrix).
@@ -240,11 +243,11 @@ All four are on the gr-isdbt side, and none required a change to Rust.
 
 | Item (crate SPEC-NOTES) | Evidence | New status |
 |---|---|---|
-| Carrier rotation numbering (`isdbt-ofdm`, "AMBIGUOUS") | gr-isdbt rotates by the absolute data-segment number (`rotated[(c − segment) mod nc]`, segment 0..12). The Rust default matches byte-exactly; `GroupRelative` fails every word. The S270 decoded gr-isdbt's partial-reception layer B. | confirmed (coherent groups) |
-| 2-symbol frame alignment, Part 2 Fig. 3-8 (`isdbt-ofdm` latency) | gr-isdbt's `examples/tx_demo.grc` and a gr-isdbt transmitter flowgraph built from it use `skiphead(2)` after the frequency interleaver. The S270 decoded that output with PER 0. Rust agrees in every row. | confirmed |
+| Carrier rotation numbering (`isdbt-ofdm`, "AMBIGUOUS") | gr-isdbt rotates by the absolute data-segment number (`rotated[(c − segment) mod nc]`, segment 0..12). The Rust default matches byte-exactly; `GroupRelative` fails every word. The S270 decoded gr-isdbt's partial-reception layer B. A broadcast (partial reception, coherent) decodes RS-clean in both layers ([below](#broadcast-reception)). | confirmed (coherent groups), also against a broadcast transmitter |
+| 2-symbol frame alignment, Part 2 Fig. 3-8 (`isdbt-ofdm` latency) | gr-isdbt's `examples/tx_demo.grc` and a gr-isdbt transmitter flowgraph built from it use `skiphead(2)` after the frequency interleaver. The S270 decoded that output with PER 0. Rust agrees in every row, and decodes a broadcast RS-clean. | confirmed, also against a broadcast transmitter |
 | Energy dispersal / puncturing reset at the OFDM frame (`isdbt-fec`) | gr-isdbt's receiver resets the PRBS at the TMCC-derived `frame_begin` tag. Cross-decoding is byte-exact in both directions. | confirmed |
 | Mapping bit order b0.. (`isdbt-ofdm`) | Carrier-identical modulator output for QPSK, 16QAM and 64QAM. | confirmed (DQPSK not covered) |
-| TMCC difference-set code bit order (`isdbt-ofdm`) | Parity agrees with gr-isdbt both ways, on two different information words. | agrees with an independent implementation; off-air check still pending |
+| TMCC difference-set code bit order (`isdbt-ofdm`) | Parity agrees with gr-isdbt both ways, on two different information words. Every frame of a broadcaster's TMCC passes the Rust parity check (0 failures; [below](#broadcast-reception)). | confirmed, also against a broadcast transmitter (AC parity not exercised) |
 
 These statuses are recorded in
 [`crates/isdbt-ofdm/SPEC-NOTES.md`](crates/isdbt-ofdm/SPEC-NOTES.md)
@@ -344,14 +347,74 @@ to reproduce the setup are in
 and in the `isdbt-mux`
 [receiver compatibility notes](crates/isdbt-mux/SPEC-NOTES.md#receiver-compatibility-notes).
 
+## Broadcast reception
+
+A real broadcaster's signal was demodulated live by `isdb rx --radio
+pluto` (2026-10-20): TV Osaka (テレビ大阪, original_network_id 0x7D76) on
+UHF channel 18, 503.142857 MHz, in Osaka, from a cable (CATV) feed that
+retransmits the terrestrial channels on their own channel numbers, into
+RX1 of a PlutoSky R2 (AD9361) over Gigabit Ethernet at 512/63 MHz
+(Tezuka firmware v0.3.24; see [below](#receiving-hardware) for why the
+radio's firmware matters).
+
+- **TMCC.** The receiver locked from the TMCC alone and decoded Mode 3,
+  GI 1/8, partial reception, layer A 1 segment QPSK 2/3 time-interleave
+  index 3, layer B 12 segments 64QAM 3/4 index 2. No frame failed the
+  (184,102) difference-set parity check, so the parity bit order is the
+  broadcaster's. Carrier offset +0.32 carriers, timing drift
+  −0.006 samples per symbol.
+- **Both layers RS-clean.** In 12 s of signal (50 frames, 46 valid: the
+  first frames after lock prime the deinterleavers), layer A gave 2944
+  packets, all clean, and layer B 119 232 packets: 119 228 clean, 4 with
+  one corrected byte each, 0 uncorrectable. MER 21.6 dB in both layers.
+  This exercises, against a broadcast transmitter, the rotation numbering
+  of coherent segments, the two-symbol frame alignment, time, frequency,
+  bit and byte deinterleaving, Viterbi, energy dispersal and RS.
+- **Reproduced TS.** The single TS (§3.2.2) has 0 sync losses, 0
+  continuity-counter errors and 0 transport_error_indicator flags on all
+  32 PIDs, and its PCRs fit a constant 29.958294 Mbit/s with at most
+  84 ns residual (no discontinuities), so the re-multiplexed slot order
+  and the null-packet positions are the broadcaster's. PAT, PMTs, NIT,
+  SDT (テレビ大阪１/２, テレビ大阪携帯), EIT p/f and schedule and TDT/TOT
+  parse with valid CRCs. The full-segment services are scrambled, as expected
+  (every PES packet of programme 0xA032); the one-segment service is not,
+  and its H.264 video and AAC PES parse (PID 0x1081: 32 PES over 10.3 s
+  of PTS).
+- **`isdb ts validate` on that TS**: 199 errors, all on scrambled PIDs
+  (PES headers hidden by scrambling; section CRC and assembly errors on
+  the three scrambled data-carousel PIDs 0x0140/0x0160/0x0161) except
+  one: the one-segment programme's PCR (PID 0x0186) is sent once per OFDM
+  frame, every 0.231 s, against H.222.0 §2.7.2's 0.1 s. PAT/PMT repeat
+  about every 0.101 s, at the edge of the B10 Table 5-2 operational
+  criterion; EIT schedule events carry an event_group_descriptor without
+  a short_event_descriptor. These are the broadcaster's practice, not
+  reception errors.
+- **Other channels on the same feed.** ch13 and ch16 lock and decode
+  layer A without errors but give layer B MER ≈ 16.5 dB (all layer-B
+  packets uncorrectable), whatever the RX gain (20–40 dB); ch24 18.1 dB
+  (partly decodable). Since the same chain reaches 21.6 dB on ch18, the
+  limit is in those channels on this feed, not yet identified.
+
+### Receiving hardware
+
+With the PlutoSky R2's factory firmware no channel locked: its 40 MHz
+VCTCXO is tuned only by an ADF4001 charge pump that stays active without
+a 10 MHz reference and drags the oscillator, which put about 1 rad of
+common phase jitter between OFDM symbols at UHF (measured as the spread
+of the per-symbol guard-interval phase: 0.19 carriers, against ≤ 0.009
+carriers for this estimator on a simulated signal at 0 dB SNR). Tezuka
+v0.3.22 and later three-state the pump without a reference; the spread
+fell to 0.001–0.003 carriers and the channels locked. The radio and the
+backend's own tests are described in
+[docs/transmitting.md](docs/transmitting.md#adalm-pluto-and-plutosky-r2).
+
 ## Open questions
 
-- **No off-air ISDB-T IQ capture has been tested.** An off-air capture of a
-  real broadcaster is the only independent check left for the TMCC/AC
-  difference-set parity bit order, and for the DQPSK path if the
-  broadcaster uses DQPSK (gr-isdbt has none). Japanese broadcasts use partial reception, so a capture would also
-  re-confirm the rotation numbering and the two-symbol frame alignment
-  against a broadcast transmitter.
+- **One broadcaster, through a cable feed.** One station's signal was
+  decoded (above). Not yet checked against a broadcast: the AC
+  difference-set parity and AC content, DQPSK (Japanese broadcasts use
+  coherent modulation), reception from an antenna rather than a cable
+  feed, and the cause of the 16.5 dB MER on ch13 and ch16.
 - **Receiver coverage.** Other modes, guard intervals, DQPSK, three-layer
   and non-partial-reception TMCC have not been shown to a real receiver.
 - **Impairments.** Behaviour under AWGN, CFO, sample-rate offset and

@@ -149,10 +149,12 @@ outside the repository.
 
 - **DQPSK** (differential segments, rotation numbering inside a
   differential group, DQPSK initial reference) is verified only by
-  self-consistent loopback; gr-isdbt has no DQPSK and no off-air capture
-  exists.
-- **TMCC/AC difference-set code bit order** agrees with gr-isdbt but is
-  not settled by the spec text; an off-air frame is still pending.
+  self-consistent loopback; gr-isdbt has no DQPSK, and the broadcast
+  decoded so far uses coherent modulation.
+- **TMCC difference-set code bit order** agrees with gr-isdbt and with a
+  broadcaster (every TMCC frame of TV Osaka passes the parity check;
+  VERIFICATION.md "Broadcast reception"); the AC parity has not been
+  checked against a broadcaster.
 - **Not cross-checked against the oracle:** AC payload content, the
   emergency-alarm flag and parameter switching with a countdown (gr-isdbt
   has none), Mode 1 with I = 0 or 4, and behaviour under impairments

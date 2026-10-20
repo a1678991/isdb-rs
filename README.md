@@ -276,9 +276,11 @@ end, but some parts have had less independent checking than others:
   3, GI 1/8, partial reception, layer A 1 segment QPSK 2/3, layer B 12
   segments 64QAM 3/4 (time-interleave index 2), on two receivers. Other
   modes and layouts are verified by the oracle and loopback only.
-- **No off-air capture yet.** No IQ capture of a real broadcaster has been
-  decoded. The TMCC/AC parity bit order agrees with gr-isdbt but is not
-  settled by the spec text alone.
+- **One broadcast decoded.** The receiver has decoded one real
+  broadcaster, through a cable feed (TV Osaka, both layers RS-clean,
+  every TMCC frame passing the parity check;
+  [VERIFICATION.md](VERIFICATION.md#broadcast-reception)). AC parity and
+  content and DQPSK have not been seen from a broadcaster.
 - **DQPSK, AC content, the emergency-alarm flag and parameter switching**
   are verified by self-consistent loopback only (gr-isdbt implements none
   of them).
@@ -319,8 +321,8 @@ end, but some parts have had less independent checking than others:
 
 ## Roadmap
 
-- Decode an off-air ISDB-T IQ capture (TMCC/AC parity order, slot order of
-  the re-multiplexed TS) and test more configurations and receivers.
+- Check AC content and parity against a broadcaster, receive from an
+  antenna, and test more configurations and receivers.
 - Replace operational choices with TR-B14 values where they can be
   confirmed.
 - AAC raw_data_block parsing (crc_check verification) once it can be

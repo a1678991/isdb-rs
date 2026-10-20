@@ -183,8 +183,9 @@ cargo test --release -p isdbt-phy
 - `RxFrame::tx_frame` is relative to the lock frame; the absolute frame
   number is not recoverable from the signal.
 - Impairment behaviour (noise, CFO, sample-rate offset, multipath) is
-  tested only in software loopback, not against the gr-isdbt oracle or
-  off-air signals (VERIFICATION.md "Open questions").
+  tested in software loopback and on one broadcast received through a
+  cable feed, not against the gr-isdbt oracle (VERIFICATION.md "Broadcast
+  reception", "Open questions").
 - Broadcasting TS: one IIP packet per frame (no sub-IIP reassembly across
   frames), no AC data in the dummy bytes, the SFN delay control of Part 2
   Ch. 4 itself is not implemented (only the Table 5-12 syntax), and no

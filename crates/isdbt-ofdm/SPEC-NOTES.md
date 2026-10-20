@@ -222,8 +222,10 @@ still needs a real-world capture or receiver check.
   frame after its acquisition, for 8 parameter sets; in the 6
   partial-reception sets the two sides' information words differ
   (gr-isdbt's B67, VERIFICATION.md D3) and both parities still check, so
-  the two encoders agree on the code.  Still pending an off-air frame
-  (whether consumer receivers check the parity is unknown).
+  the two encoders agree on the code.  Confirmed against a broadcaster:
+  every TMCC frame of TV Osaka (ch18, via a cable feed) passes the parity
+  check (VERIFICATION.md "Broadcast reception").  Whether consumer
+  receivers check the parity is unknown.
 
 ## ac: content, order and seismic word
 - No information: "information 1 is inserted as stuffing bits" (§3.13.4) →
@@ -272,7 +274,8 @@ still needs a real-world capture or receiver check.
   by a MyGica S270 with PER 0, and the Rust receiver/transmitter
   cross-decode byte-exactly with gr-isdbt in Modes 1-3, all GIs, all
   rates and I lengths (VERIFICATION.md).  Status: confirmed (receiver
-  evidence via the oracle; an off-air capture is still desirable).
+  evidence via the oracle, and a broadcast decoded RS-clean in both
+  layers, VERIFICATION.md "Broadcast reception").
 - Start-up fill (not in the spec): the mapper's bit-delay lines start with
   pseudo-random bits and its DQPSK references at pseudo-random diagonal
   points (±1, ±1) (one seed per layer); the time-interleaver lines and the

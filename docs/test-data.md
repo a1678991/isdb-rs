@@ -93,10 +93,11 @@ isdb rx --iq capture.cs8 --iq-format cs8 --out capture.ts --json
 
 The centre frequency of channel N is 473 + 6·(N − 13) + 1/7 MHz;
 `-n` is the number of samples (8 126 984 per second). Mind the HackRF's
-RX input limit (−5 dBm) when connecting anything other than an antenna. An
-off-air IQ capture of a real broadcaster is also the most useful
-independent check the project still lacks
-([VERIFICATION.md](../VERIFICATION.md#open-questions)).
+RX input limit (−5 dBm) when connecting anything other than an antenna.
+Captures of other broadcasters, or from an antenna, remain the most useful
+independent checks
+([VERIFICATION.md](../VERIFICATION.md#open-questions)); a Pluto can capture
+with `iio_readdev` or demodulate live with `isdb rx --radio pluto`.
 
 **Scrambling.** In Japan the elementary streams of full-segment services
 are scrambled; PSI/SI and the one-seg service are not. The SI-only tests

@@ -128,7 +128,8 @@ iiod 0.25 and 0.26) over Gigabit Ethernet at 512/63 MHz through the
 `isdb-radio` `pluto` backend: TX samples arrive
 bit-exact at the AD9361 (its digital TX→RX loopback, compared with the
 modulator's IQ file), TX keeps real time without underruns, and RX streams
-without gaps and is demodulated by `isdb rx`. `cargo test -p isdb-iio
+without gaps and is demodulated by `isdb rx`, including a broadcast
+received through a cable feed (VERIFICATION.md "Broadcast reception"). `cargo test -p isdb-iio
 --doc` compiles (but does not run) the example above, which needs libiio
 at link time.
 
