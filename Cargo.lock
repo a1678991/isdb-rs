@@ -305,6 +305,7 @@ dependencies = [
  "clap_complete",
  "ctrlc",
  "isdb-analyze",
+ "isdb-iq",
  "isdb-radio",
  "isdbt-core",
  "isdbt-fec",

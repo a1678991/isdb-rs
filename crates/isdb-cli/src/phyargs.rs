@@ -6,6 +6,8 @@ use clap::Args;
 use isdb_radio::{DeviceSpec, RadioConfig};
 use isdbt_core::*;
 
+use crate::bands::{TV_BAND_HZ, uhf_hz};
+
 /// Transmission parameters (what TMCC signals, ARIB STD-B31 §3.15).
 /// Defaults are the Japanese terrestrial norm: Mode 3, GI 1/8, partial
 /// reception, A = one-seg QPSK 2/3, B = 12 seg 64QAM 3/4, both TI index 2
@@ -143,22 +145,6 @@ pub fn describe_layer(l: &LayerConfig, mode: Mode) -> String {
     )
 }
 
-/// Centre frequency of Japanese UHF terrestrial channel `ch` (13..62):
-/// 473 + 6·(ch − 13) + 1/7 MHz (channel plan of the Radio Act ordinance;
-/// the 1/7 MHz offset centres the 5.57 MHz OFDM band in the 6 MHz channel).
-pub fn channel_hz(ch: u32) -> Result<u64> {
-    if !(13..=62).contains(&ch) {
-        bail!("UHF channel {ch} outside 13..62");
-    }
-    // 1/7 MHz = 142 857.142… Hz, rounded to the nearest hertz.
-    Ok(473_000_000 + 6_000_000 * (ch as u64 - 13) + 142_857)
-}
-
-/// The Japanese UHF terrestrial TV band (channels 13–52, edges 470 and
-/// 710 MHz): the centre frequencies `--channel` / `--freq` may select
-/// without `--freq-unrestricted`.
-pub const TV_BAND_HZ: std::ops::RangeInclusive<u64> = 470_000_000..=710_000_000;
-
 /// RF tuning shared by `tx --radio` and `rx --radio`.
 #[derive(Debug, Clone, Args)]
 pub struct TuneArgs {
@@ -207,7 +193,7 @@ impl TuneArgs {
     /// Resolve channel/frequency and the ppm correction.
     pub fn tuning(&self) -> Result<Tuning> {
         let nominal_hz = match (self.channel, self.freq) {
-            (Some(ch), None) => channel_hz(ch)?,
+            (Some(ch), None) => uhf_hz(ch)?,
             (None, Some(f)) => f,
             (None, None) => bail!("give --channel N or --freq HZ"),
             (Some(_), Some(_)) => bail!("--channel and --freq are exclusive"),
@@ -368,17 +354,6 @@ mod tests {
         assert!(p.params().is_ok());
         p.mode = 4;
         assert!(p.params().is_err());
-    }
-
-    #[test]
-    fn uhf_channel_centres() {
-        // ch13 = 473 + 1/7 MHz; ch62 = 767 + 1/7 MHz; 6 MHz raster.
-        assert_eq!(channel_hz(13).unwrap(), 473_142_857);
-        assert_eq!(channel_hz(14).unwrap(), 479_142_857);
-        assert_eq!(channel_hz(27).unwrap(), 557_142_857);
-        assert_eq!(channel_hz(62).unwrap(), 767_142_857);
-        assert!(channel_hz(12).is_err());
-        assert!(channel_hz(63).is_err());
     }
 
     #[test]

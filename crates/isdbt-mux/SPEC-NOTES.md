@@ -154,7 +154,7 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
   '10'); frequency "unit shall be 1/7MHz": channel *ch* → (473 + 6(ch−13))·7 + 1
   **[the UHF channel plan (centre = 473 + 6(ch−13) + 1/7 MHz) is from the Radio
   Act ordinance, not in the local specs; same formula as `isdb-cli`
-  `phyargs::channel_hz`]**; partial_reception_descriptor lists the services on
+  `bands::uhf_hz`]**; partial_reception_descriptor lists the services on
   layer A when partial reception is on; system_management_id = broadcasting_flag
   '00' (broadcasting) | broadcasting_identifier '000011' ("digital terrestrial
   television broadcasting") | additional_broadcasting_identification.

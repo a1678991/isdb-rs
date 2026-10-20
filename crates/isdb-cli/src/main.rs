@@ -4,6 +4,10 @@
 //! * `isdb rx` — IQ file or radio → demodulated TS + reception report
 //! * `isdb loopback` — software TX → impaired channel → RX, byte-exact check
 //! * `isdb ts`, `isdb mux` — TS analysis / service multiplexing
+//! * `isdb capture` — radio → raw IQ file with SigMF metadata (receive
+//!   only, any system: ISDB-T, ISDB-S, ISDB-S3)
+//! * `isdb iq survey` — symbol rate, carrier offset, band edges and system
+//!   of a single-carrier recording
 //! * `--relay FILE` (`tx`, `loopback`, `mux`) — rebroadcast a recorded
 //!   program without a TOML file
 //! * `isdb completions SHELL` — shell completion script (bash, zsh, …)
@@ -18,8 +22,11 @@ use std::io::Write;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
+mod bands;
+mod capture;
 mod channel;
 mod input;
+mod iq;
 mod iqplay;
 mod keys;
 mod loopback;
@@ -56,6 +63,11 @@ enum Command {
     Ts(ts::TsArgs),
     /// Service multiplexer.
     Mux(mux::MuxArgs),
+    /// Capture raw IQ (receive only): one contiguous block per segment at
+    /// any rate the radio supports, with SigMF metadata.
+    Capture(capture::CaptureArgs),
+    /// IQ recording tools (survey).
+    Iq(iq::IqArgs),
     /// Shell completions: print the completion script for SHELL to stdout.
     ///
     /// The script is generated from this binary's own command line, so
@@ -85,6 +97,8 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Ts(a) => ts::run(a),
         Command::Mux(a) => mux::run(a),
+        Command::Capture(a) => capture::run(&a),
+        Command::Iq(a) => iq::run(&a),
         Command::Completions { shell } => {
             let mut script = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "isdb", &mut script);

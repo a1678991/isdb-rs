@@ -638,6 +638,212 @@ fn pluto_dry_run_validates_without_a_device() {
     }
 }
 
+#[cfg(feature = "pluto")]
+#[test]
+fn capture_dry_run_validates_without_a_device() {
+    let dir = tmp("capture-dry");
+    let out = dir.join("x.sigmf-data");
+    let cap = |extra: &[&str]| {
+        let mut args = vec!["capture", "--rate", "57.72M", "-o", s(&out), "--dry-run"];
+        args.extend_from_slice(extra);
+        run(&args)
+    };
+    let o = cap(&["--radio", "pluto:uri=ip:192.0.2.1", "--freq", "bs1"]);
+    assert!(o.status.success());
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains("pluto capture settings (BS-1 IF):"), "{e}");
+    assert!(e.contains("programmed 1049480000 Hz"), "{e}");
+    assert!(e.contains("recorder     libiio single buffer"), "{e}");
+    assert!(e.contains("1 segment(s) of 16515072 samples"), "{e}");
+    assert!(e.contains("x.sigmf-meta"), "{e}");
+    assert!(e.contains("dry run: radio not opened"), "{e}");
+    assert!(!out.exists(), "a dry run writes nothing");
+    let o = cap(&[
+        "--radio",
+        "pluto:uri=ip:192.0.2.1,recorder=maia",
+        "--freq",
+        "nd24",
+    ]);
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{e}");
+    assert!(
+        e.contains("(ND24 IF)") && e.contains("programmed 2053000000 Hz"),
+        "{e}"
+    );
+    assert!(e.contains("maia-sdr recorder at http://192.0.2.1/"), "{e}");
+    assert!(e.contains("of 33554432 samples"), "{e}");
+    for (extra, want) in [
+        (
+            &["--radio", "pluto", "--freq", "bs1", "--samples", "16515073"][..],
+            "captures at most 16515072 contiguous samples",
+        ),
+        (
+            &["--radio", "pluto:buffer=65536", "--freq", "bs1"][..],
+            "(known: uri, channel, recorder)",
+        ),
+        (
+            &["--radio", "pluto", "--freq", "bs2"][..],
+            "BS channel 2: odd 1..23",
+        ),
+        (
+            &["--radio", "pluto", "--freq", "bs1", "--bw", "60M"][..],
+            "RF bandwidth 60000000 Hz outside",
+        ),
+        (
+            &["--radio", "hackrf", "--freq", "bs1"][..],
+            "cannot capture",
+        ),
+    ] {
+        let o = cap(extra);
+        let e = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success() && e.contains(want), "{extra:?}: {e}");
+    }
+}
+
+/// A QPSK signal at `fs` with `sps` samples per symbol (raised-cosine
+/// transitions, so |z|² has a strong symbol-rate line), as cs16 with full
+/// scale 2048, offset `cfo` Hz.
+fn synthetic_qpsk_cs16(fs: f64, sps: f64, cfo: f64, n: usize) -> Vec<u8> {
+    let mut rng = 0x2545_f491_4f6c_dd1du64;
+    let symbols: Vec<(f64, f64)> = (0..(n as f64 / sps) as usize + 2)
+        .map(|_| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let ph = std::f64::consts::FRAC_PI_4 + std::f64::consts::FRAC_PI_2 * (rng % 4) as f64;
+            (ph.cos(), ph.sin())
+        })
+        .collect();
+    let mut out = Vec::with_capacity(4 * n);
+    for i in 0..n {
+        let t = i as f64 / sps;
+        let k = t as usize;
+        let w = 0.5 - 0.5 * (std::f64::consts::PI * (t - k as f64)).cos();
+        let (a, b) = (symbols[k], symbols[k + 1]);
+        let (re, im) = (a.0 * (1.0 - w) + b.0 * w, a.1 * (1.0 - w) + b.1 * w);
+        let ph = 2.0 * std::f64::consts::PI * cfo * i as f64 / fs;
+        let (c, s) = (ph.cos(), ph.sin());
+        for v in [re * c - im * s, re * s + im * c] {
+            out.extend(((v * 600.0).round() as i16).to_le_bytes());
+        }
+    }
+    out
+}
+
+#[test]
+fn iq_survey_finds_rate_carrier_and_system() {
+    let dir = tmp("iq-survey");
+    let f = dir.join("qpsk.cs16");
+    let fs = 61.44e6;
+    std::fs::write(&f, synthetic_qpsk_cs16(fs, fs / 28.86e6, -115e3, 1 << 18)).unwrap();
+    // A raw file needs its format and rate.
+    let o = run(&["iq", "survey", s(&f)]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("give the sample format"));
+    let o = run(&[
+        "iq",
+        "survey",
+        "--format",
+        "cs16/2048",
+        "--rate",
+        "61.44M",
+        "--json",
+        s(&f),
+    ]);
+    assert!(o.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["system"]["name"], "ISDB-S", "{v}");
+    assert!(
+        (v["system"]["symbol_rate_hz"].as_f64().unwrap() - 28.86e6).abs() < 300.0,
+        "{v}"
+    );
+    let res = fs / f64::from(1 << 18);
+    assert!(
+        (v["carrier_offset_hz"].as_f64().unwrap() + 115e3).abs() < res,
+        "{v}"
+    );
+    assert_eq!(v["samples"], 1 << 18);
+    // With SigMF metadata the format and rate come from it.
+    std::fs::write(
+        dir.join("qpsk.cs16.sigmf-meta"),
+        r#"{"global":{"core:datatype":"ci16_le","core:sample_rate":61440000,"isdb:full_scale":2048},
+            "captures":[{"core:sample_start":0,"core:frequency":1613000000,"isdb:channel":"nd2"}]}"#,
+    )
+    .unwrap();
+    let o = run(&["iq", "survey", s(&f)]);
+    let t = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{t}");
+    assert!(
+        t.contains("cs16/2048 at 61.440000 Msps, centre 1613.000000 MHz (nd2)"),
+        "{t}"
+    );
+    assert!(t.contains("-> ISDB-S at 28.86"), "{t}");
+    assert!(t.contains("system         ISDB-S\n"), "{t}");
+}
+
+/// Opt-in hardware test (receive only): `ISDB_RS_PLUTO_URI` names a
+/// PlutoSDR-family radio, e.g. `ip:192.0.2.30`; `ISDB_RS_PLUTO_CAPTURE_FREQ`
+/// the frequency or channel to capture (default `bs1`, the BS-1 satellite
+/// IF). Captures two short segments and checks the recording and its
+/// metadata; the signal itself is not checked.
+#[cfg(feature = "pluto")]
+#[test]
+fn capture_from_a_pluto() {
+    let Some(uri) = std::env::var_os("ISDB_RS_PLUTO_URI") else {
+        eprintln!("SKIP capture_from_a_pluto: ISDB_RS_PLUTO_URI not set (e.g. ip:192.0.2.30)");
+        return;
+    };
+    let freq = std::env::var("ISDB_RS_PLUTO_CAPTURE_FREQ").unwrap_or_else(|_| "bs1".into());
+    let dir = tmp("capture-pluto");
+    let out = dir.join("c.sigmf-data");
+    let radio = format!("pluto:uri={}", uri.to_string_lossy());
+    let o = run(&[
+        "capture",
+        "--radio",
+        &radio,
+        "--freq",
+        &freq,
+        "--rate",
+        "61.44M",
+        "--samples",
+        "256Ki",
+        "--segments",
+        "2",
+        "-o",
+        s(&out),
+    ]);
+    assert!(o.status.success());
+    assert_eq!(std::fs::metadata(&out).unwrap().len(), 2 * 4 * 262_144);
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("c.sigmf-meta")).unwrap()).unwrap();
+    let g = &meta["global"];
+    assert_eq!(g["core:datatype"], "ci16_le");
+    assert_eq!(g["isdb:full_scale"], 2048.0);
+    assert!((g["core:sample_rate"].as_f64().unwrap() / 61.44e6 - 1.0).abs() < 10e-6);
+    let c = meta["captures"].as_array().unwrap();
+    assert_eq!(c.len(), 2);
+    assert_eq!(c[1]["core:sample_start"], 262_144);
+    assert_eq!(c[1]["isdb:gap_before"], true);
+    assert_eq!(c[0]["isdb:capture_method"], "libiio single buffer");
+    // Not overwritten without --overwrite.
+    let o = run(&[
+        "capture",
+        "--radio",
+        &radio,
+        "--freq",
+        &freq,
+        "--rate",
+        "61.44M",
+        "--samples",
+        "1Ki",
+        "-o",
+        s(&out),
+    ]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--overwrite replaces it"));
+    assert_eq!(std::fs::metadata(&out).unwrap().len(), 2 * 4 * 262_144);
+}
+
 #[cfg(not(any(feature = "hackrf", feature = "pluto")))]
 #[test]
 fn radio_without_backends_names_the_feature() {
@@ -700,7 +906,16 @@ fn endless_input_into_iq_file_is_refused_without_seconds() {
 
 #[test]
 fn completions_cover_every_subcommand() {
-    const SUBCOMMANDS: [&str; 6] = ["tx", "rx", "loopback", "ts", "mux", "completions"];
+    const SUBCOMMANDS: [&str; 8] = [
+        "tx",
+        "rx",
+        "loopback",
+        "ts",
+        "mux",
+        "capture",
+        "iq",
+        "completions",
+    ];
     let o = run(&["completions", "bash"]);
     assert!(o.status.success());
     let bash = String::from_utf8(o.stdout).unwrap();

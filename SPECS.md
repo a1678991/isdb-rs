@@ -126,7 +126,8 @@ The code cites the English editions in the table above.
 | **ARIB STD-B1** | Not local | Cited by B10 footnotes as the origin of SDTT (0xC3), CDT (0xC8) and the download content descriptor (0xC9). These stay `Unknown` in `isdb-si` |
 | **ISO/IEC 10646:2014 Annex B; Unicode 5.2+ / 16.0 names** | Public | `isdb-text`: combining-character order (B24 Annex E.4 refers to ISO/IEC 10646 Annex B); additional-symbol PUA → Unicode ARIB symbols, "names checked with Python `unicodedata` 16.0" |
 | **ISO/IEC 2022** | Public | `isdb-text`: unknown escape sequences are skipped by ISO/IEC 2022 shape |
-| **Radio Act ordinance (UHF channel plan)** | Japanese law, not a broadcast spec | `isdbt-mux` NIT frequency code and `isdb-cli` `phyargs::channel_hz`: centre = 473 + 6·(ch − 13) + 1/7 MHz (**[not in the local specs]**) |
+| **Radio Act ordinance (UHF channel plan)** | Japanese law, not a broadcast spec | `isdbt-mux` NIT frequency code and `isdb-cli` `bands::uhf_hz`: centre = 473 + 6·(ch − 13) + 1/7 MHz (**[not in the local specs]**) |
+| **Satellite channel plans (BS, 110° CS) and the LNB LO** | ITU-R Radio Regulations Appendix 30 (BSS plan) and the operators' 110° CS plan; not local | `isdb-cli` `bands` (`isdb capture --freq bsN / ndN`): BS-n RF = 11 727.48 + 19.18·(n − 1) MHz (odd n, right-hand circular), ND-n RF = 12 251 + 20·n MHz (even n), IF = RF − 10.678 GHz (**[not in the local specs]**). Every IF centre was checked on a cable feed's satellite IF: the measured band centres lie within 1.3 MHz of the table and every transponder shows the same carrier offset (−112…−116 kHz, the feed's conversion), [VERIFICATION.md](VERIFICATION.md#satellite-if-survey). To be confirmed from the NIT satellite_delivery_system_descriptor (B10 §6.2.6) once ISDB-S TS are decoded |
 
 The SPEC-NOTES statements that depend on these documents. Search terms used:
 "not available", "knowledge", "TR-B14", "pending".
@@ -263,8 +264,11 @@ are in `specs/pdf/` (gitignored).
 
 ### 1.4 Satellite transmission (ISDB-S, ISDB-S3): local, not yet implemented
 
-Collected on 2026-10-20 for the planned ISDB-S and ISDB-S3 receivers. No
-code cites them yet. Each URL was fetched with `curl` that day and returned
+Collected on 2026-10-20 for the planned ISDB-S and ISDB-S3 receivers. The
+only code citing them so far is `isdb-iq`'s survey, which quotes the
+nominal symbol rates (ISDB-S 28.860 Mbaud, ordinance Art. 52(3) and
+BO.1408-1 Table 3; ISDB-S3 33.7561 Mbaud, B44 Annex B.3) to recognise a
+recording's system. Each URL was fetched with `curl` that day and returned
 HTTP 200 with `Content-Type: application/pdf` (the ordinance: the e-Gov
 API's XML and JPEG attachments).
 

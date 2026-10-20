@@ -16,8 +16,9 @@ use isdbt_mux::config::{AtEof, CaMode, LayerName, StreamCfg};
 use isdbt_mux::relay_template::{DEFAULT_NAME, RelayOptions};
 use isdbt_mux::{Config, Multiplexer, MuxError};
 
+use crate::bands::uhf_hz;
 use crate::input::{FrameInput, InputArgs, MuxConfigInput};
-use crate::phyargs::{channel_hz, describe_params, phy_options};
+use crate::phyargs::{describe_params, phy_options};
 
 /// `--relay` and its options (shared by `tx`, `loopback` and `mux`).
 #[derive(Debug, Clone, Default, Args)]
@@ -163,7 +164,7 @@ impl RelayArgs {
     /// service name is read when `--name` is not given).
     pub fn options(&self, channel: u32, params: &Params) -> Result<RelayOptions> {
         let src = self.relay.as_ref().context("--relay FILE")?;
-        channel_hz(channel)?;
+        uhf_hz(channel)?;
         let abs =
             std::fs::canonicalize(src).with_context(|| format!("--relay {}", src.display()))?;
         let mut o = RelayOptions::new(&abs);
@@ -373,7 +374,7 @@ pub fn tx_channel(channel: Option<u32>, freq: Option<u64>) -> Result<u32> {
     }
     if let Some(f) = freq {
         return (13..=62)
-            .find(|&c| channel_hz(c).is_ok_and(|h| h.abs_diff(f) <= 500_000))
+            .find(|&c| uhf_hz(c).is_ok_and(|h| h.abs_diff(f) <= 500_000))
             .with_context(|| {
                 format!(
                     "--relay: {f} Hz is not a UHF channel centre; the NIT must name the transmit channel, give --channel"

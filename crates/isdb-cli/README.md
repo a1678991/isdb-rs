@@ -2,7 +2,9 @@
 
 `isdb` drives the spec crates of this workspace from the command line:
 transport streams → ARIB STD-B31 baseband → IQ file or radio, and back,
-plus the service multiplexer and TS analysis tools.
+plus the service multiplexer and TS analysis tools, and receive-only raw
+IQ capture and survey of satellite IF (ISDB-S, ISDB-S3; no demodulator
+yet).
 
 ```text
 cargo build --release -p isdb-cli      # → target/release/isdb
@@ -27,7 +29,7 @@ fails with a message naming the feature.
 > content you transmit or relay.
 
 Position in the stack: the only binary crate, on top of every library
-crate. It calls `isdbt-phy` (`Transmitter`, `PipelinedReceiver`, `iq`),
+crate. It calls `isdb-iq` (recordings, SigMF, survey), `isdbt-phy` (`Transmitter`, `PipelinedReceiver`, `iq`),
 `isdbt-core`/`isdbt-fec`/`isdbt-ofdm` (parameters, multiplex pattern,
 demodulator configuration), `isdbt-mux` (`Multiplexer`), `isdb-analyze`
 (`isdb ts`) and `isdb-radio` (`IqSink` / `IqSource`, the backend
@@ -292,6 +294,57 @@ the stream has no PCR). Input packets may be 188/192/204 bytes (autodetected).
   never|needed|always` controls use of null packets for rewritten sections.
 * `extract FILE` — sections to a hex fixture (`pid tid hex` per line;
   `--pid`, `--tid`, `--all-versions`, `-o`).
+
+### `isdb capture` — radio → raw IQ recording (receive only)
+
+Captures one contiguous block of raw samples from a radio at any rate it
+supports (not only 512/63 MHz) and writes it as cs16 (little-endian I/Q)
+with [SigMF](https://sigmf.org) metadata next to it: `NAME.sigmf-meta` for
+`-o NAME.sigmf-data`, else the file name with `.sigmf-meta` appended. It
+never transmits and has no `--rf-enable`.
+
+```sh
+isdb capture --radio pluto:uri=ip:192.0.2.30 --freq bs1 --rate 57.72M -o bs1.sigmf-data
+isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia --freq nd2 --rate 61.44M \
+    -o nd2.sigmf-data --survey
+```
+
+- `--freq` is a frequency (`1049480000`, `1049.48M`) or a channel name:
+  `chN` (UHF 13..62), `bsN` (BS, odd 1..23) or `ndN` (110° CS, even
+  2..24), the satellite ones at their IF = RF − 10.678 GHz (BS-n IF =
+  1049.48 + 19.18·(n − 1) MHz, ND-n IF = 1613 + 20·(n − 2) MHz).
+- `--rate` in samples per second (`57.72M` is 2 samples per ISDB-S symbol,
+  `61.44M` is the AD936x maximum); the rate the device runs at is read
+  back. `--bw` defaults to 0.8 × the rate, `--gain` takes the backend's
+  gains (Pluto: `agc=…`, `gain=dB`).
+- `--samples` defaults to the largest contiguous capture of the backend
+  (`isdb_radio::Backend::capture_limit`) and more is refused. Pluto:
+  16 515 072 samples through libiio (63 MiB, 282 ms at 57.72 Msps),
+  33 554 432 with `recorder=maia` (Tezuka's maia-sdr recorder, 581 ms).
+  Longer recordings take `--segments N`: N captures one after another into
+  the same file, each its own SigMF capture segment, the 2nd and later
+  marked `isdb:gap_before` (samples between them are lost).
+- The metadata records the sample rate and LO read back, the RF
+  bandwidth, the gain (AGC mode and the gain at the end), the device
+  identity, the capture method, the host time and the channel name
+  (`isdb:` extension fields, `isdb_iq::sigmf`). Do not put station names
+  in `--description` of recordings you share.
+- Existing outputs are kept unless `--overwrite`; a failed capture
+  removes its partial outputs; `--dry-run` prints the settings without
+  opening the radio; `--survey` runs `isdb iq survey` on the result.
+
+### `isdb iq survey` — what a single-carrier recording contains
+
+`isdb iq survey FILE…` reads a recording (SigMF metadata, or a raw file
+with `--format cs8|cs16|cs16/2048|cf32 --rate SPS`) and prints, for 4 Mi
+samples of its first SigMF segment (`--samples`, `--segment`): power,
+band centre and widths, the symbol-rate line of |z|² with the known
+system it matches (ISDB-S 28.860 Mbaud, ISDB-S3 33.7561 Mbaud; at
+2 samples per symbol the line and its alias fs − R coincide, so the sign
+of the ppm deviation is ambiguous), the z², z⁴, z⁸ carrier lines (and the
+π/2-BPSK z² lines at ±R/2) with the carrier offset each gives, and the
+strongest one. `--json` prints one object per file. The analysis is
+`isdb_iq::survey`.
 
 ### `isdb completions` — shell completions
 
@@ -579,13 +632,16 @@ transmit with, over the in-memory `mock::MockRadio`):
 | `tests/cli.rs` `radio_tx_refuses_without_rf_enable` | `--radio hackrf --dry-run` prints the backend's settings and refuses; no `--rf-enable` ⇒ rejected |
 | `tests/cli.rs` `radio_rejects_unknown_backends_gains_and_ranges` | an unknown backend lists the compiled-in ones with their features; unknown or out-of-range `--gain` values (TX and RX) and unknown device arguments are rejected before a device is opened |
 | `tests/cli.rs` `pluto_dry_run_validates_without_a_device` | `--radio pluto:…` dry runs print the settings (attenuation, default maximum; loopback; cs12 level) and reject out-of-range attenuation, HackRF gain names, a third channel, a 50 MHz bandwidth, `loopback` on RX and manual gain with AGC, without connecting |
+| `tests/cli.rs` `capture_dry_run_validates_without_a_device` | `capture --dry-run` with `--freq bs1` / `nd24` prints the tuning (BS-1 IF 1049.48 MHz, ND24 IF 2053 MHz), the method (libiio buffer / maia-sdr at the `ip:` host) and the limit (16 515 072 / 33 554 432 samples), writes nothing; refuses more samples than the limit, `buffer` (a streaming argument), `bs2`, a 60 MHz bandwidth and a backend that cannot capture |
+| `tests/cli.rs` `iq_survey_finds_rate_carrier_and_system` | `iq survey` on a synthetic QPSK file at 28.86 Mbaud, 61.44 Msps, −115 kHz: a raw file needs `--format`/`--rate`; the JSON names ISDB-S and gives the rate and the offset within one FFT bin; with SigMF metadata the format, rate, centre and channel come from it |
+| `tests/cli.rs` `capture_from_a_pluto` | opt-in hardware, receive only (`ISDB_RS_PLUTO_URI`, optionally `ISDB_RS_PLUTO_CAPTURE_FREQ`, default `bs1`): two 256 Ki-sample segments at 61.44 Msps; data size, SigMF datatype, full scale 2048, rate read back within 10 ppm, the second segment's start and gap marker, the capture method; an existing output is not overwritten. Prints `SKIP` without the variable |
 | `tests/cli.rs` `radio_without_backends_names_the_feature` | `--no-default-features` build: `tx`/`rx --radio hackrf` and `--radio pluto` name their features |
 | `tests/cli.rs` `scrambled_input_is_refused` | a TS with one scrambled packet (transport_scrambling_control ≠ '00') is refused: `isdb` neither descrambles nor transmits scrambled content |
 | `tests/cli.rs` `completions_cover_every_subcommand` | `completions bash` defines `_isdb` and dispatches every subcommand; `completions zsh` starts with `#compdef isdb` and lists every subcommand; both complete `--radio`; an unknown shell is a usage error |
 | `tests/cli.rs` `endless_input_into_iq_file_is_refused_without_seconds` | `tx --synthetic --iq FILE` without `--seconds` is refused before the file is created; with `--seconds` it runs |
 | `tests/cli.rs` `mux_config_and_ts_tools_smoke`, `loopback_with_in_process_multiplexer` | `isdb mux` / `ts inspect` and `loopback --mux-config` on `bench.toml` with media streams replaced by `declared` streams; the media variant runs only when `ISDB_RS_MEDIA_DIR` names a directory with `video.m2v` and `audio.m2a` (prints `SKIP` otherwise; [docs/test-data.md](https://github.com/a1678991/isdb-rs/blob/main/docs/test-data.md#making-a-media-directory) shows how to make one) |
 | `tests/cli.rs` `media_aac_gate_matches_b32_part2_report` | `isdb mux` on `bench.toml` with your own `audio.m2a`, expectations taken from its ADTS headers: the default `conform` succeeds exactly when no error-severity B32 Part 2 rule is violated (refusal says "crc_check cannot be inserted" for protection_absent '1'); with `--adts-compliance warn` `isdb ts validate` reports each violated per-frame rule as an `aac.*` error and the quality_indicator Table 1 derives from the file's rate (opt-in: `ISDB_RS_MEDIA_DIR` with `video.m2v` and `audio.m2a`; prints `SKIP` otherwise) |
-| `src/*` unit tests | `--relay` numbers (hex/decimal), NIT channel from `--freq`, service layer from the layout; PCR pacing of the PID split (frames carry only the packets due; over capacity: everything sent, lag measured), layer-spec parsing and defaults, UHF channel centres and ppm correction, the band check, the `RadioConfig` built from the tuning / `--radio` arguments / `--gain` list, cs8 file bytes, AWGN/CFO channel, verifier anchoring, producer lead/data/flush sequence and stop, file/loop/live sources, PID split, streaming into memory and through the queued radio sink over the mock radio (prefill and drain; cs8 bytes equal to the quantised samples; stop aborts), `clap` definition consistency, `--seconds` default 0 for every `tx` input and for `rx`, the `--iq` bound check (regular file refused; stdout, FIFO, `/dev/null` accepted), which `--mux-config` / `--relay` configurations end by themselves |
+| `src/*` unit tests | `--relay` numbers (hex/decimal), NIT channel from `--freq`, service layer from the layout; PCR pacing of the PID split (frames carry only the packets due; over capacity: everything sent, lag measured), layer-spec parsing and defaults, UHF channel centres and ppm correction, BS / ND satellite IF tables, channel names and `--freq` / `--rate` / `--samples` syntax, `capture` arguments → `RadioConfig` and its SigMF metadata (segments, gap marker, read-back values), the band check, the `RadioConfig` built from the tuning / `--radio` arguments / `--gain` list, cs8 file bytes, AWGN/CFO channel, verifier anchoring, producer lead/data/flush sequence and stop, file/loop/live sources, PID split, streaming into memory and through the queued radio sink over the mock radio (prefill and drain; cs8 bytes equal to the quantised samples; stop aborts), `clap` definition consistency, `--seconds` default 0 for every `tx` input and for `rx`, the `--iq` bound check (regular file refused; stdout, FIFO, `/dev/null` accepted), which `--mux-config` / `--relay` configurations end by themselves |
 
 Workspace overview: [`../../README.md`](https://github.com/a1678991/isdb-rs/blob/main/README.md); architecture and
 the frame/latency contract: [`docs/architecture.md`](https://github.com/a1678991/isdb-rs/blob/main/docs/architecture.md);
