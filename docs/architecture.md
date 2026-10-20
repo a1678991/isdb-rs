@@ -50,6 +50,7 @@ graph TD
   radio[isdb-radio<br/>IQ sink/source, radio backends]
   hrf[isdb-hackrf<br/>libhackrf FFI]
   iio[isdb-iio<br/>libiio FFI]
+  iq[isdb-iq<br/>IQ recordings, SigMF, survey]
   cli[isdb-cli<br/>the isdb binary]
 
   si --> ts
@@ -79,6 +80,7 @@ graph TD
   cli --> ofdm
   cli --> core
   cli --> radio
+  cli --> iq
 ```
 
 Arrows point to dependencies. The TS/SI side (`isdb-ts`, `isdb-text`,
@@ -92,7 +94,11 @@ the `RadioConfig` / `TxOptions` / `RxOptions` handed to a backend, the
 `QueuedSink` transmit path shared by every backend with integer samples,
 and the registry of backends, each behind its own cargo feature
 (`hackrf` → `isdb-hackrf`, `pluto` → `isdb-iio`, the FFI wrappers).
-The CLI never names a device. The PHY crates carry TS packets
+The CLI never names a device. `isdb-iq` stands apart from both sides:
+IQ recordings of any system (sample formats, SigMF metadata) and the
+survey of a single-carrier recording, used by `isdb capture` and `isdb iq
+survey`; the radio's raw captures (`Backend::capture`) reach it only
+through the CLI. The PHY crates carry TS packets
 as plain `[u8; 188]` and do not depend on `isdb-ts`. `isdb-analyze` uses
 `isdbt-mux` only for the ARIB STD-B32 Part 2 ADTS rule identities and
 quality modes; it parses ADTS headers itself.

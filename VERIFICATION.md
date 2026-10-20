@@ -26,7 +26,9 @@ checks something the rung below cannot:
 6. **Broadcast transmitters.** The Rust receiver decodes real
    broadcasters' signals ([below](#broadcast-reception)), which checks the
    receive chain against transmitters this project did not build; their
-   TMCC words are kept as test vectors.
+   TMCC words are kept as test vectors. Satellite IF recordings (ISDB-S,
+   ISDB-S3) are so far only surveyed, not demodulated
+   ([below](#satellite-if-survey)).
 
 Coverage per clause, with the rung that confirms it, is in
 [SPECS.md §2](SPECS.md#2-coverage-matrix).
@@ -437,6 +439,65 @@ v0.3.22 and later three-state the pump without a reference; the spread
 fell to 0.001–0.003 carriers and the channels locked. The radio and the
 backend's own tests are described in
 [docs/transmitting.md](docs/transmitting.md#adalm-pluto-and-plutosky-r2).
+
+## Satellite IF survey
+
+The satellite IF of the same cable feed (RX1 of the PlutoSky R2, Tezuka
+v0.3.24) was recorded with `isdb capture` and surveyed with `isdb iq
+survey` on 2026-10-20: every BS right-hand-circular transponder (12) and
+every 110° CS transponder (12). Nothing is demodulated yet; this rung
+checks the capture path, the channel tables and which system each
+transponder carries. The feed carries no left-hand-circular IF
+(2.2–3.2 GHz: nothing).
+
+**Capture length and contiguity.** One libiio buffer holds at most
+16 515 072 samples (63 MiB; 16 531 456 fail with `ENOMEM` in iiod, with
+1 or 4 kernel blocks), 282 ms at 57.72 Msps; Tezuka's maia-sdr recorder
+holds 33 554 432 (128 MiB), 581 ms, and returns in about 5.5 s including
+the download. Both are one DMA transfer. On recordings at 61.44 Msps,
+where the |z|² line of the 28.86 Mbaud signal and its image are
+resolved, the line's phase advances uniformly across the whole capture:
+in 2^16-sample chunks it deviates at most 0.084 rad (maia, 546 ms) and
+0.068 rad (libiio, 269 ms) from its mean step, while one lost sample
+would move it by 2.95 rad. A loss of a multiple of 1024 samples would
+move it by only 0.004 rad (R/fs·1024 is almost an integer) and the
+z⁸ carrier line is too noisy to see it (its phase moves 0.5 rad rms per
+1 ms chunk: the feed's conversion phase noise, ×8); the ISDB-S frame
+sync of the demodulator will settle that. At 57.72 Msps (2 samples per
+symbol) the line and its image coincide and this check does not apply.
+The two methods agree in level (−10.9 dBFS on BS-1 with the AGC at
+33 dB), which confirms their full scales (2048 and 32768).
+
+**Channel tables.** Every band centre measured lies within 1.3 MHz of
+the `isdb-cli` `bands` IF table (BS-n 1049.48 + 19.18·(n − 1) MHz, ND-n
+1613 + 20·(n − 2) MHz), and every transponder shows the same carrier
+offset, −112 to −116 kHz (the feed's conversion), so the tables locate
+each transponder.
+
+**Classification** (4 Mi samples of each recording; dB above the median
+of the searched bins; ISDB-S at 57.72 Msps where the ppm sign is
+ambiguous, the rest at 61.44 Msps):
+
+| Transponders | Symbol line | Strongest carrier line | System |
+|---|---|---|---|
+| BS-1, 3, 5, 9, 13, 15, 19, 21, 23 | 28.86 Mbaud, +47…+49 dB | z⁸, +33…+41 dB (z⁴ +21…+27 dB): 8PSK main signal | ISDB-S |
+| BS-7, 11, 17 | 33.7561 Mbaud (+0.6 ppm), +32 dB | z² at +R/2, +27 dB (π/2-shift BPSK), confirmed by z⁴ | ISDB-S3 |
+| ND2 … ND20 (10) | 28.86 Mbaud (−0.3…+0.3 ppm), +47…+50 dB | z⁴, +49…+57 dB (z⁸ +25…+43 dB): QPSK main signal | ISDB-S |
+| ND22, ND24 | 28.86 Mbaud, +38…+39 dB | z⁴, +31…+33 dB | ISDB-S (about 10 dB lower SNR: the feed's tilt) |
+
+The −3 dB widths are 23–26 MHz (BS ISDB-S), 25–31 MHz (CS) and 32–33 MHz
+(ISDB-S3); the ISDB-S spectrum is not flat at the top on this feed, so
+the −3 dB width is an estimate of the occupied band, not a roll-off
+measurement.
+
+Survey findings that shaped `isdb_iq::survey`: on a BS IF recording the
+z⁸ line's copy at 8Δf + R was stronger than the line itself in one 73 ms
+stretch (so z^k lines are searched within ±R/2), and in ISDB-S3
+recordings an unrelated line of the same strength as the π/2-BPSK line
+lies in the −R/2 window (so an offset counts when a second line kind
+confirms it). The opt-in tests `isdb-iq` `tests/captures.rs`
+(`ISDB_RS_ISDBS_IQ`, `ISDB_RS_ISDBS3_IQ`) pass on ND2, ND22, ND24, BS-1
+(maia and libiio recordings) and BS-7, 11, 17.
 
 ## Open questions
 

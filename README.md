@@ -10,8 +10,10 @@ the same library — services → TS → OFDM baseband → radio, and radio → 
 → TS → analysis — so every layer can be checked against its inverse, against
 the specifications' own numbers, and against independent receivers. It is
 meant for receiver testing, protocol study and broadcast-engineering
-experiments on a conducted bench. Only ISDB-T is implemented today; the name
-leaves room for ISDB-S and ISDB-S3.
+experiments on a conducted bench. Only ISDB-T is implemented today; for
+ISDB-S and ISDB-S3 there is so far receive-only satellite IF capture
+(`isdb capture`) and a survey of the recordings (`isdb iq survey`), no
+demodulator.
 
 > [!WARNING]
 > **Legal and RF safety notice**
@@ -88,7 +90,13 @@ leaves room for ISDB-S and ISDB-S3.
   through device-neutral IQ sink/source traits with one backend per device
   (HackRF One, `--radio hackrf`; ADALM-Pluto and compatibles such as the
   PlutoSky R2 over USB or Ethernet, `--radio pluto`); one `isdb` binary with `tx`, `rx`,
-  `loopback`, `mux`, `ts` and `completions` commands.
+  `loopback`, `mux`, `ts`, `capture`, `iq` and `completions` commands.
+- **Satellite IF recordings** (`isdb-iq`, `isdb capture`, `isdb iq
+  survey`): receive-only contiguous captures at any rate the radio
+  supports (a Pluto takes up to 16.5 M samples through libiio, 33.5 M with
+  Tezuka's maia-sdr recorder) with SigMF metadata, BS / 110° CS channel
+  names at their IF, and a survey that finds the symbol rate, the carrier
+  offset and the system (ISDB-S, ISDB-S3) of a recording.
 
 ## Crates
 
@@ -106,6 +114,7 @@ leaves room for ISDB-S and ISDB-S3.
 | [`isdb-radio`](crates/isdb-radio/README.md) | — | device-neutral SDR layer: IQ sink/source traits, `--radio` device selection, backend registry (HackRF behind the `hackrf` feature, ADALM-Pluto behind `pluto`), integer sample quantisers |
 | [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | minimal safe wrapper over the system libhackrf (FFI), used by the `isdb-radio` HackRF backend |
 | [`isdb-iio`](crates/isdb-iio/README.md) | — | minimal safe wrapper over the system libiio 0.x (FFI), used by the `isdb-radio` Pluto backend |
+| [`isdb-iq`](crates/isdb-iq/README.md) | — (quotes the ISDB-S / ISDB-S3 symbol rates) | IQ recordings independent of the system: sample formats, SigMF metadata, single-carrier survey (symbol rate, carrier offset, band, system) |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary |
 
 How they fit together, the frame/latency contract and the data flow:
@@ -328,8 +337,10 @@ end, but some parts have had less independent checking than others:
   confirmed.
 - AAC raw_data_block parsing (crc_check verification) once it can be
   written from ISO/IEC 13818-7 itself; H.264 one-seg packetisation.
-- ISDB-S (ARIB STD-B20) and ISDB-S3 (ARIB STD-B44) transmission, reusing
-  the TS/SI crates — not started.
+- ISDB-S (ITU-R BO.1408 / MIC Ordinance No. 87 of 2011; ARIB STD-B20) and
+  ISDB-S3 (ARIB STD-B44) reception, then transmission, reusing the TS/SI
+  crates — satellite IF capture and survey done, demodulation not
+  started.
 
 ## Development
 

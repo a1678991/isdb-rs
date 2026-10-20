@@ -72,6 +72,30 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   the TX LO down. The `Cs12` sample format (12-bit, left-aligned in
   `i16`) is the DAC format of its `QueuedSink`.
 - `isdb-cli`: the `pluto` feature (default on) forwarding `isdb-radio/pluto`.
+- `isdb-iq`: IQ recordings independent of the broadcast system — sample
+  formats (`cs8`, `cs16` with its full scale, `cf32`), SigMF 1.2 metadata
+  with an optional `isdb` extension (full scale, LO and bandwidth read
+  back, gain, channel, capture method, gap marker between capture
+  segments), `Recording` (opened by data, `.sigmf-meta` or base name), and
+  a single-carrier survey: power spectrum and band edges, the |z|²
+  symbol-rate line (aliases above fs/2 included), z², z⁴, z⁸ and
+  π/2-BPSK carrier lines, and the system (ISDB-S, ISDB-S3) whose symbol
+  rate matches.
+- `isdb-iio`: `Context::capture`, one buffer refilled once (contiguous
+  samples without a stream thread).
+- `isdb-radio`: raw captures — `Backend::describe_capture`,
+  `capture_limit` and `capture` returning a `Capture` (raw `i16` I/Q, full
+  scale, rate / LO / bandwidth / gain read back, device identity, method,
+  host time); `hackrf` cannot capture. The `pluto` backend captures
+  through one libiio buffer (`recorder=iio`, up to 16 515 072 samples) or
+  Tezuka's maia-sdr recorder over HTTP (`recorder=maia`, up to
+  33 554 432 samples).
+- `isdb-cli`: `isdb capture` (receive only: one contiguous block per
+  segment at any rate the radio supports, cs16 + SigMF metadata,
+  `--segments` with gap markers, `--dry-run`, `--survey`, no overwrite
+  without `--overwrite`) and `isdb iq survey` (text or `--json`). `--freq`
+  of `capture` takes channel names: `chN` (UHF), `bsN` and `ndN` (BS and
+  110° CS at their satellite IF).
 - `isdb-cli`: the `isdb` binary — `tx` (to an IQ file or a radio; radiates
   only with `--rf-enable`), `rx`, `loopback` (software channel with
   impairments), `mux` (including `--relay` of a recording) and `ts`
@@ -158,6 +182,13 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   English).
 
 ### Changed
+
+- `isdb-cli`: the UHF channel table moved from `phyargs` to the new
+  `bands` module (`channel_hz` → `bands::uhf_hz`), next to the BS and
+  110° CS satellite IF tables; `tx` / `rx` behave as before.
+- `isdb-radio`: the `pluto` device arguments are parsed per use (TX, RX,
+  capture): `recorder` is a capture argument, `buffer` a streaming one.
+- `.gitignore`: `*.cs16`, `*.sigmf-data` and `*.sigmf-meta` recordings.
 
 - Crates and binary renamed: `arib-ts` → `isdb-ts`, `arib-text` →
   `isdb-text`, `arib-si` → `isdb-si`, `arib-analyze` → `isdb-analyze`,

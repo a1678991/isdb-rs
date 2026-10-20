@@ -4,7 +4,7 @@
 
 > この文書は [README.md](README.md) の日本語訳です。リンク先のドキュメントは英語版のみで、内容に相違がある場合は英語版が優先します。
 
-規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（HackRF One と ADALM-Pluto 系）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。現在実装しているのは ISDB-T のみですが、名称は ISDB-S と ISDB-S3 を将来扱う余地を残しています。
+規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（HackRF One と ADALM-Pluto 系）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。現在実装しているのは ISDB-T のみです。ISDB-S と ISDB-S3 については、今のところ衛星 IF の受信専用キャプチャ（`isdb capture`）と録音の解析（`isdb iq survey`）だけがあり、復調器はまだありません。
 
 > [!WARNING]
 > **法令および電波安全に関する注意**
@@ -24,7 +24,8 @@
 - **多重化器**（`isdbt-mux`）：TOML によるサービス記述（ネットワーク、サービス、イベント、SI テーブル、実験用の上書き設定）と MPEG-2 映像および AAC ADTS ファイルから、OFDM フレームに合わせて送出される固定レートの多重を生成します。H.222.0 の T-STD バッファモデルを備えます。**TS 中継**：スクランブルされていない録画 TS（たとえば自分で作成したもの）の 1 番組を、独自の PSI/SI を持つ地上デジタル放送のサービスとして再送信します。ストリームの役割と PID は録画から検出され、元のコピー制御と限定受信の信号は既定で保持されます。**データ放送とハイブリッドキャスト**：ディレクトリ内のファイルを BML データカルーセル（DSM-CC の DII／DDB、ARIB STD-B24 第 2・3 編）として PMT／EIT の信号とともに送出し、ハイブリッドキャスト受信機が起動する HTML5 アプリケーションの URL を示す AIT（B24 第 4 編、IPTVFJ STD-0010／0013）を、生成したランチャーとともにカルーセル内で、または独立した PID で伝送します。
 - **解析器**（`isdb-analyze`）：内容の表示（inspect）、検証（validate。各指摘には根拠となる条項を明記）、2 つのキャプチャのテーブル／フィールド単位の差分、および TS の正当性を保ったままの編集（PID のヌル化、セクションの削除・置換・挿入、型付きのフィールド変更）。
 - **ISDB-T 物理層**（`isdbt-core`、`isdbt-fec`、`isdbt-ofdm`、`isdbt-phy`、ARIB STD-B31）：モード 1〜3、すべてのガードインターバル、部分受信を含む最大 3 階層の階層伝送、DQPSK／QPSK／16QAM／64QAM、すべての符号化率と時間インターリーブ長、TMCC と AC。受信側は同期、CFO（キャリア周波数オフセット）とタイミングドリフトの補正、伝送路推定、TMCC 復号、軟判定ビタビ復号と RS 復号を行い、13 セグメントの TS を再生します。
-- **入出力**（`isdb-radio`、`isdb-hackrf`、`isdb-iio`、`isdb-cli`）：IQ ファイル（GNU Radio 向けの cf32、`hackrf_transfer` 向けの cs8）と、デバイス非依存の IQ シンク／ソーストレイトを介した無線機とのストリーミング（デバイスごとに 1 つのバックエンド。HackRF One は `--radio hackrf`、ADALM-Pluto とその互換機（USB または Ethernet 接続の PlutoSky R2 など）は `--radio pluto`）。`tx`、`rx`、`loopback`、`mux`、`ts`、`completions` の各コマンドを持つ単一の `isdb` バイナリ。
+- **入出力**（`isdb-radio`、`isdb-hackrf`、`isdb-iio`、`isdb-cli`）：IQ ファイル（GNU Radio 向けの cf32、`hackrf_transfer` 向けの cs8）と、デバイス非依存の IQ シンク／ソーストレイトを介した無線機とのストリーミング（デバイスごとに 1 つのバックエンド。HackRF One は `--radio hackrf`、ADALM-Pluto とその互換機（USB または Ethernet 接続の PlutoSky R2 など）は `--radio pluto`）。`tx`、`rx`、`loopback`、`mux`、`ts`、`capture`、`iq`、`completions` の各コマンドを持つ単一の `isdb` バイナリ。
+- **衛星 IF の録音**（`isdb-iq`、`isdb capture`、`isdb iq survey`）：無線機が対応する任意のサンプルレートでの受信専用・連続キャプチャ（Pluto では libiio 経由で最大 1650 万サンプル、Tezuka の maia-sdr レコーダーで 3355 万サンプル）と SigMF メタデータ、BS／110 度 CS のチャンネル名による IF 周波数指定、録音からシンボルレート・搬送波オフセット・方式（ISDB-S、ISDB-S3）を求める解析。
 
 ## クレート
 
@@ -42,6 +43,7 @@
 | [`isdb-radio`](crates/isdb-radio/README.md) | — | デバイス非依存の SDR 層：IQ シンク／ソーストレイト、`--radio` によるデバイス選択、バックエンドのレジストリ（HackRF は `hackrf`、ADALM-Pluto は `pluto` フィーチャで有効化）、整数サンプルの量子化器 |
 | [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | システムの libhackrf に対する最小限の安全なラッパー（FFI）。`isdb-radio` の HackRF バックエンドが使用 |
 | [`isdb-iio`](crates/isdb-iio/README.md) | — | システムの libiio 0.x に対する最小限の安全なラッパー（FFI）。`isdb-radio` の Pluto バックエンドが使用 |
+| [`isdb-iq`](crates/isdb-iq/README.md) | —（ISDB-S／ISDB-S3 のシンボルレートを引用） | 方式に依存しない IQ 録音：サンプル形式、SigMF メタデータ、単一キャリア信号の解析（シンボルレート、搬送波オフセット、帯域、方式） |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | `isdb` バイナリ |
 
 各クレートの関係、フレーム／レイテンシの約束事、データの流れについては [docs/architecture.md](docs/architecture.md) を参照してください。
@@ -176,7 +178,7 @@ isdb ts diff test.ts rx.ts                 # every section identical
 - AC の内容とパリティを実放送で確認し、アンテナからの受信を試し、より多くの構成と受信機で試験する。
 - 確認できたものから、運用上の選択を TR-B14 の値に置き換える。
 - ISO/IEC 13818-7 そのものから書けるようになり次第、AAC の raw_data_block の解析（crc_check の検証）を実装する。H.264 ワンセグのパケット化。
-- TS／SI のクレートを再利用した ISDB-S（ARIB STD-B20）および ISDB-S3（ARIB STD-B44）の送信 — 未着手。
+- TS／SI のクレートを再利用した ISDB-S（ITU-R BO.1408／平成 23 年総務省令第 87 号；ARIB STD-B20）および ISDB-S3（ARIB STD-B44）の受信、その後に送信 — 衛星 IF のキャプチャと解析は完了、復調は未着手。
 
 ## 開発
 
