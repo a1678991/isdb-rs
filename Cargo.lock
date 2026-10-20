@@ -332,6 +332,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "isdb-iq"
+version = "0.1.0"
+dependencies = [
+ "num-complex",
+ "rustfft",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "isdb-radio"
 version = "0.1.0"
 dependencies = [

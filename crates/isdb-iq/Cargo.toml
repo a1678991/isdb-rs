@@ -1,0 +1,24 @@
+[package]
+name = "isdb-iq"
+description = "System-independent IQ recordings for the isdb-rs receivers: sample formats, SigMF metadata and a single-carrier signal survey"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-iq"
+readme = "README.md"
+keywords = ["iq", "sigmf", "sdr", "isdb", "cyclostationary"]
+categories = ["science", "multimedia::encoding"]
+# Ship sources and docs only.
+include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+num-complex.workspace = true
+rustfft.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -25,6 +25,7 @@ proptest = "1"
 isdbt-phy = { version = "0.1.0", path = "crates/isdbt-phy" }
 isdb-hackrf = { version = "0.1.0", path = "crates/isdb-hackrf" }
 isdb-iio = { version = "0.1.0", path = "crates/isdb-iio" }
+isdb-iq = { version = "0.1.0", path = "crates/isdb-iq" }
 # Members choose the backends (`hackrf`, `pluto`) through their own features.
 isdb-radio = { version = "0.1.0", path = "crates/isdb-radio", default-features = false }
 clap = { version = "4.6", features = ["derive"] }
