@@ -350,6 +350,7 @@ dependencies = [
  "isdb-iio",
  "isdbt-ofdm",
  "isdbt-phy",
+ "serde_json",
 ]
 
 [[package]]

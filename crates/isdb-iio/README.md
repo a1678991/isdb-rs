@@ -1,7 +1,7 @@
 # isdb-iio
 
 Minimal safe wrapper over the system `libiio` (FFI, 0.x API) for attribute
-access and continuous TX and RX streaming of 16-bit I/Q with an AD936x
+access, continuous TX and RX streaming and one-shot RX captures of 16-bit I/Q with an AD936x
 radio such as the ADALM-Pluto or a PlutoSky R2: connect to an IIO context
 (USB, Ethernet or local), read and write device and channel attributes,
 start a stream and exchange interleaved `i16` buffers over bounded
@@ -65,6 +65,7 @@ No broadcast specification. The surface is the libiio 0.x C API
 | `Channel` | `read`/`write` (text), `read_i64`/`write_i64`, `read_f64`/`write_f64` |
 | `Context::start_tx(device, channels, samples, kernel_buffers, depth) -> TxStream` | `sender: SyncSender<Vec<i16>>` (drop it to end the stream) + `counters` |
 | `Context::start_rx(device, channels, samples, kernel_buffers, depth) -> RxStream` | `receiver: Receiver<Vec<i16>>` + `counters` |
+| `Context::capture(device, channels, samples, kernel_buffers) -> Vec<i16>` | one buffer, refilled once: `samples` contiguous samples (one DMA transfer), without a stream thread |
 | `Context::stop`, `is_streaming` | stop every stream (returns the first error a stream thread ended with) |
 | `Counters` | atomics: `buffers`, `underruns` (TX), `overruns` (RX), `finished` |
 | `library_version()` | information |
@@ -114,6 +115,14 @@ any RF activity: `cargo run -p isdb-iio --example info -- ip:192.168.2.1`.
   thread uses only its own buffer while the owner may keep changing
   attributes: libiio's backends serve buffers apart from attribute
   requests, the same concurrency SoapyPlutoSDR and pyadi-iio rely on.
+- **One-shot capture.** `capture` creates a buffer of the requested size,
+  refills it once and destroys it, so the samples are one DMA transfer and
+  contiguous whatever the link speed. Its size is bounded by the memory
+  the device can allocate for one buffer: on a PlutoSky R2 with Tezuka
+  v0.3.24, 16 515 072 samples (63 MiB of 2 × 16-bit) worked and
+  16 531 456 failed with `ENOMEM` in iiod, with 1 and with 4 kernel
+  blocks alike (measured 2026-10-20). `isdb-radio`'s `pluto` backend uses
+  it for `isdb capture`.
 - **unsafe.** Like `isdb-hackrf`, this FFI crate lifts the workspace's
   `unsafe_code` denial with `#![allow(unsafe_code)]` in `src/lib.rs`; all
   of it is FFI calls and the buffer slice between `iio_buffer_start` and
@@ -129,7 +138,10 @@ iiod 0.25 and 0.26) over Gigabit Ethernet at 512/63 MHz through the
 bit-exact at the AD9361 (its digital TX→RX loopback, compared with the
 modulator's IQ file), TX keeps real time without underruns, and RX streams
 without gaps and is demodulated by `isdb rx`, including a broadcast
-received through a cable feed (VERIFICATION.md "Broadcast reception"). `cargo test -p isdb-iio
+received through a cable feed (VERIFICATION.md "Broadcast reception").
+`capture` took single buffers of up to 16 515 072 samples at 57.72 and
+61.44 Msps whose symbol-rate line stays continuous across the whole
+buffer (VERIFICATION.md "Satellite IF survey"). `cargo test -p isdb-iio
 --doc` compiles (but does not run) the example above, which needs libiio
 at link time.
 

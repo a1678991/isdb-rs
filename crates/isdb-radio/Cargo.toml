@@ -1,6 +1,6 @@
 [package]
 name = "isdb-radio"
-description = "Device-neutral SDR layer for ISDB-T streaming: IQ sink/source traits, device selection, a backend registry (HackRF, ADALM-Pluto), a shared transmit queue and sample quantisation"
+description = "Device-neutral SDR layer for ISDB-T streaming and raw IQ captures: IQ sink/source traits, device selection, a backend registry (HackRF, ADALM-Pluto), a shared transmit queue and sample quantisation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,6 +19,7 @@ isdbt-ofdm.workspace = true
 isdbt-phy.workspace = true
 isdb-hackrf = { workspace = true, optional = true }
 isdb-iio = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 anyhow.workspace = true
 
 [features]
@@ -29,7 +30,7 @@ hackrf = ["dep:isdb-hackrf"]
 # ADALM-Pluto family backend (`--radio pluto`, AD936x over libiio: USB or
 # Ethernet): links the system libiio 0.x through isdb-iio. Without hackrf and
 # pluto no backend links a system library.
-pluto = ["dep:isdb-iio"]
+pluto = ["dep:isdb-iio", "dep:serde_json"]
 # In-memory sink and radio (`isdb_radio::mock`) for tests of code driving
 # an IqSink.
 mock = []

@@ -1,4 +1,4 @@
-//! Device-neutral SDR layer for ISDB-T streaming.
+//! Device-neutral SDR layer: ISDB-T streaming and raw captures.
 //!
 //! The signal crates (`isdbt-phy` and below) produce and consume complex
 //! `f32` baseband ([`C32`]) at 512/63 MHz and know nothing about radios.
@@ -16,7 +16,11 @@
 //! * [`Backend`]: one kind of radio. It validates a configuration without
 //!   touching hardware ([`Backend::describe_tx`] / [`Backend::describe_rx`],
 //!   which is what a dry run prints) and opens the device
-//!   ([`Backend::open_tx`] / [`Backend::open_rx`]).
+//!   ([`Backend::open_tx`] / [`Backend::open_rx`]). A backend can
+//!   also take one contiguous [`Capture`] of raw samples
+//!   ([`Backend::capture`], up to [`Backend::capture_limit`]), at any
+//!   rate the device supports: the way to record signals of other systems
+//!   (ISDB-S, ISDB-S3) faster than the host link can stream.
 //! * [`backends`] / [`backend`]: the backends compiled into this build.
 //! * [`Quantizer`]: scaling of the unit-RMS OFDM signal into integer
 //!   samples (e.g. [`Cs8`]) with a backoff below full scale and a count of
@@ -250,6 +254,35 @@ impl RxOptions {
     }
 }
 
+/// Samples captured in one piece by [`Backend::capture`], as the device
+/// delivered them, with the settings read back from it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Capture {
+    /// Interleaved I, Q components, contiguous in time.
+    pub iq: Vec<i16>,
+    /// The component value of 1.0: 2048 for 12-bit samples sign-extended
+    /// in `i16` (Pluto through libiio), 32768 for samples left-aligned in
+    /// 16 bits (Tezuka's maia-sdr recorder).
+    pub full_scale: f32,
+    /// Sample rate the device ran at, Hz (read back).
+    pub sample_rate_hz: f64,
+    /// LO frequency read back, Hz.
+    pub lo_hz: u64,
+    /// Analog bandwidth read back, Hz, if the device reports it.
+    pub rf_bandwidth_hz: Option<u64>,
+    /// Gain mode and value as the device reported them after the capture,
+    /// e.g. `AGC slow_attack, 33 dB at the end` or `manual 30 dB`.
+    pub gain: String,
+    /// One line identifying the device (model, firmware, serial).
+    pub device: String,
+    /// How the samples were taken, e.g. `libiio single buffer`.
+    pub method: String,
+    /// Host time (seconds since the Unix epoch) when the capture was
+    /// requested; the first sample follows within the device's set-up
+    /// time.
+    pub time: f64,
+}
+
 /// One kind of radio.
 ///
 /// Gains not given in [`RadioConfig::gains`] take the backend's defaults;
@@ -272,6 +305,27 @@ pub trait Backend: Sync {
     /// queueing up to [`RxOptions::queue_seconds`] of signal before
     /// dropping. Returns the source and a one-line device description.
     fn open_rx(&self, cfg: &RadioConfig, opts: &RxOptions) -> Result<(Box<dyn IqSource>, String)>;
+    /// As [`Backend::describe_rx`], for [`Backend::capture`] (whose
+    /// device arguments may differ from streaming ones).
+    fn describe_capture(&self, cfg: &RadioConfig) -> Result<String> {
+        self.describe_rx(cfg)
+    }
+    /// The largest number of samples [`Backend::capture`] takes in one
+    /// contiguous piece with `cfg`, with a line saying where the limit
+    /// comes from; a backend that captures validates `cfg` as
+    /// [`Backend::describe_capture`] does. `None` (the default): the
+    /// backend cannot capture.
+    fn capture_limit(&self, cfg: &RadioConfig) -> Result<Option<(usize, String)>> {
+        let _ = cfg;
+        Ok(None)
+    }
+    /// Receive `samples` contiguous samples in one piece (no streaming
+    /// queue, so nothing can overrun), then release the device. Refuses
+    /// more than [`Backend::capture_limit`].
+    fn capture(&self, cfg: &RadioConfig, samples: usize) -> Result<Capture> {
+        let _ = (cfg, samples);
+        bail!("radio backend {:?} cannot capture", self.name())
+    }
 }
 
 impl std::fmt::Debug for dyn Backend {

@@ -499,6 +499,49 @@ impl Context {
         Ok(RxStream { receiver, counters })
     }
 
+    /// Capture one buffer of `samples` samples from `channels` (inputs) of
+    /// `device`: create the buffer over `kernel_buffers` kernel blocks,
+    /// refill it once and return its interleaved components (one `i16`
+    /// per enabled channel per sample, in channel order).
+    ///
+    /// The samples of one refill are one DMA block, so they are contiguous
+    /// in time; two calls are not. How large a buffer the device can
+    /// allocate depends on its free contiguous (CMA) memory, which every
+    /// kernel block takes in full: one block allows the largest capture.
+    /// Fails with `ENOMEM` from `iio_device_create_buffer` when it does not
+    /// fit. Must not be called while a stream of the same device runs.
+    pub fn capture(
+        &self,
+        device: &str,
+        channels: &[&str],
+        samples: usize,
+        kernel_buffers: u32,
+    ) -> Result<Vec<i16>> {
+        let (buf, enabled) = self.open_stream(device, channels, false, samples, kernel_buffers)?;
+        // SAFETY: the buffer is live and used by this thread only.
+        let rc = unsafe { ffi::iio_buffer_refill(buf.0.as_ptr()) };
+        let r = check(
+            "iio_buffer_refill",
+            || format!("{device} in {}", self.uri),
+            rc,
+        )
+        .map(|_| {
+            // SAFETY: the only slice of the buffer, dropped before it is
+            // destroyed below.
+            unsafe { buf.components() }
+                .iter()
+                .map(|&x| i16::from_le(x))
+                .collect()
+        });
+        // SAFETY: nothing else uses the buffer; destroyed once.
+        unsafe { ffi::iio_buffer_destroy(buf.0.as_ptr()) };
+        for c in &enabled {
+            // SAFETY: valid channel of the live context.
+            unsafe { ffi::iio_channel_disable(c.as_ptr()) };
+        }
+        r
+    }
+
     fn add_stream(
         &mut self,
         buf: BufPtr,
