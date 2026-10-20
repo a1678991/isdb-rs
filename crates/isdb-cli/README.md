@@ -367,6 +367,44 @@ of the ppm deviation is ambiguous), the z², z⁴, z⁸ carrier lines (and the
 strongest one. `--json` prints one object per file. The analysis is
 `isdb_iq::survey`.
 
+### `isdb symbols` — radio → satellite symbols (receive only)
+
+```sh
+isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq bs1 --probe
+isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq bs1 --seconds 10 -o bs1.syms
+```
+
+The single-carrier front end of `isdb-frontend` (matched filter, timing
+recovery, AGC; IQ to 5- or 6-bit symbols) on an ISDB-S or ISDB-S3
+transponder. The command:
+
+1. reads whether the radio's FPGA has the front end (`--probe` stops
+   here: one register read, nothing written);
+2. takes a short IQ capture for the system and carrier offset (`--system
+   auto|isdb-s|isdb-s3`);
+3. designs the parameters (`--taps`, `--bits`; defaults from
+   `Design::for_system`);
+4. with `--offload auto` (default) or `fpga`, streams the FPGA's
+   `Symbols` words, continuous for as long as `--seconds`. Otherwise
+   (`cpu`, or auto without an FPGA front end) it runs the same front end
+   on the CPU over one contiguous IQ capture (as long as the radio takes
+   in one piece).
+
+Defaults: 40 Msps (≥ (1 + roll-off) × the symbol rate of both systems)
+and 56 MHz analog bandwidth (`isdb capture`'s default 0.8 × the rate
+costs the satellite signals 2 dB of MER). Output: the words in `OUT`
+(`isdb_frontend::format`) and `OUT.json` with the system, rates, carrier
+offset and parameters, and whether the FPGA or the CPU computed them.
+
+### `isdb iq symbols` — the CPU front end on a recording
+
+`isdb iq symbols REC -o OUT` runs the same front end on a recording's
+first segment (`--samples`, `--system`, `--taps`, `--bits`). It prints
+the symbol rate the timing loop locked to, the ring MER, and for ISDB-S
+the 8PSK decision-directed MER. `isdb iq symbols --read OUT` parses a
+words file (from either command, or captured from the FPGA): blocks,
+losses with the missing blocks, and the ring MER of the output.
+
 ### `isdb completions` — shell completions
 
 `isdb completions SHELL` prints a completion script to stdout for `bash`

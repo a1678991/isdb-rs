@@ -200,7 +200,8 @@ impl Write for Progress<'_> {
     }
 }
 
-fn create(path: &Path, overwrite: bool) -> Result<std::fs::File> {
+/// Create `path`, refusing to replace a file unless `overwrite`.
+pub(crate) fn create(path: &Path, overwrite: bool) -> Result<std::fs::File> {
     let mut o = std::fs::OpenOptions::new();
     o.write(true);
     if overwrite {

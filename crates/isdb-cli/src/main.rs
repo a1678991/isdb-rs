@@ -39,6 +39,7 @@ mod rx;
 mod sink;
 mod source;
 mod stop;
+mod symbols;
 #[allow(missing_docs)]
 mod ts;
 mod tx;
@@ -66,8 +67,12 @@ enum Command {
     /// Capture raw IQ (receive only): one contiguous block per segment at
     /// any rate the radio supports, with SigMF metadata.
     Capture(capture::CaptureArgs),
-    /// IQ recording tools (survey).
+    /// IQ recording tools (survey, CPU symbol front end).
     Iq(iq::IqArgs),
+    /// Symbols of a single-carrier satellite signal (ISDB-S, ISDB-S3),
+    /// receive only: from the radio's FPGA front end when it has one, else
+    /// from the CPU front end on one contiguous IQ capture.
+    Symbols(symbols::SymbolsArgs),
     /// Shell completions: print the completion script for SHELL to stdout.
     ///
     /// The script is generated from this binary's own command line, so
@@ -102,6 +107,10 @@ fn main() -> anyhow::Result<()> {
             capture::run(&a)
         }
         Command::Iq(a) => iq::run(&a),
+        Command::Symbols(a) => {
+            stop::install()?;
+            symbols::run(&a)
+        }
         Command::Completions { shell } => {
             let mut script = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "isdb", &mut script);

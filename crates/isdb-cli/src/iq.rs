@@ -21,6 +21,9 @@ enum IqCmd {
     /// Spectrum, symbol-rate line and carrier lines of a single-carrier
     /// signal, and the system (ISDB-S, ISDB-S3) whose symbol rate matches.
     Survey(SurveyArgs),
+    /// Symbols of a single-carrier recording through the CPU front end
+    /// (the same words as the FPGA front end), or `--read` a words file.
+    Symbols(crate::symbols::IqSymbolsArgs),
 }
 
 /// `isdb iq survey` arguments.
@@ -58,6 +61,7 @@ pub fn run(a: &IqArgs) -> Result<()> {
             }
             Ok(())
         }
+        IqCmd::Symbols(s) => crate::symbols::run_iq(s),
     }
 }
 

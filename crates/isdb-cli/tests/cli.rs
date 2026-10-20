@@ -789,6 +789,46 @@ fn iq_survey_finds_rate_carrier_and_system() {
     assert!(t.contains("system         ISDB-S\n"), "{t}");
 }
 
+#[test]
+fn iq_symbols_writes_words_that_read_back() {
+    let dir = tmp("iq-symbols");
+    let f = dir.join("qpsk.sigmf-data");
+    std::fs::write(
+        &f,
+        synthetic_qpsk_cs16(40e6, 40e6 / 28.86e6, -115e3, 1 << 20),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("qpsk.sigmf-meta"),
+        r#"{"global":{"core:datatype":"ci16_le","core:sample_rate":40000000,"isdb:full_scale":2048},
+            "captures":[{"core:sample_start":0,"core:frequency":1049480000}]}"#,
+    )
+    .unwrap();
+    let out = dir.join("q.syms");
+    let o = run(&["iq", "symbols", "--system", "isdb-s", s(&f), "-o", s(&out)]);
+    let t = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        o.status.success(),
+        "{t}{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(t.contains("whole blocks; symbol rate"), "{t}");
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("q.syms.json")).unwrap()).unwrap();
+    assert_eq!(meta["source"], "cpu");
+    assert_eq!(meta["system"], "ISDB-S");
+    assert_eq!(meta["params"]["bits"], 6);
+    assert_eq!(meta["params"]["taps"], 32);
+    let o = run(&["iq", "symbols", "--read", s(&out)]);
+    let t = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{t}");
+    assert!(t.contains("blocks of 4096 symbols"), "{t}");
+    assert!(t.contains("0 loss event(s)"), "{t}");
+    // Not overwritten without --overwrite.
+    let o = run(&["iq", "symbols", "--system", "isdb-s", s(&f), "-o", s(&out)]);
+    assert!(!o.status.success());
+}
+
 /// The opt-in radio tests may name the same device: one at a time.
 #[cfg(feature = "pluto")]
 static RADIO: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -857,6 +897,52 @@ fn capture_from_a_pluto() {
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("--overwrite replaces it"));
     assert_eq!(std::fs::metadata(&out).unwrap().len(), 2 * 4 * 262_144);
+}
+
+/// Opt-in hardware test (receive only): `ISDB_RS_PLUTO_URI` names a
+/// PlutoSDR-family radio. `isdb symbols --probe` reads whether its
+/// bitstream has the FPGA symbol front end (one register read, nothing
+/// written); without one, `--offload fpga` must refuse.
+#[cfg(feature = "pluto")]
+#[test]
+fn symbols_probe_on_a_pluto() {
+    let Some(uri) = std::env::var_os("ISDB_RS_PLUTO_URI") else {
+        eprintln!("SKIP symbols_probe_on_a_pluto: ISDB_RS_PLUTO_URI not set (e.g. ip:192.0.2.30)");
+        return;
+    };
+    let _radio = RADIO
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let freq = std::env::var("ISDB_RS_PLUTO_CAPTURE_FREQ").unwrap_or_else(|_| "bs1".into());
+    let radio = format!("pluto:uri={}", uri.to_string_lossy());
+    let o = run(&["symbols", "--radio", &radio, "--freq", &freq, "--probe"]);
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{e}");
+    eprintln!("{e}");
+    if e.contains("offers no symbol front end") {
+        let dir = tmp("symbols-pluto");
+        let out = dir.join("s.syms");
+        let o = run(&[
+            "symbols",
+            "--radio",
+            &radio,
+            "--freq",
+            &freq,
+            "--offload",
+            "fpga",
+            "-o",
+            s(&out),
+        ]);
+        assert!(!o.status.success());
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains("no compatible symbol front end"),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(!out.exists());
+    } else {
+        assert!(e.contains("offers the symbol front end"), "{e}");
+    }
 }
 
 /// Opt-in hardware test (receive only) of what needs the Tezuka firmware:

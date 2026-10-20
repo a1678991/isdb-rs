@@ -28,6 +28,7 @@ isdbt-ofdm.workspace = true
 isdbt-phy.workspace = true
 isdb-radio.workspace = true
 isdb-iq.workspace = true
+isdb-frontend.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 anyhow.workspace = true
