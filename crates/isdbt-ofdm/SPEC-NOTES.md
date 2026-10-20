@@ -222,10 +222,11 @@ still needs a real-world capture or receiver check.
   frame after its acquisition, for 8 parameter sets; in the 6
   partial-reception sets the two sides' information words differ
   (gr-isdbt's B67, VERIFICATION.md D3) and both parities still check, so
-  the two encoders agree on the code.  Confirmed against a broadcaster:
-  every TMCC frame of TV Osaka (ch18, via a cable feed) passes the parity
-  check (VERIFICATION.md "Broadcast reception").  Whether consumer
-  receivers check the parity is unknown.
+  the two encoders agree on the code.  Confirmed against broadcasters:
+  every TMCC frame of seven stations (via a cable feed) passes the parity
+  check as received, and one station's word equals the Rust encoder's
+  (`tests/broadcast.rs`, VERIFICATION.md "Broadcast reception").  Whether
+  consumer receivers check the parity is unknown.
 
 ## ac: content, order and seismic word
 - No information: "information 1 is inserted as stuffing bits" (§3.13.4) →

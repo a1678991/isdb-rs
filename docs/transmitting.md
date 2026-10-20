@@ -101,9 +101,22 @@ Device arguments, gains and ranges are listed in the
   SD card (it three-states the pump without a reference and locks when one
   is connected), or connect a 10 MHz reference. With Tezuka v0.3.24 and no
   reference the unit tested was 0.6 ppm off and decoded broadcast
-  channels; one boot in two failed the AD9361 data-interface calibration
-  ("Tuning TX FAILED!" in `dmesg`, no `cf-ad9361-lpc` device), which a
-  reboot cleared.
+  channels. Two boots in three failed the AD9361 data-interface
+  calibration ("Tuning TX FAILED!" in `dmesg`, no `cf-ad9361-lpc`
+  device, so `--radio pluto` fails with "RX1 streaming"). Rebinding the
+  drivers repeats the calibration without a reboot (on the Pluto, as
+  root):
+
+  ```sh
+  D=/sys/bus/platform/drivers
+  echo 79024000.cf-ad9361-dds-core-lpc > $D/cf_axi_dds/unbind
+  echo spi0.0 > /sys/bus/spi/drivers/ad9361/unbind
+  echo spi0.0 > /sys/bus/spi/drivers/ad9361/bind   # re-probes the TX core too
+  echo 79020000.cf-ad9361-lpc > $D/cf_axi_adc/bind
+  /etc/init.d/S23udc restart                       # iiod picks up the RX device
+  ```
+
+  Repeat if `dmesg` shows the failure again.
 - **Self-test without radiating.** `--radio pluto:uri=…,loopback=on`
   powers the TX LO down and routes the TX samples digitally into the
   device's own RX path (the AD936x data-port loopback); `isdb rx --radio

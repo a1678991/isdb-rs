@@ -276,11 +276,12 @@ end, but some parts have had less independent checking than others:
   3, GI 1/8, partial reception, layer A 1 segment QPSK 2/3, layer B 12
   segments 64QAM 3/4 (time-interleave index 2), on two receivers. Other
   modes and layouts are verified by the oracle and loopback only.
-- **One broadcast decoded.** The receiver has decoded one real
-  broadcaster, through a cable feed (TV Osaka, both layers RS-clean,
-  every TMCC frame passing the parity check;
-  [VERIFICATION.md](VERIFICATION.md#broadcast-reception)). AC parity and
-  content and DQPSK have not been seen from a broadcaster.
+- **Broadcasts of one region decoded.** Through a cable feed, the TMCC of
+  seven stations passes the parity check in every frame, one station's
+  TMCC word equals ours bit for bit, and a station's both layers decode
+  RS-clean ([VERIFICATION.md](VERIFICATION.md#broadcast-reception)). No
+  station sends the seismic-warning AC word or uses DQPSK, so those
+  remain loopback-verified only.
 - **DQPSK, AC content, the emergency-alarm flag and parameter switching**
   are verified by self-consistent loopback only (gr-isdbt implements none
   of them).

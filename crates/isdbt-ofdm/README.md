@@ -129,6 +129,7 @@ assert!(frames.iter().all(|f| f.tmcc.parity.is_ok() && f.params == params));
 |---|---|
 | `tests/spec.rs` | spec vectors: every label of Figs. 3-15/3-17/3-19, Table 3-11 unit power, Table 3-10 DQPSK, Table 3-13 permutations + PDF spot checks, Fig. 3-28 (b) randomising direction, Figs. 3-26/3-27 composed, Table 3-1/3-2 carrier counts, Tables 3-14/3-15, Figs. 3-29/3-30 segment structure, Table 3-16 PRBS initial values regenerated across the band (+ Table 3-19), Table 3-21 sync alternation decoded from the TMCC carriers, Tables 3-22..3-31 field placement, §3.15.6.9 parity vectors, §3.16.6 seismic word / CRC / parity, §3.14.2 sample counts |
 | `tests/prop.rs` | proptest inverse pairs: map/demap, TMCC and seismic round trips with up to 8 bit errors, frequency, bit and time (de)interleaving identities, AC stream round trip, noiseless TX → RX loopback over random valid `Params`; `prop_bit_frame_alignment` asserts the Figs. 3-8/3-9 contract |
+| `tests/broadcast.rs` | TMCC words of two broadcasters (B20–B203 as received): codewords of the (184,102) code with our parity, decoded to the broadcast configuration, "no next information" as all 1 (B67 = 1), our transmitter's word equal to the second station's bit for bit, any 8 errors corrected |
 | `tests/loopback.rs` | Modulator → channel (CFO 2.3 carriers, echo, 30 dB SNR, sample offset) → Demodulator with zero bit errors: Mode 3 hierarchical, Mode 1 three layers (DQPSK + coherent) starting mid-frame, Mode 2 long interleave, all-DQPSK Mode 3 GI 1/32, AC seismic + serial AC + emergency flag, +40 ppm sampling-clock offset, parameter switch with re-acquisition, arbitrary chunking with noise lead-in, acquisition helpers, alignment option |
 | `tests/loopback.rs` (ignored) | `stress_long_echo_and_seeds` (6 seeds; −10 dB echo at half the GI; Mode 3 at 20 ppm; BER < 1e-4) and `perf_realtime_factor` (prints TX/RX real-time factors) |
 | `tests/papr.rs` | PAPR < 15 dB for the first 3 frames of a fresh modulator in 6 configurations with random coded bits (all-zero input, which bypasses energy dispersal, is only reported) |
@@ -151,10 +152,11 @@ outside the repository.
   differential group, DQPSK initial reference) is verified only by
   self-consistent loopback; gr-isdbt has no DQPSK, and the broadcast
   decoded so far uses coherent modulation.
-- **TMCC difference-set code bit order** agrees with gr-isdbt and with a
-  broadcaster (every TMCC frame of TV Osaka passes the parity check;
-  VERIFICATION.md "Broadcast reception"); the AC parity has not been
-  checked against a broadcaster.
+- **TMCC difference-set code bit order** agrees with gr-isdbt and with
+  seven broadcasters (every TMCC frame passes the parity check as
+  received; `tests/broadcast.rs`, VERIFICATION.md "Broadcast reception");
+  no broadcaster sent a seismic-warning AC word, so the AC parity shares
+  only the code and its bit order with TMCC.
 - **Not cross-checked against the oracle:** AC payload content, the
   emergency-alarm flag and parameter switching with a countdown (gr-isdbt
   has none), Mode 1 with I = 0 or 4, and behaviour under impairments
