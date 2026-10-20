@@ -92,11 +92,15 @@ demodulator.
   PlutoSky R2 over USB or Ethernet, `--radio pluto`); one `isdb` binary with `tx`, `rx`,
   `loopback`, `mux`, `ts`, `capture`, `iq` and `completions` commands.
 - **Satellite IF recordings** (`isdb-iq`, `isdb capture`, `isdb iq
-  survey`): receive-only contiguous captures at any rate the radio
-  supports (a Pluto takes up to 16.5 M samples through libiio, 33.5 M with
-  Tezuka's maia-sdr recorder) with SigMF metadata, BS / 110° CS channel
-  names at their IF, and a survey that finds the symbol rate, the carrier
-  offset and the system (ISDB-S, ISDB-S3) of a recording.
+  survey`): receive-only captures at any rate the radio supports, in one
+  contiguous piece (a Pluto takes up to 16.5 M 16-bit samples through
+  libiio; with Tezuka's maia-sdr recorder 33.5 M in 16 bits or 67 M in 8
+  bits, 1.7 s at 40 Msps) or streamed with every loss marked (over
+  Gigabit Ethernet without loss up to about 40 MB/s, e.g. 8-bit samples
+  at 20 Msps),
+  with SigMF metadata, BS / 110° CS channel names at their IF, and a
+  survey that finds the symbol rate, the carrier offset and the system
+  (ISDB-S, ISDB-S3) of a recording.
 
 ## Crates
 

@@ -24,7 +24,8 @@ gr-isdbt differential test.
 | `ISDB_RS_ISDBS_IQ` | a SigMF recording of an ISDB-S transponder (BS or 110° CS satellite IF; data file, `.sigmf-meta` or base name), e.g. from `isdb capture` | `isdb-iq` `tests/captures.rs` `isdb_s_recording` (survey: ISDB-S symbol rate within 20 ppm, symbol and carrier lines above 20 dB, the carrier offset confirmed by a second line, a continuous symbol clock across the first segment when fs is not near 2R) |
 | `ISDB_RS_ISDBS3_IQ` | a SigMF recording of an ISDB-S3 transponder | `isdb-iq` `tests/captures.rs` `isdb_s3_recording` (the same checks for ISDB-S3) |
 | `ISDB_RS_PLUTO_URI` | a PlutoSDR-family radio (libiio URI, e.g. `ip:192.0.2.30`); **receive only** | `isdb-cli` `capture_from_a_pluto` (two 256 Ki-sample `isdb capture` segments at 61.44 Msps: file size, SigMF fields, gap marker, no overwrite) |
-| `ISDB_RS_PLUTO_CAPTURE_FREQ` | frequency or channel for that test (default `bs1`, the BS-1 satellite IF) | the same test |
+| `ISDB_RS_TEZUKA_URI` | a PlutoSDR-family radio running the Tezuka firmware (libiio URI); **receive only** | `isdb-cli` `tezuka_captures` (an 8-bit libiio buffer, a 1 s 8-bit stream and maia-sdr recordings in 8 and 12 bits: SigMF datatype and full scale, capture method, file size) |
+| `ISDB_RS_PLUTO_CAPTURE_FREQ` | frequency or channel for those tests (default `bs1`, the BS-1 satellite IF) | the same tests |
 | `ISDB_RS_ORACLE_CONTAINER` | name of the running oracle container (default `isdb-oracle`) | `oracle/run_matrix.py` |
 | `ISDB_RS_ORACLE_OUT` | output directory of the oracle matrix, inside the repository (default `target/oracle-matrix`) | `oracle/run_matrix.py` |
 
@@ -41,6 +42,7 @@ ISDB_RS_RELAY_TS=/path/to/recording.ts cargo test --release -p isdb-cli --test c
 ISDB_RS_ISDBS_IQ=/path/to/nd2.sigmf-data ISDB_RS_ISDBS3_IQ=/path/to/bs7.sigmf-data \
     cargo test --release -p isdb-iq --test captures -- --nocapture
 ISDB_RS_PLUTO_URI=ip:192.0.2.30 cargo test --release -p isdb-cli --test cli capture_from_a_pluto -- --nocapture
+ISDB_RS_TEZUKA_URI=ip:192.0.2.30 cargo test --release -p isdb-cli --test cli tezuka_captures -- --nocapture
 ```
 
 Statistics quoted in the crate READMEs, SPECS.md and SPEC-NOTES (for
@@ -111,17 +113,25 @@ with `iio_readdev` or demodulate live with `isdb rx --radio pluto`.
 A BS / 110° CS dish feed (or a cable feed that carries the satellite IF)
 delivers the transponders at 1032–2071 MHz; mind that a satellite tuner
 port may put 11–15 V DC on the cable for the LNB (use a DC block or the
-feed's own IF output). The IF rates exceed what the network streams, so
-`isdb capture` takes one contiguous block per capture (282 ms through
-libiio, 581 ms with Tezuka's maia-sdr recorder at 57.72 Msps):
+feed's own IF output). The IF rates exceed what the network streams
+(ISDB-S needs at least 39 Msps, 78 MB/s in 8 bits; a Pluto streams at
+most about 63–66 MB/s, and without loss about 40 MB/s), so `isdb capture`
+takes one contiguous block per capture. Tezuka's maia-sdr recorder holds
+128 MiB: 0.58 s at 57.72 Msps in 16 bits, 1.68 s at 40 Msps in 8 bits
+(40 Msps is enough for ISDB-S, whose band ends at ±19.5 MHz: the spectrum
+matches the 57.72 Msps one within 0.5 dB out to ±16 MHz, and for
+ISDB-S3, ±17.4 MHz):
 
 ```sh
 D=data/$(date +%F); mkdir -p "$D"
-for n in 1 3 5 9 13 15 19 21 23; do   # ISDB-S at 2 samples per symbol
+for n in 1 3 5 9 13 15 19 21 23; do   # ISDB-S at 2 samples per symbol, 16 bits
   isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia --freq bs$n --rate 57.72M -o "$D/bs$n.sigmf-data"
 done
 for n in 7 11 17; do                   # ISDB-S3 (33.756 Mbaud) at the AD936x maximum
   isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia --freq bs$n --rate 61.44M -o "$D/bs$n.sigmf-data"
+done
+for n in 1 7; do                       # longer, 8 bits: 1.7 s
+  isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --freq bs$n --rate 40M -o "$D/bs$n-40-cs8.sigmf-data"
 done
 isdb iq survey "$D"/*.sigmf-data       # symbol rate, carrier offset, system of each
 ```
@@ -129,9 +139,14 @@ isdb iq survey "$D"/*.sigmf-data       # symbol rate, carrier offset, system of 
 Which BS channel carries which system depends on the year and the
 operators; `isdb iq survey` says what each recording contains (the
 channels above are those of the feed in VERIFICATION.md "Satellite IF
-survey"). Each recording takes 128 MiB (maia) or 63 MiB (libiio). Keep
-them outside the repository; the payloads of BS / CS services are
-scrambled, and nothing here descrambles them.
+survey"). A full maia recording takes 128 MiB on the board (downloaded
+as 128 MiB in 16 and 8 bits, 171 MiB in 12 bits, which arrive unpacked
+to 16 bits), a libiio one 63 MiB. Keep them outside the repository; the
+payloads of BS / CS services are scrambled, and nothing here descrambles
+them. Streams (`recorder=stream`) suit signals up to about 40 MB/s
+(20 Msps of 8-bit samples, or ISDB-T's 8.13 Msps in 16 bits); a stream
+that loses samples marks each loss as a SigMF segment boundary
+(`isdb:gap_before`).
 
 **Scrambling.** In Japan the elementary streams of full-segment services
 are scrambled; PSI/SI and the one-seg service are not. The SI-only tests

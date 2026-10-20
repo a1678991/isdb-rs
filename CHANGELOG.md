@@ -76,25 +76,35 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   formats (`cs8`, `cs16` with its full scale, `cf32`), SigMF 1.2 metadata
   with an optional `isdb` extension (full scale, LO and bandwidth read
   back, gain, channel, capture method, gap marker between capture
-  segments), `Recording` (opened by data, `.sigmf-meta` or base name), and
+  segments and the samples discarded around a loss), `Recording` (opened by data, `.sigmf-meta` or base name), and
   a single-carrier survey: power spectrum and band edges, the |z|²
   symbol-rate line (aliases above fs/2 included), z², z⁴, z⁸ and
   π/2-BPSK carrier lines, and the system (ISDB-S, ISDB-S3) whose symbol
   rate matches.
 - `isdb-iio`: `Context::capture`, one buffer refilled once (contiguous
-  samples without a stream thread).
+  samples without a stream thread, returned as the device's raw bytes);
+  `Context::start_rx_raw`, an RX stream of raw bytes for any channel
+  layout that waits for its consumer instead of dropping; register access
+  (`Device::reg_read` / `reg_write`).
 - `isdb-radio`: raw captures — `Backend::describe_capture`,
-  `capture_limit` and `capture` returning a `Capture` (raw `i16` I/Q, full
-  scale, rate / LO / bandwidth / gain read back, device identity, method,
-  host time); `hackrf` cannot capture. The `pluto` backend captures
-  through one libiio buffer (`recorder=iio`, up to 16 515 072 samples) or
-  Tezuka's maia-sdr recorder over HTTP (`recorder=maia`, up to
-  33 554 432 samples).
+  `capture_limit` and `capture`, which writes the samples to an
+  `io::Write` as they arrive and returns a `Capture` (`CaptureFormat`
+  cs8 or cs16 with its full scale, samples written, `CaptureGap`s, rate /
+  LO / bandwidth / gain read back, device identity, method, host time);
+  `hackrf` cannot capture. The `pluto` backend captures through one
+  libiio buffer (`recorder=iio`, up to 63 MiB), Tezuka's maia-sdr
+  recorder over HTTP (`recorder=maia`, its 128 MiB buffer, modes
+  `IQ16bit` / `IQ12bit` / `IQ8bit`) or a stream of libiio buffers
+  (`recorder=stream`) whose losses it finds from the ADC core's overflow
+  bit; `bits=8` selects 8-bit samples (Tezuka's packing through libiio).
 - `isdb-cli`: `isdb capture` (receive only: one contiguous block per
-  segment at any rate the radio supports, cs16 + SigMF metadata,
-  `--segments` with gap markers, `--dry-run`, `--survey`, no overwrite
-  without `--overwrite`) and `isdb iq survey` (text or `--json`). `--freq`
-  of `capture` takes channel names: `chN` (UHF), `bsN` and `ndN` (BS and
+  segment, or a stream, at any rate the radio supports; cs16 or cs8 +
+  SigMF metadata; `--samples` or `--seconds`, `--segments` and losses
+  inside a stream as SigMF segments with gap markers, `--discard` to test
+  a link without writing, progress every 5 s, Ctrl-C ends a stream and
+  keeps what it wrote, `--dry-run`, `--survey`, no overwrite without
+  `--overwrite`) and `isdb iq survey` (text or `--json`). `--freq` of
+  `capture` takes channel names: `chN` (UHF), `bsN` and `ndN` (BS and
   110° CS at their satellite IF).
 - `isdb-cli`: the `isdb` binary — `tx` (to an IQ file or a radio; radiates
   only with `--rf-enable`), `rx`, `loopback` (software channel with

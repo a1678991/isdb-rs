@@ -499,6 +499,122 @@ confirms it). The opt-in tests `isdb-iq` `tests/captures.rs`
 (`ISDB_RS_ISDBS_IQ`, `ISDB_RS_ISDBS3_IQ`) pass on ND2, ND22, ND24, BS-1
 (maia and libiio recordings) and BS-7, 11, 17.
 
+## 8-bit captures and streaming over Gigabit Ethernet
+
+Measured on 2026-10-20 with the same PlutoSky R2 (Tezuka v0.3.24, iiod
+0.26; host libiio 0.26) on the same feed, receive only. The question was
+how long a capture can be, and whether ISDB-S / ISDB-S3 can be streamed
+live, without new FPGA code.
+
+**Sample formats.** Tezuka's bitstream packs 8-bit samples when
+`voltage0` is the only `cf-ad9361-lpc` channel enabled (`{Q8, I8}` per
+16-bit word, maia-hdl `cs12_cs8mux.v`), and 12-bit samples with sync
+bursts when `voltage1` is; maia-sdr's recorder has `IQ16bit`, `IQ12bit`
+and `IQ8bit` modes. On BS-1 at 40 Msps, against 16-bit captures of the
+same signal:
+
+| Path | Datatype | Power | Carrier offset | DC mean (8-bit LSB) |
+|---|---|---|---|---|
+| libiio 16 bits (full scale 2048) | `ci16_le` | −11.0 dBFS | −103.56 kHz | +0.003 |
+| libiio 8 bits (Tezuka packing, full scale 128) | `ci8` | −11.0 dBFS | −103.55 kHz | +0.004 |
+| maia `IQ16bit` (full scale 32768, low 4 bits always 0) | `ci16_le` | −11.0 dBFS | −103.82 kHz | +0.005 |
+| maia `IQ12bit` (downloaded sign-extended, 2048) | `ci16_le` | −11.1 dBFS | −103.77 kHz | – |
+| maia `IQ8bit` (full scale 128) | `ci8` | −10.8 dBFS | −103.24 kHz | −0.465 |
+
+The same power gives the full scales; the same sign of the offset shows
+that I is the first byte; the means show that Tezuka's 8-bit packing
+rounds (with first-order error feedback, per its HDL) and maia-sdr's
+8-bit mode truncates.
+
+**maia-sdr recorder length.** Every mode stopped at exactly 128 MiB
+(33 554 432 / 44 739 242 / 67 108 864 samples in 16 / 12 / 8 bits),
+although the device tree reserves 256 MiB and
+`/sys/class/maia-sdr/maia-sdr-recording/device/recording_size` reads
+0x10000000: maia-hdl's `maia_iio_lite` configuration, which Tezuka
+builds, ends the recorder's DMA at 0x0E000000 ("size only 0x8000000").
+`maximum_duration` in maia-httpd's `/api` is the duration last
+requested, not a capacity. A longer one-shot capture therefore needs a
+bitstream built with a larger recorder range, not only a larger
+reservation. The longest contiguous recordings are now 1.68 s (8 bits at
+40 Msps); one libiio buffer holds 33 030 144 8-bit samples (63 MiB).
+
+**40 Msps is enough for both systems.** With the AD9361's own filters at
+40 Msps, the BS-1 spectrum matches the 57.72 Msps one within 0.5 dB out
+to ±16 MHz and within 2.5 dB at ±18–19 MHz, where it is already 16–22 dB
+down (analog bandwidth 38–56 MHz made no difference). `isdb iq survey`
+on full 8-bit maia recordings at 40 Msps: BS-1 ISDB-S 28.86002 Mbaud
+(line +45.7 dB), carrier −112.2 kHz from z⁸ (+42 dB), z⁴ and z²; BS-7
+ISDB-S3 33.75612 Mbaud (+24.7 dB), carrier −112.1 kHz from both
+π/2-BPSK z² lines (+28 dB). At 40 Msps the two ±R/2 search windows met
+across fs/2, so each saw both lines and the +R/2 one reported +3.0 MHz;
+the windows are now kept apart (`isdb-iq` `pi2_bpsk_carrier_line` at
+61.44 and 40 Msps). The opt-in `isdb-iq` capture tests pass on these
+recordings (BS-1: symbol clock continuous over 67 108 864 samples,
+largest deviation 0.109 rad against 4.53 rad for one lost sample; BS-7:
+0.619 rad against 5.30; the libiio 8-bit buffer: 0.073 rad).
+
+**Link throughput.** 40 Msps of 8-bit samples is 80 MB/s; the link does
+not carry it:
+
+| Path (PlutoSky → host, Gigabit Ethernet) | Rate |
+|---|---|
+| `iio_readdev` 0.26 over iiod | ≈ 38 MB/s at most, behind real time even at 8 MB/s offered |
+| `isdb-iio` `start_rx_raw` over iiod (1 Mi-sample buffers, 4 kernel blocks) | ≈ 63–66 MB/s at most |
+| on the board: `iio_readdev` (local, mmap) to `/dev/null` | real time at 80 MB/s, almost no CPU |
+| on the board: `iio_readdev` piped into `socat` TCP | real time at 32 and 40 MB/s |
+| on the board: `dd if=/dev/zero` piped into `socat` / busybox `nc` TCP | 45.6 / 29.7 MB/s, one CPU at 100 % system time |
+
+The Zynq-7000 GEM has no TSO and its `maxmtu` is 1518 (no jumbo frames),
+so the board's CPU and TCP stack, not the cable, set the ceiling; a
+direct cable instead of a switch does not raise it. Streamed captures
+(`isdb capture --radio pluto:…,recorder=stream,bits=8 --discard`) on
+BS-1 and BS-7:
+
+| Rate (8-bit samples) | MB/s | Duration | Losses reported | Samples discarded |
+|---|---|---|---|---|
+| 10 Msps | 20 | 20 s | 0 | 0 |
+| 15 / 18 / 20 / 22 Msps | 30 / 36 / 40 / 44 | 30 s each | 0 | 0 |
+| 20 Msps (BS-1) | 40 | 300 s | 0 | 0 |
+| 24 Msps (BS-1) | 48 | 300 s | 9 | 142 606 336 (2.0 %) |
+| 28 Msps (BS-1) | 56 | 300 s | 7 | 114 294 784 (1.4 %) |
+| 32 Msps (BS-7) | 64 | 300 s | 14 | 476 053 504 (5.0 %) |
+| 40 Msps (BS-1, BS-7) | 80 | 60 s | continuous after the first 2–4 Mi samples | all (≈ 65.5 MB/s arrived) |
+
+16-bit samples at 512/63 MHz (32.5 MB/s, the ISDB-T rate, ch27) streamed
+60 s without loss. Losses above 40 MB/s come at random (single 30 s runs
+at 28 and 32 Msps had none), so "loss-free" holds up to about 40 MB/s on
+this board with its default services running.
+
+**The loss detector.** The ADC core's overflow bit (`cf-ad9361-lpc`
+register 0x80000088, bit 2, write 1 to clear) is sticky and also set
+whenever no DMA transfer runs, so it is cleared once the stream is
+running and read after every buffer. It was checked against an exact
+reference: Tezuka's 12-bit mode replaces 8 samples every 262 144 with a
+20-byte magic and a 32-bit counter, so a counter step other than 1 is a
+loss. Streaming that mode through the same `isdb-iio` path (a scratch
+program, not in the repository):
+
+| 12-bit rate | MB/s offered / arrived | Counter jumps (losses) | Overflow flags | Jumps with no flag in the 15 buffers before | Largest flag-to-jump lag |
+|---|---|---|---|---|---|
+| 10 Msps, 20 s | 30 / 29.9 | 0 | 0 | 0 | – |
+| 20 Msps, 30 s | 60 / 59.8 | 2 | 2 | 0 | 5 buffers |
+| 22 Msps, 30 s | 66 / 62.7 | 38 | 239 | 0 | 12 buffers |
+| 25 Msps, 30 s | 75 / 62.5 | 370 | 823 | 0 | 5 buffers |
+
+Every loss was flagged before its data arrived, at most 12 buffers
+earlier (the queue between the DMA and the reader is 4 kernel blocks,
+iiod, the network and 8 host buffers); flags without a counter jump are
+losses that did not swallow a sync burst. So a streamed capture drops the
+buffer that finds the bit and the next 14, and what it writes after a
+reported loss is contiguous again (`isdb-radio` README).
+
+**Consequence.** Live ISDB-S / ISDB-S3 from this Pluto over Gigabit
+Ethernet does not fit as samples (≥ 78 / 70 MB/s in 8 bits against
+≈ 40 MB/s loss-free), nor as 8-bit symbols at one per symbol (58 / 68
+MB/s); it needs fewer bits leaving the board (soft bits narrower than
+8 bits, or decoded packets) or a network path that does not go through
+the CPU. Offline work uses one-shot recordings (1.68 s at 40 Msps).
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received
