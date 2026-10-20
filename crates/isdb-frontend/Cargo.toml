@@ -1,0 +1,27 @@
+[package]
+name = "isdb-frontend"
+description = "Single-carrier receive front end for ISDB-S and ISDB-S3 (IQ to symbols): a bit-exact fixed-point model of the FPGA stage, a floating-point reference and the Symbols boundary format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-frontend"
+readme = "README.md"
+keywords = ["isdb", "sdr", "fpga", "timing-recovery", "matched-filter"]
+categories = ["science", "multimedia::encoding"]
+# Ship sources and docs only.
+include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+isdb-iq.workspace = true
+num-complex.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

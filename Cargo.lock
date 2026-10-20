@@ -319,6 +319,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "isdb-frontend"
+version = "0.1.0"
+dependencies = [
+ "isdb-iq",
+ "num-complex",
+ "proptest",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "isdb-hackrf"
 version = "0.1.0"
 dependencies = [
