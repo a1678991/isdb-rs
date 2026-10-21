@@ -70,7 +70,9 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   refused. Opening the TX sets the maximum attenuation and switches the
   DDS off first; closing it restores the maximum attenuation and powers
   the TX LO down. The `Cs12` sample format (12-bit, left-aligned in
-  `i16`) is the DAC format of its `QueuedSink`.
+  `i16`) is the DAC format of its `QueuedSink`. A TV received its
+  `isdb tx` output from a PlutoSky R2's TX2 over a conducted link
+  (VERIFICATION.md "Real receivers").
 - `isdb-cli`: the `pluto` feature (default on) forwarding `isdb-radio/pluto`.
 - `isdb-iq`: IQ recordings independent of the broadcast system — sample
   formats (`cs8`, `cs16` with its full scale, `cf32`), SigMF 1.2 metadata

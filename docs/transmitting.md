@@ -84,7 +84,10 @@ Device arguments, gains and ranges are listed in the
   At `att=0` and full scale the AD9361 delivers several dBm (more on
   PlutoSky variants with the 10 dB PA), so start high (`--gain att=60`)
   with the attenuators of the bench above and lower it step by step. The
-  DAC has 12 bits: `--backoff-db 10` puts the RMS at 647 of 2047.
+  DAC has 12 bits: `--backoff-db 10` puts the RMS at 647 of 2047. On the
+  bench chain above, a TV received a PlutoSky R2's TX2 at `att=60` and
+  `att=80` but not at `att=85` (2026-10-21; [VERIFICATION.md](../VERIFICATION.md#real-receivers)),
+  so `att=60` already leaves about 20 dB of margin there.
 - **Clock.** The AD936x derives the LO and the sample clock from one
   40 MHz reference, so one `--freq-corr-ppm` corrects both (the
   firmware's own `xo_correction` only spans ±0.5 ppm). The integer-Hz

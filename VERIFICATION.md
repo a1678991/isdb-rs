@@ -316,7 +316,7 @@ python3 oracle/run_matrix.py            # or: python3 oracle/run_matrix.py m3g4p
 
 The Rust transmitter (`isdb tx --mux-config`, spec-conformant TMCC and
 modulated AC, multiplex from `isdbt-mux`) was received over a conducted link
-(HackRF One → coax → attenuators → receiver):
+(HackRF One or PlutoSky R2 → coax → attenuators → receiver):
 
 - **MyGica S270** (USB ISDB-T tuner): decoded with PER 0; `isdb ts validate`
   of its 12 s capture reported 0 errors (5 warnings).
@@ -344,6 +344,18 @@ modulated AC, multiplex from `isdbt-mux`) was received over a conducted link
   'AITControlledApp.Start')` check reports no support, and the page says
   "This receiver has no Hybridcast engine"; starting the application
   itself needs a Hybridcast-capable TV.
+
+- **A TV, from a PlutoSky R2 (2026-10-21)**: `isdb tx --mux-config
+  bench.toml` (with `channels = [44]`) `--radio
+  pluto:uri=ip:…,channel=2 --channel 44 --gain att=60 --rf-enable`,
+  Tezuka v0.3.24, TX2 into the same conducted chain as the HackRF
+  (fixed attenuators, DC block). The TV showed the test picture and
+  played its tone. It received at `att=60` and `att=80`, not at `att=85`.
+  Over Gigabit Ethernet the producer ran at 4.3× real time with 0
+  underruns in 8.1 s on air; 1.7·10⁻⁵ of the components clipped at the
+  default 10 dB backoff. The audio was the same non-conforming ADTS file
+  (MPEG-4 ID '0', no CRC, fullness 0x7FF, sent with `adts_compliance =
+  "warn"`), so this does not close the conforming-AAC item.
 
 Only one configuration was shown to these receivers: Mode 3, GI 1/8, partial
 reception, layer A 1 segment QPSK 2/3 TI 2, layer B 12 segments 64QAM 3/4
