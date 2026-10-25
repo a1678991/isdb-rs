@@ -11,8 +11,8 @@ All crates of the workspace share one version (`[workspace.package]`).
 Initial feature set, implemented from the published specifications
 (ITU-T H.222.0 | ISO/IEC 13818-1, ARIB STD-B10, STD-B24, STD-B31,
 STD-B32; editions in `SPECS.md`). ISDB-T is implemented end to end;
-ISDB-S (ITU-R BO.1408-1, MIC Ordinance No. 87 of 2011) as far as the
-TMCC.
+ISDB-S (ITU-R BO.1408-1, MIC Ordinance No. 87 of 2011) is received to
+transport streams.
 
 ### Added
 
@@ -24,8 +24,26 @@ TMCC.
   of a superframe (RS(64,48), energy dispersal), the burst bits.
 - `isdbs-phy` (new): ISDB-S reception after the symbol front end: frame
   sync on the frame's 808 known symbols with slip detection, burst-aided
-  forward-backward carrier loop, TMCC decoding, the derotated main signal
-  per frame (the boundary to the main-signal decoder).
+  forward-backward carrier loop, TMCC decoding, and the main signal to TS
+  packets (`demod`: BPSK / punctured QPSK / TC8PSK soft demapping with
+  set-partition metrics, one Viterbi decoder per frame from the W2/W3
+  state to the next W1; `ts`: de-interleaving, energy dispersal, sync-byte
+  restoration, RS(204,188), TS_ID per packet, superframes decoded in
+  parallel). Examples `mapprobe` and `throughput`.
+- `isdbs-core::mainsig`: the slots sent (dummy slots after the valid ones
+  of each unit), the superframe energy dispersal, the depth-8 inter-frame
+  interleaver of BO.1408-1 Fig. 6, a superframe's RS codewords and their
+  transmit-side inverse.
+- `isdb-fec`: `ViterbiDecoder::with_state` (known start state),
+  `push_known` (known trailing bits end the trellis) and `push_metrics`
+  (arbitrary branch metrics, for trellis-coded 8PSK).
+- `isdb-cli`: `isdb rx --system auto|isdbt|isdbs` receives ISDB-S from a
+  SigMF recording or a radio, one TS per TS_ID (`--out` with `{ts_id}`,
+  `--ts-id`), per-TS RS counters and JSON; from a radio it decodes one
+  contiguous capture after another (`--rate`, `--bw`, `--block-seconds`).
+  `tools/isdbs-ts-acceptance.sh` receives a capture directory and checks
+  each TS. 19 of the 21 lab transponders give RS-clean TS (311 520
+  packets, 0 uncorrectable, 0 continuity errors; VERIFICATION.md).
 - `isdb-cli`: `isdb iq tmcc REC [--summary|--json]` decodes the frames and
   the TMCC of an ISDB-S recording: combinations, slots and TS_IDs per
   superframe, slips, pilot and main MER. `tools/isdbs-tmcc-acceptance.sh`
@@ -356,6 +374,12 @@ TMCC.
 
 ### Fixed
 
+- `isdb-analyze`: scrambled packets (transport_scrambling_control ≠ 00)
+  were parsed as sections, PES and ADTS, giving hundreds of false CRC,
+  pointer and PES-start errors on scrambled services; their payloads are
+  now left alone (an all-scrambled elementary stream is an Info finding).
+  Mandatory tables, CAT and PMTs missing from a capture shorter than
+  their repetition interval are Info instead of Error.
 - `ts-program` relay: the rate check and `--auto-layout` use the rate the
   whole recording needs (`relay_rate`: the smallest constant rate that
   delivers every relayed packet by its PES's decoding time, read once over

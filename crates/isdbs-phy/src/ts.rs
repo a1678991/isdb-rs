@@ -82,15 +82,42 @@ pub fn decode_superframe(
 }
 
 /// Decode every superframe of `r`, in order, carrying the last good TMCC
-/// over superframes whose own TMCC failed.
+/// over superframes whose own TMCC failed. Superframes decode
+/// independently (each frame's decoder starts from its own W2/W3 state),
+/// so they are spread over the available cores.
 pub fn decode_all(r: &Reception, o: &DemodOptions) -> Vec<DecodedSuperframe> {
-    let mut last: Option<TmccInfo> = None;
-    let mut out = Vec::new();
-    for sf in &r.superframes {
-        if let Some(d) = decode_superframe(r, sf, last.as_ref(), o) {
-            last = Some(d.info.clone());
-            out.push(d);
+    // The TMCC each superframe decodes under, chosen in order first.
+    let mut last: Option<&TmccInfo> = None;
+    let jobs: Vec<(&Superframe, Option<&TmccInfo>)> = r
+        .superframes
+        .iter()
+        .map(|sf| {
+            let fallback = last;
+            if sf.info.is_some() {
+                last = sf.info.as_ref();
+            }
+            (sf, fallback)
+        })
+        .collect();
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(jobs.len().max(1));
+    let chunk = jobs.len().div_ceil(threads.max(1)).max(1);
+    let mut out: Vec<Option<DecodedSuperframe>> = Vec::with_capacity(jobs.len());
+    std::thread::scope(|s| {
+        let handles: Vec<_> = jobs
+            .chunks(chunk)
+            .map(|part| {
+                s.spawn(move || {
+                    part.iter()
+                        .map(|&(sf, fb)| decode_superframe(r, sf, fb, o))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for h in handles {
+            out.extend(h.join().expect("decoder thread"));
         }
-    }
-    out
+    });
+    out.into_iter().flatten().collect()
 }

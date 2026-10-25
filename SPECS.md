@@ -20,7 +20,7 @@ code comments and SPEC-NOTES quote (into the gitignored `specs/`). The
 IPTV Forum Japan documents kept locally for future work are in
 [§1.3](#13-iptv-forum-japan-specifications-local), and the
 satellite (ISDB-S, ISDB-S3) documents in
-[§1.4](#14-satellite-transmission-isdb-s-isdb-s3-local-not-yet-implemented). Real
+[§1.4](#14-satellite-transmission-isdb-s-isdb-s3). Real
 captures are not distributed either; how to make and use your own is in
 [docs/test-data.md](docs/test-data.md).
 
@@ -262,11 +262,12 @@ Every PDF has a text layer: `pdftotext` 26.08.0 gave between about 970 and
 8,200 characters per page, so no OCR is needed. The copies in this checkout
 are in `specs/pdf/` (gitignored).
 
-### 1.4 Satellite transmission (ISDB-S, ISDB-S3): local, not yet implemented
+### 1.4 Satellite transmission (ISDB-S, ISDB-S3)
 
 Collected on 2026-10-20 for the ISDB-S and ISDB-S3 receivers. BO.1408-1
-and the ordinance's Chapter 5 §2 are implemented up to the TMCC
-(`isdb-fec`, `isdbs-core`, `isdbs-phy`; coverage in §2.7). The ISDB-S3
+and the ordinance's Chapter 5 §2 are implemented on the receive side, to
+TS packets per TS_ID (`isdb-fec`, `isdbs-core`, `isdbs-phy`, `isdb rx
+--system isdbs`; coverage in §2.7). The ISDB-S3
 documents are cited only by `isdb-iq`'s survey, which quotes the nominal
 symbol rates (ISDB-S 28.860 Mbaud, ordinance Art. 52(3) and BO.1408-1
 Table 3; ISDB-S3 33.7561 Mbaud, B44 Annex B.3) to recognise a recording's
@@ -361,7 +362,7 @@ clause.
 | **O** | gr-isdbt oracle, byte-exact in both directions ([VERIFICATION.md](VERIFICATION.md), 8 parameter sets / 9 runs) |
 | **RX** | a real receiver accepted the Rust output over a conducted link (HackRF → coax → attenuators → receiver), configuration **C_rx**: `isdb tx` with Mode 3, GI 1/8, partial reception; layer A 1 seg QPSK 2/3 I=2; layer B 12 seg 64QAM 3/4 I=2; multiplex from `isdbt-mux`. MyGica S270 USB tuner: its 12.0 s capture validates with `isdb ts validate`: 0 errors, 5 warnings. A Sony BDZ-series recorder ("the recorder" below): registered the service in a channel scan and played it, with digital copy control copy_control_type '01' (§3.4). RX shows only that the whole chain was accepted in C_rx; it does not test each clause separately ([VERIFICATION.md](VERIFICATION.md#real-receivers)) |
 | **RX(gr)** | a real receiver accepted *gr-isdbt* output that the Rust chain matches byte-exactly (S270, PER 0) |
-| **LS** | decoded on the lab's satellite IF recordings (2026-10-20, receive only: 9 BS and 12 110° CS ISDB-S transponders, VERIFICATION.md "ISDB-S frame sync and TMCC"); as for **L**, the recordings are not distributed and the opt-in tests take them from `ISDB_RS_*` variables |
+| **LS** | decoded on the lab's satellite IF recordings (2026-10-20, receive only: 9 BS and 12 110° CS ISDB-S transponders, VERIFICATION.md "ISDB-S frame sync and TMCC" and "ISDB-S main signal to TS"); as for **L**, the recordings are not distributed and the opt-in tests take them from `ISDB_RS_*` variables |
 | **—** | not implemented, or deliberately left raw |
 
 ### 2.1 ITU-T H.222.0 (05/2006)
@@ -500,9 +501,9 @@ the CA descriptors. B19 is unrelated (§1.1).
 
 ### 2.7 ITU-R BO.1408-1 and MIC Ordinance No. 87, Chapter 5 §2 (ISDB-S)
 
-Reception to the TMCC; the main signal (demapping, inner code,
-de-interleaving, energy dispersal removal, RS, TS output) is Phase 3 and
-not implemented.
+Reception to TS packets per TS_ID (`isdb rx --system isdbs`). The
+transmitter (Phase 4) is not implemented, so there is no loopback (P)
+coverage of the whole chain yet; the per-stage round trips are P.
 
 | Clause / table | Implementation | Tests | Status |
 |---|---|---|---|
@@ -511,15 +512,18 @@ not implemented.
 | Annexed table 45 note 1 (coded tails of W1/W2/W3), table 49 note 3 (BPSK pair order) | `isdbs_core::frame` | `spec_w_words_and_coded_tails` | S, LS |
 | Table 3 (N, M, B, I_D, 39 936 symbols), equation (3); annexed tables 45, 50, 51 (frame layout) | `isdbs_core::frame` | `spec_table_3_geometry` | S, LS |
 | Table 1 (combination words), annexed table 48 別記 3 (slot units) | `isdbs_core::combination` | `spec_table_1_words`, `spec_table_48_slot_units` | S, LS (TC8PSK 2/3, QPSK 3/4) |
-| Table 2, annexed table 49 notes 4–5 (puncturing) | `isdbs_core::combination::Puncture` | `spec_table_2_puncturing` | S (used from Phase 3) |
-| §3.2, §8, Fig. 4 (slot assignment, dummy slots) | `isdbs_core::slots`, `TmccInfo::slot_combinations` | `spec_fig_4_examples`, `prop_slot_assignment_fills_the_frame` | S, P; dummy-slot position **pending** |
+| Table 2, annexed table 49 notes 4–5 (puncturing, pattern restarted per run) | `isdbs_core::combination::Puncture`, `isdbs_phy::demod` | `spec_table_2_puncturing`, `prop_frame_round_trip` | S, P, LS (QPSK 3/4 on 10 CS transponders) |
+| §3.2, §8, Fig. 4 (slot assignment, dummy slots) | `isdbs_core::slots`, `TmccInfo::slot_combinations`, `mainsig::sent_slots` | `spec_fig_4_examples`, `spec_sent_slots`, `prop_slot_assignment_fills_the_frame` | S, P, LS (dummy slots after the valid ones, by RS success on QPSK 3/4) |
 | §6.1, Figs. 7–10, App. 1 Table 3 items 8–13 (TMCC information) | `isdbs_core::tmcc::TmccInfo` | `live_words_decode_consistently`, `prop_tmcc_info_lossless`, `validation` | S, P, LS (the layout is an interpretation: Notification 304/2011 unavailable) |
 | §6.3, §6.4, Fig. 11, annexed table 50 (blocks, sync words, TMCC energy dispersal) | `isdbs_core::tmcc::{headers, derandomise, decode_blocks}` | `spec_tmcc_prbs_alignment`, `headers_round_trip` | S, LS |
-| §4, annexed table 48 別記 1 (main-signal PRBS per superframe) | `isdb_fec::Prbs15` | `spec_prbs15_first_bits` | S (used from Phase 3) |
+| §4, Fig. 5, annexed table 48 別記 1 (main-signal PRBS per superframe, sync bytes skipped) | `isdb_fec::Prbs15`, `isdbs_core::mainsig::dispersal` | `spec_prbs15_first_bits`, `spec_dispersal_alignment`, `prop_superframe_round_trip` | S, P, LS |
 | §7, annexed table 51 (burst PRBS X⁹+X⁴+1, `111101101`) | `isdb_fec::Prbs9`, `isdbs_core::burst` | `spec_prbs9_first_bits`, `spec_periods`, `spec_table_51_burst_bits` | S, LS (every burst symbol of 40 frames) |
-| Table 46 (BPSK / QPSK / 8PSK absolute phases) | header and burst BPSK in `isdbs_phy`; `rx::main_mer` | synthetic `decodes_synthetic_tmcc` | S, LS (BPSK); QPSK / 8PSK decision MER only |
+| Table 46 (BPSK / QPSK / 8PSK absolute phases); BO.1408-1 Fig. 15 ((W, Y, X) labels) | `isdbs_phy::demod::{psk8_point, qpsk_point, decode_frame}` | `spec_table_46_points`, `prop_frame_round_trip`, `tc8psk_noise_and_wrong_reading` | S, P, LS (TC8PSK on 9 BS, QPSK on 10 CS transponders; the QPSK axes follow the table text, not figure `-086`) |
+| §9, Figs. 14–15 (TC8PSK: B1 uncoded, B0 coded; B1 the higher bit) | `isdbs_phy::demod` (set-partition metrics) | `prop_frame_round_trip`, `tc8psk_noise_and_wrong_reading` | S, P, LS |
+| §2, Fig. 2–3, §5 (sync byte not sent, restored; RS(204,188) per slot) | `isdbs_core::mainsig::codewords`, `isdbs_phy::ts` | `prop_superframe_round_trip`, `isdbs_ts_recordings` | P, LS (311 520 packets of 19 transponders, 0 uncorrectable) |
 | Art. 52 (28.860 Mbaud), annexed table 47 (α = 0.35) | `isdb_iq::survey::KNOWN_SYSTEMS`, `isdb-frontend` | the front-end tests | LS |
-| §5, annexed table 48 別記 2 (inter-frame interleaving) | — | — | — (Phase 3) |
+| §5, Fig. 6, annexed table 48 別記 2 (inter-frame interleaving, depth 8) | `isdbs_core::mainsig::{interleave, deinterleave}` | `spec_fig_6_interleaver`, `prop_interleave_round_trip` | S, P, LS |
+| §6.1.3, Fig. 10 (relative TS ID → TS_ID; one TS per TS_ID) | `isdbs_phy::ts::Packet::ts_id`, `isdb rx --out …{ts_id}…` | `outputs_split_by_ts_id`, the acceptance tool | LS (every PAT transport_stream_id equals the TMCC TS_ID) |
 
 ---
 
@@ -623,8 +627,15 @@ have no external confirmation, because none is possible from the local texts.
 | isdbs-core | [tmcc-prbs](crates/isdbs-core/SPEC-NOTES.md#tmcc-prbs-where-the-tmcc-energy-dispersal-starts-and-which-bytes-it-skips) | confirmed (live data) |
 | isdbs-core | [tmcc-layout](crates/isdbs-core/SPEC-NOTES.md#tmcc-layout-bit-layout-of-the-384-bit-tmcc-information) | confirmed (live data; binding text unavailable) |
 | isdbs-core | [tmcc-other](crates/isdbs-core/SPEC-NOTES.md#tmcc-other-the-other-information-field-values) | **pending** |
-| isdbs-core | [dummy-slots](crates/isdbs-core/SPEC-NOTES.md#dummy-slots-which-slots-of-a-unit-are-the-dummy-ones) | **pending** (Phase 3) |
+| isdbs-core | [dummy-slots](crates/isdbs-core/SPEC-NOTES.md#dummy-slots-which-slots-of-a-unit-are-the-dummy-ones) | confirmed (live data) |
 | isdbs-core | [ts-unused](crates/isdbs-core/SPEC-NOTES.md#ts-unused-ts_id-value-of-unused-table-entries) | observation |
+| isdbs-core | [main-dispersal](crates/isdbs-core/SPEC-NOTES.md#main-dispersal-the-main-signals-energy-dispersal) | confirmed (live data) |
+| isdbs-core | [main-interleaver](crates/isdbs-core/SPEC-NOTES.md#main-interleaver-read-and-write-order-of-the-inter-frame-interleaver) | confirmed (spec figure, live data) |
+| isdbs-core | [qpsk-map](crates/isdbs-core/SPEC-NOTES.md#qpsk-map-which-qpsk-axis-carries-p1) | confirmed (live data; figure `-086` disagrees) |
+| isdbs-core | [tc8psk-map](crates/isdbs-core/SPEC-NOTES.md#tc8psk-map-which-inner-code-output-is-c1) | confirmed (live data) |
+| isdbs-core | [tc8psk-decoding](crates/isdbs-core/SPEC-NOTES.md#tc8psk-decoding-how-the-uncoded-bit-is-decided) | design |
+| isdbs-core | [inner-code-frames](crates/isdbs-core/SPEC-NOTES.md#inner-code-frames-one-encoder-through-the-frame-known-at-both-ends) | confirmed (live data) |
+| isdbs-core | [unassigned-slots](crates/isdbs-core/SPEC-NOTES.md#unassigned-slots-slots-whose-relative-ts-id-names-an-unused-entry) | observation |
 | isdbt-fec | [remux: model receiver timing](crates/isdbt-fec/SPEC-NOTES.md#remux-model-receiver-timing-multiplex-frame-pattern) | partially confirmed; **pending** live slot order |
 | isdbt-fec | [remux: null TSP content](crates/isdbt-fec/SPEC-NOTES.md#remux-null-tsp-content-in-the-reproduced-ts) | convention |
 | isdbt-fec | [layer: one-byte shift](crates/isdbt-fec/SPEC-NOTES.md#layer-one-byte-shift-of-the-frame-slot-structure) | confirmed |

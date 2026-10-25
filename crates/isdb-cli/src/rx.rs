@@ -76,7 +76,7 @@ pub struct RxArgs {
     /// Status line interval in seconds of signal (0 = none).
     #[arg(long, default_value_t = 1.0)]
     pub status_secs: f64,
-    /// Transmission system: `auto` picks ISDB-S for a BS<n> / ND<n>
+    /// Transmission system: `auto` picks ISDB-S for a BSn / NDn
     /// channel and for a recording that is not at the ISDB-T rate (or
     /// whose survey finds the ISDB-S symbol rate), ISDB-T otherwise.
     #[arg(long, value_enum, default_value_t = SystemArg::Auto)]
@@ -329,7 +329,7 @@ pub fn sigmf_input(path: &str, format: Option<IqFormat>) -> Result<(String, IqFo
         .with_context(|| format!("{}", meta_path.display()))?;
     if (m.sample_rate / ISDBT_RATE_HZ - 1.0).abs() > 10e-6 {
         bail!(
-            "{}: recorded at {:.6} Msps, not the ISDB-T rate 512/63 MHz ({:.6} Msps); `isdb rx` is ISDB-T only. See `isdb iq survey` (any system) and `isdb iq tmcc` (ISDB-S)",
+            "{}: recorded at {:.6} Msps, not the ISDB-T rate 512/63 MHz ({:.6} Msps); for ISDB-S use --system isdbs (or auto). See `isdb iq survey` (any system) and `isdb iq tmcc` (ISDB-S)",
             meta_path.display(),
             m.sample_rate / 1e6,
             ISDBT_RATE_HZ / 1e6
@@ -886,6 +886,30 @@ mod tests {
         // Gains need a radio and the NAME=VALUE form.
         assert!(T::try_parse_from(["rx", "--iq", "x", "--gain", "lna=16"]).is_err());
         assert!(T::try_parse_from(["rx", "--radio", "sdr", "--gain", "16"]).is_err());
+    }
+
+    #[test]
+    fn system_selection() {
+        let p = |args: &[&str]| T::try_parse_from(args).unwrap().a;
+        // a satellite channel selects ISDB-S, a terrestrial one ISDB-T
+        let a = p(&["rx", "--radio", "pluto", "--channel", "BS3"]);
+        assert_eq!(resolve_system(&a).unwrap(), SystemArg::Isdbs);
+        let a = p(&["rx", "--radio", "pluto", "--channel", "T27"]);
+        assert_eq!(resolve_system(&a).unwrap(), SystemArg::Isdbt);
+        // a file without SigMF metadata, or stdin: ISDB-T
+        let a = p(&["rx", "--iq", "no-such-file.cf32"]);
+        assert_eq!(resolve_system(&a).unwrap(), SystemArg::Isdbt);
+        // an explicit system wins
+        let a = p(&["rx", "--iq", "-", "--system", "isdbs"]);
+        assert_eq!(resolve_system(&a).unwrap(), SystemArg::Isdbs);
+        // ISDB-S options on ISDB-T are refused
+        let a = p(&[
+            "rx", "--iq", "x.cf32", "--system", "isdbt", "--ts-id", "0x4010",
+        ]);
+        assert!(run(a).unwrap_err().to_string().contains("ISDB-S options"));
+        // ISDB-T layer outputs on ISDB-S are refused
+        let a = p(&["rx", "--iq", "x", "--system", "isdbs", "--b-out", "b.ts"]);
+        assert!(run(a).unwrap_err().to_string().contains("ISDB-T layers"));
     }
 
     #[test]

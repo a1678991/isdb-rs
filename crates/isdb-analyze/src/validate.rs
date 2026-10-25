@@ -572,7 +572,10 @@ fn psi_checks(
     for (prog, pid) in pat.body.programs() {
         match pmts.get(&prog) {
             None => o.push(
-                Error,
+                // B10 Table 5-2: PMT ≥ once per 100 ms is the criterion,
+                // but data-service PMTs are seen at longer intervals: in a
+                // capture under 2 s, a missing one is not yet an error.
+                if duration.is_some_and(|d| d < 2.0) { Severity::Info } else { Error },
                 "psi.pmt",
                 "H.222.0 §2.4.4 (\"Each program listed in the Program Association Table shall be described in a unique TS_program_map_section\")",
                 format!("program {prog:#06x}"),

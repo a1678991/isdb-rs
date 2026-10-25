@@ -28,7 +28,9 @@ checks something the rung below cannot:
    receive chain against transmitters this project did not build; their
    TMCC words are kept as test vectors. On the satellite IF recordings,
    ISDB-S is demodulated to the TMCC on all 21 transponders
-   ([below](#isdb-s-frame-sync-and-tmcc)); ISDB-S3 is only surveyed
+   ([below](#isdb-s-frame-sync-and-tmcc)) and to RS-clean TS packets on
+   the 19 with the SNR for it ([below](#isdb-s-main-signal-to-ts));
+   ISDB-S3 is only surveyed
    ([below](#satellite-if-survey)).
 
 Coverage per clause, with the rung that confirms it, is in
@@ -802,6 +804,75 @@ checks). BS1 is the 40 Msps 8-bit recording with 56 MHz analog bandwidth
 - Main-signal decision MER (8PSK on BS, QPSK on CS) is within 0.3 dB of
   the pilot MER where the SNR is high enough for decisions (BS1 14.4 dB
   against 14.7; ND2 12.8 against 13.0).
+
+## ISDB-S main signal to TS
+
+`isdb rx --system isdbs` on the same recordings, one TS per TS_ID, each
+checked with `isdb ts inspect` and `isdb ts validate`
+(`tools/isdbs-ts-acceptance.sh`, 2026-10-25; release build). The
+recordings are 0.42–0.58 s long: 37–52 superframes each, which at the
+TMCC's slot counts give 4 700–14 100 packets per TS. TS_IDs are
+transponder numbering, not station identities.
+
+| Transponder | TS_ID: slots/frame, packets | RS corrected / uncorrectable | CC errors | PCR fit (max) | scrambled |
+|---|---|---|---|---|---|
+| BS1 (40 Msps) | 4010: 16, 4736 · 4011: 16, 4736 · 4012: 16, 4736 | 0 / 0 | 0 | 33–55 ns | 88–98 % |
+| BS3 | 4030: 24, 9984 · 4631: 12, 4992 · 4632: 12, 4992 | 0 / 0 | 0 | 42–54 ns | 71–90 % |
+| BS5 | 4450: 24, 9984 · 4451: 24, 9984 | 0 / 0 | 0 | 35–52 ns | 79–92 % |
+| BS9 | 4090: 18, 7344 · 4092: 14, 5712 · unassigned: 16 | 0 / 0 | 0 | 39–68 ns | 89–96 % |
+| BS13 | 40D0: 16 · 40D1: 16 · 46D2: 16, 6528 each | 0 / 0 | 0 | 27–45 ns | 74–98 % |
+| BS15 | 40F1: 22, 9152 · 40F2: 12 · 48F3: 12, 4992 each · unassigned: 2 | 0 / 0 | 0 | 29–57 ns | 79–82 % |
+| BS19 | 4730–4733: 12 each, 4896 each | 0 / 0 | 0 | 28–45 ns | 84–88 % |
+| BS21 | 4750: 14 · 4751: 12 · 4752: 14 · unassigned: 8 | 0 / 0 | 0 | 30–66 ns | 87–93 % |
+| BS23 | 4770 · 4971 · 4973: 12 each, 4992 each · unassigned: 12 | 0 / 0 | 0 | 21–47 ns | 79–88 % |
+| ND2–ND12 | one TS each: 36 slots, 13 824–14 112 packets | 0 / 0 | 0 | 11–16 µs | 67–89 % |
+| ND14, ND16, ND18, ND20 | one TS each: 36 slots, 13 824–14 112 packets | 1, 1, 4, 6 / 0 | 0 | 12–14 µs | 87–91 % |
+| ND22, ND24 | 36 slots, 13 824 | — / 13 824 (all) | — | — | — |
+
+- **19 of 21 transponders give RS-clean TS**: 311 520 packets, 12
+  corrected (on the weaker CS channels) and none uncorrectable; 0
+  continuity errors and 0 transport_error_indicator in every TS. ND22 and
+  ND24 (pilot MER ≈ 1 dB) decode their TMCC but not their main signal,
+  as expected for QPSK 3/4 at that SNR: a re-capture with more gain or
+  another feed is needed for them.
+- **The TMCC's TS_IDs are right**: the PAT transport_stream_id of every
+  TS equals the TMCC's TS_ID for its slots. Slots whose relative TS ID
+  names an unused (FFFFh) entry (BS9, 15, 21, 23) carry null packets only
+  and are not written.
+- **PSI/SI and scrambling**: every TS carries PAT and PMTs; SDT, EIT, TOT,
+  NIT and CAT appear where their repetition interval fits in the 0.6 s
+  recording. 67–98 % of the packets are scrambled (video, audio and
+  some data; transport_scrambling_control ≠ 00, with ECM PIDs in the
+  PMTs): recognised and left as they are (no descrambling, project
+  policy). `isdb ts validate` reports 0 errors on every decoded TS.
+- **PCR**: the BS TSs fit a constant packet rate within 21–68 ns, so the
+  decoder adds no timing error. The CS TSs deviate 11–16 µs from a CBR
+  fit (4 programs, PCR every 66.7 ms with ±0.2 ms spread): their measured
+  TS rate (39.13 Mbit/s) equals 36 slots × 188 bytes per 1.3838 ms frame,
+  and the continuity counters run clean, so this is the broadcaster's
+  multiplexing, not a decoding error.
+- **Constellation readings** that the texts leave open were settled by
+  RS success (`examples/mapprobe`, `isdbs-core` SPEC-NOTES): TC8PSK takes
+  C1 = 133₈ and C0 = 171₈ (BO.1408-1 Fig. 15 (W, Y, X); the reverse gives
+  0 of 19 968 packets on BS3); QPSK puts P1 on I (annexed table 46 text;
+  figure `-086` draws the other assignment); no spectrum inversion. The
+  dummy slots of a unit follow its valid slots (all 36 sent slots of the
+  CS transponders decode), and the interleaver follows BO.1408-1 Fig. 6.
+- **validate on satellite TSs** misfired before this work: it parsed
+  scrambled payloads as sections and PES (hundreds of CRC, pointer and
+  PES-start errors), and reported mandatory tables and CAT as missing
+  from captures shorter than their repetition interval. Both are fixed
+  (`isdb-analyze`: scrambled payloads are not parsed; such absences are
+  Info), with synthetic tests.
+- **Throughput** (BS3, 0.581 s of signal, 32-core host): front end
+  1.6 s (0.36× real time, one thread), frame sync / carrier / TMCC 0.95 s
+  (0.61×, one thread), main signal → TS 0.16 s (3.7×, every core; 7.5
+  Msym/s per core). Reception of a recording runs at about 0.2× real
+  time; the sequential front end and carrier tracker are the limits
+  (`examples/throughput`). From a radio, `isdb rx` takes one contiguous
+  capture after another (over Gigabit Ethernet ISDB-S cannot be streamed
+  without losses), so the TS has a gap between blocks; continuous
+  reception needs the FPGA symbol front end.
 
 ## Open questions
 

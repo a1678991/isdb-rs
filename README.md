@@ -10,11 +10,11 @@ the same library — services → TS → OFDM baseband → radio, and radio → 
 → TS → analysis — so every layer can be checked against its inverse, against
 the specifications' own numbers, and against independent receivers. It is
 meant for receiver testing, protocol study and broadcast-engineering
-experiments on a conducted bench. ISDB-T is implemented end to end. For
-ISDB-S, recordings of the satellite IF are demodulated as far as frame
-sync and the TMCC (`isdb iq tmcc`), not yet to TS packets; for ISDB-S3
-there is capture (`isdb capture`) and a survey of the recordings (`isdb iq
-survey`).
+experiments on a conducted bench. ISDB-T is implemented end to end.
+ISDB-S is received to transport streams, one per TS_ID (`isdb rx --system
+isdbs`, from satellite IF recordings or block by block from a radio); its
+transmitter is not written yet. For ISDB-S3 there is capture (`isdb
+capture`) and a survey of the recordings (`isdb iq survey`).
 
 > [!WARNING]
 > **Legal and RF safety notice**
@@ -110,12 +110,17 @@ survey`).
   43 MB/s instead of 80) for continuous ISDB-S / ISDB-S3 reception. The
   HDL matches the model bit for bit in simulation but is not yet in a
   bitstream; until then the CPU runs it on one contiguous capture.
-- **ISDB-S frame sync and TMCC** (`isdbs-core`, `isdbs-phy`, `isdb iq
-  tmcc`): frame and superframe sync on the frame's known symbols,
-  burst-aided carrier recovery, and the TMCC (inner code, energy
-  dispersal, RS(64,48)): modulation-code combinations, slots and the
-  TS_ID of each slot. Decoded on every superframe of the 9 BS and 12
-  110° CS transponders of a cable feed.
+- **ISDB-S reception** (`isdbs-core`, `isdbs-phy`, `isdb iq tmcc`, `isdb
+  rx --system isdbs`): frame and superframe sync on the frame's known
+  symbols, burst-aided carrier recovery, the TMCC (inner code, energy
+  dispersal, RS(64,48)), then the main signal: TC8PSK / QPSK / BPSK soft
+  demapping, depunctured Viterbi, depth-8 inter-frame de-interleaving,
+  energy dispersal and RS(204,188), one TS per TS_ID. The TMCC decodes
+  on all 9 BS and 12 110° CS transponders of a cable feed; 19 of them
+  give RS-clean TS (311 520 packets, 0 uncorrectable), the other two lack
+  the SNR. Live from a radio it decodes one contiguous capture after
+  another (no continuous stream over Gigabit Ethernet without the FPGA
+  front end), slower than real time on the CPU.
 
 ## Crates
 
@@ -137,7 +142,7 @@ survey`).
 | [`isdb-iq`](crates/isdb-iq/README.md) | — (quotes the ISDB-S / ISDB-S3 symbol rates) | IQ recordings independent of the system: sample formats, SigMF metadata, single-carrier survey (symbol rate, carrier offset, band, system) |
 | [`isdb-frontend`](crates/isdb-frontend/README.md) | — (rates from `isdb-iq`) | single-carrier front end IQ → symbols for ISDB-S / ISDB-S3: bit-exact fixed-point model of the FPGA stage, floating-point reference, `Symbols` boundary format, FPGA control map; the HDL is in [`fpga/`](fpga/README.md) |
 | [`isdbs-core`](crates/isdbs-core/README.md) | BO.1408-1; MIC Ordinance No. 87 annexed tables 45–51 | ISDB-S frame geometry, combinations, slot assignment, TMCC information codec and signal, burst |
-| [`isdbs-phy`](crates/isdbs-phy/README.md) | BO.1408-1 | ISDB-S receive chain after the front end: frame sync, carrier recovery, TMCC decoding, derotated main signal |
+| [`isdbs-phy`](crates/isdbs-phy/README.md) | BO.1408-1 | ISDB-S receive chain after the front end: frame sync, carrier recovery, TMCC decoding, main signal to TS packets per TS_ID |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary |
 
 How they fit together, the frame/latency contract and the data flow:
@@ -362,8 +367,8 @@ end, but some parts have had less independent checking than others:
   written from ISO/IEC 13818-7 itself; H.264 one-seg packetisation.
 - ISDB-S (ITU-R BO.1408 / MIC Ordinance No. 87 of 2011; ARIB STD-B20) and
   ISDB-S3 (ARIB STD-B44) reception, then transmission, reusing the TS/SI
-  crates — satellite IF capture and survey done; ISDB-S demodulated to the
-  TMCC, the main signal (TS output) next.
+  crates — satellite IF capture and survey done; ISDB-S received to TS;
+  next the ISDB-S modulator (loopback) and the ISDB-S3 receiver.
 
 ## Development
 

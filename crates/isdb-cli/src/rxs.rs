@@ -69,7 +69,10 @@ impl Outputs {
     }
 
     fn write(&mut self, ts_id: u16, p: &[u8; 188]) -> Result<()> {
-        if !self.wanted(ts_id) {
+        // Slots whose relative TS ID points at an unused TS_ID entry
+        // (FFFFh) belong to no TS (the lab transponders fill them with
+        // null packets): counted, never written.
+        if ts_id == isdbs_core::tmcc::UNUSED_TS_ID || !self.wanted(ts_id) {
             return Ok(());
         }
         if self.strip_nulls && crate::source::is_null(p) {
@@ -266,8 +269,13 @@ pub fn report(stats: &Stats, secs: f64) {
         eprintln!("[rx]   TMCC: {}", combos.join(" + "));
     }
     for (id, t) in &stats.ts {
+        let name = if *id == isdbs_core::tmcc::UNUSED_TS_ID {
+            "unassigned slots (TS_ID FFFFh, not written)".to_string()
+        } else {
+            format!("TS_ID {id:#06x}")
+        };
         eprintln!(
-            "[rx]   TS_ID {id:#06x} ({} slots/frame): {} packets; RS clean {} corrected {} ({} bytes) uncorrectable {}",
+            "[rx]   {name} ({} slots/frame): {} packets; RS clean {} corrected {} ({} bytes) uncorrectable {}",
             t.slots, t.packets, t.clean, t.corrected_packets, t.corrected_bytes, t.uncorrectable
         );
     }

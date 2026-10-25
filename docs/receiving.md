@@ -4,7 +4,9 @@
 (`--radio`; HackRF One or an ADALM-Pluto / PlutoSky R2) and
 writes the transport stream it carries. It needs no configuration: the
 mode, guard interval and layer parameters are detected from the signal
-(guard-interval correlation and the TMCC).
+(guard-interval correlation and the TMCC). It also receives ISDB-S (BS
+and 110° CS satellite transponders) to one TS per TS_ID
+([below](#isdb-s-bs-and-110-cs)).
 
 ## Sources
 
@@ -34,7 +36,7 @@ in the same range), and see
 | `--iq PATH` | — | read baseband from a file (`-` = stdin) |
 | `--iq-format cf32\|cs8` | cf32 | file format |
 | `--radio NAME[:key=value,...]` | — | receive with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`); needs `--channel` or `--freq`. An unknown name lists the compiled-in backends |
-| `--channel T` / `--freq HZ` | — | terrestrial channel T13–T52 (a bare number N means TN) or centre frequency in Hz, within 470–710 MHz. Satellite channels (BSn, NDn) are refused: `rx` is ISDB-T only |
+| `--channel T` / `--freq HZ` | — | terrestrial channel T13–T52 (a bare number N means TN) or centre frequency in Hz, within 470–710 MHz. A satellite channel (BSn, NDn) selects ISDB-S (below) |
 | `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (channels 53–62, other bands); the backend's own range still applies |
 | `--gain NAME=VALUE` | backend's | radio gain, repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF: `lna=0..40` dB in 8 dB steps (16), `vga=0..62` dB baseband VGA in 2 dB steps (20), `amp=on\|off` RF amplifier (off). Pluto: `agc=manual\|slow_attack\|fast_attack\|hybrid` (slow_attack), `gain=dB` manual gain (implies `agc=manual`; the range depends on the LO and is checked at open) |
 | `--freq-corr-ppm P` | 0 | reference-clock correction (tuning and sample clock) |
@@ -60,6 +62,51 @@ transport_error_indicator = 1 (H.222.0), so downstream tools can see them.
 `isdb rx` does not descramble: services that a broadcaster scrambles stay
 scrambled in the output, while PSI/SI and unscrambled services are
 readable. The output can be fed straight to `isdb ts` ([analysis.md](analysis.md)).
+
+## ISDB-S (BS and 110° CS)
+
+`--system isdbs` (or `auto`, the default, on a BSn / NDn channel or a
+SigMF recording whose survey finds the ISDB-S symbol rate) receives an
+ISDB-S transponder: frame sync and TMCC, then the main signal of every
+superframe (TC8PSK, QPSK or BPSK, Viterbi, de-interleaving, energy
+dispersal, RS(204,188)). A transponder carries up to 8 transport streams,
+told apart by the TS_ID the TMCC gives each slot, so the output is per
+TS_ID instead of per layer.
+
+```sh
+isdb rx --iq bs3.sigmf-meta --out 'bs3-{ts_id}.ts'          # one file per TS: bs3-4030.ts, …
+isdb rx --iq nd2.sigmf-meta --ts-id 0x6020 --out nd2.ts      # one TS
+isdb rx --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --channel BS3 \
+        --seconds 10 --out 'bs3-{ts_id}.ts'                   # blocks from a radio
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--system auto\|isdbt\|isdbs` | auto | the transmission system |
+| `--out PATH` | — | with `{ts_id}` in the path: one file per TS_ID (4 hex digits); without it, select one TS with `--ts-id` |
+| `--ts-id ID` | every TS | receive only this TS_ID (repeatable; `0x4010`, `4010h` or decimal) |
+| `--iq REC` | — | a SigMF recording (data file, `.sigmf-meta` or base name): its metadata gives the rate and format; `isdb capture` writes them |
+| `--rate SPS` / `--bw HZ` | 40M / 56M | radio sample rate and analog bandwidth (≥ 1.35 × 28.86 Mbaud; a narrower filter costs MER) |
+| `--block-seconds S` | the radio's longest single capture | radio: seconds per contiguous capture |
+| `--carrier-offset HZ` | from the survey | carrier offset of the signal |
+| `--json` | — | summary with per-TS counters (packets, RS clean / corrected / uncorrectable) |
+
+From a radio, `isdb rx` takes one contiguous capture after another and
+decodes each on its own: over Gigabit Ethernet a radio cannot stream the
+≥ 39 Msps ISDB-S needs without losses (VERIFICATION.md "8-bit captures
+and streaming over Gigabit Ethernet"), so the TS has a gap at every block
+boundary, which the summary states. The longest single capture is about
+1.7 s with a PlutoSky's maia-sdr recorder in 8 bits at 40 Msps. Decoding
+also runs slower than real time on the CPU (about 0.2× on a 32-core host:
+VERIFICATION.md "ISDB-S main signal to TS"). Continuous reception needs
+the FPGA symbol front end.
+
+Slots whose relative TS ID points at an unused TS_ID entry (FFFFh) carry
+no TS and are not written. Uncorrectable packets keep
+transport_error_indicator = 1, as for ISDB-T. Satellite services are
+mostly scrambled: their payloads stay scrambled, while PAT, PMT and SI
+are readable (`isdb ts inspect`; `validate` does not parse scrambled
+payloads).
 
 ## Status lines
 

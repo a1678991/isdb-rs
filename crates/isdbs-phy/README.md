@@ -2,11 +2,10 @@
 
 ISDB-S receive chain after the symbol front end: frame and superframe
 synchronisation, carrier recovery on the known symbols, TMCC decoding, and
-the derotated main signal of every frame. Symbols come from
-`isdb-frontend` (shared with ISDB-S3, and the same bits as the PlutoSky's
-FPGA front end); frame layout and codes from `isdbs-core`. Main-signal
-demapping, the inner code, de-interleaving, RS and TS output are Phase 3
-of the ISDB-S plan.
+the main signal of every superframe to TS packets per TS_ID. Symbols come
+from `isdb-frontend` (shared with ISDB-S3, and the same bits as the
+PlutoSky's FPGA front end); frame layout, codes, the interleaver and the
+energy dispersal from `isdbs-core`.
 
 ## Stages
 
@@ -29,6 +28,23 @@ of the ISDB-S plan.
 4. **Frames** (`rx::receive`): per frame the 38 976 main symbols,
    derotated and scaled to unit amplitude on the bursts, the pilot MER and
    the header check; per superframe the decoded `TmccInfo`.
+5. **Main signal → bytes** (`demod::decode_frame`): run by run of the
+   TMCC's slot layout, soft demapping and one K = 7 Viterbi decoder per
+   frame, started in the state the header's W2/W3 left and ended on the
+   next frame's W1 (both known). BPSK r = 1/2: X then Y on successive
+   symbols. QPSK: the (P1, P0) pairs of the punctured code, P1 on I, the
+   puncturing restarted at each run. TC8PSK r = 2/3: B1 sent uncoded as
+   C2, B0 coded into C1 = Y (133₈) and C0 = X (171₈); the branch metric of
+   each (C1, C0) is the better of its two antipodal points (|Re z·p̄|),
+   and C2 is decided afterwards in the subset of the decoded (C1, C0).
+   Bytes MSB first, alternately B1 and B0 for TC8PSK.
+6. **Superframe → TS** (`ts::decode_superframe`, `ts::decode_all`): the
+   8 frames' bytes (203 per sent slot) de-interleaved per slot number,
+   the superframe energy dispersal removed, the sync byte 0x47 restored,
+   RS(204,188), each packet tagged with its slot's TS_ID from the TMCC;
+   uncorrectable words keep transport_error_indicator = 1. A superframe
+   whose own TMCC failed decodes under the previous one. Superframes are
+   decoded in parallel on every core.
 
 ## Design choices (measured on the lab recordings, 2026-10-20)
 
@@ -38,7 +54,7 @@ of the ISDB-S plan.
 | Carrier | Linear interpolation of measured pilot phases with smoothing: biased at frame ends with a plain average (fixed with a local line fit); a forward-backward loop over the pilot correlations gives the same MER on strong signals and cannot slip on a single bad pilot | loop, bandwidth 0.05 of the pilot rate |
 | Burst data | all 30 720 burst symbols of 40 frames match BPSK of the PRBS alone | all-zero burst data (SPEC-NOTES of `isdbs-core`) |
 
-## The boundary to Phase 3
+## Boundaries
 
 `rx::Frame::main`: the 38 976 main-signal symbols of a frame in
 transmission order, derotated (BPSK "0" on the positive real axis, QPSK
@@ -49,11 +65,38 @@ the superframe comes from its `TmccInfo` through `isdbs_core::slots::runs`.
 Each run is a contiguous range of main symbols with one combination, and
 the puncturing restarts at its start.
 
+`ts::Packet`: 188 bytes, the TS_ID, the frame and slot it was sent in, and
+the RS outcome. `isdb rx --system isdbs` writes them per TS_ID; slots whose
+relative TS ID points at an unused (FFFFh) entry belong to no TS.
+
+## Constellation readings (confirmed by RS(204,188) on the lab recordings)
+
+`demod::Mapping` keeps the alternatives selectable for `examples/mapprobe`,
+which counts RS successes under each:
+
+| Reading | Alternatives | Result |
+|---|---|---|
+| TC8PSK C1/C0 | C1 = 171₈ (X) or 133₈ (Y) | only C1 = Y decodes: BS3 19 968 of 19 968 packets RS-clean, C1 = X 0. BO.1408-1 Fig. 15 labels the points (W, Y, X) |
+| QPSK P1 | on I (annexed table 46 text) or on Q | only P1 on I decodes: ND2 288 of 288 packets RS-clean |
+| Spectrum | as received or mirrored | as received (mirrored decodes nothing) |
+
+## Throughput (one recording, 32-core host, release build)
+
+| Stage | BS3, 0.581 s of signal | Rate |
+|---|---|---|
+| front end (`isdb-frontend` bit-exact model, one thread) | 1.6 s | 0.36× real time, 10.4 Msym/s |
+| frame sync, carrier, TMCC (one thread) | 0.95 s | 0.61× real time, 17.7 Msym/s |
+| main signal → TS (every core) | 0.16 s | 3.7× real time, 107 Msym/s |
+
+Real time needs 28.86 Msym/s. The main-signal decoder is single-threaded
+at 7.5 Msym/s and scales with superframes; the front end and the carrier
+tracker are sequential and are now the bottleneck
+(`examples/throughput`).
 ## Position in the stack
 
 - Depends on: `isdb-frontend`, `isdb-iq` (survey), `isdb-fec`,
   `isdbs-core`, `num-complex`.
-- Used by: `isdb-cli` (`isdb iq tmcc`).
+- Used by: `isdb-cli` (`isdb iq tmcc`, `isdb rx --system isdbs`).
 
 ## Tests
 
@@ -66,6 +109,15 @@ the puncturing restarts at its start.
 - Opt-in recordings (`tests/captures.rs`, `ISDB_RS_ISDBS_TMCC_IQ`, a
   `:`-separated list): no slips, RS(64,48) on every superframe, valid and
   unchanging TMCC, 39 936-symbol spacing across each recording.
+- `demod` unit tests: annexed table 46 points and set partitioning,
+  the encoder state after W2/W3, `prop_frame_round_trip` (every
+  combination mix encodes with `encode_frame` and decodes back exactly),
+  TC8PSK at 12 dB SNR (few byte errors, the reverse C1/C0 reading fails).
+- Opt-in recordings, main signal (`ISDB_RS_ISDBS_TS_IQ`): no
+  uncorrectable RS word, sync byte on every packet, continuity counters
+  without a gap per TS_ID and PID.
 - Development tools (examples): `syncstat` (sync-metric statistics on and
   off the frame grid), `spacing` (acquisition-only frame spacing),
-  `offsets` (metric at ±2 symbols and the derotated burst projection).
+  `offsets` (metric at ±2 symbols and the derotated burst projection),
+  `mapprobe` (RS success under each constellation reading), `throughput`
+  (time per stage).

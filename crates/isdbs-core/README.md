@@ -15,6 +15,7 @@ the planned modulator.
 | `slots` | §3.2, §8, Fig. 4 | each combination's run of slots and its range of main-signal symbols |
 | `tmcc` | §6, Figs. 7–11, App. 1; annexed table 50 | the 384-bit TMCC information codec, validation, per-slot combination and TS_ID, and the TMCC signal of a superframe (RS(64,48), energy dispersal, sync words) |
 | `burst` | §7; annexed table 51 | the 768 burst bits of a frame (X⁹ + X⁴ + 1 from `111101101`) |
+| `mainsig` | §§2–5, §8, Figs. 5–6; annexed table 48 別記 1–3 | the slots sent (dummy slots dropped), the superframe energy dispersal, the depth-8 inter-frame interleaver, and a superframe's RS codewords from the inner decoder's bytes (and back) |
 
 The RS code, the K = 7 code and the PRBS generators are `isdb-fec`.
 Every reading that is not settled by the text is in
@@ -22,13 +23,14 @@ Every reading that is not settled by the text is in
 (confirmed on live signals), the bit order of the BPSK pair, the TMCC
 energy dispersal and the TMCC information layout (confirmed on live
 signals: the binding MIC Notification No. 304 of 2011 is not available),
-the meaning of the "other information" values and the place of dummy
-slots in a unit (pending).
+the place of dummy slots in a unit, the main-signal energy dispersal and
+interleaver alignment (confirmed by RS(204,188) on live signals), and the
+meaning of the "other information" values (pending).
 
 ## Position in the stack
 
 - Depends on: `isdb-fec`, `thiserror`.
-- Used by: `isdbs-phy` (receiver), `isdb-cli` (`isdb iq tmcc`).
+- Used by: `isdbs-phy` (receiver), `isdb-cli` (`isdb iq tmcc`, `isdb rx`).
 
 ## Key types and entry points
 
@@ -41,6 +43,7 @@ slots in a unit (pending).
 | `tmcc::{headers, decode_blocks, derandomise}` | a superframe's 8 header blocks ↔ information |
 | `slots::runs` | `Run { combination, slots, valid_slots, symbols }` per combination |
 | `burst::frame_bits` | burst data |
+| `mainsig::{sent_slots, dispersal, interleave, deinterleave, codewords, frame_bytes}` | main signal bytes of a superframe |
 
 ## Tests
 
@@ -50,8 +53,13 @@ slots in a unit (pending).
   `spec_table_48_slot_units` (units from E_k / E_max, 812-symbol slots),
   `spec_table_2_puncturing` (each kept bit sent once),
   `spec_tmcc_prbs_alignment`, `spec_table_51_burst_bits`,
-  `spec_fig_4_examples` (runs fill the main signal).
+  `spec_fig_4_examples` (runs fill the main signal),
+  `spec_fig_6_interleaver` (the positions Fig. 6 prints),
+  `spec_dispersal_alignment` (PRBS from the second byte, sync bytes
+  skipped with the sequence running), `spec_sent_slots`.
 - Live words: `live_words_decode_consistently` (a BS and a CS TMCC word
   received from the lab's satellite IF, RS-clean, round trip).
 - Property tests (`tests/props.rs`): `prop_tmcc_info_lossless`,
-  `prop_tmcc_signal_corrects_8_bytes`, `prop_slot_assignment_fills_the_frame`.
+  `prop_tmcc_signal_corrects_8_bytes`, `prop_slot_assignment_fills_the_frame`;
+  in `mainsig`: `prop_interleave_round_trip`, `prop_superframe_round_trip`
+  (RS-coded packets → dispersal, interleaving → back).

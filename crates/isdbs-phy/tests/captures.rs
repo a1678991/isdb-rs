@@ -51,3 +51,68 @@ fn isdbs_tmcc_recordings() {
         }
     }
 }
+
+/// Opt-in test of the main signal: `ISDB_RS_ISDBS_TS_IQ` lists SigMF
+/// recordings of ISDB-S transponders whose main signal is strong enough to
+/// decode (paths separated by `:`). Every decoded superframe must give
+/// RS(204,188)-correctable packets only, every TS packet must start with
+/// the sync byte, and the continuity counters of each TS_ID must run
+/// without a gap. Prints `SKIP` when the variable is unset. See
+/// docs/test-data.md.
+#[test]
+fn isdbs_ts_recordings() {
+    use isdbs_phy::demod::DemodOptions;
+    use isdbs_phy::ts::decode_all;
+    use std::collections::BTreeMap;
+    let Some(list) = std::env::var_os("ISDB_RS_ISDBS_TS_IQ") else {
+        eprintln!(
+            "SKIP: ISDB_RS_ISDBS_TS_IQ not set (SigMF recordings of ISDB-S transponders, ':'-separated)"
+        );
+        return;
+    };
+    for path in std::env::split_paths(&list) {
+        let mut rec = Recording::open(&path, None, None).unwrap();
+        let seg = rec.segments()[0].clone();
+        let x = rec
+            .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+            .unwrap();
+        let s = isdbs_phy::frontend::symbols(&x, rec.sample_rate, None).unwrap();
+        let r = receive(&s.z, &RxOptions::default());
+        let d = decode_all(&r, &DemodOptions::default());
+        assert!(!d.is_empty(), "{}", path.display());
+        let (mut n, mut bad, mut corr) = (0usize, 0usize, 0usize);
+        // (TS_ID, PID) → last continuity_counter of a payload packet
+        let mut cc: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+        let mut cc_err = 0usize;
+        for sf in &d {
+            for p in &sf.packets {
+                n += 1;
+                match p.corrected {
+                    None => bad += 1,
+                    Some(c) => corr += c,
+                }
+                assert_eq!(p.bytes[0], 0x47);
+                let pid = (u16::from(p.bytes[1] & 0x1F) << 8) | u16::from(p.bytes[2]);
+                let has_payload = p.bytes[3] & 0x10 != 0;
+                if pid == 0x1FFF || !has_payload {
+                    continue;
+                }
+                let c = p.bytes[3] & 0x0F;
+                if let Some(&prev) = cc.get(&(p.ts_id, pid))
+                    && c != (prev + 1) & 0x0F
+                    && c != prev
+                {
+                    cc_err += 1;
+                }
+                cc.insert((p.ts_id, pid), c);
+            }
+        }
+        println!(
+            "{}: {} superframes, {n} packets, {corr} bytes corrected, {bad} uncorrectable, {cc_err} CC errors",
+            path.display(),
+            d.len()
+        );
+        assert_eq!(bad, 0, "{}", path.display());
+        assert_eq!(cc_err, 0, "{}", path.display());
+    }
+}

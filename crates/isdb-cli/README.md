@@ -110,7 +110,7 @@ Sinks: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdout) or
 | flag | default | meaning |
 |---|---|---|
 | `--radio NAME[:key=value,...]` | — | radio backend and its device arguments, e.g. `hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`; an unknown name lists the compiled-in backends and their cargo features |
-| `--channel T` / `--freq HZ` | — | terrestrial channel T13..T62 (a bare number N means TN) → 473 + 6(N−13) + 1/7 MHz; the centre must lie in the 470–710 MHz TV band (T13–T52). Satellite channels (BSn, NDn) are refused: `rx` / `tx` are ISDB-T only |
+| `--channel T` / `--freq HZ` | — | terrestrial channel T13..T62 (a bare number N means TN) → 473 + 6(N−13) + 1/7 MHz; the centre must lie in the 470–710 MHz TV band (T13–T52). Satellite channels (BSn, NDn): `rx` receives them as ISDB-S, `tx` refuses them (no ISDB-S transmitter) |
 | `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (shielded lab only); the backend's own range still applies (HackRF 1 MHz–6 GHz, Pluto TX 47 MHz–6 GHz) |
 | `--freq-corr-ppm P` | 0 | divide tuning and sample clock by 1 + P·1e-6 |
 | `--gain NAME=VALUE` | backend's | repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF TX: `txvga=0..47` dB (0), `amp=on\|off` (RF amplifier ≈ +11 dB, off); Pluto TX: `att=0..89.75` dB attenuation in 0.25 dB steps (89.75) |
@@ -164,7 +164,7 @@ packet), the data, then `Transmitter::flush_frames` null frames (`--no-flush`
 to omit) that push the last input packets through the interleavers and the
 receiver look-ahead.
 
-### `isdb rx` — IQ / radio → TS
+### `isdb rx` — IQ / radio → TS (ISDB-T, ISDB-S)
 
 * Source: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdin, 512/63 MHz) or
   `--radio SPEC` with `--channel/--freq`, `--freq-corr-ppm`,
@@ -179,12 +179,22 @@ receiver look-ahead.
 * Status lines every `--status-secs` (1) seconds of signal: lock state,
   mode/GI from TMCC, valid frames, MER per layer, CFO, RS
   clean/corrected/uncorrectable per layer. `--json` prints a summary on stdout.
-* ISDB-T only. A SigMF recording given to `--iq` (data file, `.sigmf-meta`
-  or base name) supplies its format and must have been recorded at
-  512/63 MHz; another rate (a satellite recording) is refused with a
-  pointer to `isdb iq survey` / `isdb iq tmcc`. `--channel BSn` / `NDn`
-  is refused too. When a file holds no ISDB-T frame, `rx` surveys its
-  start and names the single-carrier system it finds, if any.
+* `--system auto|isdbt|isdbs` (auto): ISDB-S for a `BSn` / `NDn`
+  channel and for a SigMF recording that is not at 512/63 MHz and whose
+  survey finds the ISDB-S symbol rate; ISDB-T otherwise. For ISDB-T a
+  SigMF recording supplies its format and must be at 512/63 MHz; when a
+  file holds no ISDB-T frame, `rx` surveys its start and names the
+  single-carrier system it finds, if any.
+* ISDB-S (`isdbs_phy`): `--out PATH` with `{ts_id}` writes one file per
+  TS_ID (without it, select one TS with `--ts-id`), `--ts-id ID`
+  (repeatable), `--strip-nulls`, `--carrier-offset`; from a radio
+  `--rate` (40M), `--bw` (56M) and `--block-seconds` (default the
+  radio's longest single capture): contiguous captures decoded one after
+  another, the TS discontinuous between them. Per-TS counters (packets,
+  RS clean / corrected / uncorrectable) and `--json`. Slots of no TS
+  (TS_ID FFFFh) are counted, not written. `--a-out/--b-out/--c-out`,
+  `--iq-format`, stdin and `--freq-corr-ppm` are refused (ISDB-T
+  options).
 
 ### `isdb loopback` — TX → software channel → RX
 
@@ -708,7 +718,9 @@ transmit with, over the in-memory `mock::MockRadio`):
 
 | Test | What it proves |
 |---|---|
-| `src/rx.rs` `sigmf_recordings_must_be_isdbt_rate` | `rx --iq` with SigMF metadata: a 40 Msps recording is refused with the pointer to `iq survey` / `iq tmcc`; a 512/63 MHz cs8 recording gives its data file and format; a conflicting `--iq-format` and cs16 are refused; without metadata the path and cf32 are used |
+| `src/rx.rs` `system_selection` | `--system auto` picks ISDB-S for BSn, ISDB-T for Tn and for files without SigMF metadata; an explicit system wins; ISDB-S options on ISDB-T and layer outputs on ISDB-S are refused |
+| `src/rxs.rs` `ts_id_forms`, `output_template_rules`, `outputs_split_by_ts_id` | ISDB-S output: TS_ID syntaxes; `--out` without `{ts_id}` needs exactly one `--ts-id`; one file per selected TS_ID, null packets stripped on request |
+| `src/rx.rs` `sigmf_recordings_must_be_isdbt_rate` | `rx --system isdbt --iq` with SigMF metadata: a 40 Msps recording is refused with the pointer to `--system isdbs` and `iq tmcc`; a 512/63 MHz cs8 recording gives its data file and format; a conflicting `--iq-format` and cs16 are refused; without metadata the path and cf32 are used |
 | `src/phyargs.rs` `freq_restricted_to_the_uhf_tv_band` | `--channel BS1` is refused by `rx` / `tx` (satellite channel) |
 | `tests/cli.rs` `tx_then_rx_reproduces_every_layer_byte_exact` | `isdb tx --iq` → `isdb rx --iq` returns every input packet of every layer byte-exact |
 | `tests/cli.rs` `mux_ts_is_split_by_pid` | `--mux-ts` routing by `--a-pids`, order preserved |

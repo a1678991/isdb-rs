@@ -123,14 +123,117 @@ frame sync and TMCC").
   ("one dummy slot is inserted for three active slots"), but only for a
   single unit at the end of the frame.
 - Interpretation: within each unit the valid slots come first, then its
-  dummy slots, unit after unit (`TmccInfo::slot_combinations`).
-- Confirmation: none yet; it matters only when the TS packets are
-  demultiplexed (Phase 3: on the CS transponders, QPSK 3/4 units of 4
-  slots, every fourth slot would be a dummy). Status: pending (Phase 3,
-  by RS success per slot).
+  dummy slots, unit after unit (`TmccInfo::slot_combinations`,
+  `mainsig::sent_slots`). Dummy slots are not transmitted (§8) but count
+  in the frame for the energy dispersal and the interleaver (they keep
+  their slot positions in the 48 × 204-byte frame).
+- Confirmation: on the 110° CS transponders (QPSK 3/4 × 48: 36 valid
+  slots in units of 4) every slot decodes RS(204,188)-clean with this
+  placement, whose PRBS bytes depend on the slot positions: ND2–ND20,
+  ≈ 140 000 packets, 0 uncorrectable (VERIFICATION.md "ISDB-S main signal
+  to TS"). A different placement would put the dispersal of a dummy
+  position on a sent slot and fail every RS word there. Status: confirmed
+  (live data).
 
 ## ts-unused: TS_ID value of unused table entries
 - Spec: BO.1408-1 Fig. 10 lists TM entries without saying what an unused
   one holds.
 - Observed: FFFFh in every unused entry of every lab transponder
   (`tmcc::UNUSED_TS_ID`). Status: observation (operational).
+
+## main-dispersal: the main signal's energy dispersal
+- Spec: BO.1408-1 §4, Fig. 5: "Loading of the sequence … shall be
+  initiated at the second byte of every super-frame. The first bit of the
+  output … shall be applied to the … MSB of the second byte of slot No. 1
+  in frame No. 1. The PRBS shall be added to the data except to the first
+  byte (MPEG sync byte) of every slot." Annexed table 48 別記 1:
+  "各スーパーフレームの先頭の１バイトを除き … 周期内のＴＳ同期バイトには
+  加算は行わないが、擬似乱数符号系列の発生は継続する".
+- Interpretation: one X¹⁵+X¹⁴+1 sequence over the superframe's 8 × 48 ×
+  204 bytes in slot order (dummy slots included), from the second byte;
+  the 384 sync-byte positions get no dispersal but still clock the PRBS
+  (`mainsig::dispersal`). Dispersal is applied before the interleaver
+  (Fig. 1 order: energy dispersal, then interleaver), so the receiver
+  removes it after de-interleaving, at the original byte positions.
+- Confirmation: `mainsig::tests::spec_dispersal_alignment`; RS(204,188)
+  succeeds on every packet of 19 lab transponders. Status: confirmed
+  (live data).
+
+## main-interleaver: read and write order of the inter-frame interleaver
+- Spec: BO.1408-1 §5 and Fig. 6: "The data in the original frame is read
+  out in the inter-frame direction, i.e., in the order of A1,1; A2,1;
+  A3,1; …, where Ai,j represents the byte data at j-th slot in i-th
+  frame, to form the interleaved frame. The data in the interleaved frame
+  is read out in the byte direction"; Fig. 6 prints the first interleaved
+  row as A1,1 A2,1 A3,1 … A3,26 and the second starting at A4,26. Annexed
+  table 48 別記 2: "８×２０３バイトのブロックインターリーブ … スーパーフレーム
+  方向で各フレームのスロット番号が同一のスロット間".
+- The text's "j-th slot" conflicts with the figure: the figure's index
+  runs over the 203 bytes of one slot (A1,1 … A1,203), and the annexed
+  table interleaves the slots of the same number across the 8 frames.
+- Interpretation: per slot number, an 8 × 203 matrix (row = frame, column
+  = byte after the sync byte) read column by column and written row by
+  row into the same slot of the 8 transmitted frames
+  (`mainsig::interleave_position`); the sync byte is not interleaved.
+- Confirmation: `mainsig::tests::spec_fig_6_interleaver` (the positions
+  Fig. 6 prints); RS(204,188)-clean decoding of every lab transponder
+  that has the SNR. Status: confirmed (spec figure and live data).
+
+## qpsk-map: which QPSK axis carries P1
+- Spec: annexed table 46 text: "四相位相変調 ０，０ （＋）４５度 ／ ０，１
+  （－）４５度 ／ １，０ （＋）１３５度 ／ １，１ （－）１３５度" with
+  "Ｐ１及びＰ０"; figure `-086` labels the points "[Ｐ１Ｐ０]" with 01 at
+  +135° and 10 at −45°, which is the other axis assignment. BO.1408-1
+  Fig. 15 b) labels "(P1, P0)" with 10 at upper left and 01 at lower
+  right, as the text.
+- Interpretation: the text and BO.1408: P1 = 0 ⇒ I > 0, P0 = 0 ⇒ Q > 0
+  (`demod::qpsk_point`).
+- Confirmation: only this reading decodes ND2 (288 of 288 packets
+  RS-clean in the first superframe; the swapped axes and the mirrored
+  spectrum give 0), `examples/mapprobe`. Status: confirmed (live data);
+  figure `-086` as extracted disagrees.
+
+## tc8psk-map: which inner-code output is C1
+- Spec: annexed table 49 figure: B1 → C2 uncoded; B0 → the K = 7 encoder
+  → "C1" (upper output) and "C0" (lower output) → puncturing; table 46:
+  8PSK points labelled [C2 C1 C0]. BO.1408-1 Fig. 15 a) labels the same
+  points "(W, Y, X)", i.e. C1 = Y (133₈) and C0 = X (171₈); Fig. 14 draws
+  X on top.
+- Interpretation: C1 = Y (133₈), C0 = X (171₈), as BO.1408-1 Fig. 15
+  (`demod::Mapping::tc8psk_c1_is_y`, the default). For QPSK and BPSK the
+  pair is (P1, P0) = (X, Y) as Table 2 says.
+- Confirmation: BS3: 19 968 of 19 968 packets RS-clean with C1 = Y, 0 with
+  C1 = X; BS1 the same (`examples/mapprobe`). Status: confirmed (live
+  data).
+
+## tc8psk-decoding: how the uncoded bit is decided
+- Spec: BO.1408-1 §9 and annexed table 49 only define the transmitter.
+- Design (not a spec reading): the 8 points of table 46 are set-partitioned
+  by (C1, C0): for each pair the two values of C2 are antipodal. Viterbi
+  runs on the coded bit with the branch metric max(|Re z·p̄|) over each
+  subset (the likelier of its two points), and C2 is decided afterwards
+  from the sign of Re z·p̄ against the subset of the decoded (C1, C0)
+  (`demod::decode_frame`). Bytes are rebuilt MSB first, alternately B1
+  (C2) and B0 (BO.1408-1 §9: "B1 and B0 are two successive bits of a
+  byte data (B1 represents the higher order bit)").
+- Confirmation: RS-clean decoding of every BS transponder (unit test at
+  12 dB SNR: fewer than 0.5 % byte errors before RS). Status: design.
+
+## inner-code-frames: one encoder through the frame, known at both ends
+- Spec: BO.1408-1 §6.3: the W words' first 6 bits flush the encoder
+  memory; Fig. 12 and Fig. 14: one encoder for TMCC and main signal.
+- Interpretation: the encoder runs on from the header's W2/W3 into the
+  main signal and on into the next frame's W1. The decoder starts in the
+  state the W2/W3 word leaves (its last six bits) and ends on the next
+  W1, which it knows (`isdb_fec::ViterbiDecoder::with_state`,
+  `push_known`). Bursts are not coded (they are inserted after the inner
+  coder, Fig. 1).
+- Confirmation: RS-clean decoding of the last slot of every frame (the
+  bytes the known end protects). Status: confirmed (live data).
+
+## unassigned-slots: slots whose relative TS ID names an unused entry
+- Observed: on four BS transponders some slots carry a relative TS ID
+  whose TS_ID entry is FFFFh; all their packets are null packets (PID
+  0x1FFF) and decode RS-clean.
+- Interpretation: such slots belong to no TS; `isdb rx` counts them and
+  writes no file for them. Status: observation (operational).
