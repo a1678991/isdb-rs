@@ -23,7 +23,8 @@ def main(argv):
     taps = int(argv[2]) if len(argv) > 2 else p["taps"]
     h = [(row + [0] * taps)[:taps] for row in p["h"]]
     g = [(row + [0] * taps)[:taps] for row in p["g"]]
-    dut = SymbolsRx(taps, doc["cos_table"], h, g)
+    k = [(row + [0] * taps)[:taps] for row in p.get("k", p["h"])]
+    dut = SymbolsRx(taps, doc["cos_table"], h, g, k)
     ports = dut.ports()
     out_dir = os.path.join(os.path.dirname(__file__), "..", "build")
     os.makedirs(out_dir, exist_ok=True)

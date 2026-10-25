@@ -120,6 +120,8 @@ run = [
   "mkdir -p fpga/build",
   "cargo run -q --release --locked -p isdb-frontend --example vectors -- fpga/build/vec-1-s-t16.json - s 16 3000 5 8",
   "cargo run -q --release --locked -p isdb-frontend --example vectors -- fpga/build/vec-2-s3-t32.json - s3 32 3000 6 8",
+  "cargo run -q --release --locked -p isdb-frontend --example vectors -- fpga/build/vec-3-s3-t32-trim.json - s3 32 3000 6 8 -0.17",
+  "cargo run -q --release --locked -p isdb-frontend --example vectors -- fpga/build/vec-4-s-t32-trim.json - s 32 3000 6 8 -0.075",
 ]
 
 [tasks."fpga:test"]

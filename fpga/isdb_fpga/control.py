@@ -39,6 +39,7 @@ STATUS = 0x10
 SYMBOLS = 0x11
 H_BASE = 0x1000
 G_BASE = 0x2000
+K_BASE = 0x3000
 
 OP_NOP, OP_ADDR, OP_HI, OP_WRITE, OP_READ, OP_CTRL, OP_WRITE_S = range(7)
 CTRL_RUN, CTRL_START, CTRL_SYMBOLS = 1, 2, 4
@@ -86,6 +87,7 @@ class Control(Elaboratable):
             core.c_tap.eq(addr[:6]),
             core.c_h.eq(value[:18]),
             core.c_g.eq(value[:18]),
+            core.c_k.eq(value[:18]),
         ]
         m.d.sync += core.start.eq(0)
         with m.If(go):
@@ -105,6 +107,7 @@ class Control(Elaboratable):
                     m.d.comb += [
                         core.c_we_h.eq(addr[12:] == H_BASE >> 12),
                         core.c_we_g.eq(addr[12:] == G_BASE >> 12),
+                        core.c_we_k.eq(addr[12:] == K_BASE >> 12),
                     ]
                 with m.Case(OP_READ):
                     m.d.sync += show_read.eq(1)

@@ -1,4 +1,4 @@
-"""Single-carrier front end (IQ -> Symbols), format version 1.
+"""Single-carrier front end (IQ -> Symbols), format version 2.
 
 The FPGA implementation of `isdb_frontend::fixed::Frontend` (Rust,
 crates/isdb-frontend/src/fixed.rs). The model's module documentation is
@@ -15,8 +15,10 @@ update and advances t_acc. For a due symbol ("Dk" is k cycles after D0;
 a value "at Dk" is held in a register during Dk):
 
   D1..D4   coefficient read and tap selection, cycle j: tap j*L + l (lane l)
-  D2..D5   products;  D3..D6 lane sums;  D4..D7 accumulation
-  D9  y, dy   D10 y*G   D11 z, dz   D12 q, TED and power products
+  D2..D5   products (h, g and the output bank k);  D3..D6 lane sums;
+  D4..D7 accumulation
+  D9  y, dy, yk   D10 *G   D11 z, dz, zk   D12 q (from zk), TED (z, dz)
+  and power (zk) products
   D13 e, err (the symbol's internals, `s_*`)   D14 kp*e, ki*e, AGC step
   D15 rounded loop terms;  D16 queued for the commit of symbol k + 6
 
@@ -31,8 +33,8 @@ next loop state (ready 3 cycles after any commit) both fit.
 from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal, signed, unsigned
 from amaranth.lib.memory import Memory
 
-# Constants of format version 1 (crates/isdb-frontend/src/params.rs).
-FORMAT_VERSION = 1
+# Constants of format version 2 (crates/isdb-frontend/src/params.rs).
+FORMAT_VERSION = 2
 PHASES = 64
 PHASE_BITS = 6
 FRAC_BITS = 24
@@ -127,18 +129,22 @@ class SymbolFrontend(Elaboratable):
                              values (set the registers first);
       i_valid, i_i, i_q      input sample;
       o_valid, o_word        output words (at most one per cycle);
-      c_we_h, c_we_g, c_phase, c_tap, c_h, c_g
-                             coefficient load (h and/or g of one tap per cycle);
+      c_we_h, c_we_g, c_we_k, c_phase, c_tap, c_h, c_g, c_k
+                             coefficient load (h, g and/or k of one tap per
+                             cycle);
       s_valid, s_*           the internals of each symbol (verification).
     """
 
-    def __init__(self, taps, cos_table, h=None, g=None):
+    def __init__(self, taps, cos_table, h=None, g=None, k=None):
         assert taps % CYCLES == 0 and CYCLES <= taps <= 64
         self.taps = taps
         self.lanes = taps // CYCLES
         self.cos_table = list(cos_table)
         self.h = h
         self.g = g
+        # Without an output bank the core starts with k = h (format 1's
+        # output); the host loads k with the trim.
+        self.k = k if k is not None else h
         self.regs = Registers()
         self.start = Signal()
         self.i_valid = Signal()
@@ -148,18 +154,22 @@ class SymbolFrontend(Elaboratable):
         self.o_word = Signal(16)
         self.c_we_h = Signal()
         self.c_we_g = Signal()
+        self.c_we_k = Signal()
         self.c_phase = Signal(PHASE_BITS)
         self.c_tap = Signal(6)
         self.c_h = Signal(signed(COEF_BITS))
         self.c_g = Signal(signed(COEF_BITS))
+        self.c_k = Signal(signed(COEF_BITS))
         self.s_valid = Signal()
         self.s_phase = Signal(PHASE_BITS)
         self.s_y = [Signal(signed(16), name=f"s_y{i}") for i in range(2)]
         self.s_dy = [Signal(signed(16), name=f"s_dy{i}") for i in range(2)]
+        self.s_yk = [Signal(signed(16), name=f"s_yk{i}") for i in range(2)]
         self.s_gain = Signal(16)
         self.s_period = Signal(32)
         self.s_z = [Signal(signed(16), name=f"s_z{i}") for i in range(2)]
         self.s_dz = [Signal(signed(16), name=f"s_dz{i}") for i in range(2)]
+        self.s_zk = [Signal(signed(16), name=f"s_zk{i}") for i in range(2)]
         self.s_q = [Signal(signed(8), name=f"s_q{i}") for i in range(2)]
         self.s_e = Signal(signed(24))
         self.s_err = Signal(signed(33))
@@ -301,8 +311,11 @@ class SymbolFrontend(Elaboratable):
                     t = jj * L + lane
                     hv = self.h[ph][t] if self.h else 0
                     gv = self.g[ph][t] if self.g else 0
-                    init.append((hv & 0x3FFFF) | ((gv & 0x3FFFF) << 18))
-            mem = Memory(shape=unsigned(36), depth=PHASES * CYCLES, init=init)
+                    kv = self.k[ph][t] if self.k else 0
+                    init.append(
+                        (hv & 0x3FFFF) | ((gv & 0x3FFFF) << 18) | ((kv & 0x3FFFF) << 36)
+                    )
+            mem = Memory(shape=unsigned(54), depth=PHASES * CYCLES, init=init)
             m.submodules[f"coef{lane}"] = mem
             rp = mem.read_port()
             m.d.comb += rp.addr.eq(Cat(j, k_phase))
@@ -312,31 +325,34 @@ class SymbolFrontend(Elaboratable):
             wp = mem.write_port(granularity=18)
             hit = ((self.c_tap % L) == lane) & (self.c_tap < self.taps)
             m.d.comb += [
-                wp.en.eq(Cat(self.c_we_h & hit, self.c_we_g & hit)),
+                wp.en.eq(Cat(self.c_we_h & hit, self.c_we_g & hit, self.c_we_k & hit)),
                 wp.addr.eq(Cat((self.c_tap // L)[:2], self.c_phase)),
-                wp.data.eq(Cat(self.c_h, self.c_g)),
+                wp.data.eq(Cat(self.c_h, self.c_g, self.c_k)),
             ]
             hc = rp.data[:18].as_signed()
-            gc = rp.data[18:].as_signed()
-            pr = [Signal(signed(32), name=f"pr{lane}_{k}") for k in range(4)]
+            gc = rp.data[18:36].as_signed()
+            kc = rp.data[36:].as_signed()
+            pr = [Signal(signed(32), name=f"pr{lane}_{k}") for k in range(6)]
             m.d.sync += [
                 pr[0].eq(hc * tap_i[lane]),
                 pr[1].eq(hc * tap_q[lane]),
                 pr[2].eq(gc * tap_i[lane]),
                 pr[3].eq(gc * tap_q[lane]),
+                pr[4].eq(kc * tap_i[lane]),
+                pr[5].eq(kc * tap_q[lane]),
             ]
             prods.append(pr)
-        part = [Signal(signed(40), name=f"part{k}") for k in range(4)]
-        for k in range(4):
+        part = [Signal(signed(40), name=f"part{k}") for k in range(6)]
+        for k in range(6):
             total = prods[0][k]
             for lane in range(1, L):
                 total = total + prods[lane][k]
             m.d.sync += part[k].eq(total)
-        acc = [Signal(signed(44), name=f"acc{k}") for k in range(4)]
+        acc = [Signal(signed(44), name=f"acc{k}") for k in range(6)]
         with m.If(at(4)):
-            m.d.sync += [acc[k].eq(part[k]) for k in range(4)]
+            m.d.sync += [acc[k].eq(part[k]) for k in range(6)]
         with m.Elif(at(5) | at(6) | at(7)):
-            m.d.sync += [acc[k].eq(acc[k] + part[k]) for k in range(4)]
+            m.d.sync += [acc[k].eq(acc[k] + part[k]) for k in range(6)]
 
         # Context down the pipeline: k_* hold a symbol's values from D1 to
         # its successor's D0 (>= D4); a free-running delay line of n
@@ -349,30 +365,35 @@ class SymbolFrontend(Elaboratable):
         # ---- D9: y, dy ---------------------------------------------------
         y = [Signal(signed(16), name=f"y{i}") for i in range(2)]
         dy = [Signal(signed(16), name=f"dy{i}") for i in range(2)]
+        yk = [Signal(signed(16), name=f"yk{i}") for i in range(2)]
         with m.If(at(8)):
             for i in range(2):
                 m.d.sync += [
                     y[i].eq(sat(round_shift_const(acc[i], FILTER_SHIFT), -32768, 32767)),
                     dy[i].eq(sat(round_shift_const(acc[2 + i], FILTER_SHIFT), -32768, 32767)),
+                    yk[i].eq(sat(round_shift_const(acc[4 + i], FILTER_SHIFT), -32768, 32767)),
                 ]
         # ---- D10: gain products -------------------------------------------
-        gp = [Signal(signed(34), name=f"gp{i}") for i in range(4)]
+        gp = [Signal(signed(34), name=f"gp{i}") for i in range(6)]
         gain_s = Cat(gain_d9, Const(0, 1)).as_signed()
         with m.If(at(9)):
             m.d.sync += [
                 gp[0].eq(y[0] * gain_s), gp[1].eq(y[1] * gain_s),
                 gp[2].eq(dy[0] * gain_s), gp[3].eq(dy[1] * gain_s),
+                gp[4].eq(yk[0] * gain_s), gp[5].eq(yk[1] * gain_s),
             ]
-        # ---- D11: z, dz ----------------------------------------------------
+        # ---- D11: z, dz, zk -------------------------------------------------
         z = [Signal(signed(16), name=f"z{i}") for i in range(2)]
         dz = [Signal(signed(16), name=f"dz{i}") for i in range(2)]
+        zk = [Signal(signed(16), name=f"zk{i}") for i in range(2)]
         with m.If(at(10)):
             for i in range(2):
                 m.d.sync += [
                     z[i].eq(sat(round_shift_const(gp[i], GAIN_FRAC_BITS), -32768, 32767)),
                     dz[i].eq(sat(round_shift_const(gp[2 + i], GAIN_FRAC_BITS), -32768, 32767)),
+                    zk[i].eq(sat(round_shift_const(gp[4 + i], GAIN_FRAC_BITS), -32768, 32767)),
                 ]
-        # ---- D12: quantiser, TED and power products --------------------
+        # ---- D12: quantiser (zk), TED (z, dz) and power (zk) products ---
         lim = Array(Const(1 << max(b - 1, 0), signed(10)) for b in range(16))[r.bits]
         qv = [Signal(signed(8), name=f"q{i}") for i in range(2)]
         tp = [Signal(signed(32), name=f"tp{i}") for i in range(2)]
@@ -380,9 +401,9 @@ class SymbolFrontend(Elaboratable):
         with m.If(at(11)):
             for i in range(2):
                 m.d.sync += [
-                    qv[i].eq(sat(round_shift_var(z[i], r.q_shift), -lim, lim - 1)),
+                    qv[i].eq(sat(round_shift_var(zk[i], r.q_shift), -lim, lim - 1)),
                     tp[i].eq(z[i] * dz[i]),
-                    pw[i].eq(z[i] * z[i]),
+                    pw[i].eq(zk[i] * zk[i]),
                 ]
         # ---- D13: e, err ---------------------------------------------------
         e = Signal(signed(24))
@@ -425,8 +446,10 @@ class SymbolFrontend(Elaboratable):
             m.d.comb += [
                 self.s_y[i].eq(delayed(y[i], 4, f"sy{i}")),
                 self.s_dy[i].eq(delayed(dy[i], 4, f"sdy{i}")),
+                self.s_yk[i].eq(delayed(yk[i], 4, f"syk{i}")),
                 self.s_z[i].eq(delayed(z[i], 2, f"sz{i}")),
                 self.s_dz[i].eq(delayed(dz[i], 2, f"sdz{i}")),
+                self.s_zk[i].eq(delayed(zk[i], 2, f"szk{i}")),
                 self.s_q[i].eq(delayed(qv[i], 1, f"sq{i}")),
             ]
 

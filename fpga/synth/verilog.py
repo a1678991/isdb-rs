@@ -26,7 +26,8 @@ def main(argv):
     p = doc["params"]
     h = [(row + [0] * taps)[:taps] for row in p["h"]]
     g = [(row + [0] * taps)[:taps] for row in p["g"]]
-    dut = SymbolsRx(taps, doc["cos_table"], h, g)
+    k = [(row + [0] * taps)[:taps] for row in p.get("k", p["h"])]
+    dut = SymbolsRx(taps, doc["cos_table"], h, g, k)
     il = out + ".il"
     with open(il, "w") as f:
         f.write(rtlil.convert(dut, name="isdb_symbols_rx", ports=dut.ports()))

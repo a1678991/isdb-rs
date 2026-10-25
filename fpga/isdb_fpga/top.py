@@ -25,8 +25,8 @@ from .frontend import SymbolFrontend
 
 
 class SymbolsRx(Elaboratable):
-    def __init__(self, taps, cos_table, h=None, g=None):
-        self.core = SymbolFrontend(taps, cos_table, h, g)
+    def __init__(self, taps, cos_table, h=None, g=None, k=None):
+        self.core = SymbolFrontend(taps, cos_table, h, g, k)
         self.control = Control(self.core)
         self.adc_valid = Signal()
         self.adc_i = Signal(signed(16))

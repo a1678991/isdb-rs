@@ -70,6 +70,16 @@ def vector_files():
     return sorted(glob.glob(os.path.join(VECTORS, "*.json")))
 
 
+def trimmed_vector():
+    """A vector set whose output bank differs from h (a nonzero trim), so
+    the load paths are tested on k too; the first set otherwise."""
+    for path in vector_files():
+        doc = load(path)
+        if doc["params"]["k"] != doc["params"]["h"]:
+            return path
+    return vector_files()[0]
+
+
 @unittest.skipUnless(vector_files(), f"no test vectors in {VECTORS} (mise run fpga:vectors)")
 class VectorTest(unittest.TestCase):
     def test_bit_exact_regular_strobe(self):
@@ -80,19 +90,31 @@ class VectorTest(unittest.TestCase):
                 self.assertEqual(compare(doc, syms, words), [])
 
     def test_bit_exact_irregular_strobe_and_coefficient_load(self):
-        path = vector_files()[0]
+        path = trimmed_vector()
         doc = load(path)
         syms, words = simulate(doc, jitter=True, load_port=True)
         self.assertEqual(compare(doc, syms, words), [])
 
     def test_configured_through_gpio(self):
-        path = vector_files()[0]
+        path = trimmed_vector()
         doc = load(path)
         words, problems = simulate_top(doc)
         self.assertEqual(problems, [])
         ew = doc["words"]
         self.assertIn(len(ew) - len(words), range(0, 3))
         self.assertEqual(words, ew[: len(words)])
+
+
+    def test_a_wrong_output_bank_is_caught(self):
+        """One coefficient of k off by one: the comparison must fail (the
+        output path is really compared, not only the loop's)."""
+        doc = load(trimmed_vector())
+        k = doc["params"]["k"]
+        ph, t = 0, len(k[0]) // 2
+        k[ph][t] += 1
+        syms, words = simulate(doc)
+        doc["params"]["k"][ph][t] -= 1
+        self.assertNotEqual(compare(doc, syms, words), [])
 
 
 if __name__ == "__main__":

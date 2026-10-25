@@ -15,7 +15,7 @@ from .control import ID_MAGIC
 from .frontend import CYCLES, FORMAT_VERSION, SymbolFrontend
 from .top import SymbolsRx
 
-FIELDS = ("phase", "y", "dy", "gain", "period", "z", "dz", "q", "e", "err")
+FIELDS = ("phase", "y", "dy", "yk", "gain", "period", "z", "dz", "zk", "q", "e", "err")
 
 
 def load(path):
@@ -34,7 +34,7 @@ def simulate(doc, jitter=False, load_port=False, seed=1):
     if load_port:
         dut = SymbolFrontend(taps, doc["cos_table"])
     else:
-        dut = SymbolFrontend(taps, doc["cos_table"], p["h"], p["g"])
+        dut = SymbolFrontend(taps, doc["cos_table"], p["h"], p["g"], p["k"])
     sim = Simulator(dut)
     sim.add_clock(1e-8)
     syms, words = [], []
@@ -46,10 +46,12 @@ def simulate(doc, jitter=False, load_port=False, seed=1):
                 "phase": ctx.get(dut.s_phase),
                 "y": [ctx.get(s) for s in dut.s_y],
                 "dy": [ctx.get(s) for s in dut.s_dy],
+                "yk": [ctx.get(s) for s in dut.s_yk],
                 "gain": ctx.get(dut.s_gain),
                 "period": ctx.get(dut.s_period),
                 "z": [ctx.get(s) for s in dut.s_z],
                 "dz": [ctx.get(s) for s in dut.s_dz],
+                "zk": [ctx.get(s) for s in dut.s_zk],
                 "q": [ctx.get(s) for s in dut.s_q],
                 "e": ctx.get(dut.s_e),
                 "err": ctx.get(dut.s_err),
@@ -70,13 +72,16 @@ def simulate(doc, jitter=False, load_port=False, seed=1):
                 for t in range(taps):
                     ctx.set(dut.c_we_h, 1)
                     ctx.set(dut.c_we_g, 1)
+                    ctx.set(dut.c_we_k, 1)
                     ctx.set(dut.c_phase, ph)
                     ctx.set(dut.c_tap, t)
                     ctx.set(dut.c_h, p["h"][ph][t])
                     ctx.set(dut.c_g, p["g"][ph][t])
+                    ctx.set(dut.c_k, p["k"][ph][t])
                     await tick()
             ctx.set(dut.c_we_h, 0)
             ctx.set(dut.c_we_g, 0)
+            ctx.set(dut.c_we_k, 0)
         ctx.set(dut.start, 1)
         await tick()
         ctx.set(dut.start, 0)

@@ -1,11 +1,13 @@
 //! Write FPGA test vectors (JSON, `isdb_frontend::vectors`) for the HDL
 //! simulation in `fpga/`.
 //!
-//! cargo run -p isdb-frontend --example vectors -- OUT.json [REC [s|s3] [TAPS] [SAMPLES] [BITS] [BLOCK_LOG2]]
+//! cargo run -p isdb-frontend --example vectors -- OUT.json [REC [s|s3] [TAPS] [SAMPLES] [BITS] [BLOCK_LOG2] [TRIM]]
 //!
 //! With a SigMF recording the input is its first samples (12-bit domain)
 //! and the parameters are designed for the system at the recording's rate
 //! and carrier offset; without one, a synthetic QPSK pulse train at 40 Msps.
+//! TRIM (symbol periods, default 0) sets the output bank (format 2): a
+//! nonzero trim makes `k` differ from `h`, so the vectors test that path.
 
 use isdb_frontend::params::{Design, Params};
 use isdb_frontend::tables::rrc;
@@ -23,6 +25,7 @@ fn main() {
     let n: usize = arg(5, "6000").parse().unwrap();
     let bits: u8 = arg(6, "6").parse().unwrap();
     let block_log2: u8 = arg(7, "8").parse().unwrap();
+    let trim: f64 = arg(8, "0").parse().unwrap();
     let (rs, alpha) = if system == "s3" {
         (33.7561e6, 0.03)
     } else {
@@ -77,6 +80,7 @@ fn main() {
     d.taps = taps;
     d.bits = bits;
     d.block_log2 = block_log2;
+    d.trim = trim;
     // Wider loops than for reception, so the test exercises them (ISDB-S3's
     // small timing-detector slope limits its integral gain register).
     d.loop_bandwidth = if alpha < 0.1 { 2e-4 } else { 2e-3 };
