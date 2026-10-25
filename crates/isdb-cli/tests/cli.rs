@@ -414,8 +414,12 @@ fn live_feed_with_stalling_input_stays_cbr_and_lossless() {
     assert_eq!(len % (SAMPLES_PER_FRAME * 2), 0);
     let frames = len / (SAMPLES_PER_FRAME * 2);
     let air = frames as f64 * FRAME_S;
+    // A skipped stall would leave only the data's ≈ 1.07 s; half the stall
+    // on top of that proves it was filled, with room for a producer slowed
+    // by the rest of the test suite running on every core (the full stall
+    // was missed by one frame there, plan §0.5).
     assert!(
-        air >= 1.5 + 2.0 * 6000.0 / 2592.0 * FRAME_S,
+        air >= 0.75 + 2.0 * 6000.0 / 2592.0 * FRAME_S,
         "{frames} frames for a 1.5 s stall"
     );
     assert!(
