@@ -12,7 +12,7 @@ readme = "README.md"
 keywords = ["isdb", "reed-solomon", "viterbi", "fec", "arib"]
 categories = ["algorithms", "encoding", "science"]
 # Ship sources and docs only.
-include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
+include = ["/src/**", "/build.rs", "/README.md", "/LICENSE", "/NOTICE"]
 
 [dependencies]
 thiserror.workspace = true

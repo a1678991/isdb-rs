@@ -13,11 +13,14 @@
 //! `isdbs-core`. Coded bits are `u8` 0/1 values; soft bits are `f32` LLRs
 //! ln P(b=0)/P(b=1).
 
+#![cfg_attr(isdb_fec_portable_simd, feature(portable_simd))]
+
 pub mod bch;
 pub mod conv;
 pub mod ldpc;
 pub mod prbs;
 pub mod rs;
+pub mod simd;
 
 #[cfg(test)]
 pub(crate) mod testutil;

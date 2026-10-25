@@ -19,6 +19,8 @@
 
 use std::sync::Arc;
 
+pub mod fixed;
+
 /// Information bits per address-table row.
 pub const GROUP: usize = 374;
 
