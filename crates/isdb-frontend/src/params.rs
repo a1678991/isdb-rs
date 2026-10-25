@@ -1,4 +1,4 @@
-//! The front end's fixed architecture constants (format version 2) and its
+//! The front end's fixed architecture constants (format version 3) and its
 //! run-time parameters (the registers of the FPGA implementation).
 
 use crate::tables;
@@ -11,10 +11,18 @@ use crate::tables;
 /// the output instant can sit a fixed trim away from where the loop locks
 /// (ISDB-S3: crate README, "The timing trim"). The word layout is the
 /// same as version 1; with `k == h` the output is version 1's.
-pub const FORMAT_VERSION: u16 = 2;
+///
+/// Version 3 keeps version 2's arithmetic and changes only the block
+/// trailer: a CRC-32C of the sequence number and payload (two words)
+/// instead of a CRC-16 (one word); see [`crate::format`].
+pub const FORMAT_VERSION: u16 = 3;
 /// Oldest `Symbols` format version a [`crate::format::Reader`] accepts
-/// (the layout has not changed since).
+/// (header and payload layout unchanged since; the trailer per version).
 pub const MIN_READ_VERSION: u16 = 1;
+/// Oldest front-end version whose arithmetic is [`FORMAT_VERSION`]'s
+/// (version 2 differs from 3 only in the trailer): a device reporting a
+/// version from here up is driven with the same parameters.
+pub const MIN_ARITH_VERSION: u16 = 2;
 
 /// Phases of the polyphase matched-filter banks (the fractional-delay
 /// resolution of the timing recovery, 1/64 sample).

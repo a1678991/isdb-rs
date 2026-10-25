@@ -482,7 +482,11 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
     let out = a.out.as_ref().context("--out")?;
     let use_fpga = match (a.offload, fpga) {
         (OffloadArg::Cpu, _) => false,
-        (_, Some((v, t))) if v == isdb_frontend::params::FORMAT_VERSION => {
+        (_, Some((v, t)))
+            if (isdb_frontend::params::MIN_ARITH_VERSION
+                ..=isdb_frontend::params::FORMAT_VERSION)
+                .contains(&v) =>
+        {
             if t != a.fe.taps {
                 eprintln!("[symbols] using the device's {t} taps");
             }

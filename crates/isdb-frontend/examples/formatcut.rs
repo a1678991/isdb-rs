@@ -1,10 +1,12 @@
 //! Replay one cut of the `Symbols` loss test and print what the reader
-//! delivers, block by block (development tool for the failing proptest
-//! seed `bits = 5, cut_at = 208, cut_len = 282`).
+//! delivers, block by block (development tool for the proptest seed
+//! `bits = 5, cut_at = 208, cut_len = 282`, which spliced a block past the
+//! version-2 CRC-16 before the framing check). `VERSION` selects the
+//! format written (default 2; 3 has the CRC-32C trailer).
 //!
-//! cargo run --release -p isdb-frontend --example formatcut -- [BITS CUT_AT CUT_LEN]
+//! cargo run --release -p isdb-frontend --example formatcut -- [BITS CUT_AT CUT_LEN [VERSION]]
 
-use isdb_frontend::format::{Event, HEADER_WORDS, Packer, Reader, TRAILER_WORDS};
+use isdb_frontend::format::{Event, HEADER_WORDS, Packer, Reader, trailer_words};
 use isdb_frontend::params::{Design, Params};
 
 fn main() {
@@ -12,9 +14,10 @@ fn main() {
         .skip(1)
         .map(|s| s.parse().unwrap())
         .collect();
-    let (bits, cut_at, cut_len) = match a[..] {
-        [b, c, l] => (b as u8, c, l),
-        _ => (5, 208, 282),
+    let (bits, cut_at, cut_len, version) = match a[..] {
+        [b, c, l, v] => (b as u8, c, l, v as u16),
+        [b, c, l] => (b as u8, c, l, 2),
+        _ => (5, 208, 282, 2),
     };
     let l = 256usize;
     let mut d = Design::new(40e6, 28.86e6, 0.35);
@@ -24,16 +27,16 @@ fn main() {
     let syms: Vec<[i8; 2]> = (0..l * 8)
         .map(|i| [(i % 3) as i8 - 1, (i % 2) as i8])
         .collect();
-    let mut pk = Packer::new(&p);
+    let mut pk = Packer::with_version(&p, version);
     let mut words = Vec::new();
     for &s in &syms {
         pk.push(s, 1024, 1 << 24, &mut words);
     }
-    let block_words = HEADER_WORDS + l * 2 * usize::from(bits) / 16 + TRAILER_WORDS;
+    let block_words = HEADER_WORDS + l * 2 * usize::from(bits) / 16 + trailer_words(version);
     let cut_at = cut_at.min(words.len() - 1);
     let cut_end = (cut_at + cut_len).min(words.len());
     println!(
-        "{} words, {block_words} per block; cut words {cut_at}..{cut_end} (blocks {}..={})",
+        "version {version}: {} words, {block_words} per block; cut words {cut_at}..{cut_end} (blocks {}..={})",
         words.len(),
         cut_at / block_words,
         (cut_end - 1) / block_words

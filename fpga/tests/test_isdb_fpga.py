@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from amaranth.hdl import Elaboratable, Module, Signal  # noqa: E402
 from amaranth.sim import Simulator  # noqa: E402
 
-from isdb_fpga.frontend import crc16_word  # noqa: E402
+from isdb_fpga.frontend import crc32c_word, crc32c_word_terms  # noqa: E402
 from isdb_fpga.sim import compare, load, simulate, simulate_top  # noqa: E402
 
 VECTORS = os.environ.get(
@@ -25,32 +25,57 @@ VECTORS = os.environ.get(
 )
 
 
-def crc16_ref(crc, word):
-    for bit in reversed(range(16)):
-        fb = ((crc >> 15) ^ (word >> bit)) & 1
-        crc = ((crc << 1) & 0xFFFF) ^ (0x1021 if fb else 0)
+def crc32c_ref(crc, word):
+    """Bit-serial reflected CRC-32C register over a 16-bit word, bit 0
+    first (no initial value or final XOR)."""
+    for bit in range(16):
+        fb = (crc ^ (word >> bit)) & 1
+        crc = (crc >> 1) ^ (0x82F63B78 if fb else 0)
     return crc
+
+
+def crc32c_bytes(data):
+    """The standard CRC-32/ISCSI of `data` through the word reference
+    (pads nothing: even lengths only)."""
+    crc = 0xFFFFFFFF
+    for i in range(0, len(data), 2):
+        crc = crc32c_ref(crc, data[i] | data[i + 1] << 8)
+    return crc ^ 0xFFFFFFFF
 
 
 class Crc(Elaboratable):
     def __init__(self):
-        self.crc = Signal(16)
+        self.crc = Signal(32)
         self.word = Signal(16)
-        self.out = Signal(16)
+        self.out = Signal(32)
 
     def elaborate(self, platform):
         m = Module()
-        m.d.comb += self.out.eq(crc16_word(self.crc, self.word))
+        m.d.comb += self.out.eq(crc32c_word(self.crc, self.word))
         return m
 
 
 class CrcTest(unittest.TestCase):
-    def test_crc16_word_matches_the_bitwise_definition(self):
+    def test_reference_is_the_standard_crc32c(self):
+        # CRC-32/ISCSI check value; "123456789" has an odd length, so check
+        # the even-length "12345678" against a bytewise reference too.
+        def bytewise(data):
+            crc = 0xFFFFFFFF
+            for b in data:
+                crc ^= b
+                for _ in range(8):
+                    crc = (crc >> 1) ^ (0x82F63B78 if crc & 1 else 0)
+            return crc ^ 0xFFFFFFFF
+
+        self.assertEqual(bytewise(b"123456789"), 0xE3069283)
+        self.assertEqual(crc32c_bytes(b"12345678"), bytewise(b"12345678"))
+
+    def test_crc32c_word_matches_the_bitwise_definition(self):
         dut = Crc()
         sim = Simulator(dut)
         rng = random.Random(7)
-        cases = [(0, 0x3132), (0xFFFF, 0), (0x1234, 0xFC1D)]
-        cases += [(rng.randrange(1 << 16), rng.randrange(1 << 16)) for _ in range(200)]
+        cases = [(0xFFFFFFFF, 0x3231), (0, 0), (0x12345678, 0xFC1D)]
+        cases += [(rng.randrange(1 << 32), rng.randrange(1 << 16)) for _ in range(300)]
         bad = []
 
         async def bench(ctx):
@@ -58,12 +83,18 @@ class CrcTest(unittest.TestCase):
                 ctx.set(dut.crc, c)
                 ctx.set(dut.word, w)
                 await ctx.delay(1e-9)
-                if ctx.get(dut.out) != crc16_ref(c, w):
+                if ctx.get(dut.out) != crc32c_ref(c, w):
                     bad.append((c, w))
 
         sim.add_testbench(bench)
         sim.run()
         self.assertEqual(bad, [])
+
+    def test_crc32c_word_is_one_xor_level_wide(self):
+        # every output bit is a single XOR of register and word bits:
+        # report the widest (the logic depth that timing depends on)
+        widest = max(len(t) for t in crc32c_word_terms())
+        self.assertLessEqual(widest, 32)
 
 
 def vector_files():

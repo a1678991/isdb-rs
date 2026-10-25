@@ -29,7 +29,7 @@
 //! (Tezuka v0.3.24 leaves the input unconnected), so discovery is one
 //! register read and changes nothing.
 
-use crate::params::{FORMAT_VERSION, PHASES, Params};
+use crate::params::{FORMAT_VERSION, MIN_ARITH_VERSION, PHASES, Params};
 
 /// Magic of the ID word, bits 31–16.
 pub const ID_MAGIC: u16 = 0x15DB;
@@ -138,9 +138,12 @@ impl Identity {
         u32::from(ID_MAGIC) << 16 | u32::from(self.version & 0xF) << 12 | (self.taps as u32 & 0xFF)
     }
 
-    /// Whether this host can drive it (same format, enough taps for `p`).
+    /// Whether this host can drive it: the same arithmetic (versions
+    /// [`MIN_ARITH_VERSION`] to [`FORMAT_VERSION`]: 2 and 3 differ only in
+    /// the block trailer, which the reader takes per block) and `p`'s
+    /// taps.
     pub fn supports(&self, p: &Params) -> bool {
-        self.version == FORMAT_VERSION && self.taps == p.taps()
+        (MIN_ARITH_VERSION..=FORMAT_VERSION).contains(&self.version) && self.taps == p.taps()
     }
 }
 
@@ -262,6 +265,26 @@ mod tests {
         assert_eq!(id.word(), 0x15DB_2020);
         assert_eq!(Identity::parse(id.word()), Some(id));
         assert_eq!(Identity::parse(0), None);
+    }
+
+    #[test]
+    fn versions_2_and_3_share_the_arithmetic_1_does_not() {
+        let p = Params::design(&Design::new(40e6, 28.86e6, 0.35)).unwrap();
+        let id = |version| Identity {
+            version,
+            taps: p.taps(),
+        };
+        assert!(id(3).supports(&p));
+        assert!(id(2).supports(&p));
+        assert!(!id(1).supports(&p));
+        assert!(!id(4).supports(&p));
+        assert!(
+            !Identity {
+                version: 3,
+                taps: p.taps() + 2
+            }
+            .supports(&p)
+        );
     }
 
     #[test]

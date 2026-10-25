@@ -33,8 +33,8 @@ next loop state (ready 3 cycles after any commit) both fit.
 from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal, signed, unsigned
 from amaranth.lib.memory import Memory
 
-# Constants of format version 2 (crates/isdb-frontend/src/params.rs).
-FORMAT_VERSION = 2
+# Constants of format version 3 (crates/isdb-frontend/src/params.rs).
+FORMAT_VERSION = 3
 PHASES = 64
 PHASE_BITS = 6
 FRAC_BITS = 24
@@ -74,19 +74,34 @@ def round_shift_var(v, s):
     return Mux(s == 0, v, ((v >> s1) + 1) >> 1)
 
 
-def crc16_word(crc, word):
-    """One CRC-16 (polynomial 0x1021) step over a 16-bit word, most
-    significant bit first (`isdb_frontend::format::crc16`), as a parallel
-    XOR network derived by symbolic simulation."""
-    state = [{("c", i)} for i in range(16)]
-    for bit in reversed(range(16)):
-        fb = state[15] ^ {("w", bit)}
-        new = [set()] + [set(state[i - 1]) for i in range(1, 16)]
-        for i in (0, 5, 12):
-            new[i] = new[i] ^ fb
+# CRC-32C (Castagnoli) polynomial 0x1EDC6F41, bit-reversed for the
+# reflected shift register of CRC-32/ISCSI.
+CRC32C_POLY_REFLECTED = 0x82F63B78
+
+
+def crc32c_word_terms():
+    """The parallel next-state equations of the reflected CRC-32C register
+    for one 16-bit word sent as its two little-endian bytes (bit 0 of the
+    word first, as `isdb_frontend::format::crc32c` feeds it), derived by
+    symbolic simulation of the bit-serial register: entry i is the set of
+    ("c", j) / ("w", j) inputs XORed into bit i."""
+    state = [{("c", i)} for i in range(32)]
+    for bit in range(16):
+        fb = state[0] ^ {("w", bit)}
+        new = [set(state[i + 1]) for i in range(31)] + [set()]
+        for i in range(32):
+            if CRC32C_POLY_REFLECTED >> i & 1:
+                new[i] = new[i] ^ fb
         state = new
+    return state
+
+
+def crc32c_word(crc, word):
+    """One CRC-32C step of the 32-bit register `crc` over the 16-bit
+    `word` (no initial value or final XOR applied): a one-level XOR
+    network per output bit (`crc32c_word_terms`)."""
     outs = []
-    for terms in state:
+    for terms in crc32c_word_terms():
         acc = Const(0, 1)
         for kind, i in sorted(terms):
             acc = acc ^ (crc[i] if kind == "c" else word[i])
@@ -477,7 +492,10 @@ class SymbolFrontend(Elaboratable):
         nacc = Signal(5)
         in_block = Signal(16)
         seq = Signal(32)
-        crc = Signal(16)
+        crc = Signal(32)
+        crc_out = Signal(32)
+        m.d.comb += crc_out.eq(~crc)
+        tr_idx = Signal(1)
         hdr_idx = Signal(4)
         hdr_gain = Signal(16)
         hdr_per = Signal(32)
@@ -506,8 +524,13 @@ class SymbolFrontend(Elaboratable):
                         m.next = "SYMBOL"
             with m.State("HEADER"):
                 m.d.sync += [self.o_valid.eq(1), self.o_word.eq(hw[hdr_idx]), hdr_idx.eq(hdr_idx + 1)]
+                # the trailer's CRC-32C starts from ~0 over the sequence
+                # number's two words (low first), during the header
+                with m.If(hdr_idx == 0):
+                    m.d.sync += crc.eq(crc32c_word(Const(0xFFFFFFFF, 32), seq[:16]))
+                with m.Elif(hdr_idx == 1):
+                    m.d.sync += crc.eq(crc32c_word(crc, seq[16:]))
                 with m.If(hdr_idx == HEADER_WORDS - 1):
-                    m.d.sync += crc.eq(seq[:16])
                     m.next = "SYMBOL"
             with m.State("SYMBOL"):
                 m.d.sync += [pq_rd.eq(pq_rd + 1), in_block.eq(in_block + 1)]
@@ -515,7 +538,7 @@ class SymbolFrontend(Elaboratable):
                     m.d.sync += [
                         self.o_valid.eq(1),
                         self.o_word.eq(newacc[:16]),
-                        crc.eq(crc16_word(crc, newacc[:16])),
+                        crc.eq(crc32c_word(crc, newacc[:16])),
                         bacc.eq(newacc >> 16),
                         nacc.eq(nbits - 16),
                     ]
@@ -526,8 +549,13 @@ class SymbolFrontend(Elaboratable):
                 with m.Else():
                     m.next = "IDLE"
             with m.State("TRAILER"):
-                m.d.sync += [self.o_valid.eq(1), self.o_word.eq(crc), seq.eq(seq + 1), in_block.eq(0)]
-                m.next = "IDLE"
+                # two words, low first: the CRC with the final XOR
+                m.d.sync += [self.o_valid.eq(1), tr_idx.eq(tr_idx + 1)]
+                with m.If(tr_idx == 0):
+                    m.d.sync += self.o_word.eq(crc_out[:16])
+                with m.Else():
+                    m.d.sync += [self.o_word.eq(crc_out[16:]), seq.eq(seq + 1), in_block.eq(0)]
+                    m.next = "IDLE"
 
         # ---- start: initial state (Frontend::new) ------------------------
         with m.If(self.start):
@@ -535,7 +563,7 @@ class SymbolFrontend(Elaboratable):
                 nco.eq(0), t_acc.eq(0), v.eq(0), period.eq(r.period_nominal),
                 gain_acc.eq(r.agc_init), nsym.eq(0), q_rd.eq(0), q_wr.eq(0),
                 pq_rd.eq(0), pq_wr.eq(0), bacc.eq(0), nacc.eq(0), in_block.eq(0),
-                seq.eq(0), crc.eq(0), stage.eq(0),
+                seq.eq(0), crc.eq(0), tr_idx.eq(0), stage.eq(0),
             ]
             m.d.sync += [line_i[t].eq(0) for t in range(self.taps)]
             m.d.sync += [line_q[t].eq(0) for t in range(self.taps)]
