@@ -37,6 +37,7 @@ mod producer;
 mod relay;
 mod rx;
 mod rxs;
+mod s3sync;
 mod sink;
 mod source;
 mod stop;

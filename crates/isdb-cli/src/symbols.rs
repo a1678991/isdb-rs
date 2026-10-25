@@ -55,9 +55,38 @@ pub struct FrontendOpts {
     /// FPGA; the device's own count when it runs there).
     #[arg(long, default_value_t = 32)]
     pub taps: usize,
-    /// Bits per symbol component; default 6 for ISDB-S, 5 for ISDB-S3.
+    /// Bits per symbol component; default 6 (both systems).
     #[arg(long)]
     pub bits: Option<u8>,
+    /// Output instant relative to where the timing loop locks, in symbol
+    /// periods, or `auto`: measured on the IQ before the run from known
+    /// symbols (ISDB-S3 sync words, ISDB-S bursts). The loop's detector
+    /// locks 0.15–0.18 symbol off the best instant on the lab's ISDB-S3
+    /// signals (5–6 dB of SNR) and 0.05–0.10 on ISDB-S.
+    #[arg(long, value_name = "auto|T", default_value = "auto", value_parser = parse_trim)]
+    pub trim: TrimArg,
+}
+
+/// `--trim`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrimArg {
+    /// Measured on the signal.
+    Auto,
+    /// Symbol periods.
+    Fixed(f64),
+}
+
+pub(crate) fn parse_trim(s: &str) -> Result<TrimArg> {
+    if s.eq_ignore_ascii_case("auto") {
+        return Ok(TrimArg::Auto);
+    }
+    let t: f64 = s
+        .parse()
+        .with_context(|| format!("--trim {s:?}: auto or a number"))?;
+    if !(-0.5..=0.5).contains(&t) {
+        bail!("--trim {t}: within ±0.5 symbol");
+    }
+    Ok(TrimArg::Fixed(t))
 }
 
 /// `isdb symbols` arguments.
@@ -129,15 +158,53 @@ fn pick_system(arg: SystemArg, x: &[C32], fs: f64) -> Result<(&'static KnownSyst
     Ok((sys, cfo))
 }
 
-/// The parameters for `sys` at `fs` with carrier offset `cfo`.
-fn design(sys: &KnownSystem, fs: f64, cfo: f64, o: &FrontendOpts) -> Result<Params> {
+/// The design for `sys` at `fs` with carrier offset `cfo`, before the
+/// trim.
+fn base_design(sys: &KnownSystem, fs: f64, cfo: f64, o: &FrontendOpts) -> Design {
     let mut d = Design::for_system(sys, fs);
     d.carrier_offset = cfo;
     d.taps = o.taps;
     if let Some(b) = o.bits {
         d.bits = b;
     }
-    Ok(Params::design(&d)?)
+    d
+}
+
+/// The parameters for `sys` at `fs` with carrier offset `cfo`, and the
+/// trim they use; with `--trim auto` the trim is measured on `x`
+/// (unit-scale IQ at `fs`, at most the first 0.15 s used), and reported.
+fn design(
+    sys: &KnownSystem,
+    fs: f64,
+    cfo: f64,
+    o: &FrontendOpts,
+    x: &[C32],
+) -> Result<(Params, f64)> {
+    let mut d = base_design(sys, fs, cfo, o);
+    d.trim = match o.trim {
+        TrimArg::Fixed(t) => t,
+        TrimArg::Auto => {
+            let n = ((0.15 * fs) as usize).min(x.len());
+            let xi = to_input(&x[..n]);
+            let (t, snr) = if sys.name == KNOWN_SYSTEMS[1].name {
+                let cands: Vec<f64> = (-6..=1).map(|i| f64::from(i) * 0.05).collect();
+                isdb_frontend::s3sync::best_trim(&xi, &d, &cands)?
+            } else {
+                isdbs_phy::frontend::measure_trim(&xi, &d)?
+            };
+            eprintln!(
+                "[symbols] trim {t:+.3} symbol measured on {:.3} s ({} {snr:.2} dB there)",
+                n as f64 / fs,
+                if sys.name == KNOWN_SYSTEMS[1].name {
+                    "sync-symbol Es/N0"
+                } else {
+                    "burst MER"
+                }
+            );
+            t
+        }
+    };
+    Ok((Params::design(&d)?, d.trim))
 }
 
 /// Samples in the front end's input domain (12-bit components in i16).
@@ -169,7 +236,7 @@ fn cpu_front_end(p: &Params, x: &[C32], out: &mut dyn Write) -> Result<Report> {
                     psum += f64::from(sym.period) / ONE as f64;
                     pn += 1;
                     if z.len() < 1 << 21 {
-                        z.push([f64::from(sym.z[0]), f64::from(sym.z[1])]);
+                        z.push([f64::from(sym.zk[0]), f64::from(sym.zk[1])]);
                     }
                 }
                 symbols += 1;
@@ -200,16 +267,29 @@ fn print_report(r: &Report, sys: &KnownSystem, fs: f64) {
         sys.name,
         sys.symbol_rate_hz
     );
-    if !r.z.is_empty() {
-        let ring = ring_stats(&r.z, 1);
-        print!("ring MER {:.2} dB", ring.mer_db);
-        if sys.roll_off >= 0.1 {
-            print!(
-                ", 8PSK decision-directed MER {:.2} dB",
-                psk_mer(&r.z, 8, 2e-3, 20_000).mer_db
-            );
-        }
-        println!(" (before the output quantiser)");
+    if r.z.is_empty() {
+        return;
+    }
+    if sys.roll_off >= 0.1 {
+        println!(
+            "ring MER {:.2} dB, 8PSK decision-directed MER {:.2} dB (before the output quantiser)",
+            ring_stats(&r.z, 1).mer_db,
+            psk_mer(&r.z, 8, 2e-3, 20_000).mer_db
+        );
+        return;
+    }
+    // ISDB-S3: 16APSK and friends have no single ring; the known sync
+    // symbols give the SNR instead.
+    let z: Vec<isdbs_phy::Cplx> =
+        r.z.iter()
+            .map(|v| isdbs_phy::Cplx::new(v[0], v[1]))
+            .collect();
+    match isdb_frontend::s3sync::measure(&z) {
+        Some(m) => println!(
+            "sync-symbol Es/N0 {:.2} dB over {} slots (before the output quantiser)",
+            m.snr_db, m.slots
+        ),
+        None => println!("too few symbols for the ISDB-S3 slot sync"),
     }
 }
 
@@ -230,6 +310,7 @@ fn meta(
     cfo: f64,
     centre: Option<u64>,
     p: &Params,
+    trim: f64,
 ) -> Value {
     json!({
         "format": "isdb-rs Symbols",
@@ -241,6 +322,7 @@ fn meta(
         "sample_rate_hz": fs,
         "carrier_offset_hz": cfo,
         "center_hz": centre,
+        "trim_symbols": trim,
         "params": vectors::params_json(p),
     })
 }
@@ -280,7 +362,7 @@ pub fn run_iq(a: &IqSymbolsArgs) -> Result<()> {
     let n = usize::try_from(seg.end - seg.start)?.min(a.samples.unwrap_or(usize::MAX));
     let x = rec.read(seg.start, n)?;
     let (sys, cfo) = pick_system(a.fe.system, &x, fs)?;
-    let p = design(sys, fs, cfo, &a.fe)?;
+    let (p, trim) = design(sys, fs, cfo, &a.fe, &x)?;
     eprintln!(
         "[symbols] {}: {} samples at {fs:.0} Hz, {} with carrier {cfo:+.0} Hz; {} taps, {} bits, CPU",
         a.file.display(),
@@ -294,7 +376,15 @@ pub fn run_iq(a: &IqSymbolsArgs) -> Result<()> {
     f.flush()?;
     sidecar(
         out,
-        &meta("cpu", sys, fs, cfo, rec.frequency.map(|v| v as u64), &p),
+        &meta(
+            "cpu",
+            sys,
+            fs,
+            cfo,
+            rec.frequency.map(|v| v as u64),
+            &p,
+            trim,
+        ),
         a.overwrite,
     )?;
     print_report(&r, sys, fs);
@@ -416,7 +506,7 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
     if use_fpga {
         fe.taps = fpga.map_or(fe.taps, |(_, t)| t);
     }
-    let p = design(sys, fs, cfo, &fe)?;
+    let (p, trim) = design(sys, fs, cfo, &fe, &x)?;
     eprintln!(
         "[symbols] {} at {fs:.0} Hz, carrier {cfo:+.0} Hz; {} taps, {} bits per component, on the {}",
         sys.name,
@@ -431,7 +521,7 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
         f.flush()?;
         sidecar(
             out,
-            &meta("fpga", sys, c.sample_rate_hz, cfo, Some(c.lo_hz), &p),
+            &meta("fpga", sys, c.sample_rate_hz, cfo, Some(c.lo_hz), &p, trim),
             a.overwrite,
         )?;
         println!(
@@ -460,7 +550,15 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
     f.flush()?;
     sidecar(
         out,
-        &meta("cpu", sys, cap.sample_rate_hz, cfo, Some(cap.lo_hz), &p),
+        &meta(
+            "cpu",
+            sys,
+            cap.sample_rate_hz,
+            cfo,
+            Some(cap.lo_hz),
+            &p,
+            trim,
+        ),
         a.overwrite,
     )?;
     print_report(&r, sys, cap.sample_rate_hz);

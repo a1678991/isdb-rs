@@ -27,6 +27,10 @@ enum IqCmd {
     /// ISDB-S frame sync and TMCC of a recording: modulation-code
     /// combinations, slots and the TS_ID of each slot.
     Tmcc(crate::tmcc::TmccArgs),
+    /// ISDB-S3 slot sync and the SNR on its known synchronisation symbols,
+    /// untrimmed and with the front end's timing trim (a recording), or of
+    /// a `Symbols` words file (`--read`)
+    S3sync(crate::s3sync::S3SyncArgs),
 }
 
 /// `isdb iq survey` arguments.
@@ -66,6 +70,7 @@ pub fn run(a: &IqArgs) -> Result<()> {
         }
         IqCmd::Symbols(s) => crate::symbols::run_iq(s),
         IqCmd::Tmcc(t) => crate::tmcc::run(t),
+        IqCmd::S3sync(a) => crate::s3sync::run(a),
     }
 }
 
