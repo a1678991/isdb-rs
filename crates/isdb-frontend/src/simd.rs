@@ -17,11 +17,16 @@
 //! crate where that happens (the private function `run`); the crate allows `unsafe_code`
 //! there and nowhere else.
 //!
-//! [`Isa::best`] is the widest instruction set both the CPU (detected at
-//! run time) and the build support. The environment variable
-//! `ISDB_SIMD` (`baseline`, `avx2`, `avx512`) lowers it, for comparisons
-//! and to rule the vector code out when debugging; a request above what
-//! the CPU supports falls back to the widest it does.
+//! [`Isa::best`] is AVX2 when the CPU (detected at run time) has it, else
+//! the baseline: measured on a Zen 4 (Ryzen 9 7950X), AVX-512 is *slower*
+//! than AVX2 here (ISDB-S3 0.92 vs 0.86 s, ISDB-S 0.35 vs 0.32 s per
+//! 0.826 s block), because Zen 4 executes 512-bit integer operations as
+//! two 256-bit halves and the 32-tap rows leave one 512-bit block plus a
+//! fold. AVX-512 is kept for CPUs with full-width units and is chosen
+//! only on request. The environment variable `ISDB_SIMD` (`baseline`,
+//! `avx2`, `avx512`) selects the instruction set, for comparisons and to
+//! rule the vector code out when debugging; a request the CPU or build
+//! cannot run falls back to the widest available below it.
 
 use std::fmt;
 
@@ -77,9 +82,10 @@ impl Isa {
             .unwrap_or(Self::Baseline)
     }
 
-    /// The instruction set the front end uses: [`Isa::detected`], lowered
-    /// by `ISDB_SIMD` if it names a narrower one (an unknown value is
-    /// ignored).
+    /// The instruction set the front end uses: the one `ISDB_SIMD` names
+    /// (or the widest available below it), else AVX2 if available, else
+    /// the baseline (module documentation: AVX-512 only on request). An
+    /// unknown `ISDB_SIMD` value is ignored.
     pub fn best() -> Self {
         let d = Self::detected();
         match std::env::var("ISDB_SIMD")
@@ -88,7 +94,7 @@ impl Isa {
             .and_then(Self::parse)
         {
             Some(want) => want.min(d),
-            None => d,
+            None => d.min(Self::Avx2),
         }
     }
 }

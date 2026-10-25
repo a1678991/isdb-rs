@@ -1,0 +1,27 @@
+//! `process_each` on synthetic ISDB-S3-like input for an instruction-level
+//! profiler (`ISDB_SIMD` picks the instruction set; development tool,
+//! plan §0.14).
+//!
+//! cargo build --release -p isdb-frontend --example feeach
+use isdb_frontend::fast::FastFrontend;
+use isdb_frontend::params::{Design, Params};
+fn main() {
+    let n: usize = std::env::args()
+        .nth(1)
+        .map_or(2_000_000, |s| s.parse().unwrap());
+    let mut d = Design::new(40e6, 33.7561e6, 0.03);
+    d.trim = -0.16;
+    d.carrier_offset = -130e3;
+    let p = Params::design(&d).unwrap();
+    let mut st = 1u32;
+    let x: Vec<[i16; 2]> = (0..n)
+        .map(|_| {
+            st = st.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            [((st >> 16) as i16) >> 5, ((st & 0xFFFF) as i16) >> 5]
+        })
+        .collect();
+    let mut f = FastFrontend::new(p).unwrap();
+    let mut acc = 0i64;
+    f.process_each(&x, |y| acc += i64::from(y.zk[0]));
+    println!("{acc} ({})", f.isa());
+}

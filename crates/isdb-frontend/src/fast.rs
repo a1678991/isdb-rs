@@ -85,11 +85,18 @@ pub struct FastFrontend {
     /// The instruction set [`FastFrontend::process`] and
     /// [`FastFrontend::process_each`] run on.
     isa: Isa,
+    /// Symbols of one sub-block, for [`FastFrontend::process_each`] on the
+    /// vector instruction sets (reused).
+    scratch: Vec<Symbol>,
 }
 
 /// Length of the delay-line buffers: room for many samples before a
 /// slide.
 const LINE: usize = 4096;
+
+/// Samples per sub-block of [`FastFrontend::process_each`] on the vector
+/// instruction sets.
+const EACH_BLOCK: usize = 4096;
 
 impl FastFrontend {
     /// A front end with parameters `p`, in the reference's initial state,
@@ -150,6 +157,7 @@ impl FastFrontend {
             samples: 0,
             symbols: 0,
             isa,
+            scratch: Vec::new(),
             p,
         })
     }
@@ -213,14 +221,22 @@ impl FastFrontend {
     }
 
     fn each_isa<const W: usize, F: FnMut(&Symbol)>(&mut self, x: &[[i16; 2]], f: &mut F) {
-        let k = Kernels {
-            baseline: each_baseline::<W, F>,
-            #[cfg(target_arch = "x86_64")]
-            avx2: each_avx2::<W, F>,
-            #[cfg(all(target_arch = "x86_64", isdb_frontend_avx512))]
-            avx512: each_avx512::<W, F>,
-        };
-        simd::run(&k, self.isa, self, (x, f));
+        if self.isa == Isa::Baseline {
+            // the callback inlined into the loop: the fastest baseline form
+            each_baseline::<W, F>(self, (x, f));
+            return;
+        }
+        // On the vector instruction sets the callback, compiled without
+        // their features, would not be inlined into their loop (measured
+        // 2.8× slower than the baseline): run the loop on sub-blocks into
+        // a buffer and hand the symbols over outside it.
+        let mut scratch = std::mem::take(&mut self.scratch);
+        for c in x.chunks(EACH_BLOCK) {
+            scratch.clear();
+            self.process_isa::<W>(c, &mut scratch);
+            scratch.iter().for_each(&mut *f);
+        }
+        self.scratch = scratch;
     }
 
     /// Push one sample (the reference's `push`). [`FastFrontend::process`]
@@ -420,8 +436,8 @@ impl FastFrontend {
 type Block<'a> = (&'a [[i16; 2]], &'a mut Vec<Symbol>);
 type Each<'a, F> = (&'a [[i16; 2]], &'a mut F);
 
-macro_rules! block_loops {
-    ($process:ident, $each:ident, $dot6:ident $(, #[$attr:meta])*) => {
+macro_rules! process_loop {
+    ($process:ident, $dot6:ident $(, #[$attr:meta])*) => {
         $(#[$attr])*
         fn $process<const W: usize>(f: &mut FastFrontend, (x, out): Block<'_>) {
             for &s in x {
@@ -436,39 +452,41 @@ macro_rules! block_loops {
                 }
             }
         }
-
-        $(#[$attr])*
-        fn $each<const W: usize, F: FnMut(&Symbol)>(f: &mut FastFrontend, (x, g): Each<'_, F>) {
-            for &s in x {
-                if f.advance(s) {
-                    let d = if f.wide() {
-                        f.dots_wide::<W>()
-                    } else {
-                        let (c6, xi, xq) = f.split_operands::<W>();
-                        $dot6::<W>(c6, xi, xq)
-                    };
-                    g(&f.finish(d));
-                }
-            }
-        }
     };
 }
 
-block_loops!(process_baseline, each_baseline, dot6_n);
-block_loops!(
+process_loop!(process_baseline, dot6_n);
+process_loop!(
     process_avx2,
-    each_avx2,
     dot6_avx2,
     #[cfg(target_arch = "x86_64")],
     #[target_feature(enable = "avx2,fma,bmi1,bmi2,lzcnt,popcnt")]
 );
-block_loops!(
+process_loop!(
     process_avx512,
-    each_avx512,
     dot6_avx512,
     #[cfg(all(target_arch = "x86_64", isdb_frontend_avx512))],
-    #[target_feature(enable = "avx2,fma,bmi1,bmi2,lzcnt,popcnt,avx512f,avx512bw,avx512vl,avx512dq,avx512cd")]
+    #[clippy::msrv = "1.89"],
+    #[target_feature(
+        enable = "avx2,fma,bmi1,bmi2,lzcnt,popcnt,avx512f,avx512bw,avx512vl,avx512dq,avx512cd"
+    )]
 );
+
+/// The baseline loop with the callback of [`FastFrontend::process_each`]
+/// inlined (no `Vec<Symbol>`).
+fn each_baseline<const W: usize, F: FnMut(&Symbol)>(f: &mut FastFrontend, (x, g): Each<'_, F>) {
+    for &s in x {
+        if f.advance(s) {
+            let d = if f.wide() {
+                f.dots_wide::<W>()
+            } else {
+                let (c6, xi, xq) = f.split_operands::<W>();
+                dot6_n::<W>(c6, xi, xq)
+            };
+            g(&f.finish(d));
+        }
+    }
+}
 
 /// `c = hi·2⁹ + lo`, `0 ≤ lo < 512`: exact for 18-bit `c` (|hi| ≤ 256).
 fn split_coef(c: i32) -> (i16, i16) {
@@ -524,6 +542,68 @@ fn dot6_n<const W: usize>(c6: &[i16], li: &[i16], lq: &[i16]) -> [i64; 6] {
     ]
 }
 
+/// Vector helpers for the AVX kernels, as macros so that they expand
+/// inside each kernel's `#[target_feature]` body: as functions they were
+/// sometimes left out of line (LLVM's choice per call site; a
+/// `#[target_feature]` function cannot be `#[inline(always)]`), which cost
+/// 2.5× in one of the two loops.
+#[cfg(target_arch = "x86_64")]
+macro_rules! load16 {
+    ($a:expr) => {{
+        let a: &[i16; 16] = $a.try_into().expect("16 taps");
+        _mm256_setr_epi16(
+            a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13],
+            a[14], a[15],
+        )
+    }};
+}
+
+#[cfg(target_arch = "x86_64")]
+macro_rules! load8 {
+    ($a:expr) => {{
+        let a: &[i16; 8] = $a.try_into().expect("8 taps");
+        _mm_setr_epi16(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])
+    }};
+}
+
+/// Eight `i32` lanes folded to four (low half + high half).
+#[cfg(target_arch = "x86_64")]
+macro_rules! fold256 {
+    ($v:expr) => {{
+        let v = $v;
+        _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v))
+    }};
+}
+
+/// The sum of four `i32` lanes.
+#[cfg(target_arch = "x86_64")]
+macro_rules! hsum128 {
+    ($v:expr) => {{
+        let v = $v;
+        let v = _mm_add_epi32(v, _mm_shuffle_epi32::<0b01_00_11_10>(v));
+        let v = _mm_add_epi32(v, _mm_shuffle_epi32::<0b10_11_00_01>(v));
+        _mm_cvtsi128_si32(v)
+    }};
+}
+
+#[cfg(all(target_arch = "x86_64", isdb_frontend_avx512))]
+macro_rules! load32 {
+    ($a:expr) => {{
+        let a: &[i16] = $a;
+        let (lo, hi) = (load16!(&a[..16]), load16!(&a[16..32]));
+        _mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo), hi)
+    }};
+}
+
+/// Sixteen `i32` lanes folded to eight.
+#[cfg(all(target_arch = "x86_64", isdb_frontend_avx512))]
+macro_rules! fold512 {
+    ($v:expr) => {{
+        let v = $v;
+        _mm256_add_epi32(_mm512_castsi512_si256(v), _mm512_extracti64x4_epi64::<1>(v))
+    }};
+}
+
 /// [`dot6_n`] with AVX2: each row's sum is `vpmaddwd` over 16 taps at a
 /// time (`vpmaddwd` on 8 for a last half block), the eight lanes summed at
 /// the end. The same integers (every partial sum below 2²⁸).
@@ -540,19 +620,19 @@ fn dot6_avx2<const W: usize>(c6: &[i16], li: &[i16], lq: &[i16]) -> [i64; 6] {
         let c = &c6[row * W..(row + 1) * W];
         let (mut ai, mut aq) = (_mm256_setzero_si256(), _mm256_setzero_si256());
         for b in 0..full {
-            let cv = load16(&c[16 * b..16 * b + 16]);
-            ai = _mm256_add_epi32(ai, _mm256_madd_epi16(cv, load16(&xi[16 * b..16 * b + 16])));
-            aq = _mm256_add_epi32(aq, _mm256_madd_epi16(cv, load16(&xq[16 * b..16 * b + 16])));
+            let cv = load16!(&c[16 * b..16 * b + 16]);
+            ai = _mm256_add_epi32(ai, _mm256_madd_epi16(cv, load16!(&xi[16 * b..16 * b + 16])));
+            aq = _mm256_add_epi32(aq, _mm256_madd_epi16(cv, load16!(&xq[16 * b..16 * b + 16])));
         }
-        let (mut si, mut sq) = (fold256(ai), fold256(aq));
+        let (mut si, mut sq) = (fold256!(ai), fold256!(aq));
         if !W.is_multiple_of(16) {
             let at = 16 * full;
-            let cv = load8(&c[at..at + 8]);
-            si = _mm_add_epi32(si, _mm_madd_epi16(cv, load8(&xi[at..at + 8])));
-            sq = _mm_add_epi32(sq, _mm_madd_epi16(cv, load8(&xq[at..at + 8])));
+            let cv = load8!(&c[at..at + 8]);
+            si = _mm_add_epi32(si, _mm_madd_epi16(cv, load8!(&xi[at..at + 8])));
+            sq = _mm_add_epi32(sq, _mm_madd_epi16(cv, load8!(&xq[at..at + 8])));
         }
-        out[0] = hsum128(si);
-        out[1] = hsum128(sq);
+        out[0] = hsum128!(si);
+        out[1] = hsum128!(sq);
     }
     combine(&r)
 }
@@ -577,26 +657,26 @@ fn dot6_avx512<const W: usize>(c6: &[i16], li: &[i16], lq: &[i16]) -> [i64; 6] {
         let (mut ai, mut aq) = (_mm512_setzero_si512(), _mm512_setzero_si512());
         for b in 0..full {
             let at = 32 * b;
-            let cv = load32(&c[at..at + 32]);
-            ai = _mm512_add_epi32(ai, _mm512_madd_epi16(cv, load32(&xi[at..at + 32])));
-            aq = _mm512_add_epi32(aq, _mm512_madd_epi16(cv, load32(&xq[at..at + 32])));
+            let cv = load32!(&c[at..at + 32]);
+            ai = _mm512_add_epi32(ai, _mm512_madd_epi16(cv, load32!(&xi[at..at + 32])));
+            aq = _mm512_add_epi32(aq, _mm512_madd_epi16(cv, load32!(&xq[at..at + 32])));
         }
-        let (mut ai, mut aq) = (fold512(ai), fold512(aq));
+        let (mut ai, mut aq) = (fold512!(ai), fold512!(aq));
         let mut at = 32 * full;
         if W - at >= 16 {
-            let cv = load16(&c[at..at + 16]);
-            ai = _mm256_add_epi32(ai, _mm256_madd_epi16(cv, load16(&xi[at..at + 16])));
-            aq = _mm256_add_epi32(aq, _mm256_madd_epi16(cv, load16(&xq[at..at + 16])));
+            let cv = load16!(&c[at..at + 16]);
+            ai = _mm256_add_epi32(ai, _mm256_madd_epi16(cv, load16!(&xi[at..at + 16])));
+            aq = _mm256_add_epi32(aq, _mm256_madd_epi16(cv, load16!(&xq[at..at + 16])));
             at += 16;
         }
-        let (mut si, mut sq) = (fold256(ai), fold256(aq));
+        let (mut si, mut sq) = (fold256!(ai), fold256!(aq));
         if W - at >= 8 {
-            let cv = load8(&c[at..at + 8]);
-            si = _mm_add_epi32(si, _mm_madd_epi16(cv, load8(&xi[at..at + 8])));
-            sq = _mm_add_epi32(sq, _mm_madd_epi16(cv, load8(&xq[at..at + 8])));
+            let cv = load8!(&c[at..at + 8]);
+            si = _mm_add_epi32(si, _mm_madd_epi16(cv, load8!(&xi[at..at + 8])));
+            sq = _mm_add_epi32(sq, _mm_madd_epi16(cv, load8!(&xq[at..at + 8])));
         }
-        out[0] = hsum128(si);
-        out[1] = hsum128(sq);
+        out[0] = hsum128!(si);
+        out[1] = hsum128!(sq);
     }
     combine(&r)
 }
@@ -616,61 +696,6 @@ fn combine(r: &[i32; 12]) -> [i64; 6] {
         bank(2, 0),
         bank(2, 1),
     ]
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-fn load16(a: &[i16]) -> std::arch::x86_64::__m256i {
-    let a: &[i16; 16] = a.try_into().expect("16 taps");
-    std::arch::x86_64::_mm256_setr_epi16(
-        a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13],
-        a[14], a[15],
-    )
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-fn load8(a: &[i16]) -> std::arch::x86_64::__m128i {
-    let a: &[i16; 8] = a.try_into().expect("8 taps");
-    std::arch::x86_64::_mm_setr_epi16(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])
-}
-
-/// The eight `i32` lanes of `v` folded to four (low half + high half).
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-fn fold256(v: std::arch::x86_64::__m256i) -> std::arch::x86_64::__m128i {
-    use std::arch::x86_64::*;
-    _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v))
-}
-
-/// The sum of four `i32` lanes.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-fn hsum128(v: std::arch::x86_64::__m128i) -> i32 {
-    use std::arch::x86_64::*;
-    let v = _mm_add_epi32(v, _mm_shuffle_epi32::<0b01_00_11_10>(v));
-    let v = _mm_add_epi32(v, _mm_shuffle_epi32::<0b10_11_00_01>(v));
-    _mm_cvtsi128_si32(v)
-}
-
-#[cfg(all(target_arch = "x86_64", isdb_frontend_avx512))]
-// only compiled when the build script found Rust ≥ 1.89 (AVX-512)
-#[clippy::msrv = "1.89"]
-#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx2")]
-fn load32(a: &[i16]) -> std::arch::x86_64::__m512i {
-    use std::arch::x86_64::*;
-    let (lo, hi) = (load16(&a[..16]), load16(&a[16..32]));
-    _mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo), hi)
-}
-
-/// The sixteen `i32` lanes of `v` folded to eight.
-#[cfg(all(target_arch = "x86_64", isdb_frontend_avx512))]
-// only compiled when the build script found Rust ≥ 1.89 (AVX-512)
-#[clippy::msrv = "1.89"]
-#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx2")]
-fn fold512(v: std::arch::x86_64::__m512i) -> std::arch::x86_64::__m256i {
-    use std::arch::x86_64::*;
-    _mm256_add_epi32(_mm512_castsi512_si256(v), _mm512_extracti64x4_epi64::<1>(v))
 }
 
 /// The same with `i64` sums on the unsplit coefficients (`c3` = h, g, k,
