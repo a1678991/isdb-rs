@@ -9,13 +9,20 @@ reproduces them.
 
 The first stage is the single-carrier front end of
 [`isdb-frontend`](../crates/isdb-frontend/README.md) (IQ → `Symbols`,
-format version 2) for ISDB-S and ISDB-S3 on the PlutoSky R2
+format version 3) for ISDB-S and ISDB-S3 on the PlutoSky R2
 (XC7Z020). It turns 8-bit IQ at 40 Msps (80 MB/s, more than the board's
 Gigabit Ethernet path sustains) into 6-bit symbols at 43 MB/s (ISDB-S)
 and 51 MB/s (ISDB-S3). Format 2 adds the output bank `k` that carries
 the host's timing trim ([`isdb-frontend` README, "The timing
 trim"](../crates/isdb-frontend/README.md#the-timing-trim)): the output
-and the AGC come from `k`, the timing detector from `h` and `g`.
+and the AGC come from `k`, the timing detector from `h` and `g`. Format
+3 changes only the block trailer, to a CRC-32C (two words) that the
+packer updates one 16-bit payload word per clock: `crc32c_word` is a
+one-level XOR network per register bit (11 to 22 inputs, 560 in all),
+derived from the polynomial by symbolic simulation of the bit-serial
+register, not typed in. The sequence number is folded in while the
+header goes out, so the trailer costs one cycle per block more than
+format 2's.
 
 ## Layout
 
@@ -25,7 +32,7 @@ and the AGC come from `k`, the timing detector from `h` and `g`.
 | `isdb_fpga/control.py` | `Control`: the command decoder and register file on `up_adc_gpio_out`, the ID word and readback on `up_adc_gpio_in` (`isdb_frontend::control`) |
 | `isdb_fpga/top.py` | `SymbolsRx`: the block for the bitstream (front end + control + output selection), and where it connects in Tezuka's block design |
 | `isdb_fpga/sim.py` | simulation against a vectors file; `python -m isdb_fpga.sim VECTORS.json [--jitter] [--load-port] [--via-gpio]` |
-| `tests/test_isdb_fpga.py` | unit tests (CRC network) and the vector tests |
+| `tests/test_isdb_fpga.py` | unit tests (the CRC-32C network against a bit-serial register and the standard check value) and the vector tests |
 | `synth/estimate.py` | Yosys `synth_xilinx` resource estimate |
 | `synth/verilog.py` | Verilog of `SymbolsRx` (through the venv's Yosys) |
 
@@ -41,7 +48,7 @@ mise run fpga:estimate   # resource estimate of the 32-tap block
 mise run fpga:verilog    # fpga/build/isdb_symbols_rx.v for a vendor flow
 ```
 
-Results (format 2, 2026-10-25):
+Results (format 2, 2026-10-25; format 3 re-checked 2026-10-26):
 
 - **Simulation:** bit-exact on every vector set, with every symbol's
   internals (`y`, `dy`, `yk`, `z`, `dz`, `zk`, `q`, the loop errors) and
@@ -55,13 +62,17 @@ Results (format 2, 2026-10-25):
     banks) loaded through the port, and with the whole configuration
     sent as the host's `gpio_out` command words, both on a trimmed set;
   - one LSB off in `k` fails the comparison (the output path is really
-    compared).
+    compared);
+  - format 3: bit-exact on the regenerated default set, trailers
+    included; leaving out the CRC's final XOR fails at the first
+    trailer word (word 169 of the 5-bit set).
 - **Estimate** of `SymbolsRx` (Yosys, before place and route; Vivado's
   numbers will differ):
 
   | Taps | DSP48E1 | LUT | FF | Block RAM |
   |---|---|---|---|---|
-  | 32 (format 2) | 64 | 3.9k | 4.6k | 1 RAMB18 + 8 RAMB36 |
+  | 32 (format 3) | 64 | 4.2k (4 175) | 4.6k (4 583) | 1 RAMB18 + 8 RAMB36 |
+  | 32 (format 2) | 64 | 3.9k (3 896) | 4.6k (4 566) | 1 RAMB18 + 8 RAMB36 |
   | 64 (format 2) | 112 | 4.2k | 5.5k | 1 RAMB18 + 16 RAMB36 |
   | 32 (format 1) | 46 | 3.6k | 4.5k | 9 RAMB18 |
 
@@ -74,6 +85,11 @@ Results (format 2, 2026-10-25):
 
 Timing closure is not checked (Yosys has no 7-series timing model). The
 block runs at the ADC clock, 4 × the sample rate: 160 MHz at 40 Msps.
+The format-3 CRC is not expected to be the critical path: its widest
+output bit XORs 22 inputs, two levels of 6-input LUTs (6 × 6 = 36 ≥ 22)
+between the payload-word register and the CRC register, against the
+multi-level adder and DSP paths of the filters (an estimate from the
+logic depth, not a timing report).
 
 ## Integration (the hardware step, not done)
 

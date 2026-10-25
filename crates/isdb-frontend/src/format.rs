@@ -74,8 +74,9 @@
 //! coincidence at a position where a valid header was found. After a
 //! loss the reader tries at most a few header positions (sync word,
 //! header sum and version must all match first), so even at one loss per
-//! second — far worse than the link loses in practice (§VERIFICATION) — a
-//! damaged block would be delivered about once in 2³² s ≈ 136 years.
+//! second — far more than the loss-free link rates measured on the
+//! PlutoSky (0 losses in 5 min, VERIFICATION.md) — a damaged block would
+//! be delivered about once in 2³² s ≈ 136 years.
 
 use crate::params::{FORMAT_VERSION, MIN_READ_VERSION, Params};
 

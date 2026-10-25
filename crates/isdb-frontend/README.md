@@ -10,7 +10,7 @@ reference: the fixed-point model is the specification the FPGA follows,
 and it writes the test vectors the FPGA must reproduce.
 
 Per input sample (the `fixed` module documents every step; format
-version 2):
+version 3, whose arithmetic is version 2's):
 
 1. **Mixer**: 32-bit NCO, 1024-entry cosine table, removes the carrier
    offset the host measured (`isdb_iq::survey`).
@@ -131,7 +131,7 @@ chunking; opt-in recordings through `ISDB_RS_ISDBS3_IQ` /
 The front end implements no broadcast specification: the symbol rates
 and roll-offs come from `isdb_iq::survey::KNOWN_SYSTEMS`, which quotes
 them from the transmission standards, and the arithmetic and the
-`Symbols` format are this project's own definitions (format version 2).
+`Symbols` format are this project's own definitions (format version 3).
 [`s3sync`](src/s3sync.rs) reads ARIB STD-B44 v2.1 Fig. 3.3-1 (slot
 layout, FSync / !FSync / SSync) and §3.8 (π/2-shift BPSK) to measure
 SNR; it decodes nothing, so the crate has no SPEC-NOTES. One reading
@@ -140,33 +140,51 @@ there is an observation only: on the lab's signals one odd slot in 60
 which of FSync and !FSync that is depends on the bit order and
 reference phase assumed, and a TMCC decoder will settle it.
 
-## The `Symbols` boundary, versions 1 and 2
+## The `Symbols` boundary, versions 1 to 3
 
-A stream of 16-bit little-endian words in blocks (the same layout in
-both versions; version 2 is the arithmetic with the output bank, and a
-reader accepts both):
+A stream of 16-bit little-endian words in blocks. Header and payload are
+the same in every version; version 2 changed the arithmetic (the output
+bank), version 3 only the trailer. A `Packer` writes version 3, a
+`Reader` takes all three, even mixed in one stream:
 
 - **Header** (9 words): sync words `0x1ACF 0xFC1D`; format word (version,
   bits − 1, log2 of the block length); 32-bit sequence number; gain;
   32-bit period; check word.
 - **Payload**: L = 4096 symbols, `I | Q << bits`, packed least
   significant bit first.
-- **Trailer**: a CRC-16 (0x1021) of the payload, seeded with the
-  sequence number.
+- **Trailer, version 3**: two words, low first: the standard CRC-32C
+  (CRC-32/ISCSI, check value `0xE3069283`) of the 32-bit sequence
+  number as 4 little-endian bytes followed by the payload as
+  little-endian words, so any CRC-32C library checks a block.
+- **Trailer, versions 1 and 2**: a CRC-16 (0x1021) of the payload,
+  seeded with the low 16 bits of the sequence number.
 
-The `Reader` accepts a block only when its trailer matches and the
-block is framed: the next block's header starts right after its trailer
-(or the stream ends exactly there). The CRC alone let a splice through
-on a 16-bit coincidence: a property-test seed glued an intact header to
-later payload with a matching word in the trailer position
-(`examples/formatcut.rs`); the framing check rejects it, because a
-spliced block ends at an arbitrary point. So every loss is found, of
-any size and wherever it falls, and no damaged block is delivered. The
-price is one block per loss: the intact block just before a loss is not
-framed either, so it is counted as lost with the damaged one. Delivery
-lags the input by at most one block. Sequence numbers count the missing
-blocks, and the blocks around a loss stay in order. The `format` module
-has the details.
+Why CRC-32C: at these payload lengths (49 152 bits for 6 bits × 4 096
+symbols, up to 524 288) the Ethernet CRC-32 guarantees Hamming distance
+3 beyond 91 607 bits, CRC-32C distance 4 (Castagnoli 1993, Koopman
+2002; cited, not re-derived). Why the whole sequence number as seed: a
+splice of a later block onto a header then fails for any of 2³²
+sequence differences.
+
+**How the `Reader` accepts a block.** Version 3: on the CRC-32C alone. A
+damaged block gets through only on a 2⁻³² coincidence at a valid header
+position; at one loss per second that is once in about 136 years.
+Versions 1 and 2: the CRC-16 *and* a framing check (the next block's
+header starts right after the trailer, or the stream ends there). The
+CRC-16 alone let a splice through: a property-test seed glued an intact
+header to later payload with a matching word in the trailer position
+(`examples/formatcut.rs`); the framing check rejects it, at the price of
+the intact block just before each loss (counted as lost, never
+delivered wrong) and a delivery lag of one block. Version 3 has neither
+cost: a v3 file with a 1 000-word cut reads with exactly the 2 touched
+blocks lost. Sequence numbers count the missing blocks, and the blocks
+around a loss stay in order. The `format` module has the details.
+
+**Speed.** The CRC-32C is slicing-by-8 in safe Rust: 2.8 GB/s on one
+core (the old bitwise CRC-16: 173 MB/s; the 6-bit ISDB-S3 link: 50.6
+MB/s), and the `Reader` takes a clean version-3 stream at 558 MB/s
+(version 2: 137 MB/s) (`examples/crcspeed.rs`). The FPGA updates the
+CRC one 16-bit word per clock.
 
 ## Position in the stack
 
@@ -197,8 +215,16 @@ has the details.
 ## Tests
 
 - **Unit, spec and property tests:**
-  - header layout (versions 1 and 2), CRC-16 check value, command word
-    layout;
+  - header layout (versions 1 to 3), CRC-16 and CRC-32C check values,
+    the slicing CRC-32C against a bitwise one on every short length, the
+    version-3 trailer as a CRC of its little-endian byte string, a mixed
+    v1/v2/v3 stream, command word layout, which device versions the host
+    drives (2 and 3);
+  - the loss property for versions 1 and 2 (with the framing exception)
+    and for version 3 (every untouched block delivered), the two cuts
+    the property test found replayed on both, and fault injection: with
+    the CRC skipped the version-3 property test fails, and a grid of
+    payload cuts is caught 148 of 208 times;
   - the output bank without trim equals `h`, and a trim changes only
     the output, not the loop's first symbols;
   - the slot sync measures the SNR of a synthetic stream within 1 dB;

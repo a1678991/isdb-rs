@@ -819,6 +819,41 @@ SNR of about 17 dB from the spectrum.
   recording): trim measured on 0.1 s, more than 3 dB gain, above 13 dB,
   6 bits within 0.15 dB.
 
+### Format 3: CRC-32C trailer (2026-10-26)
+
+- **Change:** the block trailer becomes two words, the standard CRC-32C
+  (CRC-32/ISCSI) of the sequence number (4 bytes, little endian) and the
+  payload words (little endian); the arithmetic is version 2's. The
+  reader accepts version-3 blocks on the CRC alone; versions 1 and 2
+  keep the CRC-16 plus the framing check (`isdb-frontend` README, "The
+  `Symbols` boundary").
+- **Spec values:** check value `0xE3069283` on "123456789"; the
+  slicing-by-8 CRC equals a bitwise one on every length 0–63 at both
+  alignments; the trailer equals the CRC-32C of its byte string. The HDL
+  word step equals a bit-serial register on 303 random states and words.
+- **Loss handling:** the version-3 property test (random cut position
+  and length, 7 widths) delivers every untouched block, including the
+  one right before a loss; the version-2 property test keeps its
+  framing exception and its recorded seeds. The two found cuts replay
+  correctly on both. Fault injection: with the trailer check skipped the
+  version-3 property test fails (minimal `bits = 2, cut_at = 9, cut_len =
+  1`) and a grid of 208 payload cuts is caught 148 times.
+- **CLI:** a 4 500-block version-3 file of BS17 (`isdb iq symbols`)
+  reads back with 0 loss events and the same 14.51 dB sync Es/N0 as the
+  version-2 file of the same recording, which still reads; with 1 000
+  words cut out mid-stream, exactly the 2 touched blocks are lost (no
+  framing cost).
+- **Host speed** (`examples/crcspeed`, one core, 7950X): CRC-32C 2 831
+  MB/s against 173 MB/s for the bitwise CRC-16 (link 50.6 MB/s); the
+  `Reader` on a clean stream 558 MB/s (v3) against 137 MB/s (v2).
+- **FPGA:** bit-exact on the regenerated default vector set, trailers
+  included; a missing final XOR fails at the first trailer word. Yosys:
+  +279 LUT and +17 FF over format 2 (4 175 LUT, 4 583 FF, 64 DSP48E1).
+  The CRC's widest output bit is a 22-input XOR (two LUT6 levels).
+- **Decoded output unchanged:** ISDB-S3 BS7/11/17 and ISDB-S BS1/ND2
+  byte-identical to the previous build (`tools/rx-compare.sh`); ISDB-S
+  acceptance 38 TSs, 319 584 packets, 33 corrected, 0 uncorrectable.
+
 ## ISDB-S frame sync and TMCC
 
 `isdb iq tmcc` (front end → `isdbs-phy` frame sync, burst-aided carrier,

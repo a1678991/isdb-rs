@@ -16,6 +16,15 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-frontend`: `Symbols` format version 3. The block trailer is a
+  CRC-32C (two words: CRC-32/ISCSI of the 32-bit sequence number and
+  the payload, little endian) instead of a CRC-16, and a version-3
+  block is accepted on it alone: no framing check, so neither the
+  intact block before a loss is dropped nor delivery held back. Versions
+  1 and 2 still read (CRC-16 and framing check); `Packer::with_version`
+  writes them. Slicing-by-8 CRC-32C in safe Rust (2.8 GB/s per core).
+  The FPGA packer computes it one word per clock (+279 LUT, +17 FF);
+  the host drives front ends of version 2 or 3. `examples/crcspeed`.
 - `tools/sigmf-repeat.py`: repeat a SigMF recording into a long
   multi-block one, for pipeline throughput measurements.
 - `isdb-frontend`: `fast::FastFrontend`, the bit-exact front end 2–2.4×
