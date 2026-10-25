@@ -134,6 +134,36 @@ impl ViterbiDecoder {
         d
     }
 
+    /// Decoder starting in the known encoder state `state` (the register
+    /// of [`ConvEncoder::state`]), e.g. after a sync word whose last six
+    /// bits fixed it.
+    pub fn with_state(traceback: usize, state: u8) -> Self {
+        let mut d = Self::new(traceback);
+        d.pm = [-1.0e6f32; STATES];
+        d.pm[usize::from(state) % STATES] = 0.0;
+        d
+    }
+
+    /// Advance over input bits known to the receiver (a following sync
+    /// word), with no channel information: only the branches with the
+    /// known input survive. Six known bits fix the end state, so a
+    /// [`ViterbiDecoder::flush`] afterwards traces back from it.
+    pub fn push_known(&mut self, bits: &[u8], out: &mut Vec<u8>) {
+        for &b in bits {
+            self.acs(0.0, 0.0);
+            for (ns, p) in self.pm.iter_mut().enumerate() {
+                if (ns >> 5) as u8 != (b & 1) {
+                    *p = -1.0e9;
+                }
+            }
+            self.renormalise();
+            if self.decisions.len() >= self.block + self.traceback {
+                let s = self.best_state();
+                self.release(s, self.block, out);
+            }
+        }
+    }
+
     /// Traceback depth.
     pub fn traceback(&self) -> usize {
         self.traceback
@@ -174,6 +204,53 @@ impl ViterbiDecoder {
         }
         self.pm = new;
         self.decisions.push(dec);
+    }
+
+    /// One trellis step with an arbitrary metric per branch output:
+    /// `m[2·x + y]` is added to every branch that emits (X, Y) = (x, y).
+    /// [`ViterbiDecoder::acs`] is the special case m = ±lx ± ly.
+    #[inline]
+    fn acs4(&mut self, m: &[f32; 4]) {
+        let t = tables();
+        let mut new = [0f32; STATES];
+        let mut dec: u64 = 0;
+        for u in 0..2 {
+            let mut d: u32 = 0;
+            for j in 0..HALF {
+                let idx = |b: usize| {
+                    let x = usize::from(t.sx[u][b][j] < 0.0);
+                    let y = usize::from(t.sy[u][b][j] < 0.0);
+                    2 * x + y
+                };
+                let m0 = self.pm[2 * j] + m[idx(0)];
+                let m1 = self.pm[2 * j + 1] + m[idx(1)];
+                let c = m1 > m0;
+                new[u * HALF + j] = if c { m1 } else { m0 };
+                d |= (c as u32) << j;
+            }
+            dec |= (d as u64) << (u * HALF);
+        }
+        self.pm = new;
+        self.decisions.push(dec);
+    }
+
+    /// Feed one metric quadruple per trellis step (`m[2·x + y]` for the
+    /// branches emitting (X, Y) = (x, y), larger = more likely), for
+    /// branch metrics that are not a sum of two bit LLRs: the set-partition
+    /// metric of trellis-coded 8PSK, where (X, Y) select a pair of
+    /// antipodal points and the uncoded bit picks one of them.
+    pub fn push_metrics(&mut self, steps: &[[f32; 4]], out: &mut Vec<u8>) {
+        for (i, m) in steps.iter().enumerate() {
+            self.acs4(m);
+            if i % 64 == 63 {
+                self.renormalise();
+            }
+            if self.decisions.len() >= self.block + self.traceback {
+                let s = self.best_state();
+                self.release(s, self.block, out);
+            }
+        }
+        self.renormalise();
     }
 
     fn renormalise(&mut self) {
@@ -282,5 +359,60 @@ mod tests {
         }
         v.flush(&mut out);
         assert_eq!(out, bits);
+    }
+
+    /// `push_metrics` with m = ±lx ± ly decides exactly as `push`.
+    #[test]
+    fn viterbi_metrics_equal_llr_pairs() {
+        let mut rng = XorShift::new(23);
+        let llr: Vec<f32> = (0..4000)
+            .map(|_| ((rng.next() % 2001) as f32 - 1000.0) / 100.0)
+            .collect();
+        let steps: Vec<[f32; 4]> = llr
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[x, y]| [x + y, x - y, -x + y, -x - y])
+            .collect();
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        let mut v = ViterbiDecoder::new(64);
+        v.push(&llr, &mut a);
+        v.flush(&mut a);
+        let mut w = ViterbiDecoder::new(64);
+        w.push_metrics(&steps, &mut b);
+        w.flush(&mut b);
+        assert_eq!(a, b);
+    }
+
+    /// A known start state and known trailing bits: the decoder recovers a
+    /// block coded from a non-zero register, the trailing bits included,
+    /// even with the last coded pairs erased.
+    #[test]
+    fn viterbi_known_state_and_tail() {
+        let mut rng = XorShift::new(5);
+        let mut e = ConvEncoder::new();
+        for _ in 0..13 {
+            e.push((rng.next() & 1) as u8);
+        }
+        let start = e.state();
+        let bits: Vec<u8> = (0..3000).map(|_| (rng.next() & 1) as u8).collect();
+        let mut llr: Vec<f32> = bits
+            .iter()
+            .flat_map(|&u| {
+                let (x, y) = e.push(u);
+                [x, y].map(|b| if b == 0 { 4.0 } else { -4.0 })
+            })
+            .collect();
+        // erase the last 4 pairs: only the known tail disambiguates them
+        let n = llr.len();
+        llr[n - 8..].fill(0.0);
+        let tail = [0u8, 0, 0, 1, 1, 0];
+        let mut v = ViterbiDecoder::with_state(64, start);
+        let mut out = Vec::new();
+        v.push(&llr, &mut out);
+        v.push_known(&tail, &mut out);
+        v.flush(&mut out);
+        assert_eq!(&out[..bits.len() - 4], &bits[..bits.len() - 4]);
+        assert_eq!(&out[bits.len()..], &tail);
     }
 }

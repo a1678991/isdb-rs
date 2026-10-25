@@ -9,6 +9,7 @@
 //! | [`slots`] | §3.2, §8, Fig. 4 | where each combination's run of slots sits in the main signal |
 //! | [`tmcc`] | §6, Figs. 7–11, App. 1; annexed table 50 | the TMCC information codec, energy dispersal and RS(64,48) of a superframe |
 //! | [`burst`] | §7; annexed table 51 | the phase-reference burst bits |
+//! | [`mainsig`] | §§2–5, §8; annexed table 48 別記 1–3 | sent slots, energy dispersal, inter-frame interleaver, TS codewords of a superframe |
 //!
 //! Interpretations are in `SPEC-NOTES.md` next to this crate. The receive
 //! chain that uses these is `isdbs-phy`.
@@ -16,6 +17,7 @@
 pub mod burst;
 pub mod combination;
 pub mod frame;
+pub mod mainsig;
 pub mod slots;
 pub mod tmcc;
 

@@ -10,8 +10,10 @@
 //! | [`tmcc`] | Viterbi decoding of the 192 header symbols, sync-word check |
 //! | [`rx`] | `receive`: frames, superframes with their TMCC, `main_mer` |
 //! | [`frontend`] | IQ → symbols through `isdb-frontend` with the ISDB-S design |
+//! | [`demod`] | a frame's main signal → bytes: soft demapping (BPSK, QPSK, TC8PSK set-partition metrics), depuncturing, Viterbi |
+//! | [`ts`] | a superframe → TS packets: de-interleave, energy dispersal, RS(204,188), TS_ID per slot |
 //!
-//! The boundary to the main-signal decoder (Phase 3) is [`rx::Frame`]: the
+//! The boundary between frame recovery and the main-signal decoder is [`rx::Frame`]: the
 //! 38 976 main symbols of a frame, derotated and scaled to unit amplitude,
 //! with the frame's index in its superframe; the slot layout comes from
 //! the superframe's [`isdbs_core::TmccInfo`] through
@@ -21,10 +23,12 @@
 pub type Cplx = num_complex::Complex<f64>;
 
 pub mod carrier;
+pub mod demod;
 pub mod frontend;
 pub mod rx;
 pub mod sync;
 pub mod tmcc;
+pub mod ts;
 
 #[cfg(test)]
 pub(crate) mod testsig;
