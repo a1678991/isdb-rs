@@ -120,22 +120,17 @@ pub fn measure_trim(x: &[[i16; 2]], d: &Design) -> Result<(f64, f64), ParamError
 /// period over the second half (Q8.24 samples).
 fn run(x: &[[i16; 2]], d: &Design) -> Result<(Vec<Cplx>, f64), ParamError> {
     let mut fe = Frontend::new(Params::design(d)?)?;
-    let mut out = Vec::new();
     let mut z = Vec::with_capacity((x.len() as f64 / d.sps()) as usize + 16);
     let mut psum = 0.0;
     let mut pn = 0usize;
     let half = (x.len() as f64 / d.sps()) as usize / 2;
-    for chunk in x.chunks(1 << 16) {
-        out.clear();
-        fe.process(chunk, &mut out);
-        for s in &out {
-            z.push(Cplx::new(f64::from(s.zk[0]), f64::from(s.zk[1])));
-            if z.len() > half {
-                psum += f64::from(s.period);
-                pn += 1;
-            }
+    fe.process_each(x, |s| {
+        z.push(Cplx::new(f64::from(s.zk[0]), f64::from(s.zk[1])));
+        if z.len() > half {
+            psum += f64::from(s.period);
+            pn += 1;
         }
-    }
+    });
     Ok((z, psum / pn.max(1) as f64))
 }
 

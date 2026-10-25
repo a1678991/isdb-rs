@@ -131,3 +131,54 @@ fn isdbs3_ldpc_simd_equals_scalar_on_recordings() {
         );
     }
 }
+
+/// `ISDB_RS_ISDBS3_LIVE_IQ`: recordings of several separately captured
+/// blocks (e.g. `isdb capture --radio …,recorder=iio,bits=8 --segments 2`).
+/// Every segment acquired on its own decodes the TMCC of every frame (a
+/// candidate carrier a few tens of kHz off once won the carrier choice on
+/// its sync Es/N0 and decoded none, plan §0.10), and so does every segment
+/// after the first when it reuses the first's acquisition.
+#[test]
+fn isdbs3_every_segment_acquires() {
+    use isdbs3_phy::frontend::symbols_with_prior;
+    let Ok(list) = std::env::var("ISDB_RS_ISDBS3_LIVE_IQ") else {
+        eprintln!("SKIP isdbs3_every_segment_acquires: ISDB_RS_ISDBS3_LIVE_IQ not set");
+        return;
+    };
+    for path in list.split(':').filter(|p| !p.is_empty()) {
+        let mut rec = Recording::open(std::path::Path::new(path), None, None).unwrap();
+        let fs = rec.sample_rate;
+        let segs = rec.segments().clone();
+        let mut prior = None;
+        for (i, seg) in segs.iter().enumerate() {
+            let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+            let fresh = symbols_with_prior(&x, fs, None, Trim::Auto, None).unwrap();
+            let mut tries = vec![("fresh", fresh.0)];
+            if let Some(p) = &prior {
+                tries.push((
+                    "prior",
+                    symbols_with_prior(&x, fs, None, Trim::Auto, Some(p))
+                        .unwrap()
+                        .0,
+                ));
+            }
+            for (label, s) in tries {
+                let r = receive(&s.z, &RxOptions::default());
+                let ok = r.frames.iter().filter(|f| f.tmcc.is_ok()).count();
+                assert!(
+                    !r.frames.is_empty() && ok == r.frames.len(),
+                    "{path} segment {i} ({label}, carrier {:.0} Hz): TMCC {ok}/{}",
+                    s.carrier_offset_hz,
+                    r.frames.len()
+                );
+                eprintln!(
+                    "{path} segment {i} ({label}): carrier {:.0} Hz, trim {:.3}, TMCC {ok}/{}",
+                    s.carrier_offset_hz,
+                    s.trim,
+                    r.frames.len()
+                );
+            }
+            prior.get_or_insert(fresh.1);
+        }
+    }
+}

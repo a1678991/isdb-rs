@@ -102,6 +102,18 @@ proptest! {
 }
 
 #[test]
+fn process_each_equals_process() {
+    let p = params(false, 24, -0.08, 90e3, 6, 2e-4, 57.72e6).unwrap();
+    let x = signal(30_000, 11, 2047.0, 57.72e6 / 28.86e6);
+    let mut f = FastFrontend::new(p.clone()).unwrap();
+    let mut b = Vec::new();
+    for c in x.chunks(777) {
+        f.process_each(c, |s| b.push(*s));
+    }
+    assert_eq!(reference(&p, &x), b);
+}
+
+#[test]
 fn push_one_by_one_equals_process() {
     let p = params(true, 32, -0.17, -130e3, 6, 5e-6, 40e6).unwrap();
     let x = signal(20_000, 7, 2047.0, 40e6 / 33.7561e6);

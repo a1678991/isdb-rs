@@ -166,6 +166,29 @@ impl FastFrontend {
         }
     }
 
+    /// Push a block of samples, handing each symbol to `f` as it is
+    /// computed (no `Vec<Symbol>`: for callers that keep only part of it).
+    pub fn process_each(&mut self, x: &[[i16; 2]], mut f: impl FnMut(&Symbol)) {
+        match self.width {
+            8 => self.each_n::<8>(x, &mut f),
+            16 => self.each_n::<16>(x, &mut f),
+            24 => self.each_n::<24>(x, &mut f),
+            32 => self.each_n::<32>(x, &mut f),
+            40 => self.each_n::<40>(x, &mut f),
+            48 => self.each_n::<48>(x, &mut f),
+            56 => self.each_n::<56>(x, &mut f),
+            _ => self.each_n::<64>(x, &mut f),
+        }
+    }
+
+    fn each_n<const W: usize>(&mut self, x: &[[i16; 2]], f: &mut impl FnMut(&Symbol)) {
+        for &s in x {
+            if let Some(y) = self.push_n::<W>(s) {
+                f(&y);
+            }
+        }
+    }
+
     /// Push one sample (the reference's `push`). [`FastFrontend::process`]
     /// is the fast way; this one dispatches the width for every sample.
     pub fn push(&mut self, x: [i16; 2]) -> Option<Symbol> {

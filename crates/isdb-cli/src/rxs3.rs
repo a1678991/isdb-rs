@@ -16,7 +16,7 @@ use isdb_radio::{DeviceSpec, RadioConfig};
 use isdb_tlv::Assembler;
 use isdb_tlv::stats::StreamStats;
 use isdbs3_core::params::FRAME_SYMBOLS;
-use isdbs3_phy::frontend::{Trim, symbols};
+use isdbs3_phy::frontend::{Prior, Symbols, Trim, symbols_with_prior};
 use isdbs3_phy::rx::{RxOptions, receive};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -222,18 +222,23 @@ impl Stats {
     }
 }
 
-/// Decode one contiguous block of unit-scale samples at `fs`.
-pub fn decode_block(
+/// The front end of one block: symbols, and the acquisition the next
+/// block of the same signal may reuse (`prior`).
+pub fn front(
     x: &[C32],
     fs: f64,
     carrier_offset_hz: Option<f64>,
-    out: &mut Outputs,
-    stats: &mut Stats,
-) -> Result<()> {
+    prior: Option<&Prior>,
+) -> Result<(Symbols, Prior)> {
+    symbols_with_prior(x, fs, carrier_offset_hz, Trim::Auto, prior)
+        .context("ISDB-S3 front end parameters for this sample rate")
+}
+
+/// The rest of one block of `samples` samples: receive its symbols `s`,
+/// count and write.
+pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> Result<()> {
     stats.blocks += 1;
-    stats.samples += x.len() as u64;
-    let s = symbols(x, fs, carrier_offset_hz, Trim::Auto)
-        .context("ISDB-S3 front end parameters for this sample rate")?;
+    stats.samples += samples;
     stats.carrier_offset_hz = s.carrier_offset_hz;
     stats.trim = s.trim;
     if s.z.len() < 2 * FRAME_SYMBOLS {
@@ -376,6 +381,51 @@ pub fn report(stats: &Stats, secs: f64) {
     }
 }
 
+/// One contiguous block of samples for the pipeline and their rate.
+struct Block {
+    x: Vec<C32>,
+    fs: f64,
+}
+
+/// Decode the blocks `blocks` yields, in three overlapping stages: the
+/// producer (reading or capturing) on its thread, the front end on
+/// another (sequential: it carries the acquisition from block to block),
+/// and the receiver on this one, with one block in flight between
+/// stages. `after` runs after each block is written (status lines).
+fn pipeline(
+    produce: impl FnOnce(&std::sync::mpsc::SyncSender<Block>) -> Result<()> + Send,
+    carrier_offset_hz: Option<f64>,
+    out: &mut Outputs,
+    stats: &mut Stats,
+    mut after: impl FnMut(&Stats),
+) -> Result<()> {
+    use std::sync::mpsc::sync_channel;
+    let (btx, brx) = sync_channel::<Block>(1);
+    let (stx, srx) = sync_channel::<Result<(Symbols, u64)>>(1);
+    std::thread::scope(|sc| -> Result<()> {
+        let producer = sc.spawn(move || produce(&btx));
+        sc.spawn(move || {
+            let mut prior: Option<Prior> = None;
+            for b in brx {
+                let r = front(&b.x, b.fs, carrier_offset_hz, prior.as_ref()).map(|(s, p)| {
+                    prior = Some(p);
+                    (s, b.x.len() as u64)
+                });
+                let failed = r.is_err();
+                if stx.send(r).is_err() || failed {
+                    break;
+                }
+            }
+        });
+        for r in srx {
+            let (s, n) = r?;
+            back(&s, n, out, stats)?;
+            after(stats);
+        }
+        producer.join().expect("producer thread")
+    })
+}
+
 /// Offline: every contiguous segment of a recording.
 pub fn run_file(
     path: &str,
@@ -388,16 +438,27 @@ pub fn run_file(
         format!("{path}: an ISDB-S3 recording needs its SigMF metadata (rate and format)")
     })?;
     let fs = rec.sample_rate;
-    let mut left = max_samples.unwrap_or(u64::MAX);
-    for seg in rec.segments() {
-        if left == 0 {
-            break;
-        }
-        let n = (seg.end - seg.start).min(left);
-        left -= n;
-        let x = rec.read(seg.start, usize::try_from(n)?)?;
-        decode_block(&x, fs, carrier_offset_hz, out, stats)?;
-    }
+    pipeline(
+        move |tx| {
+            let mut left = max_samples.unwrap_or(u64::MAX);
+            for seg in rec.segments() {
+                if left == 0 {
+                    break;
+                }
+                let n = (seg.end - seg.start).min(left);
+                left -= n;
+                let x = rec.read(seg.start, usize::try_from(n)?)?;
+                if tx.send(Block { x, fs }).is_err() {
+                    break;
+                }
+            }
+            Ok(())
+        },
+        carrier_offset_hz,
+        out,
+        stats,
+        |_| {},
+    )?;
     Ok(stats.samples as f64 / fs)
 }
 
@@ -449,40 +510,61 @@ pub fn run_radio(
             n as f64 / rate
         );
     }
+    let t0 = std::time::Instant::now();
     let mut secs = 0.0;
-    while !stop.load(Ordering::Relaxed) && (seconds <= 0.0 || secs < seconds) {
-        let mut bytes = Vec::with_capacity(n as usize * 2);
-        let cap = backend.capture(&cfg, n, &mut bytes, stop)?;
-        if !cap.gaps.is_empty() {
-            eprintln!(
-                "[rx] the device lost samples {} time(s) inside this block; decoding its contiguous parts",
-                cap.gaps.len()
-            );
-        }
-        let x = crate::symbols::decode(cap.format, &bytes);
-        let fs = cap.sample_rate_hz;
-        let mut start = 0usize;
-        let mut cuts: Vec<usize> = cap.gaps.iter().map(|g| g.at as usize).collect();
-        cuts.push(x.len());
-        for c in cuts {
-            if c > start {
-                decode_block(&x[start..c], fs, carrier_offset_hz, out, stats)?;
+    pipeline(
+        |tx| {
+            let mut captured = 0.0;
+            while !stop.load(Ordering::Relaxed) && (seconds <= 0.0 || captured < seconds) {
+                let mut bytes = Vec::with_capacity(n as usize * 2);
+                let cap = backend.capture(&cfg, n, &mut bytes, stop)?;
+                if !cap.gaps.is_empty() {
+                    eprintln!(
+                        "[rx] the device lost samples {} time(s) inside this block; decoding its contiguous parts",
+                        cap.gaps.len()
+                    );
+                }
+                let x = crate::symbols::decode(cap.format, &bytes);
+                let fs = cap.sample_rate_hz;
+                captured += x.len() as f64 / fs;
+                let mut start = 0usize;
+                let mut cuts: Vec<usize> = cap.gaps.iter().map(|g| g.at as usize).collect();
+                cuts.push(x.len());
+                for c in cuts {
+                    if c > start
+                        && tx
+                            .send(Block {
+                                x: x[start..c].to_vec(),
+                                fs,
+                            })
+                            .is_err()
+                    {
+                        return Ok(());
+                    }
+                    start = c;
+                }
             }
-            start = c;
-        }
-        secs += x.len() as f64 / fs;
-        if status {
-            eprintln!(
-                "[rx] {secs:.2} s: block {}; {} frames; {} slots, LDPC failed {}, BCH failed {}; MER {}",
-                stats.blocks,
-                stats.frames,
-                stats.slots,
-                stats.ldpc_failed,
-                stats.bch_failed,
-                stats.mer_db().map_or("-".into(), |m| format!("{m:.1} dB"))
-            );
-        }
-    }
+            Ok(())
+        },
+        carrier_offset_hz,
+        out,
+        stats,
+        |st| {
+            secs = st.samples as f64 / rate;
+            if status {
+                eprintln!(
+                    "[rx] {secs:.2} s of signal after {:.2} s: block {}; {} frames; {} slots, LDPC failed {}, BCH failed {}; MER {}",
+                    t0.elapsed().as_secs_f64(),
+                    st.blocks,
+                    st.frames,
+                    st.slots,
+                    st.ldpc_failed,
+                    st.bch_failed,
+                    st.mer_db().map_or("-".into(), |m| format!("{m:.1} dB"))
+                );
+            }
+        },
+    )?;
     Ok(secs)
 }
 

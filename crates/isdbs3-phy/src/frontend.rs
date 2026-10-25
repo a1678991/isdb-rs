@@ -35,6 +35,11 @@ pub struct Symbols {
     pub trim: f64,
 }
 
+/// Largest mean carrier phase step between consecutive SSync slots (two
+/// modulation slots, 18 592 symbols) of a candidate carrier, rad: about
+/// 140 Hz of residual offset at 33.756 Mbaud ([`pick_carrier`]).
+pub const MAX_PHASE_STEP: f64 = 0.5;
+
 /// Carrier lines of a survey that agree within this much count as one
 /// candidate (the ±R/2 and z⁴ lines of one carrier agree within a few Hz).
 const SAME_CARRIER_HZ: f64 = 2_000.0;
@@ -65,14 +70,19 @@ pub fn carrier_candidates(sv: &isdb_iq::survey::Survey) -> Vec<f64> {
 
 /// Of the `candidates` (strongest first), the carrier the front end locks
 /// on: each of the first few runs through the front end (trim 0) over the
-/// first 0.05 s, and the one with the best sync-symbol Es/N0 wins. A wrong
-/// candidate leaves the sync words uncorrelated (Es/N0 near 0 dB or no
-/// slot sync at all), the right one gives the signal's SNR less the
-/// untrimmed timing loss, so the margin is large. With no candidate the
-/// carrier is taken as 0.
+/// first 0.05 s, and the one with the best sync-symbol Es/N0 wins among
+/// those whose carrier phase stands still between slots. A candidate far
+/// off leaves the sync words uncorrelated (Es/N0 near 0 dB or no slot
+/// sync at all). One a few tens of kHz off does not (a 24-symbol word
+/// hardly rotates, and each slot's phase is measured anew), but its phase
+/// then turns by a near-constant amount from one SSync slot to the next
+/// (+1.6 rad for 48 kHz on a live block, against ±0.01 rad for the right
+/// carrier), which breaks the TMCC and the main signal: so a candidate
+/// whose mean phase step exceeds [`MAX_PHASE_STEP`] ranks below every
+/// candidate within it. With no candidate the carrier is taken as 0.
 pub fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64, ParamError> {
     let n = ((0.05 * fs) as usize).min(xi.len());
-    let score = |cfo: f64| -> Result<f64, ParamError> {
+    let score = |cfo: f64| -> Result<(bool, f64), ParamError> {
         let mut fe = Frontend::new(Params::design(&design(fs, cfo))?)?;
         let mut out = Vec::new();
         fe.process(&xi[..n], &mut out);
@@ -81,22 +91,27 @@ pub fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64,
             .skip(3 * isdb_frontend::s3sync::SLOT)
             .map(|s| num_complex::Complex64::new(f64::from(s.zk[0]), f64::from(s.zk[1])))
             .collect();
-        Ok(isdb_frontend::s3sync::measure(&z).map_or(f64::NEG_INFINITY, |r| r.snr_db))
+        Ok(
+            isdb_frontend::s3sync::measure(&z).map_or((false, f64::NEG_INFINITY), |r| {
+                (r.phase_step_mean.abs() <= MAX_PHASE_STEP, r.snr_db)
+            }),
+        )
     };
     // the candidates run independently, one thread each; the first of
     // equal scores wins, as in a sequential search
     let tried = &candidates[..candidates.len().min(4)];
-    let scores: Vec<f64> = std::thread::scope(|sc| {
+    let scores: Vec<(bool, f64)> = std::thread::scope(|sc| {
         let handles: Vec<_> = tried.iter().map(|&c| sc.spawn(move || score(c))).collect();
         handles
             .into_iter()
             .map(|h| h.join().expect("carrier thread"))
             .collect::<Result<_, _>>()
     })?;
-    let mut best: Option<(f64, f64)> = None;
-    for (&cfo, &snr) in tried.iter().zip(&scores) {
-        if best.is_none_or(|b| snr > b.1) {
-            best = Some((cfo, snr));
+    // a still phase first, then the Es/N0
+    let mut best: Option<(f64, (bool, f64))> = None;
+    for (&cfo, &sc) in tried.iter().zip(&scores) {
+        if best.is_none_or(|b| (sc.0 && !b.1.0) || (sc.0 == b.1.0 && sc.1 > b.1.1)) {
+            best = Some((cfo, sc));
         }
     }
     Ok(best.map_or(0.0, |b| b.0))
@@ -127,38 +142,111 @@ pub fn symbols(
     carrier_offset_hz: Option<f64>,
     trim: Trim,
 ) -> Result<Symbols, ParamError> {
-    let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
+    Ok(symbols_with_prior(x, fs, carrier_offset_hz, trim, None)?.0)
+}
+
+/// What one block's acquisition found, for the next block of the same
+/// signal ([`symbols_with_prior`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Prior {
+    /// Carrier offset, Hz.
+    pub carrier_offset_hz: f64,
+    /// Output trim, symbol periods.
+    pub trim: f64,
+    /// Sync-symbol Es/N0 the front end reached with them on the excerpt
+    /// the acquisition measured, dB.
+    pub sync_snr_db: f64,
+    /// Whether the survey matched ISDB-S3.
+    pub survey_says_isdbs3: bool,
+}
+
+/// How far below the prior's Es/N0 a block may measure before the
+/// acquisition is redone, dB.
+pub const PRIOR_MARGIN_DB: f64 = 3.0;
+
+/// The sync-symbol Es/N0 of the front end with design `d` on the first
+/// 0.05 s of `xi` (−∞ without slot sync).
+fn excerpt_snr(xi: &[[i16; 2]], fs: f64, d: &Design) -> Result<f64, ParamError> {
+    let n = ((0.05 * fs) as usize).min(xi.len());
+    let mut fe = Frontend::new(Params::design(d)?)?;
+    let mut z = Vec::new();
+    fe.process_each(&xi[..n], |s| {
+        z.push(num_complex::Complex64::new(
+            f64::from(s.zk[0]),
+            f64::from(s.zk[1]),
+        ));
+    });
+    let z = z.get(3 * isdb_frontend::s3sync::SLOT..).unwrap_or(&[]);
+    Ok(isdb_frontend::s3sync::measure(z).map_or(f64::NEG_INFINITY, |r| r.snr_db))
+}
+
+/// [`symbols`], reusing the carrier and trim of an earlier block of the
+/// same signal (`prior`) when they still hold: the front end runs over
+/// the first 0.05 s with them, and if its sync-symbol Es/N0 is within
+/// [`PRIOR_MARGIN_DB`] of the prior's, the survey, the carrier choice and
+/// the trim search are skipped. Otherwise (or without a prior, or with
+/// `carrier_offset_hz` / a fixed trim given) the full acquisition runs.
+/// Returns the symbols and the acquisition for the next block.
+pub fn symbols_with_prior(
+    x: &[num_complex::Complex<f32>],
+    fs: f64,
+    carrier_offset_hz: Option<f64>,
+    trim: Trim,
+    prior: Option<&Prior>,
+) -> Result<(Symbols, Prior), ParamError> {
     let xi = to_input(x);
-    let cfo = match carrier_offset_hz {
-        Some(f) => f,
-        None => pick_carrier(&xi, fs, &carrier_candidates(&sv))?,
+    let reuse = match (prior, carrier_offset_hz, trim) {
+        (Some(p), None, Trim::Auto) => {
+            let mut d = design(fs, p.carrier_offset_hz);
+            d.trim = p.trim;
+            (excerpt_snr(&xi, fs, &d)? >= p.sync_snr_db - PRIOR_MARGIN_DB).then_some(*p)
+        }
+        _ => None,
     };
-    let mut d = design(fs, cfo);
-    d.trim = match trim {
-        Trim::Fixed(t) => t,
-        Trim::Auto => {
-            let n = ((0.15 * fs) as usize).min(xi.len());
-            let cands: Vec<f64> = (-10..=2).map(|i| f64::from(i) * 0.025).collect();
-            isdb_frontend::s3sync::best_trim(&xi[..n], &d, &cands)?.0
+    let acq = match reuse {
+        Some(p) => p,
+        None => {
+            let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
+            let cfo = match carrier_offset_hz {
+                Some(f) => f,
+                None => pick_carrier(&xi, fs, &carrier_candidates(&sv))?,
+            };
+            let mut d = design(fs, cfo);
+            let (t, snr) = match trim {
+                Trim::Fixed(t) => {
+                    d.trim = t;
+                    (t, excerpt_snr(&xi, fs, &d)?)
+                }
+                Trim::Auto => {
+                    let n = ((0.15 * fs) as usize).min(xi.len());
+                    let cands: Vec<f64> = (-10..=2).map(|i| f64::from(i) * 0.025).collect();
+                    isdb_frontend::s3sync::best_trim(&xi[..n], &d, &cands)?
+                }
+            };
+            Prior {
+                carrier_offset_hz: cfo,
+                trim: t,
+                sync_snr_db: snr,
+                survey_says_isdbs3: sv.system.is_some_and(|m| m.system.name == system().name),
+            }
         }
     };
+    let mut d = design(fs, acq.carrier_offset_hz);
+    d.trim = acq.trim;
     let mut fe = Frontend::new(Params::design(&d)?)?;
-    let mut out = Vec::new();
     let mut z = Vec::with_capacity((xi.len() as f64 / d.sps()) as usize + 16);
-    for chunk in xi.chunks(1 << 16) {
-        out.clear();
-        fe.process(chunk, &mut out);
-        z.extend(
-            out.iter()
-                .map(|s| Cplx::new(f64::from(s.zk[0]), f64::from(s.zk[1]))),
-        );
-    }
-    Ok(Symbols {
-        z,
-        carrier_offset_hz: cfo,
-        survey_says_isdbs3: sv.system.is_some_and(|m| m.system.name == system().name),
-        trim: d.trim,
-    })
+    fe.process_each(&xi, |s| {
+        z.push(Cplx::new(f64::from(s.zk[0]), f64::from(s.zk[1])));
+    });
+    Ok((
+        Symbols {
+            z,
+            carrier_offset_hz: acq.carrier_offset_hz,
+            survey_says_isdbs3: acq.survey_says_isdbs3,
+            trim: acq.trim,
+        },
+        acq,
+    ))
 }
 
 #[cfg(test)]
