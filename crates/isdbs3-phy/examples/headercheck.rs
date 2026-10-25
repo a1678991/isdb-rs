@@ -32,7 +32,13 @@ fn main() {
         };
         let pts = learned_points(&pil, &lay, lay[0].modulation).unwrap();
         let n0 = 0.04;
-        for d in decode_frame(&ms, &lay, n0, 50, &|_, _| pts.clone()) {
+        for d in decode_frame(
+            &ms,
+            &lay,
+            n0,
+            &isdbs3_phy::main_signal::Ldpc::FLOAT,
+            &|_, _| pts.clone(),
+        ) {
             if d.bch_corrected.is_none() {
                 continue;
             }

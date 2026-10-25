@@ -67,7 +67,13 @@ fn main() {
             let pts = learned_points(&pil, &lay, lay[0].modulation).unwrap();
             let m = mer(&ms, &pts);
             let n0 = 10f64.powf(-m / 10.0);
-            let out = decode_frame(&ms, &lay, n0, 50, &|_, _| pts.clone());
+            let out = decode_frame(
+                &ms,
+                &lay,
+                n0,
+                &isdbs3_phy::main_signal::Ldpc::FLOAT,
+                &|_, _| pts.clone(),
+            );
             let ok = out.iter().filter(|d| d.bch_corrected.is_some()).count();
             let it: usize = out.iter().filter_map(|d| d.ldpc_iterations).sum();
             println!(

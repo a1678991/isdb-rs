@@ -218,8 +218,8 @@ pub fn best_trim(
     d: &crate::params::Design,
     candidates: &[f64],
 ) -> Result<(f64, f64), crate::params::ParamError> {
-    let mut scores = Vec::with_capacity(candidates.len());
-    for &t in candidates {
+    // the candidates run independently, one thread each
+    let score = |t: f64| -> Result<f64, crate::params::ParamError> {
         let mut dd = d.clone();
         dd.trim = t;
         let mut fe = crate::fixed::Frontend::new(crate::params::Params::design(&dd)?)?;
@@ -231,8 +231,18 @@ pub fn best_trim(
             .skip(3 * SLOT)
             .map(|s| C::new(f64::from(s.zk[0]), f64::from(s.zk[1])))
             .collect();
-        scores.push(measure(&z).map_or(f64::NEG_INFINITY, |r| r.snr_db));
-    }
+        Ok(measure(&z).map_or(f64::NEG_INFINITY, |r| r.snr_db))
+    };
+    let scores: Vec<f64> = std::thread::scope(|sc| {
+        let handles: Vec<_> = candidates
+            .iter()
+            .map(|&t| sc.spawn(move || score(t)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("trim thread"))
+            .collect::<Result<_, _>>()
+    })?;
     let i = (0..scores.len())
         .max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
         .ok_or_else(|| crate::params::ParamError("no trim candidates".into()))?;

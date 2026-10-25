@@ -58,7 +58,13 @@ fn main() {
                 .sum::<f64>()
                 / 200_000.0;
             let t0 = std::time::Instant::now();
-            let out = decode_frame(&ms, &lay, n0, 50, &|_, _| pts.clone());
+            let out = decode_frame(
+                &ms,
+                &lay,
+                n0,
+                &isdbs3_phy::main_signal::Ldpc::FLOAT,
+                &|_, _| pts.clone(),
+            );
             let dt = t0.elapsed().as_secs_f64();
             let ok = out.iter().filter(|d| d.ldpc_iterations.is_some()).count();
             let bch = out.iter().filter(|d| d.bch_corrected.is_some()).count();

@@ -142,39 +142,181 @@ pub struct SlotData {
     pub data: Vec<u8>,
 }
 
+/// The LDPC decoder [`decode_frame`] uses.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Ldpc {
+    /// Floating-point layered normalised min-sum (`isdb_fec::ldpc::Code::decode`),
+    /// one codeword at a time: the reference.
+    Float {
+        /// Iteration limit.
+        max_iter: usize,
+        /// Check-to-variable scale.
+        scale: f32,
+    },
+    /// Fixed-point layered offset min-sum (`isdb_fec::ldpc::fixed`),
+    /// [`LANES`] codewords at a time on the SIMD back end, bit-exact with
+    /// its one-lane scalar form; the LLRs are quantised to `i8` as
+    /// `round(llr · input_scale)`.
+    Fixed {
+        /// Iteration limit.
+        max_iter: usize,
+        /// LLR quantisation scale.
+        input_scale: f32,
+        /// Offset subtracted from the check-to-variable magnitudes.
+        offset: i8,
+        /// [`LANES`] codewords at a time (SIMD), or one (the scalar
+        /// reference, the same results).
+        simd: bool,
+    },
+}
+
+/// Lanes of the fixed-point decoder (`isdb_fec::ldpc::fixed`): 16 `i8`
+/// lanes fill a 128-bit vector (SSE2, NEON); measured fastest at that
+/// baseline and within 2 % of 32 with AVX2 (plan §0.9).
+pub const LANES: usize = 16;
+
+impl Ldpc {
+    /// The fixed-point decoder with the settings chosen on live
+    /// recordings (plan §0.9).
+    pub const FIXED: Self = Self::Fixed {
+        max_iter: 50,
+        input_scale: 1.0,
+        offset: 1,
+        simd: true,
+    };
+    /// [`Ldpc::FIXED`] one codeword at a time: the scalar reference of
+    /// the SIMD decoder (the same bits and iterations).
+    pub const SCALAR: Self = Self::Fixed {
+        max_iter: 50,
+        input_scale: 1.0,
+        offset: 1,
+        simd: false,
+    };
+    /// The floating-point reference.
+    pub const FLOAT: Self = Self::Float {
+        max_iter: 50,
+        scale: 0.8,
+    };
+}
+
+/// One codeword's LLRs in codeword order: slot `s`'s symbols in `ms`
+/// demapped against `pts` (noise `n0`) and bit-de-interleaved (§3.7).
+pub fn codeword_llrs(ms: &[Cplx], s: &Slot, pts: &[Cplx], n0: f64) -> Vec<f32> {
+    let sym = &ms[s.symbol_start..s.symbol_start + s.symbols];
+    let mut lab = Vec::new();
+    demap(sym, pts, s.modulation.bits(), n0, &mut lab);
+    let perm = permutation(s.modulation, s.rate);
+    let mut llr = vec![0f32; N_LDPC];
+    for (i, &p) in perm.iter().enumerate() {
+        llr[p as usize] = lab[i];
+    }
+    llr
+}
+
 /// Decode every valid slot of a frame from its main symbols `ms` (unit
-/// sync amplitude), with the constellation `pts_for(modulation, rate)`.
+/// sync amplitude), with the constellation `pts_for(modulation, rate)`
+/// and the LDPC decoder `ldpc`.
 /// The slot dispersal runs across the frame's valid slots in order, so
 /// every slot's dispersed bits are produced even when its decode fails.
 pub fn decode_frame(
     ms: &[Cplx],
     layout: &[Slot],
     n0: f64,
-    max_iter: usize,
+    ldpc: &Ldpc,
     pts_for: &(dyn Fn(Modulation, isdbs3_core::CodeRate) -> Vec<Cplx> + Sync),
 ) -> Vec<SlotData> {
     // decode the codewords (independent) …
     let valid: Vec<&Slot> = layout.iter().filter(|s| !s.dummy).collect();
-    let decoded: Vec<(usize, Option<usize>, Vec<u8>)> = std::thread::scope(|sc| {
-        let workers = std::thread::available_parallelism()
-            .map_or(4, |n| n.get())
-            .min(16);
-        let chunk = valid.len().div_ceil(workers).max(1);
-        let handles: Vec<_> = valid
-            .chunks(chunk)
-            .map(|grp| {
-                sc.spawn(move || {
-                    grp.iter()
-                        .map(|s| decode_codeword(ms, s, n0, max_iter, pts_for))
-                        .collect::<Vec<_>>()
-                })
+    let mut decoded: Vec<(usize, Option<usize>, Vec<u8>)> = match *ldpc {
+        Ldpc::Float { max_iter, scale } => {
+            let workers = workers();
+            let chunk = valid.len().div_ceil(workers).max(1);
+            std::thread::scope(|sc| {
+                let handles: Vec<_> = valid
+                    .chunks(chunk)
+                    .map(|grp| {
+                        sc.spawn(move || {
+                            grp.iter()
+                                .map(|s| {
+                                    let mut llr =
+                                        codeword_llrs(ms, s, &pts_for(s.modulation, s.rate), n0);
+                                    let mut bits = Vec::new();
+                                    let it = isdbs3_core::ldpc::code(s.rate)
+                                        .decode(&mut llr, &mut bits, max_iter, scale)
+                                        .ok()
+                                        .map(|d| d.iterations);
+                                    (s.index, it, bits)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|h| h.join().expect("decoder thread"))
+                    .collect()
             })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().expect("decoder thread"))
-            .collect()
-    });
+        }
+        Ldpc::Fixed {
+            max_iter,
+            input_scale,
+            offset,
+            simd,
+        } => {
+            // one stream of codewords per thread, all of one rate; within
+            // a stream the decoder refills a lane as soon as it stops
+            let mut rates: Vec<isdbs3_core::CodeRate> = valid.iter().map(|s| s.rate).collect();
+            rates.sort_by_key(|r| r.numerator());
+            rates.dedup();
+            let mut batches: Vec<Vec<&Slot>> = Vec::new();
+            for r in rates {
+                let same: Vec<&Slot> = valid.iter().copied().filter(|s| s.rate == r).collect();
+                let per = same
+                    .len()
+                    .div_ceil(workers())
+                    .max(if simd { LANES } else { 1 });
+                batches.extend(same.chunks(per).map(<[&Slot]>::to_vec));
+            }
+            let p = isdb_fec::ldpc::fixed::Params { max_iter, offset };
+            std::thread::scope(|sc| {
+                let handles: Vec<_> = batches
+                    .iter()
+                    .map(|b| {
+                        sc.spawn(move || {
+                            let q: Vec<Vec<i8>> = b
+                                .iter()
+                                .map(|s| {
+                                    let llr =
+                                        codeword_llrs(ms, s, &pts_for(s.modulation, s.rate), n0);
+                                    let mut v = Vec::new();
+                                    isdb_fec::ldpc::fixed::quantise(&llr, input_scale, &mut v);
+                                    v
+                                })
+                                .collect();
+                            let refs: Vec<&[i8]> = q.iter().map(Vec::as_slice).collect();
+                            let code = isdbs3_core::ldpc::code(b[0].rate);
+                            let res = if simd {
+                                isdb_fec::ldpc::fixed::Decoder::<LANES>::default()
+                                    .decode_all(code, &refs, p)
+                            } else {
+                                isdb_fec::ldpc::fixed::Decoder::<1>::default()
+                                    .decode_all(code, &refs, p)
+                            };
+                            b.iter()
+                                .zip(res)
+                                .map(|(s, (r, bits))| (s.index, r.ok().map(|d| d.iterations), bits))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|h| h.join().expect("decoder thread"))
+                    .collect()
+            })
+        }
+    };
+    decoded.sort_by_key(|d| d.0);
     // … then undo the dispersal in slot order (its PRBS runs across slots)
     let mut disp = SlotDispersal::new();
     decoded
@@ -206,30 +348,11 @@ pub fn decode_frame(
         .collect()
 }
 
-/// Demap, de-interleave and LDPC-decode one slot's codeword; returns the
-/// slot index, the iterations (None if not converged) and the hard bits.
-fn decode_codeword(
-    ms: &[Cplx],
-    s: &Slot,
-    n0: f64,
-    max_iter: usize,
-    pts_for: &(dyn Fn(Modulation, isdbs3_core::CodeRate) -> Vec<Cplx> + Sync),
-) -> (usize, Option<usize>, Vec<u8>) {
-    let sym = &ms[s.symbol_start..s.symbol_start + s.symbols];
-    let pts = pts_for(s.modulation, s.rate);
-    let mut lab = Vec::new();
-    demap(sym, &pts, s.modulation.bits(), n0, &mut lab);
-    let perm = permutation(s.modulation, s.rate);
-    let mut llr = vec![0f32; N_LDPC];
-    for (i, &p) in perm.iter().enumerate() {
-        llr[p as usize] = lab[i];
-    }
-    let code = isdbs3_core::ldpc::code(s.rate);
-    let mut bits = Vec::new();
-    match code.decode(&mut llr, &mut bits, max_iter, 0.8) {
-        Ok(d) => (s.index, Some(d.iterations), bits),
-        Err(_) => (s.index, None, bits),
-    }
+/// Decoder threads per frame.
+fn workers() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .min(16)
 }
 
 #[cfg(test)]

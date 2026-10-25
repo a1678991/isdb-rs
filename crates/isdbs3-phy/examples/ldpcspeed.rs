@@ -1,6 +1,7 @@
 //! LDPC decoding throughput on live codewords: one thread and all
-//! threads, against the 2 905 codewords per second of 16APSK 93/120 in
-//! 120 slots (development tool).
+//! threads, the floating-point reference and the fixed-point SIMD decoder
+//! (`isdbs3_phy::main_signal::Ldpc::FIXED`), against the 2 905 codewords
+//! per second of 16APSK 93/120 in 120 slots (development tool).
 //!
 //! cargo run --release -p isdbs3-phy --example ldpcspeed -- REC
 
@@ -53,7 +54,7 @@ fn main() {
         })
         .collect();
     let need = words.len() as f64 * SYMBOL_RATE / FRAME_SYMBOLS as f64;
-    let run = |threads: usize| -> f64 {
+    let run_float = |threads: usize| -> f64 {
         let reps = 4;
         let t0 = std::time::Instant::now();
         std::thread::scope(|sc| {
@@ -77,22 +78,61 @@ fn main() {
         });
         (reps * words.len()) as f64 / t0.elapsed().as_secs_f64()
     };
-    let one = run(1);
+    // fixed point: every thread streams its share of `reps` copies of the
+    // frame's codewords through one 16-lane decoder
+    let isdbs3_phy::main_signal::Ldpc::Fixed {
+        max_iter,
+        input_scale,
+        offset,
+        ..
+    } = isdbs3_phy::main_signal::Ldpc::FIXED
+    else {
+        unreachable!()
+    };
+    let q: Vec<Vec<i8>> = words
+        .iter()
+        .map(|(_, l)| {
+            let mut v = Vec::new();
+            isdb_fec::ldpc::fixed::quantise(l, input_scale, &mut v);
+            v
+        })
+        .collect();
+    let run_fixed = |threads: usize| -> f64 {
+        let reps = 16;
+        let all: Vec<&[i8]> = (0..reps)
+            .flat_map(|_| q.iter().map(Vec::as_slice))
+            .collect();
+        let code = isdbs3_core::ldpc::code(words[0].0);
+        let p = isdb_fec::ldpc::fixed::Params { max_iter, offset };
+        let t0 = std::time::Instant::now();
+        std::thread::scope(|sc| {
+            for share in all.chunks(all.len().div_ceil(threads)) {
+                sc.spawn(move || {
+                    isdb_fec::ldpc::fixed::Decoder::<{ isdbs3_phy::main_signal::LANES }>::default()
+                        .decode_all(code, share, p)
+                });
+            }
+        });
+        all.len() as f64 / t0.elapsed().as_secs_f64()
+    };
     let all_n = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let all = run(all_n);
     let bits = |cw: f64| cw * words[0].0.data_bits() as f64 / 1e6;
     println!(
-        "needed: {need:.0} codewords/s ({:.1} Mbit/s of slot data)",
-        bits(need)
+        "needed: {need:.0} codewords/s ({:.1} Mbit/s of slot data); SIMD back end: {}",
+        bits(need),
+        isdb_fec::simd::BACKEND
     );
-    println!(
-        "1 thread: {one:.0} codewords/s ({:.1} Mbit/s) = {:.2}× real time",
-        bits(one),
-        one / need
-    );
-    println!(
-        "{all_n} threads: {all:.0} codewords/s ({:.1} Mbit/s) = {:.2}× real time",
-        bits(all),
-        all / need
-    );
+    for (name, run) in [
+        ("float", &run_float as &dyn Fn(usize) -> f64),
+        ("fixed", &run_fixed),
+    ] {
+        for t in [1, all_n] {
+            let cw = run(t);
+            println!(
+                "{name} {t:2} thread(s): {cw:.0} codewords/s ({:.1} Mbit/s) = {:.2}× real time",
+                bits(cw),
+                cw / need
+            );
+        }
+    }
 }

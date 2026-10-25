@@ -106,6 +106,35 @@ pub struct RxArgs {
     /// block).
     #[arg(long, value_name = "HZ", allow_negative_numbers = true)]
     pub carrier_offset: Option<f64>,
+    /// ISDB-S3: the LDPC decoder. `fixed` is the fixed-point SIMD decoder
+    /// (16 codewords per lane group); `scalar` the same arithmetic one
+    /// codeword at a time (its bit-exact reference, slower); `float` the
+    /// floating-point reference decoder.
+    #[arg(long, value_enum, default_value_t = LdpcArg::Fixed)]
+    pub ldpc: LdpcArg,
+}
+
+/// `isdb rx --ldpc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum LdpcArg {
+    /// Fixed-point layered offset min-sum, SIMD.
+    Fixed,
+    /// The same, one codeword at a time.
+    Scalar,
+    /// Floating-point layered normalised min-sum.
+    Float,
+}
+
+impl LdpcArg {
+    /// The receiver setting.
+    pub fn ldpc(self) -> isdbs3_phy::main_signal::Ldpc {
+        use isdbs3_phy::main_signal::Ldpc;
+        match self {
+            Self::Fixed => Ldpc::FIXED,
+            Self::Scalar => Ldpc::SCALAR,
+            Self::Float => Ldpc::FLOAT,
+        }
+    }
 }
 
 /// `isdb rx --system`.
@@ -596,6 +625,9 @@ pub fn run(a: RxArgs) -> Result<()> {
             "--ts-id, --rate, --bw, --block-seconds and --carrier-offset are satellite options (--system isdbs or isdbs3)"
         );
     }
+    if a.ldpc != LdpcArg::Fixed {
+        bail!("--ldpc is an ISDB-S3 option (--system isdbs3)");
+    }
     if a.json
         && [&a.out, &a.a_out, &a.b_out, &a.c_out]
             .iter()
@@ -862,6 +894,7 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
     let stop = crate::stop::flag();
     let mut out = crate::rxs3::Outputs::new(a.out.as_deref(), &a.ts_id)?;
     let mut stats = crate::rxs3::Stats::default();
+    stats.ldpc = a.ldpc.ldpc();
     let (secs, input) = if let Some(spec) = &a.radio {
         let (hz, channel) = match (a.tune.channel, a.tune.freq) {
             (Some(c), None) => (c.tune_hz()?, Some(c)),

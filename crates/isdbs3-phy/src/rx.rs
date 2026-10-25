@@ -3,7 +3,9 @@
 //! order, to the caller with its stream identity.
 
 use crate::Cplx;
-use crate::main_signal::{decode_frame, learned_points, main_symbols, nominal_points, pilots};
+use crate::main_signal::{
+    Ldpc, decode_frame, learned_points, main_symbols, nominal_points, pilots,
+};
 use crate::sync::synchronise;
 use crate::tmcc;
 use isdbs3_core::slots::{Slot, layout};
@@ -12,8 +14,10 @@ use isdbs3_core::tmcc::TmccInfo;
 /// Receiver options.
 #[derive(Debug, Clone)]
 pub struct RxOptions {
-    /// Maximum LDPC iterations (main signal and TMCC).
+    /// Maximum LDPC iterations of the TMCC.
     pub max_iter: usize,
+    /// The main signal's LDPC decoder.
+    pub ldpc: Ldpc,
     /// Demap against the pilot-learned constellation (else the nominal
     /// one of B44 §3.8).
     pub learned_constellation: bool,
@@ -26,6 +30,7 @@ impl Default for RxOptions {
     fn default() -> Self {
         Self {
             max_iter: 50,
+            ldpc: Ldpc::FIXED,
             learned_constellation: true,
             equalise: true,
         }
@@ -158,8 +163,8 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
             }
             nominal_points(m, r)
         };
-        let n0 = noise(&ms, &lay, &pts_for);
-        let decoded = decode_frame(&ms, &lay, n0, opt.max_iter, &pts_for);
+        let n0 = noise_of(&ms, &lay, &pts_for);
+        let decoded = decode_frame(&ms, &lay, n0, &opt.ldpc, &pts_for);
         for d in decoded {
             let s: &Slot = &lay[d.slot];
             let rel = t.info.slot_stream[d.slot];
@@ -194,8 +199,9 @@ fn bits_byte(bits: &[u8], i: usize) -> u8 {
 }
 
 /// Mean squared distance of the main symbols to their nearest point of
-/// their slot's constellation (a sample of each slot).
-fn noise(
+/// their slot's constellation (a sample of each slot): the N0 the
+/// receiver demaps with.
+pub fn noise_of(
     ms: &[Cplx],
     lay: &[Slot],
     pts_for: &dyn Fn(isdbs3_core::Modulation, isdbs3_core::CodeRate) -> Vec<Cplx>,

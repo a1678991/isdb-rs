@@ -73,3 +73,61 @@ fn isdbs3_tlv_recordings() {
         );
     }
 }
+
+/// On the same recordings: the fixed-point LDPC decoder gives every slot
+/// the same iterations, convergence and data with 16 codewords per lane
+/// group (SIMD) as one at a time (the scalar reference), and decodes at
+/// least as many slots as the floating-point reference.
+#[test]
+fn isdbs3_ldpc_simd_equals_scalar_on_recordings() {
+    use isdbs3_phy::main_signal::Ldpc;
+    let Ok(list) = std::env::var("ISDB_RS_ISDBS3_TLV_IQ") else {
+        eprintln!(
+            "SKIP isdbs3_ldpc_simd_equals_scalar_on_recordings: ISDB_RS_ISDBS3_TLV_IQ not set"
+        );
+        return;
+    };
+    for path in list.split(':').filter(|p| !p.is_empty()) {
+        let mut rec = Recording::open(std::path::Path::new(path), None, None).unwrap();
+        let seg = rec.segments()[0].clone();
+        let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+        let s = symbols(&x, rec.sample_rate, None, Trim::Auto).unwrap();
+        let run = |ldpc| {
+            receive(
+                &s.z,
+                &RxOptions {
+                    ldpc,
+                    ..RxOptions::default()
+                },
+            )
+        };
+        let (simd, scalar, float) = (run(Ldpc::FIXED), run(Ldpc::SCALAR), run(Ldpc::FLOAT));
+        assert_eq!(simd.slots.len(), scalar.slots.len(), "{path}");
+        assert!(!simd.slots.is_empty(), "{path}: no slots");
+        for (a, b) in simd.slots.iter().zip(&scalar.slots) {
+            assert_eq!(
+                (a.frame, a.slot, a.ldpc_iterations, a.bch_corrected, &a.data),
+                (b.frame, b.slot, b.ldpc_iterations, b.bch_corrected, &b.data),
+                "{path}"
+            );
+        }
+        let ok = |r: &isdbs3_phy::rx::Rx| {
+            r.slots
+                .iter()
+                .filter(|s| s.ldpc_iterations.is_some())
+                .count()
+        };
+        assert!(
+            ok(&simd) >= ok(&float),
+            "{path}: fixed {} < float {}",
+            ok(&simd),
+            ok(&float)
+        );
+        eprintln!(
+            "{path}: {} slots, SIMD = scalar; LDPC-clean fixed {} / float {}",
+            simd.slots.len(),
+            ok(&simd),
+            ok(&float)
+        );
+    }
+}

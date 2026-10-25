@@ -102,8 +102,10 @@ impl Outputs {
 }
 
 /// Counters over a whole run.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Stats {
+    /// The LDPC decoder the blocks are decoded with.
+    pub ldpc: isdbs3_phy::main_signal::Ldpc,
     /// Blocks decoded.
     pub blocks: u64,
     /// Samples read.
@@ -136,6 +138,31 @@ pub struct Stats {
     pub tmcc: Option<isdbs3_core::TmccInfo>,
     /// Per stream id: assembler counters and content counters.
     pub streams: BTreeMap<u16, (isdb_tlv::tlv::Stats, StreamStats, usize)>,
+}
+
+impl Default for Stats {
+    fn default() -> Self {
+        Self {
+            ldpc: isdbs3_phy::main_signal::Ldpc::FIXED,
+            blocks: 0,
+            samples: 0,
+            frames: 0,
+            tmcc_ok: 0,
+            slots: 0,
+            ldpc_failed: 0,
+            bch_failed: 0,
+            ldpc_iterations: 0,
+            bch_corrected: 0,
+            mer_sum: 0.0,
+            mer_n: 0,
+            sync_snr_db: 0.0,
+            sync_snr_eq_db: None,
+            carrier_offset_hz: 0.0,
+            trim: 0.0,
+            tmcc: None,
+            streams: BTreeMap::new(),
+        }
+    }
 }
 
 impl Stats {
@@ -212,7 +239,13 @@ pub fn decode_block(
     if s.z.len() < 2 * FRAME_SYMBOLS {
         return Ok(());
     }
-    let r = receive(&s.z, &RxOptions::default());
+    let r = receive(
+        &s.z,
+        &RxOptions {
+            ldpc: stats.ldpc,
+            ..RxOptions::default()
+        },
+    );
     stats.sync_snr_db = r.sync_snr_db;
     stats.sync_snr_eq_db = r.sync_snr_eq_db;
     stats.frames += r.frames.len() as u64;

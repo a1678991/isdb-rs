@@ -41,7 +41,7 @@ const SAME_CARRIER_HZ: f64 = 2_000.0;
 
 /// The survey's distinct carrier estimates, strongest first. Each line of
 /// the survey is one estimate; lines that agree within
-/// [`SAME_CARRIER_HZ`] are one candidate (scored by their summed level),
+/// 2 kHz are one candidate (scored by their summed level),
 /// so a carrier corroborated by several lines ranks above a single
 /// unrelated line of the same strength.
 pub fn carrier_candidates(sv: &isdb_iq::survey::Survey) -> Vec<f64> {
@@ -72,8 +72,7 @@ pub fn carrier_candidates(sv: &isdb_iq::survey::Survey) -> Vec<f64> {
 /// carrier is taken as 0.
 fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64, ParamError> {
     let n = ((0.05 * fs) as usize).min(xi.len());
-    let mut best: Option<(f64, f64)> = None;
-    for &cfo in candidates.iter().take(4) {
+    let score = |cfo: f64| -> Result<f64, ParamError> {
         let mut fe = Frontend::new(Params::design(&design(fs, cfo))?)?;
         let mut out = Vec::new();
         fe.process(&xi[..n], &mut out);
@@ -82,7 +81,20 @@ fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64, Par
             .skip(3 * isdb_frontend::s3sync::SLOT)
             .map(|s| num_complex::Complex64::new(f64::from(s.zk[0]), f64::from(s.zk[1])))
             .collect();
-        let snr = isdb_frontend::s3sync::measure(&z).map_or(f64::NEG_INFINITY, |r| r.snr_db);
+        Ok(isdb_frontend::s3sync::measure(&z).map_or(f64::NEG_INFINITY, |r| r.snr_db))
+    };
+    // the candidates run independently, one thread each; the first of
+    // equal scores wins, as in a sequential search
+    let tried = &candidates[..candidates.len().min(4)];
+    let scores: Vec<f64> = std::thread::scope(|sc| {
+        let handles: Vec<_> = tried.iter().map(|&c| sc.spawn(move || score(c))).collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("carrier thread"))
+            .collect::<Result<_, _>>()
+    })?;
+    let mut best: Option<(f64, f64)> = None;
+    for (&cfo, &snr) in tried.iter().zip(&scores) {
         if best.is_none_or(|b| snr > b.1) {
             best = Some((cfo, snr));
         }
