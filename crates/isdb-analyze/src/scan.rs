@@ -224,6 +224,9 @@ pub struct Capture {
     pub pes: BTreeMap<u16, PesTrack>,
     /// Packet indices of every packet on section PIDs.
     pub section_pid_packets: BTreeMap<u16, Vec<u64>>,
+    /// Packets whose payload was not parsed because it is scrambled
+    /// (transport_scrambling_control ≠ '00').
+    pub scrambled_payloads: u64,
 }
 
 /// Whether `pid` is in the PSI/SI range fully recorded by default
@@ -367,7 +370,15 @@ impl Scanner {
                 }
             }
         }
-        if self.demux.has_pid(pid) {
+        // transport_scrambling_control ≠ '00': the payload is encrypted
+        // (H.222.0 §2.4.3.3, Table 2-4; the header and adaptation field
+        // stay in the clear). Counted in `stats.scrambled`, not parsed as
+        // sections, PES or ADTS: descrambling is out of scope.
+        let scrambled = pkt[3] & 0xC0 != 0;
+        if scrambled {
+            self.cap.scrambled_payloads += 1;
+        }
+        if self.demux.has_pid(pid) && !scrambled {
             if self.cap.section_pids.contains(&pid) {
                 self.cap
                     .section_pid_packets
@@ -407,6 +418,7 @@ impl Scanner {
             }
         }
         if let Some(t) = self.cap.pes.get_mut(&pid)
+            && !scrambled
             && pkt[1] & 0xC0 == 0x40
             && let Ok(v) = View::parse(pkt)
             && let Some(pl) = v.payload
@@ -416,6 +428,7 @@ impl Scanner {
         // ADTS payload bytes (stream_type 0x0F); packets flagged by
         // transport_error_indicator are not fed (the next frame resyncs)
         if let Some(a) = self.cap.pes.get_mut(&pid).and_then(|t| t.aac.as_mut())
+            && !scrambled
             && pkt[1] & 0x80 == 0
             && let Ok(v) = View::parse(pkt)
             && let Some(pl) = v.payload

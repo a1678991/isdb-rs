@@ -555,3 +555,64 @@ fn aac_quality_indicator_consistency() {
     );
     assert!(has(&r, Info, "aac.quality_indicator", "Table 1"));
 }
+
+/// Scrambled payloads (transport_scrambling_control ≠ '00') are not parsed
+/// as PES: an all-scrambled elementary stream gives an Info finding, not
+/// PES or ADTS errors (descrambling is out of scope).
+#[test]
+fn scrambled_payloads_not_parsed() {
+    let mut p = build(&default_spec(3));
+    for x in p.iter_mut() {
+        let pid = (u16::from(x[1] & 0x1F) << 8) | u16::from(x[2]);
+        if pid == AUDIO_PID {
+            x[3] |= 0x80; // '10': scrambled with the even key
+            // garble the payload as a cipher would
+            for b in x[4..].iter_mut() {
+                *b = b.wrapping_mul(167).wrapping_add(13);
+            }
+        }
+    }
+    let r = validate(&p);
+    assert!(
+        has(&r, Info, "pes.scrambled", "§2.4.3.3"),
+        "{}",
+        r.to_text(Info)
+    );
+    assert!(
+        !r.findings.iter().any(|f| f.severity >= Warning
+            && (f.check.starts_with("pes.") || f.check.starts_with("aac."))),
+        "{}",
+        r.to_text(Warning)
+    );
+}
+
+/// A mandatory table absent from a capture shorter than its repetition
+/// interval (B10 Table 5-2) is Info, not Error: NIT (10 s) and TOT
+/// (30 s) in a 3 s stream that carries neither.
+#[test]
+fn absent_tables_in_short_capture_are_info() {
+    let mut s = default_spec(3);
+    s.items.retain(|i| i.pid != 0x0010 && i.pid != 0x0014);
+    let r = validate(&build(&s));
+    assert!(
+        has(&r, Info, "tables.mandatory", "Table 5-2"),
+        "{}",
+        r.to_text(Info)
+    );
+    assert!(
+        !r.findings
+            .iter()
+            .any(|f| f.severity == Error && f.check == "tables.mandatory"),
+        "{}",
+        r.to_text(Warning)
+    );
+    // SDT (2 s) missing from a 3 s capture stays an error.
+    let mut s = default_spec(3);
+    s.items.retain(|i| i.pid != 0x0011);
+    let r = validate(&build(&s));
+    assert!(
+        has(&r, Error, "tables.mandatory", "Table 5-2"),
+        "{}",
+        r.to_text(Info)
+    );
+}

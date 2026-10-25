@@ -278,11 +278,11 @@ pub fn validate(cap: &Capture, opts: &ValidateOptions) -> ValidationReport {
     let duration = tb.duration(cap.packets);
     transport(cap, &tb, &mut o);
     let pmts = cap.pmts();
-    psi_checks(cap, &pmts, &mut o);
+    psi_checks(cap, &pmts, duration, &mut o);
     pid_checks(cap, &pmts, &mut o);
     section_checks(cap, &pmts, &mut o);
     let si = si_checks(cap, &mut o);
-    mandatory_tables(cap, &pmts, &mut o);
+    mandatory_tables(cap, &pmts, duration, &mut o);
     let freqs = frequency(cap, &tb, duration, &mut o);
     window_4kb(cap, &tb, &mut o);
     cross_checks(cap, &si, &mut o);
@@ -524,7 +524,12 @@ fn transport(cap: &Capture, tb: &Timebase, o: &mut Out) {
 // PSI
 // ---------------------------------------------------------------------------
 
-fn psi_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out) {
+fn psi_checks(
+    cap: &Capture,
+    pmts: &BTreeMap<u16, (u16, Long<Pmt>)>,
+    duration: Option<f64>,
+    o: &mut Out,
+) {
     use Severity::*;
     // H.222.0 check_* on every distinct body.
     for (k, s) in &cap.slots {
@@ -610,7 +615,13 @@ fn psi_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out
     let scrambled = cap.stats.pids.iter().any(|(_, s)| s.scrambled > s.tei);
     let has_cat = cap.slots.keys().any(|k| k.pid == 1 && k.table_id == 1);
     if scrambled && !has_cat {
-        o.push(Error, "psi.cat", "H.222.0 §2.4.4 (\"Whenever one or more elementary streams … are scrambled … PID value 0x0001 shall be transmitted\")", "pid 0x0001", "scrambled packets but no CAT");
+        let sev = absent_severity(duration, 0x01);
+        let msg = if sev == Severity::Info {
+            "scrambled packets, no CAT seen; the capture is shorter than its repetition interval (Once or more/1 sec.)"
+        } else {
+            "scrambled packets but no CAT"
+        };
+        o.push(sev, "psi.cat", "H.222.0 §2.4.4 (\"Whenever one or more elementary streams … are scrambled … PID value 0x0001 shall be transmitted\")", "pid 0x0001", msg);
     }
 }
 
@@ -1017,7 +1028,22 @@ fn si_checks(cap: &Capture, o: &mut Out) -> SiView {
 // mandatory tables and transmission frequency (B10 Part 2 Table 5-2)
 // ---------------------------------------------------------------------------
 
-fn mandatory_tables(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out) {
+/// A table absent from a capture shorter than its Table 5-2 repetition
+/// interval may simply not have come round: Info, not Error.
+fn absent_severity(duration: Option<f64>, tid: u8) -> Severity {
+    let crit = names::criterion(tid).and_then(|c| c.max_interval_s);
+    match (duration, crit) {
+        (Some(d), Some(c)) if d < c => Severity::Info,
+        _ => Severity::Error,
+    }
+}
+
+fn mandatory_tables(
+    cap: &Capture,
+    pmts: &BTreeMap<u16, (u16, Long<Pmt>)>,
+    duration: Option<f64>,
+    o: &mut Out,
+) {
     use Severity::*;
     let has = |tid: u8| cap.slots.keys().any(|k| k.table_id == tid);
     let c = "B10 Part 2 §5.1.3 Table 5-2 (transmission level Mandatory)";
@@ -1029,12 +1055,20 @@ fn mandatory_tables(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &m
         (0x4E, "EIT p/f (actual stream)"),
     ] {
         if !has(tid) {
+            let sev = absent_severity(duration, tid);
             o.push(
-                Error,
+                sev,
                 "tables.mandatory",
                 c,
                 format!("table_id {tid:#04x}"),
-                format!("mandatory {name} not transmitted"),
+                if sev == Info {
+                    format!(
+                        "mandatory {name} not seen; the capture is shorter than its repetition interval ({})",
+                        names::criterion(tid).map_or("", |c| c.text)
+                    )
+                } else {
+                    format!("mandatory {name} not transmitted")
+                },
             );
         }
     }
@@ -1053,7 +1087,7 @@ fn mandatory_tables(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &m
     }
     if !has(0x70) && !has(0x73) {
         o.push(
-            Error,
+            absent_severity(duration, 0x73),
             "tables.mandatory",
             "B10 Part 2 Table 5-2 *2 (\"Transmitting either TDT or TOT is mandatory\")",
             "table_id 0x70/0x73",
@@ -1524,7 +1558,20 @@ fn pes_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out
                 );
             }
             if t.pes_count == 0 {
-                if pk > 0 {
+                let scr = cap
+                    .stats
+                    .pids
+                    .get(&s.elementary_pid)
+                    .map_or(0, |x| x.scrambled);
+                if pk > 0 && scr >= pk {
+                    o.push(
+                        Info,
+                        "pes.scrambled",
+                        "H.222.0 §2.4.3.3 (transport_scrambling_control)",
+                        &loc,
+                        format!("{pk} packets, all scrambled: PES not checked"),
+                    );
+                } else if pk > 0 {
                     o.push(
                         Warning,
                         "pes.missing",

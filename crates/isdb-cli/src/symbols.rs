@@ -349,7 +349,7 @@ fn read_words(path: &Path) -> Result<()> {
 }
 
 /// Decode capture bytes to unit-scale samples.
-fn decode(format: CaptureFormat, bytes: &[u8]) -> Vec<C32> {
+pub(crate) fn decode(format: CaptureFormat, bytes: &[u8]) -> Vec<C32> {
     let f = match format {
         CaptureFormat::Cs8 => isdb_iq::SampleFormat::Cs8,
         CaptureFormat::Cs16 { full_scale } => isdb_iq::SampleFormat::Cs16 { full_scale },

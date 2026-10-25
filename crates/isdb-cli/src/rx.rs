@@ -1,4 +1,6 @@
-//! `isdb rx`: IQ file or radio → ISDB-T demodulation → TS, with status.
+//! `isdb rx`: IQ file or radio → ISDB-T or ISDB-S demodulation → TS, with
+//! status. ISDB-S (`--system isdbs`, or `auto` on a satellite channel or
+//! recording) is in [`crate::rxs`].
 
 use crate::phyargs::{TuneArgs, describe_params, parse_gain};
 use crate::sink::IqFormat;
@@ -74,6 +76,42 @@ pub struct RxArgs {
     /// Status line interval in seconds of signal (0 = none).
     #[arg(long, default_value_t = 1.0)]
     pub status_secs: f64,
+    /// Transmission system: `auto` picks ISDB-S for a BS<n> / ND<n>
+    /// channel and for a recording that is not at the ISDB-T rate (or
+    /// whose survey finds the ISDB-S symbol rate), ISDB-T otherwise.
+    #[arg(long, value_enum, default_value_t = SystemArg::Auto)]
+    pub system: SystemArg,
+    /// ISDB-S: receive only this TS_ID (repeatable; `0x4010`, `4010h` or
+    /// decimal). Default: every TS of the transponder.
+    #[arg(long = "ts-id", value_name = "ID", value_parser = crate::rxs::parse_ts_id)]
+    pub ts_id: Vec<u16>,
+    /// ISDB-S from a radio: sample rate (default 40M, ≥ 1.35 × 28.86
+    /// Mbaud).
+    #[arg(long, value_name = "SPS", value_parser = crate::rxs::parse_rate)]
+    pub rate: Option<f64>,
+    /// ISDB-S from a radio: analog bandwidth (default 56M).
+    #[arg(long, value_name = "HZ", value_parser = crate::rxs::parse_rate)]
+    pub bw: Option<f64>,
+    /// ISDB-S from a radio: seconds per contiguous capture (default: the
+    /// longest the radio takes in one piece). Blocks are decoded one after
+    /// another, with a gap in the TS between them.
+    #[arg(long, value_name = "S")]
+    pub block_seconds: Option<f64>,
+    /// ISDB-S: carrier offset in Hz (default: from the survey of each
+    /// block).
+    #[arg(long, value_name = "HZ", allow_negative_numbers = true)]
+    pub carrier_offset: Option<f64>,
+}
+
+/// `isdb rx --system`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SystemArg {
+    /// From the channel or the recording.
+    Auto,
+    /// ISDB-T (ARIB STD-B31), terrestrial.
+    Isdbt,
+    /// ISDB-S (ITU-R BO.1408-1, ARIB STD-B20), BS and 110° CS.
+    Isdbs,
 }
 
 /// Per-layer reception counters.
@@ -536,6 +574,19 @@ pub fn receive(
 
 /// Entry point.
 pub fn run(a: RxArgs) -> Result<()> {
+    if resolve_system(&a)? == SystemArg::Isdbs {
+        return run_isdbs(a);
+    }
+    if !a.ts_id.is_empty()
+        || a.rate.is_some()
+        || a.bw.is_some()
+        || a.block_seconds.is_some()
+        || a.carrier_offset.is_some()
+    {
+        bail!(
+            "--ts-id, --rate, --bw, --block-seconds and --carrier-offset are ISDB-S options (--system isdbs)"
+        );
+    }
     if a.json
         && [&a.out, &a.a_out, &a.b_out, &a.c_out]
             .iter()
@@ -648,6 +699,137 @@ pub fn run(a: RxArgs) -> Result<()> {
         if !fin.is_empty() {
             j["radio"] = json!(fin);
         }
+        println!("{}", serde_json::to_string_pretty(&j)?);
+    }
+    Ok(())
+}
+
+/// The system `--system` selects (`auto` resolved).
+fn resolve_system(a: &RxArgs) -> Result<SystemArg> {
+    if a.system != SystemArg::Auto {
+        return Ok(a.system);
+    }
+    if a.tune.channel.is_some_and(|c| c.is_satellite()) {
+        return Ok(SystemArg::Isdbs);
+    }
+    let Some(p) = a.iq.as_deref().filter(|&p| p != "-") else {
+        return Ok(SystemArg::Isdbt);
+    };
+    let meta = isdb_iq::meta_path_for(&isdb_iq::data_path_for(std::path::Path::new(p)));
+    if !meta.exists() {
+        return Ok(SystemArg::Isdbt);
+    }
+    let Ok(mut rec) = isdb_iq::Recording::open(std::path::Path::new(p), None, None) else {
+        return Ok(SystemArg::Isdbt);
+    };
+    if (rec.sample_rate / ISDBT_RATE_HZ - 1.0).abs() <= 10e-6 {
+        return Ok(SystemArg::Isdbt);
+    }
+    // Not the ISDB-T rate: ISDB-S if its survey says so.
+    let n = rec.samples.min(1 << 22) as usize;
+    let x = rec.read(0, n)?;
+    let s = isdb_iq::survey::survey(&x, rec.sample_rate, &isdb_iq::survey::Options::default());
+    match s.system {
+        Some(m) if m.system.name == isdbs_phy::frontend::system().name => Ok(SystemArg::Isdbs),
+        Some(m) => bail!(
+            "{p}: the survey finds {} ({:.0} Bd), which `isdb rx` does not receive yet (see `isdb symbols`)",
+            m.system.name,
+            m.system.symbol_rate_hz
+        ),
+        None => bail!(
+            "{p}: recorded at {:.6} Msps, not the ISDB-T rate, and the survey finds no ISDB-S signal; give --system",
+            rec.sample_rate / 1e6
+        ),
+    }
+}
+
+/// `isdb rx` for ISDB-S.
+fn run_isdbs(a: RxArgs) -> Result<()> {
+    if a.a_out.is_some() || a.b_out.is_some() || a.c_out.is_some() {
+        bail!(
+            "--a-out/--b-out/--c-out are ISDB-T layers; ISDB-S writes one TS per TS_ID (--out PATH with {{ts_id}}, or --ts-id)"
+        );
+    }
+    if a.json && a.out.as_deref() == Some("-") {
+        bail!("--json prints on stdout; write the TS to a file");
+    }
+    let seconds = crate::tx::resolve_seconds(a.seconds)?;
+    let stop = crate::stop::flag();
+    let mut out = crate::rxs::Outputs::new(a.out.as_deref(), &a.ts_id, a.strip_nulls)?;
+    let mut stats = crate::rxs::Stats::default();
+    let (secs, input) = if let Some(spec) = &a.radio {
+        let (hz, channel) = match (a.tune.channel, a.tune.freq) {
+            (Some(c), None) => (c.tune_hz()?, Some(c)),
+            (None, Some(f)) => (f, None),
+            (None, None) => bail!("give --channel BS<n>|ND<n> or --freq HZ (the satellite IF)"),
+            (Some(_), Some(_)) => bail!("--channel and --freq are exclusive"),
+        };
+        if a.tune.freq_corr_ppm != 0.0 {
+            bail!(
+                "--freq-corr-ppm is not applied to ISDB-S reception (the receiver tracks the carrier and symbol clock)"
+            );
+        }
+        let rate = a.rate.unwrap_or(crate::rxs::DEFAULT_RATE);
+        let bw = a.bw.unwrap_or(crate::rxs::DEFAULT_BW);
+        eprintln!(
+            "isdb rx: ISDB-S from radio {spec}{} at {:.3} MHz, {:.2} Msps; {}",
+            channel.map(|c| c.label()).unwrap_or_default(),
+            hz as f64 / 1e6,
+            rate / 1e6,
+            if seconds > 0.0 {
+                format!("for {seconds} s of signal")
+            } else {
+                "until Ctrl-C".into()
+            }
+        );
+        let s = crate::rxs::run_radio(
+            spec,
+            hz,
+            channel,
+            rate,
+            bw,
+            &a.gain,
+            a.block_seconds.unwrap_or(f64::INFINITY),
+            seconds,
+            a.carrier_offset,
+            a.status_secs > 0.0,
+            &stop,
+            &mut out,
+            &mut stats,
+        )?;
+        (s, format!("radio {spec}"))
+    } else {
+        let p = a.iq.as_deref().expect("clap group");
+        if p == "-" {
+            bail!(
+                "ISDB-S reception reads a SigMF recording (rate and format from its metadata), not stdin"
+            );
+        }
+        if a.iq_format.is_some() {
+            bail!("--iq-format: an ISDB-S recording's format comes from its SigMF metadata");
+        }
+        let max = (seconds > 0.0).then(|| {
+            let fs = isdb_iq::Recording::open(std::path::Path::new(p), None, None)
+                .map(|r| r.sample_rate)
+                .unwrap_or(0.0);
+            (seconds * fs).round() as u64
+        });
+        eprintln!("isdb rx: ISDB-S from {p}");
+        let s = crate::rxs::run_file(p, max, a.carrier_offset, &mut out, &mut stats)?;
+        (s, p.to_string())
+    };
+    out.flush()?;
+    crate::rxs::report(&stats, secs);
+    if a.json {
+        let mut j = stats.json();
+        j["input"] = json!(input);
+        j["seconds"] = json!(secs);
+        j["written_packets"] = json!(
+            out.written
+                .iter()
+                .map(|(id, n)| (format!("{id:#06x}"), json!(n)))
+                .collect::<serde_json::Map<_, _>>()
+        );
         println!("{}", serde_json::to_string_pretty(&j)?);
     }
     Ok(())

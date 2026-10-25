@@ -36,6 +36,7 @@ mod phyargs;
 mod producer;
 mod relay;
 mod rx;
+mod rxs;
 mod sink;
 mod source;
 mod stop;
