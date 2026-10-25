@@ -19,7 +19,7 @@ pub fn meta_path_for(data: &Path) -> PathBuf {
 /// The data path of a recording given by its data file, its
 /// `.sigmf-meta` file or the SigMF base name (`NAME` for
 /// `NAME.sigmf-data`).
-fn data_path_for(path: &Path) -> PathBuf {
+pub fn data_path_for(path: &Path) -> PathBuf {
     let s = path.as_os_str().to_string_lossy();
     if let Some(base) = s.strip_suffix(".sigmf-meta") {
         let sigmf = PathBuf::from(format!("{base}.sigmf-data"));

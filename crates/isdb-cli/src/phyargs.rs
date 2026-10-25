@@ -195,7 +195,7 @@ impl TuneArgs {
     pub fn tuning(&self) -> Result<Tuning> {
         let nominal_hz = match (self.channel, self.freq) {
             (Some(c), None) if c.is_satellite() => bail!(
-                "--channel {c}: a satellite channel; ISDB-S / ISDB-S3 are not received or sent by this command (see `isdb capture`, `isdb symbols`)"
+                "--channel {c}: a satellite channel; ISDB-S / ISDB-S3 reception is not implemented in this command yet (see `isdb capture`, `isdb symbols` and `isdb iq tmcc`), and there is no satellite transmitter"
             ),
             (Some(c), None) => c.tune_hz()?,
             (None, Some(f)) => f,

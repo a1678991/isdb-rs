@@ -40,6 +40,7 @@ mod sink;
 mod source;
 mod stop;
 mod symbols;
+mod tmcc;
 #[allow(missing_docs)]
 mod ts;
 mod tx;

@@ -42,7 +42,7 @@ mod recording;
 
 pub use format::SampleFormat;
 pub use num_complex::Complex32 as C32;
-pub use recording::{Recording, meta_path_for};
+pub use recording::{Recording, data_path_for, meta_path_for};
 
 /// Errors of this crate.
 #[derive(Debug, thiserror::Error)]

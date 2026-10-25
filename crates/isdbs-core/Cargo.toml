@@ -1,0 +1,24 @@
+[package]
+name = "isdbs-core"
+description = "ISDB-S transmission parameters (ITU-R BO.1408-1, the ARIB STD-B20 system): frame and superframe geometry, modulation-code combinations, slot assignment, the TMCC information codec, sync words, burst sequence and puncturing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdbs-core"
+readme = "README.md"
+keywords = ["isdb-s", "satellite", "tmcc", "arib", "broadcast"]
+categories = ["science", "multimedia::encoding"]
+include = ["/src/**", "/README.md", "/SPEC-NOTES.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+isdb-fec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

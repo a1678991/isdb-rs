@@ -24,6 +24,9 @@ enum IqCmd {
     /// Symbols of a single-carrier recording through the CPU front end
     /// (the same words as the FPGA front end), or `--read` a words file.
     Symbols(crate::symbols::IqSymbolsArgs),
+    /// ISDB-S frame sync and TMCC of a recording: modulation-code
+    /// combinations, slots and the TS_ID of each slot.
+    Tmcc(crate::tmcc::TmccArgs),
 }
 
 /// `isdb iq survey` arguments.
@@ -62,6 +65,7 @@ pub fn run(a: &IqArgs) -> Result<()> {
             Ok(())
         }
         IqCmd::Symbols(s) => crate::symbols::run_iq(s),
+        IqCmd::Tmcc(t) => crate::tmcc::run(t),
     }
 }
 

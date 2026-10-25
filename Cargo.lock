@@ -308,6 +308,8 @@ dependencies = [
  "isdb-frontend",
  "isdb-iq",
  "isdb-radio",
+ "isdbs-core",
+ "isdbs-phy",
  "isdbt-core",
  "isdbt-fec",
  "isdbt-mux",
@@ -398,6 +400,28 @@ dependencies = [
 name = "isdb-ts"
 version = "0.1.0"
 dependencies = [
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "isdbs-core"
+version = "0.1.0"
+dependencies = [
+ "isdb-fec",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "isdbs-phy"
+version = "0.1.0"
+dependencies = [
+ "isdb-fec",
+ "isdb-frontend",
+ "isdb-iq",
+ "isdbs-core",
+ "num-complex",
  "proptest",
  "thiserror",
 ]

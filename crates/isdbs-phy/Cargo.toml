@@ -1,0 +1,28 @@
+[package]
+name = "isdbs-phy"
+description = "ISDB-S receive chain after the symbol front end (ITU-R BO.1408-1, ARIB STD-B20 system): frame and superframe sync, burst- and TMCC-aided carrier recovery, TMCC decoding and the per-slot soft bits of the main signal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdbs-phy"
+readme = "README.md"
+keywords = ["isdb-s", "satellite", "sdr", "tmcc", "arib"]
+categories = ["science", "multimedia::encoding"]
+include = ["/src/**", "/README.md", "/SPEC-NOTES.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+isdb-fec.workspace = true
+isdb-frontend.workspace = true
+isdbs-core.workspace = true
+isdb-iq.workspace = true
+num-complex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

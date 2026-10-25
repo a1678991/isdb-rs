@@ -17,6 +17,8 @@ isdb-si = { version = "0.1.0", path = "crates/isdb-si" }
 isdbt-core = { version = "0.1.0", path = "crates/isdbt-core" }
 isdb-fec = { version = "0.1.0", path = "crates/isdb-fec" }
 isdbt-fec = { version = "0.1.0", path = "crates/isdbt-fec" }
+isdbs-core = { version = "0.1.0", path = "crates/isdbs-core" }
+isdbs-phy = { version = "0.1.0", path = "crates/isdbs-phy" }
 isdbt-ofdm = { version = "0.1.0", path = "crates/isdbt-ofdm" }
 thiserror = "2"
 num-complex = "0.4"

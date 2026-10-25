@@ -23,12 +23,14 @@ const RX_QUEUE_SECONDS: f64 = 1.0;
 #[derive(Debug, Args)]
 #[command(group(clap::ArgGroup::new("source").required(true).args(["iq", "radio"])))]
 pub struct RxArgs {
-    /// Read baseband from this file ("-" = stdin) at 512/63 MHz.
+    /// Read baseband from this file ("-" = stdin) at 512/63 MHz. A SigMF
+    /// recording (data file, `.sigmf-meta` or base name) gives its format
+    /// and must have been recorded at 512/63 MHz.
     #[arg(long, value_name = "PATH")]
     pub iq: Option<String>,
-    /// IQ file format.
-    #[arg(long, value_enum, default_value_t = IqFormat::Cf32)]
-    pub iq_format: IqFormat,
+    /// IQ file format (default cf32, or the SigMF recording's).
+    #[arg(long, value_enum)]
+    pub iq_format: Option<IqFormat>,
     /// Receive with a radio: BACKEND[:key=value,...], the backend name and
     /// its device arguments (needs --channel/--freq).  An unknown backend
     /// lists the compiled-in ones.
@@ -268,6 +270,88 @@ pub fn params_json(p: &Params) -> Value {
     })
 }
 
+/// The ISDB-T sample rate, 512/63 MHz.
+const ISDBT_RATE_HZ: f64 = 512e6 / 63.0;
+
+/// The data file and format of `--iq PATH`: a SigMF recording's metadata
+/// must say 512/63 MHz and cs8 or cf32 (the formats `rx` reads); without
+/// metadata the path and `--iq-format` are used as given.
+pub fn sigmf_input(path: &str, format: Option<IqFormat>) -> Result<(String, IqFormat)> {
+    if path == "-" {
+        return Ok((path.into(), format.unwrap_or(IqFormat::Cf32)));
+    }
+    let data = isdb_iq::data_path_for(std::path::Path::new(path));
+    let meta_path = isdb_iq::meta_path_for(&data);
+    if !meta_path.exists() {
+        return Ok((path.into(), format.unwrap_or(IqFormat::Cf32)));
+    }
+    let text = std::fs::read_to_string(&meta_path)
+        .with_context(|| format!("read {}", meta_path.display()))?;
+    let m = isdb_iq::sigmf::Meta::from_json(&text)
+        .with_context(|| format!("{}", meta_path.display()))?;
+    if (m.sample_rate / ISDBT_RATE_HZ - 1.0).abs() > 10e-6 {
+        bail!(
+            "{}: recorded at {:.6} Msps, not the ISDB-T rate 512/63 MHz ({:.6} Msps); `isdb rx` is ISDB-T only. See `isdb iq survey` (any system) and `isdb iq tmcc` (ISDB-S)",
+            meta_path.display(),
+            m.sample_rate / 1e6,
+            ISDBT_RATE_HZ / 1e6
+        );
+    }
+    let recorded = match m.format {
+        isdb_iq::SampleFormat::Cs8 => IqFormat::Cs8,
+        isdb_iq::SampleFormat::Cf32 => IqFormat::Cf32,
+        f => bail!(
+            "{}: sample format {f}; `isdb rx --iq` reads cf32 and cs8",
+            meta_path.display()
+        ),
+    };
+    if let Some(f) = format
+        && f != recorded
+    {
+        bail!(
+            "--iq-format {f:?} disagrees with {} ({recorded:?})",
+            meta_path.display()
+        );
+    }
+    Ok((data.display().to_string(), recorded))
+}
+
+/// After no ISDB-T frame was found in file `path`: survey its start and say
+/// what single-carrier signal, if any, it holds (the rate is 512/63 MHz, so
+/// only a narrow-band signal can show here; satellite recordings are
+/// refused earlier by their metadata).
+fn explain_no_signal(path: &str) {
+    let Ok(mut rec) =
+        isdb_iq::Recording::open(std::path::Path::new(path), None, Some(ISDBT_RATE_HZ)).or_else(
+            |_| {
+                isdb_iq::Recording::open(
+                    std::path::Path::new(path),
+                    Some(isdb_iq::SampleFormat::Cf32),
+                    Some(ISDBT_RATE_HZ),
+                )
+            },
+        )
+    else {
+        return;
+    };
+    let n = rec.samples.min(1 << 22) as usize;
+    let Ok(x) = rec.read(0, n) else { return };
+    if x.len() < 1 << 16 {
+        return;
+    }
+    let s = isdb_iq::survey::survey(&x, rec.sample_rate, &isdb_iq::survey::Options::default());
+    match s.system {
+        Some(m) => eprintln!(
+            "[rx] the survey finds {} ({:.0} Bd) in this file: not ISDB-T (see `isdb iq survey`)",
+            m.system.name, m.system.symbol_rate_hz
+        ),
+        None => eprintln!(
+            "[rx] the survey finds no known single-carrier system either (power {:.1} dBFS)",
+            s.power_dbfs
+        ),
+    }
+}
+
 /// cf32/cs8 file or stdin.
 pub struct FileIqSource {
     r: Box<dyn Read + Send>,
@@ -487,9 +571,10 @@ pub fn run(a: RxArgs) -> Result<()> {
         )
     } else {
         let p = a.iq.as_deref().expect("clap group");
+        let (path, format) = sigmf_input(p, a.iq_format)?;
         (
-            Box::new(FileIqSource::open(p, a.iq_format)?),
-            format!("{p} ({:?})", a.iq_format),
+            Box::new(FileIqSource::open(&path, format)?),
+            format!("{path} ({format:?})"),
         )
     };
     eprintln!(
@@ -532,6 +617,11 @@ pub fn run(a: RxArgs) -> Result<()> {
                 describe_params(p)
             ))
     );
+    if stats.params.is_none()
+        && let Some(p) = a.iq.as_deref().filter(|&p| p != "-")
+    {
+        explain_no_signal(p);
+    }
     if let Some(p) = &stats.params {
         for (id, _) in p.active_layers() {
             let l = &stats.layers[id.index()];
@@ -588,7 +678,7 @@ mod tests {
         ])
         .unwrap()
         .a;
-        assert_eq!(a.iq_format, IqFormat::Cs8);
+        assert_eq!(a.iq_format, Some(IqFormat::Cs8));
         assert_eq!((a.radio.as_ref(), a.gain.len()), (None, 0));
         assert!(T::try_parse_from(["rx"]).is_err());
         assert!(T::try_parse_from(["rx", "--iq", "x", "--radio", "sdr"]).is_err());
@@ -627,6 +717,47 @@ mod tests {
         let v = s.read(&stop).unwrap().unwrap();
         assert_eq!(v, vec![C32::new(0.5, -0.5), C32::new(0.0, 127.0 / 128.0)]);
         assert!(s.read(&stop).unwrap().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sigmf_recordings_must_be_isdbt_rate() {
+        let dir = std::env::temp_dir().join(format!("isdb-rx-sigmf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let meta = |name: &str, dt: &str, rate: f64| {
+            std::fs::write(dir.join(format!("{name}.sigmf-data")), [0u8; 64]).unwrap();
+            std::fs::write(
+                dir.join(format!("{name}.sigmf-meta")),
+                format!(r#"{{"global":{{"core:datatype":"{dt}","core:sample_rate":{rate}}},"captures":[{{"core:sample_start":0}}]}}"#),
+            )
+            .unwrap();
+            dir.join(name).display().to_string()
+        };
+        // A satellite recording is refused with a pointer to the tools.
+        let bs = meta("bs", "ci8", 40e6);
+        let e = sigmf_input(&bs, None).unwrap_err().to_string();
+        assert!(
+            e.contains("40.000000 Msps") && e.contains("isdb iq tmcc"),
+            "{e}"
+        );
+        // An ISDB-T-rate cs8 recording gives its data file and format.
+        let t = meta("t", "ci8", 512e6 / 63.0);
+        let (p, f) = sigmf_input(&format!("{t}.sigmf-meta"), None).unwrap();
+        assert!(p.ends_with("t.sigmf-data") && f == IqFormat::Cs8, "{p}");
+        assert!(sigmf_input(&t, Some(IqFormat::Cf32)).is_err());
+        // cs16 is not read by rx.
+        let w = meta("w", "ci16_le", 512e6 / 63.0);
+        assert!(
+            sigmf_input(&w, None)
+                .unwrap_err()
+                .to_string()
+                .contains("reads cf32 and cs8")
+        );
+        // Without metadata: as given, cf32 by default.
+        assert_eq!(
+            sigmf_input("plain.cf32", None).unwrap(),
+            ("plain.cf32".into(), IqFormat::Cf32)
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
