@@ -10,10 +10,28 @@ All crates of the workspace share one version (`[workspace.package]`).
 
 Initial feature set, implemented from the published specifications
 (ITU-T H.222.0 | ISO/IEC 13818-1, ARIB STD-B10, STD-B24, STD-B31,
-STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
+STD-B32; editions in `SPECS.md`). ISDB-T is implemented end to end;
+ISDB-S (ITU-R BO.1408-1, MIC Ordinance No. 87 of 2011) as far as the
+TMCC.
 
 ### Added
 
+- `isdbs-core` (new): ISDB-S parameters from ITU-R BO.1408-1 and MIC
+  Ordinance No. 87 of 2011 annexed tables 45–51: frame geometry (192-symbol
+  header, 192 × (203 + 4)), W1/W2/W3 and their coded tails, the seven
+  modulation-code combinations with slot units and puncturing, slot runs,
+  the 384-bit TMCC information codec with validation and the TMCC signal
+  of a superframe (RS(64,48), energy dispersal), the burst bits.
+- `isdbs-phy` (new): ISDB-S reception after the symbol front end: frame
+  sync on the frame's 808 known symbols with slip detection, burst-aided
+  forward-backward carrier loop, TMCC decoding, the derotated main signal
+  per frame (the boundary to the main-signal decoder).
+- `isdb-cli`: `isdb iq tmcc REC [--summary|--json]` decodes the frames and
+  the TMCC of an ISDB-S recording: combinations, slots and TS_IDs per
+  superframe, slips, pilot and main MER. `tools/isdbs-tmcc-acceptance.sh`
+  runs it over a capture directory. The TMCC decodes on every superframe
+  of the 9 BS and 12 110° CS transponders recorded from a cable feed
+  (VERIFICATION.md).
 - `isdb-ts`: MPEG-2 transport stream layer — bit I/O, CRC_32, TS packets,
   adaptation field and PCR, PES, section assembly and packetisation,
   PAT/PMT/CAT, a TS reader for 188/192/204-byte framings.
@@ -227,6 +245,11 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
 
 ### Changed
 
+- `isdb rx`: a SigMF recording given to `--iq` supplies its format and
+  must be at 512/63 MHz (others are refused with a pointer to `isdb iq
+  survey` / `isdb iq tmcc` instead of being misread); `--iq-format` is now
+  optional (default cf32, or the recording's). When a file holds no
+  ISDB-T frame, `rx` surveys it and names the single-carrier system found.
 - `isdb-fec` (new): the RS(255,239) shortened codes (now any length, for
   RS(204,188) and the ISDB-S TMCC's RS(64,48)), the K = 7 171/133
   convolutional code and Viterbi decoder, and the X¹⁵+X¹⁴+1 PRBS moved

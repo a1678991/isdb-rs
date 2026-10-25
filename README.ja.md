@@ -4,7 +4,7 @@
 
 > この文書は [README.md](README.md) の日本語訳です。リンク先のドキュメントは英語版のみで、内容に相違がある場合は英語版が優先します。
 
-規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（HackRF One と ADALM-Pluto 系）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。現在実装しているのは ISDB-T のみです。ISDB-S と ISDB-S3 については、今のところ衛星 IF の受信専用キャプチャ（`isdb capture`）と録音の解析（`isdb iq survey`）だけがあり、復調器はまだありません。
+規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（HackRF One と ADALM-Pluto 系）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。ISDB-T は送受信の全体を実装しています。ISDB-S は衛星 IF の録音をフレーム同期と TMCC まで復調できます（`isdb iq tmcc`）が、TS パケットまではまだです。ISDB-S3 についてはキャプチャ（`isdb capture`）と録音の解析（`isdb iq survey`）があります。
 
 > [!WARNING]
 > **法令および電波安全に関する注意**
@@ -27,6 +27,7 @@
 - **入出力**（`isdb-radio`、`isdb-hackrf`、`isdb-iio`、`isdb-cli`）：IQ ファイル（GNU Radio 向けの cf32、`hackrf_transfer` 向けの cs8）と、デバイス非依存の IQ シンク／ソーストレイトを介した無線機とのストリーミング（デバイスごとに 1 つのバックエンド。HackRF One は `--radio hackrf`、ADALM-Pluto とその互換機（USB または Ethernet 接続の PlutoSky R2 など）は `--radio pluto`）。`tx`、`rx`、`loopback`、`mux`、`ts`、`capture`、`iq`、`symbols`、`completions` の各コマンドを持つ単一の `isdb` バイナリ。
 - **衛星 IF の録音**（`isdb-iq`、`isdb capture`、`isdb iq survey`）：無線機が対応する任意のサンプルレートでの受信専用キャプチャ。一括で連続した録音（Pluto では libiio 経由で 16 ビット最大 1650 万サンプル、Tezuka の maia-sdr レコーダーで 16 ビット 3355 万サンプル、8 ビット 6710 万サンプル＝40 Msps で 1.7 秒）と、欠落箇所をすべて記録するストリーミング録音（Gigabit Ethernet で欠落なしは約 40 MB/s まで、例えば 8 ビット 20 Msps）、SigMF メタデータ、BS／110 度 CS のチャンネル名による IF 周波数指定、録音からシンボルレート・搬送波オフセット・方式（ISDB-S、ISDB-S3）を求める解析。
 - **衛星のシンボル・フロントエンド**（`isdb-frontend`、`fpga/`、`isdb symbols`、`isdb iq symbols`）：IQ から 5 または 6 ビットのシンボルへの整合フィルタ、タイミング再生、AGC。CPU 上のビット精度の固定小数点モデルと、PlutoSky R2 の FPGA 向けの同じ処理（Amaranth HDL）の両方があり、FPGA 側はリンクを流れるデータ量を約半分（80 MB/s から約 43 MB/s）にして ISDB-S／ISDB-S3 の連続受信を可能にします。HDL はシミュレーションでモデルとビット単位で一致しますが、まだビットストリームには組み込んでいません。それまでは CPU が 1 回の連続キャプチャに対して処理します。
+- **ISDB-S のフレーム同期と TMCC**（`isdbs-core`、`isdbs-phy`、`isdb iq tmcc`）：フレーム内の既知シンボルによるフレーム・スーパーフレーム同期、バースト信号を用いた搬送波再生、TMCC（内符号、エネルギー拡散、RS(64,48)）の復号により、変調・符号化方式の組み合わせ、スロット、各スロットの TS_ID を得ます。ケーブル配信の BS 9 トランスポンダと 110 度 CS 12 トランスポンダのすべてのスーパーフレームで復号できました。
 
 ## クレート
 
@@ -38,6 +39,7 @@
 | [`isdb-analyze`](crates/isdb-analyze/README.md) | H.222.0, B10, B32 Part 2 | TS の内容表示、条項を引用した検証、2 つのキャプチャの差分、編集 |
 | [`isdbt-mux`](crates/isdbt-mux/README.md) | H.222.0, B10, B31, B32 | サービス多重化器：PSI/SI の生成、MPEG-2 映像／AAC のパケット化、録画番組の中継、OFDM フレームに合わせた出力 |
 | [`isdbt-core`](crates/isdbt-core/README.md) | B31 の各表 | モード、ガードインターバル、階層パラメータ、そこから導かれるレートと遅延 |
+| [`isdb-fec`](crates/isdb-fec/README.md) | B31 §3.3、§3.5、§3.8；BO.1408-1 §2、§4、§9 | 方式間で共有する通信路符号化の部品：短縮 RS(255,239) 符号、拘束長 7 の畳み込み符号とビタビ復号、PRBS 生成器 |
 | [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS 再多重、RS(204,188)、エネルギー拡散、バイトインターリーブ、畳み込み符号／ビタビ復号 |
 | [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | マッピング、インターリーブ、SP/CP/TMCC/AC を含む OFDM フレーム、IFFT/GI。受信側の同期と等化 |
 | [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | 送信／受信パイプライン（TS パケット ⇄ 複素ベースバンド）、IQ ファイル形式 |
@@ -46,6 +48,8 @@
 | [`isdb-iio`](crates/isdb-iio/README.md) | — | システムの libiio 0.x に対する最小限の安全なラッパー（FFI）。`isdb-radio` の Pluto バックエンドが使用 |
 | [`isdb-iq`](crates/isdb-iq/README.md) | —（ISDB-S／ISDB-S3 のシンボルレートを引用） | 方式に依存しない IQ 録音：サンプル形式、SigMF メタデータ、単一キャリア信号の解析（シンボルレート、搬送波オフセット、帯域、方式） |
 | [`isdb-frontend`](crates/isdb-frontend/README.md) | —（レートは `isdb-iq` から） | ISDB-S／ISDB-S3 の単一キャリア・フロントエンド（IQ → シンボル）：FPGA 処理のビット精度の固定小数点モデル、浮動小数点の参照実装、`Symbols` 境界の形式、FPGA の制御レジスタ。HDL は [`fpga/`](fpga/README.md) |
+| [`isdbs-core`](crates/isdbs-core/README.md) | BO.1408-1；総務省令第 87 号 別表第四十五号〜第五十一号 | ISDB-S のフレーム構造、変調・符号化方式の組み合わせ、スロット割当て、TMCC 情報のコーデックと信号、バースト |
+| [`isdbs-phy`](crates/isdbs-phy/README.md) | BO.1408-1 | フロントエンド以降の ISDB-S 受信処理：フレーム同期、搬送波再生、TMCC 復号、位相補正済みの主信号 |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | `isdb` バイナリ |
 
 各クレートの関係、フレーム／レイテンシの約束事、データの流れについては [docs/architecture.md](docs/architecture.md) を参照してください。
@@ -180,7 +184,7 @@ isdb ts diff test.ts rx.ts                 # every section identical
 - AC の内容とパリティを実放送で確認し、アンテナからの受信を試し、より多くの構成と受信機で試験する。
 - 確認できたものから、運用上の選択を TR-B14 の値に置き換える。
 - ISO/IEC 13818-7 そのものから書けるようになり次第、AAC の raw_data_block の解析（crc_check の検証）を実装する。H.264 ワンセグのパケット化。
-- TS／SI のクレートを再利用した ISDB-S（ITU-R BO.1408／平成 23 年総務省令第 87 号；ARIB STD-B20）および ISDB-S3（ARIB STD-B44）の受信、その後に送信 — 衛星 IF のキャプチャと解析は完了、復調は未着手。
+- TS／SI のクレートを再利用した ISDB-S（ITU-R BO.1408／平成 23 年総務省令第 87 号；ARIB STD-B20）および ISDB-S3（ARIB STD-B44）の受信、その後に送信 — 衛星 IF のキャプチャと解析は完了。ISDB-S は TMCC まで復調済みで、次は主信号（TS 出力）。
 
 ## 開発
 

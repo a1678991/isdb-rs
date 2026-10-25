@@ -26,8 +26,9 @@ checks something the rung below cannot:
 6. **Broadcast transmitters.** The Rust receiver decodes real
    broadcasters' signals ([below](#broadcast-reception)), which checks the
    receive chain against transmitters this project did not build; their
-   TMCC words are kept as test vectors. Satellite IF recordings (ISDB-S,
-   ISDB-S3) are so far only surveyed, not demodulated
+   TMCC words are kept as test vectors. On the satellite IF recordings,
+   ISDB-S is demodulated to the TMCC on all 21 transponders
+   ([below](#isdb-s-frame-sync-and-tmcc)); ISDB-S3 is only surveyed
    ([below](#satellite-if-survey)).
 
 Coverage per clause, with the rung that confirms it, is in
@@ -457,9 +458,9 @@ backend's own tests are described in
 The satellite IF of the same cable feed (RX1 of the PlutoSky R2, Tezuka
 v0.3.24) was recorded with `isdb capture` and surveyed with `isdb iq
 survey` on 2026-10-20: every BS right-hand-circular transponder (12) and
-every 110° CS transponder (12). Nothing is demodulated yet; this rung
-checks the capture path, the channel tables and which system each
-transponder carries. The feed carries no left-hand-circular IF
+every 110° CS transponder (12). This rung checks the capture path, the
+channel tables and which system each transponder carries; the ISDB-S
+frame sync and TMCC are in [their own section](#isdb-s-frame-sync-and-tmcc). The feed carries no left-hand-circular IF
 (2.2–3.2 GHz: nothing).
 
 **Capture length and contiguity.** One libiio buffer holds at most
@@ -475,7 +476,8 @@ would move it by 2.95 rad. A loss of a multiple of 1024 samples would
 move it by only 0.004 rad (R/fs·1024 is almost an integer) and the
 z⁸ carrier line is too noisy to see it (its phase moves 0.5 rad rms per
 1 ms chunk: the feed's conversion phase noise, ×8); the ISDB-S frame
-sync of the demodulator will settle that. At 57.72 Msps (2 samples per
+sync of the demodulator settles that: every ISDB-S recording keeps exact
+39 936-symbol frame spacing throughout ([below](#isdb-s-frame-sync-and-tmcc)). At 57.72 Msps (2 samples per
 symbol) the line and its image coincide and this check does not apply.
 The two methods agree in level (−10.9 dBFS on BS1 with the AGC at
 33 dB), which confirms their full scales (2048 and 32768).
@@ -735,6 +737,71 @@ ISDB-S MER above 10 dB, and a lossless read-back of the words.
 - **Configuration cost:** an iiod register access takes 0.62 ms (500
   reads), so configuring 32 taps (about 4,250 commands) takes about
   2.6 s.
+
+## ISDB-S frame sync and TMCC
+
+`isdb iq tmcc` (front end → `isdbs-phy` frame sync, burst-aided carrier,
+TMCC Viterbi, `isdbs-core` energy dispersal and RS(64,48)) was run on
+every ISDB-S recording of the 2026-10-20 satellite IF set
+(`tools/isdbs-tmcc-acceptance.sh`; the opt-in test
+`isdbs-phy` `tests/captures.rs` with `ISDB_RS_ISDBS_TMCC_IQ` runs the same
+checks). BS1 is the 40 Msps 8-bit recording with 56 MHz analog bandwidth
+(0.42 s), the other BS ones 57.72 Msps (0.58 s), the CS ones 61.44 Msps
+(0.55 s). TS_IDs are not station identities; no service is named.
+
+| Transponder | Frames (headers with intact sync words) | Slips | Superframes, RS(64,48) ok | Bytes corrected | Pilot MER | Combination | TS_IDs (slots) |
+|---|---|---|---|---|---|---|---|
+| BS1 | 303 (303) | 0 | 37 / 37 | 0 | 14.7 dB | TC8PSK 2/3 × 48 | 4010, 4011, 4012 (16 each) |
+| BS3 | 419 (419) | 0 | 52 / 52 | 0 | 14.0 dB | TC8PSK 2/3 × 48 | 4030 (24), 4631, 4632 (12 each) |
+| BS5 | 419 (419) | 0 | 52 / 52 | 0 | 14.8 dB | TC8PSK 2/3 × 48 | 4450, 4451 |
+| BS9 | 420 (420) | 0 | 51 / 51 | 0 | 14.8 dB | TC8PSK 2/3 × 48 | 4090, 4092 |
+| BS13 | 419 (419) | 0 | 51 / 51 | 0 | 14.0 dB | TC8PSK 2/3 × 48 | 40D0, 40D1, 46D2 |
+| BS15 | 419 (419) | 0 | 52 / 52 | 0 | 14.5 dB | TC8PSK 2/3 × 48 | 40F1, 40F2, 48F3 |
+| BS19 | 419 (419) | 0 | 51 / 51 | 0 | 14.0 dB | TC8PSK 2/3 × 48 | 4730, 4731, 4732, 4733 |
+| BS21 | 419 (419) | 0 | 51 / 51 | 0 | 14.4 dB | TC8PSK 2/3 × 48 | 4750, 4751, 4752 |
+| BS23 | 419 (419) | 0 | 52 / 52 | 0 | 14.3 dB | TC8PSK 2/3 × 48 | 4770, 4971, 4973 |
+| ND2 | 394 (394) | 0 | 48 / 48 | 0 | 13.0 dB | QPSK 3/4 × 48 | 6020 (36) |
+| ND4 | 394 (394) | 0 | 48 / 48 | 0 | 12.8 dB | QPSK 3/4 × 48 | 7040 |
+| ND6 | 394 (394) | 0 | 49 / 49 | 0 | 13.0 dB | QPSK 3/4 × 48 | 7060 |
+| ND8 | 394 (394) | 0 | 48 / 48 | 0 | 12.1 dB | QPSK 3/4 × 48 | 6080 |
+| ND10 | 394 (394) | 0 | 48 / 48 | 0 | 12.5 dB | QPSK 3/4 × 48 | 60A0 |
+| ND12 | 393 (393) | 0 | 48 / 48 | 0 | 11.9 dB | QPSK 3/4 × 48 | 70C0 |
+| ND14 | 394 (394) | 0 | 49 / 49 | 0 | 11.6 dB | QPSK 3/4 × 48 | 70E0 |
+| ND16 | 393 (393) | 0 | 48 / 48 | 0 | 9.8 dB | QPSK 3/4 × 48 | 7100 |
+| ND18 | 394 (394) | 0 | 49 / 49 | 0 | 9.3 dB | QPSK 3/4 × 48 | 7120 |
+| ND20 | 394 (394) | 0 | 48 / 48 | 0 | 8.2 dB | QPSK 3/4 × 48 | 7140 |
+| ND22 | 394 (367) | 0 | 48 / 48 | 5 | 0.7 dB | QPSK 3/4 × 48 | 7160 |
+| ND24 | 394 (374) | 0 | 48 / 48 | 1 | 1.0 dB | QPSK 3/4 × 48 | 7180 |
+
+- **Every superframe of every transponder decodes**, with one TMCC per
+  transponder throughout the recording: combination counts summing to 48
+  in whole slot units, unused TS_ID entries FFFFh, emergency flag 0,
+  uplink information 0010 (BS) / 0100 (CS). This is the evidence for the
+  TMCC information layout, which the binding text (MIC Notification 304
+  of 2011) would otherwise settle (`isdbs-core` SPEC-NOTES "tmcc-layout").
+- **Frame layout and burst data.** The coded W1 tail sits at header
+  symbols 12–31 and the W2 (frame 1) / W3 tail at 172–191 of every frame;
+  all 30 720 burst symbols of 40 frames (BS1, ND2) are BPSK of the
+  X⁹+X⁴+1 PRBS alone, restarted per frame. The spacing of consecutive
+  frames is exactly 39 936 symbols across every recording (0 slips), so
+  none of these captures lost samples, including multiples of 1024 that
+  the |z|² check above cannot see.
+- **Pilot MER** is the MER of the burst symbols after the carrier
+  estimate, against their BPSK points: a true SNR, unlike the decision-
+  directed figures of the front end. It falls along the CS band (ND2 13 dB
+  to ND20 8 dB) with the feed's tilt, and ND22 / ND24 are at about 1 dB
+  (their burst symbols project 6070 of 8111 rms on the expected sign),
+  near the limit of QPSK 3/4: their TMCC still decodes (BPSK r = 1/2 and
+  RS(64,48)), their main signal is not expected to (Phase 3).
+- **Sync detector.** The 20-symbol W1 tail alone scores 0.99 on frames of
+  the strong transponders, but random data reaches 0.75–0.84 somewhere in
+  every frame length and ND22's frames score 0.01–0.6. Correlating all
+  808 known symbols of a frame (tails and bursts, coherently within each
+  group): frames ≥ 0.81 on every transponder, random data ≤ 0.55 over
+  20 000 offsets, ±1 symbol ≈ 0.47 (examples `syncstat`, `offsets`).
+- Main-signal decision MER (8PSK on BS, QPSK on CS) is within 0.3 dB of
+  the pilot MER where the SNR is high enough for decisions (BS1 14.4 dB
+  against 14.7; ND2 12.8 against 13.0).
 
 ## Open questions
 

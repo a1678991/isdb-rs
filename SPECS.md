@@ -264,11 +264,13 @@ are in `specs/pdf/` (gitignored).
 
 ### 1.4 Satellite transmission (ISDB-S, ISDB-S3): local, not yet implemented
 
-Collected on 2026-10-20 for the planned ISDB-S and ISDB-S3 receivers. The
-only code citing them so far is `isdb-iq`'s survey, which quotes the
-nominal symbol rates (ISDB-S 28.860 Mbaud, ordinance Art. 52(3) and
-BO.1408-1 Table 3; ISDB-S3 33.7561 Mbaud, B44 Annex B.3) to recognise a
-recording's system. Each URL was fetched with `curl` that day and returned
+Collected on 2026-10-20 for the ISDB-S and ISDB-S3 receivers. BO.1408-1
+and the ordinance's Chapter 5 §2 are implemented up to the TMCC
+(`isdb-fec`, `isdbs-core`, `isdbs-phy`; coverage in §2.7). The ISDB-S3
+documents are cited only by `isdb-iq`'s survey, which quotes the nominal
+symbol rates (ISDB-S 28.860 Mbaud, ordinance Art. 52(3) and BO.1408-1
+Table 3; ISDB-S3 33.7561 Mbaud, B44 Annex B.3) to recognise a recording's
+system. Each URL was fetched with `curl` that day and returned
 HTTP 200 with `Content-Type: application/pdf` (the ordinance: the e-Gov
 API's XML and JPEG attachments).
 
@@ -359,6 +361,7 @@ clause.
 | **O** | gr-isdbt oracle, byte-exact in both directions ([VERIFICATION.md](VERIFICATION.md), 8 parameter sets / 9 runs) |
 | **RX** | a real receiver accepted the Rust output over a conducted link (HackRF → coax → attenuators → receiver), configuration **C_rx**: `isdb tx` with Mode 3, GI 1/8, partial reception; layer A 1 seg QPSK 2/3 I=2; layer B 12 seg 64QAM 3/4 I=2; multiplex from `isdbt-mux`. MyGica S270 USB tuner: its 12.0 s capture validates with `isdb ts validate`: 0 errors, 5 warnings. A Sony BDZ-series recorder ("the recorder" below): registered the service in a channel scan and played it, with digital copy control copy_control_type '01' (§3.4). RX shows only that the whole chain was accepted in C_rx; it does not test each clause separately ([VERIFICATION.md](VERIFICATION.md#real-receivers)) |
 | **RX(gr)** | a real receiver accepted *gr-isdbt* output that the Rust chain matches byte-exactly (S270, PER 0) |
+| **LS** | decoded on the lab's satellite IF recordings (2026-10-20, receive only: 9 BS and 12 110° CS ISDB-S transponders, VERIFICATION.md "ISDB-S frame sync and TMCC"); as for **L**, the recordings are not distributed and the opt-in tests take them from `ISDB_RS_*` variables |
 | **—** | not implemented, or deliberately left raw |
 
 ### 2.1 ITU-T H.222.0 (05/2006)
@@ -495,6 +498,29 @@ the shape or keys of the remote controller") is cited for the
 remote_control_key_id range. B21/B25 are the deferred sources for SDTT, CDT and
 the CA descriptors. B19 is unrelated (§1.1).
 
+### 2.7 ITU-R BO.1408-1 and MIC Ordinance No. 87, Chapter 5 §2 (ISDB-S)
+
+Reception to the TMCC; the main signal (demapping, inner code,
+de-interleaving, energy dispersal removal, RS, TS output) is Phase 3 and
+not implemented.
+
+| Clause / table | Implementation | Tests | Status |
+|---|---|---|---|
+| BO.1408-1 §2, annexed table 49 items 1–2 (RS(204,188), RS(64,48) shortened from RS(255,239); g(x), p(x)) | `isdb_fec::rs` (shared with ISDB-T) | `spec_primitive_element`, `spec_generator_roots`, `spec_shortening_equivalence`, `spec_correct_up_to_8`, `spec_failure_beyond_8`, `prop_tmcc_signal_corrects_8_bytes` | S, P; RS(64,48) LS (every superframe of 21 transponders, 0–5 bytes corrected) |
+| §9, Fig. 13, annexed table 49 item 3 (K = 7, 171₈/133₈) | `isdb_fec::conv` (shared) | `spec_impulse_response`, the `isdbt-fec` suite | S, LS (TMCC) |
+| Annexed table 45 note 1 (coded tails of W1/W2/W3), table 49 note 3 (BPSK pair order) | `isdbs_core::frame` | `spec_w_words_and_coded_tails` | S, LS |
+| Table 3 (N, M, B, I_D, 39 936 symbols), equation (3); annexed tables 45, 50, 51 (frame layout) | `isdbs_core::frame` | `spec_table_3_geometry` | S, LS |
+| Table 1 (combination words), annexed table 48 別記 3 (slot units) | `isdbs_core::combination` | `spec_table_1_words`, `spec_table_48_slot_units` | S, LS (TC8PSK 2/3, QPSK 3/4) |
+| Table 2, annexed table 49 notes 4–5 (puncturing) | `isdbs_core::combination::Puncture` | `spec_table_2_puncturing` | S (used from Phase 3) |
+| §3.2, §8, Fig. 4 (slot assignment, dummy slots) | `isdbs_core::slots`, `TmccInfo::slot_combinations` | `spec_fig_4_examples`, `prop_slot_assignment_fills_the_frame` | S, P; dummy-slot position **pending** |
+| §6.1, Figs. 7–10, App. 1 Table 3 items 8–13 (TMCC information) | `isdbs_core::tmcc::TmccInfo` | `live_words_decode_consistently`, `prop_tmcc_info_lossless`, `validation` | S, P, LS (the layout is an interpretation: Notification 304/2011 unavailable) |
+| §6.3, §6.4, Fig. 11, annexed table 50 (blocks, sync words, TMCC energy dispersal) | `isdbs_core::tmcc::{headers, derandomise, decode_blocks}` | `spec_tmcc_prbs_alignment`, `headers_round_trip` | S, LS |
+| §4, annexed table 48 別記 1 (main-signal PRBS per superframe) | `isdb_fec::Prbs15` | `spec_prbs15_first_bits` | S (used from Phase 3) |
+| §7, annexed table 51 (burst PRBS X⁹+X⁴+1, `111101101`) | `isdb_fec::Prbs9`, `isdbs_core::burst` | `spec_prbs9_first_bits`, `spec_periods`, `spec_table_51_burst_bits` | S, LS (every burst symbol of 40 frames) |
+| Table 46 (BPSK / QPSK / 8PSK absolute phases) | header and burst BPSK in `isdbs_phy`; `rx::main_mer` | synthetic `decodes_synthetic_tmcc` | S, LS (BPSK); QPSK / 8PSK decision MER only |
+| Art. 52 (28.860 Mbaud), annexed table 47 (α = 0.35) | `isdb_iq::survey::KNOWN_SYSTEMS`, `isdb-frontend` | the front-end tests | LS |
+| §5, annexed table 48 別記 2 (inter-frame interleaving) | — | — | — (Phase 3) |
+
 ---
 
 ## 3. Interpretations and deviations index
@@ -591,6 +617,14 @@ have no external confirmation, because none is possible from the local texts.
 | isdbt-mux | [Remote control key (0xCD)](crates/isdbt-mux/SPEC-NOTES.md#remote-control-key-0xcd-remote_control_key_id) | **[TR-B14 practice, from knowledge]**; receiver evidence of collisions |
 | isdbt-mux | [Raw vs typed descriptors](crates/isdbt-mux/SPEC-NOTES.md#raw-descriptors-versus-typed-ones) | implementation choice |
 | isdbt-mux | [Operational choices 1–39](crates/isdbt-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers) | **pending** TR-B14 / receiver tests (see §4) |
+| isdbs-core | [frame-layout](crates/isdbs-core/SPEC-NOTES.md#frame-layout-where-the-tmcc-and-the-bursts-sit-in-a-frame) | confirmed (live data) |
+| isdbs-core | [burst-data](crates/isdbs-core/SPEC-NOTES.md#burst-data-the-data-the-burst-prbs-is-added-to) | confirmed (live data) |
+| isdbs-core | [coded-tails](crates/isdbs-core/SPEC-NOTES.md#coded-tails-the-transmitted-order-of-the-inner-codes-two-outputs) | confirmed (spec vector, live data) |
+| isdbs-core | [tmcc-prbs](crates/isdbs-core/SPEC-NOTES.md#tmcc-prbs-where-the-tmcc-energy-dispersal-starts-and-which-bytes-it-skips) | confirmed (live data) |
+| isdbs-core | [tmcc-layout](crates/isdbs-core/SPEC-NOTES.md#tmcc-layout-bit-layout-of-the-384-bit-tmcc-information) | confirmed (live data; binding text unavailable) |
+| isdbs-core | [tmcc-other](crates/isdbs-core/SPEC-NOTES.md#tmcc-other-the-other-information-field-values) | **pending** |
+| isdbs-core | [dummy-slots](crates/isdbs-core/SPEC-NOTES.md#dummy-slots-which-slots-of-a-unit-are-the-dummy-ones) | **pending** (Phase 3) |
+| isdbs-core | [ts-unused](crates/isdbs-core/SPEC-NOTES.md#ts-unused-ts_id-value-of-unused-table-entries) | observation |
 | isdbt-fec | [remux: model receiver timing](crates/isdbt-fec/SPEC-NOTES.md#remux-model-receiver-timing-multiplex-frame-pattern) | partially confirmed; **pending** live slot order |
 | isdbt-fec | [remux: null TSP content](crates/isdbt-fec/SPEC-NOTES.md#remux-null-tsp-content-in-the-reproduced-ts) | convention |
 | isdbt-fec | [layer: one-byte shift](crates/isdbt-fec/SPEC-NOTES.md#layer-one-byte-shift-of-the-frame-slot-structure) | confirmed |

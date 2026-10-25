@@ -179,6 +179,12 @@ receiver look-ahead.
 * Status lines every `--status-secs` (1) seconds of signal: lock state,
   mode/GI from TMCC, valid frames, MER per layer, CFO, RS
   clean/corrected/uncorrectable per layer. `--json` prints a summary on stdout.
+* ISDB-T only. A SigMF recording given to `--iq` (data file, `.sigmf-meta`
+  or base name) supplies its format and must have been recorded at
+  512/63 MHz; another rate (a satellite recording) is refused with a
+  pointer to `isdb iq survey` / `isdb iq tmcc`. `--channel BSn` / `NDn`
+  is refused too. When a file holds no ISDB-T frame, `rx` surveys its
+  start and names the single-carrier system it finds, if any.
 
 ### `isdb loopback` — TX → software channel → RX
 
@@ -405,6 +411,29 @@ the symbol rate the timing loop locked to, the ring MER, and for ISDB-S
 the 8PSK decision-directed MER. `isdb iq symbols --read OUT` parses a
 words file (from either command, or captured from the FPGA): blocks,
 losses with the missing blocks, and the ring MER of the output.
+
+### `isdb iq tmcc` — ISDB-S frame sync and TMCC of a recording
+
+```sh
+isdb iq tmcc bs1.sigmf-meta              # per superframe: RS, combinations, TS_IDs
+isdb iq tmcc nd2.sigmf-meta --summary    # one line
+isdb iq tmcc bs1.sigmf-meta --json       # everything, incl. relative TS IDs per slot
+```
+
+Runs the ISDB-S front end over the recording's first segment (carrier
+offset from the survey, or `--carrier-offset`), then `isdbs-phy`: frame
+sync on the frame's known symbols, burst-aided carrier recovery, TMCC
+Viterbi, energy dispersal and RS(64,48). It prints the frames found (and
+how many headers decoded their sync words intact), slips (frames missing
+where 39 936 symbols predict them, e.g. samples lost in the capture),
+the pilot MER (burst symbols against their BPSK points) and the main
+signal's decision MER, then per superframe the TMCC: order of change,
+modulation-code combinations with their slot counts, the TS_IDs with
+their slot counts, emergency flag and uplink information. Unchanged
+superframes print one short line. Any rate from 1.0625 to 4 samples per
+symbol works; 40 Msps with 56 MHz analog bandwidth (`isdb capture --rate
+40M --bw 56M`) is enough. `tools/isdbs-tmcc-acceptance.sh` runs it over
+a directory of recordings.
 
 ### `isdb completions` — shell completions
 
@@ -679,6 +708,8 @@ transmit with, over the in-memory `mock::MockRadio`):
 
 | Test | What it proves |
 |---|---|
+| `src/rx.rs` `sigmf_recordings_must_be_isdbt_rate` | `rx --iq` with SigMF metadata: a 40 Msps recording is refused with the pointer to `iq survey` / `iq tmcc`; a 512/63 MHz cs8 recording gives its data file and format; a conflicting `--iq-format` and cs16 are refused; without metadata the path and cf32 are used |
+| `src/phyargs.rs` `freq_restricted_to_the_uhf_tv_band` | `--channel BS1` is refused by `rx` / `tx` (satellite channel) |
 | `tests/cli.rs` `tx_then_rx_reproduces_every_layer_byte_exact` | `isdb tx --iq` → `isdb rx --iq` returns every input packet of every layer byte-exact |
 | `tests/cli.rs` `mux_ts_is_split_by_pid` | `--mux-ts` routing by `--a-pids`, order preserved |
 | `tests/cli.rs` `mux_ts_file_is_paced_by_its_pcr` | an 8 Mbit/s PCR-timed file into the 16.85 Mbit/s layer B: ≈ 50 % null fill, `tx` → `rx` returns every data packet in order |

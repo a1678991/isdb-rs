@@ -10,10 +10,11 @@ the same library — services → TS → OFDM baseband → radio, and radio → 
 → TS → analysis — so every layer can be checked against its inverse, against
 the specifications' own numbers, and against independent receivers. It is
 meant for receiver testing, protocol study and broadcast-engineering
-experiments on a conducted bench. Only ISDB-T is implemented today; for
-ISDB-S and ISDB-S3 there is so far receive-only satellite IF capture
-(`isdb capture`) and a survey of the recordings (`isdb iq survey`), no
-demodulator.
+experiments on a conducted bench. ISDB-T is implemented end to end. For
+ISDB-S, recordings of the satellite IF are demodulated as far as frame
+sync and the TMCC (`isdb iq tmcc`), not yet to TS packets; for ISDB-S3
+there is capture (`isdb capture`) and a survey of the recordings (`isdb iq
+survey`).
 
 > [!WARNING]
 > **Legal and RF safety notice**
@@ -109,6 +110,12 @@ demodulator.
   43 MB/s instead of 80) for continuous ISDB-S / ISDB-S3 reception. The
   HDL matches the model bit for bit in simulation but is not yet in a
   bitstream; until then the CPU runs it on one contiguous capture.
+- **ISDB-S frame sync and TMCC** (`isdbs-core`, `isdbs-phy`, `isdb iq
+  tmcc`): frame and superframe sync on the frame's known symbols,
+  burst-aided carrier recovery, and the TMCC (inner code, energy
+  dispersal, RS(64,48)): modulation-code combinations, slots and the
+  TS_ID of each slot. Decoded on every superframe of the 9 BS and 12
+  110° CS transponders of a cable feed.
 
 ## Crates
 
@@ -120,6 +127,7 @@ demodulator.
 | [`isdb-analyze`](crates/isdb-analyze/README.md) | H.222.0, B10, B32 Part 2 | TS inspection, validation with clause citations, diff of two captures, editing |
 | [`isdbt-mux`](crates/isdbt-mux/README.md) | H.222.0, B10, B24, B31, B32, IPTVFJ STD-0010/0013 | service multiplexer: PSI/SI generation, MPEG-2 video / AAC packetisation, recorded-program relay, BML data carousel and Hybridcast AIT, output paced to the OFDM frame |
 | [`isdbt-core`](crates/isdbt-core/README.md) | B31 tables | modes, guard intervals, layer parameters, derived rates and delays |
+| [`isdb-fec`](crates/isdb-fec/README.md) | B31 §3.3, §3.5, §3.8; BO.1408-1 §2, §4, §9 | channel-coding blocks shared by the systems: shortened RS(255,239) codes, K = 7 code and Viterbi, PRBS generators |
 | [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS re-multiplexing, RS(204,188), energy dispersal, byte interleaving, convolutional code / Viterbi |
 | [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | mapping, interleaving, OFDM frame with SP/CP/TMCC/AC, IFFT/GI; receiver synchronisation and equalisation |
 | [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | TX/RX pipelines (TS packets ⇄ complex baseband), IQ file formats, the broadcasting TS with ISDB-T_information and IIP (Part 2 §5.5) |
@@ -128,6 +136,8 @@ demodulator.
 | [`isdb-iio`](crates/isdb-iio/README.md) | — | minimal safe wrapper over the system libiio 0.x (FFI), used by the `isdb-radio` Pluto backend |
 | [`isdb-iq`](crates/isdb-iq/README.md) | — (quotes the ISDB-S / ISDB-S3 symbol rates) | IQ recordings independent of the system: sample formats, SigMF metadata, single-carrier survey (symbol rate, carrier offset, band, system) |
 | [`isdb-frontend`](crates/isdb-frontend/README.md) | — (rates from `isdb-iq`) | single-carrier front end IQ → symbols for ISDB-S / ISDB-S3: bit-exact fixed-point model of the FPGA stage, floating-point reference, `Symbols` boundary format, FPGA control map; the HDL is in [`fpga/`](fpga/README.md) |
+| [`isdbs-core`](crates/isdbs-core/README.md) | BO.1408-1; MIC Ordinance No. 87 annexed tables 45–51 | ISDB-S frame geometry, combinations, slot assignment, TMCC information codec and signal, burst |
+| [`isdbs-phy`](crates/isdbs-phy/README.md) | BO.1408-1 | ISDB-S receive chain after the front end: frame sync, carrier recovery, TMCC decoding, derotated main signal |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary |
 
 How they fit together, the frame/latency contract and the data flow:
@@ -352,8 +362,8 @@ end, but some parts have had less independent checking than others:
   written from ISO/IEC 13818-7 itself; H.264 one-seg packetisation.
 - ISDB-S (ITU-R BO.1408 / MIC Ordinance No. 87 of 2011; ARIB STD-B20) and
   ISDB-S3 (ARIB STD-B44) reception, then transmission, reusing the TS/SI
-  crates — satellite IF capture and survey done, demodulation not
-  started.
+  crates — satellite IF capture and survey done; ISDB-S demodulated to the
+  TMCC, the main signal (TS output) next.
 
 ## Development
 

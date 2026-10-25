@@ -52,6 +52,9 @@ graph TD
   iio[isdb-iio<br/>libiio FFI]
   iq[isdb-iq<br/>IQ recordings, SigMF, survey]
   fe[isdb-frontend<br/>IQ → symbols, FPGA model]
+  sfec[isdb-fec<br/>shared RS, K=7 code, PRBS]
+  score[isdbs-core<br/>ISDB-S parameters, TMCC]
+  sphy[isdbs-phy<br/>ISDB-S frame sync, carrier, TMCC]
   cli[isdb-cli<br/>the isdb binary]
 
   si --> ts
@@ -85,6 +88,14 @@ graph TD
   cli --> fe
   fe --> iq
   radio --> fe
+  fec --> sfec
+  score --> sfec
+  sphy --> score
+  sphy --> sfec
+  sphy --> fe
+  sphy --> iq
+  cli --> sphy
+  cli --> score
 ```
 
 Arrows point to dependencies. The TS/SI side (`isdb-ts`, `isdb-text`,
@@ -107,7 +118,13 @@ receivers (IQ to symbols): a bit-exact fixed-point model whose FPGA
 implementation lives in `fpga/` (Amaranth, outside cargo). `isdb-radio`
 depends on it for the stages a radio can run itself (`Offload`,
 `Backend::capture_symbols`: the FPGA's discovery and configuration
-words), and `isdb symbols` picks the FPGA or the CPU at run time. The PHY crates carry TS packets
+words), and `isdb symbols` picks the FPGA or the CPU at run time.
+`isdb-fec` holds the channel-coding blocks both systems use (the RS(255,239)
+shortened codes, the K = 7 code with its Viterbi decoder, the PRBS
+generators); `isdbt-fec` re-exports them under its old paths.
+`isdbs-core` (ISDB-S parameters and the TMCC codec) and `isdbs-phy`
+(frame sync, carrier recovery and TMCC decoding on the front end's
+symbols) are the ISDB-S receiver so far; `isdb iq tmcc` drives them. The PHY crates carry TS packets
 as plain `[u8; 188]` and do not depend on `isdb-ts`. `isdb-analyze` uses
 `isdbt-mux` only for the ARIB STD-B32 Part 2 ADTS rule identities and
 quality modes; it parses ADTS headers itself.
