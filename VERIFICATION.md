@@ -1155,6 +1155,33 @@ between captures is not received: continuous reception needs a link
 that carries the samples (≈ 70 MB/s loss-free over iiod, below 40 Msps
 8-bit) or the FPGA symbol path, which is designed but not deployed.
 
+**SIMD dispatch and the front end (plan §0.11, 2026-10-25).**
+
+- *Runtime AVX2 dispatch without `unsafe`*: not achievable for these
+  kernels. A call into a `#[target_feature]` function from code without
+  the feature is `unsafe` on stable 1.99 and nightly 1.101 alike
+  (E0133). `pulp` 0.22 hides that call behind a safe token, but a kernel
+  inlined into its `#[target_feature]` op is unrolled into scalar code
+  by LLVM (front end 2.8–3.9 s per block instead of 1.0 s), a kernel
+  left out of line does not get the op's features (no gain), and our
+  own `#[target_feature]` kernel cannot be called from the generic op
+  without `unsafe`. AVX-512 in pulp needs Rust 1.89 (MSRV is 1.88). The
+  wider instructions come from a build with `-C target-cpu=native`.
+- *LDPC*: the iteration in its own function, 4 615 → 5 380 codewords/s
+  per thread (A/B in one session, BS11), same results.
+- *Front end*: a chunked mixer (whole chunk mixed into the delay line,
+  then the symbol loop) was 11 % faster through `process` on both
+  systems but 7–13 % slower in the ISDB-S receiver's acquisition
+  (`process_each` with its callback) and 4 % slower over a 6-block
+  ISDB-S file; it was reverted (`1664f09`). The front end stays the
+  single-stream limit: ISDB-S3 0.99 s per 0.826 s block (0.83× real
+  time), ISDB-S 1.88 s per 1.68 s at 40 Msps (0.89×).
+- *Whole pipeline on long files* (`tools/sigmf-repeat.py`: the live
+  BS7 recording ×6 = 12 blocks, 9.91 s; BS1 40 Msps ×6 = 6 blocks,
+  10.07 s): ISDB-S3 0.92× → 0.96× real time with the LDPC change
+  (27 648 slots, 12 LDPC failures before and after); ISDB-S 1.27× real
+  time.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

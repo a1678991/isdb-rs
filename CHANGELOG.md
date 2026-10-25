@@ -16,6 +16,8 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `tools/sigmf-repeat.py`: repeat a SigMF recording into a long
+  multi-block one, for pipeline throughput measurements.
 - `isdb-frontend`: `fast::FastFrontend`, the bit-exact front end 2–2.4×
   faster (linear delay line, fused banks, 16-bit products in `i32` on
   split coefficients, an `i64` kernel while a larger input is in the
@@ -331,6 +333,11 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdb-fec`: the fixed-point LDPC iteration (every check node, then the
+  syndrome) runs in a function of its own, 14 % more codewords per thread
+  (4 615 → 5 380 on live ISDB-S3 codewords), same results. Runtime SIMD
+  dispatch was measured and not adopted (needs `unsafe` or gains under
+  6 %; VERIFICATION.md "Satellite receive speed").
 - `isdb-frontend` format 2 (`Symbols` words keep their layout; the
   reader accepts versions 1 and 2): the front end's timing loop locks a
   fixed fraction of a symbol away from the best sampling instant on the

@@ -51,10 +51,25 @@ reference of plan §7.2) and in any lane of any W, on either back end of
 | portable | any compiler (stable, the default) | branch-free loops over `[i8; W]` (mask blends, min/max, saturating ops), which LLVM vectorises for the target: SSE2 on plain x86-64, NEON on aarch64, AVX2 / AVX-512 when built for them, WASM SIMD |
 | `std::simd` | the build script compiles a probe of the `std::simd` API the kernels use, i.e. a nightly whose `portable_simd` matches; `ISDB_FEC_NO_NIGHTLY_SIMD` turns it off | the same operations on `Simd<i8, W>` (`cfg(isdb_fec_portable_simd)`) |
 
-There is no `unsafe` and no target-specific code. Runtime dispatch to AVX2
-(`#[target_feature]`) would need `unsafe`, which the workspace denies; a
-build with `RUSTFLAGS="-C target-cpu=native"` gets the wider instructions
-instead.
+There is no `unsafe` and no target-specific code, and no runtime
+dispatch: a build with `RUSTFLAGS="-C target-cpu=native"` (or
+`x86-64-v3`) gets the wider instructions. Why not runtime dispatch
+(measured 2026-10-25, plan §0.11): calling a `#[target_feature]` function
+from code without that feature is `unsafe` on every Rust version, nightly
+included (E0133; the run-time CPU check is not something the compiler
+can verify), and the workspace denies `unsafe`. The `pulp` crate keeps
+that call in its own crate behind a safe token and runs a generic op
+inside its `#[target_feature]` function; with it the LDPC iteration runs
+at 6 040 codewords/s with AVX2 against 5 700 at the baseline only when
+the lane kernels are forced inline into the op, and forcing them inline
+drops the baseline to 4 230. Our own `#[target_feature]` kernel cannot be
+called from pulp's generic op without `unsafe` (the safety check is
+lexical). A 6 % gain did not justify a level-dependent code path and a
+new dependency.
+
+The iteration (every check node, then the syndrome) is a function of its
+own, not inlined into the lane-refill logic: 4 615 → 5 380 codewords/s
+per thread on the same codewords (A/B in one session).
 
 Measured on ISDB-S3 16APSK 93/120 codewords of a live transponder
 (`isdbs3-phy` `examples/ldpcspeed`, Ryzen 9 7950X, one thread, 16 lanes):
@@ -63,7 +78,7 @@ Measured on ISDB-S3 16APSK 93/120 codewords of a live transponder
 |---|---|
 | float reference (`Code::decode`) | 166 |
 | fixed, one lane (scalar reference) | about 460 |
-| fixed, 16 lanes, stable, x86-64 baseline (SSE2) | 4 678 |
+| fixed, 16 lanes, stable, x86-64 baseline (SSE2) | 4 678 (5 380 with the iteration out of line, below) |
 | fixed, 16 lanes, stable, `-C target-cpu=x86-64-v3` (AVX2) | 5 739 |
 | fixed, 16 lanes, nightly `std::simd`, baseline | 4 834 |
 | fixed, 16 lanes, nightly `std::simd`, AVX2 | 6 153 |
