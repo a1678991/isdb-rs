@@ -91,7 +91,7 @@ between the payload-word register and the CRC register, against the
 multi-level adder and DSP paths of the filters (an estimate from the
 logic depth, not a timing report).
 
-## Integration (the hardware step, not done)
+## Integration
 
 `SymbolsRx` goes between Tezuka's sample path and the ADC packer
 (maia-hdl `projects/common/cs12_cs8.tcl`, Tezuka's fork F5OEO/maia-sdr,
@@ -102,9 +102,14 @@ branch `refactor`):
 | `adc_valid`, `adc_i`, `adc_q` | `mux_decim_i/valid_out`, `mux_decim_i/data_out`, `mux_decim_q/data_out` (12-bit samples) |
 | `pass_valid`, `pass_data0`, `pass_data1` | `cs12_8mux_chan0/valid_out`, `cs12_sync_chan0/data_out0`, `data_out1` (today's path, passed through) |
 | `pack_valid`, `pack_data0`, `pack_data1` | `util_ad9361_adc_pack` `fifo_wr_en`, `fifo_wr_data_0`, `fifo_wr_data_1` |
-| `gpio_out` | `axi_ad9361/up_adc_gpio_out` (bit 0 stays Tezuka's 12-bit sync control) |
+| `gpio_out` | `axi_ad9361/up_adc_gpio_out` (bit 0 stays Tezuka's: the DDC select of `maiafirtoiq.tcl` and the cs12 `zero_count` of `cs12_cs8.tcl`) |
 | `gpio_in` | `axi_ad9361/up_adc_gpio_in` (unconnected in Tezuka v0.3.24) |
-| clock | `util_ad9361_adc_fifo/dout_clk` (the sample path's clock) |
+| clock, reset | `util_ad9361_adc_fifo/dout_clk`, `dout_rstn` inverted (62.5 or 125 MHz, see below) |
+
+(`pass_valid` is `channels_or/Res`, the OR of both channels' valid, not
+`cs12_8mux_chan0/valid_out`: that is what drives the packer's
+`fifo_wr_en` in `cs12_cs8.tcl`. `fpga/tezuka/isdb_symbols.tcl` has the
+exact connections.)
 
 **Discovery and control without kernel changes.** libiio reaches both
 GPIO registers through iiod's register access on `cf-ad9361-lpc`:
@@ -125,25 +130,110 @@ A dedicated IIO device per output boundary, with its format version as
 an attribute (the plan's longer-term form), would need a device-tree
 node and a driver. The GPIO route needs neither.
 
-**Building a bitstream** needs, beyond this repository:
+### Building the PlutoSky R2 bitstream (`tezuka/`)
 
-1. **Vivado.** Tezuka's maia-sdr fork builds with Vivado 2023.1
-   (`sourceme.first`; Tezuka issue #494 used 2023.2). ML Standard, the
-   free edition, supports the XC7Z020. The download needs an AMD
-   account. A Zynq-7000-only installation takes tens of GB; AMD's
-   installer shows the exact size (not measured here, and this machine
-   has 118 GB free).
-2. **The Verilog of `SymbolsRx`** (`mise run fpga:verilog`), packaged
-   like maia-hdl's `ip/dvbs2rx` (generate Verilog, then
-   `package_ip.tcl`) and instantiated in `system_bd.tcl` for
-   `plutoskyr2` with the connections above.
-3. **A build:** `make all` in `maia-hdl/projects/tezuka` with
-   `PROJECT_NAME=plutoskyr2`, then Tezuka's `board-fpga-reconfigure`
-   and image build.
-4. **Booting it from a spare SD card.** Never flash it.
+```sh
+fpga/tezuka/build.sh WORK stock   # the unmodified design
+fpga/tezuka/build.sh WORK isdb    # with SymbolsRx
+fpga/tezuka/sdbin.sh WORK/out/isdb/plutoskyr2.xsa isdb_top.bin
+```
+
+`build.sh` clones the pinned upstream revisions into WORKDIR (outside
+the repository; several GB), builds maia-hdl's IP cores and the
+`plutoskyr2` XSA. `apply.sh` (called in `isdb` mode) regenerates
+`fpga/build/isdb_symbols_rx.v`, sets an `isdb_symbols` flag in the
+plutoskyr2 case of maia-hdl's `system_bd.tcl` and sources
+`isdb_symbols.tcl` after `cs12_cs8.tcl`. `sdbin.sh` turns an XSA into
+the file U-Boot loads from the SD card (Tezuka's `postimage-sd.sh`
+conversion).
+
+| Upstream | Revision |
+|---|---|
+| tezuka_fw | v0.3.24 = `a304a1f7ecba49dc4cd9d57a7935ec52504c7334` |
+| F5OEO/maia-sdr | `f7092ba` (branch `refactor`): the source of the plutoskyr2 bitstream v0.3.24 ships (built 2026-10-06 with Vivado 2023.1, device `xc7z020clg484-2`) |
+| adi-hdl / dvb_fpga / XilinxUnisimLibrary | `cf81ab15`, `297a5b7e` (with its own submodules), `1c8e05fd` |
+
+Needs Vivado with the Zynq-7000 devices and a licence that covers the
+xc7z020: Vivado 2026.1's free BASIC tier does. A licence file that
+carries an ALVEO-tier section before the BASIC one makes Vivado take the
+ALVEO tier and list no parts at all; keep only the BASIC section in
+`~/.Xilinx/`. Workarounds for the upstream flow, all in `build.sh`:
+`ADI_IGNORE_VERSION_CHECK=1` (adi-hdl asks for 2023.2); Yosys for
+maia-hdl's Amaranth from the `amaranth-yosys` wheel (upstream uses
+oss-cad-suite); the XSA target built directly (the Makefile's
+`build_project` names a rule ADI's makefile lacks, and `make all` ends
+in an install to the upstream author's path); dvb_fpga's own submodules
+fetched recursively.
+
+**Status (2026-10-26): the stock design builds and closes timing with
+Vivado 2026.1; the design with `SymbolsRx` builds but does not close
+timing, so there is no bitstream to deploy yet.**
+
+| xc7z020clg484-2 | LUT | FF | BRAM36 | DSP | WNS | WHS |
+|---|---|---|---|---|---|---|
+| Tezuka's own build (2023.1, `doc/fpga_usage.md`) | 23 005 | 32 111 | 46 + 19 BRAM18 | 106 | — | — |
+| stock, rebuilt with 2026.1 | 23 211 (44 %) | 32 304 (30 %) | 55.5 | 106 (48 %) | +0.100 ns | +0.024 ns |
+| with SymbolsRx (after route) | — | — | — | — | −3.281 ns | −3.647 ns |
+
+Two causes, found on the post-opt checkpoint:
+
+1. **The ADC clock is faster than designed for.** `dout_clk` of
+   `util_ad9361_adc_fifo` is `util_ad9361_divclk`, `rx_clk` divided by 4
+   (`clk_div_sel_0_s`, 62.5 MHz at the constrained 250 MHz `rx_clk`) or by 2
+   when both `adc_r1_mode` and `dac_r1_mode` are set (`clk_div_sel_1_s`,
+   125 MHz). The front end passes at 62.5 MHz (WNS +5.4 ns) and fails at
+   125 MHz (WNS −2.58 ns, 288 endpoints): the worst path is a cascade of
+   five DSP48E1 on PCIN, 9.2 ns of DSP delay against 8 ns, i.e. one
+   filter dot product with no pipeline register between the DSPs (the
+   earlier "160 MHz" estimate assumed the DSPs' internal registers would
+   be used; the generated multiply-adds don't allow it). Fix: pipeline
+   the dot products in `frontend.py` (a few cycles of latency, absorbed
+   by the loop delay the model already has), keeping `mise run
+   fpga:test` bit-exact.
+2. **`gpio_in` crosses clock domains untimed.** The ID/readback word
+   (ADC clock) is read by `axi_ad9361`'s register file in `clk_fpga_0`;
+   Vivado times it as a 2 ns synchronous path (−4.06 ns). It is
+   quasi-static (the host reads it milliseconds after a command), so it
+   needs a `set_max_delay -datapath_only` / false-path constraint (or a
+   register on the AXI side), as ADI does for its own status words.
+
+**Deploying (once a build closes timing).** Never flash. The card's FAT
+partition already holds several bitstreams (`system_top.bin`,
+`tezuka_top.bin`); U-Boot loads `${bitstream_image}` (`fatload mmc 0 …`),
+which `uEnv.txt` sets (`bitstream_image=system_top.bin` in v0.3.24).
+On a **copy** of the card (keep the original as the rollback):
+
+1. copy `isdb_top.bin` (from `sdbin.sh`) to the FAT partition, next to
+   `system_top.bin`;
+2. in that partition's `uEnv.txt`, set `bitstream_image=isdb_top.bin`;
+3. boot from SD as today (DIP switches unchanged: both at 3.3 V).
+
+Rollback: `bitstream_image=system_top.bin`, or the original card.
+`sdbin.sh` was checked against the board: on the XSA v0.3.24 ships it
+reproduces the card's `system_top.bin` byte for byte (sha256
+`4e9ea3825f2c9fd08906f0398fff2a652736a843503f21407793fc300c045c76`).
+
+**Verifying after deployment** (receive only):
+
+1. `isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq BS7 --probe`
+   reads the ID word 0x15DB…; the stock bitstream reads 0.
+2. `isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq BS7 --system
+   isdb-s3 --offload auto --seconds 10 --out fpga.sym`: 0 loss events
+   from the CRC-32C reader, the link rate at 51 MB/s (6 bits).
+3. Bit-exactness on the board: capture the same signal as IQ and run
+   `isdb iq symbols --system isdb-s3` with the same parameters; the words
+   must be identical (the FPGA vectors are the bench version of this).
+4. Rest of the chain: `isdb iq s3sync --read fpga.sym` (Es/N0 as from
+   the CPU front end) and `isdb rx --system isdbs3` on the symbols.
 
 ## Licences
 
 The code here is Apache-2.0 like the rest of the repository. maia-hdl
 is MIT and Tezuka is GPL-3.0: neither is copied here, and both are
-referenced by path and branch only.
+referenced by path and revision only. `fpga/tezuka/apply.sh` edits
+maia-hdl's `system_bd.tcl` (MIT) in the build tree only; it carries no
+upstream code, only short anchor strings. ADI HDL is licensed per module
+(ADIBSD, BSD-1-Clause, GPL2, LGPL); dvb_fpga is CERN-OHL-W v2: none of
+them is modified. A bitstream built this way combines all of these, so
+distributing one (not building it for your own board) brings their
+terms with it, notably CERN-OHL-W for the DVB-S2 encoder.
