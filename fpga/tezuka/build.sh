@@ -62,7 +62,10 @@ fi
 PROJ=maia-sdr/maia-hdl/projects
 # Start from the pinned files every time, so stock and isdb builds don't mix.
 git -C maia-sdr checkout -q -- maia-hdl/projects
-git -C maia-sdr clean -q -fd -- maia-hdl/projects/common maia-hdl/projects/boards
+# -x: the Vivado project of a previous build (plutoskyr2.xpr, .runs, .sdk) is
+# gitignored upstream and must not be reused by the other mode. The IP
+# libraries (adi-hdl/library, maia-hdl/ip) are the same for both and kept.
+git -C maia-sdr clean -q -fdx -- maia-hdl/projects/tezuka maia-hdl/projects/common maia-hdl/projects/boards
 if [ "$MODE" = isdb ]; then
     "$HERE/apply.sh" "$WORK/maia-sdr" "$REPO"
 fi
