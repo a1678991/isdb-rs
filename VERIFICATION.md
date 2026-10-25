@@ -835,6 +835,22 @@ transponder numbering, not station identities.
   ND24 (pilot MER ≈ 1 dB) decode their TMCC but not their main signal,
   as expected for QPSK 3/4 at that SNR: a re-capture with more gain or
   another feed is needed for them.
+- **All 21 after removing a DC block (2026-10-25).** The cause of the
+  low SNR of ND22 / ND24 was a DC block in the RX1 feed: re-captured
+  without it (`tools/isdbs-recapture.sh`, same settings as above; DC on
+  the cable checked absent first), ND22 rose from 0.7 to 7.8 dB pilot MER
+  and ND24 from 1.0 to 7.5 dB, every frame header decodes, and both give
+  RS-clean TS (14 112 packets each; 24 and 51 corrected, 0
+  uncorrectable). Over the 21 recordings: 38 TSs, 319 584 packets, 85
+  corrected, 0 uncorrectable, 0 continuity errors, 0
+  transport_error_indicator, `isdb ts validate` 0 errors. Only the top of
+  the band changed: BS1–BS23 (1.05–1.48 GHz) +0.0…+0.7 dB, ND2–ND20
+  (1.61–1.97 GHz) −0.4…+0.6 dB (the spread between captures), ND22 and
+  ND24 (2.01 and 2.05 GHz) about +7 dB, so this block cut sharply near
+  2 GHz rather than losing a little everywhere. Without a DC block the
+  AD9361 input is exposed to any LNB supply that a receiver on the same
+  feed switches on later; a replacement should be specified to 2.5–3 GHz
+  and re-checked with the script.
 - **The TMCC's TS_IDs are right**: the PAT transport_stream_id of every
   TS equals the TMCC's TS_ID for its slots. Slots whose relative TS ID
   names an unused (FFFFh) entry (BS9, 15, 21, 23) carry null packets only
