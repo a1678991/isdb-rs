@@ -12,6 +12,7 @@
 //! needs the FPGA symbol front end.
 
 use crate::bands::{Channel, parse_hz};
+use crate::satpipe::{self, Block, Timing};
 use anyhow::{Context, Result, bail};
 use isdb_iq::{C32, Recording};
 use isdb_radio::{DeviceSpec, RadioConfig};
@@ -130,6 +131,16 @@ pub struct TsStats {
 /// Counters of a whole reception.
 #[derive(Debug, Clone, Default)]
 pub struct Stats {
+    /// Seconds spent in the front end (all blocks), in the receiver, and
+    /// in the whole run (the stages overlap, so the wall time is less
+    /// than their sum).
+    pub front_s: f64,
+    /// See `front_s`.
+    pub back_s: f64,
+    /// See `front_s`.
+    pub wall_s: f64,
+    /// Blocks that reused the previous block's acquisition.
+    pub reused: u64,
     /// Contiguous blocks decoded (recording segments or radio captures).
     pub blocks: u64,
     /// Samples processed.
@@ -190,6 +201,12 @@ impl Stats {
         json!({
             "system": "ISDB-S",
             "blocks": self.blocks,
+            "time": json!({
+                "wall_s": self.wall_s,
+                "front_end_s": self.front_s,
+                "receiver_s": self.back_s,
+                "reused_acquisitions": self.reused,
+            }),
             "samples": self.samples,
             "frames": self.frames,
             "headers_ok": self.headers_ok,
@@ -253,6 +270,17 @@ pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> 
 
 /// The summary lines printed at the end.
 pub fn report(stats: &Stats, secs: f64) {
+    if stats.wall_s > 0.0 {
+        eprintln!(
+            "[rx] time: {:.2} s for {secs:.3} s of signal ({:.2}× real time); front end {:.2} s, receiver {:.2} s (overlapping); {} of {} block(s) reused the previous acquisition",
+            stats.wall_s,
+            secs / stats.wall_s,
+            stats.front_s,
+            stats.back_s,
+            stats.reused,
+            stats.blocks
+        );
+    }
     eprintln!(
         "[rx] done: ISDB-S, {:.3} s of signal in {} block(s); {} frames ({} with intact sync words), {} slips; {} superframes, TMCC ok {}, decoded {}; main MER {}",
         secs,
@@ -292,17 +320,9 @@ pub fn report(stats: &Stats, secs: f64) {
     }
 }
 
-/// One contiguous block of samples for the pipeline and their rate.
-struct Block {
-    x: Vec<C32>,
-    fs: f64,
-}
-
-/// Decode the blocks `produce` sends, in three overlapping stages: the
-/// producer (reading or capturing) on its thread, the front end on
-/// another (sequential: it carries the acquisition from block to block),
-/// and the receiver on this one, with one block in flight between
-/// stages. `after` runs after each block is written (status lines).
+/// Decode the blocks `produce` sends through [`satpipe::run`] and count
+/// the stage times; `after` runs after each block is written (status
+/// lines).
 fn pipeline(
     produce: impl FnOnce(&std::sync::mpsc::SyncSender<Block>) -> Result<()> + Send,
     carrier_offset_hz: Option<f64>,
@@ -310,31 +330,20 @@ fn pipeline(
     stats: &mut Stats,
     mut after: impl FnMut(&Stats),
 ) -> Result<()> {
-    use std::sync::mpsc::sync_channel;
-    let (btx, brx) = sync_channel::<Block>(1);
-    let (stx, srx) = sync_channel::<Result<(Symbols, u64)>>(1);
-    std::thread::scope(|sc| -> Result<()> {
-        let producer = sc.spawn(move || produce(&btx));
-        sc.spawn(move || {
-            let mut prior: Option<Prior> = None;
-            for b in brx {
-                let r = front(&b.x, b.fs, carrier_offset_hz, prior.as_ref()).map(|(s, p)| {
-                    prior = Some(p);
-                    (s, b.x.len() as u64)
-                });
-                let failed = r.is_err();
-                if stx.send(r).is_err() || failed {
-                    break;
-                }
-            }
-        });
-        for r in srx {
-            let (s, n) = r?;
-            back(&s, n, out, stats)?;
-            after(stats);
-        }
-        producer.join().expect("producer thread")
-    })
+    let stats = std::cell::RefCell::new(stats);
+    satpipe::run(
+        produce,
+        |b: &Block, prior: Option<&Prior>| front(&b.x, b.fs, carrier_offset_hz, prior),
+        |s: Symbols, n: u64| back(&s, n, out, &mut stats.borrow_mut()).map(|_| ()),
+        |t: Timing| {
+            let mut st = stats.borrow_mut();
+            st.front_s = t.front_s;
+            st.back_s = t.back_s;
+            st.wall_s = t.wall_s;
+            st.reused = t.reused;
+            after(&st);
+        },
+    )
 }
 
 /// Offline: every contiguous segment of a recording.

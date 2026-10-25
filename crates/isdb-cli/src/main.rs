@@ -40,6 +40,7 @@ mod rxs;
 mod rxs3;
 mod s3sync;
 mod s3tmcc;
+mod satpipe;
 mod sink;
 mod source;
 mod stop;
