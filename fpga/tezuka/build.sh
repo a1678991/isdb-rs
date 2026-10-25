@@ -19,7 +19,8 @@
 #   tezuka_fw  https://github.com/F5OEO/tezuka_fw    v0.3.24 = a304a1f7ecba49dc4cd9d57a7935ec52504c7334
 #   maia-sdr   https://github.com/F5OEO/maia-sdr     f7092ba (refactor branch)
 #     adi-hdl              cf81ab15cdb1376982b53827a9aa3db01297eecc (submodule)
-#     dvb_fpga             297a5b7e73d9aa3f07140e08dea7cf27a72432e8 (submodule)
+#     dvb_fpga             297a5b7e73d9aa3f07140e08dea7cf27a72432e8 (submodule, with its own
+#                          third_party submodules, fetched recursively)
 #     XilinxUnisimLibrary  1c8e05fd1e9a79ceb8b996a0996674122eed086f (submodule)
 set -euo pipefail
 
@@ -47,6 +48,8 @@ fi
 git -C maia-sdr checkout -q "$MAIA_REV"
 git -C maia-sdr submodule update -q --init --depth 1 \
     maia-hdl/adi-hdl maia-hdl/dvb_fpga maia-hdl/XilinxUnisimLibrary
+# dvb_fpga has its own submodules (third_party/hdl_string_format, fpga_cores)
+git -C maia-sdr/maia-hdl/dvb_fpga submodule update -q --init --recursive --depth 1
 
 # maia-hdl generates its IP cores with Amaranth 0.5 (MIT), in its own venv;
 # Yosys comes from the amaranth-yosys wheel (upstream uses oss-cad-suite).
