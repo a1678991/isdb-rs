@@ -2,11 +2,13 @@
 //! field of every `Symbol`): on random parameters and inputs, including
 //! full-range `i16` components (the `i64` kernel), chunked arbitrarily,
 //! and on recordings when `ISDB_RS_ISDBS3_IQ` / `ISDB_RS_ISDBS_IQ` name
-//! them.
+//! them; for every instruction set this host runs (`simd::Isa`: the
+//! baseline, AVX2, AVX-512), through both `process` and `process_each`.
 
 use isdb_frontend::fast::FastFrontend;
 use isdb_frontend::fixed::{Frontend, Symbol};
 use isdb_frontend::params::{Design, Params};
+use isdb_frontend::simd::Isa;
 use proptest::prelude::*;
 
 fn reference(p: &Params, x: &[[i16; 2]]) -> Vec<Symbol> {
@@ -16,13 +18,31 @@ fn reference(p: &Params, x: &[[i16; 2]]) -> Vec<Symbol> {
     out
 }
 
-fn fast(p: &Params, x: &[[i16; 2]], chunk: usize) -> Vec<Symbol> {
-    let mut f = FastFrontend::new(p.clone()).unwrap();
+/// The fast front end on instruction set `isa` (which must be available:
+/// the caller loops over [`isas`]).
+fn fast_isa(p: &Params, x: &[[i16; 2]], chunk: usize, isa: Isa) -> Vec<Symbol> {
+    let mut f = FastFrontend::with_isa(p.clone(), isa).unwrap();
+    assert_eq!(f.isa(), isa, "{isa} not available");
     let mut out = Vec::new();
     for c in x.chunks(chunk.max(1)) {
         f.process(c, &mut out);
     }
     out
+}
+
+/// The same through `process_each`.
+fn fast_each(p: &Params, x: &[[i16; 2]], chunk: usize, isa: Isa) -> Vec<Symbol> {
+    let mut f = FastFrontend::with_isa(p.clone(), isa).unwrap();
+    let mut out = Vec::new();
+    for c in x.chunks(chunk.max(1)) {
+        f.process_each(c, |s| out.push(*s));
+    }
+    out
+}
+
+/// The instruction sets this host runs (the baseline at least).
+fn isas() -> Vec<Isa> {
+    Isa::ALL.into_iter().filter(|i| i.available()).collect()
 }
 
 /// A noisy pulse train with a carrier offset, `amp` peak per component.
@@ -93,10 +113,13 @@ proptest! {
         };
         let x = signal(12_000, seed, amp, fs / if s3 { 33.7561e6 } else { 28.86e6 });
         let a = reference(&p, &x);
-        let b = fast(&p, &x, chunk);
-        prop_assert_eq!(a.len(), b.len());
-        for (i, (r, f)) in a.iter().zip(&b).enumerate() {
-            prop_assert_eq!(r, f, "symbol {}", i);
+        for isa in isas() {
+            for (how, b) in [("process", fast_isa(&p, &x, chunk, isa)), ("process_each", fast_each(&p, &x, chunk, isa))] {
+                prop_assert_eq!(a.len(), b.len(), "{} {}", isa, how);
+                for (i, (r, f)) in a.iter().zip(&b).enumerate() {
+                    prop_assert_eq!(r, f, "{} {}: symbol {}", isa, how, i);
+                }
+            }
         }
     }
 }
@@ -139,8 +162,16 @@ fn spec_extreme_components_use_the_wide_kernel_exactly() {
             ],
         })
         .collect();
-    for chunk in [1, 3, 7, 1000, 30_000] {
-        assert_eq!(reference(&p, &x), fast(&p, &x, chunk), "chunk {chunk}");
+    let want = reference(&p, &x);
+    for isa in isas() {
+        for chunk in [1, 3, 7, 1000, 30_000] {
+            assert_eq!(want, fast_isa(&p, &x, chunk, isa), "{isa} chunk {chunk}");
+            assert_eq!(
+                want,
+                fast_each(&p, &x, chunk, isa),
+                "{isa} each, chunk {chunk}"
+            );
+        }
     }
 }
 
@@ -152,8 +183,10 @@ fn spec_chunk_boundaries_and_slides() {
     let p = params(true, 64, -0.16, -130e3, 6, 5e-6, 40e6).unwrap();
     let x = signal(60_000, 7, 2047.0, 40e6 / 33.7561e6);
     let want = reference(&p, &x);
-    for chunk in [1, 63, 64, 65, 4095, 4096, 4097, 8191, 8192, 12_289, 60_000] {
-        assert_eq!(want, fast(&p, &x, chunk), "chunk {chunk}");
+    for isa in isas() {
+        for chunk in [1, 63, 64, 65, 4095, 4096, 4097, 8191, 8192, 12_289, 60_000] {
+            assert_eq!(want, fast_isa(&p, &x, chunk, isa), "{isa} chunk {chunk}");
+        }
     }
 }
 
@@ -181,10 +214,12 @@ fn recording(var: &str, s3: bool) {
     let cfo = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
     let p = params(s3, 32, -0.16, cfo, 6, 5e-6, fs).unwrap();
     let a = reference(&p, &x);
-    let b = fast(&p, &x, 1 << 16);
-    assert_eq!(a.len(), b.len());
-    assert!(a == b, "{path}: fast differs from the reference");
-    eprintln!("{path}: {} symbols identical", a.len());
+    for isa in isas() {
+        let b = fast_isa(&p, &x, 1 << 16, isa);
+        assert_eq!(a.len(), b.len(), "{isa}");
+        assert!(a == b, "{path}: fast ({isa}) differs from the reference");
+        eprintln!("{path}: {} symbols identical ({isa})", a.len());
+    }
 }
 
 fn x_f32(x: &[[i16; 2]]) -> Vec<num_complex::Complex<f32>> {
@@ -202,4 +237,45 @@ fn isdbs3_recording_fast_equals_reference() {
 #[test]
 fn isdbs_recording_fast_equals_reference() {
     recording("ISDB_RS_ISDBS_IQ", false);
+}
+
+/// Every padded width (8 … 64 taps, so the 16-bit kernels' 8-tap tails and
+/// the AVX-512 32/16/8-tap steps all run), on every instruction set, with
+/// the input range that switches between the 16-bit and `i64` kernels.
+#[test]
+fn spec_every_width_on_every_instruction_set() {
+    for taps in (4..=64).step_by(4) {
+        for (s3, fs) in [(true, 40e6), (false, 57.72e6)] {
+            let Some(p) = params(s3, taps, -0.1, 50e3, 6, 2e-4, fs) else {
+                continue;
+            };
+            for amp in [2047.0, 9000.0] {
+                let x = signal(
+                    9_000,
+                    taps as u32,
+                    amp,
+                    fs / if s3 { 33.7561e6 } else { 28.86e6 },
+                );
+                let want = reference(&p, &x);
+                for isa in isas() {
+                    assert_eq!(
+                        want,
+                        fast_isa(&p, &x, 1000, isa),
+                        "{isa} taps {taps} amp {amp}"
+                    );
+                    assert_eq!(want, fast_each(&p, &x, 777, isa), "{isa} each, taps {taps}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn host_runs_the_instruction_sets_it_reports() {
+    eprintln!(
+        "instruction sets on this host: {:?} (best: {})",
+        isas(),
+        Isa::best()
+    );
+    assert!(isas().contains(&Isa::Baseline));
 }

@@ -70,6 +70,7 @@ pub mod format;
 pub mod metrics;
 pub mod params;
 pub mod s3sync;
+pub mod simd;
 pub mod tables;
 pub mod vectors;
 
