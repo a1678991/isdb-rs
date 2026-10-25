@@ -213,6 +213,22 @@ pub fn codeword_llrs(ms: &[Cplx], s: &Slot, pts: &[Cplx], n0: f64) -> Vec<f32> {
     llr
 }
 
+/// A decoded codeword: slot index, LDPC iterations (`None`: not
+/// converged) and the hard bits.
+type Decoded = (usize, Option<usize>, Vec<u8>);
+
+/// One frame's input to [`decode_frames`].
+pub struct FrameInput<'a> {
+    /// The frame's main symbols (unit sync amplitude).
+    pub ms: &'a [Cplx],
+    /// Its slot layout (from its TMCC).
+    pub layout: &'a [Slot],
+    /// Noise variance per complex dimension.
+    pub n0: f64,
+    /// The constellation of each (modulation, rate) of this frame.
+    pub pts_for: &'a (dyn Fn(Modulation, isdbs3_core::CodeRate) -> Vec<Cplx> + Sync),
+}
+
 /// Decode every valid slot of a frame from its main symbols `ms` (unit
 /// sync amplitude), with the constellation `pts_for(modulation, rate)`
 /// and the LDPC decoder `ldpc`.
@@ -225,27 +241,53 @@ pub fn decode_frame(
     ldpc: &Ldpc,
     pts_for: &(dyn Fn(Modulation, isdbs3_core::CodeRate) -> Vec<Cplx> + Sync),
 ) -> Vec<SlotData> {
+    decode_frames(
+        &[FrameInput {
+            ms,
+            layout,
+            n0,
+            pts_for,
+        }],
+        ldpc,
+    )
+    .pop()
+    .expect("one frame in, one out")
+}
+
+/// [`decode_frame`] for several frames at once: every codeword of every
+/// frame is demapped and decoded in one pool of threads (each codeword
+/// independently, so the results are those of [`decode_frame`] frame by
+/// frame), then each frame's dispersal and BCH run in slot order, frames
+/// in parallel.
+pub fn decode_frames(frames: &[FrameInput<'_>], ldpc: &Ldpc) -> Vec<Vec<SlotData>> {
+    // every codeword: (frame, slot)
+    let items: Vec<(usize, &Slot)> = frames
+        .iter()
+        .enumerate()
+        .flat_map(|(f, fr)| fr.layout.iter().filter(|s| !s.dummy).map(move |s| (f, s)))
+        .collect();
+    let llrs = |&(f, s): &(usize, &Slot)| -> Vec<f32> {
+        let fr = &frames[f];
+        codeword_llrs(fr.ms, s, &(fr.pts_for)(s.modulation, s.rate), fr.n0)
+    };
     // decode the codewords (independent) …
-    let valid: Vec<&Slot> = layout.iter().filter(|s| !s.dummy).collect();
-    let mut decoded: Vec<(usize, Option<usize>, Vec<u8>)> = match *ldpc {
+    let mut decoded: Vec<(usize, usize, Option<usize>, Vec<u8>)> = match *ldpc {
         Ldpc::Float { max_iter, scale } => {
-            let workers = workers();
-            let chunk = valid.len().div_ceil(workers).max(1);
+            let chunk = items.len().div_ceil(workers()).max(1);
             std::thread::scope(|sc| {
-                let handles: Vec<_> = valid
+                let handles: Vec<_> = items
                     .chunks(chunk)
                     .map(|grp| {
                         sc.spawn(move || {
                             grp.iter()
-                                .map(|s| {
-                                    let mut llr =
-                                        codeword_llrs(ms, s, &pts_for(s.modulation, s.rate), n0);
+                                .map(|it| {
+                                    let mut llr = llrs(it);
                                     let mut bits = Vec::new();
-                                    let it = isdbs3_core::ldpc::code(s.rate)
+                                    let n = isdbs3_core::ldpc::code(it.1.rate)
                                         .decode(&mut llr, &mut bits, max_iter, scale)
                                         .ok()
                                         .map(|d| d.iterations);
-                                    (s.index, it, bits)
+                                    (it.0, it.1.index, n, bits)
                                 })
                                 .collect::<Vec<_>>()
                         })
@@ -263,19 +305,20 @@ pub fn decode_frame(
             offset,
             simd,
         } => {
-            // one stream of codewords per thread, all of one rate; within
-            // a stream the decoder refills a lane as soon as it stops
-            let mut rates: Vec<isdbs3_core::CodeRate> = valid.iter().map(|s| s.rate).collect();
+            // streams of codewords of one rate, one per thread; within a
+            // stream the decoder refills a lane as soon as it stops
+            let mut rates: Vec<isdbs3_core::CodeRate> = items.iter().map(|it| it.1.rate).collect();
             rates.sort_by_key(|r| r.numerator());
             rates.dedup();
-            let mut batches: Vec<Vec<&Slot>> = Vec::new();
+            let mut batches: Vec<Vec<(usize, &Slot)>> = Vec::new();
             for r in rates {
-                let same: Vec<&Slot> = valid.iter().copied().filter(|s| s.rate == r).collect();
+                let same: Vec<(usize, &Slot)> =
+                    items.iter().copied().filter(|it| it.1.rate == r).collect();
                 let per = same
                     .len()
                     .div_ceil(workers())
                     .max(if simd { LANES } else { 1 });
-                batches.extend(same.chunks(per).map(<[&Slot]>::to_vec));
+                batches.extend(same.chunks(per).map(<[(usize, &Slot)]>::to_vec));
             }
             let p = isdb_fec::ldpc::fixed::Params { max_iter, offset };
             std::thread::scope(|sc| {
@@ -285,16 +328,14 @@ pub fn decode_frame(
                         sc.spawn(move || {
                             let q: Vec<Vec<i8>> = b
                                 .iter()
-                                .map(|s| {
-                                    let llr =
-                                        codeword_llrs(ms, s, &pts_for(s.modulation, s.rate), n0);
+                                .map(|it| {
                                     let mut v = Vec::new();
-                                    isdb_fec::ldpc::fixed::quantise(&llr, input_scale, &mut v);
+                                    isdb_fec::ldpc::fixed::quantise(&llrs(it), input_scale, &mut v);
                                     v
                                 })
                                 .collect();
                             let refs: Vec<&[i8]> = q.iter().map(Vec::as_slice).collect();
-                            let code = isdbs3_core::ldpc::code(b[0].rate);
+                            let code = isdbs3_core::ldpc::code(b[0].1.rate);
                             let res = if simd {
                                 isdb_fec::ldpc::fixed::Decoder::<LANES>::default()
                                     .decode_all(code, &refs, p)
@@ -304,7 +345,9 @@ pub fn decode_frame(
                             };
                             b.iter()
                                 .zip(res)
-                                .map(|(s, (r, bits))| (s.index, r.ok().map(|d| d.iterations), bits))
+                                .map(|(it, (r, bits))| {
+                                    (it.0, it.1.index, r.ok().map(|d| d.iterations), bits)
+                                })
                                 .collect::<Vec<_>>()
                         })
                     })
@@ -316,8 +359,29 @@ pub fn decode_frame(
             })
         }
     };
-    decoded.sort_by_key(|d| d.0);
-    // … then undo the dispersal in slot order (its PRBS runs across slots)
+    decoded.sort_by_key(|d| (d.0, d.1));
+    let mut per_frame: Vec<Vec<Decoded>> = vec![Vec::new(); frames.len()];
+    for (f, slot, it, bits) in decoded {
+        per_frame[f].push((slot, it, bits));
+    }
+    // … then undo the dispersal in slot order (its PRBS runs across
+    // slots) and check the BCH, frames in parallel
+    std::thread::scope(|sc| {
+        let handles: Vec<_> = per_frame
+            .into_iter()
+            .zip(frames)
+            .map(|(dec, fr)| sc.spawn(move || finish_frame(dec, fr.layout)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("BCH thread"))
+            .collect()
+    })
+}
+
+/// Dispersal removal (in slot order) and BCH of one frame's decoded
+/// codewords, sorted by slot.
+fn finish_frame(decoded: Vec<Decoded>, layout: &[Slot]) -> Vec<SlotData> {
     let mut disp = SlotDispersal::new();
     decoded
         .into_iter()
@@ -348,11 +412,9 @@ pub fn decode_frame(
         .collect()
 }
 
-/// Decoder threads per frame.
+/// Decoder threads.
 fn workers() -> usize {
-    std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .min(16)
+    std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
 }
 
 #[cfg(test)]

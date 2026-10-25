@@ -120,15 +120,29 @@ pub fn train(z: &[Cplx], slots: &[SlotHead], f: usize, layout: &[Slot]) -> Optio
     solve(a, b)
 }
 
-/// Apply taps `w` to `z` (output aligned with the input index).
+/// Apply taps `w` to `z` (output aligned with the input index). The
+/// output is computed in chunks on all cores, each value exactly as a
+/// single pass would.
 pub fn apply(z: &[Cplx], w: &[Cplx]) -> Vec<Cplx> {
     let h = w.len() / 2;
-    (0..z.len())
-        .map(|n| {
-            if n < h || n + h >= z.len() {
-                return z[n];
-            }
-            w.iter().enumerate().map(|(k, &c)| c * z[n + h - k]).sum()
-        })
-        .collect()
+    let one = |n: usize| -> Cplx {
+        if n < h || n + h >= z.len() {
+            return z[n];
+        }
+        w.iter().enumerate().map(|(k, &c)| c * z[n + h - k]).sum()
+    };
+    let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    let chunk = z.len().div_ceil(workers).max(1 << 14);
+    let mut out = vec![Cplx::new(0.0, 0.0); z.len()];
+    std::thread::scope(|sc| {
+        for (i, o) in out.chunks_mut(chunk).enumerate() {
+            let one = &one;
+            sc.spawn(move || {
+                for (j, v) in o.iter_mut().enumerate() {
+                    *v = one(i * chunk + j);
+                }
+            });
+        }
+    });
+    out
 }

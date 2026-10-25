@@ -70,7 +70,7 @@ pub fn carrier_candidates(sv: &isdb_iq::survey::Survey) -> Vec<f64> {
 /// slot sync at all), the right one gives the signal's SNR less the
 /// untrimmed timing loss, so the margin is large. With no candidate the
 /// carrier is taken as 0.
-fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64, ParamError> {
+pub fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64, ParamError> {
     let n = ((0.05 * fs) as usize).min(xi.len());
     let score = |cfo: f64| -> Result<f64, ParamError> {
         let mut fe = Frontend::new(Params::design(&design(fs, cfo))?)?;

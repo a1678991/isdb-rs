@@ -101,7 +101,25 @@ fn corr(x: &[C], at: usize, r: &[C; SYNC_LEN]) -> C {
 /// Find the slot sync in `x` (symbols at one per symbol, any scale) and
 /// measure the SNR on the sync symbols. `None` when `x` holds fewer than
 /// three slots.
+///
+/// The offset is the argmax of the mean sync correlation over every slot
+/// for each of the 9 296 offsets (an exhaustive search, the first maximum
+/// winning); the offsets are shared out between threads, each computing
+/// its offsets' statistics exactly as one thread would, so the result
+/// does not depend on the number of threads.
 pub fn measure(x: &[C]) -> Option<SyncReport> {
+    measure_with(x, None)
+}
+
+/// [`measure`] with the slot offset already known (from an earlier
+/// [`measure`] of the same symbol positions, e.g. before an equaliser
+/// whose output is aligned with its input): everything but the search.
+/// `None` when `x` holds fewer than three slots.
+pub fn measure_at(x: &[C], offset: usize) -> Option<SyncReport> {
+    measure_with(x, Some(offset % SLOT))
+}
+
+fn measure_with(x: &[C], known: Option<usize>) -> Option<SyncReport> {
     if x.len() < 3 * SLOT + SYNC_LEN {
         return None;
     }
@@ -110,22 +128,27 @@ pub fn measure(x: &[C]) -> Option<SyncReport> {
     let fs = sync_symbols(FSYNC);
     let ss = sync_symbols(SSYNC);
     let slots = (x.len() - SYNC_LEN) / SLOT;
-    let mag = |off: usize| -> f64 {
-        (0..slots)
-            .map(|k| {
-                let at = off + k * SLOT;
-                corr(&x, at, &fs).norm().max(corr(&x, at, &ss).norm()) / SYNC_LEN as f64
-            })
-            .sum::<f64>()
-            / slots as f64
+    // the per-position statistic max(|corr FSync|, |corr SSync|) / 24:
+    // for a search, computed once for every position it visits; with the
+    // offset known, only at the 33 offsets used below
+    let m = match known {
+        None => position_mags(&x, slots * SLOT, &fs, &ss),
+        Some(_) => Vec::new(),
     };
-    let (mut peak, mut offset) = (0.0, 0);
-    for off in 0..SLOT {
-        let m = mag(off);
-        if m > peak {
-            (peak, offset) = (m, off);
+    let at_pos = |n: usize| -> f64 {
+        if m.is_empty() {
+            corr(&x, n, &fs).norm().max(corr(&x, n, &ss).norm()) / SYNC_LEN as f64
+        } else {
+            m[n]
         }
-    }
+    };
+    let mag = |off: usize| -> f64 {
+        (0..slots).map(|k| at_pos(off + k * SLOT)).sum::<f64>() / slots as f64
+    };
+    let (peak, offset) = match known {
+        Some(o) => (mag(o), o),
+        None => search(&mag),
+    };
     let off_peak = (1..=32)
         .map(|j| mag((offset + j * 277) % SLOT))
         .sum::<f64>()
@@ -199,6 +222,93 @@ pub fn measure(x: &[C]) -> Option<SyncReport> {
         phase_step_rms: sd,
         ssync_phase,
     })
+}
+
+/// `max(|corr(x, n, fs)|, |corr(x, n, ss)|) / 24` for every position
+/// `n < len`, bit for bit as [`corr`] and `Complex::norm` compute it (the
+/// same operations in the same order per position), across positions in
+/// structure-of-arrays form so the correlation loops vectorise, on all
+/// cores.
+fn position_mags(x: &[C], len: usize, fs: &[C; SYNC_LEN], ss: &[C; SYNC_LEN]) -> Vec<f64> {
+    const B: usize = 256;
+    let re: Vec<f64> = x.iter().map(|v| v.re).collect();
+    let im: Vec<f64> = x.iter().map(|v| v.im).collect();
+    let workers = std::thread::available_parallelism()
+        .map_or(4, std::num::NonZero::get)
+        .clamp(1, 32);
+    let chunk = len.div_ceil(workers).div_ceil(B).max(1) * B;
+    let mut out = vec![0.0; len];
+    let (re, im) = (&re, &im);
+    std::thread::scope(|sc| {
+        for (ci, o) in out.chunks_mut(chunk).enumerate() {
+            sc.spawn(move || {
+                for (bi, ob) in o.chunks_mut(B).enumerate() {
+                    let n0 = ci * chunk + bi * B;
+                    let n = ob.len();
+                    // b · conj(a) summed from zero, a = the word's symbol:
+                    // re += b.re·a.re − b.im·(−a.im), im += b.re·(−a.im) + b.im·a.re
+                    let mut fr = [0.0f64; B];
+                    let mut fi = [0.0f64; B];
+                    let mut sr = [0.0f64; B];
+                    let mut si = [0.0f64; B];
+                    for t in 0..SYNC_LEN {
+                        let (far, fai) = (fs[t].re, -fs[t].im);
+                        let (sar, sai) = (ss[t].re, -ss[t].im);
+                        let br = &re[n0 + t..n0 + t + n];
+                        let bi = &im[n0 + t..n0 + t + n];
+                        for j in 0..n {
+                            fr[j] += br[j] * far - bi[j] * fai;
+                            fi[j] += br[j] * fai + bi[j] * far;
+                            sr[j] += br[j] * sar - bi[j] * sai;
+                            si[j] += br[j] * sai + bi[j] * sar;
+                        }
+                    }
+                    for j in 0..n {
+                        ob[j] = fr[j].hypot(fi[j]).max(sr[j].hypot(si[j])) / SYNC_LEN as f64;
+                    }
+                }
+            });
+        }
+    });
+    out
+}
+
+/// The first offset in 0..[`SLOT`] with the largest `mag`, and that
+/// value (strictly greater replaces, as in a sequential scan from 0;
+/// non-positive values never win, offset 0 then).
+fn search(mag: &(dyn Fn(usize) -> f64 + Sync)) -> (f64, usize) {
+    let workers = std::thread::available_parallelism()
+        .map_or(4, std::num::NonZero::get)
+        .clamp(1, 32);
+    let chunk = SLOT.div_ceil(workers);
+    let parts: Vec<(f64, usize)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..SLOT)
+            .step_by(chunk)
+            .map(|lo| {
+                sc.spawn(move || {
+                    let (mut peak, mut offset) = (0.0, 0);
+                    for off in lo..(lo + chunk).min(SLOT) {
+                        let m = mag(off);
+                        if m > peak {
+                            (peak, offset) = (m, off);
+                        }
+                    }
+                    (peak, offset)
+                })
+            })
+            .collect();
+        hs.into_iter()
+            .map(|h| h.join().expect("sync search thread"))
+            .collect()
+    });
+    // chunks in order: a later chunk wins only with a strictly larger peak
+    let (mut peak, mut offset) = (0.0, 0);
+    for (m, o) in parts {
+        if m > peak {
+            (peak, offset) = (m, o);
+        }
+    }
+    (peak, offset)
 }
 
 /// The output trim (symbol periods) that maximises the sync-symbol Es/N0
@@ -332,6 +442,26 @@ mod tests {
             }
         }
         x
+    }
+
+    #[test]
+    fn position_mags_equal_corr_bit_for_bit() {
+        let x = stream(5, 9.0, 3e-5);
+        let (fs, ss) = (sync_symbols(FSYNC), sync_symbols(SSYNC));
+        let len = x.len() - SYNC_LEN;
+        let m = position_mags(&x, len, &fs, &ss);
+        for (n, v) in m.iter().enumerate() {
+            let r = corr(&x, n, &fs).norm().max(corr(&x, n, &ss).norm()) / SYNC_LEN as f64;
+            assert_eq!(v.to_bits(), r.to_bits(), "position {n}");
+        }
+    }
+
+    #[test]
+    fn measure_at_the_found_offset_equals_measure() {
+        let x = stream(30, 12.0, 2e-6);
+        let a = measure(&x[777..]).unwrap();
+        let b = measure_at(&x[777..], a.offset).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]

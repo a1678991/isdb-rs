@@ -41,6 +41,8 @@ pub struct Synced {
     pub frames: Vec<usize>,
     /// Es/N0 on the sync symbols, dB (the `s3sync` figure).
     pub sync_snr_db: f64,
+    /// Offset of the first slot head (0 … 9 295).
+    pub offset: usize,
 }
 
 fn corr(x: &[Cplx], at: usize, r: &[Cplx; SYNC_LEN]) -> Cplx {
@@ -52,7 +54,17 @@ fn corr(x: &[Cplx], at: usize, r: &[Cplx; SYNC_LEN]) -> Cplx {
 
 /// Find slots and frames in `z` (one value per symbol, any scale).
 pub fn synchronise(z: &[Cplx]) -> Option<Synced> {
-    let rep = s3sync::measure(z)?;
+    synced(z, s3sync::measure(z)?)
+}
+
+/// [`synchronise`] with the slot offset known (`Synced::offset` of an
+/// earlier call on symbols at the same positions, e.g. before an
+/// equaliser whose output is aligned with its input): no search.
+pub fn synchronise_at(z: &[Cplx], offset: usize) -> Option<Synced> {
+    synced(z, s3sync::measure_at(z, offset)?)
+}
+
+fn synced(z: &[Cplx], rep: s3sync::SyncReport) -> Option<Synced> {
     let fs = sync_symbols(FSYNC);
     let ss = sync_symbols(SSYNC);
     let n = rep.slots;
@@ -112,6 +124,7 @@ pub fn synchronise(z: &[Cplx]) -> Option<Synced> {
         slots,
         frames,
         sync_snr_db: rep.snr_db,
+        offset: rep.offset,
     })
 }
 

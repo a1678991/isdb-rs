@@ -4,9 +4,9 @@
 
 use crate::Cplx;
 use crate::main_signal::{
-    Ldpc, decode_frame, learned_points, main_symbols, nominal_points, pilots,
+    FrameInput, Ldpc, decode_frames, learned_points, main_symbols, nominal_points, pilots,
 };
-use crate::sync::synchronise;
+use crate::sync::{synchronise, synchronise_at};
 use crate::tmcc;
 use isdbs3_core::slots::{Slot, layout};
 use isdbs3_core::tmcc::TmccInfo;
@@ -120,52 +120,85 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
     }
     let z: &[Cplx] = zeq.as_deref().unwrap_or(z);
     let sy = if zeq.is_some() {
-        let Some(s) = synchronise(z) else { return rx };
+        // the equaliser's output is aligned with its input (centred taps):
+        // the slot heads are where they were, only their phases and the
+        // SNR change
+        let Some(s) = synchronise_at(z, sy0.offset) else {
+            return rx;
+        };
         rx.sync_snr_eq_db = Some(s.sync_snr_db);
         s
     } else {
         sy0
     };
     let es_n0 = 10f64.powf(sy.sync_snr_db / 10.0);
-    for (fi, &f) in sy.frames.iter().enumerate() {
-        let Some(l) = tmcc::llrs(z, &sy.slots, f, 1.0 / (2.0 * es_n0)) else {
-            break;
-        };
-        let t = match tmcc::decode(&l, opt.max_iter) {
-            Ok(d) => d,
-            Err(e) => {
-                rx.frames.push(RxFrame {
-                    slot_index: f,
-                    tmcc: Err(e),
-                    tmcc_iterations: None,
-                    mer_db: None,
-                });
-                continue;
-            }
-        };
-        let Some(lay) = layout(&t.info) else {
-            rx.frames.push(RxFrame {
+    // Each frame's TMCC, main symbols and pilots, frames in parallel; then
+    // the frames in order up to the first incomplete one, as a sequential
+    // pass would stop there.
+    let preps: Vec<Prep> = parallel_map(&sy.frames, |&f| prepare(z, &sy.slots, f, es_n0, opt));
+    let mut ready: Vec<Ready> = Vec::new();
+    let mut order: Vec<Result<usize, RxFrame>> = Vec::new(); // index into `ready`, or a frame without slots
+    for (fi, (prep, &f)) in preps.into_iter().zip(&sy.frames).enumerate() {
+        match prep {
+            Prep::Stop => break,
+            Prep::TmccError(e) => order.push(Err(RxFrame {
+                slot_index: f,
+                tmcc: Err(e),
+                tmcc_iterations: None,
+                mer_db: None,
+            })),
+            Prep::NoLayout(t) => order.push(Err(RxFrame {
                 slot_index: f,
                 tmcc: Ok(t.info),
                 tmcc_iterations: Some(t.ldpc_iterations),
                 mer_db: None,
-            });
+            })),
+            Prep::Ready { t, lay, ms, pil } => {
+                order.push(Ok(ready.len()));
+                ready.push((fi, f, t, lay, ms, pil));
+            }
+        }
+    }
+    let pts: Vec<_> = ready
+        .iter()
+        .map(|(_, _, _, lay, _, pil)| {
+            move |m, r| {
+                if opt.learned_constellation
+                    && let Some(p) = learned_points(pil, lay, m)
+                {
+                    return p;
+                }
+                nominal_points(m, r)
+            }
+        })
+        .collect();
+    let n0s: Vec<f64> = ready
+        .iter()
+        .zip(&pts)
+        .map(|((_, _, _, lay, ms, _), p)| noise_of(ms, lay, p))
+        .collect();
+    let inputs: Vec<FrameInput<'_>> = ready
+        .iter()
+        .zip(&pts)
+        .zip(&n0s)
+        .map(|(((_, _, _, lay, ms, _), p), &n0)| FrameInput {
+            ms,
+            layout: lay,
+            n0,
+            pts_for: p,
+        })
+        .collect();
+    let mut decoded = decode_frames(&inputs, &opt.ldpc).into_iter();
+    let mut n0s = n0s.into_iter();
+    let mut ready = ready.into_iter();
+    for o in order {
+        let Ok(_) = o else {
+            rx.frames.push(o.expect_err("frame without slots"));
             continue;
         };
-        let (Some(ms), Some(pil)) = (main_symbols(z, &sy.slots, f), pilots(z, &sy.slots, f)) else {
-            break;
-        };
-        let pts_for = |m, r| {
-            if opt.learned_constellation
-                && let Some(p) = learned_points(&pil, &lay, m)
-            {
-                return p;
-            }
-            nominal_points(m, r)
-        };
-        let n0 = noise_of(&ms, &lay, &pts_for);
-        let decoded = decode_frame(&ms, &lay, n0, &opt.ldpc, &pts_for);
-        for d in decoded {
+        let (fi, f, t, lay, _, _) = ready.next().expect("one per ready frame");
+        let n0 = n0s.next().expect("one per ready frame");
+        for d in decoded.next().expect("one per ready frame") {
             let s: &Slot = &lay[d.slot];
             let rel = t.info.slot_stream[d.slot];
             let head = u16::from_be_bytes([bits_byte(&d.header, 0), bits_byte(&d.header, 1)]);
@@ -190,6 +223,66 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
         });
     }
     rx
+}
+
+/// A frame ready to decode: its index among the block's frames, its slot
+/// #1 index, TMCC, layout, main symbols and pilots.
+type Ready = (usize, usize, tmcc::Decoded, Vec<Slot>, Vec<Cplx>, Vec<Cplx>);
+
+/// One frame before its main signal is decoded.
+enum Prep {
+    /// The frame is incomplete: this and every later frame are dropped.
+    Stop,
+    /// Its TMCC failed.
+    TmccError(tmcc::Error),
+    /// Its TMCC decoded but gives no slot layout.
+    NoLayout(tmcc::Decoded),
+    /// Ready to decode.
+    Ready {
+        t: tmcc::Decoded,
+        lay: Vec<Slot>,
+        ms: Vec<Cplx>,
+        pil: Vec<Cplx>,
+    },
+}
+
+fn prepare(
+    z: &[Cplx],
+    slots: &[crate::sync::SlotHead],
+    f: usize,
+    es_n0: f64,
+    opt: &RxOptions,
+) -> Prep {
+    let Some(l) = tmcc::llrs(z, slots, f, 1.0 / (2.0 * es_n0)) else {
+        return Prep::Stop;
+    };
+    let t = match tmcc::decode(&l, opt.max_iter) {
+        Ok(d) => d,
+        Err(e) => return Prep::TmccError(e),
+    };
+    let Some(lay) = layout(&t.info) else {
+        return Prep::NoLayout(t);
+    };
+    match (main_symbols(z, slots, f), pilots(z, slots, f)) {
+        (Some(ms), Some(pil)) => Prep::Ready { t, lay, ms, pil },
+        _ => Prep::Stop,
+    }
+}
+
+/// `f` over `items` on all cores, results in order.
+fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    let chunk = items.len().div_ceil(workers).max(1);
+    let f = &f;
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = items
+            .chunks(chunk)
+            .map(|c| sc.spawn(move || c.iter().map(f).collect::<Vec<R>>()))
+            .collect();
+        hs.into_iter()
+            .flat_map(|h| h.join().expect("frame thread"))
+            .collect()
+    })
 }
 
 fn bits_byte(bits: &[u8], i: usize) -> u8 {
