@@ -244,11 +244,13 @@ impl Frontend {
 }
 
 /// `round(v / 2^s)`: add half, arithmetic shift (s ≥ 1); `v` for s = 0.
+#[inline]
 pub fn round_shift(v: i64, s: u32) -> i64 {
     if s == 0 { v } else { (v + (1 << (s - 1))) >> s }
 }
 
 /// Saturate to `i16`.
+#[inline]
 pub fn sat16(v: i64) -> i16 {
     v.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
 }

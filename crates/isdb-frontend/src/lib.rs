@@ -11,6 +11,10 @@
 //!   version 1 (mixer, polyphase root-raised-cosine matched filter with
 //!   its derivative, non-data-aided timing recovery, AGC, output
 //!   quantiser), whose arithmetic the module documents step by step;
+//! * [`fast::FastFrontend`]: the same model, faster (a linear delay
+//!   line, fused vectorisable filter banks, `i32` sums where they
+//!   provably fit), equal to [`fixed::Frontend`] symbol for symbol: what
+//!   the receivers run;
 //! * [`float::FloatFrontend`]: the same structure in floating point, to
 //!   measure what the fixed-point arithmetic costs;
 //! * [`format`](mod@format): the `Symbols` boundary, version 1 (16-bit words in blocks
@@ -59,6 +63,7 @@
 //! ```
 
 pub mod control;
+pub mod fast;
 pub mod fixed;
 pub mod float;
 pub mod format;

@@ -1,0 +1,180 @@
+//! `fast::FastFrontend` equals `fixed::Frontend` symbol for symbol (every
+//! field of every `Symbol`): on random parameters and inputs, including
+//! full-range `i16` components (the `i64` kernel), chunked arbitrarily,
+//! and on recordings when `ISDB_RS_ISDBS3_IQ` / `ISDB_RS_ISDBS_IQ` name
+//! them.
+
+use isdb_frontend::fast::FastFrontend;
+use isdb_frontend::fixed::{Frontend, Symbol};
+use isdb_frontend::params::{Design, Params};
+use proptest::prelude::*;
+
+fn reference(p: &Params, x: &[[i16; 2]]) -> Vec<Symbol> {
+    let mut f = Frontend::new(p.clone()).unwrap();
+    let mut out = Vec::new();
+    f.process(x, &mut out);
+    out
+}
+
+fn fast(p: &Params, x: &[[i16; 2]], chunk: usize) -> Vec<Symbol> {
+    let mut f = FastFrontend::new(p.clone()).unwrap();
+    let mut out = Vec::new();
+    for c in x.chunks(chunk.max(1)) {
+        f.process(c, &mut out);
+    }
+    out
+}
+
+/// A noisy pulse train with a carrier offset, `amp` peak per component.
+fn signal(n: usize, seed: u32, amp: f64, sps: f64) -> Vec<[i16; 2]> {
+    let mut s = seed | 1;
+    let mut rnd = || {
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f64::from(s >> 8) / f64::from(1u32 << 24) - 0.5
+    };
+    let mut sym = (1.0, 1.0);
+    (0..n)
+        .map(|i| {
+            if (i as f64 / sps).fract() < 1.0 / sps {
+                sym = (rnd().signum(), rnd().signum());
+            }
+            let ph = i as f64 * 0.013;
+            let (c, si) = (ph.cos(), ph.sin());
+            let (a, b) = (sym.0 * 0.6 + rnd() * 0.3, sym.1 * 0.6 + rnd() * 0.3);
+            [
+                ((a * c - b * si) * amp).round().clamp(-32768.0, 32767.0) as i16,
+                ((a * si + b * c) * amp).round().clamp(-32768.0, 32767.0) as i16,
+            ]
+        })
+        .collect()
+}
+
+fn params(
+    s3: bool,
+    taps: usize,
+    trim: f64,
+    cfo: f64,
+    bits: u8,
+    loop_bw: f64,
+    fs: f64,
+) -> Option<Params> {
+    let (rs, alpha) = if s3 {
+        (33.7561e6, 0.03)
+    } else {
+        (28.86e6, 0.35)
+    };
+    let mut d = Design::new(fs, rs, alpha);
+    d.taps = taps;
+    d.trim = trim;
+    d.carrier_offset = cfo;
+    d.bits = bits;
+    d.loop_bandwidth = loop_bw;
+    Params::design(&d).ok()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    #[test]
+    fn prop_fast_equals_reference(
+        s3 in any::<bool>(),
+        taps in (2usize..=32).prop_map(|t| 2 * t),
+        trim in -0.25f64..0.1,
+        cfo in -400e3f64..400e3,
+        bits in 2u8..=8,
+        loop_bw in 1e-5f64..2e-3,
+        fs in prop::sample::select(vec![36e6, 40e6, 57.72e6, 61.44e6]),
+        amp in prop::sample::select(vec![300.0, 1500.0, 2047.0, 4095.0, 9000.0, 32767.0]),
+        chunk in 1usize..5000,
+        seed in any::<u32>(),
+    ) {
+        let Some(p) = params(s3, taps, trim, cfo, bits, loop_bw, fs) else {
+            return Ok(());
+        };
+        let x = signal(12_000, seed, amp, fs / if s3 { 33.7561e6 } else { 28.86e6 });
+        let a = reference(&p, &x);
+        let b = fast(&p, &x, chunk);
+        prop_assert_eq!(a.len(), b.len());
+        for (i, (r, f)) in a.iter().zip(&b).enumerate() {
+            prop_assert_eq!(r, f, "symbol {}", i);
+        }
+    }
+}
+
+#[test]
+fn push_one_by_one_equals_process() {
+    let p = params(true, 32, -0.17, -130e3, 6, 5e-6, 40e6).unwrap();
+    let x = signal(20_000, 7, 2047.0, 40e6 / 33.7561e6);
+    let mut f = FastFrontend::new(p.clone()).unwrap();
+    let b: Vec<Symbol> = x.iter().filter_map(|&s| f.push(s)).collect();
+    assert_eq!(reference(&p, &x), b);
+}
+
+#[test]
+fn spec_extreme_components_use_the_wide_kernel_exactly() {
+    // i16::MIN and i16::MAX: beyond the i32 bound, where only the i64
+    // kernel is exact; alternating with small chunks switches kernels.
+    let p = params(false, 64, 0.0, 1e6, 8, 2e-3, 40e6).unwrap();
+    let x: Vec<[i16; 2]> = (0..30_000)
+        .map(|i| match i % 7 {
+            0 => [i16::MIN, i16::MAX],
+            1 => [i16::MAX, i16::MIN],
+            2 => [4095, -4095],
+            3 => [-4096, 4096],
+            _ => [
+                ((i * 37) % 4000) as i16 - 2000,
+                ((i * 91) % 4000) as i16 - 2000,
+            ],
+        })
+        .collect();
+    for chunk in [1, 3, 7, 1000, 30_000] {
+        assert_eq!(reference(&p, &x), fast(&p, &x, chunk), "chunk {chunk}");
+    }
+}
+
+/// Opt-in: a recording through both, ISDB-S3 or ISDB-S at its rate.
+fn recording(var: &str, s3: bool) {
+    let Ok(path) = std::env::var(var) else {
+        eprintln!("SKIP: {var} not set");
+        return;
+    };
+    let mut rec = isdb_iq::Recording::open(std::path::Path::new(&path), None, None).unwrap();
+    let fs = rec.sample_rate;
+    let n = 4_000_000usize.min((rec.segments()[0].end - rec.segments()[0].start) as usize);
+    let x: Vec<[i16; 2]> = rec
+        .read(rec.segments()[0].start, n)
+        .unwrap()
+        .iter()
+        .map(|v| {
+            [
+                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
+                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
+            ]
+        })
+        .collect();
+    let sv = isdb_iq::survey::survey(&x_f32(&x), fs, &isdb_iq::survey::Options::default());
+    let cfo = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
+    let p = params(s3, 32, -0.16, cfo, 6, 5e-6, fs).unwrap();
+    let a = reference(&p, &x);
+    let b = fast(&p, &x, 1 << 16);
+    assert_eq!(a.len(), b.len());
+    assert!(a == b, "{path}: fast differs from the reference");
+    eprintln!("{path}: {} symbols identical", a.len());
+}
+
+fn x_f32(x: &[[i16; 2]]) -> Vec<num_complex::Complex<f32>> {
+    x.iter()
+        .take(1 << 22)
+        .map(|s| num_complex::Complex::new(f32::from(s[0]) / 2048.0, f32::from(s[1]) / 2048.0))
+        .collect()
+}
+
+#[test]
+fn isdbs3_recording_fast_equals_reference() {
+    recording("ISDB_RS_ISDBS3_IQ", true);
+}
+
+#[test]
+fn isdbs_recording_fast_equals_reference() {
+    recording("ISDB_RS_ISDBS_IQ", false);
+}

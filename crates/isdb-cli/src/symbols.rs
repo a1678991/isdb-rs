@@ -11,10 +11,11 @@ use crate::bands::{Freq, parse_count, parse_hz};
 use crate::phyargs::parse_gain;
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
+use isdb_frontend::fast::FastFrontend as Frontend;
 use isdb_frontend::format::{Event, Packer, Reader};
 use isdb_frontend::metrics::{psk_mer, ring_stats};
 use isdb_frontend::params::{Design, ONE, Params};
-use isdb_frontend::{Frontend, vectors};
+use isdb_frontend::vectors;
 use isdb_iq::survey::{KNOWN_SYSTEMS, KnownSystem, Options, survey};
 use isdb_iq::{C32, Recording};
 use isdb_radio::{CaptureFormat, DeviceSpec, Offload, RadioConfig};
@@ -227,20 +228,21 @@ fn cpu_front_end(p: &Params, x: &[C32], out: &mut dyn Write) -> Result<Report> {
     let mut z = Vec::new();
     let (mut symbols, mut psum, mut pn) = (0u64, 0.0, 0u64);
     let settle = 40_000u64;
+    let mut syms = Vec::new();
     for chunk in x.chunks(1 << 16) {
         words.clear();
-        for s in to_input(chunk) {
-            if let Some(sym) = fe.push(s) {
-                pk.push(sym.q, sym.gain, sym.period, &mut words);
-                if symbols >= settle {
-                    psum += f64::from(sym.period) / ONE as f64;
-                    pn += 1;
-                    if z.len() < 1 << 21 {
-                        z.push([f64::from(sym.zk[0]), f64::from(sym.zk[1])]);
-                    }
+        syms.clear();
+        fe.process(&to_input(chunk), &mut syms);
+        for sym in &syms {
+            pk.push(sym.q, sym.gain, sym.period, &mut words);
+            if symbols >= settle {
+                psum += f64::from(sym.period) / ONE as f64;
+                pn += 1;
+                if z.len() < 1 << 21 {
+                    z.push([f64::from(sym.zk[0]), f64::from(sym.zk[1])]);
                 }
-                symbols += 1;
             }
+            symbols += 1;
         }
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         out.write_all(&bytes).context("write the words")?;

@@ -222,7 +222,7 @@ pub fn best_trim(
     let score = |t: f64| -> Result<f64, crate::params::ParamError> {
         let mut dd = d.clone();
         dd.trim = t;
-        let mut fe = crate::fixed::Frontend::new(crate::params::Params::design(&dd)?)?;
+        let mut fe = crate::fast::FastFrontend::new(crate::params::Params::design(&dd)?)?;
         let mut out = Vec::new();
         fe.process(x, &mut out);
         // the loop settles within the first slots: skip three

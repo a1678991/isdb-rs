@@ -5,7 +5,7 @@
 
 use crate::Cplx;
 use crate::rx::{RxOptions, receive};
-use isdb_frontend::fixed::Frontend;
+use isdb_frontend::fast::FastFrontend as Frontend;
 use isdb_frontend::params::{Design, ParamError, Params};
 use isdb_iq::survey::{KNOWN_SYSTEMS, Options, survey};
 

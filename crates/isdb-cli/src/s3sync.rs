@@ -8,7 +8,7 @@ use crate::bands::parse_count;
 use crate::symbols::TrimArg;
 use anyhow::{Context, Result, bail};
 use clap::Args;
-use isdb_frontend::fixed::Frontend;
+use isdb_frontend::fast::FastFrontend as Frontend;
 use isdb_frontend::format::{Event, Reader};
 use isdb_frontend::params::{Design, Params};
 use isdb_frontend::s3sync::{self, SLOT, SyncReport};
