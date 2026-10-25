@@ -1,0 +1,28 @@
+[package]
+name = "isdbs3-phy"
+description = "ISDB-S3 receive chain after the symbol front end (ARIB STD-B44): frame and slot synchronisation, pilot-aided carrier and equalisation, TMCC decoding (BCH + LDPC), main-signal demapping, LDPC/BCH decoding and the slots' packet streams"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdbs3-phy"
+readme = "README.md"
+keywords = ["isdb-s3", "satellite", "ldpc", "arib", "broadcast"]
+categories = ["science", "multimedia::encoding"]
+include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+isdb-fec.workspace = true
+isdb-frontend.workspace = true
+isdbs3-core.workspace = true
+isdb-iq.workspace = true
+num-complex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

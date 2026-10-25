@@ -428,6 +428,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "isdbs3-core"
+version = "0.1.0"
+dependencies = [
+ "isdb-fec",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "isdbs3-phy"
+version = "0.1.0"
+dependencies = [
+ "isdb-fec",
+ "isdb-frontend",
+ "isdb-iq",
+ "isdbs3-core",
+ "num-complex",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "isdbt-core"
 version = "0.1.0"
 dependencies = [

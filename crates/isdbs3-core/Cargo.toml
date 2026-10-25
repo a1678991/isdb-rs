@@ -1,0 +1,24 @@
+[package]
+name = "isdbs3-core"
+description = "ISDB-S3 transmission parameters (ARIB STD-B44, ITU-R BO.2098 System F): frame and slot geometry, modulation and code rates, LDPC address tables, APSK constellations, bit interleaving, energy dispersal, the TMCC information codec and slot allocation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdbs3-core"
+readme = "README.md"
+keywords = ["isdb-s3", "satellite", "tmcc", "arib", "broadcast"]
+categories = ["science", "multimedia::encoding"]
+include = ["/src/**", "/README.md", "/SPEC-NOTES.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+isdb-fec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
