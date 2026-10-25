@@ -305,8 +305,12 @@ fn sidecar(out: &Path, meta: &Value, overwrite: bool) -> Result<()> {
     Ok(())
 }
 
+/// The sidecar metadata; `version` is the `Symbols` format the words
+/// were written in (the CPU front end's, or the device's).
+#[allow(clippy::too_many_arguments)]
 fn meta(
     source: &str,
+    version: u16,
     sys: &KnownSystem,
     fs: f64,
     cfo: f64,
@@ -316,7 +320,7 @@ fn meta(
 ) -> Value {
     json!({
         "format": "isdb-rs Symbols",
-        "format_version": isdb_frontend::params::FORMAT_VERSION,
+        "format_version": version,
         "source": source,
         "system": sys.name,
         "symbol_rate_hz": sys.symbol_rate_hz,
@@ -380,6 +384,7 @@ pub fn run_iq(a: &IqSymbolsArgs) -> Result<()> {
         out,
         &meta(
             "cpu",
+            isdb_frontend::params::FORMAT_VERSION,
             sys,
             fs,
             cfo,
@@ -527,7 +532,16 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
         f.flush()?;
         sidecar(
             out,
-            &meta("fpga", sys, c.sample_rate_hz, cfo, Some(c.lo_hz), &p, trim),
+            &meta(
+                "fpga",
+                fpga.map_or(isdb_frontend::params::FORMAT_VERSION, |(v, _)| v),
+                sys,
+                c.sample_rate_hz,
+                cfo,
+                Some(c.lo_hz),
+                &p,
+                trim,
+            ),
             a.overwrite,
         )?;
         println!(
@@ -558,6 +572,7 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
         out,
         &meta(
             "cpu",
+            isdb_frontend::params::FORMAT_VERSION,
             sys,
             cap.sample_rate_hz,
             cfo,
