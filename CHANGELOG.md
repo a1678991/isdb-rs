@@ -465,6 +465,15 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Fixed
 
+- `isdb-frontend`: the `Symbols` reader could deliver a damaged block.
+  A loss glued block 1's intact header to later payload, and a payload
+  word that landed in the trailer position equalled the CRC-16 of that
+  spliced payload (property-test seed `bits = 5, cut_at = 208, cut_len =
+  282`). A block is now accepted only when it is also framed: the next
+  block's header starts right after its trailer, or the stream ends
+  there. Cost: the intact block just before a loss is counted as lost
+  too, and delivery lags by at most one block. No format change; the
+  FPGA vectors are unchanged.
 - `isdbs3-phy`: the carrier choice took a candidate 48 kHz off on a live
   BS11 block (its sync Es/N0 0.6 dB higher, no TMCC decoded): candidates
   whose carrier phase turns more than 0.5 rad between SSync slots now

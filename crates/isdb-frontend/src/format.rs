@@ -32,6 +32,20 @@
 //! (a false match needs a 16-bit coincidence). Sequence numbers
 //! count the missing blocks; a damaged or missing block is dropped and
 //! counted, and the blocks around it stay in order with the gap reported.
+//!
+//! **Framing check.** The CRC alone lets a splice through on that 16-bit
+//! coincidence: a loss can glue a block's intact header to later payload
+//! words and make an arbitrary payload word land in the trailer position
+//! (seen with a property-test seed, `examples/formatcut.rs`). The reader
+//! therefore also requires the block to be *framed*: the next block's
+//! header (sync and header check) must start at the word right after the
+//! trailer, or the stream must end exactly there ([`Reader::finish`]). A
+//! spliced block ends at an arbitrary point, so nothing frames it. The
+//! cost is one block: the intact block just before a loss is not framed
+//! either, so it is dropped and counted as lost with the damaged one
+//! (never delivered wrong). A [`Reader`] holds a checked block back until
+//! the next header arrives, so delivery lags the input by at most one
+//! block.
 
 use crate::params::{FORMAT_VERSION, MIN_READ_VERSION, Params};
 
@@ -286,8 +300,16 @@ impl Reader {
                     if avail[len - 1]
                         == crc16(h.seq as u16, &avail[HEADER_WORDS..len - TRAILER_WORDS]) =>
                 {
-                    self.deliver(h, len, out);
-                    continue;
+                    // framed: the next header starts right after the trailer
+                    let next = &avail[len..];
+                    if next.len() < HEADER_WORDS {
+                        // not decidable yet (or the stream ends here: `finish`)
+                        break;
+                    }
+                    if Header::parse(next).is_some() {
+                        self.deliver(h, len, out);
+                        continue;
+                    }
                 }
                 _ => {}
             }
@@ -325,8 +347,19 @@ impl Reader {
         self.pos += len;
     }
 
-    /// End of the stream: what is left is not a whole block.
+    /// End of the stream: a checked block that ends exactly at the end is
+    /// framed by it and delivered; what is left otherwise is not a whole,
+    /// framed block.
     pub fn finish(&mut self, out: &mut Vec<Event>) {
+        let avail = &self.buf[self.pos..];
+        if let Some(h) = Header::parse(avail) {
+            let len = h.block_words();
+            if avail.len() == len
+                && avail[len - 1] == crc16(h.seq as u16, &avail[HEADER_WORDS..len - TRAILER_WORDS])
+            {
+                self.deliver(h, len, out);
+            }
+        }
         let left = (self.buf.len() - self.pos) as u64 + self.skipped;
         if left > 0 {
             out.push(Event::Truncated { words: left });
@@ -455,6 +488,51 @@ mod tests {
         w
     }
 
+    /// The splice found by the property test (seed `bits = 5, cut_at =
+    /// 208, cut_len = 282`): before the framing check, block 1's intact
+    /// header, 29 of its payload words and words from inside block 3 were
+    /// delivered as block 1, a block-3 payload word in the trailer
+    /// position equalling the CRC of that spliced payload.
+    #[test]
+    fn spliced_block_with_a_matching_crc_is_not_delivered() {
+        let l = 256usize;
+        let syms: Vec<[i8; 2]> = (0..l * 8)
+            .map(|i| [(i % 3) as i8 - 1, (i % 2) as i8])
+            .collect();
+        let words = pack(5, 8, &syms);
+        let mut damaged = words[..208].to_vec();
+        damaged.extend_from_slice(&words[490..]);
+        // the splice really does pass the header check and the CRC
+        let h = Header::parse(&damaged[170..]).expect("block 1's header is intact");
+        let len = h.block_words();
+        let spliced = &damaged[170..170 + len];
+        assert_eq!(
+            spliced[len - 1],
+            crc16(h.seq as u16, &spliced[HEADER_WORDS..len - TRAILER_WORDS])
+        );
+        let mut r = Reader::new();
+        let mut ev = Vec::new();
+        r.feed(&damaged, &mut ev);
+        r.finish(&mut ev);
+        let mut seqs = Vec::new();
+        for e in &ev {
+            if let Event::Block { header, symbols } = e {
+                let s = header.seq as usize;
+                assert_eq!(
+                    &symbols[..],
+                    &syms[s * l..(s + 1) * l],
+                    "block {s} delivered wrong"
+                );
+                seqs.push(s);
+            }
+        }
+        assert_eq!(seqs, [0, 3, 4, 5, 6, 7]);
+        assert!(ev.contains(&Event::Loss {
+            blocks: 2,
+            words: 58
+        }));
+    }
+
     proptest! {
         #[test]
         fn prop_pack_unpack_round_trip(bits in 2u8..=8, blocks in 1usize..4, seed in any::<u64>()) {
@@ -510,10 +588,16 @@ mod tests {
                     Event::Truncated { .. } => {}
                 }
             }
-            // Every block the cut did not touch is delivered.
+            // Every block the cut did not touch is delivered, except the one
+            // that ends right before the first damaged block: the cut also
+            // removes (or moves) the header that frames it (module doc,
+            // "Framing check"), so it is counted as lost, never delivered
+            // wrong.
+            let first_damaged = cut_at / block_words;
             for b in 0..8usize {
                 let (start, end) = (b * block_words, (b + 1) * block_words);
-                if cut_end <= start || cut_at >= end {
+                let framing_cost = b + 1 == first_damaged && cut_end > first_damaged * block_words;
+                if (cut_end <= start || cut_at >= end) && !framing_cost {
                     prop_assert!(seqs.contains(&b), "block {} missing: {:?}", b, seqs);
                 }
             }

@@ -154,10 +154,19 @@ reader accepts both):
 - **Trailer**: a CRC-16 (0x1021) of the payload, seeded with the
   sequence number.
 
-The `Reader` accepts a block only when its trailer matches, so every
-loss is found, of any size and wherever it falls. Sequence numbers count
-the missing blocks, and the blocks around a loss stay in order. The
-`format` module has the details.
+The `Reader` accepts a block only when its trailer matches and the
+block is framed: the next block's header starts right after its trailer
+(or the stream ends exactly there). The CRC alone let a splice through
+on a 16-bit coincidence: a property-test seed glued an intact header to
+later payload with a matching word in the trailer position
+(`examples/formatcut.rs`); the framing check rejects it, because a
+spliced block ends at an arbitrary point. So every loss is found, of
+any size and wherever it falls, and no damaged block is delivered. The
+price is one block per loss: the intact block just before a loss is not
+framed either, so it is counted as lost with the damaged one. Delivery
+lags the input by at most one block. Sequence numbers count the missing
+blocks, and the blocks around a loss stay in order. The `format` module
+has the details.
 
 ## Position in the stack
 
