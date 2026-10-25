@@ -16,6 +16,15 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-fec`: `ldpc::fixed`, a fixed-point layered offset min-sum
+  decoder for the quasi-cyclic IRA codes, decoding 16 codewords at once
+  in SIMD lanes (refilled as each stops) with the same bits and
+  iterations as its one-lane scalar form; `simd`, its kernels, written
+  for auto-vectorisation on stable compilers, or on `std::simd` when the
+  build script finds a matching nightly. ISDB-S3 LDPC: 166 → 4 678
+  codewords/s per thread, 11.4× real time on 32 threads.
+- `isdb rx --system isdbs3 --ldpc fixed|scalar|float`: the main signal's
+  LDPC decoder (fixed by default).
 - `isdb-fec`: `bch` (binary BCH over GF(2¹⁶), t = 12, any shortening:
   ARIB STD-B44 Table 3.4-1), `ldpc` (quasi-cyclic IRA LDPC from a
   374-bit-group address table: encoder and layered normalised min-sum
@@ -424,6 +433,10 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Fixed
 
+- `isdbs3-phy`: the ISDB-S3 carrier was the survey's strongest line, and
+  an unrelated line in one of the ±R/2 windows could be stronger than the
+  π/2-BPSK line: a live block then decoded no TMCC at all. The carrier is
+  now the candidate the front end locks on best.
 - `isdb-analyze`: scrambled packets (transport_scrambling_control ≠ 00)
   were parsed as sections, PES and ADTS, giving hundreds of false CRC,
   pointer and PES-start errors on scrambled services; their payloads are

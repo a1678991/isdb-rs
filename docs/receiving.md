@@ -89,6 +89,7 @@ isdb rx --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --channel BS3 \
 | `--rate SPS` / `--bw HZ` | 40M / 56M | radio sample rate and analog bandwidth (≥ 1.35 × 28.86 Mbaud; a narrower filter costs MER) |
 | `--block-seconds S` | the radio's longest single capture | radio: seconds per contiguous capture |
 | `--carrier-offset HZ` | from the survey | carrier offset of the signal |
+| `--ldpc fixed\|scalar\|float` | fixed | ISDB-S3 LDPC decoder: fixed-point with 16 SIMD lanes; the same one codeword at a time (its bit-exact reference); the floating-point reference |
 | `--json` | — | summary with per-TS counters (packets, RS clean / corrected / uncorrectable) |
 
 From a radio, `isdb rx` takes one contiguous capture after another and

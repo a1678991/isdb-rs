@@ -1037,13 +1037,41 @@ are transponder numbering, not station identities.
 - **ISDB-S unchanged**: `tools/isdbs-ts-acceptance.sh` on the same day's
   21 ISDB-S recordings still gives 38 TSs, 319 584 packets, 0
   uncorrectable.
-- **Throughput** (BS11, 32-core host): LDPC on live codewords (scalar
-  layered min-sum, about 3 iterations) 190 codewords/s on one thread and
-  3 029 on 32, against the 2 905 per second (100 Mbit/s of slot data)
-  of 16APSK 93/120 × 120: 1.04× real time with every core and no margin
-  (`examples/ldpcspeed`). The front end runs as for ISDB-S (one thread),
-  so reception of a recording is well below real time; from a radio
-  `isdb rx` takes one contiguous capture after another.
+- **Throughput** (BS11, 32-core host, `examples/ldpcspeed`), against the
+  2 905 codewords per second (100 Mbit/s of slot data) of 16APSK 93/120 ×
+  120:
+
+  | LDPC decoder | 1 thread | 32 threads |
+  |---|---|---|
+  | float reference (layered normalised min-sum) | 166 cw/s | 2 742 cw/s = 0.94× |
+  | fixed-point, 16 SIMD lanes, stable, x86-64 baseline (the default) | 4 678 cw/s | 33 076 cw/s = 11.4× |
+  | same, built with `-C target-cpu=x86-64-v3` (AVX2) | 5 739 cw/s | 35 602 cw/s = 12.3× |
+  | same, nightly `std::simd` back end, AVX2 | 6 153 cw/s | 37 754 cw/s = 13.0× |
+
+  The fixed-point decoder (`isdb-fec` `ldpc::fixed`) gives each codeword
+  the same bits and iterations with 16 lanes as with one: on generated
+  codewords (`isdb-fec` `tests/ldpc_lanes.rs`) and slot for slot on
+  recordings (`isdbs3-phy` `tests/captures.rs`
+  `isdbs3_ldpc_simd_equals_scalar_on_recordings`). Against the float
+  reference on live-path recordings (40 Msps 8-bit libiio, about 1 dB
+  below the 61.44 Msps ones): 5 against 6 failed of 9 216 codewords, 2.59
+  against 2.53 mean iterations; neither recovers more failures past 50
+  iterations (5 at 50, 100 and 200 for fixed; float 6 at 50, 5 at 200),
+  so the residual failures need more SNR, not more iterations
+  (`examples/ldpcfixed`). The whole receiver on a 1.65 s live-path
+  recording: 37.8 s before, 19.9 s now (0.083× real time): the trim
+  search and carrier trial run their candidates on threads (10.6 → 1.3 s
+  per block); the single-threaded front end (0.33× real time) and slot
+  sync (1.7 s per 0.83 s block, run twice) are the bottleneck now
+  (`examples/chaintime`). From a radio `isdb rx` takes one contiguous
+  capture after another.
+- **Carrier choice** (2026-10-25): a live 8-bit BS7 block decoded no TMCC
+  (24 of 48 frames) because the survey's +R/2 window held an unrelated
+  line 0.3 dB stronger than the π/2-BPSK line, and the strongest line
+  was taken: 361 kHz off, sync Es/N0 5.5 dB. The carrier is now the
+  candidate the front end locks on best (sync Es/N0 on 0.05 s, lines
+  that agree within 2 kHz grouped): 48 of 48 frames, 13.6 dB
+  (`examples/blockcarrier`).
 
 ## Open questions
 
