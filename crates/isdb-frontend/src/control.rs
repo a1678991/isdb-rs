@@ -1,4 +1,4 @@
-//! How a host configures and discovers the FPGA front end (format 1):
+//! How a host configures and discovers the FPGA front end (format 2):
 //! the register map and the command words, written through the general
 //! purpose output of the AD9361 interface core (`axi_ad9361`, register
 //! word 0x2F `up_adc_gpio_out`, libiio debug address 0x800000BC) and read
@@ -80,6 +80,9 @@ pub mod reg {
     pub const H_BASE: u16 = 0x1000;
     /// Derivative bank: `G_BASE + phase·64 + tap`.
     pub const G_BASE: u16 = 0x2000;
+    /// Output bank (format 2): `K_BASE + phase·64 + tap`. Writing it alone
+    /// while running changes the trim without restarting.
+    pub const K_BASE: u16 = 0x3000;
 }
 
 /// Operations of a command word.
@@ -185,7 +188,8 @@ impl Encoder {
         }
     }
 
-    /// The whole configuration for `p`: scalar registers, then both banks.
+    /// The whole configuration for `p`: scalar registers, then the three
+    /// banks.
     pub fn configure(&mut self, p: &Params) -> Vec<u32> {
         let mut out = Vec::new();
         let scalars = [
@@ -207,13 +211,28 @@ impl Encoder {
             u32::from(p.block_log2),
         ];
         self.write(reg::NCO_STEP, &scalars, &mut out);
-        for (base, bank) in [(reg::H_BASE, &p.h), (reg::G_BASE, &p.g)] {
-            for (ph, row) in bank.iter().enumerate().take(PHASES) {
-                let vals: Vec<u32> = row.iter().map(|&c| c as u32).collect();
-                self.write(base + (ph as u16) * 64, &vals, &mut out);
-            }
+        for (base, bank) in [
+            (reg::H_BASE, &p.h),
+            (reg::G_BASE, &p.g),
+            (reg::K_BASE, &p.k),
+        ] {
+            self.write_bank(base, bank, &mut out);
         }
         out
+    }
+
+    /// Only the output bank of `p` (a new trim on a running front end).
+    pub fn output_bank(&mut self, p: &Params) -> Vec<u32> {
+        let mut out = Vec::new();
+        self.write_bank(reg::K_BASE, &p.k, &mut out);
+        out
+    }
+
+    fn write_bank(&mut self, base: u16, bank: &[Vec<i32>], out: &mut Vec<u32>) {
+        for (ph, row) in bank.iter().enumerate().take(PHASES) {
+            let vals: Vec<u32> = row.iter().map(|&c| c as u32).collect();
+            self.write(base + (ph as u16) * 64, &vals, out);
+        }
     }
 }
 
@@ -237,10 +256,10 @@ mod tests {
     #[test]
     fn identity_round_trip_and_absent_front_end() {
         let id = Identity {
-            version: 1,
+            version: 2,
             taps: 32,
         };
-        assert_eq!(id.word(), 0x15DB_1020);
+        assert_eq!(id.word(), 0x15DB_2020);
         assert_eq!(Identity::parse(id.word()), Some(id));
         assert_eq!(Identity::parse(0), None);
     }
@@ -254,10 +273,10 @@ mod tests {
             .iter()
             .filter(|&&w| op(w) == Op::Write as u32 || op(w) == Op::WriteS as u32)
             .count();
-        assert_eq!(writes, 16 + 2 * PHASES * p.taps());
+        assert_eq!(writes, 16 + 3 * PHASES * p.taps());
         // Only the 32-bit scalars (NCO step, periods) need the high half.
         let his = words.iter().filter(|&&w| op(w) == Op::Hi as u32).count();
         assert!(his <= 4, "{his} HI commands");
-        assert_eq!(words.len(), 1 + 2 * PHASES + writes + his);
+        assert_eq!(words.len(), 1 + 3 * PHASES + writes + his);
     }
 }

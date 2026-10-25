@@ -1,5 +1,5 @@
 //! The bit-exact fixed-point front end: the reference the FPGA
-//! implementation must reproduce bit for bit (format version 1).
+//! implementation must reproduce bit for bit (format version 2).
 //!
 //! Per input sample `x[n]` (12-bit components in `i16`), in this order:
 //!
@@ -17,20 +17,25 @@
 //!       `v = clamp(v + round((ki·e) / 2^ki_shift), ±integrator_max << 16)`,
 //!       `period = clamp(nominal + (v >> 16) + round((kp·e) / 2^kp_shift), min, max)`,
 //!       AGC `acc = clamp(acc + (err >> agc_shift), 0, 2²⁴ − 1)`;
-//!    3. `y = round(Σ_t h[p][t]·m[n − t] / 2¹⁴)`, `dy` likewise with `g`
-//!       (`i64` accumulators; the FPGA's are 48 bits);
+//!    3. `y = round(Σ_t h[p][t]·m[n − t] / 2¹⁴)`, `dy` likewise with `g`,
+//!       `yk` likewise with `k` (`i64` accumulators; the FPGA's are 44
+//!       bits);
 //!    4. AGC: `G = acc >> 8` (Q6.10), `z = sat16(round(y·G / 2¹⁰))`,
-//!       `dz` likewise;
-//!    5. output `q = clamp(round(z / 2^q_shift), ±2^(bits−1))`;
-//!    6. errors: `e = clamp((zI·dzI + zQ·dzQ) >> ted_shift, ±(2²³ − 1))`,
-//!       `err = agc_target − ((zI² + zQ²) >> 12)`; queued for symbol
-//!       `k + LOOP_DELAY`;
+//!       `dz` and `zk` likewise;
+//!    5. output `q = clamp(round(zk / 2^q_shift), ±2^(bits−1))`;
+//!    6. errors: `e = clamp((zI·dzI + zQ·dzQ) >> ted_shift, ±(2²³ − 1))`
+//!       (the timing detector on `h` and `g`),
+//!       `err = agc_target − ((zkI² + zkQ²) >> 12)` (the AGC on the
+//!       output); queued for symbol `k + LOOP_DELAY`;
 //!    7. `t_acc += period`.
 //! 4. `t_acc −= 1.0`.
 //!
 //! The loop delay of [`LOOP_DELAY`] symbols is part of the definition:
 //! it is the pipeline latency the FPGA is allowed, and the model applies
 //! it exactly so both agree bit for bit.
+//!
+//! Format version 1 is the special case `k == h` (then `zk == z`): the
+//! same output, words and loop behaviour.
 
 use crate::params::{
     E_MAX, FILTER_SHIFT, FRAC_BITS, GAIN_ACC_BITS, GAIN_ACC_EXTRA_BITS, GAIN_FRAC_BITS, KI_FRAC,
@@ -50,6 +55,8 @@ pub struct Symbol {
     pub y: [i16; 2],
     /// Derivative-filter output.
     pub dy: [i16; 2],
+    /// Output-filter output.
+    pub yk: [i16; 2],
     /// AGC gain used (Q6.10).
     pub gain: u16,
     /// Period register in force when the symbol was computed (Q8.24).
@@ -58,6 +65,8 @@ pub struct Symbol {
     pub z: [i16; 2],
     /// Gain-scaled derivative.
     pub dz: [i16; 2],
+    /// Gain-scaled output-filter value (what `q` quantises).
+    pub zk: [i16; 2],
     /// Output components (`bits` wide).
     pub q: [i8; 2],
     /// Timing error of this symbol (24 bits).
@@ -183,8 +192,8 @@ impl Frontend {
             self.gain_acc = (self.gain_acc + (i64::from(err) >> p.agc_shift))
                 .clamp(0, (1 << GAIN_ACC_BITS) - 1);
         }
-        let (h, g) = (&p.h[phase], &p.g[phase]);
-        let (mut yi, mut yq, mut di, mut dq) = (0i64, 0i64, 0i64, 0i64);
+        let (h, g, kb) = (&p.h[phase], &p.g[phase], &p.k[phase]);
+        let (mut yi, mut yq, mut di, mut dq, mut ki, mut kq) = (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
         for t in 0..self.taps {
             let s = self.line[(self.head + t) % self.taps];
             let (si, sq) = (i64::from(s[0]), i64::from(s[1]));
@@ -192,21 +201,25 @@ impl Frontend {
             yq += i64::from(h[t]) * sq;
             di += i64::from(g[t]) * si;
             dq += i64::from(g[t]) * sq;
+            ki += i64::from(kb[t]) * si;
+            kq += i64::from(kb[t]) * sq;
         }
         let filt = |a: i64| sat16(round_shift(a, FILTER_SHIFT));
         let y = [filt(yi), filt(yq)];
         let dy = [filt(di), filt(dq)];
+        let yk = [filt(ki), filt(kq)];
         let gain = gain_of(self.gain_acc);
         let scale = |v: i16| sat16(round_shift(i64::from(v) * i64::from(gain), GAIN_FRAC_BITS));
         let z = [scale(y[0]), scale(y[1])];
         let dz = [scale(dy[0]), scale(dy[1])];
+        let zk = [scale(yk[0]), scale(yk[1])];
         let lim = 1i64 << (p.bits - 1);
         let quant =
             |v: i16| round_shift(i64::from(v), u32::from(p.q_shift)).clamp(-lim, lim - 1) as i8;
-        let q = [quant(z[0]), quant(z[1])];
+        let q = [quant(zk[0]), quant(zk[1])];
         let ted = i64::from(z[0]) * i64::from(dz[0]) + i64::from(z[1]) * i64::from(dz[1]);
         let e = (ted >> p.ted_shift).clamp(-E_MAX, E_MAX) as i32;
-        let pow = (i64::from(z[0]).pow(2) + i64::from(z[1]).pow(2)) >> POWER_SHIFT;
+        let pow = (i64::from(zk[0]).pow(2) + i64::from(zk[1]).pow(2)) >> POWER_SHIFT;
         let err = (i64::from(p.agc_target) - pow) as i32;
         self.pending.push_back((e, err));
         let sym = Symbol {
@@ -214,10 +227,12 @@ impl Frontend {
             phase: phase as u8,
             y,
             dy,
+            yk,
             gain,
             period: self.period as u32,
             z,
             dz,
+            zk,
             q,
             e,
             err,
@@ -265,6 +280,55 @@ mod tests {
         assert_eq!(f.mix([1000, 0]), [1000, 0]);
         assert_eq!(f.mix([1000, 0]), [0, 1000]);
         assert_eq!(f.mix([1000, 0]), [-1000, 0]);
+    }
+
+    #[test]
+    fn without_trim_the_output_is_the_matched_filter() {
+        // Format 2 with k == h behaves as format 1: zk == z, q from z.
+        let mut d = Design::new(40e6, 33.7561e6, 0.03);
+        d.taps = 16;
+        d.loop_bandwidth = 2e-4;
+        let p = Params::design(&d).unwrap();
+        assert_eq!(p.k, p.h);
+        let mut f = Frontend::new(p).unwrap();
+        let mut out = Vec::new();
+        let x: Vec<[i16; 2]> = (0..20_000)
+            .map(|n| if n % 7 < 3 { [500, -300] } else { [-400, 600] })
+            .collect();
+        f.process(&x, &mut out);
+        assert!(!out.is_empty());
+        assert!(out.iter().all(|s| s.zk == s.z && s.yk == s.y));
+    }
+
+    #[test]
+    fn a_trim_changes_only_the_output() {
+        // Same input, trim 0 and −0.17 T: the loop (period, e, gain path
+        // through z) sees the matched filter in both; the output differs.
+        let base = Design {
+            taps: 16,
+            loop_bandwidth: 2e-4,
+            ..Design::new(40e6, 33.7561e6, 0.03)
+        };
+        let x: Vec<[i16; 2]> = (0..20_000)
+            .map(|n| if n % 5 < 2 { [700, 100] } else { [-200, -650] })
+            .collect();
+        let run = |trim: f64| {
+            let p = Params::design(&Design {
+                trim,
+                ..base.clone()
+            })
+            .unwrap();
+            let mut f = Frontend::new(p).unwrap();
+            let mut out = Vec::new();
+            f.process(&x, &mut out);
+            out
+        };
+        let (a, b) = (run(0.0), run(-0.17));
+        assert_eq!(a.len(), b.len());
+        // The very first symbols precede any loop update (LOOP_DELAY) and
+        // use the same gain: their z agree, their zk differ.
+        assert!(a.iter().zip(&b).take(LOOP_DELAY).all(|(s, t)| s.z == t.z));
+        assert!(a.iter().zip(&b).any(|(s, t)| s.zk != t.zk));
     }
 
     #[test]

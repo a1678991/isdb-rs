@@ -64,6 +64,7 @@ pub mod float;
 pub mod format;
 pub mod metrics;
 pub mod params;
+pub mod s3sync;
 pub mod tables;
 pub mod vectors;
 

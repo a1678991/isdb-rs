@@ -2,6 +2,11 @@
 //! names an ISDB-S transponder, `ISDB_RS_ISDBS3_IQ` an ISDB-S3 one (as for
 //! `isdb-iq`). Each test prints a `SKIP` line and passes when its variable
 //! is unset. See docs/test-data.md.
+//!
+//! `ISDB_RS_ISDBS3_IQ` also runs the timing-trim acceptance
+//! ([`isdb_s3_trim_recovers_the_sync_snr`]); give it a recording with the
+//! full 56 MHz analog bandwidth (2026-10-25 set or later) for the
+//! thresholds below.
 
 use isdb_frontend::fixed::Frontend;
 use isdb_frontend::float::FloatFrontend;
@@ -107,4 +112,72 @@ fn isdb_s_recording() {
 #[test]
 fn isdb_s3_recording() {
     check("ISDB_RS_ISDBS3_IQ", 1);
+}
+
+/// The trim measured on 0.1 s raises the sync-symbol Es/N0 over the rest
+/// of the recording by more than 3 dB and above 13 dB (measured: 9.3 →
+/// 14.6 dB on BS7, 11 and 17 at 61.44 Msps, 56 MHz), and the 6-bit output
+/// loses less than 0.15 dB of it.
+#[test]
+fn isdb_s3_trim_recovers_the_sync_snr() {
+    use isdb_frontend::s3sync::{self, SLOT};
+    use num_complex::Complex64 as C;
+    let var = "ISDB_RS_ISDBS3_IQ";
+    let Some(path) = std::env::var_os(var).map(PathBuf::from) else {
+        eprintln!("SKIP: {var} not set (path of a SigMF recording)");
+        return;
+    };
+    let mut rec = Recording::open(&path, None, None).unwrap();
+    let fs = rec.sample_rate;
+    let seg = rec.segments()[0].clone();
+    let n = usize::try_from(seg.end - seg.start).unwrap().min(12 << 20);
+    let x = rec.read(seg.start, n).unwrap();
+    let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
+    let mut d = Design::for_system(&KNOWN_SYSTEMS[1], fs);
+    d.carrier_offset = sv.best_carrier().map(|c| c.offset_hz).unwrap();
+    let input: Vec<[i16; 2]> = x
+        .iter()
+        .map(|v| {
+            [
+                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
+                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
+            ]
+        })
+        .collect();
+    let excerpt = ((0.1 * fs) as usize).min(input.len());
+    let cands: Vec<f64> = (-6..=1).map(|i| f64::from(i) * 0.05).collect();
+    let (trim, _) = s3sync::best_trim(&input[..excerpt], &d, &cands).unwrap();
+    let run = |trim: f64| {
+        let p = Params::design(&Design { trim, ..d.clone() }).unwrap();
+        let mut fe = Frontend::new(p.clone()).unwrap();
+        let mut out = Vec::new();
+        fe.process(&input, &mut out);
+        let zk: Vec<C> = out
+            .iter()
+            .skip(3 * SLOT)
+            .map(|s| C::new(f64::from(s.zk[0]), f64::from(s.zk[1])))
+            .collect();
+        let q: Vec<C> = out
+            .iter()
+            .skip(3 * SLOT)
+            .map(|s| C::new(f64::from(s.q[0]), f64::from(s.q[1])))
+            .collect();
+        (
+            s3sync::measure(&zk).unwrap().snr_db,
+            s3sync::measure(&q).unwrap().snr_db,
+        )
+    };
+    let (plain, _) = run(0.0);
+    let (trimmed, quantised) = run(trim);
+    eprintln!(
+        "{}: trim {trim:+.3} T; sync Es/N0 {plain:.2} dB untrimmed, {trimmed:.2} dB trimmed, {quantised:.2} dB at {} bits",
+        path.display(),
+        d.bits
+    );
+    assert!(trimmed - plain > 3.0, "{plain:.2} → {trimmed:.2} dB");
+    assert!(trimmed > 13.0, "{trimmed:.2} dB");
+    assert!(
+        trimmed - quantised < 0.15,
+        "{trimmed:.2} → {quantised:.2} dB"
+    );
 }

@@ -126,6 +126,45 @@ pub fn matched_filter_banks(
     (quant(&hf), quant(&gf))
 }
 
+/// The output bank for a trim of `trim` input samples: at τ = t − taps/2 +
+/// p/PHASES, the root-raised cosine at τ + `trim` under the same Kaiser
+/// window as [`matched_filter`] (centred on the loop's instant, not on the
+/// trimmed one), scaled by the matched-filter bank's [`bank_scale`] so its
+/// output has the same scale as `h`'s and rounded the same way. A trim of
+/// 0 gives `h` exactly.
+pub fn output_bank(sps: f64, alpha: f64, taps: usize, beta: f64, trim: f64) -> Vec<Vec<i32>> {
+    let (hf, _) = float_banks(sps, alpha, taps, beta);
+    let s = bank_scale(&hf);
+    let half = taps as f64 / 2.0;
+    let c = half.floor();
+    let lim = f64::from(1i32 << (COEF_BITS - 1)) - 1.0;
+    let bank: Vec<Vec<f64>> = (0..PHASES)
+        .map(|p| {
+            (0..taps)
+                .map(|t| {
+                    let tau = t as f64 - c + p as f64 / PHASES as f64;
+                    rrc((tau + trim) / sps, alpha) * kaiser(tau, half, beta) * s
+                })
+                .collect()
+        })
+        .collect();
+    // Keep the coefficient budget: scale down (rare: a trim moves the peak
+    // off the window's centre) when a phase's magnitudes sum too high.
+    let max = bank
+        .iter()
+        .map(|p| p.iter().map(|c| c.abs()).sum::<f64>())
+        .fold(0.0, f64::max);
+    let budget = COEF_SUM_MAX as f64 - taps as f64 / 2.0;
+    let fit = if max > budget { budget / max } else { 1.0 };
+    bank.iter()
+        .map(|p| {
+            p.iter()
+                .map(|c| (c * fit).round().clamp(-lim, lim) as i32)
+                .collect()
+        })
+        .collect()
+}
+
 /// Slope of the timing detector, in loop error units (after `ted_shift`)
 /// per input sample of timing error (positive when sampling early), for
 /// the integer banks `h`, `g` at `sps` samples per symbol with |z| held at
@@ -276,6 +315,28 @@ mod tests {
             let c = taps / 2;
             let max = h[0].iter().map(|v| v.abs()).max().unwrap();
             assert_eq!(h[0][c].abs(), max);
+        }
+    }
+
+    #[test]
+    fn output_bank_without_trim_is_the_matched_filter() {
+        for (sps, alpha, taps) in [(1.386, 0.35, 16), (1.82, 0.03, 32), (2.129, 0.35, 32)] {
+            let (h, _) = matched_filter_banks(sps, alpha, taps, 5.0);
+            assert_eq!(output_bank(sps, alpha, taps, 5.0, 0.0), h);
+            // A trim moves the peak of phase 0 by about `trim` samples.
+            let k = output_bank(sps, alpha, taps, 5.0, -0.31);
+            assert!(
+                k.iter()
+                    .flatten()
+                    .map(|&c| i64::from(c).abs())
+                    .max()
+                    .unwrap()
+                    > 0
+            );
+            assert!(
+                k.iter()
+                    .all(|p| p.iter().map(|&c| i64::from(c).abs()).sum::<i64>() <= COEF_SUM_MAX)
+            );
         }
     }
 

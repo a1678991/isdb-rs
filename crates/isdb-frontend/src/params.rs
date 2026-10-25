@@ -1,11 +1,20 @@
-//! The front end's fixed architecture constants (format version 1) and its
+//! The front end's fixed architecture constants (format version 2) and its
 //! run-time parameters (the registers of the FPGA implementation).
 
 use crate::tables;
 
 /// Version of the architecture and of the [`crate::format`] it emits. Any
 /// change to the arithmetic below or to the word layout increments it.
-pub const FORMAT_VERSION: u16 = 1;
+///
+/// Version 2 adds the output bank [`Params::k`]: the output symbols (and
+/// the AGC) come from it, the timing detector still from `h` and `g`, so
+/// the output instant can sit a fixed trim away from where the loop locks
+/// (ISDB-S3: crate README, "The timing trim"). The word layout is the
+/// same as version 1; with `k == h` the output is version 1's.
+pub const FORMAT_VERSION: u16 = 2;
+/// Oldest `Symbols` format version a [`crate::format::Reader`] accepts
+/// (the layout has not changed since).
+pub const MIN_READ_VERSION: u16 = 1;
 
 /// Phases of the polyphase matched-filter banks (the fractional-delay
 /// resolution of the timing recovery, 1/64 sample).
@@ -67,6 +76,11 @@ pub struct Params {
     pub h: Vec<Vec<i32>>,
     /// Derivative bank, same layout (d/dτ of the matched filter, scaled).
     pub g: Vec<Vec<i32>>,
+    /// Output bank, same layout: the matched filter evaluated `trim`
+    /// later than `h` within the same window (equal to `h` for no trim).
+    /// The output symbol and the AGC use it; the timing detector uses `h`
+    /// and `g`.
+    pub k: Vec<Vec<i32>>,
     /// Nominal symbol period in input samples, Q8.24.
     pub period_nominal: u32,
     /// Smallest and largest period the loop may set, Q8.24 (the smallest
@@ -116,6 +130,10 @@ pub struct Design {
     pub carrier_offset: f64,
     /// Taps per phase (even, ≤ [`MAX_TAPS`]).
     pub taps: usize,
+    /// Output instant relative to where the timing loop locks, in symbol
+    /// periods (0: none). Measured by the host from known symbols
+    /// ([`crate::s3sync::best_trim`]); it shapes the output bank `k`.
+    pub trim: f64,
     /// Kaiser window β applied over the filter span (0: none).
     pub kaiser_beta: f64,
     /// Timing loop noise bandwidth as a fraction of the symbol rate.
@@ -143,6 +161,7 @@ impl Design {
             roll_off,
             carrier_offset: 0.0,
             taps: 32,
+            trim: 0.0,
             kaiser_beta: 5.0,
             loop_bandwidth: 2e-4,
             bits: 8,
@@ -156,15 +175,14 @@ impl Design {
     /// IF (crate README, "Design choices") for a known system at
     /// `sample_rate`: 32 taps; loop bandwidth 2·10⁻⁴ R for roll-off ≥ 0.1
     /// and 5·10⁻⁶ R below (the timing detector's slope shrinks with the
-    /// roll-off); 6 bits per component for ISDB-S, 5 for ISDB-S3.
+    /// roll-off); 6 bits per component for both. No trim: the host
+    /// measures it on the signal and sets [`Design::trim`].
     pub fn for_system(system: &isdb_iq::survey::KnownSystem, sample_rate: f64) -> Self {
         let mut d = Self::new(sample_rate, system.symbol_rate_hz, system.roll_off);
         if system.roll_off < 0.1 {
             d.loop_bandwidth = 5e-6;
-            d.bits = 5;
-        } else {
-            d.bits = 6;
         }
+        d.bits = 6;
         d
     }
 
@@ -194,7 +212,15 @@ impl Params {
         if !(2..=8).contains(&d.bits) {
             return Err(ParamError(format!("{} bits: 2..=8", d.bits)));
         }
+        if !(-0.5..=0.5).contains(&d.trim) {
+            return Err(ParamError(format!("trim {} symbols: within ±0.5", d.trim)));
+        }
         let (h, g) = tables::matched_filter_banks(sps, d.roll_off, d.taps, d.kaiser_beta);
+        let k = if d.trim == 0.0 {
+            h.clone()
+        } else {
+            tables::output_bank(sps, d.roll_off, d.taps, d.kaiser_beta, d.trim * sps)
+        };
         let period = (sps * ONE as f64).round() as u32;
         // TED gain: the error of the scaled banks for a unit timing offset
         // is measured on a noiseless pulse train (tables::ted_gain); the
@@ -234,6 +260,7 @@ impl Params {
             nco_step: nco_step as u32 as i32,
             h,
             g,
+            k,
             period_nominal: period,
             period_min: ((sps * 0.98).max(1.0625) * ONE as f64) as u32,
             period_max: (sps * 1.02 * ONE as f64) as u32,
@@ -263,18 +290,19 @@ impl Params {
     pub fn validate(&self) -> Result<(), ParamError> {
         let err = |s: String| Err(ParamError(s));
         let taps = self.taps();
-        if self.h.len() != PHASES || self.g.len() != PHASES {
+        if self.h.len() != PHASES || self.g.len() != PHASES || self.k.len() != PHASES {
             return err(format!(
-                "{} / {} phases, {PHASES} expected",
+                "{} / {} / {} phases, {PHASES} expected",
                 self.h.len(),
-                self.g.len()
+                self.g.len(),
+                self.k.len()
             ));
         }
         if !(4..=MAX_TAPS).contains(&taps) || !taps.is_multiple_of(2) {
             return err(format!("{taps} taps"));
         }
         let lim = 1i32 << (COEF_BITS - 1);
-        for bank in [&self.h, &self.g] {
+        for bank in [&self.h, &self.g, &self.k] {
             for ph in bank {
                 if ph.len() != taps {
                     return err("ragged coefficient bank".into());

@@ -1,5 +1,7 @@
-//! The `Symbols` boundary, version 1: what leaves the front end (the FPGA
-//! over DMA, or the CPU model) as a stream of 16-bit little-endian words.
+//! The `Symbols` boundary: what leaves the front end (the FPGA over DMA,
+//! or the CPU model) as a stream of 16-bit little-endian words. Versions 1
+//! and 2 share this layout (version 2 changed the arithmetic, see
+//! [`crate::params::FORMAT_VERSION`]); a [`Reader`] accepts both.
 //!
 //! The stream is a sequence of blocks. A block is [`HEADER_WORDS`] header
 //! words, the payload of L = 2^`block_log2` symbols and one trailer word:
@@ -7,7 +9,7 @@
 //! | Word | Content |
 //! |---|---|
 //! | 0, 1 | sync: `0x1ACF`, `0xFC1D` |
-//! | 2 | bits 0–3: format version (1); 4–7: bits per component − 1; 8–11: `block_log2`; 12–15: flags (0) |
+//! | 2 | bits 0–3: format version (1 or 2); 4–7: bits per component − 1; 8–11: `block_log2`; 12–15: flags (0) |
 //! | 3, 4 | block sequence number, 32 bits, low word first (wraps) |
 //! | 5 | AGC gain used for the block's first symbol (Q6.10) |
 //! | 6, 7 | period register at the block's first symbol, Q8.24 samples, low word first |
@@ -31,7 +33,7 @@
 //! count the missing blocks; a damaged or missing block is dropped and
 //! counted, and the blocks around it stay in order with the gap reported.
 
-use crate::params::{FORMAT_VERSION, Params};
+use crate::params::{FORMAT_VERSION, MIN_READ_VERSION, Params};
 
 /// Header words per block.
 pub const HEADER_WORDS: usize = 9;
@@ -56,6 +58,8 @@ pub const SYNC: [u16; 2] = [0x1ACF, 0xFC1D];
 /// A block header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
+    /// Format version of the block (written: [`FORMAT_VERSION`]).
+    pub version: u16,
     /// Bits per component.
     pub bits: u8,
     /// log2 of the symbols per block.
@@ -76,7 +80,7 @@ impl Header {
         let mut w = [
             SYNC[0],
             SYNC[1],
-            FORMAT_VERSION
+            (self.version & 0xF)
                 | u16::from(self.bits - 1) << 4
                 | u16::from(self.block_log2) << 8
                 | u16::from(self.flags) << 12,
@@ -98,7 +102,8 @@ impl Header {
         if w.len() < HEADER_WORDS || w[0] != SYNC[0] || w[1] != SYNC[1] {
             return None;
         }
-        if w[2] & 0xF != FORMAT_VERSION
+        let version = w[2] & 0xF;
+        if !(MIN_READ_VERSION..=FORMAT_VERSION).contains(&version)
             || w[2..HEADER_WORDS]
                 .iter()
                 .fold(0u16, |a, &b| a.wrapping_add(b))
@@ -112,6 +117,7 @@ impl Header {
             return None;
         }
         Some(Self {
+            version,
             bits,
             block_log2,
             flags: (w[2] >> 12) as u8,
@@ -170,6 +176,7 @@ impl Packer {
         if self.in_block == 0 {
             out.extend_from_slice(
                 &Header {
+                    version: FORMAT_VERSION,
                     bits: self.bits,
                     block_log2: self.block_log2,
                     flags: 0,
@@ -401,7 +408,9 @@ mod tests {
 
     #[test]
     fn spec_header_layout() {
+        // A version-1 header (still read) …
         let h = Header {
+            version: 1,
             bits: 5,
             block_log2: 12,
             flags: 0,
@@ -417,6 +426,24 @@ mod tests {
         );
         assert_eq!(Header::parse(&h.words()), Some(h));
         assert_eq!(h.payload_words(), 4096 * 10 / 16);
+        // … and the same block in version 2: only the version nibble and
+        // the check word change.
+        let h2 = Header { version: 2, ..h };
+        assert_eq!(
+            h2.words(),
+            [
+                0x1ACF, 0xFC1D, 0x0C42, 0x5678, 0x1234, 0x0400, 0x3456, 0x0162, 0x5159
+            ]
+        );
+        assert_eq!(Header::parse(&h2.words()), Some(h2));
+        // Versions outside 1..=2 are not headers.
+        for v in [0, 3, 15] {
+            let mut w = Header { version: v, ..h }.words();
+            w[8] = 0;
+            let sum = w[2..8].iter().fold(0u16, |a, &b| a.wrapping_add(b));
+            w[8] = 0xFFFF_u16.wrapping_sub(sum);
+            assert_eq!(Header::parse(&w), None, "version {v}");
+        }
     }
 
     fn pack(bits: u8, block_log2: u8, syms: &[[i8; 2]]) -> Vec<u16> {
