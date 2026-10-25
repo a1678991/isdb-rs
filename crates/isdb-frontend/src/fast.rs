@@ -81,10 +81,6 @@ pub struct FastFrontend {
     since_wide: usize,
     samples: u64,
     symbols: u64,
-    /// Work buffer: positions of the wide samples of a chunk.
-    wides: Vec<usize>,
-    /// Index into `wides` of the next one not yet passed.
-    next_wide: usize,
 }
 
 /// Length of the delay-line buffers: room for many samples before a
@@ -139,8 +135,6 @@ impl FastFrontend {
             since_wide: usize::MAX,
             samples: 0,
             symbols: 0,
-            wides: Vec::new(),
-            next_wide: 0,
             p,
         })
     }
@@ -158,153 +152,125 @@ impl FastFrontend {
     /// Push a block of samples, appending the symbols to `out` (the
     /// reference's `process`).
     pub fn process(&mut self, x: &[[i16; 2]], out: &mut Vec<Symbol>) {
-        self.process_each(x, |s| out.push(*s));
+        // the padded width chosen once per call: every loop below has a
+        // constant trip count
+        match self.width {
+            8 => self.process_n::<8>(x, out),
+            16 => self.process_n::<16>(x, out),
+            24 => self.process_n::<24>(x, out),
+            32 => self.process_n::<32>(x, out),
+            40 => self.process_n::<40>(x, out),
+            48 => self.process_n::<48>(x, out),
+            56 => self.process_n::<56>(x, out),
+            _ => self.process_n::<64>(x, out),
+        }
     }
 
     /// Push a block of samples, handing each symbol to `f` as it is
     /// computed (no `Vec<Symbol>`: for callers that keep only part of it).
     pub fn process_each(&mut self, x: &[[i16; 2]], mut f: impl FnMut(&Symbol)) {
-        // at most LINE samples at a time: the delay line holds them all
-        for c in x.chunks(LINE) {
-            match self.width {
-                8 => self.chunk::<8>(c, &mut f),
-                16 => self.chunk::<16>(c, &mut f),
-                24 => self.chunk::<24>(c, &mut f),
-                32 => self.chunk::<32>(c, &mut f),
-                40 => self.chunk::<40>(c, &mut f),
-                48 => self.chunk::<48>(c, &mut f),
-                56 => self.chunk::<56>(c, &mut f),
-                _ => self.chunk::<64>(c, &mut f),
+        match self.width {
+            8 => self.each_n::<8>(x, &mut f),
+            16 => self.each_n::<16>(x, &mut f),
+            24 => self.each_n::<24>(x, &mut f),
+            32 => self.each_n::<32>(x, &mut f),
+            40 => self.each_n::<40>(x, &mut f),
+            48 => self.each_n::<48>(x, &mut f),
+            56 => self.each_n::<56>(x, &mut f),
+            _ => self.each_n::<64>(x, &mut f),
+        }
+    }
+
+    fn each_n<const W: usize>(&mut self, x: &[[i16; 2]], f: &mut impl FnMut(&Symbol)) {
+        for &s in x {
+            if let Some(y) = self.push_n::<W>(s) {
+                f(&y);
             }
         }
     }
 
     /// Push one sample (the reference's `push`). [`FastFrontend::process`]
-    /// is the fast way.
+    /// is the fast way; this one dispatches the width for every sample.
     pub fn push(&mut self, x: [i16; 2]) -> Option<Symbol> {
-        let mut y = None;
-        self.process_each(&[x], |s| y = Some(*s));
-        y
+        match self.width {
+            8 => self.push_n::<8>(x),
+            16 => self.push_n::<16>(x),
+            24 => self.push_n::<24>(x),
+            32 => self.push_n::<32>(x),
+            40 => self.push_n::<40>(x),
+            48 => self.push_n::<48>(x),
+            56 => self.push_n::<56>(x),
+            _ => self.push_n::<64>(x),
+        }
     }
 
-    /// One chunk (≤ [`LINE`] samples): the mixer for every sample in one
-    /// pass into the delay line, then the symbols in order.
-    fn chunk<const W: usize>(&mut self, x: &[[i16; 2]], f: &mut impl FnMut(&Symbol)) {
-        let n = x.len();
-        if n == 0 {
-            return;
+    fn process_n<const W: usize>(&mut self, x: &[[i16; 2]], out: &mut Vec<Symbol>) {
+        for &s in x {
+            if let Some(y) = self.push_n::<W>(s) {
+                out.push(y);
+            }
         }
-        // room for the whole chunk below `pos`: slide the newest
-        // `width − 1` samples up to the end first if needed
-        if self.pos < n {
-            let keep = self.width - 1;
-            let src = self.pos;
-            self.li.copy_within(src..src + keep, LINE + 1);
-            self.lq.copy_within(src..src + keep, LINE + 1);
-            self.si.copy_within(src..src + keep, LINE + 1);
-            self.sq.copy_within(src..src + keep, LINE + 1);
+    }
+
+    #[inline]
+    fn push_n<const W: usize>(&mut self, s: [i16; 2]) -> Option<Symbol> {
+        let wide = s[0].unsigned_abs() > I32_INPUT_MAX as u16
+            || s[1].unsigned_abs() > I32_INPUT_MAX as u16;
+        self.since_wide = if wide {
+            0
+        } else {
+            self.since_wide.saturating_add(1)
+        };
+        // the line holds the last `taps` inputs, this one included
+        if self.since_wide >= self.taps {
+            self.push_with::<false, W>(s)
+        } else {
+            self.push_with::<true, W>(s)
+        }
+    }
+
+    #[inline]
+    fn push_with<const WIDE: bool, const W: usize>(&mut self, x: [i16; 2]) -> Option<Symbol> {
+        // mixer (the reference's `mix`)
+        let idx = (self.nco >> (32 - NCO_LUT_BITS)) as usize;
+        let mask = (1 << NCO_LUT_BITS) - 1;
+        let c = i32::from(self.cos[idx]);
+        let s = i32::from(self.cos[(idx + 768) & mask]);
+        let (xi, xq) = (i32::from(x[0]), i32::from(x[1]));
+        let re = xi * c - xq * s;
+        let im = xi * s + xq * c;
+        self.nco = self.nco.wrapping_add(self.p.nco_step as u32);
+        let m = [(re + (1 << 14)) >> 15, (im + (1 << 14)) >> 15];
+        // delay line: newest at `pos`
+        if self.pos == 0 {
+            // slide the newest `width − 1` samples to the end
+            let w = self.width;
+            self.li.copy_within(0..w - 1, LINE + 1);
+            self.lq.copy_within(0..w - 1, LINE + 1);
+            self.si.copy_within(0..w - 1, LINE + 1);
+            self.sq.copy_within(0..w - 1, LINE + 1);
             self.pos = LINE + 1;
         }
-        let base = self.pos - n;
-        self.mix(x, base);
-        // symbols: sample j of the chunk is the newest at line index
-        // base + n − 1 − j
-        for j in 0..n {
-            // `since_wide` after sample j (the line holds the last `taps`
-            // inputs, this one included)
-            if self.next_wide < self.wides.len() && self.wides[self.next_wide] == j {
-                self.since_wide = 0;
-                self.next_wide += 1;
-            } else {
-                self.since_wide = self.since_wide.saturating_add(1);
-            }
-            if self.t_acc < ONE {
-                let pos = base + n - 1 - j;
-                let sym = if self.since_wide >= self.taps {
-                    self.symbol::<false, W>(pos)
-                } else {
-                    self.symbol::<true, W>(pos)
-                };
-                f(&sym);
-            }
-            self.t_acc -= ONE;
-            self.samples += 1;
-        }
-        self.pos = base;
+        self.pos -= 1;
+        self.li[self.pos] = m[0];
+        self.lq[self.pos] = m[1];
+        // truncation only matters for the wide kernel, which reads `li`/`lq`
+        self.si[self.pos] = m[0] as i16;
+        self.sq[self.pos] = m[1] as i16;
+        let out = if self.t_acc < ONE {
+            Some(self.symbol::<WIDE, W>())
+        } else {
+            None
+        };
+        self.t_acc -= ONE;
+        self.samples += 1;
+        out
     }
 
-    /// The symbol whose newest sample is at line index `pos`.
-    #[inline(always)]
-    fn symbol<const WIDE: bool, const W: usize>(&mut self, pos: usize) -> Symbol {
+    #[inline]
+    fn symbol<const WIDE: bool, const W: usize>(&mut self) -> Symbol {
         let phase = ((self.t_acc >> (FRAC_BITS - PHASE_BITS)) & ((1 << PHASE_BITS) - 1)) as usize;
         if self.pending_len == LOOP_DELAY {
-            self.loop_update();
-        }
-        let a = if WIDE {
-            let at = phase * 3 * W;
-            dot6_i64(
-                &self.coef[at..at + 3 * W],
-                &self.li[pos..pos + W],
-                &self.lq[pos..pos + W],
-            )
-        } else {
-            let at = phase * 6 * W;
-            let (r, _) = self.split[at..at + 6 * W].as_chunks::<W>();
-            dot6_n::<W>(
-                r.try_into().expect("six rows"),
-                self.si[pos..pos + W].try_into().expect("width"),
-                self.sq[pos..pos + W].try_into().expect("width"),
-            )
-        };
-        let q = Planned {
-            phase,
-            sample: self.samples,
-            gain_acc: self.gain_acc,
-            period: self.period,
-        };
-        self.t_acc += self.period;
-        self.finish(&q, &a)
-    }
-
-    /// The mixer (the reference's `mix`) for every sample of the chunk:
-    /// sample j goes to line index `base + n − 1 − j`. It does not depend
-    /// on the timing loop. Also records which samples are wide (beyond
-    /// [`I32_INPUT_MAX`]; never with 12-bit radios).
-    fn mix(&mut self, x: &[[i16; 2]], base: usize) {
-        let n = x.len();
-        let mask = (1usize << NCO_LUT_BITS) - 1;
-        let step = self.p.nco_step as u32;
-        let mut nco = self.nco;
-        self.wides.clear();
-        for (j, s) in x.iter().enumerate() {
-            let idx = (nco >> (32 - NCO_LUT_BITS)) as usize;
-            let c = i32::from(self.cos[idx]);
-            let sn = i32::from(self.cos[(idx + 768) & mask]);
-            let (xi, xq) = (i32::from(s[0]), i32::from(s[1]));
-            let re = (xi * c - xq * sn + (1 << 14)) >> 15;
-            let im = (xi * sn + xq * c + (1 << 14)) >> 15;
-            nco = nco.wrapping_add(step);
-            let at = base + n - 1 - j;
-            self.li[at] = re;
-            self.lq[at] = im;
-            // truncation only matters for the wide kernel, which reads li/lq
-            self.si[at] = re as i16;
-            self.sq[at] = im as i16;
-            if s[0].unsigned_abs() > I32_INPUT_MAX as u16
-                || s[1].unsigned_abs() > I32_INPUT_MAX as u16
-            {
-                self.wides.push(j);
-            }
-        }
-        self.nco = nco;
-        self.next_wide = 0;
-    }
-
-    /// The loop update a symbol applies before its filter outputs, with
-    /// the oldest queued error (that of the symbol [`LOOP_DELAY`] earlier).
-    #[inline(always)]
-    fn loop_update(&mut self) {
-        {
             let (e, err) = self.pending[self.pending_head];
             self.pending_len -= 1;
             self.pending_head += 1;
@@ -322,19 +288,27 @@ impl FastFrontend {
             self.gain_acc = (self.gain_acc + (i64::from(err) >> p.agc_shift))
                 .clamp(0, (1 << GAIN_ACC_BITS) - 1);
         }
-    }
-
-    /// A planned symbol from its filter sums: rounding, gain, decision and
-    /// its loop errors (queued for [`LOOP_DELAY`] symbols later).
-    #[inline(always)]
-    fn finish(&mut self, q: &Planned, a: &[i64; 6]) -> Symbol {
+        let [yi, yq, di, dq, ki, kq] = if WIDE {
+            let at = phase * 3 * W;
+            dot6_i64(
+                &self.coef[at..at + 3 * W],
+                &self.li[self.pos..self.pos + W],
+                &self.lq[self.pos..self.pos + W],
+            )
+        } else {
+            let at = phase * 6 * W;
+            dot6_n::<W>(
+                &self.split[at..at + 6 * W],
+                &self.si[self.pos..self.pos + W],
+                &self.sq[self.pos..self.pos + W],
+            )
+        };
         let p = &self.p;
-        let [yi, yq, di, dq, ki, kq] = *a;
         let filt = |a: i64| sat16(round_shift(a, FILTER_SHIFT));
         let y = [filt(yi), filt(yq)];
         let dy = [filt(di), filt(dq)];
         let yk = [filt(ki), filt(kq)];
-        let gain = (q.gain_acc >> GAIN_ACC_EXTRA_BITS) as u16;
+        let gain = (self.gain_acc >> GAIN_ACC_EXTRA_BITS) as u16;
         let scale = |v: i16| sat16(round_shift(i64::from(v) * i64::from(gain), GAIN_FRAC_BITS));
         let z = [scale(y[0]), scale(y[1])];
         let dz = [scale(dy[0]), scale(dy[1])];
@@ -342,7 +316,7 @@ impl FastFrontend {
         let lim = 1i64 << (p.bits - 1);
         let quant =
             |v: i16| round_shift(i64::from(v), u32::from(p.q_shift)).clamp(-lim, lim - 1) as i8;
-        let q8 = [quant(zk[0]), quant(zk[1])];
+        let q = [quant(zk[0]), quant(zk[1])];
         let ted = i64::from(z[0]) * i64::from(dz[0]) + i64::from(z[1]) * i64::from(dz[1]);
         let e = (ted >> p.ted_shift).clamp(-E_MAX, E_MAX) as i32;
         let pow = (i64::from(zk[0]).pow(2) + i64::from(zk[1]).pow(2)) >> POWER_SHIFT;
@@ -353,61 +327,34 @@ impl FastFrontend {
         }
         self.pending[tail] = (e, err);
         self.pending_len += 1;
-        self.symbols += 1;
-        Symbol {
-            sample: q.sample,
-            phase: q.phase as u8,
+        let sym = Symbol {
+            sample: self.samples,
+            phase: phase as u8,
             y,
             dy,
             yk,
             gain,
-            period: q.period as u32,
+            period: self.period as u32,
             z,
             dz,
             zk,
-            q: q8,
+            q,
             e,
             err,
-        }
+        };
+        self.t_acc += self.period;
+        self.symbols += 1;
+        sym
     }
 }
 
-/// A symbol's state before its filter outputs: what
-/// [`FastFrontend::finish`] needs besides the sums.
-#[derive(Debug, Clone, Copy, Default)]
-struct Planned {
-    /// Interpolation phase.
-    phase: usize,
-    /// Its `Symbol::sample`.
-    sample: u64,
-    /// The AGC accumulator after its loop update.
-    gain_acc: i64,
-    /// The period after its loop update.
-    period: i64,
+/// `c = hi·2⁹ + lo`, `0 ≤ lo < 512`: exact for 18-bit `c` (|hi| ≤ 256).
+fn split_coef(c: i32) -> (i16, i16) {
+    let lo = c & 0x1FF;
+    ((c >> 9) as i16, lo as i16)
 }
 
-/// The six dot products of one symbol on the split coefficients
-/// (rows h.hi, h.lo, g.hi, g.lo, k.hi, k.lo) and the `i16` delay line:
-/// 16×16-bit products summed in `i32` (exact within [`I32_INPUT_MAX`],
-/// module documentation), combined in `i64` as `2⁹·Σ hi·x + Σ lo·x`.
-#[inline]
-fn dot6_n<const W: usize>(c6: &[[i16; W]; 6], xi: &[i16; W], xq: &[i16; W]) -> [i64; 6] {
-    let d = |v: i32| i64::from(v);
-    [
-        (d(dot_n(&c6[0], xi)) << 9) + d(dot_n(&c6[1], xi)),
-        (d(dot_n(&c6[0], xq)) << 9) + d(dot_n(&c6[1], xq)),
-        (d(dot_n(&c6[2], xi)) << 9) + d(dot_n(&c6[3], xi)),
-        (d(dot_n(&c6[2], xq)) << 9) + d(dot_n(&c6[3], xq)),
-        (d(dot_n(&c6[4], xi)) << 9) + d(dot_n(&c6[5], xi)),
-        (d(dot_n(&c6[4], xq)) << 9) + d(dot_n(&c6[5], xq)),
-    ]
-}
-
-/// `Σ c·x` over `W` 16-bit pairs, in `i32`. A small function on its own,
-/// its loop becomes multiply-adds (`pmaddwd`, NEON `smlal`); the shapes
-/// tried instead (twelve products inlined into one body, I and Q in one
-/// loop, eight-lane accumulators) stayed scalar under LLVM's SLP
-/// vectoriser and ran up to 3× slower (measured; plan §0.11).
+/// `Σ c·x` over `W` 16-bit pairs, in `i32`.
 #[inline]
 fn dot_n<const W: usize>(c: &[i16; W], x: &[i16; W]) -> i32 {
     let mut a = 0i32;
@@ -417,15 +364,33 @@ fn dot_n<const W: usize>(c: &[i16; W], x: &[i16; W]) -> i32 {
     a
 }
 
-/// `c = hi·2⁹ + lo`, `0 ≤ lo < 512`: exact for 18-bit `c` (|hi| ≤ 256).
-fn split_coef(c: i32) -> (i16, i16) {
-    let lo = c & 0x1FF;
-    ((c >> 9) as i16, lo as i16)
+/// The six dot products of one symbol on the split coefficients
+/// (`c6` = h.hi, h.lo, g.hi, g.lo, k.hi, k.lo, each `W` long) and the
+/// `i16` delay line: 16×16-bit products summed in `i32` (exact within
+/// [`I32_INPUT_MAX`], module documentation), combined in `i64`. `W` is
+/// the padded width, a constant per instantiation, so LLVM unrolls and
+/// vectorises the loops (`pmaddwd` / `vpmaddwd` / NEON `smlal`).
+#[inline]
+fn dot6_n<const W: usize>(c6: &[i16], li: &[i16], lq: &[i16]) -> [i64; 6] {
+    let xi: &[i16; W] = li.try_into().expect("width");
+    let xq: &[i16; W] = lq.try_into().expect("width");
+    let c = |d: usize| -> &[i16; W] { c6[d * W..(d + 1) * W].try_into().expect("width") };
+    let bank = |b: usize, x: &[i16; W]| -> i64 {
+        (i64::from(dot_n(c(2 * b), x)) << 9) + i64::from(dot_n(c(2 * b + 1), x))
+    };
+    [
+        bank(0, xi),
+        bank(0, xq),
+        bank(1, xi),
+        bank(1, xq),
+        bank(2, xi),
+        bank(2, xq),
+    ]
 }
 
 /// The same with `i64` sums on the unsplit coefficients (`c3` = h, g, k,
 /// each `li.len()` long): exact for every `i16` input.
-#[inline(always)]
+#[inline]
 fn dot6_i64(c3: &[i32], li: &[i32], lq: &[i32]) -> [i64; 6] {
     let w = li.len();
     let mut acc = [0i64; 6];
