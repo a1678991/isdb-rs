@@ -17,6 +17,7 @@ use isdb_iq::{C32, Recording};
 use isdb_radio::{DeviceSpec, RadioConfig};
 use isdbs_core::frame::FRAME_SYMBOLS;
 use isdbs_phy::demod::DemodOptions;
+use isdbs_phy::frontend::{Prior, Symbols, Trim, symbols_with_prior};
 use isdbs_phy::ts::{DecodedSuperframe, decode_all};
 use isdbs_phy::{RxOptions, receive};
 use serde_json::{Value, json};
@@ -212,19 +213,23 @@ impl Stats {
     }
 }
 
-/// Decode one contiguous block of unit-scale samples at `fs` and write its
-/// packets. Returns the number of superframes decoded.
-pub fn decode_block(
+/// The front end of one block: symbols, and the acquisition the next
+/// block of the same signal may reuse (`prior`).
+pub fn front(
     x: &[C32],
     fs: f64,
     carrier_offset_hz: Option<f64>,
-    out: &mut Outputs,
-    stats: &mut Stats,
-) -> Result<usize> {
+    prior: Option<&Prior>,
+) -> Result<(Symbols, Prior)> {
+    symbols_with_prior(x, fs, carrier_offset_hz, Trim::Auto, prior)
+        .context("ISDB-S front end parameters for this sample rate")
+}
+
+/// The rest of one block of `samples` samples: receive its symbols `s`
+/// and write its packets. Returns the number of superframes decoded.
+pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> Result<usize> {
     stats.blocks += 1;
-    stats.samples += x.len() as u64;
-    let s = isdbs_phy::frontend::symbols(x, fs, carrier_offset_hz)
-        .context("ISDB-S front end parameters for this sample rate")?;
+    stats.samples += samples;
     stats.carrier_offset_hz = s.carrier_offset_hz;
     stats.symbol_rate_hz = s.symbol_rate_hz;
     if s.z.len() < 2 * FRAME_SYMBOLS {
@@ -287,6 +292,51 @@ pub fn report(stats: &Stats, secs: f64) {
     }
 }
 
+/// One contiguous block of samples for the pipeline and their rate.
+struct Block {
+    x: Vec<C32>,
+    fs: f64,
+}
+
+/// Decode the blocks `produce` sends, in three overlapping stages: the
+/// producer (reading or capturing) on its thread, the front end on
+/// another (sequential: it carries the acquisition from block to block),
+/// and the receiver on this one, with one block in flight between
+/// stages. `after` runs after each block is written (status lines).
+fn pipeline(
+    produce: impl FnOnce(&std::sync::mpsc::SyncSender<Block>) -> Result<()> + Send,
+    carrier_offset_hz: Option<f64>,
+    out: &mut Outputs,
+    stats: &mut Stats,
+    mut after: impl FnMut(&Stats),
+) -> Result<()> {
+    use std::sync::mpsc::sync_channel;
+    let (btx, brx) = sync_channel::<Block>(1);
+    let (stx, srx) = sync_channel::<Result<(Symbols, u64)>>(1);
+    std::thread::scope(|sc| -> Result<()> {
+        let producer = sc.spawn(move || produce(&btx));
+        sc.spawn(move || {
+            let mut prior: Option<Prior> = None;
+            for b in brx {
+                let r = front(&b.x, b.fs, carrier_offset_hz, prior.as_ref()).map(|(s, p)| {
+                    prior = Some(p);
+                    (s, b.x.len() as u64)
+                });
+                let failed = r.is_err();
+                if stx.send(r).is_err() || failed {
+                    break;
+                }
+            }
+        });
+        for r in srx {
+            let (s, n) = r?;
+            back(&s, n, out, stats)?;
+            after(stats);
+        }
+        producer.join().expect("producer thread")
+    })
+}
+
 /// Offline: every contiguous segment of a recording.
 pub fn run_file(
     path: &str,
@@ -299,21 +349,33 @@ pub fn run_file(
         format!("{path}: an ISDB-S recording needs its SigMF metadata (rate and format)")
     })?;
     let fs = rec.sample_rate;
-    let mut left = max_samples.unwrap_or(u64::MAX);
-    for seg in rec.segments() {
-        if left == 0 {
-            break;
-        }
-        let n = (seg.end - seg.start).min(left);
-        left -= n;
-        let x = rec.read(seg.start, usize::try_from(n)?)?;
-        decode_block(&x, fs, carrier_offset_hz, out, stats)?;
-    }
+    pipeline(
+        move |tx| {
+            let mut left = max_samples.unwrap_or(u64::MAX);
+            for seg in rec.segments() {
+                if left == 0 {
+                    break;
+                }
+                let n = (seg.end - seg.start).min(left);
+                left -= n;
+                let x = rec.read(seg.start, usize::try_from(n)?)?;
+                if tx.send(Block { x, fs }).is_err() {
+                    break;
+                }
+            }
+            Ok(())
+        },
+        carrier_offset_hz,
+        out,
+        stats,
+        |_| {},
+    )?;
     Ok(stats.samples as f64 / fs)
 }
 
-/// Live: contiguous captures of `block_s` seconds from `spec`, decoded one
-/// after another until `seconds` of signal (0: until Ctrl-C).
+/// Live: contiguous captures of `block_s` seconds from `spec`, decoded
+/// while the next is captured, until `seconds` of signal (0: until
+/// Ctrl-C).
 #[allow(clippy::too_many_arguments)]
 pub fn run_radio(
     spec: &DeviceSpec,
@@ -361,40 +423,61 @@ pub fn run_radio(
             n as f64 / rate
         );
     }
+    let t0 = std::time::Instant::now();
     let mut secs = 0.0;
-    while !stop.load(Ordering::Relaxed) && (seconds <= 0.0 || secs < seconds) {
-        let mut bytes = Vec::with_capacity(n as usize * 2);
-        let cap = backend.capture(&cfg, n, &mut bytes, stop)?;
-        if !cap.gaps.is_empty() {
-            eprintln!(
-                "[rx] the device lost samples {} time(s) inside this block; decoding its contiguous parts",
-                cap.gaps.len()
-            );
-        }
-        let x = crate::symbols::decode(cap.format, &bytes);
-        let fs = cap.sample_rate_hz;
-        // Decode each contiguous part of the capture separately.
-        let mut start = 0usize;
-        let mut cuts: Vec<usize> = cap.gaps.iter().map(|g| g.at as usize).collect();
-        cuts.push(x.len());
-        for c in cuts {
-            if c > start {
-                decode_block(&x[start..c], fs, carrier_offset_hz, out, stats)?;
+    pipeline(
+        |tx| {
+            let mut captured = 0.0;
+            while !stop.load(Ordering::Relaxed) && (seconds <= 0.0 || captured < seconds) {
+                let mut bytes = Vec::with_capacity(n as usize * 2);
+                let cap = backend.capture(&cfg, n, &mut bytes, stop)?;
+                if !cap.gaps.is_empty() {
+                    eprintln!(
+                        "[rx] the device lost samples {} time(s) inside this block; decoding its contiguous parts",
+                        cap.gaps.len()
+                    );
+                }
+                let x = crate::symbols::decode(cap.format, &bytes);
+                let fs = cap.sample_rate_hz;
+                captured += x.len() as f64 / fs;
+                // each contiguous part of the capture separately
+                let mut start = 0usize;
+                let mut cuts: Vec<usize> = cap.gaps.iter().map(|g| g.at as usize).collect();
+                cuts.push(x.len());
+                for c in cuts {
+                    if c > start
+                        && tx
+                            .send(Block {
+                                x: x[start..c].to_vec(),
+                                fs,
+                            })
+                            .is_err()
+                    {
+                        return Ok(());
+                    }
+                    start = c;
+                }
             }
-            start = c;
-        }
-        secs += x.len() as f64 / fs;
-        if status {
-            let last = stats.ts.values().map(|t| t.uncorrectable).sum::<u64>();
-            eprintln!(
-                "[rx] {secs:.2} s: block {}; {} superframes decoded; packets {} (uncorrectable {last}); MER {}",
-                stats.blocks,
-                stats.decoded,
-                stats.ts.values().map(|t| t.packets).sum::<u64>(),
-                stats.mer_db().map_or("-".into(), |m| format!("{m:.1} dB"))
-            );
-        }
-    }
+            Ok(())
+        },
+        carrier_offset_hz,
+        out,
+        stats,
+        |st| {
+            secs = st.samples as f64 / rate;
+            if status {
+                let last = st.ts.values().map(|t| t.uncorrectable).sum::<u64>();
+                eprintln!(
+                    "[rx] {secs:.2} s of signal after {:.2} s: block {}; {} superframes decoded; packets {} (uncorrectable {last}); MER {}",
+                    t0.elapsed().as_secs_f64(),
+                    st.blocks,
+                    st.decoded,
+                    st.ts.values().map(|t| t.packets).sum::<u64>(),
+                    st.mer_db().map_or("-".into(), |m| format!("{m:.1} dB"))
+                );
+            }
+        },
+    )?;
     Ok(secs)
 }
 

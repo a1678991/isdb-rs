@@ -144,24 +144,93 @@ pub fn symbols_with(
     carrier_offset_hz: Option<f64>,
     trim: Trim,
 ) -> Result<Symbols, ParamError> {
-    let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
-    let cfo = carrier_offset_hz.unwrap_or_else(|| sv.best_carrier().map_or(0.0, |c| c.offset_hz));
-    let mut d = design(fs, cfo);
+    Ok(symbols_with_prior(x, fs, carrier_offset_hz, trim, None)?.0)
+}
+
+/// What one block's acquisition found, for the next block of the same
+/// signal ([`symbols_with_prior`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Prior {
+    /// Carrier offset, Hz.
+    pub carrier_offset_hz: f64,
+    /// Output trim, symbol periods.
+    pub trim: f64,
+    /// Burst MER the front end reached with them on the acquisition's
+    /// excerpt, dB.
+    pub pilot_mer_db: f64,
+    /// Whether the survey matched ISDB-S.
+    pub survey_says_isdbs: bool,
+}
+
+/// How far below the prior's burst MER a block may measure before the
+/// acquisition is redone, dB.
+pub const PRIOR_MARGIN_DB: f64 = 3.0;
+
+/// [`symbols_with`], reusing the carrier and trim of an earlier block of
+/// the same signal (`prior`) when they still hold: the front end runs over
+/// the first 0.05 s with them, and if its burst MER is within
+/// [`PRIOR_MARGIN_DB`] of the prior's, the survey and the trim search are
+/// skipped. Otherwise (or without a prior, or with `carrier_offset_hz` / a
+/// fixed trim given) the full acquisition runs. Returns the symbols and
+/// the acquisition for the next block.
+pub fn symbols_with_prior(
+    x: &[num_complex::Complex<f32>],
+    fs: f64,
+    carrier_offset_hz: Option<f64>,
+    trim: Trim,
+    prior: Option<&Prior>,
+) -> Result<(Symbols, Prior), ParamError> {
     let xi = to_input(x);
-    d.trim = match trim {
-        Trim::Fixed(t) => t,
-        Trim::Auto => {
-            let n = ((0.15 * fs) as usize).min(xi.len());
-            measure_trim(&xi[..n], &d)?.0
+    let excerpt_mer = |d: &Design, secs: f64| -> Result<f64, ParamError> {
+        let n = ((secs * fs) as usize).min(xi.len());
+        let (z, _) = run(&xi[..n], d)?;
+        Ok(pilot_mer(&z).unwrap_or(f64::NEG_INFINITY))
+    };
+    let reuse = match (prior, carrier_offset_hz, trim) {
+        (Some(p), None, Trim::Auto) => {
+            let mut d = design(fs, p.carrier_offset_hz);
+            d.trim = p.trim;
+            (excerpt_mer(&d, 0.05)? >= p.pilot_mer_db - PRIOR_MARGIN_DB).then_some(*p)
+        }
+        _ => None,
+    };
+    let acq = match reuse {
+        Some(p) => p,
+        None => {
+            let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
+            let cfo =
+                carrier_offset_hz.unwrap_or_else(|| sv.best_carrier().map_or(0.0, |c| c.offset_hz));
+            let mut d = design(fs, cfo);
+            let (t, mer) = match trim {
+                Trim::Fixed(t) => {
+                    d.trim = t;
+                    (t, excerpt_mer(&d, 0.05)?)
+                }
+                Trim::Auto => {
+                    let n = ((0.15 * fs) as usize).min(xi.len());
+                    measure_trim(&xi[..n], &d)?
+                }
+            };
+            Prior {
+                carrier_offset_hz: cfo,
+                trim: t,
+                pilot_mer_db: mer,
+                survey_says_isdbs: sv.system.is_some_and(|m| m.system.name == system().name),
+            }
         }
     };
+    let mut d = design(fs, acq.carrier_offset_hz);
+    d.trim = acq.trim;
     let (z, period) = run(&xi, &d)?;
     let period = period / isdb_frontend::params::ONE as f64;
-    Ok(Symbols {
-        z,
-        carrier_offset_hz: cfo,
-        symbol_rate_hz: if period > 0.0 { fs / period } else { 0.0 },
-        survey_says_isdbs: sv.system.is_some_and(|m| m.system.name == system().name),
-        trim: d.trim,
-    })
+    Ok((
+        Symbols {
+            z,
+            carrier_offset_hz: acq.carrier_offset_hz,
+            symbol_rate_hz: if period > 0.0 { fs / period } else { 0.0 },
+            survey_says_isdbs: acq.survey_says_isdbs,
+            trim: acq.trim,
+        },
+        acq,
+    ))
 }
