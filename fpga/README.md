@@ -41,7 +41,7 @@ Results (2026-10-20):
 
 - **Simulation:** bit-exact on every vector set, with every symbol's
   internals and every output word compared:
-  - recordings of BS-1 (ISDB-S, 32 taps) and BS-7 (ISDB-S3, 64 taps);
+  - recordings of BS1 (ISDB-S, 32 taps) and BS7 (ISDB-S3, 64 taps);
   - synthetic ISDB-S at 16 taps and ISDB-S3 at 32 taps;
   - with irregular sample spacing;
   - with coefficients loaded through the port;

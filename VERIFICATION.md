@@ -477,7 +477,7 @@ z⁸ carrier line is too noisy to see it (its phase moves 0.5 rad rms per
 1 ms chunk: the feed's conversion phase noise, ×8); the ISDB-S frame
 sync of the demodulator will settle that. At 57.72 Msps (2 samples per
 symbol) the line and its image coincide and this check does not apply.
-The two methods agree in level (−10.9 dBFS on BS-1 with the AGC at
+The two methods agree in level (−10.9 dBFS on BS1 with the AGC at
 33 dB), which confirms their full scales (2048 and 32768).
 
 **Channel tables.** Every band centre measured lies within 1.3 MHz of
@@ -492,8 +492,8 @@ ambiguous, the rest at 61.44 Msps):
 
 | Transponders | Symbol line | Strongest carrier line | System |
 |---|---|---|---|
-| BS-1, 3, 5, 9, 13, 15, 19, 21, 23 | 28.86 Mbaud, +47…+49 dB | z⁸, +33…+41 dB (z⁴ +21…+27 dB): 8PSK main signal | ISDB-S |
-| BS-7, 11, 17 | 33.7561 Mbaud (+0.6 ppm), +32 dB | z² at +R/2, +27 dB (π/2-shift BPSK), confirmed by z⁴ | ISDB-S3 |
+| BS1, 3, 5, 9, 13, 15, 19, 21, 23 | 28.86 Mbaud, +47…+49 dB | z⁸, +33…+41 dB (z⁴ +21…+27 dB): 8PSK main signal | ISDB-S |
+| BS7, 11, 17 | 33.7561 Mbaud (+0.6 ppm), +32 dB | z² at +R/2, +27 dB (π/2-shift BPSK), confirmed by z⁴ | ISDB-S3 |
 | ND2 … ND20 (10) | 28.86 Mbaud (−0.3…+0.3 ppm), +47…+50 dB | z⁴, +49…+57 dB (z⁸ +25…+43 dB): QPSK main signal | ISDB-S |
 | ND22, ND24 | 28.86 Mbaud, +38…+39 dB | z⁴, +31…+33 dB | ISDB-S (about 10 dB lower SNR: the feed's tilt) |
 
@@ -508,8 +508,8 @@ stretch (so z^k lines are searched within ±R/2), and in ISDB-S3
 recordings an unrelated line of the same strength as the π/2-BPSK line
 lies in the −R/2 window (so an offset counts when a second line kind
 confirms it). The opt-in tests `isdb-iq` `tests/captures.rs`
-(`ISDB_RS_ISDBS_IQ`, `ISDB_RS_ISDBS3_IQ`) pass on ND2, ND22, ND24, BS-1
-(maia and libiio recordings) and BS-7, 11, 17.
+(`ISDB_RS_ISDBS_IQ`, `ISDB_RS_ISDBS3_IQ`) pass on ND2, ND22, ND24, BS1
+(maia and libiio recordings) and BS7, 11, 17.
 
 ## 8-bit captures and streaming over Gigabit Ethernet
 
@@ -522,7 +522,7 @@ live, without new FPGA code.
 `voltage0` is the only `cf-ad9361-lpc` channel enabled (`{Q8, I8}` per
 16-bit word, maia-hdl `cs12_cs8mux.v`), and 12-bit samples with sync
 bursts when `voltage1` is; maia-sdr's recorder has `IQ16bit`, `IQ12bit`
-and `IQ8bit` modes. On BS-1 at 40 Msps, against 16-bit captures of the
+and `IQ8bit` modes. On BS1 at 40 Msps, against 16-bit captures of the
 same signal:
 
 | Path | Datatype | Power | Carrier offset | DC mean (8-bit LSB) |
@@ -551,18 +551,18 @@ reservation. The longest contiguous recordings are now 1.68 s (8 bits at
 40 Msps); one libiio buffer holds 33 030 144 8-bit samples (63 MiB).
 
 **40 Msps is enough for both systems.** With the AD9361's own filters at
-40 Msps, the BS-1 spectrum matches the 57.72 Msps one within 0.5 dB out
+40 Msps, the BS1 spectrum matches the 57.72 Msps one within 0.5 dB out
 to ±16 MHz and within 2.5 dB at ±18–19 MHz, where it is already 16–22 dB
 down (analog bandwidth 38–56 MHz made no difference). `isdb iq survey`
-on full 8-bit maia recordings at 40 Msps: BS-1 ISDB-S 28.86002 Mbaud
-(line +45.7 dB), carrier −112.2 kHz from z⁸ (+42 dB), z⁴ and z²; BS-7
+on full 8-bit maia recordings at 40 Msps: BS1 ISDB-S 28.86002 Mbaud
+(line +45.7 dB), carrier −112.2 kHz from z⁸ (+42 dB), z⁴ and z²; BS7
 ISDB-S3 33.75612 Mbaud (+24.7 dB), carrier −112.1 kHz from both
 π/2-BPSK z² lines (+28 dB). At 40 Msps the two ±R/2 search windows met
 across fs/2, so each saw both lines and the +R/2 one reported +3.0 MHz;
 the windows are now kept apart (`isdb-iq` `pi2_bpsk_carrier_line` at
 61.44 and 40 Msps). The opt-in `isdb-iq` capture tests pass on these
-recordings (BS-1: symbol clock continuous over 67 108 864 samples,
-largest deviation 0.109 rad against 4.53 rad for one lost sample; BS-7:
+recordings (BS1: symbol clock continuous over 67 108 864 samples,
+largest deviation 0.109 rad against 4.53 rad for one lost sample; BS7:
 0.619 rad against 5.30; the libiio 8-bit buffer: 0.073 rad).
 
 **Link throughput.** 40 Msps of 8-bit samples is 80 MB/s; the link does
@@ -580,19 +580,19 @@ The Zynq-7000 GEM has no TSO and its `maxmtu` is 1518 (no jumbo frames),
 so the board's CPU and TCP stack, not the cable, set the ceiling; a
 direct cable instead of a switch does not raise it. Streamed captures
 (`isdb capture --radio pluto:…,recorder=stream,bits=8 --discard`) on
-BS-1 and BS-7:
+BS1 and BS7:
 
 | Rate (8-bit samples) | MB/s | Duration | Losses reported | Samples discarded |
 |---|---|---|---|---|
 | 10 Msps | 20 | 20 s | 0 | 0 |
 | 15 / 18 / 20 / 22 Msps | 30 / 36 / 40 / 44 | 30 s each | 0 | 0 |
-| 20 Msps (BS-1) | 40 | 300 s | 0 | 0 |
-| 24 Msps (BS-1) | 48 | 300 s | 9 | 142 606 336 (2.0 %) |
-| 28 Msps (BS-1) | 56 | 300 s | 7 | 114 294 784 (1.4 %) |
-| 32 Msps (BS-7) | 64 | 300 s | 14 | 476 053 504 (5.0 %) |
-| 40 Msps (BS-1, BS-7) | 80 | 60 s | continuous after the first 2–4 Mi samples | all (≈ 65.5 MB/s arrived) |
+| 20 Msps (BS1) | 40 | 300 s | 0 | 0 |
+| 24 Msps (BS1) | 48 | 300 s | 9 | 142 606 336 (2.0 %) |
+| 28 Msps (BS1) | 56 | 300 s | 7 | 114 294 784 (1.4 %) |
+| 32 Msps (BS7) | 64 | 300 s | 14 | 476 053 504 (5.0 %) |
+| 40 Msps (BS1, BS7) | 80 | 60 s | continuous after the first 2–4 Mi samples | all (≈ 65.5 MB/s arrived) |
 
-16-bit samples at 512/63 MHz (32.5 MB/s, the ISDB-T rate, ch27) streamed
+16-bit samples at 512/63 MHz (32.5 MB/s, the ISDB-T rate, T27) streamed
 60 s without loss. Losses above 40 MB/s come at random (single 30 s runs
 at 28 and 32 Msps had none), so "loss-free" holds up to about 40 MB/s on
 this board with its default services running.
@@ -643,7 +643,7 @@ stack (`pluto_stream`, the `zynqrx` DVB-S2 receiver, MQTT, GPS and NFS
 helpers). With those stopped (board ≈ 99 % idle, no QSPI interrupts;
 `/mnt/jffs2/autorun.sh` on this board stops them at every boot),
 streamed captures (`isdb capture --radio pluto:…,recorder=stream,bits=8
---discard`, BS-1):
+--discard`, BS1):
 
 | 8-bit rate | MB/s | 30 s | 300 s |
 |---|---|---|---|
@@ -667,7 +667,7 @@ whatever the transport, below the 78 MB/s that 8-bit IQ for ISDB-S needs
 **Sample rate and analog bandwidth.** The 40 Msps recordings of the
 previous section used `isdb capture`'s default analog bandwidth,
 0.8 × the rate (32 MHz), which cuts the band edges. 8PSK
-decision-directed MER of BS-1 after the front end (32 taps):
+decision-directed MER of BS1 after the front end (32 taps):
 
 | Recording | 8PSK MER |
 |---|---|
@@ -680,11 +680,11 @@ decision-directed MER of BS-1 after the front end (32 taps):
 **Front end on the recordings** (`isdb-frontend` `examples/analyze.rs`,
 40 Msps, 56 MHz):
 
-- **ISDB-S (BS-1):** the timing loop settles at +0.68 ppm (the board's
+- **ISDB-S (BS1):** the timing loop settles at +0.68 ppm (the board's
   clock offset). The fixed-point and floating-point outputs agree within
   0.01 dB. MER against taps: 8 / 12 / 16 / 24 / 32 taps give
   13.75 / 14.33 / 14.65 / 14.86 / 14.94 dB.
-- **ISDB-S3 (BS-7, roll-off 0.03):** the non-data-aided timing
+- **ISDB-S3 (BS7, roll-off 0.03):** the non-data-aided timing
   detector's slope shrinks with the roll-off:
   - at a loop bandwidth of 2·10⁻⁴ R it wanders (−265 ppm with 32 taps);
   - at 2·10⁻⁵ to 10⁻⁶ R it locks at +0.68 ppm with a period jitter of
@@ -714,7 +714,7 @@ ISDB-S MER above 10 dB, and a lossless read-back of the words.
 - **Simulation:** reproduces the model bit for bit. Every symbol's
   phase, filter outputs, gain, period, scaled outputs, output components,
   timing and AGC errors, and every output word are compared on:
-  - recordings of BS-1 (32 taps, 2887 symbols) and BS-7 (64 taps,
+  - recordings of BS1 (32 taps, 2887 symbols) and BS7 (64 taps,
     2532 symbols);
   - synthetic signals (16 and 32 taps);
   - with sample strobes 4–7 cycles apart;
@@ -731,7 +731,7 @@ ISDB-S MER above 10 dB, and a lossless read-back of the words.
   need Vivado; `fpga/README.md` lists the steps). On the current
   bitstream, `isdb symbols --probe` reads `up_adc_gpio_in` = 0: no front
   end. `isdb symbols` falls back to the CPU on one contiguous capture
-  (0.2 s of BS-1: 8PSK MER 14.84 dB, words read back without loss).
+  (0.2 s of BS1: 8PSK MER 14.84 dB, words read back without loss).
 - **Configuration cost:** an iiod register access takes 0.62 ms (500
   reads), so configuring 32 taps (about 4,250 commands) takes about
   2.6 s.

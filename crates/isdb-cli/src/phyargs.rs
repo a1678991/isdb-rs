@@ -6,7 +6,7 @@ use clap::Args;
 use isdb_radio::{DeviceSpec, RadioConfig};
 use isdbt_core::*;
 
-use crate::bands::{TV_BAND_HZ, uhf_hz};
+use crate::bands::{Channel, TV_BAND_HZ};
 
 /// Transmission parameters (what TMCC signals, ARIB STD-B31 §3.15).
 /// Defaults are the Japanese terrestrial norm: Mode 3, GI 1/8, partial
@@ -148,9 +148,10 @@ pub fn describe_layer(l: &LayerConfig, mode: Mode) -> String {
 /// RF tuning shared by `tx --radio` and `rx --radio`.
 #[derive(Debug, Clone, Args)]
 pub struct TuneArgs {
-    /// Japanese UHF channel 13..62 (centre 473 + 6·(ch−13) + 1/7 MHz).
+    /// Terrestrial channel T13..T62 (centre 473 + 6·(n−13) + 1/7 MHz; a
+    /// bare number such as 44 means T44).
     #[arg(long, conflicts_with = "freq")]
-    pub channel: Option<u32>,
+    pub channel: Option<Channel>,
     /// Centre frequency in Hz (alternative to --channel); 470–710 MHz, the
     /// Japanese UHF TV band, unless --freq-unrestricted.
     #[arg(long)]
@@ -180,8 +181,8 @@ pub struct Tuning {
     pub nominal_hz: u64,
     /// Frequency to program into the radio (ppm-corrected).
     pub set_hz: u64,
-    /// Channel number if given.
-    pub channel: Option<u32>,
+    /// Channel if given.
+    pub channel: Option<Channel>,
     /// Sample-rate request as a rational number `rate_num / rate_den` Hz
     /// (ppm-corrected): the ISDB-T 512/63 MHz clock.
     pub rate_num: u32,
@@ -193,18 +194,19 @@ impl TuneArgs {
     /// Resolve channel/frequency and the ppm correction.
     pub fn tuning(&self) -> Result<Tuning> {
         let nominal_hz = match (self.channel, self.freq) {
-            (Some(ch), None) => uhf_hz(ch)?,
+            (Some(c), None) if c.is_satellite() => bail!(
+                "--channel {c}: a satellite channel; ISDB-S / ISDB-S3 are not received or sent by this command (see `isdb capture`, `isdb symbols`)"
+            ),
+            (Some(c), None) => c.tune_hz()?,
             (None, Some(f)) => f,
             (None, None) => bail!("give --channel N or --freq HZ"),
             (Some(_), Some(_)) => bail!("--channel and --freq are exclusive"),
         };
         if !self.freq_unrestricted && !TV_BAND_HZ.contains(&nominal_hz) {
             bail!(
-                "centre frequency {:.6} MHz{} is outside the 470–710 MHz UHF TV band (channels 13–52); add --freq-unrestricted only for a shielded lab setup",
+                "centre frequency {:.6} MHz{} is outside the 470–710 MHz UHF TV band (T13–T52); add --freq-unrestricted only for a shielded lab setup",
                 nominal_hz as f64 / 1e6,
-                self.channel
-                    .map(|c| format!(" (UHF ch{c})"))
-                    .unwrap_or_default()
+                self.channel.map(|c| c.label()).unwrap_or_default()
             );
         }
         if !(-200.0..=200.0).contains(&self.freq_corr_ppm) {
@@ -244,11 +246,9 @@ impl TuneArgs {
 }
 
 impl Tuning {
-    /// ` (UHF ch13)` when tuned by channel, else empty.
+    /// ` (T13)` when tuned by channel, else empty.
     pub fn channel_label(&self) -> String {
-        self.channel
-            .map(|c| format!(" (UHF ch{c})"))
-            .unwrap_or_default()
+        self.channel.map(|c| c.label()).unwrap_or_default()
     }
 }
 
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn tuning_with_ppm_correction() {
         let mut t = TuneArgs {
-            channel: Some(13),
+            channel: Some(Channel::T(13)),
             freq: None,
             freq_unrestricted: false,
             freq_corr_ppm: 0.0,
@@ -386,7 +386,7 @@ mod tests {
     fn freq_restricted_to_the_uhf_tv_band() {
         let t = |channel: Option<u32>, freq: Option<u64>, unrestricted: bool| {
             TuneArgs {
-                channel,
+                channel: channel.map(Channel::T),
                 freq,
                 freq_unrestricted: unrestricted,
                 freq_corr_ppm: 0.0,
@@ -407,16 +407,26 @@ mod tests {
         }
         // channel → frequency is unchanged; 53–62 lie above the band
         let e = t(Some(53), None, false).unwrap_err().to_string();
-        assert!(e.contains("713.142857 MHz (UHF ch53)"), "{e}");
+        assert!(e.contains("713.142857 MHz (T53)"), "{e}");
         assert_eq!(t(Some(62), None, true).unwrap().nominal_hz, 767_142_857);
         // the device range is the radio backend's to check, not the CLI's
         assert!(t(None, Some(7_000_000_000), true).is_ok());
+        // satellite channels are not tuned by rx / tx
+        let sat = TuneArgs {
+            channel: Some(Channel::Bs(1)),
+            freq: None,
+            freq_unrestricted: true,
+            freq_corr_ppm: 0.0,
+            bb_filter_hz: 6_000_000,
+        };
+        let e = sat.tuning().unwrap_err().to_string();
+        assert!(e.contains("--channel BS1: a satellite channel"), "{e}");
     }
 
     #[test]
     fn radio_config_carries_tuning_args_and_gains() {
         let a = TuneArgs {
-            channel: Some(13),
+            channel: Some(Channel::T(13)),
             freq: None,
             freq_unrestricted: false,
             freq_corr_ppm: 10.0,
@@ -430,7 +440,7 @@ mod tests {
         assert_eq!(c.bandwidth_hz, 5_000_000);
         assert_eq!(c.args, spec.args);
         assert_eq!(c.gains, vec![("g".to_string(), "3".to_string())]);
-        assert_eq!(t.channel_label(), " (UHF ch13)");
+        assert_eq!(t.channel_label(), " (T13)");
         assert!(parse_gain("gain").is_err());
     }
 

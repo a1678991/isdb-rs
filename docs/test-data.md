@@ -25,7 +25,7 @@ gr-isdbt differential test.
 | `ISDB_RS_ISDBS3_IQ` | a SigMF recording of an ISDB-S3 transponder | `isdb-iq` `tests/captures.rs` `isdb_s3_recording` (the same checks for ISDB-S3); `isdb-frontend` `tests/captures.rs` `isdb_s3_recording` (the same front-end checks without the 8PSK MER) |
 | `ISDB_RS_PLUTO_URI` | a PlutoSDR-family radio (libiio URI, e.g. `ip:192.0.2.30`); **receive only** | `isdb-cli` `capture_from_a_pluto` (two 256 Ki-sample `isdb capture` segments at 61.44 Msps: file size, SigMF fields, gap marker, no overwrite); `symbols_probe_on_a_pluto` (`isdb symbols --probe` reads whether the bitstream has the FPGA symbol front end, one register read; without one `--offload fpga` refuses) |
 | `ISDB_RS_TEZUKA_URI` | a PlutoSDR-family radio running the Tezuka firmware (libiio URI); **receive only** | `isdb-cli` `tezuka_captures` (an 8-bit libiio buffer, a 1 s 8-bit stream and maia-sdr recordings in 8 and 12 bits: SigMF datatype and full scale, capture method, file size) |
-| `ISDB_RS_PLUTO_CAPTURE_FREQ` | frequency or channel for those tests (default `bs1`, the BS-1 satellite IF) | the same tests |
+| `ISDB_RS_PLUTO_CAPTURE_FREQ` | frequency or channel for those tests (default `BS1`, the BS1 satellite IF) | the same tests |
 | `ISDB_RS_ORACLE_CONTAINER` | name of the running oracle container (default `isdb-oracle`) | `oracle/run_matrix.py` |
 | `ISDB_RS_ORACLE_OUT` | output directory of the oracle matrix, inside the repository (default `target/oracle-matrix`) | `oracle/run_matrix.py` |
 
@@ -97,7 +97,7 @@ dvbv5-zap -c dvb_channel.conf -r -P -t 30 -o capture.ts "<channel name>"   # all
 **IQ capture with a HackRF** (receive only), then demodulate it:
 
 ```sh
-hackrf_transfer -r capture.cs8 -f 557142857 -s 8126984 -l 16 -g 20 -n 81269840   # ch27, 10 s
+hackrf_transfer -r capture.cs8 -f 557142857 -s 8126984 -l 16 -g 20 -n 81269840   # T27, 10 s
 isdb rx --iq capture.cs8 --iq-format cs8 --out capture.ts --json
 ```
 

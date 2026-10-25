@@ -36,7 +36,7 @@ captures at 40 Msps with 56 MHz analog bandwidth; details in
 | Question | Measurement | Choice |
 |---|---|---|
 | Why not stream IQ? | iiod streams 8-bit IQ loss-free for 5 min up to 36 Msps (71.9 MB/s) with Tezuka's services stopped, and drops at 80 MB/s; a raw TCP send from the board manages 59.8 MB/s (one stream) to 69.5 MB/s (two, 89 % CPU) | IQ for ISDB-S needs ≥ 38.96 Msps ((1 + α)·R), ≥ 78 MB/s in 8 bits: above the ceiling. At 36 Msps it fits only by aliasing the roll-off (−0.9 dB MER) and with no margin. Send symbols instead |
-| Sample rate | BS-1 8PSK MER 14.9 dB at 40 Msps and 56 MHz bandwidth, against 15.2 dB at 57.72 / 61.44 Msps; 13.9 dB with 40 MHz and 13.0 dB with 32 MHz analog bandwidth | 40 Msps (≥ (1 + α)·R for both systems), analog bandwidth 56 MHz |
+| Sample rate | BS1 8PSK MER 14.9 dB at 40 Msps and 56 MHz bandwidth, against 15.2 dB at 57.72 / 61.44 Msps; 13.9 dB with 40 MHz and 13.0 dB with 32 MHz analog bandwidth | 40 Msps (≥ (1 + α)·R for both systems), analog bandwidth 56 MHz |
 | Taps | ISDB-S MER at 8 / 12 / 16 / 24 / 32 taps: 13.75 / 14.33 / 14.65 / 14.86 / 14.94 dB; ISDB-S3 ring MER within 0.1 dB from 24 to 64 taps | 32 (46 DSP48E1 in the FPGA) |
 | Timing loop bandwidth | ISDB-S locks at 2·10⁻⁴ R. ISDB-S3 (α = 0.03: the detector's slope shrinks with the roll-off) wanders at 2·10⁻⁴ R with 32 taps (−265 ppm) and locks at 2·10⁻⁵…10⁻⁶ R (+0.68 ppm, the board's clock offset, as on ISDB-S) | 2·10⁻⁴ R for ISDB-S, 5·10⁻⁶ R for ISDB-S3 (`Design::for_system`) |
 | Fixed point | Fixed-point and floating-point outputs within 0.03 dB (ring MER, 8PSK MER) on every recording | the model as specified |

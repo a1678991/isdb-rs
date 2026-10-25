@@ -23,8 +23,8 @@ pub struct CaptureArgs {
     #[arg(long, value_name = "SPEC")]
     pub radio: DeviceSpec,
     /// Centre frequency: Hz (`1049480000`, `1049.48M`) or a channel name:
-    /// `chN` (UHF 13..62), `bsN` (BS, odd 1..23) and `ndN` (110° CS, even
-    /// 2..24) at their satellite IF (RF − 10.678 GHz).
+    /// `T13`..`T62` (terrestrial UHF), `BS1`..`BS23` (odd) and `ND2`..`ND24`
+    /// (even, 110° CS) at their satellite IF (RF − 10.678 GHz).
     #[arg(long, value_name = "HZ|CHANNEL")]
     pub freq: Freq,
     /// Sample rate in samples per second (`57.72M`, `61440000`). The rate
@@ -488,7 +488,7 @@ mod tests {
         assert_eq!(m.captures.len(), 2);
         assert_eq!(m.captures[1].sample_start, 4);
         assert_eq!(m.captures[0].frequency, Some(1_613_000_000.0));
-        assert_eq!(m.captures[0].extra["isdb:channel"], json!("nd2"));
+        assert_eq!(m.captures[0].extra["isdb:channel"], json!("ND2"));
         assert_eq!(
             m.captures[0].extra["isdb:channel_rf_hz"],
             json!(12_291_000_000u64)

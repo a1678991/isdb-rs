@@ -76,7 +76,7 @@ seen in a live terrestrial capture), `examples/bench-minimal.toml` (every
 value derived from the media, copy-free) — both reference placeholder media
 paths `media/video.m2v` and `media/audio.m2a` (relative to the TOML; point
 them at your own MPEG-2 video ES and AAC ADTS files; no media is committed)
-— and `examples/relay-ts.toml` (rebroadcast a recorded program on UHF ch44,
+— and `examples/relay-ts.toml` (rebroadcast a recorded program on T44,
 remote key 9; program and PIDs detected from the recording; its `source =
 "recording.ts"` is a placeholder for your own recording). Transmission parameters are
 not in the TOML: they come from `Params` (the `isdb` `--mode/--gi/--layer-*`

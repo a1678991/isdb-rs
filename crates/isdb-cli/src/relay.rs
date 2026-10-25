@@ -16,7 +16,7 @@ use isdbt_mux::config::{AtEof, CaMode, LayerName, StreamCfg};
 use isdbt_mux::relay_template::{DEFAULT_NAME, RelayOptions};
 use isdbt_mux::{Config, Multiplexer, MuxError};
 
-use crate::bands::uhf_hz;
+use crate::bands::{Channel, uhf_hz};
 use crate::input::{FrameInput, InputArgs, MuxConfigInput};
 use crate::phyargs::{describe_params, phy_options};
 
@@ -294,7 +294,7 @@ pub fn print_config(o: &RelayOptions, params: &Params, auto_layout: bool) -> Res
 /// One line: the service a `--relay` builds.
 pub fn summary(src: &Path, o: &RelayOptions) -> String {
     format!(
-        "isdb: relay {}: service 0x0400 \"{}\" on layer {:?}, UHF ch{} (NIT), remote key {}, area {:#05x}, {}, CA {}",
+        "isdb: relay {}: service 0x0400 \"{}\" on layer {:?}, T{} (NIT), remote key {}, area {:#05x}, {}, CA {}",
         src.display(),
         o.name,
         o.layer,
@@ -366,18 +366,20 @@ pub fn prepare(
     Ok(Prepared::Ready(params, None))
 }
 
-/// The NIT channel of a `tx --relay`: `--channel`, else the UHF channel
-/// whose centre is `--freq` (±0.5 MHz), else 44.
-pub fn tx_channel(channel: Option<u32>, freq: Option<u64>) -> Result<u32> {
-    if let Some(c) = channel {
-        return Ok(c);
+/// The NIT channel of a `tx --relay`: `--channel`, else the terrestrial
+/// channel whose centre is `--freq` (±0.5 MHz), else 44.
+pub fn tx_channel(channel: Option<Channel>, freq: Option<u64>) -> Result<u32> {
+    match channel {
+        Some(Channel::T(c)) => return Ok(c),
+        Some(c) => bail!("--relay: {c} is not a terrestrial channel"),
+        None => {}
     }
     if let Some(f) = freq {
         return (13..=62)
             .find(|&c| uhf_hz(c).is_ok_and(|h| h.abs_diff(f) <= 500_000))
             .with_context(|| {
                 format!(
-                    "--relay: {f} Hz is not a UHF channel centre; the NIT must name the transmit channel, give --channel"
+                    "--relay: {f} Hz is not a terrestrial channel centre; the NIT must name the transmit channel, give --channel"
                 )
             });
     }
@@ -395,7 +397,8 @@ mod tests {
         assert_eq!(parse_u16("211"), Ok(211));
         assert!(parse_u16("0x1_0000").is_err());
         assert_eq!(tx_channel(None, None).unwrap(), 44);
-        assert_eq!(tx_channel(Some(27), Some(1)).unwrap(), 27);
+        assert_eq!(tx_channel(Some(Channel::T(27)), Some(1)).unwrap(), 27);
+        assert!(tx_channel(Some(Channel::Bs(1)), None).is_err());
         assert_eq!(tx_channel(None, Some(659_142_857)).unwrap(), 44);
         assert!(tx_channel(None, Some(660_000_000)).is_err());
         let l = |segments| {

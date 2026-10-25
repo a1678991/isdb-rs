@@ -510,7 +510,7 @@ fn radio_tx_refuses_without_rf_enable() {
     ]);
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("hackrf TX settings (UHF ch13):"), "{err}");
+    assert!(err.contains("hackrf TX settings (T13):"), "{err}");
     assert!(err.contains("centre 473.142857 MHz"), "{err}");
     assert!(err.contains("TX VGA       20 dB"), "{err}");
     assert!(err.contains("RF amp       off"), "{err}");
@@ -591,7 +591,7 @@ fn pluto_dry_run_validates_without_a_device() {
         "--gain",
         "att=30",
     ]);
-    assert!(e.contains("pluto TX settings (UHF ch13):"), "{e}");
+    assert!(e.contains("pluto TX settings (T13):"), "{e}");
     assert!(e.contains("device       Pluto ip:192.0.2.1, TX1"), "{e}");
     assert!(e.contains("TX atten     30 dB"), "{e}");
     assert!(e.contains("nothing radiated"), "{e}");
@@ -651,7 +651,7 @@ fn capture_dry_run_validates_without_a_device() {
     let o = cap(&["--radio", "pluto:uri=ip:192.0.2.1", "--freq", "bs1"]);
     assert!(o.status.success());
     let e = String::from_utf8_lossy(&o.stderr);
-    assert!(e.contains("pluto capture settings (BS-1 IF):"), "{e}");
+    assert!(e.contains("pluto capture settings (BS1 IF):"), "{e}");
     assert!(e.contains("programmed 1049480000 Hz"), "{e}");
     assert!(e.contains("recorder     libiio single buffer"), "{e}");
     assert!(e.contains("1 segment(s) of 16515072 samples"), "{e}");
@@ -691,7 +691,7 @@ fn capture_dry_run_validates_without_a_device() {
         ),
         (
             &["--radio", "pluto", "--freq", "bs2"][..],
-            "BS channel 2: odd 1..23",
+            "channel BS2: odd 1..23",
         ),
         (
             &["--radio", "pluto", "--freq", "bs1", "--bw", "60M"][..],
@@ -835,7 +835,7 @@ static RADIO: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Opt-in hardware test (receive only): `ISDB_RS_PLUTO_URI` names a
 /// PlutoSDR-family radio, e.g. `ip:192.0.2.30`; `ISDB_RS_PLUTO_CAPTURE_FREQ`
-/// the frequency or channel to capture (default `bs1`, the BS-1 satellite
+/// the frequency or channel to capture (default `BS1`, the BS1 satellite
 /// IF). Captures two short segments and checks the recording and its
 /// metadata; the signal itself is not checked.
 #[cfg(feature = "pluto")]
@@ -848,7 +848,7 @@ fn capture_from_a_pluto() {
     let _radio = RADIO
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let freq = std::env::var("ISDB_RS_PLUTO_CAPTURE_FREQ").unwrap_or_else(|_| "bs1".into());
+    let freq = std::env::var("ISDB_RS_PLUTO_CAPTURE_FREQ").unwrap_or_else(|_| "BS1".into());
     let dir = tmp("capture-pluto");
     let out = dir.join("c.sigmf-data");
     let radio = format!("pluto:uri={}", uri.to_string_lossy());
@@ -913,7 +913,7 @@ fn symbols_probe_on_a_pluto() {
     let _radio = RADIO
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let freq = std::env::var("ISDB_RS_PLUTO_CAPTURE_FREQ").unwrap_or_else(|_| "bs1".into());
+    let freq = std::env::var("ISDB_RS_PLUTO_CAPTURE_FREQ").unwrap_or_else(|_| "BS1".into());
     let radio = format!("pluto:uri={}", uri.to_string_lossy());
     let o = run(&["symbols", "--radio", &radio, "--freq", &freq, "--probe"]);
     let e = String::from_utf8_lossy(&o.stderr);
@@ -961,7 +961,7 @@ fn tezuka_captures() {
     let _radio = RADIO
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let freq = std::env::var("ISDB_RS_PLUTO_CAPTURE_FREQ").unwrap_or_else(|_| "bs1".into());
+    let freq = std::env::var("ISDB_RS_PLUTO_CAPTURE_FREQ").unwrap_or_else(|_| "BS1".into());
     let dir = tmp("capture-tezuka");
     let uri = uri.to_string_lossy();
     // (device arguments, rate, length option, data type, full scale,
@@ -1836,7 +1836,7 @@ fn relay_without_toml() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("[loopback] PASS"), "{err}");
     assert!(
-        err.contains("isdb: relay ") && err.contains("UHF ch44 (NIT), remote key 9, area 0x5a5"),
+        err.contains("isdb: relay ") && err.contains("T44 (NIT), remote key 9, area 0x5a5"),
         "{err}"
     );
     std::fs::remove_dir_all(&d).unwrap();

@@ -1156,7 +1156,7 @@ encoded as defaults or validator warnings:
   for driver reasons unrelated to the TS (SPECS.md §4).
 - **The Sony BDZ-ZW1500 starts its BML browser only for a service whose
   identity matches its channel memory** (2026-10-12). A `bml-carousel`
-  under the placeholder network (0x79EE, key 9, ch44) lit the "d" mark
+  under the placeholder network (0x79EE, key 9, T44) lit the "d" mark
   but d did nothing (no "data fetching" message); a live station's own
   carousel relayed unchanged into that network behaved the same. The
   station's recording re-emitted with its own network_id, TS / service

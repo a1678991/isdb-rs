@@ -106,8 +106,8 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
   a link without writing, progress every 5 s, Ctrl-C ends a stream and
   keeps what it wrote, `--dry-run`, `--survey`, no overwrite without
   `--overwrite`) and `isdb iq survey` (text or `--json`). `--freq` of
-  `capture` takes channel names: `chN` (UHF), `bsN` and `ndN` (BS and
-  110° CS at their satellite IF).
+  `capture` takes channel names: `T<n>` (UHF), `BS<n>` and `ND<n>` (BS
+  and 110° CS at their satellite IF).
 - `isdb-frontend`: single-carrier receive front end for ISDB-S and
   ISDB-S3 (IQ to symbols at one per symbol):
   - a bit-exact fixed-point model of format version 1: 32-bit NCO mixer,
@@ -227,6 +227,14 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
 
 ### Changed
 
+- `isdb-cli`: channels are written `T<n>` (terrestrial UHF, T13–T62),
+  `BS<n>` (odd 1–23) and `ND<n>` (even 2–24), parsed case-insensitively.
+  `--channel` of `tx` / `rx` takes these names, and a bare number still
+  means a terrestrial channel (`--channel 44` = T44). Labels and messages
+  print ` (T27)`, ` (BS1 IF)`, ` (ND2 IF)` (formerly ` (UHF ch27)`,
+  ` (BS-1 IF)`); `isdb capture` writes `isdb:channel` as `BS1` / `ND2` /
+  `T27`. The `chN` / `uhfN` / `bs-N` / `nd-N` spellings are no longer
+  accepted. `tx` / `rx` refuse satellite channels (ISDB-T only).
 - `isdb-cli`: the UHF channel table moved from `phyargs` to the new
   `bands` module (`channel_hz` → `bands::uhf_hz`), next to the BS and
   110° CS satellite IF tables; `tx` / `rx` behave as before.

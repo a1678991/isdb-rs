@@ -20,7 +20,7 @@
 //! | `isdb:lo_hz` | capture | LO frequency read back from the radio (`core:frequency` is the nominal centre) |
 //! | `isdb:rf_bandwidth_hz` | capture | analog bandwidth read back from the radio |
 //! | `isdb:gain` | capture | gain mode and value as the radio reported it, e.g. `AGC slow_attack, 33 dB at the end` |
-//! | `isdb:channel` | capture | the channel name the centre frequency was chosen by (`bs1`, `nd2`, `ch27`), if any |
+//! | `isdb:channel` | capture | the channel name the centre frequency was chosen by (`BS1`, `ND2`, `T27`; recordings made before 2026-10-25 say `bs1`, `nd2`, `ch27`), if any |
 //! | `isdb:channel_rf_hz` | capture | that channel's RF centre on air (for a satellite channel tuned at its IF) |
 //! | `isdb:capture_method` | capture | how the samples were taken (`libiio single buffer`, `libiio stream …`, `maia-sdr recorder IQ8bit: …`) |
 //! | `isdb:gap_before` | capture | `true`: samples between this segment and the previous one were lost (the segments were captured one after another, or a streamed capture lost samples) |
@@ -249,7 +249,7 @@ mod tests {
         m.hw = Some("PlutoSky".into());
         let mut extra = Map::new();
         extra.insert("isdb:lo_hz".into(), json!(1_049_479_998u64));
-        extra.insert("isdb:channel".into(), json!("bs1"));
+        extra.insert("isdb:channel".into(), json!("BS1"));
         m.captures.push(Segment {
             sample_start: 0,
             frequency: Some(1_049_480_000.0),

@@ -19,7 +19,7 @@ use std::str::FromStr;
 /// the 1/7 MHz offset centres the 5.57 MHz OFDM band in the 6 MHz channel).
 pub fn uhf_hz(ch: u32) -> Result<u64> {
     if !(13..=62).contains(&ch) {
-        bail!("UHF channel {ch} outside 13..62");
+        bail!("channel T{ch}: outside T13..T62");
     }
     // 1/7 MHz = 142 857.142… Hz, rounded to the nearest hertz.
     Ok(473_000_000 + 6_000_000 * (u64::from(ch) - 13) + 142_857)
@@ -38,29 +38,30 @@ pub const LNB_LO_HZ: u64 = 10_678_000_000;
 pub fn bs_rf_hz(n: u32) -> Result<u64> {
     if !(1..=23).contains(&n) || n.is_multiple_of(2) {
         bail!(
-            "BS channel {n}: odd 1..23 (the right-hand-circular channels; the even, left-hand ones use another LNB LO and are not tabulated)"
+            "channel BS{n}: odd 1..23 (the right-hand-circular channels; the even, left-hand ones use another LNB LO and are not tabulated)"
         );
     }
     Ok(11_727_480_000 + 19_180_000 * (u64::from(n) - 1))
 }
 
-/// RF centre of 110° CS channel ND-`n` (even 2..=24): 12 251 + 20·n MHz
+/// RF centre of 110° CS channel ND`n` (even 2..=24): 12 251 + 20·n MHz
 /// (ND2 = 12.291 GHz, 40 MHz apart).
 pub fn nd_rf_hz(n: u32) -> Result<u64> {
     if !(2..=24).contains(&n) || !n.is_multiple_of(2) {
-        bail!("110° CS channel ND{n}: even 2..24");
+        bail!("channel ND{n}: even 2..24 (110° CS)");
     }
     Ok(12_251_000_000 + 20_000_000 * u64::from(n))
 }
 
-/// A named channel.
+/// A named channel, written `T27`, `BS1` or `ND2` (case-insensitive when
+/// parsed; a bare number is a terrestrial channel).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
-    /// Japanese UHF terrestrial channel 13..62 (`ch27`).
-    Uhf(u32),
-    /// BS channel, odd 1..23 (`bs1`), at its satellite IF.
+    /// Japanese UHF terrestrial channel 13..62 (`T27`).
+    T(u32),
+    /// BS channel, odd 1..23 (`BS1`), at its satellite IF.
     Bs(u32),
-    /// 110° CS channel ND-n, even 2..24 (`nd2`), at its satellite IF.
+    /// 110° CS channel, even 2..24 (`ND2`), at its satellite IF.
     Nd(u32),
 }
 
@@ -69,7 +70,7 @@ impl Channel {
     /// IF centre (RF − [`LNB_LO_HZ`]).
     pub fn tune_hz(&self) -> Result<u64> {
         Ok(match *self {
-            Self::Uhf(c) => uhf_hz(c)?,
+            Self::T(c) => uhf_hz(c)?,
             Self::Bs(n) => bs_rf_hz(n)? - LNB_LO_HZ,
             Self::Nd(n) => nd_rf_hz(n)? - LNB_LO_HZ,
         })
@@ -78,29 +79,33 @@ impl Channel {
     /// The RF centre on air (equal to [`Channel::tune_hz`] for UHF).
     pub fn rf_hz(&self) -> Result<u64> {
         match *self {
-            Self::Uhf(c) => uhf_hz(c),
+            Self::T(c) => uhf_hz(c),
             Self::Bs(n) => bs_rf_hz(n),
             Self::Nd(n) => nd_rf_hz(n),
         }
     }
 
-    /// ` (UHF ch27)`, ` (BS-1 IF)`, ` (ND2 IF)`.
+    /// ` (T27)`, ` (BS1 IF)`, ` (ND2 IF)`.
     pub fn label(&self) -> String {
         match *self {
-            Self::Uhf(c) => format!(" (UHF ch{c})"),
-            Self::Bs(n) => format!(" (BS-{n} IF)"),
-            Self::Nd(n) => format!(" (ND{n} IF)"),
+            Self::T(_) => format!(" ({self})"),
+            Self::Bs(_) | Self::Nd(_) => format!(" ({self} IF)"),
         }
+    }
+
+    /// True for a BS or 110° CS channel (a satellite IF).
+    pub fn is_satellite(&self) -> bool {
+        matches!(self, Self::Bs(_) | Self::Nd(_))
     }
 }
 
 impl fmt::Display for Channel {
-    /// `ch27`, `bs1`, `nd2`: the form [`Channel::from_str`] reads.
+    /// `T27`, `BS1`, `ND2`: the form [`Channel::from_str`] reads.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Uhf(c) => write!(f, "ch{c}"),
-            Self::Bs(n) => write!(f, "bs{n}"),
-            Self::Nd(n) => write!(f, "nd{n}"),
+            Self::T(c) => write!(f, "T{c}"),
+            Self::Bs(n) => write!(f, "BS{n}"),
+            Self::Nd(n) => write!(f, "ND{n}"),
         }
     }
 }
@@ -108,22 +113,23 @@ impl fmt::Display for Channel {
 impl FromStr for Channel {
     type Err = anyhow::Error;
 
-    /// `ch27` / `uhf27`, `bs1` / `bs-1`, `nd2` / `nd-2` (case-insensitive);
-    /// the number is checked against the table.
+    /// `T27`, `BS1`, `ND2`, case-insensitive; a bare number (`27`) is a
+    /// terrestrial channel. The number is checked against the table.
     fn from_str(s: &str) -> Result<Self> {
+        const WANT: &str = "T13..T62 (UHF), BS1..BS23 (odd) or ND2..ND24 (even)";
         let l = s.trim().to_ascii_lowercase();
-        let (kind, num) = l
+        let i = l
             .find(|c: char| c.is_ascii_digit())
-            .map(|i| l.split_at(i))
-            .with_context(|| format!("channel {s:?}: want chN, bsN or ndN"))?;
+            .with_context(|| format!("channel {s:?}: want {WANT}"))?;
+        let (kind, num) = l.split_at(i);
         let n: u32 = num
             .parse()
-            .with_context(|| format!("channel {s:?}: want chN, bsN or ndN"))?;
-        let c = match kind.trim_end_matches('-') {
-            "ch" | "uhf" => Self::Uhf(n),
+            .with_context(|| format!("channel {s:?}: want {WANT}"))?;
+        let c = match kind {
+            "" | "t" => Self::T(n),
             "bs" => Self::Bs(n),
             "nd" => Self::Nd(n),
-            _ => bail!("channel {s:?}: want chN (UHF 13..62), bsN (odd 1..23) or ndN (even 2..24)"),
+            _ => bail!("channel {s:?}: want {WANT}"),
         };
         c.tune_hz()?;
         Ok(c)
@@ -131,7 +137,8 @@ impl FromStr for Channel {
 }
 
 /// A `--freq` value: a frequency (`1049480000`, `1049.48M`, `557.142857MHz`,
-/// `2.4G`) or a channel name ([`Channel`]).
+/// `2.4G`) or a channel name with its prefix (`T27`, `BS1`, `ND2`; a bare
+/// number is a frequency here).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Freq {
     /// The frequency to tune to, Hz.
@@ -209,7 +216,7 @@ mod tests {
 
     #[test]
     fn uhf_channel_centres() {
-        // ch13 = 473 + 1/7 MHz; ch62 = 767 + 1/7 MHz; 6 MHz raster.
+        // T13 = 473 + 1/7 MHz; T62 = 767 + 1/7 MHz; 6 MHz raster.
         assert_eq!(uhf_hz(13).unwrap(), 473_142_857);
         assert_eq!(uhf_hz(14).unwrap(), 479_142_857);
         assert_eq!(uhf_hz(27).unwrap(), 557_142_857);
@@ -220,7 +227,7 @@ mod tests {
 
     #[test]
     fn satellite_if_centres() {
-        // BS-n IF = 1049.48 + 19.18·(n − 1) MHz, odd n.
+        // BSn IF = 1049.48 + 19.18·(n − 1) MHz, odd n.
         let bs = |n| Channel::Bs(n).tune_hz().unwrap();
         assert_eq!(bs(1), 1_049_480_000);
         assert_eq!(bs(3), 1_087_840_000);
@@ -228,7 +235,7 @@ mod tests {
         assert_eq!(Channel::Bs(1).rf_hz().unwrap(), 11_727_480_000);
         assert!(Channel::Bs(2).tune_hz().is_err());
         assert!(Channel::Bs(25).tune_hz().is_err());
-        // ND-n IF = 1613 + 20·(n − 2) MHz, even n.
+        // NDn IF = 1613 + 20·(n − 2) MHz, even n.
         let nd = |n| Channel::Nd(n).tune_hz().unwrap();
         assert_eq!(nd(2), 1_613_000_000);
         assert_eq!(nd(24), 2_053_000_000);
@@ -240,21 +247,36 @@ mod tests {
     #[test]
     fn channel_names() {
         for (s, c) in [
-            ("ch27", Channel::Uhf(27)),
-            ("UHF13", Channel::Uhf(13)),
-            ("bs1", Channel::Bs(1)),
-            ("BS-23", Channel::Bs(23)),
-            ("nd2", Channel::Nd(2)),
-            ("ND-24", Channel::Nd(24)),
+            ("T27", Channel::T(27)),
+            ("t13", Channel::T(13)),
+            ("BS1", Channel::Bs(1)),
+            ("bs23", Channel::Bs(23)),
+            ("Bs5", Channel::Bs(5)),
+            ("ND2", Channel::Nd(2)),
+            ("nd24", Channel::Nd(24)),
+            ("Nd12", Channel::Nd(12)),
         ] {
             assert_eq!(s.parse::<Channel>().unwrap(), c, "{s}");
             assert_eq!(c.to_string().parse::<Channel>().unwrap(), c);
         }
-        for bad in ["", "bs", "bs2", "nd1", "ch12", "cs2", "x1", "bs1.5"] {
+        for bad in [
+            "", "bs", "BS2", "ND1", "T12", "T63", "CS2", "x1", "BS1.5", "ch27", "uhf27", "bs-1",
+        ] {
             assert!(bad.parse::<Channel>().is_err(), "{bad}");
         }
-        assert_eq!(Channel::Bs(1).label(), " (BS-1 IF)");
-        assert_eq!(Channel::Uhf(27).label(), " (UHF ch27)");
+        assert_eq!(Channel::T(27).to_string(), "T27");
+        assert_eq!(Channel::Bs(1).label(), " (BS1 IF)");
+        assert_eq!(Channel::Nd(2).label(), " (ND2 IF)");
+        assert_eq!(Channel::T(27).label(), " (T27)");
+        assert!(Channel::Bs(1).is_satellite() && !Channel::T(27).is_satellite());
+    }
+
+    #[test]
+    fn bare_number_is_terrestrial() {
+        assert_eq!("44".parse::<Channel>().unwrap(), Channel::T(44));
+        assert_eq!(" 13 ".parse::<Channel>().unwrap(), Channel::T(13));
+        assert!("12".parse::<Channel>().is_err());
+        assert!("63".parse::<Channel>().is_err());
     }
 
     #[test]
@@ -271,14 +293,15 @@ mod tests {
         assert_eq!(f("557.142857MHz").hz, 557_142_857);
         assert_eq!(f("2.4G").hz, 2_400_000_000);
         assert_eq!(
-            f("bs1"),
+            f("BS1"),
             Freq {
                 hz: 1_049_480_000,
                 channel: Some(Channel::Bs(1))
             }
         );
-        assert_eq!(f("ch27").hz, 557_142_857);
-        for bad in ["0", "-5", "1x", "bs2", "nan"] {
+        assert_eq!(f("t27").hz, 557_142_857);
+        assert_eq!(f("nd2").channel, Some(Channel::Nd(2)));
+        for bad in ["0", "-5", "1x", "BS2", "nan", "ch27"] {
             assert!(bad.parse::<Freq>().is_err(), "{bad}");
         }
         assert_eq!(parse_hz("57.72M").unwrap(), 57.72e6);

@@ -110,7 +110,7 @@ Sinks: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdout) or
 | flag | default | meaning |
 |---|---|---|
 | `--radio NAME[:key=value,...]` | — | radio backend and its device arguments, e.g. `hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`; an unknown name lists the compiled-in backends and their cargo features |
-| `--channel N` / `--freq HZ` | — | UHF ch 13..62 → 473 + 6(N−13) + 1/7 MHz; the centre must lie in the 470–710 MHz TV band (ch 13–52) |
+| `--channel T` / `--freq HZ` | — | terrestrial channel T13..T62 (a bare number N means TN) → 473 + 6(N−13) + 1/7 MHz; the centre must lie in the 470–710 MHz TV band (T13–T52). Satellite channels (BSn, NDn) are refused: `rx` / `tx` are ISDB-T only |
 | `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (shielded lab only); the backend's own range still applies (HackRF 1 MHz–6 GHz, Pluto TX 47 MHz–6 GHz) |
 | `--freq-corr-ppm P` | 0 | divide tuning and sample clock by 1 + P·1e-6 |
 | `--gain NAME=VALUE` | backend's | repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF TX: `txvga=0..47` dB (0), `amp=on\|off` (RF amplifier ≈ +11 dB, off); Pluto TX: `att=0..89.75` dB attenuation in 0.25 dB steps (89.75) |
@@ -305,19 +305,20 @@ and writes them as cs16 (little-endian I/Q) or cs8 with
 never transmits and has no `--rf-enable`.
 
 ```sh
-isdb capture --radio pluto:uri=ip:192.0.2.30 --freq bs1 --rate 57.72M -o bs1.sigmf-data
-isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --freq nd2 --rate 40M \
+isdb capture --radio pluto:uri=ip:192.0.2.30 --freq BS1 --rate 57.72M -o bs1.sigmf-data
+isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --freq ND2 --rate 40M \
     -o nd2.sigmf-data --survey                   # 64 Mi samples (1.7 s) in one piece
-isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=stream,bits=8 --freq ch27 \
-    --rate 16M --seconds 600 -o ch27.sigmf-data  # streamed, losses marked
-isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=stream,bits=8 --freq bs1 \
+isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=stream,bits=8 --freq T27 \
+    --rate 16M --seconds 600 -o t27.sigmf-data  # streamed, losses marked
+isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=stream,bits=8 --freq BS1 \
     --rate 32M --seconds 60 --discard           # link test: rate and losses, no file
 ```
 
 - `--freq` is a frequency (`1049480000`, `1049.48M`) or a channel name:
-  `chN` (UHF 13..62), `bsN` (BS, odd 1..23) or `ndN` (110° CS, even
-  2..24), the satellite ones at their IF = RF − 10.678 GHz (BS-n IF =
-  1049.48 + 19.18·(n − 1) MHz, ND-n IF = 1613 + 20·(n − 2) MHz).
+  `T13`..`T62` (terrestrial UHF), `BS1`..`BS23` (odd) or `ND2`..`ND24`
+  (110° CS, even), case-insensitive; the satellite ones at their IF =
+  RF − 10.678 GHz (BSn IF = 1049.48 + 19.18·(n − 1) MHz, NDn IF =
+  1613 + 20·(n − 2) MHz). A bare number is a frequency here.
 - `--rate` in samples per second (`57.72M` is 2 samples per ISDB-S symbol,
   `61.44M` is the AD936x maximum); the rate the device runs at is read
   back. `--bw` defaults to 0.8 × the rate, `--gain` takes the backend's
@@ -370,8 +371,8 @@ strongest one. `--json` prints one object per file. The analysis is
 ### `isdb symbols` — radio → satellite symbols (receive only)
 
 ```sh
-isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq bs1 --probe
-isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq bs1 --seconds 10 -o bs1.syms
+isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq BS1 --probe
+isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq BS1 --seconds 10 -o bs1.syms
 ```
 
 The single-carrier front end of `isdb-frontend` (matched filter, timing
@@ -434,7 +435,7 @@ regenerate it after upgrading `isdb`; a new shell picks it up.
 
 ## Examples
 
-Bench configuration (ch13, HackRF TX VGA 20 dB, amp off, coax + attenuator
+Bench configuration (T13, HackRF TX VGA 20 dB, amp off, coax + attenuator
 only):
 
 ```text
@@ -492,7 +493,7 @@ isdb ts diff ours.ts live-capture.ts
 ## Rebroadcast a recording
 
 A recorded program (unscrambled, transport_scrambling_control '00'; one
-you have the rights to relay) as a terrestrial service on UHF ch44,
+you have the rights to relay) as a terrestrial service on T44,
 remote key 9, in one line:
 
 ```text
@@ -533,7 +534,7 @@ copy-free (explicit)`.
 | option (`--relay` only) | default | meaning |
 |---|---|---|
 | `--program N` / `--service-name S` | the only program | source program_number (hex or decimal) / SDT name (exact, else unique substring; full-width ASCII folded: `TV12` finds `ＴＶ１２テスト`) |
-| `--channel N` | 44 | UHF channel in the NIT (`tx`: its `--channel`, or the channel of `--freq`) |
+| `--channel N` | 44 | terrestrial channel (TN) in the NIT (`tx`: its `--channel`, or the channel of `--freq`) |
 | `--remote-key K` | 9 | remote_control_key_id 1..12 |
 | `--area-code C` | 0x5A5 | area_code (12 bits, B10 Annex D Table D-2); set the receiver's area |
 | `--name S` | source SDT name, else ベンチ | network / TS / service / provider / broadcaster name |
@@ -691,9 +692,9 @@ transmit with, over the in-memory `mock::MockRadio`):
 | `tests/cli.rs` `radio_tx_refuses_without_rf_enable` | `--radio hackrf --dry-run` prints the backend's settings and refuses; no `--rf-enable` ⇒ rejected |
 | `tests/cli.rs` `radio_rejects_unknown_backends_gains_and_ranges` | an unknown backend lists the compiled-in ones with their features; unknown or out-of-range `--gain` values (TX and RX) and unknown device arguments are rejected before a device is opened |
 | `tests/cli.rs` `pluto_dry_run_validates_without_a_device` | `--radio pluto:…` dry runs print the settings (attenuation, default maximum; loopback; cs12 level) and reject out-of-range attenuation, HackRF gain names, a third channel, a 50 MHz bandwidth, `loopback` on RX and manual gain with AGC, without connecting |
-| `tests/cli.rs` `capture_dry_run_validates_without_a_device` | `capture --dry-run` with `--freq bs1` / `nd24` prints the tuning (BS-1 IF 1049.48 MHz, ND24 IF 2053 MHz), the method (libiio buffer / maia-sdr at the `ip:` host) and the limit (16 515 072 / 33 554 432 samples), writes nothing; refuses more samples than the limit, `buffer` without `recorder=stream`, `loopback` (a TX argument), a stream without `--samples` / `--seconds`, `bs2`, a 60 MHz bandwidth and a backend that cannot capture |
+| `tests/cli.rs` `capture_dry_run_validates_without_a_device` | `capture --dry-run` with `--freq BS1` / `nd24` prints the tuning (BS1 IF 1049.48 MHz, ND24 IF 2053 MHz), the method (libiio buffer / maia-sdr at the `ip:` host) and the limit (16 515 072 / 33 554 432 samples), writes nothing; refuses more samples than the limit, `buffer` without `recorder=stream`, `loopback` (a TX argument), a stream without `--samples` / `--seconds`, `bs2`, a 60 MHz bandwidth and a backend that cannot capture |
 | `tests/cli.rs` `iq_survey_finds_rate_carrier_and_system` | `iq survey` on a synthetic QPSK file at 28.86 Mbaud, 61.44 Msps, −115 kHz: a raw file needs `--format`/`--rate`; the JSON names ISDB-S and gives the rate and the offset within one FFT bin; with SigMF metadata the format, rate, centre and channel come from it |
-| `tests/cli.rs` `capture_from_a_pluto` | opt-in hardware, receive only (`ISDB_RS_PLUTO_URI`, optionally `ISDB_RS_PLUTO_CAPTURE_FREQ`, default `bs1`): two 256 Ki-sample segments at 61.44 Msps; data size, SigMF datatype, full scale 2048, rate read back within 10 ppm, the second segment's start and gap marker, the capture method; an existing output is not overwritten. Prints `SKIP` without the variable |
+| `tests/cli.rs` `capture_from_a_pluto` | opt-in hardware, receive only (`ISDB_RS_PLUTO_URI`, optionally `ISDB_RS_PLUTO_CAPTURE_FREQ`, default `BS1`): two 256 Ki-sample segments at 61.44 Msps; data size, SigMF datatype, full scale 2048, rate read back within 10 ppm, the second segment's start and gap marker, the capture method; an existing output is not overwritten. Prints `SKIP` without the variable |
 | `tests/cli.rs` `tezuka_captures` | opt-in hardware, receive only, Tezuka firmware (`ISDB_RS_TEZUKA_URI`, optionally `ISDB_RS_PLUTO_CAPTURE_FREQ`): an 8-bit libiio buffer (1 Mi samples at 40 Msps), a 1 s 8-bit stream at 10 Msps, maia-sdr recordings in 8 and 12 bits (4 Mi samples at 40 Msps); for each the SigMF datatype and full scale, the capture method and the file size against the samples written (a stream's discarded samples subtracted). Prints `SKIP` without the variable |
 | `tests/cli.rs` `radio_without_backends_names_the_feature` | `--no-default-features` build: `tx`/`rx --radio hackrf` and `--radio pluto` name their features |
 | `tests/cli.rs` `scrambled_input_is_refused` | a TS with one scrambled packet (transport_scrambling_control ≠ '00') is refused: `isdb` neither descrambles nor transmits scrambled content |

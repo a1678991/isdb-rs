@@ -34,7 +34,7 @@ in the same range), and see
 | `--iq PATH` | — | read baseband from a file (`-` = stdin) |
 | `--iq-format cf32\|cs8` | cf32 | file format |
 | `--radio NAME[:key=value,...]` | — | receive with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`); needs `--channel` or `--freq`. An unknown name lists the compiled-in backends |
-| `--channel N` / `--freq HZ` | — | UHF channel 13–52 or centre frequency in Hz, within 470–710 MHz |
+| `--channel T` / `--freq HZ` | — | terrestrial channel T13–T52 (a bare number N means TN) or centre frequency in Hz, within 470–710 MHz. Satellite channels (BSn, NDn) are refused: `rx` is ISDB-T only |
 | `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (channels 53–62, other bands); the backend's own range still applies |
 | `--gain NAME=VALUE` | backend's | radio gain, repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF: `lna=0..40` dB in 8 dB steps (16), `vga=0..62` dB baseband VGA in 2 dB steps (20), `amp=on\|off` RF amplifier (off). Pluto: `agc=manual\|slow_attack\|fast_attack\|hybrid` (slow_attack), `gain=dB` manual gain (implies `agc=manual`; the range depends on the LO and is checked at open) |
 | `--freq-corr-ppm P` | 0 | reference-clock correction (tuning and sample clock) |

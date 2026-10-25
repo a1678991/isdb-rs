@@ -19,7 +19,7 @@
 //!   (`maximum_duration` is the setting last written, not a capacity);
 //! * `GET /recording`: a tar of `NAME.sigmf-meta` and `NAME.sigmf-data`.
 //!
-//! The modes, as measured (BS-1 at 40 Msps, against 16-bit captures of
+//! The modes, as measured (BS1 at 40 Msps, against 16-bit captures of
 //! the same signal):
 //!
 //! | `mode` | in DDR | `sigmf-data` | value of 1.0 |

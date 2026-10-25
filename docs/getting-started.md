@@ -59,7 +59,7 @@ the modulator needs it to keep up with a radio.
 | `isdb loopback` | `tx` → software channel (noise, CFO, timing offset) → `rx`, comparing every packet |
 | `isdb mux` | service multiplexer: TOML description (+ media) → transport stream |
 | `isdb ts` | transport-stream analysis: `inspect`, `validate`, `diff`, `edit`, `extract` |
-| `isdb capture` | radio → raw IQ recording with SigMF metadata, receive only, any rate (e.g. ISDB-S / ISDB-S3 satellite IF: `--freq bs1`) |
+| `isdb capture` | radio → raw IQ recording with SigMF metadata, receive only, any rate (e.g. ISDB-S / ISDB-S3 satellite IF: `--freq BS1`) |
 | `isdb iq survey` | symbol rate, carrier offset, band and system (ISDB-S, ISDB-S3) of a single-carrier recording |
 | `isdb completions` | shell completion script for bash or zsh (also fish, elvish, PowerShell) |
 

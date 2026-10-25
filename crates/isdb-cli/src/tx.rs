@@ -619,7 +619,7 @@ mod tests {
             (spec.backend.as_str(), spec.get("serial")),
             ("sdr", Some("0000abcd"))
         );
-        assert_eq!(h.tune.channel, Some(13));
+        assert_eq!(h.tune.channel, Some(crate::bands::Channel::T(13)));
         assert_eq!(
             h.gain,
             vec![("if".into(), "20".into()), ("amp".into(), "on".into())]

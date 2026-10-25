@@ -78,7 +78,7 @@ tests):
 let mut dev = isdb_hackrf::Device::open(None)?;
 dev.set_sample_rate_manual(512_000_000, 63)?;
 dev.set_baseband_filter(6_000_000)?;
-dev.set_freq(659_142_857)?; // UHF ch 44 centre + 1/7 MHz
+dev.set_freq(659_142_857)?; // T44 centre + 1/7 MHz
 dev.set_txvga_gain(20)?;
 let tx = dev.start_tx(16)?;
 let iq: Vec<i8> = vec![0; 262_144]; // interleaved I/Q, signed 8-bit

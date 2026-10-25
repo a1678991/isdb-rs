@@ -226,7 +226,7 @@ a program of *another* network (e.g. a satellite recording), use
 | `--iq PATH` | — | write baseband to a file (`-` = stdout) instead of a radio |
 | `--iq-format cf32\|cs8` | cf32 | float32 I/Q (GNU Radio) or signed 8-bit I/Q (`hackrf_transfer`, scaled with `--backoff-db`) |
 | `--radio NAME[:key=value,...]` | — | transmit with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`); needs `--channel` or `--freq`, and `--rf-enable` or `--dry-run`. An unknown name lists the compiled-in backends and their cargo features |
-| `--channel N` / `--freq HZ` | — | UHF channel 13–52, or a centre frequency in Hz, within 470–710 MHz |
+| `--channel T` / `--freq HZ` | — | terrestrial channel T13–T52 (a bare number N means TN), or a centre frequency in Hz, within 470–710 MHz. Satellite channels (BSn, NDn) are refused |
 | `--freq-unrestricted` | off | allow a centre outside the 470–710 MHz TV band (shielded lab setups only); the backend's own range still applies (HackRF 1 MHz–6 GHz, Pluto 47 MHz–6 GHz) |
 | `--rf-enable` | off | **actually radiate** (licensed or conducted/shielded use only) |
 | `--dry-run` | off | print the settings and exit without opening the device |
@@ -293,7 +293,7 @@ isdb tx --mux-config bench.toml --radio hackrf --channel 27 --gain txvga=20 --dr
 ```
 
 ```text
-hackrf TX settings (UHF ch27):
+hackrf TX settings (T27):
   device       HackRF (first found)
   tuning       centre 557.142857 MHz, programmed 557142857 Hz; sample rate 512000000/63 Hz = 8.126984 MHz
   bb filter    6.00 MHz requested
@@ -399,7 +399,7 @@ the air time).
 | Option (`--relay` only) | Default | Meaning |
 |---|---|---|
 | `--program N` / `--service-name S` | the only program | source program_number, or SDT service name (exact, else a unique substring; full-width ASCII folded) |
-| `--channel N` | `tx`: the transmit channel; `mux`/`loopback`: 44 | UHF channel named in the NIT |
+| `--channel N` | `tx`: the transmit channel; `mux`/`loopback`: 44 | terrestrial channel (TN) named in the NIT |
 | `--remote-key K` | 9 | remote_control_key_id 1–12 |
 | `--area-code C` | 0x5A5 | area_code (12 bits, B10 Annex D Table D-2); set the receiver's area |
 | `--name S` | the recording's SDT service name | network / TS / service / provider name |
@@ -538,7 +538,7 @@ specifications, and the defaults follow them.
   service as off air afterwards, so the cause is not isolated.
 - **Data broadcasting needs a registered broadcaster identity.** On a
   Sony BDZ-ZW1500 a `bml-carousel` under the placeholder network
-  (network_id 0x79EE, key 9, ch44) lit the "d" mark but the d button never
+  (network_id 0x79EE, key 9, T44) lit the "d" mark but the d button never
   started the BML browser (no "data fetching" message), and the same held
   for a live station's own carousel relayed packet for packet into that
   network. Re-emitting a local station's recording with its own
@@ -548,7 +548,7 @@ specifications, and the defaults follow them.
   (`examples/bml/startup.bml`) displayed our page over the picture; a
   service made entirely here (MPEG-2 video and AAC files, the two example
   pages with colour-key navigation) under the same identity worked the
-  same way. The same identity on another channel (ch44) showed "this
+  same way. The same identity on another channel (T44) showed "this
   channel is suspended" with neither picture, sound nor d mark, so the
   recorder binds a known network to the frequency in its channel table
   and matches the service against it before it allows anything. To test BML or Hybridcast on such a receiver, re-emit a

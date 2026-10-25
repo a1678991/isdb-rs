@@ -52,7 +52,7 @@ pub struct LoopbackArgs {
     /// Print a JSON summary on stdout.
     #[arg(long)]
     pub json: bool,
-    /// --relay: UHF channel named in the NIT (default 44).
+    /// --relay: terrestrial channel named in the NIT (default 44, i.e. T44).
     #[arg(long, value_name = "13..62", requires = "relay")]
     pub channel: Option<u32>,
 }
