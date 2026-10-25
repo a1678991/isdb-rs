@@ -20,17 +20,17 @@
 /// and stage `N` (stage i in bit i − 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Lfsr<const N: u32, const A: u32> {
-    reg: u16,
-    init: u16,
+    reg: u32,
+    init: u32,
 }
 
 impl<const N: u32, const A: u32> Lfsr<N, A> {
-    const MASK: u16 = ((1u32 << N) - 1) as u16;
+    const MASK: u32 = ((1u64 << N) - 1) as u32;
 
     const fn from_str(init: &str) -> Self {
         let b = init.as_bytes();
         assert!(b.len() == N as usize);
-        let mut reg = 0u16;
+        let mut reg = 0u32;
         let mut i = 0;
         while i < b.len() {
             if b[i] == b'1' {
@@ -46,6 +46,17 @@ impl<const N: u32, const A: u32> Lfsr<N, A> {
         let fb = ((self.reg >> (A - 1)) ^ (self.reg >> (N - 1))) & 1;
         self.reg = ((self.reg << 1) | fb) & Self::MASK;
         fb as u8
+    }
+
+    /// One clock with the output taken from stage `N` before the shift
+    /// (the form of the ARIB STD-B44 figures, where the output leaves the
+    /// last stage, not the feedback node).
+    #[inline]
+    fn next_bit_last_stage(&mut self) -> u8 {
+        let out = (self.reg >> (N - 1)) & 1;
+        let fb = ((self.reg >> (A - 1)) ^ (self.reg >> (N - 1))) & 1;
+        self.reg = ((self.reg << 1) | fb) & Self::MASK;
+        out as u8
     }
 
     fn state_string(&self) -> String {
@@ -132,6 +143,67 @@ impl Prbs9 {
     #[inline]
     pub fn next_bit(&mut self) -> u8 {
         self.0.next_bit()
+    }
+}
+
+/// Initial state of the ISDB-S3 slot energy dispersal, stage 1 first
+/// (ARIB STD-B44 v2.1 Fig. 3.6-1: stages 1–13 `1010000000000`, stages
+/// 14–25 `000000011010`).
+pub const PRBS25_SLOT_INITIAL_STATE: &str = "1010000000000000000011010";
+/// Initial state of the ISDB-S3 TMCC energy dispersal (B44 Fig. 3.6-2).
+pub const PRBS15_S3_TMCC_INITIAL_STATE: &str = "100000000001110";
+/// Initial state of the ISDB-S3 pilot energy dispersal (B44 Fig. 3.6-3).
+pub const PRBS15_S3_PILOT_INITIAL_STATE: &str = "100000000101100";
+
+/// The energy-dispersal generators of ISDB-S3 (ARIB STD-B44 v2.1 §3.6,
+/// Figs. 3.6-1 to 3.6-3). Same shift and feedback as the ISDB-T/S ones,
+/// but the figures take the **output from the last stage** (25 or 15), not
+/// from the feedback node: the arrow to the addition switch leaves stage
+/// 25 / 15. Confirmed on the live TMCC: only this form, with the TMCC
+/// initial state, gives BCH-clean TMCC data (`isdbs3-core` SPEC-NOTES
+/// "Energy dispersal output").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum B44Prbs {
+    /// X²⁵ + X²² + 1 (slot data, Fig. 3.6-1).
+    Slot(Lfsr25),
+    /// X¹⁵ + X¹⁴ + 1 (TMCC Fig. 3.6-2 or pilot Fig. 3.6-3).
+    Short(Lfsr15),
+}
+
+/// The 25-stage register of [`B44Prbs::Slot`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lfsr25(Lfsr<25, 22>);
+/// The 15-stage register of [`B44Prbs::Short`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lfsr15(Lfsr<15, 14>);
+
+impl B44Prbs {
+    /// The slot-data generator at the start of a frame.
+    pub const fn slot() -> Self {
+        Self::Slot(Lfsr25(Lfsr::from_str(PRBS25_SLOT_INITIAL_STATE)))
+    }
+    /// The TMCC generator at the start of a frame.
+    pub const fn tmcc() -> Self {
+        Self::Short(Lfsr15(Lfsr::from_str(PRBS15_S3_TMCC_INITIAL_STATE)))
+    }
+    /// The pilot generator at the start of a frame.
+    pub const fn pilot() -> Self {
+        Self::Short(Lfsr15(Lfsr::from_str(PRBS15_S3_PILOT_INITIAL_STATE)))
+    }
+    /// Register contents, stage 1 first.
+    pub fn state_string(&self) -> String {
+        match self {
+            Self::Slot(l) => l.0.state_string(),
+            Self::Short(l) => l.0.state_string(),
+        }
+    }
+    /// One clock: the last stage's bit, then shift in the feedback.
+    #[inline]
+    pub fn next_bit(&mut self) -> u8 {
+        match self {
+            Self::Slot(l) => l.0.next_bit_last_stage(),
+            Self::Short(l) => l.0.next_bit_last_stage(),
+        }
     }
 }
 
