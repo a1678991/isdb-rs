@@ -969,6 +969,82 @@ transponder numbering, not station identities.
   without losses), so the TS has a gap between blocks; continuous
   reception needs the FPGA symbol front end.
 
+## ISDB-S3 receiver
+
+`isdb rx --system isdbs3` (or `auto`, from the survey) on the 61.44 Msps,
+56 MHz recordings of BS7, BS11 and BS17 of 2026-10-25 (DC block removed;
+`isdb capture --freq BS7 --rate 61.44M --bw 56M`), one TLV stream file
+per stream id, each checked with `isdb tlv inspect` (release build). The
+recordings are 0.55 s long: 15–16 whole frames of 33.05 ms. Stream ids
+are transponder numbering, not station identities.
+
+| Transponder | TMCC | Sync Es/N0 → equalised | Main MER | LDPC / BCH | TLV streams: slots, packets | Head-indication mismatches | MPU with scramble info |
+|---|---|---|---|---|---|---|---|
+| BS7 | 15/15; 16APSK 93/120 × 120 | 14.65 → 17.72 dB | 15.57 dB | 1 440 / 1 440 clean, 2.01 it | B070: 40, 1 514 · B071: 40, 1 518 · B072: 40, 1 445 | 0 | 98.8–98.9 % |
+| BS11 | 16/16; same | 14.68 → 17.67 dB | 15.69 dB | 1 536 / 1 536 clean, 1.98 it | B0B0: 40, 1 616 · B0B2: 40, 1 618 · unassigned: 40 (null packets) | 0 | 98.8–98.9 % |
+| BS17 | 16/16; same | 14.56 → 17.02 dB | 15.21 dB | 1 536 / 1 536 clean, 2.09 it | B110: 40, 1 643 · B111: 40, 1 584 · B112: 40, 1 695 | 0 | 98.8–98.9 % |
+
+- **Every frame and every codeword decodes.** The TMCC decodes on every
+  whole frame (0 LDPC iterations, 0 BCH corrections at 14.6 dB) and says
+  16APSK, code 0111, in all 120 slots, three relative streams of type TLV
+  with 40 slots each (BS11's relative stream 1 is unassigned: type FFh,
+  id FFFFh, its slots carry TLV null packets). All 4 512 main-signal
+  codewords of the 47 whole frames are LDPC- and BCH-clean with 0 BCH
+  corrections.
+- **Readings settled on the signal** (`isdbs3-core` SPEC-NOTES): the
+  B44 energy-dispersal generators output their **last stage**, not the
+  feedback node (80 readings tried after the TMCC LDPC converged; only
+  this one is BCH-clean); Table 3.11-2's code 0111 = 93/120 (the
+  amended numbering; the 93/120 LDPC code decodes the main signal) and
+  its printed "1010 = 101/120" is read as 105/120; the frame head is the
+  odd slot whose FSync correlation has the opposite sign to the other 59
+  of its parity; the BCH word of a slot is header + data + parity, with
+  the dispersal (which also covers the stuffing) removed first; the
+  16APSK labels of Fig. 3.8-1 and the forward read-out of the 4-column
+  interleaver at 93/120; the 32 pilot symbols carry the slot's
+  constellation in label order with the pilot PRBS's 0°/180° signs. The
+  LDPC address tables were transcribed from the standard by
+  `tools/b44-ldpc-tables.py` (2.0-E1 and 2.1-E1 give identical tables),
+  and a spec test checks that Table 3.4-1's BCH polynomials are the
+  minimal polynomials of α¹ … α²³.
+- **Transponder compression**: the pilot-learned 16APSK points have an
+  inner/outer radius ratio of 2.51 against γ = 2.87 for 93/120, each
+  label within 3.6° of its nominal angle (`examples/pilotcheck`).
+  Demapping against them adds 0.7 dB of MER.
+- **Equaliser**: an 11-tap symbol-spaced least-squares equaliser trained
+  on each frame's 6 720 sync and pilot symbols removes the intersymbol
+  interference the timing trim leaves: sync Es/N0 +2.5 to +3.1 dB (to
+  17.0–17.7 dB, the in-band SNR estimated from the spectrum) and main
+  MER +1.3 to +1.7 dB on the data symbols, which were not used to train
+  it; LDPC iterations fall from about 3.0 to 2.0 (`examples/eqgain`).
+  Main tap 1.05, the others ≤ 0.10.
+- **TLV**: 12 633 TLV packets in the 8 assigned streams, 0
+  head-indication mismatches, 0 bytes skipped, 0 IP errors; every UDP
+  payload (header-compressed IP, context 1, and 15–16 IPv6 packets per
+  stream) is an MMTP packet. The 160 undefined bits of every slot header
+  are ones.
+- **MMT-SI**: PA messages carrying MPT and PLT on every stream; M2
+  section messages with MH-EIT (p/f and schedule), MH-SDT (actual,
+  other), MH-TOT, MH-AIT, ECM and EMM; data transmission messages.
+  ISO/IEC 23008-1 is not available, so only what ARIB STD-B32 Part 3 and
+  STD-B60 define is parsed. No TLV-SI (TLV-NIT, AMT) appears in these
+  0.55 s recordings; the TLV-SI section finder is tested on synthetic
+  sections only.
+- **Scrambling**: 98.8–98.9 % of the MPU payloads carry the MMTP
+  scramble-information extension (B60 Table 6-9 type 0001h; its content
+  is in ARIB STD-B61, not available), and ECM / EMM are present:
+  recognised and left as they are (no descrambling, project policy).
+- **ISDB-S unchanged**: `tools/isdbs-ts-acceptance.sh` on the same day's
+  21 ISDB-S recordings still gives 38 TSs, 319 584 packets, 0
+  uncorrectable.
+- **Throughput** (BS11, 32-core host): LDPC on live codewords (scalar
+  layered min-sum, about 3 iterations) 190 codewords/s on one thread and
+  3 029 on 32, against the 2 905 per second (100 Mbit/s of slot data)
+  of 16APSK 93/120 × 120: 1.04× real time with every core and no margin
+  (`examples/ldpcspeed`). The front end runs as for ISDB-S (one thread),
+  so reception of a recording is well below real time; from a radio
+  `isdb rx` takes one contiguous capture after another.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

@@ -12,9 +12,37 @@ Initial feature set, implemented from the published specifications
 (ITU-T H.222.0 | ISO/IEC 13818-1, ARIB STD-B10, STD-B24, STD-B31,
 STD-B32; editions in `SPECS.md`). ISDB-T is implemented end to end;
 ISDB-S (ITU-R BO.1408-1, MIC Ordinance No. 87 of 2011) is received to
-transport streams.
+transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
+
+- `isdb-fec`: `bch` (binary BCH over GF(2¹⁶), t = 12, any shortening:
+  ARIB STD-B44 Table 3.4-1), `ldpc` (quasi-cyclic IRA LDPC from a
+  374-bit-group address table: encoder and layered normalised min-sum
+  decoder) and `prbs::B44Prbs` (the ISDB-S3 slot, TMCC and pilot energy
+  dispersals, output from the last stage).
+- `isdbs3-core` (new): ISDB-S3 parameters from ARIB STD-B44 v2.1: frame
+  and slot geometry, the eleven code rates and their LDPC codes (address
+  tables transcribed by `tools/b44-ldpc-tables.py`), π/2-BPSK to 32APSK
+  constellations with γ, the bit interleaver, energy dispersal, the TMCC
+  information codec and signal coding, slot allocation and codeword
+  placement. Readings and their confirmation on live signals in its
+  SPEC-NOTES.
+- `isdbs3-phy` (new): ISDB-S3 receive chain after the symbol front end:
+  slot and frame sync, carrier phase per slot, an 11-tap least-squares
+  equaliser trained on each frame's sync and pilot symbols, TMCC
+  decoding, the pilot-learned constellation and the main signal (max-log
+  demapping, de-interleaving, LDPC, dispersal, BCH) to each slot's data;
+  `rx::receive`.
+- `isdb-tlv` (new): TLV packets reassembled from a stream's slots with the
+  head-TLV indication, IPv4 / IPv6 / header-compressed IP, MMTP headers
+  (with the B60 scramble-information extension), MMT-SI messages and
+  table ids, TLV-SI sections by CRC, per-stream statistics.
+- `isdb-cli`: `isdb rx --system isdbs3` (and `auto` from a recording's
+  survey) writes one TLV stream file per stream id (`{tlv_id}` in
+  `--out`, or `--ts-id`), offline or block-wise from a radio; `isdb iq
+  s3tmcc` (ISDB-S3 TMCC of a recording); `isdb tlv inspect` (content of
+  a TLV stream file).
 
 - `isdbs-core` (new): ISDB-S parameters from ITU-R BO.1408-1 and MIC
   Ordinance No. 87 of 2011 annexed tables 45–51: frame geometry (192-symbol

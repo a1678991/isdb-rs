@@ -4,7 +4,7 @@
 
 > この文書は [README.md](README.md) の日本語訳です。リンク先のドキュメントは英語版のみで、内容に相違がある場合は英語版が優先します。
 
-規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（HackRF One と ADALM-Pluto 系）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。ISDB-T は送受信の全体を実装しています。ISDB-S は TS_ID ごとのトランスポートストリームまで受信できます（`isdb rx --system isdbs`。衛星 IF の録音から、または無線機からブロック単位で）。送信側はまだです。ISDB-S3 についてはキャプチャ（`isdb capture`）、録音の解析（`isdb iq survey`）、シンボル・フロントエンド、スロット同期とその SNR の測定（`isdb iq s3sync`）があります。復号はまだです。
+規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（HackRF One と ADALM-Pluto 系）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。ISDB-T は送受信の全体を実装しています。ISDB-S は TS_ID ごとのトランスポートストリームまで受信できます（`isdb rx --system isdbs`。衛星 IF の録音から、または無線機からブロック単位で）。送信側はまだです。ISDB-S3 は TLV ストリーム ID ごとの TLV ストリームまで受信でき（`isdb rx --system isdbs3`）、その中の MMTP パケットと MMT-SI のテーブルを識別できます（`isdb tlv inspect`）。
 
 > [!WARNING]
 > **法令および電波安全に関する注意**
@@ -28,6 +28,7 @@
 - **衛星 IF の録音**（`isdb-iq`、`isdb capture`、`isdb iq survey`）：無線機が対応する任意のサンプルレートでの受信専用キャプチャ。一括で連続した録音（Pluto では libiio 経由で 16 ビット最大 1650 万サンプル、Tezuka の maia-sdr レコーダーで 16 ビット 3355 万サンプル、8 ビット 6710 万サンプル＝40 Msps で 1.7 秒）と、欠落箇所をすべて記録するストリーミング録音（Gigabit Ethernet で欠落なしは約 40 MB/s まで、例えば 8 ビット 20 Msps）、SigMF メタデータ、BS／110 度 CS のチャンネル名による IF 周波数指定、録音からシンボルレート・搬送波オフセット・方式（ISDB-S、ISDB-S3）を求める解析。
 - **衛星のシンボル・フロントエンド**（`isdb-frontend`、`fpga/`、`isdb symbols`、`isdb iq symbols`、`isdb iq s3sync`）：IQ から 6 ビットのシンボルへの整合フィルタ、タイミング再生、AGC。既知シンボルからホストが測るタイミングのトリム付き（ループだけでは ISDB-S3 で最適点から 0.15〜0.18 シンボルずれ、5〜6 dB 失う）。CPU 上のビット精度の固定小数点モデルと、PlutoSky R2 の FPGA 向けの同じ処理（Amaranth HDL）の両方があり、FPGA 側はリンクを流れるデータ量を減らして（80 MB/s から ISDB-S 43 MB/s、ISDB-S3 51 MB/s）連続受信を可能にします。HDL はシミュレーションでモデルとビット単位で一致しますが、まだビットストリームには組み込んでいません。それまでは CPU が 1 回の連続キャプチャに対して処理します。
 - **ISDB-S の受信**（`isdbs-core`、`isdbs-phy`、`isdb iq tmcc`、`isdb rx --system isdbs`）：フレーム内の既知シンボルによるフレーム・スーパーフレーム同期、バースト信号を用いた搬送波再生、TMCC（内符号、エネルギー拡散、RS(64,48)）の復号、続いて主信号の TC8PSK／QPSK／BPSK 軟判定デマッピング、パンクチャド符号のビタビ復号、深さ 8 のフレーム間デインターリーブ、エネルギー拡散の除去、RS(204,188) を行い、TS_ID ごとに TS を出力します。ケーブル配信の BS 9 と 110 度 CS 12 のトランスポンダすべてで TMCC を復号でき、そのうち 19 で RS 誤りのない TS（311 520 パケット、訂正不能 0）が得られました（残る 2 つは SNR 不足）。無線機からは連続キャプチャを 1 つずつ復号します（FPGA フロントエンドなしでは Gigabit Ethernet で連続ストリームはできません）。CPU では実時間より遅く動作します。
+- **ISDB-S3 の受信**（`isdbs3-core`、`isdbs3-phy`、`isdb-tlv`、`isdb iq s3tmcc`、`isdb rx --system isdbs3`、`isdb tlv inspect`；ARIB STD-B44、B32 第 3 部、B60）：π/2 シフト BPSK の同期ワードによるスロット・フレーム同期、同期・パイロットシンボルで学習する最小二乗等化器、TMCC（短縮 LDPC、BCH）、主信号（パイロットで学習した信号点配置に対するデマッピング、ビットデインターリーブ、規格書から書き起こした検査行列による LDPC、エネルギー拡散の除去、BCH）、続いて TLV パケット、ヘッダ圧縮 IP、MMTP、MMT-SI（PA／MPT／PLT、MH-EIT、MH-SDT、MH-TOT、MH-AIT、ECM、EMM）。ケーブル配信の ISDB-S3 の 3 トランスポンダ（16APSK 7/9）で全フレームと 4 512 符号語すべてを復号し、8 本の TLV ストリームを誤りなく再構成しました。100 Mbit/s に追いつくには LDPC に 32 コアのホストの全コアが必要です。
 
 ## クレート
 
@@ -50,6 +51,9 @@
 | [`isdb-frontend`](crates/isdb-frontend/README.md) | —（レートは `isdb-iq` から） | ISDB-S／ISDB-S3 の単一キャリア・フロントエンド（IQ → シンボル）：FPGA 処理のビット精度の固定小数点モデル、浮動小数点の参照実装、`Symbols` 境界の形式、FPGA の制御レジスタ。HDL は [`fpga/`](fpga/README.md) |
 | [`isdbs-core`](crates/isdbs-core/README.md) | BO.1408-1；総務省令第 87 号 別表第四十五号〜第五十一号 | ISDB-S のフレーム構造、変調・符号化方式の組み合わせ、スロット割当て、TMCC 情報のコーデックと信号、バースト |
 | [`isdbs-phy`](crates/isdbs-phy/README.md) | BO.1408-1 | フロントエンド以降の ISDB-S 受信処理：フレーム同期、搬送波再生、TMCC 復号、主信号から TS_ID ごとの TS パケットまで |
+| [`isdbs3-core`](crates/isdbs3-core/README.md) | B44 v2.1 | ISDB-S3 の構造、符号化率、LDPC 検査行列、信号点配置、インターリーブ、エネルギー拡散、TMCC コーデック、スロット割当て |
+| [`isdbs3-phy`](crates/isdbs3-phy/README.md) | B44 v2.1 | フロントエンド以降の ISDB-S3 受信処理：スロット・フレーム同期、等化器、TMCC、主信号（LDPC、BCH）からスロットデータまで |
+| [`isdb-tlv`](crates/isdb-tlv/README.md) | B32 第 3 部、B60 | スロットからの TLV パケット、圧縮 IP、MMTP、MMT-SI と TLV-SI の識別 |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | `isdb` バイナリ |
 
 各クレートの関係、フレーム／レイテンシの約束事、データの流れについては [docs/architecture.md](docs/architecture.md) を参照してください。
@@ -184,7 +188,7 @@ isdb ts diff test.ts rx.ts                 # every section identical
 - AC の内容とパリティを実放送で確認し、アンテナからの受信を試し、より多くの構成と受信機で試験する。
 - 確認できたものから、運用上の選択を TR-B14 の値に置き換える。
 - ISO/IEC 13818-7 そのものから書けるようになり次第、AAC の raw_data_block の解析（crc_check の検証）を実装する。H.264 ワンセグのパケット化。
-- TS／SI のクレートを再利用した ISDB-S（ITU-R BO.1408／平成 23 年総務省令第 87 号；ARIB STD-B20）および ISDB-S3（ARIB STD-B44）の受信、その後に送信 — 衛星 IF のキャプチャと解析は完了。ISDB-S は TS まで受信済みで、次は ISDB-S 変調器（ループバック）と ISDB-S3 の受信。
+- TS／SI のクレートを再利用した ISDB-S（ITU-R BO.1408／平成 23 年総務省令第 87 号；ARIB STD-B20）および ISDB-S3（ARIB STD-B44）の受信、その後に送信 — 衛星 IF のキャプチャと解析は完了。ISDB-S は TS まで、ISDB-S3 は TLV ストリームと MMT-SI の識別まで受信済み。次は ISDB-S 変調器（ループバック）、長い録音での TLV-SI の確認、LDPC の実時間化（SIMD）。
 
 ## 開発
 

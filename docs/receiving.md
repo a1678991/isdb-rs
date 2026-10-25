@@ -82,7 +82,7 @@ isdb rx --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --channel BS3 \
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--system auto\|isdbt\|isdbs` | auto | the transmission system |
+| `--system auto\|isdbt\|isdbs\|isdbs3` | auto | the transmission system |
 | `--out PATH` | — | with `{ts_id}` in the path: one file per TS_ID (4 hex digits); without it, select one TS with `--ts-id` |
 | `--ts-id ID` | every TS | receive only this TS_ID (repeatable; `0x4010`, `4010h` or decimal) |
 | `--iq REC` | — | a SigMF recording (data file, `.sigmf-meta` or base name): its metadata gives the rate and format; `isdb capture` writes them |
@@ -107,6 +107,42 @@ transport_error_indicator = 1, as for ISDB-T. Satellite services are
 mostly scrambled: their payloads stay scrambled, while PAT, PMT and SI
 are readable (`isdb ts inspect`; `validate` does not parse scrambled
 payloads).
+
+## ISDB-S3 (advanced BS and wide-band CS)
+
+`--system isdbs3` (or `auto` on a SigMF recording whose survey finds the
+ISDB-S3 symbol rate) receives an ISDB-S3 transponder (ARIB STD-B44): slot
+and frame sync on the π/2-BPSK sync words, a least-squares equaliser
+trained on each frame's sync and pilot symbols, the TMCC (shortened LDPC,
+BCH), then every slot's codeword (demapping against the constellation
+the pilots show, bit de-interleaving, LDPC, energy dispersal, BCH). The
+slots of each relative stream join into a TLV stream; the output is one
+file of TLV packets (each with its 4-byte header) per TLV stream id.
+
+```sh
+isdb rx --iq bs7-61-bw56.sigmf-meta --out 'bs7-{tlv_id}.tlv'   # bs7-b070.tlv, …
+isdb rx --iq bs11.sigmf-meta --ts-id 0xb0b0 --out b0b0.tlv     # one stream
+isdb rx --radio pluto:uri=ip:192.0.2.30,recorder=maia --freq BS7 \
+        --system isdbs3 --seconds 10 --out 'bs7-{tlv_id}.tlv'  # blocks from a radio
+isdb iq s3tmcc bs7-61-bw56.sigmf-meta                           # the TMCC of every frame
+isdb tlv inspect bs7-b070.tlv                                   # what a TLV stream carries
+```
+
+The options are those of ISDB-S above, with `{tlv_id}` (or `{ts_id}`) in
+`--out` and `--ts-id` selecting TLV stream ids; `--strip-nulls` and the
+layer outputs do not apply. `auto` cannot tell ISDB-S3 from ISDB-S on a
+BSn channel from a radio before capturing, so give `--system isdbs3`
+there. Record ISDB-S3 with the full 56 MHz analog bandwidth: the
+default 0.8 × rate filter cuts into the 34.8 MHz band.
+
+`isdb tlv inspect` lists the TLV packets by type (IPv6, header-compressed
+IP, control, null), the MMTP packet ids, the MMT-SI messages and tables
+(PA message with MPT and PLT, MH-EIT, MH-SDT, MH-TOT, MH-AIT, ECM, EMM,
+…) and the share of MPU payloads whose MMTP header carries scramble
+information. The scrambled payloads stay scrambled (no descrambling). The
+same limits as ISDB-S apply from a radio (block-wise, slower than real
+time on the CPU: LDPC alone needs every core of a 32-core host for 16APSK
+7/9; VERIFICATION.md "ISDB-S3 receiver").
 
 ## Status lines
 

@@ -267,11 +267,13 @@ are in `specs/pdf/` (gitignored).
 Collected on 2026-10-20 for the ISDB-S and ISDB-S3 receivers. BO.1408-1
 and the ordinance's Chapter 5 §2 are implemented on the receive side, to
 TS packets per TS_ID (`isdb-fec`, `isdbs-core`, `isdbs-phy`, `isdb rx
---system isdbs`; coverage in §2.7). The ISDB-S3
-documents are cited only by `isdb-iq`'s survey, which quotes the nominal
-symbol rates (ISDB-S 28.860 Mbaud, ordinance Art. 52(3) and BO.1408-1
-Table 3; ISDB-S3 33.7561 Mbaud, B44 Annex B.3) to recognise a recording's
-system. Each URL was fetched with `curl` that day and returned
+--system isdbs`; coverage in §2.7). ARIB STD-B44, the TLV layer of
+B32 Part 3 and STD-B60 are implemented on the receive side, to TLV
+streams per stream id with MMTP and MMT-SI identification (`isdb-fec`,
+`isdbs3-core`, `isdbs3-phy`, `isdb-tlv`, `isdb rx --system isdbs3`;
+coverage in §2.8). `isdb-iq`'s survey quotes the nominal symbol rates
+(ISDB-S 28.860 Mbaud, ordinance Art. 52(3) and BO.1408-1 Table 3; ISDB-S3
+33.7561 Mbaud, B44 Annex B.3) to recognise a recording's system. Each URL was fetched with `curl` that day and returned
 HTTP 200 with `Content-Type: application/pdf` (the ordinance: the e-Gov
 API's XML and JPEG attachments).
 
@@ -279,9 +281,9 @@ API's XML and JPEG attachments).
 |---|---|---|---|---|---|
 | ITU-R BO.1408-1 | 04/2002 | Transmission system for advanced multimedia services provided by integrated services digital broadcasting in a broadcasting-satellite channel | https://www.itu.int/dms_pubrec/itu-r/rec/bo/R-REC-BO.1408-1-200204-I!!PDF-E.pdf (landing page https://www.itu.int/rec/R-REC-BO.1408-1-200204-I/en) | `ITU-R-BO.1408-1.txt` | ISDB-S (the system of ARIB STD-B20): RS, framing, PRBS, interleaving, TMCC information, inner code, Table 3 parameters |
 | ITU-R BO.2098-0 | 12/2016 | Transmission system for UHDTV satellite broadcasting | https://www.itu.int/dms_pubrec/itu-r/rec/bo/R-REC-BO.2098-0-201612-I!!PDF-E.pdf (landing page https://www.itu.int/rec/R-REC-BO.2098/en) | `ITU-R-BO.2098-0.txt` | ISDB-S3 summary ("System F", Annex 1); cites B44 2.0-E1 |
-| ARIB STD-B44 | 2.1-E1 (2016-03-25) | Transmission System for Advanced Wide Band Digital Satellite Broadcasting (ISDB-S3) | https://www.arib.or.jp/english/html/overview/doc/6-STD-B44v2_1-E1.pdf | `ARIB-STD-B44-v2.1.txt` | ISDB-S3 in full. The latest edition in either language (the Japanese 2.1 has the same date). 2.0-E1 (2014-07-31, the edition BO.2098 cites) is also local as `ARIB-STD-B44-v2.0.txt` |
-| ARIB STD-B60 | 1.14-E1 (2019-12-05) | MMT-Based Media Transport Scheme in Digital Broadcasting Systems | https://www.arib.or.jp/english/html/overview/doc/6-STD-B60_v1_14-E1.pdf | `ARIB-STD-B60-v1.14.txt` | MMT-SI of ISDB-S3 services. The Japanese original is at 2.0 (2025-03-25) |
-| ARIB STD-B32 Part 3 | 3.11-E1 | (already in §1.1) | (§1.1) | `ARIB-STD-B32-v3.11-part3.txt` | §2.3 and §3.5 (TLV packet), §3.9 (MMTP packet), §3.10 (TLV-NIT): the TLV layer of ISDB-S3 |
+| ARIB STD-B44 | 2.1-E1 (2016-03-25) | Transmission System for Advanced Wide Band Digital Satellite Broadcasting (ISDB-S3) | https://www.arib.or.jp/english/html/overview/doc/6-STD-B44v2_1-E1.pdf | `ARIB-STD-B44-v2.1.txt` | ISDB-S3 in full; implemented (`isdb-fec` BCH / LDPC / B44 PRBS, `isdbs3-core`, `isdbs3-phy`; §2.8). The latest edition in either language (the Japanese 2.1 has the same date). 2.0-E1 (2014-07-31, the edition BO.2098 cites) is also local as `ARIB-STD-B44-v2.0.txt` |
+| ARIB STD-B60 | 1.14-E1 (2019-12-05) | MMT-Based Media Transport Scheme in Digital Broadcasting Systems | https://www.arib.or.jp/english/html/overview/doc/6-STD-B60_v1_14-E1.pdf | `ARIB-STD-B60-v1.14.txt` | MMT-SI of ISDB-S3 services: MMTP header, messages and table ids implemented (`isdb-tlv`; §2.8). The Japanese original is at 2.0 (2025-03-25) |
+| ARIB STD-B32 Part 3 | 3.11-E1 | (already in §1.1) | (§1.1) | `ARIB-STD-B32-v3.11-part3.txt` | §2.3 and §3.5 (TLV packet), §3.7 (compressed IP), §3.9 (MMTP packet), §3.10 (TLV-NIT): the TLV layer of ISDB-S3, implemented (`isdb-tlv`; §2.8) |
 | MIC Ordinance No. 87 of 2011 (標準テレビジョン放送等のうちデジタル放送に関する送信の標準方式, 平成二十三年総務省令第八十七号), law ID `423M60000008087`, Japanese | revision of 2024-05-23 (`423M60000008087_20240523_506M60000008047`) | The legal transmission standard for Japanese digital broadcasting | XML: https://laws.e-gov.go.jp/api/2/law_data/423M60000008087?response_format=xml; figures: `https://laws.e-gov.go.jp/api/2/attachment/423M60000008087_20240523_506M60000008047?src=./pict/<file>`; viewer: https://laws.e-gov.go.jp/law/423M60000008087 | `MIC-Ordinance-87-2011-r20240523.txt` (text of the XML; `[FIG …]` marks each figure) | Chapter 5 §2 (Arts. 50–56, annexed tables 45–51) = ISDB-S; Chapter 5 §3 / Chapter 6 §5 (annexed tables 59-2 to 68) = ISDB-S3. B44 names this ordinance and STD-B20 as the definition of BS / wide-band CS digital broadcasting |
 
 **The ordinance fills most of BO.1408's gaps.** Annexed tables 45–51 are in
@@ -363,6 +365,7 @@ clause.
 | **RX** | a real receiver accepted the Rust output over a conducted link (HackRF → coax → attenuators → receiver), configuration **C_rx**: `isdb tx` with Mode 3, GI 1/8, partial reception; layer A 1 seg QPSK 2/3 I=2; layer B 12 seg 64QAM 3/4 I=2; multiplex from `isdbt-mux`. MyGica S270 USB tuner: its 12.0 s capture validates with `isdb ts validate`: 0 errors, 5 warnings. A Sony BDZ-series recorder ("the recorder" below): registered the service in a channel scan and played it, with digital copy control copy_control_type '01' (§3.4). RX shows only that the whole chain was accepted in C_rx; it does not test each clause separately ([VERIFICATION.md](VERIFICATION.md#real-receivers)) |
 | **RX(gr)** | a real receiver accepted *gr-isdbt* output that the Rust chain matches byte-exactly (S270, PER 0) |
 | **LS** | decoded on the lab's satellite IF recordings (2026-10-20, receive only: 9 BS and 12 110° CS ISDB-S transponders, VERIFICATION.md "ISDB-S frame sync and TMCC" and "ISDB-S main signal to TS"); as for **L**, the recordings are not distributed and the opt-in tests take them from `ISDB_RS_*` variables |
+| **LS3** | decoded on the lab's ISDB-S3 recordings (2026-10-25, receive only: BS7, BS11, BS17 at 61.44 Msps with 56 MHz analog bandwidth, VERIFICATION.md "ISDB-S3 receiver"); not distributed, opt-in test variable `ISDB_RS_ISDBS3_TLV_IQ` |
 | **—** | not implemented, or deliberately left raw |
 
 ### 2.1 ITU-T H.222.0 (05/2006)
@@ -525,6 +528,32 @@ coverage of the whole chain yet; the per-stage round trips are P.
 | §5, Fig. 6, annexed table 48 別記 2 (inter-frame interleaving, depth 8) | `isdbs_core::mainsig::{interleave, deinterleave}` | `spec_fig_6_interleaver`, `prop_interleave_round_trip` | S, P, LS |
 | §6.1.3, Fig. 10 (relative TS ID → TS_ID; one TS per TS_ID) | `isdbs_phy::ts::Packet::ts_id`, `isdb rx --out …{ts_id}…` | `outputs_split_by_ts_id`, the acceptance tool | LS (every PAT transport_stream_id equals the TMCC TS_ID) |
 
+### 2.8 ARIB STD-B44 v2.1, STD-B32 Part 3, STD-B60 (ISDB-S3)
+
+Reception to TLV streams per stream id (`isdb rx --system isdbs3`). There
+is no ISDB-S3 transmitter, so the chain has no loopback; the codecs have
+round trips (P) and every stage is confirmed on the live signal (LS3).
+
+| Clause / table | Implementation | Tests | Status |
+|---|---|---|---|
+| B44 §3.4 (1), Table 3.4-1 (BCH(65 535, 65 343), t = 12, shortened) | `isdb_fec::bch` | `spec_table_3_4_1_are_the_minimal_polynomials`, `spec_generator_degree_192`, `corrects_up_to_twelve_errors_in_the_shortened_codes` | S, LS3 (TMCC and 4 512 main-signal words, 0 corrections) |
+| §3.4 (2) and its Appendix 1 (LDPC 44 880, eleven rates, q table) | `isdb_fec::ldpc`, `isdbs3_core::{ldpc, ldpc_tables}` (`tools/b44-ldpc-tables.py`) | `spec_example_81_120_first_parity_addresses`, `spec_k_matches_table_3_2_1`, `spec_q_table`, `prop_ldpc_codewords`, `decodes_noisy_bpsk` | S, P; LS3 for 61/120 (TMCC) and 93/120 (main signal) |
+| §3.5, Fig. 3.5-1 (TMCC: shortened 61/120 with 1 870 + 11 330 nulls) | `isdbs3_core::tmcc::encode`, `isdbs3_phy::tmcc::decode` | `spec_fig_3_2_5_signal_length`, `prop_tmcc_signal_round_trip` | S, P, LS3 (every frame of three transponders) |
+| §3.6 (1)–(3), Figs. 3.6-1 to 3.6-3 (slot, TMCC, pilot dispersal; last-stage output) | `isdb_fec::prbs::B44Prbs`, `isdbs3_core::dispersal` | `spec_initial_states`, `slot_dispersal_is_an_involution` | S, LS3 (output stage settled on the TMCC; slot by BCH; pilot by `pilotcheck`) |
+| §3.2 (1), Table 3.2-1, Fig. 3.2-1 (slot: header, data, BCH, stuffing; BCH before dispersal) | `isdbs3_core::params`, `isdbs3_phy::main_signal::decode_frame` | `spec_table_3_2_1_bit_distribution` | S, LS3 |
+| §3.2 (2), Tables 3.2-2/3, Fig. 3.2-3 (slot allocation, dummy slots) | `isdbs3_core::slots` | `spec_fig_3_2_3_c_8psk_plus_qpsk`, `all_16apsk_uses_96_codewords`, `bad_allocations_are_refused`, `spec_modulation_main_symbols_fill_whole_codewords` | S, LS3 (16APSK × 120 only) |
+| §3.3, Fig. 3.3-1 (modulation slot: 24 sync + 32 pilot + 66 × (136 + 4); FSync / !FSync / SSync) | `isdbs3_core::params`, `isdbs3_phy::{sync, tmcc, main_signal}` | `spec_fig_3_3_1_geometry`, `spec_264_tmcc_symbols_per_slot_after_each_136`, `spec_8976_main_symbols_per_slot` | S, LS3 |
+| §3.7, Tables 3.7-1/2 (bit interleaver) | `isdbs3_core::interleave` | `spec_table_3_7_1_rows`, `permutations_are_bijections`, `first_symbol_takes_the_first_bit_of_each_column` | S, LS3 (16APSK forward at 93/120); the other directions S only |
+| §3.8, Fig. 3.8-1, Tables 3.8-2/3 (π/2-BPSK, QPSK, 8PSK, 16APSK, 32APSK, γ) | `isdbs3_core::constellation`, `isdbs3_phy::main_signal::demap` | `spec_pi2_bpsk_rotation`, `spec_apsk_power_normalisation_and_gray_neighbours`, `every_label_is_placed_once_at_unit_power`, `demap_is_exact_on_the_points` | S, LS3 (π/2-BPSK, 16APSK); QPSK, 8PSK, 32APSK S only |
+| §3.9 (pilot signal) | `isdbs3_phy::main_signal::{pilots, learned_points}`, `isdbs3_phy::eq` | `pilotcheck`, `eqgain`, `isdbs3_tlv_recordings` | LS3 |
+| §3.11, Figs. 3.11-1 to 3.11-9, Tables 3.11-1 to 3.11-4 (TMCC information) | `isdbs3_core::tmcc::TmccInfo` | `spec_fig_3_11_1_field_sizes_sum_to_9422`, `info_round_trips`, `prop_tmcc_info_lossless` | S, P, LS3 (bit order and the 0111 = 93/120 numbering confirmed; Notification 304/2011 unavailable) |
+| B44 Fig. 3.2-1 Appendix 1 (slot header: head-TLV indication) | `isdb_tlv::tlv::Assembler` | `reassembles_packets_across_slots`, `a_lost_slot_drops_only_the_packets_it_touches`, `prop_slots_round_trip` | S, P, LS3 (12 633 packets, 0 mismatches) |
+| B32 Part 3 §3.5 (TLV packet) | `isdb_tlv::tlv` | as above | S, P, LS3 |
+| B32 Part 3 §3.4, §3.7 (1) (IPv4 / IPv6 / HCfB header types 20h, 21h, 60h, 61h) | `isdb_tlv::ip` | `compressed_ipv6_header_type_60`, `compressed_type_61_has_no_header` | S, LS3 (the types on air) |
+| B32 Part 3 §3.9; B60 §6.4.1, Tables 6-5 to 6-9 (MMTP header, payload types, multi-type header extension) | `isdb_tlv::mmtp` | `spec_pa_message_lists_its_tables` | S, LS3 |
+| B60 §4.2, §7.2.3, Tables 4-6, 4-8, 4-11, 7-1, 7-2 (MMT-SI messages and table ids) | `isdb_tlv::mmtp::{messages, table_name}` | as above | S, LS3 (PA with MPT / PLT; MH-EIT, MH-SDT, MH-TOT, MH-AIT, ECM, EMM) |
+| B32 Part 3 §3.10 (5), B60 §5 (TLV-NIT, AMT) | `isdb_tlv::si` | `finds_a_nit_at_any_offset` | S only (no TLV-SI in the 0.55 s recordings) |
+
 ---
 
 ## 3. Interpretations and deviations index
@@ -636,6 +665,23 @@ have no external confirmation, because none is possible from the local texts.
 | isdbs-core | [tc8psk-decoding](crates/isdbs-core/SPEC-NOTES.md#tc8psk-decoding-how-the-uncoded-bit-is-decided) | design |
 | isdbs-core | [inner-code-frames](crates/isdbs-core/SPEC-NOTES.md#inner-code-frames-one-encoder-through-the-frame-known-at-both-ends) | confirmed (live data) |
 | isdbs-core | [unassigned-slots](crates/isdbs-core/SPEC-NOTES.md#unassigned-slots-slots-whose-relative-ts-id-names-an-unused-entry) | observation |
+| isdbs3-core | [ldpc-tables](crates/isdbs3-core/SPEC-NOTES.md#ldpc-tables-transcription-of-the-parity-check-address-tables) | confirmed (live data) for 61/120 and 93/120; others structure tests only |
+| isdbs3-core | [tmcc-rate-table](crates/isdbs3-core/SPEC-NOTES.md#tmcc-rate-table-table-311-2-prints-101120-twice) | confirmed (live data) for 0111 = 93/120; 1010 = 105/120 interpretation |
+| isdbs3-core | [dispersal-output](crates/isdbs3-core/SPEC-NOTES.md#dispersal-output-which-stage-the-b44-prbs-outputs) | confirmed (live data) |
+| isdbs3-core | [tmcc-bit-order](crates/isdbs3-core/SPEC-NOTES.md#tmcc-bit-order-bit-order-of-the-tmcc-information-fields) | confirmed (live data) |
+| isdbs3-core | [frame-marker](crates/isdbs3-core/SPEC-NOTES.md#frame-marker-which-synchronisation-word-marks-the-frame) | confirmed (live data) |
+| isdbs3-core | [interleaver-rows](crates/isdbs3-core/SPEC-NOTES.md#interleaver-rows-32apsk-rows) | interpretation (32APSK not on air) |
+| isdbs3-core | [interleaver-direction](crates/isdbs3-core/SPEC-NOTES.md#interleaver-direction-below-25-in-table-37-2) | interpretation for the low rates; 16APSK 93/120 confirmed |
+| isdbs3-core | [codeword-placement](crates/isdbs3-core/SPEC-NOTES.md#codeword-placement-where-each-slots-codeword-sits-in-the-symbols) | confirmed (live data) for 16APSK × 120; other mixes interpretation |
+| isdbs3-core | [main-ldpc](crates/isdbs3-core/SPEC-NOTES.md#main-ldpc-the-main-signals-inner-code) | confirmed (live data) |
+| isdbs3-core | [main-dispersal](crates/isdbs3-core/SPEC-NOTES.md#main-dispersal-order-of-bch-and-energy-dispersal-in-a-slot) | confirmed (live data) |
+| isdbs3-core | [constellation-labels](crates/isdbs3-core/SPEC-NOTES.md#constellation-labels-16apsk-and-32apsk-labels) | confirmed (live data) for 16APSK; QPSK, 8PSK, 32APSK interpretation |
+| isdbs3-core | [pilot](crates/isdbs3-core/SPEC-NOTES.md#pilot-pilot-content-and-dispersal) | confirmed (live data) for 16APSK |
+| isdb-tlv | [head-tlv](crates/isdb-tlv/SPEC-NOTES.md#head-tlv-the-slot-headers-head-tlv-indication) | confirmed (live data) |
+| isdb-tlv | [hcfb](crates/isdb-tlv/SPEC-NOTES.md#hcfb-header-compressed-ip-layout) | confirmed (live data) for the header types on air |
+| isdb-tlv | [pa-message](crates/isdb-tlv/SPEC-NOTES.md#pa-message-pa-message-table-list) | observation |
+| isdb-tlv | [control-message](crates/isdb-tlv/SPEC-NOTES.md#control-message-control-message-payload-header) | confirmed (live data) |
+| isdb-tlv | [control-packet-layout](crates/isdb-tlv/SPEC-NOTES.md#control-packet-layout-sections-in-transmission-control-tlv-packets) | **pending** (no TLV-SI in the recordings) |
 | isdbt-fec | [remux: model receiver timing](crates/isdbt-fec/SPEC-NOTES.md#remux-model-receiver-timing-multiplex-frame-pattern) | partially confirmed; **pending** live slot order |
 | isdbt-fec | [remux: null TSP content](crates/isdbt-fec/SPEC-NOTES.md#remux-null-tsp-content-in-the-reproduced-ts) | convention |
 | isdbt-fec | [layer: one-byte shift](crates/isdbt-fec/SPEC-NOTES.md#layer-one-byte-shift-of-the-frame-slot-structure) | confirmed |

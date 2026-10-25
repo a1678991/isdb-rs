@@ -13,10 +13,9 @@ meant for receiver testing, protocol study and broadcast-engineering
 experiments on a conducted bench. ISDB-T is implemented end to end.
 ISDB-S is received to transport streams, one per TS_ID (`isdb rx --system
 isdbs`, from satellite IF recordings or block by block from a radio); its
-transmitter is not written yet. For ISDB-S3 there is capture (`isdb
-capture`), a survey of the recordings (`isdb iq survey`), the symbol
-front end and the slot sync with its SNR (`isdb iq s3sync`); no decoder
-yet.
+transmitter is not written yet. ISDB-S3 is received to TLV streams,
+one per TLV stream id (`isdb rx --system isdbs3`), with the MMTP packets
+and MMT-SI tables they carry identified (`isdb tlv inspect`).
 
 > [!WARNING]
 > **Legal and RF safety notice**
@@ -126,6 +125,18 @@ yet.
   the SNR. Live from a radio it decodes one contiguous capture after
   another (no continuous stream over Gigabit Ethernet without the FPGA
   front end), slower than real time on the CPU.
+- **ISDB-S3 reception** (`isdbs3-core`, `isdbs3-phy`, `isdb-tlv`, `isdb
+  iq s3tmcc`, `isdb rx --system isdbs3`, `isdb tlv inspect`; ARIB
+  STD-B44, B32 Part 3, B60): slot and frame sync on the π/2-BPSK sync
+  words, a least-squares equaliser trained on the sync and pilot symbols,
+  the TMCC (shortened LDPC, BCH), the main signal (demapping against the
+  pilot-learned constellation, bit de-interleaving, LDPC with the address
+  tables transcribed from the standard, energy dispersal, BCH), then TLV
+  packets, header-compressed IP, MMTP and MMT-SI (PA / MPT / PLT,
+  MH-EIT, MH-SDT, MH-TOT, MH-AIT, ECM, EMM). On the three ISDB-S3
+  transponders of a cable feed (16APSK 7/9) every frame and all 4 512
+  codewords decode, and 8 TLV streams reassemble with no error. LDPC
+  needs every core of a 32-core host to keep up with 100 Mbit/s.
 
 ## Crates
 
@@ -148,6 +159,9 @@ yet.
 | [`isdb-frontend`](crates/isdb-frontend/README.md) | — (rates from `isdb-iq`) | single-carrier front end IQ → symbols for ISDB-S / ISDB-S3: bit-exact fixed-point model of the FPGA stage, floating-point reference, `Symbols` boundary format, FPGA control map; the HDL is in [`fpga/`](fpga/README.md) |
 | [`isdbs-core`](crates/isdbs-core/README.md) | BO.1408-1; MIC Ordinance No. 87 annexed tables 45–51 | ISDB-S frame geometry, combinations, slot assignment, TMCC information codec and signal, burst |
 | [`isdbs-phy`](crates/isdbs-phy/README.md) | BO.1408-1 | ISDB-S receive chain after the front end: frame sync, carrier recovery, TMCC decoding, main signal to TS packets per TS_ID |
+| [`isdbs3-core`](crates/isdbs3-core/README.md) | B44 v2.1 | ISDB-S3 geometry, code rates, LDPC tables, constellations, interleaver, energy dispersal, TMCC codec, slot allocation |
+| [`isdbs3-phy`](crates/isdbs3-phy/README.md) | B44 v2.1 | ISDB-S3 receive chain after the front end: slot/frame sync, equaliser, TMCC, main signal (LDPC, BCH) to slot data |
+| [`isdb-tlv`](crates/isdb-tlv/README.md) | B32 Part 3, B60 | TLV packets from slots, compressed IP, MMTP, MMT-SI and TLV-SI identification |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary |
 
 How they fit together, the frame/latency contract and the data flow:
@@ -373,7 +387,9 @@ end, but some parts have had less independent checking than others:
 - ISDB-S (ITU-R BO.1408 / MIC Ordinance No. 87 of 2011; ARIB STD-B20) and
   ISDB-S3 (ARIB STD-B44) reception, then transmission, reusing the TS/SI
   crates — satellite IF capture and survey done; ISDB-S received to TS;
-  next the ISDB-S modulator (loopback) and the ISDB-S3 receiver.
+  ISDB-S3 received to TLV streams with MMT-SI identified; next the ISDB-S
+  modulator (loopback), TLV-SI checked on a longer recording, and
+  real-time LDPC (SIMD).
 
 ## Development
 
