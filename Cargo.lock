@@ -398,6 +398,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "isdb-tlv"
+version = "0.1.0"
+dependencies = [
+ "isdb-ts",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "isdb-ts"
 version = "0.1.0"
 dependencies = [
@@ -443,6 +452,7 @@ dependencies = [
  "isdb-fec",
  "isdb-frontend",
  "isdb-iq",
+ "isdb-tlv",
  "isdbs3-core",
  "num-complex",
  "proptest",

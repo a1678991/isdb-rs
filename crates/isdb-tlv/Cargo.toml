@@ -1,0 +1,24 @@
+[package]
+name = "isdb-tlv"
+description = "TLV packets of ISDB-S3 / advanced BS (ARIB STD-B32 Part 3 §3.5, §3.7, §3.9, §3.10; STD-B60): stream reassembly from slots, TLV, IPv4/IPv6 and header-compressed IP, MMTP headers and messages, TLV-SI and MMT-SI section identification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-tlv"
+readme = "README.md"
+keywords = ["isdb-s3", "tlv", "mmt", "arib", "broadcast"]
+categories = ["parser-implementations", "multimedia"]
+include = ["/src/**", "/README.md", "/SPEC-NOTES.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+isdb-ts.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

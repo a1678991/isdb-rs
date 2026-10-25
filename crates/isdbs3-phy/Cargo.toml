@@ -22,6 +22,7 @@ num-complex.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+isdb-tlv.workspace = true
 proptest.workspace = true
 
 [lints]
