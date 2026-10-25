@@ -80,18 +80,21 @@ which counts RS successes under each:
 | QPSK P1 | on I (annexed table 46 text) or on Q | only P1 on I decodes: ND2 288 of 288 packets RS-clean |
 | Spectrum | as received or mirrored | as received (mirrored decodes nothing) |
 
-## Throughput (one recording, 32-core host, release build)
+## Throughput (32-thread host, release build)
 
-| Stage | BS3, 0.581 s of signal | Rate |
+| Stage | BS1, 1.68 s at 40 Msps | Notes |
 |---|---|---|
-| front end (`isdb-frontend` bit-exact model, one thread) | 1.6 s | 0.36× real time, 10.4 Msym/s |
-| frame sync, carrier, TMCC (one thread) | 0.95 s | 0.61× real time, 17.7 Msym/s |
-| main signal → TS (every core) | 0.16 s | 3.7× real time, 107 Msym/s |
+| survey | 0.29 s | |
+| trim search (11 candidates, each a front end and a receive over 0.15 s) | 0.65 s | candidates at once (were one after another: 7.6 s) |
+| front end (`isdb-frontend` `FastFrontend`, one thread) | 2.0 s | 0.84× real time, the sequential stream |
+| frame sync, carrier, derotation | 0.17 s | acquisition scan and frames shared out between threads |
+| main signal → TS (every core) | 0.40 s | |
 
-Real time needs 28.86 Msym/s. The main-signal decoder is single-threaded
-at 7.5 Msym/s and scales with superframes; the front end and the carrier
-tracker are sequential and are now the bottleneck
-(`examples/throughput`).
+Real time needs 28.86 Msym/s. The front end is one sequential stream
+per block (the bit-exact model's timing loop); `isdb rx` overlaps it
+with the receiver and runs several blocks' front ends at once
+(VERIFICATION.md "Satellite receive speed"; `examples/chaintime`,
+`examples/throughput`).
 ## Position in the stack
 
 - Depends on: `isdb-frontend`, `isdb-iq` (survey), `isdb-fec`,

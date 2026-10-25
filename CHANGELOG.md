@@ -16,6 +16,31 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-frontend`: `fast::FastFrontend`, the bit-exact front end 2–2.4×
+  faster (linear delay line, fused banks, 16-bit products in `i32` on
+  split coefficients, an `i64` kernel while a larger input is in the
+  line), equal to `fixed::Frontend` symbol for symbol (property tests,
+  recordings); the receivers run it, the FPGA vectors stay made with the
+  reference. `process_each` hands symbols to a closure.
+- `isdb-frontend` `s3sync::measure_at`; the slot search on every core,
+  bit for bit as one thread.
+- `isdbs3-phy`: `main_signal::decode_frames` (every codeword of several
+  frames in one pool), `sync::synchronise_at`, `frontend::symbols_with_prior`
+  (reuse a block's carrier and trim after checking them on 0.05 s);
+  `rx::receive` prepares frames in parallel: 5.85 → 0.60 s per 0.83 s
+  block, output unchanged.
+- `isdbs-phy`: `frontend::symbols_with_prior`, the trim candidates run at
+  once (7.6 → 0.65 s), frame acquisition and derotation on every core,
+  `par` (ordered parallel map, first-maximum search).
+- `isdb-cli`: `isdb rx --system isdbs` / `isdbs3` read or capture, run the
+  front end and receive at once, up to three blocks' front ends at a time
+  (`satpipe`); the summary's `[rx] time:` line and `time` in `--json`.
+  ISDB-S3 recordings decode 3–5× faster, ISDB-S 5–8×, with the same
+  output on single-block recordings; live from a PlutoSky the decoder
+  keeps up with the radio's captures.
+- `tools/rx-compare.sh`: decode recordings with two builds and compare
+  the outputs byte for byte.
+
 - `isdb-fec`: `ldpc::fixed`, a fixed-point layered offset min-sum
   decoder for the quasi-cyclic IRA codes, decoding 16 codewords at once
   in SIMD lanes (refilled as each stops) with the same bits and
@@ -432,6 +457,13 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
   override of the Makefile is gone.
 
 ### Fixed
+
+- `isdbs3-phy`: the carrier choice took a candidate 48 kHz off on a live
+  BS11 block (its sync Es/N0 0.6 dB higher, no TMCC decoded): candidates
+  whose carrier phase turns more than 0.5 rad between SSync slots now
+  rank below the others.
+- `isdb-cli`: the live-feed stall test no longer fails when the rest of
+  the workspace tests load every core.
 
 - `isdbs3-phy`: the ISDB-S3 carrier was the survey's strongest line, and
   an unrelated line in one of the ±R/2 windows could be stronger than the

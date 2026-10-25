@@ -90,17 +90,26 @@ isdb rx --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --channel BS3 \
 | `--block-seconds S` | the radio's longest single capture | radio: seconds per contiguous capture |
 | `--carrier-offset HZ` | from the survey | carrier offset of the signal |
 | `--ldpc fixed\|scalar\|float` | fixed | ISDB-S3 LDPC decoder: fixed-point with 16 SIMD lanes; the same one codeword at a time (its bit-exact reference); the floating-point reference |
-| `--json` | — | summary with per-TS counters (packets, RS clean / corrected / uncorrectable) |
+| `--json` | — | summary with per-TS counters (packets, RS clean / corrected / uncorrectable) and the stage times |
 
 From a radio, `isdb rx` takes one contiguous capture after another and
 decodes each on its own: over Gigabit Ethernet a radio cannot stream the
 ≥ 39 Msps ISDB-S needs without losses (VERIFICATION.md "8-bit captures
 and streaming over Gigabit Ethernet"), so the TS has a gap at every block
 boundary, which the summary states. The longest single capture is about
-1.7 s with a PlutoSky's maia-sdr recorder in 8 bits at 40 Msps. Decoding
-also runs slower than real time on the CPU (about 0.2× on a 32-core host:
-VERIFICATION.md "ISDB-S main signal to TS"). Continuous reception needs
-the FPGA symbol front end.
+1.7 s with a PlutoSky's maia-sdr recorder in 8 bits at 40 Msps.
+
+Capturing, the front end and the receiver run at once, and later blocks
+reuse the first block's carrier and trim after checking them on the
+block's first 0.05 s (re-acquiring if they no longer hold). From a
+PlutoSky over libiio a block of 0.83 s arrives every 2 s and the decoder
+keeps up with it; from a recording, up to three blocks' front ends run
+at a time. One contiguous block is limited by its front end, a single
+sequential stream (about 0.75× real time at 40 Msps on a 32-thread
+host). The summary's `[rx] time:` line (and `time` in `--json`) gives
+the wall time against the signal time and the time of each stage
+(VERIFICATION.md "Satellite receive speed"). Continuous reception needs
+a link that carries the samples, or the FPGA symbol front end.
 
 Slots whose relative TS ID points at an unused TS_ID entry (FFFFh) carry
 no TS and are not written. Uncorrectable packets keep

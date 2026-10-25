@@ -101,6 +101,31 @@ remove: an equaliser on the host, after the boundary, where the pilots
 MER by 0.1–2.3 dB (median 1.3 dB) on all 21 transponders; their TMCC
 and TS stay RS-clean.
 
+## The fast implementation
+
+`fast::FastFrontend` computes exactly the reference's integers, only
+differently: the newest `taps` mixer outputs kept contiguous (no modulo
+per tap), the three banks of a phase fused, and the dot products as
+16×16-bit products summed in `i32` on coefficients split as
+`hi·2⁹ + lo` (both `i16`), which LLVM vectorises (`pmaddwd` at the
+x86-64 baseline, `smlal` on aarch64). The sums fit `i32` while the last
+`taps` inputs stay within 13 bits (|x| ≤ 4 095; the radios deliver 12):
+a mixer output is then at most 8 190 in magnitude and a phase's
+coefficient magnitudes sum to at most 2¹⁷ − 1, so each partial sum stays
+below 64 × 512 × 8 190 < 2²⁸. While a larger input is in the delay line
+an `i64` kernel on the unsplit coefficients is used, so the equality
+holds for every `i16` input. The padded tap count is a const generic
+chosen once per `process` call.
+
+On a 0.826 s ISDB-S3 block at 40 Msps (27.9 M symbols, 32 taps): the
+reference 2.2 s, the fast one 0.93–1.05 s (`process`), about 0.9 s with
+`-C target-cpu=native`; one thread, the timing loop being sequential
+(`examples/fespeed.rs`; `examples/feprof.rs` for `valgrind
+--tool=callgrind`). Equality: `tests/fast.rs` (property tests over
+designs, widths, trims, rates, amplitudes to full-range `i16` and any
+chunking; opt-in recordings through `ISDB_RS_ISDBS3_IQ` /
+`ISDB_RS_ISDBS_IQ`). The FPGA vectors stay made with the reference.
+
 ## Spec scope
 
 The front end implements no broadcast specification: the symbol rates
@@ -143,8 +168,8 @@ the missing blocks, and the blocks around a loss stay in order. The
     the Pluto's discovery and configuration through `control`;
   - `isdb-cli`: `isdb symbols`, `isdb iq symbols`;
   - `fpga/`: the test vectors;
-  - the planned ISDB-S / ISDB-S3 receivers, which start from its
-    symbols.
+  - `isdbs-phy` and `isdbs3-phy`, the ISDB-S / ISDB-S3 receivers,
+    through `fast::FastFrontend`.
 
 ## Key types and entry points
 
@@ -152,11 +177,12 @@ the missing blocks, and the blocks around a loss stay in order. The
 |---|---|
 | `params::Design`, `Design::for_system`, `Params::design` | physical settings (rates, roll-off, taps, loop bandwidth, bits, trim) to the integer parameters (the FPGA's registers and banks) |
 | `fixed::Frontend` (`push`, `process`) → `Symbol` | the bit-exact model; `Symbol` carries every internal the FPGA test compares |
+| `fast::FastFrontend` (`push`, `process`, `process_each`) | the same `Symbol`s, 2–2.4× faster: what the receivers run (below) |
 | `float::FloatFrontend` | the floating-point reference |
 | `format::Packer`, `format::Reader` → `Event::{Block, Loss, Truncated}` | the `Symbols` words and their reader |
 | `control::{Encoder, Identity, reg}` | the FPGA's command words (through the AD9361 core's `up_adc_gpio_out` / `up_adc_gpio_in`), register map and ID word |
 | `metrics::{ring_stats, psk_mer, sqnr_db}` | MER without frame sync, SQNR |
-| `s3sync::{measure, best_trim, derotated_data}` | ISDB-S3 slot sync and sync-symbol Es/N0; the trim search; data symbols for ring statistics |
+| `s3sync::{measure, measure_at, best_trim, derotated_data}` | ISDB-S3 slot sync (the search on every core, bit for bit as one thread) and sync-symbol Es/N0, or the same at a known offset; the trim search; data symbols for ring statistics |
 | `vectors::document` | the JSON test vectors for `fpga/` |
 
 ## Tests

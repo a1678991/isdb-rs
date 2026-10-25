@@ -1071,7 +1071,89 @@ are transponder numbering, not station identities.
   was taken: 361 kHz off, sync Es/N0 5.5 dB. The carrier is now the
   candidate the front end locks on best (sync Es/N0 on 0.05 s, lines
   that agree within 2 kHz grouped): 48 of 48 frames, 13.6 dB
-  (`examples/blockcarrier`).
+  (`examples/blockcarrier`). A second case (2026-10-25, plan §0.10): on
+  the second block of the live BS11 recording a candidate 48 kHz off won
+  by 0.6 dB of sync Es/N0 and decoded no TMCC (24 of 48 frames over the
+  recording). A 24-symbol sync word hardly rotates at that offset and
+  each slot's phase is measured anew, so the sync Es/N0 cannot tell, but
+  the phase then turns +1.6 rad from one SSync slot to the next (the
+  right carrier: ±0.01 rad). Candidates whose mean phase step exceeds
+  0.5 rad now rank below the others: every segment of the three live
+  recordings acquires on its own with every frame's TMCC
+  (`isdbs3_every_segment_acquires`, `ISDB_RS_ISDBS3_LIVE_IQ`;
+  `examples/blockacq`).
+
+## Satellite receive speed
+
+Plan §0.10 (2026-10-25): the stages that kept `isdb rx --system isdbs3`
+and `--system isdbs` below real time, made faster without changing their
+output.
+
+**Bit-exactness.** The front end the receivers run is
+`isdb-frontend` `fast::FastFrontend`; `fixed::Frontend` stays the
+reference the FPGA matches. They give the same `Symbol`s (every field):
+property tests over random designs, widths, trims, rates, input
+amplitudes up to full-range `i16` and arbitrary chunking
+(`tests/fast.rs`), and on recordings (`ISDB_RS_ISDBS3_IQ`,
+`ISDB_RS_ISDBS_IQ`: 3.4 M and 1.9 M symbols identical). The FPGA
+vectors (`mise run fpga:vectors`, made with the reference) are
+byte-identical to those of the previous build and `mise run fpga:test`
+passes. Everything else that was parallelised computes each value as
+the sequential code did (`position_mags_equal_corr_bit_for_bit`,
+first-maximum searches split between threads). Decoded TLV streams and
+TS files, and the receivers' summaries, are byte-identical to the
+previous build on BS7/11/17 (61.44 Msps), BS1 (40 Msps), BS3, BS9, ND2
+and ND22 (`tools/rx-compare.sh`), and `tools/isdbs-ts-acceptance.sh`
+still gives 38 TSs, 319 584 packets, 33 corrected, 0 uncorrectable.
+Recordings of several blocks change after the first block: later blocks
+reuse the first block's acquisition (below).
+
+**One 0.826 s ISDB-S3 block** (live-path recording, 40 Msps, 32-thread
+host; real time = 0.826 s):
+
+| Stage | Before | After | What changed |
+|---|---|---|---|
+| front end | 2.57 s (one thread) | 1.13 s (one thread) | linear delay line, fused banks, 16-bit products in `i32` on split coefficients, width as a const generic (`FastFrontend`); symbols handed to a closure |
+| slot sync | 1.74 s, run twice | 0.17 s once + 0.07 s | the per-position sync statistic computed once in vectorised form on every core; no second search after the equaliser (`synchronise_at`) |
+| carrier choice + trim | 1.26 s every block | 0.83 s on the first block; later blocks verify the first block's in 0.05 s | `symbols_with_prior` |
+| equaliser | 0.21 s | 0.04 s | chunks on every core |
+| TMCC, main symbols, demap, LDPC, BCH | 2.7 s (frame by frame) | 0.36 s | every frame prepared in parallel, all codewords of the block in one pool (`decode_frames`) |
+| receive (whole) | 5.85 s | 0.60 s | |
+
+**ISDB-S** (BS1, 1.68 s at 40 Msps): 16.5 s → 2.9 s. The trim search ran
+its 11 candidates (each a front end and a receive) one after another
+(7.6 s); they now run at once (0.65 s), and frame acquisition and the
+per-frame derotation share out their work.
+
+**Whole chain, recordings.** `isdb rx` reads, runs the front end and
+receives at once (`isdb-cli` `satpipe`), up to three blocks' front ends
+at a time (each block depends only on its samples and the first block).
+
+| Recording | Before | After |
+|---|---|---|
+| ISDB-S3, 1 block, 0.546 s at 61.44 Msps | 6.9–7.2 s | 2.3–2.4 s |
+| ISDB-S3, 2 blocks, 1.65 s at 40 Msps | 19.4–20.0 s | 4.2–4.3 s |
+| ISDB-S3, 12 blocks, 9.9 s at 40 Msps (live blocks repeated) | — | 10.9 s (0.91×; one front end at a time: 0.52×) |
+| ISDB-S, 1 block, 1.68 s at 40 Msps | 16.1–16.5 s | 2.9 s |
+| ISDB-S, 1 block, 0.546 s at 61.44 Msps | 10.3–13.3 s | 1.5–1.7 s |
+
+A single contiguous block is bounded by its front end, one sequential
+stream (the timing loop): 1.13 s per 0.826 s of ISDB-S3 at 40 Msps
+(0.73× real time) on this host at the x86-64 baseline, about 0.9 s with
+`-C target-cpu=native`. Splitting one stream between threads would
+change its output at the seams, so it is not done.
+
+**Live** (receive only, PlutoSky R2, libiio 8-bit captures of 0.826 s at
+40 Msps, 5 s of signal): ISDB-S3 BS7, 7 blocks: 168/168 TMCC, 16 128
+slots, 13 LDPC failures, front end 1.33 s and receiver 0.60 s per block;
+ISDB-S BS1, 7 blocks: 516 superframes, 198 144 packets, 0
+uncorrectable, front end 0.93 s and receiver 0.29 s per block. A block
+arrived every 2.05 s, which is the capture alone (`isdb capture
+--discard`: 2.03 s per block, the single-buffer transfer at 32.5 MB/s):
+the decoder keeps up with the blocks the radio delivers. The signal
+between captures is not received: continuous reception needs a link
+that carries the samples (≈ 70 MB/s loss-free over iiod, below 40 Msps
+8-bit) or the FPGA symbol path, which is designed but not deployed.
 
 ## Open questions
 
