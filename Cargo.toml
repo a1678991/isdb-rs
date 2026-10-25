@@ -15,6 +15,7 @@ isdb-ts = { version = "0.1.0", path = "crates/isdb-ts" }
 isdb-text = { version = "0.1.0", path = "crates/isdb-text" }
 isdb-si = { version = "0.1.0", path = "crates/isdb-si" }
 isdbt-core = { version = "0.1.0", path = "crates/isdbt-core" }
+isdb-fec = { version = "0.1.0", path = "crates/isdb-fec" }
 isdbt-fec = { version = "0.1.0", path = "crates/isdbt-fec" }
 isdbt-ofdm = { version = "0.1.0", path = "crates/isdbt-ofdm" }
 thiserror = "2"
@@ -127,6 +128,9 @@ opt-level = 2
 # the signal-processing crates and all dependencies in the dev profile;
 # debug assertions and overflow checks stay on.
 [profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.isdb-fec]
 opt-level = 3
 
 [profile.dev.package.isdbt-fec]

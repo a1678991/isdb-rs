@@ -14,157 +14,40 @@
 //! prepending 51 zero bytes "at the beginning" yields a (255,239) codeword
 //! with the parity at the end as in Fig. 3-6 (b) — see SPEC-NOTES.md.
 //!
-//! The decoder is a textbook errors-only bounded-distance decoder
-//! (syndromes, Berlekamp–Massey, Chien search restricted to the 204
-//! unshortened positions, Forney), correcting up to 8 byte errors.
+//! The code itself (field, generator, encoder and the errors-only t = 8
+//! decoder) is `isdb_fec::rs`, shared with ISDB-S; this module keeps the
+//! 188/204-byte API of the ISDB-T chain.
 
 use crate::FecError;
+use isdb_fec::rs::RS_204_188;
 use isdbt_core::{TRANSMISSION_TSP, TSP};
+
+pub use isdb_fec::rs::{ALPHA, PRIMITIVE_POLY, generator_poly, gf_alpha_pow, gf_mul};
 
 /// Number of RS parity bytes (§3.3: 204 − 188).
 pub const PARITY: usize = TRANSMISSION_TSP - TSP;
 /// Correctable byte errors, t = 8 (§3.3 \[Description\]: "can correct up to
 /// 8 random bytes in error among 204 bytes").
 pub const T: usize = PARITY / 2;
-/// Primitive polynomial p(x) = x⁸+x⁴+x³+x²+1 including the x⁸ term (§3.3).
-pub const PRIMITIVE_POLY: u16 = 0x11D;
-/// Primitive element λ = 02HEX (§3.3).
-pub const ALPHA: u8 = 0x02;
 /// Zero bytes conceptually prepended to shorten RS(255,239) (§3.3).
 pub const SHORTENING: usize = 255 - TRANSMISSION_TSP;
 
-/// GF(2⁸) arithmetic tables for p(x) = 0x11D, λ = 2 (§3.3).
-struct Gf {
-    exp: [u8; 512],
-    log: [u16; 256],
-}
-
-impl Gf {
-    const fn new() -> Self {
-        let mut exp = [0u8; 512];
-        let mut log = [0u16; 256];
-        let mut x: u16 = 1;
-        let mut i = 0;
-        while i < 255 {
-            exp[i] = x as u8;
-            exp[i + 255] = x as u8;
-            log[x as usize] = i as u16;
-            x <<= 1; // multiply by λ = 0x02
-            if x & 0x100 != 0 {
-                x ^= PRIMITIVE_POLY;
-            }
-            i += 1;
-        }
-        exp[510] = exp[0];
-        exp[511] = exp[1];
-        Self { exp, log }
-    }
-    #[inline]
-    fn mul(&self, a: u8, b: u8) -> u8 {
-        if a == 0 || b == 0 {
-            0
-        } else {
-            self.exp[self.log[a as usize] as usize + self.log[b as usize] as usize]
-        }
-    }
-    #[inline]
-    fn div(&self, a: u8, b: u8) -> u8 {
-        debug_assert!(b != 0);
-        if a == 0 {
-            0
-        } else {
-            self.exp[(self.log[a as usize] as usize + 255 - self.log[b as usize] as usize) % 255]
-        }
-    }
-    /// λ^e for any integer e.
-    #[inline]
-    fn pow_alpha(&self, e: i64) -> u8 {
-        self.exp[e.rem_euclid(255) as usize]
-    }
-}
-
-static GF: Gf = Gf::new();
-
-/// Field multiplication in GF(2⁸)/p(x) (§3.3), exposed for tests and tools.
-pub fn gf_mul(a: u8, b: u8) -> u8 {
-    GF.mul(a, b)
-}
-
-/// λ^e in GF(2⁸) (§3.3, λ = 02HEX).
-pub fn gf_alpha_pow(e: u32) -> u8 {
-    GF.pow_alpha(e as i64)
-}
-
-/// Coefficients of g(x) = ∏_{i=0}^{15} (x − λ^i) (§3.3), highest degree
-/// first: `[1, g15, …, g0]` (17 coefficients, monic).
-pub fn generator_poly() -> [u8; PARITY + 1] {
-    // Built in ascending-degree order then reversed.
-    let mut g = [0u8; PARITY + 1];
-    g[0] = 1; // ascending: g[k] = coeff of x^k
-    for i in 0..PARITY {
-        let root = GF.pow_alpha(i as i64);
-        // multiply by (x + root) (characteristic 2: − = +); degree is i.
-        let mut next = [0u8; PARITY + 1];
-        for k in 0..=i {
-            next[k + 1] ^= g[k];
-            next[k] ^= GF.mul(g[k], root);
-        }
-        g = next;
-    }
-    let mut out = [0u8; PARITY + 1];
-    for k in 0..=PARITY {
-        out[k] = g[PARITY - k];
-    }
-    out
-}
-
-/// Generator coefficients without the leading 1, highest degree first.
-fn gen_tail() -> &'static [u8; PARITY] {
-    use std::sync::OnceLock;
-    static G: OnceLock<[u8; PARITY]> = OnceLock::new();
-    G.get_or_init(|| {
-        let g = generator_poly();
-        let mut t = [0u8; PARITY];
-        t.copy_from_slice(&g[1..]);
-        t
-    })
-}
+const _: () = assert!(PARITY == isdb_fec::rs::PARITY && RS_204_188.n() == TRANSMISSION_TSP);
 
 /// Systematic RS(204,188) encoding of one 188-byte TSP (§3.3, Fig. 3-6):
 /// returns the transmission TSP = the 188 input bytes followed by the 16
 /// parity bytes r(x) = d(x)·x¹⁶ mod g(x).
 pub fn encode(tsp: &[u8; TSP]) -> [u8; TRANSMISSION_TSP] {
-    let g = gen_tail();
-    let mut reg = [0u8; PARITY];
-    for &b in tsp {
-        let fb = b ^ reg[0];
-        reg.copy_within(1.., 0);
-        reg[PARITY - 1] = 0;
-        if fb != 0 {
-            for (r, &gk) in reg.iter_mut().zip(g.iter()) {
-                *r ^= GF.mul(fb, gk);
-            }
-        }
-    }
     let mut out = [0u8; TRANSMISSION_TSP];
     out[..TSP].copy_from_slice(tsp);
-    out[TSP..].copy_from_slice(&reg);
+    out[TSP..].copy_from_slice(&RS_204_188.parity(tsp));
     out
 }
 
 /// The 16 syndromes S_j = c(λ^j), j = 0..15, of a 204-byte word (roots of
 /// g(x), §3.3). All zero ⇔ the word is a codeword.
 pub fn syndromes(word: &[u8; TRANSMISSION_TSP]) -> [u8; PARITY] {
-    let mut s = [0u8; PARITY];
-    for (j, sj) in s.iter_mut().enumerate() {
-        let a = GF.pow_alpha(j as i64);
-        let mut acc = 0u8;
-        for &b in word {
-            acc = GF.mul(acc, a) ^ b;
-        }
-        *sj = acc;
-    }
-    s
+    RS_204_188.syndromes(word)
 }
 
 /// Successful RS decoding outcome.
@@ -178,112 +61,10 @@ pub struct Corrected {
 /// word is a codeword and the number of corrected bytes is returned; on
 /// failure (more than 8 errors detected) the word is left unchanged.
 pub fn decode(word: &mut [u8; TRANSMISSION_TSP]) -> Result<Corrected, FecError> {
-    let s = syndromes(word);
-    if s.iter().all(|&x| x == 0) {
-        return Ok(Corrected { errors: 0 });
-    }
-    // Berlekamp–Massey: error locator Λ(x), ascending coefficients.
-    let mut lambda = [0u8; PARITY + 1];
-    let mut prev = [0u8; PARITY + 1];
-    lambda[0] = 1;
-    prev[0] = 1;
-    let mut l = 0usize;
-    let mut m = 1usize;
-    let mut b = 1u8;
-    for n in 0..PARITY {
-        let mut d = s[n];
-        for i in 1..=l {
-            d ^= GF.mul(lambda[i], s[n - i]);
-        }
-        if d == 0 {
-            m += 1;
-        } else if 2 * l <= n {
-            let t = lambda;
-            let coef = GF.div(d, b);
-            for i in m..=PARITY {
-                lambda[i] ^= GF.mul(coef, prev[i - m]);
-            }
-            l = n + 1 - l;
-            prev = t;
-            b = d;
-            m = 1;
-        } else {
-            let coef = GF.div(d, b);
-            for i in m..=PARITY {
-                lambda[i] ^= GF.mul(coef, prev[i - m]);
-            }
-            m += 1;
-        }
-    }
-    let deg = (0..=PARITY).rev().find(|&i| lambda[i] != 0).unwrap_or(0);
-    if l > T || deg != l {
-        return Err(FecError::RsUncorrectable);
-    }
-    // Ω(x) = S(x)·Λ(x) mod x^16, S(x) = Σ S_j x^j.
-    let mut omega = [0u8; PARITY];
-    for i in 0..PARITY {
-        let mut acc = 0u8;
-        for j in 0..=i.min(l) {
-            acc ^= GF.mul(lambda[j], s[i - j]);
-        }
-        omega[i] = acc;
-    }
-    // Chien search over the 204 transmitted positions. Byte index p has
-    // degree e = 203 − p and locator X = λ^e; Λ(X⁻¹) = 0 at error positions.
-    let mut positions = [0usize; T];
-    let mut values = [0u8; T];
-    let mut found = 0;
-    for p in 0..TRANSMISSION_TSP {
-        let e = (TRANSMISSION_TSP - 1 - p) as i64;
-        let xinv = GF.pow_alpha(-e);
-        let mut acc = 0u8;
-        let mut xp = 1u8;
-        for &c in lambda.iter().take(l + 1) {
-            acc ^= GF.mul(c, xp);
-            xp = GF.mul(xp, xinv);
-        }
-        if acc == 0 {
-            if found == T {
-                return Err(FecError::RsUncorrectable);
-            }
-            // Forney with first consecutive root λ⁰ (b = 0):
-            // e = X^{1−b} Ω(X⁻¹) / Λ'(X⁻¹) = X·Ω(X⁻¹)/Λ'(X⁻¹).
-            let mut om = 0u8;
-            let mut xp = 1u8;
-            for &c in omega.iter() {
-                om ^= GF.mul(c, xp);
-                xp = GF.mul(xp, xinv);
-            }
-            // Formal derivative: odd-degree terms only.
-            let mut dl = 0u8;
-            let mut i = 1;
-            while i <= l {
-                dl ^= GF.mul(lambda[i], GF.pow_alpha(-e * (i as i64 - 1)));
-                i += 2;
-            }
-            if dl == 0 {
-                return Err(FecError::RsUncorrectable);
-            }
-            let x = GF.pow_alpha(e);
-            positions[found] = p;
-            values[found] = GF.mul(x, GF.div(om, dl));
-            found += 1;
-        }
-    }
-    if found != l {
-        // Roots outside the transmitted 204 positions (in the shortened
-        // zero region) or repeated: more than t errors.
-        return Err(FecError::RsUncorrectable);
-    }
-    let mut fixed = *word;
-    for k in 0..found {
-        fixed[positions[k]] ^= values[k];
-    }
-    if syndromes(&fixed).iter().any(|&x| x != 0) {
-        return Err(FecError::RsUncorrectable);
-    }
-    *word = fixed;
-    Ok(Corrected { errors: found })
+    RS_204_188
+        .decode(word)
+        .map(|errors| Corrected { errors })
+        .map_err(|_| FecError::RsUncorrectable)
 }
 
 #[cfg(test)]

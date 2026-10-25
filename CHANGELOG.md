@@ -227,6 +227,12 @@ STD-B32; editions in `SPECS.md`). Only ISDB-T is implemented.
 
 ### Changed
 
+- `isdb-fec` (new): the RS(255,239) shortened codes (now any length, for
+  RS(204,188) and the ISDB-S TMCC's RS(64,48)), the K = 7 171/133
+  convolutional code and Viterbi decoder, and the X¹⁵+X¹⁴+1 PRBS moved
+  out of `isdbt-fec`, joined by the ISDB-S burst PRBS X⁹+X⁴+1.
+  `isdbt-fec::{rs, conv, energy}` keep their public items and delegate;
+  every ISDB-T test is unchanged and Viterbi throughput is the same.
 - `isdb-cli`: channels are written `T<n>` (terrestrial UHF, T13–T62),
   `BS<n>` (odd 1–23) and `ND<n>` (even 2–24), parsed case-insensitively.
   `--channel` of `tx` / `rx` takes these names, and a bare number still

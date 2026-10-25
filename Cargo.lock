@@ -320,6 +320,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "isdb-fec"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "isdb-frontend"
 version = "0.1.0"
 dependencies = [
@@ -405,6 +413,7 @@ dependencies = [
 name = "isdbt-fec"
 version = "0.1.0"
 dependencies = [
+ "isdb-fec",
  "isdbt-core",
  "proptest",
  "thiserror",

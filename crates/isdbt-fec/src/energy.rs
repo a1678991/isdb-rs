@@ -23,69 +23,15 @@
 use isdbt_core::TRANSMISSION_TSP;
 
 /// Initial register contents "100101010000000", stage 1 first (§3.5).
-pub const INITIAL_STATE: &str = "100101010000000";
+pub const INITIAL_STATE: &str = isdb_fec::prbs::PRBS15_INITIAL_STATE;
 
 /// Period of the maximal-length sequence of g(x) = X¹⁵ + X¹⁴ + 1:
 /// 2¹⁵ − 1 (§3.5, Fig. 3-8).
-pub const PERIOD: usize = (1 << 15) - 1;
+pub const PERIOD: usize = isdb_fec::prbs::PRBS15_PERIOD;
 
-/// The PRBS generator of Fig. 3-8 (§3.5).
-///
-/// The register is held in a `u16` with stage *i* in bit *i − 1*.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Prbs {
-    reg: u16,
-}
-
-impl Default for Prbs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Prbs {
-    /// Register loaded with [`INITIAL_STATE`] (stage 1 = leftmost '1').
-    pub fn new() -> Self {
-        let mut reg = 0u16;
-        for (i, c) in INITIAL_STATE.bytes().enumerate() {
-            if c == b'1' {
-                reg |= 1 << i;
-            }
-        }
-        Self { reg }
-    }
-
-    /// Re-initialise (done at every OFDM-frame start, §3.5).
-    pub fn reset(&mut self) {
-        *self = Self::new();
-    }
-
-    /// Register contents as the 15-character string, stage 1 first.
-    pub fn state_string(&self) -> String {
-        (0..15)
-            .map(|i| if self.reg >> i & 1 == 1 { '1' } else { '0' })
-            .collect()
-    }
-
-    /// One clock: output = stage14 ⊕ stage15, which also enters stage 1.
-    #[inline]
-    pub fn next_bit(&mut self) -> u8 {
-        let fb = ((self.reg >> 13) ^ (self.reg >> 14)) & 1;
-        self.reg = ((self.reg << 1) | fb) & 0x7FFF;
-        fb as u8
-    }
-
-    /// Eight clocks packed MSB-first (the first PRBS bit XORs the byte's
-    /// MSB, §3.5 "the beginning … must be the MSB").
-    #[inline]
-    pub fn next_byte(&mut self) -> u8 {
-        let mut b = 0u8;
-        for _ in 0..8 {
-            b = (b << 1) | self.next_bit();
-        }
-        b
-    }
-}
+/// The PRBS generator of Fig. 3-8 (§3.5): `isdb_fec::Prbs15`, shared with
+/// ISDB-S, which restarts it per superframe instead of per OFDM frame.
+pub type Prbs = isdb_fec::Prbs15;
 
 /// PRBS bytes for one layer frame of `slots` transmission-TSP slots,
 /// starting from the reset state: element *i* is the byte XORed onto layer

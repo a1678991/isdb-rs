@@ -1,0 +1,24 @@
+[package]
+name = "isdb-fec"
+description = "Channel-coding blocks shared by the ISDB systems: shortened Reed-Solomon over GF(2^8) with the (255,239) mother code, the K=7 171/133 convolutional code and its soft Viterbi decoder, and the PRBS generators"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-fec"
+readme = "README.md"
+keywords = ["isdb", "reed-solomon", "viterbi", "fec", "arib"]
+categories = ["algorithms", "encoding", "science"]
+# Ship sources and docs only.
+include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

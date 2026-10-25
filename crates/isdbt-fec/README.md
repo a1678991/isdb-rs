@@ -28,8 +28,10 @@ The bit interleaving and everything after it (§3.9–3.16) is in
 
 ## Position in the stack
 
-- Depends on: `isdbt-core` (`LayerConfig`, `Mode`, `Params`, Table 3-7 /
-  coded-bit figures).
+- Depends on: `isdb-fec` (the RS code, the K = 7 mother code and Viterbi
+  decoder, and the 15-bit PRBS, shared with ISDB-S; `rs`, `conv` and
+  `energy` keep their APIs here and delegate), `isdbt-core` (`LayerConfig`,
+  `Mode`, `Params`, Table 3-7 / coded-bit figures).
 - Used by: `isdbt-phy` (TX/RX pipelines: `LayerEncoder`, `LayerDecoder`,
   `MultiplexPattern`, `LATENCY_FRAMES`), `isdbt-mux` (`MultiplexPattern`
   for multiplex-frame output and null packets) and `isdb-cli`.
