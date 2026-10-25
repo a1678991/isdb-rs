@@ -144,6 +144,19 @@ fn spec_extreme_components_use_the_wide_kernel_exactly() {
     }
 }
 
+/// The chunked mixer and the delay-line slides: chunk sizes around the
+/// internal block of 4 096 samples and its divisors and multiples, on a
+/// stream long enough for many slides, with 64 taps (the longest line).
+#[test]
+fn spec_chunk_boundaries_and_slides() {
+    let p = params(true, 64, -0.16, -130e3, 6, 5e-6, 40e6).unwrap();
+    let x = signal(60_000, 7, 2047.0, 40e6 / 33.7561e6);
+    let want = reference(&p, &x);
+    for chunk in [1, 63, 64, 65, 4095, 4096, 4097, 8191, 8192, 12_289, 60_000] {
+        assert_eq!(want, fast(&p, &x, chunk), "chunk {chunk}");
+    }
+}
+
 /// Opt-in: a recording through both, ISDB-S3 or ISDB-S at its rate.
 fn recording(var: &str, s3: bool) {
     let Ok(path) = std::env::var(var) else {
