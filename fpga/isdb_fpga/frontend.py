@@ -7,8 +7,11 @@ bit: every step uses the model's widths, rounding (add half, arithmetic
 shift) and saturation.
 
 Timing: one input sample per `i_valid` strobe, at least CYCLES (4) clock
-cycles apart (the AD9361 ADC clock runs at 4x the sample rate on the
-PlutoSky R2, LVDS 2R2T). The input sample enters at cycle A; the mixer
+cycles apart. NOTE (2026-10-26): that assumption does not hold on the
+PlutoSky R2. Its LVDS 2R2T interface gives `util_ad9361_divclk` =
+rx_clk / 4 = the sample rate (40 MHz at 40 Msps), and `util_wfifo`
+delivers samples in bursts of 8 on consecutive cycles, so this schedule
+cannot run there as is; see fpga/README.md "Status". The input sample enters at cycle A; the mixer
 output is ready at D0 = A + 2, the cycle that shifts it into the delay
 line, decides whether a symbol is due (model step 3), commits the loop
 update and advances t_acc. For a due symbol ("Dk" is k cycles after D0;

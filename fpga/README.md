@@ -175,7 +175,65 @@ timing, so there is no bitstream to deploy yet.**
 | stock, rebuilt with 2026.1 | 23 211 (44 %) | 32 304 (30 %) | 55.5 | 106 (48 %) | +0.100 ns | +0.024 ns |
 | with SymbolsRx (after route) | — | — | — | — | −3.281 ns | −3.647 ns |
 
-Two causes, found on the post-opt checkpoint:
+**Update 2026-10-26: the block cannot work as designed on this board,
+whatever its timing.** It was designed for 4 clock cycles per input
+sample (`CYCLES = 4`, a time-multiplexed MAC) and for a loop latency of
+16 cycles inside the model's `LOOP_DELAY` of 6 symbols, which the model
+documents as "24 clock cycles at 4 cycles per sample". On the board
+there is **one clock per sample**:
+
+- The board runs the AD9361 in LVDS 2R2T mode (device tree
+  `adi,lvds-mode-enable`, `adi,2rx-2tx-mode-enable`; at 40 Msps the
+  driver reports `RXSAMP:40000000`). The LVDS data clock `rx_clk` is
+  4 × fs = 160 MHz, and `util_ad9361_divclk` divides it by 4
+  (`SEL_0_DIV = 4`, `xilinx_ad9361.tcl` with `lvds` set): the block's
+  clock is **40 MHz = fs**. The "160 MHz" of the plan was `rx_clk`,
+  which the block never sees. The 125 MHz failure below is the BUFGMUX's
+  other input (`clk_div_sel_1_s`, the 1R1T divider at the 250 MHz
+  maximum `rx_clk` Vivado constrains); 2R2T at 40 Msps never selects it.
+- `util_wfifo` (`util_ad9361_adc_fifo`) moves samples into that domain
+  in bursts: every 8 samples written in `l_clk`, it reads them out on
+  8 consecutive `dout_clk` cycles (`dout_req_cnt`, `dout_valid`). So
+  `adc_valid` is high on back-to-back cycles, not every 4th.
+
+With one sample per clock the MAC would have to be fully parallel
+(`CYCLES = 1`), and symbols (1.18–1.39 samples apart) can be due on
+consecutive clocks, so `LOOP_DELAY = 6` symbols can be as few as 6 clock
+cycles. The loop path (delay line → 32-tap dot product → round/saturate →
+× G → round/saturate → TED and power products → shift/saturate → kp·e,
+ki·e → rounding → integrator and period clamp) needs about four
+multiplier stages plus adder trees: it cannot be closed in 6 cycles, even
+at 40 MHz, and pipelining makes it longer. Timing at 40 MHz itself is
+easy (the unpipelined dot product is 9.2 ns of 25 ns).
+
+What it needs is a model change, owned by `isdb-frontend` (not made
+here; it changes the bit-exact output and the FPGA vectors):
+
+1. **`LOOP_DELAY` in clock cycles of the real rate.** At one sample per
+   clock and ≥ 1 symbol per 1.18 samples, a latency of N clocks needs
+   `LOOP_DELAY ≥ ceil(N / 1.0)` symbols in the worst case. A
+   straightforward full-rate pipeline (registered dot product in 2–3
+   stages, ×G, TED/power, loop terms, shadow commit) is about 16–20
+   cycles: **`LOOP_DELAY = 24`** leaves margin. The loop stays stable:
+   the timing loop bandwidth is 5·10⁻⁶ R (ISDB-S3) to 2·10⁻⁴ R, so 24
+   symbols of delay is negligible phase margin loss, but it must be
+   checked on the recordings (lock, MER) before it is adopted.
+2. **Or keep `LOOP_DELAY = 6` and decimate first:** no, the input rate is
+   fixed by the 40 Msps the receivers need.
+3. **The parallel MAC itself:** today's 64 DSP48E1 (Yosys, 32 taps) are
+   48 for the MAC (8 lanes × 6 products, each 18 × 14 bits, one DSP per
+   product, time-shared over 4 cycles) plus 16 for mixer, gain, TED and
+   loop. At one cycle per sample the MAC is 32 × 6 = 192 DSPs, about
+   208 in all; with Tezuka's 106 that is ~314 of the xc7z020's 220. It
+   needs the multiplies to drop: the three banks need not all be full
+   length (e.g. `g` only feeds the TED; `k` equals `h` when untrimmed),
+   or fewer taps. Each is again a model change.
+
+So the next step is a design decision on the model (loop delay, MAC
+budget), then a re-derivation of the FPGA schedule, not a timing fix.
+
+The two causes found on the post-opt checkpoint (still valid as timing
+facts, but superseded by the above):
 
 1. **The ADC clock is faster than designed for.** `dout_clk` of
    `util_ad9361_adc_fifo` is `util_ad9361_divclk`, `rx_clk` divided by 4
