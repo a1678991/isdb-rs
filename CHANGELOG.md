@@ -146,25 +146,31 @@ transport streams.
   and 110° CS at their satellite IF).
 - `isdb-frontend`: single-carrier receive front end for ISDB-S and
   ISDB-S3 (IQ to symbols at one per symbol):
-  - a bit-exact fixed-point model of format version 1: 32-bit NCO mixer,
+  - a bit-exact fixed-point model of format version 2: 32-bit NCO mixer,
     64-phase polyphase root-raised-cosine matched filter with its
-    derivative, non-data-aided timing recovery with a PI loop applied six
-    symbols late, AGC, n-bit output;
+    derivative and an output filter (the matched filter a trim later),
+    non-data-aided timing recovery on the first two with a PI loop applied
+    six symbols late, AGC and n-bit output on the third;
   - a floating-point reference;
   - the `Symbols` boundary: 16-bit words in blocks with sync, sequence
     number, gain, period, header check and a CRC-16 trailer, and a
     `Reader` that reports every loss;
-  - `Design::for_system` with the settings measured on the satellite IF;
+  - `Design::for_system` with the settings measured on the satellite IF
+    (32 taps, 6 bits for both systems) and `Design::trim`;
   - ring / PSK MER and SQNR metrics;
+  - `s3sync`: ISDB-S3 slot synchronisation on the STD-B44 sync words, the
+    SNR on those known symbols, and `best_trim`, the trim search that the
+    host runs before configuring the front end;
   - the FPGA's register map and command words over the AD9361 core's
     general purpose registers (`control`);
   - JSON test vectors for the HDL.
 - `fpga/`: the same front end in Amaranth HDL (`SymbolsRx`: core,
   command decoder on `up_adc_gpio_out`, ID word on `up_adc_gpio_in`,
-  output selection before the RX DMA's packer). It matches the model bit
-  for bit in simulation, and Yosys estimates 46 DSP48E1 and 3.6k LUT for
-  32 taps. `mise run fpga:test`, `fpga:estimate` and `fpga:verilog`. Not
-  yet built into a bitstream.
+  output selection before the RX DMA's packer), format 2 with the
+  output bank. It matches the model bit for bit in simulation, trimmed
+  and untrimmed, and Yosys estimates 64 DSP48E1 and 3.9k LUT for 32 taps.
+  `mise run fpga:test`, `fpga:estimate` and `fpga:verilog`. Not yet built
+  into a bitstream.
 - `isdb-radio`: `Offload` (stages a radio runs itself), probed by
   `Backend::offloads` without changing the device, and
   `Backend::capture_symbols`. The Pluto backend reads the front end's ID
@@ -262,6 +268,22 @@ transport streams.
   English).
 
 ### Changed
+
+- `isdb-frontend` format 2 (`Symbols` words keep their layout; the
+  reader accepts versions 1 and 2): the front end's timing loop locks a
+  fixed fraction of a symbol away from the best sampling instant on the
+  lab's satellite signals (0.15–0.18 on ISDB-S3, 5–6 dB of SNR; 0.05–0.10
+  on ISDB-S), so the output now comes from a separate filter bank shifted
+  by a trim the host measures on known symbols. `isdb symbols` and `isdb
+  iq symbols` measure and apply it (`--trim auto|T`, default auto) and
+  record it in the sidecar; ISDB-S3 output goes from 5 to 6 bits; the
+  ISDB-S3 report gives the sync-symbol Es/N0. With the trim: ISDB-S3
+  sync-symbol Es/N0 8.8–9.5 → 14.6–14.7 dB on BS7/11/17; ISDB-S burst
+  MER +1.3 dB (median) on 21 transponders, TS still RS-clean.
+  `isdbs_phy::frontend::symbols` measures the trim too (`Trim::Auto`).
+- `isdb-cli`: `isdb iq s3sync`, the ISDB-S3 slot sync and sync-symbol
+  Es/N0 of a recording (untrimmed and trimmed) or of a `Symbols` words
+  file.
 
 - `isdb rx`: a SigMF recording given to `--iq` supplies its format and
   must be at 512/63 MHz (others are refused with a pointer to `isdb iq

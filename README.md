@@ -14,7 +14,9 @@ experiments on a conducted bench. ISDB-T is implemented end to end.
 ISDB-S is received to transport streams, one per TS_ID (`isdb rx --system
 isdbs`, from satellite IF recordings or block by block from a radio); its
 transmitter is not written yet. For ISDB-S3 there is capture (`isdb
-capture`) and a survey of the recordings (`isdb iq survey`).
+capture`), a survey of the recordings (`isdb iq survey`), the symbol
+front end and the slot sync with its SNR (`isdb iq s3sync`); no decoder
+yet.
 
 > [!WARNING]
 > **Legal and RF safety notice**
@@ -103,13 +105,16 @@ capture`) and a survey of the recordings (`isdb iq survey`).
   survey that finds the symbol rate, the carrier offset and the system
   (ISDB-S, ISDB-S3) of a recording.
 - **Satellite symbol front end** (`isdb-frontend`, `fpga/`, `isdb
-  symbols`, `isdb iq symbols`): matched filtering, timing recovery and
-  AGC from IQ to 5- or 6-bit symbols. It exists as a bit-exact
-  fixed-point model on the CPU and as the same stage in Amaranth HDL for
-  the PlutoSky R2's FPGA, which halves what crosses the link (about
-  43 MB/s instead of 80) for continuous ISDB-S / ISDB-S3 reception. The
-  HDL matches the model bit for bit in simulation but is not yet in a
-  bitstream; until then the CPU runs it on one contiguous capture.
+  symbols`, `isdb iq symbols`, `isdb iq s3sync`): matched filtering,
+  timing recovery and AGC from IQ to 6-bit symbols, with a timing trim
+  that the host measures on known symbols (the loop alone lands
+  0.15–0.18 symbol off the best instant on ISDB-S3: 5–6 dB). It exists as
+  a bit-exact fixed-point model on the CPU and as the same stage in
+  Amaranth HDL for the PlutoSky R2's FPGA, which cuts what crosses the
+  link (43 / 51 MB/s for ISDB-S / ISDB-S3 instead of 80) for continuous
+  reception. The HDL matches the model bit for bit in simulation but is
+  not yet in a bitstream; until then the CPU runs it on one contiguous
+  capture.
 - **ISDB-S reception** (`isdbs-core`, `isdbs-phy`, `isdb iq tmcc`, `isdb
   rx --system isdbs`): frame and superframe sync on the frame's known
   symbols, burst-aided carrier recovery, the TMCC (inner code, energy

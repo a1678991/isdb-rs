@@ -705,8 +705,10 @@ decision-directed MER of BS1 after the front end (32 taps):
   | 5 | −0.32 dB | −0.07 dB | 36.2 / 42.4 |
   | 6 | −0.07 dB | −0.01 dB | 43.4 / 50.8 |
 
-  Chosen: 6 bits for ISDB-S, 5 for ISDB-S3 (≈ 43 MB/s, 60 % of the
-  ceiling).
+  Chosen then: 6 bits for ISDB-S, 5 for ISDB-S3 (≈ 43 MB/s, 60 % of
+  the ceiling). Superseded on 2026-10-25 (below): the ISDB-S3 figures
+  were taken through an untrimmed filter at about 9 dB, where the
+  quantiser's cost hides; ISDB-S3 now uses 6 bits.
 
 The opt-in tests `isdb-frontend` `tests/captures.rs` (`ISDB_RS_ISDBS_IQ`,
 `ISDB_RS_ISDBS3_IQ`) check this on any recording: timing lock within
@@ -738,7 +740,84 @@ ISDB-S MER above 10 dB, and a lossless read-back of the words.
   (0.2 s of BS1: 8PSK MER 14.84 dB, words read back without loss).
 - **Configuration cost:** an iiod register access takes 0.62 ms (500
   reads), so configuring 32 taps (about 4,250 commands) takes about
-  2.6 s.
+  2.6 s (format 1; format 2 below: about 6,360 commands, 3.9 s).
+
+### Timing trim and output width (format 2, 2026-10-25)
+
+ISDB-S3 recordings of BS7, BS11 and BS17 at 61.44 Msps with 56 MHz
+analog bandwidth (the DC-block-free set of 2026-10-25), measured with
+the SNR on the 24 known π/2-BPSK synchronisation symbols of every
+9 296-symbol modulation slot (`isdb iq s3sync`; ARIB STD-B44 v2.1
+Fig. 3.3-1). The format-1 front end gave 8.8–9.5 dB against an in-band
+SNR of about 17 dB from the spectrum.
+
+- **Loss budget** (`isdb-frontend` `examples/s3budget.rs`): the timing
+  loop locks −0.153 / −0.165 / −0.181 symbol (±0.02 rms) from the
+  instant of best SNR found per slot from the sync symbols, steadily over
+  each recording and the same at 40 and 61.44 Msps, 8 and 16 bits, 32 to
+  56 MHz analog bandwidth and on the older 2026-10-20 recordings. That
+  costs 5.1–6.4 dB. A brick-wall filter against the neighbouring
+  transponders changes nothing, 32 instead of 128 taps costs 0.4 dB at
+  ideal timing, jitter (0.004 symbol rms at 10⁻⁶ R) and fixed point
+  under 0.3 dB together. On noiseless synthetic signals (QPSK, and
+  ISDB-S3 slot structure with 8PSK or 16APSK data) the detector locks
+  within ±0.05 symbol (`examples/tedbias.rs`): the offset comes from the
+  received pulse, upstream of the front end. ISDB-S shows the same
+  effect at −0.05 … −0.10 symbol.
+- **Fix:** format 2 adds an output bank `k` (the matched filter a trim
+  later inside the same window); the output and the AGC use it, the
+  timing detector still `h` and `g`. The host measures the trim on
+  0.1–0.15 s of IQ (`s3sync::best_trim` on the sync words,
+  `isdbs_phy::frontend::measure_trim` on the ISDB-S bursts) and
+  `isdb symbols` / `isdb iq symbols` apply it (`--trim auto`, the
+  default).
+- **Result,** whole recordings, 32 taps:
+
+  | | Trim | Untrimmed | Trimmed | 6-bit words read back |
+  |---|---|---|---|---|
+  | BS7 | −0.168 | 9.31 dB | 14.65 dB | 14.57 dB |
+  | BS11 | −0.165 | 9.46 dB | 14.67 dB | |
+  | BS17 | −0.180 | 8.83 dB | 14.58 dB | |
+
+  Per-slot ideal timing reaches 15.4 / 14.7 / 14.7 dB: the trim recovers
+  all but 0.1–0.8 dB of the timing loss; the rest of the gap to the
+  spectrum's estimate is intersymbol interference for an equaliser on
+  the host.
+- **Modulation:** the data symbols after the trim form two rings with
+  shares 0.26 / 0.74, 4 angle clusters on the inner and 12 on the outer
+  ring: 16APSK (4 + 12). Ring ratio 2.2–2.3, below STD-B44 Table 3.8-2's
+  γ ≈ 2.7–3.0, as Annex A describes for a saturated transponder (outer
+  points pulled inward). The code rate needs the TMCC.
+- **Output width** (the bit-exact model's own quantiser, trimmed):
+
+  | Bits | 16APSK ring MER change | Sync Es/N0 change | ISDB-S3 MB/s |
+  |---|---|---|---|
+  | 4 | −0.6 dB | −1.0 dB | 33.9 |
+  | 5 | −0.16…−0.19 dB | −0.27 dB | 42.4 |
+  | 6 | −0.04 dB | −0.07 dB | 51.0 |
+  | 7 | −0.01 dB | −0.02 dB | 59.4 |
+
+  Nothing reaches full scale at any width. Chosen: 6 bits for ISDB-S3 as
+  for ISDB-S: 51.0 MB/s, 73 % of the 70 MB/s ceiling. With 14.6 dB the
+  16APSK rates up to about 7/9 (12.3 dB in STD-B44 Table A2.2-4) keep a
+  2 dB margin; 5 bits would spend 0.2–0.3 dB of it.
+- **ISDB-S with the trim** (2026-10-25 set, `tools/isdbs-*-acceptance.sh`):
+  burst MER +0.1 … +2.3 dB on all 21 transponders (median 1.3 dB, ND2
+  12.6 → 14.9 dB); every frame header and TMCC RS-clean, 0 bytes
+  corrected; TS acceptance unchanged (38 TSs, 319 584 packets, 0
+  uncorrectable, 0 continuity errors), corrected packets 85 → 33. BS1
+  8PSK decision-directed MER 16.4 dB.
+- **FPGA:** the format-2 HDL (54-bit `h | g | k` coefficient words, a
+  third accumulator pair, AGC and quantiser on `zk`) is bit-exact with
+  the model on four vector sets (two with a trim), on trimmed recording
+  vectors of BS7 and BS1, through the port load with irregular strobes
+  and through `gpio_out`; one LSB off in `k` fails. Yosys: 64 DSP48E1,
+  3.9k LUT, 4.6k FF, 1 RAMB18 + 8 RAMB36 at 32 taps (170 / 220 DSP
+  beside Tezuka's build). Configuration is about 6,360 commands (3.9 s).
+- **Opt-in test:** `isdb-frontend` `tests/captures.rs`
+  `isdb_s3_trim_recovers_the_sync_snr` (`ISDB_RS_ISDBS3_IQ`, a 56 MHz
+  recording): trim measured on 0.1 s, more than 3 dB gain, above 13 dB,
+  6 bits within 0.15 dB.
 
 ## ISDB-S frame sync and TMCC
 
