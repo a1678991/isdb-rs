@@ -1,0 +1,61 @@
+//! Where the time of `isdb rx --system isdbs` goes, per stage, on one
+//! recording: survey, trim search, front end, receive (frame sync,
+//! carrier, TMCC) and the main signal to TS (development tool; plan
+//! §0.10).
+//!
+//! cargo run --release -p isdbs-phy --example chaintime -- REC
+
+use isdb_iq::Recording;
+use isdb_iq::survey::{Options, survey};
+use isdbs_phy::demod::DemodOptions;
+use isdbs_phy::frontend::{Trim, design, measure_trim, symbols_with};
+use isdbs_phy::ts::decode_all;
+use isdbs_phy::{RxOptions, receive};
+use std::time::Instant;
+
+fn main() {
+    let path = std::path::PathBuf::from(std::env::args().nth(1).expect("REC"));
+    let mut rec = Recording::open(&path, None, None).expect("open");
+    let fs = rec.sample_rate;
+    let seg = rec.segments()[0].clone();
+    let x = rec
+        .read(seg.start, (seg.end - seg.start) as usize)
+        .expect("read");
+    let secs = x.len() as f64 / fs;
+    println!(
+        "{}: {secs:.3} s of signal at {:.2} Msps",
+        path.display(),
+        fs / 1e6
+    );
+    let mut lap = Instant::now();
+    let mut step = |name: &str| {
+        println!("  {name:26} {:7.3} s", lap.elapsed().as_secs_f64());
+        lap = Instant::now();
+    };
+    let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
+    step("survey");
+    let cfo = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
+    let xi: Vec<[i16; 2]> = x
+        .iter()
+        .map(|v| {
+            [
+                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
+                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
+            ]
+        })
+        .collect();
+    let n = ((0.15 * fs) as usize).min(xi.len());
+    let (trim, _) = measure_trim(&xi[..n], &design(fs, cfo)).expect("trim");
+    step("trim search");
+    let s = symbols_with(&x, fs, Some(cfo), Trim::Fixed(trim)).expect("front end");
+    step("survey + front end");
+    let (marks, _) = isdbs_phy::sync::find_frames(&s.z, &isdbs_phy::sync::SyncOptions::default());
+    step("  find_frames");
+    let _ = isdbs_phy::carrier::track(&s.z, &marks, RxOptions::default().carrier_bandwidth);
+    step("  carrier track");
+    let r = receive(&s.z, &RxOptions::default());
+    step("receive (sync, TMCC)");
+    let d = decode_all(&r, &DemodOptions::default());
+    step("main signal to TS");
+    println!("  {} superframes decoded", d.len());
+}

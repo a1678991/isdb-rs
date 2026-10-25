@@ -12,6 +12,7 @@
 //! | [`frontend`] | IQ → symbols through `isdb-frontend` with the ISDB-S design |
 //! | [`demod`] | a frame's main signal → bytes: soft demapping (BPSK, QPSK, TC8PSK set-partition metrics), depuncturing, Viterbi |
 //! | [`ts`] | a superframe → TS packets: de-interleave, energy dispersal, RS(204,188), TS_ID per slot |
+//! | [`par`] | independent work on all cores, results in order |
 //!
 //! The boundary between frame recovery and the main-signal decoder is [`rx::Frame`]: the
 //! 38 976 main symbols of a frame, derotated and scaled to unit amplitude,
@@ -25,6 +26,7 @@ pub type Cplx = num_complex::Complex<f64>;
 pub mod carrier;
 pub mod demod;
 pub mod frontend;
+pub mod par;
 pub mod rx;
 pub mod sync;
 pub mod tmcc;

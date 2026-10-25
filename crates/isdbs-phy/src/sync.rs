@@ -151,13 +151,9 @@ pub fn find_frames(z: &[Cplx], o: &SyncOptions) -> (Vec<FrameMark>, usize) {
     'search: while at <= last {
         // Acquire: best metric over one frame length from `at`.
         let end = (at + FRAME_SYMBOLS).min(last + 1);
-        let mut best = (0.0, at);
-        for s in at..end {
-            let m = frame_metric(z, s);
-            if m > best.0 {
-                best = (m, s);
-            }
-        }
+        // the first offset with the best metric, offsets shared out
+        // between threads (crate::par::first_max: as a sequential scan)
+        let best = crate::par::first_max(at..end, 0.0, |s| frame_metric(z, s));
         if best.0 < o.acquire {
             at = end;
             continue;

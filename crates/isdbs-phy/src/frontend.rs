@@ -88,13 +88,19 @@ fn pilot_mer(z: &[Cplx]) -> Option<f64> {
 /// (`isdb-frontend` README, "The timing trim").
 pub fn measure_trim(x: &[[i16; 2]], d: &Design) -> Result<(f64, f64), ParamError> {
     let cands: Vec<f64> = (-8..=2).map(|i| f64::from(i) * 0.025).collect();
-    let mut scores = Vec::with_capacity(cands.len());
-    for &t in &cands {
+    // the candidates run independently, one thread each
+    let score = |t: f64| -> Result<f64, ParamError> {
         let mut dd = d.clone();
         dd.trim = t;
         let (z, _) = run(x, &dd)?;
-        scores.push(pilot_mer(&z).unwrap_or(f64::NEG_INFINITY));
-    }
+        Ok(pilot_mer(&z).unwrap_or(f64::NEG_INFINITY))
+    };
+    let scores: Vec<f64> = std::thread::scope(|sc| {
+        let hs: Vec<_> = cands.iter().map(|&t| sc.spawn(move || score(t))).collect();
+        hs.into_iter()
+            .map(|h| h.join().expect("trim thread"))
+            .collect::<Result<_, _>>()
+    })?;
     let i = (0..scores.len())
         .max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
         .expect("candidates");

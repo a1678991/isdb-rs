@@ -95,8 +95,10 @@ pub fn receive(z: &[Cplx], o: &RxOptions) -> Reception {
     let (marks, slips) = find_frames(z, &o.sync);
     let pilots = track(z, &marks, o.carrier_bandwidth);
     let burst = frame_bits();
-    let mut frames = Vec::with_capacity(marks.len());
-    for (k, m) in marks.iter().enumerate() {
+    // every frame on its own (derotation, scaling, header): frames in
+    // parallel, results in order
+    let one = |k: usize| {
+        let m = &marks[k];
         let next = pilots
             .get(k + 1)
             .filter(|_| marks[k + 1].start == m.start + FRAME_SYMBOLS)
@@ -130,7 +132,7 @@ pub fn receive(z: &[Cplx], o: &RxOptions) -> Reception {
         let main = (0..MAIN_SYMBOLS)
             .map(|i| d[main_symbol_position(i)] * g)
             .collect();
-        frames.push((
+        (
             Frame {
                 mark: *m,
                 index: None,
@@ -139,8 +141,10 @@ pub fn receive(z: &[Cplx], o: &RxOptions) -> Reception {
                 header_ok,
             },
             block(&h),
-        ));
-    }
+        )
+    };
+    let idx: Vec<usize> = (0..marks.len()).collect();
+    let mut frames = crate::par::map(&idx, |&k| one(k));
     // Superframes: a W2 frame followed by 7 consecutive frames.
     let mut superframes = Vec::new();
     let mut k = 0;
