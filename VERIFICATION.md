@@ -1217,6 +1217,47 @@ that carries the samples (≈ 70 MB/s loss-free over iiod, below 40 Msps
   (27 648 slots, 12 LDPC failures before and after); ISDB-S 1.27× real
   time.
 
+**AVX2 / AVX-512 front end (plan §0.14, 2026-10-26).** With the user's
+approval the front end got run-time dispatch with exactly one `unsafe`
+call (`isdb-frontend` `simd::run`, right after detecting the loop's CPU
+features; the workspace's `unsafe_code = "deny"` is unchanged, the
+exception is named in the workspace `Cargo.toml`). Kernels: `vpmaddwd`
+via `std::arch` inside `#[target_feature]` functions, the loop around
+them shared. Default AVX2; AVX-512 on request (`ISDB_SIMD=avx512`;
+needs Rust ≥ 1.89, probed by `build.rs`), because it is slower on this
+Zen 4.
+
+- *Bit-exactness*: `tests/fast.rs` runs every instruction set the host
+  supports (baseline, AVX2, AVX-512) through `process` and
+  `process_each`: property tests, every padded width 8 … 64, the wide
+  input kernel, recordings (live BS7 3 375 613 and BS1 1 878 908 symbols
+  identical on all three). Fault injection: ±1 in one lane of the AVX2
+  or of the AVX-512 kernel fails 3–4 tests. Decoded output
+  byte-identical to `c03a2aa` (`tools/rx-compare.sh`): ISDB-S3 BS7, BS11,
+  BS17 (61.44 Msps) and live BS7; ISDB-S BS1, BS3, ND2, ND22 and BS1 at
+  40 Msps. ISDB-S acceptance: 38 TSs, 319 584 packets, 0 uncorrectable.
+- *Front end, one core* (`examples/feisa.rs`, best of 3, load ≈ 3.5),
+  through `process_each` (what the receivers call): ISDB-S3 0.826 s
+  block baseline 0.78 s (1.06×), **AVX2 0.69 s (1.19×)**, AVX-512 0.77 s;
+  ISDB-S 0.419 s block baseline 0.34 s (1.25×), **AVX2 0.30 s (1.40×)**,
+  AVX-512 0.33 s. Before §0.14: ISDB-S3 0.99 s (0.83×). One contiguous
+  ISDB-S3 stream's sequential stage is now above real time on this CPU.
+- *A trap found on the way*: the kernels' helpers as `#[target_feature]`
+  functions (which cannot be `#[inline(always)]`) were left out of line
+  by LLVM in the `process_each` loop only, where AVX2 then ran 2.8×
+  *slower* than the baseline (2.2 s); as macros they expand in each
+  kernel. Also, a plain reduction loop written generically is left scalar
+  when inlined into a `#[target_feature]` function; the baseline dot
+  product is now written as `pmaddwd` computes it, which LLVM
+  vectorises (baseline 1.07 → 0.99 s through `process`).
+- *Whole pipeline on long files* (same files as above, contended: the
+  FPGA image build ran in parallel, load 10–16): ISDB-S3 0.95–0.96×,
+  ISDB-S 1.30–1.33× real time for every instruction set (decoding
+  identical: 12 LDPC failures; 444 superframes). With three front ends
+  and the receiver threads sharing a loaded machine the instruction set
+  hardly shows in the wall time (summed front-end CPU −9 % with AVX2);
+  the single-stream figure above is the load-independent one.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

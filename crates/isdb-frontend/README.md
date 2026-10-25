@@ -117,14 +117,62 @@ an `i64` kernel on the unsplit coefficients is used, so the equality
 holds for every `i16` input. The padded tap count is a const generic
 chosen once per `process` call.
 
-On a 0.826 s ISDB-S3 block at 40 Msps (27.9 M symbols, 32 taps): the
-reference 2.2 s, the fast one 0.93–1.05 s (`process`), about 0.9 s with
-`-C target-cpu=native`; one thread, the timing loop being sequential
-(`examples/fespeed.rs`; `examples/feprof.rs` for `valgrind
---tool=callgrind`). Equality: `tests/fast.rs` (property tests over
-designs, widths, trims, rates, amplitudes to full-range `i16` and any
-chunking; opt-in recordings through `ISDB_RS_ISDBS3_IQ` /
-`ISDB_RS_ISDBS_IQ`). The FPGA vectors stay made with the reference.
+### Instruction sets (AVX2, AVX-512)
+
+`simd::Isa` chooses at run time which build of the 16-bit dot products
+the block methods (`process`, `process_each`) use: the baseline (what
+LLVM vectorises for the build's target, SSE2 on x86-64), AVX2, or
+AVX-512 (`vpmaddwd` written with `std::arch` inside `#[target_feature]`
+functions). The loop around them (`advance`: mixer and delay line;
+`finish`: loop update and decision) is the same generic code inlined into
+each. Every instruction set gives the same integers.
+
+- **Default:** AVX2 when the CPU has it, else the baseline. AVX-512 is
+  slower on a Zen 4 (512-bit integer operations run as two halves) and is
+  used only on request.
+- **Override:** `ISDB_SIMD=baseline|avx2|avx512` (a request the CPU or
+  build cannot run falls back to the widest available below it), or
+  `FastFrontend::with_isa`. `push` always runs the baseline.
+- **AVX-512 needs Rust ≥ 1.89** (stable AVX-512 intrinsics and target
+  features). `build.rs` probes the compiler and sets
+  `cfg(isdb_frontend_avx512)`; at the workspace's 1.88 minimum the
+  AVX-512 code is left out and a request for it runs AVX2.
+- **The one `unsafe`.** Calling a `#[target_feature]` function from code
+  that lacks the feature is an `unsafe` call by the language rules (the
+  run-time check is not something the compiler can verify), on stable
+  and nightly alike. The crate does it in exactly one place,
+  `simd::run`, immediately after `is_x86_feature_detected!` has found
+  every feature of the loop it calls, with `#[allow(unsafe_code)]` on
+  that item and a `SAFETY` comment. Inside a `#[target_feature]` loop the
+  kernels (same features) are called without `unsafe`. The workspace's
+  `unsafe_code = "deny"` is unchanged. A safe dispatch crate (`pulp`) was
+  measured and rejected (plan §0.11: its kernels came out scalar).
+- **Helpers as macros.** The kernels' load / fold / sum steps are macros
+  that expand inside each kernel: as `#[target_feature]` functions (which
+  cannot be `#[inline(always)]`) LLVM left them out of line in one loop,
+  which then ran 2.8× slower than the baseline.
+
+One core, 32 taps, 40 Msps (`examples/feisa.rs`, best of 3, load ≈ 3.5;
+the reference takes 2.2 s for the ISDB-S3 block):
+
+| | ISDB-S3, 0.826 s block | ISDB-S, 0.419 s block |
+|---|---|---|
+| baseline `process` / `process_each` | 0.94 / 0.78 s (1.06×) | 0.40 / 0.34 s (1.25×) |
+| **AVX2** | 0.73 / **0.69 s (1.19×)** | 0.31 / **0.30 s (1.40×)** |
+| AVX-512 | 0.79 / 0.77 s (1.07×) | 0.34 / 0.33 s (1.28×) |
+
+The receivers call `process_each`. The timing loop is sequential, so
+this is the speed of one contiguous stream.
+
+Equality: `tests/fast.rs`, for **every instruction set the host runs**
+and both block methods: property tests over designs, widths, trims,
+rates, amplitudes to full-range `i16` and any chunking; every padded
+width 8 … 64 (all kernel tails); opt-in recordings through
+`ISDB_RS_ISDBS3_IQ` / `ISDB_RS_ISDBS_IQ`. A ±1 in one lane of either AVX
+kernel fails 3–4 of these tests. The FPGA vectors stay made with the
+reference. Tools: `examples/fespeed.rs`, `examples/feisa.rs` (per
+instruction set), `examples/feprof.rs` / `examples/feeach.rs` for
+`valgrind --tool=callgrind`.
 
 ## Spec scope
 

@@ -16,6 +16,16 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-frontend`: AVX2 and AVX-512 builds of the fast front end's dot
+  products, chosen at run time (`simd::Isa`; AVX2 by default, AVX-512
+  with `ISDB_SIMD=avx512` and Rust ≥ 1.89, `ISDB_SIMD=baseline` for the
+  portable path; `FastFrontend::with_isa`). Same output on every
+  instruction set (tested per set, with fault injection). ISDB-S3 front
+  end on one core 0.83× → 1.19× real time, ISDB-S 1.40×. The crate's one
+  `unsafe` is the call into the chosen `#[target_feature]` loop after
+  detecting its features (`simd::run`), named in the workspace
+  `Cargo.toml`.
+
 - `isdb-frontend`: `Symbols` format version 3. The block trailer is a
   CRC-32C (two words: CRC-32/ISCSI of the 32-bit sequence number and
   the payload, little endian) instead of a CRC-16, and a version-3

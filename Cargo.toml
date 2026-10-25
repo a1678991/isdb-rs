@@ -49,8 +49,11 @@ nix = { version = "0.31", default-features = false, features = ["term"] }
 # `-D warnings`, so "warn" fails CI while keeping local builds usable.
 [workspace.lints.rust]
 # `deny`, not `forbid`: the FFI crates `isdb-hackrf` and `isdb-iio` opt out
-# with a crate-level `#![allow(unsafe_code)]`; every other crate is
-# unsafe-free.
+# with a crate-level `#![allow(unsafe_code)]`; `isdb-frontend` allows it on
+# one item, `simd::run`, the call into its AVX2 / AVX-512 loops right after
+# detecting their CPU features (an `unsafe` call by the language rules: a
+# `#[target_feature]` function called from code without the feature);
+# every other crate and item is unsafe-free.
 unsafe_code = "deny"
 missing_docs = "warn"
 meta_variable_misuse = "warn"
