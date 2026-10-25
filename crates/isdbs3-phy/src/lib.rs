@@ -6,11 +6,13 @@
 //! | Module | Contents |
 //! |---|---|
 //! | [`frontend`] | IQ → symbols through `isdb-frontend` with the ISDB-S3 design and trim |
+//! | [`eq`] | least-squares symbol-spaced equaliser trained on each frame's sync and pilot symbols |
 //! | [`sync`] | slot heads, frame heads, carrier phase per slot from the sync words |
 //! | [`tmcc`] | the 31 680 TMCC symbols of a frame → LLRs → LDPC → BCH → information |
 //! | [`rx`] | `receive`: frames, TMCC, decoded slots in order with their stream ids |
 //! | [`main_signal`] | pilots, learned constellation, demapping, de-interleaving, LDPC, BCH, dispersal → slot data |
 
+pub mod eq;
 pub mod frontend;
 pub mod main_signal;
 pub mod rx;

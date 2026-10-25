@@ -34,10 +34,9 @@ pub struct StreamStats {
     pub nit_networks: BTreeMap<u16, u64>,
     /// HCfB contexts seen.
     pub contexts: BTreeMap<u16, u64>,
-    /// MPU payloads (payload type 0) whose FEC type or content suggests
-    /// scrambling cannot be told from MMTP alone; counted with the
-    /// extension header present (B60 §… the scrambling information sits in
-    /// an MMTP extension header).
+    /// MPU payloads (payload type 0) whose MMTP header carries the
+    /// scramble-information extension (B60 Table 6-9 type 0001h, content
+    /// in STD-B61).
     pub mpu_with_extension: u64,
     /// MPU payloads.
     pub mpu: u64,
@@ -99,7 +98,7 @@ impl StreamStats {
             }
             mmtp::MPU => {
                 self.mpu += 1;
-                if d.payload.first().is_some_and(|b| b & 0x02 != 0) {
+                if h.scramble_info {
                     self.mpu_with_extension += 1;
                 }
             }

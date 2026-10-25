@@ -31,6 +31,11 @@ pub struct Header {
     pub packet_id: u16,
     /// Packet sequence number.
     pub sequence: u32,
+    /// The header extension carries a multi-type header extension of type
+    /// 0001h, "information related to scramble specified in ARIB STD-B61"
+    /// (B60 Tables 6-7 to 6-9). STD-B61 is not available: its content is
+    /// not interpreted.
+    pub scramble_info: bool,
 }
 
 /// Payload type: MPU.
@@ -54,9 +59,26 @@ pub fn parse(b: &[u8]) -> Option<(Header, &[u8])> {
     let packet_id = u16::from_be_bytes([b[2], b[3]]);
     let sequence = u32::from_be_bytes([b[8], b[9], b[10], b[11]]);
     let mut pos = 12 + if counter { 4 } else { 0 };
+    let mut scramble_info = false;
     if ext {
         let h = b.get(pos..pos + 4)?;
-        pos += 4 + usize::from(u16::from_be_bytes([h[2], h[3]]));
+        let ext_type = u16::from_be_bytes([h[0], h[1]]);
+        let len = usize::from(u16::from_be_bytes([h[2], h[3]]));
+        let body = b.get(pos + 4..pos + 4 + len)?;
+        if ext_type == 0x0000 {
+            // multi-type header extension: (end flag 1, type 15, length
+            // 16, bytes) …
+            let mut q = 0;
+            while let Some(e) = body.get(q..q + 4) {
+                let t = u16::from_be_bytes([e[0], e[1]]) & 0x7FFF;
+                scramble_info |= t == 0x0001;
+                q += 4 + usize::from(u16::from_be_bytes([e[2], e[3]]));
+                if e[0] & 0x80 != 0 {
+                    break;
+                }
+            }
+        }
+        pos += 4 + len;
     }
     Some((
         Header {
@@ -65,6 +87,7 @@ pub fn parse(b: &[u8]) -> Option<(Header, &[u8])> {
             payload_type,
             packet_id,
             sequence,
+            scramble_info,
         },
         b.get(pos..)?,
     ))

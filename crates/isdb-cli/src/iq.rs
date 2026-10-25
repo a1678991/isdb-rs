@@ -31,6 +31,8 @@ enum IqCmd {
     /// untrimmed and with the front end's timing trim (a recording), or of
     /// a `Symbols` words file (`--read`)
     S3sync(crate::s3sync::S3SyncArgs),
+    /// ISDB-S3 slot/frame sync and TMCC decoding of a recording
+    S3tmcc(crate::s3tmcc::S3TmccArgs),
 }
 
 /// `isdb iq survey` arguments.
@@ -71,6 +73,7 @@ pub fn run(a: &IqArgs) -> Result<()> {
         IqCmd::Symbols(s) => crate::symbols::run_iq(s),
         IqCmd::Tmcc(t) => crate::tmcc::run(t),
         IqCmd::S3sync(a) => crate::s3sync::run(a),
+        IqCmd::S3tmcc(a) => crate::s3tmcc::run(a),
     }
 }
 

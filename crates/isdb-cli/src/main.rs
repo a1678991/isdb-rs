@@ -37,11 +37,14 @@ mod producer;
 mod relay;
 mod rx;
 mod rxs;
+mod rxs3;
 mod s3sync;
+mod s3tmcc;
 mod sink;
 mod source;
 mod stop;
 mod symbols;
+mod tlv;
 mod tmcc;
 #[allow(missing_docs)]
 mod ts;
@@ -59,7 +62,7 @@ struct Cli {
 enum Command {
     /// Transmit: per-layer TS (or one TS split by PID) → ISDB-T → IQ file / radio.
     Tx(tx::TxArgs),
-    /// Receive: IQ file / radio → ISDB-T demodulation → TS, with status.
+    /// Receive: IQ file / radio → ISDB-T / ISDB-S / ISDB-S3 → TS or TLV streams, with status.
     Rx(rx::RxArgs),
     /// Software loopback TX → channel impairments → RX, verifying delivery.
     Loopback(loopback::LoopbackArgs),
@@ -72,6 +75,8 @@ enum Command {
     Capture(capture::CaptureArgs),
     /// IQ recording tools (survey, CPU symbol front end).
     Iq(iq::IqArgs),
+    /// TLV stream tools (ISDB-S3 / advanced BS).
+    Tlv(tlv::TlvArgs),
     /// Symbols of a single-carrier satellite signal (ISDB-S, ISDB-S3),
     /// receive only: from the radio's FPGA front end when it has one, else
     /// from the CPU front end on one contiguous IQ capture.
@@ -110,6 +115,7 @@ fn main() -> anyhow::Result<()> {
             capture::run(&a)
         }
         Command::Iq(a) => iq::run(&a),
+        Command::Tlv(a) => tlv::run(&a),
         Command::Symbols(a) => {
             stop::install()?;
             symbols::run(&a)

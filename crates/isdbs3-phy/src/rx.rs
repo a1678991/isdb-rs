@@ -17,6 +17,9 @@ pub struct RxOptions {
     /// Demap against the pilot-learned constellation (else the nominal
     /// one of B44 §3.8).
     pub learned_constellation: bool,
+    /// Equalise the block with taps trained on the first frame's sync and
+    /// pilot symbols ([`crate::eq`]).
+    pub equalise: bool,
 }
 
 impl Default for RxOptions {
@@ -24,6 +27,7 @@ impl Default for RxOptions {
         Self {
             max_iter: 50,
             learned_constellation: true,
+            equalise: true,
         }
     }
 }
@@ -67,8 +71,12 @@ pub struct RxFrame {
 /// What [`receive`] found.
 #[derive(Debug, Clone, Default)]
 pub struct Rx {
-    /// Es/N0 on the sync symbols, dB.
+    /// Es/N0 on the sync symbols before equalisation, dB.
     pub sync_snr_db: f64,
+    /// Es/N0 on the sync symbols after equalisation, dB (when equalised).
+    pub sync_snr_eq_db: Option<f64>,
+    /// The equaliser taps used.
+    pub taps: Vec<Cplx>,
     /// Whole frames found.
     pub frames: Vec<RxFrame>,
     /// Every valid slot of every frame whose TMCC decoded, in order.
@@ -77,14 +85,43 @@ pub struct Rx {
 
 /// Run the receiver over symbols `z` (one per symbol, any scale).
 pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
-    let Some(sy) = synchronise(z) else {
+    let Some(sy0) = synchronise(z) else {
         return Rx::default();
     };
-    let es_n0 = 10f64.powf(sy.sync_snr_db / 10.0);
     let mut rx = Rx {
-        sync_snr_db: sy.sync_snr_db,
+        sync_snr_db: sy0.sync_snr_db,
         ..Rx::default()
     };
+    // equalise with taps trained on the first frame whose TMCC decodes
+    let mut zeq = None;
+    if opt.equalise {
+        let es = 10f64.powf(sy0.sync_snr_db / 10.0);
+        for &f in &sy0.frames {
+            let Some(l) = tmcc::llrs(z, &sy0.slots, f, 1.0 / (2.0 * es)) else {
+                break;
+            };
+            let Some(lay) = tmcc::decode(&l, opt.max_iter)
+                .ok()
+                .and_then(|t| layout(&t.info))
+            else {
+                continue;
+            };
+            if let Some(w) = crate::eq::train(z, &sy0.slots, f, &lay) {
+                zeq = Some(crate::eq::apply(z, &w));
+                rx.taps = w;
+            }
+            break;
+        }
+    }
+    let z: &[Cplx] = zeq.as_deref().unwrap_or(z);
+    let sy = if zeq.is_some() {
+        let Some(s) = synchronise(z) else { return rx };
+        rx.sync_snr_eq_db = Some(s.sync_snr_db);
+        s
+    } else {
+        sy0
+    };
+    let es_n0 = 10f64.powf(sy.sync_snr_db / 10.0);
     for (fi, &f) in sy.frames.iter().enumerate() {
         let Some(l) = tmcc::llrs(z, &sy.slots, f, 1.0 / (2.0 * es_n0)) else {
             break;

@@ -1,6 +1,7 @@
-//! `isdb rx`: IQ file or radio → ISDB-T or ISDB-S demodulation → TS, with
-//! status. ISDB-S (`--system isdbs`, or `auto` on a satellite channel or
-//! recording) is in [`crate::rxs`].
+//! `isdb rx`: IQ file or radio → ISDB-T, ISDB-S or ISDB-S3 demodulation →
+//! TS (or TLV streams), with status. ISDB-S (`--system isdbs`, or `auto` on
+//! a satellite channel or recording) is in [`crate::rxs`], ISDB-S3
+//! (`--system isdbs3`, or `auto` on a recording) in [`crate::rxs3`].
 
 use crate::phyargs::{TuneArgs, describe_params, parse_gain};
 use crate::sink::IqFormat;
@@ -55,7 +56,9 @@ pub struct RxArgs {
     /// whole file for --iq, until Ctrl-C / SIGTERM for --radio.
     #[arg(long, value_name = "S")]
     pub seconds: Option<f64>,
-    /// Write the reproduced single TS (§3.2.2, valid frames only).
+    /// Write the reproduced single TS (§3.2.2, valid frames only). ISDB-S:
+    /// one TS per TS_ID with `{ts_id}` in the path; ISDB-S3: one TLV
+    /// stream per stream id with `{tlv_id}`.
     #[arg(long, value_name = "PATH")]
     pub out: Option<String>,
     /// Write layer A packets (valid frames only).
@@ -76,28 +79,30 @@ pub struct RxArgs {
     /// Status line interval in seconds of signal (0 = none).
     #[arg(long, default_value_t = 1.0)]
     pub status_secs: f64,
-    /// Transmission system: `auto` picks ISDB-S for a BSn / NDn
-    /// channel and for a recording that is not at the ISDB-T rate (or
-    /// whose survey finds the ISDB-S symbol rate), ISDB-T otherwise.
+    /// Transmission system: `auto` picks ISDB-S for a BSn / NDn channel
+    /// from a radio, and for a recording not at the ISDB-T rate whichever
+    /// of ISDB-S / ISDB-S3 the survey finds; ISDB-T otherwise. ISDB-S3
+    /// from a radio needs `--system isdbs3`.
     #[arg(long, value_enum, default_value_t = SystemArg::Auto)]
     pub system: SystemArg,
-    /// ISDB-S: receive only this TS_ID (repeatable; `0x4010`, `4010h` or
-    /// decimal). Default: every TS of the transponder.
+    /// ISDB-S / ISDB-S3: receive only this TS_ID or TLV stream id
+    /// (repeatable; `0x4010`, `4010h` or decimal). Default: every stream
+    /// of the transponder.
     #[arg(long = "ts-id", value_name = "ID", value_parser = crate::rxs::parse_ts_id)]
     pub ts_id: Vec<u16>,
-    /// ISDB-S from a radio: sample rate (default 40M, ≥ 1.35 × 28.86
-    /// Mbaud).
+    /// ISDB-S / ISDB-S3 from a radio: sample rate (default 40M; ≥ 1.35 ×
+    /// 28.86 Mbaud for ISDB-S, ≥ 1.03 × 33.756 Mbaud for ISDB-S3).
     #[arg(long, value_name = "SPS", value_parser = crate::rxs::parse_rate)]
     pub rate: Option<f64>,
-    /// ISDB-S from a radio: analog bandwidth (default 56M).
+    /// ISDB-S / ISDB-S3 from a radio: analog bandwidth (default 56M).
     #[arg(long, value_name = "HZ", value_parser = crate::rxs::parse_rate)]
     pub bw: Option<f64>,
-    /// ISDB-S from a radio: seconds per contiguous capture (default: the
-    /// longest the radio takes in one piece). Blocks are decoded one after
-    /// another, with a gap in the TS between them.
+    /// ISDB-S / ISDB-S3 from a radio: seconds per contiguous capture
+    /// (default: the longest the radio takes in one piece). Blocks are
+    /// decoded one after another, with a gap in the stream between them.
     #[arg(long, value_name = "S")]
     pub block_seconds: Option<f64>,
-    /// ISDB-S: carrier offset in Hz (default: from the survey of each
+    /// ISDB-S / ISDB-S3: carrier offset in Hz (default: from the survey of each
     /// block).
     #[arg(long, value_name = "HZ", allow_negative_numbers = true)]
     pub carrier_offset: Option<f64>,
@@ -112,6 +117,8 @@ pub enum SystemArg {
     Isdbt,
     /// ISDB-S (ITU-R BO.1408-1, ARIB STD-B20), BS and 110° CS.
     Isdbs,
+    /// ISDB-S3 (ARIB STD-B44), advanced BS / wide-band CS, to TLV streams.
+    Isdbs3,
 }
 
 /// Per-layer reception counters.
@@ -574,8 +581,10 @@ pub fn receive(
 
 /// Entry point.
 pub fn run(a: RxArgs) -> Result<()> {
-    if resolve_system(&a)? == SystemArg::Isdbs {
-        return run_isdbs(a);
+    match resolve_system(&a)? {
+        SystemArg::Isdbs => return run_isdbs(a),
+        SystemArg::Isdbs3 => return run_isdbs3(a),
+        _ => {}
     }
     if !a.ts_id.is_empty()
         || a.rate.is_some()
@@ -584,7 +593,7 @@ pub fn run(a: RxArgs) -> Result<()> {
         || a.carrier_offset.is_some()
     {
         bail!(
-            "--ts-id, --rate, --bw, --block-seconds and --carrier-offset are ISDB-S options (--system isdbs)"
+            "--ts-id, --rate, --bw, --block-seconds and --carrier-offset are satellite options (--system isdbs or isdbs3)"
         );
     }
     if a.json
@@ -731,13 +740,14 @@ fn resolve_system(a: &RxArgs) -> Result<SystemArg> {
     let s = isdb_iq::survey::survey(&x, rec.sample_rate, &isdb_iq::survey::Options::default());
     match s.system {
         Some(m) if m.system.name == isdbs_phy::frontend::system().name => Ok(SystemArg::Isdbs),
+        Some(m) if m.system.name == isdbs3_phy::frontend::system().name => Ok(SystemArg::Isdbs3),
         Some(m) => bail!(
-            "{p}: the survey finds {} ({:.0} Bd), which `isdb rx` does not receive yet (see `isdb symbols`)",
+            "{p}: the survey finds {} ({:.0} Bd), which `isdb rx` does not receive",
             m.system.name,
             m.system.symbol_rate_hz
         ),
         None => bail!(
-            "{p}: recorded at {:.6} Msps, not the ISDB-T rate, and the survey finds no ISDB-S signal; give --system",
+            "{p}: recorded at {:.6} Msps, not the ISDB-T rate, and the survey finds neither ISDB-S nor ISDB-S3; give --system",
             rec.sample_rate / 1e6
         ),
     }
@@ -835,6 +845,101 @@ fn run_isdbs(a: RxArgs) -> Result<()> {
     Ok(())
 }
 
+/// `isdb rx` for ISDB-S3.
+fn run_isdbs3(a: RxArgs) -> Result<()> {
+    if a.a_out.is_some() || a.b_out.is_some() || a.c_out.is_some() {
+        bail!(
+            "--a-out/--b-out/--c-out are ISDB-T layers; ISDB-S3 writes one TLV stream per stream id (--out PATH with {{tlv_id}}, or --ts-id ID)"
+        );
+    }
+    if a.strip_nulls {
+        bail!("--strip-nulls is for TS output; ISDB-S3 writes TLV streams");
+    }
+    if a.json && a.out.as_deref() == Some("-") {
+        bail!("--json prints on stdout; write the TLV stream to a file");
+    }
+    let seconds = crate::tx::resolve_seconds(a.seconds)?;
+    let stop = crate::stop::flag();
+    let mut out = crate::rxs3::Outputs::new(a.out.as_deref(), &a.ts_id)?;
+    let mut stats = crate::rxs3::Stats::default();
+    let (secs, input) = if let Some(spec) = &a.radio {
+        let (hz, channel) = match (a.tune.channel, a.tune.freq) {
+            (Some(c), None) => (c.tune_hz()?, Some(c)),
+            (None, Some(f)) => (f, None),
+            (None, None) => bail!("give --channel BS<n>|ND<n> or --freq HZ (the satellite IF)"),
+            (Some(_), Some(_)) => bail!("--channel and --freq are exclusive"),
+        };
+        if a.tune.freq_corr_ppm != 0.0 {
+            bail!(
+                "--freq-corr-ppm is not applied to ISDB-S3 reception (the receiver tracks the carrier and symbol clock)"
+            );
+        }
+        let rate = a.rate.unwrap_or(crate::rxs3::DEFAULT_RATE);
+        let bw = a.bw.unwrap_or(crate::rxs3::DEFAULT_BW);
+        eprintln!(
+            "isdb rx: ISDB-S3 from radio {spec}{} at {:.3} MHz, {:.2} Msps; {}",
+            channel.map(|c| c.label()).unwrap_or_default(),
+            hz as f64 / 1e6,
+            rate / 1e6,
+            if seconds > 0.0 {
+                format!("for {seconds} s of signal")
+            } else {
+                "until Ctrl-C".into()
+            }
+        );
+        let s = crate::rxs3::run_radio(
+            spec,
+            hz,
+            channel,
+            rate,
+            bw,
+            &a.gain,
+            a.block_seconds.unwrap_or(f64::INFINITY),
+            seconds,
+            a.carrier_offset,
+            a.status_secs > 0.0,
+            &stop,
+            &mut out,
+            &mut stats,
+        )?;
+        (s, format!("radio {spec}"))
+    } else {
+        let p = a.iq.as_deref().expect("clap group");
+        if p == "-" {
+            bail!(
+                "ISDB-S3 reception reads a SigMF recording (rate and format from its metadata), not stdin"
+            );
+        }
+        if a.iq_format.is_some() {
+            bail!("--iq-format: an ISDB-S3 recording's format comes from its SigMF metadata");
+        }
+        let max = (seconds > 0.0).then(|| {
+            let fs = isdb_iq::Recording::open(std::path::Path::new(p), None, None)
+                .map(|r| r.sample_rate)
+                .unwrap_or(0.0);
+            (seconds * fs).round() as u64
+        });
+        eprintln!("isdb rx: ISDB-S3 from {p}");
+        let s = crate::rxs3::run_file(p, max, a.carrier_offset, &mut out, &mut stats)?;
+        (s, p.to_string())
+    };
+    out.flush()?;
+    crate::rxs3::report(&stats, secs);
+    if a.json {
+        let mut j = stats.json();
+        j["input"] = json!(input);
+        j["seconds"] = json!(secs);
+        j["written_packets"] = json!(
+            out.written
+                .iter()
+                .map(|(id, n)| (format!("{id:#06x}"), json!(n)))
+                .collect::<serde_json::Map<_, _>>()
+        );
+        println!("{}", serde_json::to_string_pretty(&j)?);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -902,14 +1007,26 @@ mod tests {
         // an explicit system wins
         let a = p(&["rx", "--iq", "-", "--system", "isdbs"]);
         assert_eq!(resolve_system(&a).unwrap(), SystemArg::Isdbs);
-        // ISDB-S options on ISDB-T are refused
+        let a = p(&["rx", "--iq", "-", "--system", "isdbs3"]);
+        assert_eq!(resolve_system(&a).unwrap(), SystemArg::Isdbs3);
+        // satellite options on ISDB-T are refused
         let a = p(&[
             "rx", "--iq", "x.cf32", "--system", "isdbt", "--ts-id", "0x4010",
         ]);
-        assert!(run(a).unwrap_err().to_string().contains("ISDB-S options"));
-        // ISDB-T layer outputs on ISDB-S are refused
+        assert!(
+            run(a)
+                .unwrap_err()
+                .to_string()
+                .contains("satellite options")
+        );
+        // ISDB-T layer outputs on ISDB-S / ISDB-S3 are refused
         let a = p(&["rx", "--iq", "x", "--system", "isdbs", "--b-out", "b.ts"]);
         assert!(run(a).unwrap_err().to_string().contains("ISDB-T layers"));
+        let a = p(&["rx", "--iq", "x", "--system", "isdbs3", "--b-out", "b.ts"]);
+        assert!(run(a).unwrap_err().to_string().contains("ISDB-T layers"));
+        // ISDB-S3 reads a SigMF recording, not stdin
+        let a = p(&["rx", "--iq", "-", "--system", "isdbs3"]);
+        assert!(run(a).unwrap_err().to_string().contains("not stdin"));
     }
 
     #[test]
