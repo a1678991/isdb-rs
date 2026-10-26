@@ -61,6 +61,8 @@ HEADER_WORDS = 9
 SYNC = (0x1ACF, 0xFC1D)
 TREE = 5  # adder-tree levels of the output bank (32 taps); 2**TREE >= taps
 LAST = 15  # the loop terms are in their registers during this stage
+# Vivado synthesis attribute: map an adder to fabric, not a DSP48E1.
+NO_DSP = {"use_dsp": "no"}
 
 
 def ted_range(taps):
@@ -245,8 +247,8 @@ class SymbolFrontend(Elaboratable):
         # ---- loop state -----------------------------------------------
         line_i = [Signal(signed(14), name=f"li{t}") for t in range(taps)]
         line_q = [Signal(signed(14), name=f"lq{t}") for t in range(taps)]
-        t_acc = Signal(signed(32))
-        v = Signal(signed(40))
+        t_acc = Signal(signed(32), attrs=NO_DSP)
+        v = Signal(signed(40), attrs=NO_DSP)
         period = Signal(32)
         gain_acc = Signal(GAIN_ACC_BITS)
         nsym = Signal(range(LOOP_DELAY + 1))
@@ -271,9 +273,9 @@ class SymbolFrontend(Elaboratable):
         new_v = Signal(signed(40))
         new_p = Signal(32)
         new_g = Signal(GAIN_ACC_BITS)
-        vsum = Signal(signed(41))
-        gsum = Signal(signed(34))
-        psum = Signal(signed(42))
+        vsum = Signal(signed(41), attrs=NO_DSP)
+        gsum = Signal(signed(34), attrs=NO_DSP)
+        psum = Signal(signed(42), attrs=NO_DSP)
         m.d.comb += [
             vsum.eq(v + q_ki_h),
             new_v.eq(sat(vsum, -vmax, vmax)),
@@ -376,7 +378,10 @@ class SymbolFrontend(Elaboratable):
                 for i in range(0, max(len(cur), 1), 2):
                     a = cur[i]
                     b = cur[i + 1] if i + 1 < len(cur) else Const(0, signed(44))
-                    s = Signal(signed(44), name=f"{name}_l{lvl}_{i // 2}")
+                    # adders in fabric: Vivado would otherwise spend a DSP48
+                    # post-adder on each, and the block's multipliers already
+                    # take 112 of the xc7z020's 220
+                    s = Signal(signed(44), name=f"{name}_l{lvl}_{i // 2}", attrs=NO_DSP)
                     m.d.sync += s.eq(a + b)
                     nxt.append(s)
                 cur = nxt

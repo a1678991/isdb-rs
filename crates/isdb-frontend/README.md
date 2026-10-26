@@ -10,7 +10,8 @@ reference: the fixed-point model is the specification the FPGA follows,
 and it writes the test vectors the FPGA must reproduce.
 
 Per input sample (the `fixed` module documents every step; format
-version 3, whose arithmetic is version 2's):
+version 4: version 3's words, the loop of an FPGA that takes one sample
+per clock, [below](#format-4-one-sample-per-clock)):
 
 1. **Mixer**: 32-bit NCO, 1024-entry cosine table, removes the carrier
    offset the host measured (`isdb_iq::survey`).
@@ -18,11 +19,12 @@ version 3, whose arithmetic is version 2's):
    filter `h` (root-raised cosine under a Kaiser window), its derivative
    `g`, and the output filter `k` (the matched filter evaluated a trim
    later inside the same window, [below](#the-timing-trim)); 64 phases of
-   32 taps, 18-bit coefficients.
+   32 taps, 18-bit coefficients. `h` and `g` are non-zero on their centre
+   8 taps only (format 4).
 3. **Timing recovery**: non-data-aided maximum-likelihood detector
    `Re{z·conj(dz)}` on `h` and `g`, which needs no carrier lock. It feeds
    a PI loop on the symbol period (Q8.24 samples) that applies each
-   symbol's error six symbols later (the latency the FPGA pipeline is
+   symbol's error 24 symbols later (the latency the FPGA pipeline is
    allowed).
 4. **AGC** on the output symbols `zk` (gain Q6.10, same delay).
 5. **Output**: n-bit I and Q (2..8) of `zk`, framed into the `Symbols`
@@ -48,6 +50,26 @@ captures at 40 Msps with 56 MHz analog bandwidth; details in
 | Fixed point | Fixed-point and floating-point outputs within 0.03 dB (ring MER, 8PSK MER) on every recording | the model as specified |
 | Output width | MER change by the n-bit quantiser (no clipping): ISDB-S 4 / 5 / 6 bits −1.1 / −0.32 / −0.07 dB. ISDB-S3, measured after the trim on BS7 / 11 / 17 (2026-10-25): 16APSK ring MER 4 / 5 / 6 / 7 bits −0.6 / −0.16…−0.19 / −0.04 / −0.01 dB, sync-symbol Es/N0 −1.0 / −0.27 / −0.07 / −0.02 dB; nothing reaches full scale. (The earlier "5 bits" for ISDB-S3 was measured through the untrimmed filter, whose 9 dB hid the quantiser's cost) | 6 bits for both: ISDB-S 43.4 MB/s, ISDB-S3 51.0 MB/s, 62 % and 73 % of the measured 70 MB/s ceiling |
 | Timing trim | The loop locks 0.15–0.18 T off the best instant on ISDB-S3, 0.05–0.10 T on ISDB-S ([below](#the-timing-trim)) | output bank `k` with a trim the host measures (format 2) |
+| Loop delay, detector taps (2026-10-26) | ISDB-S3 trimmed sync-symbol Es/N0 on BS7 / 11 / 17: loop delay 6 → 24 symbols 14.65 / 14.67 / 14.58 → 14.69 / 14.71 / 14.58 dB; detector banks on 32 / 24 / 16 / 12 / 8 centre taps 14.69 / 14.95 / 14.94 / 14.93 / 14.89 dB (BS7), the same pattern on BS11 and BS17 (`examples/tedspan.rs`). Running the detector on every 2nd or 4th symbol only (fewer multipliers by time-sharing) breaks ISDB-S3: 1.5–8 dB with cycle slips (`examples/loopdiag.rs`) | format 4: loop delay 24, detector on the centre 8 taps, on every symbol ([below](#format-4-one-sample-per-clock)) |
+
+## Format 4: one sample per clock
+
+The PlutoSky R2 clocks the FPGA's sample path with
+`util_ad9361_divclk` = l_clk / 4: measured on the board, `adc_clk_count`
+reads 160 MHz (l_clk), r1_mode is 0 and Tezuka's plutoskyr2 build is LVDS
+(divider 4), so the block runs at the sample rate, 40 MHz at 40 Msps, and
+sees one sample per clock (`util_wfifo` hands them over in bursts of
+eight). The format-3 HDL assumed four clocks per sample. A full-rate
+pipeline needs about 15 clocks from a decision to its loop terms, and
+symbols can be due on consecutive clocks, so format 4 sets the loop delay
+to 24 symbols (≥ 24 clocks). The output bank `k` keeps all 32 taps (64
+multipliers); the detector banks `h` and `g` are non-zero on their centre
+8 taps (32 multipliers instead of 128), which `Params::validate` enforces
+and the FPGA relies on. Both choices cost nothing measurable on the
+recordings (table above); the receivers' results are unchanged or better
+(ISDB-S acceptance: 38 TSs, 0 uncorrectable; ISDB-S3 LDPC/BCH-clean,
+trimmed sync Es/N0 14.79 / 14.81 / 14.69 dB through the CLI). A device
+reporting format 2 or 3 is refused (`MIN_ARITH_VERSION` = 4).
 
 ## The timing trim
 

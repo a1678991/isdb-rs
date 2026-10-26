@@ -32,8 +32,12 @@ if {![info exists ::isdb_symbols_rx_v]} {
 add_files -norecurse $::isdb_symbols_rx_v
 update_compile_order -fileset sources_1
 # its timing constraints (CDC of the control word, the clock case it runs in)
+# (implementation only, processed late: its clocks and cells exist only
+# then, util_clkdiv's generated clocks included)
 if {[info exists ::isdb_symbols_xdc]} {
     add_files -norecurse -fileset constrs_1 $::isdb_symbols_xdc
+    set_property USED_IN_SYNTHESIS false [get_files $::isdb_symbols_xdc]
+    set_property PROCESSING_ORDER LATE [get_files $::isdb_symbols_xdc]
 }
 
 create_bd_cell -type module -reference isdb_symbols_rx isdb_symbols
