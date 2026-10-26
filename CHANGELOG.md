@@ -519,7 +519,11 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 - `isdb-radio`: the FPGA symbol stream overflowed the device's DMA every
   10.2 s at 51 MB/s (iiod near a full Pluto core, four kernel buffers).
   New device argument `kbuffers` (default 16 × 1 Mi words); `buffer` also
-  applies to the symbol stream.
+  applies to the symbol stream. The cause is the board's TCP congestion
+  control: Tezuka sets BBR, whose PROBE_RTT phase pauses the sender for
+  ≥ 200 ms every 10 s (5 of 5 BBR runs lost blocks at the same stream
+  position, 2 of 2 `cubic` runs lost none); 16 buffers (660 ms) absorb
+  it.
 - `isdb-cli`: the streaming receiver's queue is bounded (four chunks);
   beyond it whole blocks are dropped and reported (`blocks_dropped`)
   instead of memory growing while the decoder is behind.

@@ -124,13 +124,19 @@ const DEFAULT_STREAM_BUFFER_SAMPLES: usize = 1_048_576;
 /// Buffers a streamed capture queues on the host.
 const STREAM_DEPTH: usize = 8;
 /// Kernel buffers of the symbol stream (`kbuffers`, default), each
-/// `buffer` words (1 Mi: 2 MiB, 20.6 ms of a 50.8 MB/s ISDB-S3 stream):
-/// the device's slack while iiod is not served. iiod spends ≈ 72 % of a
-/// Pluto core on that stream, and the stream stalls for ≈ 10 ms every
-/// ≈ 10.2 s (measured with no decoder, writing to disk: losses at 10.15,
-/// 20.35, 30.54, 40.73 s with 4 buffers; plan §0.18). 16 buffers (32 MiB of
-/// DMA memory, 330 ms) ran 45 s without a loss, as did 8; 16 leaves room for
-/// stalls on the host side too.
+/// `buffer` words (1 Mi: 2 MiB, 41 ms of a 50.8 MB/s ISDB-S3 stream):
+/// the device's slack while iiod cannot send. iiod spends ≈ 72 % of a
+/// Pluto core on that stream.
+///
+/// What it absorbs (plan §0.20): Tezuka sets the board's TCP congestion
+/// control to BBR (`/etc/init.d/S96networkcong`), and BBR's PROBE_RTT
+/// phase cuts the in-flight data to 4 packets for ≥ 200 ms every 10 s to
+/// re-measure the minimum RTT. iiod's sends block meanwhile, and with
+/// 4 buffers (165 ms) the DMA overflowed at the same point of every
+/// stream: 10.152 s, symbol 342 704 128, in 5 of 5 runs under BBR, and in
+/// none of 2 runs with `cubic` set at runtime. 16 buffers (32 MiB of DMA
+/// memory, 660 ms at 50.8 MB/s) ride it out with room for host-side stalls
+/// as well; setting `cubic` on the board removes the pause itself.
 const SYMBOLS_KERNEL_BUFFERS: u32 = 16;
 /// Accepted `kbuffers`.
 const SYMBOLS_KERNEL_BUFFERS_RANGE: std::ops::RangeInclusive<u32> = 2..=64;

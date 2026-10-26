@@ -124,8 +124,14 @@ superframes, 0 continuity errors); 60 s of BS7 decoded every frame
   `[rx] carrier drift tracked …`); ISDB-S has its own carrier loop.
 - **Device buffering.** `--radio pluto:…,kbuffers=N,buffer=W` sets the
   symbol stream's kernel buffers (default 16) and words per buffer
-  (default 1 Mi): 330 ms of slack on the device, where iiod runs near a
-  full core at 51 MB/s and the stream stalls for ≈ 10 ms every ≈ 10 s.
+  (default 1 Mi): 660 ms of slack on the device at 51 MB/s, where iiod
+  runs near a full core. The slack absorbs a periodic pause of iiod's
+  sends: Tezuka sets the board's TCP congestion control to BBR, whose
+  PROBE_RTT phase holds the sender to 4 packets for ≥ 200 ms every 10 s
+  (VERIFICATION.md "The stall is BBR's PROBE_RTT"). With the default
+  buffers the pause costs nothing. To remove it at the source, set
+  `net.ipv4.tcp_congestion_control=cubic` on the board (a runtime
+  `sysctl`, gone at reboot unless added to a boot script).
 - **A busy host.** The words are drained into memory whatever the
   decoder does; once four chunks wait (≈ 3.2 s of ISDB-S3, ≈ 1.1 s of
   ISDB-S) whole blocks are dropped and reported (`… dropped here: the

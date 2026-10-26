@@ -1359,8 +1359,39 @@ receive only, satellite IF through RX1 (no DC block), 40 Msps, 56 MHz.
   (`tools/symbols-losses.py`); a 43.4 MB/s ISDB-S stream lost nothing.
   iiod used ≈ 72 % of a Pluto core at 50.8 MB/s, and no other process
   on the board showed anything periodic. With 8 or 16 kernel buffers of
-  1 Mi words (`kbuffers`, now 16 by default: 330 ms of slack) 45 s ran
-  without a loss.
+  1 Mi words (`kbuffers`, now 16 by default: 660 ms of slack at
+  50.8 MB/s) 45 s ran without a loss.
+- **The stall is BBR's PROBE_RTT (2026-10-26).** Tezuka sets the board's
+  TCP congestion control to BBR (`/etc/init.d/S96networkcong`, with the
+  `fq` qdisc and 4 MiB send buffers). BBR re-measures the minimum RTT
+  every 10 s by holding in-flight data to 4 packets for ≥ 200 ms, during
+  which iiod's sends block and the FPGA's DMA buffers fill. Evidence,
+  `isdb symbols --offload fpga` to disk, no decoder, `kbuffers=4`
+  (165 ms of slack), BS7:
+  - the loss lands at the same point of every stream: **10.152 s, symbol
+    342 704 128** (± one block), in 5 of 5 runs under BBR, losing 29–201
+    blocks (the part of a ≈ 170–200 ms pause beyond the slack);
+  - with `cubic` set at runtime (`sysctl -w
+    net.ipv4.tcp_congestion_control=cubic`): **0 losses** in 2 of 2 30 s
+    runs; the same setup back under BBR straight after lost 52 blocks at
+    10.152 s again;
+  - ruled out on the way: a free-running board task (the loss is at a
+    fixed stream position, not a fixed time of day; the board's watchdog,
+    chrony, update.sh and maia-sdr IRQ are periodic on their own clocks),
+    the Pluto's memory reclaim (all `allocstall`/`pgscan`/`pgsteal`
+    counters 0), a fixed DMA buffer count (half-size buffers stall at
+    the same time, as four back-to-back overflows 20 ms apart — the
+    pause's true length), and the host NIC (its drop counters for this
+    traffic did not move during a stalled stream).
+
+  The "every 10.19 s" pattern above and the 43.4 MB/s ISDB-S stream's
+  apparent immunity follow from the pause's length against the slack:
+  at 43.4 MB/s, 4 × 2 MiB is 193 ms, just enough most of the time;
+  small buffers showed ISDB-S losses too. The default 16 buffers absorb
+  it at both rates; setting `cubic` on the board removes it.
+  `tools/pluto-sample.sh` samples the board's interrupts, softirqs and
+  process CPU time at ≈ 5 ms intervals (read-only) for this kind of
+  search.
 - **The host keeps draining.** The parser thread reads the words whatever
   the decoder does; its queue to the decoder is bounded to four chunks
   (≈ 3.2 s of ISDB-S3, ≈ 1.1 s of ISDB-S), beyond which whole blocks are
