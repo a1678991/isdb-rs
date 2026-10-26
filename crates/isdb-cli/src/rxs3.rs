@@ -149,6 +149,9 @@ pub struct Stats {
     pub tmcc: Option<isdbs3_core::TmccInfo>,
     /// Per stream id: assembler counters and content counters.
     pub streams: BTreeMap<u16, (isdb_tlv::tlv::Stats, StreamStats, usize)>,
+    /// Streamed reception (FPGA or a words file): the word stream's
+    /// counters; `None` for block-wise reception.
+    pub words: Option<crate::symstream::WordStats>,
 }
 
 impl Default for Stats {
@@ -176,6 +179,7 @@ impl Default for Stats {
             trim: 0.0,
             tmcc: None,
             streams: BTreeMap::new(),
+            words: None,
         }
     }
 }
@@ -197,6 +201,20 @@ impl Stats {
                 "receiver_s": self.back_s,
                 "reused_acquisitions": self.reused,
             }),
+            "stream": self.words.map(|w| json!({
+                "blocks": w.blocks,
+                "symbols": w.symbols,
+                "losses": w.losses,
+                "blocks_lost": w.blocks_lost,
+                "words_skipped": w.words_skipped,
+                "resyncs": w.resyncs,
+                "max_queued_symbols": w.max_queued_symbols,
+                "stopped": w.stopped,
+            })),
+            "sync_snr_db": self.sync_snr_db,
+            "sync_snr_eq_db": self.sync_snr_eq_db,
+            "carrier_offset_hz": self.carrier_offset_hz,
+            "trim": self.trim,
             "frames": self.frames,
             "tmcc_ok": self.tmcc_ok,
             "slots": self.slots,
@@ -265,17 +283,55 @@ pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> 
     if s.z.len() < 2 * FRAME_SYMBOLS {
         return Ok(());
     }
+    // a fresh assembler per block: the blocks are not contiguous
+    let mut asm: BTreeMap<u16, Assembler> = BTreeMap::new();
+    decode(&s.z, false, false, &mut asm, out, stats)?;
+    close(asm, stats);
+    Ok(())
+}
+
+/// Receive the symbols `z` and write their TLV packets through the
+/// per-stream assemblers `asm` (which carry partial packets across calls
+/// on a contiguous stream). With `keep_last` (a stream that continues),
+/// the last whole frame found and everything after it are left for the
+/// next call: only the frames before it are counted and written, and the
+/// returned index is where it starts. Without, every frame is taken and
+/// `z.len()` is returned.
+pub fn decode(
+    z: &[isdbs3_phy::Cplx],
+    keep_last: bool,
+    aligned: bool,
+    asm: &mut BTreeMap<u16, Assembler>,
+    out: &mut Outputs,
+    stats: &mut Stats,
+) -> Result<usize> {
     let r = receive(
-        &s.z,
+        z,
         &RxOptions {
             ldpc: stats.ldpc,
+            // a continuing stream is cut on a frame start (slot head at 0)
+            slot_offset: aligned.then_some(0),
             ..RxOptions::default()
         },
     );
     stats.sync_snr_db = r.sync_snr_db;
     stats.sync_snr_eq_db = r.sync_snr_eq_db;
-    stats.frames += r.frames.len() as u64;
-    for f in &r.frames {
+    let upto = keep_last.then(|| r.frame_starts.last().copied()).flatten();
+    if keep_last && upto.is_none() {
+        // no whole frame yet: keep everything for the next call
+        return Ok(0);
+    }
+    // `r.frames[i]`, `r.frame_starts[i]` and the slots with `frame == i`
+    // are the same frame (the receiver pushes one entry per frame in sync
+    // order, up to the first incomplete one); a frame is taken when it
+    // starts before `upto`
+    let taken =
+        |fi: usize| -> bool { upto.is_none_or(|u| r.frame_starts.get(fi).is_some_and(|&a| a < u)) };
+    for (fi, f) in r.frames.iter().enumerate() {
+        if !taken(fi) {
+            continue;
+        }
+        stats.frames += 1;
         if let Ok(t) = &f.tmcc {
             stats.tmcc_ok += 1;
             stats.tmcc = Some(t.clone());
@@ -285,9 +341,7 @@ pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> 
             stats.mer_n += 1;
         }
     }
-    // a fresh assembler per block: the blocks are not contiguous
-    let mut asm: BTreeMap<u16, Assembler> = BTreeMap::new();
-    for sl in &r.slots {
+    for sl in r.slots.iter().filter(|sl| taken(sl.frame)) {
         stats.slots += 1;
         match sl.ldpc_iterations {
             Some(i) => stats.ldpc_iterations += i as u64,
@@ -314,6 +368,12 @@ pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> 
             out.write(sl.stream_id, &p.bytes())?;
         }
     }
+    Ok(upto.unwrap_or(z.len()))
+}
+
+/// Add the assemblers' counters to `stats` (at the end of a contiguous
+/// stretch: a block, a loss, the end of the run).
+pub fn close(asm: BTreeMap<u16, Assembler>, stats: &mut Stats) {
     for (id, a) in asm {
         let e = &mut stats.streams.entry(id).or_default().0;
         e.packets += a.stats.packets;
@@ -321,12 +381,32 @@ pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> 
         e.pointer_mismatches += a.stats.pointer_mismatches;
         e.skipped_bytes += a.stats.skipped_bytes;
     }
-    Ok(())
 }
 
 /// The summary lines printed at the end.
 pub fn report(stats: &Stats, secs: f64) {
-    if stats.wall_s > 0.0 {
+    if let Some(w) = stats.words {
+        eprintln!(
+            "[rx] time: {:.2} s for {secs:.3} s of signal ({:.2}× real time, startup included); receiver {:.2} s; at most {:.2} s of symbols queued behind the receiver",
+            stats.wall_s,
+            secs / stats.wall_s.max(1e-9),
+            stats.back_s,
+            w.max_queued_symbols as f64 / isdbs3_phy::frontend::system().symbol_rate_hz
+        );
+        eprintln!(
+            "[rx] stream: {} blocks of symbols; {} loss(es) ({} blocks missing, {} words skipped), {} resync(s){}: each is a discontinuity in the TLV streams",
+            w.blocks,
+            w.losses,
+            w.blocks_lost,
+            w.words_skipped,
+            w.resyncs,
+            if w.stopped {
+                "; stopped with symbols still queued"
+            } else {
+                ""
+            }
+        );
+    } else if stats.wall_s > 0.0 {
         eprintln!(
             "[rx] time: {:.2} s for {secs:.3} s of signal ({:.2}× real time); front end {:.2} s, receiver {:.2} s (overlapping); {} of {} block(s) reused the previous acquisition",
             stats.wall_s,
@@ -473,6 +553,130 @@ pub fn run_file(
         |_| {},
     )?;
     Ok(stats.samples as f64 / fs)
+}
+
+/// Streamed reception: decode the `Symbols` words of `bytes` (a radio's
+/// FPGA front end, or a words file) as one continuous stream, cut on frame
+/// boundaries ([`crate::symstream`]); a loss in the words ends a contiguous
+/// stretch (the streams are discontinuous there, reported). Returns the
+/// seconds of signal (symbols / `symbol_rate_hz`).
+pub fn run_stream(
+    bytes: crate::symstream::Bytes,
+    symbol_rate_hz: f64,
+    status: bool,
+    stop: &AtomicBool,
+    out: &mut Outputs,
+    stats: &mut Stats,
+) -> Result<f64> {
+    let t0 = std::time::Instant::now();
+    let stats = std::cell::RefCell::new(stats);
+    let asm = std::cell::RefCell::new(BTreeMap::<u16, Assembler>::new());
+    // whether the buffer starts where the previous call cut (a frame start)
+    let aligned = std::cell::Cell::new(false);
+    let mut next_status = 1.0;
+    let w = crate::symstream::run(
+        bytes,
+        crate::symstream::CHUNK_FRAMES * FRAME_SYMBOLS,
+        stop,
+        |z, cut| {
+            let t = std::time::Instant::now();
+            let mut st = stats.borrow_mut();
+            let more = cut == crate::symstream::Cut::More;
+            let used = decode(z, more, aligned.get(), &mut asm.borrow_mut(), out, &mut st)?;
+            st.back_s += t.elapsed().as_secs_f64();
+            // the next buffer starts at the cut (a frame start) when this
+            // call cut on one; after a loss or with nothing cut, not
+            aligned.set(more && used > 0);
+            Ok(used)
+        },
+        |_| {
+            // a contiguous stretch ended: close its assemblers
+            let a = std::mem::take(&mut *asm.borrow_mut());
+            close(a, &mut stats.borrow_mut());
+            Ok(())
+        },
+        |w| {
+            let mut st = stats.borrow_mut();
+            st.words = Some(*w);
+            st.wall_s = t0.elapsed().as_secs_f64();
+            let secs = w.symbols as f64 / symbol_rate_hz;
+            if status && secs >= next_status {
+                next_status = secs.floor() + 1.0;
+                eprintln!(
+                    "[rx] {secs:.2} s of signal after {:.2} s: {} frames, TMCC ok {}; {} slots, LDPC failed {}, BCH failed {}; losses {} ({} blocks); MER {}",
+                    st.wall_s,
+                    st.frames,
+                    st.tmcc_ok,
+                    st.slots,
+                    st.ldpc_failed,
+                    st.bch_failed,
+                    w.losses,
+                    w.blocks_lost,
+                    st.mer_db().map_or("-".into(), |m| format!("{m:.1} dB"))
+                );
+            }
+        },
+    )?;
+    let mut st = stats.borrow_mut();
+    st.words = Some(w);
+    st.wall_s = t0.elapsed().as_secs_f64();
+    Ok(w.symbols as f64 / symbol_rate_hz)
+}
+
+/// Lowest sync-symbol Es/N0 the acquisition accepts, dB. The carrier gives
+/// 8–9 dB on 0.05 s of a live 40 Msps BS7/BS11/BS17 probe; a survey alias
+/// that still correlates the sync words a little gives 1–2 dB (a live run
+/// locked on −760 kHz at 1.46 dB and decoded no TMCC, plan §0.16).
+pub const MIN_ACQUIRE_SNR_DB: f64 = 4.0;
+
+/// Live from a radio's FPGA symbol front end: acquire on a short IQ
+/// capture (carrier from every candidate, trim), configure the front end
+/// and decode its words continuously until `seconds` of signal (or Ctrl-C).
+#[allow(clippy::too_many_arguments)]
+pub fn run_radio_fpga(
+    backend: &'static dyn isdb_radio::Backend,
+    cfg: &RadioConfig,
+    taps: usize,
+    seconds: f64,
+    carrier_offset_hz: Option<f64>,
+    status: bool,
+    stop: &std::sync::Arc<AtomicBool>,
+    out: &mut Outputs,
+    stats: &mut Stats,
+) -> Result<f64> {
+    let rs = isdbs3_phy::frontend::system().symbol_rate_hz;
+    let mut acq = None;
+    // the capture's own stop: set at the end of `seconds`, or on Ctrl-C
+    let cap_stop = std::sync::Arc::new(AtomicBool::new(false));
+    let stream = crate::symstream::start_radio(backend, cfg, rs, &cap_stop, |x, fs| {
+        let p = isdbs3_phy::frontend::acquire(x, fs, carrier_offset_hz, Trim::Auto)?;
+        if p.sync_snr_db < MIN_ACQUIRE_SNR_DB {
+            eprintln!(
+                "[rx] carrier {:+.0} Hz gives a sync Es/N0 of {:.2} dB, below {MIN_ACQUIRE_SNR_DB} dB: no lock",
+                p.carrier_offset_hz, p.sync_snr_db
+            );
+            return Ok(None);
+        }
+        let mut d = isdbs3_phy::frontend::design(fs, p.carrier_offset_hz);
+        d.trim = p.trim;
+        d.taps = taps;
+        let params = isdb_frontend::Params::design(&d)?;
+        acq = Some(p);
+        Ok(Some((
+            params,
+            format!(
+                "carrier {:+.0} Hz, trim {:+.3} symbol, sync Es/N0 {:.2} dB there; FPGA front end, {taps} taps",
+                p.carrier_offset_hz, p.trim, p.sync_snr_db
+            ),
+        )))
+    })?;
+    if let Some(p) = acq {
+        stats.carrier_offset_hz = p.carrier_offset_hz;
+        stats.trim = p.trim;
+    }
+    crate::symstream::finish_radio(stream, seconds, stop, &cap_stop, |rx| {
+        run_stream(rx, rs, status, stop, out, stats)
+    })
 }
 
 /// Live: contiguous captures of `block_s` seconds from `spec`.

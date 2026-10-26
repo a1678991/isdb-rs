@@ -45,6 +45,7 @@ mod sink;
 mod source;
 mod stop;
 mod symbols;
+mod symstream;
 mod tlv;
 mod tmcc;
 #[allow(missing_docs)]

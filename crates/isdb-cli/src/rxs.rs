@@ -167,6 +167,9 @@ pub struct Stats {
     pub carrier_offset_hz: f64,
     /// Symbol rate the front end settled at in the last block, Bd.
     pub symbol_rate_hz: f64,
+    /// Streamed reception (FPGA or a words file): the word stream's
+    /// counters; `None` for block-wise reception.
+    pub words: Option<crate::symstream::WordStats>,
 }
 
 impl Stats {
@@ -201,6 +204,16 @@ impl Stats {
         json!({
             "system": "ISDB-S",
             "blocks": self.blocks,
+            "stream": self.words.map(|w| json!({
+                "blocks": w.blocks,
+                "symbols": w.symbols,
+                "losses": w.losses,
+                "blocks_lost": w.blocks_lost,
+                "words_skipped": w.words_skipped,
+                "resyncs": w.resyncs,
+                "max_queued_symbols": w.max_queued_symbols,
+                "stopped": w.stopped,
+            })),
             "time": json!({
                 "wall_s": self.wall_s,
                 "front_end_s": self.front_s,
@@ -252,10 +265,47 @@ pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> 
     if s.z.len() < 2 * FRAME_SYMBOLS {
         return Ok(0);
     }
-    let r = receive(&s.z, &RxOptions::default());
-    stats.frames += r.frames.len() as u64;
-    stats.headers_ok += r.frames.iter().filter(|f| f.header_ok).count() as u64;
-    stats.slips += r.slips as u64;
+    Ok(decode(&s.z, false, out, stats)?.1)
+}
+
+/// Receive the symbols `z` and write their packets. With `keep_last` (a
+/// stream that continues), the last whole superframe found and everything
+/// after it are left for the next call (each superframe decodes on its
+/// own, so a stream cut at a superframe start loses nothing): only the
+/// superframes before it are counted and written. Returns where the kept
+/// part starts (`z.len()` without `keep_last`; 0 when no whole superframe
+/// was found yet) and how many superframes were decoded.
+pub fn decode(
+    z: &[isdbs_phy::Cplx],
+    keep_last: bool,
+    out: &mut Outputs,
+    stats: &mut Stats,
+) -> Result<(usize, usize)> {
+    let mut r = receive(z, &RxOptions::default());
+    let start =
+        |r: &isdbs_phy::Reception, sf: &isdbs_phy::Superframe| r.frames[sf.first_frame].mark.start;
+    if keep_last && r.superframes.is_empty() {
+        return Ok((0, 0));
+    }
+    let keep = if keep_last {
+        r.superframes.len() - 1
+    } else {
+        r.superframes.len()
+    };
+    let next = r.superframes.get(keep).map_or(z.len(), |sf| start(&r, sf));
+    // frames counted up to the first superframe not taken (all of them
+    // without a cut)
+    let frame_end = r
+        .superframes
+        .get(keep)
+        .map_or(r.frames.len(), |sf| sf.first_frame);
+    let frames = &r.frames[..frame_end];
+    stats.frames += frames.len() as u64;
+    stats.headers_ok += frames.iter().filter(|f| f.header_ok).count() as u64;
+    if !keep_last {
+        stats.slips += r.slips as u64;
+    }
+    r.superframes.truncate(keep);
     stats.superframes += r.superframes.len() as u64;
     stats.tmcc_ok += r.superframes.iter().filter(|s| s.info.is_some()).count() as u64;
     let decoded = decode_all(&r, &DemodOptions::default());
@@ -265,12 +315,33 @@ pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> 
             out.write(p.ts_id, &p.bytes)?;
         }
     }
-    Ok(decoded.len())
+    Ok((next, decoded.len()))
 }
 
 /// The summary lines printed at the end.
 pub fn report(stats: &Stats, secs: f64) {
-    if stats.wall_s > 0.0 {
+    if let Some(w) = stats.words {
+        eprintln!(
+            "[rx] time: {:.2} s for {secs:.3} s of signal ({:.2}× real time, startup included); receiver {:.2} s; at most {:.2} s of symbols queued behind the receiver",
+            stats.wall_s,
+            secs / stats.wall_s.max(1e-9),
+            stats.back_s,
+            w.max_queued_symbols as f64 / isdbs_phy::frontend::system().symbol_rate_hz
+        );
+        eprintln!(
+            "[rx] stream: {} blocks of symbols; {} loss(es) ({} blocks missing, {} words skipped), {} resync(s){}: each is a discontinuity in the TS",
+            w.blocks,
+            w.losses,
+            w.blocks_lost,
+            w.words_skipped,
+            w.resyncs,
+            if w.stopped {
+                "; stopped with symbols still queued"
+            } else {
+                ""
+            }
+        );
+    } else if stats.wall_s > 0.0 {
         eprintln!(
             "[rx] time: {:.2} s for {secs:.3} s of signal ({:.2}× real time); front end {:.2} s, receiver {:.2} s (overlapping); {} of {} block(s) reused the previous acquisition",
             stats.wall_s,
@@ -380,6 +451,114 @@ pub fn run_file(
         |_| {},
     )?;
     Ok(stats.samples as f64 / fs)
+}
+
+/// Streamed reception: decode the `Symbols` words of `bytes` (a radio's
+/// FPGA front end, or a words file) as one continuous stream, cut on
+/// superframe starts ([`crate::symstream`]); a loss in the words ends a
+/// contiguous stretch (a discontinuity in the TS, reported). Returns the
+/// seconds of signal (symbols / `symbol_rate_hz`).
+pub fn run_stream(
+    bytes: crate::symstream::Bytes,
+    symbol_rate_hz: f64,
+    status: bool,
+    stop: &AtomicBool,
+    out: &mut Outputs,
+    stats: &mut Stats,
+) -> Result<f64> {
+    let t0 = std::time::Instant::now();
+    let stats = std::cell::RefCell::new(stats);
+    let mut next_status = 1.0;
+    let w = crate::symstream::run(
+        bytes,
+        crate::symstream::CHUNK_SUPERFRAMES * isdbs_core::frame::FRAMES * FRAME_SYMBOLS,
+        stop,
+        |z, cut| {
+            let t = std::time::Instant::now();
+            let mut st = stats.borrow_mut();
+            let (used, _) = decode(z, cut == crate::symstream::Cut::More, out, &mut st)?;
+            st.back_s += t.elapsed().as_secs_f64();
+            Ok(used)
+        },
+        |_| Ok(()),
+        |w| {
+            let mut st = stats.borrow_mut();
+            st.words = Some(*w);
+            st.wall_s = t0.elapsed().as_secs_f64();
+            let secs = w.symbols as f64 / symbol_rate_hz;
+            if status && secs >= next_status {
+                next_status = secs.floor() + 1.0;
+                eprintln!(
+                    "[rx] {secs:.2} s of signal after {:.2} s: {} superframes, TMCC ok {}, decoded {}; losses {} ({} blocks); MER {}",
+                    st.wall_s,
+                    st.superframes,
+                    st.tmcc_ok,
+                    st.decoded,
+                    w.losses,
+                    w.blocks_lost,
+                    st.mer_db().map_or("-".into(), |m| format!("{m:.1} dB"))
+                );
+            }
+        },
+    )?;
+    let mut st = stats.borrow_mut();
+    st.words = Some(w);
+    st.wall_s = t0.elapsed().as_secs_f64();
+    Ok(w.symbols as f64 / symbol_rate_hz)
+}
+
+/// Lowest burst MER the acquisition accepts, dB (the live BS/CS
+/// transponders give 10–15 dB on a 40 Msps probe; a wrong carrier or no
+/// signal leaves the bursts unaligned).
+pub const MIN_ACQUIRE_MER_DB: f64 = 4.0;
+
+/// Live from a radio's FPGA symbol front end: acquire on a short IQ
+/// capture (carrier, trim), configure the front end and decode its words
+/// continuously until `seconds` of signal (or Ctrl-C).
+#[allow(clippy::too_many_arguments)]
+pub fn run_radio_fpga(
+    backend: &'static dyn isdb_radio::Backend,
+    cfg: &RadioConfig,
+    taps: usize,
+    seconds: f64,
+    carrier_offset_hz: Option<f64>,
+    status: bool,
+    stop: &std::sync::Arc<AtomicBool>,
+    out: &mut Outputs,
+    stats: &mut Stats,
+) -> Result<f64> {
+    let rs = isdbs_phy::frontend::system().symbol_rate_hz;
+    let mut acq = None;
+    let cap_stop = std::sync::Arc::new(AtomicBool::new(false));
+    let stream = crate::symstream::start_radio(backend, cfg, rs, &cap_stop, |x, fs| {
+        let p = isdbs_phy::frontend::acquire(x, fs, carrier_offset_hz, Trim::Auto)?;
+        if p.pilot_mer_db < MIN_ACQUIRE_MER_DB {
+            eprintln!(
+                "[rx] carrier {:+.0} Hz gives a burst MER of {:.2} dB, below {MIN_ACQUIRE_MER_DB} dB: no lock",
+                p.carrier_offset_hz, p.pilot_mer_db
+            );
+            return Ok(None);
+        }
+        let mut d = isdbs_phy::frontend::design(fs, p.carrier_offset_hz);
+        d.trim = p.trim;
+        d.taps = taps;
+        let params = isdb_frontend::Params::design(&d)?;
+        acq = Some(p);
+        Ok(Some((
+            params,
+            format!(
+                "carrier {:+.0} Hz, trim {:+.3} symbol, burst MER {:.2} dB there; FPGA front end, {taps} taps",
+                p.carrier_offset_hz, p.trim, p.pilot_mer_db
+            ),
+        )))
+    })?;
+    if let Some(p) = acq {
+        stats.carrier_offset_hz = p.carrier_offset_hz;
+    }
+    stats.symbol_rate_hz = rs;
+    crate::symstream::finish_radio(stream, seconds, stop, &cap_stop, |rx| {
+        run_stream(rx, rs, status, stop, out, stats)
+    })
 }
 
 /// Live: contiguous captures of `block_s` seconds from `spec`, decoded
