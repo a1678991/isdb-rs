@@ -131,7 +131,17 @@ superframes, 0 continuity errors); 60 s of BS7 decoded every frame
   (VERIFICATION.md "The stall is BBR's PROBE_RTT"). With the default
   buffers the pause costs nothing. To remove it at the source, set
   `net.ipv4.tcp_congestion_control=cubic` on the board (a runtime
-  `sysctl`, gone at reboot unless added to a boot script).
+  `sysctl`, gone at reboot unless added to a boot script). The bench
+  board does this at every boot through `tools/pluto-autorun.sh`
+  (installed as `/mnt/jffs2/autorun.sh`); with cubic a 4-buffer stream
+  that lost blocks at 10.152 s under BBR ran 30 s without a loss.
+- **Static address after a link flap.** Tezuka's `ifplugd.action`
+  flushes eth0's addresses when the link goes down and reacquires them
+  only by DHCP when it comes back, so a static `ipaddr_eth` is lost until
+  reboot (the board answers on the serial console but not on the
+  network). `tools/pluto-autorun.sh` re-adds it whenever the link is up
+  without it; `tools/pluto-console.py` runs commands over the serial
+  debug console when the network is gone.
 - **A busy host.** The words are drained into memory whatever the
   decoder does; once four chunks wait (≈ 3.2 s of ISDB-S3, ≈ 1.1 s of
   ISDB-S) whole blocks are dropped and reported (`… dropped here: the
