@@ -31,48 +31,185 @@ pub fn segment_type_bits(differential: bool) -> [u8; 3] {
     if differential { [1, 1, 1] } else { [0, 0, 0] }
 }
 
-/// Transmission-parameter information of one layer (Table 3-23), raw codes.
+/// Carrier modulation mapping scheme code, Table 3-28 (3 bits, §3.15.6.5).
+///
+/// Lossless: every 3-bit code has a variant, so a received TMCC word
+/// re-encodes bit for bit (`from_code(c).code() == c`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModulationCode {
+    /// '000' DQPSK, '001' QPSK, '010' 16QAM, '011' 64QAM.
+    Assigned(Modulation),
+    /// '100'–'110' "Reserved"; the code, masked to 3 bits.
+    Reserved(u8),
+    /// '111' "Unused hierarchical layer" (also "no next information").
+    Unused,
+}
+
+impl ModulationCode {
+    /// The 3-bit code.
+    pub const fn code(self) -> u8 {
+        match self {
+            ModulationCode::Assigned(Modulation::Dqpsk) => 0b000,
+            ModulationCode::Assigned(Modulation::Qpsk) => 0b001,
+            ModulationCode::Assigned(Modulation::Qam16) => 0b010,
+            ModulationCode::Assigned(Modulation::Qam64) => 0b011,
+            ModulationCode::Reserved(c) => c & 0b111,
+            ModulationCode::Unused => 0b111,
+        }
+    }
+
+    /// From the 3-bit code (higher bits of `code` are ignored).
+    pub const fn from_code(code: u8) -> Self {
+        match code & 0b111 {
+            0b000 => ModulationCode::Assigned(Modulation::Dqpsk),
+            0b001 => ModulationCode::Assigned(Modulation::Qpsk),
+            0b010 => ModulationCode::Assigned(Modulation::Qam16),
+            0b011 => ModulationCode::Assigned(Modulation::Qam64),
+            0b111 => ModulationCode::Unused,
+            c => ModulationCode::Reserved(c),
+        }
+    }
+}
+
+/// Convolutional-coding rate code, Table 3-29 (3 bits, §3.15.6.6).
+/// Lossless like [`ModulationCode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RateCode {
+    /// '000' 1/2, '001' 2/3, '010' 3/4, '011' 5/6, '100' 7/8.
+    Assigned(CodeRate),
+    /// '101'–'110' "Reserved"; the code, masked to 3 bits.
+    Reserved(u8),
+    /// '111' "Unused hierarchical layer" (also "no next information").
+    Unused,
+}
+
+impl RateCode {
+    /// The 3-bit code.
+    pub const fn code(self) -> u8 {
+        match self {
+            RateCode::Assigned(CodeRate::R1_2) => 0b000,
+            RateCode::Assigned(CodeRate::R2_3) => 0b001,
+            RateCode::Assigned(CodeRate::R3_4) => 0b010,
+            RateCode::Assigned(CodeRate::R5_6) => 0b011,
+            RateCode::Assigned(CodeRate::R7_8) => 0b100,
+            RateCode::Reserved(c) => c & 0b111,
+            RateCode::Unused => 0b111,
+        }
+    }
+
+    /// From the 3-bit code (higher bits of `code` are ignored).
+    pub const fn from_code(code: u8) -> Self {
+        match code & 0b111 {
+            0b000 => RateCode::Assigned(CodeRate::R1_2),
+            0b001 => RateCode::Assigned(CodeRate::R2_3),
+            0b010 => RateCode::Assigned(CodeRate::R3_4),
+            0b011 => RateCode::Assigned(CodeRate::R5_6),
+            0b100 => RateCode::Assigned(CodeRate::R7_8),
+            0b111 => RateCode::Unused,
+            c => RateCode::Reserved(c),
+        }
+    }
+}
+
+/// Time-interleaving length code, Table 3-30 (3 bits, §3.15.6.7).
+/// Lossless like [`ModulationCode`]; the assigned codes are the Table
+/// 3-12 indices of [`TimeInterleave`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InterleaveCode {
+    /// '000'–'011': I = 0 / 4 / 8 / 16 (Mode 1), 0 / 2 / 4 / 8 (Mode 2),
+    /// 0 / 1 / 2 / 4 (Mode 3).
+    Assigned(TimeInterleave),
+    /// '100' "Not used" (assigned to digital terrestrial sound
+    /// broadcasting, "not used in this system") and '101'–'110'
+    /// "Reserved"; the code, masked to 3 bits.
+    Reserved(u8),
+    /// '111' "Unused hierarchical layer" (also "no next information").
+    Unused,
+}
+
+impl InterleaveCode {
+    /// The 3-bit code.
+    pub const fn code(self) -> u8 {
+        match self {
+            InterleaveCode::Assigned(t) => t.code(),
+            InterleaveCode::Reserved(c) => c & 0b111,
+            InterleaveCode::Unused => 0b111,
+        }
+    }
+
+    /// From the 3-bit code (higher bits of `code` are ignored).
+    pub const fn from_code(code: u8) -> Self {
+        let code = code & 0b111;
+        match TimeInterleave::from_code(code) {
+            Some(t) => InterleaveCode::Assigned(t),
+            None if code == 0b111 => InterleaveCode::Unused,
+            None => InterleaveCode::Reserved(code),
+        }
+    }
+}
+
+/// Number-of-segments code, Table 3-31 (4 bits, §3.15.6.8).
+/// Lossless like [`ModulationCode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SegmentsCode {
+    /// '0001'–'1101': 1 to 13 segments (the count, equal to the code).
+    Segments(u8),
+    /// '0000' and '1110' "Reserved"; the code, masked to 4 bits.
+    Reserved(u8),
+    /// '1111' "Unused hierarchical layer" (also "no next information").
+    Unused,
+}
+
+impl SegmentsCode {
+    /// The 4-bit code.
+    pub const fn code(self) -> u8 {
+        match self {
+            SegmentsCode::Segments(n) | SegmentsCode::Reserved(n) => n & 0b1111,
+            SegmentsCode::Unused => 0b1111,
+        }
+    }
+
+    /// From the 4-bit code (higher bits of `code` are ignored).
+    pub const fn from_code(code: u8) -> Self {
+        match code & 0b1111 {
+            n @ 1..=13 => SegmentsCode::Segments(n),
+            0b1111 => SegmentsCode::Unused,
+            c => SegmentsCode::Reserved(c),
+        }
+    }
+}
+
+/// Transmission-parameter information of one layer (Table 3-23): the four
+/// codes as received, each a lossless coded enum of its table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TmccLayer {
-    /// Carrier modulation, Table 3-28 (3 bits; 111 = unused).
-    pub modulation: u8,
-    /// Convolutional-coding rate, Table 3-29 (3 bits; 111 = unused).
-    pub code_rate: u8,
-    /// Time-interleaving length, Table 3-30 (3 bits; 111 = unused).
-    pub interleave: u8,
-    /// Number of segments, Table 3-31 (4 bits; 1111 = unused).
-    pub segments: u8,
+    /// Carrier modulation, Table 3-28.
+    pub modulation: ModulationCode,
+    /// Convolutional-coding rate, Table 3-29.
+    pub code_rate: RateCode,
+    /// Time-interleaving length, Table 3-30.
+    pub interleave: InterleaveCode,
+    /// Number of segments, Table 3-31.
+    pub segments: SegmentsCode,
 }
 
 impl TmccLayer {
     /// Unused hierarchical layer / no next information: all ones.
     pub const UNUSED: Self = Self {
-        modulation: 0b111,
-        code_rate: 0b111,
-        interleave: 0b111,
-        segments: 0b1111,
+        modulation: ModulationCode::Unused,
+        code_rate: RateCode::Unused,
+        interleave: InterleaveCode::Unused,
+        segments: SegmentsCode::Unused,
     };
 
-    /// Codes for a configured layer.
+    /// Codes for a configured layer (one of a validated [`Params`], so
+    /// `segments` is 1..=13).
     pub fn from_config(l: &LayerConfig) -> Self {
-        let modulation = match l.modulation {
-            Modulation::Dqpsk => 0,
-            Modulation::Qpsk => 1,
-            Modulation::Qam16 => 2,
-            Modulation::Qam64 => 3,
-        };
-        let code_rate = match l.code_rate {
-            CodeRate::R1_2 => 0,
-            CodeRate::R2_3 => 1,
-            CodeRate::R3_4 => 2,
-            CodeRate::R5_6 => 3,
-            CodeRate::R7_8 => 4,
-        };
         Self {
-            modulation,
-            code_rate,
-            interleave: l.time_interleave.code(),
-            segments: l.segments as u8,
+            modulation: ModulationCode::Assigned(l.modulation),
+            code_rate: RateCode::Assigned(l.code_rate),
+            interleave: InterleaveCode::Assigned(l.time_interleave),
+            segments: SegmentsCode::Segments(l.segments as u8),
         }
     }
 
@@ -81,41 +218,47 @@ impl TmccLayer {
         *self == Self::UNUSED
     }
 
-    /// Typed configuration; `Ok(None)` for an unused layer, `Err` for
-    /// reserved / inconsistent codes.
-    pub fn to_config(&self) -> Result<Option<LayerConfig>, Error> {
-        if self.modulation == 0b111 {
-            return Ok(None);
-        }
+    /// Typed configuration; `Ok(None)` for an unused layer (modulation
+    /// '111'), `Err` for reserved / inconsistent codes.
+    pub fn config(self) -> Result<Option<LayerConfig>, Error> {
         let modulation = match self.modulation {
-            0 => Modulation::Dqpsk,
-            1 => Modulation::Qpsk,
-            2 => Modulation::Qam16,
-            3 => Modulation::Qam64,
-            v => return Err(Error::Tmcc(format!("reserved modulation code {v:03b}"))),
+            ModulationCode::Unused => return Ok(None),
+            ModulationCode::Assigned(m) => m,
+            ModulationCode::Reserved(c) => {
+                return Err(Error::Tmcc(format!("reserved modulation code {c:03b}")));
+            }
         };
         let code_rate = match self.code_rate {
-            0 => CodeRate::R1_2,
-            1 => CodeRate::R2_3,
-            2 => CodeRate::R3_4,
-            3 => CodeRate::R5_6,
-            4 => CodeRate::R7_8,
-            v => return Err(Error::Tmcc(format!("reserved code-rate code {v:03b}"))),
+            RateCode::Assigned(r) => r,
+            RateCode::Reserved(c) => {
+                return Err(Error::Tmcc(format!("reserved code-rate code {c:03b}")));
+            }
+            RateCode::Unused => {
+                return Err(Error::Tmcc(
+                    "unused code-rate code 111 in a used layer".into(),
+                ));
+            }
         };
-        let Some(time_interleave) = TimeInterleave::from_code(self.interleave) else {
-            return Err(Error::Tmcc(format!(
-                "reserved/unused interleave code {:03b}",
-                self.interleave
-            )));
+        let time_interleave = match self.interleave {
+            InterleaveCode::Assigned(t) => t,
+            c @ (InterleaveCode::Reserved(_) | InterleaveCode::Unused) => {
+                return Err(Error::Tmcc(format!(
+                    "reserved/unused interleave code {:03b}",
+                    c.code()
+                )));
+            }
         };
-        if !(1..=13).contains(&self.segments) {
-            return Err(Error::Tmcc(format!(
-                "reserved segment count code {:04b}",
-                self.segments
-            )));
-        }
+        let segments = match self.segments {
+            SegmentsCode::Segments(n) => usize::from(n),
+            c @ (SegmentsCode::Reserved(_) | SegmentsCode::Unused) => {
+                return Err(Error::Tmcc(format!(
+                    "reserved segment count code {:04b}",
+                    c.code()
+                )));
+            }
+        };
         Ok(Some(LayerConfig {
-            segments: self.segments as usize,
+            segments,
             modulation,
             code_rate,
             time_interleave,
@@ -154,7 +297,7 @@ impl TmccParams {
     pub fn to_params(&self, mode: Mode, guard: GuardInterval) -> Result<Params, Error> {
         let mut layers = [None; 3];
         for (dst, l) in layers.iter_mut().zip(&self.layers) {
-            *dst = l.to_config()?;
+            *dst = l.config()?;
         }
         Params::new(mode, guard, self.partial_reception, layers)
             .map_err(|e| Error::Tmcc(e.to_string()))
@@ -211,10 +354,10 @@ impl TmccInfo {
         for p in [&self.current, &self.next] {
             w.put(p.partial_reception as u32, 1);
             for l in &p.layers {
-                w.put(l.modulation as u32, 3);
-                w.put(l.code_rate as u32, 3);
-                w.put(l.interleave as u32, 3);
-                w.put(l.segments as u32, 4);
+                w.put(u32::from(l.modulation.code()), 3);
+                w.put(u32::from(l.code_rate.code()), 3);
+                w.put(u32::from(l.interleave.code()), 3);
+                w.put(u32::from(l.segments.code()), 4);
             }
         }
         w.put(self.phase_shift_correction as u32, 3);
@@ -232,10 +375,10 @@ impl TmccInfo {
         let mut tp = || {
             let partial_reception = r.get(1) == 1;
             let layers = std::array::from_fn(|_| TmccLayer {
-                modulation: r.get(3) as u8,
-                code_rate: r.get(3) as u8,
-                interleave: r.get(3) as u8,
-                segments: r.get(4) as u8,
+                modulation: ModulationCode::from_code(r.get(3) as u8),
+                code_rate: RateCode::from_code(r.get(3) as u8),
+                interleave: InterleaveCode::from_code(r.get(3) as u8),
+                segments: SegmentsCode::from_code(r.get(4) as u8),
             });
             TmccParams {
                 partial_reception,

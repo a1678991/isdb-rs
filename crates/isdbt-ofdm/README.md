@@ -42,6 +42,7 @@ ARIB STD-B31 v2.2 (`specs/ARIB-STD-B31-v2.2.txt`):
 | `Modulator::modulate_frame(layer_bits, &TmccInfo, &AcFrame)` | one OFDM frame: `bits_per_frame(layer)` = `nc·S·N·204` coded bits (0/1) per active layer → `204·(Ng+N)` samples at 512/63 MHz |
 | `Modulator::modulate_frame_carriers` | the same frame in the carrier domain (204 × K values) |
 | `tmcc::TmccInfo::from_params` | TMCC with next = current information, countdown 1111 |
+| `tmcc::TmccLayer` | one layer's Table 3-23 codes as received: `ModulationCode`, `RateCode`, `InterleaveCode`, `SegmentsCode` (Tables 3-28..3-31; each `Assigned(..)` / `Reserved(code)` / `Unused`, lossless `from_code` / `code`); `config()` is the typed `LayerConfig`, `None` for an unused layer, `Error::Tmcc` for a reserved code |
 | `ac::AcFrame::stuffing` / `from_stream` / `with_seismic` | AC content (stuffing 1, serial data, §3.16.6 seismic word) |
 | `Demodulator::new(DemodConfig)` / `push(&[C32])` | receiver; any chunking; yields one `DemodFrame` per on-air frame once locked |
 | `DemodFrame` | `llr` per layer, `valid`, `latency_frames`, `tmcc` (with parity status), `params`, `ac_bits`, `seismic`, `metrics` (CFO, MER per layer, noise, timing drift), `start_sample` |
@@ -81,6 +82,26 @@ let mut rx = Demodulator::new(DemodConfig::default());
 let frames = rx.push(&iq);
 assert!(frames.iter().any(|f| f.valid));
 assert!(frames.iter().all(|f| f.tmcc.parity.is_ok() && f.params == params));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The TMCC layer codes are kept as received (Tables 3-28..3-31), so a word
+with a reserved code re-encodes bit for bit and is refused only when it
+is turned into parameters:
+
+```rust
+use isdbt_core::{Modulation, TimeInterleave};
+use isdbt_ofdm::tmcc::{InterleaveCode, ModulationCode, SegmentsCode, TmccLayer};
+
+assert_eq!(ModulationCode::from_code(0b001), ModulationCode::Assigned(Modulation::Qpsk));
+assert_eq!(InterleaveCode::from_code(0b011), InterleaveCode::Assigned(TimeInterleave::K3));
+assert_eq!(InterleaveCode::from_code(0b100), InterleaveCode::Reserved(0b100)); // sound broadcasting
+assert_eq!(SegmentsCode::from_code(0b1101), SegmentsCode::Segments(13));
+assert!((0..16u8).all(|c| SegmentsCode::from_code(c).code() == c));
+assert!(TmccLayer::UNUSED.config()?.is_none()); // modulation '111': unused layer
+let reserved = TmccLayer { modulation: ModulationCode::Reserved(0b101), ..TmccLayer::UNUSED };
+assert_eq!(reserved.modulation.code(), 0b101); // kept for re-encoding
+assert!(reserved.config().is_err()); // refused as parameters
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 

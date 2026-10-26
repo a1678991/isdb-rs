@@ -407,6 +407,16 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdbt-ofdm`: the four fields of `tmcc::TmccLayer` are lossless coded
+  enums of ARIB STD-B31 Tables 3-28..3-31 (`ModulationCode`, `RateCode`,
+  `InterleaveCode`, `SegmentsCode`: `Assigned(..)` over the `isdbt-core`
+  type, `Reserved(code)`, `Unused`; total `from_code()` / `code()`)
+  instead of raw `u8` codes. A received TMCC word still re-encodes bit
+  for bit (reserved codes keep their value), and `TmccLayer::config()`
+  (was `to_config`) matches variants, not integers: the unused layer is
+  `None`, a reserved code is `Error::Tmcc` as before. Table 3-30 '100'
+  ("not used", terrestrial sound) is `InterleaveCode::Reserved(0b100)`.
+  Second item of `docs/plans/type-safety.md`.
 - `isdbt-core`: `TimeInterleave` is a closed enum of the four TMCC codes
   of ARIB STD-B31 Table 3-12 (`K0`..`K3`, `code()` / `from_code()`,
   `ALL`) instead of `TimeInterleave(pub u8)`. `length(mode)` is

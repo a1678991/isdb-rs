@@ -19,7 +19,10 @@ use isdbt_ofdm::mapping::{
     CarrierMapper, constellation_point, constellation_point_raw, dqpsk_phase, normalization,
 };
 use isdbt_ofdm::tables;
-use isdbt_ofdm::tmcc::{TmccInfo, W0, decode_frame, sync_word};
+use isdbt_ofdm::tmcc::{
+    InterleaveCode, ModulationCode, RateCode, SegmentsCode, TmccInfo, TmccLayer, W0, decode_frame,
+    sync_word,
+};
 use isdbt_ofdm::{C32, Modulator};
 
 const MODES: [Mode; 3] = [Mode::M1, Mode::M2, Mode::M3];
@@ -520,6 +523,174 @@ fn spec_table_3_22_tmcc_fields() {
     assert_eq!(field(107, 121), "111111111111111");
     assert_eq!(field(1, 16), "0011010111101110");
     assert_eq!(field(17, 19), "000");
+}
+
+/// Table 3-28: carrier modulation codes '000'–'011', '100'–'110' reserved,
+/// '111' unused; every 3-bit code round-trips.
+#[test]
+fn spec_table_3_28_modulation_codes() {
+    use ModulationCode::{Assigned, Reserved, Unused};
+    for (code, want) in [
+        ("000", Assigned(Modulation::Dqpsk)),
+        ("001", Assigned(Modulation::Qpsk)),
+        ("010", Assigned(Modulation::Qam16)),
+        ("011", Assigned(Modulation::Qam64)),
+        ("100", Reserved(0b100)),
+        ("101", Reserved(0b101)),
+        ("110", Reserved(0b110)),
+        ("111", Unused),
+    ] {
+        assert_eq!(ModulationCode::from_code(label(code)), want, "{code}");
+    }
+    for c in 0..=7u8 {
+        assert_eq!(ModulationCode::from_code(c).code(), c, "{c:03b}");
+        assert_eq!(
+            ModulationCode::from_code(c | 0b1000),
+            ModulationCode::from_code(c)
+        );
+    }
+    assert_eq!(TmccLayer::UNUSED.modulation, Unused);
+}
+
+/// Table 3-29: coding-rate codes '000'–'100', '101'–'110' reserved, '111'
+/// unused; every 3-bit code round-trips.
+#[test]
+fn spec_table_3_29_code_rate_codes() {
+    use RateCode::{Assigned, Reserved, Unused};
+    for (code, want) in [
+        ("000", Assigned(CodeRate::R1_2)),
+        ("001", Assigned(CodeRate::R2_3)),
+        ("010", Assigned(CodeRate::R3_4)),
+        ("011", Assigned(CodeRate::R5_6)),
+        ("100", Assigned(CodeRate::R7_8)),
+        ("101", Reserved(0b101)),
+        ("110", Reserved(0b110)),
+        ("111", Unused),
+    ] {
+        assert_eq!(RateCode::from_code(label(code)), want, "{code}");
+    }
+    for c in 0..=7u8 {
+        assert_eq!(RateCode::from_code(c).code(), c, "{c:03b}");
+        assert_eq!(RateCode::from_code(c | 0b1000), RateCode::from_code(c));
+    }
+    assert_eq!(TmccLayer::UNUSED.code_rate, Unused);
+}
+
+/// Table 3-30: time-interleaving codes '000'–'011' are the Table 3-12
+/// indices, '100' "not used" (terrestrial sound), '101'–'110' reserved,
+/// '111' unused; every 3-bit code round-trips.
+#[test]
+fn spec_table_3_30_interleave_codes() {
+    use InterleaveCode::{Assigned, Reserved, Unused};
+    for (code, want) in [
+        ("000", Assigned(TimeInterleave::K0)),
+        ("001", Assigned(TimeInterleave::K1)),
+        ("010", Assigned(TimeInterleave::K2)),
+        ("011", Assigned(TimeInterleave::K3)),
+        ("100", Reserved(0b100)),
+        ("101", Reserved(0b101)),
+        ("110", Reserved(0b110)),
+        ("111", Unused),
+    ] {
+        assert_eq!(InterleaveCode::from_code(label(code)), want, "{code}");
+    }
+    // The "Meaning (value I)" column is Table 3-12 / Table 3-2.
+    for (t, i) in TimeInterleave::ALL
+        .iter()
+        .zip([[0, 0, 0], [4, 2, 1], [8, 4, 2], [16, 8, 4]])
+    {
+        for (mode, want) in MODES.iter().zip(i) {
+            assert_eq!(t.length(*mode), want, "{t:?} {mode:?}");
+        }
+    }
+    for c in 0..=7u8 {
+        assert_eq!(InterleaveCode::from_code(c).code(), c, "{c:03b}");
+        assert_eq!(
+            InterleaveCode::from_code(c | 0b1000),
+            InterleaveCode::from_code(c)
+        );
+    }
+    assert_eq!(TmccLayer::UNUSED.interleave, Unused);
+}
+
+/// Table 3-31: segment-count codes '0001'–'1101' = 1..=13 segments,
+/// '0000' and '1110' reserved, '1111' unused; every 4-bit code round-trips.
+#[test]
+fn spec_table_3_31_segment_codes() {
+    use SegmentsCode::{Reserved, Segments, Unused};
+    assert_eq!(SegmentsCode::from_code(label("0000")), Reserved(0b0000));
+    for n in 1..=13u8 {
+        assert_eq!(SegmentsCode::from_code(n), Segments(n), "{n:04b}");
+    }
+    assert_eq!(SegmentsCode::from_code(label("1101")), Segments(13));
+    assert_eq!(SegmentsCode::from_code(label("1110")), Reserved(0b1110));
+    assert_eq!(SegmentsCode::from_code(label("1111")), Unused);
+    for c in 0..=15u8 {
+        assert_eq!(SegmentsCode::from_code(c).code(), c, "{c:04b}");
+        assert_eq!(
+            SegmentsCode::from_code(c | 0b1_0000),
+            SegmentsCode::from_code(c)
+        );
+    }
+    assert_eq!(TmccLayer::UNUSED.segments, Unused);
+    assert!(TmccLayer::UNUSED.is_unused());
+}
+
+/// Tables 3-28..3-31 in `TmccLayer::config`: the unused layer is `None`,
+/// a reserved code in any field is an `Error::Tmcc` naming the field, and
+/// a configured layer round-trips through its codes.
+#[test]
+fn spec_tables_3_28_to_3_31_layer_config() {
+    let a = LayerConfig {
+        segments: 12,
+        modulation: Modulation::Qam64,
+        code_rate: CodeRate::R3_4,
+        time_interleave: TimeInterleave::K2,
+    };
+    let coded = TmccLayer::from_config(&a);
+    assert_eq!(coded.config().unwrap(), Some(a));
+    assert_eq!(TmccLayer::UNUSED.config().unwrap(), None);
+    let reserved = [
+        (
+            TmccLayer {
+                modulation: ModulationCode::Reserved(0b101),
+                ..coded
+            },
+            "modulation",
+        ),
+        (
+            TmccLayer {
+                code_rate: RateCode::Reserved(0b110),
+                ..coded
+            },
+            "code-rate",
+        ),
+        (
+            TmccLayer {
+                interleave: InterleaveCode::Reserved(0b100),
+                ..coded
+            },
+            "interleave",
+        ),
+        (
+            TmccLayer {
+                segments: SegmentsCode::Reserved(0b1110),
+                ..coded
+            },
+            "segment count",
+        ),
+        (
+            TmccLayer {
+                segments: SegmentsCode::Unused,
+                ..coded
+            },
+            "segment count",
+        ),
+    ];
+    for (layer, field) in reserved {
+        let err = layer.config().unwrap_err().to_string();
+        assert!(err.contains(field), "{field}: {err}");
+    }
 }
 
 /// §3.15.6.9: parity of the all-zero word is zero; information "…0001"

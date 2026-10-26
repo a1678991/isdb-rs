@@ -204,6 +204,30 @@ still needs a real-world capture or receiver check.
   all 1.  ("the content of this flag is set to '1' if there is no next
   information" is available as `TmccParams::NONE`.)
 
+## tmcc: Table 3-30 code '100' and the unused-layer test
+- Spec: ARIB STD-B31 v2.2 §3.15.6.5–3.15.6.8, Tables 3-28..3-31.
+- Text: Table 3-30 lists "100 — Not used", "101–110 — Reserved", "111 —
+  Unused hierarchical layer"; §3.15.6.7 adds that "100" is "assigned to
+  the use of digital terrestrial sound broadcasting system and are not
+  used in this system". Tables 3-28/3-29/3-31 have only "Reserved" and
+  "Unused hierarchical layer" rows. Each clause says the field is all
+  ones "for an unused hierarchical layer, or when there is no next
+  information".
+- Interpretation: '100' of Table 3-30 is `InterleaveCode::Reserved(0b100)`
+  (one variant for every code this system does not assign, so the TMCC
+  word stays lossless; the sound-broadcasting meaning is documented on
+  the variant, not modelled). A layer is "unused" when all four fields are
+  all ones (`TmccLayer::UNUSED`, `is_unused`); `TmccLayer::config` decides
+  on the modulation field alone ('111' → `None`), so a word with '111'
+  modulation and a non-'111' other field is treated as unused, while a
+  '111' rate / interleave / segment code under an assigned modulation is
+  an error. The tables do not say which of these mixed words a receiver
+  should accept.
+- Confirmation: the two broadcast words of `tests/broadcast.rs` decode to
+  the named variants (`spec_table_3_28_…`–`spec_table_3_31_…`,
+  `broadcast_words_decode_to_the_broadcast_configuration`); the mixed
+  words have not been seen off air (status: pending real-world check).
+
 ## dsc: difference-set code bit order (AMBIGUOUS)
 - Text: "B20 to B121 … are error-correction coded by means of the shortened
   code (184,102) of the difference-set cyclic code (273,191)", g(x) given.
