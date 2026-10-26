@@ -33,38 +33,152 @@ pub const NULL_TAIL: usize = 11_330;
 /// TMCC data bits after BCH: 9 422 + 192.
 pub const DATA_BITS: usize = TMCC_INFO_BITS + isdb_fec::bch::PARITY;
 
+/// Modulation-scheme field of a transmission mode (Table 3.11-1), 4 bits.
+///
+/// A lossless coded enum: the five assigned codes carry a [`Modulation`],
+/// `1111` is "No scheme allocated" (the value of an unused mode, §3.11
+/// (2)), and `0000` / `0110`–`1110` are reserved and kept as received so
+/// the TMCC word round-trips bit-exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModulationCode {
+    /// `0001` π/2-shift BPSK … `0101` 32APSK.
+    Assigned(Modulation),
+    /// `1111`: no scheme allocated.
+    Unused,
+    /// `0000`, `0110`–`1110`: reserved; the 4-bit code as received.
+    Reserved(u8),
+}
+
+impl ModulationCode {
+    /// From the 4-bit field (higher bits are masked off).
+    pub const fn from_code(c: u8) -> Self {
+        let c = c & 0b1111;
+        match Modulation::from_code(c) {
+            Some(m) => Self::Assigned(m),
+            None if c == 0b1111 => Self::Unused,
+            None => Self::Reserved(c),
+        }
+    }
+    /// The 4-bit field.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Assigned(m) => m.code(),
+            Self::Unused => 0b1111,
+            Self::Reserved(c) => c & 0b1111,
+        }
+    }
+    /// The modulation, if the code is assigned.
+    pub const fn modulation(self) -> Option<Modulation> {
+        match self {
+            Self::Assigned(m) => Some(m),
+            Self::Unused | Self::Reserved(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ModulationCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Assigned(m) => f.write_str(m.name()),
+            Self::Unused => f.write_str("none (1111)"),
+            Self::Reserved(c) => write!(f, "reserved ({c:04b})"),
+        }
+    }
+}
+
+/// Inner-coding-rate field of a transmission mode (Table 3.11-2), 4 bits.
+///
+/// A lossless coded enum: `0001`–`1011` carry a [`CodeRate`], `1111` is
+/// "No scheme allocated", and `0000` / `1100`–`1110` are reserved and kept
+/// as received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RateCode {
+    /// `0001` 41/120 … `1011` 109/120, in the order of Table 3.4-2.
+    Assigned(CodeRate),
+    /// `1111`: no scheme allocated.
+    Unused,
+    /// `0000`, `1100`–`1110`: reserved; the 4-bit code as received.
+    Reserved(u8),
+}
+
+impl RateCode {
+    /// From the 4-bit field (higher bits are masked off), read per B44
+    /// v2.1 Table 3.11-2: `0001` = 41/120 … `1011` = 109/120 in table
+    /// order. The table prints 101/120 twice, at `1001` and `1010`; `1010`
+    /// is read as 105/120, the only rate missing (SPEC-NOTES "TMCC
+    /// code-rate table"; [`CodeRate::from_code`]).
+    pub fn from_code(c: u8) -> Self {
+        let c = c & 0b1111;
+        match CodeRate::from_code(c) {
+            Some(r) => Self::Assigned(r),
+            None if c == 0b1111 => Self::Unused,
+            None => Self::Reserved(c),
+        }
+    }
+    /// The 4-bit field.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Assigned(r) => r.code(),
+            Self::Unused => 0b1111,
+            Self::Reserved(c) => c & 0b1111,
+        }
+    }
+    /// The code rate, if the code is assigned.
+    pub const fn rate(self) -> Option<CodeRate> {
+        match self {
+            Self::Assigned(r) => Some(r),
+            Self::Unused | Self::Reserved(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for RateCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Assigned(r) => write!(f, "{r}"),
+            Self::Unused => f.write_str("none (1111)"),
+            Self::Reserved(c) => write!(f, "reserved ({c:04b})"),
+        }
+    }
+}
+
 /// One transmission mode (Fig. 3.11-2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mode {
-    /// Raw 4-bit modulation code (Table 3.11-1); 1111 = unused.
-    pub modulation_code: u8,
-    /// Raw 4-bit code-rate code (Table 3.11-2).
-    pub rate_code: u8,
+    /// Modulation scheme (Table 3.11-1).
+    pub modulation_code: ModulationCode,
+    /// Inner coding rate (Table 3.11-2).
+    pub rate_code: RateCode,
     /// Slots allocated, dummies included (a multiple of 5).
     pub slots: u8,
-    /// Satellite output back-off, 0.1 dB units.
+    /// Satellite output back-off, 0.1 dB units (Table 3.11-3).
     pub obo: u8,
 }
 
 impl Mode {
     /// An unused mode: 1111 / 1111 / 0 / 0 (§3.11 (2)).
     pub const UNUSED: Self = Self {
-        modulation_code: 0b1111,
-        rate_code: 0b1111,
+        modulation_code: ModulationCode::Unused,
+        rate_code: RateCode::Unused,
         slots: 0,
         obo: 0,
     };
     /// Modulation, if the code is assigned.
-    pub fn modulation(&self) -> Option<Modulation> {
-        Modulation::from_code(self.modulation_code)
+    pub const fn modulation(&self) -> Option<Modulation> {
+        self.modulation_code.modulation()
     }
     /// Code rate, if the code is assigned.
-    pub fn rate(&self) -> Option<CodeRate> {
-        CodeRate::from_code(self.rate_code)
+    pub const fn rate(&self) -> Option<CodeRate> {
+        self.rate_code.rate()
     }
-    /// Whether this mode carries slots.
-    pub fn is_used(&self) -> bool {
-        self.slots > 0 && self.modulation().is_some() && self.rate().is_some()
+    /// Whether this mode carries slots: an assigned modulation and rate
+    /// with a non-zero slot count.
+    pub const fn is_used(&self) -> bool {
+        self.slots > 0
+            && matches!(
+                (self.modulation_code, self.rate_code),
+                (ModulationCode::Assigned(_), RateCode::Assigned(_))
+            )
     }
 }
 
@@ -86,8 +200,8 @@ pub struct TmccInfo {
     pub change: u8,
     /// Transmission modes 1…8.
     pub modes: [Mode; 8],
-    /// Stream type per relative stream (Table 3.11-4: 1 TS, 2 TLV, FF none).
-    pub stream_type: [u8; 16],
+    /// Stream type per relative stream #0…#15 (Table 3.11-4).
+    pub stream_type: [StreamType; 16],
     /// Packet format per relative stream.
     pub packet_format: [PacketFormat; 16],
     /// (top, last) pointer per slot #1…#120; 0xFFFF = none.
@@ -109,10 +223,53 @@ pub struct TmccInfo {
     pub extension_all_ones: bool,
 }
 
-/// Stream type: MPEG-2 TS.
-pub const STREAM_TS: u8 = 0x01;
-/// Stream type: TLV.
-pub const STREAM_TLV: u8 = 0x02;
+/// Stream type of a relative stream (Table 3.11-4), 8 bits.
+///
+/// A lossless coded enum: `0x01` TS, `0x02` TLV, `0xFF` "No type
+/// allocated", and `0x00` / `0x03`–`0xFE` reserved and kept as received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StreamType {
+    /// `00000001`: MPEG-2 TS.
+    Ts,
+    /// `00000010`: TLV.
+    Tlv,
+    /// `11111111`: no type allocated.
+    None,
+    /// `00000000`, `00000011`–`11111110`: reserved; the code as received.
+    Reserved(u8),
+}
+
+impl StreamType {
+    /// From the 8-bit field.
+    pub const fn from_code(c: u8) -> Self {
+        match c {
+            0x01 => Self::Ts,
+            0x02 => Self::Tlv,
+            0xFF => Self::None,
+            c => Self::Reserved(c),
+        }
+    }
+    /// The 8-bit field.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Ts => 0x01,
+            Self::Tlv => 0x02,
+            Self::None => 0xFF,
+            Self::Reserved(c) => c,
+        }
+    }
+}
+
+impl std::fmt::Display for StreamType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ts => f.write_str("TS"),
+            Self::Tlv => f.write_str("TLV"),
+            Self::None => f.write_str("none (0xff)"),
+            Self::Reserved(c) => write!(f, "reserved ({c:#04x})"),
+        }
+    }
+}
 
 struct Reader<'a> {
     b: &'a [u8],
@@ -143,12 +300,12 @@ impl TmccInfo {
         let mut r = Reader { b: bits, pos: 0 };
         let change = r.take(8) as u8;
         let modes = std::array::from_fn(|_| Mode {
-            modulation_code: r.take(4) as u8,
-            rate_code: r.take(4) as u8,
+            modulation_code: ModulationCode::from_code(r.take(4) as u8),
+            rate_code: RateCode::from_code(r.take(4) as u8),
             slots: r.take(8) as u8,
             obo: r.take(8) as u8,
         });
-        let stream_type = std::array::from_fn(|_| r.take(8) as u8);
+        let stream_type = std::array::from_fn(|_| StreamType::from_code(r.take(8) as u8));
         let lengths: [u16; 16] = std::array::from_fn(|_| r.take(16) as u16);
         let sync_bits: [u8; 16] = std::array::from_fn(|_| r.take(8) as u8);
         let syncs: [u32; 16] = std::array::from_fn(|_| r.take(32));
@@ -188,13 +345,13 @@ impl TmccInfo {
         let mut o = Vec::with_capacity(TMCC_INFO_BITS);
         put(&mut o, self.change.into(), 8);
         for m in &self.modes {
-            put(&mut o, m.modulation_code.into(), 4);
-            put(&mut o, m.rate_code.into(), 4);
+            put(&mut o, m.modulation_code.code().into(), 4);
+            put(&mut o, m.rate_code.code().into(), 4);
             put(&mut o, m.slots.into(), 8);
             put(&mut o, m.obo.into(), 8);
         }
         for &t in &self.stream_type {
-            put(&mut o, t.into(), 8);
+            put(&mut o, t.code().into(), 8);
         }
         for f in &self.packet_format {
             put(&mut o, f.length.into(), 16);
@@ -276,13 +433,13 @@ pub(crate) mod tests {
     pub(crate) fn sample() -> TmccInfo {
         let mut modes = [Mode::UNUSED; 8];
         modes[0] = Mode {
-            modulation_code: Modulation::Apsk16.code(),
-            rate_code: CodeRate::new(93).unwrap().code(),
+            modulation_code: ModulationCode::Assigned(Modulation::Apsk16),
+            rate_code: RateCode::Assigned(CodeRate::new(93).unwrap()),
             slots: 120,
             obo: 0,
         };
-        let mut stream_type = [0xFF; 16];
-        stream_type[0] = STREAM_TLV;
+        let mut stream_type = [StreamType::None; 16];
+        stream_type[0] = StreamType::Tlv;
         let mut stream_id = [0xFFFF; 16];
         stream_id[0] = 0x0001;
         TmccInfo {
@@ -321,5 +478,104 @@ pub(crate) mod tests {
     fn spec_fig_3_2_5_signal_length() {
         let s = encode(&sample());
         assert_eq!(s.len(), crate::params::TMCC_SIGNAL_BITS);
+    }
+
+    /// Table 3.11-1: every 4-bit code round-trips; 0001–0101 are the five
+    /// modulations in order, 1111 is "no scheme allocated", the rest are
+    /// reserved.
+    #[test]
+    fn spec_table_3_11_1_modulation_codes() {
+        for c in 0..=0b1111u8 {
+            assert_eq!(ModulationCode::from_code(c).code(), c, "{c:04b}");
+        }
+        let assigned = [
+            (0b0001, Modulation::Bpsk),
+            (0b0010, Modulation::Qpsk),
+            (0b0011, Modulation::Psk8),
+            (0b0100, Modulation::Apsk16),
+            (0b0101, Modulation::Apsk32),
+        ];
+        for (c, m) in assigned {
+            assert_eq!(ModulationCode::from_code(c), ModulationCode::Assigned(m));
+            assert_eq!(ModulationCode::Assigned(m).code(), c);
+        }
+        assert_eq!(ModulationCode::from_code(0b1111), ModulationCode::Unused);
+        assert_eq!(
+            ModulationCode::from_code(0b0000),
+            ModulationCode::Reserved(0b0000)
+        );
+        for c in 0b0110..=0b1110u8 {
+            assert_eq!(ModulationCode::from_code(c), ModulationCode::Reserved(c));
+        }
+        // the field is 4 bits: higher bits are masked
+        assert_eq!(ModulationCode::from_code(0xF4).code(), 0b0100);
+        assert_eq!(ModulationCode::Reserved(0xF6).code(), 0b0110);
+    }
+
+    /// Table 3.11-2: every 4-bit code round-trips; 0001–1011 are the
+    /// eleven rates of Table 3.4-2 in order, so 1010 is 105/120 (the
+    /// standard prints 101/120 twice; SPEC-NOTES "TMCC code-rate table").
+    #[test]
+    fn spec_table_3_11_2_rate_codes() {
+        for c in 0..=0b1111u8 {
+            assert_eq!(RateCode::from_code(c).code(), c, "{c:04b}");
+        }
+        for (i, r) in crate::params::RATES.into_iter().enumerate() {
+            let c = u8::try_from(i).unwrap() + 1;
+            let rate = CodeRate::new(r).unwrap();
+            assert_eq!(RateCode::from_code(c), RateCode::Assigned(rate), "{c:04b}");
+            assert_eq!(RateCode::Assigned(rate).code(), c);
+        }
+        assert_eq!(
+            RateCode::from_code(0b1010).rate().map(CodeRate::numerator),
+            Some(105)
+        );
+        assert_eq!(RateCode::from_code(0b1111), RateCode::Unused);
+        assert_eq!(RateCode::from_code(0b0000), RateCode::Reserved(0b0000));
+        for c in 0b1100..=0b1110u8 {
+            assert_eq!(RateCode::from_code(c), RateCode::Reserved(c));
+        }
+        assert_eq!(RateCode::from_code(0xF7).code(), 0b0111);
+        assert_eq!(RateCode::Reserved(0xFC).code(), 0b1100);
+    }
+
+    /// Table 3.11-4: every 8-bit code round-trips; 0x01 TS, 0x02 TLV,
+    /// 0xFF "no type allocated", the rest reserved.
+    #[test]
+    fn spec_table_3_11_4_stream_types() {
+        for c in 0..=0xFFu8 {
+            assert_eq!(StreamType::from_code(c).code(), c, "{c:#04x}");
+        }
+        assert_eq!(StreamType::from_code(0x01), StreamType::Ts);
+        assert_eq!(StreamType::from_code(0x02), StreamType::Tlv);
+        assert_eq!(StreamType::from_code(0xFF), StreamType::None);
+        assert_eq!(StreamType::from_code(0x00), StreamType::Reserved(0x00));
+        for c in 0x03..=0xFEu8 {
+            assert_eq!(StreamType::from_code(c), StreamType::Reserved(c));
+        }
+    }
+
+    /// A reserved modulation or rate code, or an unused one with slots,
+    /// is not a used mode; the word still round-trips.
+    #[test]
+    fn reserved_codes_are_kept_and_not_used() {
+        let mut t = sample();
+        t.modes[1] = Mode {
+            modulation_code: ModulationCode::Reserved(0b0110),
+            rate_code: RateCode::Reserved(0b1100),
+            slots: 5,
+            obo: 1,
+        };
+        t.stream_type[1] = StreamType::Reserved(0x7E);
+        assert!(!t.modes[1].is_used());
+        assert!(!t.allocation_ok());
+        assert_eq!(TmccInfo::parse(&t.bits()), t);
+        assert!(
+            !Mode {
+                slots: 5,
+                ..Mode::UNUSED
+            }
+            .is_used()
+        );
     }
 }

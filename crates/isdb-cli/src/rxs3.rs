@@ -248,9 +248,9 @@ impl Stats {
                     "slots": m.slots,
                     "obo_db": f64::from(m.obo) / 10.0,
                 })).collect::<Vec<_>>(),
-                "streams": (0..16).filter(|&k| t.stream_type[k] != 0xFF).map(|k| json!({
+                "streams": (0..16).filter(|&k| t.stream_type[k] != isdbs3_core::StreamType::None).map(|k| json!({
                     "relative": k,
-                    "type": t.stream_type[k],
+                    "type": t.stream_type[k].code(),
                     "id": t.stream_id[k],
                     "slots": t.slot_stream.iter().filter(|&&s| usize::from(s) == k).count(),
                 })).collect::<Vec<_>>(),

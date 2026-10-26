@@ -442,6 +442,20 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
   `None`, a reserved code is `Error::Tmcc` as before. Table 3-30 '100'
   ("not used", terrestrial sound) is `InterleaveCode::Reserved(0b100)`.
   Second item of `docs/plans/type-safety.md`.
+- `isdbs3-core`: the TMCC code fields of ARIB STD-B44 §3.11 are lossless
+  coded enums instead of raw integers: `Mode.modulation_code:
+  ModulationCode { Assigned(Modulation), Unused, Reserved(u8) }` (Table
+  3.11-1), `Mode.rate_code: RateCode { Assigned(CodeRate), Unused,
+  Reserved(u8) }` (Table 3.11-2; `1010` still reads as 105/120 per
+  SPEC-NOTES "TMCC code-rate table") and `TmccInfo.stream_type:
+  [StreamType; 16]` with `StreamType { Ts, Tlv, None, Reserved(u8) }`
+  (Table 3.11-4), each with a total `from_code()` (masked to the field
+  width) and its inverse `code()`, so the TMCC word still round-trips
+  bit-exactly. `Mode::modulation()` / `rate()` / `is_used()` are
+  `const` pattern matches; the `STREAM_TS` / `STREAM_TLV` constants are
+  gone; `isdbs3_phy::rx::RxSlot.stream_type` is a `StreamType`. The
+  `isdb iq s3tmcc` / `isdb rx` JSON keeps the numeric codes. Item D of
+  `docs/plans/type-safety.md`.
 - `isdbt-core`: `TimeInterleave` is a closed enum of the four TMCC codes
   of ARIB STD-B31 Table 3-12 (`K0`..`K3`, `code()` / `from_code()`,
   `ALL`) instead of `TimeInterleave(pub u8)`. `length(mode)` is

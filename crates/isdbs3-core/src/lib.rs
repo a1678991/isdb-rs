@@ -25,4 +25,9 @@ pub mod slots;
 pub mod tmcc;
 
 pub use params::{CodeRate, Modulation};
-pub use tmcc::TmccInfo;
+pub use tmcc::{Mode, ModulationCode, RateCode, StreamType, TmccInfo};
+
+// Compile the README's code blocks as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

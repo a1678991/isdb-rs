@@ -1,7 +1,9 @@
 //! Property tests of the ISDB-S3 codecs.
 
 use isdbs3_core::params::{CodeRate, Modulation, SLOTS};
-use isdbs3_core::tmcc::{Mode, PacketFormat, TmccInfo, disperse};
+use isdbs3_core::tmcc::{
+    Mode, ModulationCode, PacketFormat, RateCode, StreamType, TmccInfo, disperse,
+};
 use proptest::prelude::*;
 
 fn info() -> impl Strategy<Value = TmccInfo> {
@@ -19,15 +21,15 @@ fn info() -> impl Strategy<Value = TmccInfo> {
         .prop_map(|(change, m, r, obo, ids, ptr, rel, ews, up)| {
             let mut modes = [Mode::UNUSED; 8];
             modes[0] = Mode {
-                modulation_code: m.code(),
-                rate_code: CodeRate::new(r).unwrap().code(),
+                modulation_code: ModulationCode::Assigned(m),
+                rate_code: RateCode::Assigned(CodeRate::new(r).unwrap()),
                 slots: 120,
                 obo,
             };
             TmccInfo {
                 change,
                 modes,
-                stream_type: [isdbs3_core::tmcc::STREAM_TLV; 16],
+                stream_type: [StreamType::Tlv; 16],
                 packet_format: [PacketFormat::default(); 16],
                 pointers: ptr.try_into().unwrap(),
                 slot_stream: rel.try_into().unwrap(),

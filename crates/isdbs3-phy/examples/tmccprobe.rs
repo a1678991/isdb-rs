@@ -4,6 +4,7 @@
 //! cargo run --release -p isdbs3-phy --example tmccprobe -- REC
 
 use isdb_iq::Recording;
+use isdbs3_core::tmcc::{ModulationCode, StreamType};
 use isdbs3_phy::frontend::{Trim, symbols};
 use isdbs3_phy::sync::synchronise;
 use isdbs3_phy::tmcc::{decode, llrs};
@@ -53,24 +54,27 @@ fn main() {
                     t.extension_all_ones
                 );
                 for (i, m) in t.modes.iter().enumerate() {
-                    if m.slots > 0 || m.modulation_code != 0xF {
+                    if m.slots > 0 || m.modulation_code != ModulationCode::Unused {
                         println!(
-                            "  mode {}: mod {:04b} ({:?}) rate {:04b} ({:?}) slots {} obo {:.1} dB",
+                            "  mode {}: mod {:04b} ({}) rate {:04b} ({}) slots {} obo {:.1} dB",
                             i + 1,
+                            m.modulation_code.code(),
                             m.modulation_code,
-                            m.modulation().map(|m| m.name()),
+                            m.rate_code.code(),
                             m.rate_code,
-                            m.rate().map(|r| r.to_string()),
                             m.slots,
                             f64::from(m.obo) / 10.0
                         );
                     }
                 }
                 for k in 0..16 {
-                    if k < 4 || t.stream_type[k] != 0xFF || t.stream_id[k] != 0xFFFF {
+                    if k < 4 || t.stream_type[k] != StreamType::None || t.stream_id[k] != 0xFFFF {
                         println!(
-                            "  rel stream {k}: type {:#04x} id {:#06x} format {:?}",
-                            t.stream_type[k], t.stream_id[k], t.packet_format[k]
+                            "  rel stream {k}: type {:#04x} ({}) id {:#06x} format {:?}",
+                            t.stream_type[k].code(),
+                            t.stream_type[k],
+                            t.stream_id[k],
+                            t.packet_format[k]
                         );
                     }
                 }
