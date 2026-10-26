@@ -470,6 +470,30 @@ for BS14 by the TLV-NIT of the lab's ISDB-S3 recordings (TLV stream
 0xB0E0, 11 976 820 kHz, polarization '10' = left-handed; BS7, BS11 and
 BS17 '11' = right-handed; `tools/tlv-nit-polarisation.py`).
 
+**2.0–4.0 GHz sweep (2026-10-26).** `tools/band-sweep.sh 2000000000
+4000000000 OUT.jsonl`: 42 captures of 1 Mi samples at 61.44 Msps, 56 MHz
+analog bandwidth, manual gain 30 dB (one gain, so levels compare), each
+analysed by `crates/isdb-iq/examples/sweepspec.rs` (Welch spectrum of the
+centre ±24 MHz, floor = 10th percentile of the bins, spans ≥ 6 dB above it
+that are ≥ 1 MHz wide or ≥ 15 dB strong). Checked first on ND20: one span,
+1 956.4–1 989.0 MHz, +12.5 dB. Every span found was then re-tuned 10 MHz
+off to tell signals (fixed absolute frequency) from receiver artefacts
+(fixed offset from the tuning):
+
+| Found | Re-tuned | What it is |
+|---|---|---|
+| 2 000.8–2 026.9, 2 039–2 069 MHz, 9–14 dB | — | ND22 (2 013) and ND24 (2 053), right-hand CS, already decoded |
+| 2 479.73 MHz, +19 dB, a few kHz wide | stays at 2 479.73 | a narrow carrier on the feed, not a broadcast transponder |
+| 2 826.24 MHz, +16 dB, narrow | absent, then present at 2 826.24 | an intermittent narrow tone |
+| 3 288.01 MHz, +16 dB, narrow | absent twice | a transient |
+| pairs at ±23.3 MHz of every step from 3.3 GHz | move with the tuning | the analog filter's band edge, visible where the floor is lowest |
+
+**No wideband carrier in 2.07–4.0 GHz**: the left-hand BS IF (2 241.66–
+2 663.62 MHz, BS14 at 2 471.82 MHz) and the left-hand 110° CS IF
+(2 766–3 206 MHz) are empty on this feed. The floor falls from −73 to
+−93 dBFS across the band (the AD9361's gain and the cable's loss with
+frequency).
+
 **Capture length and contiguity.** One libiio buffer holds at most
 16 515 072 samples (63 MiB; 16 531 456 fail with `ENOMEM` in iiod, with
 1 or 4 kernel blocks), 282 ms at 57.72 Msps; Tezuka's maia-sdr recorder
