@@ -64,7 +64,7 @@ fn main() -> Result<(), FecError> {
         segments: 1,
         modulation: Modulation::Qpsk,
         code_rate: CodeRate::R1_2,
-        time_interleave: TimeInterleave(0),
+        time_interleave: TimeInterleave::K0,
     };
     let mut enc = LayerEncoder::new(Mode::M1, &layer);
     let mut dec = LayerDecoder::new(Mode::M1, &layer);

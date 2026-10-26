@@ -8,18 +8,18 @@ use isdbt_core::{
 use isdbt_ofdm::{C32, DemodConfig};
 use isdbt_phy::{Packet, PipelinedReceiver, Receiver, RxFrame, Transmitter, null_packet};
 
-fn params(mode: Mode, ti: u8) -> Params {
+fn params(mode: Mode, ti: TimeInterleave) -> Params {
     let a = LayerConfig {
         segments: 1,
         modulation: Modulation::Qpsk,
         code_rate: CodeRate::R2_3,
-        time_interleave: TimeInterleave(ti),
+        time_interleave: ti,
     };
     let b = LayerConfig {
         segments: 12,
         modulation: Modulation::Qam16,
         code_rate: CodeRate::R1_2,
-        time_interleave: TimeInterleave(ti),
+        time_interleave: ti,
     };
     Params::new(mode, GuardInterval::G1_8, true, [Some(a), Some(b), None]).unwrap()
 }
@@ -80,7 +80,11 @@ fn non_null(frames: &[RxFrame], l: usize) -> Vec<Packet> {
 
 #[test]
 fn lead_and_flush_deliver_every_packet() {
-    for (mode, ti) in [(Mode::M1, 3), (Mode::M3, 2), (Mode::M3, 0)] {
+    for (mode, ti) in [
+        (Mode::M1, TimeInterleave::K3),
+        (Mode::M3, TimeInterleave::K2),
+        (Mode::M3, TimeInterleave::K0),
+    ] {
         let p = params(mode, ti);
         let (iq, sent) = transmit(&p, true, 3);
         let mut rx = Receiver::new(DemodConfig::default());
@@ -95,7 +99,7 @@ fn lead_and_flush_deliver_every_packet() {
 
 #[test]
 fn preroll_removes_fill_peaks() {
-    let p = params(Mode::M3, 2);
+    let p = params(Mode::M3, TimeInterleave::K2);
     let peak = |iq: &[C32]| iq.iter().map(|c| c.norm()).fold(0f32, f32::max);
     let rms = |iq: &[C32]| (iq.iter().map(|c| c.norm_sqr()).sum::<f32>() / iq.len() as f32).sqrt();
     let (raw, _) = transmit(&p, false, 1);
@@ -116,7 +120,7 @@ fn preroll_removes_fill_peaks() {
 
 #[test]
 fn pipelined_receiver_matches_inline() {
-    let p = params(Mode::M1, 2);
+    let p = params(Mode::M1, TimeInterleave::K2);
     let (iq, _) = transmit(&p, true, 4);
     let mut rx = Receiver::new(DemodConfig::default());
     let inline: Vec<RxFrame> = rx.push(&iq).unwrap();

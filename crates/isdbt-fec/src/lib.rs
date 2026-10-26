@@ -31,7 +31,7 @@
 //!     segments: 1,
 //!     modulation: Modulation::Qpsk,
 //!     code_rate: CodeRate::R1_2,
-//!     time_interleave: TimeInterleave(0),
+//!     time_interleave: TimeInterleave::K0,
 //! };
 //! let (mut enc, mut dec) = (LayerEncoder::new(Mode::M1, &layer), LayerDecoder::new(Mode::M1, &layer));
 //! let frame: Vec<[u8; TSP]> = (0..enc.tsps_per_frame() as u8)

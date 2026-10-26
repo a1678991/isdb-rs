@@ -37,7 +37,7 @@ fn broadcast_params() -> Params {
             segments,
             modulation,
             code_rate,
-            time_interleave: TimeInterleave(ti),
+            time_interleave: ti,
         })
     };
     Params::new(
@@ -45,8 +45,8 @@ fn broadcast_params() -> Params {
         GuardInterval::G1_8,
         true,
         [
-            layer(1, Modulation::Qpsk, CodeRate::R2_3, 3),
-            layer(12, Modulation::Qam64, CodeRate::R3_4, 2),
+            layer(1, Modulation::Qpsk, CodeRate::R2_3, TimeInterleave::K3),
+            layer(12, Modulation::Qam64, CodeRate::R3_4, TimeInterleave::K2),
             None,
         ],
     )

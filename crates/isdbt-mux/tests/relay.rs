@@ -542,7 +542,7 @@ fn ends_at_eof_and_refuses_a_layer_that_is_too_small() {
             segments,
             modulation,
             code_rate,
-            time_interleave: TimeInterleave(2),
+            time_interleave: TimeInterleave::K2,
         })
     };
     let small = Params::new(

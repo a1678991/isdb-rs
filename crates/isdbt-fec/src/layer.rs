@@ -386,7 +386,7 @@ mod tests {
             segments: 2,
             modulation: Modulation::Qpsk,
             code_rate: CodeRate::R2_3,
-            time_interleave: TimeInterleave(0),
+            time_interleave: TimeInterleave::K0,
         };
         let t = l.tsp_per_frame(mode);
         let mut delay = DelayLine::new(l.delay_adjustment_tsps(mode));
@@ -449,7 +449,7 @@ mod tests {
                 segments,
                 modulation,
                 code_rate,
-                time_interleave: TimeInterleave(0),
+                time_interleave: TimeInterleave::K0,
             };
             let mut enc = LayerEncoder::new(mode, &l);
             let mut dec = LayerDecoder::new(mode, &l);
@@ -479,7 +479,7 @@ mod tests {
             segments: 1,
             modulation: Modulation::Dqpsk,
             code_rate: CodeRate::R1_2,
-            time_interleave: TimeInterleave(0),
+            time_interleave: TimeInterleave::K0,
         };
         let mut enc = LayerEncoder::new(Mode::M1, &l);
         let mut dec = LayerDecoder::new(Mode::M1, &l);

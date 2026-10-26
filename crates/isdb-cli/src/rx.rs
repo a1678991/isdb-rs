@@ -342,7 +342,7 @@ pub fn params_json(p: &Params) -> Value {
                     "segments": l.segments,
                     "modulation": format!("{:?}", l.modulation),
                     "code_rate": format!("{n}/{d}"),
-                    "time_interleave_index": l.time_interleave.0,
+                    "time_interleave_index": l.time_interleave.code(),
                     "tsp_per_frame": l.tsp_per_frame(p.mode()),
                 }),
             )

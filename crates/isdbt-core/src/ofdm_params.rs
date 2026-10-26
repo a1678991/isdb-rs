@@ -161,9 +161,7 @@ impl Params {
 
     /// Time-interleave length I of `layer` (0 if the layer is unused).
     pub fn time_interleave_length(&self, layer: crate::Layer) -> usize {
-        self.layers()[layer.index()]
-            .and_then(|l| l.time_interleave.length(self.mode()))
-            .unwrap_or(0)
+        self.layers()[layer.index()].map_or(0, |l| l.time_interleave.length(self.mode()))
     }
 
     /// Total symbol-domain latency of `layer` from bits entering the
@@ -231,8 +229,8 @@ mod tests {
     #[test]
     fn spec_table_3_12_frame_multiple() {
         for mode in [Mode::M1, Mode::M2, Mode::M3] {
-            for k in 0..4u8 {
-                let i = TimeInterleave(k).length(mode).unwrap();
+            for k in TimeInterleave::ALL {
+                let i = k.length(mode);
                 let adj = time_interleave_adjustment_symbols(mode, i).unwrap();
                 let frames = time_interleave_delayed_frames(mode, i).unwrap();
                 assert_eq!(
@@ -280,13 +278,13 @@ mod tests {
             segments: 1,
             modulation: Modulation::Dqpsk,
             code_rate: CodeRate::R1_2,
-            time_interleave: TimeInterleave(1),
+            time_interleave: TimeInterleave::K1,
         });
         let b = Some(LayerConfig {
             segments: 12,
             modulation: Modulation::Qam64,
             code_rate: CodeRate::R3_4,
-            time_interleave: TimeInterleave(2),
+            time_interleave: TimeInterleave::K2,
         });
         let p = Params::new(Mode::M3, GuardInterval::G1_8, true, [a, b, None]).unwrap();
         assert!(p.segment_is_differential(0));

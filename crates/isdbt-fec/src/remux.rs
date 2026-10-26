@@ -279,7 +279,7 @@ mod tests {
             segments,
             modulation,
             code_rate,
-            time_interleave: TimeInterleave(0),
+            time_interleave: TimeInterleave::K0,
         }
     }
 

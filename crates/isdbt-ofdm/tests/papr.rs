@@ -12,12 +12,12 @@ use isdbt_ofdm::Modulator;
 use isdbt_ofdm::ac::AcFrame;
 use isdbt_ofdm::tmcc::TmccInfo;
 
-fn layer(segments: usize, modulation: Modulation, ti: u8) -> Option<LayerConfig> {
+fn layer(segments: usize, modulation: Modulation, ti: TimeInterleave) -> Option<LayerConfig> {
     Some(LayerConfig {
         segments,
         modulation,
         code_rate: CodeRate::R3_4,
-        time_interleave: TimeInterleave(ti),
+        time_interleave: ti,
     })
 }
 
@@ -36,8 +36,8 @@ fn papr_first_frames() {
             GuardInterval::G1_8,
             true,
             [
-                layer(1, Modulation::Qpsk, 2),
-                layer(12, Modulation::Qam64, 2),
+                layer(1, Modulation::Qpsk, TimeInterleave::K2),
+                layer(12, Modulation::Qam64, TimeInterleave::K2),
                 None,
             ],
         ),
@@ -46,8 +46,8 @@ fn papr_first_frames() {
             GuardInterval::G1_8,
             true,
             [
-                layer(1, Modulation::Qpsk, 0),
-                layer(12, Modulation::Qam64, 0),
+                layer(1, Modulation::Qpsk, TimeInterleave::K0),
+                layer(12, Modulation::Qam64, TimeInterleave::K0),
                 None,
             ],
         ),
@@ -55,29 +55,29 @@ fn papr_first_frames() {
             Mode::M1,
             GuardInterval::G1_4,
             false,
-            [layer(13, Modulation::Dqpsk, 0), None, None],
+            [layer(13, Modulation::Dqpsk, TimeInterleave::K0), None, None],
         ),
         Params::new(
             Mode::M2,
             GuardInterval::G1_16,
             true,
             [
-                layer(1, Modulation::Dqpsk, 0),
-                layer(4, Modulation::Dqpsk, 1),
-                layer(8, Modulation::Qam16, 3),
+                layer(1, Modulation::Dqpsk, TimeInterleave::K0),
+                layer(4, Modulation::Dqpsk, TimeInterleave::K1),
+                layer(8, Modulation::Qam16, TimeInterleave::K3),
             ],
         ),
         Params::new(
             Mode::M3,
             GuardInterval::G1_32,
             false,
-            [layer(13, Modulation::Dqpsk, 1), None, None],
+            [layer(13, Modulation::Dqpsk, TimeInterleave::K1), None, None],
         ),
         Params::new(
             Mode::M1,
             GuardInterval::G1_8,
             false,
-            [layer(13, Modulation::Qam64, 0), None, None],
+            [layer(13, Modulation::Qam64, TimeInterleave::K0), None, None],
         ),
     ];
     for p in cases {

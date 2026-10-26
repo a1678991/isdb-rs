@@ -46,7 +46,7 @@
 //! use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
 //!
 //! let layer = |segments, modulation, code_rate| {
-//!     Some(LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave(2) })
+//!     Some(LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave::K2 })
 //! };
 //! let params = Params::new(
 //!     Mode::M3,

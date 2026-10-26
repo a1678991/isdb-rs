@@ -15,13 +15,13 @@ fn layer(
     segments: usize,
     modulation: Modulation,
     code_rate: CodeRate,
-    ti: u8,
+    ti: TimeInterleave,
 ) -> Option<LayerConfig> {
     Some(LayerConfig {
         segments,
         modulation,
         code_rate,
-        time_interleave: TimeInterleave(ti),
+        time_interleave: ti,
     })
 }
 
@@ -162,8 +162,8 @@ fn loopback_mode3_hierarchical() {
         GuardInterval::G1_8,
         true,
         [
-            layer(1, Modulation::Qpsk, CodeRate::R2_3, 2),
-            layer(12, Modulation::Qam64, CodeRate::R3_4, 2),
+            layer(1, Modulation::Qpsk, CodeRate::R2_3, TimeInterleave::K2),
+            layer(12, Modulation::Qam64, CodeRate::R3_4, TimeInterleave::K2),
             None,
         ],
     )
@@ -185,9 +185,9 @@ fn loopback_mode1_three_layers_mid_frame_start() {
         GuardInterval::G1_16,
         true,
         [
-            layer(1, Modulation::Dqpsk, CodeRate::R1_2, 1),
-            layer(4, Modulation::Dqpsk, CodeRate::R2_3, 2),
-            layer(8, Modulation::Qam16, CodeRate::R3_4, 1),
+            layer(1, Modulation::Dqpsk, CodeRate::R1_2, TimeInterleave::K1),
+            layer(4, Modulation::Dqpsk, CodeRate::R2_3, TimeInterleave::K2),
+            layer(8, Modulation::Qam16, CodeRate::R3_4, TimeInterleave::K1),
         ],
     )
     .unwrap();
@@ -207,8 +207,8 @@ fn loopback_mode2_long_interleave() {
         GuardInterval::G1_4,
         false,
         [
-            layer(2, Modulation::Qam16, CodeRate::R1_2, 1),
-            layer(11, Modulation::Qam64, CodeRate::R7_8, 3),
+            layer(2, Modulation::Qam16, CodeRate::R1_2, TimeInterleave::K1),
+            layer(11, Modulation::Qam64, CodeRate::R7_8, TimeInterleave::K3),
             None,
         ],
     )
@@ -227,7 +227,11 @@ fn loopback_mode3_all_differential() {
         Mode::M3,
         GuardInterval::G1_32,
         false,
-        [layer(13, Modulation::Dqpsk, CodeRate::R1_2, 1), None, None],
+        [
+            layer(13, Modulation::Dqpsk, CodeRate::R1_2, TimeInterleave::K1),
+            None,
+            None,
+        ],
     )
     .unwrap();
     let lat = end_to_end_frames(&p);
@@ -246,8 +250,8 @@ fn loopback_ac_seismic_and_emergency_flag() {
         GuardInterval::G1_8,
         true,
         [
-            layer(1, Modulation::Qpsk, CodeRate::R2_3, 0),
-            layer(12, Modulation::Qam64, CodeRate::R3_4, 0),
+            layer(1, Modulation::Qpsk, CodeRate::R2_3, TimeInterleave::K0),
+            layer(12, Modulation::Qam64, CodeRate::R3_4, TimeInterleave::K0),
             None,
         ],
     )
@@ -313,8 +317,8 @@ fn stress_long_echo_and_seeds() {
         GuardInterval::G1_8,
         true,
         [
-            layer(1, Modulation::Qpsk, CodeRate::R2_3, 2),
-            layer(12, Modulation::Qam64, CodeRate::R3_4, 2),
+            layer(1, Modulation::Qpsk, CodeRate::R2_3, TimeInterleave::K2),
+            layer(12, Modulation::Qam64, CodeRate::R3_4, TimeInterleave::K2),
             None,
         ],
     )
@@ -373,8 +377,8 @@ fn loopback_sampling_clock_offset() {
         GuardInterval::G1_8,
         true,
         [
-            layer(1, Modulation::Qpsk, CodeRate::R1_2, 1),
-            layer(12, Modulation::Qam16, CodeRate::R1_2, 1),
+            layer(1, Modulation::Qpsk, CodeRate::R1_2, TimeInterleave::K1),
+            layer(12, Modulation::Qam16, CodeRate::R1_2, TimeInterleave::K1),
             None,
         ],
     )
@@ -395,7 +399,11 @@ fn loopback_parameter_switch_reacquires() {
         Mode::M1,
         GuardInterval::G1_8,
         false,
-        [layer(13, Modulation::Qpsk, CodeRate::R1_2, 0), None, None],
+        [
+            layer(13, Modulation::Qpsk, CodeRate::R1_2, TimeInterleave::K0),
+            None,
+            None,
+        ],
     )
     .unwrap();
     let p2 = Params::new(
@@ -403,8 +411,8 @@ fn loopback_parameter_switch_reacquires() {
         GuardInterval::G1_8,
         true,
         [
-            layer(1, Modulation::Dqpsk, CodeRate::R1_2, 0),
-            layer(12, Modulation::Qam16, CodeRate::R2_3, 1),
+            layer(1, Modulation::Dqpsk, CodeRate::R1_2, TimeInterleave::K0),
+            layer(12, Modulation::Qam16, CodeRate::R2_3, TimeInterleave::K1),
             None,
         ],
     )
@@ -444,8 +452,8 @@ fn loopback_chunking_and_noise_lead_in() {
         GuardInterval::G1_4,
         false,
         [
-            layer(5, Modulation::Qpsk, CodeRate::R1_2, 0),
-            layer(8, Modulation::Qam64, CodeRate::R5_6, 0),
+            layer(5, Modulation::Qpsk, CodeRate::R1_2, TimeInterleave::K0),
+            layer(8, Modulation::Qam64, CodeRate::R5_6, TimeInterleave::K0),
             None,
         ],
     )
@@ -514,8 +522,8 @@ fn perf_realtime_factor() {
         GuardInterval::G1_8,
         true,
         [
-            layer(1, Modulation::Qpsk, CodeRate::R2_3, 2),
-            layer(12, Modulation::Qam64, CodeRate::R3_4, 2),
+            layer(1, Modulation::Qpsk, CodeRate::R2_3, TimeInterleave::K2),
+            layer(12, Modulation::Qam64, CodeRate::R3_4, TimeInterleave::K2),
             None,
         ],
     )
@@ -558,9 +566,9 @@ fn acquisition_helpers() {
         GuardInterval::G1_8,
         true,
         [
-            layer(1, Modulation::Qpsk, CodeRate::R1_2, 0),
-            layer(4, Modulation::Dqpsk, CodeRate::R1_2, 0),
-            layer(8, Modulation::Qam64, CodeRate::R1_2, 0),
+            layer(1, Modulation::Qpsk, CodeRate::R1_2, TimeInterleave::K0),
+            layer(4, Modulation::Dqpsk, CodeRate::R1_2, TimeInterleave::K0),
+            layer(8, Modulation::Qam64, CodeRate::R1_2, TimeInterleave::K0),
         ],
     )
     .unwrap();
@@ -615,7 +623,11 @@ fn modulator_alignment_option() {
         Mode::M1,
         GuardInterval::G1_8,
         false,
-        [layer(13, Modulation::Qpsk, CodeRate::R1_2, 0), None, None],
+        [
+            layer(13, Modulation::Qpsk, CodeRate::R1_2, TimeInterleave::K0),
+            None,
+            None,
+        ],
     )
     .unwrap();
     let aligned = Modulator::new(p.clone());

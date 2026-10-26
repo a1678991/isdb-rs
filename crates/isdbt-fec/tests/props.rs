@@ -28,7 +28,7 @@ fn lc(segments: usize, modulation: Modulation, code_rate: CodeRate) -> LayerConf
         segments,
         modulation,
         code_rate,
-        time_interleave: TimeInterleave(0),
+        time_interleave: TimeInterleave::K0,
     }
 }
 

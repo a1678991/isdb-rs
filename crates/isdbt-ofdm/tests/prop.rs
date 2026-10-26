@@ -79,9 +79,8 @@ fn arb_params(max_ti: u8) -> impl Strategy<Value = Params> {
                         segments: n,
                         modulation: md,
                         code_rate: CodeRate::R1_2,
-                        time_interleave: TimeInterleave(
-                            (rng.next_u64() % (max_ti as u64 + 1)) as u8,
-                        ),
+                        time_interleave: TimeInterleave::ALL
+                            [(rng.next_u64() % (max_ti as u64 + 1)) as usize],
                     });
                 }
                 if let Ok(p) = Params::new(mode, GUARDS[g], pr, layers) {
@@ -186,7 +185,7 @@ proptest! {
     fn prop_bit_interleave_identity(m in 0usize..4, mode in 0usize..3, n in 1usize..=13, seed in any::<u64>()) {
         let m = MODS[m];
         let mode = MODES[mode];
-        let layer = LayerConfig { segments: n, modulation: m, code_rate: CodeRate::R1_2, time_interleave: TimeInterleave(0) };
+        let layer = LayerConfig { segments: n, modulation: m, code_rate: CodeRate::R1_2, time_interleave: TimeInterleave::K0 };
         let mut mapper = CarrierMapper::new(mode, &layer);
         let per = mapper.symbols_per_ofdm_symbol();
         let s = m.bits_per_symbol();

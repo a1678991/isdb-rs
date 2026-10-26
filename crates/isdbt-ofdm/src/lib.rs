@@ -36,7 +36,7 @@
 //!     segments: 13,
 //!     modulation: Modulation::Qam16,
 //!     code_rate: CodeRate::R1_2,
-//!     time_interleave: TimeInterleave(1),
+//!     time_interleave: TimeInterleave::K1,
 //! };
 //! let params = Params::new(Mode::M1, GuardInterval::G1_8, false, [Some(a), None, None])?;
 //! let mut m = Modulator::new(params.clone());

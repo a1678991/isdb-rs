@@ -71,7 +71,7 @@ impl TmccLayer {
         Self {
             modulation,
             code_rate,
-            interleave: l.time_interleave.0,
+            interleave: l.time_interleave.code(),
             segments: l.segments as u8,
         }
     }
@@ -102,12 +102,12 @@ impl TmccLayer {
             4 => CodeRate::R7_8,
             v => return Err(Error::Tmcc(format!("reserved code-rate code {v:03b}"))),
         };
-        if self.interleave > 3 {
+        let Some(time_interleave) = TimeInterleave::from_code(self.interleave) else {
             return Err(Error::Tmcc(format!(
                 "reserved/unused interleave code {:03b}",
                 self.interleave
             )));
-        }
+        };
         if !(1..=13).contains(&self.segments) {
             return Err(Error::Tmcc(format!(
                 "reserved segment count code {:04b}",
@@ -118,7 +118,7 @@ impl TmccLayer {
             segments: self.segments as usize,
             modulation,
             code_rate,
-            time_interleave: TimeInterleave(self.interleave),
+            time_interleave,
         }))
     }
 }

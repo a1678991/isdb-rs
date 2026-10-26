@@ -152,7 +152,7 @@ fn with_layer_b(modulation: Modulation, code_rate: CodeRate) -> Params {
                 segments: 12,
                 modulation,
                 code_rate,
-                time_interleave: TimeInterleave(2),
+                time_interleave: TimeInterleave::K2,
             }),
             None,
         ],

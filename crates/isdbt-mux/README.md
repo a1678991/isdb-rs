@@ -89,7 +89,7 @@ use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params,
 
 // Mode 3, GI 1/8, partial reception: A = 1 seg QPSK 2/3, B = 12 seg 64QAM 3/4.
 let layer = |segments, modulation, code_rate| {
-    Some(LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave(2) })
+    Some(LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave::K2 })
 };
 let params = Params::new(
     Mode::M3,

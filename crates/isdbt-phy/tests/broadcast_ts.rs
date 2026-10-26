@@ -19,13 +19,13 @@ fn params() -> Params {
         segments: 1,
         modulation: Modulation::Qpsk,
         code_rate: CodeRate::R2_3,
-        time_interleave: TimeInterleave(1),
+        time_interleave: TimeInterleave::K1,
     };
     let b = LayerConfig {
         segments: 12,
         modulation: Modulation::Qam16,
         code_rate: CodeRate::R1_2,
-        time_interleave: TimeInterleave(1),
+        time_interleave: TimeInterleave::K1,
     };
     Params::new(
         Mode::M1,

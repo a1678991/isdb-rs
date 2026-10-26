@@ -123,7 +123,7 @@ fn spec_table_3_10_dqpsk() {
         segments: 1,
         modulation: Modulation::Dqpsk,
         code_rate: CodeRate::R1_2,
-        time_interleave: TimeInterleave(0),
+        time_interleave: TimeInterleave::K0,
     };
     let mut m = CarrierMapper::new(Mode::M1, &layer);
     let mut rng = common::Rng(5);
@@ -213,7 +213,7 @@ fn params(mode: Mode, pr: bool, layers: [Option<(usize, Modulation)>; 3]) -> Par
             segments,
             modulation,
             code_rate: CodeRate::R1_2,
-            time_interleave: TimeInterleave(0),
+            time_interleave: TimeInterleave::K0,
         })
     });
     Params::new(mode, GuardInterval::G1_8, pr, l).unwrap()
@@ -608,7 +608,7 @@ fn spec_frame_sample_counts() {
                         segments: 13,
                         modulation: Modulation::Qpsk,
                         code_rate: CodeRate::R1_2,
-                        time_interleave: TimeInterleave(0),
+                        time_interleave: TimeInterleave::K0,
                     }),
                     None,
                     None,

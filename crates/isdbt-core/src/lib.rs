@@ -25,7 +25,7 @@
 //! use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
 //!
 //! // Mode 3, GI 1/8, partial reception: A = 1 seg QPSK 2/3, B = 12 seg 64QAM 3/4.
-//! let ti = TimeInterleave(2);
+//! let ti = TimeInterleave::K2;
 //! let a = LayerConfig { segments: 1, modulation: Modulation::Qpsk, code_rate: CodeRate::R2_3, time_interleave: ti };
 //! let b = LayerConfig { segments: 12, modulation: Modulation::Qam64, code_rate: CodeRate::R3_4, time_interleave: ti };
 //! let p = Params::new(Mode::M3, GuardInterval::G1_8, true, [Some(a), Some(b), None]).unwrap();

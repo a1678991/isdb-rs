@@ -35,7 +35,7 @@ pub enum Mode {
 
 impl Mode {
     /// 1, 2 or 3.
-    pub fn number(self) -> u8 {
+    pub const fn number(self) -> u8 {
         match self {
             Mode::M1 => 1,
             Mode::M2 => 2,
@@ -52,7 +52,7 @@ impl Mode {
         }
     }
     /// 2^(mode-1): the scale factor between modes.
-    pub fn scale(self) -> usize {
+    pub const fn scale(self) -> usize {
         1 << (self.number() - 1)
     }
     /// Carriers per OFDM segment (Table 3-1 "Total count": 108/216/432).
@@ -174,21 +174,77 @@ impl CodeRate {
 
 /// Time-interleaving length index (Table 3-2/3-12): the TMCC code 0..3 maps
 /// to I = 0,4,8,16 (Mode 1), 0,2,4,8 (Mode 2), 0,1,2,4 (Mode 3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TimeInterleave(pub u8);
+///
+/// A closed enum: the four codes Table 3-12 assigns ('000'–'011') are the
+/// only values, so the index range is a property of the type and no
+/// `Params` constraint has to check it. The reserved codes '100'–'111'
+/// are rejected where TMCC is decoded ([`TimeInterleave::from_code`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TimeInterleave {
+    /// Code 0: no time interleaving (I = 0 in every mode).
+    K0,
+    /// Code 1: I = 4 / 2 / 1 (Mode 1 / 2 / 3).
+    K1,
+    /// Code 2: I = 8 / 4 / 2.
+    K2,
+    /// Code 3: I = 16 / 8 / 4.
+    K3,
+}
 
 impl TimeInterleave {
-    /// The length I for `mode`; `None` if the index is not 0..=3.
-    pub fn length(self, mode: Mode) -> Option<usize> {
-        if self.0 > 3 {
-            return None;
+    /// All four codes in TMCC order.
+    pub const ALL: [TimeInterleave; 4] = [
+        TimeInterleave::K0,
+        TimeInterleave::K1,
+        TimeInterleave::K2,
+        TimeInterleave::K3,
+    ];
+
+    /// The TMCC code 0..=3 (Table 3-12 "length of time interleaving").
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// From the 3-bit TMCC code; `None` for the reserved codes 4..=7
+    /// (Table 3-12 '100'–'111').
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(TimeInterleave::K0),
+            1 => Some(TimeInterleave::K1),
+            2 => Some(TimeInterleave::K2),
+            3 => Some(TimeInterleave::K3),
+            _ => None,
         }
-        let i = if self.0 == 0 {
-            0
-        } else {
-            1usize << (self.0 - 1)
+    }
+
+    /// The length I for `mode` (Table 3-2).
+    pub const fn length(self, mode: Mode) -> usize {
+        let i = match self {
+            TimeInterleave::K0 => 0,
+            TimeInterleave::K1 => 1,
+            TimeInterleave::K2 => 2,
+            TimeInterleave::K3 => 4,
         };
-        Some(i * 4 / mode.scale())
+        i * 4 / mode.scale()
+    }
+}
+
+/// The reserved TMCC codes cannot be named as a [`TimeInterleave`]; the
+/// only way in is [`TimeInterleave::from_code`], which returns `None`:
+///
+/// ```compile_fail,E0599
+/// let _ = isdbt_core::TimeInterleave::K4;
+/// ```
+///
+/// ```
+/// assert_eq!(isdbt_core::TimeInterleave::from_code(4), None);
+/// ```
+#[doc(hidden)]
+pub const _TIME_INTERLEAVE_CLOSED: () = ();
+
+impl fmt::Display for TimeInterleave {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.code())
     }
 }
 
@@ -273,10 +329,6 @@ pub enum ParamError {
     /// are numbered partial reception → differential → coherent (§3.11.2).
     #[error("invalid ISDB-T parameters: differential layer {0} after a coherent layer")]
     DifferentialAfterCoherent(Layer),
-    /// Time-interleaving length index outside 0..=3 (Table 3-12, TMCC
-    /// codes '000'–'011').
-    #[error("invalid ISDB-T parameters: layer {0} time interleave index {1} not in 0..=3")]
-    TimeInterleaveIndex(Layer, u8),
 }
 
 /// Complete validated transmission configuration (what TMCC signals).
@@ -298,8 +350,9 @@ impl Params {
     /// layers are contiguous from A; partial reception means layer A has
     /// exactly one segment; data-segment numbers are assigned partial
     /// reception → differential → coherent, so after the (optional)
-    /// partial-reception layer no DQPSK layer may follow a coherent one;
-    /// time-interleave index 0..=3.
+    /// partial-reception layer no DQPSK layer may follow a coherent one.
+    /// (The time-interleave index needs no check: [`TimeInterleave`] is a
+    /// closed enum of the four Table 3-12 codes.)
     ///
     /// # Errors
     ///
@@ -340,9 +393,6 @@ impl Params {
                 return Err(ParamError::DifferentialAfterCoherent(id));
             }
             seen_coherent |= !l.modulation.is_differential();
-        }
-        if let Some(&(id, l)) = used.iter().find(|(_, l)| l.time_interleave.0 > 3) {
-            return Err(ParamError::TimeInterleaveIndex(id, l.time_interleave.0));
         }
         Ok(Self {
             mode,
@@ -450,7 +500,7 @@ mod tests {
             segments,
             modulation,
             code_rate,
-            time_interleave: TimeInterleave(0),
+            time_interleave: TimeInterleave::K0,
         }
     }
 
@@ -541,16 +591,29 @@ mod tests {
         );
     }
 
+    /// Table 3-12: the four TMCC codes '000'–'011' round-trip through
+    /// `code()` / `from_code()`, and '100'–'111' are reserved.
+    #[test]
+    fn spec_table_3_12_time_interleave_codes() {
+        for (k, ti) in TimeInterleave::ALL.into_iter().enumerate() {
+            assert_eq!(usize::from(ti.code()), k);
+            assert_eq!(TimeInterleave::from_code(ti.code()), Some(ti));
+        }
+        for code in 4..=7u8 {
+            assert_eq!(TimeInterleave::from_code(code), None);
+        }
+    }
+
     /// Table 3-2: carriers and time-interleave lengths.
     #[test]
     fn table_3_2() {
         assert_eq!(Mode::M1.total_carriers(), 1405);
         assert_eq!(Mode::M2.total_carriers(), 2809);
         assert_eq!(Mode::M3.total_carriers(), 5617);
-        let i = |m, k| TimeInterleave(k).length(m).unwrap();
-        assert_eq!([0, 1, 2, 3].map(|k| i(Mode::M1, k)), [0, 4, 8, 16]);
-        assert_eq!([0, 1, 2, 3].map(|k| i(Mode::M2, k)), [0, 2, 4, 8]);
-        assert_eq!([0, 1, 2, 3].map(|k| i(Mode::M3, k)), [0, 1, 2, 4]);
+        let i = |m| TimeInterleave::ALL.map(|k| k.length(m));
+        assert_eq!(i(Mode::M1), [0, 4, 8, 16]);
+        assert_eq!(i(Mode::M2), [0, 2, 4, 8]);
+        assert_eq!(i(Mode::M3), [0, 1, 2, 4]);
     }
 
     #[test]
@@ -598,12 +661,6 @@ mod tests {
         assert_eq!(
             new(true, [l(2), l(11), None]),
             Err(ParamError::PartialReceptionSegments(2))
-        );
-        let mut ti = layer(13, Modulation::Qpsk, CodeRate::R1_2);
-        ti.time_interleave = TimeInterleave(4);
-        assert_eq!(
-            new(false, [Some(ti), None, None]),
-            Err(ParamError::TimeInterleaveIndex(Layer::A, 4))
         );
         let d = Some(layer(6, Modulation::Dqpsk, CodeRate::R1_2));
         assert_eq!(

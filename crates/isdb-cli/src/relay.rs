@@ -406,7 +406,7 @@ mod tests {
                 segments,
                 modulation: Modulation::Qam64,
                 code_rate: CodeRate::R3_4,
-                time_interleave: TimeInterleave(2),
+                time_interleave: TimeInterleave::K2,
             })
         };
         let p = Params::new(Mode::M3, GuardInterval::G1_8, true, [l(1), l(12), None]).unwrap();

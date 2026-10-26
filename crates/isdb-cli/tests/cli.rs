@@ -1667,7 +1667,7 @@ fn isdb_cli_layer(
         segments,
         modulation,
         code_rate,
-        time_interleave: isdbt_core::TimeInterleave(2),
+        time_interleave: isdbt_core::TimeInterleave::K2,
     })
 }
 

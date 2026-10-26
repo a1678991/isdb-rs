@@ -133,7 +133,7 @@ mod tests {
                             segments: n,
                             modulation: m,
                             code_rate: *r,
-                            time_interleave: TimeInterleave(0),
+                            time_interleave: TimeInterleave::K0,
                         };
                         assert_eq!(l.delay_adjustment_tsps(mode), coef * n - 11);
                         assert_eq!(
@@ -157,7 +157,7 @@ mod tests {
                         segments: 3,
                         modulation: m,
                         code_rate: r,
-                        time_interleave: TimeInterleave(0),
+                        time_interleave: TimeInterleave::K0,
                     };
                     let (num, den) = r.ratio();
                     assert_eq!(

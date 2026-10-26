@@ -62,16 +62,16 @@ pub fn parse_layer(s: &str) -> Result<Option<LayerConfig>> {
     let ti: u8 = f[3]
         .parse()
         .with_context(|| format!("layer spec {s:?}: time-interleave index"))?;
-    if ti > 3 {
+    let Some(ti) = TimeInterleave::from_code(ti) else {
         bail!("layer spec {s:?}: time-interleave index {ti} not in 0..3");
-    }
+    };
     Ok(Some(LayerConfig {
         segments: f[0]
             .parse()
             .with_context(|| format!("layer spec {s:?}: segments"))?,
         modulation,
         code_rate,
-        time_interleave: TimeInterleave(ti),
+        time_interleave: ti,
     }))
 }
 
@@ -140,7 +140,7 @@ pub fn describe_layer(l: &LayerConfig, mode: Mode) -> String {
     format!(
         "{}seg {m} {n}/{d} TI{} ({} TSP/frame)",
         l.segments,
-        l.time_interleave.0,
+        l.time_interleave,
         l.tsp_per_frame(mode)
     )
 }
@@ -303,8 +303,8 @@ mod tests {
         assert!(p.partial_reception());
         let a = p.layers()[0].unwrap();
         assert_eq!(
-            (a.segments, a.modulation, a.code_rate, a.time_interleave.0),
-            (1, Modulation::Qpsk, CodeRate::R2_3, 2)
+            (a.segments, a.modulation, a.code_rate, a.time_interleave),
+            (1, Modulation::Qpsk, CodeRate::R2_3, TimeInterleave::K2)
         );
         let b = p.layers()[1].unwrap();
         assert_eq!(

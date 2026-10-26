@@ -11,9 +11,7 @@
 //! whose capacity for the stream reaches a required rate, so a
 //! "does not fit" message can name configurations that do.
 
-use isdbt_core::{
-    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave,
-};
+use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params};
 
 /// TS rate (bit/s of 188-byte packets) of one layer configuration.
 pub fn layer_config_bps(mode: Mode, guard: GuardInterval, cfg: &LayerConfig) -> f64 {
@@ -51,7 +49,7 @@ pub fn layer_spec(cfg: &LayerConfig) -> String {
         Modulation::Qam64 => "64qam",
     };
     let (n, d) = cfg.code_rate.ratio();
-    format!("{},{m},{n}/{d},{}", cfg.segments, cfg.time_interleave.0)
+    format!("{},{m},{n}/{d},{}", cfg.segments, cfg.time_interleave)
 }
 
 fn guard_name(g: GuardInterval) -> String {
@@ -161,7 +159,7 @@ pub fn suggest(params: &Params, layer: Layer, need_bps: f64, max: usize) -> Vec<
                     segments: 13,
                     modulation: m,
                     code_rate: r,
-                    time_interleave: TimeInterleave(ti.0),
+                    time_interleave: ti,
                 };
                 let bps = layer_config_bps(params.mode(), g, &cfg);
                 if bps < need_bps {
@@ -228,6 +226,7 @@ pub fn over_capacity_message(params: &Params, layer: Layer, need_bps: f64, what:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use isdbt_core::TimeInterleave;
 
     fn bench() -> Params {
         let l = |segments, modulation, code_rate| {
@@ -235,7 +234,7 @@ mod tests {
                 segments,
                 modulation,
                 code_rate,
-                time_interleave: TimeInterleave(2),
+                time_interleave: TimeInterleave::K2,
             })
         };
         Params::new(
