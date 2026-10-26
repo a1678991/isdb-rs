@@ -30,8 +30,9 @@ every entry with its status.
 parameters from the spec tables, connect the baseband to a radio, record
 and survey IQ or turn it into symbols with this project's own format
 (`isdb-frontend` defines format version 1 itself; `isdb-iq`
-quotes two symbol rates; the satellite channel plans of `isdb-cli` are
-listed in [SPECS.md §1.2](SPECS.md#12-referenced-but-not-available-locally)),
+quotes two symbol rates; the satellite channel plans and the LNB LOs of
+both circular polarisations used by `isdb-cli` are listed, with their
+sources, in [SPECS.md §1.2](SPECS.md#12-referenced-but-not-available-locally)),
 or wire the crates above together (`isdbt-phy`'s
 pipeline composition has none either; its notes cover only the
 broadcasting TS).

@@ -120,7 +120,11 @@ with `iio_readdev` or demodulate live with `isdb rx --radio pluto`.
 
 **Satellite IF capture (ISDB-S, ISDB-S3) with a Pluto** (receive only).
 A BS / 110° CS dish feed (or a cable feed that carries the satellite IF)
-delivers the transponders at 1032–2071 MHz; mind that a satellite tuner
+delivers the right-hand-circular transponders (`BS1`–`BS23` odd,
+`ND2`–`ND24` even) at 1032–2071 MHz, and a feed from a right/left-hand
+LNB also the left-hand ones (`BS2`–`BS24` even, `ND1`–`ND23` odd; e.g.
+`--freq BS14`, IF 2471.82 MHz) at 2224–3224 MHz; the lab feed has no
+left-hand IF, so those channels are untested. Mind that a satellite tuner
 port may put 11–15 V DC on the cable for the LNB (use a DC block or the
 feed's own IF output). The IF rates exceed what the network streams
 (ISDB-S needs at least 39 Msps, 78 MB/s in 8 bits; a Pluto streams at

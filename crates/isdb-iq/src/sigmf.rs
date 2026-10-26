@@ -22,6 +22,8 @@
 //! | `isdb:gain` | capture | gain mode and value as the radio reported it, e.g. `AGC slow_attack, 33 dB at the end` |
 //! | `isdb:channel` | capture | the channel name the centre frequency was chosen by (`BS1`, `ND2`, `T27`; recordings made before 2026-10-25 say `bs1`, `nd2`, `ch27`), if any |
 //! | `isdb:channel_rf_hz` | capture | that channel's RF centre on air (for a satellite channel tuned at its IF) |
+//! | `isdb:lnb_lo_hz` | capture | for a satellite channel: the LNB LO its IF assumes (10 678 000 000 right-hand, 9 505 000 000 left-hand circular), so RF = IF + LO; absent in recordings made before 2026-10-26, which are all right-hand |
+//! | `isdb:polarisation` | capture | for a satellite channel: its circular polarisation, `right` (odd BS, even ND) or `left` (even BS, odd ND); absent before 2026-10-26 |
 //! | `isdb:capture_method` | capture | how the samples were taken (`libiio single buffer`, `libiio stream …`, `maia-sdr recorder IQ8bit: …`) |
 //! | `isdb:gap_before` | capture | `true`: samples between this segment and the previous one were lost (the segments were captured one after another, or a streamed capture lost samples) |
 //! | `isdb:samples_discarded` | capture | with `isdb:gap_before`: samples received around the loss but not written, because the radio reported the loss without its position (the loss itself is at least one more sample) |
@@ -39,7 +41,7 @@ pub const SIGMF_VERSION: &str = "1.2.0";
 /// Name of this project's SigMF extension namespace.
 pub const EXTENSION: &str = "isdb";
 /// Version of the `isdb` extension written in `core:extensions`.
-pub const EXTENSION_VERSION: &str = "0.2.0";
+pub const EXTENSION_VERSION: &str = "0.3.0";
 
 /// One capture segment: contiguous samples from `sample_start`.
 #[derive(Debug, Clone, PartialEq, Default)]

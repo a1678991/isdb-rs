@@ -36,7 +36,7 @@ in the same range), and see
 | `--iq PATH` | — | read baseband from a file (`-` = stdin) |
 | `--iq-format cf32\|cs8` | cf32 | file format |
 | `--radio NAME[:key=value,...]` | — | receive with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`); needs `--channel` or `--freq`. An unknown name lists the compiled-in backends |
-| `--channel T` / `--freq HZ` | — | terrestrial channel T13–T52 (a bare number N means TN) or centre frequency in Hz, within 470–710 MHz. A satellite channel (BSn, NDn) selects ISDB-S (below) |
+| `--channel T` / `--freq HZ` | — | terrestrial channel T13–T52 (a bare number N means TN) or centre frequency in Hz, within 470–710 MHz. A satellite channel (BS1–BS24, ND1–ND24) selects ISDB-S (below) |
 | `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (channels 53–62, other bands); the backend's own range still applies |
 | `--gain NAME=VALUE` | backend's | radio gain, repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF: `lna=0..40` dB in 8 dB steps (16), `vga=0..62` dB baseband VGA in 2 dB steps (20), `amp=on\|off` RF amplifier (off). Pluto: `agc=manual\|slow_attack\|fast_attack\|hybrid` (slow_attack), `gain=dB` manual gain (implies `agc=manual`; the range depends on the LO and is checked at open) |
 | `--freq-corr-ppm P` | 0 | reference-clock correction (tuning and sample clock) |
@@ -72,6 +72,17 @@ superframe (TC8PSK, QPSK or BPSK, Viterbi, de-interleaving, energy
 dispersal, RS(204,188)). A transponder carries up to 8 transport streams,
 told apart by the TS_ID the TMCC gives each slot, so the output is per
 TS_ID instead of per layer.
+
+A satellite channel is tuned at its IF, RF minus the LO of a Japanese
+dual-polarisation LNB: the right-hand-circular channels (BS1–BS23 odd,
+ND2–ND24 even) with the 10.678 GHz LO at 1032–2071 MHz, the
+left-hand-circular ones (BS2–BS24 even, ND1–ND23 odd) with the 9.505 GHz
+LO at 2224–3224 MHz (BS14, NHK BS8K: RF 11 976.82 MHz, IF 2 471.82 MHz;
+the plan is in [SPECS.md §1.2](../SPECS.md#12-referenced-but-not-available-locally)).
+A left-hand channel needs a dish and feed that deliver the left-hand IF;
+many older feeds, and the lab's cable feed (VERIFICATION.md "Satellite IF
+survey": nothing above 2.2 GHz), carry only the right-hand band. A
+frequency given with `--freq` is the IF as it is.
 
 ```sh
 isdb rx --iq bs3.sigmf-meta --out 'bs3-{ts_id}.ts'          # one file per TS: bs3-4030.ts, …

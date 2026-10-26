@@ -26,7 +26,8 @@ The SigMF fields used are those of the SigMF 1.2 core namespace
 own fields form the optional `isdb` extension, listed in the `sigmf`
 module documentation (`isdb:full_scale`, `isdb:lo_hz`,
 `isdb:rf_bandwidth_hz`, `isdb:gain`, `isdb:channel`,
-`isdb:channel_rf_hz`, `isdb:capture_method`, `isdb:gap_before`).
+`isdb:channel_rf_hz`, `isdb:lnb_lo_hz`, `isdb:polarisation`,
+`isdb:capture_method`, `isdb:gap_before`).
 
 ## Position in the stack
 

@@ -676,6 +676,14 @@ fn capture_dry_run_validates_without_a_device() {
     );
     assert!(e.contains("maia-sdr recorder at http://192.0.2.1/"), "{e}");
     assert!(e.contains("of 33554432 samples"), "{e}");
+    // A left-hand-circular channel: its IF from the 9.505 GHz LO.
+    let o = cap(&["--radio", "pluto:uri=ip:192.0.2.1", "--freq", "BS14"]);
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{e}");
+    assert!(
+        e.contains("(BS14 IF, left-hand)") && e.contains("programmed 2471820000 Hz"),
+        "{e}"
+    );
     for (extra, want) in [
         (
             &["--radio", "pluto", "--freq", "bs1", "--samples", "16515073"][..],
@@ -699,8 +707,8 @@ fn capture_dry_run_validates_without_a_device() {
             "a streamed capture needs --samples or --seconds",
         ),
         (
-            &["--radio", "pluto", "--freq", "bs2"][..],
-            "channel BS2: odd 1..23",
+            &["--radio", "pluto", "--freq", "bs25"][..],
+            "channel BS25: outside BS1..BS24",
         ),
         (
             &["--radio", "pluto", "--freq", "bs1", "--bw", "60M"][..],

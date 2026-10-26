@@ -96,8 +96,8 @@ pub struct SymbolsArgs {
     /// The radio: BACKEND[:key=value,...] (e.g. `pluto:uri=ip:192.0.2.30`).
     #[arg(long, value_name = "SPEC")]
     pub radio: DeviceSpec,
-    /// Centre frequency: Hz or a channel name (`BS1`, `ND2` at the
-    /// satellite IF, `T27`).
+    /// Centre frequency: Hz or a channel name (`BS1`..`BS24`, `ND1`..`ND24`
+    /// at the satellite IF of their polarisation, `T27`).
     #[arg(long, value_name = "HZ|CHANNEL")]
     pub freq: Freq,
     /// Sample rate (at least (1 + roll-off) × the symbol rate: 40M covers

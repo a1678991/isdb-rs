@@ -16,6 +16,20 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-cli`: the left-hand-circular BS and 110° CS channels: `BS2`..`BS24`
+  (even) and `ND1`..`ND23` (odd) are accepted by `--freq` / `--channel`
+  and tuned at the IF of the left-hand LNB LO, 9.505 GHz (MIC Ordinance
+  No. 95 of 2011, Art. 18–19; IF 2224–3224 MHz), e.g. `--freq BS14`
+  (NHK BS8K) at 2471.82 MHz; the right-hand channels keep the 10.678 GHz
+  LO. Labels read ` (BS14 IF, left-hand)`. Receiving them needs a feed
+  that carries the left-hand IF (the lab's cable feed does not).
+  `isdb capture` records `isdb:lnb_lo_hz` and `isdb:polarisation`
+  (`right` / `left`) next to `isdb:channel_rf_hz` for a satellite
+  channel (`isdb` SigMF extension 0.3.0; older recordings, without them,
+  read as before). `tools/tlv-nit-polarisation.py` lists the frequency
+  and polarisation of each satellite delivery system descriptor in a TLV
+  stream file.
+
 - `isdb-mmt` (new): the content of ISDB-S3 TLV streams per ARIB STD-B60:
   MMT-SI descriptors (16-bit tags, the length width of each descriptor's
   structure), the MPT with its assets and locations, PLT, MH-EIT, MH-SDT,

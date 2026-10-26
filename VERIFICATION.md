@@ -463,7 +463,12 @@ survey` on 2026-10-20: every BS right-hand-circular transponder (12) and
 every 110° CS transponder (12). This rung checks the capture path, the
 channel tables and which system each transponder carries; the ISDB-S
 frame sync and TMCC are in [their own section](#isdb-s-frame-sync-and-tmcc). The feed carries no left-hand-circular IF
-(2.2–3.2 GHz: nothing).
+(2.2–3.2 GHz: nothing), so the left-hand channels that `bands` now
+tabulates (BS2–BS24 even, ND1–ND23 odd, LO 9.505 GHz; SPECS.md §1.2) are
+unverified on air at their IF. Their RF and polarisation are confirmed
+for BS14 by the TLV-NIT of the lab's ISDB-S3 recordings (TLV stream
+0xB0E0, 11 976 820 kHz, polarization '10' = left-handed; BS7, BS11 and
+BS17 '11' = right-handed; `tools/tlv-nit-polarisation.py`).
 
 **Capture length and contiguity.** One libiio buffer holds at most
 16 515 072 samples (63 MiB; 16 531 456 fail with `ENOMEM` in iiod, with

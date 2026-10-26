@@ -23,8 +23,10 @@ pub struct CaptureArgs {
     #[arg(long, value_name = "SPEC")]
     pub radio: DeviceSpec,
     /// Centre frequency: Hz (`1049480000`, `1049.48M`) or a channel name:
-    /// `T13`..`T62` (terrestrial UHF), `BS1`..`BS23` (odd) and `ND2`..`ND24`
-    /// (even, 110° CS) at their satellite IF (RF − 10.678 GHz).
+    /// `T13`..`T62` (terrestrial UHF), `BS1`..`BS24` and `ND1`..`ND24`
+    /// (110° CS) at their satellite IF: RF − 10.678 GHz for the
+    /// right-hand-circular channels (odd BS, even ND), RF − 9.505 GHz for
+    /// the left-hand ones (even BS, odd ND; IF 2224–3224 MHz).
     #[arg(long, value_name = "HZ|CHANNEL")]
     pub freq: Freq,
     /// Sample rate in samples per second (`57.72M`, `61440000`). The rate
@@ -132,6 +134,10 @@ pub fn metadata(a: &CaptureArgs, caps: &[Capture]) -> Result<Meta> {
         if let Some(ch) = a.freq.channel {
             extra.insert("isdb:channel".into(), json!(ch.to_string()));
             extra.insert("isdb:channel_rf_hz".into(), json!(ch.rf_hz()?));
+            if let (Some(lo), Some(pol)) = (ch.lnb_lo_hz(), ch.polarisation()) {
+                extra.insert("isdb:lnb_lo_hz".into(), json!(lo));
+                extra.insert("isdb:polarisation".into(), json!(pol.name()));
+            }
         }
         let segment = |at: u64, gap: Option<u64>| {
             let mut extra = extra.clone();
@@ -438,7 +444,7 @@ mod tests {
         assert_eq!(a.freq.channel, None);
         for bad in [
             vec![
-                "--radio", "pluto", "--freq", "bs2", "--rate", "1M", "-o", "y",
+                "--radio", "pluto", "--freq", "bs25", "--rate", "1M", "-o", "y",
             ],
             vec![
                 "--radio", "pluto", "--freq", "bs1", "--rate", "x", "-o", "y",
@@ -493,6 +499,11 @@ mod tests {
             m.captures[0].extra["isdb:channel_rf_hz"],
             json!(12_291_000_000u64)
         );
+        assert_eq!(
+            m.captures[0].extra["isdb:lnb_lo_hz"],
+            json!(10_678_000_000u64)
+        );
+        assert_eq!(m.captures[0].extra["isdb:polarisation"], json!("right"));
         assert_eq!(m.captures[0].extra["isdb:lo_hz"], json!(1_612_999_998u64));
         assert!(!m.captures[0].extra.contains_key("isdb:gap_before"));
         assert_eq!(m.captures[1].extra["isdb:gap_before"], json!(true));
@@ -539,6 +550,29 @@ mod tests {
         assert_eq!(m.segment_ranges(10), vec![0..3, 3..10]);
         // Formats cannot mix in one file.
         assert!(metadata(&a, &[c, cap(0.0, vec![])]).is_err());
+
+        // A left-hand-circular channel records the 9.505 GHz LO, so the
+        // recording leads back to its satellite channel.
+        let a = args(&[
+            "--radio", "pluto", "--freq", "BS14", "--rate", "40M", "-o", "z",
+        ])
+        .unwrap();
+        assert_eq!(a.radio_config().unwrap().center_hz, 2_471_820_000);
+        let m = metadata(&a, &[cap(0.0, vec![])]).unwrap();
+        let x = &m.captures[0].extra;
+        assert_eq!(m.captures[0].frequency, Some(2_471_820_000.0));
+        assert_eq!(x["isdb:channel"], json!("BS14"));
+        assert_eq!(x["isdb:channel_rf_hz"], json!(11_976_820_000u64));
+        assert_eq!(x["isdb:lnb_lo_hz"], json!(9_505_000_000u64));
+        assert_eq!(x["isdb:polarisation"], json!("left"));
+        // A frequency, or a terrestrial channel, has no LNB.
+        for f in ["2471.82M", "T27"] {
+            let a = args(&["--radio", "pluto", "--freq", f, "--rate", "40M", "-o", "z"]).unwrap();
+            let m = metadata(&a, &[cap(0.0, vec![])]).unwrap();
+            let x = &m.captures[0].extra;
+            assert!(!x.contains_key("isdb:lnb_lo_hz") && !x.contains_key("isdb:polarisation"));
+            assert_eq!(x.contains_key("isdb:channel_rf_hz"), f == "T27");
+        }
     }
 
     #[test]
