@@ -38,7 +38,8 @@ meaning of the "other information" values (pending).
 |---|---|
 | `frame::{FRAME_SYMBOLS, HEADER_SYMBOLS, BURSTS, …}`, `main_symbol_position`, `burst_symbol_position` | frame geometry |
 | `frame::{W1, W2, W3, W1_CODED_TAIL, …}` | sync words |
-| `Combination` (`word`, `from_word`, `slot_unit`, `efficiency`, `puncturing`) | Table 1 / table 48 |
+| `Combination` (`word`, `from_word`, `slot_unit`, `efficiency`, `puncturing`) | the seven assigned words of Table 1 / table 48 |
+| `CombinationWord::{Assigned(Combination), Dummy, Reserved(u8)}` (`from_word`, `word`) | all 16 words of Table 1, lossless; the `word` of a `tmcc::CombinationEntry` |
 | `TmccInfo::{decode, encode, validate, slot_combinations, slot_ts_ids}` | the TMCC information |
 | `tmcc::{headers, decode_blocks, derandomise}` | a superframe's 8 header blocks ↔ information |
 | `slots::runs` | `Run { combination, slots, valid_slots, symbols }` per combination |
@@ -50,6 +51,8 @@ meaning of the "other information" values (pending).
 - Spec vectors: `spec_table_3_geometry` (Table 3, equation (3), the
   layout adds up to 39 936), `spec_w_words_and_coded_tails` (W3 = ¬W2;
   the printed coded tails from any encoder state), `spec_table_1_words`,
+  `spec_fig_8_combination_words` (all 16 words round-trip through
+  `CombinationWord`: seven assigned, 1111 dummy, the rest reserved),
   `spec_table_48_slot_units` (units from E_k / E_max, 812-symbol slots),
   `spec_table_2_puncturing` (each kept bit sent once),
   `spec_tmcc_prbs_alignment`, `spec_table_51_burst_bits`,

@@ -5,7 +5,9 @@
 use isdbs_core::combination::Combination;
 use isdbs_core::frame::{MAIN_SYMBOLS, SLOTS};
 use isdbs_core::slots::runs;
-use isdbs_core::tmcc::{CombinationEntry, INFO_BYTES, TmccInfo, decode_blocks, headers};
+use isdbs_core::tmcc::{
+    CombinationEntry, CombinationWord, INFO_BYTES, TmccInfo, decode_blocks, headers,
+};
 use proptest::prelude::*;
 
 proptest! {
@@ -74,9 +76,9 @@ proptest! {
                 return Ok(());
             }
         }
-        let mut combinations = [CombinationEntry { word: 0xF, slots: 0 }; 4];
+        let mut combinations = [CombinationEntry::DUMMY; 4];
         for (i, &(c, n)) in entries.iter().enumerate() {
-            combinations[i] = CombinationEntry { word: c.word(), slots: n as u8 };
+            combinations[i] = CombinationEntry { word: CombinationWord::Assigned(c), slots: n as u8 };
         }
         let info = TmccInfo {
             order_of_change: 0,

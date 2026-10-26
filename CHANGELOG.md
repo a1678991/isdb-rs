@@ -421,6 +421,17 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
   `Header::new` takes the enum and the `packet::afc` constants are gone.
   Decoding stays bit-exact (`prop_*` round trips unchanged). Item A of
   `docs/plans/type-safety.md`.
+- `isdbs-core`: the TMCC combination word is a lossless coded enum of
+  ITU-R BO.1408-1 Fig. 8 / Table 1, `CombinationWord { Assigned(Combination),
+  Dummy, Reserved(u8) }` (`from_word()` total over the 4-bit code,
+  `word()` its inverse), instead of `CombinationEntry { word: u8 }`.
+  `TmccInfo::validate` and `slot_combinations` match on the variants
+  (no table lookup, no `DUMMY_WORD` comparison); `TmccError::ReservedWord`
+  is still what `validate` returns for `Reserved(_)`, and the codec stays
+  bit-exact (`prop_tmcc_info_lossless` unchanged). `CombinationEntry::DUMMY`
+  is the §6.1.2 unused entry (1111, zero slots); `CombinationEntry::combination`
+  is `const`. `isdb iq tmcc --json` prints the same `word` number as
+  before. Second step of `docs/plans/type-safety.md` (item C).
 - `isdbt-core`: `TimeInterleave` is a closed enum of the four TMCC codes
   of ARIB STD-B31 Table 3-12 (`K0`..`K3`, `code()` / `from_code()`,
   `ALL`) instead of `TimeInterleave(pub u8)`. `length(mode)` is
