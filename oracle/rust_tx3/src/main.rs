@@ -26,7 +26,8 @@ fn parse_layer(s: &str) -> LayerConfig {
         segments: f[0].parse().unwrap(),
         modulation,
         code_rate,
-        time_interleave: TimeInterleave(f[3].parse().unwrap()),
+        time_interleave: TimeInterleave::from_code(f[3].parse().unwrap())
+            .expect("time-interleave index 0..=3"),
     }
 }
 
