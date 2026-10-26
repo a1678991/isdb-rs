@@ -1108,6 +1108,20 @@ are transponder numbering, not station identities.
   scramble-information extension (B60 Table 6-9 type 0001h; its content
   is in ARIB STD-B61, not available), and ECM / EMM are present:
   recognised and left as they are (no descrambling, project policy).
+- **Is any of it unscrambled? No (2026-10-26, `isdb-tlv` example
+  `freeca`).** Carrying the extension does not by itself mean
+  scrambled, and the signalling says the opposite: every MH-SDT service
+  (8) and MH-EIT event (106) on BS7/11/17 has `free_CA_mode` 0 ("not
+  scrambled"), with `running_status` 0 ("undefined") — fields the
+  broadcasters leave at 0. The media itself decides: the payload of all
+  14 media MMTP packet ids reads 7.98–8.000 bits per byte of entropy,
+  like the known-scrambled ISDB-S PID 0x0140 on BS1 (TS
+  scrambling_control set: 8.000), while clear 8K AV1 video reads 6.65
+  and the clear signalling 2.77. The scramble extension's first byte
+  differs by stream (0xE0, 0xF0, 0xF8) and alternates 0xE0 / 0xF8 in
+  equal halves on the busiest video stream, as even / odd key switching
+  would (B61 not available to confirm). No service on these three
+  transponders was found in the clear.
 - **ISDB-S unchanged**: `tools/isdbs-ts-acceptance.sh` on the same day's
   21 ISDB-S recordings still gives 38 TSs, 319 584 packets, 0
   uncorrectable.
