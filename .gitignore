@@ -17,6 +17,11 @@ __pycache__/
 *.sigmf-meta
 *.cu8
 *.iq
+*.sym
+*.tlv
+# Working data (captures, symbol streams, decoded outputs): on disk, not in
+# tmpfs (RAM)
+/data/
 
 # Media (elementary streams and containers) used as multiplexer input
 media/
