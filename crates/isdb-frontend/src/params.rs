@@ -15,14 +15,23 @@ use crate::tables;
 /// Version 3 keeps version 2's arithmetic and changes only the block
 /// trailer: a CRC-32C of the sequence number and payload (two words)
 /// instead of a CRC-16 (one word); see [`crate::format`].
-pub const FORMAT_VERSION: u16 = 3;
+///
+/// Version 4 keeps version 3's words; it is the arithmetic of an FPGA that
+/// sees one input sample per clock (the PlutoSky R2, whose block clock is
+/// the sample rate: fpga/README.md "Clock"): the loop delay is
+/// [`LOOP_DELAY`] = 24 symbols (was 6), and the timing detector's banks
+/// `h` and `g` are non-zero on their centre [`TED_TAPS`] taps only, so the
+/// FPGA needs multipliers for those alone (the output bank `k` keeps every
+/// tap).
+pub const FORMAT_VERSION: u16 = 4;
 /// Oldest `Symbols` format version a [`crate::format::Reader`] accepts
 /// (header and payload layout unchanged since; the trailer per version).
 pub const MIN_READ_VERSION: u16 = 1;
-/// Oldest front-end version whose arithmetic is [`FORMAT_VERSION`]'s
-/// (version 2 differs from 3 only in the trailer): a device reporting a
-/// version from here up is driven with the same parameters.
-pub const MIN_ARITH_VERSION: u16 = 2;
+/// Oldest front-end version whose arithmetic is [`FORMAT_VERSION`]'s: a
+/// device reporting a version from here up is driven with the same
+/// parameters and gives the model's symbols. Version 4 changed the loop
+/// delay and the detector banks, so earlier devices are refused.
+pub const MIN_ARITH_VERSION: u16 = 4;
 
 /// Phases of the polyphase matched-filter banks (the fractional-delay
 /// resolution of the timing recovery, 1/64 sample).
@@ -61,9 +70,20 @@ pub const MAX_GAIN_SHIFT: u8 = 40;
 /// Symbols between a symbol and the loop updates that use its error
 /// values: symbol k is computed with the gain and period updated by the
 /// errors of symbols up to k − `LOOP_DELAY`. This is the pipeline latency
-/// the FPGA implementation is allowed: at least 6 input samples (24 clock
-/// cycles at 4 cycles per sample) from a symbol's decision to its errors.
-pub const LOOP_DELAY: usize = 6;
+/// the FPGA implementation is allowed. Symbols are at least one input
+/// sample apart and the FPGA (format 4) sees at most one sample per
+/// clock, so 24 symbols are at least 24 clock cycles, enough for its
+/// pipeline from a decision to the loop update (fpga/isdb_fpga/
+/// frontend.py). Measured on ISDB-S3 recordings: the same sync-symbol
+/// Es/N0 as the former 6 (within 0.04 dB; plan §0.15).
+pub const LOOP_DELAY: usize = 24;
+/// Taps of the timing detector's banks `h` and `g` that may be non-zero:
+/// the centre ones, `(taps − TED_TAPS) / 2 ..` (all of them when `taps`
+/// is smaller). The detector needs only the main lobe: on the ISDB-S3
+/// recordings 8 centre taps lock as well as 32 (plan §0.15), and the FPGA
+/// then evaluates the detector with 4 multipliers per bank instead of
+/// `taps`.
+pub const TED_TAPS: usize = 8;
 /// Bound of the timing error value (24-bit signed).
 pub const E_MAX: i64 = (1 << 23) - 1;
 /// Largest number of taps per phase.
@@ -223,12 +243,19 @@ impl Params {
         if !(-0.5..=0.5).contains(&d.trim) {
             return Err(ParamError(format!("trim {} symbols: within ±0.5", d.trim)));
         }
-        let (h, g) = tables::matched_filter_banks(sps, d.roll_off, d.taps, d.kaiser_beta);
-        let k = if d.trim == 0.0 {
-            h.clone()
-        } else {
-            tables::output_bank(sps, d.roll_off, d.taps, d.kaiser_beta, d.trim * sps)
-        };
+        let (mut h, mut g) = tables::matched_filter_banks(sps, d.roll_off, d.taps, d.kaiser_beta);
+        for bank in [&mut h, &mut g] {
+            for ph in bank.iter_mut() {
+                for (t, c) in ph.iter_mut().enumerate() {
+                    if !ted_tap(t, d.taps) {
+                        *c = 0;
+                    }
+                }
+            }
+        }
+        // The output bank is the whole matched filter (the trim's, or h's
+        // before the detector's outer taps were zeroed).
+        let k = tables::output_bank(sps, d.roll_off, d.taps, d.kaiser_beta, d.trim * sps);
         let period = (sps * ONE as f64).round() as u32;
         // TED gain: the error of the scaled banks for a unit timing offset
         // is measured on a noiseless pulse train (tables::ted_gain); the
@@ -323,6 +350,17 @@ impl Params {
                 }
             }
         }
+        for bank in [&self.h, &self.g] {
+            if bank.iter().any(|ph| {
+                ph.iter()
+                    .enumerate()
+                    .any(|(t, &c)| c != 0 && !ted_tap(t, taps))
+            }) {
+                return err(format!(
+                    "detector banks h and g must be zero outside their centre {TED_TAPS} taps"
+                ));
+            }
+        }
         if i64::from(self.period_min) <= ONE
             || self.period_min > self.period_nominal
             || self.period_nominal > self.period_max
@@ -355,4 +393,11 @@ impl Params {
             + (crate::format::HEADER_WORDS + crate::format::TRAILER_WORDS) as f64)
             / l
     }
+}
+
+/// Whether tap `t` of a `taps`-tap phase belongs to the timing detector's
+/// [`TED_TAPS`] centre taps.
+pub fn ted_tap(t: usize, taps: usize) -> bool {
+    let lo = taps.saturating_sub(TED_TAPS) / 2;
+    (lo..lo + TED_TAPS.min(taps)).contains(&t)
 }

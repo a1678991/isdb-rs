@@ -1,18 +1,19 @@
 //! The `Symbols` boundary: what leaves the front end (the FPGA over DMA,
 //! or the CPU model) as a stream of 16-bit little-endian words. Versions
-//! 1, 2 and 3 share the header and payload layout; version 2 changed the
-//! arithmetic (see [`crate::params::FORMAT_VERSION`]) and version 3 the
-//! trailer (a CRC-32C instead of a CRC-16). A [`Reader`] accepts all
-//! three; a [`Packer`] writes version 3.
+//! 1 to 4 share the header and payload layout; version 2 changed the
+//! arithmetic (see [`crate::params::FORMAT_VERSION`]), version 3 the
+//! trailer (a CRC-32C instead of a CRC-16) and version 4 the loop again
+//! (same words as version 3). A [`Reader`] accepts all four; a [`Packer`]
+//! writes version 4.
 //!
 //! The stream is a sequence of blocks. A block is [`HEADER_WORDS`] header
 //! words, the payload of L = 2^`block_log2` symbols and the trailer
-//! ([`trailer_words`]: one word in versions 1 and 2, two in version 3):
+//! ([`trailer_words`]: one word in versions 1 and 2, two from version 3):
 //!
 //! | Word | Content |
 //! |---|---|
 //! | 0, 1 | sync: `0x1ACF`, `0xFC1D` |
-//! | 2 | bits 0–3: format version (1, 2 or 3); 4–7: bits per component − 1; 8–11: `block_log2`; 12–15: flags (0) |
+//! | 2 | bits 0–3: format version (1 to 4); 4–7: bits per component − 1; 8–11: `block_log2`; 12–15: flags (0) |
 //! | 3, 4 | block sequence number, 32 bits, low word first (wraps) |
 //! | 5 | AGC gain used for the block's first symbol (Q6.10) |
 //! | 6, 7 | period register at the block's first symbol, Q8.24 samples, low word first |
@@ -23,7 +24,7 @@
 //! cut into 16-bit words, also least significant bit first. 2·bits·L is a
 //! multiple of 16, so every block is a whole number of words.
 //!
-//! **Trailer, version 3**: [`crc32c`] of the block's sequence number and
+//! **Trailer, versions 3 and 4**: [`crc32c`] of the block's sequence number and
 //! payload, as two words, low word first: the standard CRC-32C
 //! (CRC-32/ISCSI: polynomial 0x1EDC6F41, reflected in and out, initial
 //! value and final XOR 0xFFFFFFFF; check value of ASCII "123456789"
@@ -640,8 +641,18 @@ mod tests {
         assert_eq!(Header::parse(&h3.words()), Some(h3));
         assert_eq!(h2.block_words(), HEADER_WORDS + 2560 + 1);
         assert_eq!(h3.block_words(), HEADER_WORDS + 2560 + 2);
-        // Versions outside 1..=3 are not headers.
-        for v in [0, 4, 15] {
+        // … and in version 4 (version 3's words; the loop changed).
+        let h4 = Header { version: 4, ..h };
+        assert_eq!(
+            h4.words(),
+            [
+                0x1ACF, 0xFC1D, 0x0C44, 0x5678, 0x1234, 0x0400, 0x3456, 0x0162, 0x5157
+            ]
+        );
+        assert_eq!(Header::parse(&h4.words()), Some(h4));
+        assert_eq!(h4.block_words(), HEADER_WORDS + 2560 + 2);
+        // Versions outside 1..=4 are not headers.
+        for v in [0, 5, 15] {
             let mut w = Header { version: v, ..h }.words();
             w[8] = 0;
             let sum = w[2..8].iter().fold(0u16, |a, &b| a.wrapping_add(b));
@@ -741,7 +752,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(blocks.len(), 12);
+        assert_eq!(blocks.len(), 4 * usize::from(FORMAT_VERSION));
         for (i, (v, s)) in blocks.iter().enumerate() {
             assert_eq!(*v as usize, 1 + i / 4);
             assert_eq!(&s[..], &syms[(i % 4) * 256..(i % 4 + 1) * 256]);

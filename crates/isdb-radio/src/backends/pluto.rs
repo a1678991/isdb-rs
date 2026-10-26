@@ -121,6 +121,13 @@ const STREAM_DEPTH: usize = 8;
 /// overflow bit (sticky, write 1 to clear).
 const ADC_STATUS_REG: u32 = 0x8000_0088;
 const ADC_STATUS_OVERFLOW: u32 = 0x4;
+/// `axi_ad9361` common control register (ADI `up_adc_common` / `up_dac_common`
+/// REG 0x11): bit 2 is `r1_mode`. With r1_mode set on the ADC and the DAC,
+/// `util_ad9361_divclk` takes its other input (l_clk / 2 instead of / 4 in
+/// LVDS), a case the symbol front end's bitstream is not timed for
+/// (fpga/README.md "Clock"), so the FPGA path is refused then.
+const R1_MODE_REG: u32 = 0x8000_0044;
+const R1_MODE_BIT: u32 = 1 << 2;
 /// Settling time between programming the RX and capturing (LO lock, AGC).
 const CAPTURE_SETTLE: Duration = Duration::from_millis(100);
 
@@ -610,6 +617,14 @@ impl Backend for Pluto {
         configure_rx(&ctx, cfg, &s, &mut info)
             .with_context(|| format!("configure Pluto {} for RX", s.dev.uri))?;
         std::thread::sleep(CAPTURE_SETTLE);
+        let r1 = |dev: &str| -> Result<bool> {
+            Ok(ctx.device(dev)?.reg_read(R1_MODE_REG)? & R1_MODE_BIT != 0)
+        };
+        if r1(RX_DEV)? && r1(TX_DEV)? {
+            bail!(
+                "{NAME}: the AD9361 core runs in r1_mode (one channel per direction): the symbol front end's clock is then l_clk / 2, which its bitstream is not timed for; use the CPU front end (--offload none)"
+            );
+        }
         let rate = {
             let rates = ctx.device(PHY)?.read("rx_path_rates")?;
             path_rate(&rates, "RXSAMP")

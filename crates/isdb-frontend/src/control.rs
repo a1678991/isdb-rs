@@ -139,9 +139,8 @@ impl Identity {
     }
 
     /// Whether this host can drive it: the same arithmetic (versions
-    /// [`MIN_ARITH_VERSION`] to [`FORMAT_VERSION`]: 2 and 3 differ only in
-    /// the block trailer, which the reader takes per block) and `p`'s
-    /// taps.
+    /// [`MIN_ARITH_VERSION`] to [`FORMAT_VERSION`]: the devices whose
+    /// arithmetic is the model's) and `p`'s taps.
     pub fn supports(&self, p: &Params) -> bool {
         (MIN_ARITH_VERSION..=FORMAT_VERSION).contains(&self.version) && self.taps == p.taps()
     }
@@ -268,19 +267,20 @@ mod tests {
     }
 
     #[test]
-    fn versions_2_and_3_share_the_arithmetic_1_does_not() {
+    fn only_version_4_has_the_models_arithmetic() {
         let p = Params::design(&Design::new(40e6, 28.86e6, 0.35)).unwrap();
         let id = |version| Identity {
             version,
             taps: p.taps(),
         };
-        assert!(id(3).supports(&p));
-        assert!(id(2).supports(&p));
-        assert!(!id(1).supports(&p));
-        assert!(!id(4).supports(&p));
+        assert!(id(4).supports(&p));
+        // 2 and 3: the loop of the former 4-cycles-per-sample design
+        for v in [1, 2, 3, 5] {
+            assert!(!id(v).supports(&p), "version {v}");
+        }
         assert!(
             !Identity {
-                version: 3,
+                version: 4,
                 taps: p.taps() + 2
             }
             .supports(&p)

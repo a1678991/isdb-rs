@@ -1,5 +1,5 @@
 //! The bit-exact fixed-point front end: the reference the FPGA
-//! implementation must reproduce bit for bit (format version 2).
+//! implementation must reproduce bit for bit (format version 4).
 //!
 //! Per input sample `x[n]` (12-bit components in `i16`), in this order:
 //!
@@ -34,8 +34,9 @@
 //! it is the pipeline latency the FPGA is allowed, and the model applies
 //! it exactly so both agree bit for bit.
 //!
-//! Format version 1 is the special case `k == h` (then `zk == z`): the
-//! same output, words and loop behaviour.
+//! Since format version 4 the detector banks `h` and `g` are non-zero on
+//! their centre [`crate::params::TED_TAPS`] taps only and `k` is the whole
+//! matched filter (format 1 was the special case `k == h`).
 
 use crate::params::{
     E_MAX, FILTER_SHIFT, FRAC_BITS, GAIN_ACC_BITS, GAIN_ACC_EXTRA_BITS, GAIN_FRAC_BITS, KI_FRAC,
@@ -285,21 +286,27 @@ mod tests {
     }
 
     #[test]
-    fn without_trim_the_output_is_the_matched_filter() {
-        // Format 2 with k == h behaves as format 1: zk == z, q from z.
+    fn the_detector_uses_its_centre_taps_and_the_output_all() {
         let mut d = Design::new(40e6, 33.7561e6, 0.03);
         d.taps = 16;
         d.loop_bandwidth = 2e-4;
         let p = Params::design(&d).unwrap();
-        assert_eq!(p.k, p.h);
-        let mut f = Frontend::new(p).unwrap();
-        let mut out = Vec::new();
-        let x: Vec<[i16; 2]> = (0..20_000)
-            .map(|n| if n % 7 < 3 { [500, -300] } else { [-400, 600] })
-            .collect();
-        f.process(&x, &mut out);
-        assert!(!out.is_empty());
-        assert!(out.iter().all(|s| s.zk == s.z && s.yk == s.y));
+        let lo = (16 - crate::params::TED_TAPS) / 2;
+        for ph in 0..crate::params::PHASES {
+            for t in 0..16 {
+                let centre = (lo..lo + crate::params::TED_TAPS).contains(&t);
+                if !centre {
+                    assert_eq!((p.h[ph][t], p.g[ph][t]), (0, 0));
+                }
+                if centre {
+                    assert_eq!(p.h[ph][t], p.k[ph][t], "untrimmed k is h's whole filter");
+                }
+            }
+        }
+        // a coefficient outside the centre is rejected
+        let mut q = p.clone();
+        q.g[3][0] = 1;
+        assert!(q.validate().is_err());
     }
 
     #[test]
