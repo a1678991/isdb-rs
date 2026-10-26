@@ -7,7 +7,10 @@
 
 use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
 use isdbt_ofdm::dsc::{self, ParityStatus};
-use isdbt_ofdm::tmcc::{TmccInfo, decode_frame, sync_word};
+use isdbt_ofdm::tmcc::{
+    InterleaveCode, ModulationCode, RateCode, SegmentsCode, TmccInfo, TmccLayer, decode_frame,
+    sync_word,
+};
 
 /// Station 1: Mode 3, GI 1/8, partial reception, A 1 seg QPSK 2/3 I-index 3,
 /// B 12 seg 64QAM 3/4 I-index 2, and no next information (B67–B106 all 1).
@@ -78,6 +81,25 @@ fn broadcast_words_decode_to_the_broadcast_configuration() {
         assert_eq!(i.phase_shift_correction, 0b111);
         assert_eq!(i.reserved, 0xfff);
         assert_eq!(i.params(Mode::M3, GuardInterval::G1_8).unwrap(), p);
+        // The received codes, as Tables 3-28..3-31 name them.
+        assert_eq!(
+            i.current.layers,
+            [
+                TmccLayer {
+                    modulation: ModulationCode::Assigned(Modulation::Qpsk),
+                    code_rate: RateCode::Assigned(CodeRate::R2_3),
+                    interleave: InterleaveCode::Assigned(TimeInterleave::K3),
+                    segments: SegmentsCode::Segments(1),
+                },
+                TmccLayer {
+                    modulation: ModulationCode::Assigned(Modulation::Qam64),
+                    code_rate: RateCode::Assigned(CodeRate::R3_4),
+                    interleave: InterleaveCode::Assigned(TimeInterleave::K2),
+                    segments: SegmentsCode::Segments(12),
+                },
+                TmccLayer::UNUSED,
+            ]
+        );
     }
     // §3.15.6.4 / Tables 3-28..3-31: "no next information" is all 1,
     // including the next partial-reception flag B67 (VERIFICATION.md D3).
