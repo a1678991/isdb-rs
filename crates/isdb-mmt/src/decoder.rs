@@ -11,7 +11,7 @@ use crate::message::{Messages, TableBytes};
 use crate::mpu::{Mfu, Reassembler};
 use crate::table::{Amt, Bit, Eit, Mpt, Nit, Plt, Sdt, SectionError, Tot};
 use isdb_tlv::ip::{Datagram, compressed, ipv4, ipv6};
-use isdb_tlv::mmtp;
+use isdb_tlv::mmtp::{self, PayloadType};
 use isdb_tlv::tlv::{Packet, PacketType};
 use std::collections::BTreeMap;
 
@@ -164,7 +164,7 @@ impl Decoder {
             return;
         };
         match h.payload_type {
-            mmtp::MESSAGES => {
+            PayloadType::Messages => {
                 let gap = self
                     .last_ctrl_seq
                     .insert(h.packet_id, h.sequence)
@@ -176,8 +176,8 @@ impl Decoder {
                     self.table(t);
                 }
             }
-            mmtp::MPU => self.mpu.push(&h, payload, mfus),
-            _ => {}
+            PayloadType::Mpu => self.mpu.push(&h, payload, mfus),
+            PayloadType::GenericObject | PayloadType::FecRepair | PayloadType::Reserved(_) => {}
         }
     }
 

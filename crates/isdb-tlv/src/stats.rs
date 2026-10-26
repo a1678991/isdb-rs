@@ -3,7 +3,7 @@
 //! TLV-SI sections, and malformed packets.
 
 use crate::ip::{Datagram, compressed, ipv4, ipv6};
-use crate::mmtp;
+use crate::mmtp::{self, PayloadType};
 use crate::si;
 use crate::tlv::{Packet, PacketType};
 use std::collections::BTreeMap;
@@ -16,7 +16,7 @@ pub struct StreamStats {
     /// IP packets whose content could not be read.
     pub ip_errors: u64,
     /// MMTP packets per packet id: (count, payload type of the last one).
-    pub mmtp: BTreeMap<u16, (u64, u8)>,
+    pub mmtp: BTreeMap<u16, (u64, PayloadType)>,
     /// UDP payloads that do not parse as MMTP.
     pub non_mmtp: u64,
     /// MMT-SI messages seen (message id → count).
@@ -82,11 +82,11 @@ impl StreamStats {
             self.non_mmtp += 1;
             return;
         };
-        let e = self.mmtp.entry(h.packet_id).or_default();
+        let e = self.mmtp.entry(h.packet_id).or_insert((0, h.payload_type));
         e.0 += 1;
         e.1 = h.payload_type;
         match h.payload_type {
-            mmtp::MESSAGES => {
+            PayloadType::Messages => {
                 if let Some(ms) = mmtp::messages(payload) {
                     for m in ms {
                         *self.messages.entry(m.id).or_default() += 1;
@@ -96,7 +96,7 @@ impl StreamStats {
                     }
                 }
             }
-            mmtp::MPU => {
+            PayloadType::Mpu => {
                 self.mpu += 1;
                 if h.scramble_info {
                     self.mpu_with_extension += 1;

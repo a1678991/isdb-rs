@@ -4,29 +4,156 @@
 //!
 //! Broadcasting sends no MPU metadata or movie fragment metadata (§6.2:
 //! "MPU metadata and movie fragment metadata shall not be transmitted");
-//! every payload is an MFU (fragment_type 2). An MFU of timed data is a
-//! sample or sub-sample: for HEVC one NAL unit with a 32-bit length
-//! prefix (§8.1.1), for MPEG-4 audio one AudioMuxElement (§8.2.1), for
-//! captions one subsample with the header of Table 9-1.
+//! every payload is an MFU ([`FragmentType::Mfu`], Table 6-2 code 2). An
+//! MFU of timed data is a sample or sub-sample: for HEVC one NAL unit with
+//! a 32-bit length prefix (§8.1.1), for MPEG-4 audio one AudioMuxElement
+//! (§8.2.1), for captions one subsample with the header of Table 9-1.
 //!
-//! An MFU divided over several payloads (fragmentation indicator 01, 10,
-//! 11; fragment_counter counting the payloads still to come) is
-//! reassembled; a gap in the MMTP packet sequence numbers of the packet id
-//! drops the MFU being reassembled and is counted.
+//! An MFU divided over several payloads ([`FragmentationIndicator`]
+//! `Head`, `Middle`, `Last`, Table 6-3 codes 01, 10, 11; fragment_counter
+//! counting the payloads still to come) is reassembled; a gap in the MMTP
+//! packet sequence numbers of the packet id drops the MFU being
+//! reassembled and is counted.
+
+use std::fmt;
 
 /// Largest MFU kept while reassembling: a NAL unit of a 4K picture is a
 /// few MB at most.
 pub const MAX_MFU: usize = 16 << 20;
 
+/// `fragment_type` of an MPU payload: ARIB STD-B60 v1.14 §6.3.2, Table
+/// 6-2 (4 bits).
+///
+/// A lossless coded enum: codes 0–2 are named, 3–15 ("provided by the
+/// Ministry or private standardization organization") are kept in
+/// [`FragmentType::Reserved`], so a decoded header re-encodes bit-exactly.
+/// Table 6-2 note 1: codes 0 and 1 "are provided in MMT Standard, but are
+/// not used in this standard" (§6.2: the metadata is not transmitted), so
+/// on air every payload is [`Mfu`](FragmentType::Mfu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FragmentType {
+    /// 0: "MPU metadata. ftyp, mmpu, moov, meta box are involved."
+    MpuMetadata,
+    /// 1: "Movie fragment metadata. moof box and, mdat box excluding media
+    /// data are involved."
+    MovieFragmentMetadata,
+    /// 2: "MFU. Sample or sub-sample (media data with time), or items
+    /// (media data without time) are involved."
+    Mfu,
+    /// 3–15: "provided by the Ministry or private standardization
+    /// organization"; the 4-bit code.
+    Reserved(u8),
+}
+
+impl FragmentType {
+    /// The three assigned codes, in Table 6-2 order.
+    pub const ASSIGNED: [FragmentType; 3] = [
+        FragmentType::MpuMetadata,
+        FragmentType::MovieFragmentMetadata,
+        FragmentType::Mfu,
+    ];
+
+    /// From the 4-bit field (`code` is masked to the width; total).
+    pub const fn from_code(code: u8) -> Self {
+        match code & 0x0F {
+            0 => FragmentType::MpuMetadata,
+            1 => FragmentType::MovieFragmentMetadata,
+            2 => FragmentType::Mfu,
+            c => FragmentType::Reserved(c),
+        }
+    }
+
+    /// The 4-bit code.
+    pub const fn code(self) -> u8 {
+        match self {
+            FragmentType::MpuMetadata => 0,
+            FragmentType::MovieFragmentMetadata => 1,
+            FragmentType::Mfu => 2,
+            FragmentType::Reserved(c) => c & 0x0F,
+        }
+    }
+}
+
+impl fmt::Display for FragmentType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.code())
+    }
+}
+
+/// `fragmentation_indicator` of an MPU payload: ARIB STD-B60 v1.14
+/// §6.3.2, Table 6-3 (2 bits). Table 6-3 assigns all four codes, so the
+/// enum needs no reserved variant and `from_code` is still total.
+///
+/// The variant names follow the table's words: "perfect form", "header
+/// part of divided data", "neither header part nor last part", "last part
+/// of divided data".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FragmentationIndicator {
+    /// 00: "This involves one or more than one data in perfect form."
+    Complete,
+    /// 01: "This involves header part of divided data."
+    Head,
+    /// 10: "This involves a part of divided data which is neither header
+    /// part nor last part."
+    Middle,
+    /// 11: "This involves last part of divided data."
+    Last,
+}
+
+impl FragmentationIndicator {
+    /// The four codes, in Table 6-3 order.
+    pub const ALL: [FragmentationIndicator; 4] = [
+        FragmentationIndicator::Complete,
+        FragmentationIndicator::Head,
+        FragmentationIndicator::Middle,
+        FragmentationIndicator::Last,
+    ];
+
+    /// From the 2-bit field (`code` is masked to the width; total).
+    pub const fn from_code(code: u8) -> Self {
+        match code & 0x03 {
+            0b00 => FragmentationIndicator::Complete,
+            0b01 => FragmentationIndicator::Head,
+            0b10 => FragmentationIndicator::Middle,
+            _ => FragmentationIndicator::Last,
+        }
+    }
+
+    /// The 2-bit code.
+    pub const fn code(self) -> u8 {
+        match self {
+            FragmentationIndicator::Complete => 0b00,
+            FragmentationIndicator::Head => 0b01,
+            FragmentationIndicator::Middle => 0b10,
+            FragmentationIndicator::Last => 0b11,
+        }
+    }
+
+    /// Whether this payload completes a data unit: `Complete` (whole) or
+    /// `Last` (the end of a divided one).
+    pub const fn completes(self) -> bool {
+        matches!(
+            self,
+            FragmentationIndicator::Complete | FragmentationIndicator::Last
+        )
+    }
+}
+
+impl fmt::Display for FragmentationIndicator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02b}", self.code())
+    }
+}
+
 /// The header of an MPU payload (Table 6-1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PayloadHeader {
-    /// `fragment_type` (0 MPU metadata, 1 movie fragment metadata, 2 MFU).
-    pub fragment_type: u8,
+    /// `fragment_type` (Table 6-2).
+    pub fragment_type: FragmentType,
     /// `timed_flag`.
     pub timed: bool,
-    /// `fragmentation_indicator`.
-    pub fragmentation: u8,
+    /// `fragmentation_indicator` (Table 6-3).
+    pub fragmentation: FragmentationIndicator,
     /// `aggregation_flag`.
     pub aggregated: bool,
     /// `fragment_counter`.
@@ -69,9 +196,9 @@ pub fn parse_header(p: &[u8]) -> Option<PayloadHeader> {
     p.get(..2 + len)?;
     let f = *p.get(2)?;
     Some(PayloadHeader {
-        fragment_type: f >> 4,
+        fragment_type: FragmentType::from_code(f >> 4),
         timed: f & 0x08 != 0,
-        fragmentation: (f >> 1) & 3,
+        fragmentation: FragmentationIndicator::from_code(f >> 1),
         aggregated: f & 1 != 0,
         fragment_counter: *p.get(3)?,
         mpu_sequence_number: u32::from_be_bytes(p.get(4..8)?.try_into().ok()?),
@@ -84,7 +211,7 @@ pub fn parse(p: &[u8]) -> Option<(PayloadHeader, Vec<DataUnit<'_>>)> {
     let len = usize::from(u16::from_be_bytes([p[0], p[1]]));
     let p = &p[..2 + len];
     let mut units = Vec::new();
-    if h.fragment_type != 2 {
+    if h.fragment_type != FragmentType::Mfu {
         return Some((h, units));
     }
     let mut rest = p.get(8..)?;
@@ -244,7 +371,7 @@ impl Reassembler {
             // Only the payload header is in the clear: count what it says
             // and deliver nothing (no descrambling). An aggregated payload
             // holds an unknown number of MFUs; it counts as one.
-            if matches!(ph.fragmentation, 0b00 | 0b11) {
+            if ph.fragmentation.completes() {
                 s.stats.scrambled_mfus += 1;
             }
             if self.pass_scrambled {
@@ -275,14 +402,14 @@ impl Reassembler {
                 data: u.data.to_vec(),
             };
             match ph.fragmentation {
-                0b00 => {
+                FragmentationIndicator::Complete => {
                     if s.partial.take().is_some() {
                         s.stats.mfus_dropped += 1;
                     }
                     s.stats.mfus += 1;
                     out.push(mfu());
                 }
-                0b01 => {
+                FragmentationIndicator::Head => {
                     if s.partial.take().is_some() {
                         s.stats.mfus_dropped += 1;
                     }
@@ -295,14 +422,14 @@ impl Reassembler {
                 // (Without a partial MFU, this is the rest of one already
                 // dropped — counted when its start was lost — or of one
                 // begun before the stream was joined.)
-                _ => {
+                FragmentationIndicator::Middle | FragmentationIndicator::Last => {
                     if let Some(m) = s.partial.as_mut() {
                         if m.data.len() + u.data.len() > MAX_MFU {
                             s.partial = None;
                             s.stats.mfus_dropped += 1;
                         } else {
                             m.data.extend_from_slice(u.data);
-                            if ph.fragmentation == 0b11
+                            if ph.fragmentation == FragmentationIndicator::Last
                                 && let Some(m) = s.partial.take()
                             {
                                 s.stats.mfus += 1;
@@ -319,11 +446,23 @@ impl Reassembler {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use isdb_tlv::mmtp::Header;
+    use FragmentationIndicator::{Complete, Head, Last, Middle};
+    use isdb_tlv::mmtp::{FecType, Header, PayloadType};
 
     /// An MPU payload carrying one timed MFU (or fragment).
-    pub(crate) fn payload(frag: u8, counter: u8, mpu: u32, sample: u32, data: &[u8]) -> Vec<u8> {
-        let mut p = vec![0, 0, 0x20 | 0x08 | (frag << 1), counter];
+    pub(crate) fn payload(
+        frag: FragmentationIndicator,
+        counter: u8,
+        mpu: u32,
+        sample: u32,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let mut p = vec![
+            0,
+            0,
+            (FragmentType::Mfu.code() << 4) | 0x08 | (frag.code() << 1),
+            counter,
+        ];
         p.extend(mpu.to_be_bytes());
         p.extend(0u32.to_be_bytes());
         p.extend(sample.to_be_bytes());
@@ -337,9 +476,9 @@ pub(crate) mod tests {
 
     pub(crate) fn header(id: u16, seq: u32) -> Header {
         Header {
-            fec_type: 0,
+            fec_type: FecType::NotProtected,
             rap: false,
-            payload_type: 0,
+            payload_type: PayloadType::Mpu,
             packet_id: id,
             sequence: seq,
             scramble_info: false,
@@ -354,24 +493,80 @@ pub(crate) mod tests {
         let (h, u) = parse(&p).unwrap();
         assert_eq!(
             (h.fragment_type, h.timed, h.fragmentation, h.aggregated),
-            (2, true, 2, false)
+            (FragmentType::Mfu, true, Middle, false)
         );
         assert_eq!(h.mpu_sequence_number, 0x0021_B0EC);
         assert_eq!(u.len(), 1);
+    }
+
+    /// Table 6-2 (the `fragment_type` of Table 6-1): every 4-bit code
+    /// round-trips through `from_code` / `code`; 0–2 are named, 3–15 are
+    /// `Reserved`.
+    #[test]
+    fn spec_b60_table_6_1_fragment_types() {
+        assert_eq!(
+            FragmentType::ASSIGNED.map(FragmentType::code),
+            [0, 1, 2],
+            "Table 6-2 order"
+        );
+        for c in 0..=0x0Fu8 {
+            let t = FragmentType::from_code(c);
+            assert_eq!(t.code(), c, "{t:?}");
+            match t {
+                FragmentType::Reserved(r) => assert!((3..=15).contains(&r) && r == c),
+                named => assert!(FragmentType::ASSIGNED.contains(&named)),
+            }
+        }
+        assert_eq!(FragmentType::from_code(2), FragmentType::Mfu);
+        // masked to the field width
+        assert_eq!(FragmentType::from_code(0x12), FragmentType::Mfu);
+        assert_eq!(FragmentType::Reserved(0xFF).code(), 0x0F);
+    }
+
+    /// Table 6-3: the four fragmentation indicators 00–11 round-trip
+    /// through `from_code` / `code`, in table order, and `completes()`
+    /// holds for a whole data unit and the last part of a divided one.
+    #[test]
+    fn spec_b60_fragmentation_indicators() {
+        assert_eq!(
+            FragmentationIndicator::ALL.map(FragmentationIndicator::code),
+            [0b00, 0b01, 0b10, 0b11]
+        );
+        for c in 0..=3u8 {
+            let i = FragmentationIndicator::from_code(c);
+            assert_eq!(i.code(), c);
+            assert_eq!(i, FragmentationIndicator::ALL[usize::from(c)]);
+            assert_eq!(i.completes(), matches!(c, 0b00 | 0b11));
+        }
+        // masked to the field width
+        assert_eq!(FragmentationIndicator::from_code(0xFD), Head);
+    }
+
+    /// A parsed payload header's codes are the bits they came from, for
+    /// every fragment type and fragmentation indicator (lossless).
+    #[test]
+    fn prop_payload_header_codes_round_trip() {
+        for ft in 0..=0x0Fu8 {
+            for fi in 0..=3u8 {
+                let p = [0, 6, (ft << 4) | (fi << 1), 0, 0, 0, 0, 0];
+                let h = parse_header(&p).unwrap();
+                assert_eq!((h.fragment_type.code(), h.fragmentation.code()), (ft, fi));
+            }
+        }
     }
 
     #[test]
     fn divided_mfu_and_a_loss() {
         let mut r = Reassembler::new();
         let mut out = Vec::new();
-        r.push(&header(9, 1), &payload(1, 2, 5, 1, b"ab"), &mut out);
-        r.push(&header(9, 2), &payload(2, 1, 5, 1, b"cd"), &mut out);
-        r.push(&header(9, 3), &payload(3, 0, 5, 1, b"ef"), &mut out);
+        r.push(&header(9, 1), &payload(Head, 2, 5, 1, b"ab"), &mut out);
+        r.push(&header(9, 2), &payload(Middle, 1, 5, 1, b"cd"), &mut out);
+        r.push(&header(9, 3), &payload(Last, 0, 5, 1, b"ef"), &mut out);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].data, b"abcdef");
         // packet 5 lost: the MFU begun at 4 is dropped
-        r.push(&header(9, 4), &payload(1, 1, 6, 1, b"xx"), &mut out);
-        r.push(&header(9, 6), &payload(3, 0, 6, 1, b"yy"), &mut out);
+        r.push(&header(9, 4), &payload(Head, 1, 6, 1, b"xx"), &mut out);
+        r.push(&header(9, 6), &payload(Last, 0, 6, 1, b"yy"), &mut out);
         assert_eq!(out.len(), 1);
         let st = r.stats().next().unwrap().1.clone();
         assert_eq!((st.packets_lost, st.mfus_dropped, st.mpus), (1, 1, 2));
@@ -389,7 +584,7 @@ pub(crate) mod tests {
                 let pieces: Vec<&[u8]> = data.chunks(cut).collect();
                 let m = pieces.len();
                 for (j, piece) in pieces.iter().enumerate() {
-                    let frag = if m == 1 { 0 } else if j == 0 { 1 } else if j == m - 1 { 3 } else { 2 };
+                    let frag = if m == 1 { Complete } else if j == 0 { Head } else if j == m - 1 { Last } else { Middle };
                     seq += 1;
                     r.push(&header(1, seq), &payload(frag, (m - 1 - j) as u8, 0, i as u32, piece), &mut out);
                 }

@@ -15,6 +15,30 @@ TLV streams of ISDB-S3 / advanced BS (ARIB STD-B32 v3.11 Part 3 §3.5,
   transmission-control packets;
 - `stats`: per-stream counters over all of the above.
 
+The coded fields of the MMTP header are lossless coded enums of their
+B60 tables: `mmtp::FecType` (Table 6-5) and `mmtp::PayloadType` (Table
+6-6). Each names the assigned codes, keeps every other code in a
+`Reserved` variant, and goes both ways with `from_code()` / `code()`, so
+a parsed header re-encodes bit-exactly and the reserved codes are never
+lost:
+
+```rust
+use isdb_tlv::mmtp::{self, FecType, PayloadType};
+
+// An MMTP header as on air: version 00, not FEC-protected, payload type
+// 02h (control messages), packet id 0000h (PA message), sequence 1
+let pkt = [0x00, 0x02, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 1, 0x3C, 0x00];
+let (h, payload) = mmtp::parse(&pkt).unwrap();
+assert_eq!(h.fec_type, FecType::NotProtected);
+assert_eq!(h.payload_type, PayloadType::Messages);
+assert_eq!(payload, &[0x3C, 0x00]);
+
+// Every 6-bit code round-trips, the reserved range included.
+assert_eq!(PayloadType::from_code(0x2A), PayloadType::Reserved(0x2A));
+assert_eq!(PayloadType::Reserved(0x2A).code(), 0x2A);
+assert_eq!(FecType::from_code(3), FecType::Reserved);
+```
+
 ISO/IEC 23008-1 (MMT) is not available: only what B32 Part 3 and B60
 define is parsed. Scrambled payloads are recognised, never descrambled.
 Interpretations are in [SPEC-NOTES.md](SPEC-NOTES.md).

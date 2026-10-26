@@ -61,6 +61,30 @@ offline (2026-10-25) and 40 s live through the FPGA front end
   MMTP; the transmit timestamp (last 8 bytes of Table 3-1) is kept.
   Status: confirmed (live data).
 
+## mpu-header-codes: fragment type and fragmentation indicator tables
+- Spec: Table 6-1 (MMTP payload structure) gives `fragment_type` (4
+  bits) and `fragmentation_indicator` (2 bits); their codes are in Table
+  6-2 (0 MPU metadata, 1 movie fragment metadata, 2 MFU, 3–15 "provided
+  by the Ministry or private standardization organization"; note 1: 0
+  and 1 "are provided in MMT Standard, but are not used in this
+  standard") and Table 6-3 (00 "one or more than one data in perfect
+  form", 01 "header part of divided data", 10 "a part of divided data
+  which is neither header part nor last part", 11 "last part of divided
+  data").
+- Interpretation: `mpu::FragmentType` is a lossless coded enum naming 0–2
+  (0 and 1 are assigned codes a receiver may meet, even though §6.2 says
+  the metadata "shall not be transmitted") with `Reserved(code)` for
+  3–15. `mpu::FragmentationIndicator` names all four codes after the
+  table's words — `Complete`, `Head`, `Middle`, `Last` — and needs no
+  reserved variant. The reassembler's state machine (`Reassembler::push`)
+  matches on these variants; a scrambled payload counts as one MFU when
+  its indicator `completes()` (`Complete` or `Last`).
+- Confirmation: `spec_b60_table_6_1_fragment_types`,
+  `spec_b60_fragmentation_indicators` and
+  `prop_payload_header_codes_round_trip` (every code parses and
+  re-encodes to itself); `prop_divided_mfus_reassemble` unchanged in
+  meaning. Status: confirmed (spec text).
+
 ## mfu-fragment-counter: reassembling divided MFUs
 - Spec: Table 6-1 / Table 6-3: fragmentation indicator 01 / 10 / 11;
   fragment_counter "the number of fragmented data which is after the

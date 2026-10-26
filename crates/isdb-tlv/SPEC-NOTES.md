@@ -58,6 +58,26 @@ around sections (SPECS.md §1.2). "Lab recordings": BS7, BS11, BS17 of
 - Observation: the first byte is 3Ch on air (reserved bits ones).
   Status: confirmed (live data).
 
+## mmtp-header-codes: FEC type and payload type tables
+- Spec: B60 §6.4.1.1 Table 6-4 (MMTP packet), Table 6-5 (`FEC_type`, 2
+  bits: 0 not protected, 1 source, 2 repair, 3 "reserved for future
+  use"), Table 6-6 (`payload_type`, 6 bits: 0x00 MPU, 0x01 generic
+  object, 0x02 control messages, 0x03 AL-FEC repair symbol, 0x04–0x1F
+  "reserved for ISO/IEC", 0x20–0x3F "provided by the Ministry or private
+  standardization organization"; note 1: 0x01 "is provided in MMT
+  Standard, but it is not used in this standard").
+- Interpretation: both fields are lossless coded enums (`mmtp::FecType`,
+  `mmtp::PayloadType`) naming every assigned code, 0x01 included although
+  B60 does not use it (it is assigned, so it is not `Reserved`); the two
+  reserved ranges of Table 6-6 share one `Reserved(code)` variant, since
+  the receiver treats them alike. Earlier text in this repository cited
+  "Table 6-5" for the payload type; 6-5 is the FEC type and 6-6 the
+  payload type.
+- Confirmation: `spec_b60_table_6_5_fec_types`, `spec_b60_payload_types`
+  and `prop_header_codes_round_trip` (every code of both fields parses
+  and re-encodes to itself); on the lab recordings only 0x00 and 0x02
+  occur with FEC type 0. Status: confirmed (spec text).
+
 ## control-packet-layout: sections in transmission-control TLV packets
 - Spec: B32 §3.5: packet type FEh "transmission control signal packet";
   B60 §5: TLV-SI (TLV-NIT 40h/41h, AMT FEh) "transmitted by the section

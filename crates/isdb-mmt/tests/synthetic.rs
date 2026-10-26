@@ -7,6 +7,8 @@
 
 use isdb_mmt::Decoder;
 use isdb_mmt::es;
+use isdb_mmt::mpu::{FragmentType, FragmentationIndicator};
+use isdb_tlv::mmtp::PayloadType;
 use isdb_tlv::tlv::{Packet, PacketType};
 
 /// A TLV packet: IPv6 + UDP to `port`, carrying `payload`.
@@ -28,8 +30,8 @@ fn ipv6_udp(port: u16, payload: &[u8]) -> Packet {
 }
 
 /// An MMTP packet (version 0, no counter, no extension).
-fn mmtp(payload_type: u8, packet_id: u16, seq: u32, payload: &[u8]) -> Vec<u8> {
-    let mut b = vec![0x00, payload_type];
+fn mmtp(payload_type: PayloadType, packet_id: u16, seq: u32, payload: &[u8]) -> Vec<u8> {
+    let mut b = vec![0x00, payload_type.code()];
     b.extend(packet_id.to_be_bytes());
     b.extend(0u32.to_be_bytes());
     b.extend(seq.to_be_bytes());
@@ -58,9 +60,15 @@ fn pa_with_mpt(assets: &[(&[u8; 4], u16)]) -> Vec<u8> {
     p
 }
 
+/// The first flags byte of an MPU payload header (Table 6-1): an MFU,
+/// timed, with the given fragmentation indicator and aggregation flag.
+fn mfu_flags(frag: FragmentationIndicator, aggregated: bool) -> u8 {
+    (FragmentType::Mfu.code() << 4) | 0x08 | (frag.code() << 1) | u8::from(aggregated)
+}
+
 /// An MPU payload with one timed MFU (or fragment of one).
-fn mpu(frag: u8, mpu_seq: u32, data: &[u8]) -> Vec<u8> {
-    let mut p = vec![0, 0, 0x20 | 0x08 | (frag << 1), 0];
+fn mpu(frag: FragmentationIndicator, mpu_seq: u32, data: &[u8]) -> Vec<u8> {
+    let mut p = vec![0, 0, mfu_flags(frag, false), 0];
     p.extend(mpu_seq.to_be_bytes());
     p.extend([0u8; 14]);
     p.extend(data);
@@ -71,7 +79,7 @@ fn mpu(frag: u8, mpu_seq: u32, data: &[u8]) -> Vec<u8> {
 
 /// An aggregated MPU payload of several whole timed MFUs.
 fn mpu_aggregated(mpu_seq: u32, units: &[&[u8]]) -> Vec<u8> {
-    let mut p = vec![0, 0, 0x20 | 0x08 | 1, 0];
+    let mut p = vec![0, 0, mfu_flags(FragmentationIndicator::Complete, true), 0];
     p.extend(mpu_seq.to_be_bytes());
     for u in units {
         p.extend(((u.len() + 14) as u16).to_be_bytes());
@@ -97,15 +105,16 @@ fn unscrambled_media_reaches_annex_b_and_loas() {
     let mut d = Decoder::new();
     let mut mfus = Vec::new();
     let mut seq = [0u32; 3];
-    let mut send = |d: &mut Decoder, mfus: &mut Vec<_>, k: usize, pt: u8, id: u16, p: Vec<u8>| {
-        seq[k] += 1;
-        d.push(&ipv6_udp(30000, &mmtp(pt, id, seq[k], &p)), mfus);
-    };
+    let mut send =
+        |d: &mut Decoder, mfus: &mut Vec<_>, k: usize, pt: PayloadType, id: u16, p: Vec<u8>| {
+            seq[k] += 1;
+            d.push(&ipv6_udp(30000, &mmtp(pt, id, seq[k], &p)), mfus);
+        };
     send(
         &mut d,
         &mut mfus,
         0,
-        2,
+        PayloadType::Messages,
         0x0000,
         pa_with_mpt(&[(b"hev1", video), (b"mp4a", audio)]),
     );
@@ -115,19 +124,55 @@ fn unscrambled_media_reaches_annex_b_and_loas() {
         &mut d,
         &mut mfus,
         1,
-        0,
+        PayloadType::Mpu,
         video,
         mpu_aggregated(7, &[&vps, &sps, &pps]),
     );
     let slice = nal(19, 3000);
     let (a, rest) = slice.split_at(1000);
     let (b, c) = rest.split_at(1000);
-    send(&mut d, &mut mfus, 1, 0, video, mpu(1, 7, a));
-    send(&mut d, &mut mfus, 1, 0, video, mpu(2, 7, b));
-    send(&mut d, &mut mfus, 1, 0, video, mpu(3, 7, c));
+    use FragmentationIndicator::{Complete, Head, Last, Middle};
+    send(
+        &mut d,
+        &mut mfus,
+        1,
+        PayloadType::Mpu,
+        video,
+        mpu(Head, 7, a),
+    );
+    send(
+        &mut d,
+        &mut mfus,
+        1,
+        PayloadType::Mpu,
+        video,
+        mpu(Middle, 7, b),
+    );
+    send(
+        &mut d,
+        &mut mfus,
+        1,
+        PayloadType::Mpu,
+        video,
+        mpu(Last, 7, c),
+    );
     // two AudioMuxElements
-    send(&mut d, &mut mfus, 2, 0, audio, mpu(0, 40, &[0x20; 300]));
-    send(&mut d, &mut mfus, 2, 0, audio, mpu(0, 41, &[0x21; 280]));
+    send(
+        &mut d,
+        &mut mfus,
+        2,
+        PayloadType::Mpu,
+        audio,
+        mpu(Complete, 40, &[0x20; 300]),
+    );
+    send(
+        &mut d,
+        &mut mfus,
+        2,
+        PayloadType::Mpu,
+        audio,
+        mpu(Complete, 41, &[0x21; 280]),
+    );
 
     let (svc, asset) = d.asset_of(video).unwrap();
     assert_eq!((svc, asset.type_str().as_str()), (Some(0x0097), "hev1"));
@@ -167,23 +212,35 @@ fn a_lost_fragment_drops_one_mfu_and_is_counted() {
     let mut d = Decoder::new();
     let mut mfus = Vec::new();
     d.push(
-        &ipv6_udp(30000, &mmtp(2, 0, 1, &pa_with_mpt(&[(b"hev1", video)]))),
+        &ipv6_udp(
+            30000,
+            &mmtp(
+                PayloadType::Messages,
+                0,
+                1,
+                &pa_with_mpt(&[(b"hev1", video)]),
+            ),
+        ),
         &mut mfus,
     );
     let slice = nal(1, 2000);
     let (a, rest) = slice.split_at(700);
     let (_lost, c) = rest.split_at(700);
+    use FragmentationIndicator::{Complete, Head, Last};
     d.push(
-        &ipv6_udp(30000, &mmtp(0, video, 10, &mpu(1, 3, a))),
+        &ipv6_udp(30000, &mmtp(PayloadType::Mpu, video, 10, &mpu(Head, 3, a))),
         &mut mfus,
     );
     // packet 11 lost
     d.push(
-        &ipv6_udp(30000, &mmtp(0, video, 12, &mpu(3, 3, c))),
+        &ipv6_udp(30000, &mmtp(PayloadType::Mpu, video, 12, &mpu(Last, 3, c))),
         &mut mfus,
     );
     d.push(
-        &ipv6_udp(30000, &mmtp(0, video, 13, &mpu(0, 4, &nal(1, 50)))),
+        &ipv6_udp(
+            30000,
+            &mmtp(PayloadType::Mpu, video, 13, &mpu(Complete, 4, &nal(1, 50))),
+        ),
         &mut mfus,
     );
     assert_eq!(mfus.len(), 1);

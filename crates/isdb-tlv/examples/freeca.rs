@@ -22,16 +22,11 @@
 //! cargo run --release -p isdb-tlv --example freeca -- FILE.tlv [FILE.tlv …]
 
 use isdb_tlv::ip::{compressed, ipv4, ipv6};
-use isdb_tlv::mmtp;
+use isdb_tlv::mmtp::{self, PayloadType};
 use isdb_tlv::tlv::PacketType;
 use isdb_ts::crc::crc32;
 use std::collections::BTreeMap;
 use std::io::{BufReader, Read};
-
-/// MMTP payload type of signalling messages (B60 Table 6-5).
-const SIGNALLING: u8 = 0x02;
-/// MMTP payload type of MPUs (media; B60 Table 6-5).
-const MPU: u8 = 0x00;
 
 /// What the media payloads of one MMTP packet id look like, measured
 /// without decrypting anything: byte entropy (encrypted data is ≈ 8 bits
@@ -147,12 +142,12 @@ fn main() {
             let Some((h, payload)) = mmtp::parse(&dg.payload) else {
                 continue;
             };
-            if h.payload_type == MPU {
+            if h.payload_type == PayloadType::Mpu {
                 let m = media.entry(h.packet_id).or_default();
                 m.add(payload, scramble_ext(&dg.payload));
                 continue;
             }
-            if h.payload_type != SIGNALLING {
+            if h.payload_type != PayloadType::Messages {
                 continue;
             }
             for msg in undivided_messages(payload) {
