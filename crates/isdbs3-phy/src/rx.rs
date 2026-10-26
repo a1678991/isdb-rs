@@ -24,6 +24,11 @@ pub struct RxOptions {
     /// Equalise the block with taps trained on the first frame's sync and
     /// pilot symbols ([`crate::eq`]).
     pub equalise: bool,
+    /// Where the first slot head is expected (a stream cut on a frame
+    /// boundary starts with one at 0): the synchronisation measures there
+    /// instead of searching every offset of a slot, and searches only if
+    /// no slot sync is found there.
+    pub slot_offset: Option<usize>,
 }
 
 impl Default for RxOptions {
@@ -33,6 +38,7 @@ impl Default for RxOptions {
             ldpc: Ldpc::FIXED,
             learned_constellation: true,
             equalise: true,
+            slot_offset: None,
         }
     }
 }
@@ -86,11 +92,25 @@ pub struct Rx {
     pub frames: Vec<RxFrame>,
     /// Every valid slot of every frame whose TMCC decoded, in order.
     pub slots: Vec<RxSlot>,
+    /// Index in `z` of the first symbol (slot #1's sync) of every whole
+    /// frame the synchronisation found, decoded or not: where a caller
+    /// streaming symbols can cut its buffer on a frame boundary.
+    pub frame_starts: Vec<usize>,
 }
+
+/// Lowest sync-symbol Es/N0 at which [`RxOptions::slot_offset`] is
+/// trusted, dB (else the offset is searched).
+pub const HINT_MIN_SNR_DB: f64 = 3.0;
 
 /// Run the receiver over symbols `z` (one per symbol, any scale).
 pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
-    let Some(sy0) = synchronise(z) else {
+    // the hint holds when the sync words correlate there (≈ 13 dB on a live
+    // stream; a wrong offset leaves them uncorrelated, ≤ 0 dB)
+    let hinted = opt
+        .slot_offset
+        .and_then(|o| synchronise_at(z, o))
+        .filter(|s| s.sync_snr_db > HINT_MIN_SNR_DB);
+    let Some(sy0) = hinted.or_else(|| synchronise(z)) else {
         return Rx::default();
     };
     let mut rx = Rx {
@@ -131,6 +151,7 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
     } else {
         sy0
     };
+    rx.frame_starts = sy.frames.iter().map(|&f| sy.slots[f].at).collect();
     let es_n0 = 10f64.powf(sy.sync_snr_db / 10.0);
     // Each frame's TMCC, main symbols and pilots, frames in parallel; then
     // the frames in order up to the first incomplete one, as a sequential

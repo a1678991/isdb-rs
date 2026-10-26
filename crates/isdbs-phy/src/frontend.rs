@@ -166,6 +166,49 @@ pub struct Prior {
 /// acquisition is redone, dB.
 pub const PRIOR_MARGIN_DB: f64 = 3.0;
 
+/// The acquisition of ISDB-S on the samples `x`: the carrier (the survey's
+/// strongest line, unless `carrier_offset_hz` is given) and the output trim
+/// (searched on the first 0.15 s, unless fixed). The front end then runs
+/// with these on the CPU ([`symbols_with_prior`]) or in a radio's FPGA.
+pub fn acquire(
+    x: &[num_complex::Complex<f32>],
+    fs: f64,
+    carrier_offset_hz: Option<f64>,
+    trim: Trim,
+) -> Result<Prior, ParamError> {
+    acquire_input(x, &to_input(x), fs, carrier_offset_hz, trim)
+}
+
+fn acquire_input(
+    x: &[num_complex::Complex<f32>],
+    xi: &[[i16; 2]],
+    fs: f64,
+    carrier_offset_hz: Option<f64>,
+    trim: Trim,
+) -> Result<Prior, ParamError> {
+    let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
+    let cfo = carrier_offset_hz.unwrap_or_else(|| sv.best_carrier().map_or(0.0, |c| c.offset_hz));
+    let mut d = design(fs, cfo);
+    let (t, mer) = match trim {
+        Trim::Fixed(t) => {
+            d.trim = t;
+            let n = ((0.05 * fs) as usize).min(xi.len());
+            let (z, _) = run(&xi[..n], &d)?;
+            (t, pilot_mer(&z).unwrap_or(f64::NEG_INFINITY))
+        }
+        Trim::Auto => {
+            let n = ((0.15 * fs) as usize).min(xi.len());
+            measure_trim(&xi[..n], &d)?
+        }
+    };
+    Ok(Prior {
+        carrier_offset_hz: cfo,
+        trim: t,
+        pilot_mer_db: mer,
+        survey_says_isdbs: sv.system.is_some_and(|m| m.system.name == system().name),
+    })
+}
+
 /// [`symbols_with`], reusing the carrier and trim of an earlier block of
 /// the same signal (`prior`) when they still hold: the front end runs over
 /// the first 0.05 s with them, and if its burst MER is within
@@ -196,28 +239,7 @@ pub fn symbols_with_prior(
     };
     let acq = match reuse {
         Some(p) => p,
-        None => {
-            let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
-            let cfo =
-                carrier_offset_hz.unwrap_or_else(|| sv.best_carrier().map_or(0.0, |c| c.offset_hz));
-            let mut d = design(fs, cfo);
-            let (t, mer) = match trim {
-                Trim::Fixed(t) => {
-                    d.trim = t;
-                    (t, excerpt_mer(&d, 0.05)?)
-                }
-                Trim::Auto => {
-                    let n = ((0.15 * fs) as usize).min(xi.len());
-                    measure_trim(&xi[..n], &d)?
-                }
-            };
-            Prior {
-                carrier_offset_hz: cfo,
-                trim: t,
-                pilot_mer_db: mer,
-                survey_says_isdbs: sv.system.is_some_and(|m| m.system.name == system().name),
-            }
-        }
+        None => acquire_input(x, &xi, fs, carrier_offset_hz, trim)?,
     };
     let mut d = design(fs, acq.carrier_offset_hz);
     d.trim = acq.trim;
