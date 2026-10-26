@@ -4,7 +4,7 @@
 
 > この文書は [README.md](README.md) の日本語訳です。リンク先のドキュメントは英語版のみで、内容に相違がある場合は英語版が優先します。
 
-規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（HackRF One と ADALM-Pluto 系）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。ISDB-T は送受信の全体を実装しています。ISDB-S は TS_ID ごとのトランスポートストリームまで受信できます（`isdb rx --system isdbs`。衛星 IF の録音から、または無線機からブロック単位で）。送信側はまだです。ISDB-S3 は TLV ストリーム ID ごとの TLV ストリームまで受信でき（`isdb rx --system isdbs3`）、その中の MMTP パケットと MMT-SI のテーブルを識別できます（`isdb tlv inspect`）。
+規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（HackRF One と ADALM-Pluto 系）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。ISDB-T は送受信の全体を実装しています。ISDB-S は TS_ID ごとのトランスポートストリームまで受信できます（`isdb rx --system isdbs`。衛星 IF の録音から、または無線機からブロック単位で）。送信側はまだです。ISDB-S3 は TLV ストリーム ID ごとの TLV ストリームまで受信でき（`isdb rx --system isdbs3`）、その中の MMT-SI のテーブルを解読してサービス、番組、パッケージとアセットを表示できます（`isdb tlv inspect`）。スクランブルされていないアセットはエレメンタリーストリームとして書き出せます（`isdb tlv extract`。試験環境の配信ではメディアはすべてスクランブルされており、デスクランブルは行いません）。
 
 > [!WARNING]
 > **法令および電波安全に関する注意**
@@ -54,6 +54,7 @@
 | [`isdbs3-core`](crates/isdbs3-core/README.md) | B44 v2.1 | ISDB-S3 の構造、符号化率、LDPC 検査行列、信号点配置、インターリーブ、エネルギー拡散、TMCC コーデック、スロット割当て |
 | [`isdbs3-phy`](crates/isdbs3-phy/README.md) | B44 v2.1 | フロントエンド以降の ISDB-S3 受信処理：スロット・フレーム同期、等化器、TMCC、主信号（LDPC、BCH）からスロットデータまで |
 | [`isdb-tlv`](crates/isdb-tlv/README.md) | B32 第 3 部、B60 | スロットからの TLV パケット、圧縮 IP、MMTP、MMT-SI と TLV-SI の識別 |
+| [`isdb-mmt`](crates/isdb-mmt/README.md) | B60 | MMT-SI と TLV-SI のテーブルの内容（MPT、PLT、MH-EIT、MH-SDT、MH-TOT、MH-BIT、TLV-NIT、AMT）、MPU／MFU の再構成、HEVC・LOAS・字幕のエレメンタリーストリーム |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | `isdb` バイナリ |
 
 各クレートの関係、フレーム／レイテンシの約束事、データの流れについては [docs/architecture.md](docs/architecture.md) を参照してください。

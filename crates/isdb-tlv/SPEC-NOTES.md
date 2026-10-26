@@ -65,5 +65,7 @@ around sections (SPECS.md §1.2). "Lab recordings": BS7, BS11, BS17 of
   documents.
 - Interpretation: `si::sections` finds sections at any offset by table
   id, section syntax indicator and CRC-32.
-- Confirmation: none yet: the 0.55 s lab recordings contain no FEh packet
-  (TLV-NIT and AMT repeat less often). Status: pending.
+- Confirmation: in 40 s live recordings of BS7, BS11 and BS17 (8 TLV
+  streams), every control packet holds one CRC-valid section starting at
+  offset 0 of its data (TLV-NIT 40h and AMT FEh, four of each per stream
+  in 40 s). Status: confirmed (live data): nothing precedes the section.

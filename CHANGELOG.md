@@ -16,6 +16,22 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-mmt` (new): the content of ISDB-S3 TLV streams per ARIB STD-B60:
+  MMT-SI descriptors (16-bit tags, the length width of each descriptor's
+  structure), the MPT with its assets and locations, PLT, MH-EIT, MH-SDT,
+  MH-TOT, MH-BIT, TLV-NIT and AMT (CRC-32 checked, repeats not decoded
+  again), divided and aggregated control messages, MPU payloads and MFUs
+  reassembled per asset with packet-loss and MPU-continuity counters,
+  NTP, and elementary-stream framing (HEVC Annex B, LOAS, caption MFUs).
+  MMT-SI text is UTF-8. Scrambled payloads are counted from their clear
+  8-byte header and never descrambled.
+- `isdb-cli`: `isdb tlv inspect` decodes the tables (network, services,
+  events, packages and assets, time; `--json`), `isdb tlv extract
+  --out-dir` writes each asset's elementary stream (`--service`,
+  `--asset`, `--write-scrambled` for the encrypted payloads as they are),
+  `isdb tlv validate` checks the structure. All three stream the file.
+- `isdb-tlv`: `tlv::FileReader`, a TLV stream file read a chunk at a
+  time.
 - `isdb-cli`: `isdb rx --system isdbs|isdbs3 --radio …` receives
   continuously through the radio's FPGA symbol front end when it offers
   one (`--offload auto|fpga|cpu`, default auto): acquisition on a short IQ

@@ -15,7 +15,10 @@ ISDB-S is received to transport streams, one per TS_ID (`isdb rx --system
 isdbs`, from satellite IF recordings or block by block from a radio); its
 transmitter is not written yet. ISDB-S3 is received to TLV streams,
 one per TLV stream id (`isdb rx --system isdbs3`), with the MMTP packets
-and MMT-SI tables they carry identified (`isdb tlv inspect`).
+and MMT-SI tables they carry decoded: services, events, packages and
+assets (`isdb tlv inspect`); unscrambled assets are written as
+elementary streams (`isdb tlv extract`; on the lab feed every media
+payload is scrambled, and nothing is descrambled).
 
 > [!WARNING]
 > **Legal and RF safety notice**
@@ -162,6 +165,7 @@ and MMT-SI tables they carry identified (`isdb tlv inspect`).
 | [`isdbs3-core`](crates/isdbs3-core/README.md) | B44 v2.1 | ISDB-S3 geometry, code rates, LDPC tables, constellations, interleaver, energy dispersal, TMCC codec, slot allocation |
 | [`isdbs3-phy`](crates/isdbs3-phy/README.md) | B44 v2.1 | ISDB-S3 receive chain after the front end: slot/frame sync, equaliser, TMCC, main signal (LDPC, BCH) to slot data |
 | [`isdb-tlv`](crates/isdb-tlv/README.md) | B32 Part 3, B60 | TLV packets from slots, compressed IP, MMTP, MMT-SI and TLV-SI identification |
+| [`isdb-mmt`](crates/isdb-mmt/README.md) | B60 | MMT-SI and TLV-SI table contents (MPT, PLT, MH-EIT, MH-SDT, MH-TOT, MH-BIT, TLV-NIT, AMT), MPU/MFU reassembly, HEVC / LOAS / caption elementary streams |
 | [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary |
 
 How they fit together, the frame/latency contract and the data flow:

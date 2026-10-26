@@ -205,11 +205,31 @@ BSn channel from a radio before capturing, so give `--system isdbs3`
 there. Record ISDB-S3 with the full 56 MHz analog bandwidth: the
 default 0.8 × rate filter cuts into the 34.8 MHz band.
 
-`isdb tlv inspect` lists the TLV packets by type (IPv6, header-compressed
-IP, control, null), the MMTP packet ids, the MMT-SI messages and tables
-(PA message with MPT and PLT, MH-EIT, MH-SDT, MH-TOT, MH-AIT, ECM, EMM,
-…) and the share of MPU payloads whose MMTP header carries scramble
-information. The scrambled payloads stay scrambled (no descrambling). The
+`isdb tlv` reads a TLV stream file a chunk at a time:
+
+```sh
+isdb tlv inspect bs7-b070.tlv            # network, services, events, assets
+isdb tlv inspect --json --events 10 bs7-b070.tlv
+isdb tlv validate bs7-b070.tlv           # exit 1 on errors
+isdb tlv extract bs7-b070.tlv --out-dir es/ [--service 0x0097] [--asset 0xa140]
+```
+
+`inspect` shows the TLV packets by type, the TLV-NIT (network, TLV
+streams, satellite frequencies, services) and AMT (service → IP flow),
+the MH-SDT services, the MH-EIT events of each service, the MPT of each
+package with its assets (type `hev1` / `mp4a` / `stpp` / `aapp`, MMTP
+packet id, component tag, MPU and packet continuity, scrambled share),
+and MH-TOT and NTP time. MMT-SI text is UTF-8 (B60 §7.1). `validate`
+checks CRCs (every repeated copy too), table structure, descriptor
+loops, lost MMTP packets and the MPU sequence continuity of timed
+assets.
+
+`extract` writes one file per asset: HEVC as an Annex B byte stream
+(`SERVICE-PACKETID.hevc`), MPEG-4 audio as LOAS (`.latm`), each caption
+subsample as its own file (`.ttml`, `.png`, …). Scrambled payloads are
+skipped; `--write-scrambled` writes them as they are, still encrypted
+(`.scrambled`). Nothing is descrambled. On the BS transponders of the lab
+feed every media payload is scrambled, so `extract` writes nothing there. The
 same modes as ISDB-S apply from a radio: continuous with the FPGA front
 end, or blocks of IQ with the CPU front end (VERIFICATION.md "ISDB-S3
 receiver" and "Continuous reception through the FPGA front end").

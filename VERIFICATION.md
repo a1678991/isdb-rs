@@ -1171,6 +1171,48 @@ are transponder numbering, not station identities.
   (`isdbs3_every_segment_acquires`, `ISDB_RS_ISDBS3_LIVE_IQ`;
   `examples/blockacq`).
 
+### MMT-SI, TLV-SI and media of the TLV streams (2026-10-26)
+
+`isdb-mmt` decodes what the TLV streams carry, `isdb tlv inspect /
+extract / validate` shows it. Measured on 40 s live recordings of BS7,
+BS11 and BS17 through the FPGA front end (`isdb rx --system isdbs3
+--radio … --seconds 40 --out 'x-{tlv_id}.tlv'`, 0 symbol-stream losses,
+8 TLV streams, 95 631–128 980 TLV packets each):
+
+- **Tables**: 1 262–1 873 tables per stream, **0 CRC errors, 0
+  malformed, 0 descriptor loops that fail to split**, 0 control-message
+  fragments without their start (after reading the fragment counter as
+  unused: it is 0 on every fragment on air, SPEC-NOTES
+  "message-fragment-counter"; requiring it had orphaned 141 MH-EIT
+  fragments of one stream in 40 s). Each stream carries one MPT (one
+  service per TLV stream), a PLT, 97–117 MH-EIT sections (166–349
+  events per service), an MH-SDT with the ten services of the network,
+  MH-BIT, MH-TOT, NTP (one packet per frame), and per 40 s four TLV-NIT
+  and four AMT sections (network 000Bh, ten TLV streams with their
+  satellite frequencies matching the BS channel plan, one service each).
+  Text is UTF-8 (B60 §7.1).
+- **Assets**: every service has an HEVC (`hev1`) and an MPEG-4 audio
+  (`mp4a`) asset and one or two caption assets (`stpp`); some carry
+  application assets (`aapp`). Every MPU payload of every asset carries
+  the scramble-information header extension (66 825–114 947 payloads per
+  stream): **no unscrambled media is on air**. Only the 8-byte payload
+  header is in the clear (SPEC-NOTES "scrambled-mpu", 3 852 payloads
+  checked): MPU sequence numbers of timed media are continuous (76–82
+  video MPUs and ≈ 470 audio MPUs per 40 s, 0 jumps, 0 packets lost);
+  application MPUs jump by design (B60 §10.2.1).
+- **Media path**: since the media are scrambled, HEVC Annex B, LOAS and
+  caption extraction are checked on synthetic MMTP (`tests/synthetic.rs`:
+  an MPT, aggregated VPS/SPS/PPS, an IRAP slice divided in three, two
+  AudioMuxElements → four start codes and the slice whole, two LOAS
+  frames; a lost fragment drops one MFU and is counted). `isdb tlv
+  extract` writes nothing for these streams by default, and with
+  `--write-scrambled` the payloads as they are (still encrypted).
+- **Checks**: `isdb tlv validate` reports 0 errors and 0 warnings on all
+  8 streams; a byte flipped inside a section is reported as a CRC error
+  (fault injection; repeated copies are CRC-checked too). Opt-in test
+  `isdbs3_tlv_files_decode_cleanly` (`ISDB_RS_ISDBS3_TLV_FILES`) passes on
+  the 8 files.
+
 ## Satellite receive speed
 
 Plan §0.10 (2026-10-25): the stages that kept `isdb rx --system isdbs3`
