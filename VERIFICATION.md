@@ -1297,6 +1297,51 @@ Zen 4.
   hardly shows in the wall time (summed front-end CPU −9 % with AVX2);
   the single-stream figure above is the load-independent one.
 
+## Continuous reception through the FPGA front end
+
+2026-10-26, PlutoSky R2 with the format-4 bitstream (`fpga/README.md`),
+receive only, satellite IF through RX1 (no DC block), 40 Msps, 56 MHz.
+`isdb rx --system isdbs|isdbs3 --radio pluto:uri=ip:192.0.2.30 --channel
+… --seconds 30` with the default `--offload auto` (plan §0.16).
+
+| | ISDB-S, BS1 | ISDB-S3, BS7 |
+|---|---|---|
+| acquisition | carrier −158.6 kHz, burst MER 16.4 dB | carrier −157.9 kHz, sync Es/N0 13.5 dB |
+| link | 43.4 MB/s (6 bits) | 50.8 MB/s (6 bits) |
+| decoded | 2 716 superframes, TMCC and main signal on all; 21 732 frames, 0 slips | 873 frames, TMCC on 872; 83 712 slots, 1 LDPC failure, 0 BCH failures |
+| output | 3 TS × 347 648 packets, all RS-clean; 0 continuity errors, 0 TEI (`isdb ts inspect`) | 3 TLV streams, 0 head-indication mismatches |
+| losses | 0 | 1 (one DMA overflow, 40 blocks ≈ 5 ms; a reported discontinuity) |
+| receiver | 12.3 s for 30 s (2.5× real time) | 18.3 s for 30 s (1.6× real time) |
+
+- **The first gapless TS from the Pluto**: until now a radio delivered
+  0.83 s blocks every 2 s (the ≥ 39 Msps IQ does not fit the link).
+- **Offline on recorded words** (`isdb symbols --out`, then `isdb rx
+  --symbols`): 10 s of BS7 decodes to 301 frames (TMCC on all; the 302nd
+  is the partial last one), 28 896 slots LDPC-clean, 0 lost slots in the
+  three TLV streams, at 1.42× real time; 10 s of BS1 to 902 superframes,
+  3 TS × 115 456 packets RS-clean, 0 continuity errors, 2.1× real time.
+- **Chunking**: the receiver runs on chunks of 24 frames (ISDB-S3) and
+  keeps what starts at its last whole frame for the next call; 8 / 16 /
+  24 frames decoded the 10 s BS7 words at 0.81× / 1.07× / 1.14× real time
+  with the same result (each call synchronises and trains the equaliser
+  anew); a slot-offset hint (chunks start on a slot head) then saved the
+  0.15 s search per chunk: 1.42×. A loss cut into the words file recovers
+  at the next frame (300 of 300 frames, TMCC on all).
+- **Losses on ISDB-S3, not ISDB-S**: the words are drained by their own
+  thread, and at most 1.1 s of symbols queued behind the receiver, so the
+  DMA overflows come from the libiio stream stalling on a loaded host
+  (load average 5–15 from other work), not from the decoder. One ISDB-S3
+  run lost lock for ≈ 2 s after its loss (64 frames without TMCC, one
+  restart); the same cut made offline recovers at once, so it is not the
+  stream handling; the AD9361's AGC stepped (33 → 34 dB) in that run.
+  Open.
+- **The frame markers are right**: over the 10 s stream `isdb iq s3sync`
+  counts FSync 302 / !FSync 17 854 = 18 156 odd slots, one marker per 120
+  slots, and the receiver finds and decodes the same frames. The FPGA
+  front end has no carrier loop: over 10 s the residual offset turned the
+  carrier by 1.06 rad per SSync slot pair (+306 Hz), which the per-slot
+  phase of the receiver follows.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

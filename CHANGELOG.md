@@ -16,6 +16,18 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-cli`: `isdb rx --system isdbs|isdbs3 --radio …` receives
+  continuously through the radio's FPGA symbol front end when it offers
+  one (`--offload auto|fpga|cpu`, default auto): acquisition on a short IQ
+  probe, then the front end's `Symbols` words decoded as one stream, cut
+  on frame (ISDB-S3) or superframe (ISDB-S) boundaries, with losses and
+  lost locks reported as discontinuities. `--symbols FILE` decodes a words
+  file (`isdb symbols --out`). Live from a PlutoSky R2: 30 s of gapless TS
+  from BS1 (every packet RS-clean, 0 continuity errors) and BS7's TLV
+  streams with one reported loss.
+- `isdbs3-phy`: `rx::Rx::frame_starts` and `RxOptions::slot_offset` (a
+  synchronisation hint for streams cut on a frame start);
+  `frontend::acquire`. `isdbs-phy`: `frontend::acquire`.
 - `isdb-frontend`: format 4, the arithmetic of an FPGA that takes one
   sample per clock (the PlutoSky R2 clocks its sample path at the sample
   rate): loop delay 24 symbols (was 6), the timing detector's banks `h`
@@ -497,6 +509,13 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Fixed
 
+- `isdbs3-phy` / `isdb-cli`: the ISDB-S3 carrier at 40 Msps. The survey's
+  strongest line was an alias on two of seven live recordings (sync
+  Es/N0 −3 / −8 dB against +9 dB for the carrier): `isdb symbols` took it,
+  and `pick_carrier` tried only the first four candidates while the
+  carrier was the 4th of 5. Every candidate is now tried, and `isdb
+  symbols` uses the same choice; the FPGA path of `isdb rx` also refuses a
+  lock below 4 dB and probes again.
 - `isdb-frontend`: the `Symbols` reader could deliver a damaged block.
   A loss glued block 1's intact header to later payload, and a payload
   word that landed in the trailer position equalled the CRC-16 of that

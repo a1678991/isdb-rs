@@ -76,8 +76,11 @@ TS_ID instead of per layer.
 ```sh
 isdb rx --iq bs3.sigmf-meta --out 'bs3-{ts_id}.ts'          # one file per TS: bs3-4030.ts, …
 isdb rx --iq nd2.sigmf-meta --ts-id 0x6020 --out nd2.ts      # one TS
+isdb rx --radio pluto:uri=ip:192.0.2.30 --channel BS3 \
+        --seconds 30 --out 'bs3-{ts_id}.ts'                   # continuous, FPGA front end
 isdb rx --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --channel BS3 \
-        --seconds 10 --out 'bs3-{ts_id}.ts'                   # blocks from a radio
+        --offload cpu --seconds 10 --out 'bs3-{ts_id}.ts'     # blocks of IQ, CPU front end
+isdb rx --symbols bs3.sym --out 'bs3-{ts_id}.ts'             # an FPGA words file (isdb symbols --out)
 ```
 
 | Option | Default | Meaning |
@@ -89,10 +92,32 @@ isdb rx --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --channel BS3 \
 | `--rate SPS` / `--bw HZ` | 40M / 56M | radio sample rate and analog bandwidth (≥ 1.35 × 28.86 Mbaud; a narrower filter costs MER) |
 | `--block-seconds S` | the radio's longest single capture | radio: seconds per contiguous capture |
 | `--carrier-offset HZ` | from the survey | carrier offset of the signal |
+| `--offload auto\|fpga\|cpu` | auto | radio: the radio's FPGA symbol front end when it offers one (continuous reception), else contiguous IQ captures with the CPU front end; `fpga` fails without one, `cpu` forces the captures |
+| `--symbols FILE` | — | decode a `Symbols` words file (`isdb symbols --out`) as one continuous stream; the system comes from its `.json` sidecar |
 | `--ldpc fixed\|scalar\|float` | fixed | ISDB-S3 LDPC decoder: fixed-point with 16 SIMD lanes; the same one codeword at a time (its bit-exact reference); the floating-point reference |
 | `--json` | — | summary with per-TS counters (packets, RS clean / corrected / uncorrectable) and the stage times |
 
-From a radio, `isdb rx` takes one contiguous capture after another and
+**Continuous reception (FPGA front end).** When the radio offers the
+symbol front end in its FPGA (a PlutoSky R2 with the `isdb_top.bin`
+bitstream, `fpga/README.md`), `isdb rx` acquires on a 0.2 s IQ probe
+(the carrier tried from every survey candidate, the trim measured;
+another probe if the lock is weak), configures the front end, and then
+decodes the symbols it streams: 43–51 MB/s over Gigabit Ethernet, within
+what the link carries. The words are parsed on their own thread (so the
+radio never waits for the receiver), checked block by block (CRC-32C,
+sequence numbers), and decoded in chunks of 24 frames (ISDB-S3) or 24
+superframes (ISDB-S), cut on their own boundaries so the TS / TLV
+streams run on without a gap. A loss in the words (a DMA overflow on the
+device), or a lost lock, is a discontinuity in the output: reported as
+`[rx] loss at symbol …` and counted in the summary's `[rx] stream:` line
+and `stream` in `--json`. 30 s of BS1 gave three gapless TSs (2 716
+superframes, every packet RS-clean, 0 continuity errors); 30 s of BS7
+gave its three TLV streams with one reported loss (VERIFICATION.md
+"Continuous reception through the FPGA front end"). `--symbols FILE`
+decodes the same words recorded by `isdb symbols --out`.
+
+**Blocks of IQ (CPU front end).** Without that front end, or with
+`--offload cpu`, `isdb rx` takes one contiguous capture after another and
 decodes each on its own: over Gigabit Ethernet a radio cannot stream the
 ≥ 39 Msps ISDB-S needs without losses (VERIFICATION.md "8-bit captures
 and streaming over Gigabit Ethernet"), so the TS has a gap at every block
@@ -132,8 +157,9 @@ file of TLV packets (each with its 4-byte header) per TLV stream id.
 ```sh
 isdb rx --iq bs7-61-bw56.sigmf-meta --out 'bs7-{tlv_id}.tlv'   # bs7-b070.tlv, …
 isdb rx --iq bs11.sigmf-meta --ts-id 0xb0b0 --out b0b0.tlv     # one stream
-isdb rx --radio pluto:uri=ip:192.0.2.30,recorder=maia --freq BS7 \
-        --system isdbs3 --seconds 10 --out 'bs7-{tlv_id}.tlv'  # blocks from a radio
+isdb rx --radio pluto:uri=ip:192.0.2.30 --channel BS7 \
+        --system isdbs3 --seconds 30 --out 'bs7-{tlv_id}.tlv'  # continuous, FPGA front end
+isdb rx --symbols bs7.sym --out 'bs7-{tlv_id}.tlv'             # an FPGA words file
 isdb iq s3tmcc bs7-61-bw56.sigmf-meta                           # the TMCC of every frame
 isdb tlv inspect bs7-b070.tlv                                   # what a TLV stream carries
 ```
@@ -150,9 +176,9 @@ IP, control, null), the MMTP packet ids, the MMT-SI messages and tables
 (PA message with MPT and PLT, MH-EIT, MH-SDT, MH-TOT, MH-AIT, ECM, EMM,
 …) and the share of MPU payloads whose MMTP header carries scramble
 information. The scrambled payloads stay scrambled (no descrambling). The
-same limits as ISDB-S apply from a radio (block-wise, slower than real
-time on the CPU: LDPC alone needs every core of a 32-core host for 16APSK
-7/9; VERIFICATION.md "ISDB-S3 receiver").
+same modes as ISDB-S apply from a radio: continuous with the FPGA front
+end, or blocks of IQ with the CPU front end (VERIFICATION.md "ISDB-S3
+receiver" and "Continuous reception through the FPGA front end").
 
 ## Status lines
 
