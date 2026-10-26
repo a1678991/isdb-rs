@@ -14,8 +14,9 @@ the ADC packer that feeds the RX DMA (Tezuka's maia-hdl block design,
 With symbols selected (CTRL bit 2) the packer's channel 0 carries the
 `Symbols` words instead of samples, one per strobe; the host enables only
 `voltage0` of `cf-ad9361-lpc` and reads 16-bit words. Otherwise the block
-is transparent. Everything runs in the ADC clock domain (dout_clk of
-util_ad9361_adc_fifo, 4x the sample rate).
+is transparent. Everything runs in the ADC packer's clock domain (dout_clk
+of util_ad9361_adc_fifo = util_ad9361_divclk = l_clk / 4: the sample rate,
+40 MHz at 40 Msps on the PlutoSky R2; one sample per clock).
 """
 
 from amaranth.hdl import Elaboratable, Module, Mux, Signal, signed

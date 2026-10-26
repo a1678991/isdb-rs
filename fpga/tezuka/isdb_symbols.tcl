@@ -12,7 +12,10 @@
 # mux_decim_i/q data_out with mux_decim_i valid_out (full rate, or the DDC
 # output when Tezuka's decimation is selected). Clock and reset: the ADC
 # packer's domain, util_ad9361_adc_fifo dout_clk / dout_rstn (active low;
-# the block's rst is active high).
+# the block's rst is active high). That clock is util_ad9361_divclk = l_clk
+# / 4 = the sample rate on the PlutoSky R2 (2R2T LVDS, r1_mode 0; 40 MHz at
+# 40 Msps), so the block takes one sample per clock (fpga/README.md
+# "Clock").
 #
 # Control: axi_ad9361 up_adc_gpio_out (bits 31..1; bit 0 stays Tezuka's:
 # it selects the DDC path in maiafirtoiq.tcl and drives cs12 zero_count in
@@ -28,6 +31,10 @@ if {![info exists ::isdb_symbols_rx_v]} {
 }
 add_files -norecurse $::isdb_symbols_rx_v
 update_compile_order -fileset sources_1
+# its timing constraints (CDC of the control word, the clock case it runs in)
+if {[info exists ::isdb_symbols_xdc]} {
+    add_files -norecurse -fileset constrs_1 $::isdb_symbols_xdc
+}
 
 create_bd_cell -type module -reference isdb_symbols_rx isdb_symbols
 

@@ -113,17 +113,26 @@ def trimmed_vector():
 
 @unittest.skipUnless(vector_files(), f"no test vectors in {VECTORS} (mise run fpga:vectors)")
 class VectorTest(unittest.TestCase):
-    def test_bit_exact_regular_strobe(self):
+    def test_bit_exact_sample_every_clock(self):
+        """The most the core must take: a sample on every clock."""
         for path in vector_files():
             with self.subTest(path=os.path.basename(path)):
                 doc = load(path)
-                syms, words = simulate(doc)
+                syms, words = simulate(doc, pattern="every")
+                self.assertEqual(compare(doc, syms, words), [])
+
+    def test_bit_exact_wfifo_bursts(self):
+        """util_wfifo's bursts of eight consecutive samples."""
+        for path in vector_files():
+            with self.subTest(path=os.path.basename(path)):
+                doc = load(path)
+                syms, words = simulate(doc, pattern="wfifo")
                 self.assertEqual(compare(doc, syms, words), [])
 
     def test_bit_exact_irregular_strobe_and_coefficient_load(self):
         path = trimmed_vector()
         doc = load(path)
-        syms, words = simulate(doc, jitter=True, load_port=True)
+        syms, words = simulate(doc, pattern="jitter", load_port=True)
         self.assertEqual(compare(doc, syms, words), [])
 
     def test_configured_through_gpio(self):
@@ -145,6 +154,19 @@ class VectorTest(unittest.TestCase):
         k[ph][t] += 1
         syms, words = simulate(doc)
         doc["params"]["k"][ph][t] -= 1
+        self.assertNotEqual(compare(doc, syms, words), [])
+
+    def test_a_wrong_detector_bank_is_caught(self):
+        """One coefficient of g (a centre tap, the only ones the core
+        has) off by one: the timing error and from there the loop differ
+        (the detector path is really compared too)."""
+        doc = load(vector_files()[0])
+        g = doc["params"]["g"]
+        taps = len(g[0])
+        t = taps // 2
+        for ph in range(len(g)):
+            g[ph][t] += 1
+        syms, words = simulate(doc)
         self.assertNotEqual(compare(doc, syms, words), [])
 
 

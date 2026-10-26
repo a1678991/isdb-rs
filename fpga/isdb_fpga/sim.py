@@ -2,7 +2,7 @@
 (`cargo run -p isdb-frontend --example vectors -- OUT.json ...`) and compare
 every symbol's internals and the output words.
 
-python -m isdb_fpga.sim VECTORS.json [--jitter] [--load-port]
+python -m isdb_fpga.sim VECTORS.json [--pattern every|wfifo|jitter] [--load-port] [--via-gpio]
 """
 
 import json
@@ -12,7 +12,7 @@ import sys
 from amaranth.sim import Simulator
 
 from .control import ID_MAGIC
-from .frontend import CYCLES, FORMAT_VERSION, SymbolFrontend
+from .frontend import FORMAT_VERSION, SymbolFrontend
 from .top import SymbolsRx
 
 FIELDS = ("phase", "y", "dy", "yk", "gain", "period", "z", "dz", "zk", "q", "e", "err")
@@ -23,12 +23,31 @@ def load(path):
         return json.load(f)
 
 
-def simulate(doc, jitter=False, load_port=False, seed=1):
+def gaps(pattern, rng):
+    """Idle cycles after each input sample: `every` = a sample on every
+    clock (the most the core must take); `wfifo` = util_wfifo's bursts of
+    eight samples on consecutive clocks with the gap a 40 Msps stream from
+    the 160 MHz interface leaves between bursts (eight samples per
+    32 l_clk = eight divided clocks: on average one sample per clock, so
+    no gap; the burst start jitters by a clock either way); `jitter` = 0
+    to 3 idle clocks at random."""
+    n = 0
+    while True:
+        if pattern == "every":
+            yield 0
+        elif pattern == "wfifo":
+            n += 1
+            yield (rng.choice((0, 1)) if n % 8 == 0 else 0)
+        else:
+            yield rng.randrange(4)
+
+
+def simulate(doc, pattern="every", load_port=False, seed=1):
     """Run the core on `doc`'s input; returns (symbols, words) as lists in
-    the JSON's layout. `jitter` spaces samples 4..7 cycles apart at random
-    (the ADC strobe is regular; the result must not depend on it).
-    `load_port` loads the coefficients through the core's load port
-    instead of the memories' initial contents."""
+    the JSON's layout. `pattern` sets the input strobe (`gaps`): the
+    result must not depend on it. `load_port` loads the coefficients
+    through the core's load port instead of the memories' initial
+    contents."""
     p = doc["params"]
     taps = p["taps"]
     if load_port:
@@ -85,16 +104,16 @@ def simulate(doc, jitter=False, load_port=False, seed=1):
         ctx.set(dut.start, 1)
         await tick()
         ctx.set(dut.start, 0)
+        gap = gaps(pattern, rng)
         for (i, q) in doc["input"]:
             ctx.set(dut.i_valid, 1)
             ctx.set(dut.i_i, i)
             ctx.set(dut.i_q, q)
             await tick()
             ctx.set(dut.i_valid, 0)
-            gap = CYCLES + (rng.randrange(4) if jitter else 0)
-            for _ in range(gap - 1):
+            for _ in range(next(gap)):
                 await tick()
-        for _ in range(60):
+        for _ in range(400):
             await tick()
 
     sim.add_testbench(bench)
@@ -151,9 +170,8 @@ def simulate_top(doc, gap=6):
             ctx.set(dut.adc_i, i)
             ctx.set(dut.adc_q, q)
             await tick()
-            ctx.set(dut.adc_valid, 0)
-            await tick(CYCLES - 1)
-        await tick(60)
+        ctx.set(dut.adc_valid, 0)
+        await tick(400)
 
     sim.add_testbench(bench)
     sim.run()
@@ -201,7 +219,8 @@ def main(argv):
         for b in bad:
             print("  " + b)
         return 1 if bad else 0
-    syms, words = simulate(doc, jitter="--jitter" in argv, load_port="--load-port" in argv)
+    pattern = argv[argv.index("--pattern") + 1] if "--pattern" in argv else "every"
+    syms, words = simulate(doc, pattern=pattern, load_port="--load-port" in argv)
     bad = compare(doc, syms, words)
     print(f"{path}: {len(syms)} symbols, {len(words)} words; "
           + ("bit-exact" if not bad else f"{len(bad)} mismatches"))
