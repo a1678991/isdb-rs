@@ -254,6 +254,45 @@ diff, as `--fix` can produce `u64::from(a) + u64::from(b)` where one
 - `segments: usize` in `LayerConfig` → `Segments(u8)` 1..=13 (Table 3-31),
   removing `ParamError::EmptyLayer` and the `1..=13` check in TMCC decode.
 - `cast_possible_truncation = "warn"` per crate as counts reach zero.
+- The raw-byte TSC/AFC readers outside `isdb-ts` (`p[3] >> 6`,
+  `(p[3] >> 4) & 3` in `isdb-analyze/src/{scan,validate}.rs`,
+  `isdb-cli/src/{source,tx}.rs`, `isdbt-mux/src/{config,relay}.rs`,
+  `isdbt-phy/src/broadcast_ts.rs`) go through `Header::decode` and the
+  item-A enums.
+
+## 3.1 Status (2026-10-27, after the first dispatch)
+
+Items A–E ran in parallel worktrees (one agent each) off `c156dc5` and
+are merged on `feat/pluto-backend` (`04900bb` A, `a8190d7` C, `b8a0d1e`
+B, `5e4ea5f` E, `66f5f82` D); the full ladder (fmt, clippy `-D
+warnings`, workspace tests, rustdoc `-D warnings`, MSRV) is green on the
+merged tree. What each agent reported:
+
+| item | sites the compiler found | bare-int `pub` fields | spec notes |
+|---|---|---|---|
+| A `isdb-ts` | 2 sites, 2 files (the 17 planned callers read raw bytes, not `Header`) | 80 → 78 | none; H.222.0 Tables 2-4/2-5 verbatim |
+| B `isdbt-ofdm` | 0 outside `tmcc.rs` | 26 → 22 | Table 3-30 '100' "not used" (sound broadcasting) kept as `Reserved(0b100)`; unused layer decided by the modulation field alone |
+| C `isdbs-core` | 22 sites, 8 files | 6 → 5 | none; BO.1408-1 Table 1 unambiguous. Lab captures re-decoded identically |
+| D `isdbs3-core` | 13 sites, 6 files | 15 → 13 (+ `isdbs3-phy` 14 → 13) | none new; the 1010 = 105/120 reading stays in `RateCode::from_code` |
+| E `isdb-mmt` / `isdb-tlv` | 15 files | 69 → 67, 20 → 18 | B60 Table 6-6 (payload type) vs 6-5 (FEC type): an old `freeca.rs` comment cited the wrong table; `FecType` typed too |
+
+Follow-ups the agents surfaced, added to §3 G: the raw-byte readers of
+TSC/AFC in `isdb-analyze`, `isdb-cli`, `isdbt-mux`, `isdbt-phy` (item A
+left them; they could take the enum through `Header::decode`), and
+`SegmentsCode::Segments(l.segments as u8)` in `isdbt-ofdm`, the one cast
+item G's `Segments(u8)` retires.
+
+Cast census after A–E (`tools/type-census.sh`): 903 truncate, 632
+lossless, 327 sign/wrap, 594 precision, total **2 456** (was 2 462): the
+enum items were never about casts; item F is.
+
+Practical notes for the next dispatch: agent worktrees are cut from
+`main`, not the current branch, so each brief must say to reset onto the
+branch tip first; the scratchpad directory is shared between parallel
+agents (one overwrote another's commit-message file), so temporary files
+need unique names; every agent inserts its CHANGELOG entry at the top of
+`### Changed`, so that file conflicts on every merge and is resolved by
+keeping all entries.
 
 ## 4. Merging the parallel items
 
