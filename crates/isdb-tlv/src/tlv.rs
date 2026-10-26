@@ -197,6 +197,75 @@ impl Assembler {
     }
 }
 
+/// Reads the TLV packets of a TLV stream file (packets back to back, as
+/// `isdb rx --system isdbs3` writes them) from any reader, a chunk at a
+/// time: memory stays bounded by one chunk and one packet. Bytes that are
+/// not a TLV header are skipped up to the next sync byte and counted.
+pub struct FileReader<R> {
+    r: R,
+    buf: Vec<u8>,
+    pos: usize,
+    eof: bool,
+    /// Bytes skipped while looking for a TLV header.
+    pub skipped: u64,
+}
+
+impl<R: std::io::Read> FileReader<R> {
+    /// Bytes read from the underlying reader at a time.
+    pub const CHUNK: usize = 1 << 20;
+
+    /// A reader over `r`.
+    pub fn new(r: R) -> Self {
+        Self {
+            r,
+            buf: Vec::new(),
+            pos: 0,
+            eof: false,
+            skipped: 0,
+        }
+    }
+
+    /// The next packet, `None` at the end of the input (a truncated last
+    /// packet is counted as skipped).
+    pub fn next_packet(&mut self) -> std::io::Result<Option<Packet>> {
+        loop {
+            let avail = &self.buf[self.pos..];
+            if avail.len() >= 4 {
+                if avail[0] != SYNC {
+                    let n = avail[1..]
+                        .iter()
+                        .position(|&b| b == SYNC)
+                        .map_or(avail.len(), |i| i + 1);
+                    self.skipped += n as u64;
+                    self.pos += n;
+                    continue;
+                }
+                let len = usize::from(u16::from_be_bytes([avail[2], avail[3]]));
+                if avail.len() >= 4 + len {
+                    let p = Packet {
+                        kind: PacketType::from_byte(avail[1]),
+                        data: avail[4..4 + len].to_vec(),
+                    };
+                    self.pos += 4 + len;
+                    return Ok(Some(p));
+                }
+            }
+            if self.eof {
+                self.skipped += avail.len() as u64;
+                self.pos = self.buf.len();
+                return Ok(None);
+            }
+            self.buf.drain(..self.pos);
+            self.pos = 0;
+            let start = self.buf.len();
+            self.buf.resize(start + Self::CHUNK, 0);
+            let n = self.r.read(&mut self.buf[start..])?;
+            self.buf.truncate(start + n);
+            self.eof = n == 0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +338,34 @@ mod tests {
         assert!(out.len() >= 20 - 6 && out.len() < 20);
         assert!(out.iter().all(|p| *p == ps[0]));
         assert_eq!(a.stats.lost_slots, 1);
+    }
+
+    #[test]
+    fn file_reader_streams_and_resyncs() {
+        let a = Packet {
+            kind: PacketType::Ipv6,
+            data: (0..3000u32).map(|i| i as u8).collect(),
+        };
+        let b = Packet {
+            kind: PacketType::Null,
+            data: vec![0xFF; 7],
+        };
+        // garbage before, between and a truncated packet at the end
+        let mut bytes = vec![1, 2, 3];
+        for _ in 0..800 {
+            bytes.extend(a.bytes());
+            bytes.extend(b.bytes());
+        }
+        bytes.extend([9, 9]);
+        bytes.extend(b.bytes());
+        bytes.extend(&a.bytes()[..10]);
+        let mut r = FileReader::new(&bytes[..]);
+        let mut n = 0;
+        while let Some(p) = r.next_packet().unwrap() {
+            assert!(p == a || p == b);
+            n += 1;
+        }
+        assert_eq!(n, 1601);
+        assert_eq!(r.skipped, 3 + 2 + 10);
     }
 }

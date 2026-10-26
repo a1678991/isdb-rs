@@ -1,0 +1,25 @@
+[package]
+name = "isdb-mmt"
+description = "MMT-SI and TLV-SI table contents and MPU/MFU media reassembly of ISDB-S3 / advanced BS (ARIB STD-B60): MPT, PLT, MH-EIT, MH-SDT, MH-TOT, MH-BIT, TLV-NIT, AMT, descriptors, and elementary streams per asset"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-mmt"
+readme = "README.md"
+keywords = ["isdb-s3", "mmt", "arib", "broadcast", "hevc"]
+categories = ["parser-implementations", "multimedia"]
+include = ["/src/**", "/README.md", "/SPEC-NOTES.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+isdb-tlv.workspace = true
+isdb-si.workspace = true
+isdb-ts.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -369,6 +369,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "isdb-mmt"
+version = "0.1.0"
+dependencies = [
+ "isdb-si",
+ "isdb-tlv",
+ "isdb-ts",
+ "proptest",
+]
+
+[[package]]
 name = "isdb-radio"
 version = "0.1.0"
 dependencies = [
