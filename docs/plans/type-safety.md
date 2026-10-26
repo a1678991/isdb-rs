@@ -78,9 +78,11 @@ goes in the inventory (§3) as a later item, after the enums.
 6. **Update the prose:** crate README (doctested), `lib.rs` module docs,
    CHANGELOG "Changed" with a `BREAKING CHANGE` footer on the commit if a
    public field or signature changed.
-7. **Verify** `mise run lint`, `cargo test --workspace --locked`, `mise run
-   doc`, `mise run msrv`. Then `tools/type-census.sh <crate>` to record
-   what the change retired.
+7. **Verify** with `mise run check` (lint, test, doc, deny, msrv **and
+   `oracle`**, which compiles the out-of-workspace helper the workspace
+   build skips; see §1.4), plus the two `--no-default-features` clippy
+   runs CI adds (`isdb-cli`, `isdb-radio`). Then `tools/type-census.sh
+   <crate>` to record what the change retired.
 8. **One commit per type**, `refactor(<crate>)!: <Type> is a <shape> of
    <table>`. Body: what was checked at run time before, where the raw value
    now enters, how many sites the compiler found.
@@ -113,6 +115,12 @@ scoped to tests), the README doctest (`Some(2)` → `2`), a test
   widen the regex to catch variables; let `rustc` list them.
 - Keep the `#[doc(hidden)] pub const _X_CLOSED: () = ();` carrier for the
   `compile_fail` doctest: rustdoc only runs doctests on items.
+- `oracle/rust_tx3` is a stand-alone crate outside the workspace that
+  depends on `isdbt-core` by path: `cargo clippy --workspace` does not
+  compile it, so the compiler's list of sites misses it. The pilot broke
+  it and only `mise run oracle` (a CI job) noticed, after item F. Step 7
+  of the recipe is `mise run check`, which includes `oracle`; the
+  workspace-only commands are not enough.
 
 ## 2. The cast lints
 
@@ -270,6 +278,7 @@ merged tree. What each agent reported:
 
 | item | sites the compiler found | bare-int `pub` fields | spec notes |
 |---|---|---|---|
+| F cast sweep | 632 casts, 81 files, all by `clippy --fix`; `cast_lossless = "warn"` now on (`58515da`) | unchanged | none; `From`-only diff, round-trip checked by a normaliser |
 | A `isdb-ts` | 2 sites, 2 files (the 17 planned callers read raw bytes, not `Header`) | 80 → 78 | none; H.222.0 Tables 2-4/2-5 verbatim |
 | B `isdbt-ofdm` | 0 outside `tmcc.rs` | 26 → 22 | Table 3-30 '100' "not used" (sound broadcasting) kept as `Reserved(0b100)`; unused layer decided by the modulation field alone |
 | C `isdbs-core` | 22 sites, 8 files | 6 → 5 | none; BO.1408-1 Table 1 unambiguous. Lab captures re-decoded identically |
