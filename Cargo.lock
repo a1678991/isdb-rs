@@ -307,6 +307,7 @@ dependencies = [
  "isdb-analyze",
  "isdb-frontend",
  "isdb-iq",
+ "isdb-mmt",
  "isdb-radio",
  "isdb-tlv",
  "isdbs-core",

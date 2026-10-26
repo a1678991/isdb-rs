@@ -40,7 +40,6 @@ struct Partial {
     buf: Vec<u8>,
     long_len: bool,
     aggregated: bool,
-    next_counter: u8,
 }
 
 /// Reassembles messages per packet id.
@@ -61,7 +60,11 @@ impl Messages {
     /// from the fragmentation indicator byte on). Lost MMTP packets on the
     /// id (`gap`) drop the message being reassembled.
     pub fn push(&mut self, packet_id: u16, payload: &[u8], gap: bool, out: &mut Vec<TableBytes>) {
-        let (Some(&f), Some(&counter)) = (payload.first(), payload.get(1)) else {
+        // fragment_counter (payload[1]) is not used: on air it reads 0 on
+        // every fragment of a divided message (SPEC-NOTES
+        // "message-fragment-counter"); the packet sequence numbers (`gap`)
+        // detect a lost fragment
+        let (Some(&f), Some(_)) = (payload.first(), payload.get(1)) else {
             self.errors.malformed += 1;
             return;
         };
@@ -84,21 +87,18 @@ impl Messages {
                         buf: data.to_vec(),
                         long_len,
                         aggregated,
-                        next_counter: counter.wrapping_sub(1),
                     },
                 );
                 None
             }
             _ => match self.partial.get_mut(&packet_id) {
-                // fragment_counter counts the fragments after this one
-                Some(p) if p.next_counter == counter => {
+                Some(p) => {
                     if p.buf.len() + data.len() > MAX_MESSAGE {
                         self.partial.remove(&packet_id);
                         self.errors.oversize += 1;
                         None
                     } else {
                         p.buf.extend_from_slice(data);
-                        p.next_counter = counter.wrapping_sub(1);
                         if division == 0b11 {
                             self.partial
                                 .remove(&packet_id)
@@ -108,8 +108,7 @@ impl Messages {
                         }
                     }
                 }
-                _ => {
-                    self.partial.remove(&packet_id);
+                None => {
                     self.errors.orphan_fragments += 1;
                     None
                 }
@@ -240,12 +239,18 @@ mod tests {
         r.push(0x8000, &[[0xFC, 0].as_slice(), b].concat(), false, &mut out);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].bytes, vec![0x8B; 40]);
-        // a lost middle fragment drops the message
+        // a lost middle fragment (a gap in the packet sequence numbers)
+        // drops the message; the end that follows is an orphan
         let mut out = Vec::new();
-        r.push(0x8000, &[[0x7C, 2].as_slice(), a].concat(), false, &mut out);
-        r.push(0x8000, &[[0xFC, 0].as_slice(), b].concat(), false, &mut out);
+        r.push(0x8000, &[[0x7C, 0].as_slice(), a].concat(), false, &mut out);
+        r.push(0x8000, &[[0xFC, 0].as_slice(), b].concat(), true, &mut out);
         assert!(out.is_empty());
         assert_eq!(r.errors.orphan_fragments, 1);
+        // the counter is 0 on every fragment on air: still reassembled
+        let mut out = Vec::new();
+        r.push(0x8000, &[[0x7C, 0].as_slice(), a].concat(), false, &mut out);
+        r.push(0x8000, &[[0xFC, 0].as_slice(), b].concat(), false, &mut out);
+        assert_eq!(out.len(), 1);
     }
 
     #[test]

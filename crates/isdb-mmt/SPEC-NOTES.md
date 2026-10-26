@@ -93,3 +93,27 @@ offline (2026-10-25) and 40 s live through the FPGA front end
   11-bit syncword 0x2B7 and a 13-bit audioMuxLengthBytes before each
   AudioMuxElement (LOAS). Status: from knowledge; not exercised on air
   (all audio scrambled).
+
+## message-fragment-counter: divided control messages
+- Spec: Table 6-1, payload type 02h: fragmentation_indicator and
+  fragment_counter, the latter "the number of fragmented data which is
+  after the part where this MMTP Payload stores".
+- Observation: on the lab recordings the fragment_counter of control
+  messages reads 0 on every fragment, including a 01 (first) fragment
+  followed by 10 and 11 fragments (MH-EIT sections on packet 8000h,
+  `examples/mmtpdump` from `isdb-tlv`).
+- Interpretation: a divided message is the payloads from 01 to 11 of one
+  packet id with consecutive MMTP packet sequence numbers; the counter is
+  not used. Requiring it dropped 141 MH-EIT fragments of a 40 s stream;
+  without it every section reassembles CRC-clean (MH-EIT events of BS7
+  service 0097h: 175 → 263). Status: observation.
+
+## async-mpu-numbering: MPU sequence numbers of non-timed assets
+- Spec: §10.2.1: an application file is an asynchronous MPU; its
+  sequence number "shall be unique at least in the asset". Timed media
+  (§6.2) number their MPUs one after another.
+- Observation: application assets (aapp) of the lab recordings jump
+  between nearly every MPU (e.g. 184 jumps in 185 MPUs).
+- Interpretation: `isdb tlv validate` reports MPU sequence jumps as errors
+  for timed assets only (hev1, hvc1, mp4a, stpp, asgd). Status:
+  confirmed (spec text and live data).

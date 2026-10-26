@@ -81,6 +81,12 @@ impl Decoder {
         Self::default()
     }
 
+    /// Pass scrambled MPU payloads through as [`Mfu`]s with `scrambled`
+    /// set (still encrypted; for writing them out on request).
+    pub fn set_pass_scrambled(&mut self, on: bool) {
+        self.mpu.pass_scrambled = on;
+    }
+
     /// The MPU counters of every packet id.
     pub fn mpu_stats(&self) -> impl Iterator<Item = (u16, &crate::mpu::AssetStats)> {
         self.mpu.stats()
@@ -126,7 +132,7 @@ impl Decoder {
                     &mut self.nits,
                     &mut self.counters,
                     key,
-                    s.version,
+                    &s.bytes,
                     || Nit::parse(&s.bytes),
                     |n| n.header.version,
                 ),
@@ -134,7 +140,7 @@ impl Decoder {
                     &mut self.amts,
                     &mut self.counters,
                     key,
-                    s.version,
+                    &s.bytes,
                     || Amt::parse(&s.bytes),
                     |a| a.header.version,
                 ),
@@ -206,9 +212,8 @@ impl Decoder {
             },
             0x8B..=0x9B | 0x9D | 0x9F | 0xA0 => {
                 // long sections: key from the header before decoding
-                let (Some(ext), Some(v), Some(sn)) = (
+                let (Some(ext), Some(sn)) = (
                     b.get(3..5).map(|x| u16::from_be_bytes([x[0], x[1]])),
-                    b.get(5).map(|x| (x >> 1) & 0x1F),
                     b.get(6),
                 ) else {
                     self.counters.malformed += 1;
@@ -220,7 +225,7 @@ impl Decoder {
                         &mut self.bits,
                         &mut self.counters,
                         key,
-                        v,
+                        b,
                         || Bit::parse(b),
                         |x| x.header.version,
                     ),
@@ -228,7 +233,7 @@ impl Decoder {
                         &mut self.sdts,
                         &mut self.counters,
                         key,
-                        v,
+                        b,
                         || Sdt::parse(b),
                         |x| x.header.version,
                     ),
@@ -236,7 +241,7 @@ impl Decoder {
                         &mut self.eits,
                         &mut self.counters,
                         key,
-                        v,
+                        b,
                         || Eit::parse(b),
                         |x| x.header.version,
                     ),
@@ -254,21 +259,34 @@ impl Decoder {
     }
 }
 
-/// Keep a section-format table at its latest version, decoding it only
-/// when it is new or its version changed.
+/// Keep a section-format table at its latest version: every copy's CRC
+/// is checked, and a copy is decoded only when it is new or its version
+/// changed ("repeat suppression" skips the decoding, not the check).
 fn keep<T>(
     map: &mut BTreeMap<SectionKey, T>,
     c: &mut Counters,
     key: SectionKey,
-    version: u8,
+    section: &[u8],
     parse: impl FnOnce() -> Result<T, SectionError>,
     version_of: impl Fn(&T) -> u8,
 ) {
-    if let Some(old) = map.get(&key) {
-        if version_of(old) == version {
+    match crate::table::long_section(section) {
+        Err(SectionError::Crc) => {
+            c.crc_errors += 1;
             return;
         }
-        c.version_changes += 1;
+        Err(_) => {
+            c.malformed += 1;
+            return;
+        }
+        Ok((h, _)) => {
+            if let Some(old) = map.get(&key) {
+                if version_of(old) == h.version {
+                    return;
+                }
+                c.version_changes += 1;
+            }
+        }
     }
     match parse() {
         Ok(t) => {

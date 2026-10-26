@@ -137,6 +137,11 @@ pub struct Mfu {
     pub item_id: Option<u32>,
     /// The MMTP random access point flag of its first packet.
     pub rap: bool,
+    /// A scrambled payload passed through as is (see
+    /// [`Reassembler::pass_scrambled`]): `data` is the payload after its
+    /// clear 8-byte header, still encrypted; `header` and `item_id` are
+    /// `None`.
+    pub scrambled: bool,
     /// The bytes.
     pub data: Vec<u8>,
 }
@@ -180,6 +185,10 @@ struct State {
 #[derive(Debug, Default)]
 pub struct Reassembler {
     assets: std::collections::BTreeMap<u16, State>,
+    /// Deliver each scrambled payload (after its clear header, still
+    /// encrypted) as an [`Mfu`] with `scrambled` set, for writing out on
+    /// request. Off by default. Nothing is ever descrambled.
+    pub pass_scrambled: bool,
 }
 
 impl Reassembler {
@@ -238,6 +247,17 @@ impl Reassembler {
             if matches!(ph.fragmentation, 0b00 | 0b11) {
                 s.stats.scrambled_mfus += 1;
             }
+            if self.pass_scrambled {
+                out.push(Mfu {
+                    packet_id: h.packet_id,
+                    mpu_sequence_number: ph.mpu_sequence_number,
+                    header: None,
+                    item_id: None,
+                    rap: h.rap,
+                    scrambled: true,
+                    data: payload.get(8..).unwrap_or_default().to_vec(),
+                });
+            }
             return;
         }
         let Some((_, units)) = parse(payload) else {
@@ -251,6 +271,7 @@ impl Reassembler {
                 header: u.mfu,
                 item_id: u.item_id,
                 rap: h.rap,
+                scrambled: false,
                 data: u.data.to_vec(),
             };
             match ph.fragmentation {
