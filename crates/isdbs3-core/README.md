@@ -21,3 +21,40 @@ on live signals, are in [SPEC-NOTES.md](SPEC-NOTES.md).
 | `dispersal` | §3.6 | energy dispersal |
 | `tmcc` | §3.2 (3), §3.5, §3.11 | TMCC information and signal |
 | `slots` | §3.2 (2) | slot allocation, codeword placement |
+
+## TMCC code fields are lossless coded enums
+
+The TMCC codec keeps every received word bit-exactly
+(`TmccInfo::parse(&t.bits()) == t`, property-tested), so the coded fields
+of §3.11 are enums with one variant per assigned code *and* a variant that
+holds a reserved code as received: `ModulationCode` (Table 3.11-1, 4 bits),
+`RateCode` (Table 3.11-2, 4 bits) and `StreamType` (Table 3.11-4, 8 bits).
+`from_code(u8)` is total (it masks to the field width) and `code()` is its
+inverse over the whole code range; `Mode::modulation()` / `rate()` /
+`is_used()` are pattern matches on them. Table 3.11-2 prints 101/120 at
+both `1001` and `1010`; `1010` is read as 105/120, the one rate the table
+otherwise lacks (SPEC-NOTES "TMCC code-rate table").
+
+```rust
+use isdbs3_core::{CodeRate, Mode, Modulation, ModulationCode, RateCode, StreamType};
+
+let m = Mode {
+    modulation_code: ModulationCode::from_code(0b0100),
+    rate_code: RateCode::from_code(0b1010),
+    slots: 120,
+    obo: 0,
+};
+assert_eq!(m.modulation(), Some(Modulation::Apsk16));
+assert_eq!(m.rate(), CodeRate::new(105));
+assert!(m.is_used());
+
+// 1111 is "no scheme allocated" (an unused mode); other codes are kept.
+assert_eq!(ModulationCode::from_code(0b1111), ModulationCode::Unused);
+assert_eq!(RateCode::from_code(0b1100), RateCode::Reserved(0b1100));
+assert_eq!(RateCode::Reserved(0b1100).code(), 0b1100);
+assert!(!Mode { slots: 5, ..Mode::UNUSED }.is_used());
+
+assert_eq!(StreamType::from_code(0x02), StreamType::Tlv);
+assert_eq!(StreamType::from_code(0xFF), StreamType::None);
+assert_eq!(StreamType::from_code(0x7E).code(), 0x7E);
+```

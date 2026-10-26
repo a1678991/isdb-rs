@@ -9,7 +9,7 @@ use crate::main_signal::{
 use crate::sync::{synchronise, synchronise_at};
 use crate::tmcc;
 use isdbs3_core::slots::{Slot, layout};
-use isdbs3_core::tmcc::TmccInfo;
+use isdbs3_core::tmcc::{StreamType, TmccInfo};
 
 /// Receiver options.
 #[derive(Debug, Clone)]
@@ -68,8 +68,8 @@ pub struct RxSlot {
     pub relative_stream: u8,
     /// Transmission stream id (TLV stream id or TS_ID) of that stream.
     pub stream_id: u16,
-    /// Stream type (TMCC: 1 TS, 2 TLV).
-    pub stream_type: u8,
+    /// Stream type of that stream (TMCC Table 3.11-4).
+    pub stream_type: StreamType,
     /// Head-TLV indication from the slot header (first 16 bits).
     pub head: u16,
     /// The slot's data bytes, `None` if LDPC or BCH failed.

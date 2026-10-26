@@ -5,7 +5,7 @@ use crate::bands::parse_count;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use isdb_iq::Recording;
-use isdbs3_core::TmccInfo;
+use isdbs3_core::{StreamType, TmccInfo};
 use isdbs3_phy::frontend::{Trim, symbols};
 use isdbs3_phy::sync::synchronise;
 use isdbs3_phy::tmcc::{decode, llrs};
@@ -50,7 +50,7 @@ fn modes(t: &TmccInfo) -> Vec<String> {
 /// `0xb0b0 TLV (40 slots)`, …
 fn streams(t: &TmccInfo) -> Vec<String> {
     (0..16)
-        .filter(|&k| t.stream_type[k] != 0xFF)
+        .filter(|&k| t.stream_type[k] != StreamType::None)
         .map(|k| {
             let n = t
                 .slot_stream
@@ -58,9 +58,11 @@ fn streams(t: &TmccInfo) -> Vec<String> {
                 .filter(|&&s| usize::from(s) == k)
                 .count();
             let ty = match t.stream_type[k] {
-                isdbs3_core::tmcc::STREAM_TS => "TS".to_string(),
-                isdbs3_core::tmcc::STREAM_TLV => "TLV".to_string(),
-                v => format!("type {v:#04x}"),
+                StreamType::Ts => "TS".to_string(),
+                StreamType::Tlv => "TLV".to_string(),
+                StreamType::None | StreamType::Reserved(_) => {
+                    format!("type {:#04x}", t.stream_type[k].code())
+                }
             };
             format!("{:#06x} {ty} ({n} slots)", t.stream_id[k])
         })
@@ -72,16 +74,16 @@ fn info_json(t: &TmccInfo) -> Value {
         "order_of_change": t.change,
         "allocation_ok": t.allocation_ok(),
         "modes": t.modes.iter().filter(|m| m.is_used()).map(|m| json!({
-            "modulation_code": m.modulation_code,
+            "modulation_code": m.modulation_code.code(),
             "modulation": m.modulation().map(|x| x.name()),
-            "rate_code": m.rate_code,
+            "rate_code": m.rate_code.code(),
             "code_rate": m.rate().map(|r| format!("{}/120", r.numerator())),
             "slots": m.slots,
             "obo_db": f64::from(m.obo) / 10.0,
         })).collect::<Vec<_>>(),
-        "streams": (0..16).filter(|&k| t.stream_type[k] != 0xFF).map(|k| json!({
+        "streams": (0..16).filter(|&k| t.stream_type[k] != StreamType::None).map(|k| json!({
             "relative": k,
-            "type": t.stream_type[k],
+            "type": t.stream_type[k].code(),
             "id": t.stream_id[k],
             "slots": t.slot_stream.iter().filter(|&&s| usize::from(s) == k).count(),
         })).collect::<Vec<_>>(),

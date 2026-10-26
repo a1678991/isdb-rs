@@ -76,15 +76,15 @@ pub fn modulation_of(layout: &[Slot], k: usize) -> Modulation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tmcc::Mode;
+    use crate::tmcc::{Mode, ModulationCode, RateCode};
 
     fn info(modes: &[(Modulation, u8, u8)]) -> TmccInfo {
         let mut t = crate::tmcc::tests::sample();
         t.modes = [Mode::UNUSED; 8];
         for (i, &(m, r, s)) in modes.iter().enumerate() {
             t.modes[i] = Mode {
-                modulation_code: m.code(),
-                rate_code: CodeRate::new(r).unwrap().code(),
+                modulation_code: ModulationCode::Assigned(m),
+                rate_code: RateCode::Assigned(CodeRate::new(r).unwrap()),
                 slots: s,
                 obo: 0,
             };
