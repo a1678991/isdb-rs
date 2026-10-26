@@ -40,6 +40,11 @@ pub struct Symbols {
 /// 140 Hz of residual offset at 33.756 Mbaud ([`pick_carrier`]).
 pub const MAX_PHASE_STEP: f64 = 0.5;
 
+/// Most carrier candidates [`pick_carrier`] runs through the front end
+/// (the survey's distinct estimates; each run is 0.05 s of signal on its
+/// own thread).
+pub const MAX_CANDIDATES: usize = 8;
+
 /// Carrier lines of a survey that agree within this much count as one
 /// candidate (the ±R/2 and z⁴ lines of one carrier agree within a few Hz).
 const SAME_CARRIER_HZ: f64 = 2_000.0;
@@ -69,7 +74,7 @@ pub fn carrier_candidates(sv: &isdb_iq::survey::Survey) -> Vec<f64> {
 }
 
 /// Of the `candidates` (strongest first), the carrier the front end locks
-/// on: each of the first few runs through the front end (trim 0) over the
+/// on: each (up to [`MAX_CANDIDATES`]) runs through the front end (trim 0) over the
 /// first 0.05 s, and the one with the best sync-symbol Es/N0 wins among
 /// those whose carrier phase stands still between slots. A candidate far
 /// off leaves the sync words uncorrelated (Es/N0 near 0 dB or no slot
@@ -98,8 +103,11 @@ pub fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64,
         )
     };
     // the candidates run independently, one thread each; the first of
-    // equal scores wins, as in a sequential search
-    let tried = &candidates[..candidates.len().min(4)];
+    // equal scores wins, as in a sequential search. Every candidate is
+    // tried: at 40 Msps the survey's aliases can outrank the carrier (it
+    // was 4th of 5 on a live BS11 recording, plan §0.16), and a survey
+    // gives at most a handful of distinct estimates.
+    let tried = &candidates[..candidates.len().min(MAX_CANDIDATES)];
     let scores: Vec<(bool, f64)> = std::thread::scope(|sc| {
         let handles: Vec<_> = tried.iter().map(|&c| sc.spawn(move || score(c))).collect();
         handles
@@ -124,7 +132,8 @@ pub fn design(fs: f64, cfo: f64) -> Design {
     d
 }
 
-fn to_input(x: &[num_complex::Complex<f32>]) -> Vec<[i16; 2]> {
+/// Unit-scale samples as the front end's 12-bit input (full scale 2048).
+pub fn to_input(x: &[num_complex::Complex<f32>]) -> Vec<[i16; 2]> {
     x.iter()
         .map(|v| {
             [
@@ -180,6 +189,53 @@ fn excerpt_snr(xi: &[[i16; 2]], fs: f64, d: &Design) -> Result<f64, ParamError> 
     Ok(isdb_frontend::s3sync::measure(z).map_or(f64::NEG_INFINITY, |r| r.snr_db))
 }
 
+/// The acquisition of ISDB-S3 on the samples `x`: the carrier (the
+/// survey's candidates tried through the front end, [`pick_carrier`],
+/// unless `carrier_offset_hz` is given) and the output trim (searched on
+/// the first 0.15 s, unless fixed). The front end then runs with these on
+/// the CPU ([`symbols_with_prior`]) or in a radio's FPGA (`isdb rx` and
+/// `isdb symbols` with a symbol front end).
+pub fn acquire(
+    x: &[num_complex::Complex<f32>],
+    fs: f64,
+    carrier_offset_hz: Option<f64>,
+    trim: Trim,
+) -> Result<Prior, ParamError> {
+    acquire_input(x, &to_input(x), fs, carrier_offset_hz, trim)
+}
+
+fn acquire_input(
+    x: &[num_complex::Complex<f32>],
+    xi: &[[i16; 2]],
+    fs: f64,
+    carrier_offset_hz: Option<f64>,
+    trim: Trim,
+) -> Result<Prior, ParamError> {
+    let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
+    let cfo = match carrier_offset_hz {
+        Some(f) => f,
+        None => pick_carrier(xi, fs, &carrier_candidates(&sv))?,
+    };
+    let mut d = design(fs, cfo);
+    let (t, snr) = match trim {
+        Trim::Fixed(t) => {
+            d.trim = t;
+            (t, excerpt_snr(xi, fs, &d)?)
+        }
+        Trim::Auto => {
+            let n = ((0.15 * fs) as usize).min(xi.len());
+            let cands: Vec<f64> = (-10..=2).map(|i| f64::from(i) * 0.025).collect();
+            isdb_frontend::s3sync::best_trim(&xi[..n], &d, &cands)?
+        }
+    };
+    Ok(Prior {
+        carrier_offset_hz: cfo,
+        trim: t,
+        sync_snr_db: snr,
+        survey_says_isdbs3: sv.system.is_some_and(|m| m.system.name == system().name),
+    })
+}
+
 /// [`symbols`], reusing the carrier and trim of an earlier block of the
 /// same signal (`prior`) when they still hold: the front end runs over
 /// the first 0.05 s with them, and if its sync-symbol Es/N0 is within
@@ -205,31 +261,7 @@ pub fn symbols_with_prior(
     };
     let acq = match reuse {
         Some(p) => p,
-        None => {
-            let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
-            let cfo = match carrier_offset_hz {
-                Some(f) => f,
-                None => pick_carrier(&xi, fs, &carrier_candidates(&sv))?,
-            };
-            let mut d = design(fs, cfo);
-            let (t, snr) = match trim {
-                Trim::Fixed(t) => {
-                    d.trim = t;
-                    (t, excerpt_snr(&xi, fs, &d)?)
-                }
-                Trim::Auto => {
-                    let n = ((0.15 * fs) as usize).min(xi.len());
-                    let cands: Vec<f64> = (-10..=2).map(|i| f64::from(i) * 0.025).collect();
-                    isdb_frontend::s3sync::best_trim(&xi[..n], &d, &cands)?
-                }
-            };
-            Prior {
-                carrier_offset_hz: cfo,
-                trim: t,
-                sync_snr_db: snr,
-                survey_says_isdbs3: sv.system.is_some_and(|m| m.system.name == system().name),
-            }
-        }
+        None => acquire_input(x, &xi, fs, carrier_offset_hz, trim)?,
     };
     let mut d = design(fs, acq.carrier_offset_hz);
     d.trim = acq.trim;

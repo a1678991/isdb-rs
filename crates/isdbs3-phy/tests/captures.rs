@@ -182,3 +182,36 @@ fn isdbs3_every_segment_acquires() {
         }
     }
 }
+
+/// `ISDB_RS_ISDBS3_LIVE_IQ`: the acquisition's carrier is the candidate
+/// with the best sync-symbol Es/N0, whatever the survey's strongest line
+/// says. At 40 Msps the ±R/2 lines alias, and on two of seven live
+/// recordings (BS7 and BS11, 2026-10-26) the strongest line was an alias
+/// (Es/N0 −3 and −8 dB) while the carrier was the 2nd and 4th of the
+/// candidates (plan §0.16): `isdb symbols` took the strongest line, and
+/// `pick_carrier` tried only the first four.
+#[test]
+fn isdbs3_carrier_beats_the_survey_aliases() {
+    use isdbs3_phy::frontend::acquire;
+    let Ok(list) = std::env::var("ISDB_RS_ISDBS3_LIVE_IQ") else {
+        eprintln!("SKIP isdbs3_carrier_beats_the_survey_aliases: ISDB_RS_ISDBS3_LIVE_IQ not set");
+        return;
+    };
+    for path in list.split(':').filter(|p| !p.is_empty()) {
+        let mut rec = Recording::open(std::path::Path::new(path), None, None).unwrap();
+        let fs = rec.sample_rate;
+        let seg = rec.segments()[0].clone();
+        let n = ((seg.end - seg.start) as usize).min((0.2 * fs) as usize);
+        let x = rec.read(seg.start, n).unwrap();
+        let p = acquire(&x, fs, None, Trim::Auto).unwrap();
+        // a wrong carrier leaves the sync words uncorrelated (≤ 0 dB);
+        // the right one gives the signal's Es/N0 (≈ 9 dB on 0.05 s untrimmed,
+        // more after the trim)
+        assert!(
+            p.sync_snr_db > 6.0,
+            "{path}: carrier {:+.0} Hz, sync Es/N0 {:.2} dB",
+            p.carrier_offset_hz,
+            p.sync_snr_db
+        );
+    }
+}

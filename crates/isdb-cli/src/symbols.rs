@@ -139,10 +139,20 @@ struct Report {
     z: Vec<[f64; 2]>,
 }
 
-/// The system for `arg`, or from a survey of `x`.
-fn pick_system(arg: SystemArg, x: &[C32], fs: f64) -> Result<(&'static KnownSystem, f64)> {
+/// The system for `arg` (or from a survey of `x`) and its carrier offset.
+/// ISDB-S takes the survey's strongest carrier line (its z⁸ / z⁴ line at
+/// baseband, corroborated by z² on every recording). ISDB-S3 has no such
+/// line: its carrier comes from the ±R/2 lines of the π/2-BPSK symbols,
+/// which alias at 40 Msps, and the strongest line was an alias on two of
+/// seven live recordings (plan §0.16), so the receiver's choice is used —
+/// every candidate through the front end, best sync-symbol Es/N0
+/// ([`isdbs3_phy::frontend::pick_carrier`]).
+pub(crate) fn pick_system(
+    arg: SystemArg,
+    x: &[C32],
+    fs: f64,
+) -> Result<(&'static KnownSystem, f64)> {
     let s = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
-    let cfo = s.best_carrier().map_or(0.0, |c| c.offset_hz);
     let sys = match arg {
         SystemArg::IsdbS => &KNOWN_SYSTEMS[0],
         SystemArg::IsdbS3 => &KNOWN_SYSTEMS[1],
@@ -155,6 +165,12 @@ fn pick_system(arg: SystemArg, x: &[C32], fs: f64) -> Result<(&'static KnownSyst
                 .find(|k| k.name == m.system.name)
                 .context("unknown system")?
         }
+    };
+    let cfo = if sys.name == isdbs3_phy::frontend::system().name {
+        let xi = isdbs3_phy::frontend::to_input(x);
+        isdbs3_phy::frontend::pick_carrier(&xi, fs, &isdbs3_phy::frontend::carrier_candidates(&s))?
+    } else {
+        s.best_carrier().map_or(0.0, |c| c.offset_hz)
     };
     Ok((sys, cfo))
 }
