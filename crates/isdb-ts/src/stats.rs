@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use crate::cc::{CcChecker, CcEvent};
-use crate::packet::{PACKET_SIZE, View};
+use crate::packet::{AdaptationFieldControl, PACKET_SIZE, View};
 use crate::pcr::Pcr;
 
 /// Counters of one PID (fields of H.222.0 Table 2-2 / Table 2-6).
@@ -61,10 +61,10 @@ impl Stats {
         s.packets += 1;
         let h = crate::packet::Header::decode(pkt).expect("188 bytes hold a header");
         s.tei += h.transport_error_indicator as u64;
-        s.scrambled += (h.transport_scrambling_control != 0) as u64;
+        s.scrambled += h.transport_scrambling_control.is_scrambled() as u64;
         s.pusi += h.payload_unit_start_indicator as u64;
         s.adaptation_only +=
-            (h.adaptation_field_control == crate::packet::afc::ADAPTATION_ONLY) as u64;
+            (h.adaptation_field_control == AdaptationFieldControl::AdaptationOnly) as u64;
         match View::parse(pkt) {
             Ok(v) => {
                 s.discontinuity += v.discontinuity_indicator() as u64;

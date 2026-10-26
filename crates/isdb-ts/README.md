@@ -17,7 +17,7 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 |---|---|
 | `bits` | §2.2.6 `uimsbf`/`bslbf` MSB-first reader/writer |
 | `crc` | Annex A CRC_32 (poly 0x04C11DB7, table-driven and bitwise) |
-| `packet` | §2.4.3.2 Table 2-2 header, §2.4.3.4–2.4.3.5 Table 2-6 adaptation field and extension, `check` |
+| `packet` | §2.4.3.2 Table 2-2 header (Tables 2-4/2-5 transport_scrambling_control and adaptation_field_control as lossless coded enums), §2.4.3.4–2.4.3.5 Table 2-6 adaptation field and extension, `check` |
 | `pcr` | §2.4.2.2 eq. 2-1..2-3 PCR/OPCR, Table 2-21 33-bit PTS/DTS coding, wrap arithmetic |
 | `cc` | §2.4.3.3 continuity_counter, duplicates, §2.4.3.5 discontinuity_indicator |
 | `pes` | §2.4.3.6–2.4.3.7 Table 2-21 PES, Table 2-22 stream_id, Table 2-24 trick mode; packetiser and reassembler |

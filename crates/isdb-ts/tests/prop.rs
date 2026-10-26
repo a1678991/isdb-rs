@@ -6,8 +6,8 @@ use isdb_ts::cc::Counter;
 use isdb_ts::demux::{Assembled, SectionAssembler};
 use isdb_ts::descriptor::Descriptor;
 use isdb_ts::packet::{
-    AdaptationField, AdaptationFieldExtension, AdaptationFields, Header, Ltw, Packet,
-    PiecewiseRate, afc,
+    AdaptationField, AdaptationFieldControl, AdaptationFieldExtension, AdaptationFields, Header,
+    Ltw, Packet, PiecewiseRate, TransportScramblingControl,
 };
 use isdb_ts::packetize::{Packing, packetize_sections};
 use isdb_ts::pcr::{Pcr, Timestamp};
@@ -114,10 +114,10 @@ fn packet() -> impl Strategy<Value = Packet> {
             |((tei, pusi, prio, pid, tsc, cc), af, reserved_afc, seed)| {
                 let af_len = af.as_ref().map_or(0, AdaptationField::encoded_len);
                 let afc = match (&af, reserved_afc) {
-                    (None, true) => afc::RESERVED,
-                    (None, false) => afc::PAYLOAD_ONLY,
-                    (Some(_), true) => afc::ADAPTATION_ONLY,
-                    (Some(_), false) => afc::ADAPTATION_AND_PAYLOAD,
+                    (None, true) => AdaptationFieldControl::Reserved,
+                    (None, false) => AdaptationFieldControl::PayloadOnly,
+                    (Some(_), true) => AdaptationFieldControl::AdaptationOnly,
+                    (Some(_), false) => AdaptationFieldControl::AdaptationAndPayload,
                 };
                 let payload: Vec<u8> = (0..184usize.saturating_sub(af_len))
                     .map(|i| (seed >> (i % 57)) as u8 ^ i as u8)
@@ -129,7 +129,7 @@ fn packet() -> impl Strategy<Value = Packet> {
                         payload_unit_start_indicator: pusi,
                         transport_priority: prio,
                         pid,
-                        transport_scrambling_control: tsc,
+                        transport_scrambling_control: TransportScramblingControl::from_code(tsc),
                         adaptation_field_control: afc,
                         continuity_counter: cc,
                     },

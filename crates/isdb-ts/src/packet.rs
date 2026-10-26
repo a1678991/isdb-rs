@@ -12,6 +12,8 @@
 //! [`View`] is a zero-copy accessor for hot paths (demultiplexers) that only
 //! need the header, payload slice, PCR and discontinuity_indicator.
 
+use std::fmt;
+
 use crate::bits::{BitReader, BitWriter};
 use crate::error::{Error, Result};
 use crate::pcr::{Pcr, Timestamp};
@@ -35,16 +37,132 @@ pub const PID_NULL: u16 = 0x1FFF;
 /// Largest PID value (13 bits, Table 2-2).
 pub const PID_MAX: u16 = 0x1FFF;
 
-/// adaptation_field_control values (Table 2-5).
-pub mod afc {
-    /// '00' — reserved for future use; decoders shall discard the packet.
-    pub const RESERVED: u8 = 0b00;
-    /// '01' — no adaptation_field, payload only.
-    pub const PAYLOAD_ONLY: u8 = 0b01;
-    /// '10' — adaptation_field only, no payload.
-    pub const ADAPTATION_ONLY: u8 = 0b10;
-    /// '11' — adaptation_field followed by payload.
-    pub const ADAPTATION_AND_PAYLOAD: u8 = 0b11;
+/// transport_scrambling_control (H.222.0 §2.4.3.3, Table 2-4): "indicates
+/// the scrambling mode of the Transport Stream packet payload".
+///
+/// A lossless coded enum over the 2-bit field: '00' is the only assigned
+/// code, '01'–'11' are "User-defined" and are kept verbatim so a decoded
+/// header re-encodes bit-exactly. [`from_code`](Self::from_code) is total
+/// (the argument is masked to 2 bits) and [`code`](Self::code) is its
+/// inverse. The project never descrambles: callers only ask
+/// [`is_scrambled`](Self::is_scrambled).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportScramblingControl {
+    /// '00' — "Not scrambled".
+    NotScrambled,
+    /// '01', '10', '11' — "User-defined"; the code is kept. (`UserDefined(0)`
+    /// can be spelled but is never decoded: '00' is [`Self::NotScrambled`].)
+    UserDefined(u8),
+}
+
+impl TransportScramblingControl {
+    /// The 2-bit code of Table 2-4.
+    pub const fn code(self) -> u8 {
+        match self {
+            TransportScramblingControl::NotScrambled => 0b00,
+            TransportScramblingControl::UserDefined(c) => c & 0b11,
+        }
+    }
+
+    /// From the 2-bit code (higher bits of `code` are ignored).
+    pub const fn from_code(code: u8) -> Self {
+        match code & 0b11 {
+            0b00 => TransportScramblingControl::NotScrambled,
+            c => TransportScramblingControl::UserDefined(c),
+        }
+    }
+
+    /// The payload is scrambled: transport_scrambling_control ≠ '00'.
+    pub const fn is_scrambled(self) -> bool {
+        self.code() != 0b00
+    }
+}
+
+impl fmt::Display for TransportScramblingControl {
+    /// The code as two binary digits (`00`, `01`, …), the spec's notation
+    /// without the quotes.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02b}", self.code())
+    }
+}
+
+/// adaptation_field_control (H.222.0 §2.4.3.3, Table 2-5): "indicates
+/// whether this Transport Stream packet header is followed by an adaptation
+/// field and/or payload".
+///
+/// A lossless coded enum over the 2-bit field: the four codes are the whole
+/// value space, so [`from_code`](Self::from_code) is total (the argument is
+/// masked to 2 bits) and [`code`](Self::code) is its inverse. '00' is
+/// "Reserved for future use by ISO/IEC" and "decoders shall discard" such
+/// packets; the TS layer keeps it so a decoded packet re-encodes bit-exactly
+/// and [`check`] reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdaptationFieldControl {
+    /// '00' — "Reserved for future use by ISO/IEC"; decoders shall discard
+    /// the packet.
+    Reserved,
+    /// '01' — "No adaptation_field, payload only".
+    PayloadOnly,
+    /// '10' — "Adaptation_field only, no payload".
+    AdaptationOnly,
+    /// '11' — "Adaptation_field followed by payload".
+    AdaptationAndPayload,
+}
+
+impl AdaptationFieldControl {
+    /// The four codes in Table 2-5 order ('00', '01', '10', '11').
+    pub const ALL: [AdaptationFieldControl; 4] = [
+        AdaptationFieldControl::Reserved,
+        AdaptationFieldControl::PayloadOnly,
+        AdaptationFieldControl::AdaptationOnly,
+        AdaptationFieldControl::AdaptationAndPayload,
+    ];
+
+    /// The 2-bit code of Table 2-5.
+    pub const fn code(self) -> u8 {
+        match self {
+            AdaptationFieldControl::Reserved => 0b00,
+            AdaptationFieldControl::PayloadOnly => 0b01,
+            AdaptationFieldControl::AdaptationOnly => 0b10,
+            AdaptationFieldControl::AdaptationAndPayload => 0b11,
+        }
+    }
+
+    /// From the 2-bit code (higher bits of `code` are ignored).
+    pub const fn from_code(code: u8) -> Self {
+        match code & 0b11 {
+            0b00 => AdaptationFieldControl::Reserved,
+            0b01 => AdaptationFieldControl::PayloadOnly,
+            0b10 => AdaptationFieldControl::AdaptationOnly,
+            _ => AdaptationFieldControl::AdaptationAndPayload,
+        }
+    }
+
+    /// An adaptation_field follows the header: '10' or '11' (Table 2-2
+    /// `if (adaptation_field_control == '10' || adaptation_field_control == '11')`).
+    pub const fn has_adaptation_field(self) -> bool {
+        matches!(
+            self,
+            AdaptationFieldControl::AdaptationOnly | AdaptationFieldControl::AdaptationAndPayload
+        )
+    }
+
+    /// data_bytes follow: '01' or '11' (Table 2-2
+    /// `if (adaptation_field_control == '01' || adaptation_field_control == '11')`).
+    pub const fn has_payload(self) -> bool {
+        matches!(
+            self,
+            AdaptationFieldControl::PayloadOnly | AdaptationFieldControl::AdaptationAndPayload
+        )
+    }
+}
+
+impl fmt::Display for AdaptationFieldControl {
+    /// The code as two binary digits (`00`, `01`, …), the spec's notation
+    /// without the quotes.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02b}", self.code())
+    }
 }
 
 /// The 4-byte packet header of Table 2-2, every field verbatim.
@@ -61,23 +179,27 @@ pub struct Header {
     /// PID (13 bits).
     pub pid: u16,
     /// transport_scrambling_control (2 bits, Table 2-4).
-    pub transport_scrambling_control: u8,
-    /// adaptation_field_control (2 bits, Table 2-5, see [`afc`]).
-    pub adaptation_field_control: u8,
+    pub transport_scrambling_control: TransportScramblingControl,
+    /// adaptation_field_control (2 bits, Table 2-5).
+    pub adaptation_field_control: AdaptationFieldControl,
     /// continuity_counter (4 bits).
     pub continuity_counter: u8,
 }
 
 impl Header {
     /// Header with sync 0x47, flags clear, not scrambled.
-    pub fn new(pid: u16, adaptation_field_control: u8, continuity_counter: u8) -> Self {
+    pub fn new(
+        pid: u16,
+        adaptation_field_control: AdaptationFieldControl,
+        continuity_counter: u8,
+    ) -> Self {
         Self {
             sync_byte: SYNC_BYTE,
             transport_error_indicator: false,
             payload_unit_start_indicator: false,
             transport_priority: false,
             pid,
-            transport_scrambling_control: 0,
+            transport_scrambling_control: TransportScramblingControl::NotScrambled,
             adaptation_field_control,
             continuity_counter,
         }
@@ -98,8 +220,8 @@ impl Header {
             payload_unit_start_indicator: b[1] & 0x40 != 0,
             transport_priority: b[1] & 0x20 != 0,
             pid: (((b[1] & 0x1F) as u16) << 8) | b[2] as u16,
-            transport_scrambling_control: b[3] >> 6,
-            adaptation_field_control: (b[3] >> 4) & 3,
+            transport_scrambling_control: TransportScramblingControl::from_code(b[3] >> 6),
+            adaptation_field_control: AdaptationFieldControl::from_code(b[3] >> 4),
             continuity_counter: b[3] & 0x0F,
         })
     }
@@ -115,27 +237,28 @@ impl Header {
         w.write(
             "transport_scrambling_control",
             2,
-            self.transport_scrambling_control as u64,
+            u64::from(self.transport_scrambling_control.code()),
         )?;
         w.write(
             "adaptation_field_control",
             2,
-            self.adaptation_field_control as u64,
+            u64::from(self.adaptation_field_control.code()),
         )?;
         w.write("continuity_counter", 4, self.continuity_counter as u64)?;
         let v = w.into_bytes();
         Ok([v[0], v[1], v[2], v[3]])
     }
 
-    /// adaptation_field_control is '10' or '11' (Table 2-2).
-    pub fn has_adaptation_field(&self) -> bool {
-        self.adaptation_field_control & 0b10 != 0
+    /// adaptation_field_control is '10' or '11' (Table 2-2); see
+    /// [`AdaptationFieldControl::has_adaptation_field`].
+    pub const fn has_adaptation_field(&self) -> bool {
+        self.adaptation_field_control.has_adaptation_field()
     }
 
-    /// adaptation_field_control is '01' or '11' (Table 2-2).
-    pub fn has_payload(&self) -> bool {
-        self.adaptation_field_control == afc::PAYLOAD_ONLY
-            || self.adaptation_field_control == afc::ADAPTATION_AND_PAYLOAD
+    /// adaptation_field_control is '01' or '11' (Table 2-2); see
+    /// [`AdaptationFieldControl::has_payload`].
+    pub const fn has_payload(&self) -> bool {
+        self.adaptation_field_control.has_payload()
     }
 }
 
@@ -554,7 +677,7 @@ impl Packet {
             return Err(Error::invalid(
                 "adaptation_field_control",
                 format!(
-                    "'{:02b}' disagrees with adaptation field presence ({})",
+                    "'{}' disagrees with adaptation field presence ({})",
                     self.header.adaptation_field_control,
                     self.adaptation_field.is_some()
                 ),
@@ -583,7 +706,7 @@ impl Packet {
     /// allowed for PES (§2.4.3.5).
     pub fn with_payload(pid: u16, pusi: bool, cc: u8, payload: &[u8]) -> Result<Self> {
         if payload.len() == PAYLOAD_CAPACITY {
-            let mut header = Header::new(pid, afc::PAYLOAD_ONLY, cc);
+            let mut header = Header::new(pid, AdaptationFieldControl::PayloadOnly, cc);
             header.payload_unit_start_indicator = pusi;
             Ok(Self {
                 header,
@@ -616,9 +739,9 @@ impl Packet {
             ));
         }
         let afc = if payload.is_empty() {
-            afc::ADAPTATION_ONLY
+            AdaptationFieldControl::AdaptationOnly
         } else {
-            afc::ADAPTATION_AND_PAYLOAD
+            AdaptationFieldControl::AdaptationAndPayload
         };
         let af = AdaptationField::stuffed(fields, PAYLOAD_CAPACITY - payload.len())?;
         let mut header = Header::new(pid, afc, cc);
@@ -645,7 +768,7 @@ impl Packet {
     /// (§2.4.3.3); data_bytes "may be assigned any value" — 0xFF here.
     pub fn null() -> Self {
         Self {
-            header: Header::new(PID_NULL, afc::PAYLOAD_ONLY, 0),
+            header: Header::new(PID_NULL, AdaptationFieldControl::PayloadOnly, 0),
             adaptation_field: None,
             payload: vec![0xFF; PAYLOAD_CAPACITY],
         }
@@ -744,17 +867,17 @@ pub fn check(p: &Packet) -> Vec<Violation> {
     });
     require(
         &mut v,
-        h.adaptation_field_control != afc::RESERVED,
+        h.adaptation_field_control != AdaptationFieldControl::Reserved,
         "§2.4.3.3 Table 2-5",
         || "adaptation_field_control '00' is reserved; decoders shall discard the packet".into(),
     );
     if let Some(af) = &p.adaptation_field {
         let len = af.length();
-        if h.adaptation_field_control == afc::ADAPTATION_AND_PAYLOAD {
+        if h.adaptation_field_control == AdaptationFieldControl::AdaptationAndPayload {
             require(&mut v, len <= 182, "§2.4.3.5", || {
                 format!("adaptation_field_length {len} with AFC '11', shall be 0..182")
             });
-        } else if h.adaptation_field_control == afc::ADAPTATION_ONLY {
+        } else if h.adaptation_field_control == AdaptationFieldControl::AdaptationOnly {
             require(&mut v, len == 183, "§2.4.3.5", || {
                 format!("adaptation_field_length {len} with AFC '10', shall be 183")
             });
@@ -775,22 +898,22 @@ pub fn check(p: &Packet) -> Vec<Violation> {
         });
         require(
             &mut v,
-            h.transport_scrambling_control == 0,
+            !h.transport_scrambling_control.is_scrambled(),
             "§2.4.3.3",
             || {
                 format!(
-                    "null packet transport_scrambling_control '{:02b}', shall be '00'",
+                    "null packet transport_scrambling_control '{}', shall be '00'",
                     h.transport_scrambling_control
                 )
             },
         );
         require(
             &mut v,
-            h.adaptation_field_control == afc::PAYLOAD_ONLY,
+            h.adaptation_field_control == AdaptationFieldControl::PayloadOnly,
             "§2.4.3.3",
             || {
                 format!(
-                    "null packet adaptation_field_control '{:02b}', shall be '01'",
+                    "null packet adaptation_field_control '{}', shall be '01'",
                     h.adaptation_field_control
                 )
             },
@@ -866,15 +989,63 @@ mod tests {
         assert!(h.payload_unit_start_indicator);
         assert!(!h.transport_priority);
         assert_eq!(h.pid, 0x1FFF);
-        assert_eq!(h.transport_scrambling_control, 0b10);
-        assert_eq!(h.adaptation_field_control, 0b01);
+        assert_eq!(
+            h.transport_scrambling_control,
+            TransportScramblingControl::UserDefined(0b10)
+        );
+        assert_eq!(
+            h.adaptation_field_control,
+            AdaptationFieldControl::PayloadOnly
+        );
         assert_eq!(h.continuity_counter, 0xA);
         assert_eq!(h.encode().unwrap(), [0x47, 0x5F, 0xFF, 0x9A]);
         let h = Header::decode(&[0x47, 0xA0, 0x00, 0x30]).unwrap();
         assert!(
             h.transport_error_indicator && h.transport_priority && !h.payload_unit_start_indicator
         );
-        assert_eq!(h.adaptation_field_control, afc::ADAPTATION_AND_PAYLOAD);
+        assert_eq!(
+            h.adaptation_field_control,
+            AdaptationFieldControl::AdaptationAndPayload
+        );
+    }
+
+    /// Table 2-4: '00' is "Not scrambled", '01'–'11' are "User-defined" and
+    /// keep their code; `from_code` masks to the 2-bit field.
+    #[test]
+    fn spec_table_2_4_tsc_codes() {
+        use TransportScramblingControl as Tsc;
+        for code in 0..=3u8 {
+            assert_eq!(Tsc::from_code(code).code(), code);
+            assert_eq!(Tsc::from_code(code).is_scrambled(), code != 0);
+            assert_eq!(Tsc::from_code(code).to_string(), format!("{code:02b}"));
+            assert_eq!(Tsc::from_code(code | 0xFC), Tsc::from_code(code));
+        }
+        assert_eq!(Tsc::from_code(0b00), Tsc::NotScrambled);
+        assert_eq!(Tsc::from_code(0b01), Tsc::UserDefined(0b01));
+        assert_eq!(Tsc::from_code(0b10), Tsc::UserDefined(0b10));
+        assert_eq!(Tsc::from_code(0b11), Tsc::UserDefined(0b11));
+        assert!(!Tsc::NotScrambled.is_scrambled());
+    }
+
+    /// Table 2-5: the four codes name Reserved, PayloadOnly, AdaptationOnly
+    /// and AdaptationAndPayload in that order; the adaptation field is
+    /// present for '10'/'11' and data_bytes for '01'/'11' (Table 2-2).
+    #[test]
+    fn spec_table_2_5_afc_codes() {
+        use AdaptationFieldControl as Afc;
+        for (code, afc) in Afc::ALL.into_iter().enumerate() {
+            let code = u8::try_from(code).unwrap();
+            assert_eq!(afc.code(), code);
+            assert_eq!(Afc::from_code(code), afc);
+            assert_eq!(Afc::from_code(code | 0xFC), afc);
+            assert_eq!(afc.to_string(), format!("{code:02b}"));
+            assert_eq!(afc.has_adaptation_field(), code & 0b10 != 0);
+            assert_eq!(afc.has_payload(), code & 0b01 != 0);
+        }
+        assert_eq!(Afc::from_code(0b00), Afc::Reserved);
+        assert_eq!(Afc::from_code(0b01), Afc::PayloadOnly);
+        assert_eq!(Afc::from_code(0b10), Afc::AdaptationOnly);
+        assert_eq!(Afc::from_code(0b11), Afc::AdaptationAndPayload);
     }
 
     /// §2.4.3.5: AFC '10' ⇒ adaptation_field_length 183; '11' ⇒ 0..182;
@@ -883,7 +1054,10 @@ mod tests {
     fn spec_2_4_3_5_adaptation_field_length_rules() {
         let p = Packet::pcr_only(0x100, 3, Pcr::from_ticks(1234));
         let raw = p.encode().unwrap();
-        assert_eq!(raw[3] >> 4 & 3, afc::ADAPTATION_ONLY);
+        assert_eq!(
+            raw[3] >> 4 & 3,
+            AdaptationFieldControl::AdaptationOnly.code()
+        );
         assert_eq!(raw[4], 183);
         assert!(check(&p).is_empty());
         let p = Packet::with_payload(0x100, false, 0, &[0xAB; 183]).unwrap();

@@ -407,6 +407,20 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdb-ts`: `Header.transport_scrambling_control` and
+  `Header.adaptation_field_control` are lossless coded enums of H.222.0
+  Tables 2-4 and 2-5 instead of raw `u8` codes:
+  `TransportScramblingControl { NotScrambled, UserDefined(u8) }` (the
+  user-defined codes '01'–'11' keep their value) and
+  `AdaptationFieldControl { Reserved, PayloadOnly, AdaptationOnly,
+  AdaptationAndPayload }`, each with a total `from_code()` (masked to the
+  2-bit field) / `code()` pair and `Display` as two binary digits.
+  `has_payload()` / `has_adaptation_field()` live on
+  `AdaptationFieldControl` (the `Header` methods forward to them),
+  `TransportScramblingControl::is_scrambled()` replaces `!= 0`,
+  `Header::new` takes the enum and the `packet::afc` constants are gone.
+  Decoding stays bit-exact (`prop_*` round trips unchanged). Item A of
+  `docs/plans/type-safety.md`.
 - `isdbt-core`: `TimeInterleave` is a closed enum of the four TMCC codes
   of ARIB STD-B31 Table 3-12 (`K0`..`K3`, `code()` / `from_code()`,
   `ALL`) instead of `TimeInterleave(pub u8)`. `length(mode)` is
