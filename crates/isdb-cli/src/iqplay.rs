@@ -85,7 +85,7 @@ impl IqFile {
             }
             let s = decode(format, &buf[..n - n % bps as usize]);
             for c in &s {
-                let p = c.norm_sqr() as f64;
+                let p = f64::from(c.norm_sqr());
                 if p > 0.0 {
                     power += p;
                     nz += 1;

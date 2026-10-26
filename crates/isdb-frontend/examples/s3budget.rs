@@ -217,7 +217,7 @@ fn ideal(x: &[C], fs: f64, cfo: f64, channel: Option<f64>, rate_ppm: f64) -> (Ve
     // Coarse search of the fractional start over one symbol.
     let (mut best, mut best_t) = (f64::MIN, 0.0);
     for k in 0..16 {
-        let t0 = 2000.0 + period * k as f64 / 16.0;
+        let t0 = 2000.0 + period * f64::from(k) / 16.0;
         let z = sample_at(&y, t0, period);
         if let Some(r) = s3sync::measure(&z)
             && r.snr_db > best

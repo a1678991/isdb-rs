@@ -187,7 +187,7 @@ pub fn assemble_pid(pkts: &[Pkt], pid: u16) -> Vec<Occurrence> {
     let mut a = SectionAssembler::new(pid);
     let mut v = Vec::new();
     for (i, p) in pkts.iter().enumerate() {
-        if (((p[1] & 0x1F) as u16) << 8 | p[2] as u16) != pid {
+        if (u16::from(p[1] & 0x1F) << 8 | u16::from(p[2])) != pid {
             continue;
         }
         for o in a.push(i as u64, p) {
@@ -204,7 +204,7 @@ pub fn assemble_pid(pkts: &[Pkt], pid: u16) -> Vec<Occurrence> {
 }
 
 fn pid_of(p: &Pkt) -> u16 {
-    ((p[1] & 0x1F) as u16) << 8 | p[2] as u16
+    u16::from(p[1] & 0x1F) << 8 | u16::from(p[2])
 }
 
 /// Replace every packet of `pids` with a null packet; returns the count.

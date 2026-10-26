@@ -140,7 +140,7 @@ mod tests {
                 } else {
                     (2.6, i, 12)
                 };
-                let a = TAU * (k % m) as f64 / m as f64;
+                let a = TAU * f64::from(k % m) / f64::from(m);
                 [r * a.cos(), r * a.sin()]
             })
             .collect();
@@ -156,7 +156,7 @@ mod tests {
         let z: Vec<[f64; 2]> = (0..20000)
             .map(|i| {
                 s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let a = TAU * f64::from(s >> 29) / 8.0 + 1e-3 * i as f64;
+                let a = TAU * f64::from(s >> 29) / 8.0 + 1e-3 * f64::from(i);
                 [a.cos(), a.sin()]
             })
             .collect();

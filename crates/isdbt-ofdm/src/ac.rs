@@ -160,23 +160,23 @@ impl SeismicDetail {
                         reserved,
                     } => {
                         w.put(1, 1);
-                        w.put(two_reports as u32, 1);
-                        w.put(second as u32, 1);
-                        w.put(warning_id as u32, 9);
-                        w.put(cancelled as u32, 1);
-                        w.put(south as u32, 1);
-                        w.put(latitude_x10 as u32, 10);
-                        w.put(west as u32, 1);
-                        w.put(longitude_x10 as u32, 11);
-                        w.put(depth_km as u32, 10);
-                        w.put(occurrence_time as u32, 10);
-                        w.put(reserved as u32, 1);
+                        w.put(u32::from(two_reports), 1);
+                        w.put(u32::from(second), 1);
+                        w.put(u32::from(warning_id), 9);
+                        w.put(u32::from(cancelled), 1);
+                        w.put(u32::from(south), 1);
+                        w.put(u32::from(latitude_x10), 10);
+                        w.put(u32::from(west), 1);
+                        w.put(u32::from(longitude_x10), 11);
+                        w.put(u32::from(depth_km), 10);
+                        w.put(u32::from(occurrence_time), 10);
+                        w.put(u32::from(reserved), 1);
                     }
                 }
             }
             SeismicDetail::NotAvailable { broadcaster_id } => {
                 w.put(u32::MAX, 32); // B24–B55 reserved "1"
-                w.put(broadcaster_id as u32, 11);
+                w.put(u32::from(broadcaster_id), 11);
                 w.put(u32::MAX, 32); // B67–B111 reserved "1" (45 bits)
                 w.put(u32::MAX, 13);
             }
@@ -191,8 +191,8 @@ impl SeismicDetail {
             0..=3 => {
                 let current_time = r.get(31);
                 let page = if r.get(1) == 0 {
-                    let hi = r.get(24) as u64;
-                    SeismicPage::Areas((hi << 32) | r.get(32) as u64)
+                    let hi = u64::from(r.get(24));
+                    SeismicPage::Areas((hi << 32) | u64::from(r.get(32)))
                 } else {
                     SeismicPage::Epicenter {
                         two_reports: r.get(1) == 1,
@@ -228,7 +228,7 @@ pub fn crc10(bits: &[u8]) -> [u8; 10] {
     const G: u16 = (1 << 9) | (1 << 5) | (1 << 4) | (1 << 1) | 1;
     let mut r: u16 = 0;
     for &b in bits {
-        let fb = (b as u16 & 1) ^ ((r >> 9) & 1);
+        let fb = (u16::from(b) & 1) ^ ((r >> 9) & 1);
         r = (r << 1) & 0x3ff;
         if fb == 1 {
             r ^= G;
@@ -263,9 +263,9 @@ impl SeismicWarning {
         out[0] = 0;
         out[1..17].copy_from_slice(&sync_word(odd_frame));
         let mut w = BitWriter::default();
-        w.put(self.start_end as u32, 2);
-        w.put(self.update as u32, 2);
-        w.put(self.signal_id as u32, 3);
+        w.put(u32::from(self.start_end), 2);
+        w.put(u32::from(self.update), 2);
+        w.put(u32::from(self.signal_id), 3);
         out[17..24].copy_from_slice(&w.bits);
         out[24..112].copy_from_slice(&self.detail);
         let crc = crc10(&out[21..112]);

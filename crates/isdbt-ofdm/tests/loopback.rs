@@ -547,7 +547,7 @@ fn perf_realtime_factor() {
     let mut d = Demodulator::new(DemodConfig::default());
     let n = d.push(&rx).len();
     let t_rx = t1.elapsed().as_secs_f64();
-    let air = frames as f64 * p.frame_seconds();
+    let air = f64::from(frames) * p.frame_seconds();
     eprintln!(
         "TX {:.2}× real time, RX {:.2}× real time ({n} frames, {air:.3} s of signal)",
         air / t_tx,

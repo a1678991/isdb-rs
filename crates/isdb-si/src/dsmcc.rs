@@ -59,7 +59,7 @@ pub fn transaction_id(transaction_number: u32) -> u32 {
 /// downloadId with `data_event_id` in bits 31–28 (Vol. 3 §6.2.1 Fig. 6-1)
 /// and `low` in bits 27–0.
 pub fn download_id(data_event_id: u8, low: u32) -> u32 {
-    ((data_event_id as u32 & 0xF) << 28) | (low & 0x0FFF_FFFF)
+    ((u32::from(data_event_id) & 0xF) << 28) | (low & 0x0FFF_FFFF)
 }
 
 /// data_event_id of a downloadId (bits 31–28).
@@ -161,11 +161,15 @@ fn write_header(
     tail: &MessageHeaderTail,
     payload: &[u8],
 ) -> Result<()> {
-    w.write("protocolDiscriminator", 8, PROTOCOL_DISCRIMINATOR as u64)?;
-    w.write("dsmccType", 8, DSMCC_TYPE_UN_DOWNLOAD as u64)?;
-    w.write("messageId", 16, message_id as u64)?;
-    w.write("transaction_id/downloadId", 32, id as u64)?;
-    w.write("reserved", 8, tail.reserved as u64)?;
+    w.write(
+        "protocolDiscriminator",
+        8,
+        u64::from(PROTOCOL_DISCRIMINATOR),
+    )?;
+    w.write("dsmccType", 8, u64::from(DSMCC_TYPE_UN_DOWNLOAD))?;
+    w.write("messageId", 16, u64::from(message_id))?;
+    w.write("transaction_id/downloadId", 32, u64::from(id))?;
+    w.write("reserved", 8, u64::from(tail.reserved))?;
     w.write("adaptationLength", 8, tail.adaptation.len() as u64)?;
     w.write(
         "messageLength",
@@ -365,7 +369,7 @@ impl ModuleDescriptor {
             } => {
                 let mut w = BitWriter::new();
                 w.bool(*return_to_entry);
-                w.write("reserved", 7, *reserved as u64)?;
+                w.write("reserved", 7, u64::from(*reserved))?;
                 out.extend_from_slice(&w.into_bytes());
             }
             ModuleDescriptor::Unknown { data, .. } => out.extend_from_slice(data),
@@ -576,12 +580,16 @@ impl LongBody for DiiBody {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut p = BitWriter::new();
-        p.write("downloadId", 32, self.download_id as u64)?;
-        p.write("blockSize", 16, self.block_size as u64)?;
-        p.write("windowSize", 8, self.window_size as u64)?;
-        p.write("ackPeriod", 8, self.ack_period as u64)?;
-        p.write("tCDownloadWindow", 32, self.t_c_download_window as u64)?;
-        p.write("tCDownloadScenario", 32, self.t_c_download_scenario as u64)?;
+        p.write("downloadId", 32, u64::from(self.download_id))?;
+        p.write("blockSize", 16, u64::from(self.block_size))?;
+        p.write("windowSize", 8, u64::from(self.window_size))?;
+        p.write("ackPeriod", 8, u64::from(self.ack_period))?;
+        p.write("tCDownloadWindow", 32, u64::from(self.t_c_download_window))?;
+        p.write(
+            "tCDownloadScenario",
+            32,
+            u64::from(self.t_c_download_scenario),
+        )?;
         p.write(
             "compatibilityDescriptorLength",
             16,
@@ -590,9 +598,9 @@ impl LongBody for DiiBody {
         p.bytes(&self.compatibility);
         p.write("numberOfModules", 16, self.modules.len() as u64)?;
         for m in &self.modules {
-            p.write("moduleId", 16, m.module_id as u64)?;
-            p.write("moduleSize", 32, m.module_size as u64)?;
-            p.write("moduleVersion", 8, m.module_version as u64)?;
+            p.write("moduleId", 16, u64::from(m.module_id))?;
+            p.write("moduleSize", 32, u64::from(m.module_size))?;
+            p.write("moduleVersion", 8, u64::from(m.module_version))?;
             let info = encode_module_descriptors(&m.info)?;
             p.write("moduleInfoLength", 8, info.len() as u64)?;
             p.bytes(&info);

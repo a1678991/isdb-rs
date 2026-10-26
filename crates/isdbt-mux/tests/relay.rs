@@ -208,11 +208,11 @@ fn pid(p: &Packet) -> u16 {
 }
 
 fn ts90(b: &[u8]) -> u64 {
-    ((b[0] as u64 >> 1) & 7) << 30
-        | (b[1] as u64) << 22
-        | ((b[2] as u64) >> 1) << 15
-        | (b[3] as u64) << 7
-        | (b[4] as u64) >> 1
+    ((u64::from(b[0]) >> 1) & 7) << 30
+        | u64::from(b[1]) << 22
+        | (u64::from(b[2]) >> 1) << 15
+        | u64::from(b[3]) << 7
+        | u64::from(b[4]) >> 1
 }
 
 /// One PES of a stream with its PCR-interpolated arrival (first byte) and

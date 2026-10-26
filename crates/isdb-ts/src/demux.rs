@@ -316,7 +316,7 @@ impl SectionDemux {
 
     /// Feed one packet; returns completed sections and events.
     pub fn push(&mut self, index: u64, pkt: &[u8; PACKET_SIZE]) -> Vec<Assembled> {
-        let pid = (((pkt[1] & 0x1F) as u16) << 8) | pkt[2] as u16;
+        let pid = (u16::from(pkt[1] & 0x1F) << 8) | u16::from(pkt[2]);
         let mut out = Vec::new();
         if let Some(a) = self.assemblers.get_mut(&pid) {
             a.push_into(index, pkt, &mut out);

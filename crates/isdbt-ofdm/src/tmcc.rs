@@ -348,11 +348,11 @@ impl TmccInfo {
     /// Serialise B20..B121 (102 bits).
     pub fn to_bits(&self) -> [u8; 102] {
         let mut w = BitWriter::default();
-        w.put(self.system_id as u32, 2);
-        w.put(self.switching_countdown as u32, 4);
-        w.put(self.emergency_alarm as u32, 1);
+        w.put(u32::from(self.system_id), 2);
+        w.put(u32::from(self.switching_countdown), 4);
+        w.put(u32::from(self.emergency_alarm), 1);
         for p in [&self.current, &self.next] {
-            w.put(p.partial_reception as u32, 1);
+            w.put(u32::from(p.partial_reception), 1);
             for l in &p.layers {
                 w.put(u32::from(l.modulation.code()), 3);
                 w.put(u32::from(l.code_rate.code()), 3);
@@ -360,8 +360,8 @@ impl TmccInfo {
                 w.put(u32::from(l.segments.code()), 4);
             }
         }
-        w.put(self.phase_shift_correction as u32, 3);
-        w.put(self.reserved as u32, 12);
+        w.put(u32::from(self.phase_shift_correction), 3);
+        w.put(u32::from(self.reserved), 12);
         assert_eq!(w.bits.len(), 102);
         w.bits.try_into().expect("102 bits")
     }
@@ -471,7 +471,7 @@ impl BitReader<'_> {
     pub fn get(&mut self, n: usize) -> u32 {
         let mut v = 0;
         for _ in 0..n {
-            v = (v << 1) | self.bits[self.pos] as u32;
+            v = (v << 1) | u32::from(self.bits[self.pos]);
             self.pos += 1;
         }
         v

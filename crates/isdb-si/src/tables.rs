@@ -23,7 +23,7 @@ fn rfu4_loop(r: &mut BitReader<'_>) -> Result<(u8, Vec<Descriptor>)> {
 
 /// Write a `reserved(4) + length(12)` word followed by the loop bytes.
 fn put_rfu4_bytes(w: &mut BitWriter, rfu: u8, what: &'static str, bytes: &[u8]) -> Result<()> {
-    w.write("reserved_future_use", 4, rfu as u64)?;
+    w.write("reserved_future_use", 4, u64::from(rfu))?;
     w.write(what, 12, bytes.len() as u64)?;
     w.bytes(bytes);
     Ok(())
@@ -97,8 +97,8 @@ impl NetworkLoops {
     fn encode(&self, out: &mut Vec<u8>, first_len: &'static str) -> Result<()> {
         let mut ts = BitWriter::new();
         for t in &self.transport_streams {
-            ts.write("transport_stream_id", 16, t.transport_stream_id as u64)?;
-            ts.write("original_network_id", 16, t.original_network_id as u64)?;
+            ts.write("transport_stream_id", 16, u64::from(t.transport_stream_id))?;
+            ts.write("original_network_id", 16, u64::from(t.original_network_id))?;
             put_rfu4_loop(
                 &mut ts,
                 t.reserved_future_use,
@@ -241,15 +241,27 @@ impl LongBody for SdtBody {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("original_network_id", 16, self.original_network_id as u64)?;
-        w.write("reserved_future_use", 8, self.reserved_future_use as u64)?;
+        w.write(
+            "original_network_id",
+            16,
+            u64::from(self.original_network_id),
+        )?;
+        w.write(
+            "reserved_future_use",
+            8,
+            u64::from(self.reserved_future_use),
+        )?;
         for s in &self.services {
-            w.write("service_id", 16, s.service_id as u64)?;
-            w.write("reserved_future_use", 3, s.reserved_future_use as u64)?;
-            w.write("EIT_user_defined_flags", 3, s.eit_user_defined_flags as u64)?;
+            w.write("service_id", 16, u64::from(s.service_id))?;
+            w.write("reserved_future_use", 3, u64::from(s.reserved_future_use))?;
+            w.write(
+                "EIT_user_defined_flags",
+                3,
+                u64::from(s.eit_user_defined_flags),
+            )?;
             w.bool(s.eit_schedule_flag);
             w.bool(s.eit_present_following_flag);
-            w.write("running_status", 3, s.running_status as u64)?;
+            w.write("running_status", 3, u64::from(s.running_status))?;
             w.bool(s.free_ca_mode);
             let d = loop_bytes(&s.descriptors)?;
             w.write("descriptors_loop_length", 12, d.len() as u64)?;
@@ -337,19 +349,27 @@ impl LongBody for EitBody {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("transport_stream_id", 16, self.transport_stream_id as u64)?;
-        w.write("original_network_id", 16, self.original_network_id as u64)?;
+        w.write(
+            "transport_stream_id",
+            16,
+            u64::from(self.transport_stream_id),
+        )?;
+        w.write(
+            "original_network_id",
+            16,
+            u64::from(self.original_network_id),
+        )?;
         w.write(
             "segment_last_section_number",
             8,
-            self.segment_last_section_number as u64,
+            u64::from(self.segment_last_section_number),
         )?;
-        w.write("last_table_id", 8, self.last_table_id as u64)?;
+        w.write("last_table_id", 8, u64::from(self.last_table_id))?;
         for e in &self.events {
-            w.write("event_id", 16, e.event_id as u64)?;
+            w.write("event_id", 16, u64::from(e.event_id))?;
             w.write("start_time", 40, e.start_time.checked_u40()?)?;
-            w.write("duration", 24, e.duration.0 as u64)?;
-            w.write("running_status", 3, e.running_status as u64)?;
+            w.write("duration", 24, u64::from(e.duration.0))?;
+            w.write("running_status", 3, u64::from(e.running_status))?;
             w.bool(e.free_ca_mode);
             let d = loop_bytes(&e.descriptors)?;
             w.write("descriptors_loop_length", 12, d.len() as u64)?;
@@ -485,12 +505,12 @@ impl ShortBody for RstBody {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
         for e in &self.entries {
-            w.write("transport_stream_id", 16, e.transport_stream_id as u64)?;
-            w.write("original_network_id", 16, e.original_network_id as u64)?;
-            w.write("service_id", 16, e.service_id as u64)?;
-            w.write("event_id", 16, e.event_id as u64)?;
-            w.write("reserved_future_use", 5, e.reserved_future_use as u64)?;
-            w.write("running_status", 3, e.running_status as u64)?;
+            w.write("transport_stream_id", 16, u64::from(e.transport_stream_id))?;
+            w.write("original_network_id", 16, u64::from(e.original_network_id))?;
+            w.write("service_id", 16, u64::from(e.service_id))?;
+            w.write("event_id", 16, u64::from(e.event_id))?;
+            w.write("reserved_future_use", 5, u64::from(e.reserved_future_use))?;
+            w.write("running_status", 3, u64::from(e.running_status))?;
         }
         out.extend_from_slice(&w.into_bytes());
         Ok(())
@@ -556,10 +576,10 @@ impl StuffingSection {
     /// Encode the complete section (section_length recomputed).
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut w = BitWriter::new();
-        w.write("table_id", 8, self.table_id as u64)?;
+        w.write("table_id", 8, u64::from(self.table_id))?;
         w.bool(self.section_syntax_indicator);
         w.bool(self.reserved_future_use);
-        w.write("reserved", 2, self.reserved as u64)?;
+        w.write("reserved", 2, u64::from(self.reserved))?;
         if self.data.len() > isdb_ts::section::MAX_SECTION_LENGTH {
             return Err(Error::Overflow {
                 what: "section_length",
@@ -688,9 +708,17 @@ impl LongBody for PcatBody {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("transport_stream_id", 16, self.transport_stream_id as u64)?;
-        w.write("original_network_id", 16, self.original_network_id as u64)?;
-        w.write("content_id", 32, self.content_id as u64)?;
+        w.write(
+            "transport_stream_id",
+            16,
+            u64::from(self.transport_stream_id),
+        )?;
+        w.write(
+            "original_network_id",
+            16,
+            u64::from(self.original_network_id),
+        )?;
+        w.write("content_id", 32, u64::from(self.content_id))?;
         w.write(
             "num_of_content_version",
             8,
@@ -699,20 +727,24 @@ impl LongBody for PcatBody {
         for c in &self.content_versions {
             let d = loop_bytes(&c.descriptors)?;
             let sched_len = c.schedules.len() * 8;
-            w.write("content_version", 16, c.content_version as u64)?;
-            w.write("content_minor_version", 16, c.content_minor_version as u64)?;
-            w.write("version_indicator", 2, c.version_indicator as u64)?;
-            w.write("reserved_future_use", 2, c.reserved_future_use_1 as u64)?;
+            w.write("content_version", 16, u64::from(c.content_version))?;
+            w.write(
+                "content_minor_version",
+                16,
+                u64::from(c.content_minor_version),
+            )?;
+            w.write("version_indicator", 2, u64::from(c.version_indicator))?;
+            w.write("reserved_future_use", 2, u64::from(c.reserved_future_use_1))?;
             w.write(
                 "content_descriptor_length",
                 12,
                 (sched_len + d.len()) as u64,
             )?;
-            w.write("reserved_future_use", 4, c.reserved_future_use_2 as u64)?;
+            w.write("reserved_future_use", 4, u64::from(c.reserved_future_use_2))?;
             w.write("schedule_description_length", 12, sched_len as u64)?;
             for s in &c.schedules {
                 w.write("start_time", 40, s.start_time.checked_u40()?)?;
-                w.write("duration", 24, s.duration.0 as u64)?;
+                w.write("duration", 24, u64::from(s.duration.0))?;
             }
             w.bytes(&d);
         }
@@ -780,13 +812,17 @@ impl LongBody for BitBody {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("reserved_future_use", 3, self.reserved_future_use as u64)?;
+        w.write(
+            "reserved_future_use",
+            3,
+            u64::from(self.reserved_future_use),
+        )?;
         w.bool(self.broadcast_view_propriety);
         let d = loop_bytes(&self.first_descriptors)?;
         w.write("first_descriptors_length", 12, d.len() as u64)?;
         w.bytes(&d);
         for b in &self.broadcasters {
-            w.write("broadcaster_id", 8, b.broadcaster_id as u64)?;
+            w.write("broadcaster_id", 8, u64::from(b.broadcaster_id))?;
             put_rfu4_loop(
                 &mut w,
                 b.reserved_future_use,
@@ -869,18 +905,18 @@ impl LongBody for NbitBody {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
         for i in &self.informations {
-            w.write("information_id", 16, i.information_id as u64)?;
-            w.write("information_type", 4, i.information_type as u64)?;
+            w.write("information_id", 16, u64::from(i.information_id))?;
+            w.write("information_type", 4, u64::from(i.information_type))?;
             w.write(
                 "description_body_location",
                 2,
-                i.description_body_location as u64,
+                u64::from(i.description_body_location),
             )?;
-            w.write("reserved_future_use", 2, i.reserved_future_use_1 as u64)?;
-            w.write("user_defined", 8, i.user_defined as u64)?;
+            w.write("reserved_future_use", 2, u64::from(i.reserved_future_use_1))?;
+            w.write("user_defined", 8, u64::from(i.user_defined))?;
             w.write("number_of_keys", 8, i.key_ids.len() as u64)?;
             for k in &i.key_ids {
-                w.write("key_id", 16, *k as u64)?;
+                w.write("key_id", 16, u64::from(*k))?;
             }
             put_rfu4_loop(
                 &mut w,
@@ -949,11 +985,19 @@ impl LongBody for LdtBody {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("transport_stream_id", 16, self.transport_stream_id as u64)?;
-        w.write("original_network_id", 16, self.original_network_id as u64)?;
+        w.write(
+            "transport_stream_id",
+            16,
+            u64::from(self.transport_stream_id),
+        )?;
+        w.write(
+            "original_network_id",
+            16,
+            u64::from(self.original_network_id),
+        )?;
         for d in &self.descriptions {
-            w.write("description_id", 16, d.description_id as u64)?;
-            w.write("reserved_future_use", 12, d.reserved_future_use as u64)?;
+            w.write("description_id", 16, u64::from(d.description_id))?;
+            w.write("reserved_future_use", 12, u64::from(d.reserved_future_use))?;
             let b = loop_bytes(&d.descriptors)?;
             w.write("descriptors_loop_length", 12, b.len() as u64)?;
             w.bytes(&b);

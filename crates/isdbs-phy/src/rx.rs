@@ -185,7 +185,7 @@ pub fn main_mer(frame: &Frame, info: &TmccInfo) -> Option<f64> {
             Modulation::Qpsk => (4, std::f64::consts::FRAC_PI_4),
             Modulation::Tc8psk => (8, 0.0),
         };
-        let step = std::f64::consts::TAU / m as f64;
+        let step = std::f64::consts::TAU / f64::from(m);
         for &v in &frame.main[r.symbols.clone()] {
             let a = ((v.arg() - off) / step).round() * step + off;
             let d = Cplx::from_polar(1.0, a);

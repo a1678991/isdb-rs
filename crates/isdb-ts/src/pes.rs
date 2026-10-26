@@ -575,13 +575,17 @@ impl PesHeader {
             });
         }
         let mut w = BitWriter::new();
-        w.write("'10'", 2, self.marker_bits as u64)?;
-        w.write("PES_scrambling_control", 2, self.scrambling_control as u64)?;
+        w.write("'10'", 2, u64::from(self.marker_bits))?;
+        w.write(
+            "PES_scrambling_control",
+            2,
+            u64::from(self.scrambling_control),
+        )?;
         w.bool(self.priority);
         w.bool(self.data_alignment_indicator);
         w.bool(self.copyright);
         w.bool(self.original_or_copy);
-        w.write("PTS_DTS_flags", 2, self.pts_dts.flags() as u64)?;
+        w.write("PTS_DTS_flags", 2, u64::from(self.pts_dts.flags()))?;
         w.bool(self.escr.is_some());
         w.bool(self.es_rate.is_some());
         w.bool(self.trick_mode.is_some());
@@ -605,30 +609,30 @@ impl PesHeader {
                     bits: 33,
                 });
             }
-            w.write("ESCR reserved", 2, e.reserved as u64)?;
+            w.write("ESCR reserved", 2, u64::from(e.reserved))?;
             w.write("ESCR_base[32..30]", 3, e.base >> 30)?;
-            w.write("marker_bit", 1, (e.markers as u64 >> 3) & 1)?;
+            w.write("marker_bit", 1, (u64::from(e.markers) >> 3) & 1)?;
             w.write("ESCR_base[29..15]", 15, (e.base >> 15) & 0x7FFF)?;
-            w.write("marker_bit", 1, (e.markers as u64 >> 2) & 1)?;
+            w.write("marker_bit", 1, (u64::from(e.markers) >> 2) & 1)?;
             w.write("ESCR_base[14..0]", 15, e.base & 0x7FFF)?;
-            w.write("marker_bit", 1, (e.markers as u64 >> 1) & 1)?;
-            w.write("ESCR_extension", 9, e.extension as u64)?;
-            w.write("marker_bit", 1, e.markers as u64 & 1)?;
+            w.write("marker_bit", 1, (u64::from(e.markers) >> 1) & 1)?;
+            w.write("ESCR_extension", 9, u64::from(e.extension))?;
+            w.write("marker_bit", 1, u64::from(e.markers) & 1)?;
         }
         if let Some(e) = self.es_rate {
-            w.write("marker_bit", 1, (e.markers as u64 >> 1) & 1)?;
-            w.write("ES_rate", 22, e.rate as u64)?;
-            w.write("marker_bit", 1, e.markers as u64 & 1)?;
+            w.write("marker_bit", 1, (u64::from(e.markers) >> 1) & 1)?;
+            w.write("ES_rate", 22, u64::from(e.rate))?;
+            w.write("marker_bit", 1, u64::from(e.markers) & 1)?;
         }
         if let Some(t) = self.trick_mode {
-            w.write("trick mode", 8, t as u64)?;
+            w.write("trick mode", 8, u64::from(t))?;
         }
         if let Some(a) = self.additional_copy_info {
             w.bool(a.marker);
-            w.write("additional_copy_info", 7, a.info as u64)?;
+            w.write("additional_copy_info", 7, u64::from(a.info))?;
         }
         if let Some(c) = self.previous_pes_packet_crc {
-            w.write("previous_PES_packet_CRC", 16, c as u64)?;
+            w.write("previous_PES_packet_CRC", 16, u64::from(c))?;
         }
         if let Some(e) = &self.extension {
             e.write(&mut w)?;
@@ -722,7 +726,7 @@ impl PesExtension {
         w.bool(self.pack_header.is_some());
         w.bool(self.program_packet_sequence_counter.is_some());
         w.bool(self.p_std_buffer.is_some());
-        w.write("PES_extension reserved", 3, self.reserved as u64)?;
+        w.write("PES_extension reserved", 3, u64::from(self.reserved))?;
         w.bool(self.extension2.is_some());
         if let Some(p) = &self.private_data {
             w.bytes(p);
@@ -732,16 +736,20 @@ impl PesExtension {
             w.bytes(p);
         }
         if let Some(c) = self.program_packet_sequence_counter {
-            w.write("marker_bit", 1, (c.markers as u64 >> 1) & 1)?;
-            w.write("program_packet_sequence_counter", 7, c.counter as u64)?;
-            w.write("marker_bit", 1, c.markers as u64 & 1)?;
+            w.write("marker_bit", 1, (u64::from(c.markers) >> 1) & 1)?;
+            w.write("program_packet_sequence_counter", 7, u64::from(c.counter))?;
+            w.write("marker_bit", 1, u64::from(c.markers) & 1)?;
             w.bool(c.mpeg1_mpeg2_identifier);
-            w.write("original_stuff_length", 6, c.original_stuff_length as u64)?;
+            w.write(
+                "original_stuff_length",
+                6,
+                u64::from(c.original_stuff_length),
+            )?;
         }
         if let Some(p) = self.p_std_buffer {
-            w.write("'01'", 2, p.prefix as u64)?;
+            w.write("'01'", 2, u64::from(p.prefix))?;
             w.bool(p.scale);
-            w.write("P-STD_buffer_size", 13, p.size as u64)?;
+            w.write("P-STD_buffer_size", 13, u64::from(p.size))?;
         }
         if let Some(e) = &self.extension2 {
             w.bool(e.marker);
@@ -909,7 +917,7 @@ pub fn check(p: &PesPacket) -> Vec<Violation> {
                 PtsDts::None => {}
             }
             if let Some(e) = h.escr {
-                reserved_ones(&mut v, e.reserved as u64, 2, "ESCR reserved");
+                reserved_ones(&mut v, u64::from(e.reserved), 2, "ESCR reserved");
                 require(&mut v, e.markers == 0b1111, c, || {
                     format!("ESCR marker bits {:04b}", e.markers)
                 });
@@ -941,7 +949,7 @@ pub fn check(p: &PesPacket) -> Vec<Violation> {
                 });
             }
             if let Some(e) = &h.extension {
-                reserved_ones(&mut v, e.reserved as u64, 3, "PES_extension reserved");
+                reserved_ones(&mut v, u64::from(e.reserved), 3, "PES_extension reserved");
                 if let Some(s) = e.program_packet_sequence_counter {
                     require(&mut v, s.markers == 0b11, c, || {
                         "program_packet_sequence_counter marker bits".into()

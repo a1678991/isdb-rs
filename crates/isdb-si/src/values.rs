@@ -589,11 +589,11 @@ impl MaximumBitrate {
     pub const UNIT_BPS: u64 = 250_000;
     /// The rate in bit/s.
     pub fn bps(self) -> u64 {
-        self.0 as u64 * Self::UNIT_BPS
+        u64::from(self.0) * Self::UNIT_BPS
     }
     /// The rate in Mbit/s.
     pub fn mbps(self) -> f64 {
-        self.0 as f64 / 4.0
+        f64::from(self.0) / 4.0
     }
     /// Code a rate in bit/s, "rolling up" to the next 1/4 Mbit/s; `None`
     /// if the result does not fit in 8 bits (> 63.75 Mbit/s).

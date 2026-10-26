@@ -137,7 +137,7 @@ impl Bins {
         self.packets[k] = self.packets[k].saturating_add(1);
         if let Some(s) = slack_ticks {
             let ms = s.div_euclid((HZ / 1000) as i64);
-            let ms = ms.clamp(i16::MIN as i64, NO_SLACK as i64 - 1) as i16;
+            let ms = ms.clamp(i64::from(i16::MIN), i64::from(NO_SLACK) - 1) as i16;
             self.slack_ms[k] = self.slack_ms[k].min(ms);
         }
     }
@@ -145,7 +145,7 @@ impl Bins {
     /// The profile of these bins.
     pub fn profile(&self) -> RateProfile {
         let bin_s = BIN_MS as f64 / 1000.0;
-        let packets: u64 = self.packets.iter().map(|&n| n as u64).sum();
+        let packets: u64 = self.packets.iter().map(|&n| u64::from(n)).sum();
         let span_s = self.packets.len() as f64 * bin_s;
         let mean_bps = if span_s > 0.0 {
             packets as f64 * 1504.0 / span_s
@@ -156,10 +156,10 @@ impl Bins {
         let peak_1s_bps = if self.packets.len() < w {
             mean_bps
         } else {
-            let mut sum: u64 = self.packets[..w].iter().map(|&n| n as u64).sum();
+            let mut sum: u64 = self.packets[..w].iter().map(|&n| u64::from(n)).sum();
             let mut best = sum;
             for k in w..self.packets.len() {
-                sum = sum + self.packets[k] as u64 - self.packets[k - w] as u64;
+                sum = sum + u64::from(self.packets[k]) - u64::from(self.packets[k - w]);
                 best = best.max(sum);
             }
             best as f64 * 1504.0
@@ -169,7 +169,7 @@ impl Bins {
             .iter()
             .filter(|&&s| s != NO_SLACK)
             .min()
-            .map(|&s| s as f64 / 1000.0);
+            .map(|&s| f64::from(s) / 1000.0);
         RateProfile {
             span_s,
             packets,
@@ -186,7 +186,7 @@ impl Bins {
         let drain = bps * bin_s;
         let mut queue = 0.0f64; // bits waiting at the start of the bin, its own included
         for (&n, &s) in self.packets.iter().zip(&self.slack_ms) {
-            queue = (queue - drain).max(0.0) + n as f64 * 1504.0;
+            queue = (queue - drain).max(0.0) + f64::from(n) * 1504.0;
             if n == 0 {
                 continue;
             }
@@ -194,7 +194,7 @@ impl Bins {
             let allowed = if s == NO_SLACK {
                 UNTIMED_MS
             } else {
-                s.max(0) as f64 + TOLERANCE_MS
+                f64::from(s.max(0)) + TOLERANCE_MS
             };
             if delay_ms > allowed {
                 return false;
@@ -211,7 +211,7 @@ impl Bins {
         if max == 0 {
             return 0.0;
         }
-        let (mut lo, mut hi) = (0.0f64, max as f64 * 1504.0 * 1000.0 / BIN_MS as f64);
+        let (mut lo, mut hi) = (0.0f64, f64::from(max) * 1504.0 * 1000.0 / BIN_MS as f64);
         while hi - lo > PRECISION_BPS {
             let mid = (lo + hi) / 2.0;
             if self.feasible(mid) {
@@ -293,11 +293,11 @@ fn pes_decode_ts(p: &[u8; 188]) -> Option<u64> {
         return None;
     }
     let ts = |b: &[u8]| {
-        ((b[0] as u64 >> 1) & 7) << 30
-            | (b[1] as u64) << 22
-            | ((b[2] as u64) >> 1) << 15
-            | (b[3] as u64) << 7
-            | (b[4] as u64) >> 1
+        ((u64::from(b[0]) >> 1) & 7) << 30
+            | u64::from(b[1]) << 22
+            | (u64::from(b[2]) >> 1) << 15
+            | u64::from(b[3]) << 7
+            | u64::from(b[4]) >> 1
     };
     match pl[7] >> 6 {
         3 => Some(ts(&pl[14..19])),
@@ -355,7 +355,7 @@ mod tests {
     }
 
     fn mbps(n: u16) -> f64 {
-        n as f64 * 1504.0 * 1000.0 / BIN_MS as f64
+        f64::from(n) * 1504.0 * 1000.0 / BIN_MS as f64
     }
 
     #[test]

@@ -348,7 +348,7 @@ impl Packer {
         }
         let b = u32::from(self.bits);
         let mask = (1u64 << b) - 1;
-        let sym = (q[0] as u8 as u64 & mask) | ((q[1] as u8 as u64 & mask) << b);
+        let sym = (u64::from(q[0] as u8) & mask) | ((u64::from(q[1] as u8) & mask) << b);
         self.acc |= sym << self.nacc;
         self.nacc += 2 * b;
         while self.nacc >= 16 {

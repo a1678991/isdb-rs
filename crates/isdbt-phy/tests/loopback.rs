@@ -36,7 +36,7 @@ fn packet(layer: u8, frame: u32, idx: u32) -> Packet {
     p[3] = 0x10;
     p[4..8].copy_from_slice(&frame.to_be_bytes());
     p[8..12].copy_from_slice(&idx.to_be_bytes());
-    let mut x = frame.wrapping_mul(2654435761) ^ idx ^ ((layer as u32) << 24);
+    let mut x = frame.wrapping_mul(2654435761) ^ idx ^ (u32::from(layer) << 24);
     for b in &mut p[12..] {
         x ^= x << 13;
         x ^= x >> 17;

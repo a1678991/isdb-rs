@@ -415,7 +415,7 @@ impl Device {
     /// RF amplifier (TX PA / RX LNA front-end amp, ~11 dB).
     pub fn set_amp_enable(&mut self, on: bool) -> Result<()> {
         check("hackrf_set_amp_enable", unsafe {
-            ffi::hackrf_set_amp_enable(self.dev, on as u8)
+            ffi::hackrf_set_amp_enable(self.dev, u8::from(on))
         })
     }
 
@@ -443,7 +443,7 @@ impl Device {
     /// Antenna-port bias tee; keep off unless powering an active antenna.
     pub fn set_antenna_enable(&mut self, on: bool) -> Result<()> {
         check("hackrf_set_antenna_enable", unsafe {
-            ffi::hackrf_set_antenna_enable(self.dev, on as u8)
+            ffi::hackrf_set_antenna_enable(self.dev, u8::from(on))
         })
     }
 

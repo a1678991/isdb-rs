@@ -78,7 +78,7 @@ pub fn mjd_to_date(mjd: u32) -> Option<Date> {
     if !(MJD_MIN..=MJD_MAX).contains(&mjd) {
         return None;
     }
-    let mjd = mjd as i64;
+    let mjd = i64::from(mjd);
     // (MJD − 15078.2) / 365.25 = (100·MJD − 1507820) / 36525 (positive here)
     let yp = (100 * mjd - 1_507_820).div_euclid(36_525);
     let iy = (yp * 36_525).div_euclid(100); // int(Y' × 365.25)
@@ -109,14 +109,14 @@ pub fn date_to_mjd(date: Date) -> Option<u32> {
     {
         return None;
     }
-    let y = (date.year - 1900) as i64;
-    let m = date.month as i64;
+    let y = i64::from(date.year - 1900);
+    let m = i64::from(date.month);
     let l = if m == 1 || m == 2 { 1 } else { 0 };
     let mjd = 14_956
-        + date.day as i64
+        + i64::from(date.day)
         + ((y - l) * 36_525).div_euclid(100)
         + ((m + 1 + l * 12) * 306_001).div_euclid(10_000);
-    if mjd < MJD_MIN as i64 || mjd > MJD_MAX as i64 {
+    if mjd < i64::from(MJD_MIN) || mjd > i64::from(MJD_MAX) {
         return None;
     }
     Some(mjd as u32)
@@ -137,7 +137,7 @@ pub fn days_in_month(year: i32, month: u8) -> u8 {
 /// Annex C (c): week day, Monday = 1 … Sunday = 7:
 /// `WD = [(MJD + 2) mod 7] + 1` (ARIB STD-B10 Part 2 Annex C (c)).
 pub fn weekday(mjd: u32) -> u8 {
-    ((mjd as u64 + 2) % 7) as u8 + 1
+    ((u64::from(mjd) + 2) % 7) as u8 + 1
 }
 
 /// Annex C (d): MJD from week-number year `wy` (since 1900), ISO week
@@ -154,7 +154,7 @@ pub fn week_to_mjd(wy: i64, wn: i64, wd: i64) -> i64 {
 /// `W = int[(MJD / 7) − 2144.64]`, `WY = int[(W × 28 / 1461) − 0.0079]`,
 /// `WN = W − int[(WY × 1461 / 28) + 0.41]`.  Returns `(W, WY, WN)`.
 pub fn mjd_to_week(mjd: u32) -> (i64, i64, i64) {
-    let mjd = mjd as i64;
+    let mjd = i64::from(mjd);
     // MJD/7 − 2144.64 = (100·MJD − 1501248) / 700
     let w = (100 * mjd - 1_501_248).div_euclid(700);
     // W·28/1461 − 0.0079 = (280000·W − 115419) / 14610000
@@ -174,7 +174,7 @@ pub fn u8_to_bcd(v: u8) -> Result<u8> {
     if v > 99 {
         return Err(Error::Overflow {
             what: "BCD digit pair",
-            value: v as u64,
+            value: u64::from(v),
             bits: 8,
         });
     }
@@ -191,7 +191,9 @@ fn bcd_hms(v: u32) -> Option<(u8, u8, u8)> {
 }
 
 fn hms_bcd(h: u8, m: u8, s: u8) -> Result<u32> {
-    Ok(((u8_to_bcd(h)? as u32) << 16) | ((u8_to_bcd(m)? as u32) << 8) | u8_to_bcd(s)? as u32)
+    Ok((u32::from(u8_to_bcd(h)?) << 16)
+        | (u32::from(u8_to_bcd(m)?) << 8)
+        | u32::from(u8_to_bcd(s)?))
 }
 
 /// 40-bit MJD + BCD date/time field (`JST_time`, `start_time`,
@@ -224,7 +226,7 @@ impl MjdTime {
 
     /// The 40-bit field value.
     pub fn to_u40(self) -> u64 {
-        ((self.mjd as u64) << 24) | (self.bcd_hms as u64 & 0xFF_FFFF)
+        (u64::from(self.mjd) << 24) | (u64::from(self.bcd_hms) & 0xFF_FFFF)
     }
 
     /// The 40-bit field value; errors if `bcd_hms` exceeds 24 bits.
@@ -232,7 +234,7 @@ impl MjdTime {
         if self.bcd_hms > 0xFF_FFFF {
             return Err(Error::Overflow {
                 what: "MJD time (BCD part)",
-                value: self.bcd_hms as u64,
+                value: u64::from(self.bcd_hms),
                 bits: 24,
             });
         }
@@ -261,7 +263,7 @@ impl MjdTime {
             return None;
         }
         Some(DateTime {
-            date: mjd_to_date(self.mjd as u32)?,
+            date: mjd_to_date(u32::from(self.mjd))?,
             hour,
             minute,
             second,
@@ -283,7 +285,7 @@ impl MjdTime {
         })?;
         let mjd = u16::try_from(mjd).map_err(|_| Error::Overflow {
             what: "MJD",
-            value: mjd as u64,
+            value: u64::from(mjd),
             bits: 16,
         })?;
         Ok(Self {
@@ -296,10 +298,10 @@ impl MjdTime {
     fn jst_seconds(self) -> Option<i64> {
         let dt = self.to_jst()?;
         Some(
-            self.mjd as i64 * 86_400
-                + dt.hour as i64 * 3600
-                + dt.minute as i64 * 60
-                + dt.second as i64,
+            i64::from(self.mjd) * 86_400
+                + i64::from(dt.hour) * 3600
+                + i64::from(dt.minute) * 60
+                + i64::from(dt.second),
         )
     }
 
@@ -321,10 +323,10 @@ impl MjdTime {
         let mjd = date_to_mjd(dt.date).ok_or_else(|| {
             Error::invalid("JST_time", format!("date {dt} outside Annex C range"))
         })?;
-        let s = mjd as i64 * 86_400
-            + dt.hour as i64 * 3600
-            + dt.minute as i64 * 60
-            + dt.second as i64
+        let s = i64::from(mjd) * 86_400
+            + i64::from(dt.hour) * 3600
+            + i64::from(dt.minute) * 60
+            + i64::from(dt.second)
             + JST_OFFSET_SECONDS;
         let jmjd = s.div_euclid(86_400) as u32;
         let tod = s.rem_euclid(86_400);
@@ -365,7 +367,7 @@ impl BcdDuration {
     /// Total seconds, if defined and valid.
     pub fn seconds(self) -> Option<u32> {
         let (h, m, s) = self.hms()?;
-        Some(h as u32 * 3600 + m as u32 * 60 + s as u32)
+        Some(u32::from(h) * 3600 + u32::from(m) * 60 + u32::from(s))
     }
 
     /// Encode `hours:minutes:seconds` (hours 0..=99).
@@ -394,6 +396,8 @@ impl BcdOffset {
 
     /// Encode `hours:minutes` (each 0..=99).
     pub fn from_hm(h: u8, m: u8) -> Result<Self> {
-        Ok(Self(((u8_to_bcd(h)? as u16) << 8) | u8_to_bcd(m)? as u16))
+        Ok(Self(
+            (u16::from(u8_to_bcd(h)?) << 8) | u16::from(u8_to_bcd(m)?),
+        ))
     }
 }

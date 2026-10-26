@@ -28,7 +28,7 @@ fn packet(pid: u16, n: u32) -> [u8; 188] {
     p[2] = pid as u8;
     p[3] = 0x10 | (n & 15) as u8;
     p[4..8].copy_from_slice(&n.to_be_bytes());
-    let mut x = (n as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ pid as u64;
+    let mut x = (u64::from(n) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ u64::from(pid);
     for b in &mut p[8..] {
         x ^= x << 13;
         x ^= x >> 7;
@@ -1553,7 +1553,7 @@ fn video_es(gops: usize) -> Vec<u8> {
         }
         for (tr, ty, size) in pics {
             v.extend_from_slice(&[0, 0, 1, 0x00]);
-            let w: u32 = (tr as u32) << 22 | (ty as u32) << 19 | 0x1234 << 3;
+            let w: u32 = u32::from(tr) << 22 | u32::from(ty) << 19 | 0x1234 << 3;
             v.extend_from_slice(&w.to_be_bytes());
             v.extend_from_slice(&[0, 0, 1, 0xB5, 0x8F, 0xFF, 0xF3, 0x80, 0x80]);
             v.extend_from_slice(&[0, 0, 1, 0x01]);

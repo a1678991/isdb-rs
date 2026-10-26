@@ -42,17 +42,17 @@ fn long_header_rows(
     lsn: u8,
 ) -> Vec<u8> {
     fields(&[
-        ("table_id", 8, table_id as u64),
+        ("table_id", 8, u64::from(table_id)),
         ("section_syntax_indicator", 1, 1),
         ("reserved_future_use", 1, 1),
         ("reserved", 2, 0b11),
         ("section_length", 12, section_length as u64),
-        ("table_id_extension", 16, ext as u64),
+        ("table_id_extension", 16, u64::from(ext)),
         ("reserved", 2, 0b11),
-        ("version_number", 5, version as u64),
+        ("version_number", 5, u64::from(version)),
         ("current_next_indicator", 1, 1),
-        ("section_number", 8, sn as u64),
-        ("last_section_number", 8, lsn as u64),
+        ("section_number", 8, u64::from(sn)),
+        ("last_section_number", 8, u64::from(lsn)),
     ])
 }
 

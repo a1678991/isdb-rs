@@ -335,7 +335,7 @@ impl Scanner {
     fn push(&mut self, index: u64, pkt: &[u8; PACKET_SIZE]) {
         self.cap.packets += 1;
         self.cap.stats.push(index, pkt);
-        let pid = (((pkt[1] & 0x1F) as u16) << 8) | pkt[2] as u16;
+        let pid = (u16::from(pkt[1] & 0x1F) << 8) | u16::from(pkt[2]);
         // Packets flagged by transport_error_indicator carry uncorrectable
         // bit errors (§2.4.3.3); their contents are not checked.
         if !self.opts.skip_packet_checks && pkt[1] & 0x80 == 0 {
@@ -659,7 +659,7 @@ pub fn scan_path(path: &Path, opts: &ScanOptions) -> std::io::Result<Capture> {
                 break;
             }
             let pk = p.packet();
-            let pid = (((pk[1] & 0x1F) as u16) << 8) | pk[2] as u16;
+            let pid = (u16::from(pk[1] & 0x1F) << 8) | u16::from(pk[2]);
             if !d.has_pid(pid) {
                 continue;
             }
@@ -695,7 +695,7 @@ pub fn scan_bytes(buf: &[u8], opts: &ScanOptions) -> Capture {
         d.add_pid(0);
         d.add_pid(1);
         for p in SliceReader::new(buf).take(400_000) {
-            let pid = (((p.packet[1] & 0x1F) as u16) << 8) | p.packet[2] as u16;
+            let pid = (u16::from(p.packet[1] & 0x1F) << 8) | u16::from(p.packet[2]);
             if !d.has_pid(pid) {
                 continue;
             }

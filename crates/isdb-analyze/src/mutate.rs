@@ -222,7 +222,7 @@ impl Expr {
                         },
                         &[],
                         op,
-                        |e| e.program_number as u64,
+                        |e| u64::from(e.program_number),
                         pat_entry,
                         |_, _, _| bail!("no fields"),
                     );
@@ -236,7 +236,7 @@ impl Expr {
                         &p[0],
                         &p[1..],
                         op,
-                        |e| e.program_number as u64,
+                        |e| u64::from(e.program_number),
                         pat_entry,
                         |e, r, op| {
                             let v = leaf(r, op)?;
@@ -281,7 +281,7 @@ impl Expr {
                         &p[0],
                         &p[1..],
                         op,
-                        |s| s.elementary_pid as u64,
+                        |s| u64::from(s.elementary_pid),
                         |v| {
                             let (t, pid) = v
                                 .split_once(':')
@@ -733,7 +733,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                 &p[0],
                 &p[1..],
                 op,
-                |&f| f as u64,
+                |&f| u64::from(f),
                 val,
                 |_, _, _| bail!("scalar element"),
             ),
@@ -754,7 +754,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                 &p[0],
                 &p[1..],
                 op,
-                |t| t.transmission_type_info as u64,
+                |t| u64::from(t.transmission_type_info),
                 |s| {
                     Ok(d::TransmissionType {
                         transmission_type_info: val(s)?,
@@ -767,7 +767,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                         &r[0],
                         &r[1..],
                         op,
-                        |&s| s as u64,
+                        |&s| u64::from(s),
                         val,
                         |_, _, _| bail!("scalar element"),
                     ),
@@ -782,7 +782,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                 &p[0],
                 &p[1..],
                 op,
-                |&s| s as u64,
+                |&s| u64::from(s),
                 val,
                 |_, _, _| bail!("scalar element"),
             ),
@@ -793,7 +793,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
             &p[0],
             &p[1..],
             op,
-            |s| s.service_id as u64,
+            |s| u64::from(s.service_id),
             |s| {
                 let (a, b) = s
                     .split_once(':')
@@ -850,7 +850,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
             &p[0],
             &p[1..],
             op,
-            |r| r.rating as u64,
+            |r| u64::from(r.rating),
             |s| {
                 let (c, r) = s
                     .split_once(':')
@@ -867,7 +867,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
             &p[0],
             &p[1..],
             op,
-            |e| e.country_region_id as u64,
+            |e| u64::from(e.country_region_id),
             |_| bail!("add local_time_offset entries as a whole descriptor (desc.add=hex)"),
             |e, r, op| fields!(e, r, op; country_code, country_region_id, reserved, local_time_offset_polarity | "polarity", local_time_offset, time_of_change, next_time_offset),
         ),
@@ -877,7 +877,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                 &p[0],
                 &p[1..],
                 op,
-                |t| t.table_id as u64,
+                |t| u64::from(t.table_id),
                 |s| {
                     let (t, h) = s.split_once(':').unwrap_or((s, ""));
                     Ok(d::TableDescription {
@@ -905,7 +905,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                         &p[0],
                         &p[1..],
                         op,
-                        |b| b.original_network_id as u64,
+                        |b| u64::from(b.original_network_id),
                         |s| {
                             let (a, b) = s
                                 .split_once(':')
@@ -955,7 +955,7 @@ fn network_loops(n: &mut isdb_si::tables::NetworkLoops, p: &[Seg], op: &Op) -> R
             &p[0],
             &p[1..],
             op,
-            |t| t.transport_stream_id as u64,
+            |t| u64::from(t.transport_stream_id),
             |s| {
                 let (a, b) = s
                     .split_once(':')
@@ -1005,7 +1005,7 @@ fn si_table(a: &mut AnyTable, p: &[Seg], op: &Op) -> Result<()> {
                     &p[0],
                     &p[1..],
                     op,
-                    |s| s.service_id as u64,
+                    |s| u64::from(s.service_id),
                     |s| {
                         Ok(isdb_si::tables::SdtService {
                             service_id: val(s)?,
@@ -1038,7 +1038,7 @@ fn si_table(a: &mut AnyTable, p: &[Seg], op: &Op) -> Result<()> {
                     &p[0],
                     &p[1..],
                     op,
-                    |e| e.event_id as u64,
+                    |e| u64::from(e.event_id),
                     |s| {
                         Ok(isdb_si::tables::EitEvent {
                             event_id: val(s)?,
@@ -1077,7 +1077,7 @@ fn si_table(a: &mut AnyTable, p: &[Seg], op: &Op) -> Result<()> {
                     &p[0],
                     &p[1..],
                     op,
-                    |b| b.broadcaster_id as u64,
+                    |b| u64::from(b.broadcaster_id),
                     |s| {
                         Ok(isdb_si::tables::BitBroadcaster {
                             broadcaster_id: val(s)?,

@@ -246,7 +246,7 @@ fn delivery(d: &isdb_si::descriptor::TerrestrialDeliverySystem) -> Delivery {
         transmission_mode: d.transmission_mode,
         transmission_mode_name: names::transmission_mode_name(d.transmission_mode),
         frequencies: d.frequencies.clone(),
-        frequencies_mhz: d.frequencies.iter().map(|&f| f as f64 / 7.0).collect(),
+        frequencies_mhz: d.frequencies.iter().map(|&f| f64::from(f) / 7.0).collect(),
     }
 }
 

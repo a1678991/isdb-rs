@@ -56,19 +56,19 @@ impl Stats {
     /// Account packet `index`.
     pub fn push(&mut self, index: u64, pkt: &[u8; PACKET_SIZE]) {
         self.packets += 1;
-        let pid = (((pkt[1] & 0x1F) as u16) << 8) | pkt[2] as u16;
+        let pid = (u16::from(pkt[1] & 0x1F) << 8) | u16::from(pkt[2]);
         let s = self.pids.entry(pid).or_default();
         s.packets += 1;
         let h = crate::packet::Header::decode(pkt).expect("188 bytes hold a header");
-        s.tei += h.transport_error_indicator as u64;
-        s.scrambled += h.transport_scrambling_control.is_scrambled() as u64;
-        s.pusi += h.payload_unit_start_indicator as u64;
+        s.tei += u64::from(h.transport_error_indicator);
+        s.scrambled += u64::from(h.transport_scrambling_control.is_scrambled());
+        s.pusi += u64::from(h.payload_unit_start_indicator);
         s.adaptation_only +=
-            (h.adaptation_field_control == AdaptationFieldControl::AdaptationOnly) as u64;
+            u64::from(h.adaptation_field_control == AdaptationFieldControl::AdaptationOnly);
         match View::parse(pkt) {
             Ok(v) => {
-                s.discontinuity += v.discontinuity_indicator() as u64;
-                s.random_access += v.random_access_indicator() as u64;
+                s.discontinuity += u64::from(v.discontinuity_indicator());
+                s.random_access += u64::from(v.random_access_indicator());
                 if let Some(p) = v.pcr() {
                     s.pcrs.push((index, p));
                 }

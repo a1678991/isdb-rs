@@ -392,7 +392,7 @@ fn check_tuning(
         bail!(
             "RF bandwidth {} Hz outside the Pluto range {:.1}..{} MHz",
             cfg.bandwidth_hz,
-            *bw.start() as f64 / 1e6,
+            f64::from(*bw.start()) / 1e6,
             bw.end() / 1_000_000
         );
     }
@@ -529,7 +529,7 @@ fn describe_device(dev: &DeviceArgs, dir: &str, cfg: &RadioConfig) -> String {
         dev.uri,
         dev.channel,
         cfg.describe_tuning(),
-        cfg.bandwidth_hz as f64 / 1e6,
+        f64::from(cfg.bandwidth_hz) / 1e6,
     )
 }
 
@@ -959,7 +959,7 @@ fn stream_capture(
     // Buffers that may hold samples from before an unseen loss: the
     // device's kernel blocks, iiod's and the client's buffer, one in the
     // network and the host queue.
-    let window = KERNEL_BUFFERS as u64 + 3 + STREAM_DEPTH as u64;
+    let window = u64::from(KERNEL_BUFFERS) + 3 + STREAM_DEPTH as u64;
     let (mut written, mut received, mut discard) = (0u64, 0u64, 0u64);
     let mut gaps = Vec::<CaptureGap>::new();
     let timeout = Duration::from_secs(10);

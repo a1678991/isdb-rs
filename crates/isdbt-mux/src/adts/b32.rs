@@ -390,17 +390,17 @@ pub struct FullnessModel {
 fn reservoir_orbit(frame_bits: &[u64], rate: u64, max: u64) -> Option<(Vec<u64>, u64)> {
     let mut start = max;
     for _ in 0..10_000 {
-        let mut r = start as i128;
+        let mut r = i128::from(start);
         let mut out = Vec::with_capacity(frame_bits.len());
         let mut clamped = 0u64;
         for &b in frame_bits {
-            r += rate as i128 - b as i128;
+            r += i128::from(rate) - i128::from(b);
             if r < 0 {
                 return None;
             }
-            if r > max as i128 {
-                clamped += (r - max as i128) as u64;
-                r = max as i128;
+            if r > i128::from(max) {
+                clamped += (r - i128::from(max)) as u64;
+                r = i128::from(max);
             }
             out.push(r as u64);
         }
@@ -444,7 +444,7 @@ pub fn cbr_fullness(frame_bits: &[u64], channels: u32) -> Result<FullnessModel, 
         return Err("no frames / no channels".into());
     }
     let total: u64 = frame_bits.iter().sum();
-    let buffer = (BUFFER_BITS_PER_CHANNEL * channels) as u64;
+    let buffer = u64::from(BUFFER_BITS_PER_CHANNEL * channels);
     let largest = *frame_bits.iter().max().unwrap_or(&0);
     if largest > buffer {
         return Err(format!(
@@ -474,12 +474,12 @@ pub fn cbr_fullness(frame_bits: &[u64], channels: u32) -> Result<FullnessModel, 
     let (reservoir, clamped) = feasible(rate).ok_or_else(|| {
         format!("no constant rate up to the largest frame ({largest} bits) keeps the decoder buffer from underflowing")
     })?;
-    let div = 32 * channels as u64;
+    let div = 32 * u64::from(channels);
     let values = reservoir
         .iter()
         .map(|&r| {
             let f = r / div;
-            debug_assert!(f < VBR_FULLNESS as u64);
+            debug_assert!(f < u64::from(VBR_FULLNESS));
             f as u16
         })
         .collect();
@@ -759,7 +759,7 @@ impl QualityMode {
 
 /// Bit rate normalised to a stereo pair.
 pub fn per_stereo_pair(bps: f64, channels: u32) -> f64 {
-    bps * 2.0 / channels.max(1) as f64
+    bps * 2.0 / f64::from(channels.max(1))
 }
 
 /// ADTS stream bit rate: Σ frame bits × fs / samples.
@@ -767,7 +767,7 @@ pub fn bit_rate(total_bytes: u64, total_samples: u64, sampling_frequency: u32) -
     if total_samples == 0 {
         return 0.0;
     }
-    total_bytes as f64 * 8.0 * sampling_frequency as f64 / total_samples as f64
+    total_bytes as f64 * 8.0 * f64::from(sampling_frequency) / total_samples as f64
 }
 
 #[cfg(test)]

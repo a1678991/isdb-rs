@@ -766,8 +766,8 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
     let did = download_id(bml.data_event_id, bml.download_id);
     let tid = transaction_id(transaction_number);
     let component_size: usize = modules.iter().map(|m| m.bytes.len()).sum();
-    let bytes_per_s = bml.bitrate_kbps.max(1) as f64 * 1000.0 / 8.0;
-    let cycle_s = (component_size as f64 * 1.1 / bytes_per_s).max(bml.cycle_ms as f64 / 1000.0);
+    let bytes_per_s = f64::from(bml.bitrate_kbps.max(1)) * 1000.0 / 8.0;
+    let cycle_s = (component_size as f64 * 1.1 / bytes_per_s).max(f64::from(bml.cycle_ms) / 1000.0);
     let mut dii = DiiBody::new(tid, did, bml.block_size);
     // live terrestrial carousels send 0xFFFFFFFF (no timeout)
     dii.t_c_download_scenario = u32::MAX;
@@ -800,7 +800,7 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
         }
     }
     // DIIs between the DDBs: one per dii_interval_ms at the configured rate
-    let per_dii = (bytes_per_s * bml.dii_interval_ms as f64 / 1000.0).max(1.0) as usize;
+    let per_dii = (bytes_per_s * f64::from(bml.dii_interval_ms) / 1000.0).max(1.0) as usize;
     let mut sections = vec![dii_bytes.clone()];
     let mut acc = 0usize;
     for d in ddbs {

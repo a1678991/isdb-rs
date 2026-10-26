@@ -80,7 +80,7 @@ fn arb_params(max_ti: u8) -> impl Strategy<Value = Params> {
                         modulation: md,
                         code_rate: CodeRate::R1_2,
                         time_interleave: TimeInterleave::ALL
-                            [(rng.next_u64() % (max_ti as u64 + 1)) as usize],
+                            [(rng.next_u64() % (u64::from(max_ti) + 1)) as usize],
                     });
                 }
                 if let Ok(p) = Params::new(mode, GUARDS[g], pr, layers) {

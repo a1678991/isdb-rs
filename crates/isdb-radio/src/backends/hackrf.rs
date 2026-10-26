@@ -232,7 +232,7 @@ fn describe_device(serial: Option<&str>, cfg: &RadioConfig) -> String {
         "  device       HackRF {}\n  tuning       {}\n  bb filter    {:.2} MHz requested",
         serial.unwrap_or("(first found)"),
         cfg.describe_tuning(),
-        cfg.bandwidth_hz as f64 / 1e6,
+        f64::from(cfg.bandwidth_hz) / 1e6,
     )
 }
 
@@ -278,7 +278,7 @@ impl Backend for HackRf {
         d.set_amp_enable(s.amp)?;
         Ok((
             Box::new(QueuedSink::new(d, opts)?),
-            format!("{info}; baseband filter {:.2} MHz", bw as f64 / 1e6),
+            format!("{info}; baseband filter {:.2} MHz", f64::from(bw) / 1e6),
         ))
     }
 
@@ -303,7 +303,7 @@ impl Backend for HackRf {
             }),
             format!(
                 "{info}; baseband filter {:.2} MHz; RX queue {depth} transfers",
-                bw as f64 / 1e6
+                f64::from(bw) / 1e6
             ),
         ))
     }

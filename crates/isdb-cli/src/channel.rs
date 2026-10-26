@@ -60,8 +60,8 @@ impl Channel {
     pub fn process(&mut self, mut s: Vec<C32>) -> Vec<C32> {
         if let (Some(snr), None) = (self.snr_db, self.sigma) {
             // Noise variance per complex sample from the first block's power.
-            let p = s.iter().map(|c| c.norm_sqr() as f64).sum::<f64>() / s.len().max(1) as f64;
-            self.sigma = Some(((p / 10f64.powf(snr as f64 / 10.0)) / 2.0).sqrt() as f32);
+            let p = s.iter().map(|c| f64::from(c.norm_sqr())).sum::<f64>() / s.len().max(1) as f64;
+            self.sigma = Some(((p / 10f64.powf(f64::from(snr) / 10.0)) / 2.0).sqrt() as f32);
         }
         if self.skip > 0 {
             let n = self.skip.min(s.len());
@@ -101,7 +101,7 @@ mod tests {
         assert_eq!(out.len(), 200_007);
         let noise: f64 = out[7..]
             .iter()
-            .map(|c| (c - C32::new(1.0, 0.0)).norm_sqr() as f64)
+            .map(|c| f64::from((c - C32::new(1.0, 0.0)).norm_sqr()))
             .sum::<f64>()
             / 200_000.0;
         assert!((10.0 * noise.log10() + 10.0).abs() < 0.1, "noise {noise}");

@@ -470,7 +470,7 @@ pub fn descriptor(d: &isdb_si::Descriptor) -> Node {
     match of(d) {
         Node::Struct(name, mut f) => {
             if !f.iter().any(|(k, _)| k == "tag") {
-                f.insert(0, ("tag".into(), Node::Int(d.tag() as i128)));
+                f.insert(0, ("tag".into(), Node::Int(i128::from(d.tag()))));
             }
             Node::Struct(name, f)
         }

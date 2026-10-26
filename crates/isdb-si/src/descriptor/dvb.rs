@@ -38,9 +38,9 @@ impl DescriptorBody for ConditionalAccess {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("CA_system_ID", 16, self.ca_system_id as u64)?;
-        w.write("reserved", 3, self.reserved as u64)?;
-        w.write("CA_PID", 13, self.ca_pid as u64)?;
+        w.write("CA_system_ID", 16, u64::from(self.ca_system_id))?;
+        w.write("reserved", 3, u64::from(self.reserved))?;
+        w.write("CA_PID", 13, u64::from(self.ca_pid))?;
         w.bytes(&self.private_data);
         finish(w, out);
         Ok(())
@@ -178,13 +178,13 @@ impl DescriptorBody for SatelliteDeliverySystem {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("frequency", 32, self.frequency as u64)?;
-        w.write("orbital_position", 16, self.orbital_position as u64)?;
+        w.write("frequency", 32, u64::from(self.frequency))?;
+        w.write("orbital_position", 16, u64::from(self.orbital_position))?;
         w.bool(self.west_east_flag);
-        w.write("polarization", 2, self.polarization as u64)?;
-        w.write("modulation", 5, self.modulation as u64)?;
-        w.write("symbol_rate", 28, self.symbol_rate as u64)?;
-        w.write("FEC_inner", 4, self.fec_inner as u64)?;
+        w.write("polarization", 2, u64::from(self.polarization))?;
+        w.write("modulation", 5, u64::from(self.modulation))?;
+        w.write("symbol_rate", 28, u64::from(self.symbol_rate))?;
+        w.write("FEC_inner", 4, u64::from(self.fec_inner))?;
         finish(w, out);
         Ok(())
     }
@@ -218,7 +218,7 @@ impl DescriptorBody for Service {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("service_type", 8, self.service_type as u64)?;
+        w.write("service_type", 8, u64::from(self.service_type))?;
         put_len8(
             &mut w,
             "service_provider_name_length",
@@ -263,7 +263,11 @@ impl DescriptorBody for CountryAvailability {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
         w.bool(self.country_availability_flag);
-        w.write("reserved_future_use", 7, self.reserved_future_use as u64)?;
+        w.write(
+            "reserved_future_use",
+            7,
+            u64::from(self.reserved_future_use),
+        )?;
         for c in &self.country_codes {
             w.bytes(c);
         }
@@ -478,11 +482,11 @@ impl DescriptorBody for ExtendedEvent {
         }
         let items = items.into_bytes();
         let mut w = BitWriter::new();
-        w.write("descriptor_number", 4, self.descriptor_number as u64)?;
+        w.write("descriptor_number", 4, u64::from(self.descriptor_number))?;
         w.write(
             "last_descriptor_number",
             4,
-            self.last_descriptor_number as u64,
+            u64::from(self.last_descriptor_number),
         )?;
         w.bytes(&self.language);
         put_len8(&mut w, "length_of_items", &items)?;
@@ -561,10 +565,14 @@ impl DescriptorBody for Component {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("reserved_future_use", 4, self.reserved_future_use as u64)?;
-        w.write("stream_content", 4, self.stream_content as u64)?;
-        w.write("component_type", 8, self.component_type as u64)?;
-        w.write("component_tag", 8, self.component_tag as u64)?;
+        w.write(
+            "reserved_future_use",
+            4,
+            u64::from(self.reserved_future_use),
+        )?;
+        w.write("stream_content", 4, u64::from(self.stream_content))?;
+        w.write("component_type", 8, u64::from(self.component_type))?;
+        w.write("component_tag", 8, u64::from(self.component_tag))?;
         w.bytes(&self.language);
         w.bytes(&self.text.0);
         finish(w, out);
@@ -665,15 +673,15 @@ impl DescriptorBody for Content {
             w.write(
                 "content_nibble_level_1",
                 4,
-                it.content_nibble_level_1 as u64,
+                u64::from(it.content_nibble_level_1),
             )?;
             w.write(
                 "content_nibble_level_2",
                 4,
-                it.content_nibble_level_2 as u64,
+                u64::from(it.content_nibble_level_2),
             )?;
-            w.write("user_nibble", 4, it.user_nibble_1 as u64)?;
-            w.write("user_nibble", 4, it.user_nibble_2 as u64)?;
+            w.write("user_nibble", 4, u64::from(it.user_nibble_1))?;
+            w.write("user_nibble", 4, u64::from(it.user_nibble_2))?;
         }
         finish(w, out);
         Ok(())
@@ -773,12 +781,12 @@ impl DescriptorBody for LocalTimeOffset {
         let mut w = BitWriter::new();
         for e in &self.entries {
             w.bytes(&e.country_code);
-            w.write("country_region_id", 6, e.country_region_id as u64)?;
+            w.write("country_region_id", 6, u64::from(e.country_region_id))?;
             w.bool(e.reserved);
             w.bool(e.local_time_offset_polarity);
-            w.write("local_time_offset", 16, e.local_time_offset.0 as u64)?;
+            w.write("local_time_offset", 16, u64::from(e.local_time_offset.0))?;
             w.write("time_of_change", 40, e.time_of_change.checked_u40()?)?;
-            w.write("next_time_offset", 16, e.next_time_offset.0 as u64)?;
+            w.write("next_time_offset", 16, u64::from(e.next_time_offset.0))?;
         }
         finish(w, out);
         Ok(())

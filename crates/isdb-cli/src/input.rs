@@ -1024,7 +1024,7 @@ mod tests {
         let mut n = 0u32;
         let total = per_frame * frames;
         let mut i = 0u64;
-        while (n as u64) < total {
+        while u64::from(n) < total {
             if i.is_multiple_of(11) {
                 v.push(pcr_packet(0x01FF, 1_000_000 + i * per_pkt));
             } else {

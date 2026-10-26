@@ -166,7 +166,7 @@ pub struct RadioConfig {
 impl RadioConfig {
     /// The sample rate in Hz.
     pub fn sample_rate_hz(&self) -> f64 {
-        self.rate_num as f64 / self.rate_den as f64
+        f64::from(self.rate_num) / f64::from(self.rate_den)
     }
 
     /// One line describing the frequency and the sample clock, for backend

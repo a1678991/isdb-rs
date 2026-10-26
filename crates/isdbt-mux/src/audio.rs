@@ -118,11 +118,11 @@ impl AdtsEs {
             });
         }
         let h = first.ok_or_else(|| err("no ADTS frames".into()))?;
-        let total_samples = frames.iter().map(|f| f.samples as u64).sum();
+        let total_samples = frames.iter().map(|f| u64::from(f.samples)).sum();
         let coded_channels = crate::adts::buffer_channels(h.channel_configuration).unwrap_or(
             match h.channel_configuration {
                 0 => 1,
-                c => c as u32,
+                c => u32::from(c),
             },
         );
         Ok(Self {

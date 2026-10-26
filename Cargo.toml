@@ -66,11 +66,15 @@ unused_macro_rules = "warn"
 
 # A subset of clippy::pedantic (plus a few restriction lints) that the code
 # already satisfies. The pedantic group as a whole is not enabled: its
-# cast_* / must_use_candidate / doc_markdown / missing_*_doc lints fire
-# thousands of times on bit-field code and spec-citing docs.
+# cast_possible_truncation / cast_sign_loss / cast_possible_wrap /
+# cast_precision_loss, must_use_candidate, doc_markdown and missing_*_doc
+# lints fire thousands of times on bit-field code and spec-citing docs
+# (docs/plans/type-safety.md §2 has the per-crate counts).
 [workspace.lints.clippy]
 # pedantic
 case_sensitive_file_extension_comparisons = "warn"
+# `x as T` where `T: From<X>`: write `T::from(x)`, so the remaining `as` are the lossy ones.
+cast_lossless = "warn"
 cast_ptr_alignment = "warn"
 checked_conversions = "warn"
 copy_iterator = "warn"

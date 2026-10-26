@@ -161,17 +161,17 @@ pub fn build_long(h: &LongHeader, body: &[u8]) -> Result<Vec<u8>> {
         });
     }
     let mut w = BitWriter::new();
-    w.write("table_id", 8, h.table_id as u64)?;
+    w.write("table_id", 8, u64::from(h.table_id))?;
     w.bool(true);
     w.bool(h.private_indicator);
-    w.write("reserved", 2, h.reserved1 as u64)?;
+    w.write("reserved", 2, u64::from(h.reserved1))?;
     w.write("section_length", 12, section_length as u64)?;
-    w.write("table_id_extension", 16, h.table_id_extension as u64)?;
-    w.write("reserved", 2, h.reserved2 as u64)?;
-    w.write("version_number", 5, h.version_number as u64)?;
+    w.write("table_id_extension", 16, u64::from(h.table_id_extension))?;
+    w.write("reserved", 2, u64::from(h.reserved2))?;
+    w.write("version_number", 5, u64::from(h.version_number))?;
     w.bool(h.current_next_indicator);
-    w.write("section_number", 8, h.section_number as u64)?;
-    w.write("last_section_number", 8, h.last_section_number as u64)?;
+    w.write("section_number", 8, u64::from(h.section_number))?;
+    w.write("last_section_number", 8, u64::from(h.last_section_number))?;
     w.bytes(body);
     let mut v = w.into_bytes();
     let c = crc32(&v);
@@ -239,10 +239,10 @@ pub fn build_short(h: &ShortHeader, body: &[u8], has_crc: bool) -> Result<Vec<u8
         });
     }
     let mut w = BitWriter::new();
-    w.write("table_id", 8, h.table_id as u64)?;
+    w.write("table_id", 8, u64::from(h.table_id))?;
     w.bool(false);
     w.bool(h.private_indicator);
-    w.write("reserved", 2, h.reserved1 as u64)?;
+    w.write("reserved", 2, u64::from(h.reserved1))?;
     w.write("section_length", 12, section_length as u64)?;
     w.bytes(body);
     let mut v = w.into_bytes();

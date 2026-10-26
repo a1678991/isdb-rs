@@ -64,12 +64,12 @@ fn read_versions(r: &mut BitReader<'_>, use_xml: bool) -> Result<BmlVersions> {
 }
 
 fn write_versions(w: &mut BitWriter, v: &BmlVersions, use_xml: bool) -> Result<()> {
-    w.write("bml_major_version", 16, v.bml_major as u64)?;
-    w.write("bml_minor_version", 16, v.bml_minor as u64)?;
+    w.write("bml_major_version", 16, u64::from(v.bml_major))?;
+    w.write("bml_minor_version", 16, u64::from(v.bml_minor))?;
     if use_xml {
         let (ma, mi) = v.bxml.unwrap_or((0, 0));
-        w.write("bxml_major_version", 16, ma as u64)?;
-        w.write("bxml_minor_version", 16, mi as u64)?;
+        w.write("bxml_major_version", 16, u64::from(ma))?;
+        w.write("bxml_minor_version", 16, u64::from(mi))?;
     }
     Ok(())
 }
@@ -203,24 +203,28 @@ impl AdditionalAribBxmlInfo {
     /// Encode to additional_data_component_info bytes.
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut w = BitWriter::new();
-        w.write("transmission_format", 2, self.transmission_format as u64)?;
+        w.write(
+            "transmission_format",
+            2,
+            u64::from(self.transmission_format),
+        )?;
         match &self.entry {
             BxmlEntry::Entry(e) => {
                 w.bool(true);
                 w.bool(e.auto_start);
-                w.write("document_resolution", 4, e.document_resolution as u64)?;
+                w.write("document_resolution", 4, u64::from(e.document_resolution))?;
                 w.bool(e.use_xml);
                 w.bool(e.versions.is_none());
                 w.bool(e.independent);
                 w.bool(e.style_for_tv);
-                w.write("reserved_future_use", 4, e.reserved as u64)?;
+                w.write("reserved_future_use", 4, u64::from(e.reserved))?;
                 if let Some(v) = &e.versions {
                     write_versions(&mut w, v, e.use_xml)?;
                 }
             }
             BxmlEntry::NotEntry { reserved } => {
                 w.bool(false);
-                w.write("reserved_future_use", 5, *reserved as u64)?;
+                w.write("reserved_future_use", 5, u64::from(*reserved))?;
             }
         }
         if self.transmission_format == TRANSMISSION_FORMAT_CAROUSEL {
@@ -229,12 +233,12 @@ impl AdditionalAribBxmlInfo {
                 event_section: false,
                 reserved: 0b111,
             });
-            w.write("data_event_id", 4, c.data_event_id as u64)?;
+            w.write("data_event_id", 4, u64::from(c.data_event_id))?;
             w.bool(c.event_section);
-            w.write("reserved", 3, c.reserved as u64)?;
+            w.write("reserved", 3, u64::from(c.reserved))?;
             w.bool(self.ondemand_retrieval);
             w.bool(self.file_storable);
-            w.write("reserved_future_use", 6, self.reserved as u64)?;
+            w.write("reserved_future_use", 6, u64::from(self.reserved))?;
         }
         Ok(w.into_bytes())
     }
@@ -390,10 +394,18 @@ impl AribBxmlInfo {
     /// Encode to selector bytes.
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut w = BitWriter::new();
-        w.write("transmission_format", 2, self.transmission_format as u64)?;
+        w.write(
+            "transmission_format",
+            2,
+            u64::from(self.transmission_format),
+        )?;
         w.bool(self.reserved_1);
         w.bool(self.auto_start);
-        w.write("document_resolution", 4, self.document_resolution as u64)?;
+        w.write(
+            "document_resolution",
+            4,
+            u64::from(self.document_resolution),
+        )?;
         w.bool(self.use_xml);
         w.bool(self.versions.is_none());
         w.bool(self.independent);
@@ -404,8 +416,8 @@ impl AribBxmlInfo {
         w.bool(self.update);
         w.bytes(&self.language);
         if let Some((id, ver)) = self.content_id {
-            w.write("content_id", 32, id as u64)?;
-            w.write("content_version", 16, ver as u64)?;
+            w.write("content_id", 32, u64::from(id))?;
+            w.write("content_version", 16, u64::from(ver))?;
         }
         if let Some(v) = &self.versions {
             write_versions(&mut w, v, self.use_xml)?;
@@ -413,30 +425,30 @@ impl AribBxmlInfo {
         if self.transmission_format == TRANSMISSION_FORMAT_CAROUSEL {
             w.write("num_of_carousels", 8, self.carousels.len() as u64)?;
             for c in &self.carousels {
-                w.write("component_tag", 8, c.component_tag as u64)?;
+                w.write("component_tag", 8, u64::from(c.component_tag))?;
                 w.bool(c.event_section);
-                w.write("reserved_future_use", 3, c.reserved as u64)?;
+                w.write("reserved_future_use", 3, u64::from(c.reserved))?;
                 w.bool(c.component_size.is_some());
                 w.bool(c.transaction_id.is_some());
                 w.bool(c.timeout_dii.is_some());
                 w.bool(c.leak_rate.is_some());
                 if let Some(s) = c.component_size {
-                    w.write("component_size", 32, s as u64)?;
+                    w.write("component_size", 32, u64::from(s))?;
                 }
                 if let Some(t) = c.transaction_id {
-                    w.write("transaction_id", 32, t as u64)?;
+                    w.write("transaction_id", 32, u64::from(t))?;
                 }
                 if let Some(t) = c.timeout_dii {
-                    w.write("timeout_value_DII", 32, t as u64)?;
+                    w.write("timeout_value_DII", 32, u64::from(t))?;
                 }
                 if let Some((l, rsv)) = c.leak_rate {
-                    w.write("leak_rate", 22, l as u64)?;
-                    w.write("reserved", 2, rsv as u64)?;
+                    w.write("leak_rate", 22, u64::from(l))?;
+                    w.write("reserved", 2, u64::from(rsv))?;
                 }
             }
             w.bool(self.ondemand_retrieval);
             w.bool(self.file_storable);
-            w.write("reserved_future_use", 6, self.reserved_3 as u64)?;
+            w.write("reserved_future_use", 6, u64::from(self.reserved_3))?;
         }
         Ok(w.into_bytes())
     }
@@ -486,10 +498,10 @@ impl AitIdentifierInfo {
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut w = BitWriter::new();
         for e in &self.entries {
-            w.write("application_type", 16, e.application_type as u64)?;
+            w.write("application_type", 16, u64::from(e.application_type))?;
             w.bool(e.section_transport);
-            w.write("application_priority", 2, e.application_priority as u64)?;
-            w.write("AIT_version_number", 5, e.ait_version as u64)?;
+            w.write("application_priority", 2, u64::from(e.application_priority))?;
+            w.write("AIT_version_number", 5, u64::from(e.ait_version))?;
         }
         Ok(w.into_bytes())
     }
@@ -528,7 +540,7 @@ impl BmlControl {
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut w = BitWriter::new();
         w.bool(self.use_xml);
-        w.write("reserved", 7, self.reserved as u64)?;
+        w.write("reserved", 7, u64::from(self.reserved))?;
         write_versions(&mut w, &self.versions, self.use_xml)?;
         Ok(w.into_bytes())
     }

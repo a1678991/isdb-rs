@@ -36,12 +36,12 @@ pub fn to_datetime(t: JstSeconds) -> Option<DateTime> {
 
 /// [`JstSeconds`] of a calendar JST time.
 pub fn from_datetime(dt: DateTime) -> Option<JstSeconds> {
-    let mjd = date_to_mjd(dt.date)? as i64;
+    let mjd = i64::from(date_to_mjd(dt.date)?);
     Some(
         (mjd - MJD_UNIX_EPOCH) * 86_400
-            + dt.hour as i64 * 3600
-            + dt.minute as i64 * 60
-            + dt.second as i64,
+            + i64::from(dt.hour) * 3600
+            + i64::from(dt.minute) * 60
+            + i64::from(dt.second),
     )
 }
 

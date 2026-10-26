@@ -407,7 +407,7 @@ fn synthetic_pmts() -> Vec<(u16, Vec<u8>)> {
                 .map(|k| {
                     PmtStream::new(
                         0x0D,
-                        0x0170 + k as u16,
+                        0x0170 + u16::from(k),
                         vec![stream_id(0x70 + k), data_component(0x000C, &[0x1F])],
                     )
                 })

@@ -231,7 +231,7 @@ fn capture_round_trips() {
     let scrambled: BTreeSet<u16> = packets
         .iter()
         .filter(|raw| raw[3] & 0xC0 != 0)
-        .map(|raw| (((raw[1] & 0x1F) as u16) << 8) | raw[2] as u16)
+        .map(|raw| (u16::from(raw[1] & 0x1F) << 8) | u16::from(raw[2]))
         .collect();
     let skipped: Vec<u16> = es_pids.intersection(&scrambled).copied().collect();
     if !skipped.is_empty() {
@@ -277,7 +277,7 @@ fn capture_round_trips() {
         }
     };
     for (i, raw) in packets.iter().enumerate() {
-        let pid = (((raw[1] & 0x1F) as u16) << 8) | raw[2] as u16;
+        let pid = (u16::from(raw[1] & 0x1F) << 8) | u16::from(raw[2]);
         if let Some(a) = asm.get_mut(&pid) {
             for o in a.push(i as u64, raw) {
                 handle(o, &mut pes_count);

@@ -43,7 +43,7 @@ fn video(gops: usize) -> Vec<u8> {
         }
         for (tr, ty, size) in pics {
             v.extend_from_slice(&[0, 0, 1, 0x00]);
-            let w: u32 = (tr as u32) << 22 | (ty as u32) << 19 | 0x1234 << 3;
+            let w: u32 = u32::from(tr) << 22 | u32::from(ty) << 19 | 0x1234 << 3;
             v.extend_from_slice(&w.to_be_bytes());
             v.extend_from_slice(&[0, 0, 1, 0xB5, 0x8F, 0xFF, 0xF3, 0x80, 0x80]);
             v.extend_from_slice(&[0, 0, 1, 0x01]);
@@ -149,11 +149,11 @@ struct Start {
 }
 
 fn ts90(b: &[u8]) -> i64 {
-    (((b[0] as i64 >> 1) & 7) << 30)
-        | ((b[1] as i64) << 22)
-        | ((b[2] as i64 >> 1) << 15)
-        | ((b[3] as i64) << 7)
-        | (b[4] as i64 >> 1)
+    (((i64::from(b[0]) >> 1) & 7) << 30)
+        | (i64::from(b[1]) << 22)
+        | ((i64::from(b[2]) >> 1) << 15)
+        | (i64::from(b[3]) << 7)
+        | (i64::from(b[4]) >> 1)
 }
 
 #[derive(Default)]

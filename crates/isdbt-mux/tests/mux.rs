@@ -439,7 +439,7 @@ pcr_per_frame = 8
         let t: Vec<u64> = full
             .iter()
             .zip(&times)
-            .filter(|(p, _)| (((p[1] as u16 & 0x1F) << 8) | p[2] as u16) == pid)
+            .filter(|(p, _)| (((u16::from(p[1]) & 0x1F) << 8) | u16::from(p[2])) == pid)
             .map(|(_, &t)| t)
             .collect();
         let mut lo = 0;
@@ -522,7 +522,7 @@ fn derived_nit_values() {
         r.full
             .iter()
             .enumerate()
-            .filter(|(_, p)| (((p[1] as u16 & 0x1F) << 8) | p[2] as u16) == pid)
+            .filter(|(_, p)| (((u16::from(p[1]) & 0x1F) << 8) | u16::from(p[2])) == pid)
             .map(|(i, _)| slots[i % n].unwrap())
             .collect::<std::collections::BTreeSet<_>>()
     };
@@ -593,7 +593,7 @@ fn hierarchical_descriptor_derived() {
     assert!(
         full.iter()
             .enumerate()
-            .filter(|(_, p)| (((p[1] as u16 & 0x1F) << 8) | p[2] as u16) == 0x01F0)
+            .filter(|(_, p)| (((u16::from(p[1]) & 0x1F) << 8) | u16::from(p[2])) == 0x01F0)
             .all(|(i, _)| slots[i % n] == Some(Layer::A))
     );
 }

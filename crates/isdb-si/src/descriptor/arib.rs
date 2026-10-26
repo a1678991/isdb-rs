@@ -37,10 +37,18 @@ impl DescriptorBody for HierarchicalTransmission {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("reserved_future_use", 7, self.reserved_future_use_1 as u64)?;
+        w.write(
+            "reserved_future_use",
+            7,
+            u64::from(self.reserved_future_use_1),
+        )?;
         w.bool(self.quality_level);
-        w.write("reserved_future_use", 3, self.reserved_future_use_2 as u64)?;
-        w.write("reference_PID", 13, self.reference_pid as u64)?;
+        w.write(
+            "reserved_future_use",
+            3,
+            u64::from(self.reserved_future_use_2),
+        )?;
+        w.write("reference_PID", 13, u64::from(self.reference_pid))?;
         finish(w, out);
         Ok(())
     }
@@ -128,28 +136,28 @@ impl DescriptorBody for DigitalCopyControl {
         w.write(
             "digital_recording_control_data",
             2,
-            self.digital_recording_control_data as u64,
+            u64::from(self.digital_recording_control_data),
         )?;
         w.bool(self.maximum_bitrate.is_some());
         w.bool(self.component_control.is_some());
-        w.write("user_defined", 4, self.user_defined as u64)?;
+        w.write("user_defined", 4, u64::from(self.user_defined))?;
         if let Some(m) = self.maximum_bitrate {
-            w.write("maximum_bitrate", 8, m as u64)?;
+            w.write("maximum_bitrate", 8, u64::from(m))?;
         }
         if let Some(cc) = &self.component_control {
             let mut cw = BitWriter::new();
             for c in cc {
-                cw.write("component_tag", 8, c.component_tag as u64)?;
+                cw.write("component_tag", 8, u64::from(c.component_tag))?;
                 cw.write(
                     "digital_recording_control_data",
                     2,
-                    c.digital_recording_control_data as u64,
+                    u64::from(c.digital_recording_control_data),
                 )?;
                 cw.bool(c.maximum_bitrate.is_some());
                 cw.bool(c.reserved_future_use);
-                cw.write("user_defined", 4, c.user_defined as u64)?;
+                cw.write("user_defined", 4, u64::from(c.user_defined))?;
                 if let Some(m) = c.maximum_bitrate {
-                    cw.write("maximum_bitrate", 8, m as u64)?;
+                    cw.write("maximum_bitrate", 8, u64::from(m))?;
                 }
             }
             put_len8(&mut w, "component_control_length", &cw.into_bytes())?;
@@ -233,16 +241,24 @@ impl DescriptorBody for AudioComponent {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("reserved_future_use", 4, self.reserved_future_use_1 as u64)?;
-        w.write("stream_content", 4, self.stream_content as u64)?;
-        w.write("component_type", 8, self.component_type as u64)?;
-        w.write("component_tag", 8, self.component_tag as u64)?;
-        w.write("stream_type", 8, self.stream_type as u64)?;
-        w.write("simulcast_group_tag", 8, self.simulcast_group_tag as u64)?;
+        w.write(
+            "reserved_future_use",
+            4,
+            u64::from(self.reserved_future_use_1),
+        )?;
+        w.write("stream_content", 4, u64::from(self.stream_content))?;
+        w.write("component_type", 8, u64::from(self.component_type))?;
+        w.write("component_tag", 8, u64::from(self.component_tag))?;
+        w.write("stream_type", 8, u64::from(self.stream_type))?;
+        w.write(
+            "simulcast_group_tag",
+            8,
+            u64::from(self.simulcast_group_tag),
+        )?;
         w.bool(self.language_2.is_some());
         w.bool(self.main_component_flag);
-        w.write("quality_indicator", 2, self.quality_indicator as u64)?;
-        w.write("sampling_rate", 3, self.sampling_rate as u64)?;
+        w.write("quality_indicator", 2, u64::from(self.quality_indicator))?;
+        w.write("sampling_rate", 3, u64::from(self.sampling_rate))?;
         w.bool(self.reserved_future_use_2);
         w.bytes(&self.language);
         if let Some(l2) = &self.language_2 {
@@ -286,11 +302,11 @@ impl DescriptorBody for Hyperlink {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("hyper_linkage_type", 8, self.hyper_linkage_type as u64)?;
+        w.write("hyper_linkage_type", 8, u64::from(self.hyper_linkage_type))?;
         w.write(
             "link_destination_type",
             8,
-            self.link_destination_type as u64,
+            u64::from(self.link_destination_type),
         )?;
         put_len8(&mut w, "selector_length", &self.selector)?;
         w.bytes(&self.private_data);
@@ -340,8 +356,8 @@ impl DescriptorBody for DataContent {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("data_component_id", 16, self.data_component_id as u64)?;
-        w.write("entry_component", 8, self.entry_component as u64)?;
+        w.write("data_component_id", 16, u64::from(self.data_component_id))?;
+        w.write("entry_component", 8, u64::from(self.entry_component))?;
         put_len8(&mut w, "selector_length", &self.selector)?;
         put_len8(&mut w, "num_of_component_ref", &self.component_refs)?;
         w.bytes(&self.language);
@@ -384,11 +400,15 @@ impl DescriptorBody for VideoDecodeControl {
         let mut w = BitWriter::new();
         w.bool(self.still_picture_flag);
         w.bool(self.sequence_end_code_flag);
-        w.write("video_encode_format", 4, self.video_encode_format as u64)?;
+        w.write(
+            "video_encode_format",
+            4,
+            u64::from(self.video_encode_format),
+        )?;
         w.write(
             "transfer_characteristics",
             2,
-            self.transfer_characteristics as u64,
+            u64::from(self.transfer_characteristics),
         )?;
         finish(w, out);
         Ok(())
@@ -454,7 +474,7 @@ impl DescriptorBody for TsInformation {
         w.write(
             "remote_control_key_id",
             8,
-            self.remote_control_key_id as u64,
+            u64::from(self.remote_control_key_id),
         )?;
         w.write("length_of_ts_name", 6, self.ts_name.0.len() as u64)?;
         w.write(
@@ -464,10 +484,14 @@ impl DescriptorBody for TsInformation {
         )?;
         w.bytes(&self.ts_name.0);
         for t in &self.transmission_types {
-            w.write("transmission_type_info", 8, t.transmission_type_info as u64)?;
+            w.write(
+                "transmission_type_info",
+                8,
+                u64::from(t.transmission_type_info),
+            )?;
             w.write("num_of_service", 8, t.service_ids.len() as u64)?;
             for s in &t.service_ids {
-                w.write("service_id", 16, *s as u64)?;
+                w.write("service_id", 16, u64::from(*s))?;
             }
         }
         w.bytes(&self.reserved_future_use);
@@ -525,7 +549,7 @@ impl TerrestrialBroadcaster {
         w.write(
             "terrestrial_broadcaster_id",
             16,
-            self.terrestrial_broadcaster_id as u64,
+            u64::from(self.terrestrial_broadcaster_id),
         )?;
         w.write(
             "number_of_affiliation_id_loop",
@@ -539,8 +563,8 @@ impl TerrestrialBroadcaster {
         )?;
         w.bytes(&self.affiliation_ids);
         for b in &self.broadcasters {
-            w.write("original_network_id", 16, b.original_network_id as u64)?;
-            w.write("broadcaster_id", 8, b.broadcaster_id as u64)?;
+            w.write("original_network_id", 16, u64::from(b.original_network_id))?;
+            w.write("broadcaster_id", 8, u64::from(b.broadcaster_id))?;
         }
         w.bytes(&self.private_data);
         Ok(())
@@ -617,8 +641,12 @@ impl DescriptorBody for ExtendedBroadcaster {
                 "Other body with broadcaster_type 0x1/0x2",
             ));
         }
-        w.write("broadcaster_type", 4, bt as u64)?;
-        w.write("reserved_future_use", 4, self.reserved_future_use as u64)?;
+        w.write("broadcaster_type", 4, u64::from(bt))?;
+        w.write(
+            "reserved_future_use",
+            4,
+            u64::from(self.reserved_future_use),
+        )?;
         match &self.body {
             ExtendedBroadcasterBody::TerrestrialTv(t)
             | ExtendedBroadcasterBody::TerrestrialSound(t) => t.encode(&mut w)?,
@@ -730,7 +758,7 @@ impl DescriptorBody for LogoTransmission {
                 "Other body with logo_transmission_type 0x01–0x03",
             ));
         }
-        w.write("logo_transmission_type", 8, t as u64)?;
+        w.write("logo_transmission_type", 8, u64::from(t))?;
         match &self.body {
             LogoTransmissionBody::Cdt1 {
                 reserved_future_use_1,
@@ -739,18 +767,18 @@ impl DescriptorBody for LogoTransmission {
                 logo_version,
                 download_data_id,
             } => {
-                w.write("reserved_future_use", 7, *reserved_future_use_1 as u64)?;
-                w.write("logo_id", 9, *logo_id as u64)?;
-                w.write("reserved_future_use", 4, *reserved_future_use_2 as u64)?;
-                w.write("logo_version", 12, *logo_version as u64)?;
-                w.write("download_data_id", 16, *download_data_id as u64)?;
+                w.write("reserved_future_use", 7, u64::from(*reserved_future_use_1))?;
+                w.write("logo_id", 9, u64::from(*logo_id))?;
+                w.write("reserved_future_use", 4, u64::from(*reserved_future_use_2))?;
+                w.write("logo_version", 12, u64::from(*logo_version))?;
+                w.write("download_data_id", 16, u64::from(*download_data_id))?;
             }
             LogoTransmissionBody::Cdt2 {
                 reserved_future_use,
                 logo_id,
             } => {
-                w.write("reserved_future_use", 7, *reserved_future_use as u64)?;
-                w.write("logo_id", 9, *logo_id as u64)?;
+                w.write("reserved_future_use", 7, u64::from(*reserved_future_use))?;
+                w.write("logo_id", 9, u64::from(*logo_id))?;
             }
             LogoTransmissionBody::Simple(s) => w.bytes(&s.0),
             LogoTransmissionBody::Other { data, .. } => w.bytes(data),
@@ -807,13 +835,17 @@ impl DescriptorBody for Series {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("series_id", 16, self.series_id as u64)?;
-        w.write("repeat_label", 4, self.repeat_label as u64)?;
-        w.write("program_pattern", 3, self.program_pattern as u64)?;
+        w.write("series_id", 16, u64::from(self.series_id))?;
+        w.write("repeat_label", 4, u64::from(self.repeat_label))?;
+        w.write("program_pattern", 3, u64::from(self.program_pattern))?;
         w.bool(self.expire_date_valid_flag);
-        w.write("expire_date", 16, self.expire_date as u64)?;
-        w.write("episode_number", 12, self.episode_number as u64)?;
-        w.write("last_episode_number", 12, self.last_episode_number as u64)?;
+        w.write("expire_date", 16, u64::from(self.expire_date))?;
+        w.write("episode_number", 12, u64::from(self.episode_number))?;
+        w.write(
+            "last_episode_number",
+            12,
+            u64::from(self.last_episode_number),
+        )?;
         w.bytes(&self.series_name.0);
         finish(w, out);
         Ok(())
@@ -901,17 +933,17 @@ impl DescriptorBody for EventGroup {
             return Err(Error::invalid(Self::NAME, "tail does not match group_type"));
         }
         let mut w = BitWriter::new();
-        w.write("group_type", 4, self.group_type as u64)?;
+        w.write("group_type", 4, u64::from(self.group_type))?;
         w.write("event_count", 4, self.events.len() as u64)?;
         for e in &self.events {
-            w.write("service_id", 16, e.service_id as u64)?;
-            w.write("event_id", 16, e.event_id as u64)?;
+            w.write("service_id", 16, u64::from(e.service_id))?;
+            w.write("event_id", 16, u64::from(e.event_id))?;
         }
         for e in &self.other_network_events {
-            w.write("original_network_id", 16, e.original_network_id as u64)?;
-            w.write("transport_stream_id", 16, e.transport_stream_id as u64)?;
-            w.write("service_id", 16, e.service_id as u64)?;
-            w.write("event_id", 16, e.event_id as u64)?;
+            w.write("original_network_id", 16, u64::from(e.original_network_id))?;
+            w.write("transport_stream_id", 16, u64::from(e.transport_stream_id))?;
+            w.write("service_id", 16, u64::from(e.service_id))?;
+            w.write("event_id", 16, u64::from(e.event_id))?;
         }
         w.bytes(&self.private_data);
         finish(w, out);
@@ -943,7 +975,7 @@ fn decode_table_descriptions(r: &mut BitReader<'_>) -> Result<Vec<TableDescripti
 
 fn encode_table_descriptions(w: &mut BitWriter, v: &[TableDescription]) -> Result<()> {
     for t in v {
-        w.write("table_id", 8, t.table_id as u64)?;
+        w.write("table_id", 8, u64::from(t.table_id))?;
         put_len8(w, "table_description_length", &t.description)?;
     }
     Ok(())
@@ -977,8 +1009,8 @@ impl DescriptorBody for SiParameter {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("parameter_version", 8, self.parameter_version as u64)?;
-        w.write("update_time", 16, self.update_time as u64)?;
+        w.write("parameter_version", 8, u64::from(self.parameter_version))?;
+        w.write("update_time", 16, u64::from(self.update_time))?;
         encode_table_descriptions(&mut w, &self.tables)?;
         finish(w, out);
         Ok(())
@@ -1085,7 +1117,11 @@ impl DescriptorBody for ComponentGroup {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("component_group_type", 3, self.component_group_type as u64)?;
+        w.write(
+            "component_group_type",
+            3,
+            u64::from(self.component_group_type),
+        )?;
         w.bool(self.total_bit_rate_flag);
         w.write("num_of_group", 4, self.groups.len() as u64)?;
         for g in &self.groups {
@@ -1095,15 +1131,15 @@ impl DescriptorBody for ComponentGroup {
                     "total_bit_rate presence differs from total_bit_rate_flag",
                 ));
             }
-            w.write("component_group_id", 4, g.component_group_id as u64)?;
+            w.write("component_group_id", 4, u64::from(g.component_group_id))?;
             w.write("num_of_CA_unit", 4, g.ca_units.len() as u64)?;
             for u in &g.ca_units {
-                w.write("CA_unit_id", 4, u.ca_unit_id as u64)?;
+                w.write("CA_unit_id", 4, u64::from(u.ca_unit_id))?;
                 w.write("num_of_component", 4, u.component_tags.len() as u64)?;
                 w.bytes(&u.component_tags);
             }
             if let Some(t) = g.total_bit_rate {
-                w.write("total_bit_rate", 8, t as u64)?;
+                w.write("total_bit_rate", 8, u64::from(t))?;
             }
             put_len8(&mut w, "text_length", &g.text.0)?;
         }
@@ -1143,17 +1179,17 @@ impl DescriptorBody for SiPrimeTs {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("parameter_version", 8, self.parameter_version as u64)?;
-        w.write("update_time", 16, self.update_time as u64)?;
+        w.write("parameter_version", 8, u64::from(self.parameter_version))?;
+        w.write("update_time", 16, u64::from(self.update_time))?;
         w.write(
             "SI_prime_ts_network_id",
             16,
-            self.si_prime_ts_network_id as u64,
+            u64::from(self.si_prime_ts_network_id),
         )?;
         w.write(
             "SI_prime_transport_stream_id",
             16,
-            self.si_prime_transport_stream_id as u64,
+            u64::from(self.si_prime_transport_stream_id),
         )?;
         encode_table_descriptions(&mut w, &self.tables)?;
         finish(w, out);
@@ -1244,14 +1280,26 @@ impl DescriptorBody for LdtLinkage {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("original_service_id", 16, self.original_service_id as u64)?;
-        w.write("transport_stream_id", 16, self.transport_stream_id as u64)?;
-        w.write("original_network_id", 16, self.original_network_id as u64)?;
+        w.write(
+            "original_service_id",
+            16,
+            u64::from(self.original_service_id),
+        )?;
+        w.write(
+            "transport_stream_id",
+            16,
+            u64::from(self.transport_stream_id),
+        )?;
+        w.write(
+            "original_network_id",
+            16,
+            u64::from(self.original_network_id),
+        )?;
         for d in &self.descriptions {
-            w.write("description_id", 16, d.description_id as u64)?;
-            w.write("reserved_future_use", 4, d.reserved_future_use as u64)?;
-            w.write("description_type", 4, d.description_type as u64)?;
-            w.write("user_defined", 8, d.user_defined as u64)?;
+            w.write("description_id", 16, u64::from(d.description_id))?;
+            w.write("reserved_future_use", 4, u64::from(d.reserved_future_use))?;
+            w.write("description_type", 4, u64::from(d.description_type))?;
+            w.write("user_defined", 8, u64::from(d.user_defined))?;
         }
         finish(w, out);
         Ok(())
@@ -1295,12 +1343,12 @@ impl DescriptorBody for ConnectedTransmission {
         w.write(
             "connected_transmission_group_id",
             16,
-            self.connected_transmission_group_id as u64,
+            u64::from(self.connected_transmission_group_id),
         )?;
-        w.write("segment_type", 2, self.segment_type as u64)?;
-        w.write("modulation_type_A", 2, self.modulation_type_a as u64)?;
-        w.write("modulation_type_B", 2, self.modulation_type_b as u64)?;
-        w.write("modulation_type_C", 2, self.modulation_type_c as u64)?;
+        w.write("segment_type", 2, u64::from(self.segment_type))?;
+        w.write("modulation_type_A", 2, u64::from(self.modulation_type_a))?;
+        w.write("modulation_type_B", 2, u64::from(self.modulation_type_b))?;
+        w.write("modulation_type_C", 2, u64::from(self.modulation_type_c))?;
         w.bytes(&self.additional_info);
         finish(w, out);
         Ok(())
@@ -1348,7 +1396,7 @@ impl DescriptorBody for ContentAvailability {
         w.bool(self.copy_restriction_mode);
         w.bool(self.image_constraint_token);
         w.bool(self.retention_mode);
-        w.write("retention_state", 3, self.retention_state as u64)?;
+        w.write("retention_state", 3, u64::from(self.retention_state))?;
         w.bool(self.encryption_mode);
         w.bytes(&self.reserved_future_use_bytes);
         finish(w, out);
@@ -1384,9 +1432,9 @@ impl DescriptorBody for AccessControl {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("CA_system_id", 16, self.ca_system_id as u64)?;
-        w.write("transmission_type", 3, self.transmission_type as u64)?;
-        w.write("PID", 13, self.pid as u64)?;
+        w.write("CA_system_id", 16, u64::from(self.ca_system_id))?;
+        w.write("transmission_type", 3, u64::from(self.transmission_type))?;
+        w.write("PID", 13, u64::from(self.pid))?;
         w.bytes(&self.private_data);
         finish(w, out);
         Ok(())
@@ -1410,7 +1458,7 @@ pub struct TerrestrialDeliverySystem {
 impl TerrestrialDeliverySystem {
     /// Centre frequency in Hz for a `frequency` value (unit 1/7 MHz, §6.2.31).
     pub fn frequency_hz(f: u16) -> f64 {
-        f as f64 * 1e6 / 7.0
+        f64::from(f) * 1e6 / 7.0
     }
 }
 
@@ -1436,11 +1484,11 @@ impl DescriptorBody for TerrestrialDeliverySystem {
     }
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("area_code", 12, self.area_code as u64)?;
-        w.write("guard_interval", 2, self.guard_interval as u64)?;
-        w.write("transmission_mode", 2, self.transmission_mode as u64)?;
+        w.write("area_code", 12, u64::from(self.area_code))?;
+        w.write("guard_interval", 2, u64::from(self.guard_interval))?;
+        w.write("transmission_mode", 2, u64::from(self.transmission_mode))?;
         for f in &self.frequencies {
-            w.write("frequency", 16, *f as u64)?;
+            w.write("frequency", 16, u64::from(*f))?;
         }
         finish(w, out);
         Ok(())
@@ -1523,7 +1571,7 @@ impl DescriptorBody for EmergencyInformation {
             let area_codes = codes
                 .chunks(2)
                 .map(|c| AreaCode {
-                    area_code: ((c[0] as u16) << 4) | (c[1] >> 4) as u16,
+                    area_code: (u16::from(c[0]) << 4) | u16::from(c[1] >> 4),
                     reserved_future_use: c[1] & 0x0F,
                 })
                 .collect();
@@ -1540,14 +1588,14 @@ impl DescriptorBody for EmergencyInformation {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
         for s in &self.services {
-            w.write("service_id", 16, s.service_id as u64)?;
+            w.write("service_id", 16, u64::from(s.service_id))?;
             w.bool(s.start_end_flag);
             w.bool(s.signal_level);
-            w.write("reserved_future_use", 6, s.reserved_future_use as u64)?;
+            w.write("reserved_future_use", 6, u64::from(s.reserved_future_use))?;
             let mut cw = BitWriter::new();
             for a in &s.area_codes {
-                cw.write("area_code", 12, a.area_code as u64)?;
-                cw.write("reserved_future_use", 4, a.reserved_future_use as u64)?;
+                cw.write("area_code", 12, u64::from(a.area_code))?;
+                cw.write("reserved_future_use", 4, u64::from(a.reserved_future_use))?;
             }
             put_len8(&mut w, "area_code_length", &cw.into_bytes())?;
         }

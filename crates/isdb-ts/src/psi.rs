@@ -109,9 +109,9 @@ impl LongBody for Pat {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
         for e in &self.entries {
-            w.write("program_number", 16, e.program_number as u64)?;
-            w.write("reserved", 3, e.reserved as u64)?;
-            w.write("program_map_PID", 13, e.pid as u64)?;
+            w.write("program_number", 16, u64::from(e.program_number))?;
+            w.write("reserved", 3, u64::from(e.reserved))?;
+            w.write("program_map_PID", 13, u64::from(e.pid))?;
         }
         out.extend_from_slice(&w.into_bytes());
         Ok(())
@@ -262,17 +262,17 @@ impl LongBody for Pmt {
 
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut w = BitWriter::new();
-        w.write("reserved", 3, self.reserved_pcr as u64)?;
-        w.write("PCR_PID", 13, self.pcr_pid as u64)?;
-        w.write("reserved", 4, self.reserved_info as u64)?;
+        w.write("reserved", 3, u64::from(self.reserved_pcr))?;
+        w.write("PCR_PID", 13, u64::from(self.pcr_pid))?;
+        w.write("reserved", 4, u64::from(self.reserved_info))?;
         let pi = descriptor::encode_loop(&self.program_info)?;
         w.write("program_info_length", 12, pi.len() as u64)?;
         w.bytes(&pi);
         for s in &self.streams {
-            w.write("stream_type", 8, s.stream_type as u64)?;
-            w.write("reserved", 3, s.reserved_pid as u64)?;
-            w.write("elementary_PID", 13, s.elementary_pid as u64)?;
-            w.write("reserved", 4, s.reserved_info as u64)?;
+            w.write("stream_type", 8, u64::from(s.stream_type))?;
+            w.write("reserved", 3, u64::from(s.reserved_pid))?;
+            w.write("elementary_PID", 13, u64::from(s.elementary_pid))?;
+            w.write("reserved", 4, u64::from(s.reserved_info))?;
             let es = descriptor::encode_loop(&s.descriptors)?;
             w.write("ES_info_length", 12, es.len() as u64)?;
             w.bytes(&es);
@@ -295,7 +295,12 @@ fn check_envelope<B: LongBody>(
     require(v, !h.private_indicator, clause, || {
         "bit after section_syntax_indicator shall be '0'".into()
     });
-    reserved_ones(v, h.reserved1 as u64, 2, "reserved before section_length");
+    reserved_ones(
+        v,
+        u64::from(h.reserved1),
+        2,
+        "reserved before section_length",
+    );
     match s.encode() {
         Ok(b) => {
             let sl = b.len() - 3;
@@ -321,13 +326,13 @@ pub fn check_pat(s: &Long<Pat>) -> Vec<Violation> {
     check_envelope(&mut v, s, TABLE_ID_PAT, "§2.4.4.5");
     reserved_ones(
         &mut v,
-        s.header.reserved2 as u64,
+        u64::from(s.header.reserved2),
         2,
         "reserved before version_number",
     );
     let mut seen = std::collections::HashSet::new();
     for e in &s.body.entries {
-        reserved_ones(&mut v, e.reserved as u64, 3, "program loop reserved");
+        reserved_ones(&mut v, u64::from(e.reserved), 3, "program loop reserved");
         require(&mut v, seen.insert(e.program_number), "§2.4.4.5", || {
             format!(
                 "program_number {:#06x} appears more than once",
@@ -349,7 +354,7 @@ pub fn check_pat(s: &Long<Pat>) -> Vec<Violation> {
 pub fn check_cat(s: &Long<Cat>) -> Vec<Violation> {
     let mut v = Vec::new();
     check_envelope(&mut v, s, TABLE_ID_CAT, "§2.4.4.7");
-    let r18 = ((s.header.table_id_extension as u64) << 2) | s.header.reserved2 as u64;
+    let r18 = (u64::from(s.header.table_id_extension) << 2) | u64::from(s.header.reserved2);
     reserved_ones(&mut v, r18, 18, "CA_section 18 reserved bits");
     v
 }
@@ -365,7 +370,7 @@ pub fn check_pmt(s: &Long<Pmt>) -> Vec<Violation> {
     let h = &s.header;
     reserved_ones(
         &mut v,
-        h.reserved2 as u64,
+        u64::from(h.reserved2),
         2,
         "reserved before version_number",
     );
@@ -379,10 +384,15 @@ pub fn check_pmt(s: &Long<Pmt>) -> Vec<Violation> {
         )
     });
     let b = &s.body;
-    reserved_ones(&mut v, b.reserved_pcr as u64, 3, "reserved before PCR_PID");
     reserved_ones(
         &mut v,
-        b.reserved_info as u64,
+        u64::from(b.reserved_pcr),
+        3,
+        "reserved before PCR_PID",
+    );
+    reserved_ones(
+        &mut v,
+        u64::from(b.reserved_info),
         4,
         "reserved before program_info_length",
     );
@@ -399,13 +409,13 @@ pub fn check_pmt(s: &Long<Pmt>) -> Vec<Violation> {
     for st in &b.streams {
         reserved_ones(
             &mut v,
-            st.reserved_pid as u64,
+            u64::from(st.reserved_pid),
             3,
             "reserved before elementary_PID",
         );
         reserved_ones(
             &mut v,
-            st.reserved_info as u64,
+            u64::from(st.reserved_info),
             4,
             "reserved before ES_info_length",
         );

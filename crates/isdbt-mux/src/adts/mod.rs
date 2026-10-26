@@ -75,7 +75,7 @@ pub const BUFFER_BITS_PER_CHANNEL: u32 = 6144;
 /// 5: SCE CPE CPE; 6: SCE CPE CPE LFE).
 pub fn buffer_channels(channel_configuration: u8) -> Option<u32> {
     match channel_configuration {
-        1..=5 => Some(channel_configuration as u32),
+        1..=5 => Some(u32::from(channel_configuration)),
         6 => Some(5),
         _ => None,
     }
@@ -168,10 +168,10 @@ impl AdtsHeader {
             home: b[3] & 0x10 != 0,
             copyright_identification_bit: b[3] & 0x08 != 0,
             copyright_identification_start: b[3] & 0x04 != 0,
-            aac_frame_length: (((b[3] & 3) as u16) << 11)
-                | ((b[4] as u16) << 3)
-                | (b[5] >> 5) as u16,
-            adts_buffer_fullness: (((b[5] & 0x1F) as u16) << 6) | (b[6] >> 2) as u16,
+            aac_frame_length: (u16::from(b[3] & 3) << 11)
+                | (u16::from(b[4]) << 3)
+                | u16::from(b[5] >> 5),
+            adts_buffer_fullness: (u16::from(b[5] & 0x1F) << 6) | u16::from(b[6] >> 2),
             number_of_raw_data_blocks_in_frame: blocks,
             crc_check,
         })
@@ -183,16 +183,16 @@ impl AdtsHeader {
         let f = self.adts_buffer_fullness & 0x7FF;
         [
             0xFF,
-            0xF0 | (self.id & 1) << 3 | (self.layer & 3) << 1 | self.protection_absent as u8,
+            0xF0 | (self.id & 1) << 3 | (self.layer & 3) << 1 | u8::from(self.protection_absent),
             (self.profile & 3) << 6
                 | (self.sampling_frequency_index & 0xF) << 2
-                | (self.private_bit as u8) << 1
+                | u8::from(self.private_bit) << 1
                 | (self.channel_configuration >> 2) & 1,
             (self.channel_configuration & 3) << 6
-                | (self.original_copy as u8) << 5
-                | (self.home as u8) << 4
-                | (self.copyright_identification_bit as u8) << 3
-                | (self.copyright_identification_start as u8) << 2
+                | u8::from(self.original_copy) << 5
+                | u8::from(self.home) << 4
+                | u8::from(self.copyright_identification_bit) << 3
+                | u8::from(self.copyright_identification_start) << 2
                 | (l >> 11) as u8,
             (l >> 3) as u8,
             ((l & 7) as u8) << 5 | (f >> 6) as u8,
@@ -222,7 +222,7 @@ impl AdtsHeader {
 
     /// Samples per channel carried by the frame.
     pub fn samples(&self) -> u32 {
-        1024 * (self.number_of_raw_data_blocks_in_frame as u32 + 1)
+        1024 * (u32::from(self.number_of_raw_data_blocks_in_frame) + 1)
     }
 }
 

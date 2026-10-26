@@ -83,7 +83,7 @@ impl Table {
                 AnyTable::Unknown(r) => Node::Struct(
                     "RawSection".into(),
                     vec![
-                        ("table_id".into(), Node::Int(r.table_id as i128)),
+                        ("table_id".into(), Node::Int(i128::from(r.table_id))),
                         (
                             "long_header".into(),
                             r.long_header.as_ref().map(tree::of).unwrap_or(Node::Null),

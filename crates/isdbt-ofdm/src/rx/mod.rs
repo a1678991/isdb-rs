@@ -163,7 +163,7 @@ fn interp_table() -> &'static [Vec<f32>] {
         let i0 = |v: f64| {
             let (mut sum, mut term) = (1.0, 1.0);
             for k in 1..40 {
-                term *= (v / 2.0) * (v / 2.0) / (k * k) as f64;
+                term *= (v / 2.0) * (v / 2.0) / f64::from(k * k);
                 sum += term;
             }
             sum
@@ -847,7 +847,7 @@ impl Track {
             let frame0 = self.frame0;
             let first = ring.front().expect("ring").0;
             let get = |d: i32| -> Option<&[C32]> {
-                let jj = t as i64 + d as i64;
+                let jj = t as i64 + i64::from(d);
                 if jj < first.max(frame0) as i64 {
                     return None;
                 }
@@ -891,7 +891,7 @@ impl Track {
                     z
                 };
                 let ideal = l.demapper.nearest(zz);
-                l.mer_err += (zz - ideal).norm_sqr() as f64;
+                l.mer_err += f64::from((zz - ideal).norm_sqr());
                 l.mer_n += 1;
             }
         }
@@ -1012,12 +1012,12 @@ fn timing_drift(cont: &[usize], kc: f64, n: usize, y: &[C32], prev: &[C32]) -> f
     for &k in cont {
         let d = y[k] * prev[k].conj();
         let q = d * d;
-        let w = q.norm() as f64;
+        let w = f64::from(q.norm());
         if w <= 0.0 {
             continue;
         }
         let x = k as f64 - kc;
-        let ph = q.arg() as f64 / 2.0;
+        let ph = f64::from(q.arg()) / 2.0;
         sw += w;
         sx += w * x;
         sp += w * ph;

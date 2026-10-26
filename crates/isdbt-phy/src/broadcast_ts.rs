@@ -1575,7 +1575,7 @@ mod tests {
                     assert_eq!(i.layer_indicator, LayerIndicator::Iip);
                     let iip = Iip::from_packet(&packet_of(t)).unwrap();
                     assert_eq!(iip.pid, IIP_PID);
-                    assert_eq!(iip.continuity_counter as u64, k);
+                    assert_eq!(u64::from(iip.continuity_counter), k);
                     assert_eq!(usize::from(iip.packet_pointer), n - 1 - j);
                     assert_eq!(iip.modulation_control.tmcc_sync_odd, k % 2 == 0);
                     assert_eq!(iip.modulation_control.params().unwrap(), params);

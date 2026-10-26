@@ -43,7 +43,7 @@ pub fn parity(info: &[u8]) -> [u8; PARITY] {
     let g = g_low();
     let mut r: u128 = 0;
     for &b in info {
-        let fb = (b & 1) as u128 ^ (r >> (PARITY - 1)) & 1;
+        let fb = u128::from(b & 1) ^ (r >> (PARITY - 1)) & 1;
         r = (r << 1) & MASK;
         if fb == 1 {
             r ^= g;
@@ -81,7 +81,7 @@ impl ParityStatus {
 // --- GF(2^12) for the Singer difference set ---------------------------
 
 fn gf_mul(a: u16, b: u16, poly: u16) -> u16 {
-    let (mut a, mut b, mut r) = (a as u32, b as u32, 0u32);
+    let (mut a, mut b, mut r) = (u32::from(a), u32::from(b), 0u32);
     while b != 0 {
         if b & 1 != 0 {
             r ^= a;
@@ -89,7 +89,7 @@ fn gf_mul(a: u16, b: u16, poly: u16) -> u16 {
         b >>= 1;
         a <<= 1;
         if a & 0x1000 != 0 {
-            a ^= 0x1000 | poly as u32;
+            a ^= 0x1000 | u32::from(poly);
         }
     }
     r as u16

@@ -288,7 +288,7 @@ mod tests {
         let rc = |k: f64| {
             (-400..=400)
                 .map(|n| {
-                    let t = n as f64 / sps;
+                    let t = f64::from(n) / sps;
                     rrc(t, 0.35) * rrc(k - t, 0.35)
                 })
                 .sum::<f64>()

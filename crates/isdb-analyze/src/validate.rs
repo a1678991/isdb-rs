@@ -1488,10 +1488,10 @@ fn chronological(k: &SlotKey, e: &isdb_si::tables::Eit, o: &mut Out) {
         let Some(dt) = ev.start_time.to_jst() else {
             continue;
         };
-        let key = ev.start_time.mjd as u64 * 86400
-            + dt.hour as u64 * 3600
-            + dt.minute as u64 * 60
-            + dt.second as u64;
+        let key = u64::from(ev.start_time.mjd) * 86400
+            + u64::from(dt.hour) * 3600
+            + u64::from(dt.minute) * 60
+            + u64::from(dt.second);
         if prev.is_some_and(|p| key < p) {
             o.push(
                 Severity::Error,
@@ -2164,7 +2164,7 @@ fn expectations(cap: &Capture, si: &SiView, e: &Expectations, o: &mut Out) {
             && !d
                 .frequencies
                 .iter()
-                .any(|&x| (x as f64 / 7.0 - f).abs() <= 0.5 / 7.0)
+                .any(|&x| (f64::from(x) / 7.0 - f).abs() <= 0.5 / 7.0)
         {
             bad(
                 "NIT delivery",
@@ -2172,7 +2172,7 @@ fn expectations(cap: &Capture, si: &SiView, e: &Expectations, o: &mut Out) {
                     "frequencies {:?} MHz do not include {f} MHz",
                     d.frequencies
                         .iter()
-                        .map(|&x| format!("{:.6}", x as f64 / 7.0))
+                        .map(|&x| format!("{:.6}", f64::from(x) / 7.0))
                         .collect::<Vec<_>>()
                 ),
             );

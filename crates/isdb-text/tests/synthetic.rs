@@ -251,7 +251,7 @@ fn encoder_strings() {
 fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &b in data {
-        crc ^= (b as u32) << 24;
+        crc ^= u32::from(b) << 24;
         for _ in 0..8 {
             crc = if crc & 0x8000_0000 != 0 {
                 (crc << 1) ^ 0x04C1_1DB7
@@ -292,7 +292,7 @@ fn sections(ts: &[u8], pids: &[u16]) -> Vec<Vec<u8>> {
     };
     let packets = (0..ts.len() / 188).map(|i| &ts[i * 188..(i + 1) * 188]);
     for pkt in packets.filter(|p| p[0] == 0x47 && p[1] & 0x80 == 0) {
-        let pid = ((pkt[1] & 0x1F) as u16) << 8 | pkt[2] as u16;
+        let pid = u16::from(pkt[1] & 0x1F) << 8 | u16::from(pkt[2]);
         if !pids.contains(&pid) {
             continue;
         }

@@ -400,7 +400,7 @@ pub fn additional_symbol(row: u8, cell: u8) -> Option<AdditionalSymbol> {
     let (unicode, mapping) = REPLACEMENTS
         .iter()
         .find(|&&(r, a, b, ..)| r == row && (a..=b).contains(&cell))
-        .map(|&(_, a, _, first, m, _)| (first + (cell - a) as u32, m))
+        .map(|&(_, a, _, first, m, _)| (first + u32::from(cell - a), m))
         .unwrap_or(if is_pua(table_7_19) {
             (table_7_19, Mapping::PrivateUse)
         } else {

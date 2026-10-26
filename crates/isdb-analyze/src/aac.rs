@@ -150,7 +150,7 @@ impl AdtsTrack {
             let Some(h) = header(&self.buf[pos..]) else {
                 break;
             };
-            if h.frame_length < 7 + 2 * (!h.protection_absent) as usize {
+            if h.frame_length < 7 + 2 * usize::from(!h.protection_absent) {
                 pos += 1; // not a frame start
                 continue;
             }
@@ -186,7 +186,7 @@ impl AdtsTrack {
     fn frame(&mut self, f: &[u8], h: Header) {
         self.frames += 1;
         self.bytes += f.len() as u64;
-        self.samples += 1024 * (h.raw_data_blocks as u64 + 1);
+        self.samples += 1024 * (u64::from(h.raw_data_blocks) + 1);
         match self.first {
             None => {
                 self.first = Some(h);

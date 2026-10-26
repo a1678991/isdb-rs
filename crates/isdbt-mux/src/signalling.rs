@@ -88,10 +88,10 @@ impl<'de, T: CodedValue> Visitor<'de> for NamedVisitor<T> {
         })
     }
     fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<T, E> {
-        Err(Self::number(v as i128))
+        Err(Self::number(i128::from(v)))
     }
     fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<T, E> {
-        Err(Self::number(v as i128))
+        Err(Self::number(i128::from(v)))
     }
 }
 

@@ -42,7 +42,7 @@ fn heavy_video(gops: usize) -> Vec<u8> {
         }
         for (tr, ty, size) in pics {
             v.extend_from_slice(&[0, 0, 1, 0x00]);
-            let w: u32 = (tr as u32) << 22 | (ty as u32) << 19 | 0x1234 << 3;
+            let w: u32 = u32::from(tr) << 22 | u32::from(ty) << 19 | 0x1234 << 3;
             v.extend_from_slice(&w.to_be_bytes());
             v.extend_from_slice(&[0, 0, 1, 0xB5, 0x8F, 0xFF, 0xF3, 0x80, 0x80]);
             v.extend_from_slice(&[0, 0, 1, 0x01]);

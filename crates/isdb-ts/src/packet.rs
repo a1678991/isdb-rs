@@ -219,7 +219,7 @@ impl Header {
             transport_error_indicator: b[1] & 0x80 != 0,
             payload_unit_start_indicator: b[1] & 0x40 != 0,
             transport_priority: b[1] & 0x20 != 0,
-            pid: (((b[1] & 0x1F) as u16) << 8) | b[2] as u16,
+            pid: (u16::from(b[1] & 0x1F) << 8) | u16::from(b[2]),
             transport_scrambling_control: TransportScramblingControl::from_code(b[3] >> 6),
             adaptation_field_control: AdaptationFieldControl::from_code(b[3] >> 4),
             continuity_counter: b[3] & 0x0F,
@@ -229,11 +229,11 @@ impl Header {
     /// Encode to 4 bytes; errors if a field exceeds its width.
     pub fn encode(&self) -> Result<[u8; 4]> {
         let mut w = BitWriter::new();
-        w.write("sync_byte", 8, self.sync_byte as u64)?;
+        w.write("sync_byte", 8, u64::from(self.sync_byte))?;
         w.bool(self.transport_error_indicator);
         w.bool(self.payload_unit_start_indicator);
         w.bool(self.transport_priority);
-        w.write("PID", 13, self.pid as u64)?;
+        w.write("PID", 13, u64::from(self.pid))?;
         w.write(
             "transport_scrambling_control",
             2,
@@ -244,7 +244,7 @@ impl Header {
             2,
             u64::from(self.adaptation_field_control.code()),
         )?;
-        w.write("continuity_counter", 4, self.continuity_counter as u64)?;
+        w.write("continuity_counter", 4, u64::from(self.continuity_counter))?;
         let v = w.into_bytes();
         Ok([v[0], v[1], v[2], v[3]])
     }
@@ -376,15 +376,15 @@ impl AdaptationFieldExtension {
         w.write(
             "adaptation_field_extension reserved",
             5,
-            self.reserved as u64,
+            u64::from(self.reserved),
         )?;
         if let Some(l) = self.ltw {
             w.bool(l.valid);
-            w.write("ltw_offset", 15, l.offset as u64)?;
+            w.write("ltw_offset", 15, u64::from(l.offset))?;
         }
         if let Some(p) = self.piecewise_rate {
-            w.write("piecewise_rate reserved", 2, p.reserved as u64)?;
-            w.write("piecewise_rate", 22, p.rate as u64)?;
+            w.write("piecewise_rate reserved", 2, u64::from(p.reserved))?;
+            w.write("piecewise_rate", 22, u64::from(p.rate))?;
         }
         if let Some(t) = self.seamless_splice {
             t.write(w)?;
@@ -564,7 +564,7 @@ impl AdaptationField {
             p.write(&mut w)?;
         }
         if let Some(s) = f.splice_countdown {
-            w.write("splice_countdown", 8, s as u8 as u64)?;
+            w.write("splice_countdown", 8, u64::from(s as u8))?;
         }
         if let Some(d) = &f.transport_private_data {
             w.write("transport_private_data_length", 8, d.len() as u64)?;
@@ -944,12 +944,12 @@ pub fn check(p: &Packet) -> Vec<Violation> {
     if let Some(e) = &f.extension {
         reserved_ones(
             &mut v,
-            e.reserved as u64,
+            u64::from(e.reserved),
             5,
             "adaptation_field_extension reserved",
         );
         if let Some(pw) = e.piecewise_rate {
-            reserved_ones(&mut v, pw.reserved as u64, 2, "piecewise_rate reserved");
+            reserved_ones(&mut v, u64::from(pw.reserved), 2, "piecewise_rate reserved");
         }
         if let Some(ss) = e.seamless_splice {
             require(&mut v, f.splice_countdown.is_some(), "§2.4.3.5", || {
@@ -973,7 +973,7 @@ fn check_pcr(v: &mut Vec<Violation>, p: &Pcr, name: &'static str) {
     require(v, p.extension < 300, "§2.4.2.2 eq. 2-3", || {
         format!("{name} extension {} ≥ 300", p.extension)
     });
-    reserved_ones(v, p.reserved as u64, 6, name);
+    reserved_ones(v, u64::from(p.reserved), 6, name);
 }
 
 #[cfg(test)]

@@ -132,7 +132,7 @@ fn synthetic_summary_and_conformance() {
                                 x.transmission_mode,
                                 x.frequencies
                                     .iter()
-                                    .map(|&f| f as f64 / 7.0)
+                                    .map(|&f| f64::from(f) / 7.0)
                                     .collect::<Vec<_>>()
                             ),
                             _ => println!("    {d:?}"),

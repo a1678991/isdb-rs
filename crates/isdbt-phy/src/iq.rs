@@ -55,6 +55,6 @@ pub fn samples_from_cs8(b: &[i8]) -> Vec<C32> {
     b.as_chunks::<2>()
         .0
         .iter()
-        .map(|&[i, q]| C32::new(i as f32 / 128.0, q as f32 / 128.0))
+        .map(|&[i, q]| C32::new(f32::from(i) / 128.0, f32::from(q) / 128.0))
         .collect()
 }

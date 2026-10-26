@@ -189,7 +189,7 @@ pub fn check(pid: u16, table: &AnyTable) -> Vec<Deviation> {
             o.ones(
                 "B10 Part 2 §5.2.9 Table 5-9",
                 "reserved",
-                t.body.reserved as u64,
+                u64::from(t.body.reserved),
                 4,
             );
             descriptors(&mut o, "TOT", &t.body.descriptors);
@@ -211,7 +211,7 @@ pub fn check(pid: u16, table: &AnyTable) -> Vec<Deviation> {
                 o.ones(
                     "B10 Part 2 §5.2.10 Table 5-10",
                     "reserved_future_use",
-                    e.reserved_future_use as u64,
+                    u64::from(e.reserved_future_use),
                     5,
                 );
                 running_status(&mut o, e.running_status);
@@ -221,10 +221,10 @@ pub fn check(pid: u16, table: &AnyTable) -> Vec<Deviation> {
             o.ones(
                 RESERVED,
                 "reserved_future_use",
-                t.reserved_future_use as u64,
+                u64::from(t.reserved_future_use),
                 1,
             );
-            o.ones(RESERVED, "reserved", t.reserved as u64, 2);
+            o.ones(RESERVED, "reserved", u64::from(t.reserved), 2);
             if section_length > 4093 {
                 o.push(
                     "B10 Part 2 §5.2.11",
@@ -246,13 +246,13 @@ pub fn check(pid: u16, table: &AnyTable) -> Vec<Deviation> {
                 o.ones(
                     "B10 Part 2 §5.2.12 Table 5-12",
                     "reserved_future_use",
-                    c.reserved_future_use_1 as u64,
+                    u64::from(c.reserved_future_use_1),
                     2,
                 );
                 o.ones(
                     "B10 Part 2 §5.2.12 Table 5-12",
                     "reserved_future_use",
-                    c.reserved_future_use_2 as u64,
+                    u64::from(c.reserved_future_use_2),
                     4,
                 );
                 for s in &c.schedules {
@@ -279,7 +279,7 @@ pub fn check(pid: u16, table: &AnyTable) -> Vec<Deviation> {
             o.ones(
                 "B10 Part 2 §5.2.13 Table 5-13",
                 "reserved_future_use",
-                t.body.reserved_future_use as u64,
+                u64::from(t.body.reserved_future_use),
                 3,
             );
             descriptors(&mut o, "first", &t.body.first_descriptors);
@@ -288,7 +288,7 @@ pub fn check(pid: u16, table: &AnyTable) -> Vec<Deviation> {
                 o.ones(
                     "B10 Part 2 §5.2.13 Table 5-13",
                     "reserved_future_use",
-                    b.reserved_future_use as u64,
+                    u64::from(b.reserved_future_use),
                     4,
                 );
                 descriptors(&mut o, "broadcaster", &b.descriptors);
@@ -307,13 +307,13 @@ pub fn check(pid: u16, table: &AnyTable) -> Vec<Deviation> {
                 o.ones(
                     "B10 Part 2 §5.2.14 Table 5-14",
                     "reserved_future_use",
-                    i.reserved_future_use_1 as u64,
+                    u64::from(i.reserved_future_use_1),
                     2,
                 );
                 o.ones(
                     "B10 Part 2 §5.2.14 Table 5-14",
                     "reserved_future_use",
-                    i.reserved_future_use_2 as u64,
+                    u64::from(i.reserved_future_use_2),
                     4,
                 );
                 if i.information_type >= 0x4 {
@@ -349,7 +349,7 @@ pub fn check(pid: u16, table: &AnyTable) -> Vec<Deviation> {
                 o.ones(
                     "B10 Part 2 §5.2.15 Table 5-17",
                     "reserved_future_use",
-                    d.reserved_future_use as u64,
+                    u64::from(d.reserved_future_use),
                     12,
                 );
                 descriptors(&mut o, "description", &d.descriptors);
@@ -382,19 +382,19 @@ fn long_header(
     o.ones(
         clause,
         "reserved_future_use (after section_syntax_indicator)",
-        h.private_indicator as u64,
+        u64::from(h.private_indicator),
         1,
     );
     o.ones(
         clause,
         "reserved (before section_length)",
-        h.reserved1 as u64,
+        u64::from(h.reserved1),
         2,
     );
     o.ones(
         clause,
         "reserved (before version_number)",
-        h.reserved2 as u64,
+        u64::from(h.reserved2),
         2,
     );
     if section_length > max {
@@ -420,13 +420,13 @@ fn short_header(o: &mut Out<'_>, h: &ShortHeader) {
     o.ones(
         RESERVED,
         "reserved_future_use (after section_syntax_indicator)",
-        h.private_indicator as u64,
+        u64::from(h.private_indicator),
         1,
     );
     o.ones(
         RESERVED,
         "reserved (before section_length)",
-        h.reserved1 as u64,
+        u64::from(h.reserved1),
         2,
     );
 }
@@ -439,13 +439,13 @@ fn network_loops(o: &mut Out<'_>, n: &NetworkLoops, clause: &'static str, first:
     o.ones(
         clause,
         "reserved_future_use (first loop length)",
-        n.reserved_future_use_1 as u64,
+        u64::from(n.reserved_future_use_1),
         4,
     );
     o.ones(
         clause,
         "reserved_future_use (transport_stream_loop_length)",
-        n.reserved_future_use_2 as u64,
+        u64::from(n.reserved_future_use_2),
         4,
     );
     descriptors(o, first, &n.descriptors);
@@ -457,7 +457,7 @@ fn network_loops(o: &mut Out<'_>, n: &NetworkLoops, clause: &'static str, first:
         o.ones(
             clause,
             "reserved_future_use (transport_descriptors_length)",
-            ts.reserved_future_use as u64,
+            u64::from(ts.reserved_future_use),
             4,
         );
         descriptors(&mut o, "transport_stream", &ts.descriptors);
@@ -512,7 +512,7 @@ fn check_sdt(o: &mut Out<'_>, t: &Sdt) {
     o.ones(
         "B10 Part 2 §5.2.6 Table 5-5",
         "reserved_future_use (after original_network_id)",
-        t.body.reserved_future_use as u64,
+        u64::from(t.body.reserved_future_use),
         8,
     );
     for s in &t.body.services {
@@ -520,7 +520,7 @@ fn check_sdt(o: &mut Out<'_>, t: &Sdt) {
         o.ones(
             "B10 Part 2 §5.2.6 Table 5-5",
             "reserved_future_use",
-            s.reserved_future_use as u64,
+            u64::from(s.reserved_future_use),
             3,
         );
         running_status(&mut o, s.running_status);
@@ -678,13 +678,13 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
         Descriptor::ConditionalAccess(x) => o.ones(
             "H.222.0 §2.6.16 Table 2-58",
             "reserved",
-            x.reserved as u64,
+            u64::from(x.reserved),
             3,
         ),
         Descriptor::CountryAvailability(x) => o.ones(
             "B10 Part 2 §6.2.5 Table 6-7",
             "reserved_future_use",
-            x.reserved_future_use as u64,
+            u64::from(x.reserved_future_use),
             7,
         ),
         Descriptor::Linkage(x) => {
@@ -714,7 +714,7 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
         Descriptor::Component(x) => o.ones(
             "B10 Part 2 §6.2.3 Table 6-4",
             "reserved_future_use",
-            x.reserved_future_use as u64,
+            u64::from(x.reserved_future_use),
             4,
         ),
         Descriptor::LocalTimeOffset(x) => {
@@ -722,7 +722,7 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
                 o.ones(
                     "B10 Part 2 §6.2.25 Table 6-41",
                     "reserved",
-                    e.reserved as u64,
+                    u64::from(e.reserved),
                     1,
                 );
                 offset(o, "local_time_offset", e.local_time_offset);
@@ -740,13 +740,13 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
             o.ones(
                 "B10 Part 2 §6.2.22 Table 6-37",
                 "reserved_future_use",
-                x.reserved_future_use_1 as u64,
+                u64::from(x.reserved_future_use_1),
                 7,
             );
             o.ones(
                 "B10 Part 2 §6.2.22 Table 6-37",
                 "reserved_future_use",
-                x.reserved_future_use_2 as u64,
+                u64::from(x.reserved_future_use_2),
                 3,
             );
         }
@@ -755,7 +755,7 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
                 o.ones(
                     "B10 Part 2 §6.2.23 Table 6-38",
                     "reserved_future_use",
-                    c.reserved_future_use as u64,
+                    u64::from(c.reserved_future_use),
                     1,
                 );
             }
@@ -764,13 +764,13 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
             o.ones(
                 "B10 Part 2 §6.2.26 Table 6-42",
                 "reserved_future_use",
-                x.reserved_future_use_1 as u64,
+                u64::from(x.reserved_future_use_1),
                 4,
             );
             o.ones(
                 "B10 Part 2 §6.2.26 Table 6-42",
                 "reserved_future_use",
-                x.reserved_future_use_2 as u64,
+                u64::from(x.reserved_future_use_2),
                 1,
             );
             if x.quality_indicator == 0 {
@@ -801,7 +801,7 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
             o.ones(
                 "B10 Part 2 §6.2.43 Table 6-83",
                 "reserved_future_use",
-                x.reserved_future_use as u64,
+                u64::from(x.reserved_future_use),
                 4,
             );
             if let ExtendedBroadcasterBody::Other {
@@ -832,13 +832,13 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
                 o.ones(
                     "B10 Part 2 §6.2.44 Table 6-85",
                     "reserved_future_use",
-                    *reserved_future_use_1 as u64,
+                    u64::from(*reserved_future_use_1),
                     7,
                 );
                 o.ones(
                     "B10 Part 2 §6.2.44 Table 6-85",
                     "reserved_future_use",
-                    *reserved_future_use_2 as u64,
+                    u64::from(*reserved_future_use_2),
                     4,
                 );
             }
@@ -848,7 +848,7 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
             } => o.ones(
                 "B10 Part 2 §6.2.44 Table 6-85",
                 "reserved_future_use",
-                *reserved_future_use as u64,
+                u64::from(*reserved_future_use),
                 7,
             ),
             LogoTransmissionBody::Simple(_) => {}
@@ -875,7 +875,7 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
                 o.ones(
                     "B10 Part 2 §6.2.40 Table 6-77",
                     "reserved_future_use",
-                    e.reserved_future_use as u64,
+                    u64::from(e.reserved_future_use),
                     4,
                 );
             }
@@ -884,7 +884,7 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
             o.ones(
                 "B10 Part 2 §6.2.45 Table 6-87",
                 "reserved_future_use",
-                x.reserved_future_use as u64,
+                u64::from(x.reserved_future_use),
                 1,
             );
             if x.reserved_future_use_bytes.iter().any(|&b| b != 0xFF) {
@@ -909,14 +909,14 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
                 o.ones(
                     "B10 Part 2 §6.2.24 Table 6-40",
                     "reserved_future_use",
-                    s.reserved_future_use as u64,
+                    u64::from(s.reserved_future_use),
                     6,
                 );
                 for a in &s.area_codes {
                     o.ones(
                         "B10 Part 2 §6.2.24 Table 6-40",
                         "reserved_future_use",
-                        a.reserved_future_use as u64,
+                        u64::from(a.reserved_future_use),
                         4,
                     );
                 }

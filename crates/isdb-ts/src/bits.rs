@@ -51,7 +51,7 @@ impl<'a> BitReader<'a> {
         for _ in 0..n {
             let byte = self.data[self.bit / 8];
             let b = (byte >> (7 - (self.bit % 8))) & 1;
-            v = (v << 1) | b as u64;
+            v = (v << 1) | u64::from(b);
             self.bit += 1;
         }
         Ok(v)
@@ -152,7 +152,8 @@ impl BitWriter {
 
     /// Write a 1-bit flag.
     pub fn bool(&mut self, v: bool) {
-        self.write("flag", 1, v as u64).expect("1-bit flag fits");
+        self.write("flag", 1, u64::from(v))
+            .expect("1-bit flag fits");
     }
 
     /// Append whole bytes; the writer must be byte aligned.

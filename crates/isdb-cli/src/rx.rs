@@ -192,7 +192,7 @@ impl LayerStats {
             self.uncorrectable += rs.uncorrectable as u64;
         }
         if let Some(m) = fr.metrics.mer_db[l] {
-            self.mer_sum += m as f64;
+            self.mer_sum += f64::from(m);
             self.mer_min = if self.mer_n == 0 {
                 m
             } else {

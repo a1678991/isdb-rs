@@ -57,7 +57,7 @@ impl Pcr {
 
     /// `PCR_base × 300 + PCR_ext` (equation 2-1), in 27 MHz ticks.
     pub fn ticks(&self) -> u64 {
-        self.base * 300 + self.extension as u64
+        self.base * 300 + u64::from(self.extension)
     }
 
     /// Seconds represented by [`Pcr::ticks`] at the nominal 27 MHz.
@@ -81,11 +81,11 @@ impl Pcr {
     /// Append the 6-byte field.
     pub fn write(&self, w: &mut BitWriter) -> Result<()> {
         w.write("program_clock_reference_base", 33, self.base)?;
-        w.write("PCR reserved", 6, self.reserved as u64)?;
+        w.write("PCR reserved", 6, u64::from(self.reserved))?;
         w.write(
             "program_clock_reference_extension",
             9,
-            self.extension as u64,
+            u64::from(self.extension),
         )
     }
 
@@ -197,7 +197,7 @@ impl Timestamp {
 
     /// Write the 40-bit field.
     pub fn write(&self, w: &mut BitWriter) -> Result<()> {
-        w.write("timestamp prefix", 4, self.prefix as u64)?;
+        w.write("timestamp prefix", 4, u64::from(self.prefix))?;
         if self.value >> 33 != 0 {
             return Err(crate::Error::Overflow {
                 what: "33-bit timestamp",
@@ -206,15 +206,15 @@ impl Timestamp {
             });
         }
         w.write("timestamp[32..30]", 3, self.value >> 30)?;
-        w.write("marker_bit", 1, (self.markers as u64 >> 2) & 1)?;
+        w.write("marker_bit", 1, (u64::from(self.markers) >> 2) & 1)?;
         w.write("timestamp[29..15]", 15, (self.value >> 15) & 0x7FFF)?;
-        w.write("marker_bit", 1, (self.markers as u64 >> 1) & 1)?;
+        w.write("marker_bit", 1, (u64::from(self.markers) >> 1) & 1)?;
         w.write("timestamp[14..0]", 15, self.value & 0x7FFF)?;
-        w.write("marker_bit", 1, self.markers as u64 & 1)?;
+        w.write("marker_bit", 1, u64::from(self.markers) & 1)?;
         if self.markers >> 3 != 0 {
             return Err(crate::Error::Overflow {
                 what: "timestamp markers",
-                value: self.markers as u64,
+                value: u64::from(self.markers),
                 bits: 3,
             });
         }

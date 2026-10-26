@@ -215,7 +215,7 @@ impl Bits<'_> {
         let mut v = 0u32;
         for _ in 0..n {
             let byte = *self.b.get(self.pos / 8)?;
-            v = (v << 1) | ((byte >> (7 - self.pos % 8)) & 1) as u32;
+            v = (v << 1) | u32::from((byte >> (7 - self.pos % 8)) & 1);
             self.pos += 1;
         }
         Some(v)
@@ -315,8 +315,8 @@ impl VideoEs {
                             aspect_ratio: ar,
                             frame_rate_code: frc,
                             frame_rate: FRAME_RATES[frc as usize],
-                            bit_rate: br as u64 * 400,
-                            vbv_buffer_bits: vbv as u64 * 16_384,
+                            bit_rate: u64::from(br) * 400,
+                            vbv_buffer_bits: u64::from(vbv) * 16_384,
                             profile_and_level: 0,
                             progressive_sequence: false,
                             mpeg2: false,
@@ -341,8 +341,8 @@ impl VideoEs {
                         rd(&mut b, 1)?;
                         let vbvx = rd(&mut b, 8)?;
                         let _low_delay = rd(&mut b, 1)?;
-                        let frn = rd(&mut b, 2)? as u64;
-                        let frd = rd(&mut b, 5)? as u64;
+                        let frn = u64::from(rd(&mut b, 2)?);
+                        let frd = u64::from(rd(&mut b, 5)?);
                         if let Some(s) = seq.as_mut()
                             && !s.mpeg2
                         {
@@ -351,9 +351,9 @@ impl VideoEs {
                             s.progressive_sequence = prog;
                             s.width |= hx << 12;
                             s.height |= vx << 12;
-                            s.bit_rate = (((brx as u64) << 18) | (s.bit_rate / 400)) * 400;
+                            s.bit_rate = ((u64::from(brx) << 18) | (s.bit_rate / 400)) * 400;
                             s.vbv_buffer_bits =
-                                (((vbvx as u64) << 10) | (s.vbv_buffer_bits / 16_384)) * 16_384;
+                                ((u64::from(vbvx) << 10) | (s.vbv_buffer_bits / 16_384)) * 16_384;
                             s.frame_rate = (s.frame_rate.0 * (frn + 1), s.frame_rate.1 * (frd + 1));
                         }
                     } else if id == 8 && last_ext_target == 2 {
@@ -479,7 +479,7 @@ impl VideoEs {
             let mut t = base;
             for &i in &order {
                 pts[i] = t + reorder;
-                t += self.aus[i].fields as u64 * field;
+                t += u64::from(self.aus[i].fields) * field;
             }
             base = t;
         }
@@ -554,7 +554,7 @@ mod tests {
                 v.extend_from_slice(&[0, 0, 1, 0xB8, 0x00, 0x08, 0x00, 0x40]);
             }
             v.extend_from_slice(&[0, 0, 1, 0x00]);
-            let w: u32 = (tr as u32) << 22 | (ty as u32) << 19 | 0x1234 << 3;
+            let w: u32 = u32::from(tr) << 22 | u32::from(ty) << 19 | 0x1234 << 3;
             v.extend_from_slice(&w.to_be_bytes());
             // picture_coding_extension: frame picture, tff=1, rff=0
             v.extend_from_slice(&[0, 0, 1, 0xB5, 0x8F, 0xFF, 0xF3, 0x80, 0x80]);

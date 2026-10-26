@@ -407,6 +407,11 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- Workspace: `clippy::cast_lossless` is enabled (`warn`, so an error in
+  CI). The 632 `x as T` casts where `T: From<X>` (`u8`/`u16`/`u32` →
+  wider integers, `bool` → integer, `f32`/`u32`/`i32` → `f64`) are written
+  `T::from(x)`, so every `as` left is a lossy one. No behaviour change.
+
 - `isdb-ts`: `Header.transport_scrambling_control` and
   `Header.adaptation_field_control` are lossless coded enums of H.222.0
   Tables 2-4 and 2-5 instead of raw `u8` codes:

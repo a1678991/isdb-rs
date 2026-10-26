@@ -61,7 +61,7 @@ pub fn null_packet() -> Packet {
 
 /// Convert model-receiver clocks (512/63 MHz) to 27 MHz ticks.
 pub fn clocks_to_ticks(c: u64) -> u64 {
-    ((c as u128 * 1701) / 512) as u64
+    ((u128::from(c) * 1701) / 512) as u64
 }
 
 struct SectionStream {
@@ -200,7 +200,7 @@ const RELAY_START_MS: u32 = 100;
 const LATE_ALERT_INTERVAL_S: f64 = 60.0;
 
 fn ms(x: u32) -> u64 {
-    x as u64 * HZ / 1000
+    u64::from(x) * HZ / 1000
 }
 
 fn to90k(t: u64) -> u64 {
@@ -502,12 +502,12 @@ impl Multiplexer {
                                 audio_mode: a.audio_mode(),
                                 quality: a.quality_mode(),
                             });
-                            let fs = a.sampling_frequency as u64;
+                            let fs = u64::from(a.sampling_frequency);
                             let mut acc = 0u64;
                             let mut starts = Vec::with_capacity(a.frames.len());
                             for f in &a.frames {
                                 starts.push(acc);
-                                acc += f.samples as u64;
+                                acc += u64::from(f.samples);
                             }
                             let dur = (a.total_samples * 54_000_000).div_ceil(fs);
                             svc_streams.push((
@@ -694,11 +694,13 @@ impl Multiplexer {
             // A carousel is limited to its own rate (packets per window).
             let max_window = match kind {
                 TableKind::Carousel(i, k) => {
-                    let kbps = cfg.services[i].streams[k]
-                        .bml
-                        .as_ref()
-                        .map_or(1000, |b| b.bitrate_kbps)
-                        .max(1) as f64;
+                    let kbps = f64::from(
+                        cfg.services[i].streams[k]
+                            .bml
+                            .as_ref()
+                            .map_or(1000, |b| b.bitrate_kbps)
+                            .max(1),
+                    );
                     ((kbps * 1000.0 / 8.0 / 188.0) * (si_window_ticks as f64 / HZ as f64)).floor()
                         as usize
                 }
@@ -1493,7 +1495,7 @@ impl Multiplexer {
                 per_pes,
                 sample_starts,
             } => {
-                let fs = es.sampling_frequency as u64;
+                let fs = u64::from(es.sampling_frequency);
                 let i0 = e.next;
                 let n = (*per_pes).min(es.frames.len() - i0);
                 let mut data = Vec::new();

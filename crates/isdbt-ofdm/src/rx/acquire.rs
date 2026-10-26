@@ -73,8 +73,8 @@ pub fn detect_mode(buf: &[C32], modes: &[Mode], guards: &[GuardInterval]) -> Opt
             let a = buf[m];
             let b = buf[m + n];
             let p = a * b.conj();
-            sp += num_complex::Complex64::new(p.re as f64, p.im as f64);
-            se += (a.norm_sqr() + b.norm_sqr()) as f64 * 0.5;
+            sp += num_complex::Complex64::new(f64::from(p.re), f64::from(p.im));
+            se += f64::from(a.norm_sqr() + b.norm_sqr()) * 0.5;
             cp.push(sp);
             ce.push(se);
         }

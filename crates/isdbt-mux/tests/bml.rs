@@ -118,7 +118,7 @@ fn sections(r: &Run, pid: u16) -> Vec<(u64, Vec<u8>)> {
     let mut a = SectionAssembler::new(pid);
     let mut v = Vec::new();
     for (i, p) in r.full.iter().enumerate() {
-        let ppid = ((p[1] as u16 & 0x1F) << 8) | p[2] as u16;
+        let ppid = ((u16::from(p[1]) & 0x1F) << 8) | u16::from(p[2]);
         if ppid != pid {
             continue;
         }
@@ -146,7 +146,7 @@ fn modules(secs: &[(u64, Vec<u8>)], dii: &Dii) -> BTreeMap<u16, Vec<u8>> {
                 assert_eq!(d.header.version_number, m.module_version & 0x1F);
                 assert_eq!(d.header.section_number, d.body.block_number as u8);
                 if d.body.block_number as usize + 1
-                    < m.module_size.div_ceil(dii.body.block_size as u32) as usize
+                    < m.module_size.div_ceil(u32::from(dii.body.block_size)) as usize
                 {
                     assert_eq!(d.body.data.len(), dii.body.block_size as usize);
                 }
@@ -318,7 +318,7 @@ fn carousel_carries_the_files_and_signals_them() {
         .full
         .iter()
         .zip(&r.times)
-        .filter(|(p, _)| ((p[1] as u16 & 0x1F) << 8) | p[2] as u16 == 0x0140)
+        .filter(|(p, _)| ((u16::from(p[1]) & 0x1F) << 8) | u16::from(p[2]) == 0x0140)
         .map(|(_, t)| *t)
         .collect();
     let window = 32 * HZ / 1000;

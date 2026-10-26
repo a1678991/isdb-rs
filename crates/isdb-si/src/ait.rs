@@ -310,15 +310,15 @@ impl AitDescriptor {
                     (a.profiles.len() * 5) as u64,
                 )?;
                 for p in &a.profiles {
-                    w.write("application_profile", 16, p.profile as u64)?;
-                    w.write("version.major", 8, p.major as u64)?;
-                    w.write("version.minor", 8, p.minor as u64)?;
-                    w.write("version.micro", 8, p.micro as u64)?;
+                    w.write("application_profile", 16, u64::from(p.profile))?;
+                    w.write("version.major", 8, u64::from(p.major))?;
+                    w.write("version.minor", 8, u64::from(p.minor))?;
+                    w.write("version.micro", 8, u64::from(p.micro))?;
                 }
                 w.bool(a.service_bound);
-                w.write("visibility", 2, a.visibility as u64)?;
-                w.write("reserved_for_future_use", 5, a.reserved as u64)?;
-                w.write("application_priority", 8, a.priority as u64)?;
+                w.write("visibility", 2, u64::from(a.visibility))?;
+                w.write("reserved_for_future_use", 5, u64::from(a.reserved))?;
+                w.write("application_priority", 8, u64::from(a.priority))?;
                 w.bytes(&a.transport_protocol_labels);
                 out.extend_from_slice(&w.into_bytes());
             }
@@ -337,7 +337,7 @@ impl AitDescriptor {
                         e.permission_bitmaps.len() as u64,
                     )?;
                     for p in &e.permission_bitmaps {
-                        w.write("permission_bitmap", 16, *p as u64)?;
+                        w.write("permission_bitmap", 16, u64::from(*p))?;
                     }
                     w.write("managed_URL_count", 8, e.managed_urls.len() as u64)?;
                     for u in &e.managed_urls {
@@ -472,10 +472,10 @@ impl LongBody for AitBody {
     fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut apps = BitWriter::new();
         for a in &self.applications {
-            apps.write("organization_id", 16, a.organization_id as u64)?;
-            apps.write("application_id", 32, a.application_id as u64)?;
-            apps.write("application_control_code", 8, a.control_code as u64)?;
-            apps.write("reserved_for_future_use", 4, a.reserved as u64)?;
+            apps.write("organization_id", 16, u64::from(a.organization_id))?;
+            apps.write("application_id", 32, u64::from(a.application_id))?;
+            apps.write("application_control_code", 8, u64::from(a.control_code))?;
+            apps.write("reserved_for_future_use", 4, u64::from(a.reserved))?;
             let d = encode_ait_descriptors(&a.descriptors)?;
             apps.write("application_descriptors_loop_length", 12, d.len() as u64)?;
             apps.bytes(&d);
@@ -483,10 +483,10 @@ impl LongBody for AitBody {
         let apps = apps.into_bytes();
         let common = encode_ait_descriptors(&self.common_descriptors)?;
         let mut w = BitWriter::new();
-        w.write("reserved_for_future_use", 4, self.reserved_1 as u64)?;
+        w.write("reserved_for_future_use", 4, u64::from(self.reserved_1))?;
         w.write("common_descriptors_length", 12, common.len() as u64)?;
         w.bytes(&common);
-        w.write("reserved_for_future_use", 4, self.reserved_2 as u64)?;
+        w.write("reserved_for_future_use", 4, u64::from(self.reserved_2))?;
         w.write("application_loop_length", 12, apps.len() as u64)?;
         w.bytes(&apps);
         out.extend_from_slice(&w.into_bytes());

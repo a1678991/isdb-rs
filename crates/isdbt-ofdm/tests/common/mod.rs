@@ -87,7 +87,7 @@ pub fn resample_ppm(x: &[C32], ppm: f64) -> Vec<C32> {
         let mut sum = 1.0;
         let mut term = 1.0;
         for k in 1..30 {
-            term *= (v / 2.0) * (v / 2.0) / (k as f64 * k as f64);
+            term *= (v / 2.0) * (v / 2.0) / (f64::from(k) * f64::from(k));
             sum += term;
         }
         sum

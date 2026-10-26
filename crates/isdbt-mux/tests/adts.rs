@@ -69,8 +69,9 @@ fn media_audio_gate_follows_header_report() {
                 assert!(e.reason.contains("crc_check cannot be inserted"), "{e}");
             }
             if let Some(m) = e.fullness.as_ref() {
-                let cap = (6144 * m.channels as u64 - m.rate_frame_bits) / (32 * m.channels as u64);
-                assert!(m.values.iter().all(|&f| f != 0x7FF && f as u64 <= cap));
+                let cap = (6144 * u64::from(m.channels) - m.rate_frame_bits)
+                    / (32 * u64::from(m.channels));
+                assert!(m.values.iter().all(|&f| f != 0x7FF && u64::from(f) <= cap));
             }
         }
     }
@@ -83,7 +84,7 @@ fn media_audio_gate_follows_header_report() {
     );
     let bytes: u64 = checks
         .iter()
-        .map(|c| c.header.aac_frame_length as u64)
+        .map(|c| u64::from(c.header.aac_frame_length))
         .sum();
     let fs = es.sampling_frequency;
     assert_eq!(
@@ -102,7 +103,7 @@ fn pid_es(ts: &[u8], pid: u16) -> Vec<u8> {
     let mut es = Vec::new();
     let mut started = false;
     for p in ts.as_chunks::<188>().0 {
-        if p[0] != 0x47 || (((p[1] & 0x1F) as u16) << 8 | p[2] as u16) != pid {
+        if p[0] != 0x47 || (u16::from(p[1] & 0x1F) << 8 | u16::from(p[2])) != pid {
             continue;
         }
         let afc = p[3] >> 4 & 3;
@@ -145,7 +146,7 @@ fn capture_all_frames_conform() {
         .0
         .iter()
         .filter(|p| p[0] == 0x47 && p[1] & 0x40 != 0)
-        .map(|p| ((p[1] & 0x1F) as u16) << 8 | p[2] as u16)
+        .map(|p| u16::from(p[1] & 0x1F) << 8 | u16::from(p[2]))
         .collect();
     pids.sort_unstable();
     pids.dedup();
@@ -171,7 +172,7 @@ fn capture_all_frames_conform() {
         let fs = isdbt_mux::adts::SAMPLING_FREQUENCIES[sfi as usize];
         let bytes: u64 = checks
             .iter()
-            .map(|c| c.header.aac_frame_length as u64)
+            .map(|c| u64::from(c.header.aac_frame_length))
             .sum();
         let bps = b32::bit_rate(bytes, 1024 * rep.frames as u64, fs);
         eprintln!("  {bps:.0} bit/s → {:?}", QualityMode::derive(fs, bps, 2));

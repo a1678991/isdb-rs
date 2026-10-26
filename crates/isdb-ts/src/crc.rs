@@ -50,7 +50,7 @@ pub fn crc32_bitwise(data: &[u8]) -> u32 {
     let mut reg = 0xFFFF_FFFFu32;
     for &byte in data {
         for i in (0..8).rev() {
-            let bit = ((byte >> i) & 1) as u32;
+            let bit = u32::from((byte >> i) & 1);
             let fb = (reg >> 31) ^ bit;
             reg <<= 1;
             if fb != 0 {

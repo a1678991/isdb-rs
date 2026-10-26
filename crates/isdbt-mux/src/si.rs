@@ -175,7 +175,7 @@ pub fn resolve_events(cfg: &Config, clock_start: JstSeconds) -> Result<Vec<Vec<E
                 }
             };
             let duration = jst::parse_hms(&e.duration)?;
-            prev_end = Some(start + duration as i64);
+            prev_end = Some(start + i64::from(duration));
             v.push(Event {
                 index: i,
                 event_id: e.event_id,
@@ -185,7 +185,7 @@ pub fn resolve_events(cfg: &Config, clock_start: JstSeconds) -> Result<Vec<Vec<E
         }
         v.sort_by_key(|e| e.start);
         for w in v.windows(2) {
-            if w[0].start + w[0].duration as i64 > w[1].start {
+            if w[0].start + i64::from(w[0].duration) > w[1].start {
                 return Err(MuxError::Config(format!(
                     "service {:#06x}: events {:#06x} and {:#06x} overlap",
                     s.service_id, w[0].event_id, w[1].event_id
@@ -930,7 +930,7 @@ impl SiBuilder {
             net.push(Descriptor::SystemManagement(SystemManagement {
                 system_management_id: (BROADCASTING_FLAG << 14)
                     | (BROADCASTING_IDENTIFIER << 8)
-                    | n.additional_broadcasting_identification as u16,
+                    | u16::from(n.additional_broadcasting_identification),
                 additional_identification_info: Vec::new(),
             }));
         }
@@ -1223,8 +1223,10 @@ impl SiBuilder {
         let ev = &self.events[i];
         let present = ev
             .iter()
-            .find(|e| e.start <= now && now < e.start + e.duration as i64);
-        let after = present.map(|p| p.start + p.duration as i64).unwrap_or(now);
+            .find(|e| e.start <= now && now < e.start + i64::from(e.duration));
+        let after = present
+            .map(|p| p.start + i64::from(p.duration))
+            .unwrap_or(now);
         let following = ev
             .iter()
             .find(|e| e.start >= after && present.is_none_or(|p| p.event_id != e.event_id));
@@ -1293,7 +1295,7 @@ impl SiBuilder {
             // (table index, segment) → events
             let mut segs: std::collections::BTreeMap<(u8, u8), Vec<&Event>> = Default::default();
             for e in &self.events[i] {
-                if e.start + e.duration as i64 <= now || e.start < t0 {
+                if e.start + i64::from(e.duration) <= now || e.start < t0 {
                     continue; // past events may be omitted (rule m)
                 }
                 let h3 = (e.start - t0) / (3 * 3600);

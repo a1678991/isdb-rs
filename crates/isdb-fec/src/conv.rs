@@ -198,9 +198,9 @@ impl ViterbiDecoder {
             for j in 0..HALF {
                 let c = m1[j] > m0[j];
                 new[u * HALF + j] = if c { m1[j] } else { m0[j] };
-                d |= (c as u32) << j;
+                d |= u32::from(c) << j;
             }
-            dec |= (d as u64) << (u * HALF);
+            dec |= u64::from(d) << (u * HALF);
         }
         self.pm = new;
         self.decisions.push(dec);
@@ -226,9 +226,9 @@ impl ViterbiDecoder {
                 let m1 = self.pm[2 * j + 1] + m[idx(1)];
                 let c = m1 > m0;
                 new[u * HALF + j] = if c { m1 } else { m0 };
-                d |= (c as u32) << j;
+                d |= u32::from(c) << j;
             }
-            dec |= (d as u64) << (u * HALF);
+            dec |= u64::from(d) << (u * HALF);
         }
         self.pm = new;
         self.decisions.push(dec);

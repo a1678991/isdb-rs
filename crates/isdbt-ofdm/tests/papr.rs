@@ -22,7 +22,7 @@ fn layer(segments: usize, modulation: Modulation, ti: TimeInterleave) -> Option<
 }
 
 fn papr_db(s: &[isdbt_ofdm::C32]) -> f64 {
-    let p: Vec<f64> = s.iter().map(|v| v.norm_sqr() as f64).collect();
+    let p: Vec<f64> = s.iter().map(|v| f64::from(v.norm_sqr())).collect();
     let mean = p.iter().sum::<f64>() / p.len() as f64;
     let peak = p.iter().cloned().fold(0.0, f64::max);
     10.0 * (peak / mean).log10()

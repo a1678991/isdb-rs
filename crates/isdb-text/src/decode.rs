@@ -390,7 +390,7 @@ impl Decoder {
 
     fn char2(&mut self, set: GraphicSet, c1: u8, c2: u8, at: usize) {
         let (row, cell) = (c1 - 0x20, c2 - 0x20);
-        let code = (c1 as u16) << 8 | c2 as u16;
+        let code = u16::from(c1) << 8 | u16::from(c2);
         let ch = match set {
             GraphicSet::Kanji => tables::kanji(row, cell),
             GraphicSet::AdditionalSymbols => tables::additional_symbols(row, cell),
@@ -443,7 +443,7 @@ impl Decoder {
                     at,
                     IssueKind::Drcs {
                         set: n,
-                        code: c1 as u16,
+                        code: u16::from(c1),
                     },
                 );
                 return self.emit_placeholder();
@@ -459,7 +459,7 @@ impl Decoder {
                     at,
                     IssueKind::UndefinedCode {
                         set,
-                        code: c1 as u16,
+                        code: u16::from(c1),
                     },
                 );
                 self.emit_placeholder();
