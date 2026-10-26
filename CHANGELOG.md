@@ -407,6 +407,15 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdbt-core`: `TimeInterleave` is a closed enum of the four TMCC codes
+  of ARIB STD-B31 Table 3-12 (`K0`..`K3`, `code()` / `from_code()`,
+  `ALL`) instead of `TimeInterleave(pub u8)`. `length(mode)` is
+  infallible and `const`; `Params::new` no longer checks the index and
+  `ParamError::TimeInterleaveIndex` is gone; the reserved codes
+  '100'–'111' are refused in `from_code` alone (TMCC decoder, CLI layer
+  spec). `Mode::number` / `Mode::scale` are `const fn`. First step of
+  the type-safety workflow in `docs/plans/type-safety.md`;
+  `tools/type-census.sh` counts what is left.
 - `isdb-fec`: the fixed-point LDPC iteration (every check node, then the
   syndrome) runs in a function of its own, 14 % more codewords per thread
   (4 615 → 5 380 on live ISDB-S3 codewords), same results. Runtime SIMD
