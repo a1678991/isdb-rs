@@ -33,7 +33,7 @@ fn main() {
             let Some((h, pl)) = mmtp::parse(&d.payload) else {
                 continue;
             };
-            if h.packet_id != 0 || h.payload_type != mmtp::MESSAGES {
+            if h.packet_id != 0 || h.payload_type != mmtp::PayloadType::Messages {
                 continue;
             }
             let c = done.entry(sl.stream_id).or_default();

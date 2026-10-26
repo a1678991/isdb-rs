@@ -8,8 +8,9 @@
 //!
 //! cargo run --release -p isdb-mmt --example scrambleprobe -- FILE
 
+use isdb_mmt::mpu::{FragmentType, FragmentationIndicator};
 use isdb_tlv::ip::{compressed, ipv4, ipv6};
-use isdb_tlv::mmtp;
+use isdb_tlv::mmtp::{self, PayloadType};
 use isdb_tlv::tlv::{FileReader, PacketType};
 use std::collections::BTreeMap;
 
@@ -41,14 +42,16 @@ fn main() {
         let Some((h, pl)) = mmtp::parse(&d.payload) else {
             continue;
         };
-        if h.payload_type != mmtp::MPU || pl.len() < 8 {
+        if h.payload_type != PayloadType::Mpu || pl.len() < 8 {
             continue;
         }
         let e = c.entry(h.packet_id).or_default();
         e.packets += 1;
         e.scrambled += u64::from(h.scramble_info);
         e.len_ok += u64::from(usize::from(u16::from_be_bytes([pl[0], pl[1]])) == pl.len() - 2);
-        e.type2_timed += u64::from(pl[2] >> 4 == 2 && pl[2] & 0x08 != 0);
+        e.type2_timed += u64::from(
+            FragmentType::from_code(pl[2] >> 4) == FragmentType::Mfu && pl[2] & 0x08 != 0,
+        );
         let mpu = u32::from_be_bytes([pl[4], pl[5], pl[6], pl[7]]);
         e.mpu_cont += u64::from(
             e.last_mpu
@@ -56,7 +59,10 @@ fn main() {
         );
         e.last_mpu = Some(mpu);
         e.aggregated += u64::from(pl[2] & 1);
-        if (pl[2] >> 1) & 3 == 0 && pl[2] & 1 == 0 && pl.len() >= 22 {
+        if FragmentationIndicator::from_code(pl[2] >> 1) == FragmentationIndicator::Complete
+            && pl[2] & 1 == 0
+            && pl.len() >= 22
+        {
             e.whole += 1;
             e.whole_offset0 += u64::from(pl[16..20] == [0, 0, 0, 0]);
         }

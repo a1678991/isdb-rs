@@ -1,14 +1,14 @@
 //! MMTP packets (ARIB STD-B32 v3.11 Part 3 §3.9) and the MMT-SI messages
 //! they carry (ARIB STD-B60 v1.14 §4.2, §7.2.3, Tables 4-6, 4-8, 4-11).
 //!
-//! Header: version (2) `00`, packet counter flag (1), FEC type (2),
-//! reserved (1), extension header flag (1), RAP flag (1), reserved (2),
-//! payload type (6), packet id (16), delivery time stamp (32), packet
-//! sequence number (32), [packet counter (32)], [extension type (16),
-//! length (16), field]. Payload type 00h MPU, 02h control messages.
-//! Packet id 0000h PA message, 0001h CA message, others per Table 4-11
-//! (8000h MH-EIT, 8002h MH-BIT, 8004h MH-SDT, 8005h MH-TOT, …) or as the
-//! MPT designates.
+//! Header (B60 §6.4.1.1 Table 6-4): version (2) `00`, packet counter flag
+//! (1), FEC type (2, Table 6-5), reserved (1), extension header flag (1),
+//! RAP flag (1), reserved (2), payload type (6, Table 6-6), packet id
+//! (16), delivery time stamp (32), packet sequence number (32), [packet
+//! counter (32)], [extension type (16), length (16), field]. Payload type
+//! 00h MPU, 02h control messages ([`PayloadType`]). Packet id 0000h PA
+//! message, 0001h CA message, others per Table 4-11 (8000h MH-EIT, 8002h
+//! MH-BIT, 8004h MH-SDT, 8005h MH-TOT, …) or as the MPT designates.
 //!
 //! A control-message payload (Figure No. 2): division index (2), reserved
 //! (4), length extension flag (1), aggregation flag (1), division number
@@ -18,15 +18,133 @@
 //! ISO/IEC 23008-1 (MMT) is not available (SPECS.md §1.2): everything here
 //! is taken from B32 Part 3 and B60.
 
-/// The MMTP header fields this crate uses.
+use std::fmt;
+
+/// `FEC_type` of the MMTP header: ARIB STD-B60 v1.14 §6.4.1.1, Table 6-5
+/// (2 bits).
+///
+/// A lossless coded enum: every code of the field has a variant, so a
+/// decoded header re-encodes bit-exactly; code 3 is "reserved for future
+/// use".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FecType {
+    /// 0: "MMTP Packet which is not protected by AL-FEC".
+    NotProtected,
+    /// 1: "Source packet, among MMTP Packets which are protected by
+    /// AL-FEC".
+    Source,
+    /// 2: "Repair packet, among MMTP Packets which are protected by
+    /// AL-FEC".
+    Repair,
+    /// 3: "reserved for future use".
+    Reserved,
+}
+
+impl FecType {
+    /// The three assigned codes, in Table 6-5 order.
+    pub const ASSIGNED: [FecType; 3] = [FecType::NotProtected, FecType::Source, FecType::Repair];
+
+    /// From the 2-bit field (`code` is masked to the width; total).
+    pub const fn from_code(code: u8) -> Self {
+        match code & 0x03 {
+            0 => FecType::NotProtected,
+            1 => FecType::Source,
+            2 => FecType::Repair,
+            _ => FecType::Reserved,
+        }
+    }
+
+    /// The 2-bit code.
+    pub const fn code(self) -> u8 {
+        match self {
+            FecType::NotProtected => 0,
+            FecType::Source => 1,
+            FecType::Repair => 2,
+            FecType::Reserved => 3,
+        }
+    }
+}
+
+impl fmt::Display for FecType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.code())
+    }
+}
+
+/// `payload_type` of the MMTP header: ARIB STD-B60 v1.14 §6.4.1.1, Table
+/// 6-6 (6 bits).
+///
+/// A lossless coded enum: the four assigned codes are named, every other
+/// code is kept in [`PayloadType::Reserved`] (0x04–0x1F "reserved for
+/// ISO/IEC", 0x20–0x3F "provided by the Ministry or private
+/// standardization organization"), so a decoded header re-encodes
+/// bit-exactly. On air only [`Mpu`](PayloadType::Mpu) and
+/// [`Messages`](PayloadType::Messages) occur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PayloadType {
+    /// 0x00: "MPU. This involves fragment of MPU considering media."
+    Mpu,
+    /// 0x01: "Generic object. This involves general object such as a
+    /// complete MPU." Table 6-6 note 1: "provided in MMT Standard, but it
+    /// is not used in this standard".
+    GenericObject,
+    /// 0x02: "This involves more than or equal to one control message."
+    Messages,
+    /// 0x03: "This involves repair symbol of AL-FEC."
+    FecRepair,
+    /// 0x04–0x3F: reserved for ISO/IEC (–0x1F) or provided by the
+    /// Ministry or a private standardization organization (0x20–); the
+    /// 6-bit code.
+    Reserved(u8),
+}
+
+impl PayloadType {
+    /// The four assigned codes, in Table 6-6 order.
+    pub const ASSIGNED: [PayloadType; 4] = [
+        PayloadType::Mpu,
+        PayloadType::GenericObject,
+        PayloadType::Messages,
+        PayloadType::FecRepair,
+    ];
+
+    /// From the 6-bit field (`code` is masked to the width; total).
+    pub const fn from_code(code: u8) -> Self {
+        match code & 0x3F {
+            0x00 => PayloadType::Mpu,
+            0x01 => PayloadType::GenericObject,
+            0x02 => PayloadType::Messages,
+            0x03 => PayloadType::FecRepair,
+            c => PayloadType::Reserved(c),
+        }
+    }
+
+    /// The 6-bit code.
+    pub const fn code(self) -> u8 {
+        match self {
+            PayloadType::Mpu => 0x00,
+            PayloadType::GenericObject => 0x01,
+            PayloadType::Messages => 0x02,
+            PayloadType::FecRepair => 0x03,
+            PayloadType::Reserved(c) => c & 0x3F,
+        }
+    }
+}
+
+impl fmt::Display for PayloadType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#04x}", self.code())
+    }
+}
+
+/// The MMTP header fields this crate uses (Table 6-4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
-    /// FEC type (0 = not protected).
-    pub fec_type: u8,
+    /// `FEC_type` (Table 6-5).
+    pub fec_type: FecType,
     /// Random access point flag.
     pub rap: bool,
-    /// Payload type (00h MPU, 02h control messages).
-    pub payload_type: u8,
+    /// `payload_type` (Table 6-6: 00h MPU, 02h control messages).
+    pub payload_type: PayloadType,
     /// Packet id.
     pub packet_id: u16,
     /// Packet sequence number.
@@ -38,11 +156,6 @@ pub struct Header {
     pub scramble_info: bool,
 }
 
-/// Payload type: MPU.
-pub const MPU: u8 = 0x00;
-/// Payload type: control messages.
-pub const MESSAGES: u8 = 0x02;
-
 /// Parse an MMTP packet: its header and payload.
 pub fn parse(b: &[u8]) -> Option<(Header, &[u8])> {
     if b.len() < 12 {
@@ -52,10 +165,10 @@ pub fn parse(b: &[u8]) -> Option<(Header, &[u8])> {
         return None;
     }
     let counter = b[0] & 0x20 != 0;
-    let fec_type = (b[0] >> 3) & 3;
+    let fec_type = FecType::from_code(b[0] >> 3);
     let ext = b[0] & 0x02 != 0;
     let rap = b[0] & 0x01 != 0;
-    let payload_type = b[1] & 0x3F;
+    let payload_type = PayloadType::from_code(b[1]);
     let packet_id = u16::from_be_bytes([b[2], b[3]]);
     let sequence = u32::from_be_bytes([b[8], b[9], b[10], b[11]]);
     let mut pos = 12 + if counter { 4 } else { 0 };
@@ -235,12 +348,85 @@ mod tests {
             0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0D, 0x00, 0x80, 0x04, 0x00, 0x08,
             0x01, 0x02, 0x00, 0x97, 0x00, 0xA0, 0x01, 0x00,
         ];
-        let mut pkt = vec![0x00, MESSAGES, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 7];
+        let mut pkt = vec![
+            0x00,
+            PayloadType::Messages.code(),
+            0x00,
+            0x00,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            7,
+        ];
         pkt.extend(payload);
         let (h, p) = parse(&pkt).unwrap();
-        assert_eq!((h.packet_id, h.payload_type, h.sequence), (0, MESSAGES, 7));
+        assert_eq!(
+            (h.packet_id, h.payload_type, h.sequence),
+            (0, PayloadType::Messages, 7)
+        );
         let m = messages(p).unwrap();
         assert_eq!(m[0].id, 0);
         assert_eq!(m[0].tables, vec![0x80]);
+    }
+
+    /// Table 6-5: the three assigned FEC types and the reserved code 3
+    /// round-trip through `from_code` / `code` over the whole 2-bit width.
+    #[test]
+    fn spec_b60_table_6_5_fec_types() {
+        assert_eq!(
+            FecType::ASSIGNED.map(FecType::code),
+            [0, 1, 2],
+            "Table 6-5 order"
+        );
+        for c in 0..=3u8 {
+            let t = FecType::from_code(c);
+            assert_eq!(t.code(), c);
+            assert_eq!(t == FecType::Reserved, c == 3);
+        }
+        // masked to the field width
+        assert_eq!(FecType::from_code(0xFE), FecType::Repair);
+    }
+
+    /// Table 6-6: every 6-bit payload type round-trips through
+    /// `from_code` / `code`; the four assigned codes are named and
+    /// 0x04–0x3F are `Reserved`.
+    #[test]
+    fn spec_b60_payload_types() {
+        assert_eq!(
+            PayloadType::ASSIGNED.map(PayloadType::code),
+            [0x00, 0x01, 0x02, 0x03],
+            "Table 6-6 order"
+        );
+        for c in 0..=0x3Fu8 {
+            let t = PayloadType::from_code(c);
+            assert_eq!(t.code(), c, "{t:?}");
+            match t {
+                PayloadType::Reserved(r) => assert!((0x04..=0x3F).contains(&r) && r == c),
+                named => assert!(PayloadType::ASSIGNED.contains(&named)),
+            }
+        }
+        assert_eq!(PayloadType::from_code(0x00), PayloadType::Mpu);
+        assert_eq!(PayloadType::from_code(0x02), PayloadType::Messages);
+        // masked to the field width (the two bits above are reserved
+        // header bits, Table 6-4)
+        assert_eq!(PayloadType::from_code(0xC2), PayloadType::Messages);
+        assert_eq!(PayloadType::Reserved(0xFF).code(), 0x3F);
+    }
+
+    /// A parsed header's codes are the bytes they came from, for every
+    /// FEC type and payload type (lossless; VERIFICATION.md rung 2).
+    #[test]
+    fn prop_header_codes_round_trip() {
+        for fec in 0..=3u8 {
+            for pt in 0..=0x3Fu8 {
+                let pkt = [fec << 3, pt, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                let (h, _) = parse(&pkt).unwrap();
+                assert_eq!((h.fec_type.code(), h.payload_type.code()), (fec, pt));
+            }
+        }
     }
 }

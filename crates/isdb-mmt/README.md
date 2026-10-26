@@ -20,6 +20,31 @@ headers, counters); the tables, descriptors and media framing here are
 larger and depend on `isdb-si` (MJD/BCD times), which the transport does
 not need.
 
+The coded fields of the MPU payload header (Table 6-1) are lossless
+coded enums of their tables: `mpu::FragmentType` (Table 6-2: MPU
+metadata, movie fragment metadata, MFU, `Reserved(u8)` for 3–15) and
+`mpu::FragmentationIndicator` (Table 6-3: `Complete`, `Head`, `Middle`,
+`Last`, all four codes assigned). The MFU reassembler matches on the
+variants; `from_code()` / `code()` go both ways over the whole field
+width, so a parsed header re-encodes bit-exactly:
+
+```rust
+use isdb_mmt::mpu::{self, FragmentType, FragmentationIndicator};
+
+// A payload header: length 6, MFU, timed, middle fragment of a divided
+// MFU, not aggregated, MPU sequence number 0021B0ECh
+let p = [0x00, 0x06, 0x2C, 0x00, 0x00, 0x21, 0xB0, 0xEC];
+let h = mpu::parse_header(&p).unwrap();
+assert_eq!(h.fragment_type, FragmentType::Mfu);
+assert_eq!(h.fragmentation, FragmentationIndicator::Middle);
+assert!(h.timed && !h.aggregated && !h.fragmentation.completes());
+assert_eq!(h.mpu_sequence_number, 0x0021_B0EC);
+
+// Reserved fragment types are kept, not dropped.
+assert_eq!(FragmentType::from_code(7), FragmentType::Reserved(7));
+assert_eq!(FragmentType::Reserved(7).code(), 7);
+```
+
 Text in MMT-SI is UTF-8 (B60 §7.1), not the ARIB 8-unit code of TS SI.
 
 Scrambled payloads (ACAS) are recognised from the MMTP header extension

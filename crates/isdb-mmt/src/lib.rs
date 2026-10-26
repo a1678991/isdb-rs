@@ -9,7 +9,7 @@
 //! | [`desc`] | MMT-SI descriptors (16-bit tags, per-descriptor length width) |
 //! | [`table`] | MPT, PLT, MH-EIT, MH-SDT, MH-TOT, MH-BIT, TLV-NIT, AMT |
 //! | [`message`] | control-message reassembly (divided, aggregated) into tables |
-//! | [`mpu`] | MPU payloads, MFU reassembly per asset, loss counters |
+//! | [`mpu`] | MPU payloads (fragment type and fragmentation indicator as coded enums), MFU reassembly per asset, loss counters |
 //! | [`es`] | HEVC Annex B, LOAS audio, caption MFUs |
 //! | [`decoder`] | the streaming decoder over TLV packets |
 //!
@@ -27,3 +27,8 @@ pub mod mpu;
 pub mod table;
 
 pub use decoder::Decoder;
+
+// Compile the README's code blocks as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

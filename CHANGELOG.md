@@ -451,6 +451,19 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
   spec). `Mode::number` / `Mode::scale` are `const fn`. First step of
   the type-safety workflow in `docs/plans/type-safety.md`;
   `tools/type-census.sh` counts what is left.
+- `isdb-tlv`, `isdb-mmt`: the coded fields of the MMTP and MPU headers
+  are lossless coded enums of their ARIB STD-B60 §6 tables instead of
+  `u8`: `mmtp::Header { fec_type: FecType, payload_type: PayloadType }`
+  (Tables 6-5, 6-6; the loose consts `mmtp::MPU` / `mmtp::MESSAGES` are
+  gone, use `PayloadType::Mpu` / `PayloadType::Messages`) and
+  `mpu::PayloadHeader { fragment_type: FragmentType, fragmentation:
+  FragmentationIndicator }` (Tables 6-2, 6-3). Each has `from_code()`
+  (total, masked to the field width) and `code()`, names every assigned
+  code and keeps the reserved ones in `Reserved(u8)`, so headers still
+  re-encode bit-exactly; the MFU reassembler matches on
+  `FragmentationIndicator::{Complete, Head, Middle, Last}` instead of
+  integers. `StreamStats::mmtp` keeps a `PayloadType`. Item E of the
+  type-safety workflow.
 - `isdb-fec`: the fixed-point LDPC iteration (every check node, then the
   syndrome) runs in a function of its own, 14 % more codewords per thread
   (4 615 → 5 380 on live ISDB-S3 codewords), same results. Runtime SIMD

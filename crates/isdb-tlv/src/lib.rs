@@ -8,7 +8,7 @@
 //! |---|---|
 //! | [`tlv`] | TLV packet, slot-to-packet assembler using the head-TLV indication |
 //! | [`ip`] | IPv4 / IPv6 / HCfB → UDP flow and payload |
-//! | [`mmtp`] | MMTP header, control messages, MMT-SI message and table names |
+//! | [`mmtp`] | MMTP header (FEC and payload type as coded enums), control messages, MMT-SI message and table names |
 //! | [`si`] | TLV-SI sections (TLV-NIT, AMT) of a control packet |
 //! | [`stats`] | per-stream counters: packets by type, flows, MMTP ids, signalling |
 //!
@@ -21,3 +21,8 @@ pub mod stats;
 pub mod tlv;
 
 pub use tlv::{Assembler, Packet, PacketType};
+
+// Compile the README's code blocks as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
