@@ -152,6 +152,14 @@ pub struct Stats {
     /// Streamed reception (FPGA or a words file): the word stream's
     /// counters; `None` for block-wise reception.
     pub words: Option<crate::symstream::WordStats>,
+    /// Carrier offset left in the last decoded symbols after the tracked
+    /// offset was removed, Hz.
+    pub residual_hz: Option<f64>,
+    /// Streamed reception: the carrier offset tracked in the symbols (the
+    /// drift since the front end was configured), Hz, and its extremes.
+    pub tracked_hz: f64,
+    /// See `tracked_hz`.
+    pub tracked_range_hz: (f64, f64),
 }
 
 impl Default for Stats {
@@ -177,6 +185,9 @@ impl Default for Stats {
             sync_snr_eq_db: None,
             carrier_offset_hz: 0.0,
             trim: 0.0,
+            residual_hz: None,
+            tracked_hz: 0.0,
+            tracked_range_hz: (0.0, 0.0),
             tmcc: None,
             streams: BTreeMap::new(),
             words: None,
@@ -210,6 +221,8 @@ impl Stats {
                 "resyncs": w.resyncs,
                 "max_queued_symbols": w.max_queued_symbols,
                 "stopped": w.stopped,
+                "tracked_carrier_hz": self.tracked_hz,
+                "tracked_carrier_range_hz": [self.tracked_range_hz.0, self.tracked_range_hz.1],
             })),
             "sync_snr_db": self.sync_snr_db,
             "sync_snr_eq_db": self.sync_snr_eq_db,
@@ -285,7 +298,7 @@ pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> 
     }
     // a fresh assembler per block: the blocks are not contiguous
     let mut asm: BTreeMap<u16, Assembler> = BTreeMap::new();
-    decode(&s.z, false, false, &mut asm, out, stats)?;
+    decode(&s.z, false, false, 0.0, &mut asm, out, stats)?;
     close(asm, stats);
     Ok(())
 }
@@ -296,11 +309,15 @@ pub fn back(s: &Symbols, samples: u64, out: &mut Outputs, stats: &mut Stats) -> 
 /// the last whole frame found and everything after it are left for the
 /// next call: only the frames before it are counted and written, and the
 /// returned index is where it starts. Without, every frame is taken and
-/// `z.len()` is returned.
+/// `z.len()` is returned. `carrier_hz` is removed from `z` first
+/// ([`RxOptions::carrier_hz`]); the offset left after it is in
+/// `stats.residual_hz`.
+#[allow(clippy::too_many_arguments)]
 pub fn decode(
     z: &[isdbs3_phy::Cplx],
     keep_last: bool,
     aligned: bool,
+    carrier_hz: f64,
     asm: &mut BTreeMap<u16, Assembler>,
     out: &mut Outputs,
     stats: &mut Stats,
@@ -311,9 +328,11 @@ pub fn decode(
             ldpc: stats.ldpc,
             // a continuing stream is cut on a frame start (slot head at 0)
             slot_offset: aligned.then_some(0),
+            carrier_hz,
             ..RxOptions::default()
         },
     );
+    stats.residual_hz = r.residual_hz;
     stats.sync_snr_db = r.sync_snr_db;
     stats.sync_snr_eq_db = r.sync_snr_eq_db;
     let upto = keep_last.then(|| r.frame_starts.last().copied()).flatten();
@@ -405,6 +424,13 @@ pub fn report(stats: &Stats, secs: f64) {
             } else {
                 ""
             }
+        );
+        eprintln!(
+            "[rx] carrier drift tracked in the symbols: {:+.0} Hz at the end ({:+.0} … {:+.0} Hz over the run), on top of the front end's {:+.0} Hz",
+            stats.tracked_hz,
+            stats.tracked_range_hz.0,
+            stats.tracked_range_hz.1,
+            stats.carrier_offset_hz
         );
     } else if stats.wall_s > 0.0 {
         eprintln!(
@@ -555,6 +581,11 @@ pub fn run_file(
     Ok(stats.samples as f64 / fs)
 }
 
+/// Lowest sync Es/N0 of a decode call whose residual carrier is added to
+/// the tracked offset, dB (a call that found no real slot sync measures
+/// noise).
+pub const TRACK_MIN_SNR_DB: f64 = 3.0;
+
 /// Streamed reception: decode the `Symbols` words of `bytes` (a radio's
 /// FPGA front end, or a words file) as one continuous stream, cut on frame
 /// boundaries ([`crate::symstream`]); a loss in the words ends a contiguous
@@ -573,6 +604,11 @@ pub fn run_stream(
     let asm = std::cell::RefCell::new(BTreeMap::<u16, Assembler>::new());
     // whether the buffer starts where the previous call cut (a frame start)
     let aligned = std::cell::Cell::new(false);
+    // the carrier offset tracked in the symbols: the front end's NCO is
+    // fixed at the acquisition's offset and the signal drifts (−22 Hz/s on
+    // a live stream, plan §0.18), so each call removes what the previous
+    // ones measured. Kept across losses: the drift is the signal's.
+    let tracked = std::cell::Cell::new(0.0f64);
     let mut next_status = 1.0;
     let w = crate::symstream::run(
         bytes,
@@ -582,7 +618,23 @@ pub fn run_stream(
             let t = std::time::Instant::now();
             let mut st = stats.borrow_mut();
             let more = cut == crate::symstream::Cut::More;
-            let used = decode(z, more, aligned.get(), &mut asm.borrow_mut(), out, &mut st)?;
+            let used = decode(
+                z,
+                more,
+                aligned.get(),
+                tracked.get(),
+                &mut asm.borrow_mut(),
+                out,
+                &mut st,
+            )?;
+            if let Some(r) = st.residual_hz
+                && st.sync_snr_db > TRACK_MIN_SNR_DB
+            {
+                let f = tracked.get() + r;
+                tracked.set(f);
+                st.tracked_hz = f;
+                st.tracked_range_hz = (st.tracked_range_hz.0.min(f), st.tracked_range_hz.1.max(f));
+            }
             st.back_s += t.elapsed().as_secs_f64();
             // the next buffer starts at the cut (a frame start) when this
             // call cut on one; after a loss or with nothing cut, not

@@ -1951,3 +1951,55 @@ fn ts_validate_expect_services() {
     assert_eq!(o.status.code(), Some(2));
     std::fs::remove_dir_all(&d).unwrap();
 }
+
+/// Opt-in: `ISDB_RS_ISDBS3_SYMBOLS` names an ISDB-S3 `Symbols` words file
+/// recorded from the FPGA front end over tens of seconds (the front end
+/// has no carrier loop: the reference recording drifts −97 Hz → −830 Hz in
+/// 40 s and has two stream losses). Every frame must decode but those a
+/// loss touches (≈ 1 per loss plus the frame it cuts): before the tracked
+/// carrier, the receiver lost every frame from ≈ 30 s on (plan §0.18).
+#[test]
+fn isdbs3_symbols_stream_tracks_the_drift_and_recovers_from_losses() {
+    let Some(f) = std::env::var_os("ISDB_RS_ISDBS3_SYMBOLS") else {
+        eprintln!(
+            "SKIP isdbs3_symbols_stream_tracks_the_drift_and_recovers_from_losses: ISDB_RS_ISDBS3_SYMBOLS not set"
+        );
+        return;
+    };
+    let d = tmp("s3symbols");
+    let o = run(&[
+        "rx",
+        "--symbols",
+        f.to_str().unwrap(),
+        "--out",
+        s(&d.join("s-{tlv_id}.tlv")),
+        "--json",
+        "--status-secs",
+        "0",
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let frames = j["frames"].as_u64().unwrap();
+    let tmcc = j["tmcc_ok"].as_u64().unwrap();
+    let losses = j["stream"]["losses"].as_u64().unwrap();
+    let resyncs = j["stream"]["resyncs"].as_u64().unwrap();
+    let secs = j["seconds"].as_f64().unwrap_or(0.0);
+    eprintln!(
+        "{secs:.1} s: {frames} frames, TMCC {tmcc}, {losses} losses, {resyncs} resyncs, tracked {}",
+        j["stream"]["tracked_carrier_hz"]
+    );
+    assert_eq!(resyncs, 0, "lost lock");
+    assert_eq!(tmcc, frames, "frames without TMCC");
+    // 30.26 frames per second; each loss may cost the frame it cuts and one more
+    let expected = (secs * isdb_s3_frames_per_second()).floor() as u64;
+    assert!(
+        frames + 2 * losses + 2 >= expected,
+        "{frames} frames in {secs} s (expected ≈ {expected})"
+    );
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+/// ISDB-S3 frames per second: 33.7561 Mbaud / (120 · 9 296 symbols).
+fn isdb_s3_frames_per_second() -> f64 {
+    33.7561e6 / (120.0 * 9296.0)
+}

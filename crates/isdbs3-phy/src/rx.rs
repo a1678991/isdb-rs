@@ -29,6 +29,19 @@ pub struct RxOptions {
     /// instead of searching every offset of a slot, and searches only if
     /// no slot sync is found there.
     pub slot_offset: Option<usize>,
+    /// Residual carrier offset of `z`, Hz (symbol `n` rotated by
+    /// e^{j2π·f·n/Rs}), removed before anything else: a streaming caller
+    /// passes the offset it tracks with [`Rx::residual_hz`]. 0 leaves the
+    /// symbols as they are.
+    ///
+    /// The frame marker is told from !FSync by comparing an FSync-parity
+    /// slot's phase with its two SSync neighbours, one slot (9 296 symbols)
+    /// either side: their sum vanishes at |f| = Rs / (4 · 9 296) ≈ 908 Hz
+    /// and flips sign beyond, after which the wrong word marks the frame
+    /// and no TMCC decodes. The FPGA front end has no carrier loop, and a
+    /// live stream drifted −22 Hz/s (−97 Hz → −830 Hz in 30 s, plan §0.18),
+    /// so a stream must track it.
+    pub carrier_hz: f64,
 }
 
 impl Default for RxOptions {
@@ -39,6 +52,7 @@ impl Default for RxOptions {
             learned_constellation: true,
             equalise: true,
             slot_offset: None,
+            carrier_hz: 0.0,
         }
     }
 }
@@ -96,6 +110,10 @@ pub struct Rx {
     /// frame the synchronisation found, decoded or not: where a caller
     /// streaming symbols can cut its buffer on a frame boundary.
     pub frame_starts: Vec<usize>,
+    /// Carrier offset left in the symbols after [`RxOptions::carrier_hz`]
+    /// was removed, Hz, from the phase steps between SSync slots (`None`
+    /// without enough of them). Add it to `carrier_hz` for the next block.
+    pub residual_hz: Option<f64>,
 }
 
 /// Lowest sync-symbol Es/N0 at which [`RxOptions::slot_offset`] is
@@ -104,6 +122,13 @@ pub const HINT_MIN_SNR_DB: f64 = 3.0;
 
 /// Run the receiver over symbols `z` (one per symbol, any scale).
 pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
+    let derotated;
+    let z: &[Cplx] = if opt.carrier_hz == 0.0 {
+        z
+    } else {
+        derotated = derotate(z, opt.carrier_hz);
+        &derotated
+    };
     // the hint holds when the sync words correlate there (≈ 13 dB on a live
     // stream; a wrong offset leaves them uncorrelated, ≤ 0 dB)
     let hinted = opt
@@ -115,6 +140,7 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
     };
     let mut rx = Rx {
         sync_snr_db: sy0.sync_snr_db,
+        residual_hz: crate::sync::residual_hz(&sy0),
         ..Rx::default()
     };
     // equalise with taps trained on the first frame whose TMCC decodes
@@ -244,6 +270,23 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
         });
     }
     rx
+}
+
+/// `z` with a carrier offset of `hz` removed: symbol `n` multiplied by
+/// e^{−j2π·hz·n/Rs}. The phasor is recomputed every 4 096 symbols from the
+/// index, so rounding does not accumulate over long blocks.
+pub fn derotate(z: &[Cplx], hz: f64) -> Vec<Cplx> {
+    let w = -std::f64::consts::TAU * hz / isdbs3_core::params::SYMBOL_RATE;
+    let step = Cplx::from_polar(1.0, w);
+    let mut out = Vec::with_capacity(z.len());
+    for (k, c) in z.chunks(4096).enumerate() {
+        let mut p = Cplx::from_polar(1.0, w * (k * 4096) as f64);
+        for &v in c {
+            out.push(v * p);
+            p *= step;
+        }
+    }
+    out
 }
 
 /// A frame ready to decode: its index among the block's frames, its slot

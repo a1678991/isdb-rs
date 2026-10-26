@@ -43,6 +43,8 @@ pub struct Synced {
     pub sync_snr_db: f64,
     /// Offset of the first slot head (0 … 9 295).
     pub offset: usize,
+    /// Parity of the SSync slots among `slots` (0 or 1).
+    pub ssync_parity: usize,
 }
 
 fn corr(x: &[Cplx], at: usize, r: &[Cplx; SYNC_LEN]) -> Cplx {
@@ -125,6 +127,27 @@ fn synced(z: &[Cplx], rep: s3sync::SyncReport) -> Option<Synced> {
         frames,
         sync_snr_db: rep.snr_db,
         offset: rep.offset,
+        ssync_parity: rep.ssync_parity,
+    })
+}
+
+/// The carrier offset left in the symbols `s` was measured on, Hz: the
+/// mean phase step between consecutive SSync slots (two slots apart, the
+/// same word, so no sign to resolve), averaged as phasors. Unambiguous
+/// within ±Rs / (4 · 9 296) ≈ ±908 Hz; `None` with fewer than two SSync
+/// slots.
+pub fn residual_hz(s: &Synced) -> Option<f64> {
+    let ss: Vec<&SlotHead> = s
+        .slots
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| k % 2 == s.ssync_parity)
+        .map(|(_, h)| h)
+        .collect();
+    let sum: Cplx = ss.windows(2).map(|w| w[1].phase * w[0].phase.conj()).sum();
+    (ss.len() >= 2 && sum.norm() > 0.0).then(|| {
+        sum.arg() / std::f64::consts::TAU * isdbs3_core::params::SYMBOL_RATE
+            / (2.0 * MOD_SLOT as f64)
     })
 }
 
@@ -142,4 +165,122 @@ pub fn phase_at(s: &[SlotHead], i: usize, j: usize) -> (Cplx, f64) {
         a.phase * Cplx::from_polar(1.0, d * t),
         a.amp + (b.amp - a.amp) * t,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rx::derotate;
+    use isdbs3_core::params::SYMBOL_RATE;
+    use std::f64::consts::FRAC_1_SQRT_2;
+
+    /// `frames` frames of slots: each slot its sync word (FSync on slot #1,
+    /// !FSync on the other odd slots, SSync on the even ones — the sign
+    /// structure the synchronisation reads), then QPSK-like filler from a
+    /// fixed LCG, all at unit amplitude plus Gaussian-ish noise; `lead`
+    /// filler symbols first, so the first slot head is not at 0. Rotated by
+    /// `hz` (symbol n × e^{j2π·hz·n/Rs}).
+    fn stream(frames: usize, lead: usize, hz: f64) -> (Vec<Cplx>, Vec<usize>) {
+        let (fs, nfs, ss) = (
+            sync_symbols(FSYNC),
+            sync_symbols(isdbs3_core::params::NFSYNC),
+            sync_symbols(SSYNC),
+        );
+        let mut s = 0x1234_5678_u64;
+        let mut rnd = || {
+            s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            s >> 33
+        };
+        let mut z = Vec::new();
+        let filler = |rnd: &mut dyn FnMut() -> u64| {
+            let q = rnd();
+            Cplx::new(
+                if q & 1 == 0 {
+                    FRAC_1_SQRT_2
+                } else {
+                    -FRAC_1_SQRT_2
+                },
+                if q & 2 == 0 {
+                    FRAC_1_SQRT_2
+                } else {
+                    -FRAC_1_SQRT_2
+                },
+            )
+        };
+        for _ in 0..lead {
+            z.push(filler(&mut rnd));
+        }
+        let mut heads = Vec::new();
+        for _f in 0..frames {
+            for k in 0..SLOTS {
+                if k == 0 {
+                    heads.push(z.len());
+                }
+                let w = match k {
+                    0 => &fs,
+                    _ if k % 2 == 0 => &nfs,
+                    _ => &ss,
+                };
+                z.extend_from_slice(w);
+                for _ in SYNC_LEN..MOD_SLOT {
+                    z.push(filler(&mut rnd));
+                }
+            }
+        }
+        // noise ≈ 20 dB below the symbols
+        for v in &mut z {
+            let (a, b) = (
+                rnd() as f64 / f64::from(1u32 << 31) - 1.0,
+                rnd() as f64 / f64::from(1u32 << 31) - 1.0,
+            );
+            *v += Cplx::new(a, b) * 0.17;
+        }
+        (derotate(&z, -hz), heads)
+    }
+
+    fn found_heads(z: &[Cplx]) -> Vec<usize> {
+        let s = synchronise(z).expect("slot sync");
+        s.frames.iter().map(|&f| s.slots[f].at).collect()
+    }
+
+    /// The frame heads are found where they are with a small carrier
+    /// offset, and the residual estimate measures that offset.
+    #[test]
+    fn frame_heads_and_residual_with_a_small_offset() {
+        for hz in [0.0, 300.0, -600.0] {
+            let (z, heads) = stream(3, 1_000, hz);
+            assert_eq!(found_heads(&z), heads, "{hz} Hz");
+            let r = residual_hz(&synchronise(&z).unwrap()).unwrap();
+            assert!((r - hz).abs() < 5.0, "{hz} Hz measured as {r:.1} Hz");
+        }
+    }
+
+    /// Near ±Rs / (4 · 9 296) ≈ ±908 Hz the two SSync neighbours of an
+    /// FSync-parity slot cancel (their rotations ±θ add to 2cos θ ≈ 0), the
+    /// word's sign is read from noise, the minority rule picks random slots
+    /// as frame heads and no TMCC decodes. (Further out the flip is common
+    /// to every slot and the minority is the marker again — but a drifting
+    /// stream passes through the point: a live one reached it in 30 s,
+    /// plan §0.18.) With the offset removed first ([`RxOptions::carrier_hz`],
+    /// tracked by a streaming caller) the heads are found.
+    #[test]
+    fn an_offset_at_the_neighbour_limit_loses_the_frame_heads_unless_removed() {
+        let limit = SYMBOL_RATE / (4.0 * MOD_SLOT as f64);
+        assert!((limit - 907.8).abs() < 1.0, "{limit}");
+        for hz in [limit, -limit] {
+            let (z, heads) = stream(3, 1_000, hz);
+            assert_ne!(
+                found_heads(&z),
+                heads,
+                "{hz} Hz: heads found without removing the offset"
+            );
+            let z2 = derotate(&z, hz);
+            assert_eq!(found_heads(&z2), heads, "{hz} Hz removed");
+        }
+        // and well beyond it the common flip keeps the minority rule right
+        let (z, heads) = stream(3, 1_000, 1_400.0);
+        assert_eq!(found_heads(&z), heads, "1 400 Hz");
+    }
 }
