@@ -62,7 +62,7 @@ fn info_json(i: &TmccInfo) -> Value {
     json!({
         "order_of_change": i.order_of_change,
         "combinations": i.combinations.iter().map(|c| json!({
-            "word": c.word,
+            "word": c.word.word(),
             "combination": c.combination().map(|k| k.to_string()),
             "slots": c.slots,
         })).collect::<Vec<_>>(),

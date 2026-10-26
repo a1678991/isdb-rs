@@ -31,7 +31,8 @@
 //! ２バイトを除き … Ｗ１、Ｗ２及びＷ３には加算は行わないが、擬似乱数符号系列の
 //! 発生は継続する").
 
-use crate::combination::{Combination, DUMMY_WORD};
+use crate::combination::Combination;
+pub use crate::combination::CombinationWord;
 use crate::frame::{FRAMES, SLOTS, TMCC_BYTES_PER_FRAME, W1, W2, W3};
 use isdb_fec::{Prbs15, RS_64_48};
 
@@ -52,16 +53,24 @@ pub const UNUSED_TS_ID: u16 = 0xFFFF;
 /// A combination entry of Fig. 8: the Table 1 word and its slot count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CombinationEntry {
-    /// 4-bit word (1111 = dummy / unused).
-    pub word: u8,
+    /// The 4-bit Table 1 word, every code kept.
+    pub word: CombinationWord,
     /// Slots assigned (6 bits).
     pub slots: u8,
 }
 
 impl CombinationEntry {
+    /// An entry not in use (§6.1.2: "the word 1111 shall be applied to the
+    /// rest of the combinations and the number of slots assigned shall be
+    /// set to zero").
+    pub const DUMMY: Self = Self {
+        word: CombinationWord::Dummy,
+        slots: 0,
+    };
+
     /// The combination, if the word is not dummy or reserved.
-    pub fn combination(&self) -> Option<Combination> {
-        Combination::from_word(self.word)
+    pub const fn combination(&self) -> Option<Combination> {
+        self.word.combination()
     }
 }
 
@@ -152,7 +161,7 @@ impl TmccInfo {
         let mut r = Bits { b: info, at: 0 };
         let order_of_change = r.take(5) as u8;
         let combinations = std::array::from_fn(|_| CombinationEntry {
-            word: r.take(4) as u8,
+            word: CombinationWord::from_word(r.take(4) as u8),
             slots: r.take(6) as u8,
         });
         let relative_ts = std::array::from_fn(|_| r.take(3) as u8);
@@ -180,7 +189,7 @@ impl TmccInfo {
         };
         w.put(u64::from(self.order_of_change & 0x1F), 5);
         for c in &self.combinations {
-            w.put(u64::from(c.word & 0xF), 4);
+            w.put(u64::from(c.word.word()), 4);
             w.put(u64::from(c.slots & 0x3F), 6);
         }
         for &t in &self.relative_ts {
@@ -204,10 +213,11 @@ impl TmccInfo {
         let mut prev: Option<usize> = None;
         for c in &self.combinations {
             sum += usize::from(c.slots);
-            if c.word == DUMMY_WORD {
-                continue;
-            }
-            let comb = c.combination().ok_or(TmccError::ReservedWord(c.word))?;
+            let comb = match c.word {
+                CombinationWord::Assigned(comb) => comb,
+                CombinationWord::Dummy => continue,
+                CombinationWord::Reserved(w) => return Err(TmccError::ReservedWord(w)),
+            };
             let (unit, _) = comb.slot_unit();
             if usize::from(c.slots) % unit != 0 {
                 return Err(TmccError::Unit {
@@ -241,13 +251,18 @@ impl TmccInfo {
         let mut at = 0usize;
         for c in &self.combinations {
             let n = usize::from(c.slots);
-            if let Some(comb) = c.combination() {
-                let (unit, valid) = comb.slot_unit();
-                for k in 0..n {
-                    if at + k < SLOTS && k % unit < valid {
-                        out[at + k] = Some(comb);
+            match c.word {
+                CombinationWord::Assigned(comb) => {
+                    let (unit, valid) = comb.slot_unit();
+                    for k in 0..n {
+                        if at + k < SLOTS && k % unit < valid {
+                            out[at + k] = Some(comb);
+                        }
                     }
                 }
+                // Dummy slots; a reserved word (refused by `validate`) is
+                // treated the same so the slots it claims stay unassigned.
+                CombinationWord::Dummy | CombinationWord::Reserved(_) => {}
             }
             at += n;
         }
@@ -364,7 +379,7 @@ mod tests {
         assert!(
             bs.combinations[1..]
                 .iter()
-                .all(|c| c.word == DUMMY_WORD && c.slots == 0)
+                .all(|&c| c == CombinationEntry::DUMMY)
         );
         assert_eq!(&bs.relative_ts[..16], &[0; 16]);
         assert_eq!(&bs.relative_ts[16..32], &[1; 16]);
@@ -423,11 +438,15 @@ mod tests {
     /// Validation errors.
     #[test]
     fn validation() {
+        let entry = |c, slots| CombinationEntry {
+            word: CombinationWord::Assigned(c),
+            slots,
+        };
         let mut i = TmccInfo::decode(&hex(CS_ONE_TS));
         i.combinations[0].slots = 44;
         assert_eq!(i.validate(), Err(TmccError::SlotSum(44)));
         i.combinations[0].slots = 46;
-        i.combinations[1] = CombinationEntry { word: 7, slots: 2 };
+        i.combinations[1] = entry(Combination::Tc8psk2_3, 2);
         assert_eq!(
             i.validate(),
             Err(TmccError::Unit {
@@ -436,13 +455,15 @@ mod tests {
                 unit: 4
             })
         );
-        i.combinations[0] = CombinationEntry { word: 4, slots: 44 };
-        i.combinations[1] = CombinationEntry { word: 7, slots: 4 };
+        i.combinations[0] = entry(Combination::Qpsk3_4, 44);
+        i.combinations[1] = entry(Combination::Tc8psk2_3, 4);
         assert_eq!(i.validate(), Err(TmccError::Order));
         i.combinations[1] = CombinationEntry {
-            word: 0b1000,
+            word: CombinationWord::Reserved(0b1000),
             slots: 4,
         };
         assert_eq!(i.validate(), Err(TmccError::ReservedWord(8)));
+        // A reserved word claims its slots but assigns none of them.
+        assert!(i.slot_combinations()[44..].iter().all(|c| c.is_none()));
     }
 }

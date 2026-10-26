@@ -32,8 +32,55 @@ pub enum Modulation {
     Tc8psk,
 }
 
-/// The word of "dummy" / unused combination entries (Table 1: 1111).
+/// The word of "dummy" / unused combination entries (Table 1: 1111), the
+/// code of [`CombinationWord::Dummy`].
 pub const DUMMY_WORD: u8 = 0b1111;
+
+/// The 4-bit word of a Fig. 8 combination entry: the whole of Table 1,
+/// kept lossless. The seven assigned words 0001–0111 are a
+/// [`Combination`]; 1111 is "Dummy" (§6.1.2: the entries not in use, with
+/// zero slots); 0000 and 1000–1110 are "Reserved" and keep their value, so
+/// `from_word(w).word() == w` for every 4-bit `w` and the TMCC codec stays
+/// bit-exact. [`crate::tmcc::TmccInfo::validate`] refuses `Reserved`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CombinationWord {
+    /// 0001–0111: a modulation-code combination.
+    Assigned(Combination),
+    /// 1111: "Dummy".
+    Dummy,
+    /// 0000 or 1000–1110: "Reserved", the 4-bit word as received.
+    Reserved(u8),
+}
+
+impl CombinationWord {
+    /// The word of a 4-bit Table 1 code (higher bits of `w` are ignored).
+    /// Total: every code has a variant.
+    pub const fn from_word(w: u8) -> Self {
+        let w = w & 0xF;
+        match Combination::from_word(w) {
+            Some(c) => Self::Assigned(c),
+            None if w == DUMMY_WORD => Self::Dummy,
+            None => Self::Reserved(w),
+        }
+    }
+
+    /// The 4-bit Table 1 code: the inverse of [`from_word`](Self::from_word).
+    pub const fn word(self) -> u8 {
+        match self {
+            Self::Assigned(c) => c.word(),
+            Self::Dummy => DUMMY_WORD,
+            Self::Reserved(w) => w & 0xF,
+        }
+    }
+
+    /// The combination of an assigned word; `None` for dummy and reserved.
+    pub const fn combination(self) -> Option<Combination> {
+        match self {
+            Self::Assigned(c) => Some(c),
+            Self::Dummy | Self::Reserved(_) => None,
+        }
+    }
+}
 
 impl Combination {
     /// Every combination, from the most to the least efficient (the slot
@@ -238,6 +285,40 @@ mod tests {
         for w in [0b0000, 0b1000, 0b1110, DUMMY_WORD] {
             assert_eq!(Combination::from_word(w), None);
         }
+    }
+
+    /// BO.1408-1 Fig. 8 / Table 1 as a whole: all 16 words round-trip
+    /// through `CombinationWord`; 0001–0111 are the seven combinations (in
+    /// `Combination::ALL`), 1111 is the dummy, 0000 and 1000–1110 are
+    /// reserved and keep their value.
+    #[test]
+    fn spec_fig_8_combination_words() {
+        let assigned: Vec<u8> = Combination::ALL.iter().map(|c| c.word()).collect();
+        for w in 0..16u8 {
+            let cw = CombinationWord::from_word(w);
+            assert_eq!(cw.word(), w, "{w:04b}");
+            assert_eq!(CombinationWord::from_word(w | 0xF0), cw, "{w:04b}: masked");
+            match cw {
+                CombinationWord::Assigned(c) => {
+                    assert!(assigned.contains(&w), "{w:04b}");
+                    assert_eq!(c.word(), w);
+                    assert_eq!(cw.combination(), Some(c));
+                }
+                CombinationWord::Dummy => {
+                    assert_eq!(w, DUMMY_WORD);
+                    assert_eq!(cw.combination(), None);
+                }
+                CombinationWord::Reserved(r) => {
+                    assert_eq!(r, w);
+                    assert!(w == 0b0000 || (0b1000..=0b1110).contains(&w), "{w:04b}");
+                    assert_eq!(cw.combination(), None);
+                }
+            }
+        }
+        let n = (0..16u8)
+            .filter(|&w| matches!(CombinationWord::from_word(w), CombinationWord::Assigned(_)))
+            .count();
+        assert_eq!(n, Combination::ALL.len());
     }
 
     /// Annexed table 48 別記 3: the slot units follow from the spectrum

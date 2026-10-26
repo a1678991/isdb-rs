@@ -55,15 +55,15 @@ pub fn runs(info: &TmccInfo) -> Vec<Run> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tmcc::{CM, CombinationEntry, TM};
+    use crate::tmcc::{CM, CombinationEntry, CombinationWord, TM};
 
-    fn info(c: &[(u8, u8)]) -> TmccInfo {
-        let mut combinations = [CombinationEntry {
-            word: 0xF,
-            slots: 0,
-        }; CM];
+    fn info(c: &[(Combination, u8)]) -> TmccInfo {
+        let mut combinations = [CombinationEntry::DUMMY; CM];
         for (i, &(w, s)) in c.iter().enumerate() {
-            combinations[i] = CombinationEntry { word: w, slots: s };
+            combinations[i] = CombinationEntry {
+                word: CombinationWord::Assigned(w),
+                slots: s,
+            };
         }
         TmccInfo {
             order_of_change: 0,
@@ -81,17 +81,26 @@ mod tests {
     #[test]
     fn spec_fig_4_examples() {
         // a) TC8PSK + QPSK 1/2: 46 + 2 slots, one dummy.
-        let r = runs(&info(&[(7, 46), (2, 2)]));
+        let r = runs(&info(&[
+            (Combination::Tc8psk2_3, 46),
+            (Combination::Qpsk1_2, 2),
+        ]));
         assert_eq!(r[0].symbols, 0..46 * 812);
         assert_eq!((r[1].valid_slots, r[1].symbols.end), (1, MAIN_SYMBOLS));
         // b) TC8PSK + BPSK 1/2: 44 + 4, three dummies.
-        let r = runs(&info(&[(7, 44), (1, 4)]));
+        let r = runs(&info(&[
+            (Combination::Tc8psk2_3, 44),
+            (Combination::Bpsk1_2, 4),
+        ]));
         assert_eq!((r[1].valid_slots, r[1].symbols.end), (1, MAIN_SYMBOLS));
         // c) TC8PSK + QPSK 3/4: 44 + 4, one dummy for three active slots.
-        let r = runs(&info(&[(7, 44), (4, 4)]));
+        let r = runs(&info(&[
+            (Combination::Tc8psk2_3, 44),
+            (Combination::Qpsk3_4, 4),
+        ]));
         assert_eq!((r[1].valid_slots, r[1].symbols.end), (3, MAIN_SYMBOLS));
         // single QPSK 3/4 (the CS transponders): 36 valid slots.
-        let r = runs(&info(&[(4, 48)]));
+        let r = runs(&info(&[(Combination::Qpsk3_4, 48)]));
         assert_eq!(
             (r[0].valid_slots, r[0].symbols.clone()),
             (36, 0..MAIN_SYMBOLS)

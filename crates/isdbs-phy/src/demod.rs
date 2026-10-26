@@ -405,16 +405,16 @@ mod tests {
     use super::*;
     use isdbs_core::frame::SLOTS;
     use isdbs_core::mainsig::sent_slots;
-    use isdbs_core::tmcc::{CM, CombinationEntry, TM};
+    use isdbs_core::tmcc::{CM, CombinationEntry, CombinationWord, TM};
     use proptest::prelude::*;
 
-    fn info(c: &[(u8, u8)]) -> TmccInfo {
-        let mut combinations = [CombinationEntry {
-            word: 0xF,
-            slots: 0,
-        }; CM];
+    fn info(c: &[(Combination, u8)]) -> TmccInfo {
+        let mut combinations = [CombinationEntry::DUMMY; CM];
         for (i, &(w, s)) in c.iter().enumerate() {
-            combinations[i] = CombinationEntry { word: w, slots: s };
+            combinations[i] = CombinationEntry {
+                word: CombinationWord::Assigned(w),
+                slots: s,
+            };
         }
         TmccInfo {
             order_of_change: 0,
@@ -469,11 +469,11 @@ mod tests {
         #[test]
         fn prop_frame_round_trip(seed in any::<u64>(), mix in 0usize..5, first in any::<bool>()) {
             let inf = [
-                info(&[(7, 48)]),
-                info(&[(4, 48)]),
-                info(&[(7, 44), (1, 4)]),
-                info(&[(6, 40), (2, 8)]),
-                info(&[(5, 30), (3, 18)]),
+                info(&[(Combination::Tc8psk2_3, 48)]),
+                info(&[(Combination::Qpsk3_4, 48)]),
+                info(&[(Combination::Tc8psk2_3, 44), (Combination::Bpsk1_2, 4)]),
+                info(&[(Combination::Qpsk7_8, 40), (Combination::Qpsk1_2, 8)]),
+                info(&[(Combination::Qpsk5_6, 30), (Combination::Qpsk2_3, 18)]),
             ][mix].clone();
             let n = sent_slots(&inf).len() * SLOT_BYTES;
             let mut x = seed | 1;
@@ -489,7 +489,7 @@ mod tests {
     /// with few byte errors; the reverse C1/C0 reading does not.
     #[test]
     fn tc8psk_noise_and_wrong_reading() {
-        let inf = info(&[(7, 48)]);
+        let inf = info(&[(Combination::Tc8psk2_3, 48)]);
         let n = 48 * SLOT_BYTES;
         let mut x = 99u64;
         let mut rnd = || {

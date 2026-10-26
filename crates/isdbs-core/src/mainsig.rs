@@ -167,17 +167,17 @@ pub fn frame_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tmcc::{CM, CombinationEntry, TM};
+    use crate::tmcc::{CM, CombinationEntry, CombinationWord, TM};
     use isdb_fec::RS_204_188;
     use proptest::prelude::*;
 
-    fn info(c: &[(u8, u8)]) -> TmccInfo {
-        let mut combinations = [CombinationEntry {
-            word: 0xF,
-            slots: 0,
-        }; CM];
+    fn info(c: &[(Combination, u8)]) -> TmccInfo {
+        let mut combinations = [CombinationEntry::DUMMY; CM];
         for (i, &(w, s)) in c.iter().enumerate() {
-            combinations[i] = CombinationEntry { word: w, slots: s };
+            combinations[i] = CombinationEntry {
+                word: CombinationWord::Assigned(w),
+                slots: s,
+            };
         }
         TmccInfo {
             order_of_change: 0,
@@ -235,11 +235,17 @@ mod tests {
     /// each unit first.
     #[test]
     fn spec_sent_slots() {
-        assert_eq!(sent_slots(&info(&[(7, 48)])), (0..48).collect::<Vec<_>>());
-        let cs = sent_slots(&info(&[(4, 48)]));
+        assert_eq!(
+            sent_slots(&info(&[(Combination::Tc8psk2_3, 48)])),
+            (0..48).collect::<Vec<_>>()
+        );
+        let cs = sent_slots(&info(&[(Combination::Qpsk3_4, 48)]));
         assert_eq!(cs.len(), 36);
         assert_eq!(&cs[..6], &[0, 1, 2, 4, 5, 6]);
-        let mixed = sent_slots(&info(&[(7, 44), (1, 4)]));
+        let mixed = sent_slots(&info(&[
+            (Combination::Tc8psk2_3, 44),
+            (Combination::Bpsk1_2, 4),
+        ]));
         assert_eq!(mixed.len(), 45);
         assert_eq!(*mixed.last().unwrap(), 44);
     }
@@ -260,7 +266,7 @@ mod tests {
         /// valid codewords, in sent order.
         #[test]
         fn prop_superframe_round_trip(seed in any::<u64>(), cs in any::<bool>()) {
-            let inf = if cs { info(&[(4, 48)]) } else { info(&[(7, 44), (2, 4)]) };
+            let inf = if cs { info(&[(Combination::Qpsk3_4, 48)]) } else { info(&[(Combination::Tc8psk2_3, 44), (Combination::Qpsk1_2, 4)]) };
             let n = sent_slots(&inf).len();
             let mut x = seed | 1;
             let packets: [Vec<[u8; PACKET_BYTES]>; FRAMES] = std::array::from_fn(|_| {
