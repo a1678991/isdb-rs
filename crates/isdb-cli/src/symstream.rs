@@ -35,6 +35,13 @@ pub const CHUNK_SUPERFRAMES: usize = 24;
 /// normally under one chunk).
 pub const MAX_KEPT_CHUNKS: usize = 3;
 
+/// Chunks of parsed symbols that may wait for the decoder (≈ 3.2 s of
+/// ISDB-S3, ≈ 1.7 GB as complex values). Beyond, the parser drops whole
+/// blocks and reports them as a loss: the capture is never held up (which
+/// would overflow the radio's buffers mid-stream), and memory stays
+/// bounded when the decoder falls behind for longer than that.
+pub const MAX_QUEUED_CHUNKS: usize = 4;
+
 /// Where a contiguous stretch of symbols ended and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cut {
@@ -66,6 +73,10 @@ pub struct WordStats {
     /// Times the buffer grew to [`MAX_KEPT_CHUNKS`] chunks without a cut
     /// and was decoded to its end (lost lock; a discontinuity, like a loss).
     pub resyncs: u64,
+    /// Blocks dropped on the host because the decoder was more than
+    /// [`MAX_QUEUED_CHUNKS`] chunks behind (counted in `blocks_lost` too;
+    /// each run of them is one loss).
+    pub blocks_dropped: u64,
     /// The run was stopped (Ctrl-C) with symbols still queued.
     pub stopped: bool,
 }
@@ -114,8 +125,13 @@ pub fn file_bytes(path: &std::path::Path) -> Result<Bytes> {
 enum Item {
     /// A whole block's symbols.
     Symbols(Vec<Cplx>),
-    /// A loss (`blocks` missing, `words` skipped) before the next block.
-    Loss { blocks: u64, words: u64 },
+    /// A loss (`blocks` missing, `words` skipped) before the next block;
+    /// `dropped` of the blocks were dropped on the host (decoder behind).
+    Loss {
+        blocks: u64,
+        words: u64,
+        dropped: u64,
+    },
 }
 
 /// Run the stream: `bytes` → blocks → `decode(buffer, cut)`, which returns
@@ -141,12 +157,39 @@ pub fn run(
     let (itx, irx) = std::sync::mpsc::channel::<Item>();
     let queued = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let q = std::sync::Arc::clone(&queued);
+    let max_queued = (MAX_QUEUED_CHUNKS * chunk_symbols) as u64;
     let parser = std::thread::spawn(move || {
         let mut reader = Reader::new();
         let mut events = Vec::new();
+        // blocks dropped since the last block sent, and a loss the reader
+        // reported meanwhile (merged into one loss item)
+        let dropped = std::cell::Cell::new(0u64);
+        let pending = std::cell::Cell::new(None::<(u64, u64)>);
+        // the loss accumulated since the last block sent, as one item
+        let flush = || -> Option<Item> {
+            let d = dropped.replace(0);
+            let p = pending.take();
+            (d > 0 || p.is_some()).then(|| {
+                let (b, w) = p.unwrap_or((0, 0));
+                Item::Loss {
+                    blocks: b + d,
+                    words: w,
+                    dropped: d,
+                }
+            })
+        };
         let send = |e: Event| -> bool {
             let item = match e {
                 Event::Block { symbols, .. } => {
+                    if q.load(std::sync::atomic::Ordering::Relaxed) >= max_queued {
+                        dropped.set(dropped.get() + 1);
+                        return true;
+                    }
+                    if let Some(loss) = flush()
+                        && itx.send(loss).is_err()
+                    {
+                        return false;
+                    }
                     q.fetch_add(symbols.len() as u64, std::sync::atomic::Ordering::Relaxed);
                     Item::Symbols(
                         symbols
@@ -155,7 +198,11 @@ pub fn run(
                             .collect(),
                     )
                 }
-                Event::Loss { blocks, words } => Item::Loss { blocks, words },
+                Event::Loss { blocks, words } => {
+                    let (b, w) = pending.get().unwrap_or((0, 0));
+                    pending.set(Some((b + blocks, w + words)));
+                    return true;
+                }
                 Event::Truncated { .. } => return true,
             };
             itx.send(item).is_ok()
@@ -173,6 +220,10 @@ pub fn run(
             if !send(e) {
                 return;
             }
+        }
+        // blocks dropped at the very end still count
+        if let Some(loss) = flush() {
+            let _ = itx.send(loss);
         }
     });
     let mut buf: Vec<Cplx> = Vec::new();
@@ -225,16 +276,26 @@ pub fn run(
                         next_at = buf.len() + chunk_symbols;
                     }
                 }
-                Item::Loss { blocks, words } => {
+                Item::Loss {
+                    blocks,
+                    words,
+                    dropped,
+                } => {
                     st.words_skipped += words;
                     st.blocks_lost += blocks;
+                    st.blocks_dropped += dropped;
                     // the first event before any block is the stream joined
                     // mid-block: nothing was lost from the output yet
                     if started {
                         st.losses += 1;
                         eprintln!(
-                            "[rx] loss at symbol {}: {blocks} block(s) missing, {words} words skipped",
-                            st.symbols
+                            "[rx] loss at symbol {}: {blocks} block(s) missing{}, {words} words skipped",
+                            st.symbols,
+                            if dropped > 0 {
+                                format!(" ({dropped} dropped here: the receiver fell behind)")
+                            } else {
+                                String::new()
+                            }
                         );
                         decode_buffer(&mut buf, Cut::End, &mut st)?;
                         ended(&st)?;
@@ -499,6 +560,43 @@ mod tests {
             .map(|i| Cplx::new(f64::from((i % 7) as i8 - 3), f64::from((i % 5) as i8 - 2)))
             .collect();
         assert!(seen == want, "symbols out of order or altered");
+    }
+
+    /// A decoder that stalls lets symbols queue up only to
+    /// MAX_QUEUED_CHUNKS chunks: the parser then drops whole blocks and
+    /// reports them as one loss, instead of growing without bound (the
+    /// capture keeps draining whatever the decoder does).
+    #[test]
+    fn a_stalled_decoder_drops_whole_blocks_beyond_the_queue_bound() {
+        let chunk = 8_192; // bound: 4 chunks = 8 blocks of 4 096
+        let blocks = 60;
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut first = true;
+        let st = run(
+            bytes_of(words(blocks)),
+            chunk,
+            &stop,
+            |z, _| {
+                if first {
+                    // the parser keeps going meanwhile
+                    first = false;
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                }
+                Ok(z.len())
+            },
+            |_| Ok(()),
+            |_| {},
+        )
+        .unwrap();
+        assert!(st.blocks_dropped > 0, "nothing dropped");
+        assert_eq!(st.blocks_dropped, st.blocks_lost);
+        assert_eq!(st.blocks + st.blocks_dropped, blocks as u64);
+        assert!(st.losses >= 1);
+        assert!(
+            st.max_queued_symbols <= (MAX_QUEUED_CHUNKS * chunk + 4096) as u64,
+            "queue grew to {}",
+            st.max_queued_symbols
+        );
     }
 
     /// A loss in the words is reported and ends the contiguous stretch.

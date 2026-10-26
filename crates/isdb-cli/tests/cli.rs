@@ -682,12 +682,17 @@ fn capture_dry_run_validates_without_a_device() {
             "captures at most 16515072 contiguous samples",
         ),
         (
-            &["--radio", "pluto:buffer=65536", "--freq", "bs1"][..],
-            "buffer applies to recorder=stream only",
+            &[
+                "--radio",
+                "pluto:recorder=maia,buffer=65536",
+                "--freq",
+                "bs1",
+            ][..],
+            "buffer applies to recorder=stream and the symbol stream, not recorder=maia",
         ),
         (
             &["--radio", "pluto:loopback=on", "--freq", "bs1"][..],
-            "(known: uri, channel, recorder, bits, buffer (recorder=stream))",
+            "(known: uri, channel, recorder, bits, buffer (recorder=stream and the symbol stream), kbuffers (the symbol stream))",
         ),
         (
             &["--radio", "pluto:recorder=stream", "--freq", "bs1"][..],

@@ -33,8 +33,15 @@
 //!       Samples per capture: `iio` 16 515 072 (16 bits) or 33 030 144
 //!       (8 bits); `maia` 33 554 432 / 44 739 242 / 67 108 864
 //!       (16 / 12 / 8 bits).
-//!     * `buffer` (`recorder=stream` only): samples per libiio buffer, as
-//!       for streaming (default 1048576).
+//!     * `buffer` (`recorder=stream` and the FPGA symbol stream; not
+//!       `maia`): samples (words) per libiio buffer, as for streaming
+//!       (default 1048576).
+//!     * `kbuffers` (the FPGA symbol stream, `isdb symbols` / `isdb rx`
+//!       with the front end): kernel buffers on the device, 2..=64
+//!       (default 16 × 1 Mi words = 330 ms of a 50.8 MB/s ISDB-S3 stream).
+//!       iiod uses ≈ 72 % of a Pluto core at that rate and the stream stalls
+//!       for ≈ 10 ms every ≈ 10.2 s; with 4 buffers that overflowed the DMA
+//!       every time (plan §0.18), with 8 or 16 never in 45–60 s.
 //!
 //!     A streamed capture checks the overflow bit of the ADC core
 //!     (`cf-ad9361-lpc` register 0x80000088 bit 2, write 1 to clear)
@@ -116,6 +123,17 @@ const MAX_IIO_CAPTURE_BYTES: u64 = 66_060_288;
 const DEFAULT_STREAM_BUFFER_SAMPLES: usize = 1_048_576;
 /// Buffers a streamed capture queues on the host.
 const STREAM_DEPTH: usize = 8;
+/// Kernel buffers of the symbol stream (`kbuffers`, default), each
+/// `buffer` words (1 Mi: 2 MiB, 20.6 ms of a 50.8 MB/s ISDB-S3 stream):
+/// the device's slack while iiod is not served. iiod spends ≈ 72 % of a
+/// Pluto core on that stream, and the stream stalls for ≈ 10 ms every
+/// ≈ 10.2 s (measured with no decoder, writing to disk: losses at 10.15,
+/// 20.35, 30.54, 40.73 s with 4 buffers; plan §0.18). 16 buffers (32 MiB of
+/// DMA memory, 330 ms) ran 45 s without a loss, as did 8; 16 leaves room for
+/// stalls on the host side too.
+const SYMBOLS_KERNEL_BUFFERS: u32 = 16;
+/// Accepted `kbuffers`.
+const SYMBOLS_KERNEL_BUFFERS_RANGE: std::ops::RangeInclusive<u32> = 2..=64;
 /// The ADC core's interface status register (ADI `up_adc_common`
 /// `REG_STATUS`, 0x0022 × 4, through the HDL-core bit 31) and its
 /// overflow bit (sticky, write 1 to clear).
@@ -168,6 +186,8 @@ struct DeviceArgs {
     buffer: usize,
     /// `buffer` was given.
     buffer_given: bool,
+    /// Kernel buffers of the symbol stream (`kbuffers`).
+    kernel_buffers: u32,
     loopback: bool,
     recorder: Recorder,
     /// Bits per component of a capture: 8, 12 or 16.
@@ -212,6 +232,7 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
         channel: 1,
         buffer: DEFAULT_BUFFER_SAMPLES,
         buffer_given: false,
+        kernel_buffers: SYMBOLS_KERNEL_BUFFERS,
         loopback: false,
         recorder: Recorder::Iio,
         bits: 16,
@@ -219,7 +240,9 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
     let known = match dir {
         Dir::Tx => "uri, channel, buffer, loopback",
         Dir::Rx => "uri, channel, buffer",
-        Dir::Capture => "uri, channel, recorder, bits, buffer (recorder=stream)",
+        Dir::Capture => {
+            "uri, channel, recorder, bits, buffer (recorder=stream and the symbol stream), kbuffers (the symbol stream)"
+        }
     };
     for (k, v) in &cfg.args {
         match k.as_str() {
@@ -246,6 +269,19 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
                 a.buffer = n;
                 a.buffer_given = true;
             }
+            "kbuffers" if dir == Dir::Capture => {
+                let n: u32 = v
+                    .parse()
+                    .with_context(|| format!("{NAME}: kbuffers={v}: not a number"))?;
+                if !SYMBOLS_KERNEL_BUFFERS_RANGE.contains(&n) {
+                    bail!(
+                        "{NAME}: kbuffers={v}: must be {}..={}",
+                        SYMBOLS_KERNEL_BUFFERS_RANGE.start(),
+                        SYMBOLS_KERNEL_BUFFERS_RANGE.end()
+                    );
+                }
+                a.kernel_buffers = n;
+            }
             "loopback" if dir == Dir::Tx => a.loopback = on_off(k, v)?,
             "recorder" if dir == Dir::Capture => {
                 a.recorder = match v.as_str() {
@@ -267,8 +303,10 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
         }
     }
     if dir == Dir::Capture {
-        if a.buffer_given && a.recorder != Recorder::Stream {
-            bail!("{NAME}: buffer applies to recorder=stream only");
+        if a.buffer_given && a.recorder == Recorder::Maia {
+            bail!(
+                "{NAME}: buffer applies to recorder=stream and the symbol stream, not recorder=maia"
+            );
         }
         if !a.buffer_given {
             a.buffer = DEFAULT_STREAM_BUFFER_SAMPLES;
@@ -841,7 +879,7 @@ fn stream_words(
             RX_DEV,
             &["voltage0"],
             dev.buffer,
-            KERNEL_BUFFERS,
+            dev.kernel_buffers,
             STREAM_DEPTH,
         )
         .with_context(|| port_hint(dev, "RX"))?;
@@ -1340,6 +1378,7 @@ mod tests {
                 channel: 1,
                 buffer: 262_144,
                 buffer_given: false,
+                kernel_buffers: SYMBOLS_KERNEL_BUFFERS,
                 loopback: false,
                 recorder: Recorder::Iio,
                 bits: 16,
@@ -1417,13 +1456,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.dev.buffer, 65_536);
+        // The symbol stream: 1 Mi-word buffers, 16 in the kernel by default
+        // (plan §0.18); `buffer` and `kbuffers` set them, not with maia.
+        let s = rx_settings_for(&cfg(&[], &[]), Dir::Capture).unwrap();
+        assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (1_048_576, 16));
+        let s = rx_settings_for(
+            &cfg(&[("buffer", "262144"), ("kbuffers", "8")], &[]),
+            Dir::Capture,
+        )
+        .unwrap();
+        assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (262_144, 8));
+        for bad in ["1", "65", "x"] {
+            assert!(rx_settings_for(&cfg(&[("kbuffers", bad)], &[]), Dir::Capture).is_err());
+        }
+        assert!(rx_settings_for(&cfg(&[("kbuffers", "8")], &[]), Dir::Rx).is_err());
+        assert!(
+            rx_settings_for(
+                &cfg(&[("recorder", "maia"), ("buffer", "65536")], &[]),
+                Dir::Capture
+            )
+            .is_err()
+        );
         let s = rx_settings_for(&cfg(&[("recorder", "stream")], &[]), Dir::Capture).unwrap();
         assert_eq!(s.dev.buffer, DEFAULT_STREAM_BUFFER_SAMPLES);
         // Refused combinations, and streaming arguments that do not apply.
         for (args, msg) in [
             (
-                vec![("buffer", "65536")],
-                "buffer applies to recorder=stream only",
+                vec![("recorder", "maia"), ("buffer", "65536")],
+                "buffer applies to recorder=stream and the symbol stream, not recorder=maia",
             ),
             (
                 vec![("loopback", "on")],

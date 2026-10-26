@@ -209,6 +209,7 @@ impl Stats {
                 "symbols": w.symbols,
                 "losses": w.losses,
                 "blocks_lost": w.blocks_lost,
+                "blocks_dropped": w.blocks_dropped,
                 "words_skipped": w.words_skipped,
                 "resyncs": w.resyncs,
                 "max_queued_symbols": w.max_queued_symbols,
@@ -329,10 +330,11 @@ pub fn report(stats: &Stats, secs: f64) {
             w.max_queued_symbols as f64 / isdbs_phy::frontend::system().symbol_rate_hz
         );
         eprintln!(
-            "[rx] stream: {} blocks of symbols; {} loss(es) ({} blocks missing, {} words skipped), {} resync(s){}: each is a discontinuity in the TS",
+            "[rx] stream: {} blocks of symbols; {} loss(es) ({} blocks missing, {} of them dropped on the host, {} words skipped), {} resync(s){}: each is a discontinuity in the TS",
             w.blocks,
             w.losses,
             w.blocks_lost,
+            w.blocks_dropped,
             w.words_skipped,
             w.resyncs,
             if w.stopped {
