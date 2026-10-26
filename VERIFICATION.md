@@ -854,6 +854,45 @@ SNR of about 17 dB from the spectrum.
   byte-identical to the previous build (`tools/rx-compare.sh`); ISDB-S
   acceptance 38 TSs, 319 584 packets, 33 corrected, 0 uncorrectable.
 
+### Format 4: one sample per clock, and the PlutoSky R2 image (2026-10-26)
+
+The block's clock on the PlutoSky R2 was measured on the board
+(read-only): `cf-ad9361-lpc` register 0x80000054 (`adc_clk_count`) =
+0x1999A → l_clk = 160.0 MHz; register 0x80000044 bit 2 (`r1_mode`) = 0
+on both AD9361 cores; Tezuka's plutoskyr2 build is LVDS, so
+`util_ad9361_divclk` (the block's clock) is l_clk / 4 = 40 MHz = the
+sample rate. The format-3 HDL assumed four clocks per sample. Format 4:
+
+- **Model** (`isdb-frontend`): loop delay 24 symbols (was 6) and the
+  detector banks `h`, `g` non-zero on their centre 8 taps only (the output
+  bank `k` keeps all 32). ISDB-S3 trimmed sync-symbol Es/N0 on the
+  2026-10-25 BS7 / 11 / 17 recordings: loop delay 6 → 24: 14.65 / 14.67 /
+  14.58 → 14.69 / 14.71 / 14.58 dB; detector on 32 → 8 centre taps
+  (`examples/tedspan.rs`): 14.69 → 14.89 (BS7), 14.69 → 14.91, 14.59 →
+  14.78 dB. Through the CLI (`isdb iq s3sync`, 6 bits): 14.79 / 14.81 /
+  14.69 dB; live 40 Msps BS7 13.93 dB. A detector on every 2nd or 4th
+  symbol only (time-shared multipliers) was tried and rejected: 1.5–8 dB
+  with cycle slips on ISDB-S3 (`examples/loopdiag.rs`).
+- **Receivers unchanged or better:** ISDB-S acceptance 38 TSs, 319 584
+  packets, 33 corrected, 0 uncorrectable, 0 CC, validate 0 errors (as
+  before); ISDB-S3 BS7 / 11 / 17 LDPC and BCH clean, equalised sync Es/N0
+  18.0 / 18.0 / 17.3 dB (was 17.7 / 17.7 / 17.0), main MER 15.7 / 15.9 /
+  15.3 dB. Decoded streams differ from format 3's (the loop changed), as
+  expected.
+- **HDL** (`fpga/`): fully pipelined, a sample every clock. Bit-exact
+  against the format-4 vectors with a sample on every clock, with
+  `util_wfifo`'s bursts of eight, with irregular strobes and the
+  coefficient load port, configured through `gpio_out`, and on 30 000
+  samples of live BS7 (25 317 symbols) and BS1 (14 092 symbols); one LSB
+  off in `k` or in a centre tap of `g` fails the comparison.
+- **Image:** Tezuka v0.3.24 plutoskyr2 with the block and without the
+  DVB-S2 transmitter, Vivado 2026.1: WNS +0.100 ns, WHS +0.022 ns, ADI's
+  timing check passes; 178 / 220 DSP48E1 (the block 112), 21 694 LUT,
+  28 421 FF, 62 BRAM36. `isdb_top.bin` 2 785 408 bytes, sha256
+  `479141e02d8a151dd8475ac196b658beee7820ad9c298123191688aaa3ed1fd3`.
+  **Not yet run on the board** (deployment and the on-board checks:
+  [fpga/README.md](fpga/README.md)).
+
 ## ISDB-S frame sync and TMCC
 
 `isdb iq tmcc` (front end → `isdbs-phy` frame sync, burst-aided carrier,

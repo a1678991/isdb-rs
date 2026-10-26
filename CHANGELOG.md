@@ -16,6 +16,19 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-frontend`: format 4, the arithmetic of an FPGA that takes one
+  sample per clock (the PlutoSky R2 clocks its sample path at the sample
+  rate): loop delay 24 symbols (was 6), the timing detector's banks `h`
+  and `g` non-zero on their centre 8 taps (`TED_TAPS`, enforced by
+  `Params::validate`). Same words as format 3; `MIN_ARITH_VERSION` 4, so a
+  format-2/3 FPGA is refused. Examples `tedspan` and `loopdiag`.
+- `fpga`: the full-rate symbol front end (a sample every clock, fully
+  pipelined, 112 DSP48E1) and the PlutoSky R2 image that closes timing
+  with Vivado 2026.1 (`fpga/tezuka/`, `isdb_symbols.xdc`; the image leaves
+  out Tezuka's DVB-S2 transmitter). `isdb_top.bin` builds; not yet run on
+  the board.
+- `isdb-radio`: the Pluto symbol path refuses to run when the AD9361 core
+  is in r1_mode (the clock case the bitstream is not timed for).
 - `isdb-frontend`: AVX2 and AVX-512 builds of the fast front end's dot
   products, chosen at run time (`simd::Isa`; AVX2 by default, AVX-512
   with `ISDB_SIMD=avx512` and Rust ≥ 1.89, `ISDB_SIMD=baseline` for the

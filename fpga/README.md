@@ -9,29 +9,46 @@ reproduces them.
 
 The first stage is the single-carrier front end of
 [`isdb-frontend`](../crates/isdb-frontend/README.md) (IQ → `Symbols`,
-format version 3) for ISDB-S and ISDB-S3 on the PlutoSky R2
+format version 4) for ISDB-S and ISDB-S3 on the PlutoSky R2
 (XC7Z020). It turns 8-bit IQ at 40 Msps (80 MB/s, more than the board's
 Gigabit Ethernet path sustains) into 6-bit symbols at 43 MB/s (ISDB-S)
-and 51 MB/s (ISDB-S3). Format 2 adds the output bank `k` that carries
-the host's timing trim ([`isdb-frontend` README, "The timing
+and 51 MB/s (ISDB-S3). The output bank `k` carries the host's timing
+trim ([`isdb-frontend` README, "The timing
 trim"](../crates/isdb-frontend/README.md#the-timing-trim)): the output
-and the AGC come from `k`, the timing detector from `h` and `g`. Format
-3 changes only the block trailer, to a CRC-32C (two words) that the
-packer updates one 16-bit payload word per clock: `crc32c_word` is a
-one-level XOR network per register bit (11 to 22 inputs, 560 in all),
-derived from the polynomial by symbolic simulation of the bit-serial
-register, not typed in. The sequence number is folded in while the
-header goes out, so the trailer costs one cycle per block more than
-format 2's.
+and the AGC come from `k`, the timing detector from `h` and `g`. The
+block trailer is a CRC-32C (two words) that the packer updates one
+16-bit payload word per clock: `crc32c_word` is a one-level XOR network
+per register bit (11 to 22 inputs, 560 in all), derived from the
+polynomial by symbolic simulation of the bit-serial register, not typed
+in.
+
+**Clock.** The block runs on `util_ad9361_adc_fifo/dout_clk` =
+`util_ad9361_divclk` = `axi_ad9361` l_clk / 4 (maia-hdl
+`projects/common/xilinx_ad9361.tcl`: `SEL_0_DIV 4` with `lvds`, which
+Tezuka's plutoskyr2 build sets; `/ 2` only when the AD9361 core's ADC
+and DAC are both in r1_mode). Measured on the board (read-only, 2026-10-26):
+`cf-ad9361-lpc` register 0x80000054 (`adc_clk_count`) = 0x1999A, i.e.
+l_clk = 104 858 × 100 MHz / 2¹⁶ = 160.0 MHz; register 0x80000044
+(control) bit 2 (`r1_mode`) = 0 on both cores; `rx_path_rates` RXSAMP
+40 MHz. So **the block clock is the sample rate, 40 MHz, one sample per
+clock**, and `util_wfifo` hands samples over in bursts of eight on
+consecutive clocks. (The format-3 design assumed four clocks per sample:
+"160 MHz" was l_clk, upstream of the divider.) Format 4 is the design
+for that rate: a fully pipelined core (a new symbol may start every
+clock), the model's loop delay 24 symbols (≥ 24 clocks; the pipeline
+needs 15), the output bank `k` on all 32 taps and the detector banks
+`h`, `g` on their centre 8 (the model requires the rest zero), measured
+on the recordings to cost nothing ([`isdb-frontend` README, "Format
+4"](../crates/isdb-frontend/README.md#format-4-one-sample-per-clock)).
 
 ## Layout
 
 | Path | Content |
 |---|---|
-| `isdb_fpga/frontend.py` | `SymbolFrontend`: mixer, polyphase matched, derivative and output filters (one 54-bit `h | g | k` word per lane and cycle, T/4 lanes, 4 cycles per input sample), timing loop, AGC, quantiser, packer. The cycle-by-cycle schedule is in its docstring |
+| `isdb_fpga/frontend.py` | `SymbolFrontend`: mixer, polyphase filters (output bank `k` on every tap, detector banks `h`, `g` on the centre 8; one 64-entry coefficient ROM per tap and bank), adder trees, timing loop, AGC, quantiser, packer; one sample per clock, fully pipelined. The cycle-by-cycle schedule is in its docstring |
 | `isdb_fpga/control.py` | `Control`: the command decoder and register file on `up_adc_gpio_out`, the ID word and readback on `up_adc_gpio_in` (`isdb_frontend::control`) |
 | `isdb_fpga/top.py` | `SymbolsRx`: the block for the bitstream (front end + control + output selection), and where it connects in Tezuka's block design |
-| `isdb_fpga/sim.py` | simulation against a vectors file; `python -m isdb_fpga.sim VECTORS.json [--jitter] [--load-port] [--via-gpio]` |
+| `isdb_fpga/sim.py` | simulation against a vectors file; `python -m isdb_fpga.sim VECTORS.json [--pattern every\|wfifo\|jitter] [--load-port] [--via-gpio]` |
 | `tests/test_isdb_fpga.py` | unit tests (the CRC-32C network against a bit-serial register and the standard check value) and the vector tests |
 | `synth/estimate.py` | Yosys `synth_xilinx` resource estimate |
 | `synth/verilog.py` | Verilog of `SymbolsRx` (through the venv's Yosys) |
@@ -48,48 +65,36 @@ mise run fpga:estimate   # resource estimate of the 32-tap block
 mise run fpga:verilog    # fpga/build/isdb_symbols_rx.v for a vendor flow
 ```
 
-Results (format 2, 2026-10-25; format 3 re-checked 2026-10-26):
+Results (format 4, 2026-10-26):
 
 - **Simulation:** bit-exact on every vector set, with every symbol's
   internals (`y`, `dy`, `yk`, `z`, `dz`, `zk`, `q`, the loop errors) and
-  every output word compared:
-  - synthetic ISDB-S at 16 taps and ISDB-S3 at 32 taps, and both with
-    a trim (`k` ≠ `h`: −0.075 and −0.17 symbol), the default
-    `mise run fpga:test` set;
-  - recordings of BS7 (ISDB-S3, trim −0.168) and BS1 (ISDB-S, trim
-    −0.05), 32 taps;
-  - with irregular sample spacing and the coefficients (all three
-    banks) loaded through the port, and with the whole configuration
-    sent as the host's `gpio_out` command words, both on a trimmed set;
-  - one LSB off in `k` fails the comparison (the output path is really
-    compared);
-  - format 3: bit-exact on the regenerated default set, trailers
-    included; leaving out the CRC's final XOR fails at the first
-    trailer word (word 169 of the 5-bit set).
-- **Estimate** of `SymbolsRx` (Yosys, before place and route; Vivado's
-  numbers will differ):
+  every output word (trailers included) compared:
+  - synthetic ISDB-S at 16 taps and ISDB-S3 at 32 taps, and both with a
+    trim (`k` ≠ `h`), the default `mise run fpga:test` set;
+  - with a sample on **every clock** (the most the core must take), with
+    `util_wfifo`'s bursts of eight, and with irregular spacing plus the
+    coefficients loaded through the port; with the whole configuration
+    sent as the host's `gpio_out` command words;
+  - recordings (opt-in vectors written from the captures with
+    `cargo run -p isdb-frontend --example vectors`): 30 000 samples of the
+    live 40 Msps BS7 recording (ISDB-S3, trim −0.174, 25 317 symbols)
+    and of BS1 at 61.44 Msps (ISDB-S, 14 092 symbols), every-clock and
+    burst patterns;
+  - one LSB off in `k`, or in a centre tap of `g`, fails the comparison.
+- **Estimate** of `SymbolsRx` (Yosys, before place and route):
 
-  | Taps | DSP48E1 | LUT | FF | Block RAM |
+  | Format, taps | DSP48E1 | LUT | FF | Block RAM |
   |---|---|---|---|---|
-  | 32 (format 3) | 64 | 4.2k (4 175) | 4.6k (4 583) | 1 RAMB18 + 8 RAMB36 |
-  | 32 (format 2) | 64 | 3.9k (3 896) | 4.6k (4 566) | 1 RAMB18 + 8 RAMB36 |
-  | 64 (format 2) | 112 | 4.2k | 5.5k | 1 RAMB18 + 16 RAMB36 |
-  | 32 (format 1) | 46 | 3.6k | 4.5k | 9 RAMB18 |
+  | 4, 32 (one sample per clock) | 112 | 4.5k (4 487) | 5.4k (5 426) | 1 RAMB18 |
+  | 3, 32 (four clocks per sample) | 64 | 4.2k | 4.6k | 1 RAMB18 + 8 RAMB36 |
 
-  Tezuka's PlutoSky R2 build already uses 106 / 220 DSP, 23.0k / 53.2k
-  LUT, 32.1k / 106.4k FF and 46 + 19 / 140 BRAM36 (Tezuka
-  `doc/fpga_usage.md`). The 32-tap block (64 DSP) fits next to
-  everything (170 / 220 DSP), more comfortably without the DVB-S2
-  transmit chain (60 DSP) in an RX-only image; 64 taps (112 DSP) would
-  not, and gain only 0.2 dB on ISDB-S3.
-
-Timing closure is not checked (Yosys has no 7-series timing model). The
-block runs at the ADC clock, 4 × the sample rate: 160 MHz at 40 Msps.
-The format-3 CRC is not expected to be the critical path: its widest
-output bit XORs 22 inputs, two levels of 6-input LUTs (6 × 6 = 36 ≥ 22)
-between the payload-word register and the CRC register, against the
-multi-level adder and DSP paths of the filters (an estimate from the
-logic depth, not a timing report).
+  112 = 64 (`k`, I and Q) + 32 (`h`, `g` on 8 taps) + 16 (mixer, gain,
+  detector and power products, loop gains). Tezuka's PlutoSky R2 build
+  uses 106 of the xc7z020's 220: 28 `axi_ad9361`, 18 maia-sdr, 40 the
+  DVB-S2 transmitter (encoder 2, RRC interpolator 38) and 20 the TX FIR
+  interpolator. The isdb image leaves out the DVB-S2 transmitter
+  (`apply.sh`), which reception does not use: 66 + 112 = 178 of 220.
 
 ## Integration
 
@@ -104,7 +109,7 @@ branch `refactor`):
 | `pack_valid`, `pack_data0`, `pack_data1` | `util_ad9361_adc_pack` `fifo_wr_en`, `fifo_wr_data_0`, `fifo_wr_data_1` |
 | `gpio_out` | `axi_ad9361/up_adc_gpio_out` (bit 0 stays Tezuka's: the DDC select of `maiafirtoiq.tcl` and the cs12 `zero_count` of `cs12_cs8.tcl`) |
 | `gpio_in` | `axi_ad9361/up_adc_gpio_in` (unconnected in Tezuka v0.3.24) |
-| clock, reset | `util_ad9361_adc_fifo/dout_clk`, `dout_rstn` inverted (62.5 or 125 MHz, see below) |
+| clock, reset | `util_ad9361_adc_fifo/dout_clk`, `dout_rstn` inverted (the sample rate on the PlutoSky R2: "Clock" above) |
 
 (`pass_valid` is `channels_or/Res`, the OR of both channels' valid, not
 `cs12_8mux_chan0/valid_out`: that is what drives the packer's
@@ -143,7 +148,9 @@ the repository; several GB), builds maia-hdl's IP cores and the
 `plutoskyr2` XSA. `apply.sh` (called in `isdb` mode) regenerates
 `fpga/build/isdb_symbols_rx.v`, sets an `isdb_symbols` flag in the
 plutoskyr2 case of maia-hdl's `system_bd.tcl` and sources
-`isdb_symbols.tcl` after `cs12_cs8.tcl`. `sdbin.sh` turns an XSA into
+`isdb_symbols.tcl` after `cs12_cs8.tcl`, drops the plutoskyr2 case's
+`dvb` flag (the DVB-S2 transmitter, for its DSP slices) and adds
+`isdb_symbols.xdc` (below). `sdbin.sh` turns an XSA into
 the file U-Boot loads from the SD card (Tezuka's `postimage-sd.sh`
 conversion).
 
@@ -165,97 +172,56 @@ oss-cad-suite); the XSA target built directly (the Makefile's
 in an install to the upstream author's path); dvb_fpga's own submodules
 fetched recursively.
 
-**Status (2026-10-26): the stock design builds and closes timing with
-Vivado 2026.1; the design with `SymbolsRx` builds but does not close
-timing, so there is no bitstream to deploy yet.**
+**Status (2026-10-26): the format-4 image builds and closes timing with
+Vivado 2026.1 (ADI's "Timing Constraints" check passes); `isdb_top.bin`
+is ready to deploy. Not yet run on the board.**
 
 | xc7z020clg484-2 | LUT | FF | BRAM36 | DSP | WNS | WHS |
 |---|---|---|---|---|---|---|
 | Tezuka's own build (2023.1, `doc/fpga_usage.md`) | 23 005 | 32 111 | 46 + 19 BRAM18 | 106 | — | — |
 | stock, rebuilt with 2026.1 | 23 211 (44 %) | 32 304 (30 %) | 55.5 | 106 (48 %) | +0.100 ns | +0.024 ns |
-| with SymbolsRx (after route) | — | — | — | — | −3.281 ns | −3.647 ns |
+| format 4, without the DVB-S2 transmitter | 21 694 (41 %) | 28 421 (27 %) | 62 | 178 (81 %) | **+0.100 ns** | **+0.022 ns** |
+| of which `isdb_symbols` | 5 825 | 5 519 | — | 112 | — | — |
 
-**Update 2026-10-26: the block cannot work as designed on this board,
-whatever its timing.** It was designed for 4 clock cycles per input
-sample (`CYCLES = 4`, a time-multiplexed MAC) and for a loop latency of
-16 cycles inside the model's `LOOP_DELAY` of 6 symbols, which the model
-documents as "24 clock cycles at 4 cycles per sample". On the board
-there is **one clock per sample**:
+Per clock, after route and physical optimisation (all met): the block's
+`clk_div_sel_0_s` (constrained at 62.5 MHz from ADI's worst-case 250 MHz
+`rx_clk`; it runs at 40 MHz) +1.523 ns; `clk_div_sel_1_s` (125 MHz, the
+r1_mode case: Tezuka's own logic only, the block's paths there are false)
++0.652 ns; `clk_fpga_0` +0.548 ns; maia-sdr's `clk_out3` (187.5 MHz)
++0.675 ns; `rx_clk` +0.445 ns. The design's overall worst slack, +0.100 ns,
+is the same path class as the stock build's (Tezuka's PlutoSky R2 has the
+smallest margin of its boards). Reports:
+`WORK/out/isdb/v4b_timing_summary.rpt`,
+`v4b_utilization*.rpt`.
 
-- The board runs the AD9361 in LVDS 2R2T mode (device tree
-  `adi,lvds-mode-enable`, `adi,2rx-2tx-mode-enable`; at 40 Msps the
-  driver reports `RXSAMP:40000000`). The LVDS data clock `rx_clk` is
-  4 × fs = 160 MHz, and `util_ad9361_divclk` divides it by 4
-  (`SEL_0_DIV = 4`, `xilinx_ad9361.tcl` with `lvds` set): the block's
-  clock is **40 MHz = fs**. The "160 MHz" of the plan was `rx_clk`,
-  which the block never sees. The 125 MHz failure below is the BUFGMUX's
-  other input (`clk_div_sel_1_s`, the 1R1T divider at the 250 MHz
-  maximum `rx_clk` Vivado constrains); 2R2T at 40 Msps never selects it.
-- `util_wfifo` (`util_ad9361_adc_fifo`) moves samples into that domain
-  in bursts: every 8 samples written in `l_clk`, it reads them out on
-  8 consecutive `dout_clk` cycles (`dout_req_cnt`, `dout_valid`). So
-  `adc_valid` is high on back-to-back cycles, not every 4th.
+| Artefact (`WORK/out/isdb/`) | Bytes | sha256 |
+|---|---|---|
+| `plutoskyr2.xsa` | — | `12abb5eb1047290101d54ea82e8bfb73e3f978819fa14131d6839c340a8f3368` |
+| `isdb_top.bin` (from `sdbin.sh`) | 2 785 408 | `479141e02d8a151dd8475ac196b658beee7820ad9c298123191688aaa3ed1fd3` |
 
-With one sample per clock the MAC would have to be fully parallel
-(`CYCLES = 1`), and symbols (1.18–1.39 samples apart) can be due on
-consecutive clocks, so `LOOP_DELAY = 6` symbols can be as few as 6 clock
-cycles. The loop path (delay line → 32-tap dot product → round/saturate →
-× G → round/saturate → TED and power products → shift/saturate → kp·e,
-ki·e → rounding → integrator and period clamp) needs about four
-multiplier stages plus adder trees: it cannot be closed in 6 cycles, even
-at 40 MHz, and pipelining makes it longer. Timing at 40 MHz itself is
-easy (the unpipelined dot product is 9.2 ns of 25 ns).
+How it got there (each step a commit): the first format-4 build put the
+block at 154 DSP48E1 (Vivado moved the adder trees and the loop's adds
+into DSP post-adders), filling the device (220 / 220), and missed timing
+in Tezuka's own paths (`interclk` → `cs12_8mux`, maia-sdr's DDC) from the
+placement pressure; `isdb_symbols.xdc` had been read during synthesis,
+before `util_clkdiv`'s generated clocks exist, so the block was still
+timed in the r1_mode clock. `use_dsp = "no"` on the adders and the XDC
+as implementation-only, processed late, fixed both.
 
-What it needs is a model change, owned by `isdb-frontend` (not made
-here; it changes the bit-exact output and the FPGA vectors):
+`isdb_symbols.xdc`: `gpio_out` into the block's synchroniser is a false
+path (Tezuka's and ADI's constraints declare the same register's bits 0–2
+false paths); `gpio_in` into `axi_ad9361`'s `up_rdata` a datapath-only
+max delay (the word is static whenever the host reads it); the block's
+paths in `clk_div_sel_1_s` (l_clk / 2, only with r1_mode on both AD9361
+cores, never on this board) false. The host refuses the symbol path if
+r1_mode is ever set (`isdb-radio` pluto backend reads register
+0x80000044 bit 2 of both cores).
 
-1. **`LOOP_DELAY` in clock cycles of the real rate.** At one sample per
-   clock and ≥ 1 symbol per 1.18 samples, a latency of N clocks needs
-   `LOOP_DELAY ≥ ceil(N / 1.0)` symbols in the worst case. A
-   straightforward full-rate pipeline (registered dot product in 2–3
-   stages, ×G, TED/power, loop terms, shadow commit) is about 16–20
-   cycles: **`LOOP_DELAY = 24`** leaves margin. The loop stays stable:
-   the timing loop bandwidth is 5·10⁻⁶ R (ISDB-S3) to 2·10⁻⁴ R, so 24
-   symbols of delay is negligible phase margin loss, but it must be
-   checked on the recordings (lock, MER) before it is adopted.
-2. **Or keep `LOOP_DELAY = 6` and decimate first:** no, the input rate is
-   fixed by the 40 Msps the receivers need.
-3. **The parallel MAC itself:** today's 64 DSP48E1 (Yosys, 32 taps) are
-   48 for the MAC (8 lanes × 6 products, each 18 × 14 bits, one DSP per
-   product, time-shared over 4 cycles) plus 16 for mixer, gain, TED and
-   loop. At one cycle per sample the MAC is 32 × 6 = 192 DSPs, about
-   208 in all; with Tezuka's 106 that is ~314 of the xc7z020's 220. It
-   needs the multiplies to drop: the three banks need not all be full
-   length (e.g. `g` only feeds the TED; `k` equals `h` when untrimmed),
-   or fewer taps. Each is again a model change.
+**What the image leaves out:** Tezuka's DVB-S2 transmitter (`dvb.tcl`,
+40 DSP48E1), for the DSP budget. To transmit DVB-S2, boot the stock
+`system_top.bin`.
 
-So the next step is a design decision on the model (loop delay, MAC
-budget), then a re-derivation of the FPGA schedule, not a timing fix.
-
-The two causes found on the post-opt checkpoint (still valid as timing
-facts, but superseded by the above):
-
-1. **The ADC clock is faster than designed for.** `dout_clk` of
-   `util_ad9361_adc_fifo` is `util_ad9361_divclk`, `rx_clk` divided by 4
-   (`clk_div_sel_0_s`, 62.5 MHz at the constrained 250 MHz `rx_clk`) or by 2
-   when both `adc_r1_mode` and `dac_r1_mode` are set (`clk_div_sel_1_s`,
-   125 MHz). The front end passes at 62.5 MHz (WNS +5.4 ns) and fails at
-   125 MHz (WNS −2.58 ns, 288 endpoints): the worst path is a cascade of
-   five DSP48E1 on PCIN, 9.2 ns of DSP delay against 8 ns, i.e. one
-   filter dot product with no pipeline register between the DSPs (the
-   earlier "160 MHz" estimate assumed the DSPs' internal registers would
-   be used; the generated multiply-adds don't allow it). Fix: pipeline
-   the dot products in `frontend.py` (a few cycles of latency, absorbed
-   by the loop delay the model already has), keeping `mise run
-   fpga:test` bit-exact.
-2. **`gpio_in` crosses clock domains untimed.** The ID/readback word
-   (ADC clock) is read by `axi_ad9361`'s register file in `clk_fpga_0`;
-   Vivado times it as a 2 ns synchronous path (−4.06 ns). It is
-   quasi-static (the host reads it milliseconds after a command), so it
-   needs a `set_max_delay -datapath_only` / false-path constraint (or a
-   register on the AXI side), as ADI does for its own status words.
-
-**Deploying (once a build closes timing).** Never flash. The card's FAT
+**Deploying.** Never flash. The card's FAT
 partition already holds several bitstreams (`system_top.bin`,
 `tezuka_top.bin`); U-Boot loads `${bitstream_image}` (`fatload mmc 0 …`),
 which `uEnv.txt` sets (`bitstream_image=system_top.bin` in v0.3.24).
@@ -274,7 +240,8 @@ reproduces the card's `system_top.bin` byte for byte (sha256
 **Verifying after deployment** (receive only):
 
 1. `isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq BS7 --probe`
-   reads the ID word 0x15DB…; the stock bitstream reads 0.
+   reads the ID word 0x15DB4020 (magic, format 4, 32 taps); the stock
+   bitstream reads 0.
 2. `isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq BS7 --system
    isdb-s3 --offload auto --seconds 10 --out fpga.sym`: 0 loss events
    from the CRC-32C reader, the link rate at 51 MB/s (6 bits).
