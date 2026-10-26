@@ -509,6 +509,20 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Fixed
 
+- `isdbs3-phy` / `isdb-cli`: streamed ISDB-S3 reception lost every frame
+  ≈ 30 s after the FPGA front end was configured. The front end has no
+  carrier loop and the carrier drifted (−97 → −830 Hz in 30 s); at
+  ≈ 908 Hz the two SSync neighbours that tell the frame marker from
+  !FSync cancel. `RxOptions::carrier_hz` / `Rx::residual_hz`: the
+  streaming receiver tracks the residual and removes it; a loss now costs
+  about one frame. The block-wise path is unchanged.
+- `isdb-radio`: the FPGA symbol stream overflowed the device's DMA every
+  10.2 s at 51 MB/s (iiod near a full Pluto core, four kernel buffers).
+  New device argument `kbuffers` (default 16 × 1 Mi words); `buffer` also
+  applies to the symbol stream.
+- `isdb-cli`: the streaming receiver's queue is bounded (four chunks);
+  beyond it whole blocks are dropped and reported (`blocks_dropped`)
+  instead of memory growing while the decoder is behind.
 - `isdbs3-phy` / `isdb-cli`: the ISDB-S3 carrier at 40 Msps. The survey's
   strongest line was an alias on two of seven live recordings (sync
   Es/N0 −3 / −8 dB against +9 dB for the carrier): `isdb symbols` took it,

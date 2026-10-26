@@ -1327,20 +1327,61 @@ receive only, satellite IF through RX1 (no DC block), 40 Msps, 56 MHz.
   anew); a slot-offset hint (chunks start on a slot head) then saved the
   0.15 s search per chunk: 1.42×. A loss cut into the words file recovers
   at the next frame (300 of 300 frames, TMCC on all).
-- **Losses on ISDB-S3, not ISDB-S**: the words are drained by their own
-  thread, and at most 1.1 s of symbols queued behind the receiver, so the
-  DMA overflows come from the libiio stream stalling on a loaded host
-  (load average 5–15 from other work), not from the decoder. One ISDB-S3
-  run lost lock for ≈ 2 s after its loss (64 frames without TMCC, one
-  restart); the same cut made offline recovers at once, so it is not the
-  stream handling; the AD9361's AGC stepped (33 → 34 dB) in that run.
-  Open.
+- **Losses on ISDB-S3, not ISDB-S** (resolved, below): a device-side
+  stall every 10.2 s, which the 51 MB/s ISDB-S3 stream's four kernel
+  buffers did not cover; and the "lost lock after a loss" was the carrier
+  drift, not the loss.
 - **The frame markers are right**: over the 10 s stream `isdb iq s3sync`
   counts FSync 302 / !FSync 17 854 = 18 156 odd slots, one marker per 120
   slots, and the receiver finds and decodes the same frames. The FPGA
   front end has no carrier loop: over 10 s the residual offset turned the
   carrier by 1.06 rad per SSync slot pair (+306 Hz), which the per-slot
   phase of the receiver follows.
+
+### Losses and drift over minutes (plan §0.18)
+
+- **The lost lock was carrier drift.** The FPGA front end's NCO stays at
+  the acquisition's offset and the signal drifted: −97 Hz → −830 Hz in
+  30 s on one run, +1 537 Hz in 60 s on another (`examples/s3drift` on
+  recorded words). The receiver tells the frame marker from !FSync
+  against the two SSync slots one slot either side; their sum vanishes at
+  |Δf| = Rs / (4 · 9 296) ≈ 908 Hz, where the word's sign is noise and
+  the frame heads land anywhere (no TMCC). A 40 s recording with two
+  losses decoded 904 of 957 frames with three resyncs, every frame lost
+  from 30 s on. The streaming receiver now tracks the residual from the
+  SSync phase steps and removes it before synchronising
+  (`RxOptions::carrier_hz`): 1 207 of 1 207 frames, 0 resyncs, each loss
+  costing about one frame. Synthetic sync tests at ±908 Hz (heads lost
+  without the offset removed, found with it).
+- **The losses were on the device.** With no decoder at all, writing the
+  words to disk at low load, a 45 s ISDB-S3 stream lost 64–106 blocks
+  (≈ 8–13 ms) at 10.15, 20.35, 30.54 and 40.73 s — every 10.19 s
+  (`tools/symbols-losses.py`); a 43.4 MB/s ISDB-S stream lost nothing.
+  iiod used ≈ 72 % of a Pluto core at 50.8 MB/s, and no other process
+  on the board showed anything periodic. With 8 or 16 kernel buffers of
+  1 Mi words (`kbuffers`, now 16 by default: 330 ms of slack) 45 s ran
+  without a loss.
+- **The host keeps draining.** The parser thread reads the words whatever
+  the decoder does; its queue to the decoder is bounded to four chunks
+  (≈ 3.2 s of ISDB-S3, ≈ 1.1 s of ISDB-S), beyond which whole blocks are
+  dropped and reported (`blocks_dropped`).
+
+60 s live, receive only, after the changes (48 busy threads on the host
+from 22 to 42 s in the "induced" runs; other sessions loaded it too):
+
+| | load | radio losses | host drops | decoded | output |
+|---|---|---|---|---|---|
+| ISDB-S3 BS7 | normal (1–11) | 0 | 0 | 1 816 / 1 816 frames with TMCC, 0 LDPC failures; drift tracked to +1 537 Hz | 3 TLV streams |
+| ISDB-S3 BS7 | induced | 0 | 11 (≈ 5.6 s) | 1 634 frames, all with TMCC, 1 LDPC failure, 0 resyncs | queue ≤ 3.2 s |
+| ISDB-S3 BS7, `kbuffers=4` | induced | 2 (157 blocks) | 14 | 1 624 frames, all with TMCC | — |
+| ISDB-S BS1 | normal (≈ 11) | 0 | 0 | 5 423 / 5 423 superframes | 3 TS × 694 144 packets, 0 CC errors, 0 TEI |
+| ISDB-S BS1 | induced | 0 | 37 (≈ 8 s) | 4 660 superframes, all decoded, 0 resyncs | queue ≤ 1.1 s |
+
+Before the changes, at normal load: an ISDB-S3 loss every 10.2 s, and
+frames lost from ≈ 30 s on (§0.17's run: TMCC on 657 of 836 frames).
+The host drops under induced load are the decoder sharing the cores with
+48 busy threads (≈ 0.9× real time then); they are reported
+discontinuities, not stalls of the capture.
 
 ## Open questions
 

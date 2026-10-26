@@ -110,11 +110,29 @@ superframes (ISDB-S), cut on their own boundaries so the TS / TLV
 streams run on without a gap. A loss in the words (a DMA overflow on the
 device), or a lost lock, is a discontinuity in the output: reported as
 `[rx] loss at symbol …` and counted in the summary's `[rx] stream:` line
-and `stream` in `--json`. 30 s of BS1 gave three gapless TSs (2 716
-superframes, every packet RS-clean, 0 continuity errors); 30 s of BS7
-gave its three TLV streams with one reported loss (VERIFICATION.md
-"Continuous reception through the FPGA front end"). `--symbols FILE`
-decodes the same words recorded by `isdb symbols --out`.
+and `stream` in `--json`. A loss costs the frames it cuts and about one
+more (ISDB-S3: the next frame marker is at most 33 ms away; ISDB-S: the
+next superframe). 60 s of BS1 gave three gapless TSs (5 423
+superframes, 0 continuity errors); 60 s of BS7 decoded every frame
+(VERIFICATION.md "Continuous reception through the FPGA front end").
+`--symbols FILE` decodes the same words recorded by `isdb symbols
+--out`.
+
+- **Carrier drift.** The FPGA front end has no carrier loop; the signal
+  drifted by up to 1.5 kHz a minute here. The ISDB-S3 receiver tracks
+  the residual from chunk to chunk and removes it (the summary line
+  `[rx] carrier drift tracked …`); ISDB-S has its own carrier loop.
+- **Device buffering.** `--radio pluto:…,kbuffers=N,buffer=W` sets the
+  symbol stream's kernel buffers (default 16) and words per buffer
+  (default 1 Mi): 330 ms of slack on the device, where iiod runs near a
+  full core at 51 MB/s and the stream stalls for ≈ 10 ms every ≈ 10 s.
+- **A busy host.** The words are drained into memory whatever the
+  decoder does; once four chunks wait (≈ 3.2 s of ISDB-S3, ≈ 1.1 s of
+  ISDB-S) whole blocks are dropped and reported (`… dropped here: the
+  receiver fell behind`, `blocks_dropped` in `--json`), so the capture
+  never stalls and memory stays bounded. On a shared host give the
+  receiver a few free cores: with 48 busy threads on this 32-core host
+  both systems dropped 5–8 s of a minute.
 
 **Blocks of IQ (CPU front end).** Without that front end, or with
 `--offload cpu`, `isdb rx` takes one contiguous capture after another and
