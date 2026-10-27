@@ -232,6 +232,16 @@ pub struct FrameLayout {
     pub w: Vec<u8>,
 }
 
+/// A band carrier number as the layout tables store it.  Carrier numbers
+/// are below [`Mode::total_carriers`] (5617 in Mode 3), so the narrowing is
+/// exact; the tables are `u32` to halve their size.
+pub(crate) fn carrier_index(k: usize) -> u32 {
+    debug_assert!(k < 1 << 16, "band carrier number {k}");
+    #[allow(clippy::cast_possible_truncation)]
+    let k = k as u32;
+    k
+}
+
 impl FrameLayout {
     /// Layout for explicit segment kinds (indexed by segment number).
     pub fn new(mode: Mode, kinds: [SegmentKind; SEGMENTS]) -> Self {
@@ -246,14 +256,17 @@ impl FrameLayout {
         let mut w = Vec::with_capacity(k_total);
         for pos in 0..SEGMENTS {
             let seg = segment_at_position(pos);
+            // Segment numbers are below SEGMENTS (13).
+            #[allow(clippy::cast_possible_truncation)]
+            let seg_no = seg as u8;
             let kind = kinds[seg];
-            let base = (pos * c_total) as u32;
+            let base = pos * c_total;
             w.extend(segment_w(mode, seg));
             for phase in 0..4 {
                 let roles = segment_roles(mode, seg, kind, phase);
                 let mut i = 0;
                 for (c, r) in roles.iter().enumerate() {
-                    let k = base + c as u32;
+                    let k = carrier_index(base + c);
                     match r {
                         CarrierRole::Data => {
                             data[phase][seg * nc + i] = k;
@@ -263,12 +276,12 @@ impl FrameLayout {
                         CarrierRole::Cp if phase == 0 => cp.push(k),
                         CarrierRole::Tmcc if phase == 0 => tmcc.push(TmccCarrier {
                             k,
-                            seg: seg as u8,
+                            seg: seg_no,
                             kind,
                         }),
                         CarrierRole::Ac(a) if phase == 0 => ac.push(AcCarrier {
                             k,
-                            seg: seg as u8,
+                            seg: seg_no,
                             kind: *a,
                         }),
                         _ => {}
@@ -286,7 +299,7 @@ impl FrameLayout {
             data,
             sp,
             cp,
-            edge: (k_total - 1) as u32,
+            edge: carrier_index(k_total - 1),
             tmcc,
             ac,
             w,
@@ -300,7 +313,7 @@ impl FrameLayout {
 
     /// Band carrier number of carrier `c` of segment `seg`.
     pub fn carrier(&self, seg: usize, c: usize) -> u32 {
-        (segment_position(seg) * self.mode.carriers_per_segment() + c) as u32
+        carrier_index(segment_position(seg) * self.mode.carriers_per_segment() + c)
     }
 
     /// Roles of all K carriers for SP phase `phase`.

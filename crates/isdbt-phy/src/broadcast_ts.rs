@@ -149,6 +149,25 @@ impl BitReader<'_> {
         }
         v
     }
+
+    /// A `bits`-wide field into a `u8`, `bits <= 8`: the width is asserted
+    /// here, once, so a decoder takes a narrow field without an `as` cast.
+    fn get_u8(&mut self, bits: usize) -> u8 {
+        assert!(bits <= 8, "get_u8: {bits} bits");
+        // bits <= 8 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.get(bits) as u8;
+        v
+    }
+
+    /// A `bits`-wide field into a `u16`, `bits <= 16`.
+    fn get_u16(&mut self, bits: usize) -> u16 {
+        assert!(bits <= 16, "get_u16: {bits} bits");
+        // bits <= 16 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.get(bits) as u16;
+        v
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -296,11 +315,11 @@ impl IsdbtInformation {
             | u8::from(self.frame_head_packet) << 1
             | u8::from(self.frame_indicator);
         b[1] = self.layer_indicator.code() << 4 | (self.count_down_index & 0xF);
-        let counter = self.tsp_counter & 0x1FFF;
+        let [counter_hi, counter_lo] = (self.tsp_counter & 0x1FFF).to_be_bytes();
         b[2] = u8::from(self.ac_data_invalid) << 7
             | (self.ac_data_effective_bytes & 0b11) << 5
-            | (counter >> 8) as u8;
-        b[3] = counter as u8;
+            | counter_hi;
+        b[3] = counter_lo;
         b[4..].copy_from_slice(&self.ac_data);
         b
     }
@@ -353,8 +372,7 @@ fn gen_tail() -> &'static [u8; PARITY_LEN] {
         // Ascending-degree coefficients, g[k] = coefficient of x^k.
         let mut g = [0u8; PARITY_LEN + 1];
         g[0] = 1;
-        for i in 0..PARITY_LEN {
-            let root = gf_alpha_pow(i as u32);
+        for (i, root) in (0u32..).map(gf_alpha_pow).take(PARITY_LEN).enumerate() {
             let mut next = [0u8; PARITY_LEN + 1];
             for k in 0..=i {
                 next[k + 1] ^= g[k];
@@ -394,7 +412,7 @@ pub fn parity(data: &[u8; PARITY_OFFSET]) -> [u8; PARITY_LEN] {
 /// syndromes c(λ^j), j = 0..7, are zero).  A sender that adds no parity
 /// (the parity is optional) fails this check.
 pub fn parity_valid(tsp: &BroadcastTsp) -> bool {
-    (0..PARITY_LEN as u32).all(|j| {
+    (0u32..).take(PARITY_LEN).all(|j| {
         let a = gf_alpha_pow(j);
         tsp.iter().fold(0u8, |acc, &b| gf_mul(acc, a) ^ b) == 0
     })
@@ -602,19 +620,19 @@ impl ModulationControl {
         let mut r = BitReader { data: b, pos: 0 };
         let tmcc_sync_odd = r.get(1) == 1;
         let ac_in_dummy_bytes = r.get(1) == 1;
-        let reserved = r.get(2) as u8;
+        let reserved = r.get_u8(2);
         let mode_gi = ModeGi {
-            initialization_timing: r.get(4) as u8,
-            current_mode: r.get(2) as u8,
-            current_guard: r.get(2) as u8,
-            next_mode: r.get(2) as u8,
-            next_guard: r.get(2) as u8,
+            initialization_timing: r.get_u8(4),
+            current_mode: r.get_u8(2),
+            current_guard: r.get_u8(2),
+            next_mode: r.get_u8(2),
+            next_guard: r.get_u8(2),
         };
         let mut bits = [0u8; 102];
         for bit in &mut bits {
-            *bit = r.get(1) as u8;
+            *bit = u8::from(r.get(1) == 1);
         }
-        let reserved_future_use = r.get(10) as u16;
+        let reserved_future_use = r.get_u16(10);
         Ok(Self {
             tmcc_sync_odd,
             ac_in_dummy_bytes,
@@ -740,7 +758,10 @@ impl NetworkSync {
                 v.push(0x00);
                 v.extend_from_slice(&s.time_stamp.to_be_bytes()[1..]);
                 v.extend_from_slice(&s.maximum_delay.to_be_bytes()[1..]);
-                v.push((5 * s.equipment.len()) as u8);
+                v.push(
+                    u8::try_from(5 * s.equipment.len())
+                        .map_err(|_| err("equipment loop length does not fit 8 bits"))?,
+                );
                 for e in &s.equipment {
                     if e.equipment_id > 0xFFF {
                         return Err(err(format!(
@@ -749,9 +770,12 @@ impl NetworkSync {
                         )));
                     }
                     check_24("time_offset", e.time_offset)?;
-                    v.push((e.equipment_id >> 4) as u8);
+                    // equipment_id <= 0xFFF (checked above): the high byte of
+                    // id << 4 is id >> 4, the low byte (id & 0xF) << 4.
+                    let [id_hi, id_lo] = (e.equipment_id << 4).to_be_bytes();
+                    v.push(id_hi);
                     v.push(
-                        ((e.equipment_id & 0xF) as u8) << 4
+                        id_lo
                             | u8::from(e.renewal) << 3
                             | u8::from(e.static_delay) << 2
                             | u8::from(e.reserved) << 1
@@ -870,7 +894,8 @@ impl Iip {
         p[6..26].copy_from_slice(&self.modulation_control.to_bytes());
         p[26] = self.branch_number;
         p[27] = self.last_branch_number;
-        p[28] = ns.len() as u8;
+        p[28] = u8::try_from(ns.len())
+            .map_err(|_| err("network_synchronization_information length does not fit 8 bits"))?;
         p[29..29 + ns.len()].copy_from_slice(&ns);
         Ok(p)
     }
@@ -1029,10 +1054,15 @@ impl BroadcastTsWriter {
         let countdown = self.tmcc.switching_countdown & 0xF;
         // The head packet of the first frame after a countdown (Table 5-7).
         let switched = self.frames > 0 && self.prev_countdown != 0b1111 && countdown == 0b1111;
+        // TSP indices within a frame are below `pattern.len()` (at most 3276
+        // TSPs, Mode 3 / 64QAM / 7/8), so they fit the 16-bit packet_pointer
+        // and the 13-bit tsp_counter.
+        #[allow(clippy::cast_possible_truncation)]
+        let index16 = |j: usize| j as u16;
         let iip = Iip {
             pid: self.iip_pid,
             continuity_counter: self.continuity_counter,
-            packet_pointer: (n - 1 - self.iip_slot) as u16,
+            packet_pointer: index16(n - 1 - self.iip_slot),
             modulation_control: ModulationControl::with_tmcc(&self.params, !odd, self.tmcc),
             branch_number: 0,
             last_branch_number: 0,
@@ -1055,7 +1085,7 @@ impl BroadcastTsWriter {
                 } else {
                     (packet, LayerIndicator::from_slot(*slot))
                 };
-                let mut info = IsdbtInformation::plain(layer_indicator, j as u16);
+                let mut info = IsdbtInformation::plain(layer_indicator, index16(j));
                 info.emergency_switch_on = self.tmcc.emergency_alarm;
                 info.initialization_timing_head_packet = switched && j == 0;
                 info.frame_head_packet = j == 0;
@@ -1279,7 +1309,7 @@ mod tests {
             x ^= x << 13;
             x ^= x >> 17;
             x ^= x << 5;
-            *b = x as u8;
+            *b = x.to_le_bytes()[0];
         }
         p
     }
@@ -1318,7 +1348,7 @@ mod tests {
                 x ^= x << 13;
                 x ^= x >> 17;
                 x ^= x << 5;
-                *v = x as u8;
+                *v = x.to_le_bytes()[0];
             }
             assert_eq!(IsdbtInformation::from_bytes(&b).to_bytes(), b);
         }
@@ -1552,10 +1582,10 @@ mod tests {
         let pat = w.pattern().clone();
         assert_eq!(pat.slots()[w.iip_slot()], None);
         assert!(pat.slots()[..w.iip_slot()].iter().all(Option::is_some));
-        let a: Vec<Packet> = (0..pat.count(Layer::A) as u32)
+        let a: Vec<Packet> = (0..u32::try_from(pat.count(Layer::A)).unwrap())
             .map(|i| packet(1, i))
             .collect();
-        let b: Vec<Packet> = (0..pat.count(Layer::B) as u32)
+        let b: Vec<Packet> = (0..u32::try_from(pat.count(Layer::B)).unwrap())
             .map(|i| packet(2, i))
             .collect();
         for k in 0..3u64 {
@@ -1639,10 +1669,10 @@ mod tests {
         let mut frames = Vec::new();
         let mut sent = Vec::new();
         for k in 0..3u32 {
-            let a: Vec<Packet> = (0..pat.count(Layer::A) as u32)
+            let a: Vec<Packet> = (0..u32::try_from(pat.count(Layer::A)).unwrap())
                 .map(|i| packet(1, k * 10_000 + i))
                 .collect();
-            let b: Vec<Packet> = (0..pat.count(Layer::B) as u32)
+            let b: Vec<Packet> = (0..u32::try_from(pat.count(Layer::B)).unwrap())
                 .map(|i| packet(2, k * 10_000 + i))
                 .collect();
             let tsps = w.frame([&a, &b, &[]]).unwrap();
@@ -1655,7 +1685,7 @@ mod tests {
         }
         frames.extend(r.finish());
         // Everything up to the next frame head is dropped.
-        assert_eq!(r.dropped() as usize, pat.len() - 5);
+        assert_eq!(usize::try_from(r.dropped()).unwrap(), pat.len() - 5);
         assert_eq!(frames.len(), 2);
         for (f, (a, b)) in frames.iter().zip(&sent[1..]) {
             assert_eq!(f.len(), pat.len());

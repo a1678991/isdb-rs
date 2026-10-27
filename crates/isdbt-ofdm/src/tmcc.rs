@@ -435,16 +435,16 @@ impl TmccInfo {
     /// Parse B20..B121.
     pub fn from_bits(bits: &[u8; 102]) -> Self {
         let mut r = BitReader { bits, pos: 0 };
-        let system_id = r.get(2) as u8;
-        let switching_countdown = r.get(4) as u8;
+        let system_id = r.get_u8(2);
+        let switching_countdown = r.get_u8(4);
         let emergency_alarm = r.get(1) == 1;
         let mut tp = || {
             let partial_reception = r.get(1) == 1;
             let layers = std::array::from_fn(|_| TmccLayer {
-                modulation: ModulationCode::from_code(r.get(3) as u8),
-                code_rate: RateCode::from_code(r.get(3) as u8),
-                interleave: InterleaveCode::from_code(r.get(3) as u8),
-                segments: SegmentsCode::from_code(r.get(4) as u8),
+                modulation: ModulationCode::from_code(r.get_u8(3)),
+                code_rate: RateCode::from_code(r.get_u8(3)),
+                interleave: InterleaveCode::from_code(r.get_u8(3)),
+                segments: SegmentsCode::from_code(r.get_u8(4)),
             });
             TmccParams {
                 partial_reception,
@@ -453,8 +453,8 @@ impl TmccInfo {
         };
         let current = tp();
         let next = tp();
-        let phase_shift_correction = r.get(3) as u8;
-        let reserved = r.get(12) as u16;
+        let phase_shift_correction = r.get_u8(3);
+        let reserved = r.get_u16(12);
         Self {
             system_id,
             switching_countdown,
@@ -540,6 +540,25 @@ impl BitReader<'_> {
             v = (v << 1) | u32::from(self.bits[self.pos]);
             self.pos += 1;
         }
+        v
+    }
+
+    /// An `n`-bit field into a `u8`, `n <= 8`: the width is asserted here,
+    /// once, so a decoder takes a narrow field without an `as` cast.
+    pub fn get_u8(&mut self, n: usize) -> u8 {
+        assert!(n <= 8, "get_u8: {n} bits");
+        // n <= 8 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.get(n) as u8;
+        v
+    }
+
+    /// An `n`-bit field into a `u16`, `n <= 16`.
+    pub fn get_u16(&mut self, n: usize) -> u16 {
+        assert!(n <= 16, "get_u16: {n} bits");
+        // n <= 16 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.get(n) as u16;
         v
     }
 }

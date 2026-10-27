@@ -156,7 +156,12 @@ pub fn integer_cfo(mode: Mode, spectra: &[Vec<C32>], max_shift: usize) -> (i64, 
     for d in -max..=max {
         let score: f32 = pattern
             .iter()
-            .map(|&b| metric[(b + d).rem_euclid(n) as usize])
+            .map(|&b| {
+                // rem_euclid(n) lands in 0..n, the FFT size (at most 8192).
+                #[allow(clippy::cast_possible_truncation)]
+                let bin = (b + d).rem_euclid(n) as usize;
+                metric[bin]
+            })
             .sum();
         if score > best.1 {
             best = (d, score);

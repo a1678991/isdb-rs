@@ -1,6 +1,9 @@
 //! Property tests: every TX stage composed with its RX inverse is the
 //! identity (after the documented latency).
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 
 use common::Rng;
@@ -60,7 +63,7 @@ fn arb_params(max_ti: u8) -> impl Strategy<Value = Params> {
                     } else if pr && i == 0 {
                         1
                     } else {
-                        1 + (rng.next_u64() as usize) % (remaining - left)
+                        1 + usize::try_from(rng.next_u64() % (remaining - left) as u64).unwrap()
                     };
                     cuts.push(n);
                     remaining -= n;
@@ -68,7 +71,7 @@ fn arb_params(max_ti: u8) -> impl Strategy<Value = Params> {
                 let mut layers = [None; 3];
                 let mut coherent_seen = false;
                 for (i, &n) in cuts.iter().enumerate() {
-                    let mut md = MODS[(rng.next_u64() % 4) as usize];
+                    let mut md = MODS[usize::try_from(rng.next_u64() % 4).unwrap()];
                     if md.is_differential() && coherent_seen && !(pr && i == 0) {
                         md = Modulation::Qam16;
                     }
@@ -80,7 +83,7 @@ fn arb_params(max_ti: u8) -> impl Strategy<Value = Params> {
                         modulation: md,
                         code_rate: CodeRate::R1_2,
                         time_interleave: TimeInterleave::ALL
-                            [(rng.next_u64() % (u64::from(max_ti) + 1)) as usize],
+                            [usize::try_from(rng.next_u64() % (u64::from(max_ti) + 1)).unwrap()],
                     });
                 }
                 if let Ok(p) = Params::new(mode, GUARDS[g], pr, layers) {
@@ -151,7 +154,7 @@ proptest! {
         let n = fi.permutation().len();
         let mut seen = vec![false; n];
         for &q in fi.permutation() { prop_assert!(!seen[q as usize]); seen[q as usize] = true; }
-        let x: Vec<u32> = (0..n as u32).collect();
+        let x: Vec<u32> = (0..u32::try_from(n).unwrap()).collect();
         let mut y = vec![0; n];
         let mut z = vec![0; n];
         fi.interleave(&x, &mut y);
@@ -228,7 +231,7 @@ proptest! {
         let total = max_f * 204 + 3;
         let mut hist: Vec<Vec<u32>> = Vec::new();
         for t in 0..total {
-            let x: Vec<u32> = (0..13 * nc).map(|_| rng.next_u64() as u32 & 0x7fff_ffff).collect();
+            let x: Vec<u32> = (0..13 * nc).map(|_| (rng.next_u64() & 0x7fff_ffff) as u32).collect();
             let mut y = x.clone();
             ti.process(&mut y);
             tdi.process(&mut y);
@@ -268,7 +271,7 @@ proptest! {
         for f in &frames {
             prop_assert_eq!(&f.params, &p);
             prop_assert_eq!(f.tmcc.parity, dsc::ParityStatus::Ok);
-            let idx = (f.start_sample / p.samples_per_frame() as u64) as usize;
+            let idx = usize::try_from(f.start_sample / p.samples_per_frame() as u64).unwrap();
             if !f.valid || idx < lat { continue; }
             for l in Layer::ALL {
                 if let Some(llr) = &f.llr[l.index()] {
@@ -353,9 +356,9 @@ proptest! {
                     }
                     bd.process(&mut llr);
                     let src = onair - ti_frames(&p, l) as i64;
-                    if src >= 0 && (src as usize) < inputs.len() {
+                    if let Some(input) = usize::try_from(src).ok().and_then(|i| inputs.get(i)) {
                         let per = llr.len();
-                        let want = &inputs[src as usize][l.index()][n * per..(n + 1) * per];
+                        let want = &input[l.index()][n * per..(n + 1) * per];
                         let hard: Vec<u8> = llr.iter().map(|&x| u8::from(x < 0.0)).collect();
                         prop_assert!(hard == want, "layer {} on-air frame {} symbol {}", l, onair, n);
                         checked[l.index()] += 1;

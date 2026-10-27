@@ -144,7 +144,7 @@ impl SeismicDetail {
                     SeismicPage::Areas(a) => {
                         w.put(0, 1);
                         w.put((a >> 32) as u32 & 0xff_ffff, 24);
-                        w.put(a as u32, 32);
+                        w.put((a & 0xffff_ffff) as u32, 32);
                     }
                     SeismicPage::Epicenter {
                         two_reports,
@@ -197,14 +197,14 @@ impl SeismicDetail {
                     SeismicPage::Epicenter {
                         two_reports: r.get(1) == 1,
                         second: r.get(1) == 1,
-                        warning_id: r.get(9) as u16,
+                        warning_id: r.get_u16(9),
                         cancelled: r.get(1) == 1,
                         south: r.get(1) == 1,
-                        latitude_x10: r.get(10) as u16,
+                        latitude_x10: r.get_u16(10),
                         west: r.get(1) == 1,
-                        longitude_x10: r.get(11) as u16,
-                        depth_km: r.get(10) as u16,
-                        occurrence_time: r.get(10) as u16,
+                        longitude_x10: r.get_u16(11),
+                        depth_km: r.get_u16(10),
+                        occurrence_time: r.get_u16(10),
                         reserved: r.get(1) == 1,
                     }
                 };
@@ -213,7 +213,7 @@ impl SeismicDetail {
             7 => {
                 r.get(32);
                 Some(SeismicDetail::NotAvailable {
-                    broadcaster_id: r.get(11) as u16,
+                    broadcaster_id: r.get_u16(11),
                 })
             }
             _ => None,
@@ -285,9 +285,9 @@ impl SeismicWarning {
             bits: &word,
             pos: 0,
         };
-        let start_end = r.get(2) as u8;
-        let update = r.get(2) as u8;
-        let signal_id = r.get(3) as u8;
+        let start_end = r.get_u8(2);
+        let update = r.get_u8(2);
+        let signal_id = r.get_u8(3);
         let detail: [u8; 88] = word[7..95].try_into().expect("88");
         // CRC over B21..B111 = word[4..95]; CRC bits B112..B121 = word[95..105].
         let crc_ok = crc10(&word[4..95]).as_slice() == &word[95..105];

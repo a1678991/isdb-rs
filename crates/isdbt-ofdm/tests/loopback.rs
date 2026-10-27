@@ -1,5 +1,8 @@
 //! End-to-end loopback: Modulator → channel → Demodulator.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 
 use common::{Channel, Rng};
@@ -100,7 +103,10 @@ fn run_sfo(params: Params, frames: usize, ch: Channel, skip: usize, seed: u64, p
         let rel = f.start_sample as i64 - ch.offset as i64 + skip as i64;
         // With a sampling-clock offset the TX frame f starts at f·len/(1+ppm).
         let scale = 1.0 / (1.0 + ppm * 1e-6);
+        // Frame indices and sample positions are far below 2^53 (test code).
+        #[allow(clippy::cast_possible_truncation)]
         let tx_frame = (rel as f64 / (frame_len as f64 * scale)).round() as i64;
+        #[allow(clippy::cast_possible_truncation)]
         let expect = (tx_frame as f64 * frame_len as f64 * scale).round() as i64;
         rep.start_err = rep.start_err.max((rel - expect).abs());
         rep.cfo = f.metrics.cfo_carriers;
@@ -112,7 +118,7 @@ fn run_sfo(params: Params, frames: usize, ch: Channel, skip: usize, seed: u64, p
         rep.frames_checked += 1;
         for l in Layer::ALL {
             if let Some(llr) = &f.llr[l.index()] {
-                let input = &inputs[src as usize][l.index()];
+                let input = &inputs[usize::try_from(src).unwrap()][l.index()];
                 assert_eq!(llr.len(), input.len());
                 rep.bits[l.index()] += input.len();
                 rep.bit_errors[l.index()] += llr
@@ -330,7 +336,7 @@ fn stress_long_echo_and_seeds() {
         let r = run(
             p.clone(),
             lat + 3,
-            channel(Mode::M3, 1000 + seed as usize * 37),
+            channel(Mode::M3, 1000 + usize::try_from(seed).unwrap() * 37),
             0,
             seed,
         );
@@ -485,6 +491,8 @@ fn loopback_chunking_and_noise_lead_in() {
     let lat = end_to_end_frames(&p);
     let mut checked = 0;
     for f in &frames {
+        // The frame index is small and non-negative (test code).
+        #[allow(clippy::cast_possible_truncation)]
         let idx = ((f.start_sample as f64 - ch.offset as f64) / p.samples_per_frame() as f64)
             .round() as usize;
         if f.valid && idx >= lat {

@@ -407,6 +407,14 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `clippy::cast_possible_truncation` is on (crate-level `#![warn]`) in
+  `isdbt-ofdm` and `isdbt-phy` (`docs/plans/type-safety.md` §2). The
+  TMCC, AC and IIP decoders read narrow fields through width-typed
+  `get_u8` / `get_u16` readers, the IIP encoder's loop and length bytes
+  are `try_from` into `Error::BroadcastTs`, and the remaining narrowings
+  (DSP quantisation, `f64` sample positions, carrier-table indices) sit
+  under 19 `#[allow]`s in library code, each with its invariant. No
+  behaviour change; no public signature changed.
 - The reserved payloads of the lossless coded enums are canonical by
   construction (`docs/plans/type-safety.md` §3 H1): `Reserved(u8)` /
   `UserDefined(u8)` become `Reserved(ReservedCode)` /

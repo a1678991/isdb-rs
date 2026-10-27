@@ -5,6 +5,8 @@
 //! and the receiver's reproduced TS has the layer arrangement the
 //! dummy-byte `layer_indicator`s announced.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdbt_core::{
     CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };
@@ -48,7 +50,7 @@ fn packet(layer: u8, n: u32) -> Packet {
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
-        *b = x as u8;
+        *b = x.to_le_bytes()[0];
     }
     p
 }
@@ -66,8 +68,12 @@ fn transmitter_configured_from_the_iip_delivers_every_packet() {
     let mut stream = Vec::new();
     let mut sent: [Vec<Packet>; 2] = Default::default();
     for f in 0..3u32 {
-        let a: Vec<_> = (0..na as u32).map(|i| packet(0, f * 100_000 + i)).collect();
-        let b: Vec<_> = (0..nb as u32).map(|i| packet(1, f * 100_000 + i)).collect();
+        let a: Vec<_> = (0..u32::try_from(na).unwrap())
+            .map(|i| packet(0, f * 100_000 + i))
+            .collect();
+        let b: Vec<_> = (0..u32::try_from(nb).unwrap())
+            .map(|i| packet(1, f * 100_000 + i))
+            .collect();
         for tsp in writer.frame([&a, &b, &[]]).unwrap() {
             stream.extend_from_slice(&tsp);
         }

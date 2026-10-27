@@ -107,7 +107,7 @@ impl FrequencyInterleaver {
                     let r = (i + nc - kr % nc) % nc;
                     // Carrier randomising (Table 3-13).
                     let t = table[r] as usize;
-                    perm[q] = ((g0 + k) * nc + t) as u32;
+                    perm[q] = crate::frame::carrier_index((g0 + k) * nc + t);
                 }
             }
         }

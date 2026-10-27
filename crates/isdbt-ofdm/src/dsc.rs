@@ -81,7 +81,9 @@ impl ParityStatus {
 // --- GF(2^12) for the Singer difference set ---------------------------
 
 fn gf_mul(a: u16, b: u16, poly: u16) -> u16 {
-    let (mut a, mut b, mut r) = (u32::from(a), u32::from(b), 0u32);
+    // Field elements are 12 bits, so `a` stays below 0x2000 after the shift
+    // and the product fits a u16 throughout.
+    let (mut a, mut b, mut r) = (a, b, 0u16);
     while b != 0 {
         if b & 1 != 0 {
             r ^= a;
@@ -89,13 +91,13 @@ fn gf_mul(a: u16, b: u16, poly: u16) -> u16 {
         b >>= 1;
         a <<= 1;
         if a & 0x1000 != 0 {
-            a ^= 0x1000 | u32::from(poly);
+            a ^= 0x1000 | poly;
         }
     }
-    r as u16
+    r
 }
 
-fn gf_pow(a: u16, mut e: u32, poly: u16) -> u16 {
+fn gf_pow(a: u16, mut e: usize, poly: u16) -> u16 {
     let (mut base, mut r) = (a, 1u16);
     while e > 0 {
         if e & 1 != 0 {
@@ -113,7 +115,10 @@ fn primitive_poly() -> u16 {
     (1u16..0x1000)
         .step_by(2)
         .find(|&p| {
-            gf_pow(2, 4095, p) == 1 && [3u32, 5, 7, 13].iter().all(|q| gf_pow(2, 4095 / q, p) != 1)
+            gf_pow(2, 4095, p) == 1
+                && [3usize, 5, 7, 13]
+                    .iter()
+                    .all(|q| gf_pow(2, 4095 / q, p) != 1)
         })
         .expect("primitive polynomial")
 }
@@ -137,7 +142,7 @@ pub fn difference_set() -> &'static [usize] {
         // Tr_{GF(4096)/GF(16)}(x) = x + x^16 + x^256.
         let base: Vec<usize> = (0..N)
             .filter(|&i| {
-                let x = gf_pow(alpha, i as u32, poly);
+                let x = gf_pow(alpha, i, poly);
                 (x ^ gf_pow(x, 16, poly) ^ gf_pow(x, 256, poly)) == 0
             })
             .collect();

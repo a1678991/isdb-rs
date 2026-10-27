@@ -1,5 +1,8 @@
 //! Shared test helpers: deterministic RNG and a channel model.
 #![allow(dead_code)]
+// The channel model computes in f64 and narrows to the f32 sample type;
+// its sample indices come from f64 instants (test code).
+#![allow(clippy::cast_possible_truncation)]
 
 use isdbt_ofdm::C32;
 
