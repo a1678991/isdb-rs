@@ -11,6 +11,8 @@
 //!
 //! cargo run --release -p isdb-frontend --example tedbias -- [FS] [taps…]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fixed::Frontend;
 use isdb_frontend::params::{Design, Params};
 use isdb_frontend::tables::rrc;
@@ -69,6 +71,10 @@ fn symbols(kind: Kind, n: usize) -> Vec<C> {
 }
 
 /// The pulse train at `sps` samples per symbol, symbol k at t0 + k·sps.
+// f64 sample and symbol positions are truncated to indices on purpose
+// (the symbol index is clamped to 0..syms.len()), and the components are
+// rounded and clamped to the 12-bit range.
+#[allow(clippy::cast_possible_truncation)]
 fn train(syms: &[C], sps: f64, alpha: f64, t0: f64) -> Vec<[i16; 2]> {
     let n = (syms.len() as f64 * sps) as usize;
     let span = 240i64;

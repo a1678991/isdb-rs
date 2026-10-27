@@ -5,6 +5,8 @@
 //!
 //! cargo run --release -p isdb-frontend --example feisa -- REC [s|s3] [TAPS]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fast::FastFrontend;
 use isdb_frontend::fixed::{Frontend, Symbol};
 use isdb_frontend::params::{Design, Params};
@@ -20,16 +22,10 @@ fn main() {
     let mut rec = Recording::open(&path, None, None).unwrap();
     let fs = rec.sample_rate;
     let seg = rec.segments()[0].clone();
-    let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
-    let xi: Vec<[i16; 2]> = x
-        .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect();
+    let x = rec
+        .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+        .unwrap();
+    let xi: Vec<[i16; 2]> = x.iter().map(|&v| isdb_frontend::input_sample(v)).collect();
     let secs = xi.len() as f64 / fs;
     let (rs, a) = if s3 {
         (33.7561e6, 0.03)

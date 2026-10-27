@@ -4,6 +4,8 @@
 //!
 //! cargo run --release -p isdb-frontend --example loopdiag -- REC [s|s3] [TRIM]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fixed::Frontend;
 use isdb_frontend::params::{Design, Params};
 use isdb_frontend::s3sync;
@@ -20,19 +22,11 @@ fn main() {
     let mut rec = Recording::open(&path, None, None).unwrap();
     let fs = rec.sample_rate;
     let seg = rec.segments()[0].clone();
-    let n = ((seg.end - seg.start) as usize).min(12 << 20);
+    let n = usize::try_from(seg.end - seg.start).unwrap().min(12 << 20);
     let x = rec.read(seg.start, n).unwrap();
     let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
     let cfo = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
-    let xi: Vec<[i16; 2]> = x
-        .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect();
+    let xi: Vec<[i16; 2]> = x.iter().map(|&v| isdb_frontend::input_sample(v)).collect();
     let mut d = Design::for_system(&KNOWN_SYSTEMS[usize::from(s3)], fs);
     d.carrier_offset = cfo;
     d.trim = trim;

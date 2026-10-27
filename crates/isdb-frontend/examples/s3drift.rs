@@ -17,6 +17,8 @@
 //!
 //! cargo run --release -p isdb-frontend --example s3drift -- SYMBOLS_FILE [WINDOW_S]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::format::{Event, Reader};
 use isdb_frontend::s3sync;
 use num_complex::Complex64 as C;
@@ -38,6 +40,8 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let path = a.get(1).expect("usage: s3drift SYMBOLS_FILE [WINDOW_S]");
     let window_s: f64 = a.get(2).map_or(1.0, |s| s.parse().expect("WINDOW_S"));
+    // f64 -> usize saturates; a window of seconds × symbol rate.
+    #[allow(clippy::cast_possible_truncation)]
     let win = (window_s * RS) as usize;
     let mut file = std::fs::File::open(path).expect("open symbols file");
     println!("{path}: windows of {window_s} s");

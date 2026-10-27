@@ -5,6 +5,8 @@
 //! them; for every instruction set this host runs (`simd::Isa`: the
 //! baseline, AVX2, AVX-512), through both `process` and `process_each`.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fast::FastFrontend;
 use isdb_frontend::fixed::{Frontend, Symbol};
 use isdb_frontend::params::{Design, Params};
@@ -61,10 +63,10 @@ fn signal(n: usize, seed: u32, amp: f64, sps: f64) -> Vec<[i16; 2]> {
             let ph = i as f64 * 0.013;
             let (c, si) = (ph.cos(), ph.sin());
             let (a, b) = (sym.0 * 0.6 + rnd() * 0.3, sym.1 * 0.6 + rnd() * 0.3);
-            [
-                ((a * c - b * si) * amp).round().clamp(-32768.0, 32767.0) as i16,
-                ((a * si + b * c) * amp).round().clamp(-32768.0, 32767.0) as i16,
-            ]
+            // rounded and clamped to the i16 range, so the casts are exact
+            #[allow(clippy::cast_possible_truncation)]
+            let q = |v: f64| (v * amp).round().clamp(-32768.0, 32767.0) as i16;
+            [q(a * c - b * si), q(a * si + b * c)]
         })
         .collect()
 }
@@ -198,17 +200,13 @@ fn recording(var: &str, s3: bool) {
     };
     let mut rec = isdb_iq::Recording::open(std::path::Path::new(&path), None, None).unwrap();
     let fs = rec.sample_rate;
-    let n = 4_000_000usize.min((rec.segments()[0].end - rec.segments()[0].start) as usize);
+    let n = 4_000_000usize
+        .min(usize::try_from(rec.segments()[0].end - rec.segments()[0].start).unwrap());
     let x: Vec<[i16; 2]> = rec
         .read(rec.segments()[0].start, n)
         .unwrap()
         .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
+        .map(|&v| isdb_frontend::input_sample(v))
         .collect();
     let sv = isdb_iq::survey::survey(&x_f32(&x), fs, &isdb_iq::survey::Options::default());
     let cfo = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
@@ -252,7 +250,7 @@ fn spec_every_width_on_every_instruction_set() {
             for amp in [2047.0, 9000.0] {
                 let x = signal(
                     9_000,
-                    taps as u32,
+                    u32::try_from(taps).unwrap(),
                     amp,
                     fs / if s3 { 33.7561e6 } else { 28.86e6 },
                 );

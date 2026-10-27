@@ -135,7 +135,9 @@ impl Identity {
 
     /// The ID word.
     pub fn word(&self) -> u32 {
-        u32::from(ID_MAGIC) << 16 | u32::from(self.version & 0xF) << 12 | (self.taps as u32 & 0xFF)
+        u32::from(ID_MAGIC) << 16
+            | u32::from(self.version & 0xF) << 12
+            | u32::from(self.taps.to_le_bytes()[0])
     }
 
     /// Whether this host can drive it: the same arithmetic (versions
@@ -231,9 +233,9 @@ impl Encoder {
     }
 
     fn write_bank(&mut self, base: u16, bank: &[Vec<i32>], out: &mut Vec<u32>) {
-        for (ph, row) in bank.iter().enumerate().take(PHASES) {
+        for (ph, row) in (0u16..).zip(bank.iter().take(PHASES)) {
             let vals: Vec<u32> = row.iter().map(|&c| c as u32).collect();
-            self.write(base + (ph as u16) * 64, &vals, out);
+            self.write(base + ph * 64, &vals, out);
         }
     }
 }

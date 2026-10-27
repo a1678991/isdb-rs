@@ -62,6 +62,8 @@
 //! assert!(matches!(events[0], Event::Block { .. }));
 //! ```
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 pub mod control;
 pub mod fast;
 pub mod fixed;
@@ -76,3 +78,14 @@ pub mod vectors;
 
 pub use fixed::{Frontend, Symbol};
 pub use params::{Design, Params};
+
+/// The front end's input sample from a float IQ value at ±1.0 full scale
+/// (an `isdb_iq` recording): `round(v · 2048)` per component, clamped to
+/// the 12-bit range −2048..=2047 (what [`Frontend::push`] takes).
+pub fn input_sample(v: num_complex::Complex32) -> [i16; 2] {
+    // DSP quantisation: rounded and clamped to the 12-bit range, so the
+    // casts are exact.
+    #[allow(clippy::cast_possible_truncation)]
+    let q = |c: f32| (c * 2048.0).round().clamp(-2048.0, 2047.0) as i16;
+    [q(v.re), q(v.im)]
+}

@@ -1,5 +1,8 @@
 //! Largest coefficient magnitude of the designed banks, per system and
 //! sample rate (development tool; plan §0.10).
+
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::params::{Design, Params};
 fn main() {
     for (name, rs, a) in [("ISDB-S", 28.86e6, 0.35), ("ISDB-S3", 33.7561e6, 0.03)] {

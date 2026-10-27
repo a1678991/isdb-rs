@@ -98,9 +98,9 @@ pub fn trailer_words(version: u16) -> usize {
 /// zero bytes.
 const CRC32C_TABLES: [[u32; 256]; 8] = {
     let mut t = [[0u32; 256]; 8];
-    let mut b = 0;
+    let mut b = 0u32;
     while b < 256 {
-        let mut c = b as u32;
+        let mut c = b;
         let mut k = 0;
         while k < 8 {
             c = if c & 1 != 0 {
@@ -110,7 +110,7 @@ const CRC32C_TABLES: [[u32; 256]; 8] = {
             };
             k += 1;
         }
-        t[0][b] = c;
+        t[0][b as usize] = c;
         b += 1;
     }
     let mut k = 1;
@@ -169,6 +169,18 @@ pub fn crc32c(seq: u32, payload: &[u16]) -> u32 {
     !crc
 }
 
+/// A 32-bit value as two words, low word first (the stream's order).
+fn words_of(x: u32) -> [u16; 2] {
+    let [a, b, c, d] = x.to_le_bytes();
+    [u16::from_le_bytes([a, b]), u16::from_le_bytes([c, d])]
+}
+
+/// The low 16 bits of a bit accumulator: the next payload word.
+fn low_word(acc: u64) -> u16 {
+    let [a, b, ..] = acc.to_le_bytes();
+    u16::from_le_bytes([a, b])
+}
+
 /// Whether `block` (exactly one block of `h`'s length, header included)
 /// carries the right trailer for `h`'s version.
 fn trailer_ok(h: &Header, block: &[u16]) -> bool {
@@ -176,10 +188,9 @@ fn trailer_ok(h: &Header, block: &[u16]) -> bool {
     let tw = trailer_words(h.version);
     let payload = &block[HEADER_WORDS..len - tw];
     if tw == 2 {
-        let c = crc32c(h.seq, payload);
-        block[len - 2] == c as u16 && block[len - 1] == (c >> 16) as u16
+        block[len - 2..] == words_of(crc32c(h.seq, payload))
     } else {
-        block[len - 1] == crc16(h.seq as u16, payload)
+        block[len - 1] == crc16(words_of(h.seq)[0], payload)
     }
 }
 /// CRC-16 with the CCITT polynomial x¹⁶ + x¹² + x⁵ + 1 (0x1021), no
@@ -220,6 +231,8 @@ pub struct Header {
 impl Header {
     /// The header words.
     pub fn words(&self) -> [u16; HEADER_WORDS] {
+        let [seq_lo, seq_hi] = words_of(self.seq);
+        let [period_lo, period_hi] = words_of(self.period);
         let mut w = [
             SYNC[0],
             SYNC[1],
@@ -227,11 +240,11 @@ impl Header {
                 | u16::from(self.bits - 1) << 4
                 | u16::from(self.block_log2) << 8
                 | u16::from(self.flags) << 12,
-            self.seq as u16,
-            (self.seq >> 16) as u16,
+            seq_lo,
+            seq_hi,
             self.gain,
-            self.period as u16,
-            (self.period >> 16) as u16,
+            period_lo,
+            period_hi,
             0,
         ];
         let sum = w[2..8].iter().fold(0u16, |a, &b| a.wrapping_add(b));
@@ -352,8 +365,9 @@ impl Packer {
         self.acc |= sym << self.nacc;
         self.nacc += 2 * b;
         while self.nacc >= 16 {
-            self.payload.push(self.acc as u16);
-            out.push(self.acc as u16);
+            let w = low_word(self.acc);
+            self.payload.push(w);
+            out.push(w);
             self.acc >>= 16;
             self.nacc -= 16;
         }
@@ -361,10 +375,9 @@ impl Packer {
         if self.in_block == 1 << self.block_log2 {
             debug_assert_eq!(self.nacc, 0);
             if trailer_words(self.version) == 2 {
-                let c = crc32c(self.seq, &self.payload);
-                out.extend_from_slice(&[c as u16, (c >> 16) as u16]);
+                out.extend_from_slice(&words_of(crc32c(self.seq, &self.payload)));
             } else {
-                out.push(crc16(self.seq as u16, &self.payload));
+                out.push(crc16(words_of(self.seq)[0], &self.payload));
             }
             self.seq = self.seq.wrapping_add(1);
             self.in_block = 0;
@@ -538,6 +551,9 @@ pub fn unpack(words: &[u16], bits: u8) -> Vec<[i8; 2]> {
     let mut out = Vec::with_capacity(n);
     let (mut acc, mut nacc) = (0u64, 0u32);
     let mut it = words.iter();
+    // Sign extension of a `bits`-bit field, bits ≤ 8 (Header::parse), so
+    // the value fits i8.
+    #[allow(clippy::cast_possible_truncation)]
     let sign = |v: u64| -> i8 {
         let v = v as i64;
         (if v & (1 << (b - 1)) != 0 {
@@ -661,6 +677,15 @@ mod tests {
         }
     }
 
+    /// `n` symbols of the pattern `[i % 3 - 1, i % 2]` (period 6).
+    fn test_syms(n: usize) -> Vec<[i8; 2]> {
+        (0i8..6)
+            .cycle()
+            .take(n)
+            .map(|i| [i % 3 - 1, i % 2])
+            .collect()
+    }
+
     fn pack_v(version: u16, bits: u8, block_log2: u8, syms: &[[i8; 2]]) -> Vec<u16> {
         let mut pk = Packer::with_version(&params(bits, block_log2), version);
         let mut w = Vec::new();
@@ -678,7 +703,7 @@ mod tests {
         assert_eq!(crc32c_bytes(b""), 0);
         // the slicing-by-8 path against a bit-at-a-time definition, on
         // every length 0..64 and both alignments
-        let data: Vec<u8> = (0..80u32).map(|i| (i * 37 + 11) as u8).collect();
+        let data: Vec<u8> = (0..80u32).map(|i| (i * 37 + 11).to_le_bytes()[0]).collect();
         for a in 0..2 {
             for n in 0..64 {
                 let b = &data[a..a + n];
@@ -721,7 +746,7 @@ mod tests {
         assert_eq!(crc32c(0, &w), crc32c_bytes(&b));
         // a long payload crosses the 256-word batches
         let long: Vec<u16> = (0..3072u32)
-            .map(|i| (i.wrapping_mul(2_654_435_761) >> 7) as u16)
+            .map(|i| words_of(i.wrapping_mul(2_654_435_761) >> 7)[0])
             .collect();
         let mut lb = 7u32.to_le_bytes().to_vec();
         lb.extend(long.iter().flat_map(|w| w.to_le_bytes()));
@@ -779,9 +804,7 @@ mod tests {
         skip_crc: bool,
     ) -> Result<(), String> {
         let l = 256usize;
-        let syms: Vec<[i8; 2]> = (0..l * 8)
-            .map(|i| [(i % 3) as i8 - 1, (i % 2) as i8])
-            .collect();
+        let syms = test_syms(l * 8);
         let words = pack_v(version, bits, 8, &syms);
         let block_words = HEADER_WORDS + l * 2 * usize::from(bits) / 16 + trailer_words(version);
         let cut_at = cut_at.min(words.len() - 1);
@@ -830,7 +853,7 @@ mod tests {
         // Every block between the first and last delivered ones is either
         // delivered or counted as lost.
         if let (Some(&a), Some(&b)) = (seqs.first(), seqs.last())
-            && lost as usize + seqs.len() != b - a + 1
+            && lost + seqs.len() as u64 != (b - a + 1) as u64
         {
             return Err(format!(
                 "{lost} lost + {} delivered != {}",
@@ -849,9 +872,7 @@ mod tests {
     #[test]
     fn spliced_block_with_a_matching_crc_is_not_delivered() {
         let l = 256usize;
-        let syms: Vec<[i8; 2]> = (0..l * 8)
-            .map(|i| [(i % 3) as i8 - 1, (i % 2) as i8])
-            .collect();
+        let syms = test_syms(l * 8);
         let words = pack_v(2, 5, 8, &syms);
         let mut damaged = words[..208].to_vec();
         damaged.extend_from_slice(&words[490..]);
@@ -861,7 +882,7 @@ mod tests {
         let spliced = &damaged[170..170 + len];
         assert_eq!(
             spliced[len - 1],
-            crc16(h.seq as u16, &spliced[HEADER_WORDS..len - 1])
+            crc16(words_of(h.seq)[0], &spliced[HEADER_WORDS..len - 1])
         );
         let mut r = Reader::new();
         let mut ev = Vec::new();
@@ -896,9 +917,7 @@ mod tests {
             cut_check(3, bits, at, len, false).unwrap();
         }
         // version 3: the splice cut costs only the two damaged blocks
-        let syms: Vec<[i8; 2]> = (0..256 * 8)
-            .map(|i| [(i % 3) as i8 - 1, (i % 2) as i8])
-            .collect();
+        let syms = test_syms(256 * 8);
         let words = pack_v(3, 7, 8, &syms);
         let mut damaged = words[..702].to_vec();
         damaged.extend_from_slice(&words[703..]);
@@ -951,7 +970,7 @@ mod tests {
                 s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
                 let a = ((s >> 33) as i64).rem_euclid(2 * lim) - lim;
                 let b = ((s >> 13) as i64).rem_euclid(2 * lim) - lim;
-                [a as i8, b as i8]
+                [i8::try_from(a).unwrap(), i8::try_from(b).unwrap()]
             }).collect();
             for v in [2, FORMAT_VERSION] {
                 let words = pack_v(v, bits, 8, &syms);

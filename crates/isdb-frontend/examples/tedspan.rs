@@ -5,6 +5,8 @@
 //!
 //! cargo run --release -p isdb-frontend --example tedspan -- REC [N...]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fast::FastFrontend;
 use isdb_frontend::params::{Design, Params};
 use isdb_frontend::s3sync::{self, SLOT};
@@ -24,18 +26,12 @@ fn main() {
     let mut rec = Recording::open(&path, None, None).unwrap();
     let fs = rec.sample_rate;
     let seg = rec.segments()[0].clone();
-    let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+    let x = rec
+        .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+        .unwrap();
     let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
     let cfo = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
-    let xi: Vec<[i16; 2]> = x
-        .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect();
+    let xi: Vec<[i16; 2]> = x.iter().map(|&v| isdb_frontend::input_sample(v)).collect();
     let mut d = Design::for_system(&KNOWN_SYSTEMS[1], fs);
     d.carrier_offset = cfo;
     d.bits = 8;

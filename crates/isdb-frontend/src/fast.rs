@@ -30,10 +30,12 @@
 //! The mixer, the symbol decision, the loop update and every rounding and
 //! saturation are the reference's, in the same order.
 
-use crate::fixed::{Symbol, round_shift, sat16};
+use crate::fixed::{
+    Symbol, agc_error, gain_of, period_reg, phase_of, quantise, round_shift, sat16, timing_error,
+};
 use crate::params::{
-    E_MAX, FILTER_SHIFT, FRAC_BITS, GAIN_ACC_BITS, GAIN_ACC_EXTRA_BITS, GAIN_FRAC_BITS, KI_FRAC,
-    LOOP_DELAY, NCO_LUT_BITS, ONE, PHASE_BITS, PHASES, POWER_SHIFT, ParamError, Params,
+    FILTER_SHIFT, GAIN_ACC_BITS, GAIN_FRAC_BITS, KI_FRAC, LOOP_DELAY, NCO_LUT_BITS, ONE, PHASES,
+    POWER_SHIFT, ParamError, Params,
 };
 use crate::simd::{self, Isa, Kernels};
 use crate::tables::cos_table;
@@ -303,7 +305,7 @@ impl FastFrontend {
     /// The filter phase of the symbol about to be computed.
     #[inline(always)]
     fn phase(&self) -> usize {
-        ((self.t_acc >> (FRAC_BITS - PHASE_BITS)) & ((1 << PHASE_BITS) - 1)) as usize
+        usize::from(phase_of(self.t_acc))
     }
 
     /// One input sample: the wide-input bookkeeping, the mixer and the
@@ -343,9 +345,12 @@ impl FastFrontend {
         self.pos -= 1;
         self.li[self.pos] = m[0];
         self.lq[self.pos] = m[1];
-        // truncation only matters for the wide kernel, which reads `li`/`lq`
-        self.si[self.pos] = m[0] as i16;
-        self.sq[self.pos] = m[1] as i16;
+        // The 16-bit line holds the low 16 bits: a mixer output beyond i16
+        // comes from a wide input, and the wide kernel then reads `li`/`lq`.
+        #[allow(clippy::cast_possible_truncation)]
+        let narrow = [m[0] as i16, m[1] as i16];
+        self.si[self.pos] = narrow[0];
+        self.sq[self.pos] = narrow[1];
         let fire = self.t_acc < ONE;
         if !fire {
             self.t_acc -= ONE;
@@ -359,7 +364,7 @@ impl FastFrontend {
     /// update, the decision and the output, as the reference does them.
     #[inline(always)]
     fn finish(&mut self, d: [i64; 6]) -> Symbol {
-        let phase = self.phase();
+        let phase = phase_of(self.t_acc);
         if self.pending_len == LOOP_DELAY {
             let (e, err) = self.pending[self.pending_head];
             self.pending_len -= 1;
@@ -384,19 +389,17 @@ impl FastFrontend {
         let y = [filt(yi), filt(yq)];
         let dy = [filt(di), filt(dq)];
         let yk = [filt(ki), filt(kq)];
-        let gain = (self.gain_acc >> GAIN_ACC_EXTRA_BITS) as u16;
+        let gain = gain_of(self.gain_acc);
         let scale = |v: i16| sat16(round_shift(i64::from(v) * i64::from(gain), GAIN_FRAC_BITS));
         let z = [scale(y[0]), scale(y[1])];
         let dz = [scale(dy[0]), scale(dy[1])];
         let zk = [scale(yk[0]), scale(yk[1])];
-        let lim = 1i64 << (p.bits - 1);
-        let quant =
-            |v: i16| round_shift(i64::from(v), u32::from(p.q_shift)).clamp(-lim, lim - 1) as i8;
+        let quant = |v: i16| quantise(v, p.q_shift, p.bits);
         let q = [quant(zk[0]), quant(zk[1])];
         let ted = i64::from(z[0]) * i64::from(dz[0]) + i64::from(z[1]) * i64::from(dz[1]);
-        let e = (ted >> p.ted_shift).clamp(-E_MAX, E_MAX) as i32;
+        let e = timing_error(ted, p.ted_shift);
         let pow = (i64::from(zk[0]).pow(2) + i64::from(zk[1]).pow(2)) >> POWER_SHIFT;
-        let err = (i64::from(p.agc_target) - pow) as i32;
+        let err = agc_error(p.agc_target, pow);
         let mut tail = self.pending_head + self.pending_len;
         if tail >= LOOP_DELAY {
             tail -= LOOP_DELAY;
@@ -405,12 +408,12 @@ impl FastFrontend {
         self.pending_len += 1;
         let sym = Symbol {
             sample: self.samples,
-            phase: phase as u8,
+            phase,
             y,
             dy,
             yk,
             gain,
-            period: self.period as u32,
+            period: period_reg(self.period),
             z,
             dz,
             zk,
@@ -491,7 +494,10 @@ fn each_baseline<const W: usize, F: FnMut(&Symbol)>(f: &mut FastFrontend, (x, g)
 /// `c = hi·2⁹ + lo`, `0 ≤ lo < 512`: exact for 18-bit `c` (|hi| ≤ 256).
 fn split_coef(c: i32) -> (i16, i16) {
     let lo = c & 0x1FF;
-    ((c >> 9) as i16, lo as i16)
+    // c is an 18-bit coefficient (Params::validate), so c >> 9 is 9 bits.
+    #[allow(clippy::cast_possible_truncation)]
+    let hi = (c >> 9) as i16;
+    (hi, lo as i16)
 }
 
 /// `Σ c·x` over `W` 16-bit pairs, in `i32`. Written as `pmaddwd` does it

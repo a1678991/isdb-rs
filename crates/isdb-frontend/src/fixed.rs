@@ -130,7 +130,7 @@ impl Frontend {
 
     /// The period register (Q8.24 samples).
     pub fn period(&self) -> u32 {
-        self.period as u32
+        period_reg(self.period)
     }
 
     /// The AGC gain (Q6.10).
@@ -177,7 +177,7 @@ impl Frontend {
 
     fn symbol(&mut self) -> Symbol {
         let p = &self.p;
-        let phase = ((self.t_acc >> (FRAC_BITS - PHASE_BITS)) & ((1 << PHASE_BITS) - 1)) as usize;
+        let phase = phase_of(self.t_acc);
         if self.pending.len() == LOOP_DELAY {
             let (e, err) = self
                 .pending
@@ -193,7 +193,11 @@ impl Frontend {
             self.gain_acc = (self.gain_acc + (i64::from(err) >> p.agc_shift))
                 .clamp(0, (1 << GAIN_ACC_BITS) - 1);
         }
-        let (h, g, kb) = (&p.h[phase], &p.g[phase], &p.k[phase]);
+        let (h, g, kb) = (
+            &p.h[usize::from(phase)],
+            &p.g[usize::from(phase)],
+            &p.k[usize::from(phase)],
+        );
         let (mut yi, mut yq, mut di, mut dq, mut ki, mut kq) = (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
         for t in 0..self.taps {
             let s = self.line[(self.head + t) % self.taps];
@@ -214,23 +218,21 @@ impl Frontend {
         let z = [scale(y[0]), scale(y[1])];
         let dz = [scale(dy[0]), scale(dy[1])];
         let zk = [scale(yk[0]), scale(yk[1])];
-        let lim = 1i64 << (p.bits - 1);
-        let quant =
-            |v: i16| round_shift(i64::from(v), u32::from(p.q_shift)).clamp(-lim, lim - 1) as i8;
+        let quant = |v: i16| quantise(v, p.q_shift, p.bits);
         let q = [quant(zk[0]), quant(zk[1])];
         let ted = i64::from(z[0]) * i64::from(dz[0]) + i64::from(z[1]) * i64::from(dz[1]);
-        let e = (ted >> p.ted_shift).clamp(-E_MAX, E_MAX) as i32;
+        let e = timing_error(ted, p.ted_shift);
         let pow = (i64::from(zk[0]).pow(2) + i64::from(zk[1]).pow(2)) >> POWER_SHIFT;
-        let err = (i64::from(p.agc_target) - pow) as i32;
+        let err = agc_error(p.agc_target, pow);
         self.pending.push_back((e, err));
         let sym = Symbol {
             sample: self.samples,
-            phase: phase as u8,
+            phase,
             y,
             dy,
             yk,
             gain,
-            period: self.period as u32,
+            period: period_reg(self.period),
             z,
             dz,
             zk,
@@ -253,11 +255,66 @@ pub fn round_shift(v: i64, s: u32) -> i64 {
 /// Saturate to `i16`.
 #[inline]
 pub fn sat16(v: i64) -> i16 {
-    v.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+    // Clamped to the i16 range, so the cast is exact.
+    #[allow(clippy::cast_possible_truncation)]
+    let s = v.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
+    s
 }
 
-fn gain_of(acc: i64) -> u16 {
-    (acc >> GAIN_ACC_EXTRA_BITS) as u16
+/// Step 3.1: the filter phase `(t_acc >> 18) & 63` of the symbol about to
+/// be computed.
+#[inline(always)]
+pub(crate) fn phase_of(t_acc: i64) -> u8 {
+    ((t_acc >> (FRAC_BITS - PHASE_BITS)) & ((1 << PHASE_BITS) - 1)) as u8
+}
+
+/// Step 3.4: the AGC gain `G = acc >> 8` (Q6.10).
+#[inline(always)]
+pub(crate) fn gain_of(acc: i64) -> u16 {
+    // The accumulator is clamped to 0..2^GAIN_ACC_BITS (24 bits), so its
+    // top 16 bits fit.
+    #[allow(clippy::cast_possible_truncation)]
+    let g = (acc >> GAIN_ACC_EXTRA_BITS) as u16;
+    g
+}
+
+/// Step 3.5: the output component `clamp(round(v / 2^q_shift), ±2^(bits−1))`.
+#[inline(always)]
+pub(crate) fn quantise(v: i16, q_shift: u8, bits: u8) -> i8 {
+    let lim = 1i64 << (bits - 1);
+    // DSP quantiser: clamped to ±2^(bits−1) with bits ≤ 8
+    // (Params::validate), so the cast is exact.
+    #[allow(clippy::cast_possible_truncation)]
+    let q = round_shift(i64::from(v), u32::from(q_shift)).clamp(-lim, lim - 1) as i8;
+    q
+}
+
+/// Step 3.6: the timing error `clamp(ted >> ted_shift, ±E_MAX)`.
+#[inline(always)]
+pub(crate) fn timing_error(ted: i64, ted_shift: u8) -> i32 {
+    // Clamped to ±E_MAX (24 bits), so the cast is exact.
+    #[allow(clippy::cast_possible_truncation)]
+    let e = (ted >> ted_shift).clamp(-E_MAX, E_MAX) as i32;
+    e
+}
+
+/// Step 3.6: the AGC error `agc_target − pow`.
+#[inline(always)]
+pub(crate) fn agc_error(agc_target: u32, pow: i64) -> i32 {
+    // pow ≤ 2·32768² >> 12 = 2^19 and a designed agc_target is at most 2^18
+    // (Params::design, agc_rms ≤ 1), so the difference fits i32.
+    #[allow(clippy::cast_possible_truncation)]
+    let err = (i64::from(agc_target) - pow) as i32;
+    err
+}
+
+/// The period register (Q8.24) from the loop's `i64` value.
+#[inline(always)]
+pub(crate) fn period_reg(period: i64) -> u32 {
+    // The loop clamps the period to period_min..=period_max, both u32.
+    #[allow(clippy::cast_possible_truncation)]
+    let r = period as u32;
+    r
 }
 
 #[cfg(test)]

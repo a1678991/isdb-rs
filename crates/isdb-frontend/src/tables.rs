@@ -16,9 +16,10 @@ pub const COS_AMPLITUDE: f64 = 32767.0;
 /// The sine is read from it at k + 768.
 pub fn cos_table() -> Vec<i16> {
     let n = 1usize << NCO_LUT_BITS;
-    (0..n)
-        .map(|k| (COS_AMPLITUDE * (2.0 * PI * k as f64 / n as f64).cos()).round() as i16)
-        .collect()
+    // |round(32767·cos)| ≤ 32767, so the cast is exact.
+    #[allow(clippy::cast_possible_truncation)]
+    let entry = |k: usize| (COS_AMPLITUDE * (2.0 * PI * k as f64 / n as f64).cos()).round() as i16;
+    (0..n).map(entry).collect()
 }
 
 /// Root-raised-cosine pulse of roll-off `alpha` at `t` symbol periods,
@@ -115,12 +116,11 @@ pub fn matched_filter_banks(
     let quant = |bank: &[Vec<f64>]| {
         let s = bank_scale(bank);
         let lim = f64::from(1i32 << (COEF_BITS - 1)) - 1.0;
+        // Rounded and clamped to the COEF_BITS-bit range, so the cast is exact.
+        #[allow(clippy::cast_possible_truncation)]
+        let coef = |c: &f64| (c * s).round().clamp(-lim, lim) as i32;
         bank.iter()
-            .map(|p| {
-                p.iter()
-                    .map(|c| (c * s).round().clamp(-lim, lim) as i32)
-                    .collect()
-            })
+            .map(|p| p.iter().map(coef).collect())
             .collect::<Vec<Vec<i32>>>()
     };
     (quant(&hf), quant(&gf))
@@ -156,13 +156,10 @@ pub fn output_bank(sps: f64, alpha: f64, taps: usize, beta: f64, trim: f64) -> V
         .fold(0.0, f64::max);
     let budget = COEF_SUM_MAX as f64 - taps as f64 / 2.0;
     let fit = if max > budget { budget / max } else { 1.0 };
-    bank.iter()
-        .map(|p| {
-            p.iter()
-                .map(|c| (c * fit).round().clamp(-lim, lim) as i32)
-                .collect()
-        })
-        .collect()
+    // Rounded and clamped to the COEF_BITS-bit range, so the cast is exact.
+    #[allow(clippy::cast_possible_truncation)]
+    let coef = |c: &f64| (c * fit).round().clamp(-lim, lim) as i32;
+    bank.iter().map(|p| p.iter().map(coef).collect()).collect()
 }
 
 /// Slope of the timing detector, in loop error units (after `ted_shift`)
@@ -170,6 +167,10 @@ pub fn output_bank(sps: f64, alpha: f64, taps: usize, beta: f64, trim: f64) -> V
 /// the integer banks `h`, `g` at `sps` samples per symbol with |z| held at
 /// `agc_rms`·32768 RMS. Measured on a noiseless QPSK pulse train with a
 /// fixed pseudo-random symbol sequence; only the loop gains depend on it.
+// The f64 sample positions of a 600-symbol measurement (sps < 4, so all
+// below 2^12) are truncated to i64 / usize indices on purpose; negative
+// ones are clamped (max(0)) or skipped.
+#[allow(clippy::cast_possible_truncation)]
 pub fn ted_gain(
     h: &[Vec<i32>],
     g: &[Vec<i32>],
@@ -226,12 +227,15 @@ pub fn ted_gain(
         let n0 = (s - half).floor() as i64;
         let (mut a, mut b) = (0.0, 0.0);
         for n in n0..=n0 + taps as i64 + 1 {
-            if n < 0 || n as usize >= x.len() {
+            let Ok(i) = usize::try_from(n) else {
+                continue;
+            };
+            if i >= x.len() {
                 continue;
             }
             let w = f(s - n as f64);
-            a += x[n as usize].0 * w;
-            b += x[n as usize].1 * w;
+            a += x[i].0 * w;
+            b += x[i].1 * w;
         }
         let k = f64::from(1u32 << FILTER_SHIFT);
         (a / k, b / k)

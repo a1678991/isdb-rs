@@ -5,6 +5,8 @@
 //!
 //! cargo run --release -p isdb-frontend --example s3sync -- SYMBOLS_FILE
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::format::{Event, Reader};
 use isdb_frontend::s3sync;
 use num_complex::Complex64 as C;

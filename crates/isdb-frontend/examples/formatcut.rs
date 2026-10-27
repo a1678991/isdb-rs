@@ -6,6 +6,8 @@
 //!
 //! cargo run --release -p isdb-frontend --example formatcut -- [BITS CUT_AT CUT_LEN [VERSION]]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::format::{Event, HEADER_WORDS, Packer, Reader, trailer_words};
 use isdb_frontend::params::{Design, Params};
 
@@ -15,8 +17,8 @@ fn main() {
         .map(|s| s.parse().unwrap())
         .collect();
     let (bits, cut_at, cut_len, version) = match a[..] {
-        [b, c, l, v] => (b as u8, c, l, v as u16),
-        [b, c, l] => (b as u8, c, l, 2),
+        [b, c, l, v] => (u8::try_from(b).unwrap(), c, l, u16::try_from(v).unwrap()),
+        [b, c, l] => (u8::try_from(b).unwrap(), c, l, 2),
         _ => (5, 208, 282, 2),
     };
     let l = 256usize;
@@ -24,8 +26,11 @@ fn main() {
     d.bits = bits;
     d.block_log2 = 8;
     let p = Params::design(&d).unwrap();
-    let syms: Vec<[i8; 2]> = (0..l * 8)
-        .map(|i| [(i % 3) as i8 - 1, (i % 2) as i8])
+    // the pattern [i % 3 - 1, i % 2] (period 6)
+    let syms: Vec<[i8; 2]> = (0i8..6)
+        .cycle()
+        .take(l * 8)
+        .map(|i| [i % 3 - 1, i % 2])
         .collect();
     let mut pk = Packer::with_version(&p, version);
     let mut words = Vec::new();
