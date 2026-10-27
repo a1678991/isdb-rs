@@ -125,6 +125,12 @@ assert_eq!(back.encode().unwrap(), bytes); // encode(decode(x)) == x
   `DemuxEvent` (pointer_field mismatch, bad stuffing, unexpected bytes,
   partial section discarded on CC break or TEI) and `PesEvent`; continuity
   events are classified per §2.4.3.3 (`Continuity`, `CcEventKind`).
+- **Diagnostics are `tracing` events** in addition to the values above,
+  never printed: every `CcEvent` and `DemuxEvent`, an assembler reset, a
+  section_length over 4093 and a CRC_32 failure in `section::split_*` are
+  `debug` events with `pid`, `packet_index`, `table_id`, `expected` /
+  `got` fields; nothing is emitted per packet that is in order. The
+  crate installs no subscriber (the `isdb` binary does).
 - No panics on malformed input in decoders.
 
 ## Verification

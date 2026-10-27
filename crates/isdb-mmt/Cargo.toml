@@ -17,9 +17,11 @@ include = ["/src/**", "/README.md", "/SPEC-NOTES.md", "/LICENSE", "/NOTICE"]
 isdb-tlv.workspace = true
 isdb-si.workspace = true
 isdb-ts.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+tracing-subscriber = { workspace = true, features = ["registry"] }
 
 [lints]
 workspace = true

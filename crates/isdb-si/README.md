@@ -100,6 +100,11 @@ assert!(dev.iter().any(|d| d.kind == conformance::Kind::ReservedBits));
   `descriptor_length` or decoding fails (no silent truncation).
 - **Errors are not downgraded.** Length, CRC and syntax errors are `Err`;
   only a missing typed decoder yields `Unknown`.
+- **Diagnostics are `tracing` events**, never printed: an SI table_id
+  decoded on a PID Table 5-1 does not assign to it is a `debug` event
+  (`pid`, `table_id`) next to the `Unknown` it returns. `conformance::check`
+  stays a pure function and emits nothing; the crate installs no
+  subscriber.
 - **Conformance is separate.** Codecs accept any field value the syntax can
   carry (e.g. reserved bits '0', section_length up to 4093 for every
   table); `conformance` reports what B10 states (reserved bits '1', 1021

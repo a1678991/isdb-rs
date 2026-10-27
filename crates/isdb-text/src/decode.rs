@@ -3,9 +3,17 @@
 //! ARIB STD-B24 v6.4 Vol.1 Part 2 §7.1 (code structure, Tables 7-1 … 7-3,
 //! control functions Tables 7-14 … 7-18) and Annex E.4 (conversion of the
 //! 8-bit code to UCS).
+//!
+//! Every [`Issue`] a decode records (an unknown escape sequence or control
+//! code, an unmapped character, …) is also a `tracing` event at `trace`
+//! level with `offset` and `kind` fields: text decoding runs per
+//! character inside the SI decoders, so nothing it says is louder than
+//! that.
 
 use std::collections::HashMap;
 use std::fmt;
+
+use tracing::trace;
 
 use crate::control as c;
 use crate::sets::{CharSize, GraphicSet, InitialState};
@@ -230,6 +238,11 @@ fn is_graphic(b: u8) -> bool {
 
 impl Decoder {
     fn issue(&mut self, offset: usize, kind: IssueKind) {
+        trace!(
+            offset,
+            kind = ?kind,
+            "ARIB text: {kind:?} at byte {offset}"
+        );
         self.issues.push(Issue { offset, kind });
     }
 

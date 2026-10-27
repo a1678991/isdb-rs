@@ -16,6 +16,8 @@
 //! decoding then encoding a valid section reproduces it byte for byte.  Spec
 //! *values* of reserved bits are checked by validators, not here.
 
+use tracing::debug;
+
 use crate::bits::{BitReader, BitWriter};
 use crate::crc::crc32;
 use crate::error::{Error, Result};
@@ -87,10 +89,22 @@ pub struct ShortHeader {
 }
 
 /// Split a complete long section into header and body (bytes between
-/// last_section_number and CRC_32), verifying length and CRC_32.
+/// last_section_number and CRC_32), verifying length and CRC_32.  A CRC
+/// failure is also a `tracing` event at `debug` level (`table_id`,
+/// `table_id_extension`, `residue`).
 pub fn split_long(sec: &[u8]) -> Result<(LongHeader, &[u8])> {
     let (h, body, residue) = split_long_unchecked(sec)?;
     if residue != 0 {
+        debug!(
+            table_id = h.table_id,
+            table_id_extension = h.table_id_extension,
+            section_number = h.section_number,
+            residue,
+            "table_id {:#04x} (extension {:#06x}, section {}): CRC_32 mismatch (residue {residue:#010x})",
+            h.table_id,
+            h.table_id_extension,
+            h.section_number
+        );
         return Err(Error::Crc {
             what: "long section",
             residue,
@@ -180,7 +194,8 @@ pub fn build_long(h: &LongHeader, body: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Split a complete short section into header and body.  With `has_crc`
-/// the last four bytes are CRC_32 and are verified and excluded from body.
+/// the last four bytes are CRC_32 and are verified and excluded from body;
+/// a CRC failure is also a `tracing` event at `debug` level.
 pub fn split_short(sec: &[u8], has_crc: bool) -> Result<(ShortHeader, &[u8])> {
     let mut r = BitReader::new(sec, "short section header");
     let table_id = r.u8()?;
@@ -217,6 +232,10 @@ pub fn split_short(sec: &[u8], has_crc: bool) -> Result<(ShortHeader, &[u8])> {
         }
         let residue = crc32(sec);
         if residue != 0 {
+            debug!(
+                table_id,
+                residue, "table_id {table_id:#04x}: CRC_32 mismatch (residue {residue:#010x})"
+            );
             return Err(Error::Crc {
                 what: "short section",
                 residue,

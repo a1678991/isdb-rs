@@ -6,6 +6,12 @@
 //! Tables are kept per (table id, extension, section number) at their
 //! latest version, so a repeated table is decoded once ("repeat
 //! suppression"); a changed version replaces it and is counted.
+//!
+//! Every count of a deviation in [`Counters`] (an IP packet that does not
+//! decode, a table whose CRC fails or that is malformed, a version change)
+//! is also a `tracing` event at `debug` level; a UDP payload that is
+//! neither NTP nor MMTP is a `trace` event (it is a classification, not a
+//! deviation).  The reassemblers emit their own (see `mpu`, `message`).
 
 use crate::message::{Messages, TableBytes};
 use crate::mpu::{Mfu, Reassembler};
@@ -14,6 +20,7 @@ use isdb_tlv::ip::{Datagram, compressed, ipv4, ipv6};
 use isdb_tlv::mmtp::{self, PayloadType};
 use isdb_tlv::tlv::{Packet, PacketType};
 use std::collections::BTreeMap;
+use tracing::{debug, trace};
 
 /// NTP's UDP port (§3.2).
 pub const NTP_PORT: u16 = 123;
@@ -118,7 +125,15 @@ impl Decoder {
         };
         match dg {
             Some(Ok(d)) => self.datagram(&d, mfus),
-            Some(Err(_)) => self.counters.ip_errors += 1,
+            Some(Err(e)) => {
+                self.counters.ip_errors += 1;
+                debug!(
+                    tlv_type = p.kind.name(),
+                    error = %e,
+                    "TLV packet {}: IP content does not decode: {e}",
+                    self.counters.tlv_packets - 1
+                );
+            }
             None => {}
         }
     }
@@ -161,6 +176,11 @@ impl Decoder {
         }
         let Some((h, payload)) = mmtp::parse(&d.payload) else {
             self.counters.non_mmtp += 1;
+            trace!(
+                bytes = d.payload.len(),
+                "UDP payload of {} bytes is neither NTP nor MMTP",
+                d.payload.len()
+            );
             return;
         };
         match h.payload_type {
@@ -192,23 +212,61 @@ impl Decoder {
                         && old.version != m.version
                     {
                         self.counters.version_changes += 1;
+                        debug!(
+                            packet_id = t.packet_id,
+                            table_id = id,
+                            old = old.version,
+                            new = m.version,
+                            "packet id {:#06x}: MPT version changed {} → {}",
+                            t.packet_id,
+                            old.version,
+                            m.version
+                        );
                     }
                     self.mpts.insert(t.packet_id, m);
                 }
-                None => self.counters.malformed += 1,
+                None => {
+                    self.counters.malformed += 1;
+                    debug!(
+                        packet_id = t.packet_id,
+                        table_id = id,
+                        "packet id {:#06x}: MPT does not parse",
+                        t.packet_id
+                    );
+                }
             },
             0x80 => match Plt::parse(b) {
                 Some(p) => {
-                    if self.plt.as_ref().is_some_and(|o| o.version != p.version) {
+                    if let Some(old) = &self.plt
+                        && old.version != p.version
+                    {
                         self.counters.version_changes += 1;
+                        debug!(
+                            packet_id = t.packet_id,
+                            table_id = id,
+                            old = old.version,
+                            new = p.version,
+                            "packet id {:#06x}: PLT version changed {} → {}",
+                            t.packet_id,
+                            old.version,
+                            p.version
+                        );
                     }
                     self.plt = Some(p);
                 }
-                None => self.counters.malformed += 1,
+                None => {
+                    self.counters.malformed += 1;
+                    debug!(
+                        packet_id = t.packet_id,
+                        table_id = id,
+                        "packet id {:#06x}: PLT does not parse",
+                        t.packet_id
+                    );
+                }
             },
             0xA1 => match Tot::parse(b) {
                 Ok(tot) => self.tot = Some(tot),
-                Err(e) => self.error(e),
+                Err(e) => self.error(id, e),
             },
             0x8B..=0x9B | 0x9D | 0x9F | 0xA0 => {
                 // long sections: key from the header before decoding
@@ -217,6 +275,12 @@ impl Decoder {
                     b.get(6),
                 ) else {
                     self.counters.malformed += 1;
+                    debug!(
+                        packet_id = t.packet_id,
+                        table_id = id,
+                        "packet id {:#06x}: table_id {id:#04x} section truncated in its header",
+                        t.packet_id
+                    );
                     return;
                 };
                 let key = (id, ext, *sn);
@@ -251,12 +315,32 @@ impl Decoder {
         }
     }
 
-    fn error(&mut self, e: SectionError) {
-        match e {
-            SectionError::Crc => self.counters.crc_errors += 1,
-            _ => self.counters.malformed += 1,
-        }
+    fn error(&mut self, table_id: u8, e: SectionError) {
+        section_error(&mut self.counters, table_id, &e);
     }
+}
+
+/// Count a section's decode failure and emit it (`debug`).
+fn section_error(c: &mut Counters, table_id: u8, e: &SectionError) {
+    let why = match e {
+        SectionError::Crc => {
+            c.crc_errors += 1;
+            "CRC_32 mismatch"
+        }
+        SectionError::Truncated => {
+            c.malformed += 1;
+            "truncated"
+        }
+        SectionError::Malformed => {
+            c.malformed += 1;
+            "body does not follow the table structure"
+        }
+    };
+    debug!(
+        table_id,
+        error = ?e,
+        "table_id {table_id:#04x}: section rejected: {why}"
+    );
 }
 
 /// Keep a section-format table at its latest version: every copy's CRC
@@ -271,12 +355,8 @@ fn keep<T>(
     version_of: impl Fn(&T) -> u8,
 ) {
     match crate::table::long_section(section) {
-        Err(SectionError::Crc) => {
-            c.crc_errors += 1;
-            return;
-        }
-        Err(_) => {
-            c.malformed += 1;
+        Err(e) => {
+            section_error(c, key.0, &e);
             return;
         }
         Ok((h, _)) => {
@@ -285,6 +365,19 @@ fn keep<T>(
                     return;
                 }
                 c.version_changes += 1;
+                debug!(
+                    table_id = key.0,
+                    extension = key.1,
+                    section_number = key.2,
+                    old = version_of(old),
+                    new = h.version,
+                    "table_id {:#04x} (extension {:#06x}, section {}): version changed {} → {}",
+                    key.0,
+                    key.1,
+                    key.2,
+                    version_of(old),
+                    h.version
+                );
             }
         }
     }
@@ -292,7 +385,6 @@ fn keep<T>(
         Ok(t) => {
             map.insert(key, t);
         }
-        Err(SectionError::Crc) => c.crc_errors += 1,
-        Err(_) => c.malformed += 1,
+        Err(e) => section_error(c, key.0, &e),
     }
 }

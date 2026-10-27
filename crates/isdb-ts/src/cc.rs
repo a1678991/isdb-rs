@@ -20,9 +20,15 @@
 //! arithmetic; [`Tracker`] is the per-PID state machine shared by the
 //! checker ([`CcChecker`]) and the section/PES reassemblers; [`Counter`]
 //! generates counters on the transmit side.
+//!
+//! [`CcChecker`] also emits every event it returns as a `tracing` event at
+//! `debug` level (fields `pid`, `packet_index`, and `expected` / `got`
+//! where the kind has them); a continuous packet emits nothing.
 
 use std::collections::HashMap;
 use std::fmt;
+
+use tracing::debug;
 
 use crate::packet::{Header, PACKET_SIZE, View};
 use crate::pid::Pid;
@@ -344,7 +350,8 @@ impl CcChecker {
 
     /// Feed packet `index`; returns an event if the packet is not simply
     /// continuous.  Structurally invalid packets (adaptation field past the
-    /// end) are classified from the header alone.
+    /// end) are classified from the header alone.  Every event returned is
+    /// also emitted as a `tracing` event at `debug` level.
     pub fn push(&mut self, index: u64, pkt: &[u8; PACKET_SIZE]) -> Option<CcEvent> {
         let (h, disc) = match View::parse(pkt) {
             Ok(v) => (v.header, v.discontinuity_indicator()),
@@ -354,6 +361,7 @@ impl CcChecker {
             return None;
         }
         let ev = |kind| {
+            emit(h.pid, index, &kind);
             Some(CcEvent {
                 packet_index: index,
                 pid: h.pid,
@@ -386,6 +394,52 @@ impl CcChecker {
             st.prev = *pkt;
         }
         out
+    }
+}
+
+/// The `tracing` event of one continuity event (`debug`: per-packet
+/// detail, but only for packets that deviate).  The message names the PID
+/// and the counters; the fields repeat them for the JSON format.
+fn emit(pid: Pid, index: u64, kind: &CcEventKind) {
+    match *kind {
+        CcEventKind::Break { expected, got } => debug!(
+            pid = %pid,
+            packet_index = index,
+            expected = %expected,
+            got = %got,
+            "PID {pid}: continuity_counter break at packet {index}: expected {expected}, got {got}"
+        ),
+        CcEventKind::Discontinuity { expected, got } => debug!(
+            pid = %pid,
+            packet_index = index,
+            expected = %expected,
+            got = %got,
+            "PID {pid}: signalled discontinuity at packet {index}: expected {expected}, got {got}"
+        ),
+        CcEventKind::Duplicate { identical } => debug!(
+            pid = %pid,
+            packet_index = index,
+            identical,
+            "PID {pid}: duplicate packet {index}{}",
+            if identical { "" } else { " (content differs)" }
+        ),
+        CcEventKind::ExcessDuplicate => debug!(
+            pid = %pid,
+            packet_index = index,
+            "PID {pid}: more than one duplicate in a row at packet {index}"
+        ),
+        CcEventKind::NoPayloadChanged { previous, got } => debug!(
+            pid = %pid,
+            packet_index = index,
+            previous = %previous,
+            got = %got,
+            "PID {pid}: continuity_counter changed without payload at packet {index}: previous {previous}, got {got}"
+        ),
+        CcEventKind::TransportError => debug!(
+            pid = %pid,
+            packet_index = index,
+            "PID {pid}: transport_error_indicator set, packet {index} not used"
+        ),
     }
 }
 

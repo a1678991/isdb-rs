@@ -15,6 +15,14 @@ reads what they carry.
 | `es` | HEVC as an Annex B byte stream, MPEG-4 audio as LOAS, caption MFUs (Table 9-1) |
 | `decoder` | the streaming decoder over a stream's TLV packets: NTP time, TLV-SI, MMT-SI tables kept at their latest version (repeats not decoded again), MFUs with their asset |
 
+Diagnostics are `tracing` events, never printed: every deviation the
+counters record (a packet-sequence gap, an MFU or message dropped as lost
+or oversize, an orphan fragment, a malformed payload, a table whose CRC
+fails, a version change) is a `debug` event with the `packet_id` /
+`table_id`; a UDP payload that is neither NTP nor MMTP is `trace`.
+Nothing is emitted for a packet that reassembles cleanly. The crate
+installs no subscriber (the `isdb` binary does).
+
 Why a crate of its own: `isdb-tlv` is the transport (packets, flows,
 headers, counters); the tables, descriptors and media framing here are
 larger and depend on `isdb-si` (MJD/BCD times), which the transport does
