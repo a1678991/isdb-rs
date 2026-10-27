@@ -13,6 +13,7 @@ use serde_json::json;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tracing::info;
 
 /// `isdb capture` arguments.
 #[derive(Debug, Args)]
@@ -192,8 +193,12 @@ impl Write for Progress<'_> {
         if self.last.elapsed() >= Duration::from_secs(5) {
             self.last = Instant::now();
             let t = self.start.elapsed().as_secs_f64();
-            eprintln!(
-                "[capture] {:.1} MB written in {t:.1} s ({:.1} MB/s)",
+            info!(
+                target: "isdb::capture",
+                bytes = self.bytes,
+                seconds = t,
+                mb_per_s = self.bytes as f64 / t / 1e6,
+                "{:.1} MB written in {t:.1} s ({:.1} MB/s)",
                 self.bytes as f64 / 1e6,
                 self.bytes as f64 / t / 1e6
             );
@@ -265,8 +270,18 @@ fn take_captures(
             .with_context(|| format!("capture into {}", path.display()))?;
         let secs = t.elapsed().as_secs_f64();
         let lost: u64 = c.gaps.iter().map(|g| g.discarded).sum();
-        eprintln!(
-            "[capture] segment {}/{}: {} samples ({}) at {:.2} Hz, LO {} Hz, {}, {} ({secs:.2} s, {:.1} MB/s); {}",
+        info!(
+            target: "isdb::capture",
+            segment = i + 1,
+            segments = a.segments,
+            samples = c.samples,
+            sample_rate_hz = c.sample_rate_hz,
+            lo_hz = c.lo_hz,
+            seconds = secs,
+            mb_per_s = out.bytes as f64 / secs / 1e6,
+            losses = c.gaps.len(),
+            samples_discarded = lost,
+            "segment {}/{}: {} samples ({}) at {:.2} Hz, LO {} Hz, {}, {} ({secs:.2} s, {:.1} MB/s); {}",
             i + 1,
             a.segments,
             c.samples,
@@ -330,9 +345,19 @@ pub fn run(a: &CaptureArgs) -> Result<()> {
         );
     }
     let label = a.freq.channel.map(|c| c.label()).unwrap_or_default();
-    eprintln!("{} capture settings{label}:\n{settings}", backend.name());
-    eprintln!(
-        "  capture      {} segment(s) of {samples} samples ({:.1} ms each at the requested rate); {}",
+    info!(
+        target: "isdb::capture",
+        backend = backend.name(),
+        "{} capture settings{label}:\n{settings}",
+        backend.name()
+    );
+    info!(
+        target: "isdb::capture",
+        segments = a.segments,
+        samples,
+        milliseconds = samples as f64 / cfg.sample_rate_hz() * 1e3,
+        limit,
+        "capture      {} segment(s) of {samples} samples ({:.1} ms each at the requested rate); {}",
         a.segments,
         samples as f64 / cfg.sample_rate_hz() * 1e3,
         if limit == u64::MAX {
@@ -342,18 +367,25 @@ pub fn run(a: &CaptureArgs) -> Result<()> {
         }
     );
     let Some(out) = a.out.as_deref() else {
-        eprintln!("  output       none (--discard)");
+        info!(target: "isdb::capture", "output       none (--discard)");
         if a.dry_run {
-            eprintln!("dry run: radio not opened");
+            info!(target: "isdb::capture", "dry run: radio not opened");
             return Ok(());
         }
         take_captures(a, backend, &cfg, samples, None)?;
         return Ok(());
     };
     let meta_path = meta_path_for(out);
-    eprintln!("  output       {} + {}", out.display(), meta_path.display());
+    info!(
+        target: "isdb::capture",
+        file = %out.display(),
+        meta = %meta_path.display(),
+        "output       {} + {}",
+        out.display(),
+        meta_path.display()
+    );
     if a.dry_run {
-        eprintln!("dry run: radio not opened");
+        info!(target: "isdb::capture", "dry run: radio not opened");
         return Ok(());
     }
     let data = create(out, a.overwrite)?;
@@ -371,8 +403,14 @@ pub fn run(a: &CaptureArgs) -> Result<()> {
             .write_all(m.to_json().as_bytes())
             .with_context(|| format!("write {}", meta_path.display()))?;
         let total: u64 = caps.iter().map(|c| c.samples).sum();
-        eprintln!(
-            "[capture] done: {total} samples ({:.1} ms) in {}, {} SigMF segment(s); device {}",
+        info!(
+            target: "isdb::capture",
+            samples = total,
+            milliseconds = total as f64 / m.sample_rate * 1e3,
+            file = %out.display(),
+            segments = m.captures.len(),
+            device = caps[0].device,
+            "done: {total} samples ({:.1} ms) in {}, {} SigMF segment(s); device {}",
             total as f64 / m.sample_rate * 1e3,
             out.display(),
             m.captures.len(),

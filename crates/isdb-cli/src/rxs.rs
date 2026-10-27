@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::{info, warn};
 
 /// The default sample rate for ISDB-S from a radio: ≥ (1 + 0.35) × 28.86
 /// Mbaud = 38.96 Msps (BO.1408-1 §9 roll-off), the rate the front end is
@@ -322,15 +323,29 @@ pub fn decode(
 /// The summary lines printed at the end.
 pub fn report(stats: &Stats, secs: f64) {
     if let Some(w) = stats.words {
-        eprintln!(
-            "[rx] time: {:.2} s for {secs:.3} s of signal ({:.2}× real time, startup included); receiver {:.2} s; at most {:.2} s of symbols queued behind the receiver",
+        info!(
+            target: "isdb::rx",
+            wall_s = stats.wall_s,
+            seconds = secs,
+            speed = secs / stats.wall_s.max(1e-9),
+            back_s = stats.back_s,
+            max_queued_symbols = w.max_queued_symbols,
+            "time: {:.2} s for {secs:.3} s of signal ({:.2}× real time, startup included); receiver {:.2} s; at most {:.2} s of symbols queued behind the receiver",
             stats.wall_s,
             secs / stats.wall_s.max(1e-9),
             stats.back_s,
             w.max_queued_symbols as f64 / isdbs_phy::frontend::system().symbol_rate_hz
         );
-        eprintln!(
-            "[rx] stream: {} blocks of symbols; {} loss(es) ({} blocks missing, {} of them dropped on the host, {} words skipped), {} resync(s){}: each is a discontinuity in the TS",
+        info!(
+            target: "isdb::rx",
+            blocks = w.blocks,
+            losses = w.losses,
+            blocks_lost = w.blocks_lost,
+            blocks_dropped = w.blocks_dropped,
+            words_skipped = w.words_skipped,
+            resyncs = w.resyncs,
+            stopped = w.stopped,
+            "stream: {} blocks of symbols; {} loss(es) ({} blocks missing, {} of them dropped on the host, {} words skipped), {} resync(s){}: each is a discontinuity in the TS",
             w.blocks,
             w.losses,
             w.blocks_lost,
@@ -344,8 +359,16 @@ pub fn report(stats: &Stats, secs: f64) {
             }
         );
     } else if stats.wall_s > 0.0 {
-        eprintln!(
-            "[rx] time: {:.2} s for {secs:.3} s of signal ({:.2}× real time); front end {:.2} s, receiver {:.2} s (overlapping); {} of {} block(s) reused the previous acquisition",
+        info!(
+            target: "isdb::rx",
+            wall_s = stats.wall_s,
+            seconds = secs,
+            speed = secs / stats.wall_s,
+            front_s = stats.front_s,
+            back_s = stats.back_s,
+            reused = stats.reused,
+            blocks = stats.blocks,
+            "time: {:.2} s for {secs:.3} s of signal ({:.2}× real time); front end {:.2} s, receiver {:.2} s (overlapping); {} of {} block(s) reused the previous acquisition",
             stats.wall_s,
             secs / stats.wall_s,
             stats.front_s,
@@ -354,8 +377,18 @@ pub fn report(stats: &Stats, secs: f64) {
             stats.blocks
         );
     }
-    eprintln!(
-        "[rx] done: ISDB-S, {:.3} s of signal in {} block(s); {} frames ({} with intact sync words), {} slips; {} superframes, TMCC ok {}, decoded {}; main MER {}",
+    info!(
+        target: "isdb::rx",
+        seconds = secs,
+        blocks = stats.blocks,
+        frames = stats.frames,
+        headers_ok = stats.headers_ok,
+        slips = stats.slips,
+        superframes = stats.superframes,
+        tmcc_ok = stats.tmcc_ok,
+        decoded = stats.decoded,
+        mer_db = stats.mer_db().unwrap_or(f64::NAN),
+        "done: ISDB-S, {:.3} s of signal in {} block(s); {} frames ({} with intact sync words), {} slips; {} superframes, TMCC ok {}, decoded {}; main MER {}",
         secs,
         stats.blocks,
         stats.frames,
@@ -372,7 +405,7 @@ pub fn report(stats: &Stats, secs: f64) {
             .iter()
             .filter_map(|c| c.combination().map(|k| format!("{k} ×{}", c.slots)))
             .collect();
-        eprintln!("[rx]   TMCC: {}", combos.join(" + "));
+        info!(target: "isdb::rx", "  TMCC: {}", combos.join(" + "));
     }
     for (id, t) in &stats.ts {
         let name = if *id == isdbs_core::tmcc::UNUSED_TS_ID {
@@ -380,14 +413,24 @@ pub fn report(stats: &Stats, secs: f64) {
         } else {
             format!("TS_ID {id:#06x}")
         };
-        eprintln!(
-            "[rx]   {name} ({} slots/frame): {} packets; RS clean {} corrected {} ({} bytes) uncorrectable {}",
+        info!(
+            target: "isdb::rx",
+            ts_id = id,
+            slots = t.slots,
+            packets = t.packets,
+            clean = t.clean,
+            corrected_packets = t.corrected_packets,
+            corrected_bytes = t.corrected_bytes,
+            uncorrectable = t.uncorrectable,
+            "  {name} ({} slots/frame): {} packets; RS clean {} corrected {} ({} bytes) uncorrectable {}",
             t.slots, t.packets, t.clean, t.corrected_packets, t.corrected_bytes, t.uncorrectable
         );
     }
     if stats.blocks > 1 {
-        eprintln!(
-            "[rx]   the {} blocks were captured one after another with gaps between them: each TS is discontinuous at every block boundary",
+        info!(
+            target: "isdb::rx",
+            blocks = stats.blocks,
+            "  the {} blocks were captured one after another with gaps between them: each TS is discontinuous at every block boundary",
             stats.blocks
         );
     }
@@ -492,8 +535,17 @@ pub fn run_stream(
             let secs = w.symbols as f64 / symbol_rate_hz;
             if status && secs >= next_status {
                 next_status = secs.floor() + 1.0;
-                eprintln!(
-                    "[rx] {secs:.2} s of signal after {:.2} s: {} superframes, TMCC ok {}, decoded {}; losses {} ({} blocks); MER {}",
+                info!(
+                    target: "isdb::rx",
+                    seconds = secs,
+                    wall_s = st.wall_s,
+                    superframes = st.superframes,
+                    tmcc_ok = st.tmcc_ok,
+                    decoded = st.decoded,
+                    losses = w.losses,
+                    blocks_lost = w.blocks_lost,
+                    mer_db = st.mer_db().unwrap_or(f64::NAN),
+                    "{secs:.2} s of signal after {:.2} s: {} superframes, TMCC ok {}, decoded {}; losses {} ({} blocks); MER {}",
                     st.wall_s,
                     st.superframes,
                     st.tmcc_ok,
@@ -537,8 +589,12 @@ pub fn run_radio_fpga(
     let stream = crate::symstream::start_radio(backend, cfg, rs, &cap_stop, |x, fs| {
         let p = isdbs_phy::frontend::acquire(x, fs, carrier_offset_hz, Trim::Auto)?;
         if p.pilot_mer_db < MIN_ACQUIRE_MER_DB {
-            eprintln!(
-                "[rx] carrier {:+.0} Hz gives a burst MER of {:.2} dB, below {MIN_ACQUIRE_MER_DB} dB: no lock",
+            warn!(
+                target: "isdb::rx",
+                carrier_offset_hz = p.carrier_offset_hz,
+                mer_db = p.pilot_mer_db,
+                min_mer_db = MIN_ACQUIRE_MER_DB,
+                "carrier {:+.0} Hz gives a burst MER of {:.2} dB, below {MIN_ACQUIRE_MER_DB} dB: no lock",
                 p.carrier_offset_hz, p.pilot_mer_db
             );
             return Ok(None);
@@ -602,7 +658,9 @@ pub fn run_radio(
         args: spec.args.clone(),
         gains: gains.to_vec(),
     };
-    eprintln!(
+    info!(
+        target: "isdb::rx",
+        backend = backend.name(),
         "{} capture settings{}:\n{}",
         backend.name(),
         channel.map(|c| c.label()).unwrap_or_default(),
@@ -617,8 +675,12 @@ pub fn run_radio(
     let want = crate::phyargs::sample_count(block_s, rate);
     let n = want.min(limit);
     if n < want {
-        eprintln!(
-            "[rx] block shortened to {} samples ({:.3} s): {why}",
+        warn!(
+            target: "isdb::rx",
+            samples = n,
+            seconds = n as f64 / rate,
+            wanted = want,
+            "block shortened to {} samples ({:.3} s): {why}",
             n,
             n as f64 / rate
         );
@@ -637,8 +699,10 @@ pub fn run_radio(
                 let mut bytes = Vec::with_capacity(block_bytes);
                 let cap = backend.capture(&cfg, n, &mut bytes, stop)?;
                 if !cap.gaps.is_empty() {
-                    eprintln!(
-                        "[rx] the device lost samples {} time(s) inside this block; decoding its contiguous parts",
+                    warn!(
+                        target: "isdb::rx",
+                        gaps = cap.gaps.len(),
+                        "the device lost samples {} time(s) inside this block; decoding its contiguous parts",
                         cap.gaps.len()
                     );
                 }
@@ -677,8 +741,17 @@ pub fn run_radio(
             secs = st.samples as f64 / rate;
             if status {
                 let last = st.ts.values().map(|t| t.uncorrectable).sum::<u64>();
-                eprintln!(
-                    "[rx] {secs:.2} s of signal after {:.2} s: block {}; {} superframes decoded; packets {} (uncorrectable {last}); MER {}",
+                let packets = st.ts.values().map(|t| t.packets).sum::<u64>();
+                info!(
+                    target: "isdb::rx",
+                    seconds = secs,
+                    wall_s = t0.elapsed().as_secs_f64(),
+                    blocks = st.blocks,
+                    decoded = st.decoded,
+                    packets,
+                    uncorrectable = last,
+                    mer_db = st.mer_db().unwrap_or(f64::NAN),
+                    "{secs:.2} s of signal after {:.2} s: block {}; {} superframes decoded; packets {} (uncorrectable {last}); MER {}",
                     t0.elapsed().as_secs_f64(),
                     st.blocks,
                     st.decoded,

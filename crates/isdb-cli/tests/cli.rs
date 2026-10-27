@@ -2182,5 +2182,59 @@ fn tools_diagnostics_are_structured_events() {
         nulled["packets"].as_u64().is_some_and(|n| n > 0),
         "{nulled}"
     );
+}
+
+/// The receive side's diagnostics are `tracing` events too: `rx` on a
+/// synthetic recording gives `isdb::rx` events whose fields repeat the
+/// numbers of the message (the status line's `state`, the summary's
+/// `frames` / `valid` / `seconds`, as in the `--json` report), and nothing
+/// at `--log-level warn`.
+#[test]
+fn rx_diagnostics_are_structured_events() {
+    let d = tmp("rx-log-json");
+    let iq = d.join("x.cf32");
+    let o = run(&["tx", "--synthetic", "--seconds", "0.5", "--iq", s(&iq)]);
+    assert!(o.status.success());
+    let o = run(&[
+        "--log-format",
+        "json",
+        "rx",
+        "--iq",
+        s(&iq),
+        "--status-secs",
+        "0.2",
+        "--json",
+    ]);
+    assert!(o.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    let (mut status, mut done) = (None, None);
+    for line in err.lines() {
+        let j: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"));
+        assert_eq!(j["level"], "INFO", "{line}");
+        assert_eq!(j["target"], "isdb::rx", "{line}");
+        if j["state"].is_string() {
+            status = Some(j.clone());
+        }
+        if j["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("done: "))
+        {
+            done = Some(j);
+        }
+    }
+    let status = status.expect("a status event");
+    assert!(status["seconds"].as_f64().unwrap() > 0.0, "{status}");
+    assert!(status["frames"].is_u64(), "{status}");
+    let done = done.expect("the end-of-run event");
+    assert_eq!(done["frames"], report["frames"], "{done}");
+    assert_eq!(done["valid"], report["valid_frames"], "{done}");
+    assert_eq!(done["seconds"], report["seconds"], "{done}");
+    assert_eq!(done["signal"], true, "{done}");
+
+    let o = run(&["--log-level", "warn", "rx", "--iq", s(&iq)]);
+    assert!(o.status.success());
+    assert!(o.stderr.is_empty(), "info events above --log-level warn");
     std::fs::remove_dir_all(&d).unwrap();
 }

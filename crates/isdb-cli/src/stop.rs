@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::info;
 
 static FLAG: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
@@ -18,9 +19,9 @@ pub fn install() -> anyhow::Result<()> {
     let f = flag();
     ctrlc::set_handler(move || {
         if f.swap(true, Ordering::SeqCst) {
-            eprintln!("isdb: still stopping (waiting for the device to stop streaming)...");
+            info!(target: "isdb", "still stopping (waiting for the device to stop streaming)...");
         } else {
-            eprintln!("isdb: stop requested");
+            info!(target: "isdb", "stop requested");
         }
     })?;
     Ok(())
