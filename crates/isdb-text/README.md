@@ -84,6 +84,10 @@ assert_eq!(bytes.decode().text, "ニュース TEST！ 7:00");
   base, as the 8-unit code sends non-spacing characters first.
 - **Bounded macros.** Macro expansion is limited (`MACRO_WORK_LIMIT`,
   nesting) and reported as `MacroLimit`.
+- **Diagnostics are `tracing` events**, never printed: every `Issue` is
+  also a `trace` event (`offset`, `kind`) — decoding runs per character
+  inside the SI decoders, so nothing it says is louder than that. The
+  crate installs no subscriber.
 
 ## Verification
 

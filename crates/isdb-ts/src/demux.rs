@@ -21,12 +21,22 @@
 //! Partial sections are discarded on a continuity break, a
 //! transport_error_indicator, or an inconsistent pointer_field.  Nothing is
 //! assembled before the first packet with PUSI.
+//!
+//! Every [`DemuxEvent`] the assembler returns, a reset, and a section
+//! whose section_length exceeds [`MAX_SECTION_LENGTH`] are also emitted
+//! as `tracing` events at `debug` level with `pid`, `packet_index` and
+//! (where known) `table_id` fields; a packet that simply continues a
+//! section emits nothing.
 
 use std::collections::HashMap;
+use std::fmt;
+
+use tracing::debug;
 
 use crate::cc::Tracker;
 use crate::packet::{PACKET_SIZE, View};
 use crate::pid::Pid;
+use crate::section::MAX_SECTION_LENGTH;
 
 /// A complete section as carried on one PID (H.222.0 §2.4.4; size
 /// `3 + section_length`, Table 2-30/2-35).
@@ -87,6 +97,45 @@ pub enum DiscardReason {
     Reset,
 }
 
+impl fmt::Display for DemuxEventKind {
+    /// One sentence naming the deviation and its numbers, as the `tracing`
+    /// events print it: `partial section dropped (183 bytes): continuity
+    /// break`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DemuxEventKind::Discarded { bytes, reason } => {
+                write!(f, "partial section dropped ({bytes} bytes): {reason}")
+            }
+            DemuxEventKind::PointerOutOfRange { pointer, available } => write!(
+                f,
+                "pointer_field {pointer} points past the {available}-byte payload; packet ignored"
+            ),
+            DemuxEventKind::UnexpectedBytes { bytes } => {
+                write!(
+                    f,
+                    "{bytes} bytes after the end of a section are not stuffing"
+                )
+            }
+            DemuxEventKind::BadStuffing => {
+                write!(f, "non-0xFF bytes follow stuffing in the same packet")
+            }
+        }
+    }
+}
+
+impl fmt::Display for DiscardReason {
+    /// Short reason text: `continuity break`, `transport_error_indicator`,
+    /// `pointer_field mismatch`, `reset`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            DiscardReason::ContinuityBreak => "continuity break",
+            DiscardReason::TransportError => "transport_error_indicator",
+            DiscardReason::PointerMismatch => "pointer_field mismatch",
+            DiscardReason::Reset => "reset",
+        })
+    }
+}
+
 /// An event of the section assembler (H.222.0 §2.4.4) with the index of
 /// the packet that caused it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,11 +188,23 @@ impl SectionAssembler {
 
     /// Drop any partial section and the continuity expectation.
     pub fn reset(&mut self, index: u64, out: &mut Vec<Assembled>) {
+        debug!(
+            pid = %self.pid,
+            packet_index = index,
+            "PID {}: section assembler reset at packet {index}",
+            self.pid
+        );
         self.discard(index, DiscardReason::Reset, out);
         self.cc.reset();
     }
 
     fn event(&self, index: u64, kind: DemuxEventKind, out: &mut Vec<Assembled>) {
+        debug!(
+            pid = %self.pid,
+            packet_index = index,
+            "PID {}: {kind} (packet {index})",
+            self.pid
+        );
         out.push(Assembled::Event(DemuxEvent {
             pid: self.pid,
             packet_index: index,
@@ -153,14 +214,25 @@ impl SectionAssembler {
 
     fn discard(&mut self, index: u64, reason: DiscardReason, out: &mut Vec<Assembled>) {
         if let Some(p) = self.partial.take() {
-            self.event(
-                index,
-                DemuxEventKind::Discarded {
-                    bytes: p.data.len(),
-                    reason,
-                },
-                out,
+            let kind = DemuxEventKind::Discarded {
+                bytes: p.data.len(),
+                reason,
+            };
+            // The first byte of a partial section is its table_id (the
+            // assembler keeps at least one byte).
+            let table_id = p.data.first().copied().unwrap_or(0xFF);
+            debug!(
+                pid = %self.pid,
+                packet_index = index,
+                table_id,
+                "PID {}: table_id {table_id:#04x} {kind} (packet {index})",
+                self.pid
             );
+            out.push(Assembled::Event(DemuxEvent {
+                pid: self.pid,
+                packet_index: index,
+                kind,
+            }));
         }
     }
 
@@ -268,7 +340,24 @@ impl SectionAssembler {
                 }
                 return;
             }
-            match crate::section::total_len(b) {
+            let total = crate::section::total_len(b);
+            if let Some(t) = total
+                && t > 3 + MAX_SECTION_LENGTH
+            {
+                // §2.4.4.11 / ARIB STD-B10 §5.1: section_length never
+                // exceeds 4093; the section is still assembled and left to
+                // the decoder to reject.
+                debug!(
+                    pid = %self.pid,
+                    packet_index = index,
+                    table_id = first,
+                    section_length = t - 3,
+                    "PID {}: table_id {first:#04x} section_length {} exceeds the maximum {MAX_SECTION_LENGTH} (packet {index})",
+                    self.pid,
+                    t - 3
+                );
+            }
+            match total {
                 Some(t) if t <= b.len() => {
                     out.push(Assembled::Section(Section {
                         pid: self.pid,

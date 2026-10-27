@@ -13,6 +13,14 @@
 //! indication: the byte offset of the first packet that starts in the slot
 //! (from the start of the slot's data), FFFFh when none starts. The
 //! assembler uses it to (re)gain packet sync and to check it.
+//!
+//! Every loss of packet sync (a lost slot, a head-TLV indication that
+//! disagrees with the parse, a byte that is not a sync byte where a packet
+//! should start) is counted in [`Stats`] / [`FileReader::skipped`] and
+//! emitted as a `tracing` event at `debug` level with the bytes skipped;
+//! a packet that parses emits nothing.
+
+use tracing::debug;
 
 /// The fixed first byte of every TLV packet: `01` + `111111`.
 pub const SYNC: u8 = 0x7F;
@@ -130,6 +138,12 @@ impl Assembler {
         let Some(data) = data else {
             self.stats.lost_slots += 1;
             self.stats.skipped_bytes += self.buf.len() as u64;
+            debug!(
+                skipped_bytes = self.buf.len(),
+                lost_slots = self.stats.lost_slots,
+                "TLV slot lost: {} bytes of the partial packet dropped, packet sync lost",
+                self.buf.len()
+            );
             self.buf.clear();
             self.synced = false;
             return;
@@ -144,6 +158,12 @@ impl Assembler {
                 self.drain(out, Some(at));
             } else {
                 self.stats.skipped_bytes += at as u64;
+                if at > 0 {
+                    debug!(
+                        skipped_bytes = at,
+                        "TLV packet sync regained from the head-TLV indication: {at} bytes skipped"
+                    );
+                }
                 self.buf.drain(..at);
                 self.synced = true;
             }
@@ -186,6 +206,12 @@ impl Assembler {
                 if pos != u {
                     self.stats.pointer_mismatches += 1;
                     self.stats.skipped_bytes += (u - pos.min(u)) as u64;
+                    debug!(
+                        skipped_bytes = u - pos.min(u),
+                        pointer_mismatches = self.stats.pointer_mismatches,
+                        "TLV head-TLV indication disagrees with the packet parse: {} bytes skipped, sync taken from the indication",
+                        u - pos.min(u)
+                    );
                 }
                 self.buf.drain(..u);
             }
@@ -193,6 +219,11 @@ impl Assembler {
                 // lost packet sync with no indication to resynchronise on:
                 // drop the rest and wait for the next one
                 self.stats.skipped_bytes += (self.buf.len() - pos) as u64;
+                debug!(
+                    skipped_bytes = self.buf.len() - pos,
+                    "TLV packet sync lost (no sync byte where a packet should start): {} bytes dropped until the next head-TLV indication",
+                    self.buf.len() - pos
+                );
                 self.buf.clear();
                 self.synced = false;
             }
@@ -243,6 +274,12 @@ impl<R: std::io::Read> FileReader<R> {
                         .position(|&b| b == SYNC)
                         .map_or(avail.len(), |i| i + 1);
                     self.skipped += n as u64;
+                    debug!(
+                        skipped_bytes = n,
+                        skipped_total = self.skipped,
+                        "TLV file: {n} bytes skipped looking for a sync byte ({} so far)",
+                        self.skipped
+                    );
                     self.pos += n;
                     continue;
                 }
@@ -257,6 +294,13 @@ impl<R: std::io::Read> FileReader<R> {
                 }
             }
             if self.eof {
+                if !avail.is_empty() {
+                    debug!(
+                        skipped_bytes = avail.len(),
+                        "TLV file: {} bytes of a truncated last packet skipped at end of input",
+                        avail.len()
+                    );
+                }
                 self.skipped += avail.len() as u64;
                 self.pos = self.buf.len();
                 return Ok(None);

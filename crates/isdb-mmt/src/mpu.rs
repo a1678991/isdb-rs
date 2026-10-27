@@ -14,8 +14,15 @@
 //! counting the payloads still to come) is reassembled; a gap in the MMTP
 //! packet sequence numbers of the packet id drops the MFU being
 //! reassembled and is counted.
+//!
+//! Every count of a deviation in [`AssetStats`] (packets lost, an MFU
+//! dropped, an MPU sequence jump, a malformed payload) is also a
+//! `tracing` event at `debug` level with the `packet_id`; a packet that
+//! reassembles cleanly emits nothing.
 
 use std::fmt;
+
+use tracing::debug;
 
 /// Largest MFU kept while reassembling: a NAL unit of a 4K picture is a
 /// few MB at most.
@@ -398,8 +405,18 @@ impl Reassembler {
         }
         let gap = match s.last_seq {
             Some(l) if h.sequence != l.wrapping_add(1) => {
-                s.stats.packets_lost +=
-                    u64::from(h.sequence.wrapping_sub(l).wrapping_sub(1)).min(1 << 20);
+                let lost = u64::from(h.sequence.wrapping_sub(l).wrapping_sub(1)).min(1 << 20);
+                s.stats.packets_lost += lost;
+                debug!(
+                    packet_id = h.packet_id,
+                    expected = l.wrapping_add(1),
+                    got = h.sequence,
+                    lost,
+                    "packet id {:#06x}: MMTP packet sequence gap, expected {}, got {} ({lost} packets lost)",
+                    h.packet_id,
+                    l.wrapping_add(1),
+                    h.sequence
+                );
                 true
             }
             _ => false,
@@ -407,9 +424,22 @@ impl Reassembler {
         s.last_seq = Some(h.sequence);
         if gap && s.partial.take().is_some() {
             s.stats.mfus_dropped += 1;
+            debug!(
+                packet_id = h.packet_id,
+                reason = "fragment lost",
+                "packet id {:#06x}: MFU dropped, a fragment was lost",
+                h.packet_id
+            );
         }
         let Some(ph) = parse_header(payload) else {
             s.stats.malformed += 1;
+            debug!(
+                packet_id = h.packet_id,
+                sequence = h.sequence,
+                "packet id {:#06x}: MPU payload header does not parse (packet sequence {})",
+                h.packet_id,
+                h.sequence
+            );
             return;
         };
         if s.mpu != Some(ph.mpu_sequence_number) {
@@ -417,6 +447,15 @@ impl Reassembler {
                 && ph.mpu_sequence_number != prev.wrapping_add(1)
             {
                 s.stats.mpu_sequence_jumps += 1;
+                debug!(
+                    packet_id = h.packet_id,
+                    expected = prev.wrapping_add(1),
+                    got = ph.mpu_sequence_number,
+                    "packet id {:#06x}: MPU sequence number jump, expected {}, got {}",
+                    h.packet_id,
+                    prev.wrapping_add(1),
+                    ph.mpu_sequence_number
+                );
             }
             s.mpu = Some(ph.mpu_sequence_number);
             s.stats.mpus += 1;
@@ -448,6 +487,13 @@ impl Reassembler {
         }
         let Some((_, units)) = parse(payload) else {
             s.stats.malformed += 1;
+            debug!(
+                packet_id = h.packet_id,
+                sequence = h.sequence,
+                "packet id {:#06x}: MPU payload does not parse (packet sequence {})",
+                h.packet_id,
+                h.sequence
+            );
             return;
         };
         for u in units {
@@ -464,6 +510,12 @@ impl Reassembler {
                 FragmentationIndicator::Complete => {
                     if s.partial.take().is_some() {
                         s.stats.mfus_dropped += 1;
+                        debug!(
+                            packet_id = h.packet_id,
+                            reason = "unterminated",
+                            "packet id {:#06x}: MFU dropped, a complete MFU arrived before its last fragment",
+                            h.packet_id
+                        );
                     }
                     s.stats.mfus += 1;
                     out.push(mfu());
@@ -471,6 +523,12 @@ impl Reassembler {
                 FragmentationIndicator::Head => {
                     if s.partial.take().is_some() {
                         s.stats.mfus_dropped += 1;
+                        debug!(
+                            packet_id = h.packet_id,
+                            reason = "unterminated",
+                            "packet id {:#06x}: MFU dropped, a new MFU began before its last fragment",
+                            h.packet_id
+                        );
                     }
                     s.partial = Some(mfu());
                 }
@@ -484,8 +542,16 @@ impl Reassembler {
                 FragmentationIndicator::Middle | FragmentationIndicator::Last => {
                     if let Some(m) = s.partial.as_mut() {
                         if m.data.len() + u.data.len() > MAX_MFU {
+                            let bytes = m.data.len() + u.data.len();
                             s.partial = None;
                             s.stats.mfus_dropped += 1;
+                            debug!(
+                                packet_id = h.packet_id,
+                                reason = "oversize",
+                                bytes,
+                                "packet id {:#06x}: MFU dropped, {bytes} bytes exceed the {MAX_MFU}-byte limit",
+                                h.packet_id
+                            );
                         } else {
                             m.data.extend_from_slice(u.data);
                             if ph.fragmentation == FragmentationIndicator::Last

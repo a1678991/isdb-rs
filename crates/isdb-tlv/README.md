@@ -15,6 +15,13 @@ TLV streams of ISDB-S3 / advanced BS (ARIB STD-B32 v3.11 Part 3 §3.5,
   transmission-control packets;
 - `stats`: per-stream counters over all of the above.
 
+Diagnostics are `tracing` events, never printed: every loss of packet
+sync in `tlv::Assembler` / `tlv::FileReader` (a lost slot, a head-TLV
+indication that disagrees with the parse, bytes skipped to the next sync
+byte) is a `debug` event with `skipped_bytes`, in addition to the
+counters; a packet that parses emits nothing. The crate installs no
+subscriber (the `isdb` binary does).
+
 The coded fields of the MMTP header are lossless coded enums of their
 B60 tables: `mmtp::FecType` (Table 6-5) and `mmtp::PayloadType` (Table
 6-6). Each names the assigned codes, keeps every other code in a

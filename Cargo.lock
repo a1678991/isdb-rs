@@ -389,6 +389,8 @@ dependencies = [
  "isdb-tlv",
  "isdb-ts",
  "proptest",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -412,6 +414,8 @@ dependencies = [
  "isdb-ts",
  "proptest",
  "thiserror",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -421,6 +425,8 @@ dependencies = [
  "encoding_rs",
  "proptest",
  "thiserror",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -430,6 +436,8 @@ dependencies = [
  "isdb-ts",
  "proptest",
  "thiserror",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -439,6 +447,8 @@ dependencies = [
  "proptest",
  "serde",
  "thiserror",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

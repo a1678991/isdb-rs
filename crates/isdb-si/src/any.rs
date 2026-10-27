@@ -1,9 +1,15 @@
 //! Section dispatcher: PID + table_id → typed SI table (ARIB STD-B10 Part 2
 //! §5.1.3, Tables 5-1 and 5-2).
+//!
+//! An SI table_id arriving on a PID Table 5-1 does not assign to it is
+//! decoded as [`AnyTable::Unknown`] and reported as a `tracing` event at
+//! `debug` level (`pid`, `table_id`); [`crate::conformance::check`] stays
+//! a pure function and emits nothing.
 
 use crate::tables::*;
 use isdb_ts::section::{LongHeader, split_long, total_len};
 use isdb_ts::{Error, Pid, Result};
+use tracing::debug;
 
 /// Whether ARIB STD-B10 Part 2 Table 5-1 allows `table_id` (Table 5-2) on
 /// `pid` for the tables this crate types:
@@ -33,6 +39,16 @@ pub fn table_allowed_on_pid(table_id: u8, pid: Pid) -> bool {
         0xC5..=0xC7 => pid == 0x0025,
         _ => false,
     }
+}
+
+/// Whether `table_id` is one this crate types on *some* PID (the rows of
+/// [`table_allowed_on_pid`]): on any other PID it is a Table 5-1
+/// deviation, where a PAT, PMT or company table on its own PID is not.
+fn is_typed_table_id(table_id: u8) -> bool {
+    matches!(
+        table_id,
+        0x40..=0x42 | 0x46 | 0x4A | 0x4E..=0x6F | 0x70..=0x73 | 0xC2 | 0xC4..=0xC7
+    )
 }
 
 /// A section whose (PID, table_id) has no typed decoder in this crate.
@@ -110,6 +126,13 @@ impl AnyTable {
             ));
         }
         if !table_allowed_on_pid(table_id, pid) {
+            if is_typed_table_id(table_id) {
+                debug!(
+                    pid = %pid,
+                    table_id,
+                    "PID {pid}: table_id {table_id:#04x} is not assigned to this PID (B10 Part 2 Table 5-1); kept as a raw section"
+                );
+            }
             let long_header = if sec[1] & 0x80 != 0 {
                 Some(split_long(sec)?.0)
             } else {

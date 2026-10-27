@@ -16,6 +16,16 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-ts`, `isdb-si`, `isdb-tlv`, `isdb-mmt`, `isdb-text`: the codec
+  libraries emit `tracing` events (no subscriber) for what they already
+  report as data: every continuity event and section-assembler event, a
+  CRC_32 failure, a section_length over 4093 and an SI table on a PID
+  Table 5-1 does not assign to it (`debug`, with `pid`, `packet_index`,
+  `table_id`, `expected` / `got`); TLV sync losses, MMTP sequence gaps,
+  dropped MFUs and messages, rejected tables and version changes
+  (`debug`, with `packet_id` / `table_id`); text-decoding issues
+  (`trace`). Nothing is emitted for packets that are in order, and the
+  returned events, counters and `Vec`s are unchanged.
 - `isdb`: diagnostics are `tracing` events. The global options
   `--log-level` (default `info`; `RUST_LOG` takes an `EnvFilter`
   directive and overrides it) and `--log-format text|json` select what

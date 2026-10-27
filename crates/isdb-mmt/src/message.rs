@@ -4,8 +4,14 @@
 //! (fragmentation indicator 01, 10…, 11), aggregated payloads are split by
 //! their length prefixes, and each message is cut into the tables it
 //! carries.
+//!
+//! Every count in [`MessageErrors`] is also a `tracing` event at `debug`
+//! level with the `packet_id`; a message that reassembles cleanly emits
+//! nothing.
 
 use std::collections::BTreeMap;
+
+use tracing::debug;
 
 /// Largest message kept while reassembling (a PA message's length field
 /// is 32 bits; tables are at most 64 KiB, sections 4 KiB).
@@ -66,6 +72,12 @@ impl Messages {
         // detect a lost fragment
         let (Some(&f), Some(_)) = (payload.first(), payload.get(1)) else {
             self.errors.malformed += 1;
+            debug!(
+                packet_id,
+                bytes = payload.len(),
+                "packet id {packet_id:#06x}: control-message payload of {} bytes is shorter than its header",
+                payload.len()
+            );
             return;
         };
         let division = f >> 6;
@@ -94,8 +106,14 @@ impl Messages {
             _ => match self.partial.get_mut(&packet_id) {
                 Some(p) => {
                     if p.buf.len() + data.len() > MAX_MESSAGE {
+                        let bytes = p.buf.len() + data.len();
                         self.partial.remove(&packet_id);
                         self.errors.oversize += 1;
+                        debug!(
+                            packet_id,
+                            bytes,
+                            "packet id {packet_id:#06x}: message dropped, {bytes} bytes exceed the {MAX_MESSAGE}-byte limit"
+                        );
                         None
                     } else {
                         p.buf.extend_from_slice(data);
@@ -110,12 +128,17 @@ impl Messages {
                 }
                 None => {
                     self.errors.orphan_fragments += 1;
+                    debug!(
+                        packet_id,
+                        division,
+                        "packet id {packet_id:#06x}: message fragment (division {division:#04b}) continues no message in progress; dropped"
+                    );
                     None
                 }
             },
         };
         if let Some((bytes, long_len, aggregated)) = whole {
-            for m in split_aggregated(&bytes, long_len, aggregated, &mut self.errors) {
+            for m in split_aggregated(packet_id, &bytes, long_len, aggregated, &mut self.errors) {
                 tables_of(packet_id, m, out, &mut self.errors);
             }
         }
@@ -124,6 +147,7 @@ impl Messages {
 
 /// The messages of a reassembled payload.
 fn split_aggregated<'a>(
+    packet_id: u16,
     b: &'a [u8],
     long_len: bool,
     aggregated: bool,
@@ -141,6 +165,13 @@ fn split_aggregated<'a>(
             .fold(0usize, |a, &x| (a << 8) | usize::from(x));
         let Some(m) = b.get(p + w..p + w + n) else {
             e.malformed += 1;
+            debug!(
+                packet_id,
+                length = n,
+                available = b.len() - p - w,
+                "packet id {packet_id:#06x}: aggregated message length {n} runs past the payload ({} bytes left)",
+                b.len() - p - w
+            );
             break;
         };
         out.push(m);
@@ -153,6 +184,12 @@ fn split_aggregated<'a>(
 fn tables_of(packet_id: u16, m: &[u8], out: &mut Vec<TableBytes>, e: &mut MessageErrors) {
     let Some(id) = m.get(..2).map(|x| u16::from_be_bytes([x[0], x[1]])) else {
         e.malformed += 1;
+        debug!(
+            packet_id,
+            bytes = m.len(),
+            "packet id {packet_id:#06x}: message of {} bytes has no message id",
+            m.len()
+        );
         return;
     };
     let mut push = |bytes: &[u8]| {
@@ -170,6 +207,11 @@ fn tables_of(packet_id: u16, m: &[u8], out: &mut Vec<TableBytes>, e: &mut Messag
         0x0000 => {
             let Some(h) = m.get(3..7) else {
                 e.malformed += 1;
+                debug!(
+                    packet_id,
+                    message_id = id,
+                    "packet id {packet_id:#06x}: PA message truncated before its length"
+                );
                 return;
             };
             let len = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as usize;
@@ -180,6 +222,14 @@ fn tables_of(packet_id: u16, m: &[u8], out: &mut Vec<TableBytes>, e: &mut Messag
                 let tl = usize::from(u16::from_be_bytes([t[2], t[3]]));
                 let Some(table) = body.get(p..p + 4 + tl) else {
                     e.malformed += 1;
+                    debug!(
+                        packet_id,
+                        message_id = id,
+                        table_id = t[0],
+                        length = tl,
+                        "packet id {packet_id:#06x}: PA message table_id {:#04x} length {tl} runs past the message",
+                        t[0]
+                    );
                     break;
                 };
                 push(table);
@@ -191,12 +241,27 @@ fn tables_of(packet_id: u16, m: &[u8], out: &mut Vec<TableBytes>, e: &mut Messag
         0x8000..=0x8002 => {
             let Some(h) = m.get(3..5) else {
                 e.malformed += 1;
+                debug!(
+                    packet_id,
+                    message_id = id,
+                    "packet id {packet_id:#06x}: message {id:#06x} truncated before its length"
+                );
                 return;
             };
             let len = usize::from(u16::from_be_bytes([h[0], h[1]]));
             match m.get(5..5 + len) {
                 Some(t) => push(t),
-                None => e.malformed += 1,
+                None => {
+                    e.malformed += 1;
+                    debug!(
+                        packet_id,
+                        message_id = id,
+                        length = len,
+                        available = m.len() - 5,
+                        "packet id {packet_id:#06x}: message {id:#06x} length {len} runs past its {} bytes",
+                        m.len() - 5
+                    );
+                }
             }
         }
         _ => {}
