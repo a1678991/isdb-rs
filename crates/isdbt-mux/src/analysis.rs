@@ -62,6 +62,10 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
     let mut es_pids: HashSet<Pid> = HashSet::new();
     let mut pes_asm: HashMap<Pid, PesAssembler> = HashMap::new();
     let mut cc = CcChecker::new();
+    // Arrival time of packet `i`: the demux indices are the `enumerate()`
+    // index of `packets` widened to u64, so they convert back exactly (a
+    // stray index panics like any out-of-range slice index would).
+    let at = |i: u64| times[usize::try_from(i).expect("packet index")];
     let finish_pes = |r: &mut Report, out: Vec<PesOutput>| {
         for o in out {
             match o {
@@ -70,8 +74,8 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
                         let h = p.header();
                         r.pes.entry(a.pid).or_default().push(PesInfo {
                             stream_id: p.stream_id,
-                            first_arrival: times[a.start_packet as usize],
-                            last_arrival: times[a.end_packet as usize] + packet_ticks,
+                            first_arrival: at(a.start_packet),
+                            last_arrival: at(a.end_packet) + packet_ticks,
                             pts: h.and_then(|h| h.pts_dts.pts()),
                             dts: h.and_then(|h| h.pts_dts.dts()),
                             len: a.data.len(),
@@ -83,8 +87,8 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
             }
         }
     };
-    for (i, pkt) in packets.iter().enumerate() {
-        let i = i as u64;
+    for (n, pkt) in packets.iter().enumerate() {
+        let i = n as u64;
         let pid = Pid::of_packet(pkt).expect("188-byte packet");
         *r.pid_counts.entry(pid).or_default() += 1;
         if pid == Pid::NULL {
@@ -99,7 +103,7 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
             r.pcrs
                 .entry(pid)
                 .or_default()
-                .push((i, times[i as usize], pcr.ticks()));
+                .push((i, times[n], pcr.ticks()));
         }
         for a in demux.push(i, pkt) {
             match a {
@@ -128,7 +132,7 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
                     r.sections
                         .entry(s.pid)
                         .or_default()
-                        .push((times[s.start_packet as usize], s.data));
+                        .push((at(s.start_packet), s.data));
                 }
                 Assembled::Event(e) => r.problems.push(format!("section event {e:?}")),
             }

@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+#![warn(clippy::cast_possible_truncation)]
 //! Real-media test: muxes 10 s of the bench example with your own media
 //! (MPEG-2 video `video.m2v` + AAC ADTS `audio.m2a`, not committed) and
 //! checks the result with ffprobe against what the files themselves
@@ -52,7 +53,7 @@ fn media_ffprobe() {
     for w in mux.warnings() {
         eprintln!("warning: {w}");
     }
-    let frames = (10.0 / params.frame_seconds()).ceil() as u64;
+    let frames = common::count((10.0 / params.frame_seconds()).ceil()) as u64;
     let dir = common::tmpdir("media");
     let full_path = dir.join("bench_full.ts");
     let b_path = dir.join("bench_layer_b.ts");

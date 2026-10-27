@@ -407,6 +407,16 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `clippy::cast_possible_truncation` is on (`#![warn]`) in `isdbt-mux`
+  (`docs/plans/type-safety.md` §2), with 8 `#[allow]`s (float → integer
+  tick and packet counts, two clamped values, one bounded PES length).
+  Section builders report a value that does not fit its wire field
+  instead of wrapping it: the BML resource list (`resourceCount`, a
+  `resourceNameLength` over 127 bytes), `moduleSize` / `component_size`
+  and the EIT schedule section numbers are errors; a `service:` / `event:`
+  / `broadcaster:` loop selector whose number exceeds the identifier
+  width selects nothing. `SilentFrame::stereo_48k` and `build` panic
+  (documented) on a `len` past the 13-bit `aac_frame_length`.
 - The reserved payloads of the lossless coded enums are canonical by
   construction (`docs/plans/type-safety.md` §3 H1): `Reserved(u8)` /
   `UserDefined(u8)` become `Reserved(ReservedCode)` /

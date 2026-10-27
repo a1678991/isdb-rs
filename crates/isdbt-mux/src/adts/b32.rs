@@ -390,24 +390,23 @@ pub struct FullnessModel {
 fn reservoir_orbit(frame_bits: &[u64], rate: u64, max: u64) -> Option<(Vec<u64>, u64)> {
     let mut start = max;
     for _ in 0..10_000 {
-        let mut r = i128::from(start);
+        let mut r = start;
         let mut out = Vec::with_capacity(frame_bits.len());
         let mut clamped = 0u64;
         for &b in frame_bits {
-            r += i128::from(rate) - i128::from(b);
-            if r < 0 {
-                return None;
+            // r + rate - b, None when it would go negative (r <= max and
+            // rate <= the decoder buffer, so the sum does not overflow).
+            r = (r + rate).checked_sub(b)?;
+            if r > max {
+                clamped += r - max;
+                r = max;
             }
-            if r > i128::from(max) {
-                clamped += (r - i128::from(max)) as u64;
-                r = i128::from(max);
-            }
-            out.push(r as u64);
+            out.push(r);
         }
-        if r as u64 == start {
+        if r == start {
             return Some((out, clamped));
         }
-        start = r as u64;
+        start = r;
     }
     None
 }
@@ -475,14 +474,13 @@ pub fn cbr_fullness(frame_bits: &[u64], channels: u32) -> Result<FullnessModel, 
         format!("no constant rate up to the largest frame ({largest} bits) keeps the decoder buffer from underflowing")
     })?;
     let div = 32 * u64::from(channels);
+    // r <= buffer - rate < 6144 * NCC, so r / (32 * NCC) < 192 < 0x7FF.
     let values = reservoir
         .iter()
-        .map(|&r| {
-            let f = r / div;
-            debug_assert!(f < u64::from(VBR_FULLNESS));
-            f as u16
-        })
-        .collect();
+        .map(|&r| u16::try_from(r / div))
+        .collect::<Result<Vec<u16>, _>>()
+        .map_err(|_| "adts_buffer_fullness does not fit 11 bits".to_string())?;
+    debug_assert!(values.iter().all(|&f| f < VBR_FULLNESS));
     Ok(FullnessModel {
         rate_frame_bits: rate,
         mean_frame_bits: total as f64 / n as f64,
@@ -861,7 +859,7 @@ mod tests {
             .map(|i| (4096 + dev[i % dev.len()] + (i % 7) as i64) as u64)
             .collect();
         let m = cbr_fullness(&bits, 2).unwrap();
-        let cap = ((12288 - m.rate_frame_bits) / 64) as u16;
+        let cap = u16::try_from((12288 - m.rate_frame_bits) / 64).unwrap();
         assert!(m.values.iter().all(|&f| f != VBR_FULLNESS && f <= cap));
     }
 }

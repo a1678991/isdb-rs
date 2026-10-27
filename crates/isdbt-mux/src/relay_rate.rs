@@ -45,6 +45,9 @@ const PRECISION_BPS: f64 = 1000.0;
 const TICKS_PER_BIN: u64 = HZ / 1000 * BIN_MS;
 /// Slack value of a bin without timed packets.
 const NO_SLACK: i16 = i16::MAX;
+/// Bins per second (the window of the 1 s peak rate).
+const BINS_PER_S: usize = 1000;
+const _: () = assert!(BINS_PER_S as u64 * BIN_MS == 1000);
 
 /// A relayed source PID for [`scan`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -139,6 +142,8 @@ impl Bins {
         self.packets[k] = self.packets[k].saturating_add(1);
         if let Some(s) = slack_ticks {
             let ms = s.div_euclid((HZ / 1000) as i64);
+            // clamped to the i16 range, so the cast is exact
+            #[allow(clippy::cast_possible_truncation)]
             let ms = ms.clamp(i64::from(i16::MIN), i64::from(NO_SLACK) - 1) as i16;
             self.slack_ms[k] = self.slack_ms[k].min(ms);
         }
@@ -154,7 +159,7 @@ impl Bins {
         } else {
             0.0
         };
-        let w = (1000 / BIN_MS) as usize;
+        let w = BINS_PER_S;
         let peak_1s_bps = if self.packets.len() < w {
             mean_bps
         } else {
@@ -241,7 +246,8 @@ fn bin_and_index(path: &Path, pcr_pid: Pid, pids: &[ScanPid]) -> Result<(Bins, V
     let mut r = StreamReader::new(BufReader::with_capacity(1 << 20, f));
     let mut slot = vec![u16::MAX; 8192];
     for (i, p) in pids.iter().enumerate() {
-        slot[usize::from(p.pid)] = i as u16;
+        slot[usize::from(p.pid)] =
+            u16::try_from(i).map_err(|_| media(format!("{} PIDs to relay", pids.len())))?;
     }
     // per relayed PID: the decoding time (27 MHz, continuous) of the PES
     // being received

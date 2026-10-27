@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+#![warn(clippy::cast_possible_truncation)]
 //! ADTS header checks / buffer-fullness model / B32 Part 2 §5.2 gate on
 //! real encoder output (optional inputs from environment variables; each
 //! one unset or missing prints `SKIP` and passes):

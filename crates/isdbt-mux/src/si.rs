@@ -252,10 +252,11 @@ pub fn transmission_mode_code(m: Mode) -> u8 {
 /// Frequency code (1/7 MHz units, B10 §6.2.31) of UHF channel `ch`:
 /// centre 473 + 6·(ch − 13) + 1/7 MHz.
 pub fn channel_frequency_code(ch: u32) -> Result<u16> {
-    if !(13..=62).contains(&ch) {
-        return Err(MuxError::Config(format!("UHF channel {ch} outside 13..62")));
-    }
-    Ok(((473 + 6 * (ch - 13)) * 7 + 1) as u16)
+    let ch = u16::try_from(ch)
+        .ok()
+        .filter(|ch| (13..=62).contains(ch))
+        .ok_or_else(|| MuxError::Config(format!("UHF channel {ch} outside 13..62")))?;
+    Ok((473 + 6 * (ch - 13)) * 7 + 1) // at most 767 * 7 + 1 = 5370
 }
 
 fn text(s: &str) -> Result<AribString> {
@@ -288,6 +289,12 @@ fn parse_num(s: &str) -> Option<u32> {
     }
 }
 
+/// [`parse_num`] into the width of the selected identifier (`None` when
+/// the number does not fit: it would select nothing).
+fn parse_id<T: TryFrom<u32>>(s: &str) -> Option<T> {
+    T::try_from(parse_num(s)?).ok()
+}
+
 /// Loop selector of an [`AddDescriptor`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Target {
@@ -307,17 +314,17 @@ pub(crate) fn parse_target(s: &str) -> Option<Target> {
     Some(match f.as_slice() {
         ["main"] => Target::Main,
         ["program"] => Target::Program,
-        ["es", p] => Target::Es(u16::try_from(parse_num(p)?).ok().and_then(Pid::new)?),
+        ["es", p] => Target::Es(Pid::new(parse_id(p)?)?),
         ["network"] => Target::Network,
         ["ts"] => Target::Ts,
         ["service"] => Target::Service(None),
-        ["service", s] => Target::Service(Some(parse_num(s)? as u16)),
+        ["service", s] => Target::Service(Some(parse_id(s)?)),
         ["event"] => Target::Event(None, None),
-        ["event", s] => Target::Event(Some(parse_num(s)? as u16), None),
-        ["event", s, e] => Target::Event(Some(parse_num(s)? as u16), Some(parse_num(e)? as u16)),
+        ["event", s] => Target::Event(Some(parse_id(s)?), None),
+        ["event", s, e] => Target::Event(Some(parse_id(s)?), Some(parse_id(e)?)),
         ["first"] => Target::First,
         ["broadcaster"] => Target::Broadcaster(None),
-        ["broadcaster", b] => Target::Broadcaster(Some(parse_num(b)? as u8)),
+        ["broadcaster", b] => Target::Broadcaster(Some(parse_id(b)?)),
         _ => return None,
     })
 }
@@ -1302,13 +1309,11 @@ impl SiBuilder {
                     continue; // past events may be omitted (rule m)
                 }
                 let h3 = (e.start - t0) / (3 * 3600);
-                let table = h3 / 32;
-                if table > 15 {
+                // 16 tables of 32 three-hour segments; later events are dropped
+                let Some(table) = u8::try_from(h3 / 32).ok().filter(|&t| t <= 15) else {
                     continue;
-                }
-                segs.entry((table as u8, (h3 % 32) as u8))
-                    .or_default()
-                    .push(e);
+                };
+                segs.entry((table, (h3 % 32) as u8)).or_default().push(e);
             }
             let Some(&(last_table, _)) = segs.keys().next_back() else {
                 continue;
@@ -1339,12 +1344,19 @@ impl SiBuilder {
                     }
                     per_seg.push(sections);
                 }
-                let last_section =
-                    (last_seg as usize * 8 + per_seg[last_seg as usize].len() - 1) as u8;
+                // segment (<= 31) * 8 + section within it (< 8) fits a byte
+                let section_number = |n: usize| {
+                    u8::try_from(n).map_err(|_| {
+                        MuxError::Config(format!("EIT schedule section number {n} exceeds 255"))
+                    })
+                };
+                let last_section = section_number(
+                    usize::from(last_seg) * 8 + per_seg[usize::from(last_seg)].len() - 1,
+                )?;
                 for (seg, sections) in per_seg.into_iter().enumerate() {
                     let n = sections.len();
                     for (k, events) in sections.into_iter().enumerate() {
-                        let sn = (seg * 8 + k) as u8;
+                        let sn = section_number(seg * 8 + k)?;
                         let mut h = si_header(tid, c.services[i].service_id, v);
                         h.section_number = sn;
                         h.last_section_number = last_section;
@@ -1353,7 +1365,7 @@ impl SiBuilder {
                             body: EitBody {
                                 transport_stream_id: c.transport.transport_stream_id,
                                 original_network_id: c.original_network_id(),
-                                segment_last_section_number: (seg * 8 + n - 1) as u8,
+                                segment_last_section_number: section_number(seg * 8 + n - 1)?,
                                 last_table_id: 0x50 + last_table,
                                 events,
                             },
@@ -1593,7 +1605,7 @@ mod tests {
             (Qam64, R7_8),
         ];
         for (i, (m, r)) in order.into_iter().enumerate() {
-            assert_eq!(robustness_rank(m, r), i as u32 + 1);
+            assert_eq!(robustness_rank(m, r), u32::try_from(i).unwrap() + 1);
         }
     }
 

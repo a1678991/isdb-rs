@@ -11,6 +11,8 @@
 //! continuity (PTS, arrival, CC); source EIT p/f copied; `at_eof = "end"`;
 //! the rate check.
 
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 
 use common::{bench_params, synth_audio, synth_video, tmpdir};
@@ -116,7 +118,7 @@ sections = ["84 70 05 0a 0b 0c 0d 0e"]
     let cfg = Config::from_toml(&text).unwrap();
     let p = bench_params();
     let mut mux = Multiplexer::new(&cfg, &p, dir).unwrap();
-    let frames = (seconds / p.frame_seconds()).ceil() as usize;
+    let frames = common::count((seconds / p.frame_seconds()).ceil());
     let mut out = Vec::new();
     for _ in 0..frames {
         let (full, _) = mux.next_frame_full();
@@ -184,7 +186,7 @@ copy_control = {{ recording_control = "copy-free", in_pmt = true, in_sdt = true 
 fn run(cfg: &Config, seconds: f64) -> (Multiplexer, Vec<Packet>) {
     let p = bench_params();
     let mut mux = Multiplexer::new(cfg, &p, Path::new(".")).unwrap();
-    let frames = (seconds / p.frame_seconds()).ceil() as usize;
+    let frames = common::count((seconds / p.frame_seconds()).ceil());
     let mut out = Vec::new();
     for _ in 0..frames {
         if mux.relays_finished() {
