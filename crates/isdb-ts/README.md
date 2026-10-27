@@ -15,7 +15,7 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 
 | Module | Clauses / tables |
 |---|---|
-| `bits` | §2.2.6 `uimsbf`/`bslbf` MSB-first reader/writer |
+| `bits` | §2.2.6 `uimsbf`/`bslbf` MSB-first reader/writer; `read_u8(n)` .. `read_usize(n)` take a field narrower than its type without a cast |
 | `crc` | Annex A CRC_32 (poly 0x04C11DB7, table-driven and bitwise) |
 | `pid` | §2.4.3.3 Table 2-3 `Pid`: a 13-bit value type (`Pid::new` checks the range once; `PAT`, `CAT`, `TSDT`, `NULL` consts; `is_reserved`, `may_carry_pcr`), with `serde` as a range-checked integer behind the `serde` feature |
 | `packet` | §2.4.3.2 Table 2-2 header (Tables 2-4/2-5 transport_scrambling_control and adaptation_field_control as lossless coded enums), §2.4.3.4–2.4.3.5 Table 2-6 adaptation field and extension, `check` |

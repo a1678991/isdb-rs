@@ -63,19 +63,58 @@ impl<'a> BitReader<'a> {
         Ok(self.read(1)? == 1)
     }
 
+    /// Read an `n`-bit field into a `u8`, `n <= 8`.
+    ///
+    /// The width-typed readers (`read_u8`, [`read_u16`](Self::read_u16),
+    /// [`read_u32`](Self::read_u32), [`read_usize`](Self::read_usize)) are
+    /// how a decoder takes a field narrower than 64 bits without an `as`
+    /// cast: the width is asserted here, once, so the narrowing is proven
+    /// where it happens and the field lands in a type that fits it.
+    pub fn read_u8(&mut self, n: u32) -> Result<u8> {
+        assert!(n <= 8, "read_u8: {n} bits");
+        // n <= 8 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(self.read(n)? as u8)
+    }
+
+    /// Read an `n`-bit field into a `u16`, `n <= 16`.
+    pub fn read_u16(&mut self, n: u32) -> Result<u16> {
+        assert!(n <= 16, "read_u16: {n} bits");
+        // n <= 16 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(self.read(n)? as u16)
+    }
+
+    /// Read an `n`-bit field into a `u32`, `n <= 32`.
+    pub fn read_u32(&mut self, n: u32) -> Result<u32> {
+        assert!(n <= 32, "read_u32: {n} bits");
+        // n <= 32 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(self.read(n)? as u32)
+    }
+
+    /// Read an `n`-bit field into a `usize`, `n <= 32` (a length or count).
+    pub fn read_usize(&mut self, n: u32) -> Result<usize> {
+        assert!(n <= 32, "read_usize: {n} bits");
+        // n <= 32 is asserted above and usize is at least 32 bits on every
+        // target this workspace builds for, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(self.read(n)? as usize)
+    }
+
     /// Read an 8-bit field.
     pub fn u8(&mut self) -> Result<u8> {
-        Ok(self.read(8)? as u8)
+        self.read_u8(8)
     }
 
     /// Read a 16-bit field.
     pub fn u16(&mut self) -> Result<u16> {
-        Ok(self.read(16)? as u16)
+        self.read_u16(16)
     }
 
     /// Read a 32-bit field.
     pub fn u32(&mut self) -> Result<u32> {
-        Ok(self.read(32)? as u32)
+        self.read_u32(32)
     }
 
     /// Read a 13-bit PID field (H.222.0 Table 2-3).
@@ -148,7 +187,7 @@ impl BitWriter {
             if self.bit & 7 == 0 {
                 self.buf.push(0);
             }
-            let b = ((v >> i) & 1) as u8;
+            let b = u8::from((v >> i) & 1 == 1);
             let last = self.buf.len() - 1;
             self.buf[last] |= b << (7 - (self.bit % 8));
             self.bit += 1;
@@ -187,6 +226,21 @@ impl BitWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The width-typed readers return exactly the field, and refuse a
+    /// width their type cannot hold.
+    #[test]
+    fn width_typed_readers() {
+        let v = [0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56, 0x78, 0x9A];
+        let mut r = BitReader::new(&v, "t");
+        assert_eq!(r.read_u8(4).unwrap(), 0xA);
+        assert_eq!(r.read_u8(8).unwrap(), 0xBC);
+        assert_eq!(r.read_u16(12).unwrap(), 0xDEF);
+        assert_eq!(r.read_u32(24).unwrap(), 0x123456);
+        assert_eq!(r.read_usize(16).unwrap(), 0x789A);
+        r.finish().unwrap();
+        assert!(std::panic::catch_unwind(|| BitReader::new(&v, "t").read_u8(9)).is_err());
+    }
 
     #[test]
     fn roundtrip_fields() {
