@@ -595,6 +595,7 @@ pub const TRACK_MIN_SNR_DB: f64 = 3.0;
 /// seconds of signal (symbols / `symbol_rate_hz`).
 pub fn run_stream(
     bytes: crate::symstream::Bytes,
+    source: crate::symstream::Source,
     symbol_rate_hz: f64,
     status: bool,
     stop: &AtomicBool,
@@ -614,6 +615,7 @@ pub fn run_stream(
     let mut next_status = 1.0;
     let w = crate::symstream::run(
         bytes,
+        source,
         crate::symstream::CHUNK_FRAMES * FRAME_SYMBOLS,
         stop,
         |z, cut| {
@@ -729,7 +731,15 @@ pub fn run_radio_fpga(
         stats.trim = p.trim;
     }
     crate::symstream::finish_radio(stream, seconds, stop, &cap_stop, |rx| {
-        run_stream(rx, rs, status, stop, out, stats)
+        run_stream(
+            rx,
+            crate::symstream::Source::Live,
+            rs,
+            status,
+            stop,
+            out,
+            stats,
+        )
     })
 }
 

@@ -836,6 +836,7 @@ fn run_isdbs(a: RxArgs) -> Result<()> {
         stats.symbol_rate_hz = rs;
         let s = crate::rxs::run_stream(
             crate::symstream::file_bytes(std::path::Path::new(p))?,
+            crate::symstream::Source::File,
             rs,
             a.status_secs > 0.0,
             &stop,
@@ -974,6 +975,7 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
         let rs = isdbs3_phy::frontend::system().symbol_rate_hz;
         let s = crate::rxs3::run_stream(
             crate::symstream::file_bytes(std::path::Path::new(p))?,
+            crate::symstream::Source::File,
             rs,
             a.status_secs > 0.0,
             &stop,

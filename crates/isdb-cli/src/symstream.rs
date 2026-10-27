@@ -36,11 +36,76 @@ pub const CHUNK_SUPERFRAMES: usize = 24;
 pub const MAX_KEPT_CHUNKS: usize = 3;
 
 /// Chunks of parsed symbols that may wait for the decoder (≈ 3.2 s of
-/// ISDB-S3, ≈ 1.7 GB as complex values). Beyond, the parser drops whole
-/// blocks and reports them as a loss: the capture is never held up (which
-/// would overflow the radio's buffers mid-stream), and memory stays
-/// bounded when the decoder falls behind for longer than that.
+/// ISDB-S3, ≈ 1.7 GB as complex values). Beyond, a [`Source::Live`]
+/// parser drops whole blocks and reports them as a loss: the capture is
+/// never held up (which would overflow the radio's buffers mid-stream),
+/// and memory stays bounded when the decoder falls behind for longer than
+/// that. A [`Source::File`] parser waits instead.
 pub const MAX_QUEUED_CHUNKS: usize = 4;
+
+/// Where the words come from, which decides what happens when the decoder
+/// falls [`MAX_QUEUED_CHUNKS`] behind the parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// A radio: the parser drops blocks rather than hold the capture up.
+    Live,
+    /// A file: the parser waits for the decoder, so a replay is complete
+    /// and the same on every run whatever the decoder's speed.
+    File,
+}
+
+/// Symbols parsed and not yet taken by the decoder, shared by the parser
+/// thread (adds) and the decoder (subtracts, and wakes a waiting parser).
+struct Queue {
+    symbols: std::sync::Mutex<u64>,
+    drained: std::sync::Condvar,
+    /// Set by the decoder when it stops taking items, so a parser waiting
+    /// on `drained` returns instead of waiting for a drain that never
+    /// comes.
+    closed: std::sync::atomic::AtomicBool,
+}
+
+impl Queue {
+    fn new() -> Self {
+        Self {
+            symbols: std::sync::Mutex::new(0),
+            drained: std::sync::Condvar::new(),
+            closed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+    /// Reserve `n` symbols for a block. `false` means the block is to be
+    /// dropped (`Live`, queue full) or the decoder has gone.
+    fn reserve(&self, n: u64, max: u64, source: Source) -> bool {
+        let mut q = self.symbols.lock().unwrap_or_else(|e| e.into_inner());
+        while *q >= max {
+            if self.closed.load(std::sync::atomic::Ordering::Relaxed) {
+                return false;
+            }
+            match source {
+                Source::Live => return false,
+                Source::File => q = self.drained.wait(q).unwrap_or_else(|e| e.into_inner()),
+            }
+        }
+        *q += n;
+        true
+    }
+    fn release(&self, n: u64) -> u64 {
+        let mut q = self.symbols.lock().unwrap_or_else(|e| e.into_inner());
+        *q -= n;
+        let left = *q;
+        drop(q);
+        self.drained.notify_one();
+        left
+    }
+    fn len(&self) -> u64 {
+        *self.symbols.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn close(&self) {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.drained.notify_all();
+    }
+}
 
 /// Where a contiguous stretch of symbols ended and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +213,7 @@ enum Item {
 /// leaving the queued symbols undecoded.
 pub fn run(
     bytes: Bytes,
+    source: Source,
     chunk_symbols: usize,
     stop: &std::sync::atomic::AtomicBool,
     mut decode: impl FnMut(&[Cplx], Cut) -> Result<usize>,
@@ -155,7 +221,7 @@ pub fn run(
     mut status: impl FnMut(&WordStats),
 ) -> Result<WordStats> {
     let (itx, irx) = std::sync::mpsc::channel::<Item>();
-    let queued = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let queued = std::sync::Arc::new(Queue::new());
     let q = std::sync::Arc::clone(&queued);
     let max_queued = (MAX_QUEUED_CHUNKS * chunk_symbols) as u64;
     let parser = std::thread::spawn(move || {
@@ -181,7 +247,10 @@ pub fn run(
         let send = |e: Event| -> bool {
             let item = match e {
                 Event::Block { symbols, .. } => {
-                    if q.load(std::sync::atomic::Ordering::Relaxed) >= max_queued {
+                    if !q.reserve(symbols.len() as u64, max_queued, source) {
+                        if q.closed.load(std::sync::atomic::Ordering::Relaxed) {
+                            return false;
+                        }
                         dropped.set(dropped.get() + 1);
                         return true;
                     }
@@ -190,7 +259,6 @@ pub fn run(
                     {
                         return false;
                     }
-                    q.fetch_add(symbols.len() as u64, std::sync::atomic::Ordering::Relaxed);
                     Item::Symbols(
                         symbols
                             .iter()
@@ -234,7 +302,7 @@ pub fn run(
         if cut == Cut::End {
             buf.clear();
         }
-        st.queued_symbols = queued.load(std::sync::atomic::Ordering::Relaxed);
+        st.queued_symbols = queued.len();
         st.max_queued_symbols = st.max_queued_symbols.max(st.queued_symbols);
         status(st);
         Ok(())
@@ -253,7 +321,7 @@ pub fn run(
             }
             match item {
                 Item::Symbols(sy) => {
-                    queued.fetch_sub(sy.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                    queued.release(sy.len() as u64);
                     st.blocks += 1;
                     st.symbols += sy.len() as u64;
                     buf.extend_from_slice(&sy);
@@ -307,7 +375,9 @@ pub fn run(
         decode_buffer(&mut buf, Cut::End, &mut st)?;
         ended(&st)
     })();
-    // on an error the parser stops when its channel closes
+    // on an error or a stop the parser stops when its channel closes, or,
+    // if it is waiting for the decoder to drain, when the queue closes
+    queued.close();
     let _ = parser.join();
     r?;
     Ok(st)
@@ -509,6 +579,7 @@ mod tests {
         let (mut calls, mut max_len) = (0usize, 0usize);
         let st = run(
             bytes_of(words(blocks)),
+            Source::File,
             chunk,
             &stop,
             |z, cut| {
@@ -540,6 +611,7 @@ mod tests {
         let mut seen: Vec<Cplx> = Vec::new();
         let st = run(
             bytes_of(words(30)),
+            Source::File,
             10_000,
             &stop,
             |z, cut| {
@@ -563,6 +635,66 @@ mod tests {
         assert!(seen == want, "symbols out of order or altered");
     }
 
+    /// A file source is replayed completely however slow the decoder is:
+    /// the parser waits at the queue bound instead of dropping, so every
+    /// block arrives and the counters are the same on every run.
+    #[test]
+    fn a_file_source_waits_for_a_slow_decoder_and_loses_nothing() {
+        let chunk = 8_192; // bound: 4 chunks = 8 blocks of 4 096
+        let blocks = 60;
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut first = true;
+        let st = run(
+            bytes_of(words(blocks)),
+            Source::File,
+            chunk,
+            &stop,
+            |z, _| {
+                if first {
+                    // the parser fills the queue and then waits
+                    first = false;
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+                Ok(z.len())
+            },
+            |_| Ok(()),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(st.blocks, blocks as u64);
+        assert_eq!(st.symbols, (blocks * 4096) as u64);
+        assert_eq!((st.blocks_dropped, st.blocks_lost, st.losses), (0, 0, 0));
+        assert!(
+            st.max_queued_symbols <= (MAX_QUEUED_CHUNKS * chunk + 4096) as u64,
+            "queue grew to {}",
+            st.max_queued_symbols
+        );
+    }
+
+    /// A stop while the file parser waits at the queue bound ends the run
+    /// (the queue is closed and the parser wakes) instead of hanging.
+    #[test]
+    fn a_stop_wakes_a_waiting_file_parser() {
+        let chunk = 8_192;
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let st = run(
+            bytes_of(words(60)),
+            Source::File,
+            chunk,
+            &stop,
+            |z, _| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(z.len())
+            },
+            |_| Ok(()),
+            |_| {},
+        )
+        .unwrap();
+        assert!(st.stopped);
+        assert!(st.blocks < 60);
+    }
+
     /// A decoder that stalls lets symbols queue up only to
     /// MAX_QUEUED_CHUNKS chunks: the parser then drops whole blocks and
     /// reports them as one loss, instead of growing without bound (the
@@ -575,6 +707,7 @@ mod tests {
         let mut first = true;
         let st = run(
             bytes_of(words(blocks)),
+            Source::Live,
             chunk,
             &stop,
             |z, _| {
@@ -611,6 +744,7 @@ mod tests {
         let mut ends = 0;
         let st = run(
             bytes_of(b),
+            Source::File,
             8_192,
             &stop,
             |z, _| Ok(z.len()),
