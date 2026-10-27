@@ -741,4 +741,12 @@ fn acquisition_is_reported_as_tracing_events() {
             .any(|e| e.level == Level::DEBUG && e.message.starts_with("frame 0: TMCC ok")),
         "per-frame debug event"
     );
+    // The per-symbol timing step is out of line behind `enabled!`
+    // (rx/mod.rs `trace_timing_step`): it must still arrive.
+    let step = events
+        .iter()
+        .find(|e| e.message.contains(": timing step "))
+        .expect("a per-symbol timing-step event");
+    assert_eq!(step.level, Level::TRACE);
+    assert!(step.field("symbol").is_some() && step.field("drift").is_some());
 }

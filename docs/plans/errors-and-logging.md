@@ -66,6 +66,14 @@ took `&[u8]` and returned `Option` while every caller held a `[u8; 188]`.
   per-section and per-table detail (RS corrections per frame, a section
   assembled, a timing-loop step). `trace`: per-packet and per-symbol.
   Nothing above `trace` in a per-packet or per-sample loop.
+- **An event inside a hot loop goes out of line**, even at `trace`: a
+  `#[cold] #[inline(never)]` helper holding the macro, called behind
+  `if tracing::enabled!(Level::TRACE)`. The macro's expansion costs speed
+  by code size alone with tracing off: the per-symbol timing step inline
+  in `isdbt_ofdm::rx::Track::push_symbol` slowed the receiver 3–4 %
+  (`perf_realtime_factor` RX 1.49× → 1.43×); out of line it measures the
+  same as before the event existed. Measure the crate's throughput test
+  before and after any event added to a per-symbol or per-packet path.
 - **Target** is the default (module path): `isdbt_mux::relay`, so the
   text format shows `[relay]` and `RUST_LOG=isdbt_mux=debug` works.
   `isdb-cli` modules keep their current tag as the target where it

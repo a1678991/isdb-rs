@@ -73,6 +73,23 @@ fn describe(p: &Params) -> String {
     s
 }
 
+/// The per-symbol timing-loop event, out of line: the `trace!` expansion
+/// inside `push_symbol` cost the receiver 3–4 % of its speed with tracing
+/// off (`perf_realtime_factor`: RX 1.49× → 1.43× real time), by its code
+/// size alone. The caller checks `enabled!` first.
+#[cold]
+#[inline(never)]
+fn trace_timing_step(j: u64, delta: f64, drift: f64, c: f64, total: f64) {
+    trace!(
+        symbol = j,
+        measured = delta,
+        drift,
+        step = c,
+        total,
+        "symbol {j}: timing step {c:+.4} samples (measured {delta:+.4}, drift {drift:+.4} samples/symbol, {total:+.1} samples since lock)"
+    );
+}
+
 /// Carrier frequency offset in Hz of `cfo` carrier spacings in `mode`.
 fn cfo_hz(mode: Mode, cfo: f64) -> f64 {
     cfo * isdbt_core::sample_rate_hz() / mode.fft_size() as f64
@@ -940,16 +957,9 @@ impl Track {
             let already = (self.ex.rate - 1.0) * p;
             self.ex.rate = 1.0 + self.drift / p;
             self.ex.adjust(c - already);
-            trace!(
-                symbol = j,
-                measured = delta,
-                drift = self.drift,
-                step = c,
-                total = self.timing_total,
-                "symbol {j}: timing step {c:+.4} samples (measured {delta:+.4}, drift {:+.4} samples/symbol, {:+.1} samples since lock)",
-                self.drift,
-                self.timing_total
-            );
+            if tracing::enabled!(tracing::Level::TRACE) {
+                trace_timing_step(j, delta, self.drift, c, self.timing_total);
+            }
         }
         self.ring.push_back((j, start, y));
         if self.ring.len() as u64 > 2 * self.lookahead + 1 {
