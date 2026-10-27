@@ -322,16 +322,23 @@ const BYTE_FIELDS: &[&str] = &[
     "private_data_byte",
 ];
 
-fn ints(v: &[Node]) -> Option<Vec<i128>> {
+/// The list as bytes, if every element is an integer in `0..=255`.
+fn bytes(v: &[Node]) -> Option<Vec<u8>> {
     v.iter()
-        .map(|n| if let Node::Int(i) = n { Some(*i) } else { None })
+        .map(|n| {
+            if let Node::Int(i) = n {
+                u8::try_from(*i).ok()
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
 fn code3(v: &[Node]) -> Option<String> {
-    let i = ints(v)?;
-    if i.len() == 3 && i.iter().all(|&c| (0x20..0x7F).contains(&c)) {
-        Some(i.iter().map(|&c| c as u8 as char).collect())
+    let b = bytes(v)?;
+    if b.len() == 3 && b.iter().all(|&c| (0x20..0x7F).contains(&c)) {
+        Some(b.iter().map(|&c| char::from(c)).collect())
     } else {
         None
     }
@@ -357,9 +364,8 @@ pub fn normalize(n: Node, field: &str) -> Node {
                 "Some" if fields.len() == 1 => return normalize(fields.pop().unwrap().1, field),
                 "AribString" if fields.len() == 1 => {
                     if let Node::List(v) = &fields[0].1
-                        && let Some(i) = ints(v)
+                        && let Some(raw) = bytes(v)
                     {
-                        let raw: Vec<u8> = i.iter().map(|&x| x as u8).collect();
                         let text = isdb_text::AribString(raw.clone()).to_string_lossy();
                         return Node::Text(text, raw);
                     }
@@ -367,11 +373,9 @@ pub fn normalize(n: Node, field: &str) -> Node {
                 "MjdTime" => {
                     if let (Some(mjd), Some(bcd)) =
                         (field_int(&fields, "mjd"), field_int(&fields, "bcd_hms"))
+                        && let (Ok(mjd), Ok(bcd)) = (u16::try_from(mjd), u32::try_from(bcd))
                     {
-                        let t = isdb_si::time::MjdTime {
-                            mjd: mjd as u16,
-                            bcd_hms: bcd as u32,
-                        };
+                        let t = isdb_si::time::MjdTime { mjd, bcd_hms: bcd };
                         return Node::Str(if t.is_undefined() {
                             "undefined".into()
                         } else if let Some(dt) = t.to_jst() {
@@ -382,8 +386,9 @@ pub fn normalize(n: Node, field: &str) -> Node {
                     }
                 }
                 "BcdDuration" if fields.len() == 1 => {
-                    if let Node::Int(v) = fields[0].1 {
-                        let v = v as u32;
+                    if let Node::Int(v) = fields[0].1
+                        && let Ok(v) = u32::try_from(v)
+                    {
                         return Node::Str(if v == 0xFF_FFFF {
                             "undefined".into()
                         } else {
@@ -392,8 +397,9 @@ pub fn normalize(n: Node, field: &str) -> Node {
                     }
                 }
                 "BcdOffset" if fields.len() == 1 => {
-                    if let Node::Int(v) = fields[0].1 {
-                        let v = v as u32;
+                    if let Node::Int(v) = fields[0].1
+                        && let Ok(v) = u32::try_from(v)
+                    {
                         return Node::Str(format!("{}:{}", bcd2(v >> 8), bcd2(v)));
                     }
                 }
@@ -403,10 +409,10 @@ pub fn normalize(n: Node, field: &str) -> Node {
                     if fields.len() == 2 && fields[0].0 == "tag" && fields[1].0 == "data" =>
                 {
                     if let (Node::Int(tag), Node::List(d)) = (&fields[0].1, &fields[1].1)
-                        && let Some(d) = ints(d)
+                        && let Ok(tag8) = u8::try_from(*tag)
+                        && let Some(data) = bytes(d)
                     {
-                        let data: Vec<u8> = d.iter().map(|&x| x as u8).collect();
-                        return match isdb_si::Descriptor::decode_body(*tag as u8, &data) {
+                        return match isdb_si::Descriptor::decode_body(tag8, &data) {
                             Ok(td) => descriptor(&td),
                             Err(e) => Node::Struct(
                                 "Undecodable".into(),
@@ -453,10 +459,9 @@ pub fn normalize(n: Node, field: &str) -> Node {
                 return Node::Str(c);
             }
             if BYTE_FIELDS.contains(&field)
-                && let Some(i) = ints(&v)
-                && i.iter().all(|&x| (0..=255).contains(&x))
+                && let Some(b) = bytes(&v)
             {
-                return Node::Bytes(i.iter().map(|&x| x as u8).collect());
+                return Node::Bytes(b);
             }
             Node::List(v.into_iter().map(|x| normalize(x, field)).collect())
         }

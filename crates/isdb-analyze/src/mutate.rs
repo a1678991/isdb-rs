@@ -168,10 +168,14 @@ impl Expr {
         let head = parts.remove(0);
         let hs = seg(&head)?;
         let (table, tid) = match hs.name.split_once('@') {
-            Some((t, x)) => (t.to_lowercase(), Some(int(x)? as u8)),
+            Some((t, x)) => (t.to_lowercase(), Some(field(x, "table_id")?)),
             None => (hs.name.to_lowercase(), None),
         };
-        let ext = hs.sel.as_deref().map(int).transpose()?.map(|x| x as u16);
+        let ext = hs
+            .sel
+            .as_deref()
+            .map(|x| field(x, "table_id_extension"))
+            .transpose()?;
         let mut path: Vec<Seg> = parts.iter().map(|p| seg(p)).collect::<Result<_>>()?;
         let v = rhs.to_string();
         let op = match path.last() {
@@ -300,7 +304,7 @@ impl Expr {
                                 .split_once(':')
                                 .ok_or_else(|| anyhow!("stream as TYPE:PID"))?;
                             Ok(isdb_ts::psi::PmtStream::new(
-                                int(t)? as u8,
+                                field(t, "stream_type")?,
                                 self::pid(pid)?,
                                 vec![],
                             ))
@@ -343,7 +347,10 @@ fn pat_entry(v: &str) -> Result<isdb_ts::psi::PatEntry> {
     let (a, b) = v
         .split_once(':')
         .ok_or_else(|| anyhow!("PAT entry as PROGRAM:PID"))?;
-    Ok(isdb_ts::psi::PatEntry::new(int(a)? as u16, pid(b)?))
+    Ok(isdb_ts::psi::PatEntry::new(
+        field(a, "program_number")?,
+        pid(b)?,
+    ))
 }
 
 /// The value of a scalar leaf: exactly one segment, no selector, `Set`.
@@ -494,6 +501,11 @@ fn val<T: FromVal>(s: &str) -> Result<T> {
     T::from_val(s)
 }
 
+/// [`val`] with the field name on the error (`table_id: 300 does not fit u8`).
+pub(crate) fn field<T: FromVal>(s: &str, name: &'static str) -> Result<T> {
+    val(s).context(name)
+}
+
 macro_rules! int_val {
     ($($t:ty),*) => {$(
         impl FromVal for $t {
@@ -612,7 +624,7 @@ impl FromVal for BcdDuration {
             return Ok(BcdDuration::UNDEFINED);
         }
         if s.starts_with("0x") {
-            return Ok(BcdDuration(int(s)? as u32));
+            return Ok(BcdDuration(field(s, "duration")?));
         }
         let p: Vec<&str> = s.split(':').collect();
         if p.len() != 3 {
@@ -627,7 +639,7 @@ impl FromVal for BcdOffset {
     fn from_val(s: &str) -> Result<Self> {
         let s = s.trim();
         if s.starts_with("0x") {
-            return Ok(BcdOffset(int(s)? as u16));
+            return Ok(BcdOffset(field(s, "local_time_offset")?));
         }
         let (h, m) = s
             .split_once(':')
@@ -654,7 +666,7 @@ fn desc_select(v: &[Descriptor], sel: &str) -> Result<usize> {
             Some((t, k)) => (t, k.parse::<usize>()?),
             None => (sel, 0),
         };
-        let tag = int(t)? as u8;
+        let tag = field(t, "descriptor_tag")?;
         v.iter()
             .enumerate()
             .filter(|(_, d)| d.tag() == tag)
@@ -762,7 +774,14 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
             }
             "frequency_mhz" => {
                 let mhz: f64 = leaf(p, op)?.parse()?;
-                x.frequencies = vec![(mhz * 7.0).round() as u16];
+                let units = (mhz * 7.0).round();
+                if !(0.0..=f64::from(u16::MAX)).contains(&units) {
+                    bail!("frequency_mhz {mhz} is outside the 16-bit 1/7 MHz field");
+                }
+                // Checked against the field's range just above.
+                #[allow(clippy::cast_possible_truncation)]
+                let units = units as u16;
+                x.frequencies = vec![units];
                 Ok(())
             }
             _ => fields!(x, p, op; area_code, guard_interval | "gi", transmission_mode | "mode"),

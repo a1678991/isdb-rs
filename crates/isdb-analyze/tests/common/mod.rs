@@ -230,7 +230,11 @@ pub fn eit_pf(sn: u8, events: Vec<EitEvent>) -> Vec<u8> {
 }
 
 pub fn tot(sec: u32) -> Vec<u8> {
-    let t = jst(12, (sec / 60) as u8, (sec % 60) as u8);
+    let t = jst(
+        12,
+        u8::try_from(sec / 60).unwrap(),
+        u8::try_from(sec % 60).unwrap(),
+    );
     isdb_si::tables::Tot {
         header: ShortHeader {
             table_id: 0x73,
@@ -322,7 +326,7 @@ pub fn default_spec(seconds: u64) -> Spec {
                 pid: Pid::new(0x0014).unwrap(),
                 period_ms: 5000,
                 phase_ms: 19,
-                make: Box::new(|n| vec![tot(n as u32 * 5)]),
+                make: Box::new(|n| vec![tot(u32::try_from(n).unwrap() * 5)]),
             },
         ],
         audio_period_ms: 64,
@@ -348,7 +352,7 @@ pub fn build(spec: &Spec) -> Vec<Pkt> {
     let total = spec.seconds * PPS;
     let mut cc: HashMap<Pid, Counter> = HashMap::new();
     let mut queue: Vec<Pkt> = Vec::new(); // FIFO of pending packets
-    let mut out = Vec::with_capacity(total as usize);
+    let mut out = Vec::with_capacity(usize::try_from(total).unwrap());
     let mut next: Vec<u64> = spec.items.iter().map(|i| i.phase_ms).collect();
     let mut reps: Vec<u64> = vec![0; spec.items.len()];
     let mut next_pcr = 0u64;

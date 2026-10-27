@@ -15,6 +15,8 @@
 //!
 //! Run with `--nocapture` to see the reports.
 
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 use common::*;
 use isdb_analyze::edit::{self, EditOp, EditOptions, NullSlots, Selector};

@@ -4,6 +4,8 @@
 //! name). Each test prints a `SKIP` line and passes when its variable is
 //! unset. See docs/test-data.md.
 
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::survey::{Options, survey};
 use isdb_iq::{C32, Recording};
 use std::path::PathBuf;

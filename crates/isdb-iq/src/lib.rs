@@ -34,6 +34,9 @@
 //! assert_eq!(f.sigmf_datatype(), "ci16_le");
 //! ```
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 pub mod sigmf;
 pub mod survey;
 
@@ -68,6 +71,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// timestamp with milliseconds (`2026-10-20T08:15:30.125Z`), the form of
 /// SigMF `core:datetime`.
 pub fn iso8601_utc(secs: f64) -> String {
+    // Milliseconds since the epoch; `as` saturates far outside any clock
+    // reading and std has no fallible float-to-integer conversion.
+    #[allow(clippy::cast_possible_truncation)]
     let ms_total = (secs * 1000.0).round() as i64;
     let (days, ms) = (
         ms_total.div_euclid(86_400_000),
