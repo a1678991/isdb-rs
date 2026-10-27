@@ -2,6 +2,9 @@
 //! built field by field from the syntax tables (each `f(name, bits, value)`
 //! row mirrors one row of the cited table), then decoded and checked.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_si::any::AnyTable;
 use isdb_si::descriptor::*;
 use isdb_si::tables::*;
@@ -28,7 +31,7 @@ fn with_crc(mut v: Vec<u8>) -> Vec<u8> {
 }
 
 fn desc(tag: u8, body: &[u8]) -> Vec<u8> {
-    let mut v = vec![tag, body.len() as u8];
+    let mut v = vec![tag, u8::try_from(body.len()).unwrap()];
     v.extend_from_slice(body);
     v
 }

@@ -19,6 +19,9 @@
 //! counts and the conformance deviations (not asserted; live multiplexes
 //! carry some, see SPEC-NOTES).
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 

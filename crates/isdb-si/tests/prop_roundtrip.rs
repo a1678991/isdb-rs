@@ -2,6 +2,9 @@
 //! table body (encode → decode → equal → re-encode identical), plus
 //! decode-side fuzzing (any bytes a decoder accepts re-encode identically).
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_si::any::AnyTable;
 use isdb_si::descriptor::*;
 use isdb_si::tables::*;
@@ -24,7 +27,7 @@ fn code3() -> impl Strategy<Value = Code3> + Clone {
     any::<[u8; 3]>()
 }
 fn bits(n: u32) -> impl Strategy<Value = u8> + Clone {
-    0u8..=((1u16 << n) - 1) as u8
+    0u8..=(u8::MAX >> (8 - n))
 }
 /// Any 13-bit PID (H.222.0 Table 2-3).
 fn pid() -> impl Strategy<Value = Pid> + Clone {
@@ -32,7 +35,7 @@ fn pid() -> impl Strategy<Value = Pid> + Clone {
 }
 
 fn bits16(n: u32) -> impl Strategy<Value = u16> + Clone {
-    0u16..=((1u32 << n) - 1) as u16
+    0u16..=(u16::MAX >> (16 - n))
 }
 fn mjd_time() -> impl Strategy<Value = MjdTime> + Clone {
     (any::<u16>(), 0u32..=0xFF_FFFF).prop_map(|(mjd, bcd_hms)| MjdTime { mjd, bcd_hms })

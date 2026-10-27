@@ -4,6 +4,9 @@
 //! 6-3, 6-21, 6-22, 6-24) and Vol. 4 (Tables 5-1 … 5-7), decoded and
 //! re-encoded byte-identically.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_si::ait::{Ait, AitDescriptor, HttpSelector};
 use isdb_si::bxml::{AdditionalAribBxmlInfo, AribBxmlInfo, BxmlEntry};
 use isdb_si::dsmcc::{Ddb, Dii, ModuleDescriptor, module_blocks};
@@ -68,7 +71,7 @@ fn spec_vol3_table_6_1_dii() {
         ("moduleInfoLength", 8, info.len() as u64),
     ]);
     body.extend_from_slice(&info);
-    body.extend_from_slice(&(private.len() as u16).to_be_bytes());
+    body.extend_from_slice(&u16::try_from(private.len()).unwrap().to_be_bytes());
     body.extend_from_slice(&private);
     // Table 6-3 dsmccMessageHeader
     let mut msg = fields(&[
@@ -172,7 +175,7 @@ fn spec_vol4_table_5_1_ait() {
         ("transport_protocol_label", 8, 0),
     ]);
     tp.extend_from_slice(&sel);
-    let mut common = vec![0x02, tp.len() as u8];
+    let mut common = vec![0x02, u8::try_from(tp.len()).unwrap()];
     common.extend_from_slice(&tp);
     // application descriptor (Table 5-3)
     let app_desc = fields(&[
@@ -187,7 +190,7 @@ fn spec_vol4_table_5_1_ait() {
         ("application_priority", 8, 1),
         ("transport_protocol_label", 8, 0),
     ]);
-    let mut descs = vec![0x00, app_desc.len() as u8];
+    let mut descs = vec![0x00, u8::try_from(app_desc.len()).unwrap()];
     descs.extend_from_slice(&app_desc);
     // simple application location (Table 5-5, tag 0x15 per B10 Part 1 Table 5-5)
     descs.extend_from_slice(&[0x15, 15]);
@@ -200,7 +203,7 @@ fn spec_vol4_table_5_1_ait() {
         ("managed_URL_length", 8, 20),
     ]);
     bp.extend_from_slice(b"http://www.xbc.co.jp");
-    descs.extend_from_slice(&[0x30, bp.len() as u8]);
+    descs.extend_from_slice(&[0x30, u8::try_from(bp.len()).unwrap()]);
     descs.extend_from_slice(&bp);
     // autostart priority (Table 5-7)
     descs.extend_from_slice(&[0x31, 1, 5]);

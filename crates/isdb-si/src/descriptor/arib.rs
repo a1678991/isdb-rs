@@ -27,9 +27,9 @@ impl DescriptorBody for HierarchicalTransmission {
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
         let d = Self {
-            reserved_future_use_1: r.read(7)? as u8,
+            reserved_future_use_1: r.read_u8(7)?,
             quality_level: r.bool()?,
-            reserved_future_use_2: r.read(3)? as u8,
+            reserved_future_use_2: r.read_u8(3)?,
             reference_pid: r.pid()?,
         };
         r.finish()?;
@@ -90,10 +90,10 @@ impl DescriptorBody for DigitalCopyControl {
     const NAME: &'static str = "digital_copy_control_descriptor";
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
-        let digital_recording_control_data = r.read(2)? as u8;
+        let digital_recording_control_data = r.read_u8(2)?;
         let maximum_bitrate_flag = r.bool()?;
         let component_control_flag = r.bool()?;
-        let user_defined = r.read(4)? as u8;
+        let user_defined = r.read_u8(4)?;
         let maximum_bitrate = if maximum_bitrate_flag {
             Some(r.u8()?)
         } else {
@@ -106,10 +106,10 @@ impl DescriptorBody for DigitalCopyControl {
             let mut v = Vec::new();
             while cr.remaining_bytes() > 0 {
                 let component_tag = cr.u8()?;
-                let digital_recording_control_data = cr.read(2)? as u8;
+                let digital_recording_control_data = cr.read_u8(2)?;
                 let mbf = cr.bool()?;
                 let reserved_future_use = cr.bool()?;
-                let user_defined = cr.read(4)? as u8;
+                let user_defined = cr.read_u8(4)?;
                 let maximum_bitrate = if mbf { Some(cr.u8()?) } else { None };
                 v.push(ComponentCopyControl {
                     component_tag,
@@ -204,16 +204,16 @@ impl DescriptorBody for AudioComponent {
     const NAME: &'static str = "audio_component_descriptor";
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
-        let reserved_future_use_1 = r.read(4)? as u8;
-        let stream_content = r.read(4)? as u8;
+        let reserved_future_use_1 = r.read_u8(4)?;
+        let stream_content = r.read_u8(4)?;
         let component_type = r.u8()?;
         let component_tag = r.u8()?;
         let stream_type = r.u8()?;
         let simulcast_group_tag = r.u8()?;
         let es_multi_lingual_flag = r.bool()?;
         let main_component_flag = r.bool()?;
-        let quality_indicator = r.read(2)? as u8;
-        let sampling_rate = r.read(3)? as u8;
+        let quality_indicator = r.read_u8(2)?;
+        let sampling_rate = r.read_u8(3)?;
         let reserved_future_use_2 = r.bool()?;
         let language = code3(&mut r)?;
         let language_2 = if es_multi_lingual_flag {
@@ -390,8 +390,8 @@ impl DescriptorBody for VideoDecodeControl {
         let d = Self {
             still_picture_flag: r.bool()?,
             sequence_end_code_flag: r.bool()?,
-            video_encode_format: r.read(4)? as u8,
-            transfer_characteristics: r.read(2)? as u8,
+            video_encode_format: r.read_u8(4)?,
+            transfer_characteristics: r.read_u8(2)?,
         };
         r.finish()?;
         Ok(d)
@@ -445,8 +445,8 @@ impl DescriptorBody for TsInformation {
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
         let remote_control_key_id = r.u8()?;
-        let length_of_ts_name = r.read(6)? as usize;
-        let transmission_type_count = r.read(2)? as usize;
+        let length_of_ts_name = r.read_usize(6)?;
+        let transmission_type_count = r.read_usize(2)?;
         let ts_name = string(&mut r, length_of_ts_name)?;
         let mut transmission_types = Vec::with_capacity(transmission_type_count);
         for _ in 0..transmission_type_count {
@@ -528,8 +528,8 @@ pub struct TerrestrialBroadcaster {
 impl TerrestrialBroadcaster {
     fn decode(r: &mut BitReader<'_>) -> Result<Self> {
         let terrestrial_broadcaster_id = r.u16()?;
-        let n_aff = r.read(4)? as usize;
-        let n_bc = r.read(4)? as usize;
+        let n_aff = r.read_usize(4)?;
+        let n_bc = r.read_usize(4)?;
         let affiliation_ids = r.bytes(n_aff)?.to_vec();
         let mut broadcasters = Vec::with_capacity(n_bc);
         for _ in 0..n_bc {
@@ -615,8 +615,8 @@ impl DescriptorBody for ExtendedBroadcaster {
     const NAME: &'static str = "extended_broadcaster_descriptor";
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
-        let broadcaster_type = r.read(4)? as u8;
-        let reserved_future_use = r.read(4)? as u8;
+        let broadcaster_type = r.read_u8(4)?;
+        let reserved_future_use = r.read_u8(4)?;
         let body = match broadcaster_type {
             0x1 => ExtendedBroadcasterBody::TerrestrialTv(TerrestrialBroadcaster::decode(&mut r)?),
             0x2 => {
@@ -724,10 +724,10 @@ impl DescriptorBody for LogoTransmission {
         let body = match t {
             0x01 => {
                 let b = LogoTransmissionBody::Cdt1 {
-                    reserved_future_use_1: r.read(7)? as u8,
-                    logo_id: r.read(9)? as u16,
-                    reserved_future_use_2: r.read(4)? as u8,
-                    logo_version: r.read(12)? as u16,
+                    reserved_future_use_1: r.read_u8(7)?,
+                    logo_id: r.read_u16(9)?,
+                    reserved_future_use_2: r.read_u8(4)?,
+                    logo_version: r.read_u16(12)?,
                     download_data_id: r.u16()?,
                 };
                 r.finish()?;
@@ -735,8 +735,8 @@ impl DescriptorBody for LogoTransmission {
             }
             0x02 => {
                 let b = LogoTransmissionBody::Cdt2 {
-                    reserved_future_use: r.read(7)? as u8,
-                    logo_id: r.read(9)? as u16,
+                    reserved_future_use: r.read_u8(7)?,
+                    logo_id: r.read_u16(9)?,
                 };
                 r.finish()?;
                 b
@@ -815,12 +815,12 @@ impl DescriptorBody for Series {
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
         let series_id = r.u16()?;
-        let repeat_label = r.read(4)? as u8;
-        let program_pattern = r.read(3)? as u8;
+        let repeat_label = r.read_u8(4)?;
+        let program_pattern = r.read_u8(3)?;
         let expire_date_valid_flag = r.bool()?;
         let expire_date = r.u16()?;
-        let episode_number = r.read(12)? as u16;
-        let last_episode_number = r.read(12)? as u16;
+        let episode_number = r.read_u16(12)?;
+        let last_episode_number = r.read_u16(12)?;
         let series_name = AribString(r.rest()?.to_vec());
         Ok(Self {
             series_id,
@@ -894,8 +894,8 @@ impl DescriptorBody for EventGroup {
     const NAME: &'static str = "event_group_descriptor";
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
-        let group_type = r.read(4)? as u8;
-        let event_count = r.read(4)? as usize;
+        let group_type = r.read_u8(4)?;
+        let event_count = r.read_usize(4)?;
         let mut events = Vec::with_capacity(event_count);
         for _ in 0..event_count {
             events.push(EventRef {
@@ -1079,17 +1079,17 @@ impl DescriptorBody for ComponentGroup {
     const NAME: &'static str = "component_group_descriptor";
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
-        let component_group_type = r.read(3)? as u8;
+        let component_group_type = r.read_u8(3)?;
         let total_bit_rate_flag = r.bool()?;
-        let num_of_group = r.read(4)? as usize;
+        let num_of_group = r.read_usize(4)?;
         let mut groups = Vec::with_capacity(num_of_group);
         for _ in 0..num_of_group {
-            let component_group_id = r.read(4)? as u8;
-            let num_of_ca_unit = r.read(4)? as usize;
+            let component_group_id = r.read_u8(4)?;
+            let num_of_ca_unit = r.read_usize(4)?;
             let mut ca_units = Vec::with_capacity(num_of_ca_unit);
             for _ in 0..num_of_ca_unit {
-                let ca_unit_id = r.read(4)? as u8;
-                let n = r.read(4)? as usize;
+                let ca_unit_id = r.read_u8(4)?;
+                let n = r.read_usize(4)?;
                 ca_units.push(CaUnit {
                     ca_unit_id,
                     component_tags: r.bytes(n)?.to_vec(),
@@ -1266,8 +1266,8 @@ impl DescriptorBody for LdtLinkage {
         for _ in 0..n {
             descriptions.push(LdtLinkageEntry {
                 description_id: r.u16()?,
-                reserved_future_use: r.read(4)? as u8,
-                description_type: r.read(4)? as u8,
+                reserved_future_use: r.read_u8(4)?,
+                description_type: r.read_u8(4)?,
                 user_defined: r.u8()?,
             });
         }
@@ -1331,10 +1331,10 @@ impl DescriptorBody for ConnectedTransmission {
         let mut r = BitReader::new(data, Self::NAME);
         Ok(Self {
             connected_transmission_group_id: r.u16()?,
-            segment_type: r.read(2)? as u8,
-            modulation_type_a: r.read(2)? as u8,
-            modulation_type_b: r.read(2)? as u8,
-            modulation_type_c: r.read(2)? as u8,
+            segment_type: r.read_u8(2)?,
+            modulation_type_a: r.read_u8(2)?,
+            modulation_type_b: r.read_u8(2)?,
+            modulation_type_c: r.read_u8(2)?,
             additional_info: r.rest()?.to_vec(),
         })
     }
@@ -1385,7 +1385,7 @@ impl DescriptorBody for ContentAvailability {
             copy_restriction_mode: r.bool()?,
             image_constraint_token: r.bool()?,
             retention_mode: r.bool()?,
-            retention_state: r.read(3)? as u8,
+            retention_state: r.read_u8(3)?,
             encryption_mode: r.bool()?,
             reserved_future_use_bytes: r.rest()?.to_vec(),
         })
@@ -1425,7 +1425,7 @@ impl DescriptorBody for AccessControl {
         let mut r = BitReader::new(data, Self::NAME);
         Ok(Self {
             ca_system_id: r.u16()?,
-            transmission_type: r.read(3)? as u8,
+            transmission_type: r.read_u8(3)?,
             pid: r.pid()?,
             private_data: r.rest()?.to_vec(),
         })
@@ -1467,9 +1467,9 @@ impl DescriptorBody for TerrestrialDeliverySystem {
     const NAME: &'static str = "terrestrial_delivery_system_descriptor";
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
-        let area_code = r.read(12)? as u16;
-        let guard_interval = r.read(2)? as u8;
-        let transmission_mode = r.read(2)? as u8;
+        let area_code = r.read_u16(12)?;
+        let guard_interval = r.read_u8(2)?;
+        let transmission_mode = r.read_u8(2)?;
         let n = multiple_of(Self::NAME, r.remaining_bytes(), 2)?;
         let mut frequencies = Vec::with_capacity(n);
         for _ in 0..n {
@@ -1565,7 +1565,7 @@ impl DescriptorBody for EmergencyInformation {
             let service_id = r.u16()?;
             let start_end_flag = r.bool()?;
             let signal_level = r.bool()?;
-            let reserved_future_use = r.read(6)? as u8;
+            let reserved_future_use = r.read_u8(6)?;
             let codes = len8_bytes(&mut r)?;
             multiple_of(Self::NAME, codes.len(), 2)?;
             let area_codes = codes
@@ -1652,7 +1652,7 @@ impl SystemManagement {
     }
     /// additional_broadcasting_identification (low 8 bits).
     pub fn additional_broadcasting_identification(&self) -> u8 {
-        self.system_management_id as u8
+        self.system_management_id.to_be_bytes()[1]
     }
 }
 

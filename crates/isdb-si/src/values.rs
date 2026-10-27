@@ -23,6 +23,9 @@ pub trait CodedValue: Copy + Eq + Sized + 'static {
     /// Every value the table gives a meaning to, in code order (reserved
     /// codes are not listed).
     const NAMED: &'static [Self];
+    /// The low [`Self::BITS`] bits set: the field's mask in a `u8`
+    /// (`BITS <= 8`, which the constant's evaluation checks).
+    const MASK: u8 = u8::MAX >> (8 - Self::BITS);
     /// The code (right-aligned in a `u8`).
     fn code(self) -> u8;
     /// The value of `code` (masked to [`Self::BITS`]).
@@ -62,11 +65,11 @@ macro_rules! coded_enum {
             fn code(self) -> u8 {
                 match self {
                     $( $name::$var => $code, )*
-                    $name::$res(c) => c & ((1u16 << $bits) - 1) as u8,
+                    $name::$res(c) => c & Self::MASK,
                 }
             }
             fn from_code(code: u8) -> Self {
-                match code & ((1u16 << $bits) - 1) as u8 {
+                match code & Self::MASK {
                     $( $code => $name::$var, )*
                     c => $name::$res(c),
                 }
@@ -116,7 +119,7 @@ macro_rules! coded_enum {
                 // Every code of the masked width is listed (checked by the
                 // `complete_tables` test), so the fallback is never taken;
                 // it returns the first entry instead of panicking.
-                match code & ((1u16 << $bits) - 1) as u8 {
+                match code & Self::MASK {
                     $( $code => $name::$var, )*
                     _ => Self::NAMED[0],
                 }
@@ -608,7 +611,7 @@ mod tests {
 
     fn complete<T: CodedValue + std::fmt::Debug>() {
         assert_eq!(T::NAMED.len(), 1 << T::BITS, "{}", T::TABLE);
-        for c in 0..(1u16 << T::BITS) as u8 {
+        for c in 0..=T::MASK {
             assert_eq!(T::from_code(c).code(), c);
         }
     }
@@ -624,7 +627,7 @@ mod tests {
     #[test]
     fn every_code_round_trips_and_names_are_unique() {
         fn check<T: CodedValue + std::fmt::Debug>() {
-            for c in 0..(1u16 << T::BITS) as u8 {
+            for c in 0..=T::MASK {
                 assert_eq!(T::from_code(c).code(), c, "{} {c:#x}", T::TABLE);
             }
             let mut names: Vec<_> = T::NAMED.iter().map(|v| v.name()).collect();

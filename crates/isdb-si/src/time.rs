@@ -90,10 +90,12 @@ pub fn mjd_to_date(mjd: u32) -> Option<Date> {
     let k = if mp == 14 || mp == 15 { 1 } else { 0 };
     let y = yp + k;
     let m = mp - 1 - k * 12;
+    // Within the validity range checked above, Y <= 200, M = 1..=12 and
+    // D = 1..=31, so the conversions cannot fail.
     Some(Date {
-        year: 1900 + y as i32,
-        month: m as u8,
-        day: d as u8,
+        year: 1900 + i32::try_from(y).ok()?,
+        month: u8::try_from(m).ok()?,
+        day: u8::try_from(d).ok()?,
     })
 }
 
@@ -116,10 +118,9 @@ pub fn date_to_mjd(date: Date) -> Option<u32> {
         + i64::from(date.day)
         + ((y - l) * 36_525).div_euclid(100)
         + ((m + 1 + l * 12) * 306_001).div_euclid(10_000);
-    if mjd < i64::from(MJD_MIN) || mjd > i64::from(MJD_MAX) {
-        return None;
-    }
-    Some(mjd as u32)
+    u32::try_from(mjd)
+        .ok()
+        .filter(|mjd| (MJD_MIN..=MJD_MAX).contains(mjd))
 }
 
 /// Gregorian month length (used only to reject impossible dates before
@@ -183,11 +184,8 @@ pub fn u8_to_bcd(v: u8) -> Result<u8> {
 
 /// Decode 6 BCD digits `hhmmss` packed in the low 24 bits.
 fn bcd_hms(v: u32) -> Option<(u8, u8, u8)> {
-    Some((
-        bcd_to_u8((v >> 16) as u8)?,
-        bcd_to_u8((v >> 8) as u8)?,
-        bcd_to_u8(v as u8)?,
-    ))
+    let [_, h, m, s] = v.to_be_bytes();
+    Some((bcd_to_u8(h)?, bcd_to_u8(m)?, bcd_to_u8(s)?))
 }
 
 fn hms_bcd(h: u8, m: u8, s: u8) -> Result<u32> {
@@ -218,9 +216,10 @@ impl MjdTime {
 
     /// From the 40-bit field value (low 40 bits of `v`).
     pub fn from_u40(v: u64) -> Self {
+        let [_, _, _, mjd_hi, mjd_lo, h, m, s] = v.to_be_bytes();
         Self {
-            mjd: (v >> 24) as u16,
-            bcd_hms: (v & 0xFF_FFFF) as u32,
+            mjd: u16::from_be_bytes([mjd_hi, mjd_lo]),
+            bcd_hms: u32::from_be_bytes([0, h, m, s]),
         }
     }
 
@@ -309,12 +308,12 @@ impl MjdTime {
     pub fn to_utc(self) -> Option<DateTime> {
         let s = self.jst_seconds()? - JST_OFFSET_SECONDS;
         let mjd = u32::try_from(s.div_euclid(86_400)).ok()?;
-        let tod = s.rem_euclid(86_400);
+        let (hour, minute, second) = tod_hms(s.rem_euclid(86_400))?;
         Some(DateTime {
             date: mjd_to_date(mjd)?,
-            hour: (tod / 3600) as u8,
-            minute: (tod / 60 % 60) as u8,
-            second: (tod % 60) as u8,
+            hour,
+            minute,
+            second,
         })
     }
 
@@ -328,17 +327,32 @@ impl MjdTime {
             + i64::from(dt.minute) * 60
             + i64::from(dt.second)
             + JST_OFFSET_SECONDS;
-        let jmjd = s.div_euclid(86_400) as u32;
-        let tod = s.rem_euclid(86_400);
-        let date = mjd_to_date(jmjd)
+        let date = u32::try_from(s.div_euclid(86_400))
+            .ok()
+            .and_then(mjd_to_date)
             .ok_or_else(|| Error::invalid("JST_time", "date outside Annex C range"))?;
+        let (hour, minute, second) = tod_hms(s.rem_euclid(86_400))
+            .ok_or_else(|| Error::invalid("JST_time", "time of day out of range"))?;
         Self::from_jst(DateTime {
             date,
-            hour: (tod / 3600) as u8,
-            minute: (tod / 60 % 60) as u8,
-            second: (tod % 60) as u8,
+            hour,
+            minute,
+            second,
         })
     }
+}
+
+/// `(hour, minute, second)` of a time of day given in seconds; `None`
+/// outside 0..86 400.
+fn tod_hms(tod: i64) -> Option<(u8, u8, u8)> {
+    if !(0..86_400).contains(&tod) {
+        return None;
+    }
+    Some((
+        u8::try_from(tod / 3600).ok()?,
+        u8::try_from(tod / 60 % 60).ok()?,
+        u8::try_from(tod % 60).ok()?,
+    ))
 }
 
 /// 24-bit BCD duration `hhmmss` (ARIB STD-B10 Part 2 §5.2.7 `duration`,
@@ -391,7 +405,8 @@ pub struct BcdOffset(pub u16);
 impl BcdOffset {
     /// `(hours, minutes)` if every nibble is a decimal digit.
     pub fn hm(self) -> Option<(u8, u8)> {
-        Some((bcd_to_u8((self.0 >> 8) as u8)?, bcd_to_u8(self.0 as u8)?))
+        let [h, m] = self.0.to_be_bytes();
+        Some((bcd_to_u8(h)?, bcd_to_u8(m)?))
     }
 
     /// Encode `hours:minutes` (each 0..=99).

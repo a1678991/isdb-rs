@@ -3,6 +3,9 @@
 //! descriptors of the synthetic multiplex (`tests/synthetic`, values as
 //! sent by live terrestrial broadcasters) decode to the expected variants.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 mod synthetic;
 
 use isdb_si::AnyTable;

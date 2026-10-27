@@ -27,7 +27,7 @@ impl DescriptorBody for ConditionalAccess {
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
         let ca_system_id = r.u16()?;
-        let reserved = r.read(3)? as u8;
+        let reserved = r.read_u8(3)?;
         let ca_pid = r.pid()?;
         Ok(Self {
             ca_system_id,
@@ -168,10 +168,10 @@ impl DescriptorBody for SatelliteDeliverySystem {
             frequency: r.u32()?,
             orbital_position: r.u16()?,
             west_east_flag: r.bool()?,
-            polarization: r.read(2)? as u8,
-            modulation: r.read(5)? as u8,
-            symbol_rate: r.read(28)? as u32,
-            fec_inner: r.read(4)? as u8,
+            polarization: r.read_u8(2)?,
+            modulation: r.read_u8(5)?,
+            symbol_rate: r.read_u32(28)?,
+            fec_inner: r.read_u8(4)?,
         };
         r.finish()?;
         Ok(d)
@@ -248,7 +248,7 @@ impl DescriptorBody for CountryAvailability {
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
         let country_availability_flag = r.bool()?;
-        let reserved_future_use = r.read(7)? as u8;
+        let reserved_future_use = r.read_u8(7)?;
         let n = multiple_of(Self::NAME, r.remaining_bytes(), 3)?;
         let mut country_codes = Vec::with_capacity(n);
         for _ in 0..n {
@@ -453,8 +453,8 @@ impl DescriptorBody for ExtendedEvent {
     const NAME: &'static str = "extended_event_descriptor";
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
-        let descriptor_number = r.read(4)? as u8;
-        let last_descriptor_number = r.read(4)? as u8;
+        let descriptor_number = r.read_u8(4)?;
+        let last_descriptor_number = r.read_u8(4)?;
         let language = code3(&mut r)?;
         let items_bytes = super::len8_bytes(&mut r)?;
         let mut ir = BitReader::new(items_bytes, "extended_event_descriptor items");
@@ -547,8 +547,8 @@ impl DescriptorBody for Component {
     const NAME: &'static str = "component_descriptor";
     fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, Self::NAME);
-        let reserved_future_use = r.read(4)? as u8;
-        let stream_content = r.read(4)? as u8;
+        let reserved_future_use = r.read_u8(4)?;
+        let stream_content = r.read_u8(4)?;
         let component_type = r.u8()?;
         let component_tag = r.u8()?;
         let language = code3(&mut r)?;
@@ -767,7 +767,7 @@ impl DescriptorBody for LocalTimeOffset {
         for _ in 0..n {
             entries.push(LocalTimeOffsetEntry {
                 country_code: code3(&mut r)?,
-                country_region_id: r.read(6)? as u8,
+                country_region_id: r.read_u8(6)?,
                 reserved: r.bool()?,
                 local_time_offset_polarity: r.bool()?,
                 local_time_offset: BcdOffset(r.u16()?),

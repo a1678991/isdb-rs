@@ -206,15 +206,13 @@ impl Descriptor {
     pub fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         let mut body = Vec::new();
         self.encode_body(&mut body)?;
-        if body.len() > 255 {
-            return Err(Error::Overflow {
-                what: "descriptor_length",
-                value: body.len() as u64,
-                bits: 8,
-            });
-        }
+        let len = u8::try_from(body.len()).map_err(|_| Error::Overflow {
+            what: "descriptor_length",
+            value: body.len() as u64,
+            bits: 8,
+        })?;
         out.push(self.tag());
-        out.push(body.len() as u8);
+        out.push(len);
         out.extend_from_slice(&body);
         Ok(())
     }

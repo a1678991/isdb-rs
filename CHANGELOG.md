@@ -407,6 +407,16 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdb-si`: `clippy::cast_possible_truncation` is on at crate level
+  (`docs/plans/type-safety.md` §2, item H3), with no `#[allow]`: the 149
+  narrowing casts are gone. Bit fields go through the width-typed
+  `BitReader::read_u8` / `read_u16` / `read_u32` / `read_usize`; the
+  descriptor and DSM-CC `descriptor_length`, the DDB block count and the
+  Annex C MJD / time-of-day arithmetic narrow through `try_from`; byte
+  extraction (`MjdTime::from_u40`, the BCD digit pairs, the DII / DDB
+  header fields that carry the low bits of a wider value) uses
+  `to_be_bytes`. `CodedValue` gains the provided constant `MASK`.
+  Behaviour is unchanged.
 - The reserved payloads of the lossless coded enums are canonical by
   construction (`docs/plans/type-safety.md` §3 H1): `Reserved(u8)` /
   `UserDefined(u8)` become `Reserved(ReservedCode)` /

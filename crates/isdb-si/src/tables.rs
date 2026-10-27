@@ -16,8 +16,8 @@ use isdb_ts::{Error, Result};
 
 /// Read a `reserved(4) + length(12)` word and the descriptor loop it sizes.
 fn rfu4_loop(r: &mut BitReader<'_>) -> Result<(u8, Vec<Descriptor>)> {
-    let rfu = r.read(4)? as u8;
-    let n = r.read(12)? as usize;
+    let rfu = r.read_u8(4)?;
+    let n = r.read_usize(12)?;
     Ok((rfu, decode_loop(r.bytes(n)?)?))
 }
 
@@ -69,8 +69,8 @@ impl NetworkLoops {
     fn decode(body: &[u8], what: &'static str) -> Result<Self> {
         let mut r = BitReader::new(body, what);
         let (reserved_future_use_1, descriptors) = rfu4_loop(&mut r)?;
-        let reserved_future_use_2 = r.read(4)? as u8;
-        let n = r.read(12)? as usize;
+        let reserved_future_use_2 = r.read_u8(4)?;
+        let n = r.read_usize(12)?;
         let ts_bytes = r.bytes(n)?;
         r.finish()?;
         let mut tr = BitReader::new(ts_bytes, what);
@@ -214,13 +214,13 @@ impl LongBody for SdtBody {
         let mut services = Vec::new();
         while r.remaining_bytes() > 0 {
             let service_id = r.u16()?;
-            let reserved_future_use = r.read(3)? as u8;
-            let eit_user_defined_flags = r.read(3)? as u8;
+            let reserved_future_use = r.read_u8(3)?;
+            let eit_user_defined_flags = r.read_u8(3)?;
             let eit_schedule_flag = r.bool()?;
             let eit_present_following_flag = r.bool()?;
-            let running_status = r.read(3)? as u8;
+            let running_status = r.read_u8(3)?;
             let free_ca_mode = r.bool()?;
-            let n = r.read(12)? as usize;
+            let n = r.read_usize(12)?;
             let descriptors = decode_loop(r.bytes(n)?)?;
             services.push(SdtService {
                 service_id,
@@ -325,10 +325,10 @@ impl LongBody for EitBody {
         while r.remaining_bytes() > 0 {
             let event_id = r.u16()?;
             let start_time = MjdTime::from_u40(r.read(40)?);
-            let duration = BcdDuration(r.read(24)? as u32);
-            let running_status = r.read(3)? as u8;
+            let duration = BcdDuration(r.read_u32(24)?);
+            let running_status = r.read_u8(3)?;
             let free_ca_mode = r.bool()?;
-            let n = r.read(12)? as usize;
+            let n = r.read_usize(12)?;
             let descriptors = decode_loop(r.bytes(n)?)?;
             events.push(EitEvent {
                 event_id,
@@ -496,8 +496,8 @@ impl ShortBody for RstBody {
                 original_network_id: r.u16()?,
                 service_id: r.u16()?,
                 event_id: r.u16()?,
-                reserved_future_use: r.read(5)? as u8,
-                running_status: r.read(3)? as u8,
+                reserved_future_use: r.read_u8(5)?,
+                running_status: r.read_u8(3)?,
             });
         }
         Ok(Self { entries })
@@ -552,8 +552,8 @@ impl StuffingSection {
         }
         let section_syntax_indicator = r.bool()?;
         let reserved_future_use = r.bool()?;
-        let reserved = r.read(2)? as u8;
-        let len = r.read(12)? as usize;
+        let reserved = r.read_u8(2)?;
+        let len = r.read_usize(12)?;
         if sec.len() != 3 + len {
             return Err(Error::invalid(
                 "stuffing_section",
@@ -660,11 +660,11 @@ impl LongBody for PcatBody {
         for _ in 0..n {
             let content_version = r.u16()?;
             let content_minor_version = r.u16()?;
-            let version_indicator = r.read(2)? as u8;
-            let reserved_future_use_1 = r.read(2)? as u8;
-            let content_descriptor_length = r.read(12)? as usize;
-            let reserved_future_use_2 = r.read(4)? as u8;
-            let schedule_description_length = r.read(12)? as usize;
+            let version_indicator = r.read_u8(2)?;
+            let reserved_future_use_1 = r.read_u8(2)?;
+            let content_descriptor_length = r.read_usize(12)?;
+            let reserved_future_use_2 = r.read_u8(4)?;
+            let schedule_description_length = r.read_usize(12)?;
             if schedule_description_length > content_descriptor_length {
                 return Err(Error::invalid(
                     "partial_content_announcement_section",
@@ -683,7 +683,7 @@ impl LongBody for PcatBody {
             while sr.remaining_bytes() > 0 {
                 schedules.push(PcatSchedule {
                     start_time: MjdTime::from_u40(sr.read(40)?),
-                    duration: BcdDuration(sr.read(24)? as u32),
+                    duration: BcdDuration(sr.read_u32(24)?),
                 });
             }
             let descriptors =
@@ -789,9 +789,9 @@ impl LongBody for BitBody {
     }
     fn decode(_: &LongHeader, body: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(body, "broadcaster_information_section");
-        let reserved_future_use = r.read(3)? as u8;
+        let reserved_future_use = r.read_u8(3)?;
         let broadcast_view_propriety = r.bool()?;
-        let n = r.read(12)? as usize;
+        let n = r.read_usize(12)?;
         let first_descriptors = decode_loop(r.bytes(n)?)?;
         let mut broadcasters = Vec::new();
         while r.remaining_bytes() > 0 {
@@ -879,9 +879,9 @@ impl LongBody for NbitBody {
         let mut informations = Vec::new();
         while r.remaining_bytes() > 0 {
             let information_id = r.u16()?;
-            let information_type = r.read(4)? as u8;
-            let description_body_location = r.read(2)? as u8;
-            let reserved_future_use_1 = r.read(2)? as u8;
+            let information_type = r.read_u8(4)?;
+            let description_body_location = r.read_u8(2)?;
+            let reserved_future_use_1 = r.read_u8(2)?;
             let user_defined = r.u8()?;
             let n = r.u8()? as usize;
             let mut key_ids = Vec::with_capacity(n);
@@ -968,8 +968,8 @@ impl LongBody for LdtBody {
         let mut descriptions = Vec::new();
         while r.remaining_bytes() > 0 {
             let description_id = r.u16()?;
-            let reserved_future_use = r.read(12)? as u16;
-            let n = r.read(12)? as usize;
+            let reserved_future_use = r.read_u16(12)?;
+            let n = r.read_usize(12)?;
             let descriptors = decode_loop(r.bytes(n)?)?;
             descriptions.push(LdtDescription {
                 description_id,

@@ -149,16 +149,16 @@ impl AdditionalAribBxmlInfo {
     /// Decode the additional_data_component_info bytes.
     pub fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, "additional_arib_bxml_info");
-        let transmission_format = r.read(2)? as u8;
+        let transmission_format = r.read_u8(2)?;
         let entry_point_flag = r.bool()?;
         let entry = if entry_point_flag {
             let auto_start = r.bool()?;
-            let document_resolution = r.read(4)? as u8;
+            let document_resolution = r.read_u8(4)?;
             let use_xml = r.bool()?;
             let default_version_flag = r.bool()?;
             let independent = r.bool()?;
             let style_for_tv = r.bool()?;
-            let reserved = r.read(4)? as u8;
+            let reserved = r.read_u8(4)?;
             let versions = if default_version_flag {
                 None
             } else {
@@ -175,17 +175,17 @@ impl AdditionalAribBxmlInfo {
             })
         } else {
             BxmlEntry::NotEntry {
-                reserved: r.read(5)? as u8,
+                reserved: r.read_u8(5)?,
             }
         };
         let (carousel, ondemand_retrieval, file_storable, reserved) =
             if transmission_format == TRANSMISSION_FORMAT_CAROUSEL {
                 let c = AdditionalAribCarouselInfo {
-                    data_event_id: r.read(4)? as u8,
+                    data_event_id: r.read_u8(4)?,
                     event_section: r.bool()?,
-                    reserved: r.read(3)? as u8,
+                    reserved: r.read_u8(3)?,
                 };
-                (Some(c), r.bool()?, r.bool()?, r.read(6)? as u8)
+                (Some(c), r.bool()?, r.bool()?, r.read_u8(6)?)
             } else {
                 (None, false, false, 0)
             };
@@ -311,10 +311,10 @@ impl AribBxmlInfo {
     /// Decode selector bytes.
     pub fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, "arib_bxml_info");
-        let transmission_format = r.read(2)? as u8;
+        let transmission_format = r.read_u8(2)?;
         let reserved_1 = r.bool()?;
         let auto_start = r.bool()?;
-        let document_resolution = r.read(4)? as u8;
+        let document_resolution = r.read_u8(4)?;
         let use_xml = r.bool()?;
         let default_version_flag = r.bool()?;
         let independent = r.bool()?;
@@ -342,7 +342,7 @@ impl AribBxmlInfo {
                 for _ in 0..n {
                     let component_tag = r.u8()?;
                     let event_section = r.bool()?;
-                    let reserved = r.read(3)? as u8;
+                    let reserved = r.read_u8(3)?;
                     let size_f = r.bool()?;
                     let tid_f = r.bool()?;
                     let to_f = r.bool()?;
@@ -351,7 +351,7 @@ impl AribBxmlInfo {
                     let transaction_id = if tid_f { Some(r.u32()?) } else { None };
                     let timeout_dii = if to_f { Some(r.u32()?) } else { None };
                     let leak_rate = if lr_f {
-                        Some((r.read(22)? as u32, r.read(2)? as u8))
+                        Some((r.read_u32(22)?, r.read_u8(2)?))
                     } else {
                         None
                     };
@@ -365,7 +365,7 @@ impl AribBxmlInfo {
                         leak_rate,
                     });
                 }
-                (r.bool()?, r.bool()?, r.read(6)? as u8)
+                (r.bool()?, r.bool()?, r.read_u8(6)?)
             } else {
                 (false, false, 0)
             };
@@ -486,8 +486,8 @@ impl AitIdentifierInfo {
             entries.push(AitIdentifier {
                 application_type: r.u16()?,
                 section_transport: r.bool()?,
-                application_priority: r.read(2)? as u8,
-                ait_version: r.read(5)? as u8,
+                application_priority: r.read_u8(2)?,
+                ait_version: r.read_u8(5)?,
             });
         }
         r.finish()?;
@@ -526,7 +526,7 @@ impl BmlControl {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(data, "control_data_byte");
         let use_xml = r.bool()?;
-        let reserved = r.read(7)? as u8;
+        let reserved = r.read_u8(7)?;
         let versions = read_versions(&mut r, use_xml)?;
         r.finish()?;
         Ok(Self {

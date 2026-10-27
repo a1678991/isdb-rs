@@ -248,8 +248,8 @@ impl AitDescriptor {
                     });
                 }
                 let service_bound = r.bool()?;
-                let visibility = r.read(2)? as u8;
-                let reserved = r.read(5)? as u8;
+                let visibility = r.read_u8(2)?;
+                let reserved = r.read_u8(5)?;
                 let priority = r.u8()?;
                 let transport_protocol_labels = r.rest()?.to_vec();
                 AitDescriptor::Application(ApplicationDescriptor {
@@ -438,11 +438,11 @@ impl LongBody for AitBody {
     }
     fn decode(_: &LongHeader, body: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(body, "application_information_section");
-        let reserved_1 = r.read(4)? as u8;
-        let cl = r.read(12)? as usize;
+        let reserved_1 = r.read_u8(4)?;
+        let cl = r.read_usize(12)?;
         let common_descriptors = decode_ait_descriptors(r.bytes(cl)?)?;
-        let reserved_2 = r.read(4)? as u8;
-        let al = r.read(12)? as usize;
+        let reserved_2 = r.read_u8(4)?;
+        let al = r.read_usize(12)?;
         let apps = r.bytes(al)?;
         r.finish()?;
         let mut ar = BitReader::new(apps, "AIT application loop");
@@ -451,8 +451,8 @@ impl LongBody for AitBody {
             let organization_id = ar.u16()?;
             let application_id = ar.u32()?;
             let control_code = ar.u8()?;
-            let reserved = ar.read(4)? as u8;
-            let dl = ar.read(12)? as usize;
+            let reserved = ar.read_u8(4)?;
+            let dl = ar.read_usize(12)?;
             let descriptors = decode_ait_descriptors(ar.bytes(dl)?)?;
             applications.push(AitApplication {
                 organization_id,

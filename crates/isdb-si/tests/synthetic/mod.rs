@@ -405,13 +405,12 @@ fn extended_event(items: &[(&str, &str)], chunk_chars: usize) -> Vec<Descriptor>
             });
         }
     }
-    let last = (parts.len() - 1) as u8;
-    parts
-        .into_iter()
-        .enumerate()
+    let last = u8::try_from(parts.len() - 1).unwrap();
+    (0u8..)
+        .zip(parts)
         .map(|(n, it)| {
             Descriptor::ExtendedEvent(ExtendedEvent {
-                descriptor_number: n as u8,
+                descriptor_number: n,
                 last_descriptor_number: last,
                 language: *b"jpn",
                 items: vec![it],

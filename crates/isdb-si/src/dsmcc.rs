@@ -48,7 +48,8 @@ pub const TRANSACTION_ID_ORIGINATOR_NETWORK: u32 = 0b10 << 30;
 /// 4096-byte section limit the largest blockSize is 4096 − 30 = 4066.
 pub const DDB_OVERHEAD: usize = 30;
 /// Largest blockSize that keeps a DDB section within 4096 bytes.
-pub const MAX_BLOCK_SIZE: u16 = (4096 - DDB_OVERHEAD) as u16;
+pub const MAX_BLOCK_SIZE: u16 = 4066;
+const _: () = assert!(MAX_BLOCK_SIZE as usize + DDB_OVERHEAD == 4096);
 
 /// Transaction Number (bits 29–0) → transaction_id with the network
 /// originator bits.
@@ -321,7 +322,7 @@ impl ModuleDescriptor {
             },
             TAG_ARIB_BXML_PRIVATEDATA => ModuleDescriptor::AribBxmlPrivateData {
                 return_to_entry: r.bool()?,
-                reserved: r.read(7)? as u8,
+                reserved: r.read_u8(7)?,
             },
             _ => {
                 let data = r.rest()?.to_vec();
@@ -387,15 +388,13 @@ impl ModuleDescriptor {
 
 /// Append `tag`, `descriptor_length` and `body` (fails above 255 bytes).
 pub(crate) fn frame(tag: u8, body: &[u8], out: &mut Vec<u8>) -> Result<()> {
-    if body.len() > 255 {
-        return Err(Error::Overflow {
-            what: "descriptor_length",
-            value: body.len() as u64,
-            bits: 8,
-        });
-    }
+    let len = u8::try_from(body.len()).map_err(|_| Error::Overflow {
+        what: "descriptor_length",
+        value: body.len() as u64,
+        bits: 8,
+    })?;
     out.push(tag);
-    out.push(body.len() as u8);
+    out.push(len);
     out.extend_from_slice(body);
     Ok(())
 }
@@ -520,7 +519,8 @@ impl DiiBody {
     /// The DII section: table_id 0x3B, table_id_extension = transaction_id
     /// bits 15–0, version_number 0, private_indicator 0 (Table 6-24).
     pub fn section(self) -> Dii {
-        let mut h = LongHeader::new(TABLE_ID_DII, self.transaction_id as u16, 0);
+        let [_, _, ext_hi, ext_lo] = self.transaction_id.to_be_bytes();
+        let mut h = LongHeader::new(TABLE_ID_DII, u16::from_be_bytes([ext_hi, ext_lo]), 0);
         h.private_indicator = false;
         Long {
             header: h,
@@ -674,8 +674,8 @@ impl DdbBody {
     pub fn section(self, last_block: u16) -> Ddb {
         let mut h = LongHeader::new(TABLE_ID_DDB, self.module_id, self.module_version & 0x1F);
         h.private_indicator = false;
-        h.section_number = self.block_number as u8;
-        h.last_section_number = last_block as u8;
+        h.section_number = self.block_number.to_be_bytes()[1];
+        h.last_section_number = last_block.to_be_bytes()[1];
         Long {
             header: h,
             body: self,
@@ -743,7 +743,8 @@ pub fn module_blocks(
         return Err(Error::invalid("blockSize", "0"));
     }
     let n = module.len().div_ceil(block_size as usize).max(1);
-    if n > 256 {
+    // The last block number must fit the 8-bit section_number: n <= 256.
+    let Ok(last) = u8::try_from(n - 1) else {
         return Err(Error::invalid(
             "module",
             format!(
@@ -752,23 +753,16 @@ pub fn module_blocks(
                 256 * block_size as usize
             ),
         ));
-    }
-    let last = (n - 1) as u16;
+    };
+    let last = u16::from(last);
     let mut v = Vec::with_capacity(n);
     if module.is_empty() {
         v.push(DdbBody::new(download_id, module_id, module_version, 0, Vec::new()).section(0));
         return Ok(v);
     }
-    for (i, chunk) in module.chunks(block_size as usize).enumerate() {
+    for (i, chunk) in (0u16..).zip(module.chunks(block_size as usize)) {
         v.push(
-            DdbBody::new(
-                download_id,
-                module_id,
-                module_version,
-                i as u16,
-                chunk.to_vec(),
-            )
-            .section(last),
+            DdbBody::new(download_id, module_id, module_version, i, chunk.to_vec()).section(last),
         );
     }
     Ok(v)
@@ -815,7 +809,7 @@ mod tests {
 
     #[test]
     fn ddb_blocks() {
-        let module: Vec<u8> = (0..10_000u32).map(|i| i as u8).collect();
+        let module: Vec<u8> = (0..=u8::MAX).cycle().take(10_000).collect();
         let blocks = module_blocks(7, 0x0001, 2, 4066, &module).unwrap();
         assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[2].body.data.len(), 10_000 - 2 * 4066);
@@ -823,7 +817,7 @@ mod tests {
             assert_eq!(b.header.table_id, 0x3C);
             assert_eq!(b.header.table_id_extension, 0x0001);
             assert_eq!(b.header.version_number, 2);
-            assert_eq!(b.header.section_number, i as u8);
+            assert_eq!(b.header.section_number, u8::try_from(i).unwrap());
             assert_eq!(b.header.last_section_number, 2);
             let bytes = b.encode().unwrap();
             assert!(bytes.len() <= 4096);
