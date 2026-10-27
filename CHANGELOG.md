@@ -16,6 +16,14 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-cli`: the transmit and tools side emits `tracing` events too
+  (`isdb loopback`, `mux`, `ts edit`, the `--relay` builder and the
+  inputs of `isdb tx`): every line on stderr is an event under
+  `isdb::loopback`, `isdb::mux`, `isdb::relay`, `isdb::ts` or `isdb::tx`
+  with its values as fields (`pass`, `frames`, `packets`, `path`, `pid`,
+  …); the relay policy's copy-control note carries `source` and `output`.
+  Message text unchanged; the `isdb:` / `isdb mux:` / `isdb loopback:`
+  prefixes became the `[component]` of the text format.
 - `isdb`: diagnostics are `tracing` events. The global options
   `--log-level` (default `info`; `RUST_LOG` takes an `EnvFilter`
   directive and overrides it) and `--log-format text|json` select what

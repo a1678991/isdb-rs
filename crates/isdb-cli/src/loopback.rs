@@ -17,6 +17,7 @@ use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tracing::info;
 
 /// `isdb loopback` arguments.
 #[derive(Debug, Args)]
@@ -244,9 +245,14 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
         Some(i) => i,
         None => input_args.open(&params)?,
     };
-    eprintln!("isdb loopback: {}", describe_params(&params));
-    eprintln!("  input: {}", input.describe());
-    eprintln!(
+    info!("{}", describe_params(&params));
+    info!("  input: {}", input.describe());
+    info!(
+        snr_db = a.snr_db.map_or(f64::INFINITY, f64::from),
+        cfo_carriers = a.cfo_carriers,
+        sample_offset = a.sample_offset,
+        lead_frames = lead,
+        flush_frames = flush,
         "  channel: SNR {}, CFO {:+} carriers, sample offset {}; lead {lead}, flush {flush} frames",
         a.snr_db.map_or("∞".into(), |s| format!("{s} dB")),
         a.cfo_carriers,
@@ -304,8 +310,15 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
     }
     ver.finish();
     let ok = ver.pass() && end != EndReason::Stopped;
-    eprintln!(
-        "[loopback] sent {sent_frames} frames ({sent_data} data); received {} frames ({} valid, {} before anchor); TS frames exact {}/{}",
+    info!(
+        sent_frames,
+        sent_data,
+        received_frames = stats.frames,
+        valid_frames = stats.valid,
+        unanchored_frames = ver.unanchored,
+        ts_frames_exact = ver.ts_pass,
+        ts_frames_compared = ver.ts_pass + ver.ts_fail,
+        "sent {sent_frames} frames ({sent_data} data); received {} frames ({} valid, {} before anchor); TS frames exact {}/{}",
         stats.frames,
         stats.valid,
         ver.unanchored,
@@ -314,13 +327,19 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
     );
     for (id, _) in params.active_layers() {
         let (v, st) = (&ver.layers[id.index()], &stats.layers[id.index()]);
-        eprintln!(
-            "[loopback]   layer {id}: {} — {} packets byte-exact ({} input), {} FAIL, {} input packets lost; RS corrected {} uncorrectable {}; MER {}",
-            if v.fail == 0 && v.lost == 0 && ver.frames_compared > 0 {
-                "PASS"
-            } else {
-                "FAIL"
-            },
+        let layer_ok = v.fail == 0 && v.lost == 0 && ver.frames_compared > 0;
+        info!(
+            layer = %id,
+            pass = layer_ok,
+            exact_packets = v.pass,
+            input_exact_packets = v.input_pass,
+            fail_packets = v.fail,
+            lost_packets = v.lost,
+            rs_corrected = st.corrected_packets,
+            rs_uncorrectable = st.uncorrectable,
+            mer_db = st.mer_mean().unwrap_or(f64::NAN),
+            "  layer {id}: {} — {} packets byte-exact ({} input), {} FAIL, {} input packets lost; RS corrected {} uncorrectable {}; MER {}",
+            if layer_ok { "PASS" } else { "FAIL" },
             v.pass,
             v.input_pass,
             v.fail,
@@ -330,7 +349,7 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
             st.mer_mean().map_or("-".into(), |m| format!("{m:.1} dB"))
         );
     }
-    eprintln!("[loopback] {}", if ok { "PASS" } else { "FAIL" });
+    info!(pass = ok, end = ?end, "{}", if ok { "PASS" } else { "FAIL" });
     if a.json {
         let layers: serde_json::Map<String, serde_json::Value> = params
             .active_layers()

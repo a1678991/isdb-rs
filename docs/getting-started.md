@@ -86,9 +86,9 @@ isdb loopback --synthetic
 ```
 
 ```text
-isdb loopback: Mode 3, GI 1/8, partial reception; A 1seg QPSK 2/3 TI2 (64 TSP/frame); B 12seg 64QAM 3/4 TI2 (2592 TSP/frame)
-  input: synthetic test packets (PID 0x0100/0x0200/0x0300 for A/B/C)
-  channel: SNR ∞, CFO +0 carriers, sample offset 0; lead 2, flush 4 frames
+[loopback] Mode 3, GI 1/8, partial reception; A 1seg QPSK 2/3 TI2 (64 TSP/frame); B 12seg 64QAM 3/4 TI2 (2592 TSP/frame)
+[loopback]   input: synthetic test packets (PID 0x0100/0x0200/0x0300 for A/B/C)
+[loopback]   channel: SNR ∞, CFO +0 carriers, sample offset 0; lead 2, flush 4 frames
 [loopback] sent 12 frames (6 data); received 11 frames (8 valid, 2 before anchor); TS frames exact 6/6
 [loopback]   layer A: PASS — 384 packets byte-exact (384 input), 0 FAIL, 0 input packets lost; RS corrected 0 uncorrectable 0; MER 118.6 dB
 [loopback]   layer B: PASS — 15552 packets byte-exact (15552 input), 0 FAIL, 0 input packets lost; RS corrected 0 uncorrectable 0; MER 125.1 dB

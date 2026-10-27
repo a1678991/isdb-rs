@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use tracing::info;
 
 /// Role of a frame in the transmission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,7 +192,7 @@ pub fn spawn(
                 }
                 pace(index);
                 for cmd in controls.iter().flat_map(Receiver::try_iter) {
-                    eprintln!("[tx] {}", input.control(cmd));
+                    info!(target: "isdb::tx", command = ?cmd, "{}", input.control(cmd));
                 }
                 let ti = Instant::now();
                 let Some(fp) = input.take_frame(counts, &stop) else {

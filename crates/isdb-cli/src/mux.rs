@@ -10,9 +10,11 @@ use isdbt_mux::audio::AdtsCompliance;
 use isdbt_mux::config::StreamKind;
 use isdbt_mux::mux::{HZ, clocks_to_ticks};
 use isdbt_mux::{Config, TsWriter};
+use tracing::{error, info, warn};
 
+use crate::input::copy_control_note;
 use crate::phyargs::{PhyArgs, describe_params};
-use crate::relay::{RelayArgs, build_mux, print_config};
+use crate::relay::{RelayArgs, build_mux, log_summary, print_config};
 
 /// `isdb mux` arguments.
 #[derive(clap::Args, Debug)]
@@ -107,10 +109,7 @@ pub fn run(args: MuxArgs) -> Result<()> {
         if args.relay.print_config {
             return print_config(&o, &params, args.relay.auto_layout);
         }
-        eprintln!(
-            "{}",
-            crate::relay::summary(args.relay.relay.as_deref().unwrap_or(Path::new("")), &o)
-        );
+        log_summary(args.relay.relay.as_deref().unwrap_or(Path::new("")), &o);
         (o.config()?, PathBuf::from("."))
     } else {
         let path = args.config.as_ref().context("--config is required")?;
@@ -152,17 +151,23 @@ pub fn run(args: MuxArgs) -> Result<()> {
             n
         }
     };
-    eprintln!("isdb mux: {}", describe_params(&params));
-    eprintln!(
-        "isdb mux: {frames} frames ({:.2} s), clock start {} JST",
+    info!("{}", describe_params(&params));
+    info!(
+        frames,
+        seconds = frames as f64 * params.frame_seconds(),
+        clock_start = %isdbt_mux::jst::format(mux.clock_start()),
+        "{frames} frames ({:.2} s), clock start {} JST",
         frames as f64 * params.frame_seconds(),
         isdbt_mux::jst::format(mux.clock_start())
     );
     for n in mux.notes() {
-        eprintln!("{n}");
+        match copy_control_note(n) {
+            Some((source, output)) => info!(source, output, "{n}"),
+            None => info!("{n}"),
+        }
     }
     for w in mux.warnings() {
-        eprintln!("warning: {w}");
+        warn!("{w}");
     }
     let mut writer = TsWriter::new(
         [
@@ -176,12 +181,12 @@ pub fn run(args: MuxArgs) -> Result<()> {
     let mut times = Vec::new();
     for k in 0..frames {
         if mux.relays_finished() {
-            eprintln!("isdb mux: every ts-program source ended after {k} frames");
+            info!(frames = k, "every ts-program source ended after {k} frames");
             break;
         }
         let (full, layers) = mux.next_frame_full();
         for w in mux.take_alerts() {
-            eprintln!("warning: {w}");
+            warn!("{w}");
         }
         writer.write_frame(&full, &layers)?;
         if args.report {
@@ -194,7 +199,13 @@ pub fn run(args: MuxArgs) -> Result<()> {
     let st = mux.stats();
     for (i, name) in ["A", "B", "C"].iter().enumerate() {
         if st.layer_packets[i] > 0 {
-            eprintln!(
+            info!(
+                layer = name,
+                packets_per_frame =
+                    params.layers()[i].map_or(0, |l| l.tsp_per_frame(params.mode())),
+                packets = st.layer_packets[i],
+                null_packets = st.layer_nulls[i],
+                null_fill_pct = 100.0 * st.layer_nulls[i] as f64 / st.layer_packets[i] as f64,
                 "layer {name}: {} packets/frame, {} packets, {} null ({:.1} %)",
                 params.layers()[i].map_or(0, |l| l.tsp_per_frame(params.mode())),
                 st.layer_packets[i],
@@ -203,13 +214,18 @@ pub fn run(args: MuxArgs) -> Result<()> {
             );
         }
     }
-    eprintln!(
+    info!(
+        pes = st.pes,
+        late_pes = st.late_pes,
+        version_changes = st.version_changes,
         "PES packets: {}, late: {}, SI version changes: {}",
-        st.pes, st.late_pes, st.version_changes
+        st.pes,
+        st.late_pes,
+        st.version_changes
     );
     for (pid, v) in mux.tstd_violations() {
         let bad = v.tb_overflow + v.buffer_overflow + v.underflow;
-        eprintln!(
+        let line = format!(
             "T-STD {pid:#06x}: {} (TB overflow {}, buffer overflow {}, underflow {}, max TB busy {:.0} ms, max MB busy {:.0} ms)",
             if bad == 0 { "ok" } else { "VIOLATIONS" },
             v.tb_overflow,
@@ -218,29 +234,44 @@ pub fn run(args: MuxArgs) -> Result<()> {
             v.tb_max_nonempty as f64 * 1e3 / HZ as f64,
             v.mb_max_nonempty as f64 * 1e3 / HZ as f64
         );
+        if bad == 0 {
+            info!(pid = %pid, tb_overflow = v.tb_overflow, buffer_overflow = v.buffer_overflow, underflow = v.underflow, "{line}");
+        } else {
+            warn!(pid = %pid, tb_overflow = v.tb_overflow, buffer_overflow = v.buffer_overflow, underflow = v.underflow, "{line}");
+        }
     }
     for r in mux.relay_status() {
-        eprintln!("{r}");
+        info!("{r}");
     }
     for e in &st.errors {
-        eprintln!("error: {e}");
+        error!("{e}");
     }
 
     if args.report {
         let r = analyze(&full_all, &times, clocks_to_ticks(408));
-        eprintln!(
+        info!(
+            packets = full_all.len(),
             "--- report (multiplex-frame TS, {} packets)",
             full_all.len()
         );
         for ((pid, tid, ext, sn), (gap, n)) in r.section_intervals() {
-            eprintln!(
+            info!(
+                pid = %pid,
+                table_id = tid,
+                extension = ext,
+                section_number = sn,
+                times = n,
+                max_interval_ms = gap as f64 * 1e3 / HZ as f64,
                 "section pid {pid:#06x} table_id {tid:#04x} ext {ext:#06x} sec {sn}: {n} times, max interval {:.1} ms",
                 gap as f64 * 1e3 / HZ as f64
             );
         }
         for (pid, p) in &r.pcrs {
             let max = p.windows(2).map(|w| w[1].2 - w[0].2).max().unwrap_or(0);
-            eprintln!(
+            info!(
+                pid = %pid,
+                pcrs = p.len(),
+                max_interval_ms = max as f64 * 1e3 / HZ as f64,
                 "PCR pid {pid:#06x}: {} PCRs, max interval {:.2} ms",
                 p.len(),
                 max as f64 * 1e3 / HZ as f64
@@ -252,14 +283,22 @@ pub fn run(args: MuxArgs) -> Result<()> {
                 .filter(|p| p.last_arrival / 300 > p.dts.or(p.pts).unwrap_or(u64::MAX))
                 .count();
             let first = pes.first().and_then(|p| p.pts).unwrap_or(0) as f64 / 90_000.0;
-            eprintln!(
+            info!(
+                pid = %pid,
+                packets = pes.len(),
+                first_pts_s = first,
+                late,
                 "PES pid {pid:#06x}: {} packets, first PTS {first:.3} s, arriving after DTS: {late}",
                 pes.len()
             );
         }
-        eprintln!("continuity events: {}", r.cc_events.len());
+        info!(
+            cc_events = r.cc_events.len(),
+            "continuity events: {}",
+            r.cc_events.len()
+        );
         for p in r.problems.iter().take(10) {
-            eprintln!("problem: {p}");
+            warn!("problem: {p}");
         }
     }
     Ok(())

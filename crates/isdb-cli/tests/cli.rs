@@ -330,7 +330,7 @@ fn mux_ts_over_capacity_is_refused_with_layouts_that_fit() {
         "--allow-overrate",
     ]);
     assert!(o.status.success());
-    assert!(String::from_utf8_lossy(&o.stderr).contains("WARNING (--allow-overrate)"));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("WARNING: (--allow-overrate)"));
     std::fs::remove_dir_all(&d).unwrap();
 }
 
@@ -1860,7 +1860,7 @@ fn relay_without_toml() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("[loopback] PASS"), "{err}");
     assert!(
-        err.contains("isdb: relay ") && err.contains("T44 (NIT), remote key 9, area 0x5a5"),
+        err.contains("[relay] relay ") && err.contains("T44 (NIT), remote key 9, area 0x5a5"),
         "{err}"
     );
     std::fs::remove_dir_all(&d).unwrap();
@@ -2080,4 +2080,107 @@ fn diagnostics_are_structured_events() {
     ]);
     assert!(o.status.success());
     assert!(o.stderr.is_empty(), "info events above --log-level warn");
+}
+
+/// The transmit and tools side emits events too: with `--log-format json`,
+/// `isdb mux --relay` reports the relay policy's copy control as an event
+/// with `source` and `output` fields (CONTRIBUTING.md "Relay policy"),
+/// `isdb loopback` ends with a `pass` verdict event, and `isdb ts edit`
+/// says what it wrote with `packets` and `path`.
+#[test]
+fn tools_diagnostics_are_structured_events() {
+    let d = tmp("log-json-tools");
+    let events = |o: &Output| -> Vec<serde_json::Value> {
+        String::from_utf8_lossy(&o.stderr)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+            .collect()
+    };
+    let field = |e: &serde_json::Value, k: &str| e[k].as_str().unwrap_or_default().to_string();
+
+    // mux --relay --copy copy-free: the source's value and the relaxed one
+    let src = foreign_recording(&d, 2.0);
+    let out = d.join("relay.ts");
+    let o = run(&[
+        "--log-format",
+        "json",
+        "mux",
+        "--relay",
+        s(&src),
+        "--auto-layout",
+        "--copy",
+        "copy-free",
+        "--seconds",
+        "1",
+        "--out-ts",
+        s(&out),
+    ]);
+    assert!(o.status.success());
+    let ev = events(&o);
+    let cc = ev
+        .iter()
+        .find(|e| field(e, "message").contains("; relayed as: "))
+        .expect("the copy-control note event");
+    assert_eq!(cc["level"], "INFO", "{cc}");
+    assert_eq!(cc["target"], "isdb::mux", "{cc}");
+    assert_eq!(cc["source"], "copy-one-generation (PMT)", "{cc}");
+    assert_eq!(cc["output"], "copy-free (explicit)", "{cc}");
+    let summary = ev
+        .iter()
+        .find(|e| field(e, "message").starts_with("relay "))
+        .expect("the relay summary event");
+    assert_eq!(summary["target"], "isdb::relay", "{summary}");
+    assert_eq!(summary["copy_control"], "copy-free", "{summary}");
+    assert_eq!(summary["ca"], "Keep", "{summary}");
+
+    // loopback: the verdict
+    let o = run(&[
+        "--log-format",
+        "json",
+        "loopback",
+        "--synthetic",
+        "--frames",
+        "1",
+    ]);
+    assert!(o.status.success());
+    let ev = events(&o);
+    assert!(ev.iter().all(|e| e["target"] == "isdb::loopback"), "{ev:?}");
+    let verdict = ev.last().expect("the verdict event");
+    assert_eq!(verdict["message"], "PASS", "{verdict}");
+    assert_eq!(verdict["pass"], true, "{verdict}");
+    assert_eq!(verdict["end"], "Limit", "{verdict}");
+
+    // ts edit: what was written
+    let edited = d.join("edited.ts");
+    let o = run(&[
+        "--log-format",
+        "json",
+        "ts",
+        "edit",
+        s(&out),
+        s(&edited),
+        "--null-pid",
+        "0x0111",
+    ]);
+    assert!(o.status.success());
+    let ev = events(&o);
+    let wrote = ev
+        .iter()
+        .find(|e| field(e, "message").starts_with("wrote "))
+        .expect("the wrote event");
+    assert_eq!(wrote["target"], "isdb::ts", "{wrote}");
+    assert_eq!(wrote["path"], s(&edited), "{wrote}");
+    assert_eq!(
+        wrote["packets"].as_u64(),
+        Some(std::fs::metadata(&edited).unwrap().len() / 188)
+    );
+    let nulled = ev
+        .iter()
+        .find(|e| field(e, "message").contains("nulled "))
+        .expect("the nulled event");
+    assert!(
+        nulled["packets"].as_u64().is_some_and(|n| n > 0),
+        "{nulled}"
+    );
+    std::fs::remove_dir_all(&d).unwrap();
 }

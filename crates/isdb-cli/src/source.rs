@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, sync_channel};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tracing::{error, warn};
 
 use isdb_ts::packet::{Header, TransportScramblingControl};
 
@@ -144,7 +145,7 @@ impl PacketStream {
                         Ok(n) => n,
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(e) => {
-                            eprintln!("isdb: read {tname}: {e}");
+                            warn!(target: "isdb::tx", input = %tname, error = %e, "read {tname}: {e}");
                             0
                         }
                     };
@@ -157,7 +158,9 @@ impl PacketStream {
                                     st.rewinds.fetch_add(1, Ordering::Relaxed);
                                     continue;
                                 }
-                                Err(e) => eprintln!("isdb: reopen {tname}: {e}"),
+                                Err(e) => {
+                                    warn!(target: "isdb::tx", input = %tname, error = %e, "reopen {tname}: {e}");
+                                }
                             }
                         }
                         return; // dropping `tx` signals the end
@@ -167,13 +170,13 @@ impl PacketStream {
                     let (used, alive) = split_packets(&buf, &mut skipped, |p| {
                         let tsc = scrambling_control(&p);
                         if tsc.is_scrambled() && !is_null(&p) {
+                            let pid = Header::of_packet(&p).pid;
                             let m = format!(
-                                "{tname}: scrambled packet on PID {:#06x} (transport_scrambling_control '{tsc}'); \
+                                "{tname}: scrambled packet on PID {pid} (transport_scrambling_control '{tsc}'); \
                                  scrambled input is refused: isdb does not descramble (no B-CAS / CAS support) \
-                                 and transmits only content you have the rights to",
-                                pid(&p),
+                                 and transmits only content you have the rights to"
                             );
-                            eprintln!("isdb: {m}");
+                            error!(target: "isdb::tx", input = %tname, pid = %pid, tsc = %tsc, "{m}");
                             let _ = SCRAMBLED.set(m);
                             crate::stop::flag().store(true, Ordering::SeqCst);
                             return false;

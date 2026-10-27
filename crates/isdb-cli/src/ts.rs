@@ -18,6 +18,7 @@ use isdb_analyze::validate::{Expectations, Severity, ValidateOptions};
 use isdb_analyze::{ScanOptions, inspect, scan_path};
 use isdb_ts::Pid;
 use std::path::PathBuf;
+use tracing::{info, warn};
 
 fn int(s: &str) -> Result<u64> {
     isdb_analyze::mutate::int(s)
@@ -367,10 +368,10 @@ pub fn run(args: TsArgs) -> Result<()> {
             if pkts.is_empty() {
                 bail!("{}: no transport packets", a.input.display());
             }
-            if fmt.is_some_and(|f| f.size() != 188) {
-                eprintln!(
-                    "note: input has {}-byte units; output is 188-byte packets",
-                    fmt.unwrap().size()
+            if let Some(unit) = fmt.map(|f| f.size()).filter(|&n| n != 188) {
+                info!(
+                    unit_bytes = unit,
+                    "note: input has {unit}-byte units; output is 188-byte packets"
                 );
             }
             let mut ops = Vec::new();
@@ -423,12 +424,26 @@ pub fn run(args: TsArgs) -> Result<()> {
                 print_json(&rep)?;
             } else {
                 for r in &rep {
-                    eprintln!("{}", r.op);
+                    info!(op = %r.op, "{}", r.op);
                     if r.nulled_packets > 0 {
-                        eprintln!("  nulled {} packets", r.nulled_packets);
+                        info!(
+                            packets = r.nulled_packets,
+                            "  nulled {} packets", r.nulled_packets
+                        );
                     }
                     for w in &r.rewrites {
-                        eprintln!(
+                        info!(
+                            pid = %w.pid,
+                            sections_in = w.sections_in,
+                            changed = w.changed,
+                            removed = w.removed,
+                            inserted = w.inserted,
+                            sections_out = w.sections_out,
+                            dropped = w.dropped,
+                            original_slots = w.original_slots,
+                            slots_nulled = w.slots_nulled,
+                            null_slots_used = w.null_slots_used,
+                            max_delay_packets = w.max_delay_packets,
                             "  pid {:#06x}: {} sections in, {} changed, {} removed, {} inserted, {} out, {} DROPPED; slots {} original ({} now null), {} null used, max delay {} packets",
                             w.pid,
                             w.sections_in,
@@ -451,11 +466,18 @@ pub fn run(args: TsArgs) -> Result<()> {
                 .map(|w| w.dropped)
                 .sum();
             if dropped > 0 {
-                eprintln!(
-                    "warning: {dropped} section(s) did not fit before the end of the stream (try --null-slots always)"
+                warn!(
+                    dropped,
+                    "{dropped} section(s) did not fit before the end of the stream (try --null-slots always)"
                 );
             }
-            eprintln!("wrote {} packets to {}", pkts.len(), a.output.display());
+            info!(
+                packets = pkts.len(),
+                path = %a.output.display(),
+                "wrote {} packets to {}",
+                pkts.len(),
+                a.output.display()
+            );
             Ok(())
         }
         TsCmd::Extract(a) => {

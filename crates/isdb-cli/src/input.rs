@@ -15,6 +15,7 @@ use isdbt_core::{Layer, Params};
 use isdbt_mux::capacity;
 use isdbt_mux::pcrclock::PcrClock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::{info, warn};
 
 /// Packets of one OFDM frame.
 #[derive(Debug, Clone)]
@@ -597,10 +598,16 @@ impl MuxConfigInput {
     /// built from (for [`FrameInput::endless`]).
     pub fn from_mux(mux: isdbt_mux::Multiplexer, name: String, cfg: &isdbt_mux::Config) -> Self {
         for n in mux.notes() {
-            eprintln!("  {}", n.replace('\n', "\n  "));
+            let text = n.replace('\n', "\n  ");
+            match copy_control_note(n) {
+                Some((source, output)) => {
+                    info!(target: "isdb::tx", source, output, "  {text}");
+                }
+                None => info!(target: "isdb::tx", "  {text}"),
+            }
         }
         for w in mux.warnings() {
-            eprintln!("isdb: mux warning: {w}");
+            warn!(target: "isdb::tx", "mux warning: {w}");
         }
         Self {
             mux,
@@ -610,6 +617,19 @@ impl MuxConfigInput {
     }
 }
 
+/// The relay policy's copy-control note among a multiplexer's start-up
+/// notes (CONTRIBUTING.md "Relay policy": the source's digital copy control
+/// is reported whenever a `ts-program` service is relayed, so a relaxed
+/// value is visible): `(source, output)` as the note states them, `None`
+/// for any other note. The note's shape is `isdbt_mux`'s
+/// `service 0x….: source copy control: <source>; relayed as: <output>[; …]`.
+pub fn copy_control_note(note: &str) -> Option<(&str, &str)> {
+    let (_, rest) = note.split_once("source copy control: ")?;
+    let (source, rest) = rest.split_once("; relayed as: ")?;
+    let output = rest.split_once("; ").map_or(rest, |(o, _)| o);
+    Some((source, output))
+}
+
 impl FrameInput for MuxConfigInput {
     fn take_frame(&mut self, counts: [usize; 3], stop: &AtomicBool) -> Option<FramePackets> {
         if stop.load(Ordering::Relaxed) || self.mux.relays_finished() {
@@ -617,7 +637,7 @@ impl FrameInput for MuxConfigInput {
         }
         let layers = self.mux.next_frame();
         for w in self.mux.take_alerts() {
-            eprintln!("isdb: mux warning: {w}");
+            warn!(target: "isdb::tx", "mux warning: {w}");
         }
         debug_assert!(
             (0..3).all(|l| layers[l].len() == counts[l]),
@@ -693,7 +713,9 @@ fn is_regular_file(path: &str) -> bool {
 /// `allow_overrate`.
 pub fn check_input_rates(r: &InputRates, params: &Params, allow_overrate: bool) -> Result<bool> {
     let Some(pcr) = r.pcr_pid else {
-        eprintln!(
+        info!(
+            target: "isdb::tx",
+            probe_mb = PROBE_BYTES >> 20,
             "  input rate: no PCR found in the first {} MB — not paced (packets go out as fast as the layers take them)",
             PROBE_BYTES >> 20
         );
@@ -706,7 +728,14 @@ pub fn check_input_rates(r: &InputRates, params: &Params, allow_overrate: bool) 
         if r.mean[l] == 0.0 {
             continue;
         }
-        eprintln!(
+        info!(
+            target: "isdb::tx",
+            layer = %id,
+            pcr_pid = format_args!("{pcr:#06x}"),
+            span_s = r.span_s,
+            mean_bps = r.mean[l],
+            peak_1s_bps = r.peak_1s[l],
+            capacity_bps = cap,
             "  input rate (PCR 0x{pcr:04x}, first {:.1} s): layer {id} mean {:.2} Mbit/s, peak {:.2} Mbit/s (1 s) — capacity {:.2} Mbit/s",
             r.span_s,
             r.mean[l] / 1e6,
@@ -721,8 +750,12 @@ pub fn check_input_rates(r: &InputRates, params: &Params, allow_overrate: bool) 
                 &format!("the input's layer {id} share (mean over {:.1} s)", r.span_s),
             ));
         } else if r.peak_1s[l] > cap {
-            eprintln!(
-                "  WARNING: layer {id}: 1-s peaks ({:.2} Mbit/s) exceed the capacity; the stream falls behind its PCR schedule during peaks (lag shown in the status lines)",
+            warn!(
+                target: "isdb::tx",
+                layer = %id,
+                peak_1s_bps = r.peak_1s[l],
+                capacity_bps = cap,
+                "  layer {id}: 1-s peaks ({:.2} Mbit/s) exceed the capacity; the stream falls behind its PCR schedule during peaks (lag shown in the status lines)",
                 r.peak_1s[l] / 1e6
             );
         }
@@ -734,7 +767,7 @@ pub fn check_input_rates(r: &InputRates, params: &Params, allow_overrate: bool) 
                 "{msg}\n  the file would go on air slower than real time; choose a layout above, or pass --allow-overrate to send it anyway"
             );
         }
-        eprintln!("  WARNING (--allow-overrate): {msg}");
+        warn!(target: "isdb::tx", "(--allow-overrate): {msg}");
     }
     Ok(true)
 }

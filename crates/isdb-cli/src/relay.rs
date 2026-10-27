@@ -15,9 +15,10 @@ use isdbt_core::{Layer, Params};
 use isdbt_mux::config::{AtEof, CaMode, LayerName, StreamCfg};
 use isdbt_mux::relay_template::{DEFAULT_NAME, RelayOptions};
 use isdbt_mux::{Config, Multiplexer, MuxError};
+use tracing::{info, warn};
 
 use crate::bands::{Channel, uhf_hz};
-use crate::input::{FrameInput, InputArgs, MuxConfigInput};
+use crate::input::{FrameInput, InputArgs, MuxConfigInput, copy_control_note};
 use crate::phyargs::{describe_params, phy_options};
 
 /// `--relay` and its options (shared by `tx`, `loopback` and `mux`).
@@ -236,8 +237,13 @@ pub fn build_mux(
                     "{message}\n  --auto-layout: no layout keeps layer {layer} and the layer set; choose one of the above"
                 );
             };
-            eprintln!(
-                "isdb: --auto-layout: the relay needs {:.2} Mbit/s on layer {layer} ({:.2} Mbit/s available); using {} [{}]",
+            info!(
+                layer = %layer,
+                need_bps,
+                available_bps = isdbt_mux::capacity::layer_bps(&params, layer),
+                layout = %s.summary,
+                options = %s.options,
+                "--auto-layout: the relay needs {:.2} Mbit/s on layer {layer} ({:.2} Mbit/s available); using {} [{}]",
                 need_bps / 1e6,
                 isdbt_mux::capacity::layer_bps(&params, layer) / 1e6,
                 s.summary,
@@ -261,12 +267,16 @@ pub fn print_config(o: &RelayOptions, params: &Params, auto_layout: bool) -> Res
     let used = match build_mux(&cfg, Path::new("."), params.clone(), auto_layout) {
         Ok((m, p)) => {
             for n in m.notes() {
-                eprintln!("{n}");
+                match copy_control_note(n) {
+                    Some((source, output)) => info!(source, output, "{n}"),
+                    None => info!("{n}"),
+                }
             }
             Some(p)
         }
         Err(e) => {
-            eprintln!("isdb: warning: the configuration does not run with these parameters: {e:#}");
+            let e = format!("{e:#}");
+            warn!(error = %e, "the configuration does not run with these parameters: {e}");
             None
         }
     };
@@ -291,10 +301,27 @@ pub fn print_config(o: &RelayOptions, params: &Params, auto_layout: bool) -> Res
     Ok(())
 }
 
+/// One `info` event (target `isdb::relay`): the service a `--relay` builds,
+/// with the policy choices as fields (`copy_control`, `ca`).
+pub fn log_summary(src: &Path, o: &RelayOptions) {
+    info!(
+        source = %src.display(),
+        service_name = %o.name,
+        layer = ?o.layer,
+        channel = o.channel,
+        remote_control_key_id = o.remote_control_key_id,
+        area_code = o.area_code,
+        copy_control = %o.recording_control,
+        ca = ?o.ca,
+        "{}",
+        summary(src, o)
+    );
+}
+
 /// One line: the service a `--relay` builds.
 pub fn summary(src: &Path, o: &RelayOptions) -> String {
     format!(
-        "isdb: relay {}: service 0x0400 \"{}\" on layer {:?}, T{} (NIT), remote key {}, area {:#05x}, {}, CA {}",
+        "relay {}: service 0x0400 \"{}\" on layer {:?}, T{} (NIT), remote key {}, area {:#05x}, {}, CA {}",
         src.display(),
         o.name,
         o.layer,
@@ -340,7 +367,7 @@ pub fn prepare(
         }
         let cfg = o.config()?;
         let (mux, params) = build_mux(&cfg, Path::new("."), params, r.auto_layout)?;
-        eprintln!("{}", summary(src, &o));
+        log_summary(src, &o);
         let name = format!("--relay {}", src.display());
         return Ok(Prepared::Ready(
             params,

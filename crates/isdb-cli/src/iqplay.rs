@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use tracing::info;
 
 use crate::sink::IqFormat;
 
@@ -215,7 +216,14 @@ pub fn spawn(
                             " (the play rate of an IQ file is fixed)".into()
                         }
                     };
-                    eprintln!("[tx] {}{note}", state(frame, paused));
+                    info!(
+                        target: "isdb::tx",
+                        command = ?cmd,
+                        paused,
+                        position_s = frame as f64 * frame_s,
+                        "{}{note}",
+                        state(frame, paused)
+                    );
                 }
                 if cfg.pace {
                     let due = t0 + Duration::from_secs_f64(index as f64 * frame_s);
