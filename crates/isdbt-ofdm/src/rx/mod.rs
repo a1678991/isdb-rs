@@ -614,7 +614,7 @@ impl Demodulator {
             .map(|(id, l)| {
                 let (first, count) = layer_segments(&params, id).expect("active");
                 let align_syms = rx_alignment_symbols(&params, id);
-                let per_sym = nc * l.segments * l.modulation.bits_per_symbol();
+                let per_sym = nc * l.segments.count() * l.modulation.bits_per_symbol();
                 LayerRx {
                     layer: id,
                     demapper: Demapper::new(l.modulation),

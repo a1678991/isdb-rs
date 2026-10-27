@@ -389,7 +389,9 @@ pub fn tx_channel(channel: Option<Channel>, freq: Option<u64>) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, TimeInterleave};
+    use isdbt_core::{
+        CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Segments, TimeInterleave,
+    };
 
     #[test]
     fn numbers_channels_and_layers() {
@@ -401,9 +403,9 @@ mod tests {
         assert!(tx_channel(Some(Channel::Bs(1)), None).is_err());
         assert_eq!(tx_channel(None, Some(659_142_857)).unwrap(), 44);
         assert!(tx_channel(None, Some(660_000_000)).is_err());
-        let l = |segments| {
+        let l = |segments: u8| {
             Some(LayerConfig {
-                segments,
+                segments: Segments::new(segments).unwrap(),
                 modulation: Modulation::Qam64,
                 code_rate: CodeRate::R3_4,
                 time_interleave: TimeInterleave::K2,

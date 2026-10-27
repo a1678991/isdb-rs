@@ -56,12 +56,12 @@ One-frame round trip with hard-decision LLRs (Mode 1, one segment, QPSK
 1/2 → 12 TSPs per frame):
 
 ```rust
-use isdbt_core::{CodeRate, LayerConfig, Mode, Modulation, TimeInterleave, TSP};
+use isdbt_core::{CodeRate, LayerConfig, Mode, Modulation, Segments, TimeInterleave, TSP};
 use isdbt_fec::{FecError, LayerDecoder, LayerEncoder};
 
 fn main() -> Result<(), FecError> {
     let layer = LayerConfig {
-        segments: 1,
+        segments: Segments::new(1).unwrap(),
         modulation: Modulation::Qpsk,
         code_rate: CodeRate::R1_2,
         time_interleave: TimeInterleave::K0,

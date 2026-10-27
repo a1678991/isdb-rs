@@ -11,7 +11,7 @@
 //! whose capacity for the stream reaches a required rate, so a
 //! "does not fit" message can name configurations that do.
 
-use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params};
+use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments};
 
 /// TS rate (bit/s of 188-byte packets) of one layer configuration.
 pub fn layer_config_bps(mode: Mode, guard: GuardInterval, cfg: &LayerConfig) -> f64 {
@@ -156,7 +156,7 @@ pub fn suggest(params: &Params, layer: Layer, need_bps: f64, max: usize) -> Vec<
         if params.partial_reception() || params.active_layers().count() > 1 {
             for (m, r) in coherent_by_robustness() {
                 let cfg = LayerConfig {
-                    segments: 13,
+                    segments: Segments::MAX,
                     modulation: m,
                     code_rate: r,
                     time_interleave: ti,
@@ -229,9 +229,9 @@ mod tests {
     use isdbt_core::TimeInterleave;
 
     fn bench() -> Params {
-        let l = |segments, modulation, code_rate| {
+        let l = |segments: u8, modulation, code_rate| {
             Some(LayerConfig {
-                segments,
+                segments: Segments::new(segments).unwrap(),
                 modulation,
                 code_rate,
                 time_interleave: TimeInterleave::K2,
@@ -264,7 +264,7 @@ mod tests {
             (layer_config_bps(Mode::M3, GuardInterval::G1_8, &b78) / 1e6 - 19.660).abs() < 0.001
         );
         let a13 = LayerConfig {
-            segments: 13,
+            segments: Segments::MAX,
             ..b78
         };
         assert!(

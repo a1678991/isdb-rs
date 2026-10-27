@@ -6,15 +6,15 @@ mod common;
 
 use common::Rng;
 use isdbt_core::{
-    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave,
+    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };
 use isdbt_ofdm::Modulator;
 use isdbt_ofdm::ac::AcFrame;
 use isdbt_ofdm::tmcc::TmccInfo;
 
-fn layer(segments: usize, modulation: Modulation, ti: TimeInterleave) -> Option<LayerConfig> {
+fn layer(segments: u8, modulation: Modulation, ti: TimeInterleave) -> Option<LayerConfig> {
     Some(LayerConfig {
-        segments,
+        segments: Segments::new(segments).unwrap(),
         modulation,
         code_rate: CodeRate::R3_4,
         time_interleave: ti,

@@ -12,7 +12,7 @@
 mod common;
 
 use common::{bench_params, synth_audio, tmpdir};
-use isdbt_core::{CodeRate, LayerConfig, Modulation, Params, TimeInterleave};
+use isdbt_core::{CodeRate, LayerConfig, Modulation, Params, Segments, TimeInterleave};
 use isdbt_mux::{Config, Multiplexer, MuxError};
 use std::path::{Path, PathBuf};
 
@@ -149,7 +149,7 @@ fn with_layer_b(modulation: Modulation, code_rate: CodeRate) -> Params {
         [
             b.layers()[0],
             Some(LayerConfig {
-                segments: 12,
+                segments: Segments::new(12).unwrap(),
                 modulation,
                 code_rate,
                 time_interleave: TimeInterleave::K2,

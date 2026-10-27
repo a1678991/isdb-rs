@@ -6,7 +6,7 @@
 //! dummy-byte `layer_indicator`s announced.
 
 use isdbt_core::{
-    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave,
+    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };
 use isdbt_ofdm::DemodConfig;
 use isdbt_phy::broadcast_ts::{
@@ -16,13 +16,13 @@ use isdbt_phy::{Packet, Receiver, Transmitter, null_packet};
 
 fn params() -> Params {
     let a = LayerConfig {
-        segments: 1,
+        segments: Segments::new(1).unwrap(),
         modulation: Modulation::Qpsk,
         code_rate: CodeRate::R2_3,
         time_interleave: TimeInterleave::K1,
     };
     let b = LayerConfig {
-        segments: 12,
+        segments: Segments::new(12).unwrap(),
         modulation: Modulation::Qam16,
         code_rate: CodeRate::R1_2,
         time_interleave: TimeInterleave::K1,

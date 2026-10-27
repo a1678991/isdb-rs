@@ -162,7 +162,7 @@ impl CarrierMapper {
         assert_eq!(adj_bits % s, 0);
         let adj = adj_bits / s;
         let delays: Vec<usize> = bit_interleave_delays(m).iter().map(|d| d + adj).collect();
-        let per_symbol = mode.data_carriers_per_segment() * layer.segments;
+        let per_symbol = mode.data_carriers_per_segment() * layer.segments.count();
         Self {
             modulation: m,
             per_symbol,

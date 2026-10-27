@@ -102,7 +102,7 @@ impl MultiplexPattern {
         let mut offset = 0u64; // clock offset of the layer's first carrier in a symbol
         let mut events: Vec<Completion> = Vec::new();
         for (id, l) in params.active_layers() {
-            let carriers = (nc * l.segments) as u64;
+            let carriers = (nc * l.segments.count()) as u64;
             let s = l.modulation.bits_per_symbol() as u64;
             let (num, den) = l.code_rate.ratio();
             let (num, den) = (num as u64, den as u64);
@@ -272,11 +272,11 @@ pub fn null_tsp() -> [u8; TSP] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Modulation, TimeInterleave};
+    use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Modulation, Segments, TimeInterleave};
 
-    fn lc(segments: usize, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
+    fn lc(segments: u8, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
         LayerConfig {
-            segments,
+            segments: Segments::new(segments).unwrap(),
             modulation,
             code_rate,
             time_interleave: TimeInterleave::K0,

@@ -46,8 +46,11 @@ and `Params` methods used by `isdbt-ofdm`).
   `Params` is valid; read them with `mode()`, `guard()`,
   `partial_reception()`, `layers()` and `layer(Layer)`.
 - `LayerConfig { segments, modulation, code_rate, time_interleave }`;
-  `TimeInterleave::K0..K3` is the TMCC index 0..=3 as a closed enum
-  (`.code()` / `from_code()`), and `.length(mode)` gives I.
+  `Segments::new(n)` is the layer's segment count as a `1..=13` newtype
+  (`None` outside Table 3-31's assigned codes; `.get()` / `.count()`,
+  `Segments::MAX`, `Segments::ALL`), and `TimeInterleave::K0..K3` is the
+  TMCC index 0..=3 as a closed enum (`.code()` / `from_code()`), with
+  `.length(mode)` giving I.
 - `Params` figures: `multiplex_frame_tsps`, `samples_per_symbol`,
   `samples_per_frame`, `frame_seconds`, `frame_ticks_27mhz`,
   `layer_of_segment`, `differential_segments`, `symbol_domain_delay_symbols`.
@@ -55,13 +58,13 @@ and `Params` methods used by `isdbt-ofdm`).
   (204), `SEGMENTS` (13), `SAMPLE_RATE_NUM`/`SAMPLE_RATE_DEN` (512/63 MHz).
 
 ```rust
-use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave};
 
 // Mode 3, GI 1/8 with partial reception: layer A = 1 segment QPSK 2/3,
 // layer B = 12 segments 64QAM 3/4, time-interleave index 2 (I = 2 in Mode 3).
 let ti = TimeInterleave::K2;
-let a = LayerConfig { segments: 1, modulation: Modulation::Qpsk, code_rate: CodeRate::R2_3, time_interleave: ti };
-let b = LayerConfig { segments: 12, modulation: Modulation::Qam64, code_rate: CodeRate::R3_4, time_interleave: ti };
+let a = LayerConfig { segments: Segments::new(1).unwrap(), modulation: Modulation::Qpsk, code_rate: CodeRate::R2_3, time_interleave: ti };
+let b = LayerConfig { segments: Segments::new(12).unwrap(), modulation: Modulation::Qam64, code_rate: CodeRate::R3_4, time_interleave: ti };
 let p = Params::new(Mode::M3, GuardInterval::G1_8, true, [Some(a), Some(b), None]).unwrap();
 
 assert_eq!(a.tsp_per_frame(p.mode()), 64); // Table 3-3: 16 × 4 (Mode 3) × 1 segment
@@ -73,8 +76,8 @@ assert!((p.frame_seconds() - 0.231336).abs() < 1e-12); // Table 3-1
 assert_eq!(p.frame_ticks_27mhz(), 6_246_072); // PCR ticks per OFDM frame
 
 // §3.11.2: partial reception requires a one-segment layer A.
-let bad = LayerConfig { segments: 2, ..a };
-let c = LayerConfig { segments: 11, ..b };
+let bad = LayerConfig { segments: Segments::new(2).unwrap(), ..a };
+let c = LayerConfig { segments: Segments::new(11).unwrap(), ..b };
 assert!(Params::new(Mode::M3, GuardInterval::G1_8, true, [Some(bad), Some(c), None]).is_err());
 ```
 

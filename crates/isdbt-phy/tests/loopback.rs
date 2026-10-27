@@ -1,19 +1,21 @@
 //! End-to-end PHY loopback: TS packets → Transmitter → channel → Receiver
 //! → TS packets, byte-exact, with the multiplex-frame reproduction.
 
-use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+use isdbt_core::{
+    CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
+};
 use isdbt_ofdm::{C32, DemodConfig};
 use isdbt_phy::{Packet, Receiver, Transmitter};
 
 fn bench_params() -> Params {
     let a = LayerConfig {
-        segments: 1,
+        segments: Segments::new(1).unwrap(),
         modulation: Modulation::Qpsk,
         code_rate: CodeRate::R2_3,
         time_interleave: TimeInterleave::K2,
     };
     let b = LayerConfig {
-        segments: 12,
+        segments: Segments::new(12).unwrap(),
         modulation: Modulation::Qam64,
         code_rate: CodeRate::R3_4,
         time_interleave: TimeInterleave::K2,

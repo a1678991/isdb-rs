@@ -34,12 +34,12 @@
 //! Wrap one frame, read it back, configure a transmitter from the IIP:
 //!
 //! ```
-//! use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+//! use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave};
 //! use isdbt_phy::broadcast_ts::{BroadcastTsReader, BroadcastTsWriter};
 //! use isdbt_phy::{Transmitter, null_packet};
 //!
 //! let a = LayerConfig {
-//!     segments: 13,
+//!     segments: Segments::new(13).unwrap(),
 //!     modulation: Modulation::Qpsk,
 //!     code_rate: CodeRate::R1_2,
 //!     time_interleave: TimeInterleave::K0,
@@ -1241,11 +1241,11 @@ impl BroadcastTsReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use isdbt_core::{CodeRate, LayerConfig, Modulation, TimeInterleave};
+    use isdbt_core::{CodeRate, LayerConfig, Modulation, Segments, TimeInterleave};
 
-    fn lc(segments: usize, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
+    fn lc(segments: u8, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
         LayerConfig {
-            segments,
+            segments: Segments::new(segments).unwrap(),
             modulation,
             code_rate,
             time_interleave: TimeInterleave::K1,

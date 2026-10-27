@@ -5,7 +5,9 @@
 //! order, the Table 3-22..3-31 field decoding and the transmitter's TMCC
 //! encoding against transmitters this project did not build.
 
-use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+use isdbt_core::{
+    CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
+};
 use isdbt_ofdm::dsc::{self, ParityStatus};
 use isdbt_ofdm::tmcc::{
     InterleaveCode, ModulationCode, RateCode, SegmentsCode, TmccInfo, TmccLayer, decode_frame,
@@ -37,7 +39,7 @@ fn frame(w: &[u8]) -> [u8; 204] {
 fn broadcast_params() -> Params {
     let layer = |segments, modulation, code_rate, ti| {
         Some(LayerConfig {
-            segments,
+            segments: Segments::new(segments).unwrap(),
             modulation,
             code_rate,
             time_interleave: ti,
@@ -89,13 +91,13 @@ fn broadcast_words_decode_to_the_broadcast_configuration() {
                     modulation: ModulationCode::Assigned(Modulation::Qpsk),
                     code_rate: RateCode::Assigned(CodeRate::R2_3),
                     interleave: InterleaveCode::Assigned(TimeInterleave::K3),
-                    segments: SegmentsCode::Segments(1),
+                    segments: SegmentsCode::Segments(Segments::new(1).unwrap()),
                 },
                 TmccLayer {
                     modulation: ModulationCode::Assigned(Modulation::Qam64),
                     code_rate: RateCode::Assigned(CodeRate::R3_4),
                     interleave: InterleaveCode::Assigned(TimeInterleave::K2),
-                    segments: SegmentsCode::Segments(12),
+                    segments: SegmentsCode::Segments(Segments::new(12).unwrap()),
                 },
                 TmccLayer::UNUSED,
             ]

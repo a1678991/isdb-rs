@@ -407,6 +407,20 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdbt-core`: `LayerConfig.segments` is `Segments`, a `1..=13` newtype
+  of ARIB STD-B31 Table 3-31 ('0001'–'1101'; Table 3-2 Ns = 13), instead
+  of `usize`. `Segments::new(n)` is the only constructor (`None` outside
+  the range; `const`), with `get()` (the `u8` count / code), `count()`
+  (`usize` for carrier and TSP arithmetic), `MAX` (13), `ALL` and
+  `Display`. `Params::new` no longer checks for an empty layer and
+  `ParamError::EmptyLayer` is gone (the value cannot be built); the
+  sum-to-13 and partial-reception checks stay.
+  `ofdm_params::bit_delay_adjustment_bits` takes `Segments`. In
+  `isdbt-ofdm`, `tmcc::SegmentsCode::Segments` carries a `Segments`
+  (not a `u8`), so `TmccLayer::from_config` has no cast and
+  `from_code` goes through `Segments::new`; the CLI layer spec refuses
+  a count outside 1..=13 at the parser. Item G (segments) of
+  `docs/plans/type-safety.md`.
 - Workspace: `clippy::cast_lossless` is enabled (`warn`, so an error in
   CI). The 632 `x as T` casts where `T: From<X>` (`u8`/`u16`/`u32` →
   wider integers, `bool` → integer, `f32`/`u32`/`i32` → `f64`) are written

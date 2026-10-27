@@ -1659,12 +1659,12 @@ sections = ["82 70 05 01 02 03 04 05"]
 }
 
 fn isdb_cli_layer(
-    segments: usize,
+    segments: u8,
     modulation: isdbt_core::Modulation,
     code_rate: isdbt_core::CodeRate,
 ) -> Option<isdbt_core::LayerConfig> {
     Some(isdbt_core::LayerConfig {
-        segments,
+        segments: isdbt_core::Segments::new(segments).unwrap(),
         modulation,
         code_rate,
         time_interleave: isdbt_core::TimeInterleave::K2,

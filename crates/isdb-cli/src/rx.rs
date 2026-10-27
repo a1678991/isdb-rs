@@ -339,7 +339,7 @@ pub fn params_json(p: &Params) -> Value {
             (
                 id.to_string(),
                 json!({
-                    "segments": l.segments,
+                    "segments": l.segments.get(),
                     "modulation": format!("{:?}", l.modulation),
                     "code_rate": format!("{n}/{d}"),
                     "time_interleave_index": l.time_interleave.code(),

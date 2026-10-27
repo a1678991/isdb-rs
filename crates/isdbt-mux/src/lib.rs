@@ -43,10 +43,10 @@
 //!
 //! ```
 //! use isdbt_mux::{Config, Multiplexer};
-//! use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+//! use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave};
 //!
-//! let layer = |segments, modulation, code_rate| {
-//!     Some(LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave::K2 })
+//! let layer = |segments: u8, modulation, code_rate| {
+//!     Some(LayerConfig { segments: Segments::new(segments).unwrap(), modulation, code_rate, time_interleave: TimeInterleave::K2 })
 //! };
 //! let params = Params::new(
 //!     Mode::M3,

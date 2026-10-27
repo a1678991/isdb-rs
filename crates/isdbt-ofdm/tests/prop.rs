@@ -6,7 +6,7 @@ mod common;
 use common::Rng;
 use isdbt_core::ofdm_params::time_interleave_delayed_frames;
 use isdbt_core::{
-    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave,
+    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };
 use isdbt_ofdm::ac::{AcFrame, SeismicWarning};
 use isdbt_ofdm::combine::layer_segments;
@@ -76,7 +76,7 @@ fn arb_params(max_ti: u8) -> impl Strategy<Value = Params> {
                         coherent_seen |= !md.is_differential();
                     }
                     layers[i] = Some(LayerConfig {
-                        segments: n,
+                        segments: Segments::ALL[n - 1],
                         modulation: md,
                         code_rate: CodeRate::R1_2,
                         time_interleave: TimeInterleave::ALL
@@ -185,7 +185,7 @@ proptest! {
     fn prop_bit_interleave_identity(m in 0usize..4, mode in 0usize..3, n in 1usize..=13, seed in any::<u64>()) {
         let m = MODS[m];
         let mode = MODES[mode];
-        let layer = LayerConfig { segments: n, modulation: m, code_rate: CodeRate::R1_2, time_interleave: TimeInterleave::K0 };
+        let layer = LayerConfig { segments: Segments::ALL[n - 1], modulation: m, code_rate: CodeRate::R1_2, time_interleave: TimeInterleave::K0 };
         let mut mapper = CarrierMapper::new(mode, &layer);
         let per = mapper.symbols_per_ofdm_symbol();
         let s = m.bits_per_symbol();

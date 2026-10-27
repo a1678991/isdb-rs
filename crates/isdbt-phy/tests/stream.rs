@@ -3,20 +3,20 @@
 //! receiver matching the inline one.
 
 use isdbt_core::{
-    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave,
+    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };
 use isdbt_ofdm::{C32, DemodConfig};
 use isdbt_phy::{Packet, PipelinedReceiver, Receiver, RxFrame, Transmitter, null_packet};
 
 fn params(mode: Mode, ti: TimeInterleave) -> Params {
     let a = LayerConfig {
-        segments: 1,
+        segments: Segments::new(1).unwrap(),
         modulation: Modulation::Qpsk,
         code_rate: CodeRate::R2_3,
         time_interleave: ti,
     };
     let b = LayerConfig {
-        segments: 12,
+        segments: Segments::new(12).unwrap(),
         modulation: Modulation::Qam16,
         code_rate: CodeRate::R1_2,
         time_interleave: ti,
