@@ -252,6 +252,31 @@ file lists. The script: `cargo clippy --workspace --all-targets --fix
 diff, as `--fix` can produce `u64::from(a) + u64::from(b)` where one
 `From` suffices.
 
+### H. Second wave (after G1 `Segments` and G2 `Pid`)
+
+- **H1 canonical reserved payloads.** In each crate with a lossless coded
+  enum (`isdb-ts`, `isdbt-ofdm`, `isdbs-core`, `isdbs3-core`, `isdb-tlv`,
+  `isdb-mmt`), `Reserved(u8)` / `UserDefined(u8)` become
+  `Reserved(ReservedCode)` where `ReservedCode` has a private field,
+  `pub const fn get(self) -> u8`, `Display`, and a constructor that is
+  `pub(crate)` and only `from_code` calls, after it has excluded the
+  assigned and unused codes. Then every value of the enum is canonical by
+  construction, `PartialEq` is the wire equality, and a `compile_fail`
+  doctest proves `Reserved(…)` cannot be built outside the crate.
+- **H2 `ContinuityCounter(u8)`** (4 bits, H.222.0 §2.4.3.3) in `isdb-ts`
+  with `wrapping_next()` / `is_next_of()`, replacing the `& 0x0F`
+  arithmetic in `cc.rs`, `packetize.rs`, the muxer and `isdb-analyze`;
+  and, in the same item because the files overlap, the raw-byte TSC/AFC
+  readers outside `isdb-ts` (`p[3] >> 6`, `(p[3] >> 4) & 3` in
+  `isdb-analyze/src/{scan,validate}.rs`, `isdb-cli/src/{source,tx}.rs`,
+  `isdbt-mux/src/{config,relay}.rs`, `isdbt-phy/src/broadcast_ts.rs`) go
+  through `Header::decode` and the item-A enums.
+- **H3 `cast_possible_truncation`** as a crate-level `#![warn]` in every
+  crate whose census count is zero or can be made zero in a few edits
+  (`isdbt-core` 0, `isdb-hackrf` 0, `isdb-iio` 1, `isdb-text` 2,
+  `isdb-radio` 5, `isdb-tlv` 6), each remaining cast replaced by
+  `try_from` + the crate's error or `#[allow]` with a one-line reason.
+
 ### G. Later (not dispatched now)
 
 - `Pid(u16)` newtype in `isdb-ts` (13 bits, `pid: u16` × 118 sites; H.222.0
@@ -294,6 +319,21 @@ item G's `Segments(u8)` retires.
 Cast census after A–E (`tools/type-census.sh`): 903 truncate, 632
 lossless, 327 sign/wrap, 594 precision, total **2 456** (was 2 462): the
 enum items were never about casts; item F is.
+
+**Independent review of A–F** (read-only agent, tree at `86972d6`, no
+shell so no old-vs-new diff; the two questions it raised were checked
+against `13ace6a` by hand): no lossless-ness regression (every
+`from_code` masks to the width, every encoder writes `code()`); no
+behaviour change (`is_unused` compared all four fields before and after,
+`config()` gated on modulation alone before and after); no new panic on
+wire data; every new item cites its table. One structural finding,
+valid: the `Reserved(u8)` / `UserDefined(u8)` payloads are public, so a
+hand-built `Reserved(0xF6)` is `!=` `Reserved(0x06)` while both encode as
+6, and `Reserved(0b111)` can be spelled where `Unused` is the canonical
+form. The decoders never produce such values and `code()` masks, but the
+bijection is only guaranteed on the `from_code` path. Fix queued as item
+H1 below: a crate-private-constructor newtype for the payload so the only
+way to hold a reserved code is to have decoded it.
 
 Practical notes for the next dispatch: agent worktrees are cut from
 `main`, not the current branch, so each brief must say to reset onto the
