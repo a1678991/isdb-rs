@@ -149,6 +149,14 @@ pub enum RxState {
     Locked,
 }
 
+/// A gain or phase computed in `f64` narrowed to the `f32` sample domain.
+/// The narrowing is the point: the arithmetic runs in `f64` for accuracy
+/// and the result multiplies `f32` samples.
+#[allow(clippy::cast_possible_truncation)]
+fn to_f32(x: f64) -> f32 {
+    x as f32
+}
+
 /// Half length of the resampling interpolator (taps per side).
 const INTERP_HALF: usize = 12;
 /// Fractional phases of the polyphase interpolator table.
@@ -192,7 +200,7 @@ fn interp_table() -> &'static [Vec<f32>] {
                     })
                     .collect();
                 let sum: f64 = taps.iter().sum();
-                taps.iter().map(|&v| (v / sum) as f32).collect()
+                taps.iter().map(|&v| to_f32(v / sum)).collect()
             })
             .collect()
     })
@@ -219,6 +227,8 @@ impl Extractor {
     fn new(mode: Mode, guard: GuardInterval, start: u64, cfo: f64, backoff_frac: f32) -> Self {
         let n = mode.fft_size();
         let ng = guard.samples(mode);
+        // f32 -> usize saturates (NaN gives 0); min(ng) bounds the result.
+        #[allow(clippy::cast_possible_truncation)]
         let backoff = ((ng as f32 * backoff_frac) as usize).min(ng);
         Self {
             mode,
@@ -235,16 +245,20 @@ impl Extractor {
 
     /// GI start (rounded) of the next symbol.
     fn next_start(&self) -> u64 {
-        self.pos.max(0.0).round() as u64
+        // f64 -> u64 saturates; `pos` is a sample index, far below 2^53.
+        #[allow(clippy::cast_possible_truncation)]
+        let start = self.pos.max(0.0).round() as u64;
+        start
     }
 
     /// Absolute input sample index needed (exclusive) for the next symbol.
     fn needs(&self) -> u64 {
-        (self.pos + (self.n + self.ng) as f64 * self.rate)
+        // f64 -> u64 saturates; `pos` is a sample index, far below 2^53.
+        #[allow(clippy::cast_possible_truncation)]
+        let end = (self.pos + (self.n + self.ng) as f64 * self.rate)
             .ceil()
-            .max(0.0) as u64
-            + INTERP_HALF as u64
-            + 1
+            .max(0.0) as u64;
+        end + INTERP_HALF as u64 + 1
     }
 
     /// Move the timing of the following symbols by `c` samples.
@@ -262,6 +276,9 @@ impl Extractor {
         let f = self.cfo / self.n as f64;
         let exact = self.rate == 1.0 && w.fract() == 0.0;
         if exact {
+            // `w` is integral here and `buf` holds every sample up to
+            // `needs()` (the caller checks), so the offset is within `buf`.
+            #[allow(clippy::cast_possible_truncation)]
             let w0 = (w as u64 - base) as usize;
             for m in 0..self.n {
                 self.tmp[m] = buf[w0 + m];
@@ -271,14 +288,18 @@ impl Extractor {
             for m in 0..self.n {
                 let p = w + m as f64 * self.rate;
                 let fl = p.floor();
+                // The fraction is in 0..=1, so the phase is in 0..=INTERP_PHASES.
+                #[allow(clippy::cast_possible_truncation)]
                 let ph = ((p - fl) * INTERP_PHASES as f64).round() as usize;
                 let taps = &table[ph];
+                // `fl` is an integral sample position far below 2^53.
+                #[allow(clippy::cast_possible_truncation)]
                 let i0 = (fl as i64 - base as i64) - (INTERP_HALF as i64 - 1);
                 let mut acc = C32::default();
                 for (t, &h) in taps.iter().enumerate() {
                     let idx = i0 + t as i64;
-                    if idx >= 0 && (idx as usize) < buf.len() {
-                        acc += buf[idx as usize] * h;
+                    if let Some(&sample) = usize::try_from(idx).ok().and_then(|i| buf.get(i)) {
+                        acc += sample * h;
                     }
                 }
                 self.tmp[m] = acc;
@@ -286,9 +307,9 @@ impl Extractor {
         }
         // CFO derotation on the input time base.
         let ph0 = (-two_pi * f * w).rem_euclid(two_pi);
-        let mut rot = C32::new(ph0.cos() as f32, ph0.sin() as f32);
+        let mut rot = C32::new(to_f32(ph0.cos()), to_f32(ph0.sin()));
         let step_ph = -two_pi * f * self.rate;
-        let step = C32::new(step_ph.cos() as f32, step_ph.sin() as f32);
+        let step = C32::new(to_f32(step_ph.cos()), to_f32(step_ph.sin()));
         for (m, v) in self.tmp.iter_mut().enumerate() {
             *v *= rot;
             rot *= step;
@@ -301,8 +322,8 @@ impl Extractor {
         let th = two_pi * self.backoff as f64 / self.n as f64;
         let n = self.n;
         for (half, s0) in [(0..n / 2, 0.0f64), (n / 2..n, -((n / 2) as f64))] {
-            let mut r = C32::from_polar(1.0, (th * s0) as f32);
-            let st = C32::from_polar(1.0, th as f32);
+            let mut r = C32::from_polar(1.0, to_f32(th * s0));
+            let st = C32::from_polar(1.0, to_f32(th));
             for (i, b) in half.enumerate() {
                 self.tmp[b] *= r;
                 r *= st;
@@ -475,7 +496,8 @@ impl Demodulator {
 
     fn drop_before(&mut self, abs: u64) {
         if abs > self.base {
-            let n = ((abs - self.base) as usize).min(self.buf.len());
+            let n =
+                usize::try_from(abs - self.base).map_or(self.buf.len(), |n| n.min(self.buf.len()));
             self.buf.drain(..n);
             self.base += n as u64;
         }
@@ -776,7 +798,7 @@ impl Track {
             self.ex.adjust(c - already);
         }
         self.ring.push_back((j, start, y));
-        if self.ring.len() > 2 * self.lookahead as usize + 1 {
+        if self.ring.len() as u64 > 2 * self.lookahead + 1 {
             self.ring.pop_front();
         }
         // Process symbol j − lookahead (SP time interpolation).
@@ -795,10 +817,14 @@ impl Track {
         if j < first {
             return None;
         }
-        self.ring.get((j - first) as usize)
+        usize::try_from(j - first)
+            .ok()
+            .and_then(|i| self.ring.get(i))
     }
 
     fn process(&mut self, t: u64) -> Option<DemodFrame> {
+        // The remainder is below SYMBOLS_PER_FRAME (204).
+        #[allow(clippy::cast_possible_truncation)]
         let n = ((t - self.frame0) % SYMBOLS_PER_FRAME as u64) as usize;
         let phase = n % 4;
         let (_, start, y) = self.ring_get(t).expect("current").clone();
@@ -847,11 +873,13 @@ impl Track {
             let frame0 = self.frame0;
             let first = ring.front().expect("ring").0;
             let get = |d: i32| -> Option<&[C32]> {
-                let jj = t as i64 + i64::from(d);
-                if jj < first.max(frame0) as i64 {
+                let jj = u64::try_from(t as i64 + i64::from(d)).ok()?;
+                if jj < first.max(frame0) {
                     return None;
                 }
-                ring.get((jj as u64 - first) as usize)
+                usize::try_from(jj - first)
+                    .ok()
+                    .and_then(|i| ring.get(i))
                     .map(|e| e.2.as_slice())
             };
             self.est.estimate(get, phase, self.sp_w);
@@ -961,7 +989,7 @@ impl Track {
             let v = std::mem::take(&mut l.out);
             llr[l.layer.index()] = Some(v);
             if l.mer_n > 0 {
-                mer[l.layer.index()] = Some((-10.0 * (l.mer_err / l.mer_n as f64).log10()) as f32);
+                mer[l.layer.index()] = Some(to_f32(-10.0 * (l.mer_err / l.mer_n as f64).log10()));
             }
         }
         let frame_number = self.frames_out;

@@ -115,13 +115,16 @@ impl ChannelEstimator {
         }
         let y0 = ring(0).expect("current symbol");
         let c = self.c;
+        // `w` is DemodConfig::sp_time_window, a handful of symbols (the ring
+        // holds 2·lookahead(w) + 1 of them), so it fits an i32.
+        #[allow(clippy::cast_possible_truncation)]
         let w = w.max(1) as i32;
         // 1. SP grid with time interpolation.
         for &k0 in &self.segments {
             for g in (k0..k0 + c).step_by(3) {
                 let p = (g / 3) % 4;
                 // Offset back to the latest SP occurrence (0..=3).
-                let back = ((phase_t + 4 - p) % 4) as i32;
+                let back: i32 = [0, 1, 2, 3][(phase_t + 4 - p) % 4];
                 let pts = (-(w - 1)..=w).filter_map(|i| {
                     let d = -back + 4 * i;
                     ring(d).map(|y| (d as f32, y[g] * self.inv_pilot[g]))

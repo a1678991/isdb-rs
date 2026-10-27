@@ -2,6 +2,9 @@
 //! directly (tables and figures cited per test).  Figure transcriptions
 //! were read from the PDF page images (pdf pages 39–42, 45–51, 63).
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 
 use isdbt_core::ofdm_params::{segment_carrier_counts, segment_position, time_interleave_m};
@@ -104,7 +107,7 @@ fn spec_table_3_11_unit_power() {
     for m in [Modulation::Qpsk, Modulation::Qam16, Modulation::Qam64] {
         let n = 1u32 << m.bits_per_symbol();
         let p: f32 = (0..n)
-            .map(|l| constellation_point(m, l as u8).norm_sqr())
+            .map(|l| constellation_point(m, u8::try_from(l).unwrap()).norm_sqr())
             .sum::<f32>()
             / n as f32;
         assert!((p - 1.0).abs() < 1e-6, "{m:?} {p}");

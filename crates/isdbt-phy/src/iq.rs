@@ -44,7 +44,10 @@ pub fn cs8_from_samples(s: &[C32], scale: f32, out: &mut Vec<i8>) -> usize {
             if !(-127.0..=127.0).contains(&x) {
                 clipped += 1;
             }
-            out.push(x.clamp(-127.0, 127.0) as i8);
+            // DSP: the value is rounded and clamped to +-127, the cast is exact.
+            #[allow(clippy::cast_possible_truncation)]
+            let q = x.clamp(-127.0, 127.0) as i8;
+            out.push(q);
         }
     }
     clipped

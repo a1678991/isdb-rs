@@ -1,6 +1,8 @@
 //! End-to-end PHY loopback: TS packets → Transmitter → channel → Receiver
 //! → TS packets, byte-exact, with the multiplex-frame reproduction.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdbt_core::{
     CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };
@@ -43,7 +45,7 @@ fn packet(layer: u8, frame: u32, idx: u32) -> Packet {
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
-        *b = x as u8;
+        *b = x.to_le_bytes()[0];
     }
     p
 }
@@ -78,8 +80,12 @@ fn ts_loopback_hierarchical_mode3() {
     let mut iq = vec![C32::new(0.0, 0.0); 23_456];
     let mut sent: Vec<[Vec<Packet>; 2]> = Vec::new();
     for f in 0..frames {
-        let a: Vec<Packet> = (0..na as u32).map(|i| packet(0xA, f, i)).collect();
-        let b: Vec<Packet> = (0..nb as u32).map(|i| packet(0xB, f, i)).collect();
+        let a: Vec<Packet> = (0..u32::try_from(na).unwrap())
+            .map(|i| packet(0xA, f, i))
+            .collect();
+        let b: Vec<Packet> = (0..u32::try_from(nb).unwrap())
+            .map(|i| packet(0xB, f, i))
+            .collect();
         iq.extend(tx.transmit_frame([&a, &b, &[]]).unwrap());
         sent.push([a, b]);
     }

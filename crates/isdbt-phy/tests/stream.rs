@@ -2,6 +2,8 @@
 //! / flush frame counts that deliver every input packet, and the pipelined
 //! receiver matching the inline one.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdbt_core::{
     CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };
@@ -24,11 +26,11 @@ fn params(mode: Mode, ti: TimeInterleave) -> Params {
     Params::new(mode, GuardInterval::G1_8, true, [Some(a), Some(b), None]).unwrap()
 }
 
-fn packet(layer: usize, n: u32) -> Packet {
+fn packet(layer: u8, n: u32) -> Packet {
     let mut p = [0u8; 188];
     p[0] = 0x47;
     p[1] = 0x01;
-    p[2] = layer as u8;
+    p[2] = layer;
     p[3] = 0x10 | (n & 15) as u8;
     p[4..8].copy_from_slice(&n.to_be_bytes());
     let mut x = n.wrapping_mul(2654435761) | 1;
@@ -36,7 +38,7 @@ fn packet(layer: usize, n: u32) -> Packet {
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
-        *b = x as u8;
+        *b = x.to_le_bytes()[0];
     }
     p
 }
@@ -55,8 +57,12 @@ fn transmit(p: &Params, preroll: bool, data: u32) -> (Vec<C32>, [Vec<Packet>; 2]
     }
     let mut sent: [Vec<Packet>; 2] = Default::default();
     for f in 0..data {
-        let a: Vec<_> = (0..na as u32).map(|i| packet(0, f * 100_000 + i)).collect();
-        let b: Vec<_> = (0..nb as u32).map(|i| packet(1, f * 100_000 + i)).collect();
+        let a: Vec<_> = (0..u32::try_from(na).unwrap())
+            .map(|i| packet(0, f * 100_000 + i))
+            .collect();
+        let b: Vec<_> = (0..u32::try_from(nb).unwrap())
+            .map(|i| packet(1, f * 100_000 + i))
+            .collect();
         iq.extend(tx.transmit_frame([&a, &b, &[]]).unwrap());
         sent[0].extend(a);
         sent[1].extend(b);

@@ -151,7 +151,12 @@ impl Modulator {
             } else {
                 let labels = 1u32 << m.bits_per_symbol();
                 (0..len)
-                    .map(|_| constellation_point(m, (next() % labels) as u8))
+                    .map(|_| {
+                        // The remainder is below 2^bits_per_symbol <= 64.
+                        #[allow(clippy::cast_possible_truncation)]
+                        let label = (next() % labels) as u8;
+                        constellation_point(m, label)
+                    })
                     .collect()
             };
             fill_seqs.push(seq);
