@@ -136,7 +136,7 @@ pub enum SeismicPage {
 impl SeismicDetail {
     /// Encode to B24..B111.
     pub fn to_bits(&self) -> [u8; 88] {
-        let mut w = BitWriter::default();
+        let mut w = BitWriter::<88>::new();
         match *self {
             SeismicDetail::Warning { current_time, page } => {
                 w.put(current_time & 0x7fff_ffff, 31);
@@ -181,7 +181,7 @@ impl SeismicDetail {
                 w.put(u32::MAX, 13);
             }
         }
-        w.bits.try_into().expect("88 bits")
+        w.finish()
     }
 
     /// Typed view for a signal identification; `None` for 100–110.
@@ -262,11 +262,11 @@ impl SeismicWarning {
         let mut out = [1u8; 204];
         out[0] = 0;
         out[1..17].copy_from_slice(&sync_word(odd_frame));
-        let mut w = BitWriter::default();
+        let mut w = BitWriter::<7>::new();
         w.put(u32::from(self.start_end), 2);
         w.put(u32::from(self.update), 2);
         w.put(u32::from(self.signal_id), 3);
-        out[17..24].copy_from_slice(&w.bits);
+        out[17..24].copy_from_slice(&w.finish());
         out[24..112].copy_from_slice(&self.detail);
         let crc = crc10(&out[21..112]);
         out[112..122].copy_from_slice(&crc);
@@ -288,7 +288,7 @@ impl SeismicWarning {
         let start_end = r.get_u8(2);
         let update = r.get_u8(2);
         let signal_id = r.get_u8(3);
-        let detail: [u8; 88] = word[7..95].try_into().expect("88");
+        let detail: [u8; 88] = std::array::from_fn(|i| word[7 + i]);
         // CRC over B21..B111 = word[4..95]; CRC bits B112..B121 = word[95..105].
         let crc_ok = crc10(&word[4..95]).as_slice() == &word[95..105];
         SeismicDecoded {

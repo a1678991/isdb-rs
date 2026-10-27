@@ -505,20 +505,40 @@ impl Params {
             .filter_map(|(id, l)| l.as_ref().map(|l| (id, l)))
     }
 
+    /// Configured layers with their data segments, in data-segment order
+    /// (§3.11.2 numbering: layer A from segment 0, then B, then C). The
+    /// ranges are contiguous and cover `0..13` ([`Params::new`] checks
+    /// both).
+    pub fn layer_segments(
+        &self,
+    ) -> impl Iterator<Item = (Layer, &LayerConfig, std::ops::Range<usize>)> {
+        self.active_layers().scan(0, |first, (id, l)| {
+            let start = *first;
+            *first += l.segments.count();
+            Some((id, l, start..*first))
+        })
+    }
+
+    /// Layer owning data segment `seg` (0..13), in the §3.11.2 numbering,
+    /// with its configuration.
+    ///
+    /// # Panics
+    ///
+    /// If `seg` ≥ 13 (the configured layers cover segments 0..13).
+    pub fn segment_layer(&self, seg: usize) -> (Layer, &LayerConfig) {
+        match self.layer_segments().find(|(_, _, r)| r.contains(&seg)) {
+            Some((id, l, _)) => (id, l),
+            None => panic!("data segment {seg} out of range 0..{SEGMENTS}"),
+        }
+    }
+
     /// Layer owning data segment `seg` (0..13), in the §3.11.2 numbering.
     ///
     /// # Panics
     ///
     /// If `seg` ≥ 13.
     pub fn layer_of_segment(&self, seg: usize) -> Layer {
-        let mut acc = 0;
-        for (id, l) in self.active_layers() {
-            acc += l.segments.count();
-            if seg < acc {
-                return id;
-            }
-        }
-        panic!("segment {seg} out of range")
+        self.segment_layer(seg).0
     }
 
     /// Number of differentially modulated segments, nd (Table 3-2).
@@ -715,6 +735,9 @@ mod tests {
         let p = Params::new(Mode::M3, GuardInterval::G1_8, true, [a, b, None]).unwrap();
         assert_eq!(p.layer_of_segment(0), Layer::A);
         assert_eq!(p.layer_of_segment(12), Layer::B);
+        let spans: Vec<_> = p.layer_segments().map(|(id, _, r)| (id, r)).collect();
+        assert_eq!(spans, [(Layer::A, 0..1), (Layer::B, 1..13)]);
+        assert_eq!(p.segment_layer(1), (Layer::B, b.as_ref().unwrap()));
         // DQPSK after coherent (outside partial reception) is illegal.
         let c = Some(layer(6, Modulation::Qam64, CodeRate::R3_4));
         let d = Some(layer(6, Modulation::Dqpsk, CodeRate::R1_2));

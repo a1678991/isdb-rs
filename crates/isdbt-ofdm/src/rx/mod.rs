@@ -27,7 +27,6 @@ pub mod chanest;
 
 use crate::C32;
 use crate::ac::{SeismicDecoded, SeismicWarning, is_seismic_config};
-use crate::combine::layer_segments;
 use crate::delay::{Fifo, MultiDelay};
 use crate::frame::{FrameLayout, SegmentKind};
 use crate::freq_interleave::{FrequencyInterleaver, RotationNumbering};
@@ -605,7 +604,9 @@ impl Demodulator {
     fn step_acquire(&mut self) -> bool {
         let base = self.base;
         let avail = base + self.buf.len() as u64;
-        let acq = self.acq.as_mut().expect("acq");
+        let Some(acq) = self.acq.as_mut() else {
+            return false;
+        };
         if acq.ex.needs() > avail {
             return false;
         }
@@ -649,7 +650,7 @@ impl Demodulator {
         let start = acq.ex.extract(&self.buf, base);
         acq.spectra.push(acq.ex.carriers());
         acq.starts.push(start);
-        if acq.kinds.is_none() {
+        let Some(layout) = acq.kinds.as_ref() else {
             if acq.spectra.len() >= self.cfg.continual_symbols {
                 let (kinds, _) = detect_kinds(mode, &acq.spectra);
                 let layout = FrameLayout::new(mode, kinds);
@@ -661,8 +662,7 @@ impl Demodulator {
                 acq.kinds = Some(layout);
             }
             return true;
-        }
-        let layout = acq.kinds.as_ref().expect("layout");
+        };
         let j = acq.spectra.len() - 1;
         let s = tmcc_soft(layout, &acq.spectra[j], &acq.spectra[j - 1], None);
         acq.soft.push(s);
@@ -697,7 +697,9 @@ impl Demodulator {
                 continue;
             };
             // Lock.
-            let acq = self.acq.take().expect("acq");
+            let Some(acq) = self.acq.take() else {
+                return true;
+            };
             info!(
                 mode = params.mode().number(),
                 guard = params.guard().denominator(),
@@ -723,9 +725,9 @@ impl Demodulator {
         let nc = params.mode().data_carriers_per_segment();
         let latency = latency_frames(&params);
         let layers = params
-            .active_layers()
-            .map(|(id, l)| {
-                let (first, count) = layer_segments(&params, id).expect("active");
+            .layer_segments()
+            .map(|(id, l, segs)| {
+                let (first, count) = (segs.start, segs.len());
                 let align_syms = rx_alignment_symbols(&params, id);
                 let per_sym = nc * l.segments.count() * l.modulation.bits_per_symbol();
                 LayerRx {
@@ -813,7 +815,9 @@ impl Demodulator {
     fn step_track(&mut self, out: &mut Vec<DemodFrame>) -> bool {
         let base = self.base;
         let avail = base + self.buf.len() as u64;
-        let t = self.track.as_mut().expect("track");
+        let Some(t) = self.track.as_mut() else {
+            return false;
+        };
         if t.ex.needs() > avail {
             return false;
         }
@@ -991,7 +995,7 @@ impl Track {
         #[allow(clippy::cast_possible_truncation)]
         let n = ((t - self.frame0) % SYMBOLS_PER_FRAME as u64) as usize;
         let phase = n % 4;
-        let (_, start, y) = self.ring_get(t).expect("current").clone();
+        let (_, start, y) = self.ring_get(t)?.clone();
         let y_prev = self.ring_get(t.wrapping_sub(1)).map(|e| e.2.clone());
         if n == 0 {
             self.frame_start_sample = start;
@@ -1035,7 +1039,8 @@ impl Track {
         if !self.est.is_empty() {
             let ring = &self.ring;
             let frame0 = self.frame0;
-            let first = ring.front().expect("ring").0;
+            // The ring holds symbol t (above), so it is not empty.
+            let first = ring.front().map_or(t, |e| e.0);
             let get = |d: i32| -> Option<&[C32]> {
                 let jj = u64::try_from(t as i64 + i64::from(d)).ok()?;
                 if jj < first.max(frame0) {
@@ -1046,7 +1051,7 @@ impl Track {
                     .and_then(|i| ring.get(i))
                     .map(|e| e.2.as_slice())
             };
-            self.est.estimate(get, phase, self.sp_w);
+            self.est.estimate(&y, get, phase, self.sp_w);
         }
         // Data carriers in data-segment order.
         let nc = self.nc;

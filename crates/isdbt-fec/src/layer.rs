@@ -254,7 +254,7 @@ impl DecodedFrame {
     pub fn tsps_188(&self) -> Vec<[u8; TSP]> {
         self.tsps
             .iter()
-            .map(|t| t[..TSP].try_into().expect("188"))
+            .map(|t| std::array::from_fn(|i| t[i]))
             .collect()
     }
 }

@@ -144,3 +144,23 @@ fn pipelined_receiver_matches_inline() {
         assert_eq!(a.ts, b.ts);
     }
 }
+
+/// Packets for a layer the parameters leave unused are refused with
+/// `Error::UnusedLayer`, before anything is modulated.
+#[test]
+fn packets_for_an_unused_layer_are_refused() {
+    let mut tx = Transmitter::new(params(Mode::M3, TimeInterleave::K0));
+    let a = vec![null_packet(); tx.tsps_per_frame(Layer::A)];
+    let b = vec![null_packet(); tx.tsps_per_frame(Layer::B)];
+    let c = vec![null_packet(); 2];
+    let e = tx.transmit_frame([&a, &b, &c]).unwrap_err();
+    assert!(matches!(
+        e,
+        isdbt_phy::Error::UnusedLayer {
+            layer: Layer::C,
+            got: 2
+        }
+    ));
+    assert_eq!(e.to_string(), "layer C unused but 2 packets given");
+    assert_eq!(tx.frames(), 0);
+}

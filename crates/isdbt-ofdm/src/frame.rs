@@ -67,6 +67,10 @@ pub fn prbs_step(state: &mut [u8; 11]) -> u8 {
 }
 
 /// Parse a Table 3-16 string "D1…D11".
+///
+/// # Panics
+///
+/// If `s` is not 11 binary digits.
 pub fn prbs_init(s: &str) -> [u8; 11] {
     let b = s.as_bytes();
     assert_eq!(b.len(), 11);

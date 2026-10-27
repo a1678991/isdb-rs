@@ -101,12 +101,35 @@ pub enum Error {
         /// Supplied bit count.
         got: usize,
     },
-    /// TMCC content cannot be mapped to valid parameters.
-    #[error("invalid TMCC: {0}")]
-    Tmcc(String),
-    /// Invalid input value or size.
-    #[error("invalid input: {0}")]
-    Invalid(String),
+    /// A field of a used layer's TMCC transmission parameters (Table 3-23)
+    /// holds a code that names no parameter: a code Tables 3-28 … 3-31
+    /// reserve, or the "unused hierarchical layer" code (all ones) in a
+    /// layer whose modulation code says it is used.
+    #[error(
+        "invalid TMCC: {} {field} code {code:0width$b} in a used layer ({table})",
+        if *code == field.unused_code() { "unused" } else { "reserved" },
+        width = usize::from(field.bits()),
+        table = field.table()
+    )]
+    Tmcc {
+        /// The Table 3-23 field.
+        field: tmcc::TmccField,
+        /// Its code as received, in the field's width.
+        code: u8,
+    },
+    /// Every layer's TMCC codes are assigned, but together they break a
+    /// §3.11.2 constraint (segment sum, layer order, partial reception).
+    #[error("invalid TMCC: the layers are not valid transmission parameters")]
+    TmccParams(#[source] isdbt_core::ParamError),
+    /// The AC frame does not have one value per AC carrier of the layout
+    /// (§3.16).
+    #[error("AC frame has {got} carriers, layout {expected}")]
+    AcCarriers {
+        /// AC carriers of the frame layout.
+        expected: usize,
+        /// Carriers in the AC frame.
+        got: usize,
+    },
 }
 
 // Compile the README's code blocks as doctests.

@@ -3,6 +3,7 @@
 
 use crate::ac::AcFrame;
 use crate::combine::combine;
+use crate::delay::Fifo;
 use crate::frame::{Dbpsk, FrameLayout, SegmentKind, pilot_value};
 use crate::freq_interleave::{FrequencyInterleaver, RotationNumbering};
 use crate::latency::bits_per_frame;
@@ -60,7 +61,7 @@ pub struct Modulator {
     mappers: [Option<CarrierMapper>; 3],
     /// Per layer: bit-interleaved carrier symbols waiting for their OFDM
     /// symbol (the one-frame buffer of Fig. 3-8).
-    pending: [std::collections::VecDeque<C32>; 3],
+    pending: [Fifo<C32>; 3],
     aligned: bool,
     ti: TimeInterleaver<C32>,
     fi: FrequencyInterleaver,
@@ -115,19 +116,22 @@ impl Modulator {
         let mut fill_seqs: Vec<Vec<C32>> = Vec::with_capacity(ti_delays.len());
         let mut rng = FillRng::new(0x5eed);
         let mut next = || rng.next_u32();
-        for (q, &d) in ti_delays.iter().enumerate() {
-            let layer = params.layer_of_segment(q / nc);
-            let m = params.layers()[layer.index()].expect("active").modulation;
-            let len = d + lead;
+        // Carrier positions q in data-segment order, layer by layer: the
+        // configured layers cover the 13 data segments in order A, B, C
+        // and have a mapper each (built from the same `layers()`).
+        let positions = params
+            .layer_segments()
+            .zip(mappers.iter().flatten())
+            .flat_map(|((_, l, segs), mapper)| {
+                let first = segs.start * nc;
+                (first..segs.end * nc).map(move |q| (q, q - first, l.modulation, mapper))
+            });
+        for (q, p, m, mapper) in positions {
+            let len = ti_delays[q] + lead;
             let seq: Vec<C32> = if m.is_differential() {
                 let mut v = vec![C32::default(); len];
                 // End at this position's mapper start-up reference.
-                let (first, _) = crate::combine::layer_segments(&params, layer).expect("active");
-                let r = mappers[layer.index()]
-                    .as_ref()
-                    .expect("mapper")
-                    .dqpsk_reference(q - first * nc)
-                    / normalization(m);
+                let r = mapper.dqpsk_reference(p) / normalization(m);
                 let (mut i, mut qq) = (r.re.round(), r.im.round());
                 for slot in v.iter_mut().rev() {
                     *slot = C32::new(i, qq) * normalization(m);
@@ -161,21 +165,22 @@ impl Modulator {
             };
             fill_seqs.push(seq);
         }
+        debug_assert_eq!(fill_seqs.len(), ti_delays.len());
         let pending = std::array::from_fn(|l| {
             let layer = Layer::ALL[l];
             match crate::combine::layer_segments(&params, layer) {
                 Some((first, count)) => {
                     let per = count * nc;
-                    let mut qd = std::collections::VecDeque::with_capacity(lead * per);
+                    let mut qd = Vec::with_capacity(lead * per);
                     for j in 0..lead {
                         for p in 0..per {
                             let q = first * nc + p;
-                            qd.push_back(fill_seqs[q][ti_delays[q] + j]);
+                            qd.push(fill_seqs[q][ti_delays[q] + j]);
                         }
                     }
-                    qd
+                    Fifo::from_vec(qd)
                 }
-                None => std::collections::VecDeque::new(),
+                None => Fifo::from_vec(Vec::new()),
             }
         });
         let ti = TimeInterleaver::with_initial(&params, |q, d| fill_seqs[q][..d].to_vec());
@@ -249,11 +254,10 @@ impl Modulator {
             }
         }
         if ac.carriers.len() != self.layout.ac.len() {
-            return Err(Error::Invalid(format!(
-                "AC frame has {} carriers, layout {}",
-                ac.carriers.len(),
-                self.layout.ac.len()
-            )));
+            return Err(Error::AcCarriers {
+                expected: self.layout.ac.len(),
+                got: ac.carriers.len(),
+            });
         }
         let odd = self.frame % 2 == 1;
         let tmcc_coh = tmcc.frame_bits(odd, false);
@@ -280,11 +284,7 @@ impl Modulator {
                     let per = layer_bits[l].len() / SYMBOLS_PER_FRAME;
                     m.map_symbol(&layer_bits[l][n * per..(n + 1) * per], &mut layer_sym[l]);
                     // One-frame buffer (Figs. 3-8/3-9 alignment).
-                    let q = &mut self.pending[l];
-                    q.extend(layer_sym[l].iter().copied());
-                    for v in layer_sym[l].iter_mut() {
-                        *v = q.pop_front().expect("buffered symbol");
-                    }
+                    self.pending[l].process(&mut layer_sym[l]);
                 }
             }
             // §3.10 combine, §3.11.1 time interleave, §3.11.2 frequency interleave.

@@ -21,10 +21,10 @@ use isdbt_ofdm::mapping::{
 };
 use isdbt_ofdm::tables;
 use isdbt_ofdm::tmcc::{
-    InterleaveCode, ModulationCode, RateCode, SegmentsCode, TmccInfo, TmccLayer, W0, decode_frame,
-    sync_word,
+    InterleaveCode, ModulationCode, RateCode, SegmentsCode, TmccField, TmccInfo, TmccLayer, W0,
+    decode_frame, sync_word,
 };
-use isdbt_ofdm::{C32, Modulator};
+use isdbt_ofdm::{C32, Error, Modulator};
 
 const MODES: [Mode; 3] = [Mode::M1, Mode::M2, Mode::M3];
 
@@ -689,8 +689,9 @@ fn prop_layer_codes_from_code_mask_to_width() {
 }
 
 /// Tables 3-28..3-31 in `TmccLayer::config`: the unused layer is `None`,
-/// a reserved code in any field is an `Error::Tmcc` naming the field, and
-/// a configured layer round-trips through its codes.
+/// a reserved code in any field (or "unused" in a used layer) is an
+/// `Error::Tmcc` naming the field and its code, and a configured layer
+/// round-trips through its codes.
 #[test]
 fn spec_tables_3_28_to_3_31_layer_config() {
     let a = LayerConfig {
@@ -708,41 +709,132 @@ fn spec_tables_3_28_to_3_31_layer_config() {
                 modulation: ModulationCode::from_code(0b101),
                 ..coded
             },
-            "modulation",
+            TmccField::Modulation,
+            0b101,
+            "reserved modulation code 101",
         ),
         (
             TmccLayer {
                 code_rate: RateCode::from_code(0b110),
                 ..coded
             },
-            "code-rate",
+            TmccField::CodeRate,
+            0b110,
+            "reserved code-rate code 110",
+        ),
+        (
+            TmccLayer {
+                code_rate: RateCode::Unused,
+                ..coded
+            },
+            TmccField::CodeRate,
+            0b111,
+            "unused code-rate code 111",
         ),
         (
             TmccLayer {
                 interleave: InterleaveCode::from_code(0b100),
                 ..coded
             },
-            "interleave",
+            TmccField::Interleave,
+            0b100,
+            "reserved time-interleave code 100",
         ),
         (
             TmccLayer {
                 segments: SegmentsCode::from_code(0b1110),
                 ..coded
             },
-            "segment count",
+            TmccField::Segments,
+            0b1110,
+            "reserved segment count code 1110",
         ),
         (
             TmccLayer {
                 segments: SegmentsCode::Unused,
                 ..coded
             },
-            "segment count",
+            TmccField::Segments,
+            0b1111,
+            "unused segment count code 1111",
+        ),
+        (
+            TmccLayer {
+                segments: SegmentsCode::from_code(0),
+                ..coded
+            },
+            TmccField::Segments,
+            0,
+            "reserved segment count code 0000",
         ),
     ];
-    for (layer, field) in reserved {
-        let err = layer.config().unwrap_err().to_string();
-        assert!(err.contains(field), "{field}: {err}");
+    for (layer, field, code, text) in reserved {
+        let err = layer.config().unwrap_err();
+        assert_eq!(err, Error::Tmcc { field, code }, "{field}");
+        assert!(err.to_string().contains(text), "{text}: {err}");
     }
+    // The first invalid field in Table 3-23 order is the one reported.
+    let two = TmccLayer {
+        code_rate: RateCode::Unused,
+        segments: SegmentsCode::Unused,
+        ..coded
+    };
+    assert!(matches!(
+        two.config(),
+        Err(Error::Tmcc {
+            field: TmccField::CodeRate,
+            ..
+        })
+    ));
+}
+
+/// Layers whose codes are each assigned but together break §3.11.2 (here
+/// the segment sum) are an `Error::TmccParams` carrying the
+/// `ParamError`.
+#[test]
+fn spec_3_11_2_tmcc_params_inconsistent() {
+    let twelve = LayerConfig {
+        segments: Segments::new(12).unwrap(),
+        modulation: Modulation::Qam64,
+        code_rate: CodeRate::R3_4,
+        time_interleave: TimeInterleave::K2,
+    };
+    let mut p = isdbt_ofdm::tmcc::TmccParams::NONE;
+    p.partial_reception = false;
+    p.layers[0] = TmccLayer::from_config(&twelve);
+    let e = p.to_params(Mode::M3, GuardInterval::G1_8).unwrap_err();
+    assert_eq!(e, Error::TmccParams(isdbt_core::ParamError::SegmentSum(12)));
+    let source = std::error::Error::source(&e).map(ToString::to_string);
+    assert_eq!(
+        source.as_deref(),
+        Some("invalid ISDB-T parameters: segments sum to 12, need 13")
+    );
+}
+
+/// §3.16: an AC frame needs one 204-bit word per AC carrier of the
+/// layout; any other count is `Error::AcCarriers`.
+#[test]
+fn spec_3_16_ac_frame_carrier_count() {
+    let p = params(Mode::M1, false, [Some((13, Modulation::Qpsk)), None, None]);
+    let mut m = Modulator::new(p.clone());
+    let tmcc = TmccInfo::from_params(&p);
+    let mut ac = AcFrame::stuffing(m.layout());
+    let expected = ac.carriers.len();
+    ac.carriers.pop();
+    let bits: Vec<Vec<u8>> = isdbt_core::Layer::ALL
+        .iter()
+        .map(|&l| vec![0; m.bits_per_frame(l)])
+        .collect();
+    let e = m
+        .modulate_frame_carriers([&bits[0], &bits[1], &bits[2]], &tmcc, &ac)
+        .unwrap_err();
+    assert_eq!(
+        e,
+        Error::AcCarriers {
+            expected,
+            got: expected - 1
+        }
+    );
 }
 
 /// §3.15.6.9: parity of the all-zero word is zero; information "…0001"

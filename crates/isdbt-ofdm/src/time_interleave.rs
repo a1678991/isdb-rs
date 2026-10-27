@@ -12,15 +12,14 @@
 
 use crate::delay::MultiDelay;
 use isdbt_core::Params;
-use isdbt_core::ofdm_params::{
-    TIME_INTERLEAVE_M_MAX, time_interleave_adjustment_symbols, time_interleave_m,
-};
+use isdbt_core::ofdm_params::{TIME_INTERLEAVE_M_MAX, time_interleave_m};
 
 fn layer_length_and_adjust(params: &Params, seg: usize) -> (usize, usize) {
-    let layer = params.layer_of_segment(seg);
-    let i = params.time_interleave_length(layer);
-    let a = time_interleave_adjustment_symbols(params.mode(), i).expect("Table 3-12 length");
-    (i, a)
+    let ti = params.segment_layer(seg).1.time_interleave;
+    (
+        ti.length(params.mode()),
+        ti.adjustment_symbols(params.mode()),
+    )
 }
 
 /// Per-carrier transmit delays (data-segment order).

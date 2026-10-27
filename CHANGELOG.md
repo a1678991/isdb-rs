@@ -474,6 +474,36 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdbt-ofdm`, `isdbt-phy`, `isdbt-fec`, `isdbt-core`: typed errors and
+  panic triage (errors-and-logging plan, group W4).
+  `isdbt_ofdm::Error::Tmcc(String)` is `Tmcc { field: TmccField, code }`
+  (the Table 3-23 field and its code as received; the message names both
+  and the table: "invalid TMCC: reserved code-rate code 110 in a used
+  layer (Table 3-29)"); a TMCC whose layers are each valid but together
+  break §3.11.2 is `TmccParams(ParamError)` with the `ParamError` as its
+  source; `Error::Invalid(String)` (its one producer, the AC carrier
+  count) is `AcCarriers { expected, got }`. `isdbt_phy::Error::Input` is
+  `UnusedLayer { layer, got }` and `MultiplexFrameLength { expected, got }`;
+  `Error::BroadcastTs(String)` wraps the new
+  `broadcast_ts::BroadcastTsError` (CRC, reserved mode, field width,
+  limit, SFN length, header, missing / unusable IIP variants; transparent,
+  so the message no longer starts with "broadcast TS: "), the codecs of
+  `broadcast_ts` return it, and `BroadcastFrame::iip_error` is an
+  `Option<BroadcastTsError>`. `ChannelEstimator::estimate` takes the
+  current spectrum explicitly. New: `Params::layer_segments` /
+  `segment_layer`, `TimeInterleave::adjustment_symbols` /
+  `delayed_frames` (Table 3-12 by code), `dsc::DIFFERENCE_SET` (the
+  Singer set as a constant; the tests re-derive it), `delay::Fifo::
+  from_vec`. The library `expect` / `unreachable!` / `panic!` sites go
+  from 26 / 1 / 3 to 1 (test helper) / 0 / 2 (documented contracts): the
+  types carry the invariants (fixed-size bit writers, ring FIFOs, the
+  layer-segment iterator, a modulation-indexed Gray mapper, Table 3-8 /
+  3-12 indexed by the closed enums) and the receiver's state steps take
+  their `Option`s with `let … else`. Output is bit-identical (transmitter
+  IQ, demodulator LLRs, receiver TS; new ignored probe
+  `isdbt-phy/tests/bitexact_hashes.rs`); the transmitter is ~17% faster,
+  the receiver unchanged.
+
 - Every library crate denies printing: `#![warn(clippy::print_stdout,
   clippy::print_stderr)]` in its `lib.rs` (CI runs clippy with `-D
   warnings`), with `allow-print-in-tests` in the new `clippy.toml` for

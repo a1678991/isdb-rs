@@ -12,19 +12,20 @@ use isdbt_core::{Layer, Params};
 
 /// First data segment and segment count of `layer` (None if unused).
 pub fn layer_segments(params: &Params, layer: Layer) -> Option<(usize, usize)> {
-    let mut first = 0;
-    for (id, l) in params.active_layers() {
-        if id == layer {
-            return Some((first, l.segments.count()));
-        }
-        first += l.segments.count();
-    }
-    None
+    params
+        .layer_segments()
+        .find(|(id, _, _)| *id == layer)
+        .map(|(_, _, segs)| (segs.start, segs.len()))
 }
 
 /// Combine the per-layer symbol vectors of one OFDM symbol into
 /// data-segment order.  `layers[l]` must hold `nc·N_l` values for active
 /// layers (ignored for unused ones).
+///
+/// # Panics
+///
+/// If `out` does not hold `13·nc` values or an active layer's slice not
+/// `nc·N_l`.
 pub fn combine<T: Copy>(params: &Params, layers: [&[T]; 3], out: &mut [T]) {
     let nc = params.mode().data_carriers_per_segment();
     assert_eq!(out.len(), 13 * nc);
@@ -38,6 +39,10 @@ pub fn combine<T: Copy>(params: &Params, layers: [&[T]; 3], out: &mut [T]) {
 }
 
 /// Split one combined symbol (data-segment order) back into layers.
+///
+/// # Panics
+///
+/// If `data` does not hold `13·nc` values.
 pub fn split<'a, T: Copy>(params: &Params, data: &'a [T]) -> [Option<&'a [T]>; 3] {
     let nc = params.mode().data_carriers_per_segment();
     assert_eq!(data.len(), 13 * nc);

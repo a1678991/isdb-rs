@@ -14,10 +14,9 @@
 //!
 //! Decoding: syndrome check, and one-step majority-logic decoding with the
 //! 17 parity checks orthogonal on each bit given by a perfect difference
-//! set of the projective plane PG(2,16) (273 = 16²+16+1); the set is
-//! derived at run time (Singer construction) and verified against g(x).
-
-use std::sync::OnceLock;
+//! set of the projective plane PG(2,16) (273 = 16²+16+1); the set is a
+//! constant, re-derived by the tests (Singer construction) and verified
+//! against g(x).
 
 /// Code length of the mother code.
 pub const N: usize = 273;
@@ -54,6 +53,10 @@ pub fn parity(info: &[u8]) -> [u8; PARITY] {
 
 /// True if `word` (information followed by parity, first = highest
 /// degree) is a codeword.
+///
+/// # Panics
+///
+/// If `word` is not longer than the 82 parity bits.
 pub fn syndrome_ok(word: &[u8]) -> bool {
     assert!(word.len() > PARITY);
     let (info, par) = word.split_at(word.len() - PARITY);
@@ -78,96 +81,28 @@ impl ParityStatus {
     }
 }
 
-// --- GF(2^12) for the Singer difference set ---------------------------
-
-fn gf_mul(a: u16, b: u16, poly: u16) -> u16 {
-    // Field elements are 12 bits, so `a` stays below 0x2000 after the shift
-    // and the product fits a u16 throughout.
-    let (mut a, mut b, mut r) = (a, b, 0u16);
-    while b != 0 {
-        if b & 1 != 0 {
-            r ^= a;
-        }
-        b >>= 1;
-        a <<= 1;
-        if a & 0x1000 != 0 {
-            a ^= 0x1000 | poly;
-        }
-    }
-    r
-}
-
-fn gf_pow(a: u16, mut e: usize, poly: u16) -> u16 {
-    let (mut base, mut r) = (a, 1u16);
-    while e > 0 {
-        if e & 1 != 0 {
-            r = gf_mul(r, base, poly);
-        }
-        base = gf_mul(base, base, poly);
-        e >>= 1;
-    }
-    r
-}
-
-/// A primitive polynomial of degree 12 (low 12 bits; x^12 implicit),
-/// found by search: x is primitive iff x^(4095/p) ≠ 1 for p ∈ {3,5,7,13}.
-fn primitive_poly() -> u16 {
-    (1u16..0x1000)
-        .step_by(2)
-        .find(|&p| {
-            gf_pow(2, 4095, p) == 1
-                && [3usize, 5, 7, 13]
-                    .iter()
-                    .all(|q| gf_pow(2, 4095 / q, p) != 1)
-        })
-        .expect("primitive polynomial")
-}
-
-fn is_dual_codeword(set: &[usize]) -> bool {
-    // v ⟂ every shift of g ⇔ Σ_d g_{(d−s) mod N} = 0 (mod 2) for all s.
-    let mut gv = [0u8; N];
-    for &e in &G_EXPONENTS {
-        gv[e] = 1;
-    }
-    (0..N).all(|s| set.iter().map(|&d| gv[(d + N - s) % N]).sum::<u8>() % 2 == 0)
-}
-
 /// The perfect difference set D (17 elements mod 273) whose indicator
-/// polynomial is a codeword of the dual code (parity check).
-pub fn difference_set() -> &'static [usize] {
-    static SET: OnceLock<Vec<usize>> = OnceLock::new();
-    SET.get_or_init(|| {
-        let poly = primitive_poly();
-        let alpha = 2u16;
-        // Tr_{GF(4096)/GF(16)}(x) = x + x^16 + x^256.
-        let base: Vec<usize> = (0..N)
-            .filter(|&i| {
-                let x = gf_pow(alpha, i, poly);
-                (x ^ gf_pow(x, 16, poly) ^ gf_pow(x, 256, poly)) == 0
-            })
-            .collect();
-        assert_eq!(base.len(), 17);
-        for t in 1..N {
-            if gcd(t, N) != 1 {
-                continue;
-            }
-            let mut d: Vec<usize> = base.iter().map(|&x| (x * t) % N).collect();
-            d.sort_unstable();
-            if is_dual_codeword(&d) {
-                return d;
-            }
-        }
-        panic!("no difference set matches g(x)");
-    })
-}
+/// polynomial is a codeword of the dual code: the 17 parity checks
+/// orthogonal on each bit. Derived from g(x) by the Singer construction
+/// over GF(2^12) (PG(2,16), 273 = 16² + 16 + 1), which the tests repeat
+/// (`difference_set_is_singer`).
+pub const DIFFERENCE_SET: [usize; 17] = [
+    5, 10, 20, 39, 40, 47, 78, 80, 91, 94, 103, 139, 156, 160, 182, 188, 206,
+];
 
-fn gcd(a: usize, b: usize) -> usize {
-    if b == 0 { a } else { gcd(b, a % b) }
+/// [`DIFFERENCE_SET`] as a slice.
+pub fn difference_set() -> &'static [usize] {
+    &DIFFERENCE_SET
 }
 
 /// Decode a shortened codeword in place (information + 82 parity bits,
 /// first = highest degree) by iterative one-step majority logic over the
 /// 17 orthogonal checks per bit.  Corrects up to 8 errors.
+///
+/// # Panics
+///
+/// If `word` is not longer than the 82 parity bits or longer than the
+/// 273-bit mother code.
 pub fn decode(word: &mut [u8]) -> ParityStatus {
     if syndrome_ok(word) {
         return ParityStatus::Ok;
@@ -234,6 +169,97 @@ mod tests {
             }
         }
         assert!(r.iter().all(|&b| b == 0));
+    }
+
+    // --- GF(2^12) for the Singer difference set ---------------------------
+
+    fn gf_mul(a: u16, b: u16, poly: u16) -> u16 {
+        // Field elements are 12 bits, so `a` stays below 0x2000 after the shift
+        // and the product fits a u16 throughout.
+        let (mut a, mut b, mut r) = (a, b, 0u16);
+        while b != 0 {
+            if b & 1 != 0 {
+                r ^= a;
+            }
+            b >>= 1;
+            a <<= 1;
+            if a & 0x1000 != 0 {
+                a ^= 0x1000 | poly;
+            }
+        }
+        r
+    }
+
+    fn gf_pow(a: u16, mut e: usize, poly: u16) -> u16 {
+        let (mut base, mut r) = (a, 1u16);
+        while e > 0 {
+            if e & 1 != 0 {
+                r = gf_mul(r, base, poly);
+            }
+            base = gf_mul(base, base, poly);
+            e >>= 1;
+        }
+        r
+    }
+
+    /// A primitive polynomial of degree 12 (low 12 bits; x^12 implicit),
+    /// found by search: x is primitive iff x^(4095/p) ≠ 1 for p ∈ {3,5,7,13}.
+    fn primitive_poly() -> u16 {
+        (1u16..0x1000)
+            .step_by(2)
+            .find(|&p| {
+                gf_pow(2, 4095, p) == 1
+                    && [3usize, 5, 7, 13]
+                        .iter()
+                        .all(|q| gf_pow(2, 4095 / q, p) != 1)
+            })
+            .expect("primitive polynomial")
+    }
+
+    fn is_dual_codeword(set: &[usize]) -> bool {
+        // v ⟂ every shift of g ⇔ Σ_d g_{(d−s) mod N} = 0 (mod 2) for all s.
+        let mut gv = [0u8; N];
+        for &e in &G_EXPONENTS {
+            gv[e] = 1;
+        }
+        (0..N).all(|s| set.iter().map(|&d| gv[(d + N - s) % N]).sum::<u8>() % 2 == 0)
+    }
+
+    /// The Singer construction of the perfect difference set whose indicator
+    /// polynomial is a codeword of the dual code (parity check).
+    fn singer_difference_set() -> Vec<usize> {
+        {
+            let poly = primitive_poly();
+            let alpha = 2u16;
+            // Tr_{GF(4096)/GF(16)}(x) = x + x^16 + x^256.
+            let base: Vec<usize> = (0..N)
+                .filter(|&i| {
+                    let x = gf_pow(alpha, i, poly);
+                    (x ^ gf_pow(x, 16, poly) ^ gf_pow(x, 256, poly)) == 0
+                })
+                .collect();
+            assert_eq!(base.len(), 17);
+            for t in 1..N {
+                if gcd(t, N) != 1 {
+                    continue;
+                }
+                let mut d: Vec<usize> = base.iter().map(|&x| (x * t) % N).collect();
+                d.sort_unstable();
+                if is_dual_codeword(&d) {
+                    return d;
+                }
+            }
+            panic!("no difference set matches g(x)");
+        }
+    }
+
+    fn gcd(a: usize, b: usize) -> usize {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+
+    #[test]
+    fn difference_set_is_singer() {
+        assert_eq!(singer_difference_set(), DIFFERENCE_SET);
     }
 
     #[test]

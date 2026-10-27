@@ -26,31 +26,28 @@ pub fn normalization(m: Modulation) -> f32 {
 }
 
 /// Per-axis Gray level: the bits of one axis (for 64QAM I: b0,b2,b4; Q:
-/// b1,b3,b5), most significant first, to the un-normalised level.
+/// b1,b3,b5) as an integer, most significant first, to the un-normalised
+/// level. The axis has `bits_per_symbol / 2` bits: 1 for (D)QPSK, 2 for
+/// 16QAM, 3 for 64QAM.
 ///
 /// Read off Figs. 3-15/3-17/3-19: the first axis bit selects the sign
 /// (0 → +), the remaining bits the magnitude: 16QAM `0→3, 1→1`;
 /// 64QAM `00→7, 01→5, 11→3, 10→1`.
-fn axis_level(bits: &[u8]) -> i32 {
-    let sign = if bits[0] == 0 { 1 } else { -1 };
-    let mag = match bits.len() {
-        1 => 1,
-        2 => {
-            if bits[1] == 0 {
-                3
-            } else {
-                1
-            }
-        }
-        3 => match (bits[1], bits[2]) {
-            (0, 0) => 7,
-            (0, 1) => 5,
-            (1, 1) => 3,
-            _ => 1,
-        },
-        _ => unreachable!(),
+fn axis_level(m: Modulation, axis: u8) -> i32 {
+    let (sign_bit, mag) = match m {
+        Modulation::Dqpsk | Modulation::Qpsk => (axis & 1, 1),
+        Modulation::Qam16 => ((axis >> 1) & 1, if axis & 1 == 0 { 3 } else { 1 }),
+        Modulation::Qam64 => (
+            (axis >> 2) & 1,
+            match axis & 0b11 {
+                0b00 => 7,
+                0b01 => 5,
+                0b11 => 3,
+                _ => 1,
+            },
+        ),
     };
-    sign * mag
+    if sign_bit == 0 { mag } else { -mag }
 }
 
 /// Un-normalised constellation point `Z = I + jQ` (integer levels) for
@@ -59,10 +56,17 @@ fn axis_level(bits: &[u8]) -> i32 {
 /// differential phase decision, which has the same labelling).
 pub fn constellation_point_raw(m: Modulation, label: u8) -> (i32, i32) {
     let s = m.bits_per_symbol();
-    let bit = |k: usize| (label >> (s - 1 - k)) & 1;
-    let ibits: Vec<u8> = (0..s).step_by(2).map(bit).collect();
-    let qbits: Vec<u8> = (1..s).step_by(2).map(bit).collect();
-    (axis_level(&ibits), axis_level(&qbits))
+    // b0, b2, … to the I axis and b1, b3, … to Q, each MSB first.
+    let (mut i, mut q) = (0u8, 0u8);
+    for k in 0..s {
+        let b = (label >> (s - 1 - k)) & 1;
+        if k % 2 == 0 {
+            i = (i << 1) | b;
+        } else {
+            q = (q << 1) | b;
+        }
+    }
+    (axis_level(m, i), axis_level(m, q))
 }
 
 /// Normalised constellation point (Table 3-11 applied).
@@ -112,10 +116,7 @@ impl FillRng {
 fn axis_table(m: Modulation) -> Vec<(f32, u8)> {
     let nb = m.bits_per_symbol() / 2;
     (0..(1u8 << nb))
-        .map(|v| {
-            let bits: Vec<u8> = (0..nb).map(|k| (v >> (nb - 1 - k)) & 1).collect();
-            (axis_level(&bits) as f32 * normalization(m), v)
-        })
+        .map(|v| (axis_level(m, v) as f32 * normalization(m), v))
         .collect()
 }
 
@@ -206,6 +207,10 @@ impl CarrierMapper {
 
     /// Map one OFDM symbol worth of bits (`nc·N·S`) to `nc·N` normalised
     /// symbols.
+    ///
+    /// # Panics
+    ///
+    /// If `bits` does not hold `nc·N·S` bits or `out` `nc·N` values.
     pub fn map_symbol(&mut self, bits: &[u8], out: &mut [C32]) {
         let s = self.modulation.bits_per_symbol();
         assert_eq!(bits.len(), self.per_symbol * s);
@@ -366,6 +371,10 @@ impl BitDeinterleaver {
     }
 
     /// Process LLRs of consecutive carrier symbols in place (`S` per symbol).
+    ///
+    /// # Panics
+    ///
+    /// If `llr` does not hold whole carrier symbols.
     pub fn process(&mut self, llr: &mut [f32]) {
         assert_eq!(llr.len() % self.s, 0);
         for chunk in llr.chunks_exact_mut(self.s) {

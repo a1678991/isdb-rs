@@ -82,12 +82,29 @@ pub const TABLE_3_8: [PunctureSpec; 5] = [
     },
 ];
 
+/// Row of `rate` in [`TABLE_3_8`] (the table lists the rates in this
+/// order; checked below).
+const fn table_3_8_row(rate: CodeRate) -> usize {
+    match rate {
+        CodeRate::R1_2 => 0,
+        CodeRate::R2_3 => 1,
+        CodeRate::R3_4 => 2,
+        CodeRate::R5_6 => 3,
+        CodeRate::R7_8 => 4,
+    }
+}
+
+const _: () = {
+    let mut i = 0;
+    while i < TABLE_3_8.len() {
+        assert!(table_3_8_row(TABLE_3_8[i].rate) == i);
+        i += 1;
+    }
+};
+
 /// The Table 3-8 row for `rate`.
 pub fn puncture_spec(rate: CodeRate) -> &'static PunctureSpec {
-    TABLE_3_8
-        .iter()
-        .find(|s| s.rate == rate)
-        .expect("all rates tabulated")
+    &TABLE_3_8[table_3_8_row(rate)]
 }
 
 /// Compiled puncturing: for each transmitted bit of a period, the index of
@@ -126,6 +143,10 @@ impl Puncturing {
 /// and puncture them, appending the transmitted bits to `out`. The
 /// puncturing pattern starts at its first position at the beginning of
 /// `bits`: call once per frame to obtain the §3.8 frame-synchronous reset.
+///
+/// # Panics
+///
+/// If `bits` does not hold whole puncturing periods.
 pub fn encode_punctured(enc: &mut ConvEncoder, punct: &Puncturing, bits: &[u8], out: &mut Vec<u8>) {
     assert_eq!(
         bits.len() % punct.period,
@@ -148,6 +169,10 @@ pub fn encode_punctured(enc: &mut ConvEncoder, punct: &Puncturing, bits: &[u8], 
 /// mother-code pairs (X, Y, X, Y, …) with 0.0 at punctured positions. The
 /// pattern restarts at the beginning of `llrs` (§3.8 frame reset); `llrs`
 /// must hold whole periods.
+///
+/// # Panics
+///
+/// If `llrs` does not hold whole puncturing periods.
 pub fn depuncture(punct: &Puncturing, llrs: &[f32], out: &mut Vec<f32>) {
     let n = punct.out_per_period();
     assert_eq!(
