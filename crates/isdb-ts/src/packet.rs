@@ -15,6 +15,7 @@
 use std::fmt;
 
 use crate::bits::{BitReader, BitWriter};
+use crate::cc::ContinuityCounter;
 use crate::error::{Error, Result};
 use crate::pcr::{Pcr, Timestamp};
 use crate::pid::Pid;
@@ -173,8 +174,8 @@ pub struct Header {
     pub transport_scrambling_control: TransportScramblingControl,
     /// adaptation_field_control (2 bits, Table 2-5).
     pub adaptation_field_control: AdaptationFieldControl,
-    /// continuity_counter (4 bits).
-    pub continuity_counter: u8,
+    /// continuity_counter (4 bits, §2.4.3.3).
+    pub continuity_counter: ContinuityCounter,
 }
 
 impl Header {
@@ -182,7 +183,7 @@ impl Header {
     pub fn new(
         pid: Pid,
         adaptation_field_control: AdaptationFieldControl,
-        continuity_counter: u8,
+        continuity_counter: ContinuityCounter,
     ) -> Self {
         Self {
             sync_byte: SYNC_BYTE,
@@ -213,7 +214,7 @@ impl Header {
             pid: Pid::from_wire((u16::from(b[1] & 0x1F) << 8) | u16::from(b[2])),
             transport_scrambling_control: TransportScramblingControl::from_code(b[3] >> 6),
             adaptation_field_control: AdaptationFieldControl::from_code(b[3] >> 4),
-            continuity_counter: b[3] & 0x0F,
+            continuity_counter: ContinuityCounter::from_wire(b[3]),
         })
     }
 
@@ -235,7 +236,11 @@ impl Header {
             2,
             u64::from(self.adaptation_field_control.code()),
         )?;
-        w.write("continuity_counter", 4, u64::from(self.continuity_counter))?;
+        w.write(
+            "continuity_counter",
+            4,
+            u64::from(self.continuity_counter.get()),
+        )?;
         let v = w.into_bytes();
         Ok([v[0], v[1], v[2], v[3]])
     }
@@ -695,7 +700,12 @@ impl Packet {
     /// payload gives adaptation_field_control '01'; a shorter one is padded
     /// with adaptation-field stuffing ('11'), the only stuffing method
     /// allowed for PES (§2.4.3.5).
-    pub fn with_payload(pid: Pid, pusi: bool, cc: u8, payload: &[u8]) -> Result<Self> {
+    pub fn with_payload(
+        pid: Pid,
+        pusi: bool,
+        cc: ContinuityCounter,
+        payload: &[u8],
+    ) -> Result<Self> {
         if payload.len() == PAYLOAD_CAPACITY {
             let mut header = Header::new(pid, AdaptationFieldControl::PayloadOnly, cc);
             header.payload_unit_start_indicator = pusi;
@@ -716,7 +726,7 @@ impl Packet {
     pub fn with_adaptation(
         pid: Pid,
         pusi: bool,
-        cc: u8,
+        cc: ContinuityCounter,
         fields: Option<AdaptationFields>,
         payload: &[u8],
     ) -> Result<Self> {
@@ -746,7 +756,7 @@ impl Packet {
 
     /// Adaptation-field-only packet ('10', adaptation_field_length 183)
     /// carrying `pcr` (§2.4.3.4/§2.4.3.5).
-    pub fn pcr_only(pid: Pid, cc: u8, pcr: Pcr) -> Self {
+    pub fn pcr_only(pid: Pid, cc: ContinuityCounter, pcr: Pcr) -> Self {
         let fields = AdaptationFields {
             pcr: Some(pcr),
             ..Default::default()
@@ -759,7 +769,11 @@ impl Packet {
     /// (§2.4.3.3); data_bytes "may be assigned any value" — 0xFF here.
     pub fn null() -> Self {
         Self {
-            header: Header::new(Pid::NULL, AdaptationFieldControl::PayloadOnly, 0),
+            header: Header::new(
+                Pid::NULL,
+                AdaptationFieldControl::PayloadOnly,
+                ContinuityCounter::ZERO,
+            ),
             adaptation_field: None,
             payload: vec![0xFF; PAYLOAD_CAPACITY],
         }
@@ -990,7 +1004,7 @@ mod tests {
             h.adaptation_field_control,
             AdaptationFieldControl::PayloadOnly
         );
-        assert_eq!(h.continuity_counter, 0xA);
+        assert_eq!(h.continuity_counter, ContinuityCounter::new(0xA).unwrap());
         assert_eq!(h.encode().unwrap(), [0x47, 0x5F, 0xFF, 0x9A]);
         let h = Header::decode(&[0x47, 0xA0, 0x00, 0x30]).unwrap();
         assert!(
@@ -1045,7 +1059,11 @@ mod tests {
     /// length 0 is a single stuffing byte.
     #[test]
     fn spec_2_4_3_5_adaptation_field_length_rules() {
-        let p = Packet::pcr_only(Pid::new(0x100).unwrap(), 3, Pcr::from_ticks(1234));
+        let p = Packet::pcr_only(
+            Pid::new(0x100).unwrap(),
+            ContinuityCounter::new(3).unwrap(),
+            Pcr::from_ticks(1234),
+        );
         let raw = p.encode().unwrap();
         assert_eq!(
             raw[3] >> 4 & 3,
@@ -1053,7 +1071,13 @@ mod tests {
         );
         assert_eq!(raw[4], 183);
         assert!(check(&p).is_empty());
-        let p = Packet::with_payload(Pid::new(0x100).unwrap(), false, 0, &[0xAB; 183]).unwrap();
+        let p = Packet::with_payload(
+            Pid::new(0x100).unwrap(),
+            false,
+            ContinuityCounter::ZERO,
+            &[0xAB; 183],
+        )
+        .unwrap();
         let raw = p.encode().unwrap();
         assert_eq!(raw[4], 0); // single stuffing byte
         assert_eq!(p.adaptation_field, Some(AdaptationField::Empty));
@@ -1135,7 +1159,7 @@ mod tests {
         let p = Packet::with_adaptation(
             Pid::new(0x1FF).unwrap(),
             true,
-            7,
+            ContinuityCounter::new(7).unwrap(),
             Some(f.clone()),
             &[0x55; 100],
         )
@@ -1158,7 +1182,7 @@ mod tests {
         let p = Packet::with_adaptation(
             Pid::new(0x30).unwrap(),
             true,
-            1,
+            ContinuityCounter::new(1).unwrap(),
             Some(AdaptationFields {
                 discontinuity_indicator: true,
                 pcr: Some(Pcr::from_ticks(99)),

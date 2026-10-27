@@ -10,7 +10,7 @@
 //!
 //! * [`packet`] — TS packet and adaptation field (Table 2-2, Table 2-6);
 //!   [`pid`] — the 13-bit [`Pid`] and Table 2-3; [`pcr`] — PCR and PTS/DTS
-//!   coding; [`cc`] — continuity_counter rules.
+//!   coding; [`cc`] — the 4-bit [`ContinuityCounter`] and its rules.
 //! * [`section`] — long/short section envelope with the
 //!   [`section::LongBody`] / [`section::ShortBody`] traits that `isdb-si`
 //!   implements; [`psi`] — PAT, CAT, PMT; [`descriptor`] — raw loops.
@@ -45,7 +45,7 @@
 //! assert!(check_pat(&pat).is_empty());
 //! let bytes = pat.encode()?; // section_length and CRC_32 computed
 //!
-//! let mut cc = Counter::new(0);
+//! let mut cc = Counter::default();
 //! let packets = packetize_sections(Pid::PAT, &[bytes.clone()], Packing::OnePerPacket, &mut cc)?;
 //! let stream: Vec<u8> = packets.concat();
 //!
@@ -82,6 +82,7 @@ pub mod section;
 pub mod stats;
 pub mod validate;
 
+pub use cc::ContinuityCounter;
 pub use error::{Error, Result};
 pub use pid::Pid;
 pub use validate::Violation;

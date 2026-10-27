@@ -389,6 +389,7 @@ impl<R: Read> Iterator for StreamReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cc::ContinuityCounter;
     use crate::packet::Packet;
     use crate::pid::Pid;
 
@@ -401,7 +402,7 @@ mod tests {
             let p = Packet::with_payload(
                 Pid::new(0x100 + i as u16).unwrap(),
                 false,
-                (i & 15) as u8,
+                ContinuityCounter::from_wire(i as u8),
                 &payload,
             )
             .unwrap()

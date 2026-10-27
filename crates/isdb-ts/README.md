@@ -20,7 +20,7 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 | `pid` | §2.4.3.3 Table 2-3 `Pid`: a 13-bit value type (`Pid::new` checks the range once; `PAT`, `CAT`, `TSDT`, `NULL` consts; `is_reserved`, `may_carry_pcr`), with `serde` as a range-checked integer behind the `serde` feature |
 | `packet` | §2.4.3.2 Table 2-2 header (Tables 2-4/2-5 transport_scrambling_control and adaptation_field_control as lossless coded enums), §2.4.3.4–2.4.3.5 Table 2-6 adaptation field and extension, `check` |
 | `pcr` | §2.4.2.2 eq. 2-1..2-3 PCR/OPCR, Table 2-21 33-bit PTS/DTS coding, wrap arithmetic |
-| `cc` | §2.4.3.3 continuity_counter, duplicates, §2.4.3.5 discontinuity_indicator |
+| `cc` | §2.4.3.3 `ContinuityCounter`: the 4-bit value type (`new` checks the range once, `next()` wraps 15 → 0, `is_next_of`), the transmit `Counter`, the checker and its duplicate rules, §2.4.3.5 discontinuity_indicator |
 | `pes` | §2.4.3.6–2.4.3.7 Table 2-21 PES, Table 2-22 stream_id, Table 2-24 trick mode; packetiser and reassembler |
 | `section` | long/short section envelope (Tables 2-30/2-32/2-33/2-40; ARIB STD-B10 §5.1 Fig. 5-1) |
 | `psi` | PAT Table 2-30, CAT Table 2-32, PMT Table 2-33 and their `check_*` |
@@ -37,14 +37,20 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 - Used by: `isdb-si` (section envelope and `Error` for every SI table),
   `isdb-analyze`, `isdbt-mux`; `isdb-cli` reaches it only through
   `isdb-analyze` / `isdbt-mux`. The PHY crates (`isdbt-core`,
-  `isdbt-fec`, `isdbt-ofdm`, `isdbt-phy`) do not use it; they carry TS
-  packets as plain `[u8; 188]`.
+  `isdbt-fec`, `isdbt-ofdm`) do not use it; they carry TS packets as
+  plain `[u8; 188]`. `isdbt-phy` takes `Pid`, `ContinuityCounter`, the
+  CRC and `packet::Header` for the broadcast TS's IIP packet.
 
 ## Key types and entry points
 
 - `Pid`: the 13-bit PID (`Pid::new(u16) -> Option<Pid>`, `get()`,
   `Pid::PAT` … `Pid::NULL`); every `pid` field and parameter in the crate
   takes it, so an out-of-range PID cannot reach an encoder.
+- `ContinuityCounter`: the 4-bit continuity_counter
+  (`ContinuityCounter::new(u8) -> Option<_>`, `get()`, `next()` wrapping
+  15 → 0, `is_next_of()`, `ZERO`); `Header.continuity_counter`, the
+  `Packet` constructors and `cc::Counter` take it, so the `& 0x0F` lives
+  only in the type.
 - `packet::Packet` (lossless codec) and `packet::View` (zero-copy header /
   payload / PCR accessor for hot paths); `packet::check`.
 - `section::{Long, Short}` with the `LongBody` / `ShortBody` traits that
@@ -61,7 +67,7 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 Build a PAT, packetise it, read it back and check that decoding is lossless:
 
 ```rust
-use isdb_ts::Pid;
+use isdb_ts::{ContinuityCounter, Pid};
 use isdb_ts::cc::Counter;
 use isdb_ts::demux::{Assembled, SectionDemux};
 use isdb_ts::packetize::{Packing, packetize_sections};
@@ -78,7 +84,11 @@ let pat = Pat::section(0x7FE8, 0, vec![PatEntry::new(0, nit), PatEntry::new(0x04
 assert!(check_pat(&pat).is_empty());
 let bytes = pat.encode().unwrap(); // section_length and CRC_32 computed
 
-let mut cc = Counter::new(0);
+// The continuity_counter is 4 bits (§2.4.3.3): `ContinuityCounter::new` is
+// `None` above 15 and `next()` wraps 15 → 0; `Counter` draws one per packet.
+assert!(ContinuityCounter::new(16).is_none());
+assert_eq!(ContinuityCounter::new(15).unwrap().next(), ContinuityCounter::ZERO);
+let mut cc = Counter::new(ContinuityCounter::ZERO);
 let packets = packetize_sections(Pid::PAT, &[bytes.clone()], Packing::OnePerPacket, &mut cc).unwrap();
 let stream: Vec<u8> = packets.concat();
 

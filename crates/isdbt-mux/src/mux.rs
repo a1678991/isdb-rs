@@ -574,7 +574,7 @@ impl Multiplexer {
                     pid,
                     layer,
                     media: m,
-                    cc: Counter::new(0),
+                    cc: Counter::default(),
                     tstd: Tstd::new(tp, t0),
                     next: 0,
                     pass: 0,
@@ -728,7 +728,7 @@ impl Multiplexer {
                 sched: ((interval as f64) * margin) as u64,
                 next_due: t0 + n * 2 * layer_slot,
                 last_start: None,
-                cc: Counter::new(0),
+                cc: Counter::default(),
                 queue: VecDeque::new(),
                 version: o.version & 0x1F,
                 last: None,
@@ -803,7 +803,7 @@ impl Multiplexer {
                 layer,
                 positions,
                 es: es_idx,
-                cc: Counter::new(0),
+                cc: Counter::default(),
                 count: 0,
             });
         }

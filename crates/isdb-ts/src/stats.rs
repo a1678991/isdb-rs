@@ -86,22 +86,37 @@ impl Stats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cc::ContinuityCounter;
     use crate::packet::Packet;
 
     #[test]
     fn counts() {
         let mut st = Stats::new();
-        let a = Packet::with_payload(Pid::new(0x100).unwrap(), true, 0, &[0; 184])
-            .unwrap()
-            .encode()
-            .unwrap();
-        let b = Packet::pcr_only(Pid::new(0x100).unwrap(), 0, Pcr::from_ticks(27_000_000))
-            .encode()
-            .unwrap();
-        let c = Packet::with_payload(Pid::new(0x100).unwrap(), false, 2, &[0; 184])
-            .unwrap()
-            .encode()
-            .unwrap();
+        let a = Packet::with_payload(
+            Pid::new(0x100).unwrap(),
+            true,
+            ContinuityCounter::ZERO,
+            &[0; 184],
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let b = Packet::pcr_only(
+            Pid::new(0x100).unwrap(),
+            ContinuityCounter::ZERO,
+            Pcr::from_ticks(27_000_000),
+        )
+        .encode()
+        .unwrap();
+        let c = Packet::with_payload(
+            Pid::new(0x100).unwrap(),
+            false,
+            ContinuityCounter::new(2).unwrap(),
+            &[0; 184],
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
         let mut d = Packet::null().encode().unwrap();
         d[1] |= 0x80;
         for (i, p) in [a, b, c, d].iter().enumerate() {

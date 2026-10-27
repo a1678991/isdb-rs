@@ -407,6 +407,31 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdb-ts`: the continuity_counter is a value type, `ContinuityCounter`,
+  instead of a `u8`: 4 bits by construction (`ContinuityCounter::new(u8)
+  -> Option<_>`, `get()`, `ZERO`, `MAX`), with the H.222.0 §2.4.3.3
+  arithmetic on it (`next()` wraps 15 → 0, `is_next_of()` is "differs by
+  a positive value of one" modulo 16) and `Display` as the decimal value.
+  `Header.continuity_counter`, `Header::new`, `Packet::with_payload` /
+  `with_adaptation` / `pcr_only`, `cc::Counter::new` / `next` / `peek`
+  and the `expected` / `got` / `previous` payloads of `cc::Continuity`
+  and `cc::CcEventKind` take it, so the `& 0x0F` masks and `+ 1` of the
+  checker (`Tracker`), the transmit `Counter`, `packetize`, the muxer's
+  relay (`last_cc`) and `isdbt-phy`'s IIP writer are gone; `Counter::new(0)`
+  is `Counter::default()`. Decoders build it with
+  `ContinuityCounter::from_wire` (a mask on the 4 bits already read, so
+  the codec stays lossless; `prop_packet_roundtrip` covers 0..=15). The
+  `isdbt_phy::broadcast_ts::Iip.continuity_counter` field follows, and
+  `Iip::to_packet` / `from_packet` build and read the TS header through
+  `isdb_ts::packet::Header`. In the same change the raw-byte readers of
+  transport_scrambling_control and adaptation_field_control outside
+  `isdb-ts` (`p[3] >> 6`, `(p[3] >> 4) & 3` in `isdb-analyze`'s scan,
+  `isdb-cli`'s packet source, the muxer's relay, PCR clock and rate
+  probe) go through `Header::decode` / `packet::View` and the Table 2-4 /
+  2-5 enums (`is_scrambled()`, `has_payload()`); the relay policy's
+  refusal of scrambled input and its messages are unchanged. Item H2 of
+  `docs/plans/type-safety.md`; `tools/newtype-wrap.py` did the literal
+  sites.
 - `clippy::cast_possible_truncation` is on (`#![warn]`) in `isdbt-core`,
   `isdb-hackrf`, `isdb-iio`, `isdb-text`, `isdb-radio` and `isdb-tlv`
   (`docs/plans/type-safety.md` §2): the remaining narrowing casts there

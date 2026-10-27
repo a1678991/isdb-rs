@@ -329,6 +329,7 @@ impl SectionDemux {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cc::ContinuityCounter;
     use crate::packet::Packet;
     use crate::section::{LongHeader, build_long};
 
@@ -338,6 +339,7 @@ mod tests {
     }
 
     fn pkt(pid: Pid, pusi: bool, cc: u8, payload: &[u8]) -> [u8; PACKET_SIZE] {
+        let cc = ContinuityCounter::new(cc).unwrap();
         let mut p = payload.to_vec();
         p.resize(184, 0xFF);
         Packet::with_payload(pid, pusi, cc, &p)

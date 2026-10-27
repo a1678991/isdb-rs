@@ -66,8 +66,9 @@
 
 use std::sync::OnceLock;
 
-use isdb_ts::Pid;
 use isdb_ts::crc::crc32;
+use isdb_ts::packet::{AdaptationFieldControl, Header, SYNC_BYTE};
+use isdb_ts::{ContinuityCounter, Pid};
 use isdbt_core::{GuardInterval, Layer, Mode, Params, TRANSMISSION_TSP, TSP};
 use isdbt_fec::remux::{MultiplexPattern, Slot, null_tsp};
 use isdbt_fec::rs::{gf_alpha_pow, gf_mul};
@@ -836,7 +837,7 @@ pub struct Iip {
     /// PID ("service provider defined"; [`IIP_PID`] in terrestrial TV).
     pub pid: Pid,
     /// `continuity_counter` (H.222.0 §2.4.3.3).
-    pub continuity_counter: u8,
+    pub continuity_counter: ContinuityCounter,
     /// `IIP_packet_pointer`: TSPs from this packet to the next multiplex
     /// frame head, minus one (0 on the last TSP of a frame).
     pub packet_pointer: u16,
@@ -858,10 +859,13 @@ impl Iip {
     pub fn to_packet(&self) -> Result<Packet> {
         let ns = self.network_sync.to_bytes()?;
         let mut p = [0xFFu8; TSP];
-        p[0] = 0x47;
-        p[1] = 0x40 | (self.pid.get() >> 8) as u8;
-        p[2] = self.pid.get() as u8;
-        p[3] = 0x10 | (self.continuity_counter & 0xF);
+        let mut header = Header::new(
+            self.pid,
+            AdaptationFieldControl::PayloadOnly,
+            self.continuity_counter,
+        );
+        header.payload_unit_start_indicator = true;
+        p[..4].copy_from_slice(&header.encode().map_err(|e| err(e.to_string()))?);
         p[4..6].copy_from_slice(&self.packet_pointer.to_be_bytes());
         p[6..26].copy_from_slice(&self.modulation_control.to_bytes());
         p[26] = self.branch_number;
@@ -876,13 +880,14 @@ impl Iip {
     /// CRC_32s; `transport_error_indicator`, `payload_unit_start_indicator`
     /// and `transport_priority` are not checked.
     pub fn from_packet(p: &Packet) -> Result<Self> {
-        if p[0] != 0x47 {
-            return Err(err(format!("IIP sync byte 0x{:02X}", p[0])));
+        let header = Header::decode(p).map_err(|e| err(e.to_string()))?;
+        if header.sync_byte != SYNC_BYTE {
+            return Err(err(format!("IIP sync byte 0x{:02X}", header.sync_byte)));
         }
-        if (p[3] >> 4) & 0b11 != 0b01 {
+        if header.adaptation_field_control != AdaptationFieldControl::PayloadOnly {
             return Err(err(format!(
-                "IIP adaptation_field_control '{:02b}' (expected '01')",
-                (p[3] >> 4) & 0b11
+                "IIP adaptation_field_control '{}' (expected '01')",
+                header.adaptation_field_control
             )));
         }
         let ns_len = usize::from(p[28]);
@@ -894,8 +899,8 @@ impl Iip {
         let mut mc = [0u8; MODULATION_CONTROL_LEN];
         mc.copy_from_slice(&p[6..26]);
         Ok(Self {
-            pid: Pid::from_wire(u16::from(p[1] & 0x1F) << 8 | u16::from(p[2])),
-            continuity_counter: p[3] & 0xF,
+            pid: header.pid,
+            continuity_counter: header.continuity_counter,
             packet_pointer: u16::from_be_bytes([p[4], p[5]]),
             modulation_control: ModulationControl::from_bytes(&mc)?,
             branch_number: p[26],
@@ -928,7 +933,7 @@ pub struct BroadcastTsWriter {
     iip_pid: Pid,
     tmcc: TmccInfo,
     network_sync: NetworkSync,
-    continuity_counter: u8,
+    continuity_counter: ContinuityCounter,
     frames: u64,
     prev_countdown: u8,
 }
@@ -950,7 +955,7 @@ impl BroadcastTsWriter {
             iip_slot,
             iip_pid: IIP_PID,
             network_sync: NetworkSync::default(),
-            continuity_counter: 0,
+            continuity_counter: ContinuityCounter::ZERO,
             frames: 0,
             prev_countdown: 0b1111,
         })
@@ -1036,7 +1041,7 @@ impl BroadcastTsWriter {
         let iip_packet = iip
             .to_packet()
             .expect("network_sync validated by set_network_sync");
-        self.continuity_counter = (self.continuity_counter + 1) & 0xF;
+        self.continuity_counter = self.continuity_counter.next();
 
         let out = self
             .pattern
@@ -1505,7 +1510,7 @@ mod tests {
         let params = bench();
         let iip = Iip {
             pid: IIP_PID,
-            continuity_counter: 9,
+            continuity_counter: ContinuityCounter::new(9).unwrap(),
             packet_pointer: 0x0102,
             modulation_control: ModulationControl::steady(&params, false),
             branch_number: 0,
@@ -1573,7 +1578,7 @@ mod tests {
                     assert_eq!(i.layer_indicator, LayerIndicator::Iip);
                     let iip = Iip::from_packet(&packet_of(t)).unwrap();
                     assert_eq!(iip.pid, IIP_PID);
-                    assert_eq!(u64::from(iip.continuity_counter), k);
+                    assert_eq!(u64::from(iip.continuity_counter.get()), k);
                     assert_eq!(usize::from(iip.packet_pointer), n - 1 - j);
                     assert_eq!(iip.modulation_control.tmcc_sync_odd, k % 2 == 0);
                     assert_eq!(iip.modulation_control.params().unwrap(), params);

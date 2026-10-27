@@ -11,7 +11,7 @@
 use crate::names;
 use isdb_ts::Pid;
 use isdb_ts::demux::{Assembled, DemuxEventKind, SectionDemux};
-use isdb_ts::packet::{PACKET_SIZE, Packet, View};
+use isdb_ts::packet::{Header, PACKET_SIZE, Packet, View};
 use isdb_ts::psi::{Cat, Pat, Pmt};
 use isdb_ts::reader::{PacketFormat, ReaderStats, SliceReader, StreamReader};
 use isdb_ts::section::{Long, split_long_unchecked};
@@ -377,7 +377,10 @@ impl Scanner {
         // (H.222.0 §2.4.3.3, Table 2-4; the header and adaptation field
         // stay in the clear). Counted in `stats.scrambled`, not parsed as
         // sections, PES or ADTS: descrambling is out of scope.
-        let scrambled = pkt[3] & 0xC0 != 0;
+        let scrambled = Header::decode(pkt)
+            .expect("188-byte packet")
+            .transport_scrambling_control
+            .is_scrambled();
         if scrambled {
             self.cap.scrambled_payloads += 1;
         }

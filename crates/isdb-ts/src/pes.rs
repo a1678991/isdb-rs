@@ -1360,7 +1360,7 @@ mod tests {
             let pes = PesPacket::new(0xE0, h, (0..n).map(|i| i as u8).collect())
                 .encode()
                 .unwrap();
-            let mut cc = Counter::new(0);
+            let mut cc = Counter::default();
             let af = AdaptationFields {
                 random_access_indicator: true,
                 pcr: Some(Pcr::from_ticks(n as u64)),
@@ -1403,7 +1403,7 @@ mod tests {
         let mut p = PesPacket::new(0xE0, PesHeader::default(), vec![7; 500]);
         p.unbounded = true;
         let pes = p.encode().unwrap();
-        let mut cc = Counter::new(0);
+        let mut cc = Counter::default();
         let mut pkts = packetize(Pid::new(0x101).unwrap(), &pes, None, &mut cc).unwrap();
         pkts.extend(packetize(Pid::new(0x101).unwrap(), &pes, None, &mut cc).unwrap());
         let mut a = PesAssembler::new(Pid::new(0x101).unwrap());
