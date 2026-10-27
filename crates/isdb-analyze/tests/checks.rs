@@ -1,6 +1,8 @@
 //! One test per validation check: a synthetic stream (isdb-ts/isdb-si
 //! encoders) violating exactly one rule, asserting the finding and clause.
 
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 use common::*;
 use isdb_analyze::validate::Severity::{Error, Info, Warning};

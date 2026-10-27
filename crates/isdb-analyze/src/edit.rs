@@ -63,12 +63,15 @@ impl Selector {
         if p.len() < 2 || p.len() > 4 {
             bail!("selector as PID:TID[:EXT[:SN]]: {s:?}");
         }
-        let n = |x: &str| crate::mutate::int(x);
+        use crate::mutate::field;
         Ok(Selector {
             pid: crate::mutate::pid(p[0])?,
-            table_id: n(p[1])? as u8,
-            ext: p.get(2).map(|x| n(x)).transpose()?.map(|x| x as u16),
-            sn: p.get(3).map(|x| n(x)).transpose()?.map(|x| x as u8),
+            table_id: field(p[1], "table_id")?,
+            ext: p
+                .get(2)
+                .map(|x| field(x, "table_id_extension"))
+                .transpose()?,
+            sn: p.get(3).map(|x| field(x, "section_number")).transpose()?,
         })
     }
 
@@ -269,7 +272,7 @@ pub fn rewrite_pid(
                 first_cc = Some(v.header.continuity_counter);
             }
         }
-        originals.push(i as u64);
+        originals.push(i);
     }
     rep.original_slots = originals.len();
     let occ = assemble_pid(pkts, pid);
@@ -309,18 +312,18 @@ pub fn rewrite_pid(
     reqs.sort_by_key(|r| r.earliest);
     let total_reqs = reqs.len();
     let mut q: VecDeque<Request> = reqs.into();
-    let orig_set: BTreeSet<u64> = originals.iter().copied().collect();
-    let nulls: Vec<u64> = if policy == NullSlots::Never {
+    let orig_set: BTreeSet<usize> = originals.iter().copied().collect();
+    let nulls: Vec<usize> = if policy == NullSlots::Never {
         Vec::new()
     } else {
         pkts.iter()
             .enumerate()
             .filter(|(_, p)| pid_of(p) == Pid::NULL)
-            .map(|(i, _)| i as u64)
+            .map(|(i, _)| i)
             .collect()
     };
     // merged slot positions
-    let mut slots: Vec<(u64, bool)> = originals
+    let mut slots: Vec<(usize, bool)> = originals
         .iter()
         .map(|&i| (i, true))
         .chain(nulls.iter().map(|&i| (i, false)))
@@ -328,10 +331,11 @@ pub fn rewrite_pid(
     slots.sort_unstable();
     let mut cc = Counter::new(first_cc.unwrap_or_default());
     let mut cur: Option<(Vec<u8>, u64)> = None;
-    let mut out: Vec<(u64, Pkt)> = Vec::new();
-    let mut used: BTreeSet<u64> = BTreeSet::new();
+    let mut out: Vec<(usize, Pkt)> = Vec::new();
+    let mut used: BTreeSet<usize> = BTreeSet::new();
     let mut sent = 0usize;
-    for (idx, orig) in slots {
+    for (slot, orig) in slots {
+        let idx = slot as u64;
         let eligible = cur.is_some() || q.front().is_some_and(|r| r.earliest <= idx);
         if !eligible {
             continue;
@@ -366,15 +370,19 @@ pub fn rewrite_pid(
                 }
                 fill = false;
             } else {
-                let can_start = q.front().is_some_and(|r| r.earliest <= idx)
-                    && rem.len() <= PAYLOAD_CAPACITY - 2;
-                if can_start {
+                // A section due now starts after the remainder when the
+                // pointer_field (§2.4.4.2) and at least one byte of it fit.
+                let pointer_field = u8::try_from(rem.len())
+                    .ok()
+                    .filter(|&n| usize::from(n) <= PAYLOAD_CAPACITY - 2)
+                    .filter(|_| q.front().is_some_and(|r| r.earliest <= idx));
+                if let Some(pf) = pointer_field {
                     pusi = true;
-                    payload.push(rem.len() as u8); // pointer_field (§2.4.4.2)
+                    payload.push(pf);
                 }
                 payload.extend_from_slice(&rem);
                 sent += 1;
-                fill = can_start;
+                fill = pointer_field.is_some();
             }
         } else {
             pusi = true;
@@ -401,8 +409,8 @@ pub fn rewrite_pid(
             .map_err(|e| anyhow!("{e}"))?
             .encode()
             .map_err(|e| anyhow!("{e}"))?;
-        out.push((idx, p));
-        used.insert(idx);
+        out.push((slot, p));
+        used.insert(slot);
         if !orig {
             rep.null_slots_used += 1;
         }
@@ -412,12 +420,12 @@ pub fn rewrite_pid(
     let null = Packet::null().encode().expect("null packet encodes");
     for &i in &orig_set {
         if !used.contains(&i) {
-            pkts[i as usize] = null;
+            pkts[i] = null;
             rep.slots_nulled += 1;
         }
     }
     for (i, p) in out {
-        pkts[i as usize] = p;
+        pkts[i] = p;
     }
     Ok(rep)
 }

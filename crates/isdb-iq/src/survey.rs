@@ -167,6 +167,8 @@ impl Survey {
     }
 }
 
+// The window is computed in f64 and rounded to the f32 of the samples.
+#[allow(clippy::cast_possible_truncation)]
 fn hann(n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| {
@@ -330,13 +332,14 @@ pub fn survey(x: &[C32], fs: f64, opts: &Options) -> Survey {
     let x = &x[..n];
     let mut planner = FftPlanner::new();
     let power = x.iter().map(|c| f64::from(c.norm_sqr())).sum::<f64>() / n as f64;
-    let rms = power.sqrt().max(1e-30) as f32;
+    // The f64 power sum rounded to the f32 of the samples it normalises.
+    #[allow(clippy::cast_possible_truncation)]
+    let (rms, mean) = (power.sqrt().max(1e-30) as f32, power as f32);
 
     let psd = welch(&mut planner, x, opts.psd_len);
     let band = band(&psd, fs);
 
     // |z|² without its mean.
-    let mean = power as f32;
     let p = power_spectrum(
         &mut planner,
         x.iter()
@@ -344,6 +347,8 @@ pub fn survey(x: &[C32], fs: f64, opts: &Options) -> Survey {
         n,
     );
     let bin_hz = fs / n as f64;
+    // A bin index: `as` saturates (NaN to 0) and the clamp bounds it.
+    #[allow(clippy::cast_possible_truncation)]
     let lo = ((opts.min_symbol_rate_hz / bin_hz).ceil() as usize).clamp(1, n / 2);
     let (bin, level_db) = peak(&p, lo, n / 2);
     let symbol_line = Line {
@@ -363,22 +368,24 @@ pub fn survey(x: &[C32], fs: f64, opts: &Options) -> Survey {
         // Peak of the bins within `half` Hz of `centre` (wrapped).
         let line_near = |centre: f64, half: f64| -> Line {
             let mut q = vec![0.0; n];
-            let mut lo = usize::MAX;
-            let mut hi = 0;
             // Shift the window to the middle of a scratch spectrum so the
-            // peak search sees it as one contiguous range.
-            let w = ((half / bin_hz) as usize).clamp(1, n / 2 - 1);
-            let c = (centre / bin_hz).round() as i64;
-            for d in -(w as i64)..=(w as i64) {
-                let src = (c + d).rem_euclid(n as i64) as usize;
-                let dst = (n / 2) as i64 + d;
-                q[dst as usize] = p[src];
-                lo = lo.min(dst as usize);
-                hi = hi.max(dst as usize);
+            // peak search sees it as one contiguous range: bin c + d of `p`
+            // (wrapped) goes to n/2 + d of `q`, |d| <= w.
+            let c = (centre / bin_hz).round();
+            // Bin counts: `as` saturates (NaN to 0), the clamp bounds the
+            // half width and rem_euclid by n puts the centre bin in [0, n).
+            #[allow(clippy::cast_possible_truncation)]
+            let (w, c_bin) = (
+                ((half / bin_hz) as usize).clamp(1, n / 2 - 1),
+                c.rem_euclid(n as f64) as usize,
+            );
+            let (lo, hi) = (n / 2 - w, n / 2 + w);
+            for dst in lo..=hi {
+                q[dst] = p[(c_bin + n + dst - n / 2) % n];
             }
             let (bin, level_db) = peak(&q, lo, hi);
             Line {
-                freq_hz: (c as f64 + bin - (n / 2) as f64) * bin_hz,
+                freq_hz: (c + bin - (n / 2) as f64) * bin_hz,
                 level_db,
             }
         };
@@ -427,6 +434,9 @@ mod tests {
 
     /// A QPSK (or 8PSK) signal at `sps` samples per symbol with a
     /// raised-cosine-like smooth pulse, offset `cfo` cycles per sample.
+    // Test signal synthesis: f64 symbol positions and phases taken to the
+    // f32 samples and usize symbol indices of the generated signal.
+    #[allow(clippy::cast_possible_truncation)]
     fn psk(m: u32, sps: f64, cfo: f64, n: usize) -> Vec<C32> {
         let mut rng = 0x1234_5678_9abc_def1u64;
         let mut next = || {
@@ -542,6 +552,9 @@ mod tests {
         }
     }
 
+    // Test signal synthesis: f64 symbol index and phase taken to the u64
+    // index and f32 rotation of the generated signal.
+    #[allow(clippy::cast_possible_truncation)]
     fn pi2_bpsk_at(fs: f64) {
         let r = 33.7561e6;
         let sps = fs / r;

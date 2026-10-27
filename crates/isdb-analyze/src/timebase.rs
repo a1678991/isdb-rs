@@ -83,7 +83,11 @@ impl Timebase {
         let d = (t * 27e6).round();
         let m = PCR_MODULUS as f64;
         let v = (self.t0_ticks as f64 + d).rem_euclid(m);
-        Some(v as u64 % PCR_MODULUS)
+        // In [0, PCR_MODULUS) after rem_euclid, so it fits; std has no
+        // fallible float-to-integer conversion.
+        #[allow(clippy::cast_possible_truncation)]
+        let ticks = v as u64;
+        Some(ticks % PCR_MODULUS)
     }
 
     /// The (packet index, seconds) samples.
@@ -123,7 +127,7 @@ impl Timebase {
         if self.samples.len() < 2 {
             return self
                 .nominal_bps
-                .map(|r| (t * r / (188.0 * 8.0)).ceil().max(0.0) as u64);
+                .map(|r| index_at_or_after(t * r / (188.0 * 8.0)));
         }
         let s = &self.samples;
         let i = s.partition_point(|&(_, x)| x < t);
@@ -138,7 +142,7 @@ impl Timebase {
             return Some(a.0);
         }
         let x = a.0 as f64 + (t - a.1) * (b.0 - a.0) as f64 / (b.1 - a.1);
-        Some(x.ceil().max(0.0) as u64)
+        Some(index_at_or_after(x))
     }
 
     /// Seconds covered by `packets` packets (from packet 0 to the last).
@@ -166,6 +170,15 @@ impl Timebase {
         let (a, b) = (self.samples[0], *self.samples.last().unwrap());
         (b.1 > a.1).then(|| (b.0 - a.0) as f64 * 188.0 * 8.0 / (b.1 - a.1))
     }
+}
+
+/// The first packet index at or after the fractional index `x`.
+// Non-negative after max(0.0); `as` saturates for an index past u64::MAX
+// (a time no capture reaches) and std has no fallible float-to-integer
+// conversion.
+#[allow(clippy::cast_possible_truncation)]
+fn index_at_or_after(x: f64) -> u64 {
+    x.ceil().max(0.0) as u64
 }
 
 #[cfg(test)]

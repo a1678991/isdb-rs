@@ -28,6 +28,7 @@
 
 use std::collections::BTreeMap;
 
+use isdb_ts::bits::BitReader;
 use isdbt_mux::adts::b32::{self, Rule};
 
 /// The ADTS fixed + variable header fields the rules need.
@@ -58,18 +59,35 @@ pub fn header(b: &[u8]) -> Option<Header> {
     if b.len() < 7 || b[0] != 0xFF || b[1] >> 4 != 0xF {
         return None;
     }
-    let bits = u64::from_be_bytes([0, b[0], b[1], b[2], b[3], b[4], b[5], b[6]]);
-    let f = |shift: u32, width: u32| ((bits >> (56 - shift - width)) & ((1 << width) - 1)) as u32;
-    Some(Header {
-        id: f(12, 1) as u8,
-        layer: f(13, 2) as u8,
-        protection_absent: f(15, 1) == 1,
-        profile: f(16, 2) as u8,
-        sampling_frequency_index: f(18, 4) as u8,
-        channel_configuration: f(23, 3) as u8,
-        frame_length: f(30, 13) as usize,
-        buffer_fullness: f(43, 11) as u16,
-        raw_data_blocks: f(54, 2) as u8,
+    // All 56 header bits are present, so none of the reads can fail.
+    fields(&b[..7]).ok()
+}
+
+/// The fixed + variable header after the 12-bit syncword, MSB first.
+fn fields(b: &[u8]) -> isdb_ts::Result<Header> {
+    let mut r = BitReader::new(b, "adts_header");
+    r.read(12)?; // syncword
+    let id = r.read_u8(1)?;
+    let layer = r.read_u8(2)?;
+    let protection_absent = r.bool()?;
+    let profile = r.read_u8(2)?;
+    let sampling_frequency_index = r.read_u8(4)?;
+    r.read(1)?; // private_bit
+    let channel_configuration = r.read_u8(3)?;
+    r.read(4)?; // original_copy, home, copyright_identification_bit/start
+    let frame_length = r.read_usize(13)?;
+    let buffer_fullness = r.read_u16(11)?;
+    let raw_data_blocks = r.read_u8(2)?;
+    Ok(Header {
+        id,
+        layer,
+        protection_absent,
+        profile,
+        sampling_frequency_index,
+        channel_configuration,
+        frame_length,
+        buffer_fullness,
+        raw_data_blocks,
     })
 }
 

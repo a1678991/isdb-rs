@@ -20,6 +20,8 @@
 //! cargo run --release -p isdb-iq --example bandpower -- REC [REC…] [--carrier-offset HZ] [--half-band HZ] [--guard HZ]
 //! ```
 
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::{C32, Recording};
 use rustfft::FftPlanner;
 
@@ -63,7 +65,7 @@ fn measure(path: &str, o: &Opts) -> serde_json::Value {
     let mut rec = Recording::open(std::path::Path::new(path), None, None).expect("open recording");
     let fs = rec.sample_rate;
     let seg = rec.segments()[0].clone();
-    let len = (seg.end - seg.start) as usize;
+    let len = usize::try_from(seg.end - seg.start).expect("segment fits in memory");
     let x = rec.read(seg.start, len).expect("read");
     let w: Vec<f32> = (0..N)
         .map(|i| (std::f32::consts::PI * i as f32 / N as f32).sin().powi(2))

@@ -164,6 +164,9 @@ impl Meta {
             .cloned()
             .ok_or_else(|| bad("no global object"))?;
         let datatype = opt_str(&mut g, "core:datatype").ok_or_else(|| bad("no core:datatype"))?;
+        // JSON numbers are f64; the full scale is held at the f32 precision
+        // of the samples it divides (rounding to nearest is the conversion).
+        #[allow(clippy::cast_possible_truncation)]
         let full_scale = g
             .remove("isdb:full_scale")
             .and_then(|v| v.as_f64())

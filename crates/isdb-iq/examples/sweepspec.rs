@@ -21,15 +21,17 @@
 //! cargo run --release -p isdb-iq --example sweepspec -- REC [--fft N] [--keep HZ] [--threshold DB] [--min-width HZ] [--strong DB] [--points N] [--samples N]
 //! ```
 
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use num_complex::Complex32 as C32;
 use rustfft::FftPlanner;
 use serde_json::json;
 
-fn arg(args: &mut Vec<String>, name: &str, default: f64) -> f64 {
+fn arg<T: std::str::FromStr>(args: &mut Vec<String>, name: &str, default: T) -> T {
     match args.iter().position(|a| a == name) {
         Some(i) => {
-            let v = args[i + 1].parse().expect("number");
+            let v = args[i + 1].parse().ok().expect("number");
             args.drain(i..=i + 1);
             v
         }
@@ -39,11 +41,11 @@ fn arg(args: &mut Vec<String>, name: &str, default: f64) -> f64 {
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let fft = arg(&mut args, "--fft", 4096.0) as usize;
+    let fft: usize = arg(&mut args, "--fft", 4096);
     let keep = arg(&mut args, "--keep", 24e6);
     let threshold = arg(&mut args, "--threshold", 6.0);
-    let points = arg(&mut args, "--points", 96.0) as usize;
-    let samples = arg(&mut args, "--samples", (1u64 << 20) as f64) as usize;
+    let points: usize = arg(&mut args, "--points", 96);
+    let samples: usize = arg(&mut args, "--samples", 1 << 20);
     let min_width = arg(&mut args, "--min-width", 1e6);
     let strong = arg(&mut args, "--strong", 15.0);
     let path = args.first().expect("usage: sweepspec REC [options]");
@@ -51,7 +53,8 @@ fn main() {
     let fs = rec.sample_rate;
     let centre = rec.frequency.unwrap_or(0.0);
     let seg = rec.segments()[0].clone();
-    let n = samples.min((seg.end - seg.start) as usize);
+    // A segment longer than the address space is clipped to --samples anyway.
+    let n = usize::try_from(seg.end - seg.start).map_or(samples, |len| samples.min(len));
     let x = rec.read(seg.start, n).expect("read");
 
     // Welch: Hann-windowed blocks, power averaged, DC in the middle

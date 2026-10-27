@@ -417,6 +417,17 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
   fs)`; `isdbs_phy::frontend::to_input` is now public, so the examples
   stop repeating the quantiser. Recording segment lengths in the examples
   and tests go through `usize::try_from`. Behaviour is unchanged.
+- `isdb-analyze`, `isdb-iq`: `clippy::cast_possible_truncation` is on at
+  crate level (`docs/plans/type-safety.md` §2, item H3), with 3 and 8
+  `#[allow]`s. The ADTS header parse uses the width-typed `BitReader`
+  readers; `edit` / `mutate` values given on the command line (table_id,
+  table_id_extension, section_number, stream_type, program_number,
+  descriptor tag, BCD duration / offset, `frequency_mhz`) are range
+  checked and an out-of-range value is an error naming the field instead
+  of being wrapped; the remaining allows are float-to-integer and
+  f64-to-f32 conversions (PCR interpolation, timestamps, spectrum bins,
+  window and full scale) with the invariant stated. Report output is
+  unchanged.
 - `isdb-si`: `clippy::cast_possible_truncation` is on at crate level
   (`docs/plans/type-safety.md` §2, item H3), with no `#[allow]`: the 149
   narrowing casts are gone. Bit fields go through the width-typed

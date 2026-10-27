@@ -1,6 +1,8 @@
 //! Edit transforms on synthetic streams: every output must be a valid TS
 //! (CRC/CC clean per the validator) with packet positions kept.
 
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 use common::*;
 use isdb_analyze::edit::{self, EditOp, EditOptions, NullSlots, Selector};
