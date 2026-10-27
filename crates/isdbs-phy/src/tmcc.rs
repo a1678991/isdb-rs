@@ -18,7 +18,7 @@ pub fn header_bytes(h: &[Cplx], llr_scale: f64) -> [u8; HEADER_BYTES] {
     assert!(h.len() >= HEADER_SYMBOLS);
     let llr: Vec<f32> = h[..HEADER_SYMBOLS]
         .iter()
-        .map(|v| (v.re * llr_scale) as f32)
+        .map(|v| crate::soft(v.re * llr_scale))
         .collect();
     let mut v = ViterbiDecoder::new_unknown_state(64);
     let mut bits = Vec::with_capacity(HEADER_SYMBOLS / 2);

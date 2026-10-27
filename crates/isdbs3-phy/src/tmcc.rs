@@ -5,8 +5,8 @@
 //! rate-61/120 LDPC code (§3.5), the energy dispersal removed (§3.6 (2))
 //! and the BCH code checked (§3.4 (1)).
 
-use crate::Cplx;
 use crate::sync::{SlotHead, phase_at};
+use crate::{Cplx, soft};
 use isdbs3_core::params::{
     CodeRate, MAIN_RUN, MOD_SLOT, PILOT_SYMBOLS, RUNS, SLOTS, SYNC_SYMBOLS, TMCC_INFO_BITS,
     TMCC_RUN,
@@ -50,7 +50,7 @@ pub fn llrs(z: &[Cplx], slots: &[SlotHead], f: usize, noise_var: f64) -> Option<
         for j in tmcc_offsets() {
             let (ph, amp) = phase_at(slots, i, j);
             let v = z[at + j] / ph / amp.max(1e-30);
-            out.push((2.0 * bpsk_soft(v, j) / noise_var) as f32);
+            out.push(soft(2.0 * bpsk_soft(v, j) / noise_var));
         }
     }
     Some(out)

@@ -11,8 +11,8 @@
 //! transponder included: B44 §2 introduces the pilot "for restrain of
 //! deterioration" from the TWTA.
 
-use crate::Cplx;
 use crate::sync::{SlotHead, phase_at};
+use crate::{Cplx, soft};
 use isdbs3_core::constellation::points;
 use isdbs3_core::dispersal::{SlotDispersal, pilot_signs};
 use isdbs3_core::interleave::permutation;
@@ -121,7 +121,7 @@ pub fn demap(sym: &[Cplx], pts: &[Cplx], bits: usize, n0: f64, out: &mut Vec<f32
                     m1 = m1.min(di);
                 }
             }
-            out.push(((m1 - m0) / n0) as f32);
+            out.push(soft((m1 - m0) / n0));
         }
     }
 }

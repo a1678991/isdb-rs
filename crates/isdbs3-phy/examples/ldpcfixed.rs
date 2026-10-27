@@ -11,6 +11,9 @@
 //! one at the given input scale and offset; `SWEEP=1` sweeps scale and
 //! offset instead.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_fec::ldpc::fixed::{Decoder, Params, quantise};
 use isdb_iq::Recording;
 use isdbs3_core::slots::layout;
@@ -31,7 +34,10 @@ fn words_of(path: &str, max_frames: usize) -> Vec<Word> {
     let mut out = Vec::new();
     for seg in rec.segments().clone() {
         let x = rec
-            .read(seg.start, (seg.end - seg.start) as usize)
+            .read(
+                seg.start,
+                usize::try_from(seg.end - seg.start).expect("segment length"),
+            )
             .expect("read");
         let s = symbols(&x, fs, None, Trim::Auto).expect("front end");
         let Some(sy0) = synchronise(&s.z) else {
@@ -120,21 +126,27 @@ fn fixed_stats<const W: usize>(words: &[Word], scale: f32, p: Params) -> (usize,
     (fail, it as f64 / words.len() as f64, cw_s)
 }
 
+/// The value of option `name` (parsed as `T`, removed from `args`), or
+/// `default`.
+fn opt<T: std::str::FromStr>(args: &mut Vec<String>, name: &str, default: T) -> T
+where
+    T::Err: std::fmt::Debug,
+{
+    match args.iter().position(|a| a == name) {
+        Some(i) => {
+            let v = args[i + 1].parse().expect("number");
+            args.drain(i..=i + 1);
+            v
+        }
+        None => default,
+    }
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let mut opt = |name: &str, default: f64| -> f64 {
-        match args.iter().position(|a| a == name) {
-            Some(i) => {
-                let v = args[i + 1].parse().expect("number");
-                args.drain(i..=i + 1);
-                v
-            }
-            None => default,
-        }
-    };
-    let frames = opt("--frames", 8.0) as usize;
-    let scale = opt("--scale", 2.0) as f32;
-    let offset = opt("--offset", 1.0) as i8;
+    let frames: usize = opt(&mut args, "--frames", 8);
+    let scale: f32 = opt(&mut args, "--scale", 2.0);
+    let offset: i8 = opt(&mut args, "--offset", 1);
     let mut words = Vec::new();
     for a in &args {
         let w = words_of(a, frames);
@@ -147,16 +159,17 @@ fn main() {
             .flat_map(|w| w.llr.iter().map(|x| x.abs()))
             .collect();
         a.sort_by(f32::total_cmp);
-        let q = |p: f64| a[((a.len() - 1) as f64 * p) as usize];
+        // the `permille`-th per-mille point (0 = min, 1000 = max)
+        let q = |permille: usize| a[(a.len() - 1) * permille / 1000];
         println!(
             "|LLR| percentiles: 1% {:.1} 10% {:.1} 50% {:.1} 90% {:.1} 99% {:.1} 99.9% {:.1} max {:.1}",
-            q(0.01),
-            q(0.1),
-            q(0.5),
-            q(0.9),
-            q(0.99),
-            q(0.999),
-            q(1.0)
+            q(10),
+            q(100),
+            q(500),
+            q(900),
+            q(990),
+            q(999),
+            q(1000)
         );
         return;
     }

@@ -4,6 +4,9 @@
 //!
 //! cargo run --release -p isdbs3-phy --example tlvprobe -- REC
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdb_tlv::stats::StreamStats;
 use isdb_tlv::{Assembler, mmtp, si};
@@ -15,7 +18,9 @@ fn main() {
     let path = std::path::PathBuf::from(std::env::args().nth(1).expect("REC"));
     let mut rec = Recording::open(&path, None, None).unwrap();
     let seg = rec.segments()[0].clone();
-    let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+    let x = rec
+        .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+        .unwrap();
     let s = symbols(&x, rec.sample_rate, None, Trim::Auto).unwrap();
     let t0 = std::time::Instant::now();
     let r = receive(&s.z, &RxOptions::default());

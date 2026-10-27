@@ -407,6 +407,16 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdbs-phy`, `isdbs3-phy`: `clippy::cast_possible_truncation` is on at
+  crate level and in every example and integration test
+  (`docs/plans/type-safety.md` §2), with three `#[allow]`s per crate, each
+  on a one-line private helper: the 12-bit input quantiser (rounded and
+  clamped before the cast), the f64 → f32 soft metric handed to the
+  Viterbi / LDPC decoder, and the f64 → usize sample count (no fallible
+  conversion in std). Both `frontend` modules gain `samples_in(seconds,
+  fs)`; `isdbs_phy::frontend::to_input` is now public, so the examples
+  stop repeating the quantiser. Recording segment lengths in the examples
+  and tests go through `usize::try_from`. Behaviour is unchanged.
 - `isdb-si`: `clippy::cast_possible_truncation` is on at crate level
   (`docs/plans/type-safety.md` §2, item H3), with no `#[allow]`: the 149
   narrowing casts are gone. Bit fields go through the width-typed

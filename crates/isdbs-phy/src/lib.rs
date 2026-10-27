@@ -20,8 +20,20 @@
 //! the superframe's [`isdbs_core::TmccInfo`] through
 //! [`isdbs_core::slots::runs`].
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 /// Complex symbol.
 pub type Cplx = num_complex::Complex<f64>;
+
+/// A soft metric (LLR) as the `f32` the Viterbi decoder takes.
+// Soft-bit quantisation: f32 is the decoder's precision, so the cast
+// rounds the metric to it; a metric past the f32 range (a noise variance
+// near zero) becomes the infinity it stands for.
+#[allow(clippy::cast_possible_truncation)]
+pub(crate) fn soft(x: f64) -> f32 {
+    x as f32
+}
 
 pub mod carrier;
 pub mod demod;

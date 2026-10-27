@@ -4,6 +4,9 @@
 //!
 //! cargo run --release -p isdbs3-phy --example pilotcheck -- REC
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdbs3_core::slots::layout;
 use isdbs3_phy::frontend::{Trim, symbols};
@@ -15,7 +18,7 @@ fn main() {
     let path = std::path::PathBuf::from(std::env::args().nth(1).expect("REC"));
     let mut rec = Recording::open(&path, None, None).unwrap();
     let seg = rec.segments()[0].clone();
-    let n = ((seg.end - seg.start) as usize).min(6_000_000);
+    let n = (usize::try_from(seg.end - seg.start).expect("segment length")).min(6_000_000);
     let x = rec.read(seg.start, n).unwrap();
     let s = symbols(&x, rec.sample_rate, None, Trim::Auto).unwrap();
     let sy = synchronise(&s.z).expect("slots");

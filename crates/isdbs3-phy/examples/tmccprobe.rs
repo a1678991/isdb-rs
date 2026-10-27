@@ -3,6 +3,9 @@
 //!
 //! cargo run --release -p isdbs3-phy --example tmccprobe -- REC
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdbs3_core::tmcc::{ModulationCode, StreamType};
 use isdbs3_phy::frontend::{Trim, symbols};
@@ -13,7 +16,9 @@ fn main() {
     let path = std::path::PathBuf::from(std::env::args().nth(1).expect("REC"));
     let mut rec = Recording::open(&path, None, None).unwrap();
     let seg = rec.segments()[0].clone();
-    let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+    let x = rec
+        .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+        .unwrap();
     let s = symbols(&x, rec.sample_rate, None, Trim::Auto).unwrap();
     println!(
         "{}: {} symbols, cfo {:.0} Hz, trim {:.3}, survey ISDB-S3 {}",

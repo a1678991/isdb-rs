@@ -50,15 +50,31 @@ pub fn symbols(
     symbols_with(x, fs, carrier_offset_hz, Trim::Auto)
 }
 
-fn to_input(x: &[num_complex::Complex<f32>]) -> Vec<[i16; 2]> {
-    x.iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect()
+/// Unit-scale samples as the front end's 12-bit input (full scale 2048).
+pub fn to_input(x: &[num_complex::Complex<f32>]) -> Vec<[i16; 2]> {
+    x.iter().map(|v| [q12(v.re), q12(v.im)]).collect()
+}
+
+/// One unit-scale sample as a 12-bit value (rounded, clamped to -2048…2047).
+// DSP sample quantisation: the value is rounded and clamped to the 12-bit
+// range before the cast, so the cast to i16 is exact.
+#[allow(clippy::cast_possible_truncation)]
+fn q12(v: f32) -> i16 {
+    (v * 2048.0).round().clamp(-2048.0, 2047.0) as i16
+}
+
+/// The number of samples in `seconds` at `fs` (truncated; 0 for a
+/// negative or NaN product, saturated past `usize::MAX`).
+pub fn samples_in(seconds: f64, fs: f64) -> usize {
+    count(seconds * fs)
+}
+
+/// A sample or symbol count from a product of a rate and a time.
+// f64 -> usize has no fallible conversion: `as` truncates toward zero and
+// saturates, which is the wanted count (NaN gives 0).
+#[allow(clippy::cast_possible_truncation)]
+fn count(x: f64) -> usize {
+    x as usize
 }
 
 /// The front end's design for ISDB-S at `fs` with carrier offset `cfo`.
@@ -120,10 +136,11 @@ pub fn measure_trim(x: &[[i16; 2]], d: &Design) -> Result<(f64, f64), ParamError
 /// period over the second half (Q8.24 samples).
 fn run(x: &[[i16; 2]], d: &Design) -> Result<(Vec<Cplx>, f64), ParamError> {
     let mut fe = Frontend::new(Params::design(d)?)?;
-    let mut z = Vec::with_capacity((x.len() as f64 / d.sps()) as usize + 16);
+    let symbols = count(x.len() as f64 / d.sps());
+    let mut z = Vec::with_capacity(symbols + 16);
     let mut psum = 0.0;
     let mut pn = 0usize;
-    let half = (x.len() as f64 / d.sps()) as usize / 2;
+    let half = symbols / 2;
     fe.process_each(x, |s| {
         z.push(Cplx::new(f64::from(s.zk[0]), f64::from(s.zk[1])));
         if z.len() > half {
@@ -192,12 +209,12 @@ fn acquire_input(
     let (t, mer) = match trim {
         Trim::Fixed(t) => {
             d.trim = t;
-            let n = ((0.05 * fs) as usize).min(xi.len());
+            let n = samples_in(0.05, fs).min(xi.len());
             let (z, _) = run(&xi[..n], &d)?;
             (t, pilot_mer(&z).unwrap_or(f64::NEG_INFINITY))
         }
         Trim::Auto => {
-            let n = ((0.15 * fs) as usize).min(xi.len());
+            let n = samples_in(0.15, fs).min(xi.len());
             measure_trim(&xi[..n], &d)?
         }
     };
@@ -225,7 +242,7 @@ pub fn symbols_with_prior(
 ) -> Result<(Symbols, Prior), ParamError> {
     let xi = to_input(x);
     let excerpt_mer = |d: &Design, secs: f64| -> Result<f64, ParamError> {
-        let n = ((secs * fs) as usize).min(xi.len());
+        let n = samples_in(secs, fs).min(xi.len());
         let (z, _) = run(&xi[..n], d)?;
         Ok(pilot_mer(&z).unwrap_or(f64::NEG_INFINITY))
     };

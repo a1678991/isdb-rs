@@ -5,10 +5,13 @@
 //!
 //! cargo run --release -p isdbs-phy --example chaintime -- REC
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdb_iq::survey::{Options, survey};
 use isdbs_phy::demod::DemodOptions;
-use isdbs_phy::frontend::{Trim, design, measure_trim, symbols_with};
+use isdbs_phy::frontend::{Trim, design, measure_trim, samples_in, symbols_with, to_input};
 use isdbs_phy::ts::decode_all;
 use isdbs_phy::{RxOptions, receive};
 use std::time::Instant;
@@ -19,7 +22,10 @@ fn main() {
     let fs = rec.sample_rate;
     let seg = rec.segments()[0].clone();
     let x = rec
-        .read(seg.start, (seg.end - seg.start) as usize)
+        .read(
+            seg.start,
+            usize::try_from(seg.end - seg.start).expect("segment length"),
+        )
         .expect("read");
     let secs = x.len() as f64 / fs;
     println!(
@@ -35,16 +41,8 @@ fn main() {
     let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
     step("survey");
     let cfo = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
-    let xi: Vec<[i16; 2]> = x
-        .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect();
-    let n = ((0.15 * fs) as usize).min(xi.len());
+    let xi = to_input(&x);
+    let n = samples_in(0.15, fs).min(xi.len());
     let (trim, _) = measure_trim(&xi[..n], &design(fs, cfo)).expect("trim");
     step("trim search");
     let s = symbols_with(&x, fs, Some(cfo), Trim::Fixed(trim)).expect("front end");

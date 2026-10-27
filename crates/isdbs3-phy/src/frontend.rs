@@ -86,7 +86,7 @@ pub fn carrier_candidates(sv: &isdb_iq::survey::Survey) -> Vec<f64> {
 /// whose mean phase step exceeds [`MAX_PHASE_STEP`] ranks below every
 /// candidate within it. With no candidate the carrier is taken as 0.
 pub fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64, ParamError> {
-    let n = ((0.05 * fs) as usize).min(xi.len());
+    let n = samples_in(0.05, fs).min(xi.len());
     let score = |cfo: f64| -> Result<(bool, f64), ParamError> {
         let mut fe = Frontend::new(Params::design(&design(fs, cfo))?)?;
         let mut out = Vec::new();
@@ -134,14 +134,29 @@ pub fn design(fs: f64, cfo: f64) -> Design {
 
 /// Unit-scale samples as the front end's 12-bit input (full scale 2048).
 pub fn to_input(x: &[num_complex::Complex<f32>]) -> Vec<[i16; 2]> {
-    x.iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect()
+    x.iter().map(|v| [q12(v.re), q12(v.im)]).collect()
+}
+
+/// One unit-scale sample as a 12-bit value (rounded, clamped to -2048…2047).
+// DSP sample quantisation: the value is rounded and clamped to the 12-bit
+// range before the cast, so the cast to i16 is exact.
+#[allow(clippy::cast_possible_truncation)]
+fn q12(v: f32) -> i16 {
+    (v * 2048.0).round().clamp(-2048.0, 2047.0) as i16
+}
+
+/// The number of samples in `seconds` at `fs` (truncated; 0 for a
+/// negative or NaN product, saturated past `usize::MAX`).
+pub fn samples_in(seconds: f64, fs: f64) -> usize {
+    count(seconds * fs)
+}
+
+/// A sample or symbol count from a product of a rate and a time.
+// f64 -> usize has no fallible conversion: `as` truncates toward zero and
+// saturates, which is the wanted count (NaN gives 0).
+#[allow(clippy::cast_possible_truncation)]
+fn count(x: f64) -> usize {
+    x as usize
 }
 
 /// Run the ISDB-S3 front end over unit-scale samples `x` at `fs`.
@@ -176,7 +191,7 @@ pub const PRIOR_MARGIN_DB: f64 = 3.0;
 /// The sync-symbol Es/N0 of the front end with design `d` on the first
 /// 0.05 s of `xi` (−∞ without slot sync).
 fn excerpt_snr(xi: &[[i16; 2]], fs: f64, d: &Design) -> Result<f64, ParamError> {
-    let n = ((0.05 * fs) as usize).min(xi.len());
+    let n = samples_in(0.05, fs).min(xi.len());
     let mut fe = Frontend::new(Params::design(d)?)?;
     let mut z = Vec::new();
     fe.process_each(&xi[..n], |s| {
@@ -223,7 +238,7 @@ fn acquire_input(
             (t, excerpt_snr(xi, fs, &d)?)
         }
         Trim::Auto => {
-            let n = ((0.15 * fs) as usize).min(xi.len());
+            let n = samples_in(0.15, fs).min(xi.len());
             let cands: Vec<f64> = (-10..=2).map(|i| f64::from(i) * 0.025).collect();
             isdb_frontend::s3sync::best_trim(&xi[..n], &d, &cands)?
         }
@@ -266,7 +281,7 @@ pub fn symbols_with_prior(
     let mut d = design(fs, acq.carrier_offset_hz);
     d.trim = acq.trim;
     let mut fe = Frontend::new(Params::design(&d)?)?;
-    let mut z = Vec::with_capacity((xi.len() as f64 / d.sps()) as usize + 16);
+    let mut z = Vec::with_capacity(count(xi.len() as f64 / d.sps()) + 16);
     fe.process_each(&xi, |s| {
         z.push(Cplx::new(f64::from(s.zk[0]), f64::from(s.zk[1])));
     });

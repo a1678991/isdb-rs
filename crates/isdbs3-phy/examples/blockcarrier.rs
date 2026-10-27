@@ -5,6 +5,9 @@
 //!
 //! cargo run --release -p isdbs3-phy --example blockcarrier -- REC
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdb_iq::survey::{Options, survey};
 use isdbs3_phy::frontend::{Trim, carrier_candidates, symbols};
@@ -15,7 +18,7 @@ fn main() {
     let mut rec = Recording::open(&path, None, None).expect("open");
     let fs = rec.sample_rate;
     for (i, seg) in rec.segments().clone().iter().enumerate() {
-        let n = ((seg.end - seg.start) as usize).min(6_000_000);
+        let n = (usize::try_from(seg.end - seg.start).expect("segment length")).min(6_000_000);
         let x = rec.read(seg.start, n).expect("read");
         let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
         println!("segment {i}: {n} samples");
