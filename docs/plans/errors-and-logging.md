@@ -304,3 +304,105 @@ misbehaves in the worktree.
 
 Report back: branch, hash, events added per crate by level, tests added,
 any site you decided not to instrument and why, any failing check.
+
+## 5. Wave 2: errors, by crate group
+
+The items of §3 wave 2 touch the same crates in pairs (E2 and E4a in
+`isdbt-mux`, E3 and E4b in the codecs, E1 and E4c in `isdb-radio`), so
+the dispatch groups them by crate instead: each agent types the errors
+**and** triages the panics of its own crates, and no two agents edit the
+same crate. `isdb-cli` is shared: an agent may change `isdb-cli` only
+where it calls the agent's crates and must keep those edits to the call
+sites (the merge resolves the rest).
+
+| group | crates | §3 items | panic census at `080b297` (unwrap / expect / panic! / unreachable!) |
+|---|---|---|---|
+| W1 | `isdbt-mux` | E2, E4a | 13 / 17 / 1 / 1 |
+| W2 | `isdb-radio`, `isdb-iio`, `isdb-hackrf` | E1, E4c | 2 / 6 / 0 / 0 |
+| W3 | `isdb-ts`, `isdb-si`, `isdb-tlv`, `isdb-mmt`, `isdb-text`, `isdb-analyze` | E3 (codec kinds, `EditError`), E4b | 12 / 12 / 0 / 4 |
+| W4 | `isdbt-ofdm`, `isdbt-fec`, `isdbt-phy`, `isdbt-core` | E3 (`Error::Tmcc`), E4a | 1 / 26 / 3 / 1 |
+| W5 | `isdb-frontend`, `isdb-iq`, `isdbs-phy`, `isdbs3-phy`, `isdbs-core`, `isdbs3-core`, `isdb-fec` | E4c | 2 / 43 / 0 / 1 |
+
+`isdb-cli`'s own 13 `expect`s are not in wave 2: it is a binary, where
+`expect` on an invariant ends the program with its message, the same
+outcome as `?` into `anyhow` minus the chain. They go with a later pass.
+
+### 5.1 Brief for a wave-2 group (the agents read this section)
+
+You are in your own git worktree, cut from `main`, not the working
+branch: `git status` (clean), then `git reset --hard feat/pluto-backend`.
+Commit on your worktree branch and report its name and hash. Temporary
+files go in your own scratch directory with your group's prefix.
+
+Read: this plan §2.2 (error rules), §2.3 (panic triage order), §3 wave 2
+(the items your group covers), and `CONTRIBUTING.md` "Ground rules"
+(decoders return errors and never panic; every public item cites its
+clause). Worked example of the panic triage: `git show 795b0e9` (a type
+carries the invariant: `Pid::of_packet` takes `&[u8; 188]`, seven
+`expect`s gone). Census: `python3 -I tools/panic-census.py <crates>`.
+
+**Error typing.** For each error type in your crates, list its variants
+and their producers (`grep` the constructors). A variant whose payload
+is a `String` built with `format!` from values the code had in hand
+becomes a variant with those values as fields and an `#[error("…")]`
+that renders the same sentence (or a better one). A free-text payload
+stays only for text from outside (an OS or parser message). Group
+producers into variants by the rule they enforce (range, reserved code,
+inconsistent length, missing item), not one variant per call site. Keep
+`#[non_exhaustive]` on public error enums; add it where missing.
+`anyhow` leaves library code (W2's `isdb-radio`, W3's
+`isdb_analyze::edit`): the library defines the enum, `isdb-cli` adds
+`.context()`.
+
+**Messages users and tests see must not regress.** `isdb-cli`'s tests
+match error text by substring (`grep -n 'contains(' crates/isdb-cli/tests/cli.rs`);
+the radio gate's "dry run, not transmitting" and every relay-policy
+refusal (CONTRIBUTING "Relay policy") are documented. Render the same
+sentence from the fields; if a sentence improves, update the test and
+the docs and say so.
+
+**Panic triage.** Every `unwrap` / `expect` / `panic!` / `unreachable!`
+in your crates' library code, in the order of §2.3: a type carries the
+invariant; else the function returns `Result`; else the invariant stays
+as `expect("<invariant>")` with a `# Panics` doc on the public function.
+`assert!` on a public function's argument contract stays with a
+`# Panics` section. Report every site with its resolution (a table is
+fine). No behaviour change on valid input; on invalid input a panic may
+become an error, which you list.
+
+**Proof.** For each new error variant, a test that produces it from bad
+input and matches the variant (`assert!(matches!(e, Error::Range { what:
+"…", .. }))`), not the message. For a public signature that changed to
+`Result`, a test of the error path. Existing `prop_*` round trips and
+`spec_*` tests unchanged.
+
+**Do not** edit crates outside your group except `isdb-cli` call sites
+of your crates. CHANGELOG.md: one entry at the top of `## [Unreleased]`
+→ `### Changed` naming your crates, with a `BREAKING CHANGE:` footer on
+the commit if a public type or signature changed.
+
+**Verify**, in order: `cargo fmt --all`; `cargo clippy --workspace
+--all-targets --locked -- -D warnings`; `cargo clippy -p isdb-cli
+--no-default-features --all-targets --locked -- -D warnings`; `cargo
+clippy -p isdb-radio --no-default-features --all-targets --locked -- -D
+warnings`; `cargo test --workspace --locked` (the two wall-clock tests in
+`isdb-cli`, `a_loss_ends_the_stretch` and `live_feed_with_stalling_input…`,
+flake under CPU load: rerun alone before concluding); `RUSTDOCFLAGS="-D
+warnings" cargo doc --workspace --no-deps --locked`; `cargo deny --locked
+check bans licenses sources`; the census before and after for your
+crates. Do not run `mise run msrv` / `oracle` or release builds (shared
+disk; the coordinator runs them on the merged tree), except a hot-path
+throughput test if you changed a per-packet or per-sample path, and
+then report the numbers.
+
+**Commit** once: `refactor(<crates>)!: typed errors and panic triage` (or
+`refactor(<crates>): …` with no breaking change) under 100 chars, body
+with the census before/after and the variants added, last line exactly
+`Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. `LEFTHOOK=0
+git commit` after running the checks yourself if the hook misbehaves in
+the worktree.
+
+**Report back:** branch, hash, census before/after per crate, error
+variants added or changed per crate, public signature changes,
+messages that changed (and the tests/docs updated for them), any check
+that did not pass.
