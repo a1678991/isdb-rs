@@ -180,3 +180,95 @@ broadcasters = [ {{ broadcaster_id = 1, name = "ベンチ", terrestrial = {{ ter
     );
     Config::from_toml(&text).unwrap()
 }
+
+// ---- tracing event capture (docs/plans/errors-and-logging.md §2.1)
+
+/// One captured `tracing` event.
+#[derive(Debug, Clone)]
+pub struct Captured {
+    pub level: tracing::Level,
+    pub target: String,
+    /// The `message` field.
+    pub message: String,
+    /// Every field in `Debug` form (`%x` values print as their `Display`,
+    /// strings quoted, numbers bare).
+    pub fields: Vec<(String, String)>,
+    thread: std::thread::ThreadId,
+}
+
+impl Captured {
+    /// The `Debug` form of field `name`, if the event has it.
+    pub fn field(&self, name: &str) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+#[derive(Clone)]
+struct CaptureLayer(std::sync::Arc<std::sync::Mutex<Vec<Captured>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        struct V(Vec<(String, String)>);
+        impl tracing::field::Visit for V {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0
+                    .push((field.name().to_string(), format!("{value:?}")));
+            }
+        }
+        let mut v = V(Vec::new());
+        event.record(&mut v);
+        let message =
+            v.0.iter()
+                .find(|(k, _)| k == "message")
+                .map(|(_, m)| m.clone())
+                .unwrap_or_default();
+        self.0.lock().unwrap().push(Captured {
+            level: *event.metadata().level(),
+            target: event.metadata().target().to_string(),
+            message,
+            fields: v.0,
+            thread: std::thread::current().id(),
+        });
+    }
+}
+
+/// Run `f` and return its result with the events it emitted on this
+/// thread.
+///
+/// The capturing subscriber is installed as the process-wide default (once
+/// per test binary) rather than as a thread-scoped one: `tracing-core`
+/// caches a callsite's interest the first time any thread hits it, and
+/// with exactly one registered, thread-scoped dispatcher it computes that
+/// interest from the hitting thread's own default (`Rebuilder::JustOne`),
+/// so a parallel test without a subscriber would cache `never` for every
+/// callsite of the code under test. A global default is what every thread
+/// sees; the events of other tests are filtered out by thread id.
+pub fn capture_events<R>(f: impl FnOnce() -> R) -> (R, Vec<Captured>) {
+    use tracing_subscriber::layer::SubscriberExt;
+    static STORE: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<Vec<Captured>>>> =
+        std::sync::OnceLock::new();
+    let store = STORE.get_or_init(|| {
+        let store = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(CaptureLayer(store.clone())),
+        )
+        .expect("the test binary installs one global subscriber");
+        store
+    });
+    let start = store.lock().unwrap().len();
+    let r = f();
+    let me = std::thread::current().id();
+    let events = store.lock().unwrap()[start..]
+        .iter()
+        .filter(|e| e.thread == me)
+        .cloned()
+        .collect();
+    (r, events)
+}

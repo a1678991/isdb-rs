@@ -108,6 +108,13 @@ assert!(reserved.config().is_err()); // refused as parameters
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+The receiver emits [`tracing`](https://docs.rs/tracing) events and never
+prints: lock acquired (mode, guard, layers, `cfo_carriers`, `offset_hz`),
+the first primed frame's MER, lock lost and a TMCC parameter switch at
+`info`; mode detection, the integer carrier offset, an abandoned
+acquisition and per-frame metrics (MER, noise, timing drift) at `debug`;
+the per-symbol timing step at `trace` only.
+
 ## Design notes
 
 - **Conventions.** Bits are `u8` 0/1; soft bits are `f32` LLRs

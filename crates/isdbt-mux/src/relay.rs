@@ -77,6 +77,7 @@ use isdb_ts::pcr::BASE_MODULUS;
 use isdb_ts::psi::{Cat, Pat, Pmt};
 use isdb_ts::reader::StreamReader;
 use isdb_ts::section::{Long, Short};
+use tracing::{debug, info, trace, warn};
 
 use crate::audio::AdtsEs;
 use crate::config::{
@@ -1673,6 +1674,17 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             None
         };
         if let Some(why) = why {
+            warn!(
+                pid = %s.elementary_pid,
+                role = class.role.name(),
+                stream_type = s.stream_type,
+                component_tag = tag,
+                why = why.as_str(),
+                "PID {} ({}, stream_type {:#04x}) not relayed: {why}",
+                s.elementary_pid,
+                class.role.name(),
+                s.stream_type
+            );
             skipped.push(format!(
                 "{:#06x} {} stream_type {:#04x}{}: {why}",
                 s.elementary_pid,
@@ -1693,6 +1705,30 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         let (special, drop): (Vec<_>, Vec<_>) = drop
             .into_iter()
             .partition(|d| d.tag == 0xC1 || (ca_keep && d.tag == 0x09));
+        // `ca = "drop"` removes the CA descriptors at the user's explicit
+        // request (CONTRIBUTING "Relay policy"): visible, but not a warning.
+        for d in &drop {
+            if d.tag == 0x09 {
+                info!(
+                    pid = %s.elementary_pid,
+                    tag = d.tag,
+                    role = class.role.name(),
+                    "PID {} ({}): conditional_access_descriptor dropped (ca = \"drop\")",
+                    s.elementary_pid,
+                    class.role.name()
+                );
+            } else {
+                warn!(
+                    pid = %s.elementary_pid,
+                    tag = d.tag,
+                    role = class.role.name(),
+                    "PID {} ({}): {} dropped (not carried over by the relay)",
+                    s.elementary_pid,
+                    class.role.name(),
+                    desc_name(d)
+                );
+            }
+        }
         es_ca_raw.push(
             special
                 .iter()
@@ -1771,6 +1807,11 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             if sc.pid_packets[usize::from(pid)] > 0 {
                 ca_src.push((pid, CaPidKind::Emm, sys));
             } else {
+                warn!(
+                    pid = %pid,
+                    ca_system_id = sys,
+                    "EMM PID {pid} (CA_system_id {sys:#06x}) has no packets in the probed part: CAT descriptor carried as is, nothing relayed"
+                );
                 ca_remarks.push(format!(
                     "EMM PID {pid:#06x} (CA_system_id {sys:#06x}) has no packets in the probed part: CAT descriptor carried as is, nothing relayed"
                 ));
@@ -1909,6 +1950,45 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         })
         .map(|p| (p, drop_reason(&sc, program, &pmt, pmt_pid, p, st.ca)))
         .collect();
+    for (p, why) in &dropped_pids {
+        debug!(pid = %p, why = why.as_str(), "PID {p} not relayed: {why}");
+    }
+    let dropped_program_descriptors: Vec<String> = pmt
+        .program_info
+        .iter()
+        .filter(|d| !(ca_keep && d.tag == 0x09))
+        .map(|d| {
+            let name = desc_name(d);
+            if d.tag == 0x09 {
+                info!(
+                    pid = %pmt_pid,
+                    tag = d.tag,
+                    program,
+                    "PID {pmt_pid} (PMT of program {program:#06x}): conditional_access_descriptor dropped (ca = \"drop\")"
+                );
+            } else {
+                warn!(
+                    pid = %pmt_pid,
+                    tag = d.tag,
+                    program,
+                    "PID {pmt_pid} (PMT of program {program:#06x}): source program descriptor {name} not carried (the PMT program loop is built from the configuration)"
+                );
+            }
+            name
+        })
+        .collect();
+    if ca_keep && (!ca.program_descriptors.is_empty() || !ca.cat_descriptors.is_empty()) {
+        info!(
+            program,
+            ecm_pids = ca_src.iter().filter(|c| c.1 == CaPidKind::Ecm).count(),
+            emm_pids = ca_src.iter().filter(|c| c.1 == CaPidKind::Emm).count(),
+            "program {program:#06x}: conditional access kept (ca = \"keep\"): {} PMT, {} CAT CA descriptors, {} ECM / {} EMM PIDs relayed; the payload is unscrambled",
+            ca.program_descriptors.len(),
+            ca.cat_descriptors.len(),
+            ca_src.iter().filter(|c| c.1 == CaPidKind::Ecm).count(),
+            ca_src.iter().filter(|c| c.1 == CaPidKind::Emm).count()
+        );
+    }
 
     // ---- pass 2: rates, scrambling, stream parameters, cut-in time
     let video = es
@@ -2155,6 +2235,22 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         }))
         .collect();
     let scanned = crate::relay_rate::scan(path, pmt.pcr_pid, &scan_pids)?;
+    info!(
+        path = %path.display(),
+        program,
+        chosen_by = chosen_by.as_str(),
+        streams = es.len(),
+        probed_s = span_s,
+        mean_bps,
+        peak_1s_bps = peak,
+        required_bps = scanned.profile.required_bps,
+        "ts-program {}: program {program:#06x} ({chosen_by}), {} streams relayed; {span_s:.1} s probed at {:.2} Mbit/s mean, {:.2} Mbit/s peak; the whole file needs {:.2} Mbit/s",
+        path.display(),
+        es.len(),
+        mean_bps / 1e6,
+        peak / 1e6,
+        scanned.profile.required_bps / 1e6
+    );
     Ok(Probe {
         path: path.to_path_buf(),
         program,
@@ -2166,12 +2262,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         pcr_pid: pmt.pcr_pid,
         es,
         skipped,
-        dropped_program_descriptors: pmt
-            .program_info
-            .iter()
-            .filter(|d| !(ca_keep && d.tag == 0x09))
-            .map(desc_name)
-            .collect(),
+        dropped_program_descriptors,
         source_copy_control,
         ca,
         span_s,
@@ -2974,8 +3065,18 @@ impl Relay {
             return;
         }
         let ei = k as usize - 1;
+        // Deviations only (never on the clean path): the TEI and CC events
+        // below fire on damaged input alone (`debug`, like the demux's); a
+        // scrambled stretch makes every packet a deviation, so that one is
+        // `trace`.
         if p[1] & 0x80 != 0 {
             self.stats.tei += 1;
+            debug!(
+                pid = %self.es[ei].pid,
+                src_pid = %packet_pid(&p),
+                "source PID {}: transport_error_indicator set, the PES in progress is dropped",
+                packet_pid(&p)
+            );
             self.damage(ei);
             return;
         }
@@ -2995,10 +3096,31 @@ impl Relay {
                         return;
                     }
                     self.stats.cc_errors += 1;
+                    debug!(
+                        pid = %e.pid,
+                        src_pid = %packet_pid(&p),
+                        expected = l.next().get(),
+                        got = cc.get(),
+                        "source PID {}: continuity_counter {} repeated with a different payload (expected {}), the PES in progress is dropped",
+                        packet_pid(&p),
+                        cc,
+                        l.next()
+                    );
                     self.damage(ei);
                 }
                 Some(l) if !cc.is_next_of(l) && !disc => {
                     self.stats.cc_errors += 1;
+                    debug!(
+                        pid = %e.pid,
+                        src_pid = %packet_pid(&p),
+                        expected = l.next().get(),
+                        got = cc.get(),
+                        "source PID {}: continuity_counter {} after {} (expected {}), the PES in progress is dropped",
+                        packet_pid(&p),
+                        cc,
+                        l,
+                        l.next()
+                    );
                     self.damage(ei);
                 }
                 _ => {}
@@ -3011,6 +3133,12 @@ impl Relay {
         }
         if h.transport_scrambling_control.is_scrambled() {
             self.stats.scrambled += 1;
+            trace!(
+                pid = %self.es[ei].pid,
+                src_pid = %packet_pid(&p),
+                "source PID {}: scrambled packet (transport_scrambling_control ≠ '00') not relayed, the PES in progress is dropped",
+                packet_pid(&p)
+            );
             self.damage(ei);
             return;
         }
@@ -3137,16 +3265,44 @@ impl Relay {
             0
         };
         let incomplete = (len != 0 && a.bytes.len() < 6 + len) || (len == 0 && at_eof);
+        let pid = self.es[ei].pid;
         if incomplete && at_eof {
             self.stats.eof_dropped += 1;
+            debug!(
+                pid = %pid,
+                bytes = a.bytes.len(),
+                "PID {pid}: PES cut by the end of the file dropped ({} bytes)",
+                a.bytes.len()
+            );
             return;
         }
         if a.damaged || incomplete || a.bytes.len() < 6 || a.bytes[..3] != [0, 0, 1] {
             self.stats.pes_dropped += 1;
+            debug!(
+                pid = %pid,
+                bytes = a.bytes.len(),
+                damaged = a.damaged,
+                incomplete,
+                "PID {pid}: PES dropped ({} bytes; {})",
+                a.bytes.len(),
+                if a.damaged {
+                    "damaged by a CC error, TEI or scrambling"
+                } else if incomplete {
+                    "shorter than its PES_packet_length"
+                } else {
+                    "no PES start code"
+                }
+            );
             return;
         }
         let Some(anchor) = a.anchor else {
             self.stats.pes_dropped += 1;
+            debug!(
+                pid = %pid,
+                bytes = a.bytes.len(),
+                "PID {pid}: PES dropped ({} bytes; untimed: no PCR before it)",
+                a.bytes.len()
+            );
             return;
         };
         let is_video = Some(ei) == self.video;
@@ -3393,6 +3549,31 @@ impl Relay {
         self.stats.passes += 1;
         self.stats.source_ticks += self.pass_last_t - self.pass_first_t.unwrap_or(0);
         self.stats.source_packets += std::mem::take(&mut self.pass_packets);
+        info!(
+            relay = self.name.as_str(),
+            pass = self.stats.passes,
+            source_s = self.stats.source_ticks as f64 / HZ as f64,
+            units_in = self.stats.units_in,
+            pes_dropped = self.stats.pes_dropped,
+            cc_errors = self.stats.cc_errors,
+            end = if self.at_eof == AtEof::End {
+                "end"
+            } else {
+                "loop"
+            },
+            "relay {}: pass {} read to the end of the file ({:.1} s of source so far, {} units in, {} PES dropped, {} CC errors); at_eof = \"{}\"",
+            self.name,
+            self.stats.passes,
+            self.stats.source_ticks as f64 / HZ as f64,
+            self.stats.units_in,
+            self.stats.pes_dropped,
+            self.stats.cc_errors,
+            if self.at_eof == AtEof::End {
+                "end"
+            } else {
+                "loop"
+            }
+        );
         self.win_1s.clear();
         self.win_100ms.clear();
         if let Some(c) = self.ctl.as_mut() {

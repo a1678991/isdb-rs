@@ -140,6 +140,17 @@ for l in 0..3 {
 assert!(full.iter().all(|p| p[0] == 0x47));
 ```
 
+The crate emits [`tracing`](https://docs.rs/tracing) events and never
+prints: the relay's decisions (a descriptor or stream not carried, a
+stream not selected) and the start-up and run-time warnings (over
+capacity, late PES, ADTS compliance) at `warn`; the copy-control and
+conditional-access decisions, the `ts-program` probe summary, a relay
+pass completed and a carousel rebuilt at `info`; CC errors, dropped PES
+and table version changes at `debug`; per-frame null fill and each table
+queued at `trace`. The `Vec<String>` reports (`notes()`, `warnings()`,
+`take_alerts()`, `Probe::report`) stay as they are; a binary installs the
+subscriber (`isdb --log-level`, `--log-format json`).
+
 ## Design notes
 
 - **Timing model.** Packet arrival = multiplex-frame slot: slot *j* of OFDM

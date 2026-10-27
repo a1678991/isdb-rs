@@ -849,3 +849,54 @@ fn raw_copy_control_overrides_are_reported() {
         "{notes}"
     );
 }
+
+/// The relay's decisions are `tracing` events as well as report lines
+/// (docs/plans/errors-and-logging.md §2.1): a source program descriptor
+/// the relay does not carry and an elementary stream it does not select
+/// are `WARN` events naming the PID in a field.
+#[test]
+fn relay_decisions_are_tracing_events() {
+    use tracing::Level;
+
+    let dir = tmpdir("relay-events");
+    let src_path = source_ts(&dir, 3.0, SOURCE_COPY);
+    let cfg = relay_config(&src_path, "");
+    let p = bench_params();
+    let (_mux, events) =
+        common::capture_events(|| Multiplexer::new(&cfg, &p, Path::new(".")).unwrap());
+    // the source PMT's digital_copy_control_descriptor is not carried as
+    // bytes (the service regenerates copy control): WARN, pid = the PMT PID
+    let dropped: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            e.message
+                .contains("program descriptor digital_copy_control_descriptor (0xc1) not carried")
+        })
+        .collect();
+    assert_eq!(dropped.len(), 1, "{events:#?}");
+    assert_eq!(dropped[0].level, Level::WARN);
+    assert_eq!(dropped[0].target, "isdbt_mux::relay");
+    assert_eq!(dropped[0].field("pid"), Some("0x0101"));
+    assert_eq!(dropped[0].field("tag"), Some("193"));
+    // the carousel stream not selected: WARN with its PID
+    let skipped = events
+        .iter()
+        .find(|e| e.message.contains("not relayed: section / carousel stream"))
+        .expect("skipped stream event");
+    assert_eq!(skipped.level, Level::WARN);
+    assert_eq!(skipped.field("pid"), Some("0x0150"));
+    assert_eq!(skipped.field("role"), Some("\"data carousel\""));
+    // the copy-control decision is an INFO event of the multiplexer
+    let cc = events
+        .iter()
+        .find(|e| {
+            e.message.contains(
+                "source copy control: copy-one-generation (PMT); relayed as: copy-free (explicit)",
+            )
+        })
+        .expect("copy control event");
+    assert_eq!(cc.level, Level::INFO);
+    assert_eq!(cc.target, "isdbt_mux::mux");
+    assert_eq!(cc.field("service_id"), Some("1024"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

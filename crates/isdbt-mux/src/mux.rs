@@ -31,6 +31,7 @@ use isdb_ts::pcr::Pcr;
 use isdb_ts::pes::{PesHeader, PesPacket, PtsDts};
 use isdbt_core::Params;
 use isdbt_fec::MultiplexPattern;
+use tracing::{debug, info, trace, warn};
 
 use crate::audio::AdtsEs;
 use crate::config::{ClockSource, Config, StreamKind};
@@ -229,6 +230,11 @@ impl Multiplexer {
             })?)?,
         };
         if !(0x7880..=0x7FE8).contains(&cfg.network.network_id) {
+            warn!(
+                network_id = cfg.network.network_id,
+                "network_id {:#06x} is outside the terrestrial TV range 0x7880–0x7FE8 (B10 Annex N)",
+                cfg.network.network_id
+            );
             warnings.push(format!(
                 "network_id {:#06x} is outside the terrestrial TV range 0x7880–0x7FE8 (B10 Annex N)",
                 cfg.network.network_id
@@ -300,6 +306,11 @@ impl Multiplexer {
                     && probe.ca.source_free_ca_mode == Some(true)
                     && !s.free_ca_mode
                 {
+                    info!(
+                        service_id = s.service_id,
+                        "service {:#06x}: the source SDT signals free_CA_mode 1; this service sends free_CA_mode 0 (service key free_ca_mode)",
+                        s.service_id
+                    );
                     notes.push(format!(
                         "service {:#06x}: the source SDT signals free_CA_mode 1; this service sends free_CA_mode 0 (service key free_ca_mode)",
                         s.service_id
@@ -308,6 +319,15 @@ impl Multiplexer {
                 if st.eit_from_source {
                     let ev = relay::source_events(&probe);
                     if ev.is_empty() {
+                        warn!(
+                            service_id = s.service_id,
+                            path = %probe.path.display(),
+                            program = probe.program,
+                            "service {:#06x}: eit_from_source: the probed part of {} has no EIT p/f of program {:#06x}; the configured events are used",
+                            s.service_id,
+                            probe.path.display(),
+                            probe.program
+                        );
                         warnings.push(format!(
                             "service {:#06x}: eit_from_source: the probed part of {} has no EIT p/f of program {:#06x}; the configured events are used",
                             s.service_id,
@@ -315,19 +335,28 @@ impl Multiplexer {
                             probe.program
                         ));
                     } else {
-                        notes.push(format!(
-                            "service {:#06x}: EIT p/f from the source: {}",
-                            s.service_id,
-                            ev.iter()
-                                .map(|e| format!(
+                        let list = ev
+                            .iter()
+                            .map(|e| {
+                                format!(
                                     "{:#06x} \"{}\" {} at {:+} s",
                                     e.event_id,
                                     e.name,
                                     e.duration,
                                     e.start_offset_s.unwrap_or(0)
-                                ))
-                                .collect::<Vec<_>>()
-                                .join(", ")
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        info!(
+                            service_id = s.service_id,
+                            events = ev.len(),
+                            "service {:#06x}: EIT p/f from the source: {list}",
+                            s.service_id
+                        );
+                        notes.push(format!(
+                            "service {:#06x}: EIT p/f from the source: {list}",
+                            s.service_id
                         ));
                         events = Some(ev);
                     }
@@ -367,14 +396,24 @@ impl Multiplexer {
                 } else {
                     "; per-component (ES loop) copy control: dropped (not \"source\")".to_string()
                 };
+                let source = source_cc
+                    .iter()
+                    .map(|c| c.describe())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // The copy-control decision of CONTRIBUTING "Relay policy":
+                // the source's value is reported whenever it is relayed.
+                info!(
+                    service_id = s.service_id,
+                    source = source.as_str(),
+                    relayed = relayed.as_str(),
+                    es_loops_kept = keep_source_cc,
+                    "service {:#06x}: source copy control: {source}; relayed as: {relayed}{es_loops}",
+                    s.service_id
+                );
                 notes.push(format!(
-                    "service {:#06x}: source copy control: {}; relayed as: {relayed}{es_loops}",
-                    s.service_id,
-                    source_cc
-                        .iter()
-                        .map(|c| c.describe())
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    "service {:#06x}: source copy control: {source}; relayed as: {relayed}{es_loops}",
+                    s.service_id
                 ));
             }
             if s.streams
@@ -628,11 +667,18 @@ impl Multiplexer {
             }
             let by = copy_control_overrides(cfg, i);
             if !by.is_empty() {
+                let sent = sent_copy_control(&si, i, clock_start)?;
+                let by = by.join(", ");
+                info!(
+                    service_id = s.service_id,
+                    set_by = by.as_str(),
+                    sent = sent.as_str(),
+                    "service {:#06x}: copy control set by raw configuration ({by}); as sent: {sent}",
+                    s.service_id
+                );
                 notes.push(format!(
-                    "service {:#06x}: copy control set by raw configuration ({}); as sent: {}",
-                    s.service_id,
-                    by.join(", "),
-                    sent_copy_control(&si, i, clock_start)?
+                    "service {:#06x}: copy control set by raw configuration ({by}); as sent: {sent}",
+                    s.service_id
                 ));
             }
         }
@@ -854,9 +900,35 @@ impl Multiplexer {
                             ),
                         });
                     }
-                    crate::config::RateCheck::Warn => warnings.push(msg),
+                    crate::config::RateCheck::Warn => {
+                        warn!(
+                            path = %probe.path.display(),
+                            layer = %id,
+                            need_bps = need,
+                            capacity_bps = cap,
+                            "{msg} (rate_check = \"warn\": relayed anyway; it falls behind its PCR schedule and its PES, audio first, arrive after their decoding time)"
+                        );
+                        warnings.push(msg);
+                    }
                 }
             }
+            info!(
+                path = %probe.path.display(),
+                layer = %id,
+                capacity_bps = cap,
+                need_bps = need,
+                usage_pct = 100.0 * need / cap,
+                required_bps = rate.required_bps,
+                overhead_bps = overhead,
+                mean_bps = rate.mean_bps,
+                "ts-program {}: layer {id} {:.2} Mbit/s = {:.1} % needed by relay + PCR/SI ({:.2} + {:.2} Mbit/s; whole-file mean {:.2} Mbit/s)",
+                probe.path.display(),
+                cap / 1e6,
+                100.0 * need / cap,
+                rate.required_bps / 1e6,
+                overhead / 1e6,
+                rate.mean_bps / 1e6
+            );
             notes.push(format!(
                 "ts-program {}: layer {id} {:.2} Mbit/s = {:.1} % needed by relay + PCR/SI ({:.2} + {:.2} Mbit/s; whole-file mean {:.2} Mbit/s)",
                 probe.path.display(),
@@ -886,6 +958,15 @@ impl Multiplexer {
                     * 8.0
                     / params.frame_seconds();
                 if v.seq.bit_rate as f64 > 0.95 * cap {
+                    warn!(
+                        pid = %e.pid,
+                        bit_rate = v.seq.bit_rate,
+                        capacity_bps = cap,
+                        "video PID {:#06x}: bit_rate {} bit/s close to/above layer payload capacity {:.0} bit/s",
+                        e.pid,
+                        v.seq.bit_rate,
+                        cap
+                    );
                     warnings.push(format!(
                         "video PID {:#06x}: bit_rate {} bit/s close to/above layer payload capacity {:.0} bit/s",
                         e.pid, v.seq.bit_rate, cap
@@ -938,6 +1019,12 @@ impl Multiplexer {
             Ok(s) => s,
             Err(e) => {
                 if w.pending.take().is_some() {
+                    warn!(
+                        what = cur.source.what.as_str(),
+                        error = %e,
+                        "{}: {e}",
+                        cur.source.what
+                    );
                     self.alerts.push(format!("{}: {e}", cur.source.what));
                 }
                 return;
@@ -948,10 +1035,15 @@ impl Multiplexer {
             return;
         }
         if w.pending.as_ref() != Some(&snap) {
+            debug!(
+                what = cur.source.what.as_str(),
+                "{}: source files changed, rebuilt if unchanged at the next check", cur.source.what
+            );
             w.pending = Some(snap);
             return;
         }
         w.pending = None;
+        // carousel::build emits the `info!` of the rebuild (module list).
         match crate::carousel::build(&cur.source, Some(cur)) {
             Ok(new) => {
                 for line in new.report.iter().filter(|l| l.contains("rebuilt")) {
@@ -959,10 +1051,18 @@ impl Multiplexer {
                 }
                 self.si.media[i][k] = StreamInfo::Carousel(std::sync::Arc::new(new));
             }
-            Err(e) => self.alerts.push(format!(
-                "{}: not rebuilt, the carousel on air is kept: {e}",
-                cur.source.what
-            )),
+            Err(e) => {
+                warn!(
+                    what = cur.source.what.as_str(),
+                    error = %e,
+                    "{}: not rebuilt, the carousel on air is kept: {e}",
+                    cur.source.what
+                );
+                self.alerts.push(format!(
+                    "{}: not rebuilt, the carousel on air is kept: {e}",
+                    cur.source.what
+                ));
+            }
         }
     }
 
@@ -1182,7 +1282,17 @@ impl Multiplexer {
                     let p = match self.decide(l, idx[l], k, j, t) {
                         Ok(p) => p,
                         Err(e) => {
+                            // the first 100 only, like the Vec (a broken
+                            // stream would otherwise flood the log)
                             if self.stats.errors.len() < 100 {
+                                warn!(
+                                    frame = k,
+                                    slot = j,
+                                    layer = %isdbt_core::Layer::ALL[l],
+                                    error = %e,
+                                    "frame {k} slot {j} (layer {}): {e}; a null packet is sent instead",
+                                    isdbt_core::Layer::ALL[l]
+                                );
                                 self.stats.errors.push(e.to_string());
                             }
                             None
@@ -1200,6 +1310,18 @@ impl Multiplexer {
         }
         self.frame += 1;
         self.stats.frames = self.frame;
+        // Per frame (not per packet): the null fill of each layer.
+        trace!(
+            frame = k,
+            nulls_a = self.stats.layer_nulls[0],
+            nulls_b = self.stats.layer_nulls[1],
+            nulls_c = self.stats.layer_nulls[2],
+            "frame {k} done: {} slots, null packets so far A {} B {} C {}",
+            n,
+            self.stats.layer_nulls[0],
+            self.stats.layer_nulls[1],
+            self.stats.layer_nulls[2]
+        );
         self.check_relay_lateness();
         out
     }
@@ -1216,6 +1338,17 @@ impl Multiplexer {
             if late == *seen || last.is_some_and(|l| now - l < LATE_ALERT_INTERVAL_S) {
                 continue;
             }
+            warn!(
+                relay = r.name.as_str(),
+                late_pes = late,
+                lag_s = r.stats.lag as f64 / HZ as f64,
+                max_lateness_s = r.stats.max_lateness as f64 / HZ as f64,
+                "relay {}: {} PES so far left after their decoding time (lag {:.3} s, max {:.3} s): receivers drop them, audio first; the layer carries less than the source needs here (choose a layout with more capacity)",
+                r.name,
+                late,
+                r.stats.lag as f64 / HZ as f64,
+                r.stats.max_lateness as f64 / HZ as f64
+            );
             self.alerts.push(format!(
                 "relay {}: {} PES so far left after their decoding time (lag {:.3} s, max {:.3} s): receivers drop them, audio first; the layer carries less than the source needs here (choose a layout with more capacity)",
                 r.name,
@@ -1389,9 +1522,26 @@ impl Multiplexer {
                 version = (version + 1) & 0x1F;
                 secs = self.si.build(kind, now, version)?;
                 self.stats.version_changes += 1;
+                debug!(
+                    table = kind.name(),
+                    pid = %self.sections[i].pid,
+                    version,
+                    "{} on PID {}: contents changed, version_number {version}",
+                    kind.name(),
+                    self.sections[i].pid
+                );
             }
             *self.stats.tables.entry(kind.name()).or_default() += 1;
             let pid = self.sections[i].pid;
+            trace!(
+                table = kind.name(),
+                pid = %pid,
+                version,
+                sections = secs.len(),
+                "{} on PID {pid}: {} section(s) queued, version_number {version}",
+                kind.name(),
+                secs.len()
+            );
             // CC continuity across streams sharing the PID: use the first stream's counter.
             let owner = self.sections.iter().position(|x| x.pid == pid).unwrap_or(i);
             let mut cc = self.sections[owner].cc;

@@ -26,6 +26,7 @@ use isdb_si::dsmcc::{
     DiiBody, DiiModule, ModuleDescriptor, download_id, module_blocks, transaction_id,
 };
 use isdb_si::values::CodedValue;
+use tracing::{debug, info};
 
 use crate::config::{BmlCfg, BmlModuleCfg, HybridcastCfg, SourceEncoding, StreamCfg};
 use crate::error::{MuxError, Result};
@@ -837,36 +838,66 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
         acc += d.len();
         sections.push(d);
     }
+    let module_list = modules
+        .iter()
+        .map(|m| {
+            format!(
+                "{:#06x}{}[{}]",
+                m.id,
+                if m.multipart { " multipart" } else { "" },
+                m.resources
+                    .iter()
+                    .map(|r| r.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let ddbs = sections.len() - sections.iter().filter(|s| s[0] == 0x3B).count();
     if prev.is_some() {
+        let changed_list = changed
+            .iter()
+            .map(|id| format!("{id:#06x} (version {})", module_versions[id]))
+            .collect::<Vec<_>>()
+            .join(", ");
+        info!(
+            what,
+            transaction_number,
+            changed = changed.len(),
+            removed,
+            modules = modules.len(),
+            component_size,
+            "{what}: carousel rebuilt, transaction {transaction_number}: modules changed {changed_list}{}; modules now: {module_list}",
+            if removed { ", modules removed" } else { "" }
+        );
         report.push(format!(
-            "{what}: carousel rebuilt, transaction {transaction_number}: modules changed {}{}",
-            changed
-                .iter()
-                .map(|id| format!("{id:#06x} (version {})", module_versions[id]))
-                .collect::<Vec<_>>()
-                .join(", "),
+            "{what}: carousel rebuilt, transaction {transaction_number}: modules changed {changed_list}{}",
             if removed { ", modules removed" } else { "" }
         ));
+    } else {
+        debug!(
+            what,
+            component_tag,
+            modules = modules.len(),
+            component_size,
+            ddbs,
+            block_size = bml.block_size,
+            cycle_s,
+            bitrate_kbps = bml.bitrate_kbps,
+            "{what}: component_tag {component_tag:#04x}, {} module(s), {component_size} bytes, {ddbs} DDB(s) of {} bytes, cycle ≈ {cycle_s:.2} s at {} kbit/s: {module_list}",
+            modules.len(),
+            bml.block_size,
+            bml.bitrate_kbps
+        );
     }
     report.insert(
         0,
         format!(
-            "{what}: component_tag {component_tag:#04x}, {} module(s), {component_size} bytes, {} DDB(s) of {} bytes, cycle ≈ {:.2} s at {} kbit/s: {}",
+            "{what}: component_tag {component_tag:#04x}, {} module(s), {component_size} bytes, {ddbs} DDB(s) of {} bytes, cycle ≈ {cycle_s:.2} s at {} kbit/s: {module_list}",
             modules.len(),
-            sections.len() - sections.iter().filter(|s| s[0] == 0x3B).count(),
             bml.block_size,
-            cycle_s,
-            bml.bitrate_kbps,
-            modules
-                .iter()
-                .map(|m| format!(
-                    "{:#06x}{}[{}]",
-                    m.id,
-                    if m.multipart { " multipart" } else { "" },
-                    m.resources.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
-                ))
-                .collect::<Vec<_>>()
-                .join("; ")
+            bml.bitrate_kbps
         ),
     );
     Ok(Carousel {

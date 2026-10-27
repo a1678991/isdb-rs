@@ -84,6 +84,7 @@ use isdbt_ofdm::{C32, DemodConfig, DemodFrame, Demodulator, Modulator};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver as Receiver_, SyncSender, channel, sync_channel};
+use tracing::debug;
 
 /// A 188-byte transport stream packet.
 pub type Packet = [u8; TSP];
@@ -333,6 +334,17 @@ impl FrameDecoder {
     pub fn decode(&mut self, f: DemodFrame) -> Result<RxFrame> {
         if self.chain.as_ref().is_none_or(|c| c.params != f.params) {
             let p = f.params.clone();
+            debug!(
+                frame = f.frame_number,
+                mode = p.mode().number(),
+                guard = p.guard().denominator(),
+                layers = p.active_layers().count(),
+                "channel decoders configured from the TMCC of frame {}: mode {}, GI 1/{}, {} layer(s)",
+                f.frame_number,
+                p.mode().number(),
+                p.guard().denominator(),
+                p.active_layers().count()
+            );
             self.chain = Some(RxChain {
                 decoders: std::array::from_fn(|i| {
                     p.layers()[i]
@@ -352,6 +364,23 @@ impl FrameDecoder {
                 continue;
             };
             let d = dec.decode_frame(llr)?;
+            let tx_frame = f.frame_number as i64
+                - f.latency_frames as i64
+                - isdbt_fec::layer::LATENCY_FRAMES as i64;
+            debug!(
+                tx_frame,
+                layer = %Layer::ALL[i],
+                clean = d.stats.clean,
+                corrected_packets = d.stats.corrected_packets,
+                corrected_bytes = d.stats.corrected_bytes,
+                uncorrectable = d.stats.uncorrectable,
+                "frame {tx_frame} layer {}: RS {} clean, {} corrected ({} bytes), {} uncorrectable",
+                Layer::ALL[i],
+                d.stats.clean,
+                d.stats.corrected_packets,
+                d.stats.corrected_bytes,
+                d.stats.uncorrectable
+            );
             let mut pkts = d.tsps_188();
             for (p, s) in pkts.iter_mut().zip(&d.status) {
                 if *s == RsStatus::Uncorrectable {

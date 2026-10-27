@@ -43,6 +43,40 @@ use acquire::{
 use chanest::ChannelEstimator;
 use isdbt_core::{GuardInterval, Layer, Mode, Modulation, Params, SYMBOLS_PER_FRAME};
 use std::collections::VecDeque;
+use tracing::{debug, info, trace};
+
+/// `mode 3, GI 1/8, A: 1seg DQPSK 1/2 TI 4; B: 12seg 64QAM 3/4 TI 2`
+/// (events; `isdbt_core` has no `Display` for `Params`).
+fn describe(p: &Params) -> String {
+    let mut s = format!(
+        "mode {}, GI 1/{}",
+        p.mode().number(),
+        p.guard().denominator()
+    );
+    if p.partial_reception() {
+        s += ", partial reception";
+    }
+    for (id, l) in p.active_layers() {
+        let m = match l.modulation {
+            Modulation::Dqpsk => "DQPSK",
+            Modulation::Qpsk => "QPSK",
+            Modulation::Qam16 => "16QAM",
+            Modulation::Qam64 => "64QAM",
+        };
+        let (n, d) = l.code_rate.ratio();
+        s += &format!(
+            ", {id}: {}seg {m} {n}/{d} TI {}",
+            l.segments,
+            l.time_interleave.length(p.mode())
+        );
+    }
+    s
+}
+
+/// Carrier frequency offset in Hz of `cfo` carrier spacings in `mode`.
+fn cfo_hz(mode: Mode, cfo: f64) -> f64 {
+    cfo * isdbt_core::sample_rate_hz() / mode.fft_size() as f64
+}
 
 /// Receiver configuration.
 #[derive(Debug, Clone)]
@@ -514,6 +548,18 @@ impl Demodulator {
         match detect_mode(&window, &modes, &guards) {
             Some(g) if g.metric > 0.3 => {
                 let start = self.base + g.offset as u64;
+                debug!(
+                    mode = g.mode.number(),
+                    guard = g.guard.denominator(),
+                    metric = g.metric,
+                    cfo_frac = g.cfo_frac,
+                    start_sample = start,
+                    "signal detected: mode {}, GI 1/{} (guard correlation {:.2}), fractional CFO {:+.3} carriers; acquiring",
+                    g.mode.number(),
+                    g.guard.denominator(),
+                    g.metric,
+                    g.cfo_frac
+                );
                 let ex =
                     Extractor::new(g.mode, g.guard, start, g.cfo_frac, self.cfg.timing_backoff);
                 self.acq = Some(Box::new(Acq {
@@ -559,12 +605,26 @@ impl Demodulator {
                 acq.raw.clear();
                 acq.ex.cfo = acq.guess.cfo_frac + d as f64;
                 acq.ex.pos = acq.first_start as f64;
+                debug!(
+                    cfo_integer = d,
+                    cfo_carriers = acq.ex.cfo,
+                    offset_hz = cfo_hz(mode, acq.ex.cfo),
+                    "carrier offset: {d:+} whole carriers, {:+.3} carriers = {:+.0} Hz in all",
+                    acq.ex.cfo,
+                    cfo_hz(mode, acq.ex.cfo)
+                );
             }
             return true;
         }
         // Give up after 3 frames without TMCC lock and search again.
         if acq.spectra.len() > 3 * SYMBOLS_PER_FRAME + self.cfg.continual_symbols {
             let keep = acq.ex.next_start();
+            debug!(
+                mode = mode.number(),
+                symbols = acq.spectra.len(),
+                "no TMCC frame sync in {} symbols: searching again",
+                acq.spectra.len()
+            );
             self.acq = None;
             self.drop_before(keep);
             return true;
@@ -621,6 +681,20 @@ impl Demodulator {
             };
             // Lock.
             let acq = self.acq.take().expect("acq");
+            info!(
+                mode = params.mode().number(),
+                guard = params.guard().denominator(),
+                cfo_carriers = acq.ex.cfo,
+                offset_hz = cfo_hz(mode, acq.ex.cfo),
+                gi_metric = acq.guess.metric,
+                start_sample = acq.starts[f],
+                params = %describe(&params),
+                "locked: {} at sample {}; carrier offset {:+.3} carriers ({:+.0} Hz)",
+                describe(&params),
+                acq.starts[f],
+                acq.ex.cfo,
+                cfo_hz(mode, acq.ex.cfo)
+            );
             self.start_track(*acq, f, params);
             return true;
         }
@@ -739,13 +813,83 @@ impl Demodulator {
             } else {
                 t.bad_frames += 1;
             }
-            let changed = fr.tmcc.parity.is_ok()
-                && fr
-                    .tmcc
-                    .info
-                    .params(t.params.mode(), t.params.guard())
-                    .is_ok_and(|p| p != t.params);
+            let new_params = fr
+                .tmcc
+                .parity
+                .is_ok()
+                .then(|| fr.tmcc.info.params(t.params.mode(), t.params.guard()).ok())
+                .flatten()
+                .filter(|p| *p != t.params);
+            let changed = new_params.is_some();
             let lost = t.bad_frames >= 4;
+            debug!(
+                frame = fr.frame_number,
+                valid = fr.valid,
+                tmcc_ok = fr.tmcc.parity.is_ok(),
+                mer_a_db = fr.metrics.mer_db[0],
+                mer_b_db = fr.metrics.mer_db[1],
+                mer_c_db = fr.metrics.mer_db[2],
+                n0 = fr.metrics.n0,
+                cfo_carriers = fr.metrics.cfo_carriers,
+                timing_drift = fr.metrics.timing_drift,
+                timing_correction = fr.metrics.timing_correction,
+                "frame {}: TMCC {}, MER {} dB, CFO {:+.3} carriers, timing drift {:+.4} samples/symbol (corrected {:+.1} samples)",
+                fr.frame_number,
+                if fr.tmcc.parity.is_ok() {
+                    "ok"
+                } else {
+                    "uncorrectable"
+                },
+                Layer::ALL
+                    .iter()
+                    .filter_map(|l| fr.metrics.mer_db[l.index()].map(|m| format!("{l} {m:.1}")))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                fr.metrics.cfo_carriers,
+                fr.metrics.timing_drift,
+                fr.metrics.timing_correction
+            );
+            if fr.frame_number == t.latency as u64 + 1 {
+                info!(
+                    frame = fr.frame_number,
+                    mer_a_db = fr.metrics.mer_db[0],
+                    mer_b_db = fr.metrics.mer_db[1],
+                    mer_c_db = fr.metrics.mer_db[2],
+                    n0 = fr.metrics.n0,
+                    cfo_carriers = fr.metrics.cfo_carriers,
+                    offset_hz = cfo_hz(t.params.mode(), fr.metrics.cfo_carriers),
+                    timing_drift = fr.metrics.timing_drift,
+                    "deinterleavers primed after {} frames: MER {} dB, carrier offset {:+.3} carriers ({:+.0} Hz), timing drift {:+.4} samples/symbol",
+                    fr.frame_number,
+                    Layer::ALL
+                        .iter()
+                        .filter_map(|l| fr.metrics.mer_db[l.index()].map(|m| format!("{l} {m:.1}")))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    fr.metrics.cfo_carriers,
+                    cfo_hz(t.params.mode(), fr.metrics.cfo_carriers),
+                    fr.metrics.timing_drift
+                );
+            }
+            if let Some(p) = &new_params {
+                info!(
+                    frame = fr.frame_number,
+                    from = %describe(&t.params),
+                    to = %describe(p),
+                    "TMCC announces new parameters at frame {}: {} -> {}; re-acquiring",
+                    fr.frame_number,
+                    describe(&t.params),
+                    describe(p)
+                );
+            } else if lost {
+                info!(
+                    frame = fr.frame_number,
+                    bad_frames = t.bad_frames,
+                    "lock lost at frame {}: {} consecutive frames with uncorrectable TMCC; searching again",
+                    fr.frame_number,
+                    t.bad_frames
+                );
+            }
             out.push(fr);
             if changed || lost {
                 let keep = t.ex.next_start();
@@ -796,6 +940,16 @@ impl Track {
             let already = (self.ex.rate - 1.0) * p;
             self.ex.rate = 1.0 + self.drift / p;
             self.ex.adjust(c - already);
+            trace!(
+                symbol = j,
+                measured = delta,
+                drift = self.drift,
+                step = c,
+                total = self.timing_total,
+                "symbol {j}: timing step {c:+.4} samples (measured {delta:+.4}, drift {:+.4} samples/symbol, {:+.1} samples since lock)",
+                self.drift,
+                self.timing_total
+            );
         }
         self.ring.push_back((j, start, y));
         if self.ring.len() as u64 > 2 * self.lookahead + 1 {
