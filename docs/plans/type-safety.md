@@ -289,16 +289,25 @@ diff, as `--fix` can produce `u64::from(a) + u64::from(b)` where one
   `isdb-radio` 5, `isdb-tlv` 6), each remaining cast replaced by
   `try_from` + the crate's error or `#[allow]` with a one-line reason.
 
+### Done so far
+
+Everything in A–F, G1, G2, H1–H3 is merged on `feat/pluto-backend` at
+`8cfe997`, full ladder green. What remains is below.
+
 ### G. Later (not dispatched now)
 
-- `Pid(u16)` newtype in `isdb-ts` (13 bits, `pid: u16` × 118 sites; H.222.0
-  Table 2-3 reserved PIDs as consts on it), `TableId(u8)` with the B10
-  Table 5-2 assignment and `table_allowed_on_pid` as a method.
-- `ContinuityCounter(u8)` with `wrapping_next()` (4 bits), replacing the
-  `& 0x0F` arithmetic in `cc.rs` and the muxer.
-- `segments: usize` in `LayerConfig` → `Segments(u8)` 1..=13 (Table 3-31),
-  removing `ParamError::EmptyLayer` and the `1..=13` check in TMCC decode.
-- `cast_possible_truncation = "warn"` per crate as counts reach zero.
+- `TableId(u8)` in `isdb-ts` with the B10 Table 5-2 assignment and
+  `table_allowed_on_pid` as a method (the `Pid` item left `table_id: u8`
+  on purpose; 28 field sites).
+- `cast_possible_truncation` on the remaining crates, in order of count:
+  `isdb-mmt` 23, `isdb-iq` 25, `isdbs-phy` 31, `isdb-fec` 32, `isdbt-phy`
+  35, `isdb-analyze` 41, `isdbs3-phy` 42, `isdb-ts` 59, `isdbt-ofdm` 75,
+  `isdb-cli` 91, `isdbt-mux` 114, `isdb-frontend` 130, `isdb-si` 152.
+  The DSP crates will need more `#[allow]`s than the codec crates; each
+  needs its one-line invariant.
+- `cast_sign_loss` / `cast_possible_wrap` (326) and `cast_precision_loss`
+  (594): not yet triaged; most precision losses are `usize as f64` in
+  reports and are harmless, so that lint may stay off.
 - The raw-byte TSC/AFC readers outside `isdb-ts` (`p[3] >> 6`,
   `(p[3] >> 4) & 3` in `isdb-analyze/src/{scan,validate}.rs`,
   `isdb-cli/src/{source,tx}.rs`, `isdbt-mux/src/{config,relay}.rs`,
@@ -318,6 +327,8 @@ merged tree. What each agent reported:
 | G1 `Segments` | 85 sites, 40 files + oracle | `isdbt-core` 7 → 6; `ParamError::EmptyLayer` gone; `bit_delay_adjustment_bits` takes `Segments` | none |
 | G2 `Pid` | ~230 sites, 68 files; `tools/newtype-wrap.py` added | `isdb-ts` 78 → 70, `isdb-si` 217 → 213, `isdb-analyze` 136 → 123, `isdbt-mux` 171 → 158; serde range check on TOML load | Table 2-3 verbatim; `Pid::IPMP` (0x0003) added; `Display` is lower-case hex because the analysers print `{:#06x}` |
 | H3 truncation lint | 14 casts in 6 crates, 3 `#[allow]`s with reasons | `#![warn(cast_possible_truncation)]` in `isdbt-core`, `isdb-hackrf`, `isdb-iio`, `isdb-text`, `isdb-radio`, `isdb-tlv` | `isdb_tlv::Packet::encode` is fallible; the panicking `bytes()` it first kept was removed in `3756d6b` |
+| H1 canonical payloads | 0 outside the enum files | 11 enums in 6 crates carry `Reserved(ReservedCode)` with a `pub(crate)` constructor; `compile_fail,E0624` doctest per crate; exhaustive mask tests | per-crate newtype (three crates do not depend on `isdb-ts`); `UserDefinedCode` in `isdb-ts` per Table 2-4's wording |
+| H2 `ContinuityCounter` + raw readers | 22 literal sites + the relay, pcrclock, scan, source, broadcast_ts readers | `isdb-ts` 70 → 69; relay reads TSC/AFC/CC through `Header`; muxer throughput 4.11× → 4.05× real time (noise) | `tx.rs`, `config.rs`, `validate.rs` had no raw readers (the list in H2 was stale); test-only byte oracles left as is |
 | F cast sweep | 632 casts, 81 files, all by `clippy --fix`; `cast_lossless = "warn"` now on (`58515da`) | unchanged | none; `From`-only diff, round-trip checked by a normaliser |
 | A `isdb-ts` | 2 sites, 2 files (the 17 planned callers read raw bytes, not `Header`) | 80 → 78 | none; H.222.0 Tables 2-4/2-5 verbatim |
 | B `isdbt-ofdm` | 0 outside `tmcc.rs` | 26 → 22 | Table 3-30 '100' "not used" (sound broadcasting) kept as `Reserved(0b100)`; unused layer decided by the modulation field alone |
@@ -333,7 +344,9 @@ item G's `Segments(u8)` retires.
 
 Cast census after A–E (`tools/type-census.sh`): 903 truncate, 632
 lossless, 327 sign/wrap, 594 precision, total **2 456** (was 2 462): the
-enum items were never about casts; item F is.
+enum items were never about casts; item F is. **After H2** (`8cfe997`):
+876 truncate, 0 lossless, 326 sign/wrap, 594 precision, total **1 796**;
+bare-integer `pub` fields 893 (was ≈ 960).
 
 **Independent review of A–F** (read-only agent, tree at `86972d6`, no
 shell so no old-vs-new diff; the two questions it raised were checked
