@@ -14,6 +14,10 @@
 //! Interpretations are in `SPEC-NOTES.md` next to this crate. The receive
 //! chain that uses these is `isdbs-phy`.
 
+// Libraries report through `tracing` events and return values, never by
+// printing (docs/plans/errors-and-logging.md section 2.1).
+#![warn(clippy::print_stdout, clippy::print_stderr)]
+
 pub mod burst;
 pub mod combination;
 pub mod frame;

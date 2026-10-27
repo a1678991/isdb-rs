@@ -14,6 +14,10 @@
 //! The outer BCH code and the LDPC machinery are system-neutral and live in
 //! `isdb-fec`. Interpretations of the standard are in SPEC-NOTES.md.
 
+// Libraries report through `tracing` events and return values, never by
+// printing (docs/plans/errors-and-logging.md section 2.1).
+#![warn(clippy::print_stdout, clippy::print_stderr)]
+
 pub mod constellation;
 pub mod dispersal;
 pub mod interleave;

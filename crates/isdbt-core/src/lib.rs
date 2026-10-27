@@ -34,6 +34,10 @@
 //! assert_eq!(p.frame_ticks_27mhz(), 6_246_072); // 231.336 ms × 27 MHz
 //! ```
 
+// Libraries report through `tracing` events and return values, never by
+// printing (docs/plans/errors-and-logging.md section 2.1).
+#![warn(clippy::print_stdout, clippy::print_stderr)]
+
 pub mod fec_params;
 pub mod ofdm_params;
 pub mod params;

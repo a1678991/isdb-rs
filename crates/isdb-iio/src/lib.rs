@@ -55,6 +55,9 @@
 //! # Ok::<(), isdb_iio::Error>(())
 //! ```
 
+// Libraries report through `tracing` events and return values, never by
+// printing (docs/plans/errors-and-logging.md section 2.1).
+#![warn(clippy::print_stdout, clippy::print_stderr)]
 #![allow(unsafe_code)]
 
 mod ffi;

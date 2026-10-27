@@ -474,6 +474,11 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- Every library crate denies printing: `#![warn(clippy::print_stdout,
+  clippy::print_stderr)]` in its `lib.rs` (CI runs clippy with `-D
+  warnings`), with `allow-print-in-tests` in the new `clippy.toml` for
+  unit tests. Libraries report through `tracing` events and return
+  values; only `isdb-cli`, examples and tests print.
 - `isdb-ts`: `Pid::of_packet` and the new `Header::of_packet` take the
   packet as `&[u8; 188]` and cannot fail (the length is the type);
   `Pid::of_bytes` is the fallible form for a slice. The seven

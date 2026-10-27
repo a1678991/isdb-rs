@@ -14,6 +14,10 @@
 //!
 //! Payload scrambling (ACAS) is recognised, never removed (project policy).
 
+// Libraries report through `tracing` events and return values, never by
+// printing (docs/plans/errors-and-logging.md section 2.1).
+#![warn(clippy::print_stdout, clippy::print_stderr)]
+
 pub mod ip;
 pub mod mmtp;
 pub mod si;

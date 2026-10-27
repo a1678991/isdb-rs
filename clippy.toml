@@ -1,0 +1,5 @@
+# Libraries do not print (docs/plans/errors-and-logging.md §2.1): each
+# library's lib.rs carries `#![warn(clippy::print_stdout,
+# clippy::print_stderr)]`. Their unit tests may print (progress of a long
+# test, a SKIP line), so print macros are allowed in #[cfg(test)] code.
+allow-print-in-tests = true

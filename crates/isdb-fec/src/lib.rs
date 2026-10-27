@@ -13,6 +13,9 @@
 //! `isdbs-core`. Coded bits are `u8` 0/1 values; soft bits are `f32` LLRs
 //! ln P(b=0)/P(b=1).
 
+// Libraries report through `tracing` events and return values, never by
+// printing (docs/plans/errors-and-logging.md section 2.1).
+#![warn(clippy::print_stdout, clippy::print_stderr)]
 #![cfg_attr(isdb_fec_portable_simd, feature(portable_simd))]
 
 pub mod bch;

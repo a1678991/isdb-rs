@@ -76,9 +76,17 @@ took `&[u8]` and returned `Option` while every caller held a `[u8; 188]`.
 - **Tests.** Stderr substring matches keep working because the message
   text is unchanged. A test that needs a field parses `--log-format json`
   (`tests/cli.rs::diagnostics_are_structured_events` is the model). For a
-  library event, a test may install `tracing_subscriber::fmt().with_test_writer()`
-  or a custom `Layer` capturing events; keep it to the few events whose
-  presence is the behaviour under test.
+  library event, a test captures events with a custom `Layer`; keep it to
+  the few events whose presence is the behaviour under test. **Install
+  the capturing subscriber globally and filter by thread**, as
+  `isdbt-mux/tests/common/mod.rs` and `isdb-radio`'s `queued` tests do:
+  `tracing` caches per event site whether any subscriber is interested,
+  so a scoped `with_default` subscriber misses events when another test
+  thread without a subscriber reaches the same site first (found in
+  L2b: the `isdb-radio` capture test failed every time in the full
+  suite and passed alone). A scoped subscriber is safe only in a test
+  binary whose every test installs one (the L2c `tests/tracing.rs`
+  files: 150 runs, no failure).
 - **Enforced by the compiler** once every crate has moved:
   `clippy::print_stdout` and `clippy::print_stderr` as workspace lints,
   with `#![allow]` in the `isdb-cli` modules that write reports and in
@@ -170,9 +178,31 @@ Test code (`#[cfg(test)]`, `tests/`, `examples/`) may unwrap.
   `isdb-text` (unknown control code → `trace!`). `isdb-analyze` emits
   nothing: its output is the report.
 
-After wave 1 merges: `print_stdout = "warn"`, `print_stderr = "warn"` in
-`[workspace.lints.clippy]`, `#![allow]` in `isdb-cli`'s report modules
-and `logging.rs`, `#[allow]` on the two test prints in `isdbt-fec`.
+After wave 1 merges: `#![warn(clippy::print_stdout, clippy::print_stderr)]`
+in every library's `lib.rs` and `allow-print-in-tests = true` in
+`clippy.toml`. Not in `[workspace.lints]`: binaries (`isdb-cli`),
+examples and integration tests print by design, and a workspace lint
+would need an allow in each.
+
+### Status (2026-10-28): wave 1 done
+
+All five items merged (`e2ea95a` L1b, `533f1cf` L1a, `cc3a19d` L2c,
+`2f2a57a` L2a, `4e6143d` L2b); the no-print lint is on in all 21
+libraries (a planted `println!` in `isdb-ts` fails clippy). `isdb-cli`
+has no `eprintln!` left. The interrupted L2a/L2b agents were finished by
+fresh agents working in the saved worktrees. Things learned:
+
+- Throughput unchanged where hot paths were touched: muxer 4.02–4.13×
+  real time against a 4.05–4.11× baseline; codec demux within noise.
+- The FPGA vectors of `isdb-frontend` are byte-identical before and
+  after (both configurations).
+- Two merges conflicted on the tests both CLI agents appended to
+  `tests/cli.rs`; resolving dropped a closing brace (caught by the
+  compiler, fixed in the merge commit). `Cargo.lock` conflicts are
+  resolved by taking one side and letting cargo add the missing
+  `tracing` edges (the diff is the dependency lines only, no version
+  change).
+
 
 ### Wave 2: errors
 

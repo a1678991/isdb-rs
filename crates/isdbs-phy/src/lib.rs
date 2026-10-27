@@ -20,6 +20,10 @@
 //! the superframe's [`isdbs_core::TmccInfo`] through
 //! [`isdbs_core::slots::runs`].
 
+// Libraries report through `tracing` events and return values, never by
+// printing (docs/plans/errors-and-logging.md section 2.1).
+#![warn(clippy::print_stdout, clippy::print_stderr)]
+
 /// Complex symbol.
 pub type Cplx = num_complex::Complex<f64>;
 

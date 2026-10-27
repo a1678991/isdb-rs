@@ -12,6 +12,10 @@
 //! | [`rx`] | `receive`: frames, TMCC, decoded slots in order with their stream ids |
 //! | [`main_signal`] | pilots, learned constellation, demapping, de-interleaving, LDPC, BCH, dispersal → slot data |
 
+// Libraries report through `tracing` events and return values, never by
+// printing (docs/plans/errors-and-logging.md section 2.1).
+#![warn(clippy::print_stdout, clippy::print_stderr)]
+
 pub mod eq;
 pub mod frontend;
 pub mod main_signal;

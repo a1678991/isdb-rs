@@ -43,6 +43,10 @@
 //! # Ok::<(), isdb_text::EncodeError>(())
 //! ```
 
+// Libraries report through `tracing` events and return values, never by
+// printing (docs/plans/errors-and-logging.md section 2.1).
+#![warn(clippy::print_stdout, clippy::print_stderr)]
+
 pub mod addsym;
 pub mod control;
 pub mod decode;

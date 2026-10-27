@@ -64,6 +64,10 @@
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 
+// Libraries report through `tracing` events and return values, never by
+// printing (docs/plans/errors-and-logging.md section 2.1).
+#![warn(clippy::print_stdout, clippy::print_stderr)]
+
 pub mod aac;
 pub mod decode;
 pub mod diff;
