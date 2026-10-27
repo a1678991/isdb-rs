@@ -5,6 +5,9 @@
 //!
 //! cargo run --release -p isdbs-phy --example mapprobe -- REC [SUPERFRAMES]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_fec::RS_204_188;
 use isdb_iq::Recording;
 use isdbs_core::frame::FRAMES;
@@ -18,7 +21,9 @@ fn main() {
     let max_sf: usize = args.next().map_or(1, |s| s.parse().unwrap());
     let mut rec = Recording::open(&path, None, None).unwrap();
     let seg = rec.segments()[0].clone();
-    let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+    let x = rec
+        .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+        .unwrap();
     let s = isdbs_phy::frontend::symbols(&x, rec.sample_rate, None).unwrap();
     let r = receive(&s.z, &RxOptions::default());
     println!(

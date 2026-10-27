@@ -6,18 +6,23 @@
 //!
 //! cargo run --release -p isdbs3-phy --example carrierpick -- REC [REC…]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_frontend::fast::FastFrontend as Frontend;
 use isdb_frontend::params::Params;
 use isdb_iq::Recording;
 use isdb_iq::survey::{Options, survey};
-use isdbs3_phy::frontend::{carrier_candidates, design, pick_carrier, to_input};
+use isdbs3_phy::frontend::{carrier_candidates, design, pick_carrier, samples_in, to_input};
 
 fn main() {
     for path in std::env::args().skip(1) {
         let mut rec = Recording::open(std::path::Path::new(&path), None, None).expect("open");
         let fs = rec.sample_rate;
         let seg = rec.segments()[0].clone();
-        let n = ((seg.end - seg.start) as usize).min((0.2 * fs) as usize);
+        let n = usize::try_from(seg.end - seg.start)
+            .expect("segment length")
+            .min(samples_in(0.2, fs));
         let x = rec.read(seg.start, n).expect("read");
         let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
         let xi = to_input(&x);
@@ -27,7 +32,7 @@ fn main() {
             "  strongest line: {:+.0} Hz",
             sv.best_carrier().map_or(f64::NAN, |c| c.offset_hz)
         );
-        let m = ((0.05 * fs) as usize).min(xi.len());
+        let m = samples_in(0.05, fs).min(xi.len());
         for &c in &cands {
             let mut fe =
                 Frontend::new(Params::design(&design(fs, c)).expect("design")).expect("fe");

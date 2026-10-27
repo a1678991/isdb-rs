@@ -4,6 +4,9 @@
 //!
 //! cargo run --release -p isdbs3-phy --example rxparts -- REC
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdbs3_phy::frontend::{Trim, symbols};
 use isdbs3_phy::rx::{RxOptions, receive};
@@ -15,7 +18,10 @@ fn main() {
     let fs = rec.sample_rate;
     let seg = rec.segments()[0].clone();
     let x = rec
-        .read(seg.start, (seg.end - seg.start) as usize)
+        .read(
+            seg.start,
+            usize::try_from(seg.end - seg.start).expect("segment length"),
+        )
         .expect("read");
     let s = symbols(&x, fs, None, Trim::Auto).expect("front end");
     for (name, ldpc) in [

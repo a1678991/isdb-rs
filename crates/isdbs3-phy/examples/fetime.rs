@@ -4,9 +4,12 @@
 //!
 //! cargo run --release -p isdbs3-phy --example fetime -- REC
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdb_iq::survey::{Options, survey};
-use isdbs3_phy::frontend::{carrier_candidates, design};
+use isdbs3_phy::frontend::{carrier_candidates, design, samples_in, to_input};
 use std::time::Instant;
 
 fn main() {
@@ -15,7 +18,10 @@ fn main() {
     let fs = rec.sample_rate;
     let seg = rec.segments()[0].clone();
     let x = rec
-        .read(seg.start, (seg.end - seg.start) as usize)
+        .read(
+            seg.start,
+            usize::try_from(seg.end - seg.start).expect("segment length"),
+        )
         .expect("read");
     let mut lap = Instant::now();
     let mut step = |name: &str| {
@@ -24,21 +30,13 @@ fn main() {
     };
     let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
     step("survey");
-    let xi: Vec<[i16; 2]> = x
-        .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect();
+    let xi = to_input(&x);
     step("to i16");
     let cands = carrier_candidates(&sv);
     let cfo = isdbs3_phy::frontend::pick_carrier(&xi, fs, &cands).unwrap();
     step("carrier choice");
     let mut d = design(fs, cfo);
-    let n = ((0.15 * fs) as usize).min(xi.len());
+    let n = samples_in(0.15, fs).min(xi.len());
     let tc: Vec<f64> = (-10..=2).map(|i| f64::from(i) * 0.025).collect();
     d.trim = isdb_frontend::s3sync::best_trim(&xi[..n], &d, &tc)
         .unwrap()

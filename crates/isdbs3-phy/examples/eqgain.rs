@@ -4,6 +4,9 @@
 //!
 //! cargo run --release -p isdbs3-phy --example eqgain -- REC [FRAMES]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdbs3_core::slots::layout;
 use isdbs3_phy::eq::{apply, train};
@@ -32,7 +35,9 @@ fn main() {
     let frames: usize = a.next().map_or(4, |s| s.parse().unwrap());
     let mut rec = Recording::open(&path, None, None).unwrap();
     let seg = rec.segments()[0].clone();
-    let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+    let x = rec
+        .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+        .unwrap();
     let s = symbols(&x, rec.sample_rate, None, Trim::Auto).unwrap();
     let sy = synchronise(&s.z).unwrap();
     let es = 10f64.powf(sy.sync_snr_db / 10.0);

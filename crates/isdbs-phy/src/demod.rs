@@ -25,7 +25,7 @@
 //! Bytes enter MSB first: into B0 for BPSK and QPSK, alternately B1, B0
 //! for TC8PSK (B1 the higher bit; table 49 note 3, BO.1408-1 §9).
 
-use crate::Cplx;
+use crate::{Cplx, soft};
 use isdb_fec::{ConvEncoder, ViterbiDecoder};
 use isdbs_core::combination::{Combination, Modulation};
 use isdbs_core::frame::{SLOT_BYTES, W1, W2, W3};
@@ -172,8 +172,8 @@ pub fn decode_frame(main: &[Cplx], info: &TmccInfo, first: bool, o: &DemodOption
         match c.modulation() {
             Modulation::Bpsk => {
                 for k in 0..info_bits {
-                    let lx = (sym[2 * k].re as f32) * s;
-                    let ly = (sym[2 * k + 1].re as f32) * s;
+                    let lx = soft(sym[2 * k].re) * s;
+                    let ly = soft(sym[2 * k + 1].re) * s;
                     steps.push(pair(lx, ly));
                 }
             }
@@ -184,7 +184,7 @@ pub fn decode_frame(main: &[Cplx], info: &TmccInfo, first: bool, o: &DemodOption
                     } else {
                         (v.re, v.im)
                     };
-                    ((a as f32) * s, (b as f32) * s)
+                    (soft(a) * s, soft(b) * s)
                 };
                 match c.puncturing() {
                     None => {
@@ -225,7 +225,7 @@ pub fn decode_frame(main: &[Cplx], info: &TmccInfo, first: bool, o: &DemodOption
                     for c1 in 0..2u8 {
                         for c0 in 0..2u8 {
                             let p = psk8_point((c1 << 1) | c0);
-                            let corr = (v * p.conj()).re.abs() as f32 * s;
+                            let corr = soft((v * p.conj()).re.abs()) * s;
                             let (x, y) = if m.tc8psk_c1_is_y { (c0, c1) } else { (c1, c0) };
                             q[usize::from(2 * x + y)] = corr;
                         }
@@ -432,24 +432,24 @@ mod tests {
     /// the QPSK pairs at ±45° / ±135°.
     #[test]
     fn spec_table_46_points() {
-        let deg = |p: Cplx| (p.arg().to_degrees().round() as i32 + 360) % 360;
+        let deg = |p: Cplx| p.arg().to_degrees().round().rem_euclid(360.0);
         let want = [
-            (0b000, 0),
-            (0b001, 45),
-            (0b011, 90),
-            (0b010, 135),
-            (0b100, 180),
-            (0b101, 225),
-            (0b111, 270),
-            (0b110, 315),
+            (0b000, 0.0),
+            (0b001, 45.0),
+            (0b011, 90.0),
+            (0b010, 135.0),
+            (0b100, 180.0),
+            (0b101, 225.0),
+            (0b111, 270.0),
+            (0b110, 315.0),
         ];
         for (l, a) in want {
             assert_eq!(deg(psk8_point(l)), a, "{l:03b}");
         }
-        assert_eq!(deg(qpsk_point(0, 0)), 45);
-        assert_eq!(deg(qpsk_point(1, 0)), 135);
-        assert_eq!(deg(qpsk_point(1, 1)), 225);
-        assert_eq!(deg(qpsk_point(0, 1)), 315);
+        assert_eq!(deg(qpsk_point(0, 0)), 45.0);
+        assert_eq!(deg(qpsk_point(1, 0)), 135.0);
+        assert_eq!(deg(qpsk_point(1, 1)), 225.0);
+        assert_eq!(deg(qpsk_point(0, 1)), 315.0);
         // set partitioning: for each (C1, C0), C2 = 0 and 1 are antipodal
         for low in 0..4u8 {
             assert!((psk8_point(low) + psk8_point(4 | low)).norm() < 1e-12);
@@ -477,7 +477,7 @@ mod tests {
             ][mix].clone();
             let n = sent_slots(&inf).len() * SLOT_BYTES;
             let mut x = seed | 1;
-            let bytes: Vec<u8> = (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect();
+            let bytes: Vec<u8> = (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x.to_le_bytes()[0] }).collect();
             let m = Mapping::default();
             let z = encode_frame(&bytes, &inf, first, m);
             let d = decode_frame(&z, &inf, first, &DemodOptions::default());
@@ -498,7 +498,7 @@ mod tests {
             x ^= x << 17;
             x
         };
-        let bytes: Vec<u8> = (0..n).map(|_| rnd() as u8).collect();
+        let bytes: Vec<u8> = (0..n).map(|_| rnd().to_le_bytes()[0]).collect();
         let mut z = encode_frame(&bytes, &inf, false, Mapping::default());
         let sigma = (10f64.powf(-12.0 / 10.0) / 2.0).sqrt();
         for v in &mut z {

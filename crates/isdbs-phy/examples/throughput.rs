@@ -5,6 +5,9 @@
 //!
 //! cargo run --release -p isdbs-phy --example throughput -- REC
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdbs_phy::demod::DemodOptions;
 use isdbs_phy::ts::decode_all;
@@ -15,7 +18,9 @@ fn main() {
     let path = std::path::PathBuf::from(std::env::args().nth(1).expect("REC"));
     let mut rec = Recording::open(&path, None, None).unwrap();
     let seg = rec.segments()[0].clone();
-    let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+    let x = rec
+        .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+        .unwrap();
     let secs = x.len() as f64 / rec.sample_rate;
     let t = Instant::now();
     let s = isdbs_phy::frontend::symbols(&x, rec.sample_rate, None).unwrap();

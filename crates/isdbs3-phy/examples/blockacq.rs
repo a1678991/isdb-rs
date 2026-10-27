@@ -4,9 +4,12 @@
 //!
 //! cargo run --release -p isdbs3-phy --example blockacq -- REC
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdb_iq::survey::{Options, survey};
-use isdbs3_phy::frontend::{Trim, carrier_candidates, symbols_with_prior};
+use isdbs3_phy::frontend::{Trim, carrier_candidates, samples_in, symbols_with_prior, to_input};
 use isdbs3_phy::rx::{RxOptions, receive};
 
 fn main() {
@@ -17,7 +20,10 @@ fn main() {
     let mut prior = None;
     for (i, seg) in segs.iter().enumerate() {
         let x = rec
-            .read(seg.start, (seg.end - seg.start) as usize)
+            .read(
+                seg.start,
+                usize::try_from(seg.end - seg.start).expect("segment length"),
+            )
             .expect("read");
         let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
         let c: Vec<String> = carrier_candidates(&sv)
@@ -25,22 +31,14 @@ fn main() {
             .map(|f| format!("{:.1}", f / 1e3))
             .collect();
         // every candidate's sync statistics on the first 0.05 s
-        let xi: Vec<[i16; 2]> = x
-            .iter()
-            .map(|v| {
-                [
-                    (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                    (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                ]
-            })
-            .collect();
+        let xi = to_input(&x);
         for &cfo in &carrier_candidates(&sv) {
             let d = isdbs3_phy::frontend::design(fs, cfo);
             let mut fe =
                 isdb_frontend::fast::FastFrontend::new(isdb_frontend::Params::design(&d).unwrap())
                     .unwrap();
             let mut z = Vec::new();
-            fe.process_each(&xi[..(0.05 * fs) as usize], |s| {
+            fe.process_each(&xi[..samples_in(0.05, fs)], |s| {
                 z.push(num_complex::Complex64::new(
                     f64::from(s.zk[0]),
                     f64::from(s.zk[1]),

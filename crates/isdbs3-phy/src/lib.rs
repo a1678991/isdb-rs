@@ -12,6 +12,9 @@
 //! | [`rx`] | `receive`: frames, TMCC, decoded slots in order with their stream ids |
 //! | [`main_signal`] | pilots, learned constellation, demapping, de-interleaving, LDPC, BCH, dispersal → slot data |
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 pub mod eq;
 pub mod frontend;
 pub mod main_signal;
@@ -21,3 +24,12 @@ pub mod tmcc;
 
 /// Complex sample type.
 pub type Cplx = num_complex::Complex<f64>;
+
+/// A soft metric (LLR) as the `f32` the LDPC decoder takes.
+// Soft-bit quantisation: f32 is the decoder's precision, so the cast
+// rounds the metric to it; a metric past the f32 range (a noise variance
+// near zero) becomes the infinity it stands for.
+#[allow(clippy::cast_possible_truncation)]
+pub(crate) fn soft(x: f64) -> f32 {
+    x as f32
+}

@@ -4,6 +4,9 @@
 //!
 //! cargo run --release -p isdbs-phy --example carrierlines -- REC [REC…]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdb_iq::survey::{Options, survey};
 
@@ -12,7 +15,7 @@ fn main() {
         let mut rec = Recording::open(std::path::Path::new(&path), None, None).expect("open");
         let fs = rec.sample_rate;
         let seg = rec.segments()[0].clone();
-        let n = ((seg.end - seg.start) as usize).min(1 << 22);
+        let n = usize::try_from(seg.end - seg.start).unwrap().min(1 << 22);
         let x = rec.read(seg.start, n).expect("read");
         let sv = survey(&x, fs, &Options::default());
         let best = sv.best_carrier().map(|c| c.offset_hz);

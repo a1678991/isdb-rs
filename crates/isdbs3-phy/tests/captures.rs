@@ -4,10 +4,13 @@
 //! test prints a `SKIP` line and passes when the variable is unset. See
 //! docs/test-data.md.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdb_tlv::Assembler;
 use isdb_tlv::stats::StreamStats;
-use isdbs3_phy::frontend::{Trim, symbols};
+use isdbs3_phy::frontend::{Trim, samples_in, symbols};
 use isdbs3_phy::rx::{RxOptions, receive};
 use std::collections::BTreeMap;
 
@@ -25,7 +28,9 @@ fn isdbs3_tlv_recordings() {
     for path in list.split(':').filter(|p| !p.is_empty()) {
         let mut rec = Recording::open(std::path::Path::new(path), None, None).unwrap();
         let seg = rec.segments()[0].clone();
-        let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+        let x = rec
+            .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+            .unwrap();
         let s = symbols(&x, rec.sample_rate, None, Trim::Auto).unwrap();
         assert!(s.survey_says_isdbs3, "{path}: survey");
         let r = receive(&s.z, &RxOptions::default());
@@ -90,7 +95,9 @@ fn isdbs3_ldpc_simd_equals_scalar_on_recordings() {
     for path in list.split(':').filter(|p| !p.is_empty()) {
         let mut rec = Recording::open(std::path::Path::new(path), None, None).unwrap();
         let seg = rec.segments()[0].clone();
-        let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+        let x = rec
+            .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+            .unwrap();
         let s = symbols(&x, rec.sample_rate, None, Trim::Auto).unwrap();
         let run = |ldpc| {
             receive(
@@ -151,7 +158,9 @@ fn isdbs3_every_segment_acquires() {
         let segs = rec.segments().clone();
         let mut prior = None;
         for (i, seg) in segs.iter().enumerate() {
-            let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+            let x = rec
+                .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+                .unwrap();
             let fresh = symbols_with_prior(&x, fs, None, Trim::Auto, None).unwrap();
             let mut tries = vec![("fresh", fresh.0)];
             if let Some(p) = &prior {
@@ -201,7 +210,9 @@ fn isdbs3_carrier_beats_the_survey_aliases() {
         let mut rec = Recording::open(std::path::Path::new(path), None, None).unwrap();
         let fs = rec.sample_rate;
         let seg = rec.segments()[0].clone();
-        let n = ((seg.end - seg.start) as usize).min((0.2 * fs) as usize);
+        let n = usize::try_from(seg.end - seg.start)
+            .unwrap()
+            .min(samples_in(0.2, fs));
         let x = rec.read(seg.start, n).unwrap();
         let p = acquire(&x, fs, None, Trim::Auto).unwrap();
         // a wrong carrier leaves the sync words uncorrelated (≤ 0 dB);

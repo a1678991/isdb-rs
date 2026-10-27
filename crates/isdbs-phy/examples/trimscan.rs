@@ -5,11 +5,15 @@
 //!
 //! cargo run --release -p isdbs-phy --example trimscan -- REC [SAMPLES]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_frontend::fixed::Frontend;
 use isdb_frontend::params::{Design, Params};
 use isdb_iq::Recording;
 use isdb_iq::survey::{Options, survey};
 use isdbs_phy::Cplx;
+use isdbs_phy::frontend::to_input;
 use isdbs_phy::rx::{RxOptions, main_mer, receive};
 use std::path::PathBuf;
 
@@ -21,19 +25,14 @@ fn main() {
     let fs = rec.sample_rate;
     let seg = rec.segments()[0].clone();
     let x = rec
-        .read(seg.start, n.min((seg.end - seg.start) as usize))
+        .read(
+            seg.start,
+            n.min(usize::try_from(seg.end - seg.start).unwrap()),
+        )
         .unwrap();
     let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
     let cfo = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
-    let xi: Vec<[i16; 2]> = x
-        .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect();
+    let xi = to_input(&x);
     println!(
         "{}: {} samples at {fs} Hz, carrier {cfo:+.0} Hz",
         path.display(),

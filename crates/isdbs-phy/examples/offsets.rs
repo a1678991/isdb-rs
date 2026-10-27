@@ -4,6 +4,9 @@
 //!
 //! cargo run --release -p isdbs-phy --example offsets -- REC
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_iq::Recording;
 use isdbs_phy::sync::{SyncOptions, find_frames, frame_metric};
 
@@ -11,14 +14,16 @@ fn main() {
     let path = std::path::PathBuf::from(std::env::args().nth(1).unwrap());
     let mut rec = Recording::open(&path, None, None).unwrap();
     let seg = rec.segments()[0].clone();
-    let x = rec.read(seg.start, (seg.end - seg.start) as usize).unwrap();
+    let x = rec
+        .read(seg.start, usize::try_from(seg.end - seg.start).unwrap())
+        .unwrap();
     let s = isdbs_phy::frontend::symbols(&x, rec.sample_rate, None).unwrap();
     let (f, _) = find_frames(&s.z, &SyncOptions::default());
-    for d in -2i64..=2 {
+    for d in -2isize..=2 {
         let m: f64 = f
             .iter()
             .take(50)
-            .map(|m| frame_metric(&s.z, (m.start as i64 + d) as usize))
+            .map(|m| frame_metric(&s.z, m.start.wrapping_add_signed(d)))
             .sum::<f64>()
             / 50.0;
         println!("offset {d:+}: mean frame metric {m:.3}");
