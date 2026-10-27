@@ -308,6 +308,9 @@ merged tree. What each agent reported:
 
 | item | sites the compiler found | bare-int `pub` fields | spec notes |
 |---|---|---|---|
+| G1 `Segments` | 85 sites, 40 files + oracle | `isdbt-core` 7 → 6; `ParamError::EmptyLayer` gone; `bit_delay_adjustment_bits` takes `Segments` | none |
+| G2 `Pid` | ~230 sites, 68 files; `tools/newtype-wrap.py` added | `isdb-ts` 78 → 70, `isdb-si` 217 → 213, `isdb-analyze` 136 → 123, `isdbt-mux` 171 → 158; serde range check on TOML load | Table 2-3 verbatim; `Pid::IPMP` (0x0003) added; `Display` is lower-case hex because the analysers print `{:#06x}` |
+| H3 truncation lint | 14 casts in 6 crates, 3 `#[allow]`s with reasons | `#![warn(cast_possible_truncation)]` in `isdbt-core`, `isdb-hackrf`, `isdb-iio`, `isdb-text`, `isdb-radio`, `isdb-tlv` | `isdb_tlv::Packet::encode` is fallible; the panicking `bytes()` it first kept was removed in `3756d6b` |
 | F cast sweep | 632 casts, 81 files, all by `clippy --fix`; `cast_lossless = "warn"` now on (`58515da`) | unchanged | none; `From`-only diff, round-trip checked by a normaliser |
 | A `isdb-ts` | 2 sites, 2 files (the 17 planned callers read raw bytes, not `Header`) | 80 → 78 | none; H.222.0 Tables 2-4/2-5 verbatim |
 | B `isdbt-ofdm` | 0 outside `tmcc.rs` | 26 → 22 | Table 3-30 '100' "not used" (sound broadcasting) kept as `Reserved(0b100)`; unused layer decided by the modulation field alone |
