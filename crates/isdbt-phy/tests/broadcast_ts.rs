@@ -5,8 +5,6 @@
 //! and the receiver's reproduced TS has the layer arrangement the
 //! dummy-byte `layer_indicator`s announced.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 use isdbt_core::{
     CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };

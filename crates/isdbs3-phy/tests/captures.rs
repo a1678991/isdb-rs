@@ -4,9 +4,6 @@
 //! test prints a `SKIP` line and passes when the variable is unset. See
 //! docs/test-data.md.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_iq::Recording;
 use isdb_tlv::Assembler;
 use isdb_tlv::stats::StreamStats;

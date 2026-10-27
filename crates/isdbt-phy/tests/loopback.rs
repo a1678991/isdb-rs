@@ -1,8 +1,6 @@
 //! End-to-end PHY loopback: TS packets → Transmitter → channel → Receiver
 //! → TS packets, byte-exact, with the multiplex-frame reproduction.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 use isdbt_core::{
     CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };

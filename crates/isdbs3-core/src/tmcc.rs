@@ -347,11 +347,29 @@ impl Reader<'_> {
         }
         v
     }
+
+    /// An `n`-bit field into a `u8`, `n <= 8` (asserted once here).
+    fn take_u8(&mut self, n: usize) -> u8 {
+        assert!(n <= 8, "take_u8: {n} bits");
+        // n <= 8 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.take(n) as u8;
+        v
+    }
+
+    /// An `n`-bit field into a `u16`, `n <= 16` (asserted once here).
+    fn take_u16(&mut self, n: usize) -> u16 {
+        assert!(n <= 16, "take_u16: {n} bits");
+        // n <= 16 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.take(n) as u16;
+        v
+    }
 }
 
 fn put(out: &mut Vec<u8>, v: u32, n: usize) {
     for i in (0..n).rev() {
-        out.push(((v >> i) & 1) as u8);
+        out.push(u8::from((v >> i) & 1 == 1));
     }
 }
 
@@ -360,29 +378,29 @@ impl TmccInfo {
     pub fn parse(bits: &[u8]) -> Self {
         assert_eq!(bits.len(), TMCC_INFO_BITS);
         let mut r = Reader { b: bits, pos: 0 };
-        let change = r.take(8) as u8;
+        let change = r.take_u8(8);
         let modes = std::array::from_fn(|_| Mode {
-            modulation_code: ModulationCode::from_code(r.take(4) as u8),
-            rate_code: RateCode::from_code(r.take(4) as u8),
-            slots: r.take(8) as u8,
-            obo: r.take(8) as u8,
+            modulation_code: ModulationCode::from_code(r.take_u8(4)),
+            rate_code: RateCode::from_code(r.take_u8(4)),
+            slots: r.take_u8(8),
+            obo: r.take_u8(8),
         });
-        let stream_type = std::array::from_fn(|_| StreamType::from_code(r.take(8) as u8));
-        let lengths: [u16; 16] = std::array::from_fn(|_| r.take(16) as u16);
-        let sync_bits: [u8; 16] = std::array::from_fn(|_| r.take(8) as u8);
+        let stream_type = std::array::from_fn(|_| StreamType::from_code(r.take_u8(8)));
+        let lengths: [u16; 16] = std::array::from_fn(|_| r.take_u16(16));
+        let sync_bits: [u8; 16] = std::array::from_fn(|_| r.take_u8(8));
         let syncs: [u32; 16] = std::array::from_fn(|_| r.take(32));
         let packet_format = std::array::from_fn(|i| PacketFormat {
             length: lengths[i],
             sync_bits: sync_bits[i],
             sync: syncs[i],
         });
-        let pointers = std::array::from_fn(|_| (r.take(16) as u16, r.take(16) as u16));
-        let slot_stream = std::array::from_fn(|_| r.take(4) as u8);
-        let stream_id = std::array::from_fn(|_| r.take(16) as u16);
+        let pointers = std::array::from_fn(|_| (r.take_u16(16), r.take_u16(16)));
+        let slot_stream = std::array::from_fn(|_| r.take_u8(4));
+        let stream_id = std::array::from_fn(|_| r.take_u16(16));
         let ews = r.take(1) == 1;
-        let uplink = r.take(3) as u8;
-        let reserved = r.take(4) as u8;
-        let extension_id = r.take(16) as u16;
+        let uplink = r.take_u8(3);
+        let reserved = r.take_u8(4);
+        let extension_id = r.take_u16(16);
         let extension_all_ones = bits[r.pos..].iter().all(|&b| b & 1 == 1);
         debug_assert_eq!(bits.len() - r.pos, 3_598);
         Self {

@@ -1,5 +1,4 @@
 #![allow(missing_docs)]
-#![warn(clippy::cast_possible_truncation)]
 //! Real-media test: muxes 10 s of the bench example with your own media
 //! (MPEG-2 video `video.m2v` + AAC ADTS `audio.m2a`, not committed) and
 //! checks the result with ffprobe against what the files themselves

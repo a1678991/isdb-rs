@@ -3,8 +3,6 @@
 //!
 //! cargo run --release -p isdb-frontend --example analyze -- REC [s|s3] [TAPS] [SAMPLES]
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fixed::Frontend;
 use isdb_frontend::float::FloatFrontend;
 use isdb_frontend::metrics::{psk_mer, ring_stats, sqnr_db};

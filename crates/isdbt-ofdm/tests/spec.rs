@@ -2,9 +2,6 @@
 //! directly (tables and figures cited per test).  Figure transcriptions
 //! were read from the PDF page images (pdf pages 39–42, 45–51, 63).
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 mod common;
 
 use isdbt_core::ofdm_params::{segment_carrier_counts, segment_position, time_interleave_m};

@@ -4,9 +4,6 @@
 //!
 //! cargo run --release -p isdbs3-phy --example headercheck -- REC
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_iq::Recording;
 use isdbs3_core::slots::layout;
 use isdbs3_phy::frontend::{Trim, symbols};

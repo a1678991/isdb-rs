@@ -36,6 +36,15 @@ pub fn direction(m: Modulation, r: CodeRate) -> Direction {
     }
 }
 
+/// A codeword bit position as the `u32` the permutation tables hold.
+fn bit_index(i: usize) -> u32 {
+    debug_assert!(i < N_LDPC);
+    // i < N_LDPC = 44 880 (Table 3.4-1), far inside u32.
+    #[allow(clippy::cast_possible_truncation)]
+    let v = i as u32;
+    v
+}
+
 /// Permutation `perm` with `labels_bit[i] = codeword[perm[i]]`: the bit
 /// order in which a codeword's bits leave the interleaver, symbol label
 /// bits MSB first.
@@ -43,7 +52,7 @@ pub fn permutation(m: Modulation, r: CodeRate) -> Vec<u32> {
     let c = m.bits();
     let rows = N_LDPC / c;
     match direction(m, r) {
-        Direction::None => (0..N_LDPC as u32).collect(),
+        Direction::None => (0..N_LDPC).map(bit_index).collect(),
         dir => {
             let mut p = Vec::with_capacity(N_LDPC);
             for row in 0..rows {
@@ -53,7 +62,7 @@ pub fn permutation(m: Modulation, r: CodeRate) -> Vec<u32> {
                     } else {
                         c - 1 - j
                     };
-                    p.push((col * rows + row) as u32);
+                    p.push(bit_index(col * rows + row));
                 }
             }
             p
@@ -79,7 +88,11 @@ mod tests {
                 let r = CodeRate::new(r).unwrap();
                 let mut p = permutation(m, r);
                 p.sort_unstable();
-                assert!(p.iter().enumerate().all(|(i, &v)| i as u32 == v));
+                assert!(
+                    p.iter()
+                        .enumerate()
+                        .all(|(i, &v)| usize::try_from(v).unwrap() == i)
+                );
             }
         }
     }

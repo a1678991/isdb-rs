@@ -407,6 +407,14 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `clippy::cast_possible_truncation` is `"warn"` in
+  `[workspace.lints.clippy]`, so every crate, example and integration test
+  is held to it by CI; the per-crate `#![warn]` attributes that turned it
+  on crate by crate are removed. The last three crates are done here:
+  `isdbs-core` and `isdbs3-core` read TMCC fields through width-asserted
+  `take_u8` / `take_u16`, `isdbs3-core`'s interleaver builds its `u32`
+  tables through one bounded `bit_index`, and `isdbt-fec`'s multiplex
+  pattern does its slot arithmetic in `usize`. No behaviour change.
 - `isdbs-phy`, `isdbs3-phy`: `clippy::cast_possible_truncation` is on at
   crate level and in every example and integration test
   (`docs/plans/type-safety.md` §2), with three `#[allow]`s per crate, each

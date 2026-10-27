@@ -5,8 +5,6 @@
 //! them; for every instruction set this host runs (`simd::Isa`: the
 //! baseline, AVX2, AVX-512), through both `process` and `process_each`.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fast::FastFrontend;
 use isdb_frontend::fixed::{Frontend, Symbol};
 use isdb_frontend::params::{Design, Params};

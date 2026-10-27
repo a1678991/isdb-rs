@@ -71,8 +71,6 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 pub mod broadcast_ts;
 pub mod iq;
 

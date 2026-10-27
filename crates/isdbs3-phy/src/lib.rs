@@ -12,9 +12,6 @@
 //! | [`rx`] | `receive`: frames, TMCC, decoded slots in order with their stream ids |
 //! | [`main_signal`] | pilots, learned constellation, demapping, de-interleaving, LDPC, BCH, dispersal → slot data |
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 pub mod eq;
 pub mod frontend;
 pub mod main_signal;

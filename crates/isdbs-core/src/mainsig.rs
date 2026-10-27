@@ -256,7 +256,7 @@ mod tests {
         fn prop_interleave_round_trip(seed in any::<u64>()) {
             let mut x = seed | 1;
             let rows: [[u8; SLOT_BYTES]; FRAMES] = std::array::from_fn(|_| std::array::from_fn(|_| {
-                x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8
+                x ^= x << 13; x ^= x >> 7; x ^= x << 17; x.to_le_bytes()[0]
             }));
             prop_assert_eq!(deinterleave(&interleave(&rows)), rows);
         }
@@ -273,7 +273,7 @@ mod tests {
                 (0..n).map(|_| {
                     let mut p = [0u8; PACKET_BYTES];
                     p[0] = SYNC_BYTE;
-                    for b in &mut p[1..188] { x ^= x << 13; x ^= x >> 7; x ^= x << 17; *b = x as u8; }
+                    for b in &mut p[1..188] { x ^= x << 13; x ^= x >> 7; x ^= x << 17; *b = x.to_le_bytes()[0]; }
                     RS_204_188.encode_in_place(&mut p);
                     p
                 }).collect()

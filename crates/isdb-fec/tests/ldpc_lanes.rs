@@ -3,9 +3,6 @@
 //! to other codewords: bits, iterations, convergence and the unsatisfied
 //! count, whichever SIMD back end the build uses (plan §7.2).
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_fec::ldpc::Code;
 use isdb_fec::ldpc::fixed::{Decoder, LaneResult, Params};
 use proptest::prelude::*;

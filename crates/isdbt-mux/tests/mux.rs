@@ -1,6 +1,4 @@
 #![allow(missing_docs)]
-#![warn(clippy::cast_possible_truncation)]
-
 mod common;
 
 use isdb_ts::Pid;

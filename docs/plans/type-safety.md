@@ -112,11 +112,14 @@ scoped to tests), the README doctest (`Some(2)` → `2`), a test
 
 ### 1.4 Caveats learned
 
-- `cargo test --workspace` has two wall-clock tests in `isdb-cli`
-  (`symstream::tests::a_loss_ends_the_stretch`, `tests/cli.rs
-  live_feed_with_stalling_input_stays_cbr_and_lossless`) that fail under
-  CPU contention (parallel cargo runs) and pass alone. Not a regression
-  signal; run the final suite with nothing else building.
+- `cargo test --workspace` has three wall-clock tests in `isdb-cli`
+  (`symstream::tests::a_loss_ends_the_stretch`,
+  `symstream::tests::a_decoder_that_finds_nothing_is_paced_and_bounded`,
+  `tests/cli.rs live_feed_with_stalling_input_stays_cbr_and_lossless`)
+  that fail under CPU contention and pass alone. The middle one counts
+  decoder calls per chunk, which depends on how the reader thread
+  batches; it failed once even with nothing else building and passed 10
+  of 10 alone. Not a regression signal; rerun alone before concluding.
 - A `sed` over literals (`TimeInterleave\(([0-3])\)` → `::K\1`) does the
   bulk; everything else is a hand edit guided by the compiler. Do not
   widen the regex to catch variables; let `rustc` list them.
@@ -152,15 +155,48 @@ per-crate table is the output of the script; the heaviest are `isdb-si`
 (1 011), `isdbt-mux` (930), `isdb-frontend` (659), `isdb-cli` (521),
 `isdbt-ofdm` (520), `isdb-ts` (380).
 
-Goal: `cast_lossless = "warn"` in `[workspace.lints.clippy]` after item F
-below; `cast_possible_truncation = "warn"` crate by crate as each crate's
-count reaches zero, with `#[allow]` + comment on the few that are
-intentional (DSP code taking the low bits on purpose). Covered (item H3,
-a crate-level `#![warn(clippy::cast_possible_truncation)]` in `lib.rs`):
-`isdbt-core`, `isdb-hackrf`, `isdb-iio`, `isdb-text`, `isdb-radio`,
-`isdb-tlv`; three `#[allow]`s remain there (libiio's `-errno` in
-`isdb-iio`, the clamped 12-bit sample in `isdb-radio::quant`, the
-saturating buffer count in `RxOptions::buffers`).
+**Status (2026-10-27): `cast_lossless` and `cast_possible_truncation` are
+both `"warn"` in `[workspace.lints.clippy]`**, so CI (`clippy -D
+warnings`) holds every crate, example and integration test to them.
+Truncation went crate by crate (H3, then the T1–T8 dispatch and the three
+satellite/FEC core crates by hand), and only when every crate was at
+zero did the lint move from per-crate `#![warn]` attributes to the
+workspace table. Census at the end:
+
+| lint | at `518a1b8` | now |
+|---|---|---|
+| `cast_possible_truncation` | 903 | **0**, lint on |
+| `cast_lossless` | 638 | **0**, lint on |
+| `cast_sign_loss` / `cast_possible_wrap` | 219 | 210, off |
+| `cast_precision_loss` | 593 | 590, off |
+
+How the truncations were retired, in the order the brief preferred them:
+
+1. **Restructured** (the majority in the codec crates; `isdb-si`,
+   `isdb-ts`, `isdb-mmt` reached zero `#[allow]`s). The enabling change
+   was `BitReader::read_u8(n)` / `read_u16` / `read_u32` / `read_usize`
+   (`80b173b`): the field width is asserted once in the reader, so 150
+   `read(n)? as u8` casts became calls. The crate-local TMCC / IIP bit
+   readers in `isdbt-ofdm`, `isdbt-phy`, `isdbs-core`, `isdbs3-core` got
+   the same `take_u8` / `get_u8` pair. Byte extraction is `to_be_bytes`,
+   table generation iterates the narrow type.
+2. **Fallible** where a caller or the wire can exceed the width:
+   `try_from` into the crate's existing error. Inputs that used to wrap
+   or saturate silently now fail with the field name: TOML/CLI values in
+   `isdbt-mux`, `isdb-analyze`, `isdb-cli`; carousel and descriptor
+   lengths; TLV `Packet::encode`.
+3. **`#[allow]` with the invariant on the one site**, 124 attributes in
+   all, most in DSP (`isdb-frontend` 31, `isdb-cli` 23, `isdbt-ofdm` 15):
+   quantisation after a clamp, `f64 -> usize` (std has no fallible
+   conversion), f64 -> f32 rounding into the decoder's precision.
+
+The remaining two lint families are deliberately off. Most
+`cast_precision_loss` hits are `usize as f64` in rate and percentage
+reports, where 52 bits of mantissa are far beyond any count the program
+reaches. The sign/wrap casts sit in the DSP crates' signed/unsigned
+sample and index arithmetic (`isdbt-mux` 66, `isdb-frontend` 46,
+`isdbt-ofdm` 29, `isdb-cli` 28). Triage them crate by crate the same
+way if they are wanted.
 
 ## 3. Inventory (work items, disjoint file sets)
 

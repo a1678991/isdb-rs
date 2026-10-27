@@ -8,8 +8,6 @@
 //! full 56 MHz analog bandwidth (2026-10-25 set or later) for the
 //! thresholds below.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fixed::Frontend;
 use isdb_frontend::float::FloatFrontend;
 use isdb_frontend::format::{Event, Packer, Reader};

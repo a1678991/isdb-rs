@@ -5,9 +5,6 @@
 //!
 //! cargo run --release -p isdbs-phy --example mapprobe -- REC [SUPERFRAMES]
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_fec::RS_204_188;
 use isdb_iq::Recording;
 use isdbs_core::frame::FRAMES;

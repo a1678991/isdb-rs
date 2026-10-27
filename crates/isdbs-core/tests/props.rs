@@ -78,7 +78,7 @@ proptest! {
         }
         let mut combinations = [CombinationEntry::DUMMY; 4];
         for (i, &(c, n)) in entries.iter().enumerate() {
-            combinations[i] = CombinationEntry { word: CombinationWord::Assigned(c), slots: n as u8 };
+            combinations[i] = CombinationEntry { word: CombinationWord::Assigned(c), slots: u8::try_from(n).unwrap() };
         }
         let info = TmccInfo {
             order_of_change: 0,

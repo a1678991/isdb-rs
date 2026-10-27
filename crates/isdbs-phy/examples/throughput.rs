@@ -5,9 +5,6 @@
 //!
 //! cargo run --release -p isdbs-phy --example throughput -- REC
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_iq::Recording;
 use isdbs_phy::demod::DemodOptions;
 use isdbs_phy::ts::decode_all;

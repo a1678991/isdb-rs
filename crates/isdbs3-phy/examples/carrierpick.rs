@@ -6,9 +6,6 @@
 //!
 //! cargo run --release -p isdbs3-phy --example carrierpick -- REC [REC…]
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_frontend::fast::FastFrontend as Frontend;
 use isdb_frontend::params::Params;
 use isdb_iq::Recording;

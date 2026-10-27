@@ -2,9 +2,6 @@
 //! item 2): `decode(encode(x)) == x` for generated values and
 //! `encode(decode(b)) == b` for every byte string a decoder accepts.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_ts::Pid;
 use isdb_ts::cc::{ContinuityCounter, Counter};
 use isdb_ts::demux::{Assembled, SectionAssembler};

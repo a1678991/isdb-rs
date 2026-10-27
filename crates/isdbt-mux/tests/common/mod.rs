@@ -1,6 +1,4 @@
 #![allow(dead_code, missing_docs)]
-#![warn(clippy::cast_possible_truncation)]
-
 use std::path::PathBuf;
 
 use isdbt_core::{

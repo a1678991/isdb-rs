@@ -5,9 +5,6 @@
 //!
 //! cargo run --release -p isdbs3-phy --example ldpcspeed -- REC
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_iq::Recording;
 use isdbs3_core::interleave::permutation;
 use isdbs3_core::params::{FRAME_SYMBOLS, N_LDPC, SYMBOL_RATE};

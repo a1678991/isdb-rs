@@ -11,8 +11,6 @@
 //! continuity (PTS, arrival, CC); source EIT p/f copied; `at_eof = "end"`;
 //! the rate check.
 
-#![warn(clippy::cast_possible_truncation)]
-
 mod common;
 
 use common::{bench_params, synth_audio, synth_video, tmpdir};

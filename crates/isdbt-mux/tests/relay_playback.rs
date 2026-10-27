@@ -5,8 +5,6 @@
 //! decoding time, the relay sends nothing while paused, and the position
 //! moves by the rate, the pause and the seeks.
 
-#![warn(clippy::cast_possible_truncation)]
-
 mod common;
 
 use common::{bench_params, synth_audio, tmpdir};

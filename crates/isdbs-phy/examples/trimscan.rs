@@ -5,9 +5,6 @@
 //!
 //! cargo run --release -p isdbs-phy --example trimscan -- REC [SAMPLES]
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_frontend::fixed::Frontend;
 use isdb_frontend::params::{Design, Params};
 use isdb_iq::Recording;

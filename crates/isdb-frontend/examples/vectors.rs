@@ -9,8 +9,6 @@
 //! TRIM (symbol periods, default 0) sets the output bank (format 2): a
 //! nonzero trim makes `k` differ from `h`, so the vectors test that path.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::params::{Design, Params};
 use isdb_frontend::tables::rrc;
 use isdb_frontend::vectors::document;

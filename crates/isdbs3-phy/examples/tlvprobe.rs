@@ -4,9 +4,6 @@
 //!
 //! cargo run --release -p isdbs3-phy --example tlvprobe -- REC
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_iq::Recording;
 use isdb_tlv::stats::StreamStats;
 use isdb_tlv::{Assembler, mmtp, si};

@@ -20,8 +20,6 @@
 //! cargo run --release -p isdb-iq --example bandpower -- REC [REC…] [--carrier-offset HZ] [--half-band HZ] [--guard HZ]
 //! ```
 
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_iq::{C32, Recording};
 use rustfft::FftPlanner;
 

@@ -11,9 +11,6 @@
 //! one at the given input scale and offset; `SWEEP=1` sweeps scale and
 //! offset instead.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_fec::ldpc::fixed::{Decoder, Params, quantise};
 use isdb_iq::Recording;
 use isdbs3_core::slots::layout;

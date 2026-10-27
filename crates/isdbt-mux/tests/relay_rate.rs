@@ -9,8 +9,6 @@
 //! `rate_check = "warn"`, late PES and a run-time alert; a layer that
 //! carries the need relays without a late PES.
 
-#![warn(clippy::cast_possible_truncation)]
-
 mod common;
 
 use common::{bench_params, synth_audio, tmpdir};

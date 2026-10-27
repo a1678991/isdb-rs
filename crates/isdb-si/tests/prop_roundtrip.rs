@@ -2,9 +2,6 @@
 //! table body (encode → decode → equal → re-encode identical), plus
 //! decode-side fuzzing (any bytes a decoder accepts re-encode identically).
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_si::any::AnyTable;
 use isdb_si::descriptor::*;
 use isdb_si::tables::*;

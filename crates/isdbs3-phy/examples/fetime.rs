@@ -4,9 +4,6 @@
 //!
 //! cargo run --release -p isdbs3-phy --example fetime -- REC
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_iq::Recording;
 use isdb_iq::survey::{Options, survey};
 use isdbs3_phy::frontend::{carrier_candidates, design, samples_in, to_input};

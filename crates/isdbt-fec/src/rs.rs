@@ -146,7 +146,7 @@ mod tests {
                 let mut r = c;
                 let pos = rng.distinct(nerr, TRANSMISSION_TSP);
                 for &p in &pos {
-                    r[p] ^= (rng.next() as u8).max(1);
+                    r[p] ^= rng.next().to_le_bytes()[0].max(1);
                 }
                 let out = decode(&mut r).expect("≤8 errors must decode");
                 assert_eq!(out.errors, nerr);
@@ -169,7 +169,7 @@ mod tests {
             let mut r = c;
             let nerr = 9 + i % 12;
             for &p in &rng.distinct(nerr, TRANSMISSION_TSP) {
-                r[p] ^= (rng.next() as u8).max(1);
+                r[p] ^= rng.next().to_le_bytes()[0].max(1);
             }
             let before = r;
             match decode(&mut r) {

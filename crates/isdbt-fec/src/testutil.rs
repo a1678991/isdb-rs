@@ -16,11 +16,11 @@ impl XorShift {
     }
     pub fn fill(&mut self, buf: &mut [u8]) {
         for b in buf {
-            *b = self.next() as u8;
+            *b = self.next().to_le_bytes()[0];
         }
     }
     pub fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+        usize::try_from(self.next() % n as u64).expect("below n, a usize")
     }
     /// `k` distinct indices in 0..n.
     pub fn distinct(&mut self, k: usize, n: usize) -> Vec<usize> {

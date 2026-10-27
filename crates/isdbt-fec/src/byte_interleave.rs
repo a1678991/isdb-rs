@@ -156,7 +156,9 @@ mod tests {
     /// Interleaver ∘ deinterleaver = delay of 11 × 204 bytes.
     #[test]
     fn pair_latency() {
-        let mut v: Vec<u8> = (0..20 * 204u32).map(|i| (i * 7 + 3) as u8).collect();
+        let mut v: Vec<u8> = (0..20 * 204u32)
+            .map(|i| (i * 7 + 3).to_le_bytes()[0])
+            .collect();
         let orig = v.clone();
         let mut il = ByteInterleaver::new();
         let mut dl = ByteDeinterleaver::new();

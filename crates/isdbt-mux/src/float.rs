@@ -5,7 +5,8 @@
 //! durations in 27 MHz ticks, packet counts and scaled rates that a
 //! non-negative `f64` holds far below the integer bounds, so the
 //! narrowing is the intended truncation. Keeping the three casts here is
-//! what lets the crate carry `#![warn(clippy::cast_possible_truncation)]`.
+//! what keeps the workspace `cast_possible_truncation` lint at one
+//! `#[allow]` per conversion.
 
 /// `x` truncated toward zero, saturating (NaN → 0).
 pub(crate) fn to_u64(x: f64) -> u64 {

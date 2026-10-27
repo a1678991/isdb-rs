@@ -21,8 +21,6 @@
 //! cargo run --release -p isdb-iq --example sweepspec -- REC [--fft N] [--keep HZ] [--threshold DB] [--min-width HZ] [--strong DB] [--points N] [--samples N]
 //! ```
 
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_iq::Recording;
 use num_complex::Complex32 as C32;
 use rustfft::FftPlanner;

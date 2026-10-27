@@ -10,8 +10,6 @@
 //! injected into null slots — synchronous PES (stream_id 0xBD, PTS) and
 //! asynchronous PES (0xBF, no PTS) — and a carousel.
 
-#![warn(clippy::cast_possible_truncation)]
-
 mod common;
 
 use common::{bench_params, synth_audio, synth_video, tmpdir};

@@ -94,7 +94,10 @@ impl MultiplexPattern {
         let sym = params.samples_per_symbol() as u64;
         let n = params.multiplex_frame_tsps();
         let intervals = switch_intervals_per_frame(mode);
-        let interval_clocks = sym * (SYMBOLS_PER_FRAME / intervals) as u64;
+        // Clocks per S3 section-interval, as the usize the slot indices
+        // use and as the u64 of the completion times.
+        let interval = params.samples_per_symbol() * (SYMBOLS_PER_FRAME / intervals);
+        let interval_clocks = interval as u64;
         let nc = mode.data_carriers_per_segment();
 
         // Packet completions per S3 section-interval, in time order.
@@ -124,8 +127,8 @@ impl MultiplexPattern {
                 }
             }
             assert_eq!(
-                packets as usize,
-                l.tsp_per_frame(mode),
+                packets,
+                l.tsp_per_frame(mode) as u64,
                 "Table 3-3 count for layer {id}"
             );
             offset += carriers;
@@ -135,6 +138,9 @@ impl MultiplexPattern {
         for e in events {
             // S3 position when the packet is transferred (input_clock = time − strict).
             let input_clock = e.time - u64::from(strict);
+            // input_clock < one frame of clocks, so the quotient is below
+            // `intervals`, a usize.
+            #[allow(clippy::cast_possible_truncation)]
             let q = (input_clock / interval_clocks) as usize;
             sections[q].push(e);
         }
@@ -144,7 +150,7 @@ impl MultiplexPattern {
         let mut heads = vec![0usize; intervals];
         for j in 0..n {
             let t = (S4_DELAY_CLOCKS + TSP_PERIOD_CLOCKS * j) as u64;
-            let q = ((TSP_PERIOD_CLOCKS * j) as u64 / interval_clocks) as usize;
+            let q = TSP_PERIOD_CLOCKS * j / interval;
             if q > 0
                 && heads[q - 1] < sections[q - 1].len()
                 && ((TSP_PERIOD_CLOCKS * j) as u64).is_multiple_of(interval_clocks)

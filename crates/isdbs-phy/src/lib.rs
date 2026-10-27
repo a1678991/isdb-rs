@@ -20,9 +20,6 @@
 //! the superframe's [`isdbs_core::TmccInfo`] through
 //! [`isdbs_core::slots::runs`].
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 /// Complex symbol.
 pub type Cplx = num_complex::Complex<f64>;
 

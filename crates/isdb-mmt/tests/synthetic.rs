@@ -5,9 +5,6 @@
 //! LOAS frames. On air every media payload is scrambled (SPEC-NOTES
 //! "scrambled-mpu"), so this is the only check of the unscrambled path.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_mmt::Decoder;
 use isdb_mmt::es;
 use isdb_mmt::mpu::{FragmentType, FragmentationIndicator};

@@ -94,8 +94,6 @@
 //! }
 //! ```
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 pub mod adts;
 pub mod analysis;
 pub mod audio;

@@ -148,7 +148,10 @@ impl CodeRate {
     /// and 1010; 1010 is read as 105/120, the only rate missing — SPEC-NOTES
     /// "TMCC code-rate table".)
     pub fn code(self) -> u8 {
-        RATES.iter().position(|&r| r == self.0).expect("rate") as u8 + 1
+        (1u8..)
+            .zip(RATES)
+            .find_map(|(code, r)| (r == self.0).then_some(code))
+            .expect("rate")
     }
     /// From a TMCC code (B44 v2.1 Table 3.11-2 reading above).
     pub fn from_code(c: u8) -> Option<Self> {

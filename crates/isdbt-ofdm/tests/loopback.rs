@@ -1,8 +1,5 @@
 //! End-to-end loopback: Modulator → channel → Demodulator.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 mod common;
 
 use common::{Channel, Rng};

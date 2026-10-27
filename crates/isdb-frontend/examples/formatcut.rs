@@ -6,8 +6,6 @@
 //!
 //! cargo run --release -p isdb-frontend --example formatcut -- [BITS CUT_AT CUT_LEN [VERSION]]
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::format::{Event, HEADER_WORDS, Packer, Reader, trailer_words};
 use isdb_frontend::params::{Design, Params};
 

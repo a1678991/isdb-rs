@@ -1,8 +1,5 @@
 //! Property tests of the TLV assembler.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_tlv::tlv::{Assembler, Packet, PacketType};
 use proptest::prelude::*;
 

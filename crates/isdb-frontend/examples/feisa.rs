@@ -5,8 +5,6 @@
 //!
 //! cargo run --release -p isdb-frontend --example feisa -- REC [s|s3] [TAPS]
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fast::FastFrontend;
 use isdb_frontend::fixed::{Frontend, Symbol};
 use isdb_frontend::params::{Design, Params};

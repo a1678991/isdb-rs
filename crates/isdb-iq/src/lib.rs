@@ -34,9 +34,6 @@
 //! assert_eq!(f.sigmf_datatype(), "ci16_le");
 //! ```
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 pub mod sigmf;
 pub mod survey;
 

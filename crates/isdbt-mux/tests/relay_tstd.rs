@@ -7,8 +7,6 @@
 //! ([`isdbt_mux::relay::RETIME_HOLD`]) that jitter overflowed MBn by a packet or two at
 //! hundreds of points although the source itself is clean.
 
-#![warn(clippy::cast_possible_truncation)]
-
 mod common;
 
 use common::{bench_params, synth_audio, tmpdir};

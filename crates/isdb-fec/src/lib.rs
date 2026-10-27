@@ -14,8 +14,6 @@
 //! ln P(b=0)/P(b=1).
 
 #![cfg_attr(isdb_fec_portable_simd, feature(portable_simd))]
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
 
 pub mod bch;
 pub mod conv;

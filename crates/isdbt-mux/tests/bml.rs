@@ -1,5 +1,4 @@
 #![allow(missing_docs)]
-#![warn(clippy::cast_possible_truncation)]
 //! BML data broadcasting (`kind = "bml-carousel"`) and Hybridcast
 //! (`[service.hybridcast]`): the carousel on air reassembles to the files,
 //! the DII / DDB / PMT / EIT / AIT fields carry the configured values, the

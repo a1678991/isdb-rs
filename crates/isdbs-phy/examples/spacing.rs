@@ -4,9 +4,6 @@
 //!
 //! cargo run --release -p isdbs-phy --example spacing -- REC
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_iq::Recording;
 use isdbs_core::frame::{FRAME_SYMBOLS, W1_CODED_TAIL, W1_TAIL_AT};
 use isdbs_phy::sync::tail_metric;

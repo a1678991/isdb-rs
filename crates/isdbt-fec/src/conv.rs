@@ -319,7 +319,10 @@ mod tests {
                     let s = if b == 0 { 1.0 } else { -1.0 };
                     let y = s + sigma * rng.gauss();
                     raw_err += usize::from((y < 0.0) != (b == 1));
-                    (2.0 * y / (sigma * sigma)) as f32
+                    // the test LLR rounded to the decoder's f32
+                    #[allow(clippy::cast_possible_truncation)]
+                    let llr = (2.0 * y / (sigma * sigma)) as f32;
+                    llr
                 })
                 .collect();
             let dec = decode_punctured(rate, &llr, DEFAULT_TRACEBACK);
@@ -348,7 +351,12 @@ mod tests {
         encode_punctured(&mut ConvEncoder::new(), &p, &bits, &mut coded);
         let llr: Vec<f32> = coded
             .iter()
-            .map(|&b| if b == 0 { 1.0 } else { -1.0 } + 0.6 * rng.gauss() as f32)
+            .map(|&b| {
+                // the test noise rounded to the decoder's f32
+                #[allow(clippy::cast_possible_truncation)]
+                let n = 0.6 * rng.gauss() as f32;
+                (if b == 0 { 1.0 } else { -1.0 }) + n
+            })
             .collect();
         let t = std::time::Instant::now();
         let mut v = ViterbiDecoder::new(DEFAULT_TRACEBACK);

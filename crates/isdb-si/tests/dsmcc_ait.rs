@@ -4,9 +4,6 @@
 //! 6-3, 6-21, 6-22, 6-24) and Vol. 4 (Tables 5-1 … 5-7), decoded and
 //! re-encoded byte-identically.
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_si::ait::{Ait, AitDescriptor, HttpSelector};
 use isdb_si::bxml::{AdditionalAribBxmlInfo, AribBxmlInfo, BxmlEntry};
 use isdb_si::dsmcc::{Ddb, Dii, ModuleDescriptor, module_blocks};

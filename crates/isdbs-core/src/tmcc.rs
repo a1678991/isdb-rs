@@ -135,6 +135,24 @@ impl Bits<'_> {
         }
         v
     }
+
+    /// An `n`-bit field into a `u8`, `n <= 8` (asserted once here).
+    fn take_u8(&mut self, n: usize) -> u8 {
+        assert!(n <= 8, "take_u8: {n} bits");
+        // n <= 8 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.take(n) as u8;
+        v
+    }
+
+    /// An `n`-bit field into a `u16`, `n <= 16` (asserted once here).
+    fn take_u16(&mut self, n: usize) -> u16 {
+        assert!(n <= 16, "take_u16: {n} bits");
+        // n <= 16 is asserted above, so the value fits.
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.take(n) as u16;
+        v
+    }
 }
 
 /// Big-endian bit writer.
@@ -159,15 +177,15 @@ impl TmccInfo {
     /// `encode(decode(x)) == x` for every input.
     pub fn decode(info: &[u8; INFO_BYTES]) -> Self {
         let mut r = Bits { b: info, at: 0 };
-        let order_of_change = r.take(5) as u8;
+        let order_of_change = r.take_u8(5);
         let combinations = std::array::from_fn(|_| CombinationEntry {
-            word: CombinationWord::from_word(r.take(4) as u8),
-            slots: r.take(6) as u8,
+            word: CombinationWord::from_word(r.take_u8(4)),
+            slots: r.take_u8(6),
         });
-        let relative_ts = std::array::from_fn(|_| r.take(3) as u8);
-        let ts_ids = std::array::from_fn(|_| r.take(16) as u16);
+        let relative_ts = std::array::from_fn(|_| r.take_u8(3));
+        let ts_ids = std::array::from_fn(|_| r.take_u16(16));
         let emergency = r.take(1) == 1;
-        let uplink = r.take(4) as u8;
+        let uplink = r.take_u8(4);
         let reserved = r.take(RESERVED_BITS);
         debug_assert_eq!(r.at, INFO_BITS);
         Self {

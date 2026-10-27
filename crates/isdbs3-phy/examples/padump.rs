@@ -3,9 +3,6 @@
 //!
 //! cargo run --release -p isdbs3-phy --example padump -- REC
 
-// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
-#![warn(clippy::cast_possible_truncation)]
-
 use isdb_iq::Recording;
 use isdb_tlv::ip::compressed;
 use isdb_tlv::{Assembler, PacketType, mmtp};
