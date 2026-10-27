@@ -70,6 +70,8 @@ unused_macro_rules = "warn"
 # cast_precision_loss, must_use_candidate, doc_markdown and missing_*_doc
 # lints fire thousands of times on bit-field code and spec-citing docs
 # (docs/plans/type-safety.md §2 has the per-crate counts).
+# cast_possible_truncation is turned on per crate, as a `#![warn]` in its
+# lib.rs, once that crate's count is zero (plan §2 lists the crates).
 [workspace.lints.clippy]
 # pedantic
 case_sensitive_file_extension_comparisons = "warn"

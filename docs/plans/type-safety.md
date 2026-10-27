@@ -148,7 +148,12 @@ per-crate table is the output of the script; the heaviest are `isdb-si`
 Goal: `cast_lossless = "warn"` in `[workspace.lints.clippy]` after item F
 below; `cast_possible_truncation = "warn"` crate by crate as each crate's
 count reaches zero, with `#[allow]` + comment on the few that are
-intentional (DSP code taking the low bits on purpose).
+intentional (DSP code taking the low bits on purpose). Covered (item H3,
+a crate-level `#![warn(clippy::cast_possible_truncation)]` in `lib.rs`):
+`isdbt-core`, `isdb-hackrf`, `isdb-iio`, `isdb-text`, `isdb-radio`,
+`isdb-tlv`; three `#[allow]`s remain there (libiio's `-errno` in
+`isdb-iio`, the clamped 12-bit sample in `isdb-radio::quant`, the
+saturating buffer count in `RxOptions::buffers`).
 
 ## 3. Inventory (work items, disjoint file sets)
 

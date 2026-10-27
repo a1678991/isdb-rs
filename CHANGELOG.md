@@ -407,6 +407,14 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `clippy::cast_possible_truncation` is on (`#![warn]`) in `isdbt-core`,
+  `isdb-hackrf`, `isdb-iio`, `isdb-text`, `isdb-radio` and `isdb-tlv`
+  (`docs/plans/type-safety.md` §2): the remaining narrowing casts there
+  are restructured to produce the narrow type, made fallible, or carry an
+  `#[allow]` with the invariant. `isdb_tlv::tlv::Packet::encode` returns
+  `isdb_ts::Error::Overflow` for data longer than the 16-bit `data_length`
+  field; `Packet::bytes` panics on it (documented) instead of wrapping the
+  length.
 - `isdbt-core`: `LayerConfig.segments` is `Segments`, a `1..=13` newtype
   of ARIB STD-B31 Table 3-31 ('0001'–'1101'; Table 3-2 Ns = 13), instead
   of `usize`. `Segments::new(n)` is the only constructor (`None` outside

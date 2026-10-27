@@ -166,8 +166,8 @@ fn default_macro(code: u8) -> Option<Vec<u8>> {
         _ => return None,
     };
     let mut v = Vec::new();
-    for (n, k) in g.iter().enumerate() {
-        v.extend(f(*k).designation(n as u8));
+    for (n, k) in (0u8..).zip(g) {
+        v.extend(f(k).designation(n));
     }
     v.extend(G::Macro.designation(3));
     v.push(c::LS0);

@@ -70,7 +70,20 @@ pub struct Packet {
 
 impl Packet {
     /// The packet's bytes, header included.
+    ///
+    /// # Panics
+    ///
+    /// If `data` is longer than the 16-bit `data_length` field holds
+    /// (65 535 bytes); [`Packet::encode`] reports that as an error instead.
+    /// The [`Assembler`] never builds such a packet.
     pub fn bytes(&self) -> Vec<u8> {
+        self.encode()
+            .expect("TLV packet data longer than 65 535 bytes")
+    }
+
+    /// The packet's bytes, header included, or [`isdb_ts::Error::Overflow`]
+    /// when `data` does not fit the 16-bit `data_length` field.
+    pub fn encode(&self) -> isdb_ts::Result<Vec<u8>> {
         let ty = match self.kind {
             PacketType::Ipv4 => 1,
             PacketType::Ipv6 => 2,
@@ -79,10 +92,15 @@ impl Packet {
             PacketType::Null => 0xFF,
             PacketType::Other(v) => v,
         };
+        let len = u16::try_from(self.data.len()).map_err(|_| isdb_ts::Error::Overflow {
+            what: "TLV data_length",
+            value: self.data.len() as u64,
+            bits: 16,
+        })?;
         let mut b = vec![SYNC, ty];
-        b.extend_from_slice(&(self.data.len() as u16).to_be_bytes());
+        b.extend_from_slice(&len.to_be_bytes());
         b.extend_from_slice(&self.data);
-        b
+        Ok(b)
     }
 }
 
@@ -273,7 +291,7 @@ mod tests {
     fn pkt(kind: PacketType, n: usize) -> Packet {
         Packet {
             kind,
-            data: (0..n).map(|i| i as u8).collect(),
+            data: (0..=u8::MAX).cycle().take(n).collect(),
         }
     }
 
@@ -288,7 +306,9 @@ mod tests {
                 let head = starts
                     .iter()
                     .find(|&&s| s >= lo && s < lo + c.len())
-                    .map_or(0xFFFF, |&s| (s - lo) as u16);
+                    .map_or(0xFFFF, |&s| {
+                        u16::try_from(s - lo).expect("offset within a slot")
+                    });
                 (c.to_vec(), head)
             })
             .collect()
@@ -344,7 +364,7 @@ mod tests {
     fn file_reader_streams_and_resyncs() {
         let a = Packet {
             kind: PacketType::Ipv6,
-            data: (0..3000u32).map(|i| i as u8).collect(),
+            data: (0..=u8::MAX).cycle().take(3000).collect(),
         };
         let b = Packet {
             kind: PacketType::Null,

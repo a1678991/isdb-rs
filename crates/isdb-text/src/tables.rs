@@ -247,6 +247,7 @@ pub(crate) fn one_byte_reverse(table: &'static str, c: char) -> Option<u8> {
     }
     table_chars(table)
         .iter()
-        .position(|&t| t == c)
-        .map(|i| 0x21 + i as u8)
+        .zip(0x21u8..=0x7E)
+        .find(|&(&t, _)| t == c)
+        .map(|(_, code)| code)
 }

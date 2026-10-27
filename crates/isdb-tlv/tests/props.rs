@@ -1,5 +1,8 @@
 //! Property tests of the TLV assembler.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_tlv::tlv::{Assembler, Packet, PacketType};
 use proptest::prelude::*;
 
@@ -37,7 +40,7 @@ proptest! {
             let head = starts
                 .iter()
                 .find(|&&s| s >= lo && s < lo + c.len())
-                .map_or(0xFFFF, |&s| (s - lo) as u16);
+                .map_or(0xFFFF, |&s| u16::try_from(s - lo).expect("offset within a slot"));
             a.push_slot(Some(c), head, &mut out);
         }
         prop_assert_eq!(&out, &ps);

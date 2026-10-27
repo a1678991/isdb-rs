@@ -55,6 +55,8 @@
 //! # Ok::<(), isdb_iio::Error>(())
 //! ```
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 #![allow(unsafe_code)]
 
 mod ffi;
@@ -110,7 +112,10 @@ fn error(call: &'static str, what: impl Into<String>, code: i32) -> Error {
 /// An error from a negative libiio return value.
 fn check(call: &'static str, what: impl FnOnce() -> String, rc: isize) -> Result<usize> {
     if rc < 0 {
-        Err(error(call, what(), rc as i32))
+        // FFI: libiio returns -errno in a ssize_t, which fits an i32.
+        #[allow(clippy::cast_possible_truncation)]
+        let code = rc as i32;
+        Err(error(call, what(), code))
     } else {
         Ok(rc as usize)
     }

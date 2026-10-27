@@ -56,7 +56,11 @@ impl IntFormat for Cs12 {
                 if !(-FULL..=FULL).contains(&x) {
                     clipped += 1;
                 }
-                out.push((x.clamp(-FULL, FULL) as i16) << 4);
+                // DSP sample conversion: x is rounded and clamped to
+                // +-2047, so the cast to i16 is exact.
+                #[allow(clippy::cast_possible_truncation)]
+                let x = x.clamp(-FULL, FULL) as i16;
+                out.push(x << 4);
             }
         }
         clipped

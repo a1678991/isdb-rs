@@ -95,8 +95,7 @@ mod tests {
     pub(crate) fn nit() -> Vec<u8> {
         let mut b = vec![0x40, 0xF0, 0, 0x00, 0x04, 0xC1, 0, 0, 0xF0, 0x00];
         b.extend([0xF0, 0x06, 0xB0, 0xB0, 0x00, 0x04, 0xF0, 0x00]);
-        let len = b.len() - 3 + 4;
-        b[2] = len as u8;
+        b[2] = u8::try_from(b.len() - 3 + 4).expect("section_length fits");
         let c = crc32(&b);
         b.extend(c.to_be_bytes());
         b

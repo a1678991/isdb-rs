@@ -34,6 +34,8 @@
 //! assert_eq!(p.frame_ticks_27mhz(), 6_246_072); // 231.336 ms × 27 MHz
 //! ```
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 pub mod fec_params;
 pub mod ofdm_params;
 pub mod params;

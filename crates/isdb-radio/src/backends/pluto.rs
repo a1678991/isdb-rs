@@ -464,11 +464,12 @@ fn tx_settings(cfg: &RadioConfig) -> Result<TxSettings> {
             let db: f64 = v
                 .parse()
                 .with_context(|| format!("{NAME} gain att={v}: not a number of dB"))?;
+            // The quarter-dB step equal to db * 4, if there is one.
             let q = db * 4.0;
-            if !(0.0..=f64::from(MAX_ATT_QDB)).contains(&q) || q.fract() != 0.0 {
+            let Some(q) = (0..=MAX_ATT_QDB).find(|&n| f64::from(n) == q) else {
                 bail!("{NAME} gain att={v}: must be 0..89.75 dB in 0.25 dB steps");
-            }
-            q as u32
+            };
+            q
         }
     };
     Ok(TxSettings { dev, att_qdb })
@@ -981,16 +982,17 @@ fn stream_capture(
                 }
                 discard = window;
             }
-            let n = ((data.len() / bps) as u64).min(samples - received);
-            received += n;
+            let n =
+                (data.len() / bps).min(usize::try_from(samples - received).unwrap_or(usize::MAX));
+            received += n as u64;
             if discard > 0 {
                 discard -= 1;
-                gaps.last_mut().expect("a gap is open").discarded += n;
+                gaps.last_mut().expect("a gap is open").discarded += n as u64;
                 continue;
             }
-            out.write_all(&data[..n as usize * bps])
+            out.write_all(&data[..n * bps])
                 .context("write the capture")?;
-            written += n;
+            written += n as u64;
         }
         Ok(())
     })();
@@ -1062,7 +1064,11 @@ fn set_rate(
     key: &str,
 ) -> Result<f64> {
     let want = cfg.sample_rate_hz();
-    let hz = want.round() as i64;
+    // round(rate_num / rate_den) in whole Hz, computed in integers.
+    let (num, den) = (i64::from(cfg.rate_num), i64::from(cfg.rate_den));
+    let hz = (2 * num + den)
+        .checked_div(2 * den)
+        .context("sample rate denominator is 0")?;
     // The driver reads back whole Hz below the BBPLL rate (8126983 for
     // 8126984): rewriting reprograms the clock chain, which would glitch a
     // stream of the other direction, so 1 Hz counts as unchanged.

@@ -88,6 +88,8 @@
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 mod backends;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
@@ -258,7 +260,11 @@ impl RxOptions {
     /// `sample_rate_hz`: rounded up, at least 1.
     pub fn buffers(&self, sample_rate_hz: f64, buffer_samples: usize) -> usize {
         let n = (self.queue_seconds * sample_rate_hz / buffer_samples as f64).ceil();
-        if n >= 1.0 { n as usize } else { 1 }
+        // f64 -> usize saturates: a count of buffers past usize::MAX could
+        // not be allocated anyway, and n < 1 (or NaN) becomes 1.
+        #[allow(clippy::cast_possible_truncation)]
+        let n = if n >= 1.0 { n as usize } else { 1 };
+        n
     }
 }
 
