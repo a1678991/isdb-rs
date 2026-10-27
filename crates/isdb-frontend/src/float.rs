@@ -141,6 +141,9 @@ impl FloatFrontend {
                 .clamp(f64::from(p.period_min) / one, f64::from(p.period_max) / one);
             self.gain_acc += err / f64::from(1u32 << p.agc_shift);
         }
+        // f64 -> usize saturates: t_acc is in 0..1 here, and min() bounds
+        // the index anyway.
+        #[allow(clippy::cast_possible_truncation)]
         let ph = ((self.t_acc * FLOAT_PHASES as f64) as usize).min(FLOAT_PHASES - 1);
         let mu = self.t_acc;
         let (h, g, kb) = (&self.h[ph], &self.g[ph], &self.k[ph]);

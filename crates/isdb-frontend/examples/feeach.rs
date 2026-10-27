@@ -3,6 +3,9 @@
 //! plan §0.14).
 //!
 //! cargo build --release -p isdb-frontend --example feeach
+
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fast::FastFrontend;
 use isdb_frontend::params::{Design, Params};
 fn main() {

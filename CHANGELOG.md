@@ -407,6 +407,17 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdb-frontend`: `clippy::cast_possible_truncation` is on (crate-level
+  `#![warn]` in `lib.rs`, every example and test; `docs/plans/type-safety.md`
+  §3 H3). Of its 130 casts, 54 are restructured (the `Symbols` words
+  through `to_le_bytes`, the filter phase as a masked `u8`, index
+  windows through `usize::try_from`, the float-to-12-bit input through the
+  new `isdb_frontend::input_sample`), 14 are `try_from` in examples and
+  tests, and 62 are DSP quantisation under 31 `#[allow]`s, each with its
+  invariant (the loop's clamps in `fixed`, shared with `fast` through
+  `pub(crate)` helpers, the bounded `Params::design` quantities, the f64
+  sample positions of the measurement tools). The FPGA vectors are
+  bit-identical.
 - The reserved payloads of the lossless coded enums are canonical by
   construction (`docs/plans/type-safety.md` §3 H1): `Reserved(u8)` /
   `UserDefined(u8)` become `Reserved(ReservedCode)` /

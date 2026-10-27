@@ -3,6 +3,8 @@
 //!
 //! cargo run --release -p isdb-frontend --example analyze -- REC [s|s3] [TAPS] [SAMPLES]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fixed::Frontend;
 use isdb_frontend::float::FloatFrontend;
 use isdb_frontend::metrics::{psk_mer, ring_stats, sqnr_db};
@@ -22,7 +24,10 @@ fn main() {
     let fs = rec.sample_rate;
     let seg = rec.segments()[0].clone();
     let x = rec
-        .read(seg.start, n.min((seg.end - seg.start) as usize))
+        .read(
+            seg.start,
+            n.min(usize::try_from(seg.end - seg.start).unwrap()),
+        )
         .unwrap();
     let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
     let cfo = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
@@ -52,15 +57,7 @@ fn main() {
         p.q_shift
     );
     // 12-bit domain input (8-bit captures are exact: value·16).
-    let xi: Vec<[i16; 2]> = x
-        .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect();
+    let xi: Vec<[i16; 2]> = x.iter().map(|&v| isdb_frontend::input_sample(v)).collect();
     let t0 = std::time::Instant::now();
     let mut fe = Frontend::new(p.clone()).unwrap();
     let mut syms = Vec::new();
@@ -144,6 +141,8 @@ fn main() {
             let q: Vec<[f64; 2]> = z
                 .iter()
                 .map(|v| {
+                    // z is an i16 value in f64, so the cast is exact.
+                    #[allow(clippy::cast_possible_truncation)]
                     let qq = |c: f64| {
                         (isdb_frontend::fixed::round_shift(c as i64, qs)).clamp(-lim, lim - 1)
                             as f64

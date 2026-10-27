@@ -9,12 +9,42 @@
 //! TRIM (symbol periods, default 0) sets the output bank (format 2): a
 //! nonzero trim makes `k` differ from `h`, so the vectors test that path.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::params::{Design, Params};
 use isdb_frontend::tables::rrc;
 use isdb_frontend::vectors::document;
 use isdb_iq::Recording;
 use isdb_iq::survey::{Options, survey};
 use std::path::PathBuf;
+
+/// `n` samples of a synthetic QPSK pulse train at `sps` samples per
+/// symbol (a fixed LCG symbol sequence), 500 per unit.
+// f64 symbol positions are truncated to indices on purpose, and the
+// components (|a| ≤ a few units × 500) fit i16: f64 -> i16 saturates.
+#[allow(clippy::cast_possible_truncation)]
+fn pulse_train(n: usize, sps: f64, alpha: f64) -> Vec<[i16; 2]> {
+    let mut state = 1u32;
+    let syms: Vec<(f64, f64)> = (0..(n as f64 / sps) as usize + 64)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (
+                if state & 0x8000_0000 != 0 { 1.0 } else { -1.0 },
+                if state & 0x4000_0000 != 0 { 1.0 } else { -1.0 },
+            )
+        })
+        .collect();
+    (0..n)
+        .map(|i| {
+            let k0 = ((i as f64 / sps) as usize).saturating_sub(16);
+            let (a, b) = (k0..k0 + 32).fold((0.0, 0.0), |(a, b), k| {
+                let w = rrc((i as f64 - k as f64 * sps) / sps, alpha);
+                (a + syms[k].0 * w, b + syms[k].1 * w)
+            });
+            [(a * 500.0).round() as i16, (b * 500.0).round() as i16]
+        })
+        .collect()
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -40,39 +70,13 @@ fn main() {
             let cfo = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
             let input: Vec<[i16; 2]> = x[..n]
                 .iter()
-                .map(|v| {
-                    [
-                        (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                        (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                    ]
-                })
+                .map(|&v| isdb_frontend::input_sample(v))
                 .collect();
             (fs, cfo, input)
         }
         _ => {
             let fs = 40e6;
-            let sps = fs / rs;
-            let mut state = 1u32;
-            let syms: Vec<(f64, f64)> = (0..(n as f64 / sps) as usize + 64)
-                .map(|_| {
-                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                    (
-                        if state & 0x8000_0000 != 0 { 1.0 } else { -1.0 },
-                        if state & 0x4000_0000 != 0 { 1.0 } else { -1.0 },
-                    )
-                })
-                .collect();
-            let input = (0..n)
-                .map(|i| {
-                    let k0 = ((i as f64 / sps) as usize).saturating_sub(16);
-                    let (a, b) = (k0..k0 + 32).fold((0.0, 0.0), |(a, b), k| {
-                        let w = rrc((i as f64 - k as f64 * sps) / sps, alpha);
-                        (a + syms[k].0 * w, b + syms[k].1 * w)
-                    });
-                    [(a * 500.0).round() as i16, (b * 500.0).round() as i16]
-                })
-                .collect();
-            (fs, 30e3, input)
+            (fs, 30e3, pulse_train(n, fs / rs, alpha))
         }
     };
     let mut d = Design::new(fs, rs, alpha);

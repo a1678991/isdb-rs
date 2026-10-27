@@ -37,6 +37,8 @@
 //!
 //! cargo run --release -p isdb-frontend --example s3budget -- REC [SAMPLES]
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fixed::Frontend;
 use isdb_frontend::float::FloatFrontend;
 use isdb_frontend::params::{Design, Params};
@@ -50,15 +52,12 @@ use std::path::PathBuf;
 const RS: f64 = 33.7561e6;
 const ALPHA: f64 = 0.03;
 
+/// 12-bit input samples (as `isdb_frontend::input_sample`, from f64).
 fn to_i16(x: &[C]) -> Vec<[i16; 2]> {
-    x.iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect()
+    // rounded and clamped to the 12-bit range, so the casts are exact
+    #[allow(clippy::cast_possible_truncation)]
+    let q = |c: f64| (c * 2048.0).round().clamp(-2048.0, 2047.0) as i16;
+    x.iter().map(|v| [q(v.re), q(v.im)]).collect()
 }
 
 fn fixed(x: &[C], d: &Design) -> Vec<C> {
@@ -189,6 +188,9 @@ fn sample_at(y: &[C], t0: f64, period: f64) -> Vec<C> {
     let mut z = Vec::new();
     let mut t = t0;
     while t + 3.0 < y.len() as f64 {
+        // f64 -> usize saturates: the instant is below y.len() (and a
+        // negative one gives 0, skipped below)
+        #[allow(clippy::cast_possible_truncation)]
         let i = t.floor() as usize;
         if i >= 1 {
             let mu = t - i as f64;
@@ -290,7 +292,10 @@ fn quant_study(z: &[C]) {
             for c in &d {
                 if (c.norm() < split) == inner {
                     let a = c.arg().rem_euclid(std::f64::consts::TAU);
-                    h[((a / std::f64::consts::TAU * 24.0) as usize).min(23)] += 1;
+                    // f64 -> usize saturates; a is in 0..TAU, min() bounds the bin
+                    #[allow(clippy::cast_possible_truncation)]
+                    let bin = ((a / std::f64::consts::TAU * 24.0) as usize).min(23);
+                    h[bin] += 1;
                 }
             }
             let tot: usize = h.iter().sum();
@@ -331,7 +336,7 @@ fn main() {
     let x32 = rec
         .read(
             seg.start + start,
-            n.min((seg.end - seg.start - start) as usize),
+            n.min(usize::try_from(seg.end - seg.start - start).unwrap()),
         )
         .unwrap();
     let x: Vec<C> = x32
@@ -403,11 +408,13 @@ fn main() {
                 let mut z = Vec::new();
                 let mut t = t0;
                 while t + half + 2.0 < m.len() as f64 {
+                    // f64 -> i64 saturates: the window start, below m.len()
+                    #[allow(clippy::cast_possible_truncation)]
                     let n0 = (t - half).ceil() as i64;
                     let mut acc = C::new(0.0, 0.0);
                     for n in n0..n0 + taps as i64 {
-                        if n >= 0 {
-                            acc += m[n as usize]
+                        if let Ok(i) = usize::try_from(n) {
+                            acc += m[i]
                                 * isdb_frontend::tables::matched_filter(
                                     t - n as f64,
                                     sps,
@@ -460,11 +467,15 @@ fn main() {
         let sps = fs / RS;
         let mf = |t: f64| -> C {
             let half = 64.0;
+            // f64 -> i64 saturates: the window start
+            #[allow(clippy::cast_possible_truncation)]
             let n0 = (t - half).ceil() as i64;
             let mut acc = C::new(0.0, 0.0);
             for nn in n0..n0 + 128 {
-                if nn >= 0 && (nn as usize) < m.len() {
-                    acc += m[nn as usize]
+                if let Ok(i) = usize::try_from(nn)
+                    && i < m.len()
+                {
+                    acc += m[i]
                         * isdb_frontend::tables::matched_filter(
                             t - nn as f64,
                             sps,
@@ -559,11 +570,15 @@ fn main() {
                 let z: Vec<C> = inst
                     .iter()
                     .map(|&t| {
+                        // f64 -> i64 saturates: the window end
+                        #[allow(clippy::cast_possible_truncation)]
                         let n_new = (t + taps as f64 / 2.0).floor() as i64;
                         let mut acc = C::new(0.0, 0.0);
                         for k in 0..taps as i64 {
                             let nn = n_new - k;
-                            if nn >= 0 && (nn as usize) < m.len() {
+                            if let Ok(i) = usize::try_from(nn)
+                                && i < m.len()
+                            {
                                 let tau = t + trim - nn as f64;
                                 // centre of the window: the loop's
                                 // instant (window from t − taps/2 to
@@ -573,9 +588,7 @@ fn main() {
                                     taps as f64 / 2.0,
                                     d.kaiser_beta,
                                 );
-                                acc += m[nn as usize]
-                                    * isdb_frontend::tables::rrc(tau / sps, ALPHA)
-                                    * w;
+                                acc += m[i] * isdb_frontend::tables::rrc(tau / sps, ALPHA) * w;
                             }
                         }
                         acc
@@ -606,16 +619,22 @@ fn main() {
                 zs.push(C::new(s.z[0], s.z[1]));
             }
         }
-        let skip = (x.len() as f64 / d.sps() / 2.0) as usize; // second half
+        // f64 -> usize saturates: half the symbol count (second half)
+        #[allow(clippy::cast_possible_truncation)]
+        let skip = (x.len() as f64 / d.sps() / 2.0) as usize;
         let r = s3sync::measure(&zs[skip..]).unwrap();
         let m = mix(&x, cfo, fs);
         let sps = fs / RS;
         let mf = |t: f64| -> C {
+            // f64 -> i64 saturates: the window start
+            #[allow(clippy::cast_possible_truncation)]
             let n0 = (t - 64.0).ceil() as i64;
             let mut acc = C::new(0.0, 0.0);
             for nn in n0..n0 + 128 {
-                if nn >= 0 && (nn as usize) < m.len() {
-                    acc += m[nn as usize]
+                if let Ok(i) = usize::try_from(nn)
+                    && i < m.len()
+                {
+                    acc += m[i]
                         * isdb_frontend::tables::matched_filter(
                             t - nn as f64,
                             sps,
@@ -671,11 +690,14 @@ fn main() {
         );
         for (ti, tau) in taus.iter().enumerate().step_by(2) {
             let v = h[ti] / cnt / peak;
+            // f64 -> usize saturates: a bar of up to 40 characters
+            #[allow(clippy::cast_possible_truncation)]
+            let bar = (v.norm() * 40.0) as usize;
             println!(
                 "  τ {tau:+.3} T: {:.3} ∠{:+6.1}°  {}",
                 v.norm(),
                 v.arg().to_degrees(),
-                "#".repeat((v.norm() * 40.0) as usize)
+                "#".repeat(bar)
             );
         }
     }

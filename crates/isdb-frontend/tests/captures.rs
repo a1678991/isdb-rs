@@ -8,6 +8,8 @@
 //! full 56 MHz analog bandwidth (2026-10-25 set or later) for the
 //! thresholds below.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::fixed::Frontend;
 use isdb_frontend::float::FloatFrontend;
 use isdb_frontend::format::{Event, Packer, Reader};
@@ -33,15 +35,7 @@ fn check(var: &str, system: usize) {
     let mut d = Design::for_system(sys, fs);
     d.carrier_offset = cfo;
     let p = Params::design(&d).unwrap();
-    let input: Vec<[i16; 2]> = x
-        .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect();
+    let input: Vec<[i16; 2]> = x.iter().map(|&v| isdb_frontend::input_sample(v)).collect();
     let mut fe = Frontend::new(p.clone()).unwrap();
     let mut syms = Vec::new();
     fe.process(&input, &mut syms);
@@ -135,15 +129,9 @@ fn isdb_s3_trim_recovers_the_sync_snr() {
     let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
     let mut d = Design::for_system(&KNOWN_SYSTEMS[1], fs);
     d.carrier_offset = sv.best_carrier().map(|c| c.offset_hz).unwrap();
-    let input: Vec<[i16; 2]> = x
-        .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect();
+    let input: Vec<[i16; 2]> = x.iter().map(|&v| isdb_frontend::input_sample(v)).collect();
+    // f64 -> usize saturates: 0.1 s of samples, bounded by the input
+    #[allow(clippy::cast_possible_truncation)]
     let excerpt = ((0.1 * fs) as usize).min(input.len());
     let cands: Vec<f64> = (-6..=1).map(|i| f64::from(i) * 0.05).collect();
     let (trim, _) = s3sync::best_trim(&input[..excerpt], &d, &cands).unwrap();

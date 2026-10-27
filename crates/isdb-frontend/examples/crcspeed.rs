@@ -7,6 +7,8 @@
 //!
 //! cargo run --release -p isdb-frontend --example crcspeed
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 use isdb_frontend::format::{Event, Packer, Reader, crc16, crc32c};
 use isdb_frontend::params::{Design, Params};
 use std::hint::black_box;
@@ -31,7 +33,7 @@ fn main() {
     println!("link payload rate, 6-bit ISDB-S3: {link:.1} MB/s");
     // one 6-bit, 4 096-symbol payload
     let payload: Vec<u16> = (0..3072u32)
-        .map(|i| (i.wrapping_mul(2_654_435_761) >> 9) as u16)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 9 & 0xFFFF) as u16)
         .collect();
     let bytes = payload.len() * 2;
     let reps = 20_000;

@@ -227,6 +227,13 @@ pub struct ParamError(pub String);
 
 impl Params {
     /// The parameters for `d`.
+    // Every cast here quantises a bounded f64 design value to its register:
+    // sps is 1.0625..4 so the Q8.24 periods and integrator bound fit u32 /
+    // i32, the gain mantissas are rounded within 8192..16383 and their
+    // shifts within 0..=MAX_GAIN_SHIFT, q_shift is clamped to 0..=15,
+    // agc_target < 2^18 for agc_rms ≤ 1, and nco_step is the phase word
+    // modulo 2^32 by definition.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn design(d: &Design) -> Result<Self, ParamError> {
         let sps = d.sps();
         if !(1.0625..4.0).contains(&sps) {
