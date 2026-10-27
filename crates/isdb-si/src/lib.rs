@@ -40,20 +40,23 @@
 //!
 //! ```
 //! use isdb_si::{AnyTable, conformance};
+//! use isdb_ts::Pid;
 //!
 //! // time_date_section (B10 Part 2 Table 5-8) carrying the §5.2.7 example
-//! // time 0xC079124500 = 1993-10-13 12:45:00 JST.
+//! // time 0xC079124500 = 1993-10-13 12:45:00 JST, on the TDT PID of Part 1
+//! // Table 5-1 (a `Pid` is 13 bits; `Pid::new` checks the range once).
+//! let pid = Pid::new(0x0014).unwrap();
 //! let tdt = [0x70, 0x70, 0x05, 0xC0, 0x79, 0x12, 0x45, 0x00];
-//! let AnyTable::Tdt(t) = AnyTable::decode(0x0014, &tdt)? else { unreachable!() };
+//! let AnyTable::Tdt(t) = AnyTable::decode(pid, &tdt)? else { unreachable!() };
 //! assert_eq!(t.body.jst_time.to_jst().unwrap().to_string(), "1993-10-13 12:45:00");
 //! assert_eq!(AnyTable::Tdt(t.clone()).encode()?, tdt); // lossless
-//! assert!(conformance::check(0x0014, &AnyTable::Tdt(t)).is_empty());
+//! assert!(conformance::check(pid, &AnyTable::Tdt(t)).is_empty());
 //!
 //! // The 2 reserved bits set to '00' still decode (and re-encode
 //! // identically); conformance reports them separately.
 //! let odd = [0x40, 0x05, 0xC0, 0x79, 0x12, 0x45, 0x00];
-//! let t = AnyTable::decode(0x0014, &[&[0x70][..], &odd].concat())?;
-//! let dev = conformance::check(0x0014, &t);
+//! let t = AnyTable::decode(pid, &[&[0x70][..], &odd].concat())?;
+//! let dev = conformance::check(pid, &t);
 //! assert!(dev.iter().any(|d| d.kind == conformance::Kind::ReservedBits));
 //! # Ok::<(), isdb_ts::Error>(())
 //! ```

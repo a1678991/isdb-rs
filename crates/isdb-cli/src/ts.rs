@@ -16,6 +16,7 @@ use isdb_analyze::edit::{self, EditOp, EditOptions, NullSlots, Selector};
 use isdb_analyze::mutate::Expr;
 use isdb_analyze::validate::{Expectations, Severity, ValidateOptions};
 use isdb_analyze::{ScanOptions, inspect, scan_path};
+use isdb_ts::Pid;
 use std::path::PathBuf;
 
 fn int(s: &str) -> Result<u64> {
@@ -34,10 +35,15 @@ fn parse_u8(s: &str) -> Result<u8, String> {
         .and_then(|v| u8::try_from(v).map_err(|_| format!("{v} does not fit 8 bits")))
 }
 
-fn parse_u16_list(s: &str) -> Result<Vec<u16>, String> {
+/// A 13-bit PID (H.222.0 Table 2-3), decimal or 0x hex.
+fn parse_pid(s: &str) -> Result<Pid, String> {
+    isdb_analyze::mutate::pid(s).map_err(|e| e.to_string())
+}
+
+fn parse_pid_list(s: &str) -> Result<Vec<Pid>, String> {
     s.split(',')
         .filter(|x| !x.trim().is_empty())
-        .map(|x| parse_u16(x.trim()))
+        .map(|x| parse_pid(x.trim()))
         .collect()
 }
 
@@ -182,8 +188,8 @@ pub struct EditArgs {
     /// Output transport stream (188-byte packets).
     pub output: PathBuf,
     /// Replace every packet of these PIDs with null packets (comma list, repeatable).
-    #[arg(long, value_parser = parse_u16_list)]
-    pub null_pid: Vec<Vec<u16>>,
+    #[arg(long, value_parser = parse_pid_list)]
+    pub null_pid: Vec<Vec<Pid>>,
     /// Remove sections: PID:TID[:EXT[:SN]].
     #[arg(long)]
     pub remove: Vec<String>,
@@ -220,8 +226,8 @@ pub struct ExtractArgs {
     /// Transport stream.
     pub file: PathBuf,
     /// Only this PID.
-    #[arg(long, value_parser = parse_u16)]
-    pub pid: Option<u16>,
+    #[arg(long, value_parser = parse_pid)]
+    pub pid: Option<Pid>,
     /// Only this table_id.
     #[arg(long, value_parser = parse_u8)]
     pub tid: Option<u8>,
@@ -368,7 +374,7 @@ pub fn run(args: TsArgs) -> Result<()> {
                 );
             }
             let mut ops = Vec::new();
-            let nulls: Vec<u16> = a.null_pid.into_iter().flatten().collect();
+            let nulls: Vec<Pid> = a.null_pid.into_iter().flatten().collect();
             if !nulls.is_empty() {
                 ops.push(EditOp::NullPids(nulls));
             }

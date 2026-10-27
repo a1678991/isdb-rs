@@ -3,6 +3,7 @@
 
 use crate::tree::{self, Node};
 use isdb_si::AnyTable;
+use isdb_ts::Pid;
 use isdb_ts::psi::{Cat, Pat, Pmt};
 use isdb_ts::section::Long;
 
@@ -25,7 +26,7 @@ pub enum Table {
 /// table_id on a PID that B10 Table 5-1 does not assign to it is decoded
 /// as if it were on its assigned PID, so it can still be shown and
 /// compared.
-pub fn decode(pid: u16, sec: &[u8]) -> isdb_ts::Result<Table> {
+pub fn decode(pid: Pid, sec: &[u8]) -> isdb_ts::Result<Table> {
     match sec.first() {
         Some(0x00) => Ok(Table::Pat(Long::decode(sec)?)),
         Some(0x01) => Ok(Table::Cat(Long::decode(sec)?)),

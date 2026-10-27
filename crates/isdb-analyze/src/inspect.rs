@@ -8,6 +8,7 @@ use crate::scan::{Capture, SectionError, SlotKey, Tally};
 use crate::si::{self, SiSummary};
 use crate::timebase::Timebase;
 use crate::tree::{self, Node};
+use isdb_ts::Pid;
 use isdb_ts::cc::CcEventKind;
 use isdb_ts::pcr::{BASE_MODULUS, ts90k_wrap_diff};
 use serde::Serialize;
@@ -48,7 +49,7 @@ impl Intervals {
 #[derive(Debug, Clone, Serialize)]
 pub struct PidReport {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// What it carries (from PSI/SI and allocation tables).
     pub kind: String,
     /// Packets.
@@ -75,7 +76,7 @@ pub struct PidReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct PcrReport {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// PCRs.
     pub count: usize,
     /// Intervals between successive PCR values (seconds of PCR time).
@@ -97,7 +98,7 @@ pub struct PcrReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct EsReport {
     /// elementary_PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// stream_type.
     pub stream_type: u8,
     /// Table 2-34 description.
@@ -128,11 +129,11 @@ pub struct ProgramReport {
     /// program_number.
     pub program_number: u16,
     /// program_map_PID.
-    pub pmt_pid: u16,
+    pub pmt_pid: Pid,
     /// PMT version.
     pub version: u8,
     /// PCR_PID.
-    pub pcr_pid: u16,
+    pub pcr_pid: Pid,
     /// program_info descriptors.
     pub descriptors: Vec<Node>,
     /// Streams.
@@ -185,7 +186,7 @@ pub struct SectionReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct OtherSectionReport {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// table_id.
     pub table_id: u8,
     /// Table name.
@@ -204,7 +205,7 @@ pub struct CcSummary {
     /// Kind.
     pub kind: String,
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// Count.
     pub count: u64,
     /// First packet.
@@ -229,7 +230,7 @@ pub struct InspectReport {
     /// Duration (s) from the time base.
     pub duration_s: Option<f64>,
     /// PID whose PCRs define times.
-    pub timebase_pcr_pid: Option<u16>,
+    pub timebase_pcr_pid: Option<Pid>,
     /// Packet-rate estimate (bit/s) from PCRs.
     pub rate_bps: Option<f64>,
     /// Null packets present (0 ⇒ nulls were stripped or the TS is VBR).
@@ -274,7 +275,7 @@ pub fn timebase(cap: &Capture, nominal_bps: Option<f64>) -> Timebase {
         .pmts()
         .values()
         .map(|(_, p)| p.body.pcr_pid)
-        .find(|&p| p != 0x1FFF);
+        .find(|&p| p != Pid::NULL);
     Timebase::from_stats(&cap.stats, pcr_pid, nominal_bps)
 }
 
@@ -298,7 +299,7 @@ pub fn occurrence_intervals(
     )
 }
 
-fn pcr_report(cap: &Capture, pid: u16) -> PcrReport {
+fn pcr_report(cap: &Capture, pid: Pid) -> PcrReport {
     let pcrs = &cap.stats.pids[&pid].pcrs;
     let tb = Timebase::from_stats(&cap.stats, Some(pid), None);
     let samples: Vec<(u64, f64)> = pcrs
@@ -338,7 +339,7 @@ fn pcr_report(cap: &Capture, pid: u16) -> PcrReport {
 }
 
 /// What a PID carries, for the inventory.
-pub fn pid_kinds(cap: &Capture) -> BTreeMap<u16, String> {
+pub fn pid_kinds(cap: &Capture) -> BTreeMap<Pid, String> {
     let mut m = BTreeMap::new();
     for &pid in cap.stats.pids.keys() {
         if let Some(n) = names::pid_allocation(pid) {
@@ -355,7 +356,7 @@ pub fn pid_kinds(cap: &Capture) -> BTreeMap<u16, String> {
         }
     }
     for (prog, (_, pmt)) in cap.pmts() {
-        if pmt.body.pcr_pid != 0x1FFF {
+        if pmt.body.pcr_pid != Pid::NULL {
             m.entry(pmt.body.pcr_pid)
                 .or_insert_with(|| format!("PCR (program {prog:#06x})"));
         }
@@ -369,14 +370,14 @@ pub fn pid_kinds(cap: &Capture) -> BTreeMap<u16, String> {
                 ),
             );
         }
-        let ca = |ds: &[isdb_ts::descriptor::Descriptor], m: &mut BTreeMap<u16, String>| {
+        let ca = |ds: &[isdb_ts::descriptor::Descriptor], m: &mut BTreeMap<Pid, String>| {
             // conditional_access_descriptor (H.222.0 §2.6.16) / access_control_descriptor (B10 §6.2.54)
             for d in ds
                 .iter()
                 .filter(|d| matches!(d.tag, 0x09 | 0xF6) && d.data.len() >= 4)
             {
-                let pid = u16::from_be_bytes([d.data[2], d.data[3]]) & 0x1FFF;
-                if pid != 0x1FFF {
+                let pid = Pid::from_wire(u16::from_be_bytes([d.data[2], d.data[3]]));
+                if pid != Pid::NULL {
                     m.insert(
                         pid,
                         format!(
@@ -399,7 +400,7 @@ pub fn pid_kinds(cap: &Capture) -> BTreeMap<u16, String> {
     if let Some(c) = cap
         .slots
         .iter()
-        .find(|(k, _)| k.pid == 1 && k.table_id == 1)
+        .find(|(k, _)| k.pid == Pid::CAT && k.table_id == 1)
         .and_then(|(_, s)| isdb_ts::section::Long::<isdb_ts::psi::Cat>::decode(&s.latest).ok())
     {
         for d in c
@@ -408,8 +409,8 @@ pub fn pid_kinds(cap: &Capture) -> BTreeMap<u16, String> {
             .iter()
             .filter(|d| matches!(d.tag, 0x09 | 0xF6) && d.data.len() >= 4)
         {
-            let pid = u16::from_be_bytes([d.data[2], d.data[3]]) & 0x1FFF;
-            if pid != 0x1FFF {
+            let pid = Pid::from_wire(u16::from_be_bytes([d.data[2], d.data[3]]));
+            if pid != Pid::NULL {
                 m.insert(
                     pid,
                     format!(
@@ -486,7 +487,7 @@ pub fn inspect(cap: &Capture, opts: &InspectOptions) -> InspectReport {
             discontinuity: s.discontinuity,
         })
         .collect();
-    let mut cc: BTreeMap<(String, u16), CcSummary> = BTreeMap::new();
+    let mut cc: BTreeMap<(String, Pid), CcSummary> = BTreeMap::new();
     for e in &cap.stats.cc_events {
         let kind = match e.kind {
             CcEventKind::Break { .. } => "break",
@@ -608,7 +609,7 @@ pub fn inspect(cap: &Capture, opts: &InspectOptions) -> InspectReport {
         duration_s: duration,
         timebase_pcr_pid: tb.pcr_pid,
         rate_bps: tb.rate_bps(),
-        null_packets: cap.stats.pids.get(&0x1FFF).map_or(0, |s| s.packets),
+        null_packets: cap.stats.pids.get(&Pid::NULL).map_or(0, |s| s.packets),
         pids,
         cc: cc.into_values().collect(),
         pcr,

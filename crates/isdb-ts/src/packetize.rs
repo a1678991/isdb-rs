@@ -13,6 +13,7 @@
 use crate::cc::Counter;
 use crate::error::{Error, Result};
 use crate::packet::{PACKET_SIZE, PAYLOAD_CAPACITY, Packet};
+use crate::pid::Pid;
 
 /// How sections share packets (H.222.0 §2.4.4.2 pointer_field, §2.4.4
 /// stuffing).
@@ -30,7 +31,7 @@ pub enum Packing {
 /// bytes) onto `pid`, drawing continuity_counter values from `cc`
 /// (H.222.0 §2.4.4.1–2.4.4.2, §2.4.3.3).
 pub fn packetize_sections(
-    pid: u16,
+    pid: Pid,
     sections: &[Vec<u8>],
     packing: Packing,
     cc: &mut Counter,
@@ -98,7 +99,7 @@ mod tests {
         build_long(&LongHeader::new(tid, 7, 1), &body).unwrap()
     }
 
-    fn reassemble(pkts: &[[u8; PACKET_SIZE]], pid: u16) -> Vec<Vec<u8>> {
+    fn reassemble(pkts: &[[u8; PACKET_SIZE]], pid: Pid) -> Vec<Vec<u8>> {
         let mut a = SectionAssembler::new(pid);
         let mut v = Vec::new();
         for (i, p) in pkts.iter().enumerate() {
@@ -116,7 +117,8 @@ mod tests {
     fn one_per_packet_layout() {
         let s = vec![sec(0x42, 300), sec(0x42, 5)];
         let mut cc = Counter::new(15);
-        let p = packetize_sections(0x11, &s, Packing::OnePerPacket, &mut cc).unwrap();
+        let p = packetize_sections(Pid::new(0x11).unwrap(), &s, Packing::OnePerPacket, &mut cc)
+            .unwrap();
         assert_eq!(p.len(), 3);
         assert_eq!(p[0][1] & 0x40, 0x40); // PUSI
         assert_eq!(p[0][4], 0); // pointer_field
@@ -127,17 +129,17 @@ mod tests {
             vec![15, 0, 1]
         );
         assert!(p[1][4 + 312 - 183..].iter().all(|&b| b == 0xFF));
-        assert_eq!(reassemble(&p, 0x11), s);
+        assert_eq!(reassemble(&p, Pid::new(0x11).unwrap()), s);
     }
 
     #[test]
     fn packed_layout_uses_pointer() {
         let s = vec![sec(0x42, 200), sec(0x43, 20), sec(0x44, 400), sec(0x45, 1)];
         let mut cc = Counter::new(0);
-        let p = packetize_sections(0x12, &s, Packing::Packed, &mut cc).unwrap();
+        let p = packetize_sections(Pid::new(0x12).unwrap(), &s, Packing::Packed, &mut cc).unwrap();
         // second packet: pointer = 212 - 183 = 29
         assert_eq!(p[1][4], 29);
-        assert_eq!(reassemble(&p, 0x12), s);
+        assert_eq!(reassemble(&p, Pid::new(0x12).unwrap()), s);
         let total: usize = s.iter().map(Vec::len).sum();
         assert!(p.len() <= total.div_ceil(183) + 1);
     }
@@ -153,8 +155,12 @@ mod tests {
                     sec(0x51, n * 2),
                 ];
                 let mut cc = Counter::new(3);
-                let p = packetize_sections(0x13, &s, packing, &mut cc).unwrap();
-                assert_eq!(reassemble(&p, 0x13), s, "n={n} {packing:?}");
+                let p = packetize_sections(Pid::new(0x13).unwrap(), &s, packing, &mut cc).unwrap();
+                assert_eq!(
+                    reassemble(&p, Pid::new(0x13).unwrap()),
+                    s,
+                    "n={n} {packing:?}"
+                );
             }
         }
     }

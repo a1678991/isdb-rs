@@ -40,10 +40,12 @@
 //! use isdb_ts::cc::Counter;
 //! use isdb_ts::packetize::{Packing, packetize_sections};
 //! use isdb_ts::psi::{Pat, PatEntry};
+//! use isdb_ts::Pid;
 //!
 //! // A stream that carries only a PAT (H.222.0 Table 2-30).
-//! let pat = Pat::section(0x79EE, 1, vec![PatEntry::new(0x0408, 0x01F0)]).encode()?;
-//! let pkts = packetize_sections(0x0000, &[pat], Packing::OnePerPacket, &mut Counter::new(0))?;
+//! let pmt_pid = Pid::new(0x01F0).unwrap();
+//! let pat = Pat::section(0x79EE, 1, vec![PatEntry::new(0x0408, pmt_pid)]).encode()?;
+//! let pkts = packetize_sections(Pid::PAT, &[pat], Packing::OnePerPacket, &mut Counter::new(0))?;
 //! let cap = isdb_analyze::scan_packets(&pkts, &Default::default());
 //! assert_eq!(cap.pat().unwrap().header.table_id_extension, 0x79EE);
 //!

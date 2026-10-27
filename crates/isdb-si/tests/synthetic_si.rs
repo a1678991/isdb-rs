@@ -17,10 +17,11 @@ mod synthetic;
 use isdb_si::AnyTable;
 use isdb_si::conformance::{self, Kind};
 use isdb_si::descriptor::Descriptor;
+use isdb_ts::Pid;
 use isdb_ts::crc::crc32;
 use std::collections::BTreeMap;
 
-fn load() -> Vec<(u16, u8, Vec<u8>)> {
+fn load() -> Vec<(Pid, u8, Vec<u8>)> {
     synthetic::sections()
 }
 
@@ -197,7 +198,7 @@ fn synthetic_summary_and_conformance() {
                 t.body.descriptors.len()
             ),
             AnyTable::Tdt(t) => println!("TDT JST {:?}", t.body.jst_time.to_jst()),
-            AnyTable::Eit(e) if e.header.table_id == 0x4E && *pid == 0x0012 => {
+            AnyTable::Eit(e) if e.header.table_id == 0x4E && pid.get() == 0x0012 => {
                 for ev in &e.body.events {
                     for d in &ev.descriptors {
                         if let Descriptor::ShortEvent(x) = d {

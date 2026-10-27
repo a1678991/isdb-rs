@@ -390,6 +390,7 @@ impl<R: Read> Iterator for StreamReader<R> {
 mod tests {
     use super::*;
     use crate::packet::Packet;
+    use crate::pid::Pid;
 
     fn stream(n: usize, fmt: PacketFormat) -> Vec<u8> {
         let mut v = Vec::new();
@@ -397,10 +398,15 @@ mod tests {
             // payload with occasional sync-byte emulation
             let mut payload: Vec<u8> = (0..184).map(|k| (k * 3 + i) as u8).collect();
             payload[0] = i as u8;
-            let p = Packet::with_payload(0x100 + i as u16, false, (i & 15) as u8, &payload)
-                .unwrap()
-                .encode()
-                .unwrap();
+            let p = Packet::with_payload(
+                Pid::new(0x100 + i as u16).unwrap(),
+                false,
+                (i & 15) as u8,
+                &payload,
+            )
+            .unwrap()
+            .encode()
+            .unwrap();
             match fmt {
                 PacketFormat::Ts188 => v.extend_from_slice(&p),
                 PacketFormat::Ts192 => {

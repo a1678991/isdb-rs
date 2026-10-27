@@ -17,6 +17,7 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 |---|---|
 | `bits` | §2.2.6 `uimsbf`/`bslbf` MSB-first reader/writer |
 | `crc` | Annex A CRC_32 (poly 0x04C11DB7, table-driven and bitwise) |
+| `pid` | §2.4.3.3 Table 2-3 `Pid`: a 13-bit value type (`Pid::new` checks the range once; `PAT`, `CAT`, `TSDT`, `NULL` consts; `is_reserved`, `may_carry_pcr`), with `serde` as a range-checked integer behind the `serde` feature |
 | `packet` | §2.4.3.2 Table 2-2 header (Tables 2-4/2-5 transport_scrambling_control and adaptation_field_control as lossless coded enums), §2.4.3.4–2.4.3.5 Table 2-6 adaptation field and extension, `check` |
 | `pcr` | §2.4.2.2 eq. 2-1..2-3 PCR/OPCR, Table 2-21 33-bit PTS/DTS coding, wrap arithmetic |
 | `cc` | §2.4.3.3 continuity_counter, duplicates, §2.4.3.5 discontinuity_indicator |
@@ -31,7 +32,8 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 
 ## Position in the stack
 
-- Depends on: nothing in the workspace (only `thiserror`).
+- Depends on: nothing in the workspace (only `thiserror`; `serde` behind
+  the optional `serde` feature).
 - Used by: `isdb-si` (section envelope and `Error` for every SI table),
   `isdb-analyze`, `isdbt-mux`; `isdb-cli` reaches it only through
   `isdb-analyze` / `isdbt-mux`. The PHY crates (`isdbt-core`,
@@ -40,6 +42,9 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 
 ## Key types and entry points
 
+- `Pid`: the 13-bit PID (`Pid::new(u16) -> Option<Pid>`, `get()`,
+  `Pid::PAT` … `Pid::NULL`); every `pid` field and parameter in the crate
+  takes it, so an out-of-range PID cannot reach an encoder.
 - `packet::Packet` (lossless codec) and `packet::View` (zero-copy header /
   payload / PCR accessor for hot paths); `packet::check`.
 - `section::{Long, Short}` with the `LongBody` / `ShortBody` traits that
@@ -56,6 +61,7 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 Build a PAT, packetise it, read it back and check that decoding is lossless:
 
 ```rust
+use isdb_ts::Pid;
 use isdb_ts::cc::Counter;
 use isdb_ts::demux::{Assembled, SectionDemux};
 use isdb_ts::packetize::{Packing, packetize_sections};
@@ -64,16 +70,20 @@ use isdb_ts::reader::SliceReader;
 use isdb_ts::section::Long;
 
 // PAT (H.222.0 Table 2-30): NIT on PID 0x0010, one programme on 0x01F0.
-let pat = Pat::section(0x7FE8, 0, vec![PatEntry::new(0, 0x0010), PatEntry::new(0x0408, 0x01F0)]);
+// A PID is 13 bits (Table 2-3): `Pid::new` is `None` above 0x1FFF.
+let nit = Pid::new(0x0010).unwrap();
+let pmt = Pid::new(0x01F0).unwrap();
+assert!(Pid::new(0x2000).is_none());
+let pat = Pat::section(0x7FE8, 0, vec![PatEntry::new(0, nit), PatEntry::new(0x0408, pmt)]);
 assert!(check_pat(&pat).is_empty());
 let bytes = pat.encode().unwrap(); // section_length and CRC_32 computed
 
 let mut cc = Counter::new(0);
-let packets = packetize_sections(0x0000, &[bytes.clone()], Packing::OnePerPacket, &mut cc).unwrap();
+let packets = packetize_sections(Pid::PAT, &[bytes.clone()], Packing::OnePerPacket, &mut cc).unwrap();
 let stream: Vec<u8> = packets.concat();
 
 let mut demux = SectionDemux::new();
-demux.add_pid(0x0000);
+demux.add_pid(Pid::PAT);
 let mut sections = Vec::new();
 for p in SliceReader::new(&stream) {
     for a in demux.push(p.index, p.packet) {
@@ -83,7 +93,7 @@ for p in SliceReader::new(&stream) {
     }
 }
 let back = Long::<Pat>::decode(&sections[0]).unwrap();
-assert_eq!(back.body.network_pid(), Some(0x0010));
+assert_eq!(back.body.network_pid(), Some(nit));
 assert_eq!(back.encode().unwrap(), bytes); // encode(decode(x)) == x
 ```
 

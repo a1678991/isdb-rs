@@ -16,6 +16,7 @@ mod common;
 use common::{bench_params, synth_audio, synth_video, tmpdir};
 use isdb_analyze::scan::{ScanOptions, scan_packets};
 use isdb_analyze::validate::{Severity, ValidateOptions, validate};
+use isdb_ts::Pid;
 use isdb_ts::pcr::{BASE_MODULUS, PCR_MODULUS};
 use isdbt_mux::pcrclock::PcrClock;
 use isdbt_mux::{Config, Multiplexer, Packet};
@@ -227,7 +228,7 @@ struct Pes {
 
 /// Complete PES of `es_pid`, timed by the PCR of `pcr_pid`.
 fn pes_of(pkts: &[Packet], pcr_pid: u16, es_pid: u16) -> Vec<Pes> {
-    let mut clock = PcrClock::new(Some(pcr_pid));
+    let mut clock = PcrClock::new(Some(Pid::new(pcr_pid).unwrap()));
     let mut timed = Vec::new();
     for (i, p) in pkts.iter().enumerate() {
         clock.push(p, i);
@@ -383,7 +384,7 @@ fn relays_a_foreign_program_as_a_terrestrial_service() {
     let pmts = cap.pmts();
     let (_, pmt) = pmts.values().next().expect("PMT");
     assert_eq!(pmt.header.table_id_extension, 0x0400);
-    assert_eq!(pmt.body.pcr_pid, 0x01FF);
+    assert_eq!(pmt.body.pcr_pid, Pid::new(0x01FF).unwrap());
     let ca: Vec<_> = pmt
         .body
         .program_info
@@ -408,7 +409,7 @@ fn relays_a_foreign_program_as_a_terrestrial_service() {
         .map(|s| {
             (
                 s.stream_type,
-                s.elementary_pid,
+                s.elementary_pid.get(),
                 s.descriptors.iter().map(|d| d.tag).collect(),
             )
         })
@@ -682,7 +683,7 @@ fn source_copy_control_is_preserved() {
         .body
         .streams
         .iter()
-        .find(|s| s.elementary_pid == 0x0112)
+        .find(|s| s.elementary_pid == Pid::new(0x0112).unwrap())
         .unwrap();
     let es_c1: Vec<_> = audio
         .descriptors

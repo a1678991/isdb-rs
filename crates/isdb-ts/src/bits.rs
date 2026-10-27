@@ -2,6 +2,7 @@
 //! H.222.0 §2.2.6 and ARIB STD-B10 §5.1 ("most significant bit first").
 
 use crate::error::{Error, Result};
+use crate::pid::Pid;
 
 /// Reads big-endian bit fields from a byte slice.
 #[derive(Debug, Clone)]
@@ -75,6 +76,11 @@ impl<'a> BitReader<'a> {
     /// Read a 32-bit field.
     pub fn u32(&mut self) -> Result<u32> {
         Ok(self.read(32)? as u32)
+    }
+
+    /// Read a 13-bit PID field (H.222.0 Table 2-3).
+    pub fn pid(&mut self) -> Result<Pid> {
+        Ok(Pid::from_wire(self.read(13)? as u16))
     }
 
     /// Take `n` whole bytes; the reader must be byte aligned.

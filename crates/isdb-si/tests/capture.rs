@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use isdb_si::AnyTable;
 use isdb_si::conformance;
 use isdb_si::descriptor::Descriptor;
+use isdb_ts::Pid;
 use isdb_ts::crc::crc32;
 use isdb_ts::demux::{Assembled, SectionDemux};
 use isdb_ts::reader::SliceReader;
@@ -57,9 +58,9 @@ fn capture_si_sections_crc_decode_reencode() {
     let Some(data) = capture() else { return };
     let mut demux = SectionDemux::new();
     for pid in SI_PIDS {
-        demux.add_pid(pid);
+        demux.add_pid(Pid::new(pid).unwrap());
     }
-    let mut seen: BTreeSet<(u16, Vec<u8>)> = BTreeSet::new();
+    let mut seen: BTreeSet<(Pid, Vec<u8>)> = BTreeSet::new();
     for (i, p) in SliceReader::new(&data).enumerate() {
         for o in demux.push(i as u64, p.packet) {
             if let Assembled::Section(s) = o {

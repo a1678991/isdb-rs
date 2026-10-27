@@ -69,6 +69,7 @@ use std::sync::mpsc::{Receiver, sync_channel};
 use isdb_si::Descriptor;
 use isdb_si::tables::{EitBody, SdtBody, TdtBody, TotBody};
 use isdb_si::values::{CodedValue, DigitalRecordingControl};
+use isdb_ts::Pid;
 use isdb_ts::cc::Counter;
 use isdb_ts::demux::{Assembled, SectionDemux};
 use isdb_ts::packet::{AdaptationFields, Packet as TsPacket};
@@ -165,7 +166,7 @@ pub enum CopySignalPlace {
     /// The PMT program loop (B10 §6.2.23: "for the whole event").
     PmtProgram,
     /// The ES loop of a relayed elementary stream (source PID).
-    PmtEs(u16),
+    PmtEs(Pid),
     /// The SDT service loop of the program (B10 §5.2.6).
     Sdt,
     /// The EIT present event of the program (B10 §5.2.7).
@@ -318,9 +319,9 @@ pub enum CaPidKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelayedCaPid {
     /// Source PID.
-    pub src_pid: u16,
+    pub src_pid: Pid,
     /// Output PID (the CA_PID of the generated descriptor).
-    pub pid: u16,
+    pub pid: Pid,
     /// ECM or EMM.
     pub kind: CaPidKind,
     /// CA_system_ID of the descriptor that names it.
@@ -362,21 +363,21 @@ impl SourceCa {
 
 /// CA_system_ID and CA_PID of a raw conditional_access_descriptor body
 /// (H.222.0 §2.6.16, Table 2-60).
-fn ca_fields(data: &[u8]) -> Option<(u16, u16)> {
+fn ca_fields(data: &[u8]) -> Option<(u16, Pid)> {
     (data.len() >= 4).then(|| {
         (
             u16::from_be_bytes([data[0], data[1]]),
-            u16::from_be_bytes([data[2], data[3]]) & 0x1FFF,
+            Pid::from_wire(u16::from_be_bytes([data[2], data[3]])),
         )
     })
 }
 
 /// A conditional_access_descriptor with its CA_PID mapped by `map` (the 3
 /// reserved bits and the private data kept).
-fn remap_ca(data: &[u8], map: impl Fn(u16) -> u16) -> RawDescriptor {
+fn remap_ca(data: &[u8], map: impl Fn(Pid) -> Pid) -> RawDescriptor {
     let mut b = data.to_vec();
     if let Some((_, pid)) = ca_fields(&b) {
-        let np = map(pid) & 0x1FFF;
+        let np = map(pid).get();
         b[2] = (b[2] & 0xE0) | (np >> 8) as u8;
         b[3] = np as u8;
     }
@@ -390,9 +391,9 @@ fn remap_ca(data: &[u8], map: impl Fn(u16) -> u16) -> RawDescriptor {
 #[derive(Debug, Clone)]
 pub struct RelayedEs {
     /// Source PID.
-    pub src_pid: u16,
+    pub src_pid: Pid,
     /// Output PID (by role from the PID plan, or after `pid_map`).
-    pub pid: u16,
+    pub pid: Pid,
     /// stream_type.
     pub stream_type: u8,
     /// component_tag of its stream_identifier_descriptor.
@@ -479,11 +480,11 @@ pub struct Probe {
     /// Source PIDs present in the probed part and not relayed (other than
     /// the program's unselected elementary streams, see `skipped`), with
     /// the reason.
-    pub dropped_pids: Vec<(u16, String)>,
+    pub dropped_pids: Vec<(Pid, String)>,
     /// Its PMT PID in the source.
-    pub pmt_pid: u16,
+    pub pmt_pid: Pid,
     /// Its PCR_PID in the source (the time base).
-    pub pcr_pid: u16,
+    pub pcr_pid: Pid,
     /// Elementary streams relayed.
     pub es: Vec<RelayedEs>,
     /// Elementary streams not relayed, with the reason.
@@ -921,7 +922,7 @@ impl Role {
 
     /// The [`PidPlan`] entry of the role (data PES, carousels and other
     /// streams share `data`).
-    pub fn plan(self, plan: &PidPlan) -> &[u16] {
+    pub fn plan(self, plan: &PidPlan) -> &[Pid] {
         match self {
             Role::Video => &plan.video.0,
             Role::Audio => &plan.audio.0,
@@ -1102,14 +1103,14 @@ pub struct SourceProgram {
     /// program_number (= service_id).
     pub number: u16,
     /// PMT PID.
-    pub pmt_pid: u16,
+    pub pmt_pid: Pid,
     /// SDT service name (service_descriptor), if the SDT was seen.
     pub service_name: Option<String>,
     /// SDT service_type.
     pub service_type: Option<u8>,
     /// Its elementary streams (PID, stream_type, role), `None` when no PMT
     /// was seen in the probed part.
-    pub es: Option<Vec<(u16, u8, Role)>>,
+    pub es: Option<Vec<(Pid, u8, Role)>>,
     /// Packets of its elementary streams in the probed part.
     pub es_packets: u64,
 }
@@ -1159,7 +1160,7 @@ pub fn normalize_name(s: &str) -> String {
 /// PSI/SI of the probed part of a source.
 struct Scan {
     /// PAT programs (number, PMT PID), in PAT order.
-    programs: Vec<(u16, u16)>,
+    programs: Vec<(u16, Pid)>,
     pmts: Vec<(u16, Pmt)>,
     /// SDT actual: service_id → (name, service_type).
     sdt: Vec<(u16, String, u8)>,
@@ -1189,7 +1190,7 @@ impl Scan {
         self.eit.last_mut().expect("pushed")
     }
 
-    fn program(&self, number: u16, pmt_pid: u16) -> SourceProgram {
+    fn program(&self, number: u16, pmt_pid: Pid) -> SourceProgram {
         let sdt = self.sdt.iter().find(|x| x.0 == number);
         let es = self.pmt(number).map(|m| {
             m.streams
@@ -1204,7 +1205,7 @@ impl Scan {
                         s.stream_type,
                         component_tag_of(&typed),
                         &typed,
-                        self.pes_hint[s.elementary_pid as usize & 0x1FFF],
+                        self.pes_hint[usize::from(s.elementary_pid)],
                     );
                     (s.elementary_pid, s.stream_type, r.role)
                 })
@@ -1212,7 +1213,7 @@ impl Scan {
         });
         let es_packets = es.as_ref().map_or(0, |v| {
             v.iter()
-                .map(|(p, _, _)| self.pid_packets[*p as usize & 0x1FFF])
+                .map(|(p, _, _)| self.pid_packets[usize::from(*p)])
                 .sum()
         });
         SourceProgram {
@@ -1245,7 +1246,7 @@ fn component_tag_of(typed: &[Descriptor]) -> Option<u8> {
 fn scan(pkts: &[Packet]) -> Scan {
     let mut demux = SectionDemux::new();
     for pid in [0x0000, 0x0001, 0x0011, 0x0012, 0x0014] {
-        demux.add_pid(pid);
+        demux.add_pid(Pid::new(pid).expect("Table 5-1 PID"));
     }
     let mut sc = Scan {
         programs: Vec::new(),
@@ -1261,7 +1262,7 @@ fn scan(pkts: &[Packet]) -> Scan {
     };
     let mut have_pat = false;
     for (i, p) in pkts.iter().enumerate() {
-        let pid = packet_pid(p) as usize;
+        let pid = usize::from(packet_pid(p));
         sc.pid_packets[pid] += 1;
         if sc.pes_hint[pid].is_none()
             && p[1] & 0x40 != 0
@@ -1277,7 +1278,7 @@ fn scan(pkts: &[Packet]) -> Scan {
         for a in demux.push(i as u64, p) {
             let Assembled::Section(sec) = a else { continue };
             let tid = sec.data[0];
-            match (sec.pid, tid) {
+            match (sec.pid.get(), tid) {
                 (0x0000, 0x00) if !have_pat => {
                     let Ok(pat) = Long::<Pat>::decode(&sec.data) else {
                         continue;
@@ -1288,10 +1289,12 @@ fn scan(pkts: &[Packet]) -> Scan {
                         demux.add_pid(pmt_pid);
                     }
                 }
-                (pid, 0x02) if sc.programs.iter().any(|x| x.1 == pid) => {
+                (pid, 0x02) if sc.programs.iter().any(|x| x.1.get() == pid) => {
                     if let Ok(m) = Long::<Pmt>::decode(&sec.data) {
                         let n = m.header.table_id_extension;
-                        if sc.programs.iter().any(|x| x == &(n, pid)) && sc.pmt(n).is_none() {
+                        if sc.programs.iter().any(|x| x.0 == n && x.1.get() == pid)
+                            && sc.pmt(n).is_none()
+                        {
                             sc.pmts.push((n, m.body));
                         }
                     }
@@ -1377,7 +1380,7 @@ fn list_programs(v: &[SourceProgram]) -> String {
 /// Choose the source program: `program` (= service_id), else
 /// `service_name` against the SDT, else the only program (or the only one
 /// whose elementary streams have packets). Returns (program, PMT PID, how).
-fn select_program(sc: &Scan, st: &StreamCfg) -> std::result::Result<(u16, u16, String), String> {
+fn select_program(sc: &Scan, st: &StreamCfg) -> std::result::Result<(u16, Pid, String), String> {
     if sc.programs.is_empty() {
         return Err("no PAT (or a PAT without programs) in the probed part".into());
     }
@@ -1463,8 +1466,8 @@ fn select_program(sc: &Scan, st: &StreamCfg) -> std::result::Result<(u16, u16, S
 /// Order of the streams within each role (component_tag, then PMT order)
 /// → `rank`; with `pid_map = "auto"`, the output PIDs from `plan`.
 fn rank_and_assign(es: &mut [RelayedEs], plan: Option<&PidPlan>) {
-    let mut used: Vec<u16> = Vec::new();
-    let reserved: Vec<u16> = plan.map(|p| p.all().collect()).unwrap_or_default();
+    let mut used: Vec<Pid> = Vec::new();
+    let reserved: Vec<Pid> = plan.map(|p| p.all().collect()).unwrap_or_default();
     for group in 0..=4u8 {
         let mut idx: Vec<usize> = (0..es.len())
             .filter(|&i| es[i].role.group() == group)
@@ -1481,8 +1484,8 @@ fn rank_and_assign(es: &mut [RelayedEs], plan: Option<&PidPlan>) {
             let pid = match list.get(n) {
                 Some(&p) if !used.contains(&p) => p,
                 _ => {
-                    while next < 0x1FFE {
-                        next += 1;
+                    while next.get() < 0x1FFE {
+                        next = Pid::new(next.get() + 1).expect("at most 0x1FFE");
                         if !used.contains(&next) && !reserved.contains(&next) {
                             break;
                         }
@@ -1497,13 +1500,13 @@ fn rank_and_assign(es: &mut [RelayedEs], plan: Option<&PidPlan>) {
 }
 
 /// Why a source PID that is not relayed is dropped.
-fn drop_reason(sc: &Scan, program: u16, pmt: &Pmt, pmt_pid: u16, pid: u16, ca: CaMode) -> String {
+fn drop_reason(sc: &Scan, program: u16, pmt: &Pmt, pmt_pid: Pid, pid: Pid, ca: CaMode) -> String {
     let ca_pid = |d: &isdb_ts::descriptor::Descriptor| match Descriptor::decode_body(d.tag, &d.data)
     {
         Ok(Descriptor::ConditionalAccess(c)) if c.ca_pid == pid => Some(c.ca_system_id),
         _ => None,
     };
-    let si = match pid {
+    let si = match pid.get() {
         0x0000 => Some("PAT"),
         0x0001 => Some("CAT"),
         0x0010 => Some("NIT"),
@@ -1523,7 +1526,7 @@ fn drop_reason(sc: &Scan, program: u16, pmt: &Pmt, pmt_pid: u16, pid: u16, ca: C
     };
     if let Some(t) = si {
         let regenerated = matches!(
-            pid,
+            pid.get(),
             0x0000 | 0x0001 | 0x0010 | 0x0011 | 0x0012 | 0x0014 | 0x0024 | 0x0026 | 0x0027
         );
         return format!(
@@ -1535,7 +1538,7 @@ fn drop_reason(sc: &Scan, program: u16, pmt: &Pmt, pmt_pid: u16, pid: u16, ca: C
             }
         );
     }
-    if pid == 0x1FFF {
+    if pid == Pid::NULL {
         return "null packets".into();
     }
     if pid == pmt_pid {
@@ -1612,7 +1615,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             "no PMT of program {program:#06x} on PID {pmt_pid:#06x} in the probed part"
         ))
     })?;
-    if pmt.pcr_pid == 0x1FFF {
+    if pmt.pcr_pid == Pid::NULL {
         return Err(err(format!(
             "program {program:#06x} has no PCR_PID: its packets cannot be timed"
         )));
@@ -1631,7 +1634,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
     let types = st.stream_types.as_deref();
     let mut es = Vec::new();
     let mut skipped = Vec::new();
-    let mut skipped_why: Vec<(u16, String)> = Vec::new();
+    let mut skipped_why: Vec<(Pid, String)> = Vec::new();
     // per relayed ES: its conditional_access_descriptor bodies (ca = "keep")
     let mut es_ca_raw: Vec<Vec<Vec<u8>>> = Vec::new();
     for s in &pmt.streams {
@@ -1645,7 +1648,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             s.stream_type,
             tag,
             &typed,
-            sc.pes_hint[s.elementary_pid as usize & 0x1FFF],
+            sc.pes_hint[usize::from(s.elementary_pid)],
         );
         let carousel = CAROUSEL_STREAM_TYPES.contains(&s.stream_type);
         let selected = match types {
@@ -1737,7 +1740,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
     // ---- conditional access (ca = "keep"): ECM PIDs of the program loop and
     // the relayed ES loops, EMM PIDs of the CAT present in the source
     let ca_keep = st.ca == CaMode::Keep;
-    let mut ca_src: Vec<(u16, CaPidKind, u16)> = Vec::new();
+    let mut ca_src: Vec<(Pid, CaPidKind, u16)> = Vec::new();
     let mut ca_remarks: Vec<String> = Vec::new();
     if ca_keep {
         let ecm = pmt
@@ -1748,7 +1751,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             .chain(es_ca_raw.iter().flatten().map(Vec::as_slice));
         for d in ecm {
             if let Some((sys, pid)) = ca_fields(d)
-                && pid != 0x1FFF
+                && pid != Pid::NULL
                 && !ca_src.iter().any(|c| c.0 == pid)
             {
                 ca_src.push((pid, CaPidKind::Ecm, sys));
@@ -1758,10 +1761,10 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             let Some((sys, pid)) = ca_fields(&d.data) else {
                 continue;
             };
-            if pid == 0x1FFF || ca_src.iter().any(|c| c.0 == pid) {
+            if pid == Pid::NULL || ca_src.iter().any(|c| c.0 == pid) {
                 continue;
             }
-            if sc.pid_packets[pid as usize] > 0 {
+            if sc.pid_packets[usize::from(pid)] > 0 {
                 ca_src.push((pid, CaPidKind::Emm, sys));
             } else {
                 ca_remarks.push(format!(
@@ -1810,11 +1813,11 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
     }
     let mut ca_pids: Vec<RelayedCaPid> = Vec::new();
     {
-        let reserved: Vec<u16> = match &st.pid_map {
+        let reserved: Vec<Pid> = match &st.pid_map {
             PidMap::Auto => st.pids.as_ref().unwrap_or(&default_plan).all().collect(),
             _ => Vec::new(),
         };
-        let mut used: Vec<u16> = es.iter().map(|e| e.pid).collect();
+        let mut used: Vec<Pid> = es.iter().map(|e| e.pid).collect();
         for &(src, kind, sys) in &ca_src {
             let listed = match &st.pid_map {
                 PidMap::List(l) => l.iter().find(|x| x[0] == src).map(|x| x[1]),
@@ -1827,7 +1830,12 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
                 (None, PidMap::Auto) => {
                     let mut p = src;
                     while used.contains(&p) || reserved.contains(&p) {
-                        p = if p >= 0x1FFE { 0x0030 } else { p + 1 };
+                        p = Pid::new(if p.get() >= 0x1FFE {
+                            0x0030
+                        } else {
+                            p.get() + 1
+                        })
+                        .expect("at most 0x1FFE");
                     }
                     p
                 }
@@ -1843,7 +1851,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             });
         }
     }
-    let out_pids: Vec<(u16, u16)> = es
+    let out_pids: Vec<(Pid, Pid)> = es
         .iter()
         .map(|e| (e.pid, e.src_pid))
         .chain(ca_pids.iter().map(|c| (c.pid, c.src_pid)))
@@ -1856,7 +1864,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             )));
         }
     }
-    let map_ca = |pid: u16| {
+    let map_ca = |pid: Pid| {
         ca_pids
             .iter()
             .find(|c| c.src_pid == pid)
@@ -1887,9 +1895,10 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             .map(|d| remap_ca(&d.data, map_ca))
             .collect();
     }
-    let dropped_pids: Vec<(u16, String)> = (0..8192u16)
+    let dropped_pids: Vec<(Pid, String)> = (0..8192u16)
+        .map(|p| Pid::new(p).expect("13 bits"))
         .filter(|&p| {
-            sc.pid_packets[p as usize] > 0
+            sc.pid_packets[usize::from(p)] > 0
                 && !es.iter().any(|e| e.src_pid == p)
                 && !ca_pids.iter().any(|c| c.src_pid == p)
                 && !skipped_why.iter().any(|x| x.0 == p)
@@ -1903,11 +1912,11 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         .position(|e| e.stream_type == 0x02 || e.stream_type == 0x01);
     let mut idx = vec![usize::MAX; 8192];
     for (i, e) in es.iter().enumerate() {
-        idx[e.src_pid as usize] = i;
+        idx[usize::from(e.src_pid)] = i;
     }
     // ECM / EMM PIDs after the ES: counted (rate, scrambling) only
     for (k, c) in ca_pids.iter().enumerate() {
-        idx[c.src_pid as usize] = es.len() + k;
+        idx[usize::from(c.src_pid)] = es.len() + k;
     }
     let mut clock = PcrClock::<usize>::new(Some(pmt.pcr_pid));
     for (i, p) in pkts.iter().enumerate() {
@@ -1929,7 +1938,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
         if tot.is_some_and(|(i, _)| i == x.item as u64) {
             tot_t = Some(x.t);
         }
-        let ei = idx[packet_pid(p) as usize];
+        let ei = idx[usize::from(packet_pid(p))];
         if ei == usize::MAX {
             continue;
         }
@@ -2546,7 +2555,7 @@ impl RelayStats {
 }
 
 pub(crate) struct RelayEs {
-    pub(crate) pid: u16,
+    pub(crate) pid: Pid,
     pub(crate) layer: usize,
     mode: EsMode,
     cc: Counter,
@@ -2638,7 +2647,7 @@ fn position(passes: &[(i64, i64, u64)], c: i64) -> f64 {
 pub(crate) struct Relay {
     pub(crate) name: String,
     rx: Receiver<Chunk>,
-    pcr_pid: u16,
+    pcr_pid: Pid,
     at_eof: AtEof,
     pub(crate) es: Vec<RelayEs>,
     index: Vec<u16>, // source PID → es index + 1
@@ -2708,7 +2717,7 @@ impl Relay {
         let mut index = vec![0u16; 8192];
         let mut es = Vec::new();
         for (i, e) in probe.es.iter().enumerate() {
-            index[e.src_pid as usize] = i as u16 + 1;
+            index[usize::from(e.src_pid)] = i as u16 + 1;
             es.push(RelayEs {
                 pid: e.pid,
                 layer: layers[i],
@@ -2736,7 +2745,7 @@ impl Relay {
         // ECM / EMM PIDs (ca = "keep"): packet by packet, no T-STD model
         for c in &probe.ca.pids {
             let i = es.len();
-            index[c.src_pid as usize] = i as u16 + 1;
+            index[usize::from(c.src_pid)] = i as u16 + 1;
             es.push(RelayEs {
                 pid: c.pid,
                 layer: layers[i],
@@ -2950,7 +2959,7 @@ impl Relay {
     fn process(&mut self, x: Timed<Packet>) {
         self.read_t = x.t;
         let p = x.item;
-        let k = self.index[packet_pid(&p) as usize];
+        let k = self.index[usize::from(packet_pid(&p))];
         if k == 0 {
             return;
         }
@@ -3941,6 +3950,7 @@ mod tests {
     }
 
     fn es(src: u16, role: Role, tag: Option<u8>) -> RelayedEs {
+        let src = Pid::new(src).unwrap();
         RelayedEs {
             src_pid: src,
             pid: src,
@@ -3967,11 +3977,17 @@ mod tests {
     #[test]
     fn spec_table_2_60_ca_pid_remap_keeps_reserved_bits() {
         let body = [0x00, 0x05, 0xE1, 0x21, 0xAB];
-        assert_eq!(ca_fields(&body), Some((0x0005, 0x0121)));
-        let r = remap_ca(&body, |p| if p == 0x0121 { 0x0901 } else { p });
+        assert_eq!(ca_fields(&body), Some((0x0005, Pid::new(0x0121).unwrap())));
+        let r = remap_ca(&body, |p| {
+            if p == Pid::new(0x0121).unwrap() {
+                Pid::new(0x0901).unwrap()
+            } else {
+                p
+            }
+        });
         assert_eq!(r.tag, 0x09);
         assert_eq!(r.hex, "0005e901ab");
-        let null = remap_ca(&[0x00, 0x05, 0xFF, 0xFF], |_| 0x0901);
+        let null = remap_ca(&[0x00, 0x05, 0xFF, 0xFF], |_| Pid::new(0x0901).unwrap());
         assert_eq!(null.hex, "0005e901", "every CA_PID goes through the map");
         assert_eq!(ca_fields(&[0x00, 0x05, 0xE1]), None);
     }
@@ -3997,13 +4013,17 @@ mod tests {
         );
         c.findings.push(f(CopySignalPlace::Sdt, CopyFree));
         assert_eq!(c.effective(), Some((CopyFree, CopySignalPlace::Sdt)));
-        c.findings
-            .push(f(CopySignalPlace::PmtEs(0x0140), CopyOneGeneration));
-        c.findings
-            .push(f(CopySignalPlace::PmtEs(0x0141), CopyNever));
+        c.findings.push(f(
+            CopySignalPlace::PmtEs(Pid::new(0x0140).unwrap()),
+            CopyOneGeneration,
+        ));
+        c.findings.push(f(
+            CopySignalPlace::PmtEs(Pid::new(0x0141).unwrap()),
+            CopyNever,
+        ));
         assert_eq!(
             c.effective(),
-            Some((CopyNever, CopySignalPlace::PmtEs(0x0141)))
+            Some((CopyNever, CopySignalPlace::PmtEs(Pid::new(0x0141).unwrap())))
         );
         c.findings.push(f(CopySignalPlace::PmtProgram, CopyFree));
         assert_eq!(c.effective(), Some((CopyFree, CopySignalPlace::PmtProgram)));
@@ -4033,7 +4053,7 @@ mod tests {
         rank_and_assign(&mut v, Some(&PidPlan::default()));
         let got: Vec<(u16, u16, String)> = v
             .iter()
-            .map(|e| (e.src_pid, e.pid, e.role_label()))
+            .map(|e| (e.src_pid.get(), e.pid.get(), e.role_label()))
             .collect();
         assert_eq!(
             got,
@@ -4051,8 +4071,11 @@ mod tests {
         );
         // an explicit list per role, extension skipping the plan's PIDs
         let plan = PidPlan {
-            video: crate::config::PidList(vec![0x0100]),
-            audio: crate::config::PidList(vec![0x0110, 0x0101]),
+            video: crate::config::PidList(vec![Pid::new(0x0100).unwrap()]),
+            audio: crate::config::PidList(vec![
+                Pid::new(0x0110).unwrap(),
+                Pid::new(0x0101).unwrap(),
+            ]),
             ..PidPlan::default()
         };
         let mut v = vec![
@@ -4063,7 +4086,7 @@ mod tests {
             es(5, Role::Audio, None),
         ];
         rank_and_assign(&mut v, Some(&plan));
-        let pids: Vec<u16> = v.iter().map(|e| e.pid).collect();
+        let pids: Vec<u16> = v.iter().map(|e| e.pid.get()).collect();
         // video #2 → 0x0101 is the plan's second audio PID: skipped → 0x0102
         assert_eq!(pids, vec![0x0100, 0x0102, 0x0110, 0x0101, 0x0103]);
         // no plan (keep / explicit list): PIDs untouched, ranks set
@@ -4072,6 +4095,6 @@ mod tests {
             es(8, Role::Audio, Some(0x10)),
         ];
         rank_and_assign(&mut v, None);
-        assert_eq!((v[0].pid, v[0].rank, v[1].rank), (7, 1, 0));
+        assert_eq!((v[0].pid.get(), v[0].rank, v[1].rank), (7, 1, 0));
     }
 }

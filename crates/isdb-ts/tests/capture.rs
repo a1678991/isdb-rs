@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use isdb_ts::Pid;
 use isdb_ts::demux::{Assembled, SectionDemux};
 use isdb_ts::packet::Packet;
 use isdb_ts::pes::{PesAssembler, PesOutput, PesPacket};
@@ -122,7 +123,7 @@ fn capture_round_trips() {
 
     // 2. Find the PAT, then assemble all sections of interest.
     let mut demux = SectionDemux::new();
-    demux.add_pid(0x0000);
+    demux.add_pid(Pid::PAT);
     let mut pat: Option<Long<Pat>> = None;
     'find: for (i, raw) in packets.iter().enumerate() {
         for o in demux.push(i as u64, raw) {
@@ -133,7 +134,7 @@ fn capture_round_trips() {
         }
     }
     let pat = pat.expect("a PAT in the capture");
-    let pmt_pids: BTreeSet<u16> = pat.body.programs().map(|(_, pid)| pid).collect();
+    let pmt_pids: BTreeSet<Pid> = pat.body.programs().map(|(_, pid)| pid).collect();
     println!(
         "PAT tsid {:#06x}: network_PID {:?}, programs {:?}",
         pat.header.table_id_extension,
@@ -146,15 +147,16 @@ fn capture_round_trips() {
         0x0000, 0x0001, 0x0010, 0x0011, 0x0012, 0x0013, 0x0014, 0x0024,
     ]
     .into_iter()
+    .map(|p| Pid::new(p).unwrap())
     .chain(pmt_pids.iter().copied())
     {
         demux.add_pid(pid);
     }
-    let mut by_table: BTreeMap<(u16, u8), (usize, usize)> = BTreeMap::new(); // (pid, table_id) → (long, short)
+    let mut by_table: BTreeMap<(Pid, u8), (usize, usize)> = BTreeMap::new(); // (pid, table_id) → (long, short)
     let mut events: BTreeMap<String, usize> = BTreeMap::new();
     let mut psi_violations: BTreeMap<String, usize> = BTreeMap::new();
     let (mut n_long, mut n_short) = (0usize, 0usize);
-    let mut es_pids: BTreeSet<u16> = BTreeSet::new();
+    let mut es_pids: BTreeSet<Pid> = BTreeSet::new();
     let mut pmts_seen = 0;
     for (i, raw) in packets.iter().enumerate() {
         for o in demux.push(i as u64, raw) {
@@ -181,14 +183,14 @@ fn capture_round_trips() {
                         e.1 += 1;
                     }
                     match (s.pid, s.data[0]) {
-                        (0x0000, 0x00) => {
+                        (Pid::PAT, 0x00) => {
                             let t = Long::<Pat>::decode(&s.data).unwrap();
                             assert_eq!(t.encode().unwrap(), s.data);
                             for v in check_pat(&t) {
                                 *psi_violations.entry(format!("PAT {v}")).or_default() += 1;
                             }
                         }
-                        (0x0001, 0x01) => {
+                        (Pid::CAT, 0x01) => {
                             let t = Long::<Cat>::decode(&s.data).unwrap();
                             assert_eq!(t.encode().unwrap(), s.data);
                             for v in check_cat(&t) {
@@ -223,29 +225,29 @@ fn capture_round_trips() {
     println!("demux events: {events:#?}");
     println!("PSI rule violations: {psi_violations:#?}");
     assert!(n_long > 0 && pmts_seen > 0);
-    assert!(by_table.contains_key(&(0x0000, 0x00)));
+    assert!(by_table.contains_key(&(Pid::PAT, 0x00)));
 
     // 3. PES on the elementary PIDs (PES stream_types) listed in the PMTs.
     // A PID with any scrambled packet (transport_scrambling_control ≠ '00')
     // has an opaque payload: it is skipped here (and only here).
-    let scrambled: BTreeSet<u16> = packets
+    let scrambled: BTreeSet<Pid> = packets
         .iter()
         .filter(|raw| raw[3] & 0xC0 != 0)
-        .map(|raw| (u16::from(raw[1] & 0x1F) << 8) | u16::from(raw[2]))
+        .map(|raw| Pid::of_packet(raw).unwrap())
         .collect();
-    let skipped: Vec<u16> = es_pids.intersection(&scrambled).copied().collect();
+    let skipped: Vec<Pid> = es_pids.intersection(&scrambled).copied().collect();
     if !skipped.is_empty() {
-        println!("PES checks skipped on scrambled PIDs: {skipped:04x?}");
+        println!("PES checks skipped on scrambled PIDs: {skipped:?}");
     }
-    let mut asm: BTreeMap<u16, PesAssembler> = es_pids
+    let mut asm: BTreeMap<Pid, PesAssembler> = es_pids
         .iter()
         .filter(|p| !scrambled.contains(p))
         .map(|&p| (p, PesAssembler::new(p)))
         .collect();
-    let mut pes_count: BTreeMap<u16, usize> = BTreeMap::new();
+    let mut pes_count: BTreeMap<Pid, usize> = BTreeMap::new();
     let mut pes_events: BTreeMap<String, usize> = BTreeMap::new();
     let mut pes_violations: BTreeMap<String, usize> = BTreeMap::new();
-    let mut handle = |o: PesOutput, pes_count: &mut BTreeMap<u16, usize>| match o {
+    let mut handle = |o: PesOutput, pes_count: &mut BTreeMap<Pid, usize>| match o {
         PesOutput::Pes(x) => {
             let p = PesPacket::decode(&x.data).unwrap_or_else(|e| {
                 panic!("PES on {:#x} at packet {}: {e}", x.pid, x.start_packet)
@@ -277,7 +279,7 @@ fn capture_round_trips() {
         }
     };
     for (i, raw) in packets.iter().enumerate() {
-        let pid = (u16::from(raw[1] & 0x1F) << 8) | u16::from(raw[2]);
+        let pid = Pid::of_packet(raw).unwrap();
         if let Some(a) = asm.get_mut(&pid) {
             for o in a.push(i as u64, raw) {
                 handle(o, &mut pes_count);

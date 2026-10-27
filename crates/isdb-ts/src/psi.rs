@@ -12,6 +12,7 @@
 use crate::bits::{BitReader, BitWriter};
 use crate::descriptor::{self, Descriptor};
 use crate::error::{Error, Result};
+use crate::pid::Pid;
 use crate::section::{Long, LongBody, LongHeader};
 use crate::validate::{Violation, require, reserved_ones};
 
@@ -35,12 +36,12 @@ pub struct PatEntry {
     /// The 3 reserved bits (spec '111').
     pub reserved: u8,
     /// network_PID (program_number 0) or program_map_PID.
-    pub pid: u16,
+    pub pid: Pid,
 }
 
 impl PatEntry {
     /// Entry with reserved bits '111'.
-    pub fn new(program_number: u16, pid: u16) -> Self {
+    pub fn new(program_number: u16, pid: Pid) -> Self {
         Self {
             program_number,
             reserved: 0b111,
@@ -58,7 +59,7 @@ pub struct Pat {
 
 impl Pat {
     /// network_PID (entry with program_number 0x0000), if present.
-    pub fn network_pid(&self) -> Option<u16> {
+    pub fn network_pid(&self) -> Option<Pid> {
         self.entries
             .iter()
             .find(|e| e.program_number == 0)
@@ -66,7 +67,7 @@ impl Pat {
     }
 
     /// `(program_number, program_map_PID)` of every program (number ≠ 0).
-    pub fn programs(&self) -> impl Iterator<Item = (u16, u16)> + '_ {
+    pub fn programs(&self) -> impl Iterator<Item = (u16, Pid)> + '_ {
         self.entries
             .iter()
             .filter(|e| e.program_number != 0)
@@ -100,7 +101,7 @@ impl LongBody for Pat {
             entries.push(PatEntry {
                 program_number: r.u16()?,
                 reserved: r.read(3)? as u8,
-                pid: r.read(13)? as u16,
+                pid: r.pid()?,
             });
         }
         Ok(Self { entries })
@@ -160,7 +161,7 @@ pub struct PmtStream {
     /// The 3 reserved bits before elementary_PID (spec '111').
     pub reserved_pid: u8,
     /// elementary_PID.
-    pub elementary_pid: u16,
+    pub elementary_pid: Pid,
     /// The 4 reserved bits before ES_info_length (spec '1111').
     pub reserved_info: u8,
     /// ES_info descriptors (ES_info_length implied).
@@ -169,7 +170,7 @@ pub struct PmtStream {
 
 impl PmtStream {
     /// Entry with reserved bits all '1'.
-    pub fn new(stream_type: u8, elementary_pid: u16, descriptors: Vec<Descriptor>) -> Self {
+    pub fn new(stream_type: u8, elementary_pid: Pid, descriptors: Vec<Descriptor>) -> Self {
         Self {
             stream_type,
             reserved_pid: 0b111,
@@ -185,8 +186,8 @@ impl PmtStream {
 pub struct Pmt {
     /// The 3 reserved bits before PCR_PID (spec '111').
     pub reserved_pcr: u8,
-    /// PCR_PID (0x1FFF: no PCR, §2.4.4.9).
-    pub pcr_pid: u16,
+    /// PCR_PID ([`Pid::NULL`]: no PCR, §2.4.4.9).
+    pub pcr_pid: Pid,
     /// The 4 reserved bits before program_info_length (spec '1111').
     pub reserved_info: u8,
     /// Program descriptors (program_info_length implied).
@@ -197,7 +198,7 @@ pub struct Pmt {
 
 impl Pmt {
     /// PMT body with reserved bits all '1'.
-    pub fn new(pcr_pid: u16, program_info: Vec<Descriptor>, streams: Vec<PmtStream>) -> Self {
+    pub fn new(pcr_pid: Pid, program_info: Vec<Descriptor>, streams: Vec<PmtStream>) -> Self {
         Self {
             reserved_pcr: 0b111,
             pcr_pid,
@@ -224,7 +225,7 @@ impl LongBody for Pmt {
     fn decode(_: &LongHeader, body: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(body, "TS_program_map_section");
         let reserved_pcr = r.read(3)? as u8;
-        let pcr_pid = r.read(13)? as u16;
+        let pcr_pid = r.pid()?;
         let reserved_info = r.read(4)? as u8;
         let pil = r.read(12)? as usize;
         let program_info = descriptor::parse_loop(r.bytes(pil).map_err(|_| {
@@ -237,7 +238,7 @@ impl LongBody for Pmt {
         while r.remaining_bits() > 0 {
             let stream_type = r.u8()?;
             let reserved_pid = r.read(3)? as u8;
-            let elementary_pid = r.read(13)? as u16;
+            let elementary_pid = r.pid()?;
             let reserved_info = r.read(4)? as u8;
             let n = r.read(12)? as usize;
             let descriptors = descriptor::parse_loop(r.bytes(n).map_err(|_| {
@@ -312,12 +313,6 @@ fn check_envelope<B: LongBody>(
     }
 }
 
-/// Table 2-3: PIDs a program_map_PID/network_PID may take
-/// (0x0010..=0x1FFE; 0x0000–0x000F are assigned/reserved, 0x1FFF is null).
-fn assignable_pid(pid: u16) -> bool {
-    (0x0010..=0x1FFE).contains(&pid)
-}
-
 /// Rules of §2.4.4.5 (Table 2-30) on a PAT section: table_id 0x00, '0' bit,
 /// reserved bits '1' (§2.1.64), section_length ≤ 1021, program_number
 /// unique, PIDs "only take values as specified in Table 2-3".
@@ -339,7 +334,7 @@ pub fn check_pat(s: &Long<Pat>) -> Vec<Violation> {
                 e.program_number
             )
         });
-        require(&mut v, assignable_pid(e.pid), "§2.4.4.5 Table 2-3", || {
+        require(&mut v, e.pid.is_assignable(), "§2.4.4.5 Table 2-3", || {
             format!(
                 "program_number {:#06x} → PID {:#06x} not in 0x0010..0x1FFE",
                 e.program_number, e.pid
@@ -398,7 +393,7 @@ pub fn check_pmt(s: &Long<Pmt>) -> Vec<Violation> {
     );
     require(
         &mut v,
-        matches!(b.pcr_pid, 0x0000 | 0x0001 | 0x0010..=0x1FFF),
+        b.pcr_pid == Pid::NULL || b.pcr_pid.may_carry_pcr(),
         "§2.4.4.9 Table 2-3",
         || format!("PCR_PID {:#06x} may not carry a PCR", b.pcr_pid),
     );
@@ -438,7 +433,10 @@ mod tests {
         let s = Pat::section(
             0x79EE,
             3,
-            vec![PatEntry::new(0, 0x0010), PatEntry::new(0x0428, 0x01F0)],
+            vec![
+                PatEntry::new(0, Pid::new(0x0010).unwrap()),
+                PatEntry::new(0x0428, Pid::new(0x01F0).unwrap()),
+            ],
         );
         let b = s.encode().unwrap();
         // header: 00 B0 11 79 EE C7 00 00 ; body: 0000 E010 0428 E1F0 ; CRC
@@ -446,10 +444,10 @@ mod tests {
         assert_eq!(&b[8..16], &[0x00, 0x00, 0xE0, 0x10, 0x04, 0x28, 0xE1, 0xF0]);
         let d = Long::<Pat>::decode(&b).unwrap();
         assert_eq!(d, s);
-        assert_eq!(d.body.network_pid(), Some(0x10));
+        assert_eq!(d.body.network_pid(), Some(Pid::new(0x10).unwrap()));
         assert_eq!(
             d.body.programs().collect::<Vec<_>>(),
-            vec![(0x0428, 0x01F0)]
+            vec![(0x0428, Pid::new(0x01F0).unwrap())]
         );
         assert!(check_pat(&d).is_empty());
         // reserved bits kept verbatim and flagged by the checker
@@ -478,11 +476,15 @@ mod tests {
     #[test]
     fn spec_table2_33_pmt_layout() {
         let body = Pmt::new(
-            0x01FF,
+            Pid::new(0x01FF).unwrap(),
             vec![Descriptor::new(0xC1, [0x84])],
             vec![
-                PmtStream::new(0x02, 0x0111, vec![]),
-                PmtStream::new(0x0F, 0x0112, vec![Descriptor::new(0x52, [0x10])]),
+                PmtStream::new(0x02, Pid::new(0x0111).unwrap(), vec![]),
+                PmtStream::new(
+                    0x0F,
+                    Pid::new(0x0112).unwrap(),
+                    vec![Descriptor::new(0x52, [0x10])],
+                ),
             ],
         );
         let s = Pmt::section(0x0428, 0, body);

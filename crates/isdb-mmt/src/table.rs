@@ -9,6 +9,7 @@
 
 use crate::desc::{self, Descriptor};
 use isdb_si::time::{BcdDuration, MjdTime};
+use isdb_ts::Pid;
 use isdb_ts::crc::crc32;
 
 /// `MMT_general_location_info` (Table 7-9).
@@ -45,14 +46,14 @@ pub enum Location {
         /// Transport stream id.
         ts_id: u16,
         /// PID.
-        pid: u16,
+        pid: Pid,
     },
     /// 04h: an MPEG-2 TS packet in an IPv6 data flow.
     Mpeg2TsIpv6 {
         /// Destination port.
         port: u16,
         /// PID.
-        pid: u16,
+        pid: Pid,
     },
     /// 05h: a URL.
     Url(String),
@@ -86,14 +87,14 @@ impl Location {
                 Location::Mpeg2Ts {
                     network_id: u16at(1)?,
                     ts_id: u16at(3)?,
-                    pid: u16at(5)? & 0x1FFF,
+                    pid: Pid::from_wire(u16at(5)?),
                 },
                 7,
             ),
             0x04 => (
                 Location::Mpeg2TsIpv6 {
                     port: u16at(33)?,
-                    pid: u16at(35)? & 0x1FFF,
+                    pid: Pid::from_wire(u16at(35)?),
                 },
                 37,
             ),

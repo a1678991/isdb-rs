@@ -22,7 +22,8 @@
 
 use std::collections::HashMap;
 
-use crate::packet::{Header, PACKET_SIZE, PID_NULL, View};
+use crate::packet::{Header, PACKET_SIZE, View};
+use crate::pid::Pid;
 
 /// Transmit-side continuity_counter for one PID (§2.4.3.3): increments
 /// only for packets that carry payload.
@@ -230,7 +231,7 @@ pub struct CcEvent {
     /// Index of the packet in the stream.
     pub packet_index: u64,
     /// PID of the packet.
-    pub pid: u16,
+    pub pid: Pid,
     /// What happened.
     pub kind: CcEventKind,
 }
@@ -245,7 +246,7 @@ struct PidState {
 /// exempt.
 #[derive(Debug, Clone, Default)]
 pub struct CcChecker {
-    pids: HashMap<u16, PidState>,
+    pids: HashMap<Pid, PidState>,
 }
 
 impl CcChecker {
@@ -262,7 +263,7 @@ impl CcChecker {
             Ok(v) => (v.header, v.discontinuity_indicator()),
             Err(_) => (Header::decode(pkt).ok()?, false),
         };
-        if h.pid == PID_NULL {
+        if h.pid == Pid::NULL {
             return None;
         }
         let ev = |kind| {
@@ -317,7 +318,7 @@ mod tests {
     use crate::packet::{AdaptationFields, Packet};
     use crate::pcr::Pcr;
 
-    fn pkt(pid: u16, cc: u8, payload: bool) -> [u8; PACKET_SIZE] {
+    fn pkt(pid: Pid, cc: u8, payload: bool) -> [u8; PACKET_SIZE] {
         let p = if payload {
             Packet::with_payload(pid, false, cc, &[cc; 184]).unwrap()
         } else {
@@ -338,7 +339,7 @@ mod tests {
         let mut events = vec![];
         let seq = [(14, true), (15, true), (15, false), (0, true), (1, true)];
         for (i, &(cc, pl)) in seq.iter().enumerate() {
-            events.extend(ch.push(i as u64, &pkt(0x100, cc, pl)));
+            events.extend(ch.push(i as u64, &pkt(Pid::new(0x100).unwrap(), cc, pl)));
         }
         assert!(events.is_empty(), "{events:?}");
     }
@@ -347,14 +348,14 @@ mod tests {
     #[test]
     fn spec_2_4_3_3_duplicates_and_breaks() {
         let mut ch = CcChecker::new();
-        let a = pkt(0x100, 5, true);
+        let a = pkt(Pid::new(0x100).unwrap(), 5, true);
         assert_eq!(ch.push(0, &a), None);
         assert_eq!(
             ch.push(1, &a).unwrap().kind,
             CcEventKind::Duplicate { identical: true }
         );
         assert_eq!(ch.push(2, &a).unwrap().kind, CcEventKind::ExcessDuplicate);
-        let e = ch.push(3, &pkt(0x100, 8, true)).unwrap();
+        let e = ch.push(3, &pkt(Pid::new(0x100).unwrap(), 8, true)).unwrap();
         assert_eq!(
             (e.packet_index, e.kind),
             (
@@ -365,9 +366,9 @@ mod tests {
                 }
             )
         );
-        assert_eq!(ch.push(4, &pkt(0x100, 9, true)), None);
+        assert_eq!(ch.push(4, &pkt(Pid::new(0x100).unwrap(), 9, true)), None);
         // duplicate with different data
-        let mut b = pkt(0x100, 9, true);
+        let mut b = pkt(Pid::new(0x100).unwrap(), 9, true);
         b[100] ^= 1;
         assert_eq!(
             ch.push(5, &b).unwrap().kind,
@@ -375,13 +376,15 @@ mod tests {
         );
         // AF-only packet with changed counter
         assert_eq!(
-            ch.push(6, &pkt(0x100, 3, false)).unwrap().kind,
+            ch.push(6, &pkt(Pid::new(0x100).unwrap(), 3, false))
+                .unwrap()
+                .kind,
             CcEventKind::NoPayloadChanged {
                 previous: 9,
                 got: 3
             }
         );
-        assert_eq!(ch.push(7, &pkt(0x100, 10, true)), None);
+        assert_eq!(ch.push(7, &pkt(Pid::new(0x100).unwrap(), 10, true)), None);
     }
 
     /// §2.4.3.3: duplicates may differ only in the PCR value.
@@ -389,7 +392,7 @@ mod tests {
     fn spec_2_4_3_3_duplicate_pcr_exception() {
         let mk = |t| {
             Packet::with_adaptation(
-                0x20,
+                Pid::new(0x20).unwrap(),
                 false,
                 2,
                 Some(AdaptationFields {
@@ -414,9 +417,9 @@ mod tests {
     #[test]
     fn spec_2_4_3_5_discontinuity_and_null_exempt() {
         let mut ch = CcChecker::new();
-        ch.push(0, &pkt(0x100, 1, true));
+        ch.push(0, &pkt(Pid::new(0x100).unwrap(), 1, true));
         let d = Packet::with_adaptation(
-            0x100,
+            Pid::new(0x100).unwrap(),
             false,
             9,
             Some(AdaptationFields {
@@ -435,7 +438,7 @@ mod tests {
                 got: 9
             }
         );
-        assert_eq!(ch.push(2, &pkt(0x100, 10, true)), None);
+        assert_eq!(ch.push(2, &pkt(Pid::new(0x100).unwrap(), 10, true)), None);
         let n = Packet::null().encode().unwrap();
         for i in 0..3 {
             assert_eq!(ch.push(3 + i, &n), None);

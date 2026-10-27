@@ -9,7 +9,8 @@
 //! [`psi::check_pmt`], … returning [`Violation`]s with the clause).
 //!
 //! * [`packet`] — TS packet and adaptation field (Table 2-2, Table 2-6);
-//!   [`pcr`] — PCR and PTS/DTS coding; [`cc`] — continuity_counter rules.
+//!   [`pid`] — the 13-bit [`Pid`] and Table 2-3; [`pcr`] — PCR and PTS/DTS
+//!   coding; [`cc`] — continuity_counter rules.
 //! * [`section`] — long/short section envelope with the
 //!   [`section::LongBody`] / [`section::ShortBody`] traits that `isdb-si`
 //!   implements; [`psi`] — PAT, CAT, PMT; [`descriptor`] — raw loops.
@@ -28,6 +29,7 @@
 //! lossless:
 //!
 //! ```
+//! use isdb_ts::Pid;
 //! use isdb_ts::cc::Counter;
 //! use isdb_ts::demux::{Assembled, SectionDemux};
 //! use isdb_ts::packetize::{Packing, packetize_sections};
@@ -36,16 +38,19 @@
 //! use isdb_ts::section::Long;
 //!
 //! // PAT (H.222.0 Table 2-30): NIT on PID 0x0010, one programme on 0x01F0.
-//! let pat = Pat::section(0x7FE8, 0, vec![PatEntry::new(0, 0x0010), PatEntry::new(0x0408, 0x01F0)]);
+//! // A PID is 13 bits (Table 2-3): `Pid::new` is `None` above 0x1FFF.
+//! let nit = Pid::new(0x0010).unwrap();
+//! let pmt = Pid::new(0x01F0).unwrap();
+//! let pat = Pat::section(0x7FE8, 0, vec![PatEntry::new(0, nit), PatEntry::new(0x0408, pmt)]);
 //! assert!(check_pat(&pat).is_empty());
 //! let bytes = pat.encode()?; // section_length and CRC_32 computed
 //!
 //! let mut cc = Counter::new(0);
-//! let packets = packetize_sections(0x0000, &[bytes.clone()], Packing::OnePerPacket, &mut cc)?;
+//! let packets = packetize_sections(Pid::PAT, &[bytes.clone()], Packing::OnePerPacket, &mut cc)?;
 //! let stream: Vec<u8> = packets.concat();
 //!
 //! let mut demux = SectionDemux::new();
-//! demux.add_pid(0x0000);
+//! demux.add_pid(Pid::PAT);
 //! let mut sections = Vec::new();
 //! for p in SliceReader::new(&stream) {
 //!     for a in demux.push(p.index, p.packet) {
@@ -55,7 +60,7 @@
 //!     }
 //! }
 //! let back = Long::<Pat>::decode(&sections[0])?;
-//! assert_eq!(back.body.network_pid(), Some(0x0010));
+//! assert_eq!(back.body.network_pid(), Some(nit));
 //! assert_eq!(back.encode()?, bytes); // encode(decode(x)) == x
 //! # Ok::<(), isdb_ts::Error>(())
 //! ```
@@ -70,6 +75,7 @@ pub mod packet;
 pub mod packetize;
 pub mod pcr;
 pub mod pes;
+pub mod pid;
 pub mod psi;
 pub mod reader;
 pub mod section;
@@ -77,6 +83,7 @@ pub mod stats;
 pub mod validate;
 
 pub use error::{Error, Result};
+pub use pid::Pid;
 pub use validate::Violation;
 
 // Compile the README's code blocks as doctests.

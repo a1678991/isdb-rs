@@ -106,9 +106,9 @@ fn table_on_wrong_pid() {
 #[test]
 fn version_incoherence() {
     let mut s = default_spec(3);
-    s.items.retain(|i| i.pid != 0x0010);
+    s.items.retain(|i| i.pid != Pid::new(0x0010).unwrap());
     s.items.push(Item {
-        pid: 0x0010,
+        pid: Pid::new(0x0010).unwrap(),
         period_ms: 500,
         phase_ms: 11,
         make: Box::new(|n| vec![nit_with(1, (n % 2) as u8)]),
@@ -139,7 +139,7 @@ fn crc_error() {
 #[test]
 fn mandatory_sdt_missing() {
     let mut s = default_spec(3);
-    s.items.retain(|i| i.pid != 0x0011);
+    s.items.retain(|i| i.pid != Pid::new(0x0011).unwrap());
     let r = validate(&build(&s));
     assert!(
         r.findings
@@ -154,7 +154,7 @@ fn mandatory_sdt_missing() {
 fn frequency_criterion_exceeded_is_warning() {
     let mut s = default_spec(8);
     for it in &mut s.items {
-        if it.pid == 0x0011 {
+        if it.pid == Pid::new(0x0011).unwrap() {
             it.period_ms = 3000; // SDT criterion: once or more / 2 s
         }
     }
@@ -180,12 +180,12 @@ fn frequency_criterion_exceeded_is_warning() {
 #[test]
 fn reserved_bits_are_warnings() {
     let mut s = default_spec(3);
-    s.items.retain(|i| i.pid != 0);
+    s.items.retain(|i| i.pid != Pid::new(0).unwrap());
     let mut p = isdb_ts::psi::Pat::section(
         TSID,
         1,
         vec![
-            isdb_ts::psi::PatEntry::new(0, 0x10),
+            isdb_ts::psi::PatEntry::new(0, Pid::new(0x10).unwrap()),
             isdb_ts::psi::PatEntry::new(SID, PMT_PID),
         ],
     );
@@ -232,11 +232,11 @@ fn psi_section_too_long() {
 #[test]
 fn si_mandatory_descriptor() {
     let mut s = default_spec(3);
-    s.items.retain(|i| i.pid != 0x0012);
+    s.items.retain(|i| i.pid != Pid::new(0x0012).unwrap());
     let mut ev = event(1, 12);
     ev.descriptors.clear();
     s.items.push(Item {
-        pid: 0x0012,
+        pid: Pid::new(0x0012).unwrap(),
         period_ms: 1000,
         phase_ms: 17,
         make: Box::new(move |_| vec![eit_pf(0, vec![ev.clone()]), eit_pf(1, vec![])]),
@@ -252,7 +252,7 @@ fn si_mandatory_descriptor() {
 #[test]
 fn sdt_tsid_and_onid_mismatch() {
     let mut s = default_spec(3);
-    s.items.retain(|i| i.pid != 0x0011);
+    s.items.retain(|i| i.pid != Pid::new(0x0011).unwrap());
     s.items
         .push(item(0x0011, 1000, 13, sdt_with(0x1234, 0x0001, &[SID])));
     let r = validate(&build(&s));
@@ -271,7 +271,7 @@ fn sdt_tsid_and_onid_mismatch() {
 #[test]
 fn pat_program_absent_from_sdt() {
     let mut s = default_spec(3);
-    s.items.retain(|i| i.pid != 0x0011);
+    s.items.retain(|i| i.pid != Pid::new(0x0011).unwrap());
     s.items
         .push(item(0x0011, 1000, 13, sdt_with(TSID, ONID, &[0x0999])));
     let r = validate(&build(&s));
@@ -285,9 +285,9 @@ fn pat_program_absent_from_sdt() {
 #[test]
 fn eit_pf_two_events_in_present_section() {
     let mut s = default_spec(3);
-    s.items.retain(|i| i.pid != 0x0012);
+    s.items.retain(|i| i.pid != Pid::new(0x0012).unwrap());
     s.items.push(Item {
-        pid: 0x0012,
+        pid: Pid::new(0x0012).unwrap(),
         period_ms: 1000,
         phase_ms: 17,
         make: Box::new(|_| {
@@ -319,7 +319,11 @@ fn es_on_allocated_si_pid() {
         isdb_ts::psi::Pmt::new(
             PCR_PID,
             vec![],
-            vec![isdb_ts::psi::PmtStream::new(0x0F, 0x0024, vec![])],
+            vec![isdb_ts::psi::PmtStream::new(
+                0x0F,
+                Pid::new(0x0024).unwrap(),
+                vec![],
+            )],
         ),
     )
     .encode()
@@ -528,9 +532,9 @@ fn aac_quality_indicator_consistency() {
             text: isdb_text::AribString::encode("").unwrap(),
         });
         let mut s = default_spec(3);
-        s.items.retain(|i| i.pid != 0x0012);
+        s.items.retain(|i| i.pid != Pid::new(0x0012).unwrap());
         s.items.push(Item {
-            pid: 0x0012,
+            pid: Pid::new(0x0012).unwrap(),
             period_ms: 1000,
             phase_ms: 17,
             make: Box::new(move |_| {
@@ -563,8 +567,7 @@ fn aac_quality_indicator_consistency() {
 fn scrambled_payloads_not_parsed() {
     let mut p = build(&default_spec(3));
     for x in p.iter_mut() {
-        let pid = (u16::from(x[1] & 0x1F) << 8) | u16::from(x[2]);
-        if pid == AUDIO_PID {
+        if Pid::of_packet(x) == Some(AUDIO_PID) {
             x[3] |= 0x80; // '10': scrambled with the even key
             // garble the payload as a cipher would
             for b in x[4..].iter_mut() {
@@ -592,7 +595,8 @@ fn scrambled_payloads_not_parsed() {
 #[test]
 fn absent_tables_in_short_capture_are_info() {
     let mut s = default_spec(3);
-    s.items.retain(|i| i.pid != 0x0010 && i.pid != 0x0014);
+    s.items
+        .retain(|i| i.pid != Pid::new(0x0010).unwrap() && i.pid != Pid::new(0x0014).unwrap());
     let r = validate(&build(&s));
     assert!(
         has(&r, Info, "tables.mandatory", "Table 5-2"),
@@ -608,7 +612,7 @@ fn absent_tables_in_short_capture_are_info() {
     );
     // SDT (2 s) missing from a 3 s capture stays an error.
     let mut s = default_spec(3);
-    s.items.retain(|i| i.pid != 0x0011);
+    s.items.retain(|i| i.pid != Pid::new(0x0011).unwrap());
     let r = validate(&build(&s));
     assert!(
         has(&r, Error, "tables.mandatory", "Table 5-2"),

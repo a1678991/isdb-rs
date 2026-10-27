@@ -8,6 +8,7 @@ use crate::scan::Capture;
 use isdb_si::AnyTable;
 use isdb_si::descriptor::{Descriptor, ExtendedBroadcasterBody};
 use isdb_si::time::{BcdDuration, MjdTime};
+use isdb_ts::Pid;
 use serde::Serialize;
 
 fn text(s: &isdb_text::AribString) -> String {
@@ -221,9 +222,9 @@ pub struct SiSummary {
     /// PAT transport_stream_id.
     pub transport_stream_id: Option<u16>,
     /// PAT network_PID.
-    pub network_pid: Option<u16>,
+    pub network_pid: Option<Pid>,
     /// PAT programs (program_number, PMT PID).
-    pub programs: Vec<(u16, u16)>,
+    pub programs: Vec<(u16, Pid)>,
     /// NITs (actual first).
     pub networks: Vec<Network>,
     /// SDT services.

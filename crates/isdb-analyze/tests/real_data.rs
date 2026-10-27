@@ -50,8 +50,8 @@ fn load(var: &str) -> Option<(PathBuf, Vec<Pkt>)> {
 }
 
 /// The PAT of `p` and the PMT PIDs it lists.
-fn pat(p: &[Pkt]) -> (Long<Pat>, Vec<u16>) {
-    let sec = edit::assemble_pid(p, 0x0000)
+fn pat(p: &[Pkt]) -> (Long<Pat>, Vec<Pid>) {
+    let sec = edit::assemble_pid(p, Pid::new(0x0000).unwrap())
         .into_iter()
         .find(|o| o.bytes.first() == Some(&0x00))
         .expect("a PAT in the capture");
@@ -167,6 +167,7 @@ fn capture_identity_rewrite_keeps_sections() {
         0x0000u16, 0x0001, 0x0010, 0x0011, 0x0012, 0x0014, 0x0024, 0x0027,
     ]
     .into_iter()
+    .map(pid)
     .chain(pmts)
     {
         let mut q = p.clone();
@@ -218,11 +219,12 @@ fn capture_edit_round_trips() {
     // NIT field mutation (guard_interval to a different value): the diff
     // shows exactly that field
     let tsid = pat.header.table_id_extension;
-    let nit = edit::assemble_pid(&p, 0x0010)
+    let nit = edit::assemble_pid(&p, Pid::new(0x0010).unwrap())
         .into_iter()
         .find(|o| o.bytes.first() == Some(&0x40))
         .unwrap();
-    let AnyTable::Nit(nit) = AnyTable::decode(0x0010, &nit.bytes).unwrap() else {
+    let AnyTable::Nit(nit) = AnyTable::decode(Pid::new(0x0010).unwrap(), &nit.bytes).unwrap()
+    else {
         panic!()
     };
     let gi = nit

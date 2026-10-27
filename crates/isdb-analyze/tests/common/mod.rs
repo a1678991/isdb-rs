@@ -5,6 +5,7 @@ use isdb_si::descriptor::{self as d, Descriptor};
 use isdb_si::tables::*;
 use isdb_si::time::{BcdDuration, Date, DateTime, MjdTime};
 use isdb_text::AribString;
+pub use isdb_ts::Pid;
 use isdb_ts::cc::Counter;
 use isdb_ts::packet::{PACKET_SIZE, Packet};
 use isdb_ts::packetize::{Packing, packetize_sections};
@@ -16,12 +17,35 @@ use std::collections::HashMap;
 
 pub type Pkt = [u8; PACKET_SIZE];
 
+/// A literal PID (panics above 0x1FFF).
+pub fn pid(v: u16) -> Pid {
+    Pid::new(v).expect("13-bit PID")
+}
+
+/// A PID argument of the builders: a `Pid` or a literal (checked).
+pub struct PidArg(pub Pid);
+impl From<Pid> for PidArg {
+    fn from(p: Pid) -> Self {
+        PidArg(p)
+    }
+}
+impl From<u16> for PidArg {
+    fn from(v: u16) -> Self {
+        PidArg(Pid::new(v).expect("13-bit PID"))
+    }
+}
+impl From<i32> for PidArg {
+    fn from(v: i32) -> Self {
+        PidArg(Pid::new(u16::try_from(v).expect("13-bit PID")).expect("13-bit PID"))
+    }
+}
+
 pub const TSID: u16 = 0x79EE;
 pub const ONID: u16 = 0x79EE;
 pub const SID: u16 = 0x0408;
-pub const PMT_PID: u16 = 0x01F0;
-pub const PCR_PID: u16 = 0x01FF;
-pub const AUDIO_PID: u16 = 0x0110;
+pub const PMT_PID: Pid = Pid::new(0x01F0).unwrap();
+pub const PCR_PID: Pid = Pid::new(0x01FF).unwrap();
+pub const AUDIO_PID: Pid = Pid::new(0x0110).unwrap();
 /// Packets per second of the synthetic CBR stream.
 pub const PPS: u64 = 2000;
 
@@ -36,7 +60,10 @@ pub fn pat() -> Vec<u8> {
     Pat::section(
         TSID,
         1,
-        vec![PatEntry::new(0, 0x0010), PatEntry::new(SID, PMT_PID)],
+        vec![
+            PatEntry::new(0, Pid::new(0x0010).unwrap()),
+            PatEntry::new(SID, PMT_PID),
+        ],
     )
     .encode()
     .unwrap()
@@ -241,7 +268,7 @@ pub fn bit() -> Vec<u8> {
 /// A scheduled item of the synthetic stream.
 pub struct Item {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// Period in ms (0 = once at start).
     pub period_ms: u64,
     /// Phase in ms.
@@ -262,9 +289,9 @@ pub struct Spec {
     pub packing: Packing,
 }
 
-pub fn item(pid: u16, period_ms: u64, phase_ms: u64, s: Vec<u8>) -> Item {
+pub fn item(pid: impl Into<PidArg>, period_ms: u64, phase_ms: u64, s: Vec<u8>) -> Item {
     Item {
-        pid,
+        pid: pid.into().0,
         period_ms,
         phase_ms,
         make: Box::new(move |_| vec![s.clone()]),
@@ -284,7 +311,7 @@ pub fn default_spec(seconds: u64) -> Spec {
             item(0x0010, 1000, 11, nit()),
             item(0x0011, 1000, 13, sdt()),
             Item {
-                pid: 0x0012,
+                pid: Pid::new(0x0012).unwrap(),
                 period_ms: 1000,
                 phase_ms: 17,
                 make: Box::new(|_| {
@@ -292,7 +319,7 @@ pub fn default_spec(seconds: u64) -> Spec {
                 }),
             },
             Item {
-                pid: 0x0014,
+                pid: Pid::new(0x0014).unwrap(),
                 period_ms: 5000,
                 phase_ms: 19,
                 make: Box::new(|n| vec![tot(n as u32 * 5)]),
@@ -319,7 +346,7 @@ pub fn adts_frame(edit: impl FnOnce(&mut isdbt_mux::adts::AdtsHeader)) -> Vec<u8
 /// Build a CBR stream: PPS packets/s, null packets where nothing is due.
 pub fn build(spec: &Spec) -> Vec<Pkt> {
     let total = spec.seconds * PPS;
-    let mut cc: HashMap<u16, Counter> = HashMap::new();
+    let mut cc: HashMap<Pid, Counter> = HashMap::new();
     let mut queue: Vec<Pkt> = Vec::new(); // FIFO of pending packets
     let mut out = Vec::with_capacity(total as usize);
     let mut next: Vec<u64> = spec.items.iter().map(|i| i.phase_ms).collect();

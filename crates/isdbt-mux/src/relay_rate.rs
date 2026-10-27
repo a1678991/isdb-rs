@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use isdb_ts::Pid;
 use isdb_ts::reader::StreamReader;
 
 use crate::error::{MuxError, Result};
@@ -48,7 +49,7 @@ const NO_SLACK: i16 = i16::MAX;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScanPid {
     /// Source PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// Its packets carry PES whose PTS/DTS give each packet a deadline.
     pub pes: bool,
 }
@@ -226,11 +227,11 @@ impl Bins {
 
 /// Read the whole of `path` and bin the packets of `pids`, timed by the
 /// PCRs of `pcr_pid` ([`PcrClock`]).
-pub fn bin_file(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<Bins> {
+pub fn bin_file(path: &Path, pcr_pid: Pid, pids: &[ScanPid]) -> Result<Bins> {
     bin_and_index(path, pcr_pid, pids).map(|x| x.0)
 }
 
-fn bin_and_index(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<(Bins, Vec<SeekPoint>)> {
+fn bin_and_index(path: &Path, pcr_pid: Pid, pids: &[ScanPid]) -> Result<(Bins, Vec<SeekPoint>)> {
     let media = |msg: String| MuxError::Media {
         path: path.display().to_string(),
         msg,
@@ -239,7 +240,7 @@ fn bin_and_index(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<(Bins, V
     let mut r = StreamReader::new(BufReader::with_capacity(1 << 20, f));
     let mut slot = vec![u16::MAX; 8192];
     for (i, p) in pids.iter().enumerate() {
-        slot[p.pid as usize & 0x1FFF] = i as u16;
+        slot[usize::from(p.pid)] = i as u16;
     }
     // per relayed PID: the decoding time (27 MHz, continuous) of the PES
     // being received
@@ -270,7 +271,7 @@ fn bin_and_index(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<(Bins, V
     while let Some(p) = r.next_packet().map_err(MuxError::Io)? {
         let offset = p.offset;
         let p = *p.packet();
-        let s = slot[packet_pid(&p) as usize];
+        let s = slot[usize::from(packet_pid(&p))];
         let start =
             (s != u16::MAX && pids[s as usize].pes && p[1] & 0x40 != 0).then(|| pes_decode_ts(&p));
         clock.push(&p, (s, start, offset));
@@ -306,7 +307,7 @@ fn pes_decode_ts(p: &[u8; 188]) -> Option<u64> {
     }
 }
 
-type CacheKey = (PathBuf, u64, Option<SystemTime>, u16, Vec<ScanPid>);
+type CacheKey = (PathBuf, u64, Option<SystemTime>, Pid, Vec<ScanPid>);
 
 /// Scans already made in this process: building a multiplexer twice
 /// (`--auto-layout` retries with another layout) reads the file once.
@@ -314,7 +315,7 @@ static CACHE: Mutex<Vec<(CacheKey, Scan)>> = Mutex::new(Vec::new());
 
 /// [`Scan`] of the packets of `pids` over the whole of `path` (memoised
 /// per file, size and modification time).
-pub fn scan(path: &Path, pcr_pid: u16, pids: &[ScanPid]) -> Result<Scan> {
+pub fn scan(path: &Path, pcr_pid: Pid, pids: &[ScanPid]) -> Result<Scan> {
     let meta = std::fs::metadata(path).map_err(|e| MuxError::Media {
         path: path.display().to_string(),
         msg: e.to_string(),

@@ -25,6 +25,7 @@ use crate::timebase::Timebase;
 use isdb_si::AnyTable;
 use isdb_si::conformance::{self, Kind};
 use isdb_si::descriptor::Descriptor;
+use isdb_ts::Pid;
 use isdb_ts::cc::CcEventKind;
 use isdb_ts::pcr::{pcr_signed_diff, ts90k_signed_diff};
 use isdb_ts::psi::{self, Pmt};
@@ -258,7 +259,7 @@ impl Out {
     }
 }
 
-fn pid_loc(pid: u16) -> String {
+fn pid_loc(pid: Pid) -> String {
     format!("pid {pid:#06x}")
 }
 
@@ -346,7 +347,7 @@ fn transport(cap: &Capture, tb: &Timebase, o: &mut Out) {
         }
         if s.scrambled > 0 && s.tei < s.packets {
             let si = matches!(
-                pid,
+                pid.get(),
                 0x0000 | 0x0001 | 0x0010 | 0x0011 | 0x0013 | 0x0014 | 0x0024 | 0x0025
             ) || cap.slots.keys().any(|k| k.pid == pid && k.table_id == 2);
             if si {
@@ -382,7 +383,7 @@ fn transport(cap: &Capture, tb: &Timebase, o: &mut Out) {
         );
     }
     // continuity (§2.4.3.3)
-    let mut agg: BTreeMap<(u16, &'static str, Severity), u64> = BTreeMap::new();
+    let mut agg: BTreeMap<(Pid, &'static str, Severity), u64> = BTreeMap::new();
     for e in &cap.stats.cc_events {
         let (k, s) = match e.kind {
             CcEventKind::Break { .. } => {
@@ -419,10 +420,10 @@ fn transport(cap: &Capture, tb: &Timebase, o: &mut Out) {
     }
     // PCR (§2.7.2) on each program's PCR_PID
     let pmts = cap.pmts();
-    let pcr_pids: BTreeSet<u16> = pmts
+    let pcr_pids: BTreeSet<Pid> = pmts
         .values()
         .map(|(_, p)| p.body.pcr_pid)
-        .filter(|&p| p != 0x1FFF)
+        .filter(|&p| p != Pid::NULL)
         .collect();
     for &pid in &pcr_pids {
         let n = cap.stats.pids.get(&pid).map_or(0, |s| s.pcrs.len());
@@ -483,7 +484,7 @@ fn transport(cap: &Capture, tb: &Timebase, o: &mut Out) {
             );
         }
         // Accuracy is only measurable when packet positions are CBR time.
-        let nulls = cap.stats.pids.get(&0x1FFF).map_or(0, |s| s.packets);
+        let nulls = cap.stats.pids.get(&Pid::NULL).map_or(0, |s| s.packets);
         if s.len() >= 3 && nulls > 0 {
             let n = s.len() as f64;
             let mx = s.iter().map(|x| x.0 as f64).sum::<f64>() / n;
@@ -526,7 +527,7 @@ fn transport(cap: &Capture, tb: &Timebase, o: &mut Out) {
 
 fn psi_checks(
     cap: &Capture,
-    pmts: &BTreeMap<u16, (u16, Long<Pmt>)>,
+    pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>,
     duration: Option<f64>,
     o: &mut Out,
 ) {
@@ -604,7 +605,7 @@ fn psi_checks(
         }
     }
     if let Some(np) = pat.body.network_pid()
-        && np != 0x0010
+        && np.get() != 0x0010
     {
         o.push(
             Error,
@@ -616,7 +617,10 @@ fn psi_checks(
     }
     // scrambling ⇒ CAT (H.222.0 §2.4.4)
     let scrambled = cap.stats.pids.iter().any(|(_, s)| s.scrambled > s.tei);
-    let has_cat = cap.slots.keys().any(|k| k.pid == 1 && k.table_id == 1);
+    let has_cat = cap
+        .slots
+        .keys()
+        .any(|k| k.pid == Pid::CAT && k.table_id == 1);
     if scrambled && !has_cat {
         let sev = absent_severity(duration, 0x01);
         let msg = if sev == Severity::Info {
@@ -632,7 +636,7 @@ fn psi_checks(
 // PID allocation
 // ---------------------------------------------------------------------------
 
-fn referenced_pids(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>) -> BTreeMap<u16, String> {
+fn referenced_pids(cap: &Capture, pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>) -> BTreeMap<Pid, String> {
     let mut m = inspect::pid_kinds(cap);
     for (ppid, p) in pmts.values() {
         m.entry(*ppid).or_insert_with(|| "PMT".into());
@@ -643,14 +647,14 @@ fn referenced_pids(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>) -> BTr
     m
 }
 
-fn pid_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out) {
+fn pid_checks(cap: &Capture, pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>, o: &mut Out) {
     use Severity::*;
     let referenced = referenced_pids(cap, pmts);
     for (&pid, s) in &cap.stats.pids {
         if s.tei == s.packets {
             continue; // only corrupt packets: the PID itself may be a bit error
         }
-        if (0x0004..=0x000F).contains(&pid) {
+        if (0x0004..=0x000F).contains(&pid.get()) {
             o.add(
                 Error,
                 "pid.allocation",
@@ -673,8 +677,8 @@ fn pid_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out
     }
     // PMT / ES PIDs colliding with allocated PIDs
     for (prog, (ppid, p)) in pmts {
-        let chk = |o: &mut Out, pid: u16, what: &str| {
-            if pid <= 0x000F {
+        let chk = |o: &mut Out, pid: Pid, what: &str| {
+            if pid.get() <= 0x000F {
                 o.push(
                     Error,
                     "pid.allocation",
@@ -682,7 +686,7 @@ fn pid_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out
                     format!("program {prog:#06x}"),
                     format!("{what} PID {pid:#06x} in 0x0000–0x000F"),
                 );
-            } else if let Some(n) = names::pid_allocation(pid).filter(|_| pid != 0x1FFF) {
+            } else if let Some(n) = names::pid_allocation(pid).filter(|_| pid != Pid::NULL) {
                 o.push(
                     Error,
                     "pid.allocation",
@@ -690,7 +694,7 @@ fn pid_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out
                     format!("program {prog:#06x}"),
                     format!("{what} PID {pid:#06x} is allocated to {n}"),
                 );
-            } else if pid <= 0x002F {
+            } else if pid.get() <= 0x002F {
                 o.push(Info, "pid.allocation", "B10 Part 1 §5.1 Table 5-1", format!("program {prog:#06x}"), format!("{what} PID {pid:#06x} inside the SI PID range 0x0010–0x002F (not allocated by Table 5-1)"));
             }
         };
@@ -720,9 +724,9 @@ fn pid_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out
 // sections: placement, CRC, assembly, version coherence
 // ---------------------------------------------------------------------------
 
-fn section_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out) {
+fn section_checks(cap: &Capture, pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>, o: &mut Out) {
     use Severity::*;
-    let pmt_pids: BTreeSet<u16> = cap
+    let pmt_pids: BTreeSet<Pid> = cap
         .pat()
         .map(|p| p.body.programs().map(|x| x.1).collect())
         .unwrap_or_default();
@@ -731,9 +735,9 @@ fn section_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut
         let tid = k.table_id;
         let loc = k.to_string();
         // table_id per PID
-        if k.pid == 0x0000 && tid != 0x00 {
+        if k.pid == Pid::PAT && tid != 0x00 {
             o.push(Error, "section.placement", "H.222.0 §2.4.4 (\"Only sections with this value of table_id are permitted\" on PID 0x0000)", &loc, format!("table_id {tid:#04x} on the PAT PID"));
-        } else if k.pid == 0x0001 && tid != 0x01 {
+        } else if k.pid == Pid::CAT && tid != 0x01 {
             o.push(
                 Error,
                 "section.placement",
@@ -742,7 +746,7 @@ fn section_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut
                 format!("table_id {tid:#04x} on the CAT PID"),
             );
         } else if tid == 0x72 {
-            if matches!(k.pid, 0x0000 | 0x0001 | 0x0014) {
+            if matches!(k.pid.get(), 0x0000 | 0x0001 | 0x0014) {
                 o.push(
                     Error,
                     "section.placement",
@@ -775,7 +779,7 @@ fn section_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut
                     "PMT section on a PID the PAT does not designate",
                 );
             }
-        } else if (0x0010..=0x002F).contains(&k.pid) && !(0x90..=0xBF).contains(&tid) {
+        } else if (0x0010..=0x002F).contains(&k.pid.get()) && !(0x90..=0xBF).contains(&tid) {
             o.push(
                 Warning,
                 "section.placement",
@@ -845,7 +849,7 @@ fn section_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut
     // sub_table consistency: lsn equal across sections, sections 0..=lsn present
     // (pid, tid, ext, version) → (section numbers, last_section_numbers)
     type Sub = (BTreeSet<u8>, BTreeSet<u8>);
-    let mut subs: BTreeMap<(u16, u8, u16, u8), Sub> = BTreeMap::new();
+    let mut subs: BTreeMap<(Pid, u8, u16, u8), Sub> = BTreeMap::new();
     for (k, slot) in &cap.slots {
         let (Some(ext), Some(sn)) = (k.ext, k.sn) else {
             continue;
@@ -1043,7 +1047,7 @@ fn absent_severity(duration: Option<f64>, tid: u8) -> Severity {
 
 fn mandatory_tables(
     cap: &Capture,
-    pmts: &BTreeMap<u16, (u16, Long<Pmt>)>,
+    pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>,
     duration: Option<f64>,
     o: &mut Out,
 ) {
@@ -1167,7 +1171,7 @@ fn window_4kb(cap: &Capture, tb: &Timebase, o: &mut Out) {
         return;
     }
     for (&pid, idx) in &cap.section_pid_packets {
-        if !(0x0010..=0x002F).contains(&pid) {
+        if !(0x0010..=0x002F).contains(&pid.get()) {
             continue;
         }
         let t: Vec<f64> = idx.iter().filter_map(|&i| tb.time(i)).collect();
@@ -1512,7 +1516,7 @@ fn chronological(k: &SlotKey, e: &isdb_si::tables::Eit, o: &mut Out) {
 // PES / timestamps
 // ---------------------------------------------------------------------------
 
-fn pes_checks(cap: &Capture, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out) {
+fn pes_checks(cap: &Capture, pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>, o: &mut Out) {
     use Severity::*;
     for (prog, (_, pmt)) in pmts {
         let ptb = Timebase::from_stats(&cap.stats, Some(pmt.body.pcr_pid), None);
@@ -1806,7 +1810,7 @@ fn copy_control_checks(cap: &Capture, o: &mut Out) {
 /// ADTS findings of every stream_type 0x0F PID (counted during the scan
 /// by [`crate::aac::AdtsTrack`]) and the consistency of the audio component
 /// descriptors' quality_indicator with the measured stream.
-fn aac_checks(cap: &Capture, si: &SiView, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>, o: &mut Out) {
+fn aac_checks(cap: &Capture, si: &SiView, pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>, o: &mut Out) {
     use Severity::*;
     use isdbt_mux::adts::b32::{self, QualityMode};
     for (&pid, t) in &cap.pes {
@@ -1901,7 +1905,7 @@ fn aac_checks(cap: &Capture, si: &SiView, pmts: &BTreeMap<u16, (u16, Long<Pmt>)>
         );
     }
     // component_tag → elementary PID per program (stream_identifier_descriptor)
-    let mut tag_pid: BTreeMap<(u16, u8), u16> = BTreeMap::new();
+    let mut tag_pid: BTreeMap<(u16, u8), Pid> = BTreeMap::new();
     for (&prog, (_, pmt)) in pmts {
         for st in &pmt.body.streams {
             for d in &st.descriptors {

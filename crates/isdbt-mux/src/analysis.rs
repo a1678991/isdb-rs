@@ -4,9 +4,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use isdb_ts::Pid;
 use isdb_ts::cc::{CcChecker, CcEvent};
 use isdb_ts::demux::{Assembled, SectionDemux};
-use isdb_ts::packet::{PID_NULL, Packet as TsPacket};
+use isdb_ts::packet::Packet as TsPacket;
 use isdb_ts::pes::{PesAssembler, PesOutput, PesPacket};
 use isdb_ts::psi::{Pat, Pmt};
 use isdb_ts::section::Long;
@@ -34,15 +35,15 @@ pub struct PesInfo {
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     /// Sections per PID: (arrival of first packet, bytes).
-    pub sections: BTreeMap<u16, Vec<(u64, Vec<u8>)>>,
+    pub sections: BTreeMap<Pid, Vec<(u64, Vec<u8>)>>,
     /// PCRs per PID: (packet index, arrival of packet start, PCR ticks).
-    pub pcrs: BTreeMap<u16, Vec<(u64, u64, u64)>>,
+    pub pcrs: BTreeMap<Pid, Vec<(u64, u64, u64)>>,
     /// PES packets per PID.
-    pub pes: BTreeMap<u16, Vec<PesInfo>>,
+    pub pes: BTreeMap<Pid, Vec<PesInfo>>,
     /// Continuity events.
     pub cc_events: Vec<CcEvent>,
     /// Packets per PID.
-    pub pid_counts: BTreeMap<u16, u64>,
+    pub pid_counts: BTreeMap<Pid, u64>,
     /// Problems found while parsing.
     pub problems: Vec<String>,
 }
@@ -55,11 +56,11 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
     for p in [
         0x0000u16, 0x0001, 0x0010, 0x0011, 0x0012, 0x0013, 0x0014, 0x0024, 0x0025, 0x0026, 0x0027,
     ] {
-        demux.add_pid(p);
+        demux.add_pid(Pid::new(p).expect("Table 5-1 PID"));
     }
-    let mut pmt_pids: HashSet<u16> = HashSet::new();
-    let mut es_pids: HashSet<u16> = HashSet::new();
-    let mut pes_asm: HashMap<u16, PesAssembler> = HashMap::new();
+    let mut pmt_pids: HashSet<Pid> = HashSet::new();
+    let mut es_pids: HashSet<Pid> = HashSet::new();
+    let mut pes_asm: HashMap<Pid, PesAssembler> = HashMap::new();
     let mut cc = CcChecker::new();
     let finish_pes = |r: &mut Report, out: Vec<PesOutput>| {
         for o in out {
@@ -84,9 +85,9 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
     };
     for (i, pkt) in packets.iter().enumerate() {
         let i = i as u64;
-        let pid = ((u16::from(pkt[1]) & 0x1F) << 8) | u16::from(pkt[2]);
+        let pid = Pid::of_packet(pkt).expect("188-byte packet");
         *r.pid_counts.entry(pid).or_default() += 1;
-        if pid == PID_NULL {
+        if pid == Pid::NULL {
             continue;
         }
         if let Some(ev) = cc.push(i, pkt) {
@@ -103,7 +104,7 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
         for a in demux.push(i, pkt) {
             match a {
                 Assembled::Section(s) => {
-                    if s.pid == 0
+                    if s.pid == Pid::PAT
                         && let Ok(pat) = Long::<Pat>::decode(&s.data)
                     {
                         for (_, pmt) in pat.body.programs() {
@@ -141,7 +142,7 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
 }
 
 /// Key identifying a repeated section: (PID, table_id, table_id_extension, section_number).
-pub type SectionKey = (u16, u8, u16, u8);
+pub type SectionKey = (Pid, u8, u16, u8);
 
 impl Report {
     /// Largest gap (27 MHz ticks) between successive transmissions of each

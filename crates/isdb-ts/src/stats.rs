@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use crate::cc::{CcChecker, CcEvent};
 use crate::packet::{AdaptationFieldControl, PACKET_SIZE, View};
 use crate::pcr::Pcr;
+use crate::pid::Pid;
 
 /// Counters of one PID (fields of H.222.0 Table 2-2 / Table 2-6).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -41,7 +42,7 @@ pub struct Stats {
     /// Packets seen.
     pub packets: u64,
     /// Per-PID counters.
-    pub pids: BTreeMap<u16, PidStats>,
+    pub pids: BTreeMap<Pid, PidStats>,
     /// Every continuity event, in stream order.
     pub cc_events: Vec<CcEvent>,
     cc: CcChecker,
@@ -56,7 +57,7 @@ impl Stats {
     /// Account packet `index`.
     pub fn push(&mut self, index: u64, pkt: &[u8; PACKET_SIZE]) {
         self.packets += 1;
-        let pid = (u16::from(pkt[1] & 0x1F) << 8) | u16::from(pkt[2]);
+        let pid = Pid::from_wire((u16::from(pkt[1] & 0x1F) << 8) | u16::from(pkt[2]));
         let s = self.pids.entry(pid).or_default();
         s.packets += 1;
         let h = crate::packet::Header::decode(pkt).expect("188 bytes hold a header");
@@ -90,14 +91,14 @@ mod tests {
     #[test]
     fn counts() {
         let mut st = Stats::new();
-        let a = Packet::with_payload(0x100, true, 0, &[0; 184])
+        let a = Packet::with_payload(Pid::new(0x100).unwrap(), true, 0, &[0; 184])
             .unwrap()
             .encode()
             .unwrap();
-        let b = Packet::pcr_only(0x100, 0, Pcr::from_ticks(27_000_000))
+        let b = Packet::pcr_only(Pid::new(0x100).unwrap(), 0, Pcr::from_ticks(27_000_000))
             .encode()
             .unwrap();
-        let c = Packet::with_payload(0x100, false, 2, &[0; 184])
+        let c = Packet::with_payload(Pid::new(0x100).unwrap(), false, 2, &[0; 184])
             .unwrap()
             .encode()
             .unwrap();
@@ -106,13 +107,13 @@ mod tests {
         for (i, p) in [a, b, c, d].iter().enumerate() {
             st.push(i as u64, p);
         }
-        let s = &st.pids[&0x100];
+        let s = &st.pids[&Pid::new(0x100).unwrap()];
         assert_eq!(
             (s.packets, s.pusi, s.adaptation_only, s.cc_events),
             (3, 1, 1, 1)
         );
         assert_eq!(s.pcrs, vec![(1, Pcr::from_ticks(27_000_000))]);
-        assert_eq!(st.pids[&0x1FFF].tei, 1);
+        assert_eq!(st.pids[&Pid::new(0x1FFF).unwrap()].tei, 1);
         assert_eq!(st.cc_events.len(), 1);
     }
 }

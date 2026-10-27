@@ -6,6 +6,7 @@ use isdb_si::any::AnyTable;
 use isdb_si::descriptor::*;
 use isdb_si::tables::*;
 use isdb_si::time::*;
+use isdb_ts::Pid;
 use isdb_ts::bits::BitWriter;
 use isdb_ts::crc::crc32;
 use isdb_ts::section::{LongBody, LongHeader};
@@ -62,7 +63,7 @@ fn long_section(table_id: u8, ext: u16, version: u8, sn: u8, lsn: u8, body: &[u8
     with_crc(v)
 }
 
-fn roundtrip(pid: u16, sec: &[u8]) -> AnyTable {
+fn roundtrip(pid: Pid, sec: &[u8]) -> AnyTable {
     let t = AnyTable::decode(pid, sec).unwrap();
     assert_eq!(t.encode().unwrap(), sec, "{} re-encode", t.name());
     assert!(
@@ -303,7 +304,7 @@ fn spec_nit() {
     ]));
     body.extend_from_slice(&ts_loop);
     let sec = long_section(0x40, 0x79EE, 3, 0, 0, &body);
-    let AnyTable::Nit(n) = roundtrip(0x0010, &sec) else {
+    let AnyTable::Nit(n) = roundtrip(Pid::new(0x0010).unwrap(), &sec) else {
         panic!()
     };
     assert_eq!(n.header.table_id_extension, 0x79EE);
@@ -385,7 +386,7 @@ fn spec_bat() {
     ]));
     body.extend_from_slice(&ts);
     let sec = long_section(0x4A, 0x1234, 0, 0, 0, &body);
-    let AnyTable::Bat(b) = roundtrip(0x0011, &sec) else {
+    let AnyTable::Bat(b) = roundtrip(Pid::new(0x0011).unwrap(), &sec) else {
         panic!()
     };
     assert_eq!(b.header.table_id_extension, 0x1234);
@@ -419,7 +420,7 @@ fn spec_sdt() {
     ]));
     body.extend_from_slice(&sd);
     let sec = long_section(0x42, 0x79EE, 1, 0, 0, &body);
-    let AnyTable::Sdt(s) = roundtrip(0x0011, &sec) else {
+    let AnyTable::Sdt(s) = roundtrip(Pid::new(0x0011).unwrap(), &sec) else {
         panic!()
     };
     assert_eq!(s.body.original_network_id, 0x79EE);
@@ -510,7 +511,7 @@ fn spec_eit() {
     ]));
     body.extend_from_slice(&ds);
     let sec = long_section(0x4E, 0x0E08, 7, 0, 1, &body);
-    let AnyTable::Eit(e) = roundtrip(0x0012, &sec) else {
+    let AnyTable::Eit(e) = roundtrip(Pid::new(0x0012).unwrap(), &sec) else {
         panic!()
     };
     assert_eq!(
@@ -606,7 +607,7 @@ fn spec_eit_undefined_times() {
     ]));
     body.extend_from_slice(&se);
     let sec = long_section(0x50, 1, 0, 0, 0, &body);
-    let AnyTable::Eit(e) = roundtrip(0x0012, &sec) else {
+    let AnyTable::Eit(e) = roundtrip(Pid::new(0x0012).unwrap(), &sec) else {
         panic!()
     };
     assert!(e.body.events[0].start_time.is_undefined());
@@ -625,7 +626,7 @@ fn spec_tdt() {
         ("JST_time", 40, 0xC0_79_12_45_00),
     ]);
     assert_eq!(sec, [0x70, 0x70, 0x05, 0xC0, 0x79, 0x12, 0x45, 0x00]);
-    let AnyTable::Tdt(t) = roundtrip(0x0014, &sec) else {
+    let AnyTable::Tdt(t) = roundtrip(Pid::new(0x0014).unwrap(), &sec) else {
         panic!()
     };
     assert_eq!(t.body.jst_time.to_u40(), 0xC0_79_12_45_00);
@@ -659,7 +660,7 @@ fn spec_tot() {
     ]);
     v.extend_from_slice(&lto);
     let sec = with_crc(v);
-    let AnyTable::Tot(t) = roundtrip(0x0014, &sec) else {
+    let AnyTable::Tot(t) = roundtrip(Pid::new(0x0014).unwrap(), &sec) else {
         panic!()
     };
     let Descriptor::LocalTimeOffset(l) = &t.body.descriptors[0] else {
@@ -681,7 +682,7 @@ fn spec_tot() {
     // A corrupted TOT is an error, not silently accepted.
     let mut bad = sec.clone();
     bad[5] ^= 1;
-    assert!(AnyTable::decode(0x0014, &bad).is_err());
+    assert!(AnyTable::decode(Pid::new(0x0014).unwrap(), &bad).is_err());
 }
 
 /// RST, Table 5-10 (no CRC_32).
@@ -702,7 +703,7 @@ fn spec_rst() {
         ("reserved_future_use", 5, 0x1F),
         ("running_status", 3, 2),
     ]));
-    let AnyTable::Rst(r) = roundtrip(0x0013, &sec) else {
+    let AnyTable::Rst(r) = roundtrip(Pid::new(0x0013).unwrap(), &sec) else {
         panic!()
     };
     assert_eq!(
@@ -730,7 +731,7 @@ fn spec_st() {
             ("section_length", 12, 3),
         ]);
         sec.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
-        let AnyTable::St(s) = roundtrip(0x0011, &sec) else {
+        let AnyTable::St(s) = roundtrip(Pid::new(0x0011).unwrap(), &sec) else {
             panic!()
         };
         assert_eq!(
@@ -741,7 +742,7 @@ fn spec_st() {
     // Not allowed on PID 0x0014 (Table 5-1): stays raw.
     let sec = [0x72, 0x70, 0x00];
     assert!(matches!(
-        AnyTable::decode(0x0014, &sec).unwrap(),
+        AnyTable::decode(Pid::new(0x0014).unwrap(), &sec).unwrap(),
         AnyTable::Unknown(_)
     ));
 }
@@ -777,7 +778,7 @@ fn spec_pcat() {
     body.extend_from_slice(&sched);
     body.extend_from_slice(&dc);
     let sec = long_section(0xC2, 0x0F88, 0, 0, 0, &body);
-    let AnyTable::Pcat(p) = roundtrip(0x0022, &sec) else {
+    let AnyTable::Pcat(p) = roundtrip(Pid::new(0x0022).unwrap(), &sec) else {
         panic!()
     };
     assert_eq!(p.body.content_id, 0xDEAD_BEEF);
@@ -838,7 +839,7 @@ fn spec_bit() {
     ]));
     body.extend_from_slice(&bd);
     let sec = long_section(0xC4, 0x79EE, 0, 0, 0, &body);
-    let AnyTable::Bit(b) = roundtrip(0x0024, &sec) else {
+    let AnyTable::Bit(b) = roundtrip(Pid::new(0x0024).unwrap(), &sec) else {
         panic!()
     };
     assert!(b.body.broadcast_view_propriety);
@@ -894,7 +895,7 @@ fn spec_nbit() {
     ]);
     body.extend_from_slice(&bi);
     let sec = long_section(0xC5, 0x79EE, 0, 0, 0, &body);
-    let AnyTable::Nbit(n) = roundtrip(0x0025, &sec) else {
+    let AnyTable::Nbit(n) = roundtrip(Pid::new(0x0025).unwrap(), &sec) else {
         panic!()
     };
     let i = &n.body.informations[0];
@@ -926,7 +927,7 @@ fn spec_ldt() {
     ]);
     body.extend_from_slice(&se);
     let sec = long_section(0xC7, 0x0E08, 0, 0, 0, &body);
-    let AnyTable::Ldt(l) = roundtrip(0x0025, &sec) else {
+    let AnyTable::Ldt(l) = roundtrip(Pid::new(0x0025).unwrap(), &sec) else {
         panic!()
     };
     assert_eq!(
@@ -1123,10 +1124,10 @@ fn spec_descriptor_ca() {
     let d = ConditionalAccess::decode(&[0x00, 0x05, 0xE0 | 0x01, 0x23, 0x99]).unwrap();
     assert_eq!(
         (d.ca_system_id, d.reserved, d.ca_pid, &d.private_data[..]),
-        (5, 7, 0x123, &[0x99u8][..])
+        (5, 7, Pid::new(0x123).unwrap(), &[0x99u8][..])
     );
     let a = AccessControl::decode(&[0x00, 0x05, 0xE0 | 0x01, 0x23]).unwrap();
-    assert_eq!((a.transmission_type, a.pid), (7, 0x123));
+    assert_eq!((a.transmission_type, a.pid), (7, Pid::new(0x123).unwrap()));
 }
 
 /// emergency_information_descriptor, Table 6-40.
@@ -1184,24 +1185,24 @@ fn spec_dispatch_errors() {
         ("reserved_future_use", 8, 0xFF),
     ]);
     let mut sec = long_section(0x42, 1, 0, 0, 0, &body);
-    assert!(AnyTable::decode(0x0011, &sec).is_ok());
+    assert!(AnyTable::decode(Pid::new(0x0011).unwrap(), &sec).is_ok());
     let n = sec.len();
     sec[n - 1] ^= 0x01;
-    assert!(AnyTable::decode(0x0011, &sec).is_err());
+    assert!(AnyTable::decode(Pid::new(0x0011).unwrap(), &sec).is_err());
     // An SI table_id on a PID Table 5-1 does not assign: raw, but CRC still checked.
     let good = long_section(0x42, 1, 0, 0, 0, &body);
-    let t = AnyTable::decode(0x0100, &good).unwrap();
+    let t = AnyTable::decode(Pid::new(0x0100).unwrap(), &good).unwrap();
     assert!(matches!(t, AnyTable::Unknown(_)));
     assert_eq!(
-        isdb_si::conformance::check(0x0100, &t)[0].kind,
+        isdb_si::conformance::check(Pid::new(0x0100).unwrap(), &t)[0].kind,
         isdb_si::conformance::Kind::Placement
     );
-    assert!(AnyTable::decode(0x0100, &sec).is_err());
-    assert!(AnyTable::decode(0x0011, &good[..good.len() - 1]).is_err());
-    assert!(AnyTable::decode(0x0011, &[0xFF, 0xFF, 0xFF]).is_err());
+    assert!(AnyTable::decode(Pid::new(0x0100).unwrap(), &sec).is_err());
+    assert!(AnyTable::decode(Pid::new(0x0011).unwrap(), &good[..good.len() - 1]).is_err());
+    assert!(AnyTable::decode(Pid::new(0x0011).unwrap(), &[0xFF, 0xFF, 0xFF]).is_err());
     // Body whose loop length overruns the section.
     let bad = long_section(0x42, 1, 0, 0, 0, &[0, 1, 0xFF, 0, 1, 0xFF, 0xF0, 0x05]);
-    assert!(AnyTable::decode(0x0011, &bad).is_err());
+    assert!(AnyTable::decode(Pid::new(0x0011).unwrap(), &bad).is_err());
 }
 
 /// The conformance checker reports reserved bits that are not '1'.
@@ -1214,8 +1215,8 @@ fn spec_conformance_reserved_bits() {
     let mut h = LongHeader::new(0x42, 1, 0);
     h.private_indicator = false;
     let sec = isdb_ts::section::build_long(&h, &body).unwrap();
-    let t = AnyTable::decode(0x0011, &sec).unwrap();
-    let devs = isdb_si::conformance::check(0x0011, &t);
+    let t = AnyTable::decode(Pid::new(0x0011).unwrap(), &sec).unwrap();
+    let devs = isdb_si::conformance::check(Pid::new(0x0011).unwrap(), &t);
     assert_eq!(devs.len(), 2, "{devs:?}");
     assert!(
         devs.iter()

@@ -5,7 +5,7 @@ use super::{
 };
 use isdb_text::AribString;
 use isdb_ts::bits::{BitReader, BitWriter};
-use isdb_ts::{Error, Result};
+use isdb_ts::{Error, Pid, Result};
 
 /// hierarchical_transmission_descriptor, tag 0xC0 — ARIB STD-B10 Part 2
 /// §6.2.22, Table 6-37.
@@ -18,7 +18,7 @@ pub struct HierarchicalTransmission {
     /// reserved_future_use (3), spec value '111'.
     pub reserved_future_use_2: u8,
     /// reference_PID (13).
-    pub reference_pid: u16,
+    pub reference_pid: Pid,
 }
 
 impl DescriptorBody for HierarchicalTransmission {
@@ -30,7 +30,7 @@ impl DescriptorBody for HierarchicalTransmission {
             reserved_future_use_1: r.read(7)? as u8,
             quality_level: r.bool()?,
             reserved_future_use_2: r.read(3)? as u8,
-            reference_pid: r.read(13)? as u16,
+            reference_pid: r.pid()?,
         };
         r.finish()?;
         Ok(d)
@@ -1406,14 +1406,14 @@ impl DescriptorBody for ContentAvailability {
 
 /// access_control_descriptor, tag 0xF6 — ARIB STD-B10 Part 2 §6.2.54,
 /// Table 6-100.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessControl {
     /// CA_system_id (16).
     pub ca_system_id: u16,
     /// transmission_type (3), Table 6-101.
     pub transmission_type: u8,
     /// PID (13).
-    pub pid: u16,
+    pub pid: Pid,
     /// private_data_byte loop.
     pub private_data: Vec<u8>,
 }
@@ -1426,7 +1426,7 @@ impl DescriptorBody for AccessControl {
         Ok(Self {
             ca_system_id: r.u16()?,
             transmission_type: r.read(3)? as u8,
-            pid: r.read(13)? as u16,
+            pid: r.pid()?,
             private_data: r.rest()?.to_vec(),
         })
     }

@@ -4,8 +4,8 @@
 use super::{Code3, DescriptorBody, code3, finish, len8_string, multiple_of, put_len8, string};
 use crate::time::{BcdOffset, MjdTime};
 use isdb_text::AribString;
-use isdb_ts::Result;
 use isdb_ts::bits::{BitReader, BitWriter};
+use isdb_ts::{Pid, Result};
 
 /// conditional_access_descriptor, tag 0x09 — ITU-T H.222.0 §2.6.16,
 /// Table 2-58 (referenced by ARIB STD-B10 Part 1 Table 5-3, Part 2 Table 6-1).
@@ -16,7 +16,7 @@ pub struct ConditionalAccess {
     /// reserved (3), spec value '111'.
     pub reserved: u8,
     /// CA_PID (13).
-    pub ca_pid: u16,
+    pub ca_pid: Pid,
     /// private_data_byte loop.
     pub private_data: Vec<u8>,
 }
@@ -28,7 +28,7 @@ impl DescriptorBody for ConditionalAccess {
         let mut r = BitReader::new(data, Self::NAME);
         let ca_system_id = r.u16()?;
         let reserved = r.read(3)? as u8;
-        let ca_pid = r.read(13)? as u16;
+        let ca_pid = r.pid()?;
         Ok(Self {
             ca_system_id,
             reserved,

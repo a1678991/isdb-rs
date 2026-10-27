@@ -2,6 +2,7 @@
 //! item 2): `decode(encode(x)) == x` for generated values and
 //! `encode(decode(b)) == b` for every byte string a decoder accepts.
 
+use isdb_ts::Pid;
 use isdb_ts::cc::Counter;
 use isdb_ts::demux::{Assembled, SectionAssembler};
 use isdb_ts::descriptor::Descriptor;
@@ -95,6 +96,11 @@ fn adaptation_field() -> impl Strategy<Value = AdaptationField> {
     prop_oneof![1 => Just(AdaptationField::Empty), 9 => af_fields().prop_map(AdaptationField::Fields)]
 }
 
+/// Any 13-bit PID (H.222.0 Table 2-3).
+fn pid() -> impl Strategy<Value = Pid> {
+    (0u16..=0x1FFF).prop_map(|v| Pid::new(v).unwrap())
+}
+
 /// Packets whose parts add up to 188 bytes, any header values.
 fn packet() -> impl Strategy<Value = Packet> {
     (
@@ -102,7 +108,7 @@ fn packet() -> impl Strategy<Value = Packet> {
             any::<bool>(),
             any::<bool>(),
             any::<bool>(),
-            0u16..0x2000,
+            pid(),
             0u8..4,
             0u8..16,
         ),
@@ -322,12 +328,10 @@ fn pat() -> impl Strategy<Value = Long<Pat>> {
     (
         long_header(0),
         vec(
-            (any::<u16>(), 0u8..8, 0u16..0x2000).prop_map(|(program_number, reserved, pid)| {
-                PatEntry {
-                    program_number,
-                    reserved,
-                    pid,
-                }
+            (any::<u16>(), 0u8..8, pid()).prop_map(|(program_number, reserved, pid)| PatEntry {
+                program_number,
+                reserved,
+                pid,
             }),
             0..50,
         ),
@@ -346,7 +350,7 @@ fn cat() -> impl Strategy<Value = Long<Cat>> {
 }
 
 fn pmt() -> impl Strategy<Value = Long<Pmt>> {
-    let stream = (any::<u8>(), 0u8..8, 0u16..0x2000, 0u8..16, descriptors()).prop_map(
+    let stream = (any::<u8>(), 0u8..8, pid(), 0u8..16, descriptors()).prop_map(
         |(stream_type, reserved_pid, elementary_pid, reserved_info, descriptors)| PmtStream {
             stream_type,
             reserved_pid,
@@ -358,7 +362,7 @@ fn pmt() -> impl Strategy<Value = Long<Pmt>> {
     (
         long_header(2),
         0u8..8,
-        0u16..0x2000,
+        pid(),
         0u8..16,
         descriptors(),
         vec(stream, 0..8),
@@ -387,6 +391,22 @@ fn sections() -> impl Strategy<Value = Vec<Vec<u8>>> {
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 512, failure_persistence: None, ..ProptestConfig::default() })]
+
+    /// Every 13-bit value is a PID and comes back unchanged through
+    /// `new` / `get`, `TryFrom` / `From`, the wire mask and the header codec.
+    #[test]
+    fn prop_pid_round_trip(v in 0u16..=0x1FFF) {
+        let p = Pid::new(v).unwrap();
+        prop_assert_eq!(p.get(), v);
+        prop_assert_eq!(u16::from(p), v);
+        prop_assert_eq!(Pid::try_from(v).unwrap(), p);
+        prop_assert_eq!(Pid::from_wire(v), p);
+        prop_assert_eq!(Pid::from_wire(v | 0xE000), p);
+        let h = Header::new(p, AdaptationFieldControl::PayloadOnly, 0).encode().unwrap();
+        prop_assert_eq!(Pid::of_packet(&h), Some(p));
+        prop_assert_eq!(Header::decode(&h).unwrap().pid, p);
+        prop_assert_eq!(p.to_string(), format!("{v:#06x}"));
+    }
 
     #[test]
     fn prop_packet_roundtrip(p in packet()) {
@@ -475,8 +495,8 @@ proptest! {
     fn prop_section_packetize_assemble(secs in sections(), packed in any::<bool>(), cc0 in 0u8..16) {
         let packing = if packed { Packing::Packed } else { Packing::OnePerPacket };
         let mut cc = Counter::new(cc0);
-        let pkts = packetize_sections(0x30, &secs, packing, &mut cc).unwrap();
-        let mut a = SectionAssembler::new(0x30);
+        let pkts = packetize_sections(Pid::new(0x30).unwrap(), &secs, packing, &mut cc).unwrap();
+        let mut a = SectionAssembler::new(Pid::new(0x30).unwrap());
         let mut got = Vec::new();
         for (i, p) in pkts.iter().enumerate() {
             prop_assert!(isdb_ts::packet::check(&Packet::decode(p).unwrap()).is_empty());
@@ -497,8 +517,8 @@ proptest! {
         let pes = PesPacket::new(0xE0, h, data).encode().unwrap();
         let af = with_pcr.then(|| AdaptationFields { pcr: Some(Pcr::from_ticks(pts * 300)), ..Default::default() });
         let mut cc = Counter::new(0);
-        let pkts = isdb_ts::pes::packetize(0x40, &pes, af, &mut cc).unwrap();
-        let mut a = PesAssembler::new(0x40);
+        let pkts = isdb_ts::pes::packetize(Pid::new(0x40).unwrap(), &pes, af, &mut cc).unwrap();
+        let mut a = PesAssembler::new(Pid::new(0x40).unwrap());
         let mut got = Vec::new();
         for (i, p) in pkts.iter().enumerate() {
             prop_assert!(isdb_ts::packet::check(&Packet::decode(p).unwrap()).is_empty());

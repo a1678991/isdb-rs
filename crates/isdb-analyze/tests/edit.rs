@@ -28,7 +28,14 @@ fn identity_rewrite_is_byte_exact() {
         let mut s = default_spec(3);
         s.packing = packing;
         let p = build(&s);
-        for pid in [0x0000, 0x0010, 0x0011, 0x0012, 0x0014, PMT_PID] {
+        for pid in [
+            Pid::PAT,
+            pid(0x0010),
+            pid(0x0011),
+            pid(0x0012),
+            pid(0x0014),
+            PMT_PID,
+        ] {
             let mut q = p.clone();
             let r = edit::rewrite_pid(&mut q, pid, |_| Ok(None), vec![], NullSlots::WhenNeeded)
                 .unwrap();
@@ -172,7 +179,7 @@ fn remove_and_insert_sections() {
     let rep = edit::apply(
         &mut q,
         &[EditOp::Insert {
-            pid: 0x0024,
+            pid: Pid::new(0x0024).unwrap(),
             sections: vec![bit()],
             interval_s: 0.5,
             offset_s: 0.1,
@@ -211,7 +218,11 @@ fn mutate_pat_add_program() {
     .unwrap();
     let cap = scan(&q);
     let pat = cap.pat().unwrap();
-    assert!(pat.body.programs().any(|x| x == (0x0E28, 0x1FC8)));
+    assert!(
+        pat.body
+            .programs()
+            .any(|x| x == (0x0E28, Pid::new(0x1FC8).unwrap()))
+    );
     let r = isdb_analyze::validate::validate(&cap, &Default::default());
     assert!(
         r.findings
@@ -226,8 +237,8 @@ fn mutate_pat_add_program() {
 #[test]
 fn extract_roundtrips_through_hex_loader() {
     let cap = scan(&build(&default_spec(2)));
-    let text = edit::extract(&cap, Some(0x0010), None, false);
+    let text = edit::extract(&cap, Some(Pid::new(0x0010).unwrap()), None, false);
     let v = edit::sections_from_hex(&text, None).unwrap();
     assert_eq!(v.len(), 1);
-    assert_eq!(v[0], (0x0010, nit()));
+    assert_eq!(v[0], (pid(0x0010), nit()));
 }

@@ -6,6 +6,7 @@
 //! PCR values themselves carry the elapsed time.  Without PCRs a nominal
 //! bit rate may be supplied; otherwise times are unknown.
 
+use isdb_ts::Pid;
 use isdb_ts::pcr::{PCR_MODULUS, pcr_wrap_diff};
 use isdb_ts::stats::Stats;
 
@@ -13,7 +14,7 @@ use isdb_ts::stats::Stats;
 #[derive(Debug, Clone, Default)]
 pub struct Timebase {
     /// PID whose PCRs define the mapping.
-    pub pcr_pid: Option<u16>,
+    pub pcr_pid: Option<Pid>,
     /// (packet index, seconds since first sample), increasing.
     samples: Vec<(u64, f64)>,
     /// Fallback constant rate (bits/s) when there are no PCRs.
@@ -26,7 +27,7 @@ pub struct Timebase {
 
 impl Timebase {
     /// Build from the PCRs of `pid` (or the PID with most PCRs if `None`).
-    pub fn from_stats(stats: &Stats, pid: Option<u16>, nominal_bps: Option<f64>) -> Self {
+    pub fn from_stats(stats: &Stats, pid: Option<Pid>, nominal_bps: Option<f64>) -> Self {
         let pid = pid
             .filter(|p| stats.pids.get(p).is_some_and(|s| s.pcrs.len() >= 2))
             .or_else(|| {
@@ -180,16 +181,20 @@ mod tests {
         let base = PCR_MODULUS - 27_000 * 3;
         for i in 0..100u64 {
             let p = if i % 10 == 0 {
-                Packet::pcr_only(0x100, 0, Pcr::from_ticks(base + i / 10 * 27_000))
-                    .encode()
-                    .unwrap()
+                Packet::pcr_only(
+                    Pid::new(0x100).unwrap(),
+                    0,
+                    Pcr::from_ticks(base + i / 10 * 27_000),
+                )
+                .encode()
+                .unwrap()
             } else {
                 Packet::null().encode().unwrap()
             };
             st.push(i, &p);
         }
         let tb = Timebase::from_stats(&st, None, None);
-        assert_eq!(tb.pcr_pid, Some(0x100));
+        assert_eq!(tb.pcr_pid, Some(Pid::new(0x100).unwrap()));
         assert!((tb.time(0).unwrap()).abs() < 1e-12);
         assert!((tb.time(55).unwrap() - 0.0055).abs() < 1e-9);
         assert!((tb.time(95).unwrap() - 0.0095).abs() < 1e-9); // extrapolated

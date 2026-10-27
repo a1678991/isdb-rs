@@ -310,6 +310,7 @@ dependencies = [
  "isdb-mmt",
  "isdb-radio",
  "isdb-tlv",
+ "isdb-ts",
  "isdbs-core",
  "isdbs-phy",
  "isdbs3-core",
@@ -425,6 +426,7 @@ name = "isdb-ts"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "serde",
  "thiserror",
 ]
 
