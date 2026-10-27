@@ -60,6 +60,9 @@ mod imp {
         let mut neg = [0i8; W]; // sign parity: 0 or -1
         for (e, (&v, re)) in vars.iter().zip(r.iter()).enumerate() {
             let lv = &l[v as usize].0;
+            // an edge of one check: the B44 check degree is at most 32
+            // (tools/ldpc-check-degree.py), inside i8
+            #[allow(clippy::cast_possible_truncation)]
             let e = e as i8;
             let mut te = [0i8; W];
             for i in 0..W {
@@ -83,6 +86,9 @@ mod imp {
         }
         for (e, ((&v, re), te)) in vars.iter().zip(r.iter_mut()).zip(t.iter()).enumerate() {
             let lv = &mut l[v as usize].0;
+            // an edge of one check: the B44 check degree is at most 32
+            // (tools/ldpc-check-degree.py), inside i8
+            #[allow(clippy::cast_possible_truncation)]
             let e = e as i8;
             for i in 0..W {
                 let at = -i8::from(imin[i] == e); // all ones on the min1 edge
@@ -138,10 +144,14 @@ mod imp {
         let mut neg = Simd::<i8, W>::splat(0);
         let seven = Simd::<i8, W>::splat(7);
         for (e, (&var, re)) in vars.iter().zip(r.iter()).enumerate() {
+            // an edge of one check: the B44 check degree is at most 32
+            // (tools/ldpc-check-degree.py), inside i8
+            #[allow(clippy::cast_possible_truncation)]
+            let e = e as i8;
             let x = v(&l[var as usize]).saturating_sub(v(re));
             let a = x.saturating_abs();
             neg ^= x >> seven;
-            imin = a.simd_lt(min1).select(Simd::splat(e as i8), imin);
+            imin = a.simd_lt(min1).select(Simd::splat(e), imin);
             min2 = min1.simd_max(min2.simd_min(a));
             min1 = min1.simd_min(a);
             t.push(Lane(x.to_array()));
@@ -151,8 +161,12 @@ mod imp {
         let m1 = min1.saturating_sub(off).simd_max(zero);
         let m2 = min2.saturating_sub(off).simd_max(zero);
         for (e, ((&var, re), te)) in vars.iter().zip(r.iter_mut()).zip(t.iter()).enumerate() {
+            // an edge of one check: the B44 check degree is at most 32
+            // (tools/ldpc-check-degree.py), inside i8
+            #[allow(clippy::cast_possible_truncation)]
+            let e = e as i8;
             let tv = v(te);
-            let mag = imin.simd_eq(Simd::splat(e as i8)).select(m2, m1);
+            let mag = imin.simd_eq(Simd::splat(e)).select(m2, m1);
             let s = neg ^ (tv >> seven);
             let m = (mag ^ s) - s;
             re.0 = m.to_array();

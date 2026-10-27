@@ -124,7 +124,7 @@ impl Verifier {
 
     /// Record a transmitted frame.
     pub fn sent(&mut self, index: u64, packets: Arc<[Vec<Packet>; 3]>, real: [usize; 3]) {
-        assert_eq!(index as usize, self.real.len(), "frames recorded in order");
+        assert_eq!(index, self.real.len() as u64, "frames recorded in order");
         self.real.push(real);
         self.verified.push(false);
         self.ring.push_back(Sent { index, packets });
@@ -135,8 +135,8 @@ impl Verifier {
 
     fn lookup(&self, index: i64) -> Option<&Sent> {
         let first = self.ring.front()?.index as i64;
-        let k = index - first;
-        (k >= 0).then(|| self.ring.get(k as usize)).flatten()
+        let k = usize::try_from(index - first).ok()?;
+        self.ring.get(k)
     }
 
     fn matches(&self, fr: &RxFrame, s: &Sent) -> bool {
@@ -195,8 +195,11 @@ impl Verifier {
             Ok(ts) if ts == fr.ts => self.ts_pass += 1,
             _ => self.ts_fail += 1,
         }
-        if idx >= 0 && (idx as usize) < self.verified.len() {
-            self.verified[idx as usize] = true;
+        if let Some(v) = usize::try_from(idx)
+            .ok()
+            .and_then(|i| self.verified.get_mut(i))
+        {
+            *v = true;
         }
     }
 
@@ -266,7 +269,7 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
         params.mode().fft_size(),
         a.sample_offset,
         a.seed,
-    );
+    )?;
     let mut prx =
         PipelinedReceiver::new(DemodConfig::default(), 2).context("start the receiver threads")?;
     let mut ver = Verifier::new(&params);

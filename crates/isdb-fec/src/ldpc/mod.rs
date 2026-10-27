@@ -68,29 +68,33 @@ impl Code {
         let mut info_adj = Vec::new();
         let mut info_start = Vec::with_capacity(k + 1);
         let mut per_check: Vec<Vec<u32>> = vec![Vec::new(); p];
+        // Bit indices (< n) and edge offsets (162 689 at most for the B44
+        // codes, n = 44 880, tools/ldpc-check-degree.py) are far inside u32.
+        #[allow(clippy::cast_possible_truncation)]
+        let ix = |v: usize| v as u32;
         for (g, row) in table.iter().enumerate() {
             for j in 0..GROUP {
-                info_start.push(info_adj.len() as u32);
-                let m = (g * GROUP + j) as u32;
+                info_start.push(ix(info_adj.len()));
+                let m = ix(g * GROUP + j);
                 for &x in *row {
                     let c = (x as usize + j * q) % p;
-                    info_adj.push(c as u32);
+                    info_adj.push(ix(c));
                     per_check[c].push(m);
                 }
             }
         }
-        info_start.push(info_adj.len() as u32);
+        info_start.push(ix(info_adj.len()));
         let mut rows = Vec::new();
         let mut row_start = Vec::with_capacity(p + 1);
         for (c, v) in per_check.iter().enumerate() {
-            row_start.push(rows.len() as u32);
+            row_start.push(ix(rows.len()));
             rows.extend_from_slice(v);
             if c > 0 {
-                rows.push((k + c - 1) as u32);
+                rows.push(ix(k + c - 1));
             }
-            rows.push((k + c) as u32);
+            rows.push(ix(k + c));
         }
-        row_start.push(rows.len() as u32);
+        row_start.push(ix(rows.len()));
         Self {
             n,
             k,
@@ -252,7 +256,10 @@ mod tests {
             .iter()
             .map(|&b| {
                 let y = if b == 0 { 1.0 } else { -1.0 } + sigma * gauss();
-                (2.0 * y / (sigma * sigma)) as f32
+                // f64 -> f32 rounds: the LLR is far inside the f32 range
+                #[allow(clippy::cast_possible_truncation)]
+                let l = (2.0 * y / (sigma * sigma)) as f32;
+                l
             })
             .collect();
         let mut bits = Vec::new();

@@ -219,10 +219,10 @@ impl TuneArgs {
         let k = 1.0 + self.freq_corr_ppm * 1e-6;
         Ok(Tuning {
             nominal_hz,
-            set_hz: (nominal_hz as f64 / k).round() as u64,
+            set_hz: whole_u64(nominal_hz as f64 / k, "the ppm-corrected frequency")?,
             channel: self.channel,
-            rate_num: (SAMPLE_RATE_NUM as f64 / k).round() as u32,
-            rate_den: SAMPLE_RATE_DEN as u32,
+            rate_num: whole_u32(SAMPLE_RATE_NUM as f64 / k, "the ppm-corrected sample rate")?,
+            rate_den: u32::try_from(SAMPLE_RATE_DEN).context("the sample-rate denominator")?,
         })
     }
 
@@ -254,6 +254,43 @@ impl Tuning {
     pub fn channel_label(&self) -> String {
         self.channel.map(|c| c.label()).unwrap_or_default()
     }
+}
+
+/// `x` rounded to a whole number for a radio-configuration field (Hz,
+/// samples per second): an error naming `what` (the flag) unless the
+/// rounded value is in `0..=u32::MAX`. NaN is out of range.
+pub fn whole_u32(x: f64, what: &str) -> Result<u32> {
+    let r = x.round();
+    if !(0.0..=f64::from(u32::MAX)).contains(&r) {
+        bail!("{what} {x}: out of range 0..={}", u32::MAX);
+    }
+    // a whole number inside the u32 range, so the cast is exact
+    #[allow(clippy::cast_possible_truncation)]
+    let v = r as u32;
+    Ok(v)
+}
+
+/// As [`whole_u32`], for a `u64` field (`0..2⁶⁴`).
+pub fn whole_u64(x: f64, what: &str) -> Result<u64> {
+    let r = x.round();
+    // 2⁶⁴ is exact in f64 (u64::MAX is not)
+    if !(0.0..2f64.powi(64)).contains(&r) {
+        bail!("{what} {x}: out of range 0..={}", u64::MAX);
+    }
+    // a whole number inside the u64 range, so the cast is exact
+    #[allow(clippy::cast_possible_truncation)]
+    let v = r as u64;
+    Ok(v)
+}
+
+/// Samples in `seconds` at `rate` Hz, rounded to a whole sample. The
+/// duration is a checked `--seconds`-style value (finite, ≥ 0); a product
+/// beyond `u64::MAX` saturates, which every caller reads as "no limit".
+pub fn sample_count(seconds: f64, rate: f64) -> u64 {
+    // f64 -> u64 saturates (see above)
+    #[allow(clippy::cast_possible_truncation)]
+    let n = (seconds * rate).round() as u64;
+    n
 }
 
 /// Parse a `--gain NAME=VALUE` argument (the backend checks the name and

@@ -52,15 +52,17 @@ fn field() -> &'static Field {
     static F: OnceLock<Field> = OnceLock::new();
     F.get_or_init(|| {
         // α is a root of g₁: α¹⁶ = 1 + α + α³ + α¹².
-        let poly: u32 = (1 << 16) | (1 << 12) | (1 << 3) | (1 << 1) | 1;
+        // g₁ below x¹⁶: the x¹⁶ term is the bit shifted out of v
+        let poly: u16 = (1 << 12) | (1 << 3) | (1 << 1) | 1;
         let mut exp = vec![0u16; 2 * Q1];
         let mut log = vec![0u16; Q1 + 1];
-        let mut v: u32 = 1;
-        for (i, e) in exp.iter_mut().take(Q1).enumerate() {
-            *e = v as u16;
-            log[v as usize] = i as u16;
+        let mut v: u16 = 1;
+        for (e, i) in exp[..Q1].iter_mut().zip(0..u16::MAX) {
+            *e = v;
+            log[usize::from(v)] = i;
+            let carry = v & 0x8000 != 0;
             v <<= 1;
-            if v & (1 << 16) != 0 {
+            if carry {
                 v ^= poly;
             }
         }
@@ -263,7 +265,7 @@ mod tests {
             .filter(|(_, v)| **v != 0)
             .map(|(i, v)| {
                 assert_eq!(*v, 1);
-                i as u32
+                u32::try_from(i).unwrap()
             })
             .collect()
     }
@@ -298,7 +300,7 @@ mod tests {
                 let mut r = c.clone();
                 let mut pos = std::collections::BTreeSet::new();
                 while pos.len() < e {
-                    pos.insert(rng.next() as usize % r.len());
+                    pos.insert(rng.below(r.len()));
                 }
                 for &p in &pos {
                     r[p] ^= 1;

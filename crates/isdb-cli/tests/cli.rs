@@ -3,6 +3,9 @@
 //! feed that stalls (null padding must keep the output constant-bit-rate),
 //! and `loopback` must PASS through an impaired channel.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -24,8 +27,7 @@ fn tmp(name: &str) -> PathBuf {
 fn packet(pid: u16, n: u32) -> [u8; 188] {
     let mut p = [0u8; 188];
     p[0] = 0x47;
-    p[1] = (pid >> 8) as u8;
-    p[2] = pid as u8;
+    p[1..3].copy_from_slice(&pid.to_be_bytes());
     p[3] = 0x10 | (n & 15) as u8;
     p[4..8].copy_from_slice(&n.to_be_bytes());
     let mut x = (u64::from(n) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ u64::from(pid);
@@ -33,7 +35,7 @@ fn packet(pid: u16, n: u32) -> [u8; 188] {
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
-        *b = (x >> 32) as u8;
+        *b = x.to_le_bytes()[4]; // bits 39..32
     }
     p
 }
@@ -183,19 +185,21 @@ fn mux_ts_is_split_by_pid() {
 fn pcr_packet(pid: u16, ticks: u64) -> [u8; 188] {
     let (base, ext) = (ticks / 300, ticks % 300);
     let mut p = [0xFFu8; 188];
-    p[..6].copy_from_slice(&[0x47, (pid >> 8) as u8, pid as u8, 0x20, 183, 0x10]);
-    p[6] = (base >> 25) as u8;
-    p[7] = (base >> 17) as u8;
-    p[8] = (base >> 9) as u8;
-    p[9] = (base >> 1) as u8;
-    p[10] = (((base & 1) << 7) as u8) | 0x7E | ((ext >> 8) as u8 & 1);
-    p[11] = ext as u8;
+    let [hi, lo] = pid.to_be_bytes();
+    p[..6].copy_from_slice(&[0x47, hi, lo, 0x20, 183, 0x10]);
+    // base bits 32..0 in bytes 6..=10, then 6 reserved bits and ext
+    p[6..11].copy_from_slice(&(base << 7).to_be_bytes()[3..]);
+    let [.., e_hi, e_lo] = ext.to_be_bytes();
+    p[10] |= 0x7E | (e_hi & 1);
+    p[11] = e_lo;
     p
 }
 
 /// A TS of `seconds` at `bps` (all packets counted): data on PID 0x0140
 /// with a PCR packet on 0x0111 every 40 ms, PCR advancing at exactly that
 /// rate.  Returns the file bytes and the data packets.
+// f64 -> u64 saturates: packet counts and PCR ticks of a test TS of seconds
+#[allow(clippy::cast_possible_truncation)]
 fn pcr_timed_ts(bps: f64, seconds: f64) -> (Vec<u8>, Vec<u8>) {
     let tick_per_pkt = 188.0 * 8.0 * 27e6 / bps;
     let per_pcr = (0.040 * 27e6 / tick_per_pkt).round() as u64; // packets per PCR interval
@@ -728,6 +732,9 @@ fn capture_dry_run_validates_without_a_device() {
 /// A QPSK signal at `fs` with `sps` samples per symbol (raised-cosine
 /// transitions, so |z|² has a strong symbol-rate line), as cs16 with full
 /// scale 2048, offset `cfo` Hz.
+// f64 -> usize / i16 saturate: symbol indices below n / sps + 2, and
+// components of magnitude ≤ √2 scaled by 600, inside i16
+#[allow(clippy::cast_possible_truncation)]
 fn synthetic_qpsk_cs16(fs: f64, sps: f64, cfo: f64, n: usize) -> Vec<u8> {
     let mut rng = 0x2545_f491_4f6c_dd1du64;
     let symbols: Vec<(f64, f64)> = (0..(n as f64 / sps) as usize + 2)
@@ -1648,7 +1655,10 @@ sections = ["82 70 05 01 02 03 04 05"]
     .unwrap();
     let mut mux = Multiplexer::new(&cfg, &p, dir).unwrap();
     let mut out = Vec::new();
-    for _ in 0..(seconds / p.frame_seconds()).ceil() as usize {
+    // f64 -> usize saturates: the frames in a few seconds
+    #[allow(clippy::cast_possible_truncation)]
+    let frames = (seconds / p.frame_seconds()).ceil() as usize;
+    for _ in 0..frames {
         for pk in mux.next_frame_full().0 {
             out.extend_from_slice(&pk);
         }
@@ -2004,6 +2014,8 @@ fn isdbs3_symbols_stream_tracks_the_drift_and_recovers_from_losses() {
     assert_eq!(resyncs, 0, "lost lock");
     assert_eq!(tmcc, frames, "frames without TMCC");
     // 30.26 frames per second; each loss may cost the frame it cuts and one more
+    // f64 -> u64 saturates: a frame count
+    #[allow(clippy::cast_possible_truncation)]
     let expected = (secs * isdb_s3_frames_per_second()).floor() as u64;
     assert!(
         frames + 2 * losses + 2 >= expected,

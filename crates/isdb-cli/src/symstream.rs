@@ -371,6 +371,8 @@ pub fn start_radio(
     let (limit, _) = backend
         .capture_limit(cfg)?
         .context("this radio cannot capture IQ, which the acquisition needs")?;
+    // f64 -> u64 saturates: 0.2 s of samples, bounded by the limit
+    #[allow(clippy::cast_possible_truncation)]
     let n = limit.min((0.2 * cfg.sample_rate_hz()) as u64);
     // `acquire` returns None when it found no usable lock on this probe
     // (e.g. the first capture after the radio idled, before its AGC
@@ -471,13 +473,12 @@ mod tests {
         d.block_log2 = 12;
         let mut pk = Packer::new(&Params::design(&d).unwrap());
         let mut w = Vec::new();
-        for i in 0..n_blocks * 4096 {
-            pk.push(
-                [(i % 7) as i8 - 3, (i % 5) as i8 - 2],
-                1024,
-                1 << 24,
-                &mut w,
-            );
+        // a (0..7, 0..5) symbol pattern, cycling
+        let (mut a, mut b) = (0i8, 0i8);
+        for _ in 0..n_blocks * 4096 {
+            let sym = [a - 3, b - 2];
+            (a, b) = ((a + 1) % 7, (b + 1) % 5);
+            pk.push(sym, 1024, 1 << 24, &mut w);
         }
         w.iter().flat_map(|x| x.to_le_bytes()).collect()
     }

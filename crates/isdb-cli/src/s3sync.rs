@@ -141,18 +141,12 @@ pub fn run(a: &S3SyncArgs) -> Result<()> {
     let mut d = Design::for_system(&KNOWN_SYSTEMS[1], fs);
     d.carrier_offset = sv.best_carrier().map_or(0.0, |c| c.offset_hz);
     d.taps = a.taps;
-    let xi: Vec<[i16; 2]> = x
-        .iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect();
+    let xi: Vec<[i16; 2]> = x.iter().copied().map(isdb_frontend::input_sample).collect();
     let trim = match a.trim {
         TrimArg::Fixed(t) => t,
         TrimArg::Auto => {
+            // f64 -> usize saturates: 0.15 s of samples, bounded by the length
+            #[allow(clippy::cast_possible_truncation)]
             let m = ((0.15 * fs) as usize).min(xi.len());
             let cands: Vec<f64> = (-6..=1).map(|i| f64::from(i) * 0.05).collect();
             s3sync::best_trim(&xi[..m], &d, &cands)?.0

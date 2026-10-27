@@ -18,6 +18,9 @@
 //! thread architecture and the test inventory are in this crate's
 //! `README.md`.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use std::io::Write;
 
 use clap::{CommandFactory, Parser, Subcommand};

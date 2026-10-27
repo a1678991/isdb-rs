@@ -1,6 +1,7 @@
 //! Software channel for `isdb loopback`: sample offset, carrier frequency
 //! offset and additive white Gaussian noise.
 
+use anyhow::{Context, Result};
 use isdbt_ofdm::C32;
 
 /// Channel impairments.
@@ -29,16 +30,20 @@ impl Channel {
         fft_size: usize,
         sample_offset: i64,
         seed: u64,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let samples = |n: u64| {
+            usize::try_from(n)
+                .with_context(|| format!("--sample-offset {sample_offset}: too large"))
+        };
+        Ok(Self {
             snr_db,
             dphi: 2.0 * std::f64::consts::PI * cfo_carriers / fft_size as f64,
             phase: 0.0,
-            offset: sample_offset.max(0) as usize,
-            skip: (-sample_offset).max(0) as usize,
+            offset: samples(sample_offset.max(0).unsigned_abs())?,
+            skip: samples(sample_offset.min(0).unsigned_abs())?,
             sigma: None,
             rng: seed | 1,
-        }
+        })
     }
 
     fn uniform(&mut self) -> f32 {
@@ -61,7 +66,10 @@ impl Channel {
         if let (Some(snr), None) = (self.snr_db, self.sigma) {
             // Noise variance per complex sample from the first block's power.
             let p = s.iter().map(|c| f64::from(c.norm_sqr())).sum::<f64>() / s.len().max(1) as f64;
-            self.sigma = Some(((p / 10f64.powf(f64::from(snr) / 10.0)) / 2.0).sqrt() as f32);
+            // f64 -> f32 rounds: a noise amplitude, far inside the f32 range
+            #[allow(clippy::cast_possible_truncation)]
+            let sigma = ((p / 10f64.powf(f64::from(snr) / 10.0)) / 2.0).sqrt() as f32;
+            self.sigma = Some(sigma);
         }
         if self.skip > 0 {
             let n = self.skip.min(s.len());
@@ -76,7 +84,10 @@ impl Channel {
         }
         if self.dphi != 0.0 {
             for c in s.iter_mut() {
-                *c *= C32::new(self.phase.cos() as f32, self.phase.sin() as f32);
+                // f64 -> f32 rounds: the components of a unit phasor
+                #[allow(clippy::cast_possible_truncation)]
+                let rot = C32::new(self.phase.cos() as f32, self.phase.sin() as f32);
+                *c *= rot;
                 self.phase = (self.phase + self.dphi) % (2.0 * std::f64::consts::PI);
             }
         }
@@ -96,7 +107,7 @@ mod tests {
     #[test]
     fn snr_offset_and_cfo() {
         let sig = vec![C32::new(1.0, 0.0); 200_000];
-        let mut ch = Channel::new(Some(10.0), 0.0, 8192, 7, 42);
+        let mut ch = Channel::new(Some(10.0), 0.0, 8192, 7, 42).unwrap();
         let out = ch.process(sig.clone());
         assert_eq!(out.len(), 200_007);
         let noise: f64 = out[7..]
@@ -106,12 +117,12 @@ mod tests {
             / 200_000.0;
         assert!((10.0 * noise.log10() + 10.0).abs() < 0.1, "noise {noise}");
         // CFO of one carrier spacing: one full turn per FFT length.
-        let mut ch = Channel::new(None, 1.0, 8, 0, 1);
+        let mut ch = Channel::new(None, 1.0, 8, 0, 1).unwrap();
         let out = ch.process(vec![C32::new(1.0, 0.0); 9]);
         assert!((out[2] - C32::new(0.0, 1.0)).norm() < 1e-5);
         assert!((out[8] - C32::new(1.0, 0.0)).norm() < 1e-5);
         // Negative offset drops samples across blocks.
-        let mut ch = Channel::new(None, 0.0, 8, -5, 1);
+        let mut ch = Channel::new(None, 0.0, 8, -5, 1).unwrap();
         assert!(ch.process(vec![C32::new(1.0, 0.0); 3]).is_empty());
         assert_eq!(ch.process(vec![C32::new(2.0, 0.0); 4]).len(), 2);
     }

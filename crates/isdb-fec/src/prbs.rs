@@ -25,7 +25,7 @@ struct Lfsr<const N: u32, const A: u32> {
 }
 
 impl<const N: u32, const A: u32> Lfsr<N, A> {
-    const MASK: u32 = ((1u64 << N) - 1) as u32;
+    const MASK: u32 = u32::MAX >> (32 - N);
 
     const fn from_str(init: &str) -> Self {
         let b = init.as_bytes();

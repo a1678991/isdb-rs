@@ -46,10 +46,10 @@ pub struct Params {
 /// Quantise float LLRs: `round(llr · scale)` saturated to ±127.
 pub fn quantise(llr: &[f32], scale: f32, out: &mut Vec<i8>) {
     out.clear();
-    out.extend(
-        llr.iter()
-            .map(|&l| (l * scale).round().clamp(-127.0, 127.0) as i8),
-    );
+    // rounded and clamped to ±127, so the cast is exact
+    #[allow(clippy::cast_possible_truncation)]
+    let q = |l: f32| (l * scale).round().clamp(-127.0, 127.0) as i8;
+    out.extend(llr.iter().map(|&l| q(l)));
 }
 
 /// The result for one lane.

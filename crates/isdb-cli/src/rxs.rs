@@ -586,9 +586,9 @@ pub fn run_radio(
     let cfg = RadioConfig {
         center_hz: freq_hz,
         nominal_hz: freq_hz,
-        rate_num: rate.round() as u32,
+        rate_num: crate::phyargs::whole_u32(rate, "--rate")?,
         rate_den: 1,
-        bandwidth_hz: bw.round() as u32,
+        bandwidth_hz: crate::phyargs::whole_u32(bw, "--bw")?,
         args: spec.args.clone(),
         gains: gains.to_vec(),
     };
@@ -604,7 +604,7 @@ pub fn run_radio(
             backend.name()
         );
     };
-    let want = (block_s * rate).round() as u64;
+    let want = crate::phyargs::sample_count(block_s, rate);
     let n = want.min(limit);
     if n < want {
         eprintln!(
@@ -613,13 +613,18 @@ pub fn run_radio(
             n as f64 / rate
         );
     }
+    // cs16: two bytes per sample
+    let block_bytes = usize::try_from(n)
+        .ok()
+        .and_then(|n| n.checked_mul(2))
+        .context("--block-seconds: the capture block does not fit in memory")?;
     let t0 = std::time::Instant::now();
     let mut secs = 0.0;
     pipeline(
         |tx| {
             let mut captured = 0.0;
             while !stop.load(Ordering::Relaxed) && (seconds <= 0.0 || captured < seconds) {
-                let mut bytes = Vec::with_capacity(n as usize * 2);
+                let mut bytes = Vec::with_capacity(block_bytes);
                 let cap = backend.capture(&cfg, n, &mut bytes, stop)?;
                 if !cap.gaps.is_empty() {
                     eprintln!(
@@ -632,7 +637,12 @@ pub fn run_radio(
                 captured += x.len() as f64 / fs;
                 // each contiguous part of the capture separately
                 let mut start = 0usize;
-                let mut cuts: Vec<usize> = cap.gaps.iter().map(|g| g.at as usize).collect();
+                let mut cuts: Vec<usize> = cap
+                    .gaps
+                    .iter()
+                    .map(|g| usize::try_from(g.at))
+                    .collect::<Result<_, _>>()
+                    .context("capture gap position")?;
                 cuts.push(x.len());
                 for c in cuts {
                     if c > start
