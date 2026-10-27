@@ -385,7 +385,7 @@ pub fn decode(
         }
         for p in &pk {
             e.1.add(p);
-            out.write(sl.stream_id, &p.bytes())?;
+            out.write(sl.stream_id, &p.encode()?)?;
         }
     }
     Ok(upto.unwrap_or(z.len()))

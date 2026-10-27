@@ -31,7 +31,7 @@ proptest! {
         let mut starts = Vec::new();
         for p in &ps {
             starts.push(stream.len());
-            stream.extend(p.bytes());
+            stream.extend(p.encode().unwrap());
         }
         let mut a = Assembler::new();
         let mut out = Vec::new();

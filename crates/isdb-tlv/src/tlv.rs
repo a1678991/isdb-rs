@@ -69,18 +69,6 @@ pub struct Packet {
 }
 
 impl Packet {
-    /// The packet's bytes, header included.
-    ///
-    /// # Panics
-    ///
-    /// If `data` is longer than the 16-bit `data_length` field holds
-    /// (65 535 bytes); [`Packet::encode`] reports that as an error instead.
-    /// The [`Assembler`] never builds such a packet.
-    pub fn bytes(&self) -> Vec<u8> {
-        self.encode()
-            .expect("TLV packet data longer than 65 535 bytes")
-    }
-
     /// The packet's bytes, header included, or [`isdb_ts::Error::Overflow`]
     /// when `data` does not fit the 16-bit `data_length` field.
     pub fn encode(&self) -> isdb_ts::Result<Vec<u8>> {
@@ -326,7 +314,7 @@ mod tests {
         let mut starts = Vec::new();
         for p in &ps {
             starts.push(stream.len());
-            stream.extend(p.bytes());
+            stream.extend(p.encode().unwrap());
         }
         let mut a = Assembler::new();
         let mut out = Vec::new();
@@ -344,7 +332,7 @@ mod tests {
         let mut starts = Vec::new();
         for p in &ps {
             starts.push(stream.len());
-            stream.extend(p.bytes());
+            stream.extend(p.encode().unwrap());
         }
         let sl = slots(&stream, &starts, 700);
         let mut a = Assembler::new();
@@ -373,12 +361,12 @@ mod tests {
         // garbage before, between and a truncated packet at the end
         let mut bytes = vec![1, 2, 3];
         for _ in 0..800 {
-            bytes.extend(a.bytes());
-            bytes.extend(b.bytes());
+            bytes.extend(a.encode().unwrap());
+            bytes.extend(b.encode().unwrap());
         }
         bytes.extend([9, 9]);
-        bytes.extend(b.bytes());
-        bytes.extend(&a.bytes()[..10]);
+        bytes.extend(b.encode().unwrap());
+        bytes.extend(&a.encode().unwrap()[..10]);
         let mut r = FileReader::new(&bytes[..]);
         let mut n = 0;
         while let Some(p) = r.next_packet().unwrap() {
