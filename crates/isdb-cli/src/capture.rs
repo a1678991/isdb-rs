@@ -94,9 +94,9 @@ impl CaptureArgs {
             center_hz: self.freq.hz,
             nominal_hz: self.freq.hz,
             // The radio takes whole Hz; the rate it runs at is read back.
-            rate_num: self.rate.round() as u32,
+            rate_num: crate::phyargs::whole_u32(self.rate, "--rate")?,
             rate_den: 1,
-            bandwidth_hz: bw as u32,
+            bandwidth_hz: crate::phyargs::whole_u32(bw, "--bw")?,
             args: self.radio.args.clone(),
             gains: self.gain.clone(),
         })
@@ -314,7 +314,9 @@ pub fn run(a: &CaptureArgs) -> Result<()> {
     let settings = backend.describe_capture(&cfg)?;
     let samples = match (a.samples, a.seconds) {
         (Some(n), _) => n as u64,
-        (None, Some(t)) if t.is_finite() && t > 0.0 => (t * cfg.sample_rate_hz()).round() as u64,
+        (None, Some(t)) if t.is_finite() && t > 0.0 => {
+            crate::phyargs::sample_count(t, cfg.sample_rate_hz())
+        }
         (None, Some(t)) => bail!("--seconds {t}: must be > 0"),
         (None, None) if limit == u64::MAX => {
             bail!("a streamed capture needs --samples or --seconds")

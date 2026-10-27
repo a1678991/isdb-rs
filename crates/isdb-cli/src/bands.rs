@@ -223,8 +223,10 @@ impl FromStr for Freq {
         if s.trim()
             .starts_with(|c: char| c.is_ascii_digit() || c == '.')
         {
-            let hz = parse_hz(s)?;
-            let hz = u64::try_from(hz.round() as i128)
+            // f64 -> i128 saturates; try_from then range-checks the value
+            #[allow(clippy::cast_possible_truncation)]
+            let hz = parse_hz(s)?.round() as i128;
+            let hz = u64::try_from(hz)
                 .ok()
                 .filter(|&h| h > 0)
                 .with_context(|| format!("frequency {s:?}: must be > 0"))?;

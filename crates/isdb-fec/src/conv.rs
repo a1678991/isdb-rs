@@ -82,8 +82,9 @@ fn tables() -> &'static Tables {
         };
         for u in 0..2u8 {
             for b in 0..2u8 {
-                for j in 0..HALF {
-                    let s = (2 * j) as u8 | b;
+                // s = 2j + b over the HALF values of j
+                for (j, s2) in (0u8..).step_by(2).take(HALF).enumerate() {
+                    let s = s2 | b;
                     let (x, y) = branch_output(s, u);
                     t.sx[u as usize][b as usize][j] = if x == 0 { 1.0 } else { -1.0 };
                     t.sy[u as usize][b as usize][j] = if y == 0 { 1.0 } else { -1.0 };
@@ -152,7 +153,7 @@ impl ViterbiDecoder {
         for &b in bits {
             self.acs(0.0, 0.0);
             for (ns, p) in self.pm.iter_mut().enumerate() {
-                if (ns >> 5) as u8 != (b & 1) {
+                if u8::from(ns >= HALF) != (b & 1) {
                     *p = -1.0e9;
                 }
             }
@@ -277,7 +278,7 @@ impl ViterbiDecoder {
         let mut s = state;
         let mut bits = vec![0u8; release];
         for t in (0..n).rev() {
-            let u = (s >> 5) as u8;
+            let u = u8::from(s >= HALF); // the input bit: s < STATES
             if t < release {
                 bits[t] = u;
             }

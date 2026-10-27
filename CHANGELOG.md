@@ -428,6 +428,13 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
   f64-to-f32 conversions (PCR interpolation, timestamps, spectrum bins,
   window and full scale) with the invariant stated. Report output is
   unchanged.
+- `isdb-cli`, `isdb-fec`: `clippy::cast_possible_truncation` is on at
+  crate level (`docs/plans/type-safety.md` §2, item H3), with 23 and 8
+  `#[allow]`s. The radio `--rate` / `--bw` (and the ppm-corrected
+  tuning) now fail with the flag name when out of the `u32` range
+  instead of saturating, as does an oversized `loopback
+  --sample-offset`; the RX float-to-12-bit conversion is
+  `isdb_frontend::input_sample`.
 - `isdb-si`: `clippy::cast_possible_truncation` is on at crate level
   (`docs/plans/type-safety.md` §2, item H3), with no `#[allow]`: the 149
   narrowing casts are gone. Bit fields go through the width-typed

@@ -596,8 +596,8 @@ pub fn receive(
             break;
         };
         if let Some(m) = max_samples {
-            let left = m.saturating_sub(samples) as usize;
-            chunk.truncate(left);
+            // a limit beyond usize::MAX keeps the whole chunk
+            chunk.truncate(usize::try_from(m.saturating_sub(samples)).unwrap_or(usize::MAX));
         }
         samples += chunk.len() as u64;
         prx.push(chunk);
@@ -650,7 +650,7 @@ pub fn run(a: RxArgs) -> Result<()> {
     }
     let fs = sample_rate_hz();
     let seconds = crate::tx::resolve_seconds(a.seconds)?;
-    let max_samples = (seconds > 0.0).then(|| (seconds * fs).round() as u64);
+    let max_samples = (seconds > 0.0).then(|| crate::phyargs::sample_count(seconds, fs));
     let stop = crate::stop::flag();
     let (mut src, input_desc): (Box<dyn IqSource>, String) = if let Some(spec) = &a.radio {
         let backend = isdb_radio::backend(&spec.backend)?;
@@ -872,9 +872,9 @@ fn run_isdbs(a: RxArgs) -> Result<()> {
         let cfg = isdb_radio::RadioConfig {
             center_hz: hz,
             nominal_hz: hz,
-            rate_num: rate.round() as u32,
+            rate_num: crate::phyargs::whole_u32(rate, "--rate")?,
             rate_den: 1,
-            bandwidth_hz: bw.round() as u32,
+            bandwidth_hz: crate::phyargs::whole_u32(bw, "--bw")?,
             args: spec.args.clone(),
             gains: a.gain.clone(),
         };
@@ -928,7 +928,7 @@ fn run_isdbs(a: RxArgs) -> Result<()> {
             let fs = isdb_iq::Recording::open(std::path::Path::new(p), None, None)
                 .map(|r| r.sample_rate)
                 .unwrap_or(0.0);
-            (seconds * fs).round() as u64
+            crate::phyargs::sample_count(seconds, fs)
         });
         eprintln!("isdb rx: ISDB-S from {p}");
         let s = crate::rxs::run_file(p, max, a.carrier_offset, &mut out, &mut stats)?;
@@ -1010,9 +1010,9 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
         let cfg = isdb_radio::RadioConfig {
             center_hz: hz,
             nominal_hz: hz,
-            rate_num: rate.round() as u32,
+            rate_num: crate::phyargs::whole_u32(rate, "--rate")?,
             rate_den: 1,
-            bandwidth_hz: bw.round() as u32,
+            bandwidth_hz: crate::phyargs::whole_u32(bw, "--bw")?,
             args: spec.args.clone(),
             gains: a.gain.clone(),
         };
@@ -1066,7 +1066,7 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
             let fs = isdb_iq::Recording::open(std::path::Path::new(p), None, None)
                 .map(|r| r.sample_rate)
                 .unwrap_or(0.0);
-            (seconds * fs).round() as u64
+            crate::phyargs::sample_count(seconds, fs)
         });
         eprintln!("isdb rx: ISDB-S3 from {p}");
         let s = crate::rxs3::run_file(p, max, a.carrier_offset, &mut out, &mut stats)?;

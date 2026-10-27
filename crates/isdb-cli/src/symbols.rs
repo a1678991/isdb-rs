@@ -201,6 +201,8 @@ fn design(
     d.trim = match o.trim {
         TrimArg::Fixed(t) => t,
         TrimArg::Auto => {
+            // f64 -> usize saturates: 0.15 s of samples, bounded by the length
+            #[allow(clippy::cast_possible_truncation)]
             let n = ((0.15 * fs) as usize).min(x.len());
             let xi = to_input(&x[..n]);
             let (t, snr) = if sys.name == KNOWN_SYSTEMS[1].name {
@@ -226,14 +228,7 @@ fn design(
 
 /// Samples in the front end's input domain (12-bit components in i16).
 fn to_input(x: &[C32]) -> Vec<[i16; 2]> {
-    x.iter()
-        .map(|v| {
-            [
-                (v.re * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-                (v.im * 2048.0).round().clamp(-2048.0, 2047.0) as i16,
-            ]
-        })
-        .collect()
+    x.iter().copied().map(isdb_frontend::input_sample).collect()
 }
 
 /// Run the CPU front end over `x`, writing the words to `out`.
@@ -404,6 +399,8 @@ pub fn run_iq(a: &IqSymbolsArgs) -> Result<()> {
             sys,
             fs,
             cfo,
+            // f64 -> u64 saturates: the recording's centre frequency in Hz
+            #[allow(clippy::cast_possible_truncation)]
             rec.frequency.map(|v| v as u64),
             &p,
             trim,
@@ -478,9 +475,9 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
     let cfg = RadioConfig {
         center_hz: a.freq.hz,
         nominal_hz: a.freq.hz,
-        rate_num: a.rate.round() as u32,
+        rate_num: crate::phyargs::whole_u32(a.rate, "--rate")?,
         rate_den: 1,
-        bandwidth_hz: a.bw.round() as u32,
+        bandwidth_hz: crate::phyargs::whole_u32(a.bw, "--bw")?,
         args: a.radio.args.clone(),
         gains: a.gain.clone(),
     };
@@ -543,6 +540,8 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
     );
     let mut f = std::io::BufWriter::new(crate::capture::create(out, a.overwrite)?);
     if use_fpga {
+        // f64 -> u64 saturates: the words in --seconds of symbols
+        #[allow(clippy::cast_possible_truncation)]
         let words = (a.seconds * sys.symbol_rate_hz * p.words_per_symbol()).ceil() as u64;
         let c = backend.capture_symbols(&cfg, &p, words, &mut f, &stop)?;
         f.flush()?;
@@ -572,6 +571,8 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
     }
     // CPU: one contiguous capture (a stream would lose samples at this
     // rate), then the same front end.
+    // f64 -> u64 saturates: the samples in --seconds, bounded by the limit
+    #[allow(clippy::cast_possible_truncation)]
     let n = ((a.seconds * fs) as u64).min(limit);
     if (n as f64) < a.seconds * fs {
         eprintln!(

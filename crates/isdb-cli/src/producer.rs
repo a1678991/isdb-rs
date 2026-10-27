@@ -92,7 +92,10 @@ pub struct ProducerConfig {
 
 /// Number of frames covering `seconds` of air time (rounded up).
 pub fn frames_for_seconds(params: &Params, seconds: f64) -> u64 {
-    (seconds / params.frame_seconds()).ceil().max(1.0) as u64
+    // f64 -> u64 saturates: a frame count, at least 1
+    #[allow(clippy::cast_possible_truncation)]
+    let n = (seconds / params.frame_seconds()).ceil().max(1.0) as u64;
+    n
 }
 
 /// Start the producer thread. `controls` (playback keys) are applied to

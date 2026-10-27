@@ -255,7 +255,10 @@ impl PacketStream {
 /// Queue depth for a layer carrying `per_frame` packets per OFDM frame of
 /// `frame_s` seconds: about two seconds of capacity, at least 1024.
 pub fn queue_depth(per_frame: usize, frame_s: f64) -> usize {
-    ((per_frame as f64 / frame_s) * 2.0).ceil().max(1024.0) as usize
+    // f64 -> usize saturates: a packet count, at least 1024
+    #[allow(clippy::cast_possible_truncation)]
+    let n = ((per_frame as f64 / frame_s) * 2.0).ceil().max(1024.0) as usize;
+    n
 }
 
 /// Check a path-based input is usable with the feed policy.
@@ -274,8 +277,7 @@ pub(crate) mod tests {
     pub(crate) fn pkt(pid: u16, n: u32) -> Packet {
         let mut p = [0u8; 188];
         p[0] = 0x47;
-        p[1] = (pid >> 8) as u8;
-        p[2] = pid as u8;
+        p[1..3].copy_from_slice(&pid.to_be_bytes());
         p[3] = 0x10 | (n & 15) as u8;
         p[4..8].copy_from_slice(&n.to_be_bytes());
         p

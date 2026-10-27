@@ -52,15 +52,17 @@ impl Gf {
     const fn new() -> Self {
         let mut exp = [0u8; 512];
         let mut log = [0u16; 256];
-        let mut x: u16 = 1;
-        let mut i = 0;
+        let mut x: u8 = 1;
+        let mut i: u16 = 0;
         while i < 255 {
-            exp[i] = x as u8;
-            exp[i + 255] = x as u8;
-            log[x as usize] = i as u16;
-            x <<= 1; // multiply by λ = 0x02
-            if x & 0x100 != 0 {
-                x ^= PRIMITIVE_POLY;
+            exp[i as usize] = x;
+            exp[i as usize + 255] = x;
+            log[x as usize] = i;
+            // multiply by λ = 0x02; the x⁸ term shifted out reduces by p(x)
+            let carry = x & 0x80 != 0;
+            x <<= 1;
+            if carry {
+                x ^= PRIMITIVE_POLY.to_le_bytes()[0];
             }
             i += 1;
         }
@@ -88,7 +90,10 @@ impl Gf {
     /// λ^e for any integer e.
     #[inline]
     fn pow_alpha(&self, e: i64) -> u8 {
-        self.exp[e.rem_euclid(255) as usize]
+        // rem_euclid(255) is in 0..255, so the index cast is exact
+        #[allow(clippy::cast_possible_truncation)]
+        let i = e.rem_euclid(255) as usize;
+        self.exp[i]
     }
 }
 
@@ -405,7 +410,7 @@ mod tests {
                     assert!(rs.syndromes(&c).iter().all(|&x| x == 0));
                     let mut r = c.clone();
                     for p in rng.distinct(nerr, rs.n()) {
-                        r[p] ^= (rng.next() as u8).max(1);
+                        r[p] ^= rng.byte().max(1);
                     }
                     assert_eq!(rs.decode(&mut r), Ok(nerr));
                     assert_eq!(r, c);
@@ -425,7 +430,7 @@ mod tests {
                 rs.encode_in_place(&mut c);
                 let mut r = c.clone();
                 for p in rng.distinct(9 + i % 12, rs.n()) {
-                    r[p] ^= (rng.next() as u8).max(1);
+                    r[p] ^= rng.byte().max(1);
                 }
                 let before = r.clone();
                 match rs.decode(&mut r) {

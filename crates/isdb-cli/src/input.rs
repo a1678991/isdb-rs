@@ -395,11 +395,12 @@ pub struct InputRates {
 }
 
 /// Measure the per-layer rates of `path` (a regular file) from its PCR:
-/// at most `probe_s` seconds of PCR time or `max_bytes` bytes.
+/// at most `probe_s` seconds of PCR time or `max_bytes` bytes. `route`
+/// gives a PID's layer index (0 = A … 2 = C).
 pub fn probe_rates(
     path: &str,
-    route: &dyn Fn(u16) -> usize,
-    probe_s: f64,
+    route: &dyn Fn(u16) -> u8,
+    probe_s: u64,
     max_bytes: usize,
 ) -> Result<InputRates> {
     use std::io::Read;
@@ -416,16 +417,12 @@ pub fn probe_rates(
     buf.truncate(n);
     let mut clock = PcrClock::<u8>::new(None);
     let mut skipped = 0;
-    let limit = (probe_s * 27e6) as u64;
+    let limit = probe_s * 27_000_000;
     // (time, layer) of every non-null packet
     let mut timed: Vec<(u64, u8)> = Vec::new();
     let mut done = false;
     split_packets(&buf, &mut skipped, |p| {
-        let l = if is_null(&p) {
-            255
-        } else {
-            route(pid(&p)) as u8
-        };
+        let l = if is_null(&p) { 255 } else { route(pid(&p)) };
         clock.push(&p, l);
         while let Some(x) = clock.pop() {
             if x.t > limit {
@@ -495,21 +492,20 @@ impl SyntheticInput {
         Self { next: [0; 3] }
     }
 
-    /// Packet `n` of layer `l`.
-    pub fn packet(l: usize, n: u64) -> Packet {
+    /// Packet `n` of layer `l` (0 = A … 2 = C).
+    pub fn packet(l: u8, n: u64) -> Packet {
         let mut p = [0u8; 188];
-        let pid = 0x100 * (l as u16 + 1);
+        let pid = 0x100 * (u16::from(l) + 1);
         p[0] = 0x47;
-        p[1] = (pid >> 8) as u8;
-        p[2] = pid as u8;
+        p[1..3].copy_from_slice(&pid.to_be_bytes());
         p[3] = 0x10 | (n & 15) as u8;
         p[4..12].copy_from_slice(&n.to_be_bytes());
-        let mut x = n.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ ((l as u64 + 1) << 56) | 1;
+        let mut x = n.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ ((u64::from(l) + 1) << 56) | 1;
         for b in &mut p[12..] {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
-            *b = (x >> 24) as u8;
+            *b = x.to_le_bytes()[3]; // bits 31..24
         }
         p
     }
@@ -520,9 +516,10 @@ impl FrameInput for SyntheticInput {
         if stop.load(Ordering::Relaxed) {
             return None;
         }
-        let layers = std::array::from_fn(|l| {
+        let layers = [0u8, 1, 2].map(|id| {
+            let l = usize::from(id);
             let v = (0..counts[l] as u64)
-                .map(|k| Self::packet(l, self.next[l] + k))
+                .map(|k| Self::packet(id, self.next[l] + k))
                 .collect();
             self.next[l] += counts[l] as u64;
             v
@@ -682,7 +679,7 @@ impl FrameInput for MuxConfigInput {
 }
 
 /// PCR time measured by the start-up rate probe of a `--mux-ts` file.
-pub const PROBE_SECONDS: f64 = 30.0;
+pub const PROBE_SECONDS: u64 = 30;
 /// Byte limit of the probe (≈ 30 s at 34 Mbit/s).
 pub const PROBE_BYTES: usize = 128 << 20;
 
@@ -1003,13 +1000,13 @@ mod tests {
     pub(crate) fn pcr_packet(pid: u16, ticks: u64) -> Packet {
         let (base, ext) = (ticks / 300, ticks % 300);
         let mut p = [0xFFu8; 188];
-        p[..6].copy_from_slice(&[0x47, (pid >> 8) as u8, pid as u8, 0x20, 183, 0x10]);
-        p[6] = (base >> 25) as u8;
-        p[7] = (base >> 17) as u8;
-        p[8] = (base >> 9) as u8;
-        p[9] = (base >> 1) as u8;
-        p[10] = (((base & 1) << 7) as u8) | 0x7E | ((ext >> 8) as u8 & 1);
-        p[11] = ext as u8;
+        let [hi, lo] = pid.to_be_bytes();
+        p[..6].copy_from_slice(&[0x47, hi, lo, 0x20, 183, 0x10]);
+        // base bits 32..0 in bytes 6..=10, then 6 reserved bits and ext
+        p[6..11].copy_from_slice(&(base << 7).to_be_bytes()[3..]);
+        let [.., e_hi, e_lo] = ext.to_be_bytes();
+        p[10] |= 0x7E | (e_hi & 1);
+        p[11] = e_lo;
         p
     }
 

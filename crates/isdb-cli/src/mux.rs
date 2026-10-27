@@ -145,7 +145,12 @@ pub fn run(args: MuxArgs) -> Result<()> {
     }
     let frames = match (args.frames, args.seconds) {
         (Some(f), _) => f,
-        (None, s) => (s.unwrap_or(10.0) / params.frame_seconds()).ceil() as u64,
+        (None, s) => {
+            // f64 -> u64 saturates: a frame count (0 for a negative --seconds)
+            #[allow(clippy::cast_possible_truncation)]
+            let n = (s.unwrap_or(10.0) / params.frame_seconds()).ceil() as u64;
+            n
+        }
     };
     eprintln!("isdb mux: {}", describe_params(&params));
     eprintln!(

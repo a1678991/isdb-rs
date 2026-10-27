@@ -47,7 +47,7 @@ pub struct IqFile {
     pub scale: f32,
 }
 
-fn bytes_per_sample(f: IqFormat) -> u64 {
+fn bytes_per_sample(f: IqFormat) -> usize {
     match f {
         IqFormat::Cf32 => 8,
         IqFormat::Cs8 => 2,
@@ -72,18 +72,20 @@ impl IqFile {
         let bps = bytes_per_sample(format);
         let rate = isdbt_core::sample_rate_hz();
         let mut rx = isdbt_phy::Receiver::new(isdbt_ofdm::DemodConfig::default());
-        let chunk = (rate / 10.0) as usize; // 0.1 s
-        let mut buf = vec![0u8; chunk * bps as usize];
+        // f64 -> usize saturates: 0.1 s of the 512/63 MHz clock
+        #[allow(clippy::cast_possible_truncation)]
+        let chunk = (rate / 10.0) as usize;
+        let mut buf = vec![0u8; chunk * bps];
         let (mut pushed, mut power, mut nz) = (0u64, 0f64, 0u64);
         let found = loop {
             if pushed as f64 > DETECT_SECONDS * rate {
                 break None;
             }
             let n = read_full(&mut f, &mut buf)?;
-            if n < bps as usize {
+            if n < bps {
                 break None;
             }
-            let s = decode(format, &buf[..n - n % bps as usize]);
+            let s = decode(format, &buf[..n - n % bps]);
             for c in &s {
                 let p = f64::from(c.norm_sqr());
                 if p > 0.0 {
@@ -105,7 +107,7 @@ impl IqFile {
         };
         let spf = params.samples_per_frame() as u64;
         let first_sample = start % spf;
-        let total = len / bps;
+        let total = len / bps as u64;
         let frames = total.saturating_sub(first_sample) / spf;
         if frames == 0 {
             bail!("--iq-in {}: shorter than one frame", path.display());
@@ -117,6 +119,8 @@ impl IqFile {
             params,
             first_sample,
             frames,
+            // f64 -> f32 rounds: a gain near 1/RMS of the samples
+            #[allow(clippy::cast_possible_truncation)]
             scale: if rms > 0.0 { (1.0 / rms) as f32 } else { 1.0 },
         })
     }
@@ -156,7 +160,7 @@ pub struct PlayConfig {
 
 fn mmss(s: f64) -> String {
     let s = s.max(0.0);
-    format!("{:02}:{:04.1}", (s / 60.0) as u64, s % 60.0)
+    format!("{:02.0}:{:04.1}", (s / 60.0).floor(), s % 60.0)
 }
 
 /// Start the playback thread (the same frame stream as
@@ -175,7 +179,7 @@ pub fn spawn(
             let spf = file.params.samples_per_frame();
             let bps = bytes_per_sample(file.format);
             let frame_s = file.params.frame_seconds();
-            let mut buf = vec![0u8; spf * bps as usize];
+            let mut buf = vec![0u8; spf * bps];
             let mut nulls: Option<Transmitter> = None;
             let (mut frame, mut paused, mut index) = (0u64, false, 0u64);
             let t0 = Instant::now();
@@ -201,6 +205,8 @@ pub fn spawn(
                             String::new()
                         }
                         Command::Seek(d) => {
+                            // f64 -> i64 saturates: the seek in frames, clamped next
+                            #[allow(clippy::cast_possible_truncation)]
                             let k = (d / frame_s).round() as i64;
                             frame = (frame as i64 + k).clamp(0, file.frames as i64 - 1) as u64;
                             format!(" (seek {d:+} s)")
@@ -236,7 +242,7 @@ pub fn spawn(
                         frame = 0;
                     }
                     f.seek(SeekFrom::Start(
-                        (file.first_sample + frame * spf as u64) * bps,
+                        (file.first_sample + frame * spf as u64) * bps as u64,
                     ))?;
                     let n = read_full(&mut f, &mut buf)?;
                     if n < buf.len() {

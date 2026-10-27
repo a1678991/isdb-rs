@@ -3,6 +3,9 @@
 //! to other codewords: bits, iterations, convergence and the unsatisfied
 //! count, whichever SIMD back end the build uses (plan §7.2).
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_fec::ldpc::Code;
 use isdb_fec::ldpc::fixed::{Decoder, LaneResult, Params};
 use proptest::prelude::*;
@@ -38,10 +41,10 @@ fn word(code: &Code, seed: u64, amp: i8, noise: i8, flips: u16) -> Vec<i8> {
                 -i16::from(amp)
             };
             let span = 2 * i16::from(noise) + 1;
-            let n = (next() % span as u64) as i16 - i16::from(noise);
+            let n = i16::try_from(next() % span as u64).unwrap() - i16::from(noise);
             let flip = (next() % 1000) < u64::from(flips);
             let x = if flip { -clean } else { clean + n };
-            x.clamp(-127, 127) as i8
+            i8::try_from(x.clamp(-127, 127)).unwrap()
         })
         .collect()
 }
@@ -81,8 +84,8 @@ proptest! {
         max_iter in 0usize..12,
     ) {
         let code = code();
-        let ws: Vec<Vec<i8>> = seeds.iter().enumerate()
-            .map(|(i, &s)| word(&code, s, amp, noise, flips * (i as u16 % 3)))
+        let ws: Vec<Vec<i8>> = seeds.iter().zip(0u16..)
+            .map(|(&s, i)| word(&code, s, amp, noise, flips * (i % 3)))
             .collect();
         let p = Params { max_iter, offset };
         check::<16>(&code, &ws, p);
@@ -104,8 +107,8 @@ proptest! {
         max_iter in 0usize..10,
     ) {
         let code = code();
-        let ws: Vec<Vec<i8>> = seeds.iter().enumerate()
-            .map(|(i, &s)| word(&code, s, amp, noise, flips * (i as u16 % 4)))
+        let ws: Vec<Vec<i8>> = seeds.iter().zip(0u16..)
+            .map(|(&s, i)| word(&code, s, amp, noise, flips * (i % 4)))
             .collect();
         let p = Params { max_iter, offset: 1 };
         let refs: Vec<&[i8]> = ws.iter().map(Vec::as_slice).collect();
