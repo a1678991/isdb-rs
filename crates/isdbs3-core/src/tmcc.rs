@@ -33,12 +33,72 @@ pub const NULL_TAIL: usize = 11_330;
 /// TMCC data bits after BCH: 9 422 + 192.
 pub const DATA_BITS: usize = TMCC_INFO_BITS + isdb_fec::bch::PARITY;
 
+/// A code one of Tables 3.11-1, 3.11-2 or 3.11-4 does not assign, as
+/// decoded.
+///
+/// Only the `from_code` of [`ModulationCode`], [`RateCode`] and
+/// [`StreamType`] builds one, after it has excluded every assigned code and
+/// the "not allocated" code: the field is private, so a `Reserved(c)` is
+/// canonical by construction (one value per wire code, never the spelling
+/// of `Unused` / `None`) and `==` on the enums is wire equality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ReservedCode(u8);
+
+impl ReservedCode {
+    /// `c` must be a reserved code of its table, already masked to the
+    /// field width; only the `from_code`s uphold this.
+    pub(crate) const fn new_unchecked(c: u8) -> Self {
+        Self(c)
+    }
+
+    /// The code, in the width of its field (4 or 8 bits).
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for ReservedCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::Binary for ReservedCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Binary::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::LowerHex for ReservedCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
+/// A reserved code cannot be spelled as a TMCC code outside this crate;
+/// the only way in is `from_code`, so a decoded value is canonical:
+///
+/// ```compile_fail,E0624
+/// use isdbs3_core::{ModulationCode, tmcc::ReservedCode};
+/// let _ = ModulationCode::Reserved(ReservedCode::new_unchecked(0b0110));
+/// ```
+///
+/// ```
+/// use isdbs3_core::ModulationCode;
+/// assert_eq!(ModulationCode::from_code(0b0110), ModulationCode::from_code(0xF6));
+/// assert_eq!(ModulationCode::from_code(0b0110).code(), 0b0110);
+/// ```
+#[doc(hidden)]
+pub const _TMCC_CODES_CANONICAL: () = ();
+
 /// Modulation-scheme field of a transmission mode (Table 3.11-1), 4 bits.
 ///
 /// A lossless coded enum: the five assigned codes carry a [`Modulation`],
 /// `1111` is "No scheme allocated" (the value of an unused mode, §3.11
 /// (2)), and `0000` / `0110`–`1110` are reserved and kept as received so
-/// the TMCC word round-trips bit-exactly.
+/// the TMCC word round-trips bit-exactly. The `Reserved` payload is a
+/// [`ReservedCode`] only `from_code` can build, so every value is canonical
+/// and `==` is wire equality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModulationCode {
     /// `0001` π/2-shift BPSK … `0101` 32APSK.
@@ -46,7 +106,7 @@ pub enum ModulationCode {
     /// `1111`: no scheme allocated.
     Unused,
     /// `0000`, `0110`–`1110`: reserved; the 4-bit code as received.
-    Reserved(u8),
+    Reserved(ReservedCode),
 }
 
 impl ModulationCode {
@@ -56,7 +116,7 @@ impl ModulationCode {
         match Modulation::from_code(c) {
             Some(m) => Self::Assigned(m),
             None if c == 0b1111 => Self::Unused,
-            None => Self::Reserved(c),
+            None => Self::Reserved(ReservedCode::new_unchecked(c)),
         }
     }
     /// The 4-bit field.
@@ -64,7 +124,7 @@ impl ModulationCode {
         match self {
             Self::Assigned(m) => m.code(),
             Self::Unused => 0b1111,
-            Self::Reserved(c) => c & 0b1111,
+            Self::Reserved(c) => c.get(),
         }
     }
     /// The modulation, if the code is assigned.
@@ -90,7 +150,8 @@ impl std::fmt::Display for ModulationCode {
 ///
 /// A lossless coded enum: `0001`–`1011` carry a [`CodeRate`], `1111` is
 /// "No scheme allocated", and `0000` / `1100`–`1110` are reserved and kept
-/// as received.
+/// as received (a [`ReservedCode`] only `from_code` can build, so `==` is
+/// wire equality).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RateCode {
     /// `0001` 41/120 … `1011` 109/120, in the order of Table 3.4-2.
@@ -98,7 +159,7 @@ pub enum RateCode {
     /// `1111`: no scheme allocated.
     Unused,
     /// `0000`, `1100`–`1110`: reserved; the 4-bit code as received.
-    Reserved(u8),
+    Reserved(ReservedCode),
 }
 
 impl RateCode {
@@ -112,7 +173,7 @@ impl RateCode {
         match CodeRate::from_code(c) {
             Some(r) => Self::Assigned(r),
             None if c == 0b1111 => Self::Unused,
-            None => Self::Reserved(c),
+            None => Self::Reserved(ReservedCode::new_unchecked(c)),
         }
     }
     /// The 4-bit field.
@@ -120,7 +181,7 @@ impl RateCode {
         match self {
             Self::Assigned(r) => r.code(),
             Self::Unused => 0b1111,
-            Self::Reserved(c) => c & 0b1111,
+            Self::Reserved(c) => c.get(),
         }
     }
     /// The code rate, if the code is assigned.
@@ -226,7 +287,8 @@ pub struct TmccInfo {
 /// Stream type of a relative stream (Table 3.11-4), 8 bits.
 ///
 /// A lossless coded enum: `0x01` TS, `0x02` TLV, `0xFF` "No type
-/// allocated", and `0x00` / `0x03`–`0xFE` reserved and kept as received.
+/// allocated", and `0x00` / `0x03`–`0xFE` reserved and kept as received (a
+/// [`ReservedCode`] only `from_code` can build, so `==` is wire equality).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StreamType {
     /// `00000001`: MPEG-2 TS.
@@ -236,7 +298,7 @@ pub enum StreamType {
     /// `11111111`: no type allocated.
     None,
     /// `00000000`, `00000011`–`11111110`: reserved; the code as received.
-    Reserved(u8),
+    Reserved(ReservedCode),
 }
 
 impl StreamType {
@@ -246,7 +308,7 @@ impl StreamType {
             0x01 => Self::Ts,
             0x02 => Self::Tlv,
             0xFF => Self::None,
-            c => Self::Reserved(c),
+            c => Self::Reserved(ReservedCode::new_unchecked(c)),
         }
     }
     /// The 8-bit field.
@@ -255,7 +317,7 @@ impl StreamType {
             Self::Ts => 0x01,
             Self::Tlv => 0x02,
             Self::None => 0xFF,
-            Self::Reserved(c) => c,
+            Self::Reserved(c) => c.get(),
         }
     }
 }
@@ -500,16 +562,38 @@ pub(crate) mod tests {
             assert_eq!(ModulationCode::Assigned(m).code(), c);
         }
         assert_eq!(ModulationCode::from_code(0b1111), ModulationCode::Unused);
-        assert_eq!(
-            ModulationCode::from_code(0b0000),
-            ModulationCode::Reserved(0b0000)
-        );
-        for c in 0b0110..=0b1110u8 {
-            assert_eq!(ModulationCode::from_code(c), ModulationCode::Reserved(c));
+        for c in [0b0000u8].into_iter().chain(0b0110..=0b1110) {
+            assert!(
+                matches!(ModulationCode::from_code(c), ModulationCode::Reserved(r) if r.get() == c),
+                "{c:04b}"
+            );
         }
         // the field is 4 bits: higher bits are masked
         assert_eq!(ModulationCode::from_code(0xF4).code(), 0b0100);
-        assert_eq!(ModulationCode::Reserved(0xF6).code(), 0b0110);
+        assert_eq!(
+            ModulationCode::from_code(0xF6),
+            ModulationCode::from_code(0b0110)
+        );
+        assert_eq!(ModulationCode::from_code(0xF6).code(), 0b0110);
+    }
+
+    /// Tables 3.11-1, 3.11-2, 3.11-4: `from_code` is total and masks to the
+    /// field width, so every `u8` decodes to the canonical value of its low
+    /// bits (the `Reserved` payloads can only come from `from_code`, so
+    /// `==` is wire equality).
+    #[test]
+    fn prop_tmcc_codes_from_code_mask_to_width() {
+        for c in 0..=255u8 {
+            assert_eq!(
+                ModulationCode::from_code(c),
+                ModulationCode::from_code(c & 0b1111)
+            );
+            assert_eq!(ModulationCode::from_code(c).code(), c & 0b1111);
+            assert_eq!(RateCode::from_code(c), RateCode::from_code(c & 0b1111));
+            assert_eq!(RateCode::from_code(c).code(), c & 0b1111);
+            assert_eq!(StreamType::from_code(c), StreamType::from_code(c));
+            assert_eq!(StreamType::from_code(c).code(), c);
+        }
     }
 
     /// Table 3.11-2: every 4-bit code round-trips; 0001–1011 are the
@@ -531,12 +615,15 @@ pub(crate) mod tests {
             Some(105)
         );
         assert_eq!(RateCode::from_code(0b1111), RateCode::Unused);
-        assert_eq!(RateCode::from_code(0b0000), RateCode::Reserved(0b0000));
-        for c in 0b1100..=0b1110u8 {
-            assert_eq!(RateCode::from_code(c), RateCode::Reserved(c));
+        for c in [0b0000u8].into_iter().chain(0b1100..=0b1110) {
+            assert!(
+                matches!(RateCode::from_code(c), RateCode::Reserved(r) if r.get() == c),
+                "{c:04b}"
+            );
         }
         assert_eq!(RateCode::from_code(0xF7).code(), 0b0111);
-        assert_eq!(RateCode::Reserved(0xFC).code(), 0b1100);
+        assert_eq!(RateCode::from_code(0xFC), RateCode::from_code(0b1100));
+        assert_eq!(RateCode::from_code(0xFC).code(), 0b1100);
     }
 
     /// Table 3.11-4: every 8-bit code round-trips; 0x01 TS, 0x02 TLV,
@@ -549,9 +636,11 @@ pub(crate) mod tests {
         assert_eq!(StreamType::from_code(0x01), StreamType::Ts);
         assert_eq!(StreamType::from_code(0x02), StreamType::Tlv);
         assert_eq!(StreamType::from_code(0xFF), StreamType::None);
-        assert_eq!(StreamType::from_code(0x00), StreamType::Reserved(0x00));
-        for c in 0x03..=0xFEu8 {
-            assert_eq!(StreamType::from_code(c), StreamType::Reserved(c));
+        for c in [0x00u8].into_iter().chain(0x03..=0xFE) {
+            assert!(
+                matches!(StreamType::from_code(c), StreamType::Reserved(r) if r.get() == c),
+                "{c:#04x}"
+            );
         }
     }
 
@@ -561,12 +650,12 @@ pub(crate) mod tests {
     fn reserved_codes_are_kept_and_not_used() {
         let mut t = sample();
         t.modes[1] = Mode {
-            modulation_code: ModulationCode::Reserved(0b0110),
-            rate_code: RateCode::Reserved(0b1100),
+            modulation_code: ModulationCode::from_code(0b0110),
+            rate_code: RateCode::from_code(0b1100),
             slots: 5,
             obo: 1,
         };
-        t.stream_type[1] = StreamType::Reserved(0x7E);
+        t.stream_type[1] = StreamType::from_code(0x7E);
         assert!(!t.modes[1].is_used());
         assert!(!t.allocation_ok());
         assert_eq!(TmccInfo::parse(&t.bits()), t);

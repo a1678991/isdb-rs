@@ -2,6 +2,8 @@
 //! efficiency, the slot units of MIC Ordinance No. 87 annexed table 48
 //! 別記 3, and the punctured codes of Table 2 / annexed table 49 note 4.
 
+use std::fmt;
+
 /// A modulation-code combination of the main signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Combination {
@@ -36,12 +38,72 @@ pub enum Modulation {
 /// code of [`CombinationWord::Dummy`].
 pub const DUMMY_WORD: u8 = 0b1111;
 
+/// A word Table 1 does not assign (0000 or 1000–1110), as decoded.
+///
+/// Only [`CombinationWord::from_word`] builds one, after it has excluded
+/// the seven assigned words and the dummy word: the field is private, so a
+/// [`Reserved`](CombinationWord::Reserved) value is canonical by
+/// construction (one value per wire code, never the spelling of `Dummy`)
+/// and `==` on the enum is wire equality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ReservedCode(u8);
+
+impl ReservedCode {
+    /// `w` must be a reserved word of Table 1, already masked to 4 bits;
+    /// only `from_word` upholds this.
+    pub(crate) const fn new_unchecked(w: u8) -> Self {
+        Self(w)
+    }
+
+    /// The 4-bit word.
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Binary for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Binary::fmt(&self.0, f)
+    }
+}
+
+impl fmt::LowerHex for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
+/// A reserved word cannot be spelled as a [`CombinationWord`] outside this
+/// crate; the only way in is [`CombinationWord::from_word`], so a decoded
+/// value is canonical:
+///
+/// ```compile_fail,E0624
+/// use isdbs_core::combination::{CombinationWord, ReservedCode};
+/// let _ = CombinationWord::Reserved(ReservedCode::new_unchecked(0b1000));
+/// ```
+///
+/// ```
+/// use isdbs_core::CombinationWord;
+/// assert_eq!(CombinationWord::from_word(0b1000), CombinationWord::from_word(0xF8));
+/// assert_eq!(CombinationWord::from_word(0b1000).word(), 0b1000);
+/// ```
+#[doc(hidden)]
+pub const _COMBINATION_WORD_CANONICAL: () = ();
+
 /// The 4-bit word of a Fig. 8 combination entry: the whole of Table 1,
 /// kept lossless. The seven assigned words 0001–0111 are a
 /// [`Combination`]; 1111 is "Dummy" (§6.1.2: the entries not in use, with
 /// zero slots); 0000 and 1000–1110 are "Reserved" and keep their value, so
 /// `from_word(w).word() == w` for every 4-bit `w` and the TMCC codec stays
-/// bit-exact. [`crate::tmcc::TmccInfo::validate`] refuses `Reserved`.
+/// bit-exact. The `Reserved` payload is a [`ReservedCode`] only
+/// `from_word` can build, so every value is canonical and `==` is wire
+/// equality. [`crate::tmcc::TmccInfo::validate`] refuses `Reserved`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CombinationWord {
     /// 0001–0111: a modulation-code combination.
@@ -49,7 +111,7 @@ pub enum CombinationWord {
     /// 1111: "Dummy".
     Dummy,
     /// 0000 or 1000–1110: "Reserved", the 4-bit word as received.
-    Reserved(u8),
+    Reserved(ReservedCode),
 }
 
 impl CombinationWord {
@@ -60,7 +122,7 @@ impl CombinationWord {
         match Combination::from_word(w) {
             Some(c) => Self::Assigned(c),
             None if w == DUMMY_WORD => Self::Dummy,
-            None => Self::Reserved(w),
+            None => Self::Reserved(ReservedCode::new_unchecked(w)),
         }
     }
 
@@ -69,7 +131,7 @@ impl CombinationWord {
         match self {
             Self::Assigned(c) => c.word(),
             Self::Dummy => DUMMY_WORD,
-            Self::Reserved(w) => w & 0xF,
+            Self::Reserved(w) => w.get(),
         }
     }
 
@@ -309,7 +371,7 @@ mod tests {
                     assert_eq!(cw.combination(), None);
                 }
                 CombinationWord::Reserved(r) => {
-                    assert_eq!(r, w);
+                    assert_eq!(r.get(), w);
                     assert!(w == 0b0000 || (0b1000..=0b1110).contains(&w), "{w:04b}");
                     assert_eq!(cw.combination(), None);
                 }
@@ -319,6 +381,18 @@ mod tests {
             .filter(|&w| matches!(CombinationWord::from_word(w), CombinationWord::Assigned(_)))
             .count();
         assert_eq!(n, Combination::ALL.len());
+    }
+
+    /// `from_word` is total and masks to the 4-bit field: every `u8`
+    /// decodes to the canonical value of its low bits (the `Reserved`
+    /// payload can only come from `from_word`, so `==` is wire equality).
+    #[test]
+    fn prop_combination_word_masks_to_width() {
+        for w in 0..=255u8 {
+            let cw = CombinationWord::from_word(w);
+            assert_eq!(cw, CombinationWord::from_word(w & 0xF), "{w:#04x}");
+            assert_eq!(cw.word(), w & 0xF, "{w:#04x}");
+        }
     }
 
     /// Annexed table 48 別記 3: the slot units follow from the spectrum

@@ -25,7 +25,7 @@ pub mod slots;
 pub mod tmcc;
 
 pub use params::{CodeRate, Modulation};
-pub use tmcc::{Mode, ModulationCode, RateCode, StreamType, TmccInfo};
+pub use tmcc::{Mode, ModulationCode, RateCode, ReservedCode, StreamType, TmccInfo};
 
 // Compile the README's code blocks as doctests.
 #[cfg(doctest)]

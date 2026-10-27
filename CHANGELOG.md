@@ -407,6 +407,27 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- The reserved payloads of the lossless coded enums are canonical by
+  construction (`docs/plans/type-safety.md` §3 H1): `Reserved(u8)` /
+  `UserDefined(u8)` become `Reserved(ReservedCode)` /
+  `UserDefined(UserDefinedCode)`, a private-field newtype per crate with
+  `get()` (`const`), `Display`, `Binary` and `LowerHex`, whose only
+  constructor is `pub(crate)` and called by `from_code` after it has
+  excluded every assigned and unused code. A hand-built `Reserved(0xF6)`
+  that was `!=` `Reserved(0x06)` yet encoded the same, or a
+  `Reserved(0b111)` spelled where `Unused` is canonical, can no longer be
+  written: `==` is wire equality on every value, not only on decoded ones.
+  Affects `isdb_ts::packet::TransportScramblingControl`,
+  `isdbt_ofdm::tmcc::{ModulationCode, RateCode, InterleaveCode,
+  SegmentsCode}`, `isdbs_core::CombinationWord`,
+  `isdbs3_core::{ModulationCode, RateCode, StreamType}`,
+  `isdb_tlv::mmtp::PayloadType` and `isdb_mmt::mpu::FragmentType`.
+  `code()` no longer masks (the payload is canonical); `from_code` still
+  does. A `compile_fail` doctest per crate proves the constructor is
+  private, and an exhaustive test per enum that `from_code(c) ==
+  from_code(c & mask)` and `from_code(c).code() == c & mask` over every
+  `u8`. Callers that matched `Reserved(c)` read `c.get()`; tests and
+  READMEs that spelled a reserved value use `from_code`.
 - `clippy::cast_possible_truncation` is on (`#![warn]`) in `isdbt-core`,
   `isdb-hackrf`, `isdb-iio`, `isdb-text`, `isdb-radio` and `isdb-tlv`
   (`docs/plans/type-safety.md` §2): the remaining narrowing casts there

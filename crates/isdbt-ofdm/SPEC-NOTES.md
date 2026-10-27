@@ -213,7 +213,7 @@ still needs a real-world capture or receiver check.
   "Unused hierarchical layer" rows. Each clause says the field is all
   ones "for an unused hierarchical layer, or when there is no next
   information".
-- Interpretation: '100' of Table 3-30 is `InterleaveCode::Reserved(0b100)`
+- Interpretation: '100' of Table 3-30 is `InterleaveCode::Reserved` carrying 0b100
   (one variant for every code this system does not assign, so the TMCC
   word stays lossless; the sound-broadcasting meaning is documented on
   the variant, not modelled). A layer is "unused" when all four fields are

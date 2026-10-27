@@ -33,9 +33,12 @@ assert_eq!(h.fec_type, FecType::NotProtected);
 assert_eq!(h.payload_type, PayloadType::Messages);
 assert_eq!(payload, &[0x3C, 0x00]);
 
-// Every 6-bit code round-trips, the reserved range included.
-assert_eq!(PayloadType::from_code(0x2A), PayloadType::Reserved(0x2A));
-assert_eq!(PayloadType::Reserved(0x2A).code(), 0x2A);
+// Every 6-bit code round-trips, the reserved range included. A `Reserved`
+// payload can only be decoded (private constructor), so `==` is wire
+// equality.
+assert!(matches!(PayloadType::from_code(0x2A), PayloadType::Reserved(r) if r.get() == 0x2A));
+assert_eq!(PayloadType::from_code(0x2A).code(), 0x2A);
+assert_eq!(PayloadType::from_code(0xEA), PayloadType::from_code(0x2A)); // masked to 6 bits
 assert_eq!(FecType::from_code(3), FecType::Reserved);
 ```
 

@@ -526,22 +526,38 @@ fn spec_table_3_22_tmcc_fields() {
     assert_eq!(field(17, 19), "000");
 }
 
+/// The reserved payloads can only be decoded, never spelled: a table row
+/// whose expectation is `None` must decode to `Reserved` carrying the code.
+macro_rules! assert_decodes {
+    ($enum:ident, $code:expr, $want:expr) => {{
+        let got = $enum::from_code($code);
+        match $want {
+            Some(w) => assert_eq!(got, w, "{:b}", $code),
+            None => assert!(
+                matches!(got, $enum::Reserved(r) if r.get() == $code),
+                "{:b}: {got:?}",
+                $code
+            ),
+        }
+    }};
+}
+
 /// Table 3-28: carrier modulation codes '000'–'011', '100'–'110' reserved,
 /// '111' unused; every 3-bit code round-trips.
 #[test]
 fn spec_table_3_28_modulation_codes() {
-    use ModulationCode::{Assigned, Reserved, Unused};
+    use ModulationCode::{Assigned, Unused};
     for (code, want) in [
-        ("000", Assigned(Modulation::Dqpsk)),
-        ("001", Assigned(Modulation::Qpsk)),
-        ("010", Assigned(Modulation::Qam16)),
-        ("011", Assigned(Modulation::Qam64)),
-        ("100", Reserved(0b100)),
-        ("101", Reserved(0b101)),
-        ("110", Reserved(0b110)),
-        ("111", Unused),
+        ("000", Some(Assigned(Modulation::Dqpsk))),
+        ("001", Some(Assigned(Modulation::Qpsk))),
+        ("010", Some(Assigned(Modulation::Qam16))),
+        ("011", Some(Assigned(Modulation::Qam64))),
+        ("100", None),
+        ("101", None),
+        ("110", None),
+        ("111", Some(Unused)),
     ] {
-        assert_eq!(ModulationCode::from_code(label(code)), want, "{code}");
+        assert_decodes!(ModulationCode, label(code), want);
     }
     for c in 0..=7u8 {
         assert_eq!(ModulationCode::from_code(c).code(), c, "{c:03b}");
@@ -557,18 +573,18 @@ fn spec_table_3_28_modulation_codes() {
 /// unused; every 3-bit code round-trips.
 #[test]
 fn spec_table_3_29_code_rate_codes() {
-    use RateCode::{Assigned, Reserved, Unused};
+    use RateCode::{Assigned, Unused};
     for (code, want) in [
-        ("000", Assigned(CodeRate::R1_2)),
-        ("001", Assigned(CodeRate::R2_3)),
-        ("010", Assigned(CodeRate::R3_4)),
-        ("011", Assigned(CodeRate::R5_6)),
-        ("100", Assigned(CodeRate::R7_8)),
-        ("101", Reserved(0b101)),
-        ("110", Reserved(0b110)),
-        ("111", Unused),
+        ("000", Some(Assigned(CodeRate::R1_2))),
+        ("001", Some(Assigned(CodeRate::R2_3))),
+        ("010", Some(Assigned(CodeRate::R3_4))),
+        ("011", Some(Assigned(CodeRate::R5_6))),
+        ("100", Some(Assigned(CodeRate::R7_8))),
+        ("101", None),
+        ("110", None),
+        ("111", Some(Unused)),
     ] {
-        assert_eq!(RateCode::from_code(label(code)), want, "{code}");
+        assert_decodes!(RateCode, label(code), want);
     }
     for c in 0..=7u8 {
         assert_eq!(RateCode::from_code(c).code(), c, "{c:03b}");
@@ -582,18 +598,18 @@ fn spec_table_3_29_code_rate_codes() {
 /// '111' unused; every 3-bit code round-trips.
 #[test]
 fn spec_table_3_30_interleave_codes() {
-    use InterleaveCode::{Assigned, Reserved, Unused};
+    use InterleaveCode::{Assigned, Unused};
     for (code, want) in [
-        ("000", Assigned(TimeInterleave::K0)),
-        ("001", Assigned(TimeInterleave::K1)),
-        ("010", Assigned(TimeInterleave::K2)),
-        ("011", Assigned(TimeInterleave::K3)),
-        ("100", Reserved(0b100)),
-        ("101", Reserved(0b101)),
-        ("110", Reserved(0b110)),
-        ("111", Unused),
+        ("000", Some(Assigned(TimeInterleave::K0))),
+        ("001", Some(Assigned(TimeInterleave::K1))),
+        ("010", Some(Assigned(TimeInterleave::K2))),
+        ("011", Some(Assigned(TimeInterleave::K3))),
+        ("100", None),
+        ("101", None),
+        ("110", None),
+        ("111", Some(Unused)),
     ] {
-        assert_eq!(InterleaveCode::from_code(label(code)), want, "{code}");
+        assert_decodes!(InterleaveCode, label(code), want);
     }
     // The "Meaning (value I)" column is Table 3-12 / Table 3-2.
     for (t, i) in TimeInterleave::ALL
@@ -618,8 +634,8 @@ fn spec_table_3_30_interleave_codes() {
 /// '0000' and '1110' reserved, '1111' unused; every 4-bit code round-trips.
 #[test]
 fn spec_table_3_31_segment_codes() {
-    use SegmentsCode::{Reserved, Unused};
-    assert_eq!(SegmentsCode::from_code(label("0000")), Reserved(0b0000));
+    use SegmentsCode::Unused;
+    assert_decodes!(SegmentsCode, label("0000"), None);
     for n in Segments::ALL {
         assert_eq!(
             SegmentsCode::from_code(n.get()),
@@ -632,7 +648,7 @@ fn spec_table_3_31_segment_codes() {
         SegmentsCode::from_code(label("1101")),
         SegmentsCode::Segments(Segments::MAX)
     );
-    assert_eq!(SegmentsCode::from_code(label("1110")), Reserved(0b1110));
+    assert_decodes!(SegmentsCode, label("1110"), None);
     assert_eq!(SegmentsCode::from_code(label("1111")), Unused);
     for c in 0..=15u8 {
         assert_eq!(SegmentsCode::from_code(c).code(), c, "{c:04b}");
@@ -643,6 +659,33 @@ fn spec_table_3_31_segment_codes() {
     }
     assert_eq!(TmccLayer::UNUSED.segments, Unused);
     assert!(TmccLayer::UNUSED.is_unused());
+}
+
+/// Tables 3-28..3-31: `from_code` is total and masks to the field width,
+/// so every `u8` decodes to the canonical value of its low bits (the
+/// `Reserved` payloads can only come from `from_code`, so `==` is wire
+/// equality).
+#[test]
+fn prop_layer_codes_from_code_mask_to_width() {
+    for c in 0..=255u8 {
+        assert_eq!(
+            ModulationCode::from_code(c),
+            ModulationCode::from_code(c & 0b111)
+        );
+        assert_eq!(ModulationCode::from_code(c).code(), c & 0b111);
+        assert_eq!(RateCode::from_code(c), RateCode::from_code(c & 0b111));
+        assert_eq!(RateCode::from_code(c).code(), c & 0b111);
+        assert_eq!(
+            InterleaveCode::from_code(c),
+            InterleaveCode::from_code(c & 0b111)
+        );
+        assert_eq!(InterleaveCode::from_code(c).code(), c & 0b111);
+        assert_eq!(
+            SegmentsCode::from_code(c),
+            SegmentsCode::from_code(c & 0b1111)
+        );
+        assert_eq!(SegmentsCode::from_code(c).code(), c & 0b1111);
+    }
 }
 
 /// Tables 3-28..3-31 in `TmccLayer::config`: the unused layer is `None`,
@@ -662,28 +705,28 @@ fn spec_tables_3_28_to_3_31_layer_config() {
     let reserved = [
         (
             TmccLayer {
-                modulation: ModulationCode::Reserved(0b101),
+                modulation: ModulationCode::from_code(0b101),
                 ..coded
             },
             "modulation",
         ),
         (
             TmccLayer {
-                code_rate: RateCode::Reserved(0b110),
+                code_rate: RateCode::from_code(0b110),
                 ..coded
             },
             "code-rate",
         ),
         (
             TmccLayer {
-                interleave: InterleaveCode::Reserved(0b100),
+                interleave: InterleaveCode::from_code(0b100),
                 ..coded
             },
             "interleave",
         ),
         (
             TmccLayer {
-                segments: SegmentsCode::Reserved(0b1110),
+                segments: SegmentsCode::from_code(0b1110),
                 ..coded
             },
             "segment count",
