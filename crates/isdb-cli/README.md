@@ -179,6 +179,11 @@ receiver look-ahead.
 * Status lines every `--status-secs` (1) seconds of signal: lock state,
   mode/GI from TMCC, valid frames, MER per layer, CFO, RS
   clean/corrected/uncorrectable per layer. `--json` prints a summary on stdout.
+  Every `[rx] …` line (and `[symbols]`, `[capture]`) is a `tracing` event:
+  `info` for setup, status and summary lines, `warn` for a loss, a
+  resync, a shortened block or a probe without lock; `--log-level` filters
+  them and `--log-format json` gives their fields (`frames`, `valid`,
+  `losses`, `blocks_lost`, `mer_db`, …).
 * `--system auto|isdbt|isdbs` (auto): ISDB-S for a `BSn` / `NDn`
   channel and for a SigMF recording that is not at 512/63 MHz and whose
   survey finds the ISDB-S symbol rate; ISDB-T otherwise. For ISDB-T a

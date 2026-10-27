@@ -19,6 +19,7 @@ use isdb_frontend::format::{Event, Reader};
 use isdbs3_phy::Cplx;
 use std::io::Read;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use tracing::{info, warn};
 
 /// ISDB-S3 frames buffered before the receiver runs (24 × 33.05 ms ≈
 /// 0.8 s of latency). Each call synchronises, trains the equaliser and
@@ -331,8 +332,12 @@ pub fn run(
                             // nothing found to cut on for several chunks
                             // (lost lock): decode it all and start afresh
                             st.resyncs += 1;
-                            eprintln!(
-                                "[rx] no frame to cut on in {} symbols (lost lock) at symbol {}: decoding them and restarting the stream",
+                            warn!(
+                                target: "isdb::rx",
+                                buffered_symbols = buf.len(),
+                                symbol = st.symbols,
+                                resyncs = st.resyncs,
+                                "no frame to cut on in {} symbols (lost lock) at symbol {}: decoding them and restarting the stream",
                                 buf.len(),
                                 st.symbols
                             );
@@ -356,8 +361,14 @@ pub fn run(
                     // mid-block: nothing was lost from the output yet
                     if started {
                         st.losses += 1;
-                        eprintln!(
-                            "[rx] loss at symbol {}: {blocks} block(s) missing{}, {words} words skipped",
+                        warn!(
+                            target: "isdb::rx",
+                            symbol = st.symbols,
+                            blocks_lost = blocks,
+                            blocks_dropped = dropped,
+                            words_skipped = words,
+                            losses = st.losses,
+                            "loss at symbol {}: {blocks} block(s) missing{}, {words} words skipped",
                             st.symbols,
                             if dropped > 0 {
                                 format!(" ({dropped} dropped here: the receiver fell behind)")
@@ -456,12 +467,21 @@ pub fn start_radio(
         let secs = x.len() as f64 / cap.sample_rate_hz;
         match acquire(&x, cap.sample_rate_hz)? {
             Some((params, what)) => {
-                eprintln!("[rx] acquisition on {secs:.3} s of IQ: {what}");
+                info!(
+                    target: "isdb::rx",
+                    seconds = secs,
+                    attempt,
+                    "acquisition on {secs:.3} s of IQ: {what}"
+                );
                 got = Some(params);
                 break;
             }
-            None => eprintln!(
-                "[rx] acquisition attempt {attempt} of {ACQUIRE_ATTEMPTS} on {secs:.3} s of IQ found no lock; probing again"
+            None => warn!(
+                target: "isdb::rx",
+                seconds = secs,
+                attempt,
+                attempts = ACQUIRE_ATTEMPTS,
+                "acquisition attempt {attempt} of {ACQUIRE_ATTEMPTS} on {secs:.3} s of IQ found no lock; probing again"
             ),
         }
     }
@@ -519,14 +539,16 @@ pub fn finish_radio(
     match stream.thread.join().expect("capture thread") {
         Ok(c) => {
             if c.overflows > 0 {
-                eprintln!(
-                    "[rx] the radio reported {} DMA overflow(s); the words' sequence numbers count what was lost",
+                warn!(
+                    target: "isdb::rx",
+                    overflows = c.overflows,
+                    "the radio reported {} DMA overflow(s); the words' sequence numbers count what was lost",
                     c.overflows
                 );
             }
-            eprintln!("[rx] {}; {}", c.method, c.gain);
+            info!(target: "isdb::rx", "{}; {}", c.method, c.gain);
         }
-        Err(e) => eprintln!("[rx] the capture ended: {e:#}"),
+        Err(e) => warn!(target: "isdb::rx", "the capture ended: {e:#}"),
     }
     secs
 }

@@ -43,6 +43,7 @@ in the same range), and see
 | `--bb-filter-hz HZ` | 6 MHz | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth |
 | `--seconds S` | 0 | bound on signal time; `0` = the whole file, or until Ctrl-C / SIGTERM with `--radio` |
 | `--status-secs S` | 1 | status line interval in seconds of signal (0 = none) |
+| `--log-level L`, `--log-format F` | `info`, `text` | global options, before the subcommand: every `[rx] …` line below is a `tracing` event (`info`: setup, status and summary lines; `warn`: a loss, a resync, a block shortened, a probe without lock, "no ISDB-T signal" diagnoses); `--log-level` or `RUST_LOG=<directive>` filters them, `--log-format json` prints one JSON object per line with the event's fields (`frames`, `valid`, `losses`, `blocks_lost`, `mer_db`, …) |
 
 ## Outputs
 
@@ -248,7 +249,7 @@ receiver" and "Continuous reception through the FPGA front end").
 ## Status lines
 
 ```text
-isdb rx: test.cf32 (Cf32); until end of input
+[rx] test.cf32 (Cf32); until end of input
 [rx]     1.0 s LOCKED    (no frame yet)
 [rx]     2.1 s LOCKED    M3 GI1/8 | frames 1/4 valid | MER A 118.6 B 125.1 dB | CFO +0.000 car | RS clean/corr/uncorr A 64/0/0 B 2592/0/0
 [rx]     3.0 s LOCKED    M3 GI1/8 | frames 5/5 valid | MER A 118.6 B 125.1 dB | CFO +0.000 car | RS clean/corr/uncorr A 320/0/0 B 12960/0/0

@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::{info, warn};
 
 /// Default sample rate from a radio: ≥ (1 + 0.03) × 33.756 Mbaud = 34.8
 /// Msps; 40 Msps is the rate the ISDB-S front end shares (VERIFICATION.md
@@ -406,15 +407,29 @@ pub fn close(asm: BTreeMap<u16, Assembler>, stats: &mut Stats) {
 /// The summary lines printed at the end.
 pub fn report(stats: &Stats, secs: f64) {
     if let Some(w) = stats.words {
-        eprintln!(
-            "[rx] time: {:.2} s for {secs:.3} s of signal ({:.2}× real time, startup included); receiver {:.2} s; at most {:.2} s of symbols queued behind the receiver",
+        info!(
+            target: "isdb::rx",
+            wall_s = stats.wall_s,
+            seconds = secs,
+            speed = secs / stats.wall_s.max(1e-9),
+            back_s = stats.back_s,
+            max_queued_symbols = w.max_queued_symbols,
+            "time: {:.2} s for {secs:.3} s of signal ({:.2}× real time, startup included); receiver {:.2} s; at most {:.2} s of symbols queued behind the receiver",
             stats.wall_s,
             secs / stats.wall_s.max(1e-9),
             stats.back_s,
             w.max_queued_symbols as f64 / isdbs3_phy::frontend::system().symbol_rate_hz
         );
-        eprintln!(
-            "[rx] stream: {} blocks of symbols; {} loss(es) ({} blocks missing, {} of them dropped on the host, {} words skipped), {} resync(s){}: each is a discontinuity in the TLV streams",
+        info!(
+            target: "isdb::rx",
+            blocks = w.blocks,
+            losses = w.losses,
+            blocks_lost = w.blocks_lost,
+            blocks_dropped = w.blocks_dropped,
+            words_skipped = w.words_skipped,
+            resyncs = w.resyncs,
+            stopped = w.stopped,
+            "stream: {} blocks of symbols; {} loss(es) ({} blocks missing, {} of them dropped on the host, {} words skipped), {} resync(s){}: each is a discontinuity in the TLV streams",
             w.blocks,
             w.losses,
             w.blocks_lost,
@@ -427,16 +442,29 @@ pub fn report(stats: &Stats, secs: f64) {
                 ""
             }
         );
-        eprintln!(
-            "[rx] carrier drift tracked in the symbols: {:+.0} Hz at the end ({:+.0} … {:+.0} Hz over the run), on top of the front end's {:+.0} Hz",
+        info!(
+            target: "isdb::rx",
+            tracked_hz = stats.tracked_hz,
+            tracked_min_hz = stats.tracked_range_hz.0,
+            tracked_max_hz = stats.tracked_range_hz.1,
+            carrier_offset_hz = stats.carrier_offset_hz,
+            "carrier drift tracked in the symbols: {:+.0} Hz at the end ({:+.0} … {:+.0} Hz over the run), on top of the front end's {:+.0} Hz",
             stats.tracked_hz,
             stats.tracked_range_hz.0,
             stats.tracked_range_hz.1,
             stats.carrier_offset_hz
         );
     } else if stats.wall_s > 0.0 {
-        eprintln!(
-            "[rx] time: {:.2} s for {secs:.3} s of signal ({:.2}× real time); front end {:.2} s, receiver {:.2} s (overlapping); {} of {} block(s) reused the previous acquisition",
+        info!(
+            target: "isdb::rx",
+            wall_s = stats.wall_s,
+            seconds = secs,
+            speed = secs / stats.wall_s,
+            front_s = stats.front_s,
+            back_s = stats.back_s,
+            reused = stats.reused,
+            blocks = stats.blocks,
+            "time: {:.2} s for {secs:.3} s of signal ({:.2}× real time); front end {:.2} s, receiver {:.2} s (overlapping); {} of {} block(s) reused the previous acquisition",
             stats.wall_s,
             secs / stats.wall_s,
             stats.front_s,
@@ -445,8 +473,21 @@ pub fn report(stats: &Stats, secs: f64) {
             stats.blocks
         );
     }
-    eprintln!(
-        "[rx] done: ISDB-S3, {:.3} s of signal in {} block(s); {} frames, TMCC ok {}; {} slots, LDPC failed {}, BCH failed {} ({} bits corrected), mean {:.2} LDPC iterations; sync Es/N0 {:.1} dB{}; main MER {}",
+    info!(
+        target: "isdb::rx",
+        seconds = secs,
+        blocks = stats.blocks,
+        frames = stats.frames,
+        tmcc_ok = stats.tmcc_ok,
+        slots = stats.slots,
+        ldpc_failed = stats.ldpc_failed,
+        bch_failed = stats.bch_failed,
+        bch_corrected = stats.bch_corrected,
+        ldpc_iterations = stats.ldpc_iterations as f64 / (stats.slots - stats.ldpc_failed).max(1) as f64,
+        sync_snr_db = stats.sync_snr_db,
+        sync_snr_eq_db = stats.sync_snr_eq_db.unwrap_or(f64::NAN),
+        mer_db = stats.mer_db().unwrap_or(f64::NAN),
+        "done: ISDB-S3, {:.3} s of signal in {} block(s); {} frames, TMCC ok {}; {} slots, LDPC failed {}, BCH failed {} ({} bits corrected), mean {:.2} LDPC iterations; sync Es/N0 {:.1} dB{}; main MER {}",
         secs,
         stats.blocks,
         stats.frames,
@@ -476,7 +517,7 @@ pub fn report(stats: &Stats, secs: f64) {
                 ))
             })
             .collect();
-        eprintln!("[rx]   TMCC: {}", modes.join(" + "));
+        info!(target: "isdb::rx", "  TMCC: {}", modes.join(" + "));
     }
     for (id, (a, s, slots)) in &stats.streams {
         let name = if *id == UNUSED_ID {
@@ -500,8 +541,14 @@ pub fn report(stats: &Stats, secs: f64) {
             )
             .collect();
         tables.dedup();
-        eprintln!(
-            "[rx]   {name} ({slots} slots/frame): {} TLV packets ({}); lost slots {}, head-indication mismatches {}; signalling: {}",
+        info!(
+            target: "isdb::rx",
+            stream_id = id,
+            slots,
+            packets = a.packets,
+            lost_slots = a.lost_slots,
+            pointer_mismatches = a.pointer_mismatches,
+            "  {name} ({slots} slots/frame): {} TLV packets ({}); lost slots {}, head-indication mismatches {}; signalling: {}",
             a.packets,
             types.join(", "),
             a.lost_slots,
@@ -514,8 +561,10 @@ pub fn report(stats: &Stats, secs: f64) {
         );
     }
     if stats.blocks > 1 {
-        eprintln!(
-            "[rx]   the {} blocks were captured one after another with gaps between them: each stream is discontinuous at every block boundary",
+        info!(
+            target: "isdb::rx",
+            blocks = stats.blocks,
+            "  the {} blocks were captured one after another with gaps between them: each stream is discontinuous at every block boundary",
             stats.blocks
         );
     }
@@ -658,8 +707,19 @@ pub fn run_stream(
             let secs = w.symbols as f64 / symbol_rate_hz;
             if status && secs >= next_status {
                 next_status = secs.floor() + 1.0;
-                eprintln!(
-                    "[rx] {secs:.2} s of signal after {:.2} s: {} frames, TMCC ok {}; {} slots, LDPC failed {}, BCH failed {}; losses {} ({} blocks); MER {}",
+                info!(
+                    target: "isdb::rx",
+                    seconds = secs,
+                    wall_s = st.wall_s,
+                    frames = st.frames,
+                    tmcc_ok = st.tmcc_ok,
+                    slots = st.slots,
+                    ldpc_failed = st.ldpc_failed,
+                    bch_failed = st.bch_failed,
+                    losses = w.losses,
+                    blocks_lost = w.blocks_lost,
+                    mer_db = st.mer_db().unwrap_or(f64::NAN),
+                    "{secs:.2} s of signal after {:.2} s: {} frames, TMCC ok {}; {} slots, LDPC failed {}, BCH failed {}; losses {} ({} blocks); MER {}",
                     st.wall_s,
                     st.frames,
                     st.tmcc_ok,
@@ -707,8 +767,12 @@ pub fn run_radio_fpga(
     let stream = crate::symstream::start_radio(backend, cfg, rs, &cap_stop, |x, fs| {
         let p = isdbs3_phy::frontend::acquire(x, fs, carrier_offset_hz, Trim::Auto)?;
         if p.sync_snr_db < MIN_ACQUIRE_SNR_DB {
-            eprintln!(
-                "[rx] carrier {:+.0} Hz gives a sync Es/N0 of {:.2} dB, below {MIN_ACQUIRE_SNR_DB} dB: no lock",
+            warn!(
+                target: "isdb::rx",
+                carrier_offset_hz = p.carrier_offset_hz,
+                sync_snr_db = p.sync_snr_db,
+                min_snr_db = MIN_ACQUIRE_SNR_DB,
+                "carrier {:+.0} Hz gives a sync Es/N0 of {:.2} dB, below {MIN_ACQUIRE_SNR_DB} dB: no lock",
                 p.carrier_offset_hz, p.sync_snr_db
             );
             return Ok(None);
@@ -770,7 +834,9 @@ pub fn run_radio(
         args: spec.args.clone(),
         gains: gains.to_vec(),
     };
-    eprintln!(
+    info!(
+        target: "isdb::rx",
+        backend = backend.name(),
         "{} capture settings{}:\n{}",
         backend.name(),
         channel.map(|c| c.label()).unwrap_or_default(),
@@ -785,8 +851,12 @@ pub fn run_radio(
     let want = crate::phyargs::sample_count(block_s, rate);
     let n = want.min(limit);
     if n < want {
-        eprintln!(
-            "[rx] block shortened to {} samples ({:.3} s): {why}",
+        warn!(
+            target: "isdb::rx",
+            samples = n,
+            seconds = n as f64 / rate,
+            wanted = want,
+            "block shortened to {} samples ({:.3} s): {why}",
             n,
             n as f64 / rate
         );
@@ -805,8 +875,10 @@ pub fn run_radio(
                 let mut bytes = Vec::with_capacity(block_bytes);
                 let cap = backend.capture(&cfg, n, &mut bytes, stop)?;
                 if !cap.gaps.is_empty() {
-                    eprintln!(
-                        "[rx] the device lost samples {} time(s) inside this block; decoding its contiguous parts",
+                    warn!(
+                        target: "isdb::rx",
+                        gaps = cap.gaps.len(),
+                        "the device lost samples {} time(s) inside this block; decoding its contiguous parts",
                         cap.gaps.len()
                     );
                 }
@@ -843,8 +915,17 @@ pub fn run_radio(
         |st| {
             secs = st.samples as f64 / rate;
             if status {
-                eprintln!(
-                    "[rx] {secs:.2} s of signal after {:.2} s: block {}; {} frames; {} slots, LDPC failed {}, BCH failed {}; MER {}",
+                info!(
+                    target: "isdb::rx",
+                    seconds = secs,
+                    wall_s = t0.elapsed().as_secs_f64(),
+                    blocks = st.blocks,
+                    frames = st.frames,
+                    slots = st.slots,
+                    ldpc_failed = st.ldpc_failed,
+                    bch_failed = st.bch_failed,
+                    mer_db = st.mer_db().unwrap_or(f64::NAN),
+                    "{secs:.2} s of signal after {:.2} s: block {}; {} frames; {} slots, LDPC failed {}, BCH failed {}; MER {}",
                     t0.elapsed().as_secs_f64(),
                     st.blocks,
                     st.frames,

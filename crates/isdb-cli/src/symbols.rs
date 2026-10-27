@@ -22,6 +22,7 @@ use isdb_radio::{CaptureFormat, DeviceSpec, Offload, RadioConfig};
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use tracing::{info, warn};
 
 /// Which system's symbols to compute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -211,8 +212,12 @@ fn design(
             } else {
                 isdbs_phy::frontend::measure_trim(&xi, &d)?
             };
-            eprintln!(
-                "[symbols] trim {t:+.3} symbol measured on {:.3} s ({} {snr:.2} dB there)",
+            info!(
+                target: "isdb::symbols",
+                trim = t,
+                seconds = n as f64 / fs,
+                snr_db = snr,
+                "trim {t:+.3} symbol measured on {:.3} s ({} {snr:.2} dB there)",
                 n as f64 / fs,
                 if sys.name == KNOWN_SYSTEMS[1].name {
                     "sync-symbol Es/N0"
@@ -380,8 +385,16 @@ pub fn run_iq(a: &IqSymbolsArgs) -> Result<()> {
     let x = rec.read(seg.start, n)?;
     let (sys, cfo) = pick_system(a.fe.system, &x, fs)?;
     let (p, trim) = design(sys, fs, cfo, &a.fe, &x)?;
-    eprintln!(
-        "[symbols] {}: {} samples at {fs:.0} Hz, {} with carrier {cfo:+.0} Hz; {} taps, {} bits, CPU",
+    info!(
+        target: "isdb::symbols",
+        file = %a.file.display(),
+        samples = x.len(),
+        sample_rate_hz = fs,
+        system = sys.name,
+        carrier_hz = cfo,
+        taps = p.taps(),
+        bits = p.bits,
+        "{}: {} samples at {fs:.0} Hz, {} with carrier {cfo:+.0} Hz; {} taps, {} bits, CPU",
         a.file.display(),
         x.len(),
         sys.name,
@@ -487,12 +500,16 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
         _ => None,
     });
     match fpga {
-        Some((v, t)) => {
-            eprintln!("[symbols] the radio offers the symbol front end (format {v}, {t} taps)")
-        }
-        None => {
-            eprintln!("[symbols] the radio offers no symbol front end (this bitstream has none)")
-        }
+        Some((v, t)) => info!(
+            target: "isdb::symbols",
+            format = v,
+            taps = t,
+            "the radio offers the symbol front end (format {v}, {t} taps)"
+        ),
+        None => info!(
+            target: "isdb::symbols",
+            "the radio offers no symbol front end (this bitstream has none)"
+        ),
     }
     if a.probe {
         return Ok(());
@@ -506,7 +523,12 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
                 .contains(&v) =>
         {
             if t != a.fe.taps {
-                eprintln!("[symbols] using the device's {t} taps");
+                info!(
+                    target: "isdb::symbols",
+                    taps = t,
+                    requested_taps = a.fe.taps,
+                    "using the device's {t} taps"
+                );
             }
             true
         }
@@ -531,8 +553,15 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
         fe.taps = fpga.map_or(fe.taps, |(_, t)| t);
     }
     let (p, trim) = design(sys, fs, cfo, &fe, &x)?;
-    eprintln!(
-        "[symbols] {} at {fs:.0} Hz, carrier {cfo:+.0} Hz; {} taps, {} bits per component, on the {}",
+    info!(
+        target: "isdb::symbols",
+        system = sys.name,
+        sample_rate_hz = fs,
+        carrier_hz = cfo,
+        taps = p.taps(),
+        bits = p.bits,
+        fpga = use_fpga,
+        "{} at {fs:.0} Hz, carrier {cfo:+.0} Hz; {} taps, {} bits per component, on the {}",
         sys.name,
         p.taps(),
         p.bits,
@@ -575,8 +604,11 @@ pub fn run(a: &SymbolsArgs) -> Result<()> {
     #[allow(clippy::cast_possible_truncation)]
     let n = ((a.seconds * fs) as u64).min(limit);
     if (n as f64) < a.seconds * fs {
-        eprintln!(
-            "[symbols] the CPU path takes one contiguous capture: {:.3} s here (continuous symbols need the FPGA front end)",
+        warn!(
+            target: "isdb::symbols",
+            seconds = n as f64 / fs,
+            requested_seconds = a.seconds,
+            "the CPU path takes one contiguous capture: {:.3} s here (continuous symbols need the FPGA front end)",
             n as f64 / fs
         );
     }

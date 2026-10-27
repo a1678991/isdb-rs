@@ -16,6 +16,16 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-cli`: the receive side's diagnostics are `tracing` events: `isdb
+  rx` (ISDB-T, ISDB-S, ISDB-S3, the continuous symbol stream), `isdb
+  symbols`, `isdb capture` and the Ctrl-C notice. Setup, status and
+  summary lines are `info` events with the message's numbers as fields
+  (`frames`, `valid`, `seconds`, `losses`, `blocks_lost`, `resyncs`,
+  `mer_db`, `ldpc_failed`, …); a loss, a resync, a DMA overflow, a block
+  shortened or lost samples inside it, a probe without lock and the
+  "no ISDB-T signal" diagnoses are `warn`. The text format is unchanged
+  except that the `isdb rx:` and `isdb:` prefixes are `[rx]` and
+  `[isdb]`.
 - `isdb`: diagnostics are `tracing` events. The global options
   `--log-level` (default `info`; `RUST_LOG` takes an `EnvFilter`
   directive and overrides it) and `--log-format text|json` select what

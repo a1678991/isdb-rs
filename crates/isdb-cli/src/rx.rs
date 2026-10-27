@@ -16,6 +16,7 @@ use isdbt_phy::{PipelinedReceiver, RxFrame};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::{info, warn};
 
 /// Seconds of signal the radio's receive queue holds before the backend
 /// drops buffers (reported as overruns); each backend converts this to
@@ -265,15 +266,20 @@ impl RxStats {
         self.timing_drift = Some(fr.metrics.timing_drift);
     }
 
-    /// Status line over the interval since the previous call.
-    pub fn status_line(&mut self, t: f64, state: RxState) -> String {
-        let iv = self.interval.take().map(|b| *b).unwrap_or_default();
+    /// The statistics of the interval since the previous call (and start
+    /// the next interval).
+    pub fn take_interval(&mut self) -> RxStats {
+        self.interval.take().map(|b| *b).unwrap_or_default()
+    }
+
+    /// Status line over the interval `iv` ([`RxStats::take_interval`]).
+    pub fn status_line(&self, t: f64, state: RxState, iv: &RxStats) -> String {
         let lock = match state {
             RxState::Locked => "LOCKED",
             RxState::Acquiring => "acquiring",
             RxState::Searching => "searching",
         };
-        let mut s = format!("[rx] {t:7.1} s {lock:9}");
+        let mut s = format!("{t:7.1} s {lock:9}");
         let Some(p) = &self.params else {
             return s + " (no frame yet)";
         };
@@ -428,12 +434,17 @@ fn explain_no_signal(path: &str) {
     }
     let s = isdb_iq::survey::survey(&x, rec.sample_rate, &isdb_iq::survey::Options::default());
     match s.system {
-        Some(m) => eprintln!(
-            "[rx] the survey finds {} ({:.0} Bd) in this file: not ISDB-T (see `isdb iq survey`)",
+        Some(m) => warn!(
+            target: "isdb::rx",
+            system = m.system.name,
+            symbol_rate_hz = m.system.symbol_rate_hz,
+            "the survey finds {} ({:.0} Bd) in this file: not ISDB-T (see `isdb iq survey`)",
             m.system.name, m.system.symbol_rate_hz
         ),
-        None => eprintln!(
-            "[rx] the survey finds no known single-carrier system either (power {:.1} dBFS)",
+        None => warn!(
+            target: "isdb::rx",
+            power_dbfs = s.power_dbfs,
+            "the survey finds no known single-carrier system either (power {:.1} dBFS)",
             s.power_dbfs
         ),
     }
@@ -609,7 +620,20 @@ pub fn receive(
             while next_status <= t {
                 next_status += status_secs;
             }
-            eprintln!("{}{}", stats.status_line(t, prx.state()), src.status());
+            let state = prx.state();
+            let iv = stats.take_interval();
+            info!(
+                target: "isdb::rx",
+                seconds = t,
+                state = ?state,
+                frames = iv.frames,
+                valid = iv.valid,
+                tmcc_failed = iv.tmcc_failed,
+                cfo = iv.cfo.unwrap_or(f64::NAN),
+                "{}{}",
+                stats.status_line(t, state, &iv),
+                src.status()
+            );
         }
         if max_samples.is_some_and(|m| samples >= m) {
             break;
@@ -656,7 +680,9 @@ pub fn run(a: RxArgs) -> Result<()> {
         let backend = isdb_radio::backend(&spec.backend)?;
         let (cfg, tuning) = a.tune.radio_config(spec, &a.gain)?;
         let settings = backend.describe_rx(&cfg)?;
-        eprintln!(
+        info!(
+            target: "isdb::rx",
+            backend = backend.name(),
             "{} RX settings{}:\n{settings}",
             backend.name(),
             tuning.channel_label()
@@ -665,7 +691,7 @@ pub fn run(a: RxArgs) -> Result<()> {
             queue_seconds: RX_QUEUE_SECONDS,
         };
         let (src, info) = backend.open_rx(&cfg, &opts)?;
-        eprintln!("  opened: {info}");
+        info!(target: "isdb::rx", "opened: {info}");
         (
             src,
             format!(
@@ -682,8 +708,11 @@ pub fn run(a: RxArgs) -> Result<()> {
             format!("{path} ({format:?})"),
         )
     };
-    eprintln!(
-        "isdb rx: {input_desc}; {}",
+    info!(
+        target: "isdb::rx",
+        input = input_desc,
+        seconds = seconds,
+        "{input_desc}; {}",
         match max_samples {
             Some(_) => format!("for {seconds} s"),
             None if a.radio.is_some() => "unbounded; stop with Ctrl-C".into(),
@@ -709,8 +738,15 @@ pub fn run(a: RxArgs) -> Result<()> {
     let samples = res?;
     let fin = fin?;
     let secs = samples as f64 / fs;
-    eprintln!(
-        "[rx] done: {:.2} s of signal, {} frames ({} valid){}",
+    info!(
+        target: "isdb::rx",
+        seconds = secs,
+        samples,
+        frames = stats.frames,
+        valid = stats.valid,
+        tmcc_failed = stats.tmcc_failed,
+        signal = stats.params.is_some(),
+        "done: {:.2} s of signal, {} frames ({} valid){}",
         secs,
         stats.frames,
         stats.valid,
@@ -730,8 +766,16 @@ pub fn run(a: RxArgs) -> Result<()> {
     if let Some(p) = &stats.params {
         for (id, _) in p.active_layers() {
             let l = &stats.layers[id.index()];
-            eprintln!(
-                "[rx]   layer {id}: {} packets; RS clean {} corrected {} ({} bytes) uncorrectable {}; MER mean {}",
+            info!(
+                target: "isdb::rx",
+                layer = %id,
+                packets = l.packets,
+                clean = l.clean,
+                corrected_packets = l.corrected_packets,
+                corrected_bytes = l.corrected_bytes,
+                uncorrectable = l.uncorrectable,
+                mer_db = l.mer_mean().unwrap_or(f64::NAN),
+                "  layer {id}: {} packets; RS clean {} corrected {} ({} bytes) uncorrectable {}; MER mean {}",
                 l.packets,
                 l.clean,
                 l.corrected_packets,
@@ -742,7 +786,7 @@ pub fn run(a: RxArgs) -> Result<()> {
         }
     }
     if !fin.is_empty() {
-        eprintln!("[rx] {fin}");
+        info!(target: "isdb::rx", "{fin}");
     }
     if a.json {
         let mut j = stats.json();
@@ -831,7 +875,7 @@ fn run_isdbs(a: RxArgs) -> Result<()> {
     let mut out = crate::rxs::Outputs::new(a.out.as_deref(), &a.ts_id, a.strip_nulls)?;
     let mut stats = crate::rxs::Stats::default();
     let (secs, input) = if let Some(p) = &a.symbols {
-        eprintln!("isdb rx: ISDB-S from the Symbols words of {p}");
+        info!(target: "isdb::rx", input = p, "ISDB-S from the Symbols words of {p}");
         let rs = isdbs_phy::frontend::system().symbol_rate_hz;
         stats.symbol_rate_hz = rs;
         let s = crate::rxs::run_stream(
@@ -858,8 +902,13 @@ fn run_isdbs(a: RxArgs) -> Result<()> {
         }
         let rate = a.rate.unwrap_or(crate::rxs::DEFAULT_RATE);
         let bw = a.bw.unwrap_or(crate::rxs::DEFAULT_BW);
-        eprintln!(
-            "isdb rx: ISDB-S from radio {spec}{} at {:.3} MHz, {:.2} Msps; {}",
+        info!(
+            target: "isdb::rx",
+            radio = %spec,
+            center_hz = hz,
+            sample_rate_hz = rate,
+            seconds,
+            "ISDB-S from radio {spec}{} at {:.3} MHz, {:.2} Msps; {}",
             channel.map(|c| c.label()).unwrap_or_default(),
             hz as f64 / 1e6,
             rate / 1e6,
@@ -885,7 +934,7 @@ fn run_isdbs(a: RxArgs) -> Result<()> {
                     "--block-seconds: the FPGA front end streams continuously (--offload cpu for blocks)"
                 );
             }
-            eprintln!("[rx] the radio's FPGA front end ({taps} taps): continuous reception");
+            info!(target: "isdb::rx", taps, "the radio's FPGA front end ({taps} taps): continuous reception");
             crate::rxs::run_radio_fpga(
                 backend,
                 &cfg,
@@ -931,7 +980,7 @@ fn run_isdbs(a: RxArgs) -> Result<()> {
                 .unwrap_or(0.0);
             crate::phyargs::sample_count(seconds, fs)
         });
-        eprintln!("isdb rx: ISDB-S from {p}");
+        info!(target: "isdb::rx", input = p, "ISDB-S from {p}");
         let s = crate::rxs::run_file(p, max, a.carrier_offset, &mut out, &mut stats)?;
         (s, p.to_string())
     };
@@ -971,7 +1020,7 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
     let mut stats = crate::rxs3::Stats::default();
     stats.ldpc = a.ldpc.ldpc();
     let (secs, input) = if let Some(p) = &a.symbols {
-        eprintln!("isdb rx: ISDB-S3 from the Symbols words of {p}");
+        info!(target: "isdb::rx", input = p, "ISDB-S3 from the Symbols words of {p}");
         let rs = isdbs3_phy::frontend::system().symbol_rate_hz;
         let s = crate::rxs3::run_stream(
             crate::symstream::file_bytes(std::path::Path::new(p))?,
@@ -997,8 +1046,13 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
         }
         let rate = a.rate.unwrap_or(crate::rxs3::DEFAULT_RATE);
         let bw = a.bw.unwrap_or(crate::rxs3::DEFAULT_BW);
-        eprintln!(
-            "isdb rx: ISDB-S3 from radio {spec}{} at {:.3} MHz, {:.2} Msps; {}",
+        info!(
+            target: "isdb::rx",
+            radio = %spec,
+            center_hz = hz,
+            sample_rate_hz = rate,
+            seconds,
+            "ISDB-S3 from radio {spec}{} at {:.3} MHz, {:.2} Msps; {}",
             channel.map(|c| c.label()).unwrap_or_default(),
             hz as f64 / 1e6,
             rate / 1e6,
@@ -1024,7 +1078,7 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
                     "--block-seconds: the FPGA front end streams continuously (--offload cpu for blocks)"
                 );
             }
-            eprintln!("[rx] the radio's FPGA front end ({taps} taps): continuous reception");
+            info!(target: "isdb::rx", taps, "the radio's FPGA front end ({taps} taps): continuous reception");
             crate::rxs3::run_radio_fpga(
                 backend,
                 &cfg,
@@ -1070,7 +1124,7 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
                 .unwrap_or(0.0);
             crate::phyargs::sample_count(seconds, fs)
         });
-        eprintln!("isdb rx: ISDB-S3 from {p}");
+        info!(target: "isdb::rx", input = p, "ISDB-S3 from {p}");
         let s = crate::rxs3::run_file(p, max, a.carrier_offset, &mut out, &mut stats)?;
         (s, p.to_string())
     };
