@@ -528,7 +528,7 @@ pub(crate) mod tests {
         p.extend(0u32.to_be_bytes());
         p.extend([0, 0]);
         p.extend(data);
-        let len = (p.len() - 2) as u16;
+        let len = u16::try_from(p.len() - 2).unwrap();
         p[..2].copy_from_slice(&len.to_be_bytes());
         p
     }
@@ -657,13 +657,15 @@ pub(crate) mod tests {
             let mut seq = 0u32;
             let mut want = Vec::new();
             for (i, n) in sizes.iter().enumerate() {
-                let data: Vec<u8> = (0..*n).map(|k| (k + i) as u8).collect();
+                let data: Vec<u8> = (0..=u8::MAX).cycle().skip(i).take(*n).collect();
                 let pieces: Vec<&[u8]> = data.chunks(cut).collect();
                 let m = pieces.len();
                 for (j, piece) in pieces.iter().enumerate() {
                     let frag = if m == 1 { Complete } else if j == 0 { Head } else if j == m - 1 { Last } else { Middle };
                     seq += 1;
-                    r.push(&header(1, seq), &payload(frag, (m - 1 - j) as u8, 0, i as u32, piece), &mut out);
+                    // the fragment counter is 8 bits on the wire and wraps
+                    let counter = u8::try_from((m - 1 - j) % 256).unwrap();
+                    r.push(&header(1, seq), &payload(frag, counter, 0, u32::try_from(i).unwrap(), piece), &mut out);
                 }
                 want.push(data);
             }

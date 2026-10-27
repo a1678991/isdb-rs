@@ -2,6 +2,9 @@
 //! item 2): `decode(encode(x)) == x` for generated values and
 //! `encode(decode(b)) == b` for every byte string a decoder accepts.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_ts::Pid;
 use isdb_ts::cc::{ContinuityCounter, Counter};
 use isdb_ts::demux::{Assembled, SectionAssembler};
@@ -126,7 +129,8 @@ fn packet() -> impl Strategy<Value = Packet> {
                     (Some(_), false) => AdaptationFieldControl::AdaptationAndPayload,
                 };
                 let payload: Vec<u8> = (0..184usize.saturating_sub(af_len))
-                    .map(|i| (seed >> (i % 57)) as u8 ^ i as u8)
+                    .zip((0..=u8::MAX).cycle())
+                    .map(|(i, k)| (seed >> (i % 57)).to_le_bytes()[0] ^ k)
                     .collect();
                 Packet {
                     header: Header {
@@ -439,7 +443,7 @@ proptest! {
     #[test]
     fn prop_pes_bytes_lossless(id in 0xBCu8..=0xFF, body in vec(any::<u8>(), 0..300)) {
         let mut b = vec![0, 0, 1, id, 0, 0];
-        let len = body.len() as u16;
+        let len = u16::try_from(body.len()).unwrap();
         b[4..6].copy_from_slice(&len.to_be_bytes());
         b.extend_from_slice(&body);
         if let Ok(p) = PesPacket::decode(&b) {

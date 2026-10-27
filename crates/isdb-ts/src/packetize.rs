@@ -55,7 +55,14 @@ pub fn packetize_sections(
         let starts_here = idx < sections.len()
             && (cur.is_empty() || (packing == Packing::Packed && cur.len() < PAYLOAD_CAPACITY - 1));
         if starts_here {
-            payload.push(cur.len() as u8); // pointer_field
+            // pointer_field (8 bits): `cur` is empty or, packed, shorter than
+            // PAYLOAD_CAPACITY - 1 by the condition above, so this cannot fail.
+            let pointer_field = u8::try_from(cur.len()).map_err(|_| Error::Overflow {
+                what: "pointer_field",
+                value: cur.len() as u64,
+                bits: 8,
+            })?;
+            payload.push(pointer_field);
             payload.extend_from_slice(cur);
             cur = &[];
             loop {
@@ -96,7 +103,9 @@ mod tests {
     use crate::section::{LongHeader, build_long};
 
     fn sec(tid: u8, n: usize) -> Vec<u8> {
-        let body: Vec<u8> = (0..n).map(|i| (i * 13 + tid as usize) as u8).collect();
+        let body: Vec<u8> = std::iter::successors(Some(tid), |b| Some(b.wrapping_add(13)))
+            .take(n)
+            .collect();
         build_long(&LongHeader::new(tid, 7, 1), &body).unwrap()
     }
 

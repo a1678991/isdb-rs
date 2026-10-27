@@ -19,6 +19,8 @@
 //! (SPEC-NOTES.md). Scrambled payloads (ACAS) are recognised and counted;
 //! they are never descrambled (project policy).
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
 pub mod decoder;
 pub mod desc;
 pub mod es;

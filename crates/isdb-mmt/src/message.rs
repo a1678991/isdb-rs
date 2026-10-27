@@ -223,7 +223,7 @@ mod tests {
 
     fn m2(section: &[u8]) -> Vec<u8> {
         let mut m = vec![0x80, 0x00, 0x00];
-        m.extend((section.len() as u16).to_be_bytes());
+        m.extend(u16::try_from(section.len()).unwrap().to_be_bytes());
         m.extend(section);
         m
     }
@@ -259,7 +259,7 @@ mod tests {
         let b = m2(&[0x02; 5]);
         let mut p = vec![0x3D, 0x00];
         for m in [&a, &b] {
-            p.extend((m.len() as u16).to_be_bytes());
+            p.extend(u16::try_from(m.len()).unwrap().to_be_bytes());
             p.extend(m);
         }
         let mut out = Vec::new();
@@ -271,7 +271,7 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn prop_any_division_reassembles(len in 1usize..3000, cuts in proptest::collection::vec(1usize..400, 0..12)) {
-            let section: Vec<u8> = (0..len).map(|i| (i * 7) as u8).collect();
+            let section: Vec<u8> = std::iter::successors(Some(0u8), |b| Some(b.wrapping_add(7))).take(len).collect();
             let msg = m2(&section);
             let mut pieces = Vec::new();
             let mut p = 0;
@@ -286,7 +286,7 @@ mod tests {
             let mut out = Vec::new();
             for (i, piece) in pieces.iter().enumerate() {
                 let div = if n == 1 { 0 } else if i == 0 { 1 } else if i == n - 1 { 3 } else { 2 };
-                let hdr = [(div << 6) | 0x3C, (n - 1 - i) as u8];
+                let hdr = [(div << 6) | 0x3C, u8::try_from(n - 1 - i).unwrap()];
                 r.push(0x8000, &[hdr.as_slice(), piece].concat(), false, &mut out);
             }
             proptest::prop_assert_eq!(out.len(), 1);

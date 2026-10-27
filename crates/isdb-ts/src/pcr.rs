@@ -69,8 +69,8 @@ impl Pcr {
     pub fn decode(b: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(b, "program_clock_reference");
         let base = r.read(33)?;
-        let reserved = r.read(6)? as u8;
-        let extension = r.read(9)? as u16;
+        let reserved = r.read_u8(6)?;
+        let extension = r.read_u16(9)?;
         Ok(Self {
             base,
             reserved,
@@ -181,17 +181,17 @@ impl Timestamp {
 
     /// Read the 40-bit field.
     pub fn read(r: &mut BitReader<'_>) -> Result<Self> {
-        let prefix = r.read(4)? as u8;
+        let prefix = r.read_u8(4)?;
         let hi = r.read(3)?;
-        let m0 = r.read(1)?;
+        let m0 = r.read_u8(1)?;
         let mid = r.read(15)?;
-        let m1 = r.read(1)?;
+        let m1 = r.read_u8(1)?;
         let lo = r.read(15)?;
-        let m2 = r.read(1)?;
+        let m2 = r.read_u8(1)?;
         Ok(Self {
             prefix,
             value: (hi << 30) | (mid << 15) | lo,
-            markers: ((m0 << 2) | (m1 << 1) | m2) as u8,
+            markers: (m0 << 2) | (m1 << 1) | m2,
         })
     }
 

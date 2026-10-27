@@ -18,6 +18,9 @@
 //! PES packet on the PMT's elementary PIDs that carry no scrambled packet
 //! decodes and re-encodes byte-identically.  Spec-rule violations are printed, not asserted.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -63,7 +66,10 @@ fn capture_round_trips() {
     );
     assert_eq!(rs.sync_losses, 0);
     assert_eq!(rs.skipped_bytes, 0);
-    assert_eq!(packets.len() * 188 + rs.trailing_bytes as usize, data.len());
+    assert_eq!(
+        packets.len() * 188 + usize::try_from(rs.trailing_bytes).unwrap(),
+        data.len()
+    );
 
     // 1. Packet codec is lossless over the whole capture.
     let mut stats = Stats::new();

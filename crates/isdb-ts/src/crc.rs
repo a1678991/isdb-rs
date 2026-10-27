@@ -11,9 +11,9 @@ pub const POLY: u32 = 0x04C1_1DB7;
 
 const fn table() -> [u32; 256] {
     let mut t = [0u32; 256];
-    let mut i = 0;
+    let mut i: u32 = 0;
     while i < 256 {
-        let mut c = (i as u32) << 24;
+        let mut c = i << 24;
         let mut k = 0;
         while k < 8 {
             c = if c & 0x8000_0000 != 0 {
@@ -23,7 +23,7 @@ const fn table() -> [u32; 256] {
             };
             k += 1;
         }
-        t[i] = c;
+        t[i as usize] = c;
         i += 1;
     }
     t

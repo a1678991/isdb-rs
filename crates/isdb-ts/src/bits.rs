@@ -119,7 +119,7 @@ impl<'a> BitReader<'a> {
 
     /// Read a 13-bit PID field (H.222.0 Table 2-3).
     pub fn pid(&mut self) -> Result<Pid> {
-        Ok(Pid::from_wire(self.read(13)? as u16))
+        Ok(Pid::from_wire(self.read_u16(13)?))
     }
 
     /// Take `n` whole bytes; the reader must be byte aligned.

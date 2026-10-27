@@ -395,14 +395,17 @@ mod tests {
 
     fn stream(n: usize, fmt: PacketFormat) -> Vec<u8> {
         let mut v = Vec::new();
-        for i in 0..n {
+        // `b` is the low byte of the packet index `i`.
+        for (i, b) in (0..n).zip((0..=u8::MAX).cycle()) {
             // payload with occasional sync-byte emulation
-            let mut payload: Vec<u8> = (0..184).map(|k| (k * 3 + i) as u8).collect();
-            payload[0] = i as u8;
+            let mut payload: Vec<u8> = std::iter::successors(Some(b), |x| Some(x.wrapping_add(3)))
+                .take(184)
+                .collect();
+            payload[0] = b;
             let p = Packet::with_payload(
-                Pid::new(0x100 + i as u16).unwrap(),
+                Pid::new(0x100 + u16::try_from(i).unwrap()).unwrap(),
                 false,
-                ContinuityCounter::from_wire(i as u8),
+                ContinuityCounter::from_wire(b),
                 &payload,
             )
             .unwrap()
@@ -411,7 +414,7 @@ mod tests {
             match fmt {
                 PacketFormat::Ts188 => v.extend_from_slice(&p),
                 PacketFormat::Ts192 => {
-                    v.extend_from_slice(&(i as u32).to_be_bytes());
+                    v.extend_from_slice(&u32::try_from(i).unwrap().to_be_bytes());
                     v.extend_from_slice(&p);
                 }
                 PacketFormat::Ts204 => {

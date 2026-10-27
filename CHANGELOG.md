@@ -407,6 +407,13 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `clippy::cast_possible_truncation` is on (`#![warn]`) in `isdb-ts` and
+  `isdb-mmt` (`docs/plans/type-safety.md` §2), with no new `#[allow]`:
+  the codec field reads go through `BitReader::read_u8/u16/u32/usize`,
+  the length fields of `Descriptor::encode`, `PesPacket::encode` and
+  `packetize_sections` are `try_from` into the `Error::Overflow` they
+  already returned, and `isdb_mmt::es::loas_frame` takes its 13-bit
+  length from `u16::to_be_bytes`. No public signature changed.
 - The reserved payloads of the lossless coded enums are canonical by
   construction (`docs/plans/type-safety.md` §3 H1): `Reserved(u8)` /
   `UserDefined(u8)` become `Reserved(ReservedCode)` /

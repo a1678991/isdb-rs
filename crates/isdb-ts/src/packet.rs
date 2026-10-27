@@ -394,19 +394,19 @@ impl AdaptationFieldExtension {
         let ltw_flag = r.bool()?;
         let pw_flag = r.bool()?;
         let ss_flag = r.bool()?;
-        let reserved = r.read(5)? as u8;
+        let reserved = r.read_u8(5)?;
         let ltw = if ltw_flag {
             Some(Ltw {
                 valid: r.bool()?,
-                offset: r.read(15)? as u16,
+                offset: r.read_u16(15)?,
             })
         } else {
             None
         };
         let piecewise_rate = if pw_flag {
             Some(PiecewiseRate {
-                reserved: r.read(2)? as u8,
-                rate: r.read(22)? as u32,
+                reserved: r.read_u8(2)?,
+                rate: r.read_u32(22)?,
             })
         } else {
             None
