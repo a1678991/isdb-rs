@@ -9,6 +9,8 @@
 //! `rate_check = "warn"`, late PES and a run-time alert; a layer that
 //! carries the need relays without a late PES.
 
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 
 use common::{bench_params, synth_audio, tmpdir};
@@ -25,9 +27,9 @@ fn video(divisors: &[usize]) -> Vec<u8> {
         v.extend_from_slice(&[0, 0, 1, 0xB3]);
         let (w, h): (u32, u32) = (1440, 1080);
         v.extend_from_slice(&[
-            (w >> 4) as u8,
-            ((w & 0xF) << 4 | h >> 8) as u8,
-            h as u8,
+            u8::try_from(w >> 4).unwrap(),
+            u8::try_from((w & 0xF) << 4 | h >> 8).unwrap(),
+            (h & 0xFF) as u8,
             0x34,
         ]);
         let br = 30_000u32; // × 400 = 12 Mbit/s
@@ -105,7 +107,7 @@ pcr_pid = 0x01FF
     let p = bench_params();
     let mut mux = Multiplexer::new(&cfg, &p, dir).unwrap();
     let mut out = Vec::new();
-    for _ in 0..(8.6 / p.frame_seconds()).ceil() as usize {
+    for _ in 0..common::count((8.6 / p.frame_seconds()).ceil()) {
         let (full, _) = mux.next_frame_full();
         for pk in full {
             out.extend_from_slice(&pk);

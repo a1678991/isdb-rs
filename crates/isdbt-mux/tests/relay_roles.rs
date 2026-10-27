@@ -10,6 +10,8 @@
 //! injected into null slots — synchronous PES (stream_id 0xBD, PTS) and
 //! asynchronous PES (0xBF, no PTS) — and a carousel.
 
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 
 use common::{bench_params, synth_audio, synth_video, tmpdir};
@@ -36,8 +38,9 @@ fn payload(p: &Packet) -> &[u8] {
 fn private_pes(pid: u16, cc: u8, pts: Option<u64>, n: u32) -> Packet {
     let mut p = [0xFFu8; 188];
     p[0] = 0x47;
-    p[1] = 0x40 | (pid >> 8) as u8;
-    p[2] = pid as u8;
+    let [hi, lo] = pid.to_be_bytes();
+    p[1] = 0x40 | hi;
+    p[2] = lo;
     p[3] = 0x10 | (cc & 0x0F);
     let pes = &mut p[4..];
     pes[..3].copy_from_slice(&[0, 0, 1]);
@@ -48,10 +51,10 @@ fn private_pes(pid: u16, cc: u8, pts: Option<u64>, n: u32) -> Packet {
             pes[6..9].copy_from_slice(&[0x80, 0x80, 5]);
             let v = v % BASE_MODULUS;
             pes[9] = 0x21 | (((v >> 30) as u8 & 7) << 1);
-            pes[10] = (v >> 22) as u8;
-            pes[11] = 0x01 | ((v >> 15) as u8) << 1;
-            pes[12] = (v >> 7) as u8;
-            pes[13] = 0x01 | (v as u8) << 1;
+            pes[10] = ((v >> 22) & 0xFF) as u8;
+            pes[11] = 0x01 | (((v >> 15) & 0x7F) as u8) << 1;
+            pes[12] = ((v >> 7) & 0xFF) as u8;
+            pes[13] = 0x01 | ((v & 0x7F) as u8) << 1;
             14
         }
         None => {
@@ -94,7 +97,7 @@ start = "2026-01-01T11:59:50"
     let cfg = Config::from_toml(&text).unwrap();
     let p = bench_params();
     let mut mux = Multiplexer::new(&cfg, &p, dir).unwrap();
-    let frames = (seconds / p.frame_seconds()).ceil() as u64;
+    let frames = common::count((seconds / p.frame_seconds()).ceil()) as u64;
     let mut out = Vec::new();
     let mut next = vec![0u64; inject.len()];
     let mut cc = vec![0u8; inject.len()];
@@ -245,7 +248,7 @@ fn roles_and_pid_plan_on_permuted_pids() {
         assert!(notes.contains(want), "missing {want:?} in\n{notes}");
     }
     let mut out = Vec::new();
-    for _ in 0..(8.0 / p.frame_seconds()) as usize {
+    for _ in 0..common::count(8.0 / p.frame_seconds()) {
         if mux.relays_finished() {
             break;
         }

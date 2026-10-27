@@ -1,4 +1,5 @@
 #![allow(dead_code, missing_docs)]
+#![warn(clippy::cast_possible_truncation)]
 
 use std::path::PathBuf;
 
@@ -6,6 +7,14 @@ use isdbt_core::{
     CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };
 use isdbt_mux::Config;
+
+/// `x` (a frame or packet count computed in f64) truncated toward zero.
+pub fn count(x: f64) -> usize {
+    // f64 -> usize saturates; the tests count at most a few thousand frames.
+    #[allow(clippy::cast_possible_truncation)]
+    let n = x as usize;
+    n
+}
 
 /// Bench parameters: Mode 3, GI 1/8, partial reception, A = 1 seg QPSK 2/3,
 /// B = 12 seg 64QAM 3/4 (the `isdb tx` defaults).
@@ -42,9 +51,9 @@ pub fn synth_video(gops: usize) -> Vec<u8> {
         v.extend_from_slice(&[0, 0, 1, 0xB3]);
         let (w, h): (u32, u32) = (1440, 1080);
         v.extend_from_slice(&[
-            (w >> 4) as u8,
-            ((w & 0xF) << 4 | h >> 8) as u8,
-            h as u8,
+            u8::try_from(w >> 4).unwrap(),
+            u8::try_from((w & 0xF) << 4 | h >> 8).unwrap(),
+            (h & 0xFF) as u8,
             0x34,
         ]);
         let br = 12_500u32; // ×400 = 5 Mbit/s

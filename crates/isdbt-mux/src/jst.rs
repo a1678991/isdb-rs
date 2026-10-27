@@ -28,7 +28,7 @@ pub fn to_datetime(t: JstSeconds) -> Option<DateTime> {
     let date = mjd_to_date(mjd)?;
     Some(DateTime {
         date,
-        hour: (secs / 3600) as u8,
+        hour: u8::try_from(secs / 3600).ok()?, // secs < 86 400
         minute: (secs / 60 % 60) as u8,
         second: (secs % 60) as u8,
     })
@@ -68,16 +68,18 @@ pub fn parse(s: &str) -> Result<JstSeconds> {
     {
         return Err(bad());
     }
-    let num = |r: std::ops::Range<usize>| s[r].parse::<u32>().map_err(|_| bad());
+    let year = s[0..4].parse::<u32>().map_err(|_| bad())?;
+    // two decimal digits always fit a u8
+    let num = |r: std::ops::Range<usize>| s[r].parse::<u8>().map_err(|_| bad());
     let dt = DateTime {
         date: Date {
-            year: num(0..4)? as i32,
-            month: num(5..7)? as u8,
-            day: num(8..10)? as u8,
+            year: year as i32,
+            month: num(5..7)?,
+            day: num(8..10)?,
         },
-        hour: num(11..13)? as u8,
-        minute: num(14..16)? as u8,
-        second: num(17..19)? as u8,
+        hour: num(11..13)?,
+        minute: num(14..16)?,
+        second: num(17..19)?,
     };
     if dt.date.month == 0
         || dt.date.month > 12
@@ -134,14 +136,11 @@ pub fn parse_hm(s: &str) -> Result<(u8, u8)> {
 
 /// BCD duration of `secs` (B10 §5.2.7 "6 digits, 4-bit BCD").
 pub fn bcd_duration(secs: u32) -> Result<BcdDuration> {
-    let h = secs / 3600;
-    if h > 99 {
-        return Err(MuxError::Config(format!(
-            "duration {secs}s exceeds 99:59:59"
-        )));
-    }
-    BcdDuration::from_hms(h as u8, (secs / 60 % 60) as u8, (secs % 60) as u8)
-        .map_err(MuxError::Encode)
+    let h = u8::try_from(secs / 3600)
+        .ok()
+        .filter(|&h| h <= 99)
+        .ok_or_else(|| MuxError::Config(format!("duration {secs}s exceeds 99:59:59")))?;
+    BcdDuration::from_hms(h, (secs / 60 % 60) as u8, (secs % 60) as u8).map_err(MuxError::Encode)
 }
 
 #[cfg(test)]

@@ -20,6 +20,8 @@
 //! pictures are shown longer (their PTS stretched) and audio frames are
 //! repeated.
 
+use crate::float;
+
 /// Play rates offered by [`next_rate`]: slow motion, normal, fast.
 pub const RATES: &[f64] = &[0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 8.0, 16.0];
 
@@ -46,7 +48,7 @@ impl Seg {
         if self.rate == 1.0 {
             self.o0 + (c - self.c0)
         } else {
-            self.o0 + ((c - self.c0) as f64 / self.rate).round() as i64
+            self.o0 + float::to_i64(((c - self.c0) as f64 / self.rate).round())
         }
     }
 
@@ -54,7 +56,7 @@ impl Seg {
         if self.rate == 1.0 {
             self.c0 + (o - self.o0)
         } else {
-            self.c0 + ((o - self.o0) as f64 * self.rate).round() as i64
+            self.c0 + float::to_i64(((o - self.o0) as f64 * self.rate).round())
         }
     }
 }
@@ -277,7 +279,7 @@ impl PlaybackStatus {
     pub fn describe(&self) -> String {
         let mmss = |s: f64| {
             let s = s.max(0.0);
-            format!("{:02}:{:04.1}", (s / 60.0) as u64, s % 60.0)
+            format!("{:02}:{:04.1}", float::to_u64(s / 60.0), s % 60.0)
         };
         format!(
             "{} {} / {}{}",

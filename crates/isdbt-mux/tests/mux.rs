@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+#![warn(clippy::cast_possible_truncation)]
 
 mod common;
 
@@ -194,7 +195,7 @@ fn pcr_and_timestamps() {
                 .iter()
                 .map(|&(i, _, _)| {
                     let f = i / n;
-                    let j = (i % n) as usize;
+                    let j = usize::try_from(i % n).unwrap();
                     f * a_count + slots[..j].iter().filter(|s| **s == Some(Layer::A)).count() as u64
                 })
                 .collect();
@@ -488,7 +489,7 @@ fn derived_nit_values() {
             isdb_si::Descriptor::TerrestrialDeliverySystem(t) => {
                 assert_eq!(t.guard_interval, 0b10); // 1/8 (B10 Table 6-62)
                 assert_eq!(t.transmission_mode, 0b10); // Mode 3 (Table 6-63)
-                assert_eq!(t.frequencies, vec![(557 * 7 + 1) as u16]); // ch 27 = 557 1/7 MHz
+                assert_eq!(t.frequencies, vec![557u16 * 7 + 1]); // ch 27 = 557 1/7 MHz
                 assert_eq!(t.area_code, 0x5A5);
                 found += 1;
             }

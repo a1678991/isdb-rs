@@ -27,6 +27,8 @@ use std::collections::VecDeque;
 use isdb_ts::packet::View;
 use isdb_ts::pcr::{pcr_signed_diff, pcr_wrap_diff};
 
+use crate::float;
+
 /// System clock frequency (H.222.0 §2.4.2.1), Hz.
 pub const HZ: u64 = 27_000_000;
 /// Largest PCR step taken as continuous: H.222.0 §2.7.2 requires PCRs at
@@ -188,7 +190,7 @@ impl<T> PcrClock<T> {
                     a.t + d
                 } else {
                     self.stats.discontinuities += 1;
-                    a.t + (n as f64 * self.ticks_per_packet).round().max(1.0) as u64
+                    a.t + float::to_u64((n as f64 * self.ticks_per_packet).round().max(1.0))
                 };
                 for (i, (anc, it)) in self.pending.drain(..).enumerate() {
                     let k = i as u64 + 1;
@@ -216,7 +218,7 @@ impl<T> PcrClock<T> {
         self.stats.extrapolated += pending.len() as u64;
         let mut last = base;
         for (i, (anc, it)) in pending.into_iter().enumerate() {
-            last = base + ((i as f64 + 1.0) * self.ticks_per_packet).round() as u64;
+            last = base + float::to_u64(((i as f64 + 1.0) * self.ticks_per_packet).round());
             self.ready.push_back(Timed {
                 t: last,
                 anchor: anc,

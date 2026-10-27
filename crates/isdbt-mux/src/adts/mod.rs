@@ -194,7 +194,7 @@ impl AdtsHeader {
                 | u8::from(self.copyright_identification_bit) << 3
                 | u8::from(self.copyright_identification_start) << 2
                 | (l >> 11) as u8,
-            (l >> 3) as u8,
+            ((l >> 3) & 0xFF) as u8,
             ((l & 7) as u8) << 5 | (f >> 6) as u8,
             ((f & 0x3F) as u8) << 2 | (self.number_of_raw_data_blocks_in_frame & 3),
         ]

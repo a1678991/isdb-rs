@@ -84,6 +84,7 @@ use crate::config::{
     VdcMode, VideoDecodeControlCfg,
 };
 use crate::error::{MuxError, Result};
+use crate::float;
 use crate::jst::{self, JstSeconds};
 use crate::mux::Packet;
 use crate::pcrclock::{Anchor, HZ, PcrClock, Timed, packet_pid};
@@ -377,9 +378,9 @@ fn ca_fields(data: &[u8]) -> Option<(u16, Pid)> {
 fn remap_ca(data: &[u8], map: impl Fn(Pid) -> Pid) -> RawDescriptor {
     let mut b = data.to_vec();
     if let Some((_, pid)) = ca_fields(&b) {
-        let np = map(pid).get();
-        b[2] = (b[2] & 0xE0) | (np >> 8) as u8;
-        b[3] = np as u8;
+        let [hi, lo] = map(pid).get().to_be_bytes();
+        b[2] = (b[2] & 0xE0) | hi;
+        b[3] = lo;
     }
     RawDescriptor {
         tag: 0x09,
@@ -782,10 +783,10 @@ fn read_ts(b: &[u8]) -> u64 {
 fn write_ts(b: &mut [u8], v: u64) {
     let v = v % BASE_MODULUS;
     b[0] = (b[0] & 0xF1) | (((v >> 30) as u8 & 7) << 1);
-    b[1] = (v >> 22) as u8;
-    b[2] = (b[2] & 0x01) | (((v >> 15) as u8) << 1);
-    b[3] = (v >> 7) as u8;
-    b[4] = (b[4] & 0x01) | ((v as u8) << 1);
+    b[1] = ((v >> 22) & 0xFF) as u8;
+    b[2] = (b[2] & 0x01) | ((((v >> 15) & 0x7F) as u8) << 1);
+    b[3] = ((v >> 7) & 0xFF) as u8;
+    b[4] = (b[4] & 0x01) | (((v & 0x7F) as u8) << 1);
 }
 
 /// H.222.0 §2.4.2.3 T-STD buffers of an MPEG-2 video stream from its
@@ -814,7 +815,7 @@ fn read_probe_packets(path: &Path, probe_s: f64) -> Result<Vec<Packet>> {
     let mut v: Vec<Packet> = Vec::new();
     // Stop at PROBE_MAX_BYTES, or once `probe_s` of PCR (of any PID) has passed.
     let (mut first, mut last): (Option<u64>, u64) = (None, 0);
-    let limit = (probe_s * HZ as f64) as u64;
+    let limit = float::to_u64(probe_s * HZ as f64);
     let mut clock = PcrClock::<()>::new(None);
     while v.len() * 188 < PROBE_MAX_BYTES {
         let Some(p) = r.next_packet().map_err(MuxError::Io)? else {
@@ -2107,7 +2108,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
     }
     let source_now = match (tot, tot_t, cut_t) {
         (Some((_, j)), Some(tt), Some(ct)) => {
-            Some(j - ((tt as i64 - ct as i64) as f64 / HZ as f64).round() as i64)
+            Some(j - float::to_i64(((tt as i64 - ct as i64) as f64 / HZ as f64).round()))
         }
         (Some((_, j)), _, _) => Some(j),
         _ => None,
@@ -2719,8 +2720,14 @@ impl Relay {
     ) -> Result<Self> {
         let mut index = vec![0u16; 8192];
         let mut es = Vec::new();
+        // 1-based slot of a relayed PID in `es` (0: not relayed); the
+        // sources are distinct PIDs, so there are at most 8192 of them.
+        let slot = |i: usize| {
+            u16::try_from(i + 1)
+                .map_err(|_| MuxError::Config(format!("{} streams to relay", i + 1)))
+        };
         for (i, e) in probe.es.iter().enumerate() {
-            index[usize::from(e.src_pid)] = i as u16 + 1;
+            index[usize::from(e.src_pid)] = slot(i)?;
             es.push(RelayEs {
                 pid: e.pid,
                 layer: layers[i],
@@ -2748,7 +2755,7 @@ impl Relay {
         // ECM / EMM PIDs (ca = "keep"): packet by packet, no T-STD model
         for c in &probe.ca.pids {
             let i = es.len();
-            index[usize::from(c.src_pid)] = i as u16 + 1;
+            index[usize::from(c.src_pid)] = slot(i)?;
             es.push(RelayEs {
                 pid: c.pid,
                 layer: layers[i],
@@ -2808,14 +2815,14 @@ impl Relay {
             ctl: None,
             now: start_mux,
             seek_index: probe.seek_index.clone(),
-            duration: (probe.rate.span_s * HZ as f64) as u64,
+            duration: float::to_u64(probe.rate.span_s * HZ as f64),
             stream_types: probe.es.iter().map(|e| e.stream_type).collect(),
             max_lead: probe
                 .es
                 .iter()
                 .filter_map(|e| e.source_lead_s.map(|l| l.2))
                 .fold(None, |m: Option<f64>, l| Some(m.map_or(l, |m| m.max(l))))
-                .map_or(HZ as i64 / 2, |l| (l * HZ as f64) as i64),
+                .map_or(HZ as i64 / 2, |l| float::to_i64(l * HZ as f64)),
             frame_period: probe
                 .es
                 .iter()
@@ -3297,6 +3304,8 @@ impl Relay {
             sp.last_pts = Some(pts);
             // PES: header with PTS only, data_alignment_indicator = 1
             let mut b = vec![0, 0, 1, stream_id, 0, 0, 0x84, 0x80, 5, 0x21, 0, 1, 0, 1];
+            // n is the 13-bit aac_frame_length (<= 8191), so 8 + n fits.
+            #[allow(clippy::cast_possible_truncation)]
             let plen = (b.len() - 6 + frame.len()) as u16;
             b[4..6].copy_from_slice(&plen.to_be_bytes());
             b.extend_from_slice(&frame);

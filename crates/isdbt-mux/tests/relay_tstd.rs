@@ -7,6 +7,8 @@
 //! ([`isdbt_mux::relay::RETIME_HOLD`]) that jitter overflowed MBn by a packet or two at
 //! hundreds of points although the source itself is clean.
 
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 
 use common::{bench_params, synth_audio, tmpdir};
@@ -21,9 +23,9 @@ fn heavy_video(gops: usize) -> Vec<u8> {
         v.extend_from_slice(&[0, 0, 1, 0xB3]);
         let (w, h): (u32, u32) = (1440, 1080);
         v.extend_from_slice(&[
-            (w >> 4) as u8,
-            ((w & 0xF) << 4 | h >> 8) as u8,
-            h as u8,
+            u8::try_from(w >> 4).unwrap(),
+            u8::try_from((w & 0xF) << 4 | h >> 8).unwrap(),
+            (h & 0xFF) as u8,
             0x34,
         ]);
         let br = 30_000u32; // × 400 = 12 Mbit/s
@@ -69,7 +71,7 @@ start = "2026-01-01T12:00:00"
 "#;
 
 fn frames_of(mux: &mut Multiplexer, seconds: f64) -> Vec<u8> {
-    let frames = (seconds / bench_params().frame_seconds()).ceil() as usize;
+    let frames = common::count((seconds / bench_params().frame_seconds()).ceil());
     let mut out = Vec::new();
     for _ in 0..frames {
         let (full, _) = mux.next_frame_full();

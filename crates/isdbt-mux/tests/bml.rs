@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+#![warn(clippy::cast_possible_truncation)]
 //! BML data broadcasting (`kind = "bml-carousel"`) and Hybridcast
 //! (`[service.hybridcast]`): the carousel on air reassembles to the files,
 //! the DII / DDB / PMT / EIT / AIT fields carry the configured values, the
@@ -125,7 +126,9 @@ fn sections(r: &Run, pid: u16) -> Vec<(u64, Vec<u8>)> {
         }
         for o in a.push(i as u64, p) {
             match o {
-                Assembled::Section(s) => v.push((r.times[s.start_packet as usize], s.data)),
+                Assembled::Section(s) => {
+                    v.push((r.times[usize::try_from(s.start_packet).unwrap()], s.data));
+                }
                 Assembled::Event(e) => panic!("{e:?}"),
             }
         }
@@ -145,7 +148,10 @@ fn modules(secs: &[(u64, Vec<u8>)], dii: &Dii) -> BTreeMap<u16, Vec<u8>> {
                 assert_eq!(d.header.table_id_extension, m.module_id);
                 assert_eq!(d.body.module_version, m.module_version);
                 assert_eq!(d.header.version_number, m.module_version & 0x1F);
-                assert_eq!(d.header.section_number, d.body.block_number as u8);
+                assert_eq!(
+                    d.header.section_number,
+                    u8::try_from(d.body.block_number).unwrap()
+                );
                 if d.body.block_number as usize + 1
                     < m.module_size.div_ceil(u32::from(dii.body.block_size)) as usize
                 {
@@ -157,7 +163,7 @@ fn modules(secs: &[(u64, Vec<u8>)], dii: &Dii) -> BTreeMap<u16, Vec<u8>> {
         let n = blocks.len();
         assert_eq!(
             blocks.keys().last().copied(),
-            Some(n as u16 - 1),
+            Some(u16::try_from(n).unwrap() - 1),
             "module {:#06x} blocks",
             m.module_id
         );
@@ -184,7 +190,7 @@ fn carousel_carries_the_files_and_signals_them() {
     let bml = dir.join("bml");
     std::fs::create_dir_all(&bml).unwrap();
     std::fs::write(bml.join("startup.bml"), STARTUP).unwrap();
-    let png: Vec<u8> = (0..9000u32).map(|i| (i * 7) as u8).collect();
+    let png: Vec<u8> = (0..9000u32).map(|i| ((i * 7) & 0xFF) as u8).collect();
     std::fs::write(bml.join("logo.png"), &png).unwrap();
     std::fs::write(bml.join("style.css"), "p { color-index: 7; }").unwrap();
     let cfg = Config::from_toml(&config(
@@ -323,7 +329,7 @@ fn carousel_carries_the_files_and_signals_them() {
         .map(|(_, t)| *t)
         .collect();
     let window = 32 * HZ / 1000;
-    let max_in_window = (1_000_000.0_f64 / 8.0 / 188.0 * 0.032).floor() as usize; // 21
+    let max_in_window = common::count((1_000_000.0_f64 / 8.0 / 188.0 * 0.032).floor()); // 21
     for (i, &t0) in pkt_times.iter().enumerate() {
         let n = pkt_times[i..]
             .iter()

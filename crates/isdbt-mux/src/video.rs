@@ -220,6 +220,18 @@ impl Bits<'_> {
         }
         Some(v)
     }
+
+    /// An `n`-bit field, `n <= 8`, in the type that holds it.
+    fn read_u8(&mut self, n: usize) -> Option<u8> {
+        debug_assert!(n <= 8, "read_u8: {n} bits");
+        u8::try_from(self.read(n)?).ok()
+    }
+
+    /// An `n`-bit field, `n <= 16`, in the type that holds it.
+    fn read_u16(&mut self, n: usize) -> Option<u16> {
+        debug_assert!(n <= 16, "read_u16: {n} bits");
+        u16::try_from(self.read(n)?).ok()
+    }
 }
 
 /// closed_gop in byte 3 of the group_of_pictures_header after its start
@@ -298,10 +310,11 @@ impl VideoEs {
                         b.read(n)
                             .ok_or_else(|| err("truncated sequence_header".into()))
                     };
+                    let truncated = || err("truncated sequence_header".into());
                     let w = rd(&mut b, 12)?;
                     let h = rd(&mut b, 12)?;
-                    let ar = rd(&mut b, 4)? as u8;
-                    let frc = rd(&mut b, 4)? as u8;
+                    let ar = b.read_u8(4).ok_or_else(truncated)?;
+                    let frc = b.read_u8(4).ok_or_else(truncated)?;
                     let br = rd(&mut b, 18)?;
                     rd(&mut b, 1)?;
                     let vbv = rd(&mut b, 10)?;
@@ -332,7 +345,9 @@ impl VideoEs {
                             b.read(n)
                                 .ok_or_else(|| err("truncated sequence_extension".into()))
                         };
-                        let pl = rd(&mut b, 8)? as u8;
+                        let pl = b
+                            .read_u8(8)
+                            .ok_or_else(|| err("truncated sequence_extension".into()))?;
                         let prog = rd(&mut b, 1)? == 1;
                         let _chroma = rd(&mut b, 2)?;
                         let hx = rd(&mut b, 2)?;
@@ -400,14 +415,9 @@ impl VideoEs {
                 0x00 => {
                     last_ext_target = 2;
                     let mut b = Bits { b: payload, pos: 0 };
-                    let tr = b
-                        .read(10)
-                        .ok_or_else(|| err("truncated picture_header".into()))?
-                        as u16;
-                    let pct = b
-                        .read(3)
-                        .ok_or_else(|| err("truncated picture_header".into()))?
-                        as u8;
+                    let truncated = || err("truncated picture_header".into());
+                    let tr = b.read_u16(10).ok_or_else(truncated)?;
+                    let pct = b.read_u8(3).ok_or_else(truncated)?;
                     if au.picture_headers.is_empty() {
                         au.temporal_reference = tr;
                         au.coding_type = pct;
@@ -539,9 +549,9 @@ mod tests {
                 let w: u32 = 1920;
                 let h: u32 = 1080;
                 v.extend_from_slice(&[
-                    (w >> 4) as u8,
-                    ((w & 0xF) << 4 | h >> 8) as u8,
-                    h as u8,
+                    u8::try_from(w >> 4).unwrap(),
+                    u8::try_from((w & 0xF) << 4 | h >> 8).unwrap(),
+                    (h & 0xFF) as u8,
                     0x34,
                 ]);
                 let br = 50_000u32; // ×400 = 20 Mbps

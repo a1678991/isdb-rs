@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+#![warn(clippy::cast_possible_truncation)]
 //! Typed signalling options: the shipped examples re-decode to the named
 //! variants, synthetic PMT descriptors (live-service values) decode to the
 //! same variants, raw descriptors duplicating typed ones are rejected, and

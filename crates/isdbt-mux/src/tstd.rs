@@ -195,7 +195,7 @@ impl Tstd {
         // PID until it has drained (at most MBSn/Rbxn, a few tens of ms).
         if self.p.mb.is_some()
             && (self.mb + self.tb_payload) > EPS
-            && self.t - self.mb_last_empty > HZ as u64 / 2
+            && self.t - self.mb_last_empty > crate::pcrclock::HZ / 2
         {
             return false;
         }

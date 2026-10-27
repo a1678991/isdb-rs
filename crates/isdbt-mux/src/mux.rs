@@ -35,6 +35,7 @@ use isdbt_fec::MultiplexPattern;
 use crate::audio::AdtsEs;
 use crate::config::{ClockSource, Config, StreamKind};
 use crate::error::{MuxError, Result};
+use crate::float;
 use crate::jst::{self, JstSeconds};
 use crate::playback::PlaybackStatus;
 use crate::relay::{self, Relay, RelayStats};
@@ -62,7 +63,9 @@ pub fn null_packet() -> Packet {
 
 /// Convert model-receiver clocks (512/63 MHz) to 27 MHz ticks.
 pub fn clocks_to_ticks(c: u64) -> u64 {
-    ((u128::from(c) * 1701) / 512) as u64
+    // floor(c * 1701 / 512) split so it stays in u64: the quotient and the
+    // remainder of c by 512 scale separately and the parts add exactly.
+    (c / 512) * 1701 + (c % 512) * 1701 / 512
 }
 
 struct SectionStream {
@@ -702,8 +705,10 @@ impl Multiplexer {
                             .map_or(1000, |b| b.bitrate_kbps)
                             .max(1),
                     );
-                    ((kbps * 1000.0 / 8.0 / 188.0) * (si_window_ticks as f64 / HZ as f64)).floor()
-                        as usize
+                    float::to_usize(
+                        ((kbps * 1000.0 / 8.0 / 188.0) * (si_window_ticks as f64 / HZ as f64))
+                            .floor(),
+                    )
                 }
                 _ => si_max_packets,
             }
@@ -725,7 +730,7 @@ impl Multiplexer {
                 pid,
                 layer,
                 interval,
-                sched: ((interval as f64) * margin) as u64,
+                sched: float::to_u64((interval as f64) * margin),
                 next_due: t0 + n * 2 * layer_slot,
                 last_start: None,
                 cc: Counter::default(),
@@ -738,8 +743,8 @@ impl Multiplexer {
         }
 
         // ---- PCR
-        let scale = params.mode().scale() as u32;
-        let per_frame = cfg.timing.pcr_per_frame.unwrap_or(scale) as usize;
+        let scale = params.mode().scale();
+        let per_frame = cfg.timing.pcr_per_frame.map_or(scale, |n| n as usize);
         let mut pcr = Vec::new();
         let mut per_layer_count = [0usize; 3];
         for (i, s) in cfg.services.iter().enumerate() {
@@ -1300,7 +1305,7 @@ impl Multiplexer {
                         ts.tb_can_accept(t)
                             && if due {
                                 let send_time =
-                                    (h.rest as f64 * 8.0 * HZ as f64 / layer_bps) as u64 * 2;
+                                    float::to_u64(h.rest as f64 * 8.0 * HZ as f64 / layer_bps) * 2;
                                 let fits = (!h.seam && t >= h.at + relay::RETIME_HOLD)
                                     || ts.can_accept(t, h.len)
                                     || h.decode

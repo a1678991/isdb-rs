@@ -296,6 +296,10 @@ impl SilentFrame {
     /// writes for a stream of identical `len`-byte frames
     /// ([`SilentFrame::cbr_fullness`]), so a stream of these frames
     /// satisfies every header rule of B32 Part 2 §5.2 as built.
+    ///
+    /// # Panics
+    ///
+    /// When `len` exceeds the 13-bit aac_frame_length field (8191 bytes).
     pub fn stereo_48k(len: usize) -> Self {
         Self {
             header: AdtsHeader {
@@ -310,7 +314,7 @@ impl SilentFrame {
                 home: false,
                 copyright_identification_bit: false,
                 copyright_identification_start: false,
-                aac_frame_length: len as u16,
+                aac_frame_length: frame_length(len),
                 adts_buffer_fullness: Self::cbr_fullness(len, 2),
                 number_of_raw_data_blocks_in_frame: 0,
                 crc_check: None,
@@ -325,19 +329,24 @@ impl SilentFrame {
     /// ⌊reservoir / (32·NCC)⌋ (the [`b32::cbr_fullness`] model; 0 if a
     /// frame exceeds the buffer).
     pub fn cbr_fullness(len: usize, channels: u32) -> u16 {
-        let buffer = (BUFFER_BITS_PER_CHANNEL * channels.max(1)) as usize;
-        (buffer.saturating_sub(8 * len) / (32 * channels.max(1) as usize)) as u16
+        let ncc = channels.max(1) as usize;
+        let buffer = BUFFER_BITS_PER_CHANNEL as usize * ncc;
+        // <= 6144 * NCC / (32 * NCC) = 192, which fits the 11-bit field.
+        #[allow(clippy::cast_possible_truncation)]
+        let fullness = (buffer.saturating_sub(8 * len) / (32 * ncc)) as u16;
+        fullness
     }
 
     /// The frame bytes (`len` ≥ header + 13 bytes).
     ///
     /// # Panics
     ///
-    /// When `len` is too small for the header and the audio element, or
-    /// cannot be filled exactly with fill elements.
+    /// When `len` is too small for the header and the audio element,
+    /// cannot be filled exactly with fill elements, or exceeds the 13-bit
+    /// aac_frame_length field (8191 bytes).
     pub fn build(&self) -> Vec<u8> {
         let mut h = self.header;
-        h.aac_frame_length = self.len as u16;
+        h.aac_frame_length = frame_length(self.len);
         let hl = if h.protection_absent {
             HEADER_BYTES
         } else {
@@ -396,11 +405,11 @@ impl SilentFrame {
             q_left -= q;
             w.put(6, 3); // ID_FIL
             let payload = if q <= 14 {
-                w.put(q as u32, 4);
+                w.put(q, 4);
                 q
             } else {
                 w.put(15, 4);
-                w.put((q - 15) as u32, 8); // count = 15 + esc_count − 1 = q − 1
+                w.put(q - 15, 8); // count = 15 + esc_count − 1 = q − 1
                 q - 1
             };
             for i in 0..payload {
@@ -439,6 +448,15 @@ fn crc_over_regions(frame: &[u8], raw_start: usize, regions: &[(usize, usize, us
     c.value()
 }
 
+/// `len` as the 13-bit aac_frame_length; panics past 8191 bytes
+/// ([`SilentFrame::stereo_48k`] and [`SilentFrame::build`] document it).
+fn frame_length(len: usize) -> u16 {
+    u16::try_from(len)
+        .ok()
+        .filter(|&l| l <= 0x1FFF)
+        .unwrap_or_else(|| panic!("SilentFrame: len {len} exceeds the 13-bit aac_frame_length"))
+}
+
 #[derive(Default)]
 struct BitWriter {
     bytes: Vec<u8>,
@@ -446,7 +464,7 @@ struct BitWriter {
 }
 
 impl BitWriter {
-    fn put(&mut self, v: u32, n: u32) {
+    fn put(&mut self, v: usize, n: u32) {
         for k in (0..n).rev() {
             if self.bits.is_multiple_of(8) {
                 self.bytes.push(0);
@@ -501,15 +519,15 @@ mod tests {
     /// Independent CRC-16 (ISO/IEC 11172-3 §2.4.3.1: x¹⁶ + x¹⁵ + x² + 1,
     /// preset all ones, MSB first, no final inversion) over a bit list.
     fn crc16_of_bits(bits: &[bool]) -> u16 {
-        let mut reg: u32 = 0xFFFF;
+        let mut reg: u16 = 0xFFFF;
         for &b in bits {
             let fb = ((reg >> 15) & 1 == 1) ^ b;
-            reg = (reg << 1) & 0xFFFF;
+            reg <<= 1;
             if fb {
                 reg ^= 0x8005;
             }
         }
-        reg as u16
+        reg
     }
 
     fn bit_at(d: &[u8], i: usize) -> bool {

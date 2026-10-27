@@ -5,6 +5,8 @@
 //! decoding time, the relay sends nothing while paused, and the position
 //! moves by the rate, the pause and the seeks.
 
+#![warn(clippy::cast_possible_truncation)]
+
 mod common;
 
 use common::{bench_params, synth_audio, tmpdir};
@@ -26,9 +28,9 @@ fn video(gops: usize) -> Vec<u8> {
         v.extend_from_slice(&[0, 0, 1, 0xB3]);
         let (w, h): (u32, u32) = (1440, 1080);
         v.extend_from_slice(&[
-            (w >> 4) as u8,
-            ((w & 0xF) << 4 | h >> 8) as u8,
-            h as u8,
+            u8::try_from(w >> 4).unwrap(),
+            u8::try_from((w & 0xF) << 4 | h >> 8).unwrap(),
+            (h & 0xFF) as u8,
             0x34,
         ]);
         let x: u32 = 30_000u32 << 14 | 1 << 13 | 427 << 3;
@@ -108,7 +110,7 @@ pcr_pid = 0x01FF
     let p = bench_params();
     let mut mux = Multiplexer::new(&cfg, &p, dir).unwrap();
     let mut out = Vec::new();
-    for _ in 0..(40.0 / p.frame_seconds()).ceil() as usize {
+    for _ in 0..common::count((40.0 / p.frame_seconds()).ceil()) {
         let (full, _) = mux.next_frame_full();
         for pk in full {
             out.extend_from_slice(&pk);
@@ -166,7 +168,7 @@ struct Run {
 /// Run `seconds` of frames, recording the relayed PES starts.
 fn run(m: &mut Multiplexer, seconds: f64, r: &mut Run) {
     let p = bench_params();
-    for _ in 0..(seconds / p.frame_seconds()).ceil() as usize {
+    for _ in 0..common::count((seconds / p.frame_seconds()).ceil()) {
         let k = m.frames();
         let (full, _) = m.next_frame_full();
         for (j, pk) in full.iter().enumerate() {

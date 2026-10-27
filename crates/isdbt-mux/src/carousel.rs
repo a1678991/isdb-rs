@@ -186,6 +186,22 @@ pub struct Module {
 pub const BOUNDARY: &str = "IETF_RFC1945_Multipart_Mixed";
 const CRLF: &str = "\r\n";
 
+/// `value` does not fit the `bits`-bit wire field `what`
+/// ([`isdb_ts::Error::Overflow`] as [`MuxError::Encode`]).
+fn overflow(what: &'static str, bits: u32, value: usize) -> MuxError {
+    MuxError::Encode(isdb_ts::Error::Overflow {
+        what,
+        value: value as u64,
+        bits,
+    })
+}
+
+/// `value` as the `bits`-bit wire field `what`, or [`overflow`] when it
+/// does not fit: file sizes, counts and names come from the configuration.
+fn field<T: TryFrom<usize>>(what: &'static str, bits: u32, value: usize) -> Result<T> {
+    T::try_from(value).map_err(|_| overflow(what, bits, value))
+}
+
 /// Content-Type of a multipart module (the DII Type descriptor and the
 /// module's own entity header): `multipart/mixed; boundary="…"`.
 pub fn multipart_content_type(boundary: &str) -> String {
@@ -249,7 +265,7 @@ pub fn multipart_entity(resources: &[Resource], with_list: bool) -> Result<(Vec<
 
     let list = if with_list {
         let mut l = Vec::with_capacity(list_len);
-        l.push(resources.len() as u8);
+        l.push(field("resourceCount", 8, resources.len())?);
         for (i, r) in resources.iter().enumerate() {
             let (off, hl) = offsets[i + 1];
             let tv = resource_type_value(&r.media_type).ok_or_else(|| {
@@ -258,12 +274,19 @@ pub fn multipart_entity(resources: &[Resource], with_list: bool) -> Result<(Vec<
                     r.name, r.media_type
                 ))
             })?;
-            l.push((13 + r.name.len()) as u8);
-            l.extend_from_slice(&(off as u32).to_be_bytes());
-            l.extend_from_slice(&(hl as u16).to_be_bytes());
-            l.extend_from_slice(&(r.data.len() as u32).to_be_bytes());
+            // resourceNameLength is 7 bits, so the 13 + name entry fits a byte
+            let name_len = u8::try_from(r.name.len())
+                .ok()
+                .filter(|&n| n <= 0x7F)
+                .ok_or_else(|| overflow("resourceNameLength", 7, r.name.len()))?;
+            l.push(13 + name_len);
+            l.extend_from_slice(&field::<u32>("resourceOffset", 32, off)?.to_be_bytes());
+            l.extend_from_slice(&field::<u16>("resourceHeaderLength", 16, hl)?.to_be_bytes());
+            l.extend_from_slice(
+                &field::<u32>("resourceDataLength", 32, r.data.len())?.to_be_bytes(),
+            );
             l.extend_from_slice(&tv.to_be_bytes());
-            l.push(0x80 | r.name.len() as u8); // reserved_future_use '1', resourceNameLength
+            l.push(0x80 | name_len); // reserved_future_use '1', resourceNameLength
             l.extend_from_slice(r.name.as_bytes());
         }
         debug_assert_eq!(l.len(), list_len);
@@ -774,7 +797,7 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
     for m in &modules {
         dii.modules.push(DiiModule {
             module_id: m.id,
-            module_size: m.bytes.len() as u32,
+            module_size: field("moduleSize", 32, m.bytes.len())?,
             module_version: module_versions[&m.id],
             info: m.info.clone(),
         });
@@ -800,7 +823,10 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
         }
     }
     // DIIs between the DDBs: one per dii_interval_ms at the configured rate
-    let per_dii = (bytes_per_s * f64::from(bml.dii_interval_ms) / 1000.0).max(1.0) as usize;
+    // bytes_per_s * dii_interval_ms / 1000 = kbit/s * ms / 8, in integers
+    // (saturated to usize::MAX, as the f64 cast it replaces was).
+    let per_dii = (u64::from(bml.bitrate_kbps.max(1)) * u64::from(bml.dii_interval_ms) / 8).max(1);
+    let per_dii = usize::try_from(per_dii).unwrap_or(usize::MAX);
     let mut sections = vec![dii_bytes.clone()];
     let mut acc = 0usize;
     for d in ddbs {
@@ -852,7 +878,7 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
         module_versions,
         dii: dii_bytes,
         sections,
-        component_size: component_size as u32,
+        component_size: field("component_size", 32, component_size)?,
         report,
         source: src.clone(),
         snapshot: snap,

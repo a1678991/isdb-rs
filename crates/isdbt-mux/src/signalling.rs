@@ -592,7 +592,10 @@ pub mod mbps_opt {
                 "maximum_bitrate_mbps {x} outside (0, 63.75]: the field counts 1/4 Mbit/s in 8 bits (B10 §6.2.23)"
             )));
         }
-        Ok(Some(MaximumBitrate((x * 4.0).ceil() as u8)))
+        // 0 < x <= 63.75 was checked above, so ceil(4x) is 1..=255.
+        #[allow(clippy::cast_possible_truncation)]
+        let quarter_mbps = (x * 4.0).ceil() as u8;
+        Ok(Some(MaximumBitrate(quarter_mbps)))
     }
 }
 
