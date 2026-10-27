@@ -24,7 +24,8 @@
 use isdb_ts::Pid;
 use std::collections::VecDeque;
 
-use isdb_ts::pcr::{Pcr, pcr_signed_diff, pcr_wrap_diff};
+use isdb_ts::packet::View;
+use isdb_ts::pcr::{pcr_signed_diff, pcr_wrap_diff};
 
 /// System clock frequency (H.222.0 §2.4.2.1), Hz.
 pub const HZ: u64 = 27_000_000;
@@ -42,12 +43,8 @@ const MAX_PENDING: usize = 200_000;
 /// PCR of a raw packet with the discontinuity_indicator, if its adaptation
 /// field carries one (H.222.0 Table 2-6).
 pub fn packet_pcr(p: &[u8; 188]) -> Option<(u64, bool)> {
-    let afc = (p[3] >> 4) & 3;
-    if afc & 2 == 0 || p[4] < 7 || p[5] & 0x10 == 0 {
-        return None;
-    }
-    let pcr = Pcr::decode(&p[6..12]).ok()?;
-    Some((pcr.ticks(), p[5] & 0x80 != 0))
+    let v = View::parse(p).ok()?;
+    Some((v.pcr()?.ticks(), v.discontinuity_indicator()))
 }
 
 /// PID of a raw packet.
@@ -259,7 +256,7 @@ impl<T> PcrClock<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use isdb_ts::pcr::PCR_MODULUS;
+    use isdb_ts::pcr::{PCR_MODULUS, Pcr};
 
     fn pcr_pkt(pid: u16, ticks: u64, disc: bool) -> [u8; 188] {
         let pid = Pid::new(pid).unwrap();
@@ -268,17 +265,28 @@ mod tests {
             ..Default::default()
         };
         f.discontinuity_indicator = disc;
-        isdb_ts::packet::Packet::with_adaptation(pid, false, 0, Some(f), &[])
-            .unwrap()
-            .encode()
-            .unwrap()
+        isdb_ts::packet::Packet::with_adaptation(
+            pid,
+            false,
+            isdb_ts::ContinuityCounter::ZERO,
+            Some(f),
+            &[],
+        )
+        .unwrap()
+        .encode()
+        .unwrap()
     }
 
     fn data_pkt(pid: u16) -> [u8; 188] {
-        isdb_ts::packet::Packet::with_payload(Pid::new(pid).unwrap(), false, 0, &[0u8; 184])
-            .unwrap()
-            .encode()
-            .unwrap()
+        isdb_ts::packet::Packet::with_payload(
+            Pid::new(pid).unwrap(),
+            false,
+            isdb_ts::ContinuityCounter::ZERO,
+            &[0u8; 184],
+        )
+        .unwrap()
+        .encode()
+        .unwrap()
     }
 
     fn run(pkts: &[[u8; 188]]) -> (Vec<u64>, ClockStats) {

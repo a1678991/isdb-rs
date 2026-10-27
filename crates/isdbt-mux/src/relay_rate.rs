@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use isdb_ts::Pid;
+use isdb_ts::packet::View;
 use isdb_ts::reader::StreamReader;
 
 use crate::error::{MuxError, Result};
@@ -284,12 +285,7 @@ fn bin_and_index(path: &Path, pcr_pid: Pid, pids: &[ScanPid]) -> Result<(Bins, V
 
 /// DTS, else PTS, of the PES header starting in this packet's payload.
 fn pes_decode_ts(p: &[u8; 188]) -> Option<u64> {
-    let afc = (p[3] >> 4) & 3;
-    if afc & 1 == 0 {
-        return None;
-    }
-    let start = if afc & 2 != 0 { 5 + p[4] as usize } else { 4 };
-    let pl = p.get(start..)?;
+    let pl = View::parse(p).ok()?.payload?;
     if pl.len() < 19 || pl[..3] != [0, 0, 1] || !isdb_ts::pes::has_optional_header(pl[3]) {
         return None;
     }

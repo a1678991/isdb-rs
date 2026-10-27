@@ -171,6 +171,7 @@ impl Timebase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use isdb_ts::ContinuityCounter;
     use isdb_ts::packet::Packet;
     use isdb_ts::pcr::Pcr;
 
@@ -183,7 +184,7 @@ mod tests {
             let p = if i % 10 == 0 {
                 Packet::pcr_only(
                     Pid::new(0x100).unwrap(),
-                    0,
+                    ContinuityCounter::ZERO,
                     Pcr::from_ticks(base + i / 10 * 27_000),
                 )
                 .encode()

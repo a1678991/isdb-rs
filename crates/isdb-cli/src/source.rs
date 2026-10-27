@@ -9,6 +9,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, sync_channel};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use isdb_ts::packet::{Header, TransportScramblingControl};
+
 /// 188-byte packet.
 pub type Packet = [u8; 188];
 
@@ -27,10 +29,12 @@ pub fn is_null(p: &Packet) -> bool {
     pid(p) == 0x1fff
 }
 
-/// transport_scrambling_control ≠ '00' (H.222.0 §2.4.3.3, Table 2-4): the
-/// payload is scrambled.
-pub fn is_scrambled(p: &Packet) -> bool {
-    p[3] >> 6 != 0
+/// transport_scrambling_control of a packet (H.222.0 §2.4.3.3, Table 2-4);
+/// anything but `NotScrambled` means the payload is scrambled.
+pub fn scrambling_control(p: &Packet) -> TransportScramblingControl {
+    Header::decode(p)
+        .expect("188-byte packet")
+        .transport_scrambling_control
 }
 
 /// The first scrambled packet met by any reader thread (the input is then
@@ -38,7 +42,7 @@ pub fn is_scrambled(p: &Packet) -> bool {
 /// content).
 static SCRAMBLED: OnceLock<String> = OnceLock::new();
 
-/// Error if an input carried scrambled packets (see [`is_scrambled`]).
+/// Error if an input carried scrambled packets (see [`scrambling_control`]).
 pub fn check_not_scrambled() -> Result<()> {
     if let Some(m) = SCRAMBLED.get() {
         bail!("{m}");
@@ -163,13 +167,13 @@ impl PacketStream {
                     buf.extend_from_slice(&chunk[..n]);
                     let mut skipped = 0;
                     let (used, alive) = split_packets(&buf, &mut skipped, |p| {
-                        if is_scrambled(&p) && !is_null(&p) {
+                        let tsc = scrambling_control(&p);
+                        if tsc.is_scrambled() && !is_null(&p) {
                             let m = format!(
-                                "{tname}: scrambled packet on PID {:#06x} (transport_scrambling_control '{:02b}'); \
+                                "{tname}: scrambled packet on PID {:#06x} (transport_scrambling_control '{tsc}'); \
                                  scrambled input is refused: isdb does not descramble (no B-CAS / CAS support) \
                                  and transmits only content you have the rights to",
                                 pid(&p),
-                                p[3] >> 6
                             );
                             eprintln!("isdb: {m}");
                             let _ = SCRAMBLED.set(m);

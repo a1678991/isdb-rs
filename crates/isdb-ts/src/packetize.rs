@@ -91,6 +91,7 @@ pub fn packetize_sections(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cc::ContinuityCounter;
     use crate::demux::{Assembled, SectionAssembler};
     use crate::section::{LongHeader, build_long};
 
@@ -116,7 +117,7 @@ mod tests {
     #[test]
     fn one_per_packet_layout() {
         let s = vec![sec(0x42, 300), sec(0x42, 5)];
-        let mut cc = Counter::new(15);
+        let mut cc = Counter::new(ContinuityCounter::new(15).unwrap());
         let p = packetize_sections(Pid::new(0x11).unwrap(), &s, Packing::OnePerPacket, &mut cc)
             .unwrap();
         assert_eq!(p.len(), 3);
@@ -135,7 +136,7 @@ mod tests {
     #[test]
     fn packed_layout_uses_pointer() {
         let s = vec![sec(0x42, 200), sec(0x43, 20), sec(0x44, 400), sec(0x45, 1)];
-        let mut cc = Counter::new(0);
+        let mut cc = Counter::default();
         let p = packetize_sections(Pid::new(0x12).unwrap(), &s, Packing::Packed, &mut cc).unwrap();
         // second packet: pointer = 212 - 183 = 29
         assert_eq!(p[1][4], 29);
@@ -154,7 +155,7 @@ mod tests {
                     sec(0x50, 3),
                     sec(0x51, n * 2),
                 ];
-                let mut cc = Counter::new(3);
+                let mut cc = Counter::new(ContinuityCounter::new(3).unwrap());
                 let p = packetize_sections(Pid::new(0x13).unwrap(), &s, packing, &mut cc).unwrap();
                 assert_eq!(
                     reassemble(&p, Pid::new(0x13).unwrap()),

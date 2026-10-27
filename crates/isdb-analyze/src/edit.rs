@@ -326,7 +326,7 @@ pub fn rewrite_pid(
         .chain(nulls.iter().map(|&i| (i, false)))
         .collect();
     slots.sort_unstable();
-    let mut cc = Counter::new(first_cc.unwrap_or(0));
+    let mut cc = Counter::new(first_cc.unwrap_or_default());
     let mut cur: Option<(Vec<u8>, u64)> = None;
     let mut out: Vec<(u64, Pkt)> = Vec::new();
     let mut used: BTreeSet<u64> = BTreeSet::new();

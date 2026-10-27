@@ -70,9 +70,9 @@ use isdb_si::Descriptor;
 use isdb_si::tables::{EitBody, SdtBody, TdtBody, TotBody};
 use isdb_si::values::{CodedValue, DigitalRecordingControl};
 use isdb_ts::Pid;
-use isdb_ts::cc::Counter;
+use isdb_ts::cc::{ContinuityCounter, Counter};
 use isdb_ts::demux::{Assembled, SectionDemux};
-use isdb_ts::packet::{AdaptationFields, Packet as TsPacket};
+use isdb_ts::packet::{AdaptationFieldControl, AdaptationFields, Header, Packet as TsPacket, View};
 use isdb_ts::pcr::BASE_MODULUS;
 use isdb_ts::psi::{Cat, Pat, Pmt};
 use isdb_ts::reader::StreamReader;
@@ -675,14 +675,17 @@ fn desc_name(d: &isdb_ts::descriptor::Descriptor) -> String {
     }
 }
 
-/// Payload of a raw packet (after header and adaptation field).
+/// Payload of a raw packet (after header and adaptation field): the
+/// data_bytes of an adaptation_field_control '01'/'11' packet whose
+/// adaptation field fits (H.222.0 Table 2-2).
 fn payload(p: &Packet) -> Option<&[u8]> {
-    let afc = (p[3] >> 4) & 3;
-    if afc & 1 == 0 {
-        return None;
-    }
-    let start = if afc & 2 != 0 { 5 + p[4] as usize } else { 4 };
-    (start <= 188).then(|| &p[start..])
+    View::parse(p).ok()?.payload
+}
+
+/// transport_scrambling_control ≠ '00' (H.222.0 Table 2-4): the relay
+/// refuses such packets (CONTRIBUTING "Relay policy").
+fn is_scrambled(p: &Packet) -> bool {
+    Header::decode(p).is_ok_and(|h| h.transport_scrambling_control.is_scrambled())
 }
 
 /// ES bytes after the PES header (stream_ids with the optional header).
@@ -1943,7 +1946,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             continue;
         }
         sel.push((x.t, ei));
-        if p[3] & 0xC0 != 0 {
+        if is_scrambled(p) {
             scrambled += 1;
             continue;
         }
@@ -2560,7 +2563,7 @@ pub(crate) struct RelayEs {
     mode: EsMode,
     cc: Counter,
     pub(crate) tstd: Option<Tstd>,
-    last_cc: Option<u8>,
+    last_cc: Option<ContinuityCounter>,
     last_pkt: Option<Packet>,
     asm: Option<Assembly>,
     wait_pusi: bool,
@@ -2722,7 +2725,7 @@ impl Relay {
                 pid: e.pid,
                 layer: layers[i],
                 mode: e.mode,
-                cc: Counter::new(0),
+                cc: Counter::default(),
                 tstd: e.tstd.map(|p| Tstd::new(p, start_mux.saturating_sub(HZ))),
                 last_cc: None,
                 last_pkt: None,
@@ -2750,7 +2753,7 @@ impl Relay {
                 pid: c.pid,
                 layer: layers[i],
                 mode: EsMode::Packets,
-                cc: Counter::new(0),
+                cc: Counter::default(),
                 tstd: None,
                 last_cc: None,
                 last_pkt: None,
@@ -2969,14 +2972,14 @@ impl Relay {
             self.damage(ei);
             return;
         }
-        let afc = (p[3] >> 4) & 3;
-        if afc == 0 {
+        let h = Header::decode(&p).expect("188-byte packet");
+        if h.adaptation_field_control == AdaptationFieldControl::Reserved {
             return;
         }
-        let has_payload = afc & 1 != 0;
-        let cc = p[3] & 0x0F;
-        let disc = afc & 2 != 0 && p[4] > 0 && p[5] & 0x80 != 0;
-        if has_payload {
+        let has_af = h.has_adaptation_field();
+        let cc = h.continuity_counter;
+        let disc = has_af && p[4] > 0 && p[5] & 0x80 != 0;
+        if h.has_payload() {
             let e = &mut self.es[ei];
             match e.last_cc {
                 Some(l) if l == cc => {
@@ -2987,7 +2990,7 @@ impl Relay {
                     self.stats.cc_errors += 1;
                     self.damage(ei);
                 }
-                Some(l) if (l + 1) & 0x0F != cc && !disc => {
+                Some(l) if !cc.is_next_of(l) && !disc => {
                     self.stats.cc_errors += 1;
                     self.damage(ei);
                 }
@@ -2999,13 +3002,13 @@ impl Relay {
         } else {
             return;
         }
-        if p[3] & 0xC0 != 0 {
+        if h.transport_scrambling_control.is_scrambled() {
             self.stats.scrambled += 1;
             self.damage(ei);
             return;
         }
         let Some(pl) = payload(&p) else { return };
-        let rai = afc & 2 != 0 && p[4] > 0 && p[5] & 0x40 != 0;
+        let rai = has_af && p[4] > 0 && p[5] & 0x40 != 0;
         let pusi = p[1] & 0x40 != 0;
         if !self.started {
             let start = match self.video {

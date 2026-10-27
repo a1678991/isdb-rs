@@ -3,7 +3,7 @@
 //! `encode(decode(b)) == b` for every byte string a decoder accepts.
 
 use isdb_ts::Pid;
-use isdb_ts::cc::Counter;
+use isdb_ts::cc::{ContinuityCounter, Counter};
 use isdb_ts::demux::{Assembled, SectionAssembler};
 use isdb_ts::descriptor::Descriptor;
 use isdb_ts::packet::{
@@ -137,7 +137,7 @@ fn packet() -> impl Strategy<Value = Packet> {
                         pid,
                         transport_scrambling_control: TransportScramblingControl::from_code(tsc),
                         adaptation_field_control: afc,
-                        continuity_counter: cc,
+                        continuity_counter: ContinuityCounter::new(cc).unwrap(),
                     },
                     adaptation_field: af,
                     payload,
@@ -402,7 +402,7 @@ proptest! {
         prop_assert_eq!(Pid::try_from(v).unwrap(), p);
         prop_assert_eq!(Pid::from_wire(v), p);
         prop_assert_eq!(Pid::from_wire(v | 0xE000), p);
-        let h = Header::new(p, AdaptationFieldControl::PayloadOnly, 0).encode().unwrap();
+        let h = Header::new(p, AdaptationFieldControl::PayloadOnly, ContinuityCounter::ZERO).encode().unwrap();
         prop_assert_eq!(Pid::of_packet(&h), Some(p));
         prop_assert_eq!(Header::decode(&h).unwrap().pid, p);
         prop_assert_eq!(p.to_string(), format!("{v:#06x}"));
@@ -494,7 +494,7 @@ proptest! {
     #[test]
     fn prop_section_packetize_assemble(secs in sections(), packed in any::<bool>(), cc0 in 0u8..16) {
         let packing = if packed { Packing::Packed } else { Packing::OnePerPacket };
-        let mut cc = Counter::new(cc0);
+        let mut cc = Counter::new(ContinuityCounter::new(cc0).unwrap());
         let pkts = packetize_sections(Pid::new(0x30).unwrap(), &secs, packing, &mut cc).unwrap();
         let mut a = SectionAssembler::new(Pid::new(0x30).unwrap());
         let mut got = Vec::new();
@@ -516,7 +516,7 @@ proptest! {
         let h = PesHeader { pts_dts: PtsDts::pts_only(pts), ..Default::default() };
         let pes = PesPacket::new(0xE0, h, data).encode().unwrap();
         let af = with_pcr.then(|| AdaptationFields { pcr: Some(Pcr::from_ticks(pts * 300)), ..Default::default() });
-        let mut cc = Counter::new(0);
+        let mut cc = Counter::default();
         let pkts = isdb_ts::pes::packetize(Pid::new(0x40).unwrap(), &pes, af, &mut cc).unwrap();
         let mut a = PesAssembler::new(Pid::new(0x40).unwrap());
         let mut got = Vec::new();
