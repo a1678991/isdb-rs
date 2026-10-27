@@ -39,7 +39,7 @@ meaning of the "other information" values (pending).
 | `frame::{FRAME_SYMBOLS, HEADER_SYMBOLS, BURSTS, …}`, `main_symbol_position`, `burst_symbol_position` | frame geometry |
 | `frame::{W1, W2, W3, W1_CODED_TAIL, …}` | sync words |
 | `Combination` (`word`, `from_word`, `slot_unit`, `efficiency`, `puncturing`) | the seven assigned words of Table 1 / table 48 |
-| `CombinationWord::{Assigned(Combination), Dummy, Reserved(u8)}` (`from_word`, `word`) | all 16 words of Table 1, lossless; the `word` of a `tmcc::CombinationEntry` |
+| `CombinationWord::{Assigned(Combination), Dummy, Reserved(ReservedCode)}` (`from_word`, `word`) | all 16 words of Table 1, lossless; a `Reserved` word can only be decoded (private constructor), so `==` is wire equality; the `word` of a `tmcc::CombinationEntry` |
 | `TmccInfo::{decode, encode, validate, slot_combinations, slot_ts_ids}` | the TMCC information |
 | `tmcc::{headers, decode_blocks, derandomise}` | a superframe's 8 header blocks ↔ information |
 | `slots::runs` | `Run { combination, slots, valid_slots, symbols }` per combination |

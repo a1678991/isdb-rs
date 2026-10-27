@@ -216,7 +216,7 @@ impl TmccInfo {
             let comb = match c.word {
                 CombinationWord::Assigned(comb) => comb,
                 CombinationWord::Dummy => continue,
-                CombinationWord::Reserved(w) => return Err(TmccError::ReservedWord(w)),
+                CombinationWord::Reserved(w) => return Err(TmccError::ReservedWord(w.get())),
             };
             let (unit, _) = comb.slot_unit();
             if usize::from(c.slots) % unit != 0 {
@@ -459,7 +459,7 @@ mod tests {
         i.combinations[1] = entry(Combination::Tc8psk2_3, 4);
         assert_eq!(i.validate(), Err(TmccError::Order));
         i.combinations[1] = CombinationEntry {
-            word: CombinationWord::Reserved(0b1000),
+            word: CombinationWord::from_word(0b1000),
             slots: 4,
         };
         assert_eq!(i.validate(), Err(TmccError::ReservedWord(8)));

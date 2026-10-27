@@ -48,10 +48,13 @@ assert_eq!(m.modulation(), Some(Modulation::Apsk16));
 assert_eq!(m.rate(), CodeRate::new(105));
 assert!(m.is_used());
 
-// 1111 is "no scheme allocated" (an unused mode); other codes are kept.
+// 1111 is "no scheme allocated" (an unused mode); other codes are kept
+// in `Reserved`, whose payload can only be decoded (private constructor),
+// so `==` is wire equality.
 assert_eq!(ModulationCode::from_code(0b1111), ModulationCode::Unused);
-assert_eq!(RateCode::from_code(0b1100), RateCode::Reserved(0b1100));
-assert_eq!(RateCode::Reserved(0b1100).code(), 0b1100);
+assert!(matches!(RateCode::from_code(0b1100), RateCode::Reserved(r) if r.get() == 0b1100));
+assert_eq!(RateCode::from_code(0b1100).code(), 0b1100);
+assert_eq!(RateCode::from_code(0xFC), RateCode::from_code(0b1100)); // masked to 4 bits
 assert!(!Mode { slots: 5, ..Mode::UNUSED }.is_used());
 
 assert_eq!(StreamType::from_code(0x02), StreamType::Tlv);

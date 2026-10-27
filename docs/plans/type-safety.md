@@ -42,7 +42,14 @@ table reserves codes: named variants plus one `Reserved(u8)` (or
 `Unused`, `Extension`, whatever the table calls it) that keeps the raw
 value masked to the field width. `coded_enum!` in `isdb-si` is this
 shape; `isdb-ts` and the satellite crates get their own copy or a shared
-one (see §3, item A).
+one (see §3, item A). The reserved payload is canonical by construction
+(item H1): it is a crate-local newtype with a private field whose only
+constructor is `pub(crate)` and called by `from_code` after it has
+excluded every assigned and unused code, so one value exists per wire
+code and `==` is wire equality everywhere, not only on the decode path.
+Consequently `code()` never masks (there is nothing to mask) and a
+`compile_fail` doctest proves the payload cannot be spelled outside the
+crate.
 
 Choose by asking: *is a reserved code an input the program has to
 preserve and report, or an input it has to refuse?* Preserve → lossless

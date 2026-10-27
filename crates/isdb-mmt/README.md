@@ -22,11 +22,13 @@ not need.
 
 The coded fields of the MPU payload header (Table 6-1) are lossless
 coded enums of their tables: `mpu::FragmentType` (Table 6-2: MPU
-metadata, movie fragment metadata, MFU, `Reserved(u8)` for 3–15) and
-`mpu::FragmentationIndicator` (Table 6-3: `Complete`, `Head`, `Middle`,
-`Last`, all four codes assigned). The MFU reassembler matches on the
-variants; `from_code()` / `code()` go both ways over the whole field
-width, so a parsed header re-encodes bit-exactly:
+metadata, movie fragment metadata, MFU, `Reserved(ReservedCode)` for
+3–15) and `mpu::FragmentationIndicator` (Table 6-3: `Complete`, `Head`,
+`Middle`, `Last`, all four codes assigned). The MFU reassembler matches
+on the variants; `from_code()` / `code()` go both ways over the whole
+field width, so a parsed header re-encodes bit-exactly. A `Reserved`
+payload can only be decoded (private constructor), so `==` is wire
+equality:
 
 ```rust
 use isdb_mmt::mpu::{self, FragmentType, FragmentationIndicator};
@@ -41,8 +43,9 @@ assert!(h.timed && !h.aggregated && !h.fragmentation.completes());
 assert_eq!(h.mpu_sequence_number, 0x0021_B0EC);
 
 // Reserved fragment types are kept, not dropped.
-assert_eq!(FragmentType::from_code(7), FragmentType::Reserved(7));
-assert_eq!(FragmentType::Reserved(7).code(), 7);
+assert!(matches!(FragmentType::from_code(7), FragmentType::Reserved(r) if r.get() == 7));
+assert_eq!(FragmentType::from_code(7).code(), 7);
+assert_eq!(FragmentType::from_code(0xF7), FragmentType::from_code(7)); // masked to 4 bits
 ```
 
 Text in MMT-SI is UTF-8 (B60 §7.1), not the ARIB 8-unit code of TS SI.

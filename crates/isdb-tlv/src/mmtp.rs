@@ -78,7 +78,9 @@ impl fmt::Display for FecType {
 /// code is kept in [`PayloadType::Reserved`] (0x04–0x1F "reserved for
 /// ISO/IEC", 0x20–0x3F "provided by the Ministry or private
 /// standardization organization"), so a decoded header re-encodes
-/// bit-exactly. On air only [`Mpu`](PayloadType::Mpu) and
+/// bit-exactly. The `Reserved` payload is a [`ReservedCode`] only
+/// `from_code` can build, so every value is canonical and `==` is wire
+/// equality. On air only [`Mpu`](PayloadType::Mpu) and
 /// [`Messages`](PayloadType::Messages) occur.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PayloadType {
@@ -94,9 +96,66 @@ pub enum PayloadType {
     FecRepair,
     /// 0x04–0x3F: reserved for ISO/IEC (–0x1F) or provided by the
     /// Ministry or a private standardization organization (0x20–); the
-    /// 6-bit code.
-    Reserved(u8),
+    /// 6-bit code as decoded.
+    Reserved(ReservedCode),
 }
+
+/// A payload type Table 6-6 does not assign (0x04–0x3F), as decoded.
+///
+/// Only [`PayloadType::from_code`] builds one, after it has excluded the
+/// four assigned codes: the field is private, so a
+/// [`Reserved`](PayloadType::Reserved) value is canonical by construction
+/// (one value per wire code) and `==` on the enum is wire equality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ReservedCode(u8);
+
+impl ReservedCode {
+    /// `c` must be a reserved code of Table 6-6, already masked to 6 bits;
+    /// only `from_code` upholds this.
+    pub(crate) const fn new_unchecked(c: u8) -> Self {
+        Self(c)
+    }
+
+    /// The 6-bit code.
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Binary for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Binary::fmt(&self.0, f)
+    }
+}
+
+impl fmt::LowerHex for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
+/// A reserved code cannot be spelled as a [`PayloadType`] outside this
+/// crate; the only way in is [`PayloadType::from_code`], so a decoded value
+/// is canonical:
+///
+/// ```compile_fail,E0624
+/// use isdb_tlv::mmtp::{PayloadType, ReservedCode};
+/// let _ = PayloadType::Reserved(ReservedCode::new_unchecked(0x2A));
+/// ```
+///
+/// ```
+/// use isdb_tlv::mmtp::PayloadType;
+/// assert_eq!(PayloadType::from_code(0x2A), PayloadType::from_code(0xEA));
+/// assert_eq!(PayloadType::from_code(0x2A).code(), 0x2A);
+/// ```
+#[doc(hidden)]
+pub const _PAYLOAD_TYPE_CANONICAL: () = ();
 
 impl PayloadType {
     /// The four assigned codes, in Table 6-6 order.
@@ -114,7 +173,7 @@ impl PayloadType {
             0x01 => PayloadType::GenericObject,
             0x02 => PayloadType::Messages,
             0x03 => PayloadType::FecRepair,
-            c => PayloadType::Reserved(c),
+            c => PayloadType::Reserved(ReservedCode::new_unchecked(c)),
         }
     }
 
@@ -125,7 +184,7 @@ impl PayloadType {
             PayloadType::GenericObject => 0x01,
             PayloadType::Messages => 0x02,
             PayloadType::FecRepair => 0x03,
-            PayloadType::Reserved(c) => c & 0x3F,
+            PayloadType::Reserved(c) => c.get(),
         }
     }
 }
@@ -405,7 +464,9 @@ mod tests {
             let t = PayloadType::from_code(c);
             assert_eq!(t.code(), c, "{t:?}");
             match t {
-                PayloadType::Reserved(r) => assert!((0x04..=0x3F).contains(&r) && r == c),
+                PayloadType::Reserved(r) => {
+                    assert!((0x04..=0x3F).contains(&r.get()) && r.get() == c);
+                }
                 named => assert!(PayloadType::ASSIGNED.contains(&named)),
             }
         }
@@ -414,7 +475,23 @@ mod tests {
         // masked to the field width (the two bits above are reserved
         // header bits, Table 6-4)
         assert_eq!(PayloadType::from_code(0xC2), PayloadType::Messages);
-        assert_eq!(PayloadType::Reserved(0xFF).code(), 0x3F);
+        assert_eq!(PayloadType::from_code(0xFF), PayloadType::from_code(0x3F));
+        assert_eq!(PayloadType::from_code(0xFF).code(), 0x3F);
+    }
+
+    /// `from_code` is total and masks to the 6-bit field: every `u8`
+    /// decodes to the canonical value of its low bits (the `Reserved`
+    /// payload can only come from `from_code`, so `==` is wire equality).
+    #[test]
+    fn prop_payload_type_from_code_masks_to_width() {
+        for c in 0..=255u8 {
+            assert_eq!(
+                PayloadType::from_code(c),
+                PayloadType::from_code(c & 0x3F),
+                "{c:#04x}"
+            );
+            assert_eq!(PayloadType::from_code(c).code(), c & 0x3F, "{c:#04x}");
+        }
     }
 
     /// A parsed header's codes are the bytes they came from, for every

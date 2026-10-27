@@ -27,6 +27,8 @@ pub const MAX_MFU: usize = 16 << 20;
 /// A lossless coded enum: codes 0–2 are named, 3–15 ("provided by the
 /// Ministry or private standardization organization") are kept in
 /// [`FragmentType::Reserved`], so a decoded header re-encodes bit-exactly.
+/// The `Reserved` payload is a [`ReservedCode`] only `from_code` can
+/// build, so every value is canonical and `==` is wire equality.
 /// Table 6-2 note 1: codes 0 and 1 "are provided in MMT Standard, but are
 /// not used in this standard" (§6.2: the metadata is not transmitted), so
 /// on air every payload is [`Mfu`](FragmentType::Mfu).
@@ -41,9 +43,66 @@ pub enum FragmentType {
     /// (media data without time) are involved."
     Mfu,
     /// 3–15: "provided by the Ministry or private standardization
-    /// organization"; the 4-bit code.
-    Reserved(u8),
+    /// organization"; the 4-bit code as decoded.
+    Reserved(ReservedCode),
 }
+
+/// A fragment type Table 6-2 does not assign (3–15), as decoded.
+///
+/// Only [`FragmentType::from_code`] builds one, after it has excluded the
+/// three assigned codes: the field is private, so a
+/// [`Reserved`](FragmentType::Reserved) value is canonical by construction
+/// (one value per wire code) and `==` on the enum is wire equality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ReservedCode(u8);
+
+impl ReservedCode {
+    /// `c` must be a reserved code of Table 6-2, already masked to 4 bits;
+    /// only `from_code` upholds this.
+    pub(crate) const fn new_unchecked(c: u8) -> Self {
+        Self(c)
+    }
+
+    /// The 4-bit code.
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Binary for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Binary::fmt(&self.0, f)
+    }
+}
+
+impl fmt::LowerHex for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
+/// A reserved code cannot be spelled as a [`FragmentType`] outside this
+/// crate; the only way in is [`FragmentType::from_code`], so a decoded
+/// value is canonical:
+///
+/// ```compile_fail,E0624
+/// use isdb_mmt::mpu::{FragmentType, ReservedCode};
+/// let _ = FragmentType::Reserved(ReservedCode::new_unchecked(7));
+/// ```
+///
+/// ```
+/// use isdb_mmt::mpu::FragmentType;
+/// assert_eq!(FragmentType::from_code(7), FragmentType::from_code(0xF7));
+/// assert_eq!(FragmentType::from_code(7).code(), 7);
+/// ```
+#[doc(hidden)]
+pub const _FRAGMENT_TYPE_CANONICAL: () = ();
 
 impl FragmentType {
     /// The three assigned codes, in Table 6-2 order.
@@ -59,7 +118,7 @@ impl FragmentType {
             0 => FragmentType::MpuMetadata,
             1 => FragmentType::MovieFragmentMetadata,
             2 => FragmentType::Mfu,
-            c => FragmentType::Reserved(c),
+            c => FragmentType::Reserved(ReservedCode::new_unchecked(c)),
         }
     }
 
@@ -69,7 +128,7 @@ impl FragmentType {
             FragmentType::MpuMetadata => 0,
             FragmentType::MovieFragmentMetadata => 1,
             FragmentType::Mfu => 2,
-            FragmentType::Reserved(c) => c & 0x0F,
+            FragmentType::Reserved(c) => c.get(),
         }
     }
 }
@@ -513,14 +572,32 @@ pub(crate) mod tests {
             let t = FragmentType::from_code(c);
             assert_eq!(t.code(), c, "{t:?}");
             match t {
-                FragmentType::Reserved(r) => assert!((3..=15).contains(&r) && r == c),
+                FragmentType::Reserved(r) => {
+                    assert!((3..=15).contains(&r.get()) && r.get() == c);
+                }
                 named => assert!(FragmentType::ASSIGNED.contains(&named)),
             }
         }
         assert_eq!(FragmentType::from_code(2), FragmentType::Mfu);
         // masked to the field width
         assert_eq!(FragmentType::from_code(0x12), FragmentType::Mfu);
-        assert_eq!(FragmentType::Reserved(0xFF).code(), 0x0F);
+        assert_eq!(FragmentType::from_code(0xFF), FragmentType::from_code(0x0F));
+        assert_eq!(FragmentType::from_code(0xFF).code(), 0x0F);
+    }
+
+    /// `from_code` is total and masks to the 4-bit field: every `u8`
+    /// decodes to the canonical value of its low bits (the `Reserved`
+    /// payload can only come from `from_code`, so `==` is wire equality).
+    #[test]
+    fn prop_fragment_type_from_code_masks_to_width() {
+        for c in 0..=255u8 {
+            assert_eq!(
+                FragmentType::from_code(c),
+                FragmentType::from_code(c & 0x0F),
+                "{c:#04x}"
+            );
+            assert_eq!(FragmentType::from_code(c).code(), c & 0x0F, "{c:#04x}");
+        }
     }
 
     /// Table 6-3: the four fragmentation indicators 00–11 round-trip

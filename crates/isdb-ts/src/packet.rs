@@ -28,6 +28,48 @@ pub const PAYLOAD_CAPACITY: usize = 184;
 /// sync_byte value '0100 0111' (§2.4.3.3).
 pub const SYNC_BYTE: u8 = 0x47;
 
+/// A user-defined transport_scrambling_control code ('01'–'11', Table 2-4)
+/// as decoded.
+///
+/// Only [`TransportScramblingControl::from_code`] builds one, after it has
+/// excluded '00': the field is private, so a
+/// [`UserDefined`](TransportScramblingControl::UserDefined) value is
+/// canonical by construction (one value per wire code) and `==` on the
+/// enum is wire equality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct UserDefinedCode(u8);
+
+impl UserDefinedCode {
+    /// `c` must be a code of the user-defined range, already masked to the
+    /// field width; only `from_code` upholds this.
+    pub(crate) const fn new_unchecked(c: u8) -> Self {
+        Self(c)
+    }
+
+    /// The 2-bit code ('01', '10' or '11').
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for UserDefinedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Binary for UserDefinedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Binary::fmt(&self.0, f)
+    }
+}
+
+impl fmt::LowerHex for UserDefinedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
 /// transport_scrambling_control (H.222.0 §2.4.3.3, Table 2-4): "indicates
 /// the scrambling mode of the Transport Stream packet payload".
 ///
@@ -35,15 +77,16 @@ pub const SYNC_BYTE: u8 = 0x47;
 /// code, '01'–'11' are "User-defined" and are kept verbatim so a decoded
 /// header re-encodes bit-exactly. [`from_code`](Self::from_code) is total
 /// (the argument is masked to 2 bits) and [`code`](Self::code) is its
-/// inverse. The project never descrambles: callers only ask
-/// [`is_scrambled`](Self::is_scrambled).
+/// inverse. The [`UserDefined`](Self::UserDefined) payload is a
+/// [`UserDefinedCode`] only `from_code` can build, so every value is
+/// canonical and `==` is wire equality. The project never descrambles:
+/// callers only ask [`is_scrambled`](Self::is_scrambled).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransportScramblingControl {
     /// '00' — "Not scrambled".
     NotScrambled,
-    /// '01', '10', '11' — "User-defined"; the code is kept. (`UserDefined(0)`
-    /// can be spelled but is never decoded: '00' is [`Self::NotScrambled`].)
-    UserDefined(u8),
+    /// '01', '10', '11' — "User-defined"; the code is kept.
+    UserDefined(UserDefinedCode),
 }
 
 impl TransportScramblingControl {
@@ -51,7 +94,7 @@ impl TransportScramblingControl {
     pub const fn code(self) -> u8 {
         match self {
             TransportScramblingControl::NotScrambled => 0b00,
-            TransportScramblingControl::UserDefined(c) => c & 0b11,
+            TransportScramblingControl::UserDefined(c) => c.get(),
         }
     }
 
@@ -59,7 +102,7 @@ impl TransportScramblingControl {
     pub const fn from_code(code: u8) -> Self {
         match code & 0b11 {
             0b00 => TransportScramblingControl::NotScrambled,
-            c => TransportScramblingControl::UserDefined(c),
+            c => TransportScramblingControl::UserDefined(UserDefinedCode::new_unchecked(c)),
         }
     }
 
@@ -68,6 +111,24 @@ impl TransportScramblingControl {
         self.code() != 0b00
     }
 }
+
+/// A user-defined code cannot be spelled as a [`TransportScramblingControl`]
+/// outside this crate; the only way in is
+/// [`TransportScramblingControl::from_code`], so a decoded value is
+/// canonical:
+///
+/// ```compile_fail,E0624
+/// use isdb_ts::packet::{TransportScramblingControl, UserDefinedCode};
+/// let _ = TransportScramblingControl::UserDefined(UserDefinedCode::new_unchecked(0b10));
+/// ```
+///
+/// ```
+/// use isdb_ts::packet::TransportScramblingControl as Tsc;
+/// assert_eq!(Tsc::from_code(0b10), Tsc::from_code(0b1110));
+/// assert_eq!(Tsc::from_code(0b10).code(), 0b10);
+/// ```
+#[doc(hidden)]
+pub const _TRANSPORT_SCRAMBLING_CONTROL_CANONICAL: () = ();
 
 impl fmt::Display for TransportScramblingControl {
     /// The code as two binary digits (`00`, `01`, …), the spec's notation
@@ -984,7 +1045,7 @@ mod tests {
         assert_eq!(h.pid, Pid::NULL);
         assert_eq!(
             h.transport_scrambling_control,
-            TransportScramblingControl::UserDefined(0b10)
+            TransportScramblingControl::from_code(0b10)
         );
         assert_eq!(
             h.adaptation_field_control,
@@ -1014,10 +1075,25 @@ mod tests {
             assert_eq!(Tsc::from_code(code | 0xFC), Tsc::from_code(code));
         }
         assert_eq!(Tsc::from_code(0b00), Tsc::NotScrambled);
-        assert_eq!(Tsc::from_code(0b01), Tsc::UserDefined(0b01));
-        assert_eq!(Tsc::from_code(0b10), Tsc::UserDefined(0b10));
-        assert_eq!(Tsc::from_code(0b11), Tsc::UserDefined(0b11));
+        for code in 1..=3u8 {
+            match Tsc::from_code(code) {
+                Tsc::UserDefined(u) => assert_eq!(u.get(), code),
+                Tsc::NotScrambled => panic!("{code:02b} is user-defined"),
+            }
+        }
         assert!(!Tsc::NotScrambled.is_scrambled());
+    }
+
+    /// `from_code` is total and masks to the 2-bit field: every `u8`
+    /// decodes to the canonical value of its low bits (the `UserDefined`
+    /// payload can only come from `from_code`).
+    #[test]
+    fn prop_tsc_from_code_masks_to_width() {
+        use TransportScramblingControl as Tsc;
+        for c in 0..=255u8 {
+            assert_eq!(Tsc::from_code(c), Tsc::from_code(c & 0b11), "{c:#04x}");
+            assert_eq!(Tsc::from_code(c).code(), c & 0b11, "{c:#04x}");
+        }
     }
 
     /// Table 2-5: the four codes name Reserved, PayloadOnly, AdaptationOnly

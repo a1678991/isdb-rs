@@ -14,6 +14,8 @@
 //! Multi-bit fields are written most significant bit first in ascending
 //! B order (the tables print "B28–B30 = 001" with B28 leftmost).
 
+use std::fmt;
+
 use crate::Error;
 use crate::dsc::{self, ParityStatus};
 use isdbt_core::{
@@ -33,16 +35,76 @@ pub fn segment_type_bits(differential: bool) -> [u8; 3] {
     if differential { [1, 1, 1] } else { [0, 0, 0] }
 }
 
+/// A code one of Tables 3-28 … 3-31 does not assign, as decoded.
+///
+/// Only the `from_code` of [`ModulationCode`], [`RateCode`],
+/// [`InterleaveCode`] and [`SegmentsCode`] builds one, after it has
+/// excluded every assigned code and the all-ones "unused" code: the field
+/// is private, so a `Reserved(c)` is canonical by construction (one value
+/// per wire code, never the spelling of `Unused`) and `==` on the enums is
+/// wire equality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ReservedCode(u8);
+
+impl ReservedCode {
+    /// `c` must be a reserved code of its table, already masked to the
+    /// field width; only the `from_code`s uphold this.
+    pub(crate) const fn new_unchecked(c: u8) -> Self {
+        Self(c)
+    }
+
+    /// The code, in the width of its field (3 or 4 bits).
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Binary for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Binary::fmt(&self.0, f)
+    }
+}
+
+impl fmt::LowerHex for ReservedCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
+/// A reserved code cannot be spelled as a TMCC layer code outside this
+/// crate; the only way in is `from_code`, so a decoded value is canonical:
+///
+/// ```compile_fail,E0624
+/// use isdbt_ofdm::tmcc::{ModulationCode, ReservedCode};
+/// let _ = ModulationCode::Reserved(ReservedCode::new_unchecked(0b101));
+/// ```
+///
+/// ```
+/// use isdbt_ofdm::tmcc::ModulationCode;
+/// assert_eq!(ModulationCode::from_code(0b101), ModulationCode::from_code(0b1101));
+/// assert_eq!(ModulationCode::from_code(0b101).code(), 0b101);
+/// ```
+#[doc(hidden)]
+pub const _TMCC_LAYER_CODES_CANONICAL: () = ();
+
 /// Carrier modulation mapping scheme code, Table 3-28 (3 bits, §3.15.6.5).
 ///
 /// Lossless: every 3-bit code has a variant, so a received TMCC word
-/// re-encodes bit for bit (`from_code(c).code() == c`).
+/// re-encodes bit for bit (`from_code(c).code() == c`). The `Reserved`
+/// payload is a [`ReservedCode`] only `from_code` can build, so every value
+/// is canonical and `==` is wire equality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModulationCode {
     /// '000' DQPSK, '001' QPSK, '010' 16QAM, '011' 64QAM.
     Assigned(Modulation),
-    /// '100'–'110' "Reserved"; the code, masked to 3 bits.
-    Reserved(u8),
+    /// '100'–'110' "Reserved"; the code as decoded.
+    Reserved(ReservedCode),
     /// '111' "Unused hierarchical layer" (also "no next information").
     Unused,
 }
@@ -55,7 +117,7 @@ impl ModulationCode {
             ModulationCode::Assigned(Modulation::Qpsk) => 0b001,
             ModulationCode::Assigned(Modulation::Qam16) => 0b010,
             ModulationCode::Assigned(Modulation::Qam64) => 0b011,
-            ModulationCode::Reserved(c) => c & 0b111,
+            ModulationCode::Reserved(c) => c.get(),
             ModulationCode::Unused => 0b111,
         }
     }
@@ -68,7 +130,7 @@ impl ModulationCode {
             0b010 => ModulationCode::Assigned(Modulation::Qam16),
             0b011 => ModulationCode::Assigned(Modulation::Qam64),
             0b111 => ModulationCode::Unused,
-            c => ModulationCode::Reserved(c),
+            c => ModulationCode::Reserved(ReservedCode::new_unchecked(c)),
         }
     }
 }
@@ -79,8 +141,8 @@ impl ModulationCode {
 pub enum RateCode {
     /// '000' 1/2, '001' 2/3, '010' 3/4, '011' 5/6, '100' 7/8.
     Assigned(CodeRate),
-    /// '101'–'110' "Reserved"; the code, masked to 3 bits.
-    Reserved(u8),
+    /// '101'–'110' "Reserved"; the code as decoded.
+    Reserved(ReservedCode),
     /// '111' "Unused hierarchical layer" (also "no next information").
     Unused,
 }
@@ -94,7 +156,7 @@ impl RateCode {
             RateCode::Assigned(CodeRate::R3_4) => 0b010,
             RateCode::Assigned(CodeRate::R5_6) => 0b011,
             RateCode::Assigned(CodeRate::R7_8) => 0b100,
-            RateCode::Reserved(c) => c & 0b111,
+            RateCode::Reserved(c) => c.get(),
             RateCode::Unused => 0b111,
         }
     }
@@ -108,7 +170,7 @@ impl RateCode {
             0b011 => RateCode::Assigned(CodeRate::R5_6),
             0b100 => RateCode::Assigned(CodeRate::R7_8),
             0b111 => RateCode::Unused,
-            c => RateCode::Reserved(c),
+            c => RateCode::Reserved(ReservedCode::new_unchecked(c)),
         }
     }
 }
@@ -123,8 +185,8 @@ pub enum InterleaveCode {
     Assigned(TimeInterleave),
     /// '100' "Not used" (assigned to digital terrestrial sound
     /// broadcasting, "not used in this system") and '101'–'110'
-    /// "Reserved"; the code, masked to 3 bits.
-    Reserved(u8),
+    /// "Reserved"; the code as decoded.
+    Reserved(ReservedCode),
     /// '111' "Unused hierarchical layer" (also "no next information").
     Unused,
 }
@@ -134,7 +196,7 @@ impl InterleaveCode {
     pub const fn code(self) -> u8 {
         match self {
             InterleaveCode::Assigned(t) => t.code(),
-            InterleaveCode::Reserved(c) => c & 0b111,
+            InterleaveCode::Reserved(c) => c.get(),
             InterleaveCode::Unused => 0b111,
         }
     }
@@ -145,7 +207,7 @@ impl InterleaveCode {
         match TimeInterleave::from_code(code) {
             Some(t) => InterleaveCode::Assigned(t),
             None if code == 0b111 => InterleaveCode::Unused,
-            None => InterleaveCode::Reserved(code),
+            None => InterleaveCode::Reserved(ReservedCode::new_unchecked(code)),
         }
     }
 }
@@ -156,8 +218,8 @@ impl InterleaveCode {
 pub enum SegmentsCode {
     /// '0001'–'1101': 1 to 13 segments (the count, equal to the code).
     Segments(Segments),
-    /// '0000' and '1110' "Reserved"; the code, masked to 4 bits.
-    Reserved(u8),
+    /// '0000' and '1110' "Reserved"; the code as decoded.
+    Reserved(ReservedCode),
     /// '1111' "Unused hierarchical layer" (also "no next information").
     Unused,
 }
@@ -167,7 +229,7 @@ impl SegmentsCode {
     pub const fn code(self) -> u8 {
         match self {
             SegmentsCode::Segments(n) => n.get(),
-            SegmentsCode::Reserved(n) => n & 0b1111,
+            SegmentsCode::Reserved(n) => n.get(),
             SegmentsCode::Unused => 0b1111,
         }
     }
@@ -178,7 +240,7 @@ impl SegmentsCode {
         match Segments::new(code) {
             Some(n) => SegmentsCode::Segments(n),
             None if code == 0b1111 => SegmentsCode::Unused,
-            None => SegmentsCode::Reserved(code),
+            None => SegmentsCode::Reserved(ReservedCode::new_unchecked(code)),
         }
     }
 }

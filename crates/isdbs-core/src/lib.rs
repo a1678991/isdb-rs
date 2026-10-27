@@ -21,5 +21,5 @@ pub mod mainsig;
 pub mod slots;
 pub mod tmcc;
 
-pub use combination::{Combination, CombinationWord, Modulation};
+pub use combination::{Combination, CombinationWord, Modulation, ReservedCode};
 pub use tmcc::{TmccDecode, TmccInfo};
