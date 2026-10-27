@@ -21,6 +21,7 @@
 //! last PCR before it, so the PTS/DTS it carries (which refer to the time
 //! base of that PCR) map onto the same continuous time line.
 
+use isdb_ts::Pid;
 use std::collections::VecDeque;
 
 use isdb_ts::pcr::{Pcr, pcr_signed_diff, pcr_wrap_diff};
@@ -50,8 +51,8 @@ pub fn packet_pcr(p: &[u8; 188]) -> Option<(u64, bool)> {
 }
 
 /// PID of a raw packet.
-pub fn packet_pid(p: &[u8; 188]) -> u16 {
-    (u16::from(p[1] & 0x1F) << 8) | u16::from(p[2])
+pub fn packet_pid(p: &[u8; 188]) -> Pid {
+    Pid::from_wire((u16::from(p[1] & 0x1F) << 8) | u16::from(p[2]))
 }
 
 /// Correspondence of a raw PCR value and the continuous time line, valid
@@ -104,7 +105,7 @@ pub struct ClockStats {
 /// (or [`PcrClock::finish`]) has fixed their time.
 #[derive(Debug)]
 pub struct PcrClock<T> {
-    pid: Option<u16>,
+    pid: Option<Pid>,
     pending: VecDeque<(Option<Anchor>, T)>,
     ready: VecDeque<Timed<T>>,
     anchor: Option<Anchor>,
@@ -115,7 +116,7 @@ pub struct PcrClock<T> {
 
 impl<T> PcrClock<T> {
     /// New clock on the PCRs of `pid`, or of the first PID carrying a PCR.
-    pub fn new(pid: Option<u16>) -> Self {
+    pub fn new(pid: Option<Pid>) -> Self {
         Self {
             pid,
             pending: VecDeque::new(),
@@ -128,7 +129,7 @@ impl<T> PcrClock<T> {
     }
 
     /// Reference PCR PID (once known).
-    pub fn pcr_pid(&self) -> Option<u16> {
+    pub fn pcr_pid(&self) -> Option<Pid> {
         self.pid
     }
 
@@ -261,6 +262,7 @@ mod tests {
     use isdb_ts::pcr::PCR_MODULUS;
 
     fn pcr_pkt(pid: u16, ticks: u64, disc: bool) -> [u8; 188] {
+        let pid = Pid::new(pid).unwrap();
         let mut f = isdb_ts::packet::AdaptationFields {
             pcr: Some(Pcr::from_ticks(ticks)),
             ..Default::default()
@@ -273,7 +275,7 @@ mod tests {
     }
 
     fn data_pkt(pid: u16) -> [u8; 188] {
-        isdb_ts::packet::Packet::with_payload(pid, false, 0, &[0u8; 184])
+        isdb_ts::packet::Packet::with_payload(Pid::new(pid).unwrap(), false, 0, &[0u8; 184])
             .unwrap()
             .encode()
             .unwrap()
@@ -321,7 +323,7 @@ mod tests {
             data_pkt(0x200),
             pcr_pkt(0x100, 1500, false), // wrapped: +3000 ticks
         ];
-        let mut c = PcrClock::new(Some(0x100));
+        let mut c = PcrClock::new(Some(Pid::new(0x100).unwrap()));
         for (i, x) in p.iter().enumerate() {
             c.push(x, i);
         }

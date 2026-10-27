@@ -7,6 +7,7 @@
 
 mod common;
 
+use isdb_ts::Pid;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -115,11 +116,11 @@ fn run(cfg: &Config, dir: &Path, frames: u64) -> Run {
 
 /// Sections of `pid` with the arrival time of their first packet.
 fn sections(r: &Run, pid: u16) -> Vec<(u64, Vec<u8>)> {
+    let pid = Pid::new(pid).unwrap();
     let mut a = SectionAssembler::new(pid);
     let mut v = Vec::new();
     for (i, p) in r.full.iter().enumerate() {
-        let ppid = ((u16::from(p[1]) & 0x1F) << 8) | u16::from(p[2]);
-        if ppid != pid {
+        if Pid::of_packet(p) != Some(pid) {
             continue;
         }
         for o in a.push(i as u64, p) {
@@ -168,7 +169,7 @@ fn modules(secs: &[(u64, Vec<u8>)], dii: &Dii) -> BTreeMap<u16, Vec<u8>> {
 }
 
 fn pmt(r: &Run) -> Long<Pmt> {
-    Long::<Pmt>::decode(&r.report.sections[&0x01F0][0].1).unwrap()
+    Long::<Pmt>::decode(&r.report.sections[&Pid::new(0x01F0).unwrap()][0].1).unwrap()
 }
 
 fn no_validation_errors(pkts: &[Packet], what: &str) {
@@ -207,7 +208,7 @@ fn carousel_carries_the_files_and_signals_them() {
         .body
         .streams
         .iter()
-        .find(|s| s.elementary_pid == 0x0140)
+        .find(|s| s.elementary_pid.get() == 0x0140)
         .unwrap();
     assert_eq!(es.stream_type, 0x0D);
     assert_eq!(es.descriptors[0].tag, 0x52);
@@ -230,7 +231,7 @@ fn carousel_carries_the_files_and_signals_them() {
     assert!(info.ondemand_retrieval);
 
     // ---- EIT: data content descriptor with the carousel
-    let eit = r.report.sections[&0x0012]
+    let eit = r.report.sections[&Pid::new(0x0012).unwrap()]
         .iter()
         .map(|(_, s)| Long::<EitBody>::decode(s).unwrap())
         .find(|t| !t.body.events.is_empty())
@@ -474,7 +475,7 @@ fn hybridcast_ait_as_its_own_component() {
         .body
         .streams
         .iter()
-        .find(|s| s.elementary_pid == 0x0141)
+        .find(|s| s.elementary_pid.get() == 0x0141)
         .unwrap();
     assert_eq!(es.stream_type, 0x05);
     let Descriptor::DataComponent(dc) =

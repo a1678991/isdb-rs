@@ -32,6 +32,7 @@ use isdb_si::AnyTable;
 use isdb_si::descriptor::{self as d, Descriptor};
 use isdb_si::time::{BcdDuration, BcdOffset, Date, DateTime, MjdTime};
 use isdb_text::AribString;
+use isdb_ts::Pid;
 use isdb_ts::section::LongHeader;
 
 /// A path segment.
@@ -74,7 +75,7 @@ pub struct Expr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     /// PIDs (empty = any PID).
-    pub pids: Vec<u16>,
+    pub pids: Vec<Pid>,
     /// table_id.
     pub table_id: u8,
     /// table_id_extension.
@@ -83,7 +84,7 @@ pub struct Target {
 
 impl Target {
     /// Whether a section on `pid` matches.
-    pub fn matches(&self, pid: u16, sec: &[u8]) -> bool {
+    pub fn matches(&self, pid: Pid, sec: &[u8]) -> bool {
         if sec.is_empty()
             || sec[0] != self.table_id
             || !(self.pids.is_empty() || self.pids.contains(&pid))
@@ -97,6 +98,15 @@ impl Target {
             }
         }
     }
+}
+
+/// A 13-bit PID (H.222.0 Table 2-3) written as [`int`] is.
+pub fn pid(s: &str) -> Result<Pid> {
+    let v = int(s)?;
+    u16::try_from(v)
+        .ok()
+        .and_then(Pid::new)
+        .ok_or_else(|| anyhow!("PID {v:#x} is not a 13-bit value (0..=0x1FFF)"))
 }
 
 /// Parse an integer (decimal or 0x hex).
@@ -187,7 +197,10 @@ impl Expr {
     /// Sections this expression applies to.
     pub fn target(&self) -> Result<Target> {
         let t = |pids: &[u16], tid: u8| Target {
-            pids: pids.to_vec(),
+            pids: pids
+                .iter()
+                .map(|&p| Pid::new(p).expect("Table 5-1 PID"))
+                .collect(),
             table_id: self.tid.unwrap_or(tid),
             ext: self.ext,
         };
@@ -288,7 +301,7 @@ impl Expr {
                                 .ok_or_else(|| anyhow!("stream as TYPE:PID"))?;
                             Ok(isdb_ts::psi::PmtStream::new(
                                 int(t)? as u8,
-                                int(pid)? as u16,
+                                self::pid(pid)?,
                                 vec![],
                             ))
                         },
@@ -330,7 +343,7 @@ fn pat_entry(v: &str) -> Result<isdb_ts::psi::PatEntry> {
     let (a, b) = v
         .split_once(':')
         .ok_or_else(|| anyhow!("PAT entry as PROGRAM:PID"))?;
-    Ok(isdb_ts::psi::PatEntry::new(int(a)? as u16, int(b)? as u16))
+    Ok(isdb_ts::psi::PatEntry::new(int(a)? as u16, pid(b)?))
 }
 
 /// The value of a scalar leaf: exactly one segment, no selector, `Set`.
@@ -492,6 +505,12 @@ macro_rules! int_val {
     )*};
 }
 int_val!(u8, u16, u32, u64);
+
+impl FromVal for Pid {
+    fn from_val(s: &str) -> Result<Self> {
+        pid(s)
+    }
+}
 
 impl FromVal for bool {
     fn from_val(s: &str) -> Result<Self> {
@@ -1101,7 +1120,7 @@ fn si_table(a: &mut AnyTable, p: &[Seg], op: &Op) -> Result<()> {
 
 /// Apply `expr` to one section (decode → mutate → encode).  Returns the
 /// new section bytes.
-pub fn apply_to_section(expr: &Expr, pid: u16, sec: &[u8]) -> Result<Vec<u8>> {
+pub fn apply_to_section(expr: &Expr, pid: Pid, sec: &[u8]) -> Result<Vec<u8>> {
     let mut t = crate::decode::decode(pid, sec).map_err(|e| anyhow!("decode: {e}"))?;
     expr.apply(&mut t)?;
     t.encode().map_err(|e| anyhow!("encode: {e}"))
@@ -1172,7 +1191,7 @@ mod tests {
         let b = nit();
         let out = apply_to_section(
             &Expr::parse("nit.ts[0].desc[0xFA].guard_interval=1").unwrap(),
-            0x10,
+            Pid::new(0x10).unwrap(),
             &b,
         )
         .unwrap();
@@ -1183,11 +1202,16 @@ mod tests {
             panic!()
         };
         assert_eq!(t.guard_interval, 1);
-        let out = apply_to_section(&Expr::parse("nit.version=24").unwrap(), 0x10, &out).unwrap();
+        let out = apply_to_section(
+            &Expr::parse("nit.version=24").unwrap(),
+            Pid::new(0x10).unwrap(),
+            &out,
+        )
+        .unwrap();
         assert_eq!(decoded(&out).header.version_number, 24);
         let out = apply_to_section(
             &Expr::parse("nit.desc[0x40].name=\"テスト\"").unwrap(),
-            0x10,
+            Pid::new(0x10).unwrap(),
             &out,
         )
         .unwrap();
@@ -1197,7 +1221,7 @@ mod tests {
         assert_eq!(nn.name.to_string_lossy(), "テスト");
         let out = apply_to_section(
             &Expr::parse("nit.ts[0x79ee].desc.add=cd0a0940000f00000e08ffff").unwrap(),
-            0x10,
+            Pid::new(0x10).unwrap(),
             &out,
         );
         assert!(
@@ -1206,7 +1230,7 @@ mod tests {
         );
         let out = apply_to_section(
             &Expr::parse("nit.ts[0x79ee].desc[0xFA].frequencies.add=3564").unwrap(),
-            0x10,
+            Pid::new(0x10).unwrap(),
             &nit(),
         )
         .unwrap();
@@ -1220,7 +1244,7 @@ mod tests {
         assert!(
             apply_to_section(
                 &Expr::parse("nit.ts[0].desc[0xFA].guard_interval=4").unwrap(),
-                0x10,
+                Pid::new(0x10).unwrap(),
                 &nit()
             )
             .is_err()
@@ -1228,7 +1252,7 @@ mod tests {
         // unknown field lists alternatives
         let e = apply_to_section(
             &Expr::parse("nit.ts[0].desc[0xFA].gaurd=1").unwrap(),
-            0x10,
+            Pid::new(0x10).unwrap(),
             &nit(),
         )
         .unwrap_err();
@@ -1241,31 +1265,44 @@ mod tests {
             0x79EE,
             0,
             vec![
-                isdb_ts::psi::PatEntry::new(0, 0x10),
-                isdb_ts::psi::PatEntry::new(0x0408, 0x1F0),
+                isdb_ts::psi::PatEntry::new(0, Pid::new(0x10).unwrap()),
+                isdb_ts::psi::PatEntry::new(0x0408, Pid::new(0x1F0).unwrap()),
             ],
         )
         .encode()
         .unwrap();
-        let out = apply_to_section(&Expr::parse("pat.add=0x0e28:0x1fff").unwrap(), 0, &p).unwrap();
+        let out = apply_to_section(
+            &Expr::parse("pat.add=0x0e28:0x1fff").unwrap(),
+            Pid::new(0).unwrap(),
+            &p,
+        )
+        .unwrap();
         let d = isdb_ts::section::Long::<isdb_ts::psi::Pat>::decode(&out).unwrap();
         assert_eq!(
             d.body.programs().collect::<Vec<_>>(),
-            vec![(0x0408, 0x1F0), (0x0E28, 0x1FFF)]
-        );
-        let out = apply_to_section(&Expr::parse("pat.del=0x0408").unwrap(), 0, &out).unwrap();
-        let d = isdb_ts::section::Long::<isdb_ts::psi::Pat>::decode(&out).unwrap();
-        assert_eq!(
-            d.body.programs().collect::<Vec<_>>(),
-            vec![(0x0E28, 0x1FFF)]
+            vec![(0x0408, Pid::new(0x1F0).unwrap()), (0x0E28, Pid::NULL)]
         );
         let out = apply_to_section(
-            &Expr::parse("pat.entries[0x0E28].pid=0x01f0").unwrap(),
-            0,
+            &Expr::parse("pat.del=0x0408").unwrap(),
+            Pid::new(0).unwrap(),
             &out,
         )
         .unwrap();
         let d = isdb_ts::section::Long::<isdb_ts::psi::Pat>::decode(&out).unwrap();
-        assert_eq!(d.body.programs().collect::<Vec<_>>(), vec![(0x0E28, 0x1F0)]);
+        assert_eq!(
+            d.body.programs().collect::<Vec<_>>(),
+            vec![(0x0E28, Pid::NULL)]
+        );
+        let out = apply_to_section(
+            &Expr::parse("pat.entries[0x0E28].pid=0x01f0").unwrap(),
+            Pid::new(0).unwrap(),
+            &out,
+        )
+        .unwrap();
+        let d = isdb_ts::section::Long::<isdb_ts::psi::Pat>::decode(&out).unwrap();
+        assert_eq!(
+            d.body.programs().collect::<Vec<_>>(),
+            vec![(0x0E28, Pid::new(0x1F0).unwrap())]
+        );
     }
 }

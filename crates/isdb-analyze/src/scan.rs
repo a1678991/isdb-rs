@@ -9,6 +9,7 @@
 //! `isdb_ts::pes::PesHeader::decode`.
 
 use crate::names;
+use isdb_ts::Pid;
 use isdb_ts::demux::{Assembled, DemuxEventKind, SectionDemux};
 use isdb_ts::packet::{PACKET_SIZE, Packet, View};
 use isdb_ts::psi::{Cat, Pat, Pmt};
@@ -33,7 +34,7 @@ pub struct ScanOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct SlotKey {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// table_id.
     pub table_id: u8,
     /// table_id_extension (long form).
@@ -102,7 +103,7 @@ pub struct Slot {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SectionError {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// Start packet.
     pub packet: u64,
     /// table_id byte.
@@ -112,14 +113,14 @@ pub struct SectionError {
 }
 
 /// Count + first occurrence of a repeated finding.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Tally {
     /// Occurrences.
     pub count: u64,
     /// First packet index.
     pub first_packet: u64,
     /// First PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// Example message.
     pub example: String,
     /// Clause.
@@ -131,7 +132,7 @@ impl Tally {
         m: &mut BTreeMap<String, Tally>,
         key: String,
         clause: &str,
-        pid: u16,
+        pid: Pid,
         packet: u64,
         example: impl FnOnce() -> String,
     ) {
@@ -209,7 +210,7 @@ pub struct Capture {
     /// Packet-level violations (H.222.0 `packet::check`), by clause+kind.
     pub packet_violations: BTreeMap<String, Tally>,
     /// PIDs whose sections are fully recorded (PSI/SI).
-    pub section_pids: BTreeSet<u16>,
+    pub section_pids: BTreeSet<Pid>,
     /// Recorded sections.
     pub slots: BTreeMap<SlotKey, Slot>,
     /// Sections failing CRC / envelope (first 1000).
@@ -219,11 +220,11 @@ pub struct Capture {
     /// Section assembler events, by kind.
     pub demux_events: BTreeMap<String, Tally>,
     /// Sections on non-SI PIDs.
-    pub other_sections: BTreeMap<(u16, u8), OtherSections>,
+    pub other_sections: BTreeMap<(Pid, u8), OtherSections>,
     /// PES tracks by PID.
-    pub pes: BTreeMap<u16, PesTrack>,
+    pub pes: BTreeMap<Pid, PesTrack>,
     /// Packet indices of every packet on section PIDs.
-    pub section_pid_packets: BTreeMap<u16, Vec<u64>>,
+    pub section_pid_packets: BTreeMap<Pid, Vec<u64>>,
     /// Packets whose payload was not parsed because it is scrambled
     /// (transport_scrambling_control ≠ '00').
     pub scrambled_payloads: u64,
@@ -231,8 +232,8 @@ pub struct Capture {
 
 /// Whether `pid` is in the PSI/SI range fully recorded by default
 /// (H.222.0 Table 2-3 0x0000–0x000F, B10 Part 1 Table 5-1 0x0010–0x002F).
-pub fn si_range(pid: u16) -> bool {
-    pid <= 0x002F
+pub fn si_range(pid: Pid) -> bool {
+    pid.get() <= 0x002F
 }
 
 struct Scanner {
@@ -240,8 +241,8 @@ struct Scanner {
     opts: ScanOptions,
     demux: SectionDemux,
     /// PIDs with other (non-SI) sections.
-    other_pids: BTreeSet<u16>,
-    pmt_pids: BTreeSet<u16>,
+    other_pids: BTreeSet<Pid>,
+    pmt_pids: BTreeSet<Pid>,
     decoded: HashMap<Vec<u8>, ()>,
 }
 
@@ -259,18 +260,18 @@ impl Scanner {
             decoded: HashMap::new(),
         };
         for pid in 0..=0x002F {
-            s.add_si_pid(pid);
+            s.add_si_pid(Pid::new(pid).expect("13 bits"));
         }
         s
     }
 
-    fn add_si_pid(&mut self, pid: u16) {
+    fn add_si_pid(&mut self, pid: Pid) {
         self.demux.add_pid(pid);
         self.cap.section_pids.insert(pid);
     }
 
-    fn add_other_pid(&mut self, pid: u16) {
-        if pid != 0x1FFF && !self.cap.section_pids.contains(&pid) {
+    fn add_other_pid(&mut self, pid: Pid) {
+        if pid != Pid::NULL && !self.cap.section_pids.contains(&pid) {
             self.demux.add_pid(pid);
             self.other_pids.insert(pid);
         }
@@ -278,23 +279,25 @@ impl Scanner {
 
     /// Learn PIDs from PSI (PAT → PMT/NIT PIDs, PMT → ES/ECM PIDs, CAT →
     /// EMM PIDs).  Called for each distinct PSI body.
-    fn learn(&mut self, pid: u16, sec: &[u8]) {
+    fn learn(&mut self, pid: Pid, sec: &[u8]) {
         match sec.first() {
-            Some(0x00) if pid == 0 => {
+            Some(0x00) if pid == Pid::PAT => {
                 if let Ok(p) = Long::<Pat>::decode(sec) {
                     for e in &p.body.entries {
-                        if e.pid != 0x1FFF {
+                        if e.pid != Pid::NULL {
                             self.pmt_pids.insert(e.pid);
                             self.add_si_pid(e.pid);
                         }
                     }
                 }
             }
-            Some(0x01) if pid == 1 => {
+            Some(0x01) if pid == Pid::CAT => {
                 if let Ok(c) = Long::<Cat>::decode(sec) {
                     for d in &c.body.descriptors {
                         if matches!(d.tag, 0x09 | 0xF6) && d.data.len() >= 4 {
-                            self.add_other_pid(u16::from_be_bytes([d.data[2], d.data[3]]) & 0x1FFF);
+                            self.add_other_pid(Pid::from_wire(u16::from_be_bytes([
+                                d.data[2], d.data[3],
+                            ])));
                         }
                     }
                 }
@@ -302,10 +305,10 @@ impl Scanner {
             Some(0x02) => {
                 if let Ok(p) = Long::<Pmt>::decode(sec) {
                     let prog = p.header.table_id_extension;
-                    let ca = |ds: &[isdb_ts::descriptor::Descriptor]| -> Vec<u16> {
+                    let ca = |ds: &[isdb_ts::descriptor::Descriptor]| -> Vec<Pid> {
                         ds.iter()
                             .filter(|d| matches!(d.tag, 0x09 | 0xF6) && d.data.len() >= 4)
-                            .map(|d| u16::from_be_bytes([d.data[2], d.data[3]]) & 0x1FFF)
+                            .map(|d| Pid::from_wire(u16::from_be_bytes([d.data[2], d.data[3]])))
                             .collect()
                     };
                     for c in ca(&p.body.program_info) {
@@ -335,7 +338,7 @@ impl Scanner {
     fn push(&mut self, index: u64, pkt: &[u8; PACKET_SIZE]) {
         self.cap.packets += 1;
         self.cap.stats.push(index, pkt);
-        let pid = (u16::from(pkt[1] & 0x1F) << 8) | u16::from(pkt[2]);
+        let pid = Pid::of_packet(pkt).expect("188-byte packet");
         // Packets flagged by transport_error_indicator carry uncorrectable
         // bit errors (§2.4.3.3); their contents are not checked.
         if !self.opts.skip_packet_checks && pkt[1] & 0x80 == 0 {
@@ -446,7 +449,7 @@ impl Scanner {
         }
     }
 
-    fn section(&mut self, pid: u16, start: u64, data: Vec<u8>) {
+    fn section(&mut self, pid: Pid, start: u64, data: Vec<u8>) {
         let tid = data[0];
         if !self.cap.section_pids.contains(&pid) {
             let o = self.cap.other_sections.entry((pid, tid)).or_default();
@@ -561,7 +564,7 @@ impl Scanner {
     }
 }
 
-fn pes_header(t: &mut PesTrack, index: u64, pid: u16, pl: &[u8]) {
+fn pes_header(t: &mut PesTrack, index: u64, pid: Pid, pl: &[u8]) {
     if pl.len() < 6 || pl[..3] != isdb_ts::pes::START_CODE_PREFIX {
         t.no_start_code += 1;
         return;
@@ -650,8 +653,8 @@ pub fn scan_path(path: &Path, opts: &ScanOptions) -> std::io::Result<Capture> {
         let f = std::fs::File::open(path)?;
         let mut r = StreamReader::new(std::io::BufReader::with_capacity(1 << 20, f));
         let mut d = SectionDemux::new();
-        d.add_pid(0);
-        d.add_pid(1);
+        d.add_pid(Pid::PAT);
+        d.add_pid(Pid::CAT);
         let mut n = 0u64;
         while let Some(p) = r.next_packet()? {
             n += 1;
@@ -659,7 +662,7 @@ pub fn scan_path(path: &Path, opts: &ScanOptions) -> std::io::Result<Capture> {
                 break;
             }
             let pk = p.packet();
-            let pid = (u16::from(pk[1] & 0x1F) << 8) | u16::from(pk[2]);
+            let pid = Pid::of_packet(pk).expect("188-byte packet");
             if !d.has_pid(pid) {
                 continue;
             }
@@ -692,10 +695,10 @@ pub fn scan_bytes(buf: &[u8], opts: &ScanOptions) -> Capture {
     let mut sc = Scanner::new(opts.clone(), "<memory>".into());
     {
         let mut d = SectionDemux::new();
-        d.add_pid(0);
-        d.add_pid(1);
+        d.add_pid(Pid::PAT);
+        d.add_pid(Pid::CAT);
         for p in SliceReader::new(buf).take(400_000) {
-            let pid = (u16::from(p.packet[1] & 0x1F) << 8) | u16::from(p.packet[2]);
+            let pid = Pid::of_packet(p.packet).expect("188-byte packet");
             if !d.has_pid(pid) {
                 continue;
             }
@@ -748,14 +751,14 @@ impl Capture {
     pub fn pat(&self) -> Option<Long<Pat>> {
         self.slots
             .iter()
-            .filter(|(k, _)| k.pid == 0 && k.table_id == 0)
+            .filter(|(k, _)| k.pid == Pid::PAT && k.table_id == 0)
             .max_by_key(|(_, s)| s.latest_packet)
             .and_then(|(_, s)| Long::<Pat>::decode(&s.latest).ok())
     }
 
     /// Latest PMT of every program, keyed by program_number, with its PID.
-    pub fn pmts(&self) -> BTreeMap<u16, (u16, Long<Pmt>)> {
-        let mut m: BTreeMap<u16, (u64, u16, Long<Pmt>)> = BTreeMap::new();
+    pub fn pmts(&self) -> BTreeMap<u16, (Pid, Long<Pmt>)> {
+        let mut m: BTreeMap<u16, (u64, Pid, Long<Pmt>)> = BTreeMap::new();
         for (k, s) in &self.slots {
             if k.table_id == 2
                 && let Ok(p) = Long::<Pmt>::decode(&s.latest)

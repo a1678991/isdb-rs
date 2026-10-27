@@ -14,6 +14,7 @@ use crate::any::{AnyTable, table_allowed_on_pid};
 use crate::descriptor::*;
 use crate::tables::*;
 use crate::time::{BcdDuration, BcdOffset, MjdTime};
+use isdb_ts::Pid;
 use isdb_ts::section::{LongHeader, ShortHeader};
 
 /// Category of a deviation.
@@ -99,7 +100,7 @@ impl Out<'_> {
 const RESERVED: &str = "B10 Part 2 §3.1 (reserved / reserved_future_use)";
 
 /// Check one decoded section carried on `pid`.
-pub fn check(pid: u16, table: &AnyTable) -> Vec<Deviation> {
+pub fn check(pid: Pid, table: &AnyTable) -> Vec<Deviation> {
     let mut v = Vec::new();
     let section_length = table
         .encode()

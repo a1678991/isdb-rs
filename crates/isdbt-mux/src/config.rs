@@ -11,6 +11,7 @@
 //! patches, whole transplanted sections).
 
 use isdb_si::values::{ApplicationControlCode, ApplicationVisibility, DocumentResolution};
+use isdb_ts::Pid;
 use serde::{Deserialize, Serialize};
 
 pub use crate::audio::AdtsCompliance;
@@ -318,7 +319,7 @@ pub struct TableOpts {
     /// Layer carrying the table.
     pub layer: Option<LayerName>,
     /// PID override (B10 Table 5-1 PIDs are the default).
-    pub pid: Option<u16>,
+    pub pid: Option<Pid>,
     /// Initial version_number.
     pub version: u8,
     /// Raw descriptors added to the generated loops.
@@ -347,7 +348,7 @@ macro_rules! table_cfg {
             /// Layer carrying the table (default: see SPEC-NOTES).
             pub layer: Option<LayerName>,
             /// PID override.
-            pub pid: Option<u16>,
+            pub pid: Option<Pid>,
             /// Initial version_number.
             pub version: u8,
             /// Raw descriptors added to generated loops.
@@ -473,7 +474,7 @@ pub enum EitScheduleReference {
 #[serde(deny_unknown_fields)]
 pub struct RawTableCfg {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// Layer.
     pub layer: LayerName,
     /// Repetition interval (ms).
@@ -550,10 +551,10 @@ pub struct Service {
     /// Layer carrying the service's elementary streams.
     pub layer: LayerName,
     /// PMT PID.
-    pub pmt_pid: u16,
+    pub pmt_pid: Pid,
     /// PCR PID (0x1FFF: no PCR). May equal an elementary PID.
     #[serde(default = "default_no_pcr")]
-    pub pcr_pid: u16,
+    pub pcr_pid: Pid,
     /// SDT running_status (B10 Table 5-6).
     #[serde(default)]
     pub running_status: u8,
@@ -712,9 +713,9 @@ pub struct StreamCfg {
     /// Kind.
     pub kind: StreamKind,
     /// elementary_PID (not used by `ts-program`, whose PIDs come from the
-    /// source PMT and `pid_map`).
-    #[serde(default)]
-    pub pid: u16,
+    /// source PMT and `pid_map`; left at 0x0000 there).
+    #[serde(default = "pid_unset")]
+    pub pid: Pid,
     /// stream_type (H.222.0 Table 2-34); default 0x02 video, 0x0F AAC ADTS.
     #[serde(default)]
     pub stream_type: Option<u8>,
@@ -893,7 +894,7 @@ pub enum PidMap {
     Keep,
     /// `[[source_pid, output_pid], …]`; relayed streams not listed keep
     /// their source PID.
-    List(Vec<[u16; 2]>),
+    List(Vec<[Pid; 2]>),
 }
 
 impl PidMap {
@@ -932,7 +933,7 @@ impl<'de> Deserialize<'de> for PidMap {
                 self,
                 seq: A,
             ) -> std::result::Result<PidMap, A::Error> {
-                let v: Vec<[u16; 2]> =
+                let v: Vec<[Pid; 2]> =
                     Deserialize::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))?;
                 Ok(PidMap::List(v))
             }
@@ -943,12 +944,12 @@ impl<'de> Deserialize<'de> for PidMap {
 
 /// One PID or a list of PIDs (TOML `0x0112` or `[0x0112, 0x0113]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PidList(pub Vec<u16>);
+pub struct PidList(pub Vec<Pid>);
 
 impl Serialize for PidList {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         match self.0.as_slice() {
-            [one] => s.serialize_u16(*one),
+            [one] => one.serialize(s),
             v => v.serialize(s),
         }
     }
@@ -963,20 +964,18 @@ impl<'de> Deserialize<'de> for PidList {
                 f.write_str("a PID or a list of PIDs")
             }
             fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<PidList, E> {
-                u16::try_from(v)
+                Pid::deserialize(serde::de::value::I64Deserializer::new(v))
                     .map(|p| PidList(vec![p]))
-                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Signed(v), &self))
             }
             fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<PidList, E> {
-                u16::try_from(v)
+                Pid::deserialize(serde::de::value::U64Deserializer::new(v))
                     .map(|p| PidList(vec![p]))
-                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Unsigned(v), &self))
             }
             fn visit_seq<A: serde::de::SeqAccess<'de>>(
                 self,
                 seq: A,
             ) -> std::result::Result<PidList, A::Error> {
-                let v: Vec<u16> =
+                let v: Vec<Pid> =
                     Deserialize::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))?;
                 Ok(PidList(v))
             }
@@ -1010,18 +1009,18 @@ pub struct PidPlan {
 impl Default for PidPlan {
     fn default() -> Self {
         Self {
-            video: PidList(vec![0x0111]),
-            audio: PidList(vec![0x0112]),
-            captions: PidList(vec![0x0130]),
-            superimpose: PidList(vec![0x0138]),
-            data: PidList(vec![0x0140]),
+            video: PidList(vec![Pid::new(0x0111).unwrap()]),
+            audio: PidList(vec![Pid::new(0x0112).unwrap()]),
+            captions: PidList(vec![Pid::new(0x0130).unwrap()]),
+            superimpose: PidList(vec![Pid::new(0x0138).unwrap()]),
+            data: PidList(vec![Pid::new(0x0140).unwrap()]),
         }
     }
 }
 
 impl PidPlan {
     /// Every PID of the plan.
-    pub fn all(&self) -> impl Iterator<Item = u16> + '_ {
+    pub fn all(&self) -> impl Iterator<Item = Pid> + '_ {
         [
             &self.video,
             &self.audio,
@@ -1039,7 +1038,7 @@ impl PidPlan {
 #[serde(deny_unknown_fields)]
 pub struct HierarchicalCfg {
     /// reference_PID: the elementary stream of the other quality level.
-    pub reference_pid: u16,
+    pub reference_pid: Pid,
     /// quality_level ('1' high). Default: derived from the transmission
     /// parameters — the stream on the less robust layer (B31 Part 2
     /// Table 3-2 ranking) is the high-quality one.
@@ -1356,7 +1355,7 @@ pub struct HybridcastCfg {
     pub launcher_prologue: Option<String>,
     /// `carriage = "es"`: PID of the AIT component. Required then.
     #[serde(default)]
-    pub pid: Option<u16>,
+    pub pid: Option<Pid>,
     /// `carriage = "es"`: data_component_id of the PMT data component
     /// descriptor carrying ait_identifier_info (B24 Vol. 4 §7.3). Required
     /// then: B24 v6.4 leaves the value "[T B D]" and the local texts do
@@ -1444,8 +1443,14 @@ fn default_abi() -> u8 {
 fn default_service_type() -> u8 {
     0x01
 }
-fn default_no_pcr() -> u16 {
-    0x1FFF
+fn default_no_pcr() -> Pid {
+    Pid::NULL
+}
+/// `StreamCfg::pid` when the TOML omits it: 0x0000, which no elementary
+/// stream may use, so the multiplexer rejects it unless the stream is a
+/// `ts-program` (whose PIDs come from the source).
+fn pid_unset() -> Pid {
+    Pid::PAT
 }
 fn default_udf() -> u8 {
     0x7
@@ -1518,5 +1523,45 @@ mod tests {
         assert_eq!(c.eit_schedule.reference, EitScheduleReference::Today);
         let e = Config::from_toml(&with("week")).unwrap_err().to_string();
         assert!(e.contains("week") && e.contains("today"), "{e}");
+    }
+
+    /// A PID is 13 bits (H.222.0 Table 2-3): every PID key of the TOML is
+    /// range-checked when the file is loaded, naming the key, not when the
+    /// packet is encoded.
+    #[test]
+    fn spec_table_2_3_pids_are_range_checked_on_load() {
+        let base = EXAMPLE_TOML;
+        assert!(Config::from_toml(base).is_ok());
+        for (key, from, to) in [
+            ("pmt_pid", "pmt_pid = 0x01F0", "pmt_pid = 0x2000"),
+            ("pcr_pid", "pcr_pid = 0x01FF", "pcr_pid = 8192"),
+            ("pid", "  pid = 0x0111", "  pid = 0x1_0000"),
+        ] {
+            let bad = base.replacen(from, to, 1);
+            assert_ne!(bad, base, "{from} not in the example");
+            let e = Config::from_toml(&bad).unwrap_err().to_string();
+            assert!(
+                e.contains(key) && e.contains("13-bit") && e.contains("Table 2-3"),
+                "{key}: {e}"
+            );
+        }
+        // the largest PID loads; the serialised form is the plain integer
+        let c =
+            Config::from_toml(&base.replacen("pcr_pid = 0x01FF", "pcr_pid = 0x1FFF", 1)).unwrap();
+        assert_eq!(c.services[0].pcr_pid, Pid::NULL);
+        assert!(c.to_toml().unwrap().contains("pcr_pid = 8191\n"));
+        // the ts-program PID map and the role plan too
+        let relay = include_str!("../examples/relay-ts.toml");
+        assert!(Config::from_toml(relay).is_ok());
+        let anchor = "  source = \"recording.ts\"\n";
+        assert!(relay.contains(anchor));
+        for (key, line) in [
+            ("pid_map", "  pid_map = [[0x0111, 0x2000]]\n"),
+            ("pids", "  pids = { video = 0x2000 }\n"),
+        ] {
+            let bad = relay.replacen(anchor, &format!("{anchor}{line}"), 1);
+            let e = Config::from_toml(&bad).unwrap_err().to_string();
+            assert!(e.contains(key) && e.contains("13-bit"), "{key}: {e}");
+        }
     }
 }

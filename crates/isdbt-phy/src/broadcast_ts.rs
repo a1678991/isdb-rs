@@ -66,6 +66,7 @@
 
 use std::sync::OnceLock;
 
+use isdb_ts::Pid;
 use isdb_ts::crc::crc32;
 use isdbt_core::{GuardInterval, Layer, Mode, Params, TRANSMISSION_TSP, TSP};
 use isdbt_fec::remux::{MultiplexPattern, Slot, null_tsp};
@@ -92,7 +93,7 @@ pub type BroadcastTsp = [u8; BROADCAST_TSP];
 /// only says "service provider defined; however, the same PID is used for
 /// digital terrestrial television broadcasting" — the value itself is from
 /// operational knowledge (TR-B14), not from the local specifications.
-pub const IIP_PID: u16 = 0x1FF0;
+pub const IIP_PID: Pid = Pid::new(0x1FF0).unwrap();
 /// Payload of the IIP: 184 bytes (Table 5-8, payload only).
 pub const IIP_PAYLOAD: usize = TSP - 4;
 /// Length of `modulation_control_configuration_information` (160 bits).
@@ -833,7 +834,7 @@ impl NetworkSync {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Iip {
     /// PID ("service provider defined"; [`IIP_PID`] in terrestrial TV).
-    pub pid: u16,
+    pub pid: Pid,
     /// `continuity_counter` (H.222.0 §2.4.3.3).
     pub continuity_counter: u8,
     /// `IIP_packet_pointer`: TSPs from this packet to the next multiplex
@@ -855,14 +856,11 @@ impl Iip {
     /// `adaptation_field_control` '01', the payload, and 0xFF stuffing
     /// (Table 5-8 / 5-9).
     pub fn to_packet(&self) -> Result<Packet> {
-        if self.pid > 0x1FFF {
-            return Err(err(format!("PID 0x{:X} does not fit 13 bits", self.pid)));
-        }
         let ns = self.network_sync.to_bytes()?;
         let mut p = [0xFFu8; TSP];
         p[0] = 0x47;
-        p[1] = 0x40 | (self.pid >> 8) as u8;
-        p[2] = self.pid as u8;
+        p[1] = 0x40 | (self.pid.get() >> 8) as u8;
+        p[2] = self.pid.get() as u8;
         p[3] = 0x10 | (self.continuity_counter & 0xF);
         p[4..6].copy_from_slice(&self.packet_pointer.to_be_bytes());
         p[6..26].copy_from_slice(&self.modulation_control.to_bytes());
@@ -896,7 +894,7 @@ impl Iip {
         let mut mc = [0u8; MODULATION_CONTROL_LEN];
         mc.copy_from_slice(&p[6..26]);
         Ok(Self {
-            pid: u16::from(p[1] & 0x1F) << 8 | u16::from(p[2]),
+            pid: Pid::from_wire(u16::from(p[1] & 0x1F) << 8 | u16::from(p[2])),
             continuity_counter: p[3] & 0xF,
             packet_pointer: u16::from_be_bytes([p[4], p[5]]),
             modulation_control: ModulationControl::from_bytes(&mc)?,
@@ -927,7 +925,7 @@ pub struct BroadcastTsWriter {
     params: Params,
     pattern: MultiplexPattern,
     iip_slot: usize,
-    iip_pid: u16,
+    iip_pid: Pid,
     tmcc: TmccInfo,
     network_sync: NetworkSync,
     continuity_counter: u8,
@@ -959,12 +957,10 @@ impl BroadcastTsWriter {
     }
 
     /// Use another IIP PID.
-    pub fn with_iip_pid(mut self, pid: u16) -> Result<Self> {
-        if pid > 0x1FFF {
-            return Err(err(format!("PID 0x{pid:X} does not fit 13 bits")));
-        }
+    #[must_use]
+    pub fn with_iip_pid(mut self, pid: Pid) -> Self {
         self.iip_pid = pid;
-        Ok(self)
+        self
     }
 
     /// Override the TMCC information carried by the IIP and (countdown
@@ -1534,7 +1530,9 @@ mod tests {
         let mut bad = p;
         bad[10] ^= 1;
         assert!(Iip::from_packet(&bad).is_err());
-        assert!(Iip { pid: 0x2000, ..iip }.to_packet().is_err());
+        // A PID above 13 bits cannot be constructed (`Pid::new` is `None`),
+        // so `to_packet` has no range check to fail.
+        assert!(Pid::new(0x2000).is_none());
     }
 
     /// Writer: one IIP per frame in the first null slot, pointer = TSPs to

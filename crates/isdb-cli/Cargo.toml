@@ -35,6 +35,7 @@ isdbs3-core.workspace = true
 isdbs3-phy.workspace = true
 isdb-tlv.workspace = true
 isdb-mmt.workspace = true
+isdb-ts.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 anyhow.workspace = true

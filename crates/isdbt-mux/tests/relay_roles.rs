@@ -267,7 +267,7 @@ fn roles_and_pid_plan_on_permuted_pids() {
         .iter()
         .map(|s| {
             (
-                s.elementary_pid,
+                s.elementary_pid.get(),
                 s.stream_type,
                 s.descriptors.iter().map(|d| d.tag).collect(),
             )
@@ -414,7 +414,10 @@ fn program_selection_in_multi_program_recordings() {
         assert_eq!(p.program, 0x00D4, "{extra}");
         assert!(p.chosen_by.contains(how), "{}", p.chosen_by);
         assert_eq!(p.service_name.as_deref(), Some("ソースＢ"));
-        let m: Vec<(u16, u16)> = p.es.iter().map(|e| (e.src_pid, e.pid)).collect();
+        let m: Vec<(u16, u16)> =
+            p.es.iter()
+                .map(|e| (e.src_pid.get(), e.pid.get()))
+                .collect();
         assert_eq!(m, vec![(0x0240, 0x0111), (0x0241, 0x0112)]);
         assert!(
             p.report()
@@ -480,7 +483,10 @@ fn explicit_pid_map_and_plan_overrides_are_checked() {
     assert!(e.contains("output PID 0x0310 used by source PIDs"), "{e}");
     // a valid list: listed renumbered, the rest kept
     let p = probe(&src, "  pid_map = [[0x0901, 0x0111], [0x0310, 0x0112]]").unwrap();
-    let m: Vec<(u16, u16)> = p.es.iter().map(|e| (e.src_pid, e.pid)).collect();
+    let m: Vec<(u16, u16)> =
+        p.es.iter()
+            .map(|e| (e.src_pid.get(), e.pid.get()))
+            .collect();
     assert_eq!(
         m,
         vec![
@@ -501,7 +507,7 @@ fn explicit_pid_map_and_plan_overrides_are_checked() {
         "  pids = { video = 0x0100, audio = [0x0101, 0x0105], captions = 0x0200 }",
     )
     .unwrap();
-    let m: Vec<(Role, usize, u16)> = p.es.iter().map(|e| (e.role, e.rank, e.pid)).collect();
+    let m: Vec<(Role, usize, u16)> = p.es.iter().map(|e| (e.role, e.rank, e.pid.get())).collect();
     assert_eq!(
         m,
         vec![

@@ -22,6 +22,7 @@ use isdb_si::descriptor::*;
 use isdb_si::tables::*;
 use isdb_si::time::{BcdDuration, BcdOffset, Date, DateTime, MjdTime};
 use isdb_text::AribString;
+use isdb_ts::Pid;
 use isdb_ts::section::{Long, LongHeader, Short, ShortHeader};
 
 /// network_id = original_network_id = transport_stream_id of the
@@ -37,9 +38,9 @@ pub const TEMP: u16 = 0x0404;
 pub const ONESEG: u16 = 0x0588;
 
 /// `(pid, table_id, section bytes)` of every synthetic section.
-pub fn sections() -> Vec<(u16, u8, Vec<u8>)> {
+pub fn sections() -> Vec<(Pid, u8, Vec<u8>)> {
     let mut out = Vec::new();
-    let mut push = |pid: u16, sec: Vec<u8>| out.push((pid, sec[0], sec));
+    let mut push = |pid: u16, sec: Vec<u8>| out.push((Pid::new(pid).unwrap(), sec[0], sec));
     push(0x0010, nit());
     push(0x0024, bit());
     push(0x0011, sdt());

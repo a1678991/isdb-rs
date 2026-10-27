@@ -3,7 +3,7 @@
 
 use crate::tables::*;
 use isdb_ts::section::{LongHeader, split_long, total_len};
-use isdb_ts::{Error, Result};
+use isdb_ts::{Error, Pid, Result};
 
 /// Whether ARIB STD-B10 Part 2 Table 5-1 allows `table_id` (Table 5-2) on
 /// `pid` for the tables this crate types:
@@ -19,7 +19,8 @@ use isdb_ts::{Error, Result};
 /// | PCAT | 0xC2 | 0x0022 |
 /// | BIT | 0xC4 | 0x0024 |
 /// | NBIT, LDT | 0xC5, 0xC6, 0xC7 | 0x0025 |
-pub fn table_allowed_on_pid(table_id: u8, pid: u16) -> bool {
+pub fn table_allowed_on_pid(table_id: u8, pid: Pid) -> bool {
+    let pid = pid.get();
     match table_id {
         0x40 | 0x41 => pid == 0x0010,
         0x42 | 0x46 | 0x4A => pid == 0x0011,
@@ -38,7 +39,7 @@ pub fn table_allowed_on_pid(table_id: u8, pid: u16) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSection {
     /// PID it was carried on.
-    pub pid: u16,
+    pub pid: Pid,
     /// table_id.
     pub table_id: u8,
     /// Parsed header when section_syntax_indicator = 1 (CRC_32 verified).
@@ -85,7 +86,7 @@ impl AnyTable {
     /// returned as [`AnyTable::Unknown`] (with CRC_32 verified when
     /// section_syntax_indicator = 1).  Length, CRC and syntax errors are
     /// errors, never silently downgraded.
-    pub fn decode(pid: u16, sec: &[u8]) -> Result<Self> {
+    pub fn decode(pid: Pid, sec: &[u8]) -> Result<Self> {
         let table_id = *sec.first().ok_or(Error::Truncated {
             what: "section",
             need: 1,

@@ -126,6 +126,10 @@ isdb ts validate test.ts
 stream is. See [getting-started.md](getting-started.md) and
 [analysis.md](analysis.md) for what to do with the output.
 
+Types in the tables below are TOML integers of the given width; `PID` is a
+13-bit packet identifier (H.222.0 Table 2-3), 0x0000–0x1FFF, and a value
+outside that range is refused when the file is loaded.
+
 ## `[network]`
 
 The NIT actual network (B10 Part 2 §5.2.4) and its terrestrial descriptors.
@@ -190,8 +194,8 @@ One service (program). Repeat the table for each service.
 | `provider` | string | `""` | 0x48 service_provider_name | |
 | `name` | string | required | 0x48 service_name | |
 | `layer` | `"A"` \| `"B"` \| `"C"` | required | — | Layer of the service's elementary streams; must be active. |
-| `pmt_pid` | u16 | required | H.222.0 §2.4.4.8 | One-seg services conventionally use 0x1FC8–0x1FCF. |
-| `pcr_pid` | u16 | `0x1FFF` (no PCR) | H.222.0 §2.4.4.9 | May equal an elementary PID (PCR in the video packets) except for a `ts-program` stream, whose packets keep their payload; a dedicated PID (e.g. 0x01FF) then carries adaptation-field-only PCR packets. |
+| `pmt_pid` | PID | required | H.222.0 §2.4.4.8 | One-seg services conventionally use 0x1FC8–0x1FCF. |
+| `pcr_pid` | PID | `0x1FFF` (no PCR) | H.222.0 §2.4.4.9 | May equal an elementary PID (PCR in the video packets) except for a `ts-program` stream, whose packets keep their payload; a dedicated PID (e.g. 0x01FF) then carries adaptation-field-only PCR packets. |
 | `running_status` | u8 | `0` | SDT running_status, Table 5-6 | 0 "undefined" is what the live terrestrial stations observed during development send; 4 = running. |
 | `free_ca_mode` | bool | `false` | SDT / EIT free_CA_mode | |
 | `eit_user_defined_flags` | u8 (3 bits) | `0x7` | SDT EIT_user_defined_flags | `'111'` = unused. |
@@ -225,12 +229,12 @@ Media files are looped; the timestamps continue across the seam.
 | Key | Type | Default | Spec | Notes |
 |---|---|---|---|---|
 | `kind` | see above | required | | |
-| `pid` | u16 | required (not for `ts-program`) | H.222.0 Table 2-3 | 0x0010–0x1FFE. A PID used on two layers is rejected. |
+| `pid` | PID | required (not for `ts-program`) | H.222.0 Table 2-3 | 0x0010–0x1FFE. A PID used on two layers is rejected. |
 | `stream_type` | u8 | 0x02 (`mpeg2-video`), 0x0F (`aac-adts`); required for `declared` | H.222.0 Table 2-34; B32 Part 3 §3.10 (2) | |
 | `component_tag` | u8 | none (`bml-carousel`: 0x40) | stream_identifier_descriptor 0x52, §6.2.16 | Also the component_tag of the EIT component descriptors. A `bml-carousel` always gets one; 0x40 is the entry-component convention of terrestrial data broadcasting (TR-B14, from knowledge). |
 | `source` | path | none | | Media file; required for `mpeg2-video`, `aac-adts` and `ts-program`. For `bml-carousel`: the directory of the BML files. |
 | `layer` | `"A"` \| `"B"` \| `"C"` | the service's layer | | For hierarchical (high/low quality) services whose components sit on different layers. |
-| `hierarchical` | `{ reference_pid = u16, high_quality = bool }` | none | hierarchical_transmission_descriptor 0xC0, §6.2.22 | `reference_pid`: the stream of the other quality level in the same service. `high_quality` (quality_level '1') defaults to the stream on the less robust layer (B31 Part 2 Table 3-2 ranking). |
+| `hierarchical` | `{ reference_pid = PID, high_quality = bool }` | none | hierarchical_transmission_descriptor 0xC0, §6.2.22 | `reference_pid`: the stream of the other quality level in the same service. `high_quality` (quality_level '1') defaults to the stream on the less robust layer (B31 Part 2 Table 3-2 ranking). |
 | `descriptors` | array of `{ tag, hex }` | `[]` | PMT ES_info | Raw descriptors. |
 | `eit_component` | bool | `true` | component_descriptor 0x50 §6.2.3 / audio_component_descriptor 0xC4 §6.2.26 | Generate the EIT component descriptor of this stream (video and audio streams with media). |
 
@@ -461,7 +465,7 @@ the BML content) is the IPTV Forum's and the maker's policy
 | `resource` | string | `"app1.ait"` | same | carousel: resource name of the AIT (media type `application/X-arib-ait`, a name the texts do not fix). |
 | `launcher` | bool | `true` | STD-0013 §6.1.5 | carousel: generate `startup.bml` when the files have none. |
 | `launcher_prologue` | string | the live terrestrial form | Vol. 2 §5.2, §10.2 | XML declaration + DOCTYPE + `<?bml bml-version?>` of the launcher. Default `+//ARIB STD-B24:1999//DTD BML Document//JA` / `bml_1_1.dtd`, bml-version 3.0 **[live]**. |
-| `pid` | u16 | none | | es: required. |
+| `pid` | PID | none | | es: required. |
 | `data_component_id` | u16 | none | Vol. 4 §7.3 | es: required (not in the local texts). |
 | `interval_ms` | u32 | `1000` | — | es: AIT repetition. |
 | `layer` | `"A"` \| `"B"` \| `"C"` | the service's | | es: layer of the AIT PID. |
@@ -671,7 +675,7 @@ experiments: `[pat]`, `[cat]`, `[nit]`, `[sdt]`, `[eit]` (present/following),
 | `enabled` | bool | `true`; `false` for `[eit_schedule]` and `[tdt]` | Transmit this table. B10 Table 5-2 needs TDT *or* TOT, so TOT is on and TDT off by default. |
 | `interval_ms` | u32 | B10 Table 5-2, see below | Maximum repetition interval; sections are scheduled at `interval_ms × [timing] interval_margin`. |
 | `layer` | `"A"` \| `"B"` \| `"C"` | see below | Layer carrying the table. |
-| `pid` | u16 | B10 Table 5-1, see below | PID override. |
+| `pid` | PID | B10 Table 5-1, see below | PID override. |
 | `version` | u8 | `0` | Initial version_number; it is incremented when the content changes (EIT p/f at an event boundary, for example). |
 | `add_descriptors` | array of `{ loop = "…", tag = u8, hex = "…", first = bool }` | `[]` | Raw descriptors added to a generated loop (appended, or inserted at the front with `first = true`). Loop selectors below. |
 | `header` | table | `{}` | Header-field overrides applied to every generated section (CRC_32 recomputed): `table_id`, `section_syntax_indicator`, `private_indicator` (the bit after section_syntax_indicator), `reserved1` (2 bits before section_length), `table_id_extension`, `reserved2` (2 bits before version_number), `version_number` (fixes the version: no automatic increments), `current_next_indicator`, `section_number`, `last_section_number`. Short-form tables (TDT, TOT) use only the first four. |
@@ -739,7 +743,7 @@ example a table this project does not type, transplanted from a capture with
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `pid` | u16 | required | |
+| `pid` | PID | required | |
 | `layer` | `"A"` \| `"B"` \| `"C"` | required | Must be active. |
 | `interval_ms` | u32 | required | All sections are sent, in order, every interval. |
 | `sections` | array of hex strings | required | Each must be one complete section. |

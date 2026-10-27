@@ -26,13 +26,14 @@ use std::collections::HashMap;
 
 use crate::cc::Tracker;
 use crate::packet::{PACKET_SIZE, View};
+use crate::pid::Pid;
 
 /// A complete section as carried on one PID (H.222.0 §2.4.4; size
 /// `3 + section_length`, Table 2-30/2-35).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
     /// PID it was carried on.
-    pub pid: u16,
+    pub pid: Pid,
     /// Index of the packet holding its first byte.
     pub start_packet: u64,
     /// Index of the packet holding its last byte.
@@ -91,7 +92,7 @@ pub enum DiscardReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemuxEvent {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// Packet index.
     pub packet_index: u64,
     /// What happened.
@@ -116,14 +117,14 @@ struct Partial {
 /// Per-PID section reassembler (H.222.0 §2.4.4.1–2.4.4.2).
 #[derive(Debug, Clone)]
 pub struct SectionAssembler {
-    pid: u16,
+    pid: Pid,
     cc: Tracker,
     partial: Option<Partial>,
 }
 
 impl SectionAssembler {
     /// Assembler for `pid`.
-    pub fn new(pid: u16) -> Self {
+    pub fn new(pid: Pid) -> Self {
         Self {
             pid,
             cc: Tracker::new(),
@@ -132,7 +133,7 @@ impl SectionAssembler {
     }
 
     /// PID served.
-    pub fn pid(&self) -> u16 {
+    pub fn pid(&self) -> Pid {
         self.pid
     }
 
@@ -293,7 +294,7 @@ impl SectionAssembler {
 /// [`SectionAssembler`] per PID).
 #[derive(Debug, Clone, Default)]
 pub struct SectionDemux {
-    assemblers: HashMap<u16, SectionAssembler>,
+    assemblers: HashMap<Pid, SectionAssembler>,
 }
 
 impl SectionDemux {
@@ -303,20 +304,20 @@ impl SectionDemux {
     }
 
     /// Start assembling sections on `pid` (no-op if already present).
-    pub fn add_pid(&mut self, pid: u16) {
+    pub fn add_pid(&mut self, pid: Pid) {
         self.assemblers
             .entry(pid)
             .or_insert_with(|| SectionAssembler::new(pid));
     }
 
     /// True if `pid` is being assembled.
-    pub fn has_pid(&self, pid: u16) -> bool {
+    pub fn has_pid(&self, pid: Pid) -> bool {
         self.assemblers.contains_key(&pid)
     }
 
     /// Feed one packet; returns completed sections and events.
     pub fn push(&mut self, index: u64, pkt: &[u8; PACKET_SIZE]) -> Vec<Assembled> {
-        let pid = (u16::from(pkt[1] & 0x1F) << 8) | u16::from(pkt[2]);
+        let pid = Pid::from_wire((u16::from(pkt[1] & 0x1F) << 8) | u16::from(pkt[2]));
         let mut out = Vec::new();
         if let Some(a) = self.assemblers.get_mut(&pid) {
             a.push_into(index, pkt, &mut out);
@@ -336,7 +337,7 @@ mod tests {
         build_long(&LongHeader::new(tid, 1, 0), &body).unwrap()
     }
 
-    fn pkt(pid: u16, pusi: bool, cc: u8, payload: &[u8]) -> [u8; PACKET_SIZE] {
+    fn pkt(pid: Pid, pusi: bool, cc: u8, payload: &[u8]) -> [u8; PACKET_SIZE] {
         let mut p = payload.to_vec();
         p.resize(184, 0xFF);
         Packet::with_payload(pid, pusi, cc, &p)
@@ -361,12 +362,12 @@ mod tests {
     fn spec_2_4_4_section_spanning_three_packets() {
         let s = sec(0x42, 400); // 412 bytes
         assert_eq!(s.len(), 412);
-        let mut a = SectionAssembler::new(0x11);
+        let mut a = SectionAssembler::new(Pid::new(0x11).unwrap());
         let mut p0 = vec![0u8];
         p0.extend_from_slice(&s[..183]);
-        let mut out = a.push(10, &pkt(0x11, true, 0, &p0));
-        out.extend(a.push(11, &pkt(0x11, false, 1, &s[183..367])));
-        out.extend(a.push(12, &pkt(0x11, false, 2, &s[367..])));
+        let mut out = a.push(10, &pkt(Pid::new(0x11).unwrap(), true, 0, &p0));
+        out.extend(a.push(11, &pkt(Pid::new(0x11).unwrap(), false, 1, &s[183..367])));
+        out.extend(a.push(12, &pkt(Pid::new(0x11).unwrap(), false, 2, &s[367..])));
         let ss = sections(&out);
         assert_eq!(ss.len(), 1);
         assert_eq!((ss[0].start_packet, ss[0].end_packet), (10, 12));
@@ -381,8 +382,8 @@ mod tests {
         let mut p = vec![0u8];
         p.extend_from_slice(&s1);
         p.extend_from_slice(&s2);
-        let mut a = SectionAssembler::new(0x11);
-        let out = a.push(0, &pkt(0x11, true, 0, &p));
+        let mut a = SectionAssembler::new(Pid::new(0x11).unwrap());
+        let out = a.push(0, &pkt(Pid::new(0x11).unwrap(), true, 0, &p));
         let ss = sections(&out);
         assert_eq!(ss.len(), 2);
         assert_eq!(ss[0].data, s1);
@@ -394,15 +395,15 @@ mod tests {
     fn spec_2_4_4_2_pointer_field_completes_previous_section() {
         let s1 = sec(0x42, 200); // 212 bytes
         let s2 = sec(0x4E, 10);
-        let mut a = SectionAssembler::new(0x12);
+        let mut a = SectionAssembler::new(Pid::new(0x12).unwrap());
         let mut p0 = vec![0u8];
         p0.extend_from_slice(&s1[..183]);
-        let mut out = a.push(0, &pkt(0x12, true, 5, &p0));
+        let mut out = a.push(0, &pkt(Pid::new(0x12).unwrap(), true, 5, &p0));
         let rem = &s1[183..];
         let mut p1 = vec![rem.len() as u8];
         p1.extend_from_slice(rem);
         p1.extend_from_slice(&s2);
-        out.extend(a.push(1, &pkt(0x12, true, 6, &p1)));
+        out.extend(a.push(1, &pkt(Pid::new(0x12).unwrap(), true, 6, &p1)));
         let ss = sections(&out);
         assert_eq!(ss.len(), 2);
         assert_eq!(ss[0].data, s1);
@@ -418,10 +419,10 @@ mod tests {
         let s0 = sec(0x40, 170); // 182 bytes; leaves 1 byte for s1 header
         p0.extend_from_slice(&s0);
         p0.push(s1[0]);
-        let mut a = SectionAssembler::new(0x12);
-        let mut out = a.push(0, &pkt(0x12, true, 0, &p0));
-        out.extend(a.push(1, &pkt(0x12, false, 1, &s1[1..185])));
-        out.extend(a.push(2, &pkt(0x12, false, 2, &s1[185..])));
+        let mut a = SectionAssembler::new(Pid::new(0x12).unwrap());
+        let mut out = a.push(0, &pkt(Pid::new(0x12).unwrap(), true, 0, &p0));
+        out.extend(a.push(1, &pkt(Pid::new(0x12).unwrap(), false, 1, &s1[1..185])));
+        out.extend(a.push(2, &pkt(Pid::new(0x12).unwrap(), false, 2, &s1[185..])));
         let ss = sections(&out);
         assert_eq!(ss.len(), 2);
         assert_eq!(ss[1].data, s1);
@@ -432,12 +433,12 @@ mod tests {
     fn spec_2_4_3_3_cc_break_discards_partial() {
         let s1 = sec(0x42, 400);
         let s2 = sec(0x42, 10);
-        let mut a = SectionAssembler::new(0x11);
+        let mut a = SectionAssembler::new(Pid::new(0x11).unwrap());
         let mut p0 = vec![0u8];
         p0.extend_from_slice(&s1[..183]);
-        let mut out = a.push(0, &pkt(0x11, true, 0, &p0));
+        let mut out = a.push(0, &pkt(Pid::new(0x11).unwrap(), true, 0, &p0));
         // packet with cc=1 lost; cc=2 arrives
-        out.extend(a.push(2, &pkt(0x11, false, 2, &s1[367..])));
+        out.extend(a.push(2, &pkt(Pid::new(0x11).unwrap(), false, 2, &s1[367..])));
         assert!(sections(&out).is_empty());
         assert!(out.iter().any(|e| matches!(
             e,
@@ -451,20 +452,23 @@ mod tests {
         )));
         let mut p3 = vec![0u8];
         p3.extend_from_slice(&s2);
-        let out = a.push(3, &pkt(0x11, true, 3, &p3));
+        let out = a.push(3, &pkt(Pid::new(0x11).unwrap(), true, 3, &p3));
         assert_eq!(sections(&out)[0].data, s2);
         // a duplicate packet is ignored
-        assert!(a.push(4, &pkt(0x11, true, 3, &p3)).is_empty());
+        assert!(
+            a.push(4, &pkt(Pid::new(0x11).unwrap(), true, 3, &p3))
+                .is_empty()
+        );
     }
 
     #[test]
     fn tei_discards_partial() {
         let s1 = sec(0x42, 400);
-        let mut a = SectionAssembler::new(0x11);
+        let mut a = SectionAssembler::new(Pid::new(0x11).unwrap());
         let mut p0 = vec![0u8];
         p0.extend_from_slice(&s1[..183]);
-        a.push(0, &pkt(0x11, true, 0, &p0));
-        let mut bad = pkt(0x11, false, 1, &s1[183..367]);
+        a.push(0, &pkt(Pid::new(0x11).unwrap(), true, 0, &p0));
+        let mut bad = pkt(Pid::new(0x11).unwrap(), false, 1, &s1[183..367]);
         bad[1] |= 0x80;
         let out = a.push(1, &bad);
         assert!(matches!(
@@ -477,20 +481,26 @@ mod tests {
                 ..
             })]
         ));
-        assert!(a.push(2, &pkt(0x11, false, 2, &s1[367..])).is_empty());
+        assert!(
+            a.push(2, &pkt(Pid::new(0x11).unwrap(), false, 2, &s1[367..]))
+                .is_empty()
+        );
     }
 
     #[test]
     fn spec_2_4_4_2_join_mid_stream_waits_for_pusi() {
         let s1 = sec(0x42, 400);
         let s2 = sec(0x43, 50);
-        let mut a = SectionAssembler::new(0x11);
+        let mut a = SectionAssembler::new(Pid::new(0x11).unwrap());
         // Joined at the 2nd packet of s1: no PUSI → nothing, no events.
-        assert!(a.push(0, &pkt(0x11, false, 1, &s1[183..367])).is_empty());
+        assert!(
+            a.push(0, &pkt(Pid::new(0x11).unwrap(), false, 1, &s1[183..367]))
+                .is_empty()
+        );
         let mut p = vec![(s1.len() - 367) as u8];
         p.extend_from_slice(&s1[367..]);
         p.extend_from_slice(&s2);
-        let out = a.push(1, &pkt(0x11, true, 2, &p));
+        let out = a.push(1, &pkt(Pid::new(0x11).unwrap(), true, 2, &p));
         let ss = sections(&out);
         assert_eq!(ss.len(), 1, "tail of s1 must not be emitted");
         assert_eq!(ss[0].data, s2);
@@ -500,14 +510,14 @@ mod tests {
     fn pointer_mismatch_discards() {
         let s1 = sec(0x42, 300);
         let s2 = sec(0x43, 10);
-        let mut a = SectionAssembler::new(0x11);
+        let mut a = SectionAssembler::new(Pid::new(0x11).unwrap());
         let mut p0 = vec![0u8];
         p0.extend_from_slice(&s1[..183]);
-        a.push(0, &pkt(0x11, true, 0, &p0));
+        a.push(0, &pkt(Pid::new(0x11).unwrap(), true, 0, &p0));
         // pointer 0 though s1 still needs bytes
         let mut p1 = vec![0u8];
         p1.extend_from_slice(&s2);
-        let out = a.push(1, &pkt(0x11, true, 1, &p1));
+        let out = a.push(1, &pkt(Pid::new(0x11).unwrap(), true, 1, &p1));
         assert!(out.iter().any(|e| matches!(
             e,
             Assembled::Event(DemuxEvent {

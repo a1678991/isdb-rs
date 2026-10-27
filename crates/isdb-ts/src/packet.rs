@@ -17,6 +17,7 @@ use std::fmt;
 use crate::bits::{BitReader, BitWriter};
 use crate::error::{Error, Result};
 use crate::pcr::{Pcr, Timestamp};
+use crate::pid::Pid;
 use crate::validate::{Violation, require, reserved_ones};
 
 /// Transport Stream packets "shall be 188 bytes long" (§2.4.3).
@@ -26,16 +27,6 @@ pub const PACKET_SIZE: usize = 188;
 pub const PAYLOAD_CAPACITY: usize = 184;
 /// sync_byte value '0100 0111' (§2.4.3.3).
 pub const SYNC_BYTE: u8 = 0x47;
-/// PID of the Program Association Table (Table 2-3).
-pub const PID_PAT: u16 = 0x0000;
-/// PID of the Conditional Access Table (Table 2-3).
-pub const PID_CAT: u16 = 0x0001;
-/// PID of the Transport Stream Description Table (Table 2-3).
-pub const PID_TSDT: u16 = 0x0002;
-/// PID of null packets (Table 2-3).
-pub const PID_NULL: u16 = 0x1FFF;
-/// Largest PID value (13 bits, Table 2-2).
-pub const PID_MAX: u16 = 0x1FFF;
 
 /// transport_scrambling_control (H.222.0 §2.4.3.3, Table 2-4): "indicates
 /// the scrambling mode of the Transport Stream packet payload".
@@ -176,8 +167,8 @@ pub struct Header {
     pub payload_unit_start_indicator: bool,
     /// transport_priority.
     pub transport_priority: bool,
-    /// PID (13 bits).
-    pub pid: u16,
+    /// PID (13 bits, Table 2-3).
+    pub pid: Pid,
     /// transport_scrambling_control (2 bits, Table 2-4).
     pub transport_scrambling_control: TransportScramblingControl,
     /// adaptation_field_control (2 bits, Table 2-5).
@@ -189,7 +180,7 @@ pub struct Header {
 impl Header {
     /// Header with sync 0x47, flags clear, not scrambled.
     pub fn new(
-        pid: u16,
+        pid: Pid,
         adaptation_field_control: AdaptationFieldControl,
         continuity_counter: u8,
     ) -> Self {
@@ -219,7 +210,7 @@ impl Header {
             transport_error_indicator: b[1] & 0x80 != 0,
             payload_unit_start_indicator: b[1] & 0x40 != 0,
             transport_priority: b[1] & 0x20 != 0,
-            pid: (u16::from(b[1] & 0x1F) << 8) | u16::from(b[2]),
+            pid: Pid::from_wire((u16::from(b[1] & 0x1F) << 8) | u16::from(b[2])),
             transport_scrambling_control: TransportScramblingControl::from_code(b[3] >> 6),
             adaptation_field_control: AdaptationFieldControl::from_code(b[3] >> 4),
             continuity_counter: b[3] & 0x0F,
@@ -233,7 +224,7 @@ impl Header {
         w.bool(self.transport_error_indicator);
         w.bool(self.payload_unit_start_indicator);
         w.bool(self.transport_priority);
-        w.write("PID", 13, u64::from(self.pid))?;
+        w.write("PID", 13, u64::from(self.pid.get()))?;
         w.write(
             "transport_scrambling_control",
             2,
@@ -704,7 +695,7 @@ impl Packet {
     /// payload gives adaptation_field_control '01'; a shorter one is padded
     /// with adaptation-field stuffing ('11'), the only stuffing method
     /// allowed for PES (§2.4.3.5).
-    pub fn with_payload(pid: u16, pusi: bool, cc: u8, payload: &[u8]) -> Result<Self> {
+    pub fn with_payload(pid: Pid, pusi: bool, cc: u8, payload: &[u8]) -> Result<Self> {
         if payload.len() == PAYLOAD_CAPACITY {
             let mut header = Header::new(pid, AdaptationFieldControl::PayloadOnly, cc);
             header.payload_unit_start_indicator = pusi;
@@ -723,7 +714,7 @@ impl Packet {
     /// field so the packet is exactly 188 bytes.  An empty `payload` gives
     /// adaptation_field_control '10' (adaptation_field_length 183).
     pub fn with_adaptation(
-        pid: u16,
+        pid: Pid,
         pusi: bool,
         cc: u8,
         fields: Option<AdaptationFields>,
@@ -755,7 +746,7 @@ impl Packet {
 
     /// Adaptation-field-only packet ('10', adaptation_field_length 183)
     /// carrying `pcr` (§2.4.3.4/§2.4.3.5).
-    pub fn pcr_only(pid: u16, cc: u8, pcr: Pcr) -> Self {
+    pub fn pcr_only(pid: Pid, cc: u8, pcr: Pcr) -> Self {
         let fields = AdaptationFields {
             pcr: Some(pcr),
             ..Default::default()
@@ -768,7 +759,7 @@ impl Packet {
     /// (§2.4.3.3); data_bytes "may be assigned any value" — 0xFF here.
     pub fn null() -> Self {
         Self {
-            header: Header::new(PID_NULL, AdaptationFieldControl::PayloadOnly, 0),
+            header: Header::new(Pid::NULL, AdaptationFieldControl::PayloadOnly, 0),
             adaptation_field: None,
             payload: vec![0xFF; PAYLOAD_CAPACITY],
         }
@@ -892,7 +883,7 @@ pub fn check(p: &Packet) -> Vec<Violation> {
             ),
         ));
     }
-    if h.pid == PID_NULL {
+    if h.pid == Pid::NULL {
         require(&mut v, !h.payload_unit_start_indicator, "§2.4.3.3", || {
             "null packet with payload_unit_start_indicator '1'".into()
         });
@@ -923,10 +914,12 @@ pub fn check(p: &Packet) -> Vec<Violation> {
         return v;
     };
     if let Some(pcr) = f.pcr {
-        let ok_pid = matches!(h.pid, 0x0000 | 0x0001 | 0x0010..=0x1FFE);
-        require(&mut v, ok_pid, "§2.4.3.3 Table 2-3 NOTE", || {
-            format!("PCR on PID {:#06x}", h.pid)
-        });
+        require(
+            &mut v,
+            h.pid.may_carry_pcr(),
+            "§2.4.3.3 Table 2-3 NOTE",
+            || format!("PCR on PID {:#06x}", h.pid),
+        );
         check_pcr(&mut v, &pcr, "PCR");
     }
     if let Some(opcr) = f.opcr {
@@ -988,7 +981,7 @@ mod tests {
         assert!(!h.transport_error_indicator);
         assert!(h.payload_unit_start_indicator);
         assert!(!h.transport_priority);
-        assert_eq!(h.pid, 0x1FFF);
+        assert_eq!(h.pid, Pid::NULL);
         assert_eq!(
             h.transport_scrambling_control,
             TransportScramblingControl::UserDefined(0b10)
@@ -1052,7 +1045,7 @@ mod tests {
     /// length 0 is a single stuffing byte.
     #[test]
     fn spec_2_4_3_5_adaptation_field_length_rules() {
-        let p = Packet::pcr_only(0x100, 3, Pcr::from_ticks(1234));
+        let p = Packet::pcr_only(Pid::new(0x100).unwrap(), 3, Pcr::from_ticks(1234));
         let raw = p.encode().unwrap();
         assert_eq!(
             raw[3] >> 4 & 3,
@@ -1060,7 +1053,7 @@ mod tests {
         );
         assert_eq!(raw[4], 183);
         assert!(check(&p).is_empty());
-        let p = Packet::with_payload(0x100, false, 0, &[0xAB; 183]).unwrap();
+        let p = Packet::with_payload(Pid::new(0x100).unwrap(), false, 0, &[0xAB; 183]).unwrap();
         let raw = p.encode().unwrap();
         assert_eq!(raw[4], 0); // single stuffing byte
         assert_eq!(p.adaptation_field, Some(AdaptationField::Empty));
@@ -1139,7 +1132,14 @@ mod tests {
             }),
             stuffing: vec![],
         };
-        let p = Packet::with_adaptation(0x1FF, true, 7, Some(f.clone()), &[0x55; 100]).unwrap();
+        let p = Packet::with_adaptation(
+            Pid::new(0x1FF).unwrap(),
+            true,
+            7,
+            Some(f.clone()),
+            &[0x55; 100],
+        )
+        .unwrap();
         let raw = p.encode().unwrap();
         assert_eq!(raw[4] as usize, 183 - 100);
         assert_eq!(raw[5], 0b1101_1111);
@@ -1156,7 +1156,7 @@ mod tests {
     #[test]
     fn view_matches_decode() {
         let p = Packet::with_adaptation(
-            0x30,
+            Pid::new(0x30).unwrap(),
             true,
             1,
             Some(AdaptationFields {

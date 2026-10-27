@@ -9,6 +9,7 @@ use crate::inspect::{self, Intervals};
 use crate::names;
 use crate::scan::{Capture, SlotKey};
 use crate::tree::{self, Node};
+use isdb_ts::Pid;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -52,7 +53,7 @@ pub struct SectionDiff {
 #[derive(Debug, Clone, Serialize)]
 pub struct PidDiff {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// Kind in A / B.
     pub kind: (Option<String>, Option<String>),
     /// Packets A / B.
@@ -267,7 +268,7 @@ fn side(cap: &Capture, nominal: Option<f64>) -> (Side, crate::timebase::Timebase
             packets: cap.packets,
             duration_s: tb.duration(cap.packets),
             rate_bps: tb.rate_bps(),
-            null_packets: cap.stats.pids.get(&0x1FFF).map_or(0, |s| s.packets),
+            null_packets: cap.stats.pids.get(&Pid::NULL).map_or(0, |s| s.packets),
         },
         tb,
     )
@@ -290,7 +291,7 @@ fn pair_keys(
         }
     }
     let mut ub: Vec<SlotKey> = b.iter().copied().filter(|k| !used_b.contains(k)).collect();
-    type Proj = fn(&SlotKey) -> (Option<u16>, u8, Option<u16>, Option<u8>);
+    type Proj = fn(&SlotKey) -> (Option<Pid>, u8, Option<u16>, Option<u8>);
     let passes: [(Proj, &'static str); 3] = [
         (|k| (None, k.table_id, k.ext, k.sn), "pid differs"),
         (
@@ -335,7 +336,7 @@ pub fn diff(a: &Capture, b: &Capture, opts: &DiffOptions) -> DiffReport {
     let (sb, tb) = side(b, opts.nominal_bps);
     let ka = inspect::pid_kinds(a);
     let kb = inspect::pid_kinds(b);
-    let pids: BTreeSet<u16> = a
+    let pids: BTreeSet<Pid> = a
         .stats
         .pids
         .keys()
@@ -454,7 +455,7 @@ impl DiffReport {
         let _ = writeln!(o, "\n-- sections --");
         // (pid, tid, ext) → (only A, only B, identical, differ)
         type Counts = (usize, usize, usize, usize);
-        let mut sched: BTreeMap<(u16, u8, u16), Counts> = BTreeMap::new();
+        let mut sched: BTreeMap<(Pid, u8, u16), Counts> = BTreeMap::new();
         for s in &self.sections {
             let k = s.key_a.or(s.key_b).unwrap();
             if !all && (0x50..=0x6F).contains(&k.table_id) {

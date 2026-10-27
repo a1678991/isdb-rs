@@ -2,6 +2,7 @@
 
 mod common;
 
+use isdb_ts::Pid;
 use std::collections::BTreeMap;
 
 use common::*;
@@ -138,8 +139,8 @@ fn tables_conform_and_repeat() {
 fn eit_present_following() {
     let r = run("", "eit_pf", 60);
     let mut versions = BTreeMap::new();
-    for (_, s) in &r.report.sections[&0x0012] {
-        let t = AnyTable::decode(0x12, s).unwrap();
+    for (_, s) in &r.report.sections[&Pid::new(0x0012).unwrap()] {
+        let t = AnyTable::decode(Pid::new(0x12).unwrap(), s).unwrap();
         let AnyTable::Eit(e) = t else { panic!() };
         assert_eq!(e.header.last_section_number, 1);
         assert_eq!(e.body.segment_last_section_number, 1);
@@ -166,7 +167,7 @@ fn pcr_and_timestamps() {
     let a_count = r.mux.pattern().count(Layer::A) as u64;
     for (&pid, pcrs) in &r.report.pcrs {
         assert!(
-            pid == 0x01FF || pid == 0x01FE,
+            pid == Pid::new(0x01FF).unwrap() || pid == Pid::new(0x01FE).unwrap(),
             "unexpected PCR PID {pid:#x}"
         );
         // Mode 3: four PCR packets per frame per service (B31 Part 2 Table 3-5)
@@ -187,7 +188,7 @@ fn pcr_and_timestamps() {
             assert_eq!(ib - ia, n / 4);
         }
         // and in the layer-A-only TS a one-seg receiver reproduces
-        if pid == 0x01FE {
+        if pid == Pid::new(0x01FE).unwrap() {
             let slots = r.mux.pattern().slots();
             let a_index: Vec<u64> = pcrs
                 .iter()
@@ -229,7 +230,10 @@ fn pcr_and_timestamps() {
             );
         }
     }
-    assert!(r.report.pes.contains_key(&0x0111) && r.report.pes.contains_key(&0x0112));
+    assert!(
+        r.report.pes.contains_key(&Pid::new(0x0111).unwrap())
+            && r.report.pes.contains_key(&Pid::new(0x0112).unwrap())
+    );
     for (pid, v) in r.mux.tstd_violations() {
         assert_eq!(
             v.tb_overflow + v.buffer_overflow + v.underflow,
@@ -292,14 +296,14 @@ interval_ms = 5000
 "#
     );
     let r = run(&extra, "overrides", 30);
-    let sdts = &r.report.sections[&0x0011];
+    let sdts = &r.report.sections[&Pid::new(0x0011).unwrap()];
     assert!(!sdts.is_empty());
     assert!(
         sdts.iter().all(|(_, s)| *s == sdt),
         "SDT on air differs from the transplanted bytes"
     );
-    let nit = &r.report.sections[&0x0010][0].1;
-    let AnyTable::Nit(nit) = AnyTable::decode(0x10, nit).unwrap() else {
+    let nit = &r.report.sections[&Pid::new(0x0010).unwrap()][0].1;
+    let AnyTable::Nit(nit) = AnyTable::decode(Pid::new(0x10).unwrap(), nit).unwrap() else {
         panic!()
     };
     assert_eq!(nit.body.0.descriptors[0].tag(), 0xCF);
@@ -309,11 +313,11 @@ interval_ms = 5000
             .iter()
             .any(|d| d.tag() == 0x8F)
     );
-    let pat = Long::<Pat>::decode(&r.report.sections[&0x0000][0].1).unwrap();
+    let pat = Long::<Pat>::decode(&r.report.sections[&Pid::new(0x0000).unwrap()][0].1).unwrap();
     assert_eq!(pat.header.version_number, 9);
-    for (_, s) in &r.report.sections[&0x0014] {
+    for (_, s) in &r.report.sections[&Pid::new(0x0014).unwrap()] {
         assert_eq!(s[7], 0x45); // patched seconds byte; CRC still valid
-        assert!(AnyTable::decode(0x14, s).is_ok());
+        assert!(AnyTable::decode(Pid::new(0x14).unwrap(), s).is_ok());
     }
 }
 
@@ -359,7 +363,7 @@ pcr_per_frame = 8
     // PCR in the video PID: patch the first service's pcr_pid via a second config
     let dir = tmpdir("sched");
     let mut cfg = test_config(&dir, extra);
-    cfg.services[0].pcr_pid = 0x0111;
+    cfg.services[0].pcr_pid = Pid::new(0x0111).unwrap();
     let params = bench_params();
     let mut mux = Multiplexer::new(&cfg, &params, &dir).unwrap();
     let n = mux.pattern().len();
@@ -377,16 +381,16 @@ pcr_per_frame = 8
         &r.cc_events[..r.cc_events.len().min(3)]
     );
     // PCR carried in video packets, 8 per frame → ≤ 33 ms
-    let p = &r.pcrs[&0x0111];
+    let p = &r.pcrs[&Pid::new(0x0111).unwrap()];
     assert_eq!(p.len(), 8 * 60);
     assert!(p.windows(2).all(|w| w[1].2 - w[0].2 <= HZ / 25));
     // EIT schedule sections decode, conform, and follow the segment rules
     let mut sched = 0;
-    for (_, s) in &r.sections[&0x0012] {
-        let AnyTable::Eit(e) = AnyTable::decode(0x12, s).unwrap() else {
+    for (_, s) in &r.sections[&Pid::new(0x0012).unwrap()] {
+        let AnyTable::Eit(e) = AnyTable::decode(Pid::new(0x12).unwrap(), s).unwrap() else {
             panic!()
         };
-        let d = isdb_si::conformance::check(0x12, &AnyTable::Eit(e.clone()));
+        let d = isdb_si::conformance::check(Pid::new(0x12).unwrap(), &AnyTable::Eit(e.clone()));
         assert!(
             d.is_empty(),
             "{:?}",
@@ -404,7 +408,11 @@ pcr_per_frame = 8
     }
     assert!(sched >= 2, "no EIT schedule sections");
     // SDT now announces the schedule
-    let AnyTable::Sdt(sdt) = AnyTable::decode(0x11, &r.sections[&0x0011][0].1).unwrap() else {
+    let AnyTable::Sdt(sdt) = AnyTable::decode(
+        Pid::new(0x11).unwrap(),
+        &r.sections[&Pid::new(0x0011).unwrap()][0].1,
+    )
+    .unwrap() else {
         panic!()
     };
     assert!(
@@ -466,8 +474,11 @@ pcr_per_frame = 8
 #[test]
 fn derived_nit_values() {
     let r = run("", "nit", 3);
-    let AnyTable::Nit(nit) = AnyTable::decode(0x10, &r.report.sections[&0x0010][0].1).unwrap()
-    else {
+    let AnyTable::Nit(nit) = AnyTable::decode(
+        Pid::new(0x10).unwrap(),
+        &r.report.sections[&Pid::new(0x0010).unwrap()][0].1,
+    )
+    .unwrap() else {
         panic!()
     };
     let ts = &nit.body.0.transport_streams[0];
@@ -501,17 +512,20 @@ fn derived_nit_values() {
     }
     assert_eq!(found, 4);
     // PAT carries the network_PID entry and both PMTs
-    let pat = Long::<Pat>::decode(&r.report.sections[&0x0000][0].1).unwrap();
-    assert_eq!(pat.body.network_pid(), Some(0x0010));
+    let pat = Long::<Pat>::decode(&r.report.sections[&Pid::new(0x0000).unwrap()][0].1).unwrap();
+    assert_eq!(pat.body.network_pid(), Some(Pid::new(0x0010).unwrap()));
     assert_eq!(
-        pat.body.programs().collect::<Vec<_>>(),
+        pat.body
+            .programs()
+            .map(|(n, p)| (n, p.get()))
+            .collect::<Vec<_>>(),
         vec![(0x0400, 0x01F0), (0x0588, 0x1FC8)]
     );
     // PMT of the HD service: video decode control derived from the ES (1080/I)
-    let pmt = Long::<Pmt>::decode(&r.report.sections[&0x01F0][0].1).unwrap();
-    assert_eq!(pmt.body.pcr_pid, 0x01FF);
+    let pmt = Long::<Pmt>::decode(&r.report.sections[&Pid::new(0x01F0).unwrap()][0].1).unwrap();
+    assert_eq!(pmt.body.pcr_pid, Pid::new(0x01FF).unwrap());
     let v = &pmt.body.streams[0];
-    assert_eq!((v.stream_type, v.elementary_pid), (0x02, 0x0111));
+    assert_eq!((v.stream_type, v.elementary_pid.get()), (0x02, 0x0111));
     let c8 = v.descriptors.iter().find(|d| d.tag == 0xC8).unwrap();
     assert_eq!(c8.data[0] >> 2 & 0xF, 0b0001);
     assert_eq!(pmt.body.streams[1].stream_type, 0x0F);
@@ -550,15 +564,15 @@ fn hierarchical_descriptor_derived() {
     let mut cfg = test_config(&dir, "");
     // HQ video on layer B, a declared LQ video of the same service on layer A
     let mut lq = cfg.services[1].streams[0].clone();
-    lq.pid = 0x0118;
+    lq.pid = Pid::new(0x0118).unwrap();
     lq.layer = Some(isdbt_mux::config::LayerName::A);
     lq.hierarchical = Some(isdbt_mux::config::HierarchicalCfg {
-        reference_pid: 0x0111,
+        reference_pid: Pid::new(0x0111).unwrap(),
         high_quality: None,
     });
     cfg.services[0].streams.push(lq);
     cfg.services[0].streams[0].hierarchical = Some(isdbt_mux::config::HierarchicalCfg {
-        reference_pid: 0x0118,
+        reference_pid: Pid::new(0x0118).unwrap(),
         high_quality: None,
     });
     let params = bench_params();
@@ -572,13 +586,13 @@ fn hierarchical_descriptor_derived() {
         full.extend(f);
     }
     let r = analyze(&full, &times, clocks_to_ticks(408));
-    let pmt = Long::<Pmt>::decode(&r.sections[&0x01F0][0].1).unwrap();
+    let pmt = Long::<Pmt>::decode(&r.sections[&Pid::new(0x01F0).unwrap()][0].1).unwrap();
     let q = |pid: u16| {
         let st = pmt
             .body
             .streams
             .iter()
-            .find(|s| s.elementary_pid == pid)
+            .find(|s| s.elementary_pid.get() == pid)
             .unwrap();
         let d = st.descriptors.iter().find(|d| d.tag == 0xC0).unwrap();
         (

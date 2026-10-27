@@ -8,6 +8,7 @@ mod synthetic;
 use isdb_si::AnyTable;
 use isdb_si::descriptor::{Descriptor, DescriptorBody, VideoDecodeControl};
 use isdb_si::values::*;
+use isdb_ts::Pid;
 
 /// Every (variant, code, name) triple of `table` equals `T`'s mapping and
 /// the triples cover `T::NAMED` exactly.
@@ -223,7 +224,7 @@ fn video_decode_control_0x47() {
     assert_eq!(d.transfer(), TransferCharacteristics::Undefined);
 }
 
-fn synthetic_sections() -> Vec<(u16, Vec<u8>)> {
+fn synthetic_sections() -> Vec<(Pid, Vec<u8>)> {
     synthetic::sections()
         .into_iter()
         .map(|(pid, _, sec)| (pid, sec))
@@ -238,9 +239,9 @@ fn synthetic_sdt_copy_control() {
     let secs = synthetic_sections();
     let (_, sdt) = secs
         .iter()
-        .find(|(pid, s)| *pid == 0x11 && s[0] == 0x42)
+        .find(|(pid, s)| pid.get() == 0x11 && s[0] == 0x42)
         .unwrap();
-    let AnyTable::Sdt(sdt) = AnyTable::decode(0x11, sdt).unwrap() else {
+    let AnyTable::Sdt(sdt) = AnyTable::decode(Pid::new(0x11).unwrap(), sdt).unwrap() else {
         panic!()
     };
     let mut n = 0;

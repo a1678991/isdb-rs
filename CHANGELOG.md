@@ -407,6 +407,34 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdb-ts`: the PID is a value type, `Pid`, instead of a `u16`: 13 bits
+  by construction (`Pid::new(u16) -> Option<Pid>`, `TryFrom<u16>`,
+  `get()`), with H.222.0 Table 2-3 on it (`Pid::PAT`, `CAT`, `TSDT`,
+  `IPMP`, `NULL`; `is_reserved()` for 0x0000–0x000F and 0x1FFF,
+  `is_assignable()` for 0x0010–0x1FFE, `may_carry_pcr()` for the table's
+  NOTE) and `Display` / `Debug` as `0x1fff`. Every `pid` field, parameter
+  and map key of the crate takes it: `Header.pid`, `PatEntry.pid`,
+  `PmtStream.elementary_pid`, `Pmt.pcr_pid`, `Packet::with_payload` /
+  `with_adaptation` / `pcr_only`, `SectionAssembler::new`,
+  `SectionDemux::add_pid` / `has_pid`, `PesAssembler::new`,
+  `pes::packetize`, `packetize_sections`, `CcEvent.pid`, `Stats.pids`.
+  The `packet::PID_*` constants are gone (use the `Pid` constants);
+  `BitReader::pid()` reads the 13-bit field. Decoders build it with
+  `Pid::from_wire` (a mask on the 13 bits already read, so the codec stays
+  lossless; `prop_pid_round_trip` covers 0..=0x1FFF). Behind the new
+  `serde` feature it serialises as the integer and deserialises with the
+  range check, so a PID above 8191 in an `isdbt-mux` TOML now fails at
+  load, naming the key, instead of at encode time; the TOML and the
+  `isdb ts` JSON reports are byte-identical. `isdb-si` follows
+  (`AnyTable::decode`, `conformance::check`, `table_allowed_on_pid`,
+  `ConditionalAccess.ca_pid`, `AccessControl.pid`,
+  `HierarchicalTransmission.reference_pid`), as do `isdb-analyze`,
+  `isdbt-mux` (`Config` PID keys, `PidMap`, `PidList`, `si::pid`
+  constants, `Probe`, `RelayedEs`), `isdbt-phy` (`Iip.pid`, `IIP_PID`;
+  `BroadcastTsWriter::with_iip_pid` is infallible) and `isdb-mmt`
+  (`Location::Mpeg2Ts`). Item G of `docs/plans/type-safety.md`;
+  `tools/newtype-wrap.py` did the literal sites.
+
 - Workspace: `clippy::cast_lossless` is enabled (`warn`, so an error in
   CI). The 632 `x as T` casts where `T: From<X>` (`u8`/`u16`/`u32` →
   wider integers, `bool` → integer, `f32`/`u32`/`i32` → `f64`) are written

@@ -23,6 +23,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 use isdb_si::values::{CodedValue, DigitalRecordingControl};
+use isdb_ts::Pid;
 use isdb_ts::cc::Counter;
 use isdb_ts::packet::{AdaptationFields, PAYLOAD_CAPACITY, Packet as TsPacket};
 use isdb_ts::packetize::{Packing, packetize_sections};
@@ -66,7 +67,7 @@ pub fn clocks_to_ticks(c: u64) -> u64 {
 
 struct SectionStream {
     kind: TableKind,
-    pid: u16,
+    pid: Pid,
     layer: usize,
     interval: u64,
     sched: u64,
@@ -105,7 +106,7 @@ struct PreparedPes {
 
 struct EsStream {
     service: usize,
-    pid: u16,
+    pid: Pid,
     layer: usize,
     media: Media,
     cc: Counter,
@@ -124,7 +125,7 @@ struct EsStream {
 }
 
 struct PcrStream {
-    pid: u16,
+    pid: Pid,
     layer: usize,
     /// Layer-local packet indices carrying PCR in each frame.
     positions: Vec<usize>,
@@ -392,14 +393,14 @@ impl Multiplexer {
         // ---- media
         let mut media_info: Vec<Vec<StreamInfo>> = Vec::new();
         let mut es: Vec<EsStream> = Vec::new();
-        let mut pid_layer: std::collections::HashMap<u16, (usize, String, bool)> =
+        let mut pid_layer: std::collections::HashMap<Pid, (usize, String, bool)> =
             Default::default();
         // `section`: section streams may share a PID with other section
         // streams (one continuity counter); nothing else may share.
-        let mut claim = |pid: u16, layer: usize, what: String, section: bool| -> Result<()> {
-            if pid > 0x1FFE {
+        let mut claim = |pid: Pid, layer: usize, what: String, section: bool| -> Result<()> {
+            if pid == Pid::NULL {
                 return Err(MuxError::Config(format!(
-                    "{what}: PID {pid:#06x} out of range"
+                    "{what}: PID {pid:#06x} is the null packet PID (H.222.0 Table 2-3)"
                 )));
             }
             if let Some((l, w, sec)) = pid_layer.get(&pid) {
@@ -419,7 +420,7 @@ impl Multiplexer {
         };
         for (si_idx, s) in cfg.services.iter().enumerate() {
             let mut infos = Vec::new();
-            let mut svc_streams: Vec<(usize, Media, u64, usize)> = Vec::new();
+            let mut svc_streams: Vec<(Pid, Media, u64, usize)> = Vec::new();
             for st in &s.streams {
                 let layer = st.layer.unwrap_or(s.layer).index();
                 if params.layers()[layer].is_none() {
@@ -429,7 +430,7 @@ impl Multiplexer {
                         ["A", "B", "C"][layer]
                     )));
                 }
-                if !(0x0010..=0x1FFE).contains(&st.pid) {
+                if !st.pid.is_assignable() {
                     return Err(MuxError::Config(format!(
                         "stream PID {:#06x} outside 0x0010–0x1FFE (H.222.0 Table 2-3)",
                         st.pid
@@ -485,7 +486,7 @@ impl Multiplexer {
                             });
                             let dur = v.duration54;
                             svc_streams.push((
-                                st.pid as usize,
+                                st.pid,
                                 Media::Video {
                                     es: Box::new(v),
                                     force_vbv: st.force_vbv_delay_ffff,
@@ -511,7 +512,7 @@ impl Multiplexer {
                             }
                             let dur = (a.total_samples * 54_000_000).div_ceil(fs);
                             svc_streams.push((
-                                st.pid as usize,
+                                st.pid,
                                 Media::Audio {
                                     es: Box::new(a),
                                     per_pes: st.frames_per_pes.max(1) as usize,
@@ -570,7 +571,7 @@ impl Multiplexer {
                 };
                 es.push(EsStream {
                     service: si_idx,
-                    pid: pid as u16,
+                    pid,
                     layer,
                     media: m,
                     cc: Counter::new(0),
@@ -742,7 +743,7 @@ impl Multiplexer {
         let mut pcr = Vec::new();
         let mut per_layer_count = [0usize; 3];
         for (i, s) in cfg.services.iter().enumerate() {
-            if s.pcr_pid == 0x1FFF {
+            if s.pcr_pid == Pid::NULL {
                 continue;
             }
             let es_idx = es.iter().position(|e| e.service == i && e.pid == s.pcr_pid);
@@ -1092,7 +1093,7 @@ impl Multiplexer {
     }
 
     /// T-STD violation counters per elementary PID.
-    pub fn tstd_violations(&self) -> Vec<(u16, TstdViolations)> {
+    pub fn tstd_violations(&self) -> Vec<(Pid, TstdViolations)> {
         let mut v: Vec<_> = self.es.iter().map(|e| (e.pid, e.tstd.violations)).collect();
         for r in &self.relays {
             for e in &r.es {

@@ -385,7 +385,7 @@ impl FrameInput for MuxInput {
 #[derive(Debug, Clone, Default)]
 pub struct InputRates {
     /// PCR PID used as the time base (None: the input has no PCR).
-    pub pcr_pid: Option<u16>,
+    pub pcr_pid: Option<isdb_ts::Pid>,
     /// Seconds of PCR time measured.
     pub span_s: f64,
     /// Mean rate per layer (bit/s).

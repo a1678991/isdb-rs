@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(c.network.name, "名前\"x\"");
         let s = &c.services[0];
         assert_eq!(
-            (s.service_id, s.pmt_pid, s.pcr_pid),
+            (s.service_id, s.pmt_pid.get(), s.pcr_pid.get()),
             (0x0400, 0x01F0, 0x01FF)
         );
         assert_eq!(s.layer, LayerName::A);

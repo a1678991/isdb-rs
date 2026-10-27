@@ -23,6 +23,7 @@ use isdb_si::tables::{
 };
 use isdb_si::time::BcdOffset;
 use isdb_si::values::{AudioMode, CodedValue};
+use isdb_ts::Pid;
 
 use crate::adts::b32::QualityMode;
 use crate::carousel::{self, Carousel};
@@ -43,20 +44,22 @@ use crate::video::SequenceInfo;
 
 /// PIDs of B10 Table 5-1.
 pub mod pid {
+    use isdb_ts::Pid;
+
     /// PAT.
-    pub const PAT: u16 = 0x0000;
+    pub const PAT: Pid = Pid::PAT;
     /// CAT.
-    pub const CAT: u16 = 0x0001;
+    pub const CAT: Pid = Pid::CAT;
     /// NIT.
-    pub const NIT: u16 = 0x0010;
+    pub const NIT: Pid = Pid::new(0x0010).unwrap();
     /// SDT/BAT.
-    pub const SDT: u16 = 0x0011;
+    pub const SDT: Pid = Pid::new(0x0011).unwrap();
     /// EIT.
-    pub const EIT: u16 = 0x0012;
+    pub const EIT: Pid = Pid::new(0x0012).unwrap();
     /// TDT/TOT.
-    pub const TOT: u16 = 0x0014;
+    pub const TOT: Pid = Pid::new(0x0014).unwrap();
     /// BIT.
-    pub const BIT: u16 = 0x0024;
+    pub const BIT: Pid = Pid::new(0x0024).unwrap();
 }
 
 /// broadcasting_flag '00' = broadcasting (B10 Table 6-35).
@@ -290,7 +293,7 @@ fn parse_num(s: &str) -> Option<u32> {
 pub(crate) enum Target {
     Main,
     Program,
-    Es(u16),
+    Es(Pid),
     Network,
     Ts,
     Service(Option<u16>),
@@ -304,7 +307,7 @@ pub(crate) fn parse_target(s: &str) -> Option<Target> {
     Some(match f.as_slice() {
         ["main"] => Target::Main,
         ["program"] => Target::Program,
-        ["es", p] => Target::Es(parse_num(p)? as u16),
+        ["es", p] => Target::Es(u16::try_from(parse_num(p)?).ok().and_then(Pid::new)?),
         ["network"] => Target::Network,
         ["ts"] => Target::Ts,
         ["service"] => Target::Service(None),
@@ -596,7 +599,7 @@ impl SiBuilder {
     }
 
     /// Default PID of `kind` (B10 Table 5-1; PMT from the service).
-    pub fn default_pid(&self, kind: TableKind) -> u16 {
+    pub fn default_pid(&self, kind: TableKind) -> Pid {
         match kind {
             TableKind::Pat => pid::PAT,
             TableKind::Cat => pid::CAT,
@@ -612,7 +615,7 @@ impl SiBuilder {
                 .hybridcast
                 .as_ref()
                 .and_then(|h| h.pid)
-                .unwrap_or(0x1FFF),
+                .unwrap_or(Pid::NULL),
         }
     }
 
@@ -813,7 +816,7 @@ impl SiBuilder {
                         reserved_future_use_1: 0x7F,
                         quality_level: self.hierarchical_quality(i, k, h)?,
                         reserved_future_use_2: 0b111,
-                        reference_pid: h.reference_pid & 0x1FFF,
+                        reference_pid: h.reference_pid,
                     },
                 ))?);
             }
@@ -1601,7 +1604,11 @@ mod tests {
             vec![0x02, 0xB0, 0x0D, 0xFF]
         );
         assert!(parse_hex("abc").is_err());
-        assert_eq!(parse_target("es:0x0111"), Some(Target::Es(0x111)));
+        assert_eq!(
+            parse_target("es:0x0111"),
+            Some(Target::Es(Pid::new(0x111).unwrap()))
+        );
+        assert_eq!(parse_target("es:0x2000"), None);
         assert_eq!(
             parse_target("event:1024:2"),
             Some(Target::Event(Some(1024), Some(2)))

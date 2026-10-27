@@ -9,6 +9,7 @@ use crate::error::{MuxError, Result};
 use crate::si::{Target, parse_target};
 use crate::signalling::{ComponentTypeCfg, VdcMode};
 use isdb_si::values::CodedValue;
+use isdb_ts::Pid;
 
 /// A descriptor the typed configuration generates in a loop.
 struct Typed {
@@ -117,7 +118,7 @@ fn check_ts_program_keys(st: &StreamCfg, what: &str) -> Result<()> {
     if st.source.is_none() {
         return fail("needs source = the recorded TS file");
     }
-    if st.pid != 0 || st.stream_type.is_some() || st.component_tag.is_some() {
+    if st.pid != Pid::PAT || st.stream_type.is_some() || st.component_tag.is_some() {
         return fail(
             "pid / stream_type / component_tag come from the source PMT; output PIDs are assigned by role (pid_map = \"auto\", pids = { video = …, audio = […], captions = …, superimpose = … }) or listed (pid_map = [[source, output], …])",
         );
@@ -146,7 +147,7 @@ fn check_ts_program_keys(st: &StreamCfg, what: &str) -> Result<()> {
     }
     if let PidMap::List(list) = &st.pid_map {
         for &[a, b] in list {
-            if !(0x0010..=0x1FFE).contains(&b) || a > 0x1FFE {
+            if !b.is_assignable() || a == Pid::NULL {
                 return fail(&format!(
                     "pid_map [{a:#06x}, {b:#06x}]: output PID outside 0x0010–0x1FFE (H.222.0 Table 2-3)"
                 ));
@@ -172,13 +173,13 @@ fn check_ts_program_keys(st: &StreamCfg, what: &str) -> Result<()> {
             if l.0.is_empty() {
                 return fail(&format!("pids.{role}: give at least one PID"));
             }
-            if let Some(p) = l.0.iter().find(|p| !(0x0010..=0x1FFE).contains(*p)) {
+            if let Some(p) = l.0.iter().find(|p| !p.is_assignable()) {
                 return fail(&format!(
                     "pids.{role}: PID {p:#06x} outside 0x0010–0x1FFE (H.222.0 Table 2-3)"
                 ));
             }
         }
-        let all: Vec<u16> = plan.all().collect();
+        let all: Vec<Pid> = plan.all().collect();
         if let Some(p) = (0..all.len()).find_map(|i| all[..i].contains(&all[i]).then_some(all[i])) {
             return fail(&format!(
                 "pids: PID {p:#06x} is given to two roles (or twice)"
@@ -312,7 +313,7 @@ impl Config {
                         let pid = h.pid.ok_or_else(|| {
                             MuxError::Config(format!("{what}: carriage = \"es\" needs pid"))
                         })?;
-                        if !(0x0010..=0x1FFE).contains(&pid) {
+                        if !pid.is_assignable() {
                             return Err(MuxError::Config(format!(
                                 "{what}: pid {pid:#06x} outside 0x0010–0x1FFE (H.222.0 Table 2-3)"
                             )));

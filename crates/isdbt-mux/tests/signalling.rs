@@ -13,6 +13,7 @@ use isdb_si::descriptor::{
     DescriptorBody, DigitalCopyControl, StreamIdentifier, VideoDecodeControl,
 };
 use isdb_si::values::*;
+use isdb_ts::Pid;
 use isdb_ts::psi::{Pmt, PmtStream};
 use isdb_ts::section::Long;
 use isdbt_mux::analysis::{Report, analyze};
@@ -76,7 +77,7 @@ struct Seen {
 }
 
 fn collect(r: &Report) -> Seen {
-    let pmt = Long::<Pmt>::decode(&r.sections[&0x01F0][0].1).unwrap();
+    let pmt = Long::<Pmt>::decode(&r.sections[&Pid::new(0x01F0).unwrap()][0].1).unwrap();
     let pmt_c1 = pmt
         .body
         .program_info
@@ -90,7 +91,11 @@ fn collect(r: &Report) -> Seen {
         .filter(|d| d.tag == 0xC8)
         .map(vdc)
         .collect();
-    let AnyTable::Sdt(sdt) = AnyTable::decode(0x11, &r.sections[&0x0011][0].1).unwrap() else {
+    let AnyTable::Sdt(sdt) = AnyTable::decode(
+        Pid::new(0x11).unwrap(),
+        &r.sections[&Pid::new(0x0011).unwrap()][0].1,
+    )
+    .unwrap() else {
         panic!()
     };
     let svc = sdt
@@ -109,8 +114,8 @@ fn collect(r: &Report) -> Seen {
         .collect();
     let (mut eit_c1, mut eit_video, mut eit_audio) = (Vec::new(), Vec::new(), Vec::new());
     let mut eit_quality = Vec::new();
-    for (_, s) in &r.sections[&0x0012] {
-        let AnyTable::Eit(eit) = AnyTable::decode(0x12, s).unwrap() else {
+    for (_, s) in &r.sections[&Pid::new(0x0012).unwrap()] {
+        let AnyTable::Eit(eit) = AnyTable::decode(Pid::new(0x12).unwrap(), s).unwrap() else {
             continue;
         };
         if eit.header.table_id_extension != 0x0400 {
@@ -130,7 +135,11 @@ fn collect(r: &Report) -> Seen {
             }
         }
     }
-    let AnyTable::Nit(nit) = AnyTable::decode(0x10, &r.sections[&0x0010][0].1).unwrap() else {
+    let AnyTable::Nit(nit) = AnyTable::decode(
+        Pid::new(0x10).unwrap(),
+        &r.sections[&Pid::new(0x0010).unwrap()][0].1,
+    )
+    .unwrap() else {
         panic!()
     };
     let key = nit.body.0.transport_streams[0]
@@ -353,43 +362,47 @@ fn synthetic_pmts() -> Vec<(u16, Vec<u8>)> {
             sid,
             1,
             Pmt::new(
-                0x01FF,
+                Pid::new(0x01FF).unwrap(),
                 vec![
-                    ca(0x0060),
-                    access(0x0061),
+                    ca(Pid::new(0x0060).unwrap()),
+                    access(Pid::new(0x0061).unwrap()),
                     copy_control(0b0100, 66),
                     content_availability(),
                 ],
                 vec![
-                    PmtStream::new(0x02, 0x0100, vec![stream_id(0x00), vdc.clone()]),
-                    PmtStream::new(0x0F, 0x0110, vec![stream_id(0x10)]),
+                    PmtStream::new(
+                        0x02,
+                        Pid::new(0x0100).unwrap(),
+                        vec![stream_id(0x00), vdc.clone()],
+                    ),
+                    PmtStream::new(0x0F, Pid::new(0x0110).unwrap(), vec![stream_id(0x10)]),
                     PmtStream::new(
                         0x06,
-                        0x0130,
+                        Pid::new(0x0130).unwrap(),
                         vec![stream_id(0x30), data_component(0x0008, &[0x3D])],
                     ),
                     PmtStream::new(
                         0x06,
-                        0x0138,
+                        Pid::new(0x0138).unwrap(),
                         vec![
                             stream_id(0x38),
-                            ca(0x1FFF),
-                            access(0x1FFF),
+                            ca(Pid::new(0x1FFF).unwrap()),
+                            access(Pid::new(0x1FFF).unwrap()),
                             data_component(0x0008, &[0x3C]),
                         ],
                     ),
                     PmtStream::new(
                         0x0D,
-                        0x0140,
+                        Pid::new(0x0140).unwrap(),
                         vec![stream_id(0x40), data_component(0x000C, &bxml)],
                     ),
                     PmtStream::new(
                         0x0D,
-                        0x0150,
+                        Pid::new(0x0150).unwrap(),
                         vec![
                             stream_id(0x50),
-                            ca(0x1FFF),
-                            access(0x1FFF),
+                            ca(Pid::new(0x1FFF).unwrap()),
+                            access(Pid::new(0x1FFF).unwrap()),
                             data_component(0x000C, &[0x1F, 0xFF, 0xBF]),
                         ],
                     ),
@@ -401,13 +414,13 @@ fn synthetic_pmts() -> Vec<(u16, Vec<u8>)> {
         0x0408,
         1,
         Pmt::new(
-            0x1FFF,
+            Pid::new(0x1FFF).unwrap(),
             vec![],
             (0..4u8)
                 .map(|k| {
                     PmtStream::new(
                         0x0D,
-                        0x0170 + u16::from(k),
+                        Pid::new(0x0170 + u16::from(k)).unwrap(),
                         vec![stream_id(0x70 + k), data_component(0x000C, &[0x1F])],
                     )
                 })
@@ -418,25 +431,25 @@ fn synthetic_pmts() -> Vec<(u16, Vec<u8>)> {
         0x0588,
         1,
         Pmt::new(
-            0x0181,
+            Pid::new(0x0181).unwrap(),
             vec![copy_control(0b1000, 2), content_availability()],
             vec![
-                PmtStream::new(0x1B, 0x0181, vec![stream_id(0x81)]),
-                PmtStream::new(0x0F, 0x0183, vec![stream_id(0x83)]),
+                PmtStream::new(0x1B, Pid::new(0x0181).unwrap(), vec![stream_id(0x81)]),
+                PmtStream::new(0x0F, Pid::new(0x0183).unwrap(), vec![stream_id(0x83)]),
                 PmtStream::new(
                     0x06,
-                    0x0187,
+                    Pid::new(0x0187).unwrap(),
                     vec![stream_id(0x87), data_component(0x0012, &[0xAD])],
                 ),
                 PmtStream::new(
                     0x0D,
-                    0x0189,
+                    Pid::new(0x0189).unwrap(),
                     vec![
                         stream_id(0x80),
                         data_component(0x000D, &[0x3F, 0x2F, 0x00, 0x0C, 0x00, 0x00, 0xFF, 0xBF]),
                     ],
                 ),
-                PmtStream::new(0x0D, 0x018A, vec![stream_id(0x8A)]),
+                PmtStream::new(0x0D, Pid::new(0x018A).unwrap(), vec![stream_id(0x8A)]),
             ],
         ),
     );

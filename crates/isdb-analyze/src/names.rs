@@ -3,6 +3,8 @@
 //! allocation (H.222.0 Table 2-3, B10 Part 1 Table 5-1 / Part 2 Table 5-1)
 //! and transmission level / frequency (B10 Part 2 Table 5-2).
 
+use isdb_ts::Pid;
+
 /// stream_type description (H.222.0 (05/2006) Table 2-34).
 pub fn stream_type_name(t: u8) -> &'static str {
     match t {
@@ -110,31 +112,39 @@ pub fn table_name(tid: u8) -> &'static str {
 /// `None` when the table's PID is designated indirectly (PMT, ECM, EMM,
 /// DSM-CC, DLT, ITT, AIT, INT, DCM, DMM, company tables) or ST
 /// ("Exclude 0x0000, 0x0001, 0x0014"), which is handled separately.
-pub fn fixed_pids(tid: u8) -> Option<&'static [u16]> {
+pub fn fixed_pids(tid: u8) -> Option<&'static [Pid]> {
+    // A `const` so the slice has a static address (a const fn call is not
+    // promoted on its own); the range check runs at compile time.
+    macro_rules! pids {
+        ($($v:expr),+) => {{
+            const P: &[Pid] = &[$(Pid::new($v).unwrap()),+];
+            P
+        }};
+    }
     Some(match tid {
-        0x00 => &[0x0000],
-        0x01 => &[0x0001],
-        0x40 | 0x41 => &[0x0010],
-        0x42 | 0x46 | 0x4A => &[0x0011],
-        0x4E..=0x6F => &[0x0012, 0x0026, 0x0027],
-        0x71 => &[0x0013],
-        0x70 | 0x73 => &[0x0014],
-        0x7E => &[0x001E],
-        0x7F => &[0x001F],
-        0xC0 => &[0x0017],
-        0xC2 => &[0x0022],
-        0xC3 => &[0x0023, 0x0028],
-        0xC4 => &[0x0024],
-        0xC5..=0xC7 => &[0x0025],
-        0xC8 => &[0x0029],
-        0xFE => &[0x002E],
+        0x00 => pids![0x0000],
+        0x01 => pids![0x0001],
+        0x40 | 0x41 => pids![0x0010],
+        0x42 | 0x46 | 0x4A => pids![0x0011],
+        0x4E..=0x6F => pids![0x0012, 0x0026, 0x0027],
+        0x71 => pids![0x0013],
+        0x70 | 0x73 => pids![0x0014],
+        0x7E => pids![0x001E],
+        0x7F => pids![0x001F],
+        0xC0 => pids![0x0017],
+        0xC2 => pids![0x0022],
+        0xC3 => pids![0x0023, 0x0028],
+        0xC4 => pids![0x0024],
+        0xC5..=0xC7 => pids![0x0025],
+        0xC8 => pids![0x0029],
+        0xFE => pids![0x002E],
         _ => return None,
     })
 }
 
 /// Name of a PID allocated by H.222.0 Table 2-3 or B10 Part 1 Table 5-1.
-pub fn pid_allocation(pid: u16) -> Option<&'static str> {
-    Some(match pid {
+pub fn pid_allocation(pid: Pid) -> Option<&'static str> {
+    Some(match pid.get() {
         0x0000 => "PAT",
         0x0001 => "CAT",
         0x0002 => "TSDT",

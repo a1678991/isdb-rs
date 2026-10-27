@@ -7,6 +7,7 @@ use isdb_si::descriptor::*;
 use isdb_si::tables::*;
 use isdb_si::time::{BcdDuration, BcdOffset, MjdTime};
 use isdb_text::AribString;
+use isdb_ts::Pid;
 use isdb_ts::section::{
     Long, LongBody, LongHeader, Short, ShortBody, ShortHeader, build_long, build_short,
 };
@@ -25,6 +26,11 @@ fn code3() -> impl Strategy<Value = Code3> + Clone {
 fn bits(n: u32) -> impl Strategy<Value = u8> + Clone {
     0u8..=((1u16 << n) - 1) as u8
 }
+/// Any 13-bit PID (H.222.0 Table 2-3).
+fn pid() -> impl Strategy<Value = Pid> + Clone {
+    (0u16..=0x1FFF).prop_map(|v| Pid::new(v).unwrap())
+}
+
 fn bits16(n: u32) -> impl Strategy<Value = u16> + Clone {
     0u16..=((1u32 << n) - 1) as u16
 }
@@ -48,7 +54,7 @@ fn descriptor_strategies() -> Vec<(u8, BoxedStrategy<Descriptor>)> {
     }
     add!(
         0x09,
-        (any::<u16>(), bits(3), bits16(13), bytes(40)).prop_map(|(a, b, c, d)| ConditionalAccess {
+        (any::<u16>(), bits(3), pid(), bytes(40)).prop_map(|(a, b, c, d)| ConditionalAccess {
             ca_system_id: a,
             reserved: b,
             ca_pid: c,
@@ -255,7 +261,7 @@ fn descriptor_strategies() -> Vec<(u8, BoxedStrategy<Descriptor>)> {
     );
     add!(
         0xC0,
-        (bits(7), any::<bool>(), bits(3), bits16(13)).prop_map(|(a, b, c, d)| {
+        (bits(7), any::<bool>(), bits(3), pid()).prop_map(|(a, b, c, d)| {
             HierarchicalTransmission {
                 reserved_future_use_1: a,
                 quality_level: b,
@@ -639,7 +645,7 @@ fn descriptor_strategies() -> Vec<(u8, BoxedStrategy<Descriptor>)> {
     );
     add!(
         0xF6,
-        (any::<u16>(), bits(3), bits16(13), bytes(30)).prop_map(|(a, b, c, d)| AccessControl {
+        (any::<u16>(), bits(3), pid(), bytes(30)).prop_map(|(a, b, c, d)| AccessControl {
             ca_system_id: a,
             transmission_type: b,
             pid: c,
@@ -969,7 +975,7 @@ fn ldt_body() -> impl Strategy<Value = LdtBody> {
 }
 
 fn check_long<B: LongBody + PartialEq + std::fmt::Debug + Clone>(
-    pid: u16,
+    pid: Pid,
     header: LongHeader,
     body: B,
 ) -> Result<(), TestCaseError> {
@@ -991,7 +997,7 @@ fn check_long<B: LongBody + PartialEq + std::fmt::Debug + Clone>(
 }
 
 fn check_short<B: ShortBody + PartialEq + std::fmt::Debug + Clone>(
-    pid: u16,
+    pid: Pid,
     header: ShortHeader,
     body: B,
 ) -> Result<(), TestCaseError> {
@@ -1018,38 +1024,38 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(500))]
 
     #[test]
-    fn prop_nit_roundtrip(h in long_header(vec![0x40, 0x41]), b in network_loops()) { check_long(0x0010, h, NitBody(b))?; }
+    fn prop_nit_roundtrip(h in long_header(vec![0x40, 0x41]), b in network_loops()) { check_long(Pid::new(0x0010).unwrap(), h, NitBody(b))?; }
     #[test]
-    fn prop_bat_roundtrip(h in long_header(vec![0x4A]), b in network_loops()) { check_long(0x0011, h, BatBody(b))?; }
+    fn prop_bat_roundtrip(h in long_header(vec![0x4A]), b in network_loops()) { check_long(Pid::new(0x0011).unwrap(), h, BatBody(b))?; }
     #[test]
-    fn prop_sdt_roundtrip(h in long_header(vec![0x42, 0x46]), b in sdt_body()) { check_long(0x0011, h, b)?; }
+    fn prop_sdt_roundtrip(h in long_header(vec![0x42, 0x46]), b in sdt_body()) { check_long(Pid::new(0x0011).unwrap(), h, b)?; }
     #[test]
-    fn prop_eit_roundtrip(h in long_header((0x4E..=0x6F).collect()), b in eit_body(), pid in prop::sample::select(vec![0x12u16, 0x26, 0x27])) {
+    fn prop_eit_roundtrip(h in long_header((0x4E..=0x6F).collect()), b in eit_body(), pid in prop::sample::select(vec![0x12u16, 0x26, 0x27]).prop_map(|v| Pid::new(v).unwrap())) {
         check_long(pid, h, b)?;
     }
     #[test]
-    fn prop_pcat_roundtrip(h in long_header(vec![0xC2]), b in pcat_body()) { check_long(0x0022, h, b)?; }
+    fn prop_pcat_roundtrip(h in long_header(vec![0xC2]), b in pcat_body()) { check_long(Pid::new(0x0022).unwrap(), h, b)?; }
     #[test]
-    fn prop_bit_roundtrip(h in long_header(vec![0xC4]), b in bit_body()) { check_long(0x0024, h, b)?; }
+    fn prop_bit_roundtrip(h in long_header(vec![0xC4]), b in bit_body()) { check_long(Pid::new(0x0024).unwrap(), h, b)?; }
     #[test]
-    fn prop_nbit_roundtrip(h in long_header(vec![0xC5, 0xC6]), b in nbit_body()) { check_long(0x0025, h, b)?; }
+    fn prop_nbit_roundtrip(h in long_header(vec![0xC5, 0xC6]), b in nbit_body()) { check_long(Pid::new(0x0025).unwrap(), h, b)?; }
     #[test]
-    fn prop_ldt_roundtrip(h in long_header(vec![0xC7]), b in ldt_body()) { check_long(0x0025, h, b)?; }
+    fn prop_ldt_roundtrip(h in long_header(vec![0xC7]), b in ldt_body()) { check_long(Pid::new(0x0025).unwrap(), h, b)?; }
 
     #[test]
-    fn prop_tdt_roundtrip(h in short_header(0x70), t in mjd_time()) { check_short(0x0014, h, TdtBody { jst_time: t })?; }
+    fn prop_tdt_roundtrip(h in short_header(0x70), t in mjd_time()) { check_short(Pid::new(0x0014).unwrap(), h, TdtBody { jst_time: t })?; }
     #[test]
     fn prop_tot_roundtrip(h in short_header(0x73), t in mjd_time(), r in bits(4), d in descriptors(4)) {
-        check_short(0x0014, h, TotBody { jst_time: t, reserved: r, descriptors: d })?;
+        check_short(Pid::new(0x0014).unwrap(), h, TotBody { jst_time: t, reserved: r, descriptors: d })?;
     }
     #[test]
     fn prop_rst_roundtrip(h in short_header(0x71), e in vec_of((any::<u16>(), any::<u16>(), any::<u16>(), any::<u16>(), bits(5), bits(3)).prop_map(
         |(a, b, c, d, r, s)| RstEntry { transport_stream_id: a, original_network_id: b, service_id: c, event_id: d, reserved_future_use: r, running_status: s }), 20)) {
-        check_short(0x0013, h, RstBody { entries: e })?;
+        check_short(Pid::new(0x0013).unwrap(), h, RstBody { entries: e })?;
     }
     #[test]
-    fn prop_st_roundtrip(ssi in any::<bool>(), rfu in any::<bool>(), r in bits(2), data in bytes(300), pid in 0x0002u16..0x1FFF) {
-        prop_assume!(pid != 0x0014);
+    fn prop_st_roundtrip(ssi in any::<bool>(), rfu in any::<bool>(), r in bits(2), data in bytes(300), pid in (0x0002u16..0x1FFF).prop_map(|v| Pid::new(v).unwrap())) {
+        prop_assume!(pid.get() != 0x0014);
         let st = StuffingSection { table_id: 0x72, section_syntax_indicator: ssi, reserved_future_use: rfu, reserved: r, data };
         let sec = st.encode().unwrap();
         prop_assert_eq!(&StuffingSection::decode(&sec).unwrap(), &st);
@@ -1075,7 +1081,7 @@ proptest! {
         for (t, crc) in [(0x70u8, false), (0x73, true), (0x71, false)] {
             let sh = ShortHeader { table_id: t, private_indicator: true, reserved1: 3 };
             let sec = build_short(&sh, &body, crc).unwrap();
-            if let Ok(any) = AnyTable::decode(if t == 0x71 { 0x13 } else { 0x14 }, &sec) {
+            if let Ok(any) = AnyTable::decode(if t == 0x71 { Pid::new(0x13).unwrap() } else { Pid::new(0x14).unwrap() }, &sec) {
                 prop_assert_eq!(any.encode().unwrap(), sec);
             }
         }

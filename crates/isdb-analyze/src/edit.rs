@@ -17,9 +17,10 @@ use crate::mutate::{Expr, Target};
 use crate::scan;
 use crate::timebase::Timebase;
 use anyhow::{Context, Result, anyhow, bail};
+use isdb_ts::Pid;
 use isdb_ts::cc::Counter;
 use isdb_ts::demux::{Assembled, SectionAssembler};
-use isdb_ts::packet::{PACKET_SIZE, PAYLOAD_CAPACITY, PID_NULL, Packet, View};
+use isdb_ts::packet::{PACKET_SIZE, PAYLOAD_CAPACITY, Packet, View};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::Path;
@@ -46,7 +47,7 @@ pub enum NullSlots {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Selector {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// table_id.
     pub table_id: u8,
     /// table_id_extension.
@@ -64,7 +65,7 @@ impl Selector {
         }
         let n = |x: &str| crate::mutate::int(x);
         Ok(Selector {
-            pid: n(p[0])? as u16,
+            pid: crate::mutate::pid(p[0])?,
             table_id: n(p[1])? as u8,
             ext: p.get(2).map(|x| n(x)).transpose()?.map(|x| x as u16),
             sn: p.get(3).map(|x| n(x)).transpose()?.map(|x| x as u8),
@@ -72,7 +73,7 @@ impl Selector {
     }
 
     /// Whether section bytes `sec` (carried on `pid`) match.
-    pub fn matches(&self, pid: u16, sec: &[u8]) -> bool {
+    pub fn matches(&self, pid: Pid, sec: &[u8]) -> bool {
         if pid != self.pid || sec.first() != Some(&self.table_id) {
             return false;
         }
@@ -96,7 +97,7 @@ impl Selector {
 #[non_exhaustive]
 pub enum EditOp {
     /// Replace every packet of these PIDs with a null packet.
-    NullPids(Vec<u16>),
+    NullPids(Vec<Pid>),
     /// Remove matching sections.
     Remove(Selector),
     /// Replace matching sections with `sections` (matched by
@@ -111,7 +112,7 @@ pub enum EditOp {
     /// `offset_s` (timed by PCR, or the nominal rate).
     Insert {
         /// PID.
-        pid: u16,
+        pid: Pid,
         /// Sections, sent together at each repetition.
         sections: Vec<Vec<u8>>,
         /// Repetition interval.
@@ -133,10 +134,10 @@ pub struct EditOptions {
 }
 
 /// What one PID rewrite did.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PidRewrite {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// Sections reassembled from the input.
     pub sections_in: usize,
     /// Sections changed (replaced/mutated) — input occurrences.
@@ -183,11 +184,11 @@ pub struct Occurrence {
 }
 
 /// Reassemble the sections of `pid` (H.222.0 §2.4.4).
-pub fn assemble_pid(pkts: &[Pkt], pid: u16) -> Vec<Occurrence> {
+pub fn assemble_pid(pkts: &[Pkt], pid: Pid) -> Vec<Occurrence> {
     let mut a = SectionAssembler::new(pid);
     let mut v = Vec::new();
     for (i, p) in pkts.iter().enumerate() {
-        if (u16::from(p[1] & 0x1F) << 8 | u16::from(p[2])) != pid {
+        if pid_of(p) != pid {
             continue;
         }
         for o in a.push(i as u64, p) {
@@ -203,14 +204,14 @@ pub fn assemble_pid(pkts: &[Pkt], pid: u16) -> Vec<Occurrence> {
     v
 }
 
-fn pid_of(p: &Pkt) -> u16 {
-    u16::from(p[1] & 0x1F) << 8 | u16::from(p[2])
+fn pid_of(p: &Pkt) -> Pid {
+    Pid::of_packet(p).expect("188-byte packet")
 }
 
 /// Replace every packet of `pids` with a null packet; returns the count.
-pub fn null_pids(pkts: &mut [Pkt], pids: &[u16]) -> usize {
+pub fn null_pids(pkts: &mut [Pkt], pids: &[Pid]) -> usize {
     let null = Packet::null().encode().expect("null packet encodes");
-    let set: BTreeSet<u16> = pids.iter().copied().collect();
+    let set: BTreeSet<Pid> = pids.iter().copied().collect();
     let mut n = 0;
     for p in pkts.iter_mut() {
         if set.contains(&pid_of(p)) {
@@ -236,14 +237,23 @@ pub struct Request {
 /// sections replacing it (`None` = keep unchanged); `extra` are inserted.
 pub fn rewrite_pid(
     pkts: &mut [Pkt],
-    pid: u16,
+    pid: Pid,
     mut f: impl FnMut(&Occurrence) -> Result<Option<Vec<Vec<u8>>>>,
     extra: Vec<Request>,
     policy: NullSlots,
 ) -> Result<PidRewrite> {
     let mut rep = PidRewrite {
         pid,
-        ..Default::default()
+        sections_in: 0,
+        changed: 0,
+        removed: 0,
+        inserted: 0,
+        sections_out: 0,
+        dropped: 0,
+        original_slots: 0,
+        slots_nulled: 0,
+        null_slots_used: 0,
+        max_delay_packets: 0,
     };
     let mut originals = Vec::new();
     let mut first_cc = None;
@@ -305,7 +315,7 @@ pub fn rewrite_pid(
     } else {
         pkts.iter()
             .enumerate()
-            .filter(|(_, p)| pid_of(p) == PID_NULL)
+            .filter(|(_, p)| pid_of(p) == Pid::NULL)
             .map(|(i, _)| i as u64)
             .collect()
     };
@@ -440,7 +450,7 @@ pub fn replace_map(orig_sns: &BTreeSet<u8>, repl: &[Vec<u8>], sec: &[u8]) -> Vec
 }
 
 /// PIDs carrying sections that match `t`.
-fn target_pids(pkts: &[Pkt], t: &Target) -> Vec<u16> {
+fn target_pids(pkts: &[Pkt], t: &Target) -> Vec<Pid> {
     if !t.pids.is_empty() {
         return t.pids.clone();
     }
@@ -451,7 +461,7 @@ fn target_pids(pkts: &[Pkt], t: &Target) -> Vec<u16> {
             ..Default::default()
         },
     );
-    let set: BTreeSet<u16> = cap
+    let set: BTreeSet<Pid> = cap
         .slots
         .keys()
         .filter(|k| k.table_id == t.table_id && (t.ext.is_none() || k.ext == t.ext))
@@ -657,7 +667,7 @@ pub fn sections_from_capture(cap: &scan::Capture, sel: &Selector) -> Vec<Vec<u8>
 
 /// Sections from a hex fixture (`pid tid hex` per line, or one hex
 /// section per line), filtered by `sel` (PID ignored for bare-hex lines).
-pub fn sections_from_hex(text: &str, sel: Option<&Selector>) -> Result<Vec<(u16, Vec<u8>)>> {
+pub fn sections_from_hex(text: &str, sel: Option<&Selector>) -> Result<Vec<(Pid, Vec<u8>)>> {
     let mut v = Vec::new();
     for (n, l) in text.lines().enumerate() {
         let l = l.trim();
@@ -666,8 +676,8 @@ pub fn sections_from_hex(text: &str, sel: Option<&Selector>) -> Result<Vec<(u16,
         }
         let t: Vec<&str> = l.split_whitespace().collect();
         let (pid, hex) = match t.len() {
-            1 => (sel.map_or(0, |s| s.pid), t[0]),
-            3 => (crate::mutate::int(t[0])? as u16, t[2]),
+            1 => (sel.map_or(Pid::PAT, |s| s.pid), t[0]),
+            3 => (crate::mutate::pid(t[0])?, t[2]),
             _ => bail!("line {}: expected `pid tid hex` or `hex`", n + 1),
         };
         let b = crate::tree::unhex(hex).ok_or_else(|| anyhow!("line {}: bad hex", n + 1))?;
@@ -714,13 +724,13 @@ pub fn load_sections(path: &Path, sel: &Selector) -> Result<Vec<Vec<u8>>> {
 /// Extract sections to the hex fixture format (`0xPPPP 0xTT hex` per
 /// line).  `all_bodies`: every distinct body of every version; otherwise
 /// the latest section of each slot.
-pub fn extract(cap: &scan::Capture, pid: Option<u16>, tid: Option<u8>, all_bodies: bool) -> String {
+pub fn extract(cap: &scan::Capture, pid: Option<Pid>, tid: Option<u8>, all_bodies: bool) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "# sections of {} (pid table_id hex)\n",
         cap.source
     ));
-    let mut seen: BTreeMap<(u16, Vec<u8>), ()> = BTreeMap::new();
+    let mut seen: BTreeMap<(Pid, Vec<u8>), ()> = BTreeMap::new();
     for (k, s) in &cap.slots {
         if pid.is_some_and(|p| p != k.pid) || tid.is_some_and(|t| t != k.table_id) {
             continue;

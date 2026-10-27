@@ -13,6 +13,7 @@ use crate::cc::{Counter, Tracker};
 use crate::error::{Error, Result};
 use crate::packet::{AdaptationFields, PACKET_SIZE, PAYLOAD_CAPACITY, Packet, View};
 use crate::pcr::Timestamp;
+use crate::pid::Pid;
 use crate::validate::{Violation, require, reserved_ones};
 
 /// packet_start_code_prefix 0x000001 (§2.4.3.7).
@@ -984,7 +985,7 @@ pub fn check(p: &PesPacket) -> Vec<Violation> {
 /// method of stuffing allowed for Transport Stream packets carrying PES
 /// packets" (§2.4.3.5).  Continuity counters come from `cc`.
 pub fn packetize(
-    pid: u16,
+    pid: Pid,
     pes: &[u8],
     first_af: Option<AdaptationFields>,
     cc: &mut Counter,
@@ -1027,7 +1028,7 @@ pub fn packetize(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssembledPes {
     /// PID.
-    pub pid: u16,
+    pub pid: Pid,
     /// Index of the packet with PUSI that started it.
     pub start_packet: u64,
     /// Index of the last packet contributing bytes.
@@ -1073,7 +1074,7 @@ pub enum PesOutput {
 /// next PUSI (or [`PesAssembler::flush`]).
 #[derive(Debug, Clone)]
 pub struct PesAssembler {
-    pid: u16,
+    pid: Pid,
     cc: Tracker,
     buf: Vec<u8>,
     start: u64,
@@ -1084,7 +1085,7 @@ pub struct PesAssembler {
 
 impl PesAssembler {
     /// Reassembler for `pid`.
-    pub fn new(pid: u16) -> Self {
+    pub fn new(pid: Pid) -> Self {
         Self {
             pid,
             cc: Tracker::new(),
@@ -1365,7 +1366,7 @@ mod tests {
                 pcr: Some(Pcr::from_ticks(n as u64)),
                 ..Default::default()
             };
-            let pkts = packetize(0x100, &pes, Some(af), &mut cc).unwrap();
+            let pkts = packetize(Pid::new(0x100).unwrap(), &pes, Some(af), &mut cc).unwrap();
             let mut payload = Vec::new();
             for (i, raw) in pkts.iter().enumerate() {
                 let p = Packet::decode(raw).unwrap();
@@ -1380,7 +1381,7 @@ mod tests {
                 payload.extend_from_slice(&p.payload);
             }
             assert_eq!(payload, pes, "n={n}");
-            let mut a = PesAssembler::new(0x100);
+            let mut a = PesAssembler::new(Pid::new(0x100).unwrap());
             let mut got = vec![];
             for (i, raw) in pkts.iter().enumerate() {
                 got.extend(a.push(i as u64, raw));
@@ -1388,7 +1389,7 @@ mod tests {
             assert_eq!(
                 got,
                 vec![PesOutput::Pes(AssembledPes {
-                    pid: 0x100,
+                    pid: Pid::new(0x100).unwrap(),
                     start_packet: 0,
                     end_packet: pkts.len() as u64 - 1,
                     data: pes
@@ -1403,9 +1404,9 @@ mod tests {
         p.unbounded = true;
         let pes = p.encode().unwrap();
         let mut cc = Counter::new(0);
-        let mut pkts = packetize(0x101, &pes, None, &mut cc).unwrap();
-        pkts.extend(packetize(0x101, &pes, None, &mut cc).unwrap());
-        let mut a = PesAssembler::new(0x101);
+        let mut pkts = packetize(Pid::new(0x101).unwrap(), &pes, None, &mut cc).unwrap();
+        pkts.extend(packetize(Pid::new(0x101).unwrap(), &pes, None, &mut cc).unwrap());
+        let mut a = PesAssembler::new(Pid::new(0x101).unwrap());
         let mut got = vec![];
         for (i, raw) in pkts.iter().enumerate() {
             if i == 4 {
