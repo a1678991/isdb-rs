@@ -112,8 +112,8 @@ pub fn split_long_unchecked(sec: &[u8]) -> Result<(LongHeader, &[u8], u32)> {
         ));
     }
     let private_indicator = r.bool()?;
-    let reserved1 = r.read(2)? as u8;
-    let section_length = r.read(12)? as usize;
+    let reserved1 = r.read_u8(2)?;
+    let section_length = r.read_usize(12)?;
     if section_length < 9 {
         return Err(Error::invalid(
             "long section header",
@@ -131,8 +131,8 @@ pub fn split_long_unchecked(sec: &[u8]) -> Result<(LongHeader, &[u8], u32)> {
         ));
     }
     let table_id_extension = r.u16()?;
-    let reserved2 = r.read(2)? as u8;
-    let version_number = r.read(5)? as u8;
+    let reserved2 = r.read_u8(2)?;
+    let version_number = r.read_u8(5)?;
     let current_next_indicator = r.bool()?;
     let section_number = r.u8()?;
     let last_section_number = r.u8()?;
@@ -191,8 +191,8 @@ pub fn split_short(sec: &[u8], has_crc: bool) -> Result<(ShortHeader, &[u8])> {
         ));
     }
     let private_indicator = r.bool()?;
-    let reserved1 = r.read(2)? as u8;
-    let section_length = r.read(12)? as usize;
+    let reserved1 = r.read_u8(2)?;
+    let section_length = r.read_usize(12)?;
     if sec.len() != 3 + section_length {
         return Err(Error::invalid(
             "short section header",

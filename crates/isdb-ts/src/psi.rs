@@ -100,7 +100,7 @@ impl LongBody for Pat {
         while r.remaining_bits() > 0 {
             entries.push(PatEntry {
                 program_number: r.u16()?,
-                reserved: r.read(3)? as u8,
+                reserved: r.read_u8(3)?,
                 pid: r.pid()?,
             });
         }
@@ -224,10 +224,10 @@ impl LongBody for Pmt {
 
     fn decode(_: &LongHeader, body: &[u8]) -> Result<Self> {
         let mut r = BitReader::new(body, "TS_program_map_section");
-        let reserved_pcr = r.read(3)? as u8;
+        let reserved_pcr = r.read_u8(3)?;
         let pcr_pid = r.pid()?;
-        let reserved_info = r.read(4)? as u8;
-        let pil = r.read(12)? as usize;
+        let reserved_info = r.read_u8(4)?;
+        let pil = r.read_usize(12)?;
         let program_info = descriptor::parse_loop(r.bytes(pil).map_err(|_| {
             Error::invalid(
                 "program_info_length",
@@ -237,10 +237,10 @@ impl LongBody for Pmt {
         let mut streams = Vec::new();
         while r.remaining_bits() > 0 {
             let stream_type = r.u8()?;
-            let reserved_pid = r.read(3)? as u8;
+            let reserved_pid = r.read_u8(3)?;
             let elementary_pid = r.pid()?;
-            let reserved_info = r.read(4)? as u8;
-            let n = r.read(12)? as usize;
+            let reserved_info = r.read_u8(4)?;
+            let n = r.read_usize(12)?;
             let descriptors = descriptor::parse_loop(r.bytes(n).map_err(|_| {
                 Error::invalid("ES_info_length", format!("{n} runs past the section"))
             })?)?;

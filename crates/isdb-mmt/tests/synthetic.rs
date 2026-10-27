@@ -5,6 +5,9 @@
 //! LOAS frames. On air every media payload is scrambled (SPEC-NOTES
 //! "scrambled-mpu"), so this is the only check of the unscrambled path.
 
+// Narrowing casts are proven or fallible here (docs/plans/type-safety.md section 2).
+#![warn(clippy::cast_possible_truncation)]
+
 use isdb_mmt::Decoder;
 use isdb_mmt::es;
 use isdb_mmt::mpu::{FragmentType, FragmentationIndicator};
@@ -14,13 +17,13 @@ use isdb_tlv::tlv::{Packet, PacketType};
 /// A TLV packet: IPv6 + UDP to `port`, carrying `payload`.
 fn ipv6_udp(port: u16, payload: &[u8]) -> Packet {
     let mut b = vec![0x60, 0, 0, 0];
-    b.extend(((payload.len() + 8) as u16).to_be_bytes());
+    b.extend(u16::try_from(payload.len() + 8).unwrap().to_be_bytes());
     b.extend([17, 64]);
     b.extend([0x20; 16]);
     b.extend([0xFF; 16]);
     b.extend(1234u16.to_be_bytes());
     b.extend(port.to_be_bytes());
-    b.extend(((payload.len() + 8) as u16).to_be_bytes());
+    b.extend(u16::try_from(payload.len() + 8).unwrap().to_be_bytes());
     b.extend([0, 0]);
     b.extend(payload);
     Packet {
@@ -41,7 +44,8 @@ fn mmtp(payload_type: PayloadType, packet_id: u16, seq: u32, payload: &[u8]) -> 
 
 /// A PA message carrying one MPT with the given (asset type, packet id).
 fn pa_with_mpt(assets: &[(&[u8; 4], u16)]) -> Vec<u8> {
-    let mut t = vec![0x20, 1, 0, 0, 0xFC, 2, 0x00, 0x97, 0, 0, assets.len() as u8];
+    let mut t = vec![0x20, 1, 0, 0, 0xFC, 2, 0x00, 0x97, 0, 0];
+    t.push(u8::try_from(assets.len()).unwrap());
     for (ty, pid) in assets {
         t.extend([0x00, 0, 0, 0, 0, 0]);
         t.extend(*ty);
@@ -49,10 +53,10 @@ fn pa_with_mpt(assets: &[(&[u8; 4], u16)]) -> Vec<u8> {
         t.extend(pid.to_be_bytes());
         t.extend([0, 0]);
     }
-    let len = (t.len() - 4) as u16;
+    let len = u16::try_from(t.len() - 4).unwrap();
     t[2..4].copy_from_slice(&len.to_be_bytes());
     let mut m = vec![0x00, 0x00, 0x00];
-    m.extend(((t.len() + 1) as u32).to_be_bytes());
+    m.extend(u32::try_from(t.len() + 1).unwrap().to_be_bytes());
     m.push(0);
     m.extend(&t);
     let mut p = vec![0x3C, 0x00];
@@ -72,7 +76,7 @@ fn mpu(frag: FragmentationIndicator, mpu_seq: u32, data: &[u8]) -> Vec<u8> {
     p.extend(mpu_seq.to_be_bytes());
     p.extend([0u8; 14]);
     p.extend(data);
-    let len = (p.len() - 2) as u16;
+    let len = u16::try_from(p.len() - 2).unwrap();
     p[..2].copy_from_slice(&len.to_be_bytes());
     p
 }
@@ -82,19 +86,19 @@ fn mpu_aggregated(mpu_seq: u32, units: &[&[u8]]) -> Vec<u8> {
     let mut p = vec![0, 0, mfu_flags(FragmentationIndicator::Complete, true), 0];
     p.extend(mpu_seq.to_be_bytes());
     for u in units {
-        p.extend(((u.len() + 14) as u16).to_be_bytes());
+        p.extend(u16::try_from(u.len() + 14).unwrap().to_be_bytes());
         p.extend([0u8; 14]);
         p.extend(*u);
     }
-    let len = (p.len() - 2) as u16;
+    let len = u16::try_from(p.len() - 2).unwrap();
     p[..2].copy_from_slice(&len.to_be_bytes());
     p
 }
 
 fn nal(t: u8, len: usize) -> Vec<u8> {
     let mut n = vec![t << 1, 1];
-    n.extend((0..len).map(|i| (i as u8) | 0x80));
-    let mut m = (n.len() as u32).to_be_bytes().to_vec();
+    n.extend((0..=u8::MAX).cycle().take(len).map(|i| i | 0x80));
+    let mut m = u32::try_from(n.len()).unwrap().to_be_bytes().to_vec();
     m.extend(n);
     m
 }

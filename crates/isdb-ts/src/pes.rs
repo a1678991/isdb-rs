@@ -437,7 +437,7 @@ pub struct PesPacket {
 }
 
 fn marker(r: &mut BitReader<'_>) -> Result<u8> {
-    Ok(r.read(1)? as u8)
+    r.read_u8(1)
 }
 
 impl PesHeader {
@@ -459,13 +459,13 @@ impl PesHeader {
             ));
         }
         let mut r = BitReader::new(&b[..3], "PES header");
-        let marker_bits = r.read(2)? as u8;
-        let scrambling_control = r.read(2)? as u8;
+        let marker_bits = r.read_u8(2)?;
+        let scrambling_control = r.read_u8(2)?;
         let priority = r.bool()?;
         let data_alignment_indicator = r.bool()?;
         let copyright = r.bool()?;
         let original_or_copy = r.bool()?;
-        let pts_dts_flags = r.read(2)? as u8;
+        let pts_dts_flags = r.read_u8(2)?;
         let escr_flag = r.bool()?;
         let es_rate_flag = r.bool()?;
         let trick_flag = r.bool()?;
@@ -483,14 +483,14 @@ impl PesHeader {
             }
         };
         let escr = if escr_flag {
-            let reserved = r.read(2)? as u8;
+            let reserved = r.read_u8(2)?;
             let hi = r.read(3)?;
             let m0 = marker(&mut r)?;
             let mid = r.read(15)?;
             let m1 = marker(&mut r)?;
             let lo = r.read(15)?;
             let m2 = marker(&mut r)?;
-            let extension = r.read(9)? as u16;
+            let extension = r.read_u16(9)?;
             let m3 = marker(&mut r)?;
             Some(Escr {
                 reserved,
@@ -503,7 +503,7 @@ impl PesHeader {
         };
         let es_rate = if es_rate_flag {
             let m0 = marker(&mut r)?;
-            let rate = r.read(22)? as u32;
+            let rate = r.read_u32(22)?;
             let m1 = marker(&mut r)?;
             Some(EsRate {
                 markers: (m0 << 1) | m1,
@@ -516,7 +516,7 @@ impl PesHeader {
         let additional_copy_info = if aci_flag {
             Some(AdditionalCopyInfo {
                 marker: r.bool()?,
-                info: r.read(7)? as u8,
+                info: r.read_u8(7)?,
             })
         } else {
             None
@@ -658,7 +658,7 @@ impl PesExtension {
         let pack_flag = r.bool()?;
         let ppsc_flag = r.bool()?;
         let pstd_flag = r.bool()?;
-        let reserved = r.read(3)? as u8;
+        let reserved = r.read_u8(3)?;
         let ext2_flag = r.bool()?;
         let private_data = if private_flag {
             let mut a = [0u8; 16];
@@ -679,29 +679,29 @@ impl PesExtension {
         };
         let program_packet_sequence_counter = if ppsc_flag {
             let m0 = marker(r)?;
-            let counter = r.read(7)? as u8;
+            let counter = r.read_u8(7)?;
             let m1 = marker(r)?;
             Some(ProgramPacketSequenceCounter {
                 markers: (m0 << 1) | m1,
                 counter,
                 mpeg1_mpeg2_identifier: r.bool()?,
-                original_stuff_length: r.read(6)? as u8,
+                original_stuff_length: r.read_u8(6)?,
             })
         } else {
             None
         };
         let p_std_buffer = if pstd_flag {
             Some(PStdBuffer {
-                prefix: r.read(2)? as u8,
+                prefix: r.read_u8(2)?,
                 scale: r.bool()?,
-                size: r.read(13)? as u16,
+                size: r.read_u16(13)?,
             })
         } else {
             None
         };
         let extension2 = if ext2_flag {
             let marker = r.bool()?;
-            let n = r.read(7)? as usize;
+            let n = r.read_usize(7)?;
             let data = r
                 .bytes(n)
                 .map_err(|_| {
@@ -832,21 +832,18 @@ impl PesPacket {
             PesBody::Data(d) | PesBody::Padding(d) => v.extend_from_slice(d),
         }
         if !self.unbounded {
-            let len = v.len() - 6;
-            if len > 0xFFFF {
-                return Err(Error::Overflow {
-                    what: "PES_packet_length",
-                    value: len as u64,
-                    bits: 16,
-                });
-            }
+            let len = u16::try_from(v.len() - 6).map_err(|_| Error::Overflow {
+                what: "PES_packet_length",
+                value: (v.len() - 6) as u64,
+                bits: 16,
+            })?;
             if len == 0 {
                 return Err(Error::invalid(
                     "PES_packet_length",
                     "an empty bounded PES packet would encode as 0, which means unbounded (§2.4.3.7)",
                 ));
             }
-            v[4..6].copy_from_slice(&(len as u16).to_be_bytes());
+            v[4..6].copy_from_slice(&len.to_be_bytes());
         }
         Ok(v)
     }
@@ -1357,7 +1354,7 @@ mod tests {
                 pts_dts: PtsDts::pts_only(n as u64),
                 ..Default::default()
             };
-            let pes = PesPacket::new(0xE0, h, (0..n).map(|i| i as u8).collect())
+            let pes = PesPacket::new(0xE0, h, (0..=u8::MAX).cycle().take(n).collect())
                 .encode()
                 .unwrap();
             let mut cc = Counter::default();

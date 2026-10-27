@@ -82,13 +82,16 @@ pub const MAX_LOAS: usize = 0x1FFF;
 /// (syncword 0x2B7, 13-bit length; ISO/IEC 14496-3, from knowledge).
 /// `false` (nothing written) when it is longer than 8191 bytes.
 pub fn loas_frame(element: &[u8], out: &mut Vec<u8>) -> bool {
-    let n = element.len();
-    if n > MAX_LOAS {
+    let Ok(n) = u16::try_from(element.len()) else {
+        return false;
+    };
+    if usize::from(n) > MAX_LOAS {
         return false;
     }
+    let [hi, lo] = n.to_be_bytes();
     out.push(0x56);
-    out.push(0xE0 | (n >> 8) as u8);
-    out.push(n as u8);
+    out.push(0xE0 | hi);
+    out.push(lo);
     out.extend_from_slice(element);
     true
 }

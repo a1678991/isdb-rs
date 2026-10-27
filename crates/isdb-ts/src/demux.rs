@@ -334,7 +334,9 @@ mod tests {
     use crate::section::{LongHeader, build_long};
 
     fn sec(tid: u8, n: usize) -> Vec<u8> {
-        let body: Vec<u8> = (0..n).map(|i| (i * 7 + tid as usize) as u8).collect();
+        let body: Vec<u8> = std::iter::successors(Some(tid), |b| Some(b.wrapping_add(7)))
+            .take(n)
+            .collect();
         build_long(&LongHeader::new(tid, 1, 0), &body).unwrap()
     }
 
@@ -402,7 +404,7 @@ mod tests {
         p0.extend_from_slice(&s1[..183]);
         let mut out = a.push(0, &pkt(Pid::new(0x12).unwrap(), true, 5, &p0));
         let rem = &s1[183..];
-        let mut p1 = vec![rem.len() as u8];
+        let mut p1 = vec![u8::try_from(rem.len()).unwrap()];
         p1.extend_from_slice(rem);
         p1.extend_from_slice(&s2);
         out.extend(a.push(1, &pkt(Pid::new(0x12).unwrap(), true, 6, &p1)));
@@ -499,7 +501,7 @@ mod tests {
             a.push(0, &pkt(Pid::new(0x11).unwrap(), false, 1, &s1[183..367]))
                 .is_empty()
         );
-        let mut p = vec![(s1.len() - 367) as u8];
+        let mut p = vec![u8::try_from(s1.len() - 367).unwrap()];
         p.extend_from_slice(&s1[367..]);
         p.extend_from_slice(&s2);
         let out = a.push(1, &pkt(Pid::new(0x11).unwrap(), true, 2, &p));

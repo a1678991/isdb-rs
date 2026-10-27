@@ -34,15 +34,13 @@ impl Descriptor {
 
     /// Append tag, length and data.
     pub fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
-        if self.data.len() > 255 {
-            return Err(Error::Overflow {
-                what: "descriptor_length",
-                value: self.data.len() as u64,
-                bits: 8,
-            });
-        }
+        let len = u8::try_from(self.data.len()).map_err(|_| Error::Overflow {
+            what: "descriptor_length",
+            value: self.data.len() as u64,
+            bits: 8,
+        })?;
         out.push(self.tag);
-        out.push(self.data.len() as u8);
+        out.push(len);
         out.extend_from_slice(&self.data);
         Ok(())
     }

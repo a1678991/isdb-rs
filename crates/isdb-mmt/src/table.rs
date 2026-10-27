@@ -767,9 +767,9 @@ pub(crate) mod tests {
     /// Append section_length and a CRC to a section whose length bytes
     /// are placeholders.
     pub(crate) fn seal(mut s: Vec<u8>) -> Vec<u8> {
-        let len = s.len() - 3 + 4;
-        s[1] = (s[1] & 0xF0) | ((len >> 8) as u8 & 0x0F);
-        s[2] = len as u8;
+        let [hi, lo] = u16::try_from(s.len() - 3 + 4).unwrap().to_be_bytes();
+        s[1] = (s[1] & 0xF0) | (hi & 0x0F);
+        s[2] = lo;
         let c = crc32(&s);
         s.extend(c.to_be_bytes());
         s
@@ -785,8 +785,8 @@ pub(crate) mod tests {
         t.extend(*b"hev1");
         t.extend([0xFE, 1, 0x00, 0xA1, 0x21]);
         t.extend([0, 5, 0x80, 0x11, 2, 0x00, 0x00]);
-        let len = t.len() - 4;
-        t[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+        let len = u16::try_from(t.len() - 4).unwrap();
+        t[2..4].copy_from_slice(&len.to_be_bytes());
         let m = Mpt::parse(&t).unwrap();
         assert_eq!(m.service_id(), Some(0x0097));
         assert_eq!(m.assets.len(), 1);
