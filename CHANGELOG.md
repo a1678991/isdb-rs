@@ -16,6 +16,15 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb`: diagnostics are `tracing` events. The global options
+  `--log-level` (default `info`; `RUST_LOG` takes an `EnvFilter`
+  directive and overrides it) and `--log-format text|json` select what
+  reaches stderr and how: `text` keeps the `[tx] …` lines, `json` prints
+  one object per line with the event's structured fields (`isdb tx`'s
+  status, warning and summary events carry `frames`, `on_air_s`, `speed`,
+  `null_fill_pct`, `end`, …). Reports on stdout are unchanged. The
+  libraries emit no events yet; `docs/plans/errors-and-logging.md` has
+  the plan.
 - `isdb-cli`: the left-hand-circular BS and 110° CS channels: `BS2`..`BS24`
   (even) and `ND1`..`ND23` (odd) are accepted by `--freq` / `--channel`
   and tuned at the IF of the left-hand LNB LO, 9.505 GHz (MIC Ordinance
@@ -793,6 +802,11 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Fixed
 
+- `isdb rx --symbols-file` replayed a recording through the live-capture
+  queue, which drops blocks when the decoder falls four chunks behind the
+  parser: a decoder slower than the disk lost blocks silently (reported
+  as losses, differently on every run). A file source now waits for the
+  decoder (`symstream::Source::File`); a radio still never waits.
 - `isdbs3-phy` / `isdb-cli`: streamed ISDB-S3 reception lost every frame
   ≈ 30 s after the FPGA front end was configured. The front end has no
   carrier loop and the carrier drifted (−97 → −830 Hz in 30 s); at

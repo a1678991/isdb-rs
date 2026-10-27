@@ -14,6 +14,7 @@ use isdbt_phy::Transmitter;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
 /// Legal and safety notice shown by `isdb tx --help` (and in README.md).
 pub const LEGAL_NOTICE: &str = "\
@@ -295,8 +296,12 @@ fn drive(
         if opts.status_secs > 0.0 && Instant::now() >= next_status {
             next_status += Duration::from_secs_f64(opts.status_secs);
             let speed = producer_speed(iv_frames, iv_input + iv_mod, frame_s);
-            eprintln!(
-                "[tx] {:7.1} s on air, {} frames ({} data) | null fill {} (total {}){input_status} | {}{}",
+            info!(
+                on_air_s = rep.frames as f64 * frame_s,
+                frames = rep.frames,
+                data_frames = rep.data,
+                speed = speed.unwrap_or(f64::NAN),
+                "{:7.1} s on air, {} frames ({} data) | null fill {} (total {}){input_status} | {}{}",
                 rep.frames as f64 * frame_s,
                 rep.frames,
                 rep.data,
@@ -306,8 +311,12 @@ fn drive(
                 sink.status()
             );
             if realtime_sink && speed.is_some_and(|x| x < 1.0) {
-                eprintln!(
-                    "[tx] WARNING: the producer runs below real time ({:.2}×): the radio underruns. \
+                warn!(
+                    speed = speed.unwrap_or(0.0),
+                    input_ms = ms_per(iv_input, iv_frames),
+                    modulation_ms = ms_per(iv_mod, iv_frames),
+                    frame_ms = frame_s * 1e3,
+                    "the producer runs below real time ({:.2}×): the radio underruns. \
                      Per frame: input {:.1} ms + modulation {:.1} ms for a {:.1} ms frame{}",
                     speed.unwrap_or(0.0),
                     ms_per(iv_input, iv_frames),
@@ -335,7 +344,7 @@ fn drive(
     let fin = sink.finish(aborted);
     if let Some(e) = err {
         if let Ok(s) = &fin {
-            eprintln!("isdb: {s}");
+            info!("{s}");
         }
         return Err(e);
     }
@@ -399,8 +408,12 @@ pub fn run(a: TxArgs) -> Result<()> {
         None => a.input.synthetic || a.input.feed == Feed::Loop,
     };
     if let Some(f) = &iq {
-        eprintln!(
-            "isdb tx: --iq-in {}: {} whole frames ({:.1} s) from sample {}, level ×{:.3} to unit RMS (parameters from its TMCC)",
+        info!(
+            frames = f.frames,
+            seconds = f.seconds(),
+            first_sample = f.first_sample,
+            scale = f.scale,
+            "--iq-in {}: {} whole frames ({:.1} s) from sample {}, level ×{:.3} to unit RMS (parameters from its TMCC)",
             a.iq_in
                 .as_deref()
                 .unwrap_or(std::path::Path::new(""))
@@ -411,9 +424,11 @@ pub fn run(a: TxArgs) -> Result<()> {
             f.scale
         );
     }
-    eprintln!("isdb tx: {}", describe_params(&params));
-    eprintln!(
-        "  per frame: {} | frame {:.4} s, {} samples at 512/63 MHz",
+    info!("{}", describe_params(&params));
+    info!(
+        frame_s = params.frame_seconds(),
+        samples_per_frame = params.samples_per_frame(),
+        "per frame: {} | frame {:.4} s, {} samples at 512/63 MHz",
         params
             .active_layers()
             .map(|(id, _)| format!(
@@ -436,7 +451,8 @@ pub fn run(a: TxArgs) -> Result<()> {
             backoff_db: a.backoff_db,
         };
         let settings = backend.describe_tx(&cfg, &opts)?;
-        eprintln!(
+        info!(
+            backend = backend.name(),
             "{} TX settings{}:\n{settings}",
             backend.name(),
             tuning.channel_label()
@@ -449,8 +465,8 @@ pub fn run(a: TxArgs) -> Result<()> {
             );
         }
         if seconds == 0.0 {
-            eprintln!(
-                "  note: unbounded transmission ({}); stop with Ctrl-C",
+            info!(
+                "note: unbounded transmission ({}); stop with Ctrl-C",
                 if endless {
                     "the input never ends"
                 } else {
@@ -459,7 +475,7 @@ pub fn run(a: TxArgs) -> Result<()> {
             );
         }
         let (sink, info) = backend.open_tx(&cfg, &opts)?;
-        eprintln!("  opened: {info}");
+        info!("opened: {info}");
         sink
     } else {
         let path = a.iq.as_deref().expect("clap group");
@@ -482,8 +498,10 @@ pub fn run(a: TxArgs) -> Result<()> {
         queue_frames: a.queue_frames,
         status_secs: a.status_secs,
     };
-    eprintln!(
-        "  duration: {} | lead-in {} frames, flush {} frames{}",
+    info!(
+        lead_frames = opts.lead_frames,
+        paced = opts.pace,
+        "duration: {} | lead-in {} frames, flush {} frames{}",
         opts.max_frames.map_or_else(
             || if endless {
                 "unbounded (the input never ends); stop with Ctrl-C".into()
@@ -502,7 +520,7 @@ pub fn run(a: TxArgs) -> Result<()> {
     );
     let keys_hint = |k: &Option<Keys>| {
         if k.is_some() {
-            eprintln!("  keys: {}", crate::keys::help(a.seek_step));
+            info!("keys: {}", crate::keys::help(a.seek_step));
         }
     };
     let iq_play = iq.is_some();
@@ -526,7 +544,7 @@ pub fn run(a: TxArgs) -> Result<()> {
             Some(i) => i,
             None => a.input.open(&params)?,
         };
-        eprintln!("  input: {}", input.describe());
+        info!("input: {}", input.describe());
         let mut keys = if !a.no_keys && input.enable_control()? {
             Keys::start(a.seek_step)
         } else {
@@ -541,8 +559,14 @@ pub fn run(a: TxArgs) -> Result<()> {
     };
     drop(keys); // the terminal back to its mode
     crate::source::check_not_scrambled()?;
-    eprintln!(
-        "[tx] done ({:?}): {} frames = {:.2} s on air ({} lead, {} data, {} flush)",
+    info!(
+        end = ?rep.end.unwrap_or(EndReason::Stopped),
+        frames = rep.frames,
+        on_air_s = rep.frames as f64 * frame_s,
+        lead_frames = rep.lead,
+        data_frames = rep.data,
+        flush_frames = rep.flush,
+        "done ({:?}): {} frames = {:.2} s on air ({} lead, {} data, {} flush)",
         rep.end.unwrap_or(EndReason::Stopped),
         rep.frames,
         rep.frames as f64 * frame_s,
@@ -552,14 +576,18 @@ pub fn run(a: TxArgs) -> Result<()> {
     );
     for (id, _) in params.active_layers().filter(|_| !iq_play) {
         let i = id.index();
-        eprintln!(
-            "[tx]   layer {id}: {} input packets, {} null padding ({:.1}% null fill)",
+        info!(
+            layer = %id,
+            input_packets = rep.real[i],
+            null_packets = rep.nulls[i],
+            null_fill_pct = ratio(rep.nulls[i], rep.real[i] + rep.nulls[i]),
+            "  layer {id}: {} input packets, {} null padding ({:.1}% null fill)",
             rep.real[i],
             rep.nulls[i],
             ratio(rep.nulls[i], rep.real[i] + rep.nulls[i])
         );
     }
-    eprintln!("[tx] {}", rep.sink);
+    info!("{}", rep.sink);
     Ok(())
 }
 

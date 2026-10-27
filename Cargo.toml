@@ -45,6 +45,10 @@ toml = "1"
 ctrlc = "3"
 # terminal mode for the playback keys of `isdb tx` (unix)
 nix = { version = "0.31", default-features = false, features = ["term"] }
+# Diagnostics: libraries emit `tracing` events (no subscriber); `isdb-cli`
+# installs the subscriber (docs/plans/errors-and-logging.md).
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "env-filter", "json"] }
 
 # Every member opts in with `[lints] workspace = true`. CI runs clippy with
 # `-D warnings`, so "warn" fails CI while keeping local builds usable.

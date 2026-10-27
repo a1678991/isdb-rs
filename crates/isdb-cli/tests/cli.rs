@@ -2025,3 +2025,59 @@ fn isdbs3_symbols_stream_tracks_the_drift_and_recovers_from_losses() {
 fn isdb_s3_frames_per_second() -> f64 {
     33.7561e6 / (120.0 * 9296.0)
 }
+
+/// Diagnostics are `tracing` events: `--log-format json` gives one object
+/// per line with the event's fields, `--log-level` filters, and the text
+/// format keeps the `[tx] …` lines (the other tests match on them).
+#[test]
+fn diagnostics_are_structured_events() {
+    let d = tmp("log-json");
+    let o = run(&[
+        "--log-format",
+        "json",
+        "tx",
+        "--synthetic",
+        "--seconds",
+        "0.5",
+        "--iq",
+        s(&d.join("x.cf32")),
+    ]);
+    assert!(o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    let mut done = None;
+    for line in err.lines() {
+        let j: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"));
+        assert_eq!(j["level"], "INFO", "{line}");
+        assert_eq!(j["target"], "isdb::tx", "{line}");
+        if j["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("done ("))
+        {
+            done = Some(j);
+        }
+    }
+    let done = done.expect("the end-of-run event");
+    assert_eq!(done["end"], "Limit");
+    assert_eq!(
+        done["frames"].as_u64(),
+        Some(
+            done["lead_frames"].as_u64().unwrap()
+                + done["data_frames"].as_u64().unwrap()
+                + done["flush_frames"].as_u64().unwrap()
+        )
+    );
+
+    let o = run(&[
+        "--log-level",
+        "warn",
+        "tx",
+        "--synthetic",
+        "--seconds",
+        "0.5",
+        "--iq",
+        s(&d.join("y.cf32")),
+    ]);
+    assert!(o.status.success());
+    assert!(o.stderr.is_empty(), "info events above --log-level warn");
+}

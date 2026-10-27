@@ -241,6 +241,7 @@ a program of *another* network (e.g. a satellite recording), use
 | `--queue-frames N` | 4 | frames produced ahead of the sink |
 | `--prefill-frames N` | 2 | frames converted before the radio starts streaming |
 | `--status-secs S` | 5 | status line interval (0 = final summary only) |
+| `--log-level L`, `--log-format F` | `info`, `text` | global options, before the subcommand: the diagnostics on stderr (every `[tx] …` line here is one) are `tracing` events; `--log-level trace|debug|info|warn|error|off` or `RUST_LOG=<directive>` filters them, `--log-format json` prints one JSON object per line with the event's fields (`frames`, `null_fill_pct`, …) for log collectors and scripts |
 | `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity |
 | `--seek-step S` | 10 | seconds per ←/→ key ([playback keys](#playback-keys)) |
 | `--no-keys` | off | do not read playback keys from the terminal |

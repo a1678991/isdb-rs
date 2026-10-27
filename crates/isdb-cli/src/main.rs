@@ -29,6 +29,7 @@ mod input;
 mod iq;
 mod iqplay;
 mod keys;
+mod logging;
 mod loopback;
 #[allow(missing_docs)]
 mod mux;
@@ -56,6 +57,8 @@ mod tx;
 #[derive(Parser, Debug)]
 #[command(name = "isdb", version, about, long_about = None, after_help = tx::LEGAL_NOTICE)]
 struct Cli {
+    #[command(flatten)]
+    log: logging::LogArgs,
     #[command(subcommand)]
     command: Command,
 }
@@ -97,6 +100,7 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    logging::init(&cli.log);
     match cli.command {
         Command::Tx(a) => {
             stop::install()?;
