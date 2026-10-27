@@ -20,6 +20,7 @@ isdbs3-core.workspace = true
 isdb-iq.workspace = true
 num-complex.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 isdb-tlv.workspace = true

@@ -10,6 +10,7 @@ use crate::sync::{synchronise, synchronise_at};
 use crate::tmcc;
 use isdbs3_core::slots::{Slot, layout};
 use isdbs3_core::tmcc::{StreamType, TmccInfo};
+use tracing::{debug, info};
 
 /// Receiver options.
 #[derive(Debug, Clone)]
@@ -120,7 +121,50 @@ pub struct Rx {
 /// trusted, dB (else the offset is searched).
 pub const HINT_MIN_SNR_DB: f64 = 3.0;
 
+/// The transmission modes of a TMCC in one line: `16APSK 7/9 ×60 + QPSK
+/// 1/2 ×60` (the modes in use with their slot counts).
+pub fn describe_tmcc(t: &TmccInfo) -> String {
+    let modes: Vec<String> = t
+        .modes
+        .iter()
+        .filter(|m| m.is_used())
+        .filter_map(|m| {
+            Some(format!(
+                "{} {} ×{}",
+                m.modulation()?.name(),
+                m.rate()?,
+                m.slots
+            ))
+        })
+        .collect();
+    if modes.is_empty() {
+        "no mode in use".into()
+    } else {
+        modes.join(" + ")
+    }
+}
+
+/// Whether two TMCCs assign the slots differently: modes, stream types
+/// and ids, slot-to-stream mapping or the EWS flag (the pointers and the
+/// order of change differ from frame to frame by design).
+fn assignment_differs(a: &TmccInfo, b: &TmccInfo) -> bool {
+    a.modes != b.modes
+        || a.stream_type != b.stream_type
+        || a.slot_stream != b.slot_stream
+        || a.stream_id != b.stream_id
+        || a.ews != b.ews
+}
+
 /// Run the receiver over symbols `z` (one per symbol, any scale).
+///
+/// Events: a slot sync found by the search is `info!` ("slot sync at
+/// offset …"); one confirmed at [`RxOptions::slot_offset`] is the
+/// continuation of a stream and `debug!`; no sync is `info!`. The first
+/// TMCC decoded after a search, and every TMCC whose slot assignment
+/// differs from the previous frame's, is `info!` ("TMCC: …", the modes
+/// through [`describe_tmcc`]); the other frames' TMCCs, a TMCC that did
+/// not decode, each frame's LDPC / BCH failure counts and the block's
+/// totals are `debug!`.
 pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
     let derotated;
     let z: &[Cplx] = if opt.carrier_hz == 0.0 {
@@ -135,12 +179,51 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
         .slot_offset
         .and_then(|o| synchronise_at(z, o))
         .filter(|s| s.sync_snr_db > HINT_MIN_SNR_DB);
+    let continuation = hinted.is_some();
     let Some(sy0) = hinted.or_else(|| synchronise(z)) else {
+        info!(
+            symbols = z.len(),
+            carrier_hz = opt.carrier_hz,
+            "no slot sync in {} symbols",
+            z.len()
+        );
         return Rx::default();
     };
+    let residual_hz = crate::sync::residual_hz(&sy0);
+    if continuation {
+        debug!(
+            offset = sy0.offset,
+            frames = sy0.frames.len(),
+            sync_snr_db = sy0.sync_snr_db,
+            residual_hz = residual_hz.unwrap_or(f64::NAN),
+            "slot sync continues at offset {}: {} whole frames, sync Es/N0 {:.1} dB, residual carrier {:+.1} Hz",
+            sy0.offset,
+            sy0.frames.len(),
+            sy0.sync_snr_db,
+            residual_hz.unwrap_or(f64::NAN)
+        );
+    } else {
+        info!(
+            offset = sy0.offset,
+            frames = sy0.frames.len(),
+            sync_snr_db = sy0.sync_snr_db,
+            residual_hz = residual_hz.unwrap_or(f64::NAN),
+            hinted = opt.slot_offset.is_some(),
+            "slot sync {}at offset {}: {} whole frames, sync Es/N0 {:.1} dB, residual carrier {:+.1} Hz",
+            if opt.slot_offset.is_some() {
+                "found again "
+            } else {
+                ""
+            },
+            sy0.offset,
+            sy0.frames.len(),
+            sy0.sync_snr_db,
+            residual_hz.unwrap_or(f64::NAN)
+        );
+    }
     let mut rx = Rx {
         sync_snr_db: sy0.sync_snr_db,
-        residual_hz: crate::sync::residual_hz(&sy0),
+        residual_hz,
         ..Rx::default()
     };
     // equalise with taps trained on the first frame whose TMCC decodes
@@ -172,6 +255,15 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
         let Some(s) = synchronise_at(z, sy0.offset) else {
             return rx;
         };
+        debug!(
+            taps = rx.taps.len(),
+            sync_snr_db = sy0.sync_snr_db,
+            sync_snr_eq_db = s.sync_snr_db,
+            "equaliser of {} taps: sync Es/N0 {:.1} → {:.1} dB",
+            rx.taps.len(),
+            sy0.sync_snr_db,
+            s.sync_snr_db
+        );
         rx.sync_snr_eq_db = Some(s.sync_snr_db);
         s
     } else {
@@ -185,22 +277,70 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
     let preps: Vec<Prep> = parallel_map(&sy.frames, |&f| prepare(z, &sy.slots, f, es_n0, opt));
     let mut ready: Vec<Ready> = Vec::new();
     let mut order: Vec<Result<usize, RxFrame>> = Vec::new(); // index into `ready`, or a frame without slots
+    // the last TMCC decoded in this block, for the change events
+    let mut last_tmcc: Option<TmccInfo> = None;
     for (fi, (prep, &f)) in preps.into_iter().zip(&sy.frames).enumerate() {
+        let start = sy.slots[f].at;
         match prep {
             Prep::Stop => break,
-            Prep::TmccError(e) => order.push(Err(RxFrame {
-                slot_index: f,
-                tmcc: Err(e),
-                tmcc_iterations: None,
-                mer_db: None,
-            })),
-            Prep::NoLayout(t) => order.push(Err(RxFrame {
-                slot_index: f,
-                tmcc: Ok(t.info),
-                tmcc_iterations: Some(t.ldpc_iterations),
-                mer_db: None,
-            })),
+            Prep::TmccError(e) => {
+                debug!(
+                    frame = fi,
+                    start, "frame {fi} (symbol {start}): TMCC not decoded: {e}"
+                );
+                order.push(Err(RxFrame {
+                    slot_index: f,
+                    tmcc: Err(e),
+                    tmcc_iterations: None,
+                    mer_db: None,
+                }));
+            }
+            Prep::NoLayout(t) => {
+                debug!(
+                    frame = fi,
+                    start,
+                    ldpc_iterations = t.ldpc_iterations,
+                    "frame {fi} (symbol {start}): TMCC decoded ({}) but its slot allocation is inconsistent",
+                    describe_tmcc(&t.info)
+                );
+                order.push(Err(RxFrame {
+                    slot_index: f,
+                    tmcc: Ok(t.info),
+                    tmcc_iterations: Some(t.ldpc_iterations),
+                    mer_db: None,
+                }));
+            }
             Prep::Ready { t, lay, ms, pil } => {
+                let changed = last_tmcc
+                    .as_ref()
+                    .is_some_and(|p| assignment_differs(p, &t.info));
+                if changed || (last_tmcc.is_none() && !continuation) {
+                    info!(
+                        frame = fi,
+                        start,
+                        ldpc_iterations = t.ldpc_iterations,
+                        bch_corrected = t.bch_corrected,
+                        change = t.info.change,
+                        ews = t.info.ews,
+                        "TMCC{}: {} (order of change {}, LDPC {} iterations, BCH {} bit(s) corrected)",
+                        if changed { " changed" } else { "" },
+                        describe_tmcc(&t.info),
+                        t.info.change,
+                        t.ldpc_iterations,
+                        t.bch_corrected
+                    );
+                } else {
+                    debug!(
+                        frame = fi,
+                        start,
+                        ldpc_iterations = t.ldpc_iterations,
+                        bch_corrected = t.bch_corrected,
+                        "frame {fi} (symbol {start}): TMCC decoded, LDPC {} iterations, BCH {} bit(s) corrected",
+                        t.ldpc_iterations,
+                        t.bch_corrected
+                    );
+                }
+                last_tmcc = Some(t.info.clone());
                 order.push(Ok(ready.len()));
                 ready.push((fi, f, t, lay, ms, pil));
             }
@@ -245,11 +385,22 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
         };
         let (fi, f, t, lay, _, _) = ready.next().expect("one per ready frame");
         let n0 = n0s.next().expect("one per ready frame");
+        let (mut slots, mut ldpc_failed, mut bch_failed, mut iterations) =
+            (0usize, 0usize, 0usize, 0usize);
         for d in decoded.next().expect("one per ready frame") {
             let s: &Slot = &lay[d.slot];
             let rel = t.info.slot_stream[d.slot];
             let head = u16::from_be_bytes([bits_byte(&d.header, 0), bits_byte(&d.header, 1)]);
             let ok = d.bch_corrected.is_some();
+            slots += 1;
+            match d.ldpc_iterations {
+                Some(n) if ok => iterations += n,
+                Some(n) => {
+                    iterations += n;
+                    bch_failed += 1;
+                }
+                None => ldpc_failed += 1,
+            }
             rx.slots.push(RxSlot {
                 frame: fi,
                 slot: s.index,
@@ -262,13 +413,42 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
                 bch_corrected: d.bch_corrected,
             });
         }
+        let mer_db = -10.0 * n0.log10();
+        debug!(
+            frame = fi,
+            slots,
+            ldpc_failed,
+            bch_failed,
+            mean_ldpc_iterations = iterations as f64 / (slots - ldpc_failed).max(1) as f64,
+            mer_db,
+            "frame {fi}: {slots} slots, LDPC failed {ldpc_failed}, BCH failed {bch_failed}, mean {:.2} LDPC iterations; main MER {mer_db:.1} dB",
+            iterations as f64 / (slots - ldpc_failed).max(1) as f64
+        );
         rx.frames.push(RxFrame {
             slot_index: f,
             tmcc: Ok(t.info),
             tmcc_iterations: Some(t.ldpc_iterations),
-            mer_db: Some(-10.0 * n0.log10()),
+            mer_db: Some(mer_db),
         });
     }
+    debug!(
+        symbols = z.len(),
+        frames = rx.frames.len(),
+        tmcc_ok = rx.frames.iter().filter(|f| f.tmcc.is_ok()).count(),
+        slots = rx.slots.len(),
+        failed = rx.slots.iter().filter(|s| s.data.is_none()).count(),
+        sync_snr_db = rx.sync_snr_db,
+        sync_snr_eq_db = rx.sync_snr_eq_db.unwrap_or(f64::NAN),
+        "{} symbols: {} frames, TMCC ok {}; {} slots, {} failed; sync Es/N0 {:.1} dB{}",
+        z.len(),
+        rx.frames.len(),
+        rx.frames.iter().filter(|f| f.tmcc.is_ok()).count(),
+        rx.slots.len(),
+        rx.slots.iter().filter(|s| s.data.is_none()).count(),
+        rx.sync_snr_db,
+        rx.sync_snr_eq_db
+            .map_or(String::new(), |e| format!(" ({e:.1} dB equalised)"))
+    );
     rx
 }
 

@@ -355,6 +355,7 @@ dependencies = [
  "rustfft",
  "serde_json",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -362,6 +363,7 @@ name = "isdb-hackrf"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -369,6 +371,7 @@ name = "isdb-iio"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -379,6 +382,7 @@ dependencies = [
  "rustfft",
  "serde_json",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -402,6 +406,8 @@ dependencies = [
  "isdbt-ofdm",
  "isdbt-phy",
  "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -461,6 +467,8 @@ dependencies = [
  "num-complex",
  "proptest",
  "thiserror",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -484,6 +492,7 @@ dependencies = [
  "num-complex",
  "proptest",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

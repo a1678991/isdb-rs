@@ -4,6 +4,7 @@ use crate::sigmf::Meta;
 use crate::{C32, Error, Result, SampleFormat};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use tracing::debug;
 
 /// The SigMF metadata path of data file `data`: `NAME.sigmf-data` →
 /// `NAME.sigmf-meta`, any other name → the name with `.sigmf-meta`
@@ -75,11 +76,28 @@ impl Recording {
         let meta_path = meta_path_for(&data_path);
         let meta = if meta_path.exists() {
             let text = std::fs::read_to_string(&meta_path).map_err(io(&meta_path))?;
-            Some(
-                Meta::from_json(&text)
-                    .map_err(|e| Error::Format(format!("{}: {e}", meta_path.display())))?,
-            )
+            let m = Meta::from_json(&text)
+                .map_err(|e| Error::Format(format!("{}: {e}", meta_path.display())))?;
+            debug!(
+                path = %meta_path.display(),
+                format = %m.format,
+                sample_rate_hz = m.sample_rate,
+                segments = m.captures.len(),
+                hw = m.hw.as_deref().unwrap_or(""),
+                "SigMF metadata {} read: {}, {} Hz, {} capture segment(s){}",
+                meta_path.display(),
+                m.format,
+                m.sample_rate,
+                m.captures.len(),
+                m.hw.as_deref().map_or(String::new(), |h| format!(", hardware {h}"))
+            );
+            Some(m)
         } else {
+            debug!(
+                path = %meta_path.display(),
+                "no SigMF metadata at {}",
+                meta_path.display()
+            );
             None
         };
         let format = format.or(meta.as_ref().map(|m| m.format)).ok_or_else(|| {
@@ -103,13 +121,24 @@ impl Recording {
             .and_then(|c| c.frequency);
         let file = std::fs::File::open(&data_path).map_err(io(&data_path))?;
         let len = file.metadata().map_err(io(&data_path))?.len();
+        let samples = len / format.bytes_per_sample() as u64;
+        debug!(
+            path = %data_path.display(),
+            format = %format,
+            sample_rate_hz = sample_rate,
+            frequency_hz = frequency.unwrap_or(f64::NAN),
+            samples,
+            "recording {} opened: {samples} samples of {format} at {sample_rate} Hz{}",
+            data_path.display(),
+            frequency.map_or(String::new(), |f| format!(", centre {f} Hz"))
+        );
         Ok(Self {
-            samples: len / format.bytes_per_sample() as u64,
             data_path,
             meta,
             format,
             sample_rate,
             frequency,
+            samples,
             file,
         })
     }

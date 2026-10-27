@@ -20,9 +20,11 @@ isdbs-core.workspace = true
 isdb-iq.workspace = true
 num-complex.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+tracing-subscriber = { workspace = true, features = ["registry"] }
 
 [lints]
 workspace = true

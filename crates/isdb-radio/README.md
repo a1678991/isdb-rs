@@ -35,6 +35,15 @@ MB/s) are above what a Pluto streams over Gigabit Ethernet (about
 
 Errors are `anyhow::Error`: they are reported to a person, not matched on.
 
+Diagnostics are `tracing` events, never printed; the crate installs no
+subscriber (the `isdb` binary does). `info`: a device opened, with its
+tuning, bandwidth and gains as fields (`rate_hz`, `freq_hz`,
+`bandwidth_hz`, `gain`), and a TX stream started. `warn`: underruns since
+the last status (`new_underruns`, `underruns`, `buffers`: zeros went on
+air), RX buffers dropped, ADC overflows during a capture, a TX queue
+that did not drain. `debug`: the full settings line, maia-sdr HTTP
+requests and each stream's end.
+
 ## Backends
 
 | Name | Feature | Device args | Gains (TX) | Gains (RX) |

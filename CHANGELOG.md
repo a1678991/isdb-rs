@@ -16,6 +16,19 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdbs-phy`, `isdbs3-phy`, `isdb-frontend`, `isdb-radio`, `isdb-iio`,
+  `isdb-hackrf`, `isdb-iq`: the satellite and radio libraries emit
+  `tracing` events (no subscriber). `info`: acquisition (carrier, trim,
+  burst MER / sync Es/N0), ISDB-S frame sync acquired and lost, ISDB-S3
+  slot sync found or not, the first TMCC and every TMCC change (with the
+  modulations and rates in use), a radio opened with its tuning and gains
+  (`rate_hz`, `freq_hz`, `bandwidth_hz`, `gain`). `warn`: TX underruns
+  since the last status, RX overruns and dropped buffers, ADC overflows
+  during a capture, a loss in a `Symbols` stream. `debug`: per frame and
+  per superframe TMCC, RS / LDPC / BCH failure counts and MER, the survey,
+  library and device details, SigMF metadata read. Nothing is emitted per
+  sample, symbol or packet, and the front end's FPGA test vectors are
+  unchanged.
 - `isdb`: diagnostics are `tracing` events. The global options
   `--log-level` (default `info`; `RUST_LOG` takes an `EnvFilter`
   directive and overrides it) and `--log-format text|json` select what

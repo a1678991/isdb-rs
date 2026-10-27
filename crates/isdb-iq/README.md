@@ -61,6 +61,11 @@ println!("symbol line {:.0} Hz, {:+.1} dB", s.symbol_line.freq_hz, s.symbol_line
 assert_eq!(s.samples, 8192);
 ```
 
+`Recording::open` emits `debug` `tracing` events (the SigMF metadata
+read or missing, the recording opened with its format, rate, centre
+frequency and sample count); the crate installs no subscriber and prints
+nothing.
+
 ## Design notes
 
 - **One segment = contiguous samples.** A SigMF capture segment covers

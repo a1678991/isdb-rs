@@ -282,6 +282,15 @@ CRC one 16-bit word per clock.
 | `s3sync::{measure, measure_at, best_trim, derotated_data}` | ISDB-S3 slot sync (the search on every core, bit for bit as one thread) and sync-symbol Es/N0, or the same at a known offset; the trim search; data symbols for ring statistics |
 | `vectors::document` | the JSON test vectors for `fpga/` |
 
+Diagnostics are `tracing` events, never printed; the crate installs no
+subscriber. `warn`: a loss in a `Symbols` stream (`format::Reader`:
+`blocks` missing, `words` skipped). `debug`: the front end built (taps,
+bits, nominal period, kernels), a stream joined mid-block or ending
+inside one, the ISDB-S3 slot sync measured and the trim chosen. The
+sample and symbol loops emit nothing: the timing loop and AGC have no
+lock state to report, and the fixed-point arithmetic and FPGA test
+vectors are unchanged.
+
 ## Tests
 
 - **Unit, spec and property tests:**

@@ -39,6 +39,7 @@ use crate::params::{
 };
 use crate::simd::{self, Isa, Kernels};
 use crate::tables::cos_table;
+use tracing::debug;
 
 /// Largest input component magnitude for which the 16-bit kernel is exact
 /// (module documentation).
@@ -136,6 +137,15 @@ impl FastFrontend {
                 }
             }
         }
+        debug!(
+            taps,
+            bits = p.bits,
+            period_nominal = p.period_nominal,
+            isa = %isa,
+            "front end: {taps} taps, {}-bit output, nominal period {:.4} samples, {isa} kernels",
+            p.bits,
+            f64::from(p.period_nominal) / ONE as f64
+        );
         Ok(Self {
             cos: cos_table(),
             taps,

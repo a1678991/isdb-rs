@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 
 /// Live counters of a TX stream, shared with the thread feeding the device.
 pub trait StreamCounters: Send + Sync {
@@ -133,6 +134,15 @@ impl<R: RadioTx> QueuedSink<R> {
         let stream = self.radio.start_tx(self.prefill + 1)?;
         self.counters = Some(stream.counters.clone());
         self.stream = Some(stream);
+        info!(
+            prefill_frames = self.pending.len(),
+            queue = self.prefill + 1,
+            format = <R::Format as IntFormat>::NAME,
+            "radio TX stream started with {} frame(s) converted ({} samples), queue of {} buffers",
+            self.pending.len(),
+            <R::Format as IntFormat>::NAME,
+            self.prefill + 1
+        );
         for b in std::mem::take(&mut self.pending) {
             self.send(b, &AtomicBool::new(false))?;
         }
@@ -154,6 +164,11 @@ impl<R: RadioTx> QueuedSink<R> {
                 Err(TrySendError::Full(back)) => b = back,
             }
             if stop.load(Ordering::Relaxed) {
+                debug!(
+                    samples = b.len() / 2,
+                    "frame of {} samples dropped: stopping",
+                    b.len() / 2
+                );
                 return Ok(()); // dropped: we are stopping anyway
             }
             if counters.finished() {
@@ -196,6 +211,14 @@ impl<R: RadioTx> IqSink for QueuedSink<R> {
         let d = u - self.last_underruns;
         self.last_underruns = u;
         let buffers = self.counters.as_ref().map_or(0, |c| c.buffers());
+        if d > 0 {
+            warn!(
+                underruns = u,
+                new_underruns = d,
+                buffers,
+                "radio underran {d} time(s) since the last status ({u} in {buffers} buffers): zeros went on air"
+            );
+        }
         format!(
             " | buffers {buffers} underruns {u} (+{d}) | {}",
             self.quantizer.describe()
@@ -220,11 +243,30 @@ impl<R: RadioTx> IqSink for QueuedSink<R> {
             drained = if counters.finished() {
                 format!("queue drained in {:.2} s", t.elapsed().as_secs_f64())
             } else {
+                warn!(
+                    limit_s = limit.as_secs_f64(),
+                    buffers = counters.buffers(),
+                    "radio TX queue did not drain in {:.1} s: stopping with samples queued",
+                    limit.as_secs_f64()
+                );
                 "queue did not drain in time; stopped".into()
             };
         }
         self.radio.stop()?;
         let streaming = self.radio.is_streaming();
+        debug!(
+            drained,
+            underruns = self.underruns(),
+            aborted,
+            streaming,
+            "radio TX stream stopped ({drained}): {} underrun(s){}",
+            self.underruns(),
+            if streaming {
+                "; the device still reports streaming"
+            } else {
+                ""
+            }
+        );
         let summary = format!(
             "radio: {drained}; underruns {}; {}; device stopped streaming: {}",
             self.underruns(),
@@ -377,6 +419,88 @@ mod tests {
         let st = s.status();
         assert!(!st.contains("underruns 0 "), "{st}");
         s.finish(false).unwrap();
+    }
+
+    /// One captured event: level, message, fields.
+    type Captured = (
+        tracing::Level,
+        String,
+        std::collections::BTreeMap<String, String>,
+    );
+
+    /// A `tracing` `Layer` that records the level, message and fields of
+    /// the events emitted on one thread.
+    ///
+    /// It is installed as the global subscriber, not a scoped one: with a
+    /// single scoped dispatcher, tracing-core caches a callsite's interest
+    /// from whichever thread reaches it first, so a concurrent test without
+    /// a subscriber (`queued_sink_counts_underruns`) disables it for this
+    /// one.
+    struct Capture {
+        events: std::sync::Arc<std::sync::Mutex<Vec<Captured>>>,
+        thread: std::thread::ThreadId,
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if std::thread::current().id() != self.thread {
+                return;
+            }
+            struct V(String, std::collections::BTreeMap<String, String>);
+            impl tracing::field::Visit for V {
+                fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                    if f.name() == "message" {
+                        self.0 = format!("{v:?}");
+                    } else {
+                        self.1.insert(f.name().to_string(), format!("{v:?}"));
+                    }
+                }
+            }
+            let mut v = V(String::new(), Default::default());
+            event.record(&mut v);
+            self.events
+                .lock()
+                .unwrap()
+                .push((*event.metadata().level(), v.0, v.1));
+        }
+    }
+
+    /// The stream start is an `INFO` event and the underruns since the
+    /// last status a `WARN` event with their count as a field.
+    #[test]
+    fn stream_start_and_underruns_are_events() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(Capture {
+            events: events.clone(),
+            thread: std::thread::current().id(),
+        });
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("the only subscriber of this test binary");
+        let mut s = sink(4e6, 0.0, 1, 0.01);
+        let stop = AtomicBool::new(false);
+        s.write(&frame(10_000, 0.1), &stop).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let st = s.status();
+        s.finish(false).unwrap();
+        let events = events.lock().unwrap();
+        let started = events
+            .iter()
+            .find(|e| e.1.starts_with("radio TX stream started"))
+            .unwrap_or_else(|| panic!("no start event in {events:?}"));
+        assert_eq!(started.0, tracing::Level::INFO);
+        assert_eq!(started.2["prefill_frames"], "1");
+        let underran = events
+            .iter()
+            .find(|e| e.1.starts_with("radio underran"))
+            .unwrap_or_else(|| panic!("no underrun event in {events:?}; status {st}"));
+        assert_eq!(underran.0, tracing::Level::WARN);
+        let n: u64 = underran.2["new_underruns"].parse().unwrap();
+        assert!(n > 0 && st.contains(&format!("(+{n})")), "{n} vs {st}");
     }
 
     #[test]

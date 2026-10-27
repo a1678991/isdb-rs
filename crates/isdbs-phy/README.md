@@ -46,6 +46,15 @@ energy dispersal from `isdbs-core`.
    whose own TMCC failed decodes under the previous one. Superframes are
    decoded in parallel on every core.
 
+Diagnostics are `tracing` events, never printed; the crate installs no
+subscriber (the `isdb` binary does). `info`: the acquisition (carrier,
+trim, burst MER), frame sync acquired and lost (`start`, `metric`), the
+first TMCC of a buffer and every TMCC change (the slot assignment, order
+of change). `debug`: the survey, a reused or rejected prior acquisition,
+a frame whose sync words did not decode, each superframe's TMCC and
+RS(204,188) outcome (`uncorrectable`, `corrected_bytes`, `mer_db`) and
+the buffer's totals. Nothing is emitted per symbol or per packet.
+
 ## Design choices (measured on the lab recordings, 2026-10-20)
 
 | Question | Measurement | Choice |

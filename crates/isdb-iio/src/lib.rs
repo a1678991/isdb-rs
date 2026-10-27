@@ -69,6 +69,7 @@ use std::sync::mpsc::{
 };
 use std::thread::JoinHandle;
 use std::time::Duration;
+use tracing::{debug, warn};
 
 /// libiio error.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -346,11 +347,20 @@ impl Context {
         let ctx = unsafe { ffi::iio_create_context_from_uri(c.as_ptr()) };
         let ctx =
             NonNull::new(ctx).ok_or_else(|| last_error("iio_create_context_from_uri", uri))?;
-        Ok(Self {
+        let this = Self {
             ctx,
             uri: uri.to_string(),
             streams: Vec::new(),
-        })
+        };
+        debug!(
+            uri,
+            library = library_version(),
+            description = this.description(),
+            "libiio context {uri} opened: libiio {}, {}",
+            library_version(),
+            this.description()
+        );
+        Ok(this)
     }
 
     /// The URI this context was opened with.
@@ -473,7 +483,21 @@ impl Context {
         // SAFETY: valid device with its channels enabled; not cyclic.
         let buf = unsafe { ffi::iio_device_create_buffer(dev.dev.as_ptr(), samples, false) };
         match NonNull::new(buf) {
-            Some(b) => Ok((BufPtr(b), enabled, size as usize)),
+            Some(b) => {
+                debug!(
+                    device,
+                    uri = self.uri,
+                    channels = ?channels,
+                    output,
+                    samples,
+                    kernel_buffers,
+                    bytes_per_sample = size,
+                    "libiio {} buffer on {device} ({}): {samples} samples of {size} bytes, {kernel_buffers} kernel blocks",
+                    if output { "output" } else { "input" },
+                    channels.join(", ")
+                );
+                Ok((BufPtr(b), enabled, size as usize))
+            }
             None => {
                 let e = last_error("iio_device_create_buffer", what());
                 disable(&enabled);
@@ -689,7 +713,8 @@ impl Context {
         {
             std::thread::sleep(Duration::from_millis(2));
         }
-        if !s.counters.finished.load(Ordering::SeqCst) {
+        let cancelled = !s.counters.finished.load(Ordering::SeqCst);
+        if cancelled {
             // SAFETY: iio_buffer_cancel is thread-safe; the buffer is live.
             unsafe { ffi::iio_buffer_cancel(s.buf.0.as_ptr()) };
         }
@@ -698,6 +723,23 @@ impl Context {
             Some(Err(p)) => std::panic::resume_unwind(p),
             None => Ok(()),
         };
+        debug!(
+            buffers = s.counters.buffers.load(Ordering::Relaxed),
+            underruns = s.counters.underruns.load(Ordering::Relaxed),
+            overruns = s.counters.overruns.load(Ordering::Relaxed),
+            cancelled,
+            stop_s = t.elapsed().as_secs_f64(),
+            "libiio stream ended{} in {:.2} s: {} buffers, {} underruns, {} overruns{}",
+            if cancelled { " (cancelled)" } else { "" },
+            t.elapsed().as_secs_f64(),
+            s.counters.buffers.load(Ordering::Relaxed),
+            s.counters.underruns.load(Ordering::Relaxed),
+            s.counters.overruns.load(Ordering::Relaxed),
+            match &r {
+                Ok(()) => String::new(),
+                Err(e) => format!("; its thread ended with: {e}"),
+            }
+        );
         // SAFETY: the thread has ended; nothing else uses the buffer.
         unsafe { ffi::iio_buffer_destroy(s.buf.0.as_ptr()) };
         for c in &s.channels {
@@ -806,7 +848,14 @@ fn tx_loop(
         }
         out[filled..].fill(0);
         if starved {
-            counters.underruns.fetch_add(1, Ordering::Relaxed);
+            let n = counters.underruns.fetch_add(1, Ordering::Relaxed) + 1;
+            fault(
+                "underrun",
+                n,
+                counters.buffers.load(Ordering::Relaxed),
+                (out.len() - filled) / 2,
+                what,
+            );
         }
         if stop.load(Ordering::SeqCst) {
             return Ok(());
@@ -889,14 +938,40 @@ fn rx_loop(
             .iter()
             .map(|&x| i16::from_le(x))
             .collect();
-        counters.buffers.fetch_add(1, Ordering::Relaxed);
+        let buffers = counters.buffers.fetch_add(1, Ordering::Relaxed) + 1;
         match tx.try_send(data) {
             Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                counters.overruns.fetch_add(1, Ordering::Relaxed);
+            Err(TrySendError::Full(d)) => {
+                let n = counters.overruns.fetch_add(1, Ordering::Relaxed) + 1;
+                fault("overrun", n, buffers, d.len() / 2, what);
             }
             Err(TrySendError::Disconnected(_)) => return Ok(()),
         }
+    }
+}
+
+/// An underrun or overrun of `what`, counted as `n` so far after
+/// `buffers` buffers: the first of a stream is `warn!`, the rest `debug!`
+/// (the sink reports the counts periodically).
+fn fault(kind: &'static str, n: u64, buffers: u64, samples: usize, what: &str) {
+    if n == 1 {
+        warn!(
+            what = kind,
+            count = n,
+            buffers,
+            samples,
+            device = what,
+            "{what} {kind} after {buffers} buffers ({samples} samples); further ones are counted"
+        );
+    } else {
+        debug!(
+            what = kind,
+            count = n,
+            buffers,
+            samples,
+            device = what,
+            "{what} {kind} {n} after {buffers} buffers ({samples} samples)"
+        );
     }
 }
 
