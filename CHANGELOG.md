@@ -16,6 +16,19 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdbt-mux`, `isdbt-phy`, `isdbt-ofdm`, `isdbt-fec`: the ISDB-T
+  libraries emit `tracing` events (no subscriber; `isdb --log-level` /
+  `--log-format json` print them). `isdbt-mux`: the relay's dropped
+  descriptors and unselected streams, over-capacity, late-PES and ADTS
+  compliance warnings at `warn` with `pid`, `tag`, `role` fields; the
+  copy-control and conditional-access decisions, the probe summary, relay
+  passes and carousel rebuilds at `info`; CC errors, dropped PES and table
+  versions at `debug`. `isdbt-ofdm`: lock acquired (`mode`, `guard`,
+  `cfo_carriers`, `offset_hz`), lock lost and TMCC parameter switches at
+  `info`, acquisition steps and per-frame metrics at `debug`, the
+  per-symbol timing step at `trace`. `isdbt-phy`: per-frame RS statistics
+  per layer at `debug`. `isdbt-fec`: the multiplex pattern at `debug`.
+  Nothing per packet or per symbol above `trace`.
 - `isdb`: diagnostics are `tracing` events. The global options
   `--log-level` (default `info`; `RUST_LOG` takes an `EnvFilter`
   directive and overrides it) and `--log-format text|json` select what

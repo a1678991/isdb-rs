@@ -117,6 +117,12 @@ rx_file IN.cf32 OUT_PREFIX
     OUT_PREFIX.mux.ts (the §3.2.2 reproduced TS); per-frame status on stderr.
 ```
 
+The crate emits [`tracing`](https://docs.rs/tracing) events and never
+prints: the channel decoders (re)configured from the TMCC and the RS
+statistics of every decoded frame and layer (`clean`, `corrected_packets`,
+`uncorrectable`), and a broadcast-TS frame with parity or IIP errors, at
+`debug`. Acquisition and lock events come from `isdbt-ofdm`.
+
 ## Design notes
 
 - **Frame contract.** The modulator holds one frame (B31 Part 2 Fig. 3-8

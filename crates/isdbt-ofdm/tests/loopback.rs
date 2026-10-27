@@ -649,3 +649,96 @@ fn modulator_alignment_option() {
     );
     assert_eq!((legacy.onair_frame_index(), legacy.buffer_frames()), (0, 0));
 }
+
+/// Acquisition is reported as `tracing` events (docs/plans/errors-and-
+/// logging.md §2.1): the lock is an `INFO` event of `isdbt_ofdm::rx` with
+/// the mode, guard and carrier offset as fields, and a TMCC parameter
+/// switch an `INFO` event naming the old and new parameters.
+#[test]
+fn acquisition_is_reported_as_tracing_events() {
+    use tracing::Level;
+
+    let p1 = Params::new(
+        Mode::M1,
+        GuardInterval::G1_8,
+        false,
+        [
+            layer(13, Modulation::Qpsk, CodeRate::R1_2, TimeInterleave::K0),
+            None,
+            None,
+        ],
+    )
+    .unwrap();
+    let p2 = Params::new(
+        Mode::M1,
+        GuardInterval::G1_8,
+        true,
+        [
+            layer(1, Modulation::Dqpsk, CodeRate::R1_2, TimeInterleave::K0),
+            layer(12, Modulation::Qam16, CodeRate::R2_3, TimeInterleave::K1),
+            None,
+        ],
+    )
+    .unwrap();
+    let mut rng = Rng(31);
+    let mut tx = Vec::new();
+    for (p, frames) in [(&p1, 3), (&p2, 4)] {
+        let mut m = Modulator::new(p.clone());
+        let tmcc = TmccInfo::from_params(p);
+        let ac = AcFrame::stuffing(m.layout());
+        for _ in 0..frames {
+            let bits = Layer::ALL.map(|l| rng.bits(m.bits_per_frame(l)));
+            tx.extend(
+                m.modulate_frame([&bits[0], &bits[1], &bits[2]], &tmcc, &ac)
+                    .unwrap(),
+            );
+        }
+    }
+    let rx = channel(Mode::M1, 500).apply(&tx, &mut rng);
+    let ((), events) = common::capture_events(|| {
+        let mut d = Demodulator::new(DemodConfig::default());
+        for chunk in rx.chunks(50_000) {
+            d.push(chunk);
+        }
+    });
+    let locks: Vec<_> = events
+        .iter()
+        .filter(|e| e.message.starts_with("locked: "))
+        .collect();
+    assert!(locks.len() >= 2, "a lock per parameter set:\n{events:#?}");
+    let lock = locks[0];
+    assert_eq!(lock.level, Level::INFO);
+    assert_eq!(lock.target, "isdbt_ofdm::rx");
+    assert_eq!(lock.field("mode"), Some("1"));
+    assert_eq!(lock.field("guard"), Some("8"));
+    assert!(
+        lock.message
+            .contains("mode 1, GI 1/8, A: 13seg QPSK 1/2 TI 0"),
+        "{}",
+        lock.message
+    );
+    // the channel applies 2.3 carrier spacings: ≈ 2.3 × 8.127 MHz / 2048
+    let hz: f64 = lock.field("offset_hz").unwrap().parse().unwrap();
+    assert!(
+        (hz - 2.3 * 8_126_984.127 / 2048.0).abs() < 200.0,
+        "offset_hz {hz}"
+    );
+    let switch = events
+        .iter()
+        .find(|e| e.message.starts_with("TMCC announces new parameters"))
+        .expect("parameter switch event");
+    assert_eq!(switch.level, Level::INFO);
+    assert!(
+        switch
+            .field("to")
+            .unwrap()
+            .contains("partial reception, A: 1seg DQPSK"),
+        "{switch:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.level == Level::DEBUG && e.message.starts_with("frame 0: TMCC ok")),
+        "per-frame debug event"
+    );
+}

@@ -73,6 +73,7 @@ use isdbt_core::{GuardInterval, Layer, Mode, Params, TRANSMISSION_TSP, TSP};
 use isdbt_fec::remux::{MultiplexPattern, Slot, null_tsp};
 use isdbt_fec::rs::{gf_alpha_pow, gf_mul};
 use isdbt_ofdm::tmcc::TmccInfo;
+use tracing::debug;
 
 use crate::{Error, Packet, Result};
 
@@ -1255,6 +1256,20 @@ impl BroadcastTsReader {
             return None;
         }
         let carried_iip = self.carried_iip.take();
+        if self.parity_errors > 0 || self.iip_error.is_some() {
+            debug!(
+                packets = self.packets.len(),
+                parity_errors = self.parity_errors,
+                iip_error = self.iip_error.as_deref(),
+                "broadcast TS frame of {} TSPs: {} RS(204,196) parity errors{}",
+                self.packets.len(),
+                self.parity_errors,
+                self.iip_error
+                    .as_deref()
+                    .map(|e| format!("; IIP not parsed: {e}"))
+                    .unwrap_or_default()
+            );
+        }
         let frame = BroadcastFrame {
             packets: std::mem::take(&mut self.packets),
             info: std::mem::take(&mut self.info),

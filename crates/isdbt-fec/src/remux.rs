@@ -40,6 +40,7 @@
 
 use isdbt_core::fec_params::MOTHER_CODED_TSP_BYTES;
 use isdbt_core::{Layer, Mode, Params, SYMBOLS_PER_FRAME, TSP};
+use tracing::debug;
 
 use crate::FecError;
 
@@ -178,6 +179,22 @@ impl MultiplexPattern {
                 "model receiver: packets left in section {q} at frame end"
             );
         }
+        debug!(
+            mode = mode.number(),
+            guard = params.guard().denominator(),
+            slots = n,
+            a = counts[0],
+            b = counts[1],
+            c = counts[2],
+            nulls = n - counts.iter().sum::<usize>(),
+            "multiplex pattern built: mode {}, GI 1/{}, {n} slots per frame (A {} B {} C {}, {} null)",
+            mode.number(),
+            params.guard().denominator(),
+            counts[0],
+            counts[1],
+            counts[2],
+            n - counts.iter().sum::<usize>()
+        );
         Self { slots, counts }
     }
 

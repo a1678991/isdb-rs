@@ -501,6 +501,7 @@ dependencies = [
  "isdbt-core",
  "proptest",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -518,6 +519,8 @@ dependencies = [
  "serde",
  "thiserror",
  "toml",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -529,6 +532,8 @@ dependencies = [
  "proptest",
  "rustfft",
  "thiserror",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -542,6 +547,7 @@ dependencies = [
  "num-complex",
  "proptest",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

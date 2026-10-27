@@ -87,6 +87,10 @@ fn main() -> Result<(), FecError> {
 }
 ```
 
+The crate emits one [`tracing`](https://docs.rs/tracing) event, at
+`debug`, when a multiplex pattern is built (mode, guard, slots per layer);
+nothing per packet.
+
 ## Design notes
 
 - **Conventions.** Coded bits are `u8` 0/1; soft bits are `f32` LLRs

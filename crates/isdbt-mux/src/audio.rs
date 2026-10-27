@@ -10,6 +10,7 @@
 
 use isdb_si::values::AudioMode;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::adts::b32::{self, QualityMode};
 use crate::adts::{AdtsHeader, BUFFER_BITS_PER_CHANNEL, Crc16, HEADER_BITS, HEADER_BYTES};
@@ -166,6 +167,9 @@ impl AdtsEs {
                         }
                     });
                 }
+                for w in &warnings {
+                    warn!(path, policy = "warn", "{w}");
+                }
                 let mut es = Self::parse(data, path)?;
                 es.b32 = Some(report);
                 Ok((es, warnings))
@@ -179,6 +183,9 @@ impl AdtsEs {
                     .filter(|l| l.starts_with("warning"))
                     .map(|l| format!("{path}: ARIB STD-B32 Part 2 §5.2: {l}"))
                     .collect();
+                for w in &warnings {
+                    warn!(path, policy = "conform", "{w}");
+                }
                 let mut es = Self::parse(c.data, path)?;
                 es.b32 = Some(c.input);
                 Ok((es, warnings))
