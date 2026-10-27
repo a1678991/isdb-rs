@@ -4,7 +4,9 @@
 //! the spectrum (Fig. 3-32), carrier counts (Tables 3-1/3-2) and the
 //! centre carrier (§3.14.1).
 
-use crate::params::{GuardInterval, Mode, Modulation, Params, SEGMENTS, SYMBOLS_PER_FRAME};
+use crate::params::{
+    GuardInterval, Mode, Modulation, Params, SEGMENTS, SYMBOLS_PER_FRAME, Segments,
+};
 
 /// Carrier number of the RF centre frequency, Kc (§3.14.1: 702/1404/2808;
 /// Attachment Table 2-1). It is the middle of the `K` carriers.
@@ -36,14 +38,18 @@ pub const BIT_INTERLEAVE_TOTAL_SYMBOLS: usize = 2;
 /// Delay-adjustment value in bits inserted before bit interleaving
 /// (Table 3-9): Mode 1 DQPSK/QPSK `384·N − 240`, 16QAM `768·N − 480`,
 /// 64QAM `1152·N − 720`; Modes 2/3 double/quadruple the `N` coefficient.
-/// `n_segments` is the number of segments of the layer (≥ 1).
-pub fn bit_delay_adjustment_bits(mode: Mode, modulation: Modulation, n_segments: usize) -> usize {
+/// `n_segments` is the number of segments of the layer.
+pub fn bit_delay_adjustment_bits(
+    mode: Mode,
+    modulation: Modulation,
+    n_segments: Segments,
+) -> usize {
     let (coef_m1, constant) = match modulation {
         Modulation::Dqpsk | Modulation::Qpsk => (384, 240),
         Modulation::Qam16 => (768, 480),
         Modulation::Qam64 => (1152, 720),
     };
-    coef_m1 * mode.scale() * n_segments - constant
+    coef_m1 * mode.scale() * n_segments.count() - constant
 }
 
 /// Time-interleave branch factor m_i = (i·5) mod 96 for data-carrier index
@@ -178,7 +184,7 @@ impl Params {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CodeRate, LayerConfig, TimeInterleave};
+    use crate::{CodeRate, LayerConfig, Segments, TimeInterleave};
 
     /// §3.14.1: Kc = 702/1404/2808.
     #[test]
@@ -192,11 +198,11 @@ mod tests {
     #[test]
     fn spec_table_3_9_total_two_symbols() {
         assert_eq!(
-            bit_delay_adjustment_bits(Mode::M1, Modulation::Qpsk, 1),
+            bit_delay_adjustment_bits(Mode::M1, Modulation::Qpsk, Segments::new(1).unwrap()),
             144
         );
         assert_eq!(
-            bit_delay_adjustment_bits(Mode::M3, Modulation::Qam64, 12),
+            bit_delay_adjustment_bits(Mode::M3, Modulation::Qam64, Segments::new(12).unwrap()),
             4608 * 12 - 720
         );
         for mode in [Mode::M1, Mode::M2, Mode::M3] {
@@ -212,13 +218,13 @@ mod tests {
                     *bit_interleave_delays(m).last().unwrap(),
                     BIT_INTERLEAVE_MAX_DELAY
                 );
-                for n in 1..=13 {
+                for n in Segments::ALL {
                     let adj = bit_delay_adjustment_bits(mode, m, n);
                     assert_eq!(adj % s, 0);
                     let total = adj / s + BIT_INTERLEAVE_MAX_DELAY;
                     assert_eq!(
                         total,
-                        BIT_INTERLEAVE_TOTAL_SYMBOLS * mode.data_carriers_per_segment() * n
+                        BIT_INTERLEAVE_TOTAL_SYMBOLS * mode.data_carriers_per_segment() * n.count()
                     );
                 }
             }
@@ -275,13 +281,13 @@ mod tests {
     #[test]
     fn differential_segments_and_delay() {
         let a = Some(LayerConfig {
-            segments: 1,
+            segments: Segments::new(1).unwrap(),
             modulation: Modulation::Dqpsk,
             code_rate: CodeRate::R1_2,
             time_interleave: TimeInterleave::K1,
         });
         let b = Some(LayerConfig {
-            segments: 12,
+            segments: Segments::new(12).unwrap(),
             modulation: Modulation::Qam64,
             code_rate: CodeRate::R3_4,
             time_interleave: TimeInterleave::K2,

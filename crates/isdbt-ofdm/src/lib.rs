@@ -29,11 +29,11 @@
 //! One frame of a single-layer Mode 1 signal, then demodulated:
 //!
 //! ```
-//! use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+//! use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave};
 //! use isdbt_ofdm::{ac::AcFrame, latency, tmcc::TmccInfo, DemodConfig, Demodulator, Modulator};
 //!
 //! let a = LayerConfig {
-//!     segments: 13,
+//!     segments: Segments::new(13).unwrap(),
 //!     modulation: Modulation::Qam16,
 //!     code_rate: CodeRate::R1_2,
 //!     time_interleave: TimeInterleave::K1,

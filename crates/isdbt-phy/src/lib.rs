@@ -28,12 +28,12 @@
 //! Software loopback of one data frame; every input packet comes out:
 //!
 //! ```
-//! use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+//! use isdbt_core::{CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave};
 //! use isdbt_ofdm::DemodConfig;
 //! use isdbt_phy::{Packet, Receiver, Transmitter, null_packet};
 //!
 //! let a = LayerConfig {
-//!     segments: 13,
+//!     segments: Segments::new(13).unwrap(),
 //!     modulation: Modulation::Qpsk,
 //!     code_rate: CodeRate::R1_2,
 //!     time_interleave: TimeInterleave::K0,

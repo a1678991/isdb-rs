@@ -1,7 +1,9 @@
 //! Property tests: inverse pairs of every stage and the per-layer pipeline
 //! (ARIB STD-B31 §3.3–3.8).
 
-use isdbt_core::{CodeRate, LayerConfig, Mode, Modulation, TRANSMISSION_TSP, TSP, TimeInterleave};
+use isdbt_core::{
+    CodeRate, LayerConfig, Mode, Modulation, Segments, TRANSMISSION_TSP, TSP, TimeInterleave,
+};
 use isdbt_fec::byte_interleave::{ByteDeinterleaver, ByteInterleaver, PAIR_LATENCY_BYTES};
 use isdbt_fec::conv::{
     ConvEncoder, DEFAULT_TRACEBACK, Puncturing, decode_punctured, encode_punctured,
@@ -23,9 +25,9 @@ const RATES: [CodeRate; 5] = [
     CodeRate::R7_8,
 ];
 
-fn lc(segments: usize, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
+fn lc(segments: u8, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
     LayerConfig {
-        segments,
+        segments: Segments::new(segments).unwrap(),
         modulation,
         code_rate,
         time_interleave: TimeInterleave::K0,
@@ -74,7 +76,10 @@ fn layer_roundtrip(mode: Mode, l: &LayerConfig, seed: u64, frames: usize) {
         assert_eq!(bits.len(), l.coded_bits_per_frame(mode));
         assert_eq!(
             bits.len(),
-            mode.data_carriers_per_segment() * l.modulation.bits_per_symbol() * l.segments * 204
+            mode.data_carriers_per_segment()
+                * l.modulation.bits_per_symbol()
+                * l.segments.count()
+                * 204
         );
         let out = dec.decode_frame(&llr_of(&bits)).unwrap();
         assert_eq!(out.tsps.len(), t);
@@ -223,7 +228,7 @@ proptest! {
     /// LayerEncoder → LayerDecoder identity on random content for random
     /// small layers (Mode 1, 1–2 segments), several frames.
     #[test]
-    fn prop_layer_roundtrip_random(seed in any::<u64>(), mi in 0usize..4, ri in 0usize..5, segs in 1usize..=2) {
+    fn prop_layer_roundtrip_random(seed in any::<u64>(), mi in 0usize..4, ri in 0usize..5, segs in 1u8..=2) {
         layer_roundtrip(Mode::M1, &lc(segs, MODS[mi], RATES[ri]), seed, 3);
     }
 }

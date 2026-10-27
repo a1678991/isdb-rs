@@ -4,7 +4,7 @@ mod common;
 
 use common::{Channel, Rng};
 use isdbt_core::{
-    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave,
+    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };
 use isdbt_ofdm::ac::AcFrame;
 use isdbt_ofdm::latency::end_to_end_frames;
@@ -12,13 +12,13 @@ use isdbt_ofdm::tmcc::TmccInfo;
 use isdbt_ofdm::{C32, DemodConfig, Demodulator, Modulator};
 
 fn layer(
-    segments: usize,
+    segments: u8,
     modulation: Modulation,
     code_rate: CodeRate,
     ti: TimeInterleave,
 ) -> Option<LayerConfig> {
     Some(LayerConfig {
-        segments,
+        segments: Segments::new(segments).unwrap(),
         modulation,
         code_rate,
         time_interleave: ti,

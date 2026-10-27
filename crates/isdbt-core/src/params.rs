@@ -248,11 +248,85 @@ impl fmt::Display for TimeInterleave {
     }
 }
 
+/// Segment count of one hierarchical layer, 1..=13 (Table 3-31 codes
+/// '0001'–'1101'; Table 3-2, Ns = 13 segments in the channel).
+///
+/// A validated newtype: the field is private and [`Segments::new`] is the
+/// only way in, returning `None` outside 1..=13. A [`LayerConfig`] can
+/// therefore never carry an empty layer or more segments than the channel
+/// has, and [`Params::new`] checks only the cross-layer sum. The Table 3-31
+/// reserved codes '0000' and '1110' and the unused-layer code '1111' have
+/// no value here; the TMCC decoder keeps them in its lossless code enum and
+/// maps the assigned codes through `new`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Segments(u8);
+
+impl Segments {
+    /// The whole channel: 13 segments (Table 3-2, Ns).
+    pub const MAX: Segments = Segments(13);
+
+    /// Every count 1..=13, in Table 3-31 order.
+    pub const ALL: [Segments; 13] = [
+        Segments(1),
+        Segments(2),
+        Segments(3),
+        Segments(4),
+        Segments(5),
+        Segments(6),
+        Segments(7),
+        Segments(8),
+        Segments(9),
+        Segments(10),
+        Segments(11),
+        Segments(12),
+        Segments(13),
+    ];
+
+    /// `n` segments; `None` for 0 or more than 13 (Table 3-31 assigns
+    /// '0001'–'1101' only).
+    pub const fn new(n: u8) -> Option<Self> {
+        if n >= 1 && n <= Self::MAX.0 {
+            Some(Segments(n))
+        } else {
+            None
+        }
+    }
+
+    /// The count, 1..=13 (equal to its 4-bit Table 3-31 code).
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    /// The count as a `usize`, for carrier / TSP arithmetic.
+    pub const fn count(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// No `Segments` exists outside 1..=13: the only constructor,
+/// [`Segments::new`], refuses the Table 3-31 reserved code '0000' and
+/// everything above 13 ('1110' reserved, '1111' unused layer):
+///
+/// ```
+/// use isdbt_core::Segments;
+/// assert_eq!(Segments::new(0), None);
+/// assert_eq!(Segments::new(14), None);
+/// assert_eq!(Segments::new(13), Some(Segments::MAX));
+/// ```
+#[doc(hidden)]
+pub const _SEGMENTS_BOUNDED: () = ();
+
+impl fmt::Display for Segments {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// One hierarchical layer (A, B or C).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LayerConfig {
-    /// Number of segments (1..=13).
-    pub segments: usize,
+    /// Number of segments, 1..=13 by construction.
+    pub segments: Segments,
     /// Carrier modulation.
     pub modulation: Modulation,
     /// Inner-code rate.
@@ -268,7 +342,7 @@ impl LayerConfig {
         let (n, d) = self.code_rate.ratio();
         let bits = mode.data_carriers_per_segment() * self.modulation.bits_per_symbol() * n;
         debug_assert_eq!(bits % (d * 8), 0);
-        bits / (d * 8) * self.segments
+        bits / (d * 8) * self.segments.count()
     }
 }
 
@@ -314,9 +388,6 @@ pub enum ParamError {
     /// contiguously from A, §3.11.2).
     #[error("invalid ISDB-T parameters: layers must be used contiguously from A")]
     NonContiguousLayers,
-    /// A configured layer has no segment.
-    #[error("invalid ISDB-T parameters: layer {0} has 0 segments")]
-    EmptyLayer(Layer),
     /// The layers' segment counts do not sum to the 13 segments of the
     /// channel (Table 3-2, Ns = 13).
     #[error("invalid ISDB-T parameters: segments sum to {0}, need 13")]
@@ -351,8 +422,9 @@ impl Params {
     /// exactly one segment; data-segment numbers are assigned partial
     /// reception → differential → coherent, so after the (optional)
     /// partial-reception layer no DQPSK layer may follow a coherent one.
-    /// (The time-interleave index needs no check: [`TimeInterleave`] is a
-    /// closed enum of the four Table 3-12 codes.)
+    /// (The time-interleave index and a layer's own segment range need no
+    /// check: [`TimeInterleave`] is a closed enum of the four Table 3-12
+    /// codes and [`Segments`] is 1..=13 by construction.)
     ///
     /// # Errors
     ///
@@ -374,17 +446,14 @@ impl Params {
         if used.is_empty() {
             return Err(ParamError::NoLayer);
         }
-        if let Some(&(id, _)) = used.iter().find(|(_, l)| l.segments == 0) {
-            return Err(ParamError::EmptyLayer(id));
-        }
-        let total = used
-            .iter()
-            .fold(0usize, |acc, (_, l)| acc.saturating_add(l.segments));
+        let total: usize = used.iter().map(|(_, l)| l.segments.count()).sum();
         if total != SEGMENTS {
             return Err(ParamError::SegmentSum(total));
         }
-        if partial_reception && used[0].1.segments != 1 {
-            return Err(ParamError::PartialReceptionSegments(used[0].1.segments));
+        if partial_reception && used[0].1.segments.count() != 1 {
+            return Err(ParamError::PartialReceptionSegments(
+                used[0].1.segments.count(),
+            ));
         }
         let skip = usize::from(partial_reception);
         let mut seen_coherent = false;
@@ -444,7 +513,7 @@ impl Params {
     pub fn layer_of_segment(&self, seg: usize) -> Layer {
         let mut acc = 0;
         for (id, l) in self.active_layers() {
-            acc += l.segments;
+            acc += l.segments.count();
             if seg < acc {
                 return id;
             }
@@ -456,7 +525,7 @@ impl Params {
     pub fn differential_segments(&self) -> usize {
         self.active_layers()
             .filter(|(_, l)| l.modulation.is_differential())
-            .map(|(_, l)| l.segments)
+            .map(|(_, l)| l.segments.count())
             .sum()
     }
 
@@ -495,9 +564,9 @@ impl Params {
 mod tests {
     use super::*;
 
-    fn layer(segments: usize, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
+    fn layer(segments: u8, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
         LayerConfig {
-            segments,
+            segments: Segments::new(segments).unwrap(),
             modulation,
             code_rate,
             time_interleave: TimeInterleave::K0,
@@ -604,6 +673,29 @@ mod tests {
         }
     }
 
+    /// Table 3-31: the thirteen assigned codes '0001'–'1101' are the counts
+    /// 1..=13 and the only `Segments` values; '0000' (reserved) and every
+    /// code above 13 ('1110' reserved, '1111' unused layer) cannot be
+    /// built.
+    #[test]
+    fn spec_table_3_31_segments() {
+        assert_eq!(Segments::new(0), None);
+        assert_eq!(Segments::new(14), None);
+        assert_eq!(Segments::new(15), None);
+        assert_eq!(Segments::new(u8::MAX), None);
+        for n in 1..=13u8 {
+            let s = Segments::new(n).unwrap();
+            assert_eq!(s.get(), n);
+            assert_eq!(s.count(), usize::from(n));
+            assert_eq!(s.to_string(), n.to_string());
+            assert_eq!(Segments::ALL[usize::from(n) - 1], s);
+        }
+        assert_eq!(Segments::ALL.len(), 13);
+        assert_eq!(Segments::ALL.len(), SEGMENTS);
+        assert_eq!(Segments::MAX, Segments::new(13).unwrap());
+        assert_eq!(Segments::ALL.last(), Some(&Segments::MAX));
+    }
+
     /// Table 3-2: carriers and time-interleave lengths.
     #[test]
     fn table_3_2() {
@@ -647,17 +739,17 @@ mod tests {
             Err(ParamError::SegmentSum(12))
         );
         assert_eq!(
-            new(false, [l(usize::MAX), l(14), None]),
-            Err(ParamError::SegmentSum(usize::MAX))
+            new(false, [l(13), l(13), l(13)]),
+            Err(ParamError::SegmentSum(39))
         );
         assert_eq!(
-            new(false, [l(13), None, l(0)]),
+            new(false, [l(13), None, l(1)]),
             Err(ParamError::NonContiguousLayers)
         );
-        assert_eq!(
-            new(false, [l(0), l(13), None]),
-            Err(ParamError::EmptyLayer(Layer::A))
-        );
+        // An empty layer is not a rejected configuration but an
+        // unrepresentable one: no `Segments` has count 0, so there is no
+        // `LayerConfig` to hand to `Params::new` and no error variant.
+        assert_eq!(Segments::new(0), None);
         assert_eq!(
             new(true, [l(2), l(11), None]),
             Err(ParamError::PartialReceptionSegments(2))
@@ -671,8 +763,8 @@ mod tests {
         assert_eq!(p.mode(), Mode::M3);
         assert_eq!(p.guard(), GuardInterval::G1_8);
         assert!(p.partial_reception());
-        assert_eq!(p.layer(Layer::B).map(|x| x.segments), Some(12));
+        assert_eq!(p.layer(Layer::B).map(|x| x.segments.get()), Some(12));
         assert_eq!(p.layer(Layer::C), None);
-        assert_eq!(p.layers()[0].map(|x| x.segments), Some(1));
+        assert_eq!(p.layers()[0].map(|x| x.segments.get()), Some(1));
     }
 }

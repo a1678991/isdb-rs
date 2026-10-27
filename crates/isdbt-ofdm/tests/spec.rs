@@ -6,7 +6,8 @@ mod common;
 
 use isdbt_core::ofdm_params::{segment_carrier_counts, segment_position, time_interleave_m};
 use isdbt_core::{
-    CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, SEGMENTS, TimeInterleave,
+    CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, SEGMENTS, Segments,
+    TimeInterleave,
 };
 use isdbt_ofdm::ac::{AcFrame, SeismicDetail, SeismicPage, SeismicWarning, crc10};
 use isdbt_ofdm::dsc;
@@ -123,7 +124,7 @@ fn spec_table_3_10_dqpsk() {
     // Recursion (Ij,Qj) = R(θj)(Ij−1,Qj−1) on one carrier: every output is a
     // Fig. 3-13 point and consecutive phases differ by θj.
     let layer = LayerConfig {
-        segments: 1,
+        segments: Segments::new(1).unwrap(),
         modulation: Modulation::Dqpsk,
         code_rate: CodeRate::R1_2,
         time_interleave: TimeInterleave::K0,
@@ -210,10 +211,10 @@ fn spec_fig_3_28b_randomize_direction() {
     assert_eq!(8 * time_interleave_m(20), 32);
 }
 
-fn params(mode: Mode, pr: bool, layers: [Option<(usize, Modulation)>; 3]) -> Params {
+fn params(mode: Mode, pr: bool, layers: [Option<(u8, Modulation)>; 3]) -> Params {
     let l = layers.map(|o| {
         o.map(|(segments, modulation)| LayerConfig {
-            segments,
+            segments: Segments::new(segments).unwrap(),
             modulation,
             code_rate: CodeRate::R1_2,
             time_interleave: TimeInterleave::K0,
@@ -617,12 +618,20 @@ fn spec_table_3_30_interleave_codes() {
 /// '0000' and '1110' reserved, '1111' unused; every 4-bit code round-trips.
 #[test]
 fn spec_table_3_31_segment_codes() {
-    use SegmentsCode::{Reserved, Segments, Unused};
+    use SegmentsCode::{Reserved, Unused};
     assert_eq!(SegmentsCode::from_code(label("0000")), Reserved(0b0000));
-    for n in 1..=13u8 {
-        assert_eq!(SegmentsCode::from_code(n), Segments(n), "{n:04b}");
+    for n in Segments::ALL {
+        assert_eq!(
+            SegmentsCode::from_code(n.get()),
+            SegmentsCode::Segments(n),
+            "{:04b}",
+            n.get()
+        );
     }
-    assert_eq!(SegmentsCode::from_code(label("1101")), Segments(13));
+    assert_eq!(
+        SegmentsCode::from_code(label("1101")),
+        SegmentsCode::Segments(Segments::MAX)
+    );
     assert_eq!(SegmentsCode::from_code(label("1110")), Reserved(0b1110));
     assert_eq!(SegmentsCode::from_code(label("1111")), Unused);
     for c in 0..=15u8 {
@@ -642,7 +651,7 @@ fn spec_table_3_31_segment_codes() {
 #[test]
 fn spec_tables_3_28_to_3_31_layer_config() {
     let a = LayerConfig {
-        segments: 12,
+        segments: Segments::new(12).unwrap(),
         modulation: Modulation::Qam64,
         code_rate: CodeRate::R3_4,
         time_interleave: TimeInterleave::K2,
@@ -776,7 +785,7 @@ fn spec_frame_sample_counts() {
                 false,
                 [
                     Some(LayerConfig {
-                        segments: 13,
+                        segments: Segments::new(13).unwrap(),
                         modulation: Modulation::Qpsk,
                         code_rate: CodeRate::R1_2,
                         time_interleave: TimeInterleave::K0,

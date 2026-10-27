@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+use isdbt_core::{
+    CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
+};
 use isdbt_mux::Config;
 
 /// Bench parameters: Mode 3, GI 1/8, partial reception, A = 1 seg QPSK 2/3,
@@ -14,13 +16,13 @@ pub fn bench_params() -> Params {
         true,
         [
             Some(LayerConfig {
-                segments: 1,
+                segments: Segments::new(1).unwrap(),
                 modulation: Modulation::Qpsk,
                 code_rate: CodeRate::R2_3,
                 time_interleave: TimeInterleave::K2,
             }),
             Some(LayerConfig {
-                segments: 12,
+                segments: Segments::new(12).unwrap(),
                 modulation: Modulation::Qam64,
                 code_rate: CodeRate::R3_4,
                 time_interleave: TimeInterleave::K2,

@@ -15,9 +15,9 @@ pub fn layer_segments(params: &Params, layer: Layer) -> Option<(usize, usize)> {
     let mut first = 0;
     for (id, l) in params.active_layers() {
         if id == layer {
-            return Some((first, l.segments));
+            return Some((first, l.segments.count()));
         }
-        first += l.segments;
+        first += l.segments.count();
     }
     None
 }

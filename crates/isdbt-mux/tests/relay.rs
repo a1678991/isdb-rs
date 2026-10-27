@@ -535,11 +535,11 @@ fn ends_at_eof_and_refuses_a_layer_that_is_too_small() {
 
     // Layer B of one QPSK 1/2 segment (0.31 Mbit/s) cannot carry ≈ 3 Mbit/s.
     use isdbt_core::{
-        CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave,
+        CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
     };
-    let l = |segments, modulation, code_rate| {
+    let l = |segments: u8, modulation, code_rate| {
         Some(LayerConfig {
-            segments,
+            segments: Segments::new(segments).unwrap(),
             modulation,
             code_rate,
             time_interleave: TimeInterleave::K2,

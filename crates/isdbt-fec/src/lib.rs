@@ -24,11 +24,11 @@
 //! # Example
 //!
 //! ```
-//! use isdbt_core::{CodeRate, LayerConfig, Mode, Modulation, TimeInterleave, TSP};
+//! use isdbt_core::{CodeRate, LayerConfig, Mode, Modulation, Segments, TimeInterleave, TSP};
 //! use isdbt_fec::{LayerDecoder, LayerEncoder};
 //!
 //! let layer = LayerConfig {
-//!     segments: 1,
+//!     segments: Segments::new(1).unwrap(),
 //!     modulation: Modulation::Qpsk,
 //!     code_rate: CodeRate::R1_2,
 //!     time_interleave: TimeInterleave::K0,

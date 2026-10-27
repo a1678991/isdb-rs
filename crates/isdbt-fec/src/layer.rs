@@ -362,7 +362,7 @@ impl LayerDecoder {
 mod tests {
     use super::*;
     use crate::testutil::XorShift;
-    use isdbt_core::{CodeRate, Modulation, TimeInterleave};
+    use isdbt_core::{CodeRate, Modulation, Segments, TimeInterleave};
 
     fn rand_frame(rng: &mut XorShift, n: usize) -> Vec<[u8; TSP]> {
         (0..n)
@@ -383,7 +383,7 @@ mod tests {
     fn tx_slot_provenance() {
         let mode = Mode::M1;
         let l = LayerConfig {
-            segments: 2,
+            segments: Segments::new(2).unwrap(),
             modulation: Modulation::Qpsk,
             code_rate: CodeRate::R2_3,
             time_interleave: TimeInterleave::K0,
@@ -446,7 +446,7 @@ mod tests {
         let mut rng = XorShift::new(8);
         for (mode, segments, modulation, code_rate) in cfgs {
             let l = LayerConfig {
-                segments,
+                segments: Segments::new(segments).unwrap(),
                 modulation,
                 code_rate,
                 time_interleave: TimeInterleave::K0,
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn one_frame_latency_small_layer() {
         let l = LayerConfig {
-            segments: 1,
+            segments: Segments::new(1).unwrap(),
             modulation: Modulation::Dqpsk,
             code_rate: CodeRate::R1_2,
             time_interleave: TimeInterleave::K0,

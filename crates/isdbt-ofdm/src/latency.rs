@@ -91,7 +91,7 @@ pub fn bits_per_frame(params: &Params, layer: Layer) -> usize {
     params.layers()[layer.index()].map_or(0, |l| {
         params.mode().data_carriers_per_segment()
             * l.modulation.bits_per_symbol()
-            * l.segments
+            * l.segments.count()
             * SYMBOLS_PER_FRAME
     })
 }

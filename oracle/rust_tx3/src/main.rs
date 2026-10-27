@@ -23,7 +23,7 @@ fn parse_layer(s: &str) -> LayerConfig {
         r => panic!("rate {r}"),
     };
     LayerConfig {
-        segments: f[0].parse().unwrap(),
+        segments: Segments::new(f[0].parse().unwrap()).expect("segments 1..=13"),
         modulation,
         code_rate,
         time_interleave: TimeInterleave::from_code(f[3].parse().unwrap())

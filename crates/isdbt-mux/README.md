@@ -85,11 +85,11 @@ options). Every key, its default and its spec reference:
 
 ```rust
 use isdbt_mux::{Config, Multiplexer};
-use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave};
 
 // Mode 3, GI 1/8, partial reception: A = 1 seg QPSK 2/3, B = 12 seg 64QAM 3/4.
-let layer = |segments, modulation, code_rate| {
-    Some(LayerConfig { segments, modulation, code_rate, time_interleave: TimeInterleave::K2 })
+let layer = |segments: u8, modulation, code_rate| {
+    Some(LayerConfig { segments: Segments::new(segments).unwrap(), modulation, code_rate, time_interleave: TimeInterleave::K2 })
 };
 let params = Params::new(
     Mode::M3,

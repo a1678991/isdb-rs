@@ -4,7 +4,7 @@
 //! Mode 2/3 sub-frame periodicity implied by the S3/S4 switching interval.
 
 use isdbt_core::{
-    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, TimeInterleave,
+    CodeRate, GuardInterval, Layer, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
 };
 use isdbt_fec::MultiplexPattern;
 
@@ -29,9 +29,9 @@ const RATES: [CodeRate; 5] = [
     CodeRate::R7_8,
 ];
 
-fn lc(segments: usize, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
+fn lc(segments: u8, modulation: Modulation, code_rate: CodeRate) -> LayerConfig {
     LayerConfig {
-        segments,
+        segments: Segments::new(segments).unwrap(),
         modulation,
         code_rate,
         time_interleave: TimeInterleave::K0,

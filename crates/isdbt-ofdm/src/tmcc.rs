@@ -16,7 +16,9 @@
 
 use crate::Error;
 use crate::dsc::{self, ParityStatus};
-use isdbt_core::{CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, TimeInterleave};
+use isdbt_core::{
+    CodeRate, GuardInterval, LayerConfig, Mode, Modulation, Params, Segments, TimeInterleave,
+};
 
 /// Sync word w0 (§3.15.4).
 pub const W0: [u8; 16] = [0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0];
@@ -153,7 +155,7 @@ impl InterleaveCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SegmentsCode {
     /// '0001'–'1101': 1 to 13 segments (the count, equal to the code).
-    Segments(u8),
+    Segments(Segments),
     /// '0000' and '1110' "Reserved"; the code, masked to 4 bits.
     Reserved(u8),
     /// '1111' "Unused hierarchical layer" (also "no next information").
@@ -164,17 +166,19 @@ impl SegmentsCode {
     /// The 4-bit code.
     pub const fn code(self) -> u8 {
         match self {
-            SegmentsCode::Segments(n) | SegmentsCode::Reserved(n) => n & 0b1111,
+            SegmentsCode::Segments(n) => n.get(),
+            SegmentsCode::Reserved(n) => n & 0b1111,
             SegmentsCode::Unused => 0b1111,
         }
     }
 
     /// From the 4-bit code (higher bits of `code` are ignored).
     pub const fn from_code(code: u8) -> Self {
-        match code & 0b1111 {
-            n @ 1..=13 => SegmentsCode::Segments(n),
-            0b1111 => SegmentsCode::Unused,
-            c => SegmentsCode::Reserved(c),
+        let code = code & 0b1111;
+        match Segments::new(code) {
+            Some(n) => SegmentsCode::Segments(n),
+            None if code == 0b1111 => SegmentsCode::Unused,
+            None => SegmentsCode::Reserved(code),
         }
     }
 }
@@ -202,14 +206,14 @@ impl TmccLayer {
         segments: SegmentsCode::Unused,
     };
 
-    /// Codes for a configured layer (one of a validated [`Params`], so
-    /// `segments` is 1..=13).
+    /// Codes for a configured layer: every field has an assigned code (the
+    /// `LayerConfig` types are closed / bounded, so none is reserved).
     pub fn from_config(l: &LayerConfig) -> Self {
         Self {
             modulation: ModulationCode::Assigned(l.modulation),
             code_rate: RateCode::Assigned(l.code_rate),
             interleave: InterleaveCode::Assigned(l.time_interleave),
-            segments: SegmentsCode::Segments(l.segments as u8),
+            segments: SegmentsCode::Segments(l.segments),
         }
     }
 
@@ -249,7 +253,7 @@ impl TmccLayer {
             }
         };
         let segments = match self.segments {
-            SegmentsCode::Segments(n) => usize::from(n),
+            SegmentsCode::Segments(n) => n,
             c @ (SegmentsCode::Reserved(_) | SegmentsCode::Unused) => {
                 return Err(Error::Tmcc(format!(
                     "reserved segment count code {:04b}",

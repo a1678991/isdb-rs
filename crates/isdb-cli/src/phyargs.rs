@@ -65,10 +65,14 @@ pub fn parse_layer(s: &str) -> Result<Option<LayerConfig>> {
     let Some(ti) = TimeInterleave::from_code(ti) else {
         bail!("layer spec {s:?}: time-interleave index {ti} not in 0..3");
     };
+    let segments: u8 = f[0]
+        .parse()
+        .with_context(|| format!("layer spec {s:?}: segments"))?;
+    let Some(segments) = Segments::new(segments) else {
+        bail!("layer spec {s:?}: segments {segments} not in 1..=13");
+    };
     Ok(Some(LayerConfig {
-        segments: f[0]
-            .parse()
-            .with_context(|| format!("layer spec {s:?}: segments"))?,
+        segments,
         modulation,
         code_rate,
         time_interleave: ti,
@@ -303,12 +307,17 @@ mod tests {
         assert!(p.partial_reception());
         let a = p.layers()[0].unwrap();
         assert_eq!(
-            (a.segments, a.modulation, a.code_rate, a.time_interleave),
+            (
+                a.segments.get(),
+                a.modulation,
+                a.code_rate,
+                a.time_interleave
+            ),
             (1, Modulation::Qpsk, CodeRate::R2_3, TimeInterleave::K2)
         );
         let b = p.layers()[1].unwrap();
         assert_eq!(
-            (b.segments, b.modulation, b.code_rate),
+            (b.segments.get(), b.modulation, b.code_rate),
             (12, Modulation::Qam64, CodeRate::R3_4)
         );
         assert!(p.layers()[2].is_none());
@@ -325,6 +334,10 @@ mod tests {
         assert!(parse_layer("12,64qam,4/5,2").is_err());
         assert!(parse_layer("12,64qam,3/4,4").is_err());
         assert!(parse_layer("x,64qam,3/4,2").is_err());
+        // Segment count outside Table 3-31 is refused at the parser, before
+        // `Params::new` (no `LayerConfig` with 0 or 14 segments exists).
+        assert!(parse_layer("0,64qam,3/4,2").is_err());
+        assert!(parse_layer("14,64qam,3/4,2").is_err());
         assert_eq!(parse_layer("NONE").unwrap(), None);
         assert_eq!(
             parse_layer(" 13 , 16QAM , 1/2 , 0")

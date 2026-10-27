@@ -47,7 +47,7 @@ impl LayerConfig {
             Modulation::Qam16 => 1,
             Modulation::Qam64 => 2,
         };
-        TABLE_3_7_MODE1[row][code_rate_index(self.code_rate)] * mode.scale() * self.segments
+        TABLE_3_7_MODE1[row][code_rate_index(self.code_rate)] * mode.scale() * self.segments.count()
             - BYTE_INTERLEAVE_DELAY_TSPS
     }
 
@@ -59,7 +59,7 @@ impl LayerConfig {
     pub fn coded_bits_per_frame(&self, mode: Mode) -> usize {
         mode.data_carriers_per_segment()
             * self.modulation.bits_per_symbol()
-            * self.segments
+            * self.segments.count()
             * SYMBOLS_PER_FRAME
     }
 
@@ -73,7 +73,7 @@ impl LayerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::TimeInterleave;
+    use crate::params::{Segments, TimeInterleave};
 
     const MODS: [Modulation; 4] = [
         Modulation::Dqpsk,
@@ -128,14 +128,14 @@ mod tests {
         for (m, rows) in printed {
             for (r, cols) in RATES.iter().zip(rows) {
                 for (mode, coef) in [Mode::M1, Mode::M2, Mode::M3].into_iter().zip(cols) {
-                    for n in 1..=13 {
+                    for n in 1..=13u8 {
                         let l = LayerConfig {
-                            segments: n,
+                            segments: Segments::new(n).unwrap(),
                             modulation: m,
                             code_rate: *r,
                             time_interleave: TimeInterleave::K0,
                         };
-                        assert_eq!(l.delay_adjustment_tsps(mode), coef * n - 11);
+                        assert_eq!(l.delay_adjustment_tsps(mode), coef * usize::from(n) - 11);
                         assert_eq!(
                             l.delay_adjustment_tsps(mode) + BYTE_INTERLEAVE_DELAY_TSPS,
                             l.tsp_per_frame(mode)
@@ -154,7 +154,7 @@ mod tests {
             for m in MODS {
                 for r in RATES {
                     let l = LayerConfig {
-                        segments: 3,
+                        segments: Segments::new(3).unwrap(),
                         modulation: m,
                         code_rate: r,
                         time_interleave: TimeInterleave::K0,
