@@ -32,9 +32,7 @@ pub fn is_null(p: &Packet) -> bool {
 /// transport_scrambling_control of a packet (H.222.0 §2.4.3.3, Table 2-4);
 /// anything but `NotScrambled` means the payload is scrambled.
 pub fn scrambling_control(p: &Packet) -> TransportScramblingControl {
-    Header::decode(p)
-        .expect("188-byte packet")
-        .transport_scrambling_control
+    Header::of_packet(p).transport_scrambling_control
 }
 
 /// The first scrambled packet met by any reader thread (the input is then

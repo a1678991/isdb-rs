@@ -120,7 +120,7 @@ fn sections(r: &Run, pid: u16) -> Vec<(u64, Vec<u8>)> {
     let mut a = SectionAssembler::new(pid);
     let mut v = Vec::new();
     for (i, p) in r.full.iter().enumerate() {
-        if Pid::of_packet(p) != Some(pid) {
+        if Pid::of_packet(p) != pid {
             continue;
         }
         for o in a.push(i as u64, p) {

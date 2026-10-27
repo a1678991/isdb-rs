@@ -404,7 +404,7 @@ proptest! {
         prop_assert_eq!(Pid::from_wire(v), p);
         prop_assert_eq!(Pid::from_wire(v | 0xE000), p);
         let h = Header::new(p, AdaptationFieldControl::PayloadOnly, ContinuityCounter::ZERO).encode().unwrap();
-        prop_assert_eq!(Pid::of_packet(&h), Some(p));
+        prop_assert_eq!(Pid::of_bytes(&h), Some(p));
         prop_assert_eq!(Header::decode(&h).unwrap().pid, p);
         prop_assert_eq!(p.to_string(), format!("{v:#06x}"));
     }

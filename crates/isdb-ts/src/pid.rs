@@ -69,15 +69,22 @@ impl Pid {
         Pid(bits & Self::MAX.0)
     }
 
-    /// The PID of a transport packet from its first three bytes (Table 2-2:
-    /// the low 5 bits of byte 1 and byte 2), or `None` if `packet` is
-    /// shorter than that.  The sync byte is not checked.
-    pub const fn of_packet(packet: &[u8]) -> Option<Self> {
-        if packet.len() < 3 {
+    /// The PID of a transport packet (Table 2-2: the low 5 bits of byte 1
+    /// and byte 2). The packet's length is its type, so this cannot fail;
+    /// the sync byte is not checked. For a byte slice of unknown length,
+    /// [`Pid::of_bytes`].
+    pub const fn of_packet(packet: &[u8; crate::packet::PACKET_SIZE]) -> Self {
+        Self::from_wire(((packet[1] & 0x1F) as u16) << 8 | packet[2] as u16)
+    }
+
+    /// [`Pid::of_packet`] for a byte slice: `None` if it is shorter than
+    /// the three header bytes the PID is in.
+    pub const fn of_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 3 {
             None
         } else {
             Some(Self::from_wire(
-                ((packet[1] & 0x1F) as u16) << 8 | packet[2] as u16,
+                ((bytes[1] & 0x1F) as u16) << 8 | bytes[2] as u16,
             ))
         }
     }
@@ -264,9 +271,12 @@ mod tests {
     /// Table 2-2: the PID of a packet is bits 3..=15 of bytes 1–2.
     #[test]
     fn spec_table_2_2_pid_bytes() {
-        assert_eq!(Pid::of_packet(&[0x47, 0x5F, 0xFF]), Some(Pid::NULL));
-        assert_eq!(Pid::of_packet(&[0x47, 0xE1, 0xF0]), Some(Pid(0x01F0)));
-        assert_eq!(Pid::of_packet(&[0x47, 0x00]), None);
+        assert_eq!(Pid::of_bytes(&[0x47, 0x5F, 0xFF]), Some(Pid::NULL));
+        assert_eq!(Pid::of_bytes(&[0x47, 0xE1, 0xF0]), Some(Pid(0x01F0)));
+        assert_eq!(Pid::of_bytes(&[0x47, 0x00]), None);
+        let mut pkt = [0u8; crate::packet::PACKET_SIZE];
+        (pkt[0], pkt[1], pkt[2]) = (0x47, 0xE1, 0xF0);
+        assert_eq!(Pid::of_packet(&pkt), Pid(0x01F0));
         assert_eq!(Pid::from_wire(0xFFFF), Pid::NULL);
     }
 }

@@ -57,10 +57,9 @@ impl Stats {
     /// Account packet `index`.
     pub fn push(&mut self, index: u64, pkt: &[u8; PACKET_SIZE]) {
         self.packets += 1;
-        let pid = Pid::from_wire((u16::from(pkt[1] & 0x1F) << 8) | u16::from(pkt[2]));
-        let s = self.pids.entry(pid).or_default();
+        let h = crate::packet::Header::of_packet(pkt);
+        let s = self.pids.entry(h.pid).or_default();
         s.packets += 1;
-        let h = crate::packet::Header::decode(pkt).expect("188 bytes hold a header");
         s.tei += u64::from(h.transport_error_indicator);
         s.scrambled += u64::from(h.transport_scrambling_control.is_scrambled());
         s.pusi += u64::from(h.payload_unit_start_indicator);

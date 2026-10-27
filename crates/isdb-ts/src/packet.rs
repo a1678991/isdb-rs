@@ -259,24 +259,40 @@ impl Header {
     }
 
     /// Decode the first 4 bytes of `b` (Table 2-2).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Truncated`] if `b` is shorter than 4 bytes. A caller that
+    /// holds a whole packet uses [`Header::of_packet`], which cannot fail.
     pub fn decode(b: &[u8]) -> Result<Self> {
-        if b.len() < 4 {
-            return Err(Error::Truncated {
+        match b {
+            [b0, b1, b2, b3, ..] => Ok(Self::of_header_bytes([*b0, *b1, *b2, *b3])),
+            _ => Err(Error::Truncated {
                 what: "transport_packet header",
                 need: 4,
                 have: b.len(),
-            });
+            }),
         }
-        Ok(Self {
+    }
+
+    /// The header of a transport packet (Table 2-2). The packet's length
+    /// is its type, so this cannot fail.
+    pub const fn of_packet(packet: &[u8; PACKET_SIZE]) -> Self {
+        Self::of_header_bytes([packet[0], packet[1], packet[2], packet[3]])
+    }
+
+    /// The four header bytes, every field verbatim.
+    const fn of_header_bytes(b: [u8; 4]) -> Self {
+        Self {
             sync_byte: b[0],
             transport_error_indicator: b[1] & 0x80 != 0,
             payload_unit_start_indicator: b[1] & 0x40 != 0,
             transport_priority: b[1] & 0x20 != 0,
-            pid: Pid::from_wire((u16::from(b[1] & 0x1F) << 8) | u16::from(b[2])),
+            pid: Pid::from_wire(((b[1] & 0x1F) as u16) << 8 | b[2] as u16),
             transport_scrambling_control: TransportScramblingControl::from_code(b[3] >> 6),
             adaptation_field_control: AdaptationFieldControl::from_code(b[3] >> 4),
             continuity_counter: ContinuityCounter::from_wire(b[3]),
-        })
+        }
     }
 
     /// Encode to 4 bytes; errors if a field exceeds its width.

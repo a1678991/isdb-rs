@@ -567,7 +567,7 @@ fn aac_quality_indicator_consistency() {
 fn scrambled_payloads_not_parsed() {
     let mut p = build(&default_spec(3));
     for x in p.iter_mut() {
-        if Pid::of_packet(x) == Some(AUDIO_PID) {
+        if Pid::of_packet(x) == AUDIO_PID {
             x[3] |= 0x80; // '10': scrambled with the even key
             // garble the payload as a cipher would
             for b in x[4..].iter_mut() {

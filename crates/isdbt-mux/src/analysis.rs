@@ -89,7 +89,7 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
     };
     for (n, pkt) in packets.iter().enumerate() {
         let i = n as u64;
-        let pid = Pid::of_packet(pkt).expect("188-byte packet");
+        let pid = Pid::of_packet(pkt);
         *r.pid_counts.entry(pid).or_default() += 1;
         if pid == Pid::NULL {
             continue;

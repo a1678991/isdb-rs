@@ -208,7 +208,7 @@ pub fn assemble_pid(pkts: &[Pkt], pid: Pid) -> Vec<Occurrence> {
 }
 
 fn pid_of(p: &Pkt) -> Pid {
-    Pid::of_packet(p).expect("188-byte packet")
+    Pid::of_packet(p)
 }
 
 /// Replace every packet of `pids` with a null packet; returns the count.

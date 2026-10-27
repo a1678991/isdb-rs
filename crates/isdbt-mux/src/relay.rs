@@ -2979,7 +2979,7 @@ impl Relay {
             self.damage(ei);
             return;
         }
-        let h = Header::decode(&p).expect("188-byte packet");
+        let h = Header::of_packet(&p);
         if h.adaptation_field_control == AdaptationFieldControl::Reserved {
             return;
         }

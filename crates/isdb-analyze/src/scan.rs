@@ -338,7 +338,7 @@ impl Scanner {
     fn push(&mut self, index: u64, pkt: &[u8; PACKET_SIZE]) {
         self.cap.packets += 1;
         self.cap.stats.push(index, pkt);
-        let pid = Pid::of_packet(pkt).expect("188-byte packet");
+        let pid = Pid::of_packet(pkt);
         // Packets flagged by transport_error_indicator carry uncorrectable
         // bit errors (§2.4.3.3); their contents are not checked.
         if !self.opts.skip_packet_checks && pkt[1] & 0x80 == 0 {
@@ -377,8 +377,7 @@ impl Scanner {
         // (H.222.0 §2.4.3.3, Table 2-4; the header and adaptation field
         // stay in the clear). Counted in `stats.scrambled`, not parsed as
         // sections, PES or ADTS: descrambling is out of scope.
-        let scrambled = Header::decode(pkt)
-            .expect("188-byte packet")
+        let scrambled = Header::of_packet(pkt)
             .transport_scrambling_control
             .is_scrambled();
         if scrambled {
@@ -665,7 +664,7 @@ pub fn scan_path(path: &Path, opts: &ScanOptions) -> std::io::Result<Capture> {
                 break;
             }
             let pk = p.packet();
-            let pid = Pid::of_packet(pk).expect("188-byte packet");
+            let pid = Pid::of_packet(pk);
             if !d.has_pid(pid) {
                 continue;
             }
@@ -701,7 +700,7 @@ pub fn scan_bytes(buf: &[u8], opts: &ScanOptions) -> Capture {
         d.add_pid(Pid::PAT);
         d.add_pid(Pid::CAT);
         for p in SliceReader::new(buf).take(400_000) {
-            let pid = Pid::of_packet(p.packet).expect("188-byte packet");
+            let pid = Pid::of_packet(p.packet);
             if !d.has_pid(pid) {
                 continue;
             }

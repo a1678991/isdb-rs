@@ -416,6 +416,12 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdb-ts`: `Pid::of_packet` and the new `Header::of_packet` take the
+  packet as `&[u8; 188]` and cannot fail (the length is the type);
+  `Pid::of_bytes` is the fallible form for a slice. The seven
+  `expect("188-byte packet")` calls in `isdb-analyze`, `isdbt-mux`,
+  `isdb-ts` and `isdb-cli` are gone. Pilot of
+  `docs/plans/errors-and-logging.md` item E4.
 - `clippy::cast_possible_truncation` is `"warn"` in
   `[workspace.lints.clippy]`, so every crate, example and integration test
   is held to it by CI; the per-crate `#![warn]` attributes that turned it
