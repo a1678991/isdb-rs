@@ -17,6 +17,7 @@ use isdbs_core::frame::{
     CODED_TAIL_BITS, FRAME_SYMBOLS, W1_CODED_TAIL, W1_TAIL_AT, W2_CODED_TAIL, W3_CODED_TAIL,
     W23_TAIL_AT, tail_bits,
 };
+use tracing::{debug, info};
 
 /// BPSK pattern of a coded tail (bit 0 → +1, table 46).
 fn pattern(tail: u32) -> [f64; CODED_TAIL_BITS] {
@@ -88,6 +89,15 @@ pub enum EndWord {
     W3,
 }
 
+impl std::fmt::Display for EndWord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::W2 => "W2",
+            Self::W3 => "W3",
+        })
+    }
+}
+
 /// A frame found in the stream.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameMark {
@@ -143,6 +153,12 @@ fn end_word(z: &[Cplx], start: usize) -> Option<(EndWord, f64)> {
 /// Find every frame in `z`: acquire, then track at 39 936-symbol steps.
 /// Returns the frames in order and the number of slips (a tracked frame
 /// missing, followed by a new acquisition).
+///
+/// Events: an acquisition is `info!` ("frame sync acquired at symbol …"),
+/// except one at symbol 0, which is the continuation of a stream the
+/// caller cut on a frame boundary and is `debug!`; a slip is `info!`
+/// ("frame sync lost at symbol …"); a frame length searched without a
+/// frame is `debug!`.
 pub fn find_frames(z: &[Cplx], o: &SyncOptions) -> (Vec<FrameMark>, usize) {
     let mut frames = Vec::new();
     let mut slips = 0;
@@ -155,6 +171,15 @@ pub fn find_frames(z: &[Cplx], o: &SyncOptions) -> (Vec<FrameMark>, usize) {
         // between threads (crate::par::first_max: as a sequential scan)
         let best = crate::par::first_max(at..end, 0.0, |s| frame_metric(z, s));
         if best.0 < o.acquire {
+            debug!(
+                from = at,
+                to = end,
+                metric = best.0,
+                threshold = o.acquire,
+                "no frame in symbols {at}..{end}: best metric {:.3} below {:.2}",
+                best.0,
+                o.acquire
+            );
             at = end;
             continue;
         }
@@ -163,6 +188,23 @@ pub fn find_frames(z: &[Cplx], o: &SyncOptions) -> (Vec<FrameMark>, usize) {
             at = s + 1;
             continue;
         };
+        if s == 0 {
+            debug!(
+                start = s,
+                metric = best.0,
+                end_word = %w,
+                "frame sync continues at symbol 0 (metric {:.3}, {w})",
+                best.0
+            );
+        } else {
+            info!(
+                start = s,
+                metric = best.0,
+                end_word = %w,
+                "frame sync acquired at symbol {s} (metric {:.3}, {w})",
+                best.0
+            );
+        }
         frames.push(FrameMark {
             start: s,
             end_word: w,
@@ -183,6 +225,14 @@ pub fn find_frames(z: &[Cplx], o: &SyncOptions) -> (Vec<FrameMark>, usize) {
                 }),
                 None => {
                     slips += 1;
+                    info!(
+                        start = s,
+                        metric = m,
+                        threshold = o.track,
+                        slips,
+                        "frame sync lost at symbol {s}: metric {m:.3} below {:.2} (slip {slips}); searching again",
+                        o.track
+                    );
                     at = s - FRAME_SYMBOLS + 1;
                     continue 'search;
                 }

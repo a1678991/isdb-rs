@@ -28,6 +28,7 @@ use isdbt_ofdm::C32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
+use tracing::{debug, info, warn};
 
 /// The `hackrf` backend.
 pub(crate) struct HackRf;
@@ -276,6 +277,24 @@ impl Backend for HackRf {
         d.set_freq(cfg.center_hz)?;
         d.set_txvga_gain(s.txvga_db)?;
         d.set_amp_enable(s.amp)?;
+        let gain = format!(
+            "TX VGA {} dB, RF amp {}",
+            s.txvga_db,
+            if s.amp { "on" } else { "off" }
+        );
+        info!(
+            backend = NAME,
+            serial = s.serial.as_deref().unwrap_or("first found"),
+            rate_hz = cfg.sample_rate_hz(),
+            freq_hz = cfg.center_hz,
+            bandwidth_hz = bw,
+            gain,
+            "HackRF {} opened for TX: {}; baseband filter {:.2} MHz; {gain}",
+            s.serial.as_deref().unwrap_or("(first found)"),
+            cfg.describe_tuning(),
+            f64::from(bw) / 1e6
+        );
+        debug!(backend = NAME, "{info}");
         Ok((
             Box::new(QueuedSink::new(d, opts)?),
             format!("{info}; baseband filter {:.2} MHz", f64::from(bw) / 1e6),
@@ -296,6 +315,26 @@ impl Backend for HackRf {
         d.set_vga_gain(s.vga_db)?;
         d.set_amp_enable(s.amp)?;
         let stream = d.start_rx(depth)?;
+        let gain = format!(
+            "LNA {} dB, VGA {} dB, RF amp {}",
+            s.lna_db,
+            s.vga_db,
+            if s.amp { "on" } else { "off" }
+        );
+        info!(
+            backend = NAME,
+            serial = s.serial.as_deref().unwrap_or("first found"),
+            rate_hz = cfg.sample_rate_hz(),
+            freq_hz = cfg.center_hz,
+            bandwidth_hz = bw,
+            gain,
+            queue = depth,
+            "HackRF {} opened for RX: {}; baseband filter {:.2} MHz; {gain}; RX queue {depth} transfers",
+            s.serial.as_deref().unwrap_or("(first found)"),
+            cfg.describe_tuning(),
+            f64::from(bw) / 1e6
+        );
+        debug!(backend = NAME, "{info}");
         Ok((
             Box::new(HackrfIqSource {
                 dev: d,
@@ -401,6 +440,24 @@ impl IqSource for HackrfIqSource {
         self.stream = None;
         self.dev.stop()?;
         let streaming = self.dev.is_streaming();
+        if overruns > 0 {
+            warn!(
+                backend = NAME,
+                overruns,
+                "HackRF RX dropped {overruns} transfer(s) (the reader fell behind the radio)"
+            );
+        }
+        debug!(
+            backend = NAME,
+            overruns,
+            streaming,
+            "HackRF RX stream stopped: {overruns} overrun(s){}",
+            if streaming {
+                "; the device still reports streaming"
+            } else {
+                ""
+            }
+        );
         let s = format!(
             "radio: overruns {overruns}; device stopped streaming: {}",
             if streaming { "NO" } else { "yes" }

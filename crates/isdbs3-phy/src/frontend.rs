@@ -7,6 +7,7 @@ use crate::Cplx;
 use isdb_frontend::fast::FastFrontend as Frontend;
 use isdb_frontend::params::{Design, ParamError, Params};
 use isdb_iq::survey::{KNOWN_SYSTEMS, Options, survey};
+use tracing::{debug, info};
 
 /// ISDB-S3 in `isdb_iq::survey::KNOWN_SYSTEMS`.
 pub fn system() -> &'static isdb_iq::survey::KnownSystem {
@@ -118,6 +119,14 @@ pub fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64,
     // a still phase first, then the Es/N0
     let mut best: Option<(f64, (bool, f64))> = None;
     for (&cfo, &sc) in tried.iter().zip(&scores) {
+        debug!(
+            carrier_offset_hz = cfo,
+            still = sc.0,
+            sync_snr_db = sc.1,
+            "carrier candidate {cfo:+.0} Hz: sync Es/N0 {:.1} dB, phase {}",
+            sc.1,
+            if sc.0 { "still" } else { "turning" }
+        );
         if best.is_none_or(|b| (sc.0 && !b.1.0) || (sc.0 == b.1.0 && sc.1 > b.1.1)) {
             best = Some((cfo, sc));
         }
@@ -227,9 +236,27 @@ fn acquire_input(
     trim: Trim,
 ) -> Result<Prior, ParamError> {
     let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
+    let survey_says_isdbs3 = sv.system.is_some_and(|m| m.system.name == system().name);
     let cfo = match carrier_offset_hz {
         Some(f) => f,
-        None => pick_carrier(xi, fs, &carrier_candidates(&sv))?,
+        None => {
+            let cands = carrier_candidates(&sv);
+            debug!(
+                samples = x.len().min(1 << 22),
+                sample_rate_hz = fs,
+                candidates = cands.len(),
+                survey_says_isdbs3,
+                "survey of {} samples at {fs:.0} Hz: {} carrier candidate(s), {}",
+                x.len().min(1 << 22),
+                cands.len(),
+                if survey_says_isdbs3 {
+                    "ISDB-S3"
+                } else {
+                    "system not recognised"
+                }
+            );
+            pick_carrier(xi, fs, &cands)?
+        }
     };
     let mut d = design(fs, cfo);
     let (t, snr) = match trim {
@@ -243,11 +270,27 @@ fn acquire_input(
             isdb_frontend::s3sync::best_trim(&xi[..n], &d, &cands)?
         }
     };
+    info!(
+        carrier_offset_hz = cfo,
+        trim = t,
+        sync_snr_db = snr,
+        survey_says_isdbs3,
+        "acquired ISDB-S3: carrier {cfo:+.0} Hz ({}), trim {t:+.3} symbol ({}), sync Es/N0 {snr:.2} dB",
+        if carrier_offset_hz.is_some() {
+            "given"
+        } else {
+            "chosen"
+        },
+        match trim {
+            Trim::Auto => "measured",
+            Trim::Fixed(_) => "fixed",
+        }
+    );
     Ok(Prior {
         carrier_offset_hz: cfo,
         trim: t,
         sync_snr_db: snr,
-        survey_says_isdbs3: sv.system.is_some_and(|m| m.system.name == system().name),
+        survey_says_isdbs3,
     })
 }
 
@@ -270,7 +313,29 @@ pub fn symbols_with_prior(
         (Some(p), None, Trim::Auto) => {
             let mut d = design(fs, p.carrier_offset_hz);
             d.trim = p.trim;
-            (excerpt_snr(&xi, fs, &d)? >= p.sync_snr_db - PRIOR_MARGIN_DB).then_some(*p)
+            let snr = excerpt_snr(&xi, fs, &d)?;
+            if snr >= p.sync_snr_db - PRIOR_MARGIN_DB {
+                debug!(
+                    carrier_offset_hz = p.carrier_offset_hz,
+                    trim = p.trim,
+                    sync_snr_db = snr,
+                    prior_snr_db = p.sync_snr_db,
+                    "previous acquisition reused: sync Es/N0 {snr:.2} dB (prior {:.2} dB)",
+                    p.sync_snr_db
+                );
+                Some(*p)
+            } else {
+                info!(
+                    carrier_offset_hz = p.carrier_offset_hz,
+                    trim = p.trim,
+                    sync_snr_db = snr,
+                    prior_snr_db = p.sync_snr_db,
+                    margin_db = PRIOR_MARGIN_DB,
+                    "acquiring again: sync Es/N0 {snr:.2} dB with the previous carrier and trim, more than {PRIOR_MARGIN_DB} dB below the {:.2} dB they gave",
+                    p.sync_snr_db
+                );
+                None
+            }
         }
         _ => None,
     };

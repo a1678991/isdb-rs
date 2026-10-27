@@ -96,6 +96,12 @@ println!("underruns: {:?}", tx.counters.underruns);
 and streaming state of the attached HackRF without any RF activity:
 `cargo run -p isdb-hackrf --example info`.
 
+Diagnostics are `tracing` events, never printed; the crate installs no
+subscriber. `warn`: the first underrun or overrun of a stream (`count`,
+`buffers`, `bytes`) and a stop that libhackrf refused. `debug`: the
+device opened (serial, libhackrf version), a stream started or stopped,
+and every later underrun or overrun.
+
 ## Design notes
 
 - **Bounded channels.** TX: the USB callback pulls buffers from a

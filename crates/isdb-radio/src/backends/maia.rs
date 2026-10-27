@@ -34,6 +34,7 @@ use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
+use tracing::debug;
 
 /// Bytes of the recorder buffer (Tezuka v0.3.24: the `maia_iio_lite`
 /// gateware's DMA range).
@@ -139,6 +140,14 @@ fn http(host: &str, method: &str, path: &str, body: Option<&str>) -> Result<Vec<
     {
         bail!("{}: {} of {n} bytes received", what(), body.len());
     }
+    debug!(
+        method,
+        path,
+        host,
+        bytes = body.len(),
+        "maia-sdr {method} {path}: {status}, {} bytes",
+        body.len()
+    );
     Ok(body)
 }
 

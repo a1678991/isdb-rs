@@ -97,6 +97,12 @@ ctx.stop()?;
 and attributes, the ENSM mode and the TX clock chain of an AD936x without
 any RF activity: `cargo run -p isdb-iio --example info -- ip:192.168.2.1`.
 
+Diagnostics are `tracing` events, never printed; the crate installs no
+subscriber. `warn`: the first underrun or overrun of a stream (`count`,
+`buffers`, `samples`). `debug`: the context opened (URI, libiio version,
+description), each buffer created, every later underrun or overrun, and
+the stream's end with its counts.
+
 ## Design notes
 
 - **A thread per stream.** `start_tx` / `start_rx` enable the channels,

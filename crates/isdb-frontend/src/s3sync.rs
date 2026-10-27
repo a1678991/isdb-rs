@@ -25,6 +25,7 @@
 
 use num_complex::Complex64 as C;
 use std::f64::consts::{FRAC_PI_4, PI, TAU};
+use tracing::debug;
 
 /// Symbols per modulation slot.
 pub const SLOT: usize = 24 + 32 + 66 * (136 + 4);
@@ -209,6 +210,24 @@ fn measure_with(x: &[C], known: Option<usize>) -> Option<SyncReport> {
     let mean = steps.iter().sum::<f64>() / steps.len().max(1) as f64;
     let sd =
         (steps.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / steps.len().max(1) as f64).sqrt();
+    let snr_db = 10.0 * (sig / err.max(1e-30)).log10();
+    debug!(
+        offset,
+        slots,
+        peak,
+        off_peak,
+        fsync,
+        nfsync,
+        snr_db,
+        phase_step_mean = mean,
+        searched = known.is_none(),
+        "slot sync {} offset {offset}: {slots} slots, correlation {peak:.3} on / {off_peak:.3} off, FSync {fsync} / !FSync {nfsync}, sync Es/N0 {snr_db:.2} dB, phase step {mean:+.3} rad",
+        if known.is_none() {
+            "found at"
+        } else {
+            "measured at the known"
+        }
+    );
     Some(SyncReport {
         offset,
         slots,
@@ -217,7 +236,7 @@ fn measure_with(x: &[C], known: Option<usize>) -> Option<SyncReport> {
         ssync_parity: parity,
         fsync,
         nfsync,
-        snr_db: 10.0 * (sig / err.max(1e-30)).log10(),
+        snr_db,
         phase_step_mean: mean,
         phase_step_rms: sd,
         ssync_phase,
@@ -356,8 +375,20 @@ pub fn best_trim(
     let i = (0..scores.len())
         .max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
         .ok_or_else(|| crate::params::ParamError("no trim candidates".into()))?;
+    let chosen = |trim: f64, snr_db: f64| {
+        debug!(
+            trim,
+            snr_db,
+            candidates = candidates.len(),
+            samples = x.len(),
+            "trim {trim:+.3} symbol chosen of {} candidates on {} samples: sync Es/N0 {snr_db:.2} dB",
+            candidates.len(),
+            x.len()
+        );
+        (trim, snr_db)
+    };
     if i == 0 || i + 1 == scores.len() {
-        return Ok((candidates[i], scores[i]));
+        return Ok(chosen(candidates[i], scores[i]));
     }
     // Vertex of the parabola through the three points around the best.
     let (x0, x1, x2) = (candidates[i - 1], candidates[i], candidates[i + 1]);
@@ -366,10 +397,13 @@ pub fn best_trim(
     let a = (x2 * (y1 - y0) + x1 * (y0 - y2) + x0 * (y2 - y1)) / den;
     let b = (x2 * x2 * (y0 - y1) + x1 * x1 * (y2 - y0) + x0 * x0 * (y1 - y2)) / den;
     if a >= 0.0 {
-        return Ok((x1, y1));
+        return Ok(chosen(x1, y1));
     }
     let v = (-b / (2.0 * a)).clamp(x0, x2);
-    Ok((v, y1.max(a * v * v + b * v + (y1 - a * x1 * x1 - b * x1))))
+    Ok(chosen(
+        v,
+        y1.max(a * v * v + b * v + (y1 - a * x1 * x1 - b * x1)),
+    ))
 }
 
 /// The data symbols (main and TMCC) of each pair of slots that starts on

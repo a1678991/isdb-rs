@@ -13,6 +13,16 @@ recording), `tmccbch` (the energy-dispersal readings tried before BCH
 succeeded), `mainprobe` (main-signal LDPC/BCH per frame, nominal vs
 learned constellation).
 
+Diagnostics are `tracing` events, never printed; the crate installs no
+subscriber (the `isdb` binary does). `info`: the acquisition (carrier,
+trim, sync Es/N0), slot sync found or not found (`offset`,
+`sync_snr_db`), the first TMCC after a search and every change of the
+slot assignment (the modes in use, order of change). `debug`: the
+carrier candidates, a reused or rejected prior acquisition, a sync
+confirmed at the known offset, the equaliser, each frame's TMCC and its
+LDPC / BCH failure counts (`ldpc_failed`, `bch_failed`, `mer_db`) and
+the block's totals. Nothing is emitted per symbol or per slot.
+
 ## Speed (32-thread host, one 0.826 s block at 40 Msps)
 
 `rx::receive` takes 0.60 s per 0.826 s block (was 5.85 s): every frame

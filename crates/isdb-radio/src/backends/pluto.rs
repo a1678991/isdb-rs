@@ -91,6 +91,7 @@ use isdbt_ofdm::C32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
+use tracing::{debug, info, warn};
 
 /// The `pluto` backend.
 pub(crate) struct Pluto;
@@ -586,6 +587,25 @@ impl Backend for Pluto {
         // From here on, dropping `tx` restores the safe state.
         tx.configure(cfg, &s, &mut info)
             .with_context(|| format!("configure Pluto {} for TX", s.dev.uri))?;
+        let gain = format!("TX{} attenuation {} dB", s.dev.channel, s.att_db());
+        info!(
+            backend = NAME,
+            uri = s.dev.uri,
+            rate_hz = cfg.sample_rate_hz(),
+            freq_hz = cfg.center_hz,
+            bandwidth_hz = cfg.bandwidth_hz,
+            gain,
+            loopback = s.dev.loopback,
+            "Pluto {} opened for TX: {}; {gain}{}",
+            s.dev.uri,
+            cfg.describe_tuning(),
+            if s.dev.loopback {
+                "; digital TX→RX loopback"
+            } else {
+                ""
+            }
+        );
+        debug!(backend = NAME, "{info}");
         Ok((Box::new(QueuedSink::new(tx, opts)?), info))
     }
 
@@ -678,6 +698,25 @@ impl Backend for Pluto {
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64());
+        let gain = describe_rx_gain(&s);
+        info!(
+            backend = NAME,
+            uri = s.dev.uri,
+            rate_hz = rate,
+            freq_hz = cfg.center_hz,
+            bandwidth_hz = cfg.bandwidth_hz,
+            gain,
+            samples,
+            recorder = ?s.dev.recorder,
+            bits = s.dev.bits,
+            "Pluto {} opened for a capture of {samples} samples: {}; RX{} gain {gain}; {:?} recorder, {} bits per component",
+            s.dev.uri,
+            cfg.describe_tuning(),
+            s.dev.channel,
+            s.dev.recorder,
+            s.dev.bits
+        );
+        debug!(backend = NAME, "{device}{info}");
         let (written, gaps, method) = match (s.dev.recorder, host) {
             (Recorder::Maia, Some(h)) => {
                 let m = maia::Mode(s.dev.bits);
@@ -716,6 +755,23 @@ impl Backend for Pluto {
             "manual" => format!("manual {gain_db} dB"),
             m => format!("AGC {m}, {gain_db} dB at the end"),
         };
+        if !gaps.is_empty() {
+            warn!(
+                backend = NAME,
+                gaps = gaps.len(),
+                discarded = gaps.iter().map(|g| g.discarded).sum::<u64>(),
+                "capture has {} gap(s): {} samples discarded around ADC overflows",
+                gaps.len(),
+                gaps.iter().map(|g| g.discarded).sum::<u64>()
+            );
+        }
+        debug!(
+            backend = NAME,
+            samples = written,
+            gain,
+            method,
+            "capture done: {written} samples by {method}; gain {gain}"
+        );
         Ok(Capture {
             format,
             samples: written,
@@ -807,6 +863,26 @@ impl Backend for Pluto {
             enc
         };
         let config_s = t0.elapsed().as_secs_f64();
+        let gain = describe_rx_gain(&s);
+        info!(
+            backend = NAME,
+            uri = s.dev.uri,
+            rate_hz = rate,
+            freq_hz = cfg.center_hz,
+            bandwidth_hz = cfg.bandwidth_hz,
+            gain,
+            words,
+            format = id.version,
+            taps = id.taps,
+            config_s,
+            "Pluto {} opened for a symbol capture of {words} words: {}; RX{} gain {gain}; FPGA front end format {} with {} taps, configured in {config_s:.1} s",
+            s.dev.uri,
+            cfg.describe_tuning(),
+            s.dev.channel,
+            id.version,
+            id.taps
+        );
+        debug!(backend = NAME, "{device}{info}");
         let streamed = stream_words(&mut ctx, &s.dev, words, out, stop);
         // Back to IQ samples, whatever happened.
         let restored = ctx
@@ -814,6 +890,20 @@ impl Backend for Pluto {
             .and_then(|d| d.reg_write(GPIO_OUT_REG, enc.word(Op::Ctrl, 0)));
         let (written, overflows) = streamed?;
         restored?;
+        if overflows > 0 {
+            warn!(
+                backend = NAME,
+                overflows,
+                words = written,
+                "symbol capture: the ADC core reported {overflows} overflow(s) in {written} words (symbols lost)"
+            );
+        }
+        debug!(
+            backend = NAME,
+            words = written,
+            overflows,
+            "symbol capture done: {written} words, {overflows} overflow(s)"
+        );
         let phy = ctx.device(PHY)?;
         let ch = phy.channel(s.dev.phy_channel(), false)?;
         let gain_db = ch.read_f64("hardwaregain")?;
@@ -854,6 +944,23 @@ impl Backend for Pluto {
             )
             .with_context(|| port_hint(&s.dev, "RX"))?;
         info += &format!("; RX queue {depth} buffers of {} samples", s.dev.buffer);
+        let gain = describe_rx_gain(&s);
+        info!(
+            backend = NAME,
+            uri = s.dev.uri,
+            rate_hz = cfg.sample_rate_hz(),
+            freq_hz = cfg.center_hz,
+            bandwidth_hz = cfg.bandwidth_hz,
+            gain,
+            queue = depth,
+            buffer = s.dev.buffer,
+            "Pluto {} opened for RX: {}; RX{} gain {gain}; RX queue {depth} buffers of {} samples",
+            s.dev.uri,
+            cfg.describe_tuning(),
+            s.dev.channel,
+            s.dev.buffer
+        );
+        debug!(backend = NAME, "{info}");
         Ok((
             Box::new(PlutoIqSource {
                 ctx,
@@ -911,6 +1018,23 @@ fn stream_words(
             if rx.reg_read(ADC_STATUS_REG)? & ADC_STATUS_OVERFLOW != 0 {
                 rx.reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW)?;
                 overflows += 1;
+                // the first is a warning, the rest are counted in the
+                // summary event at the end of the capture
+                if overflows == 1 {
+                    warn!(
+                        backend = NAME,
+                        overflows,
+                        words = written,
+                        "ADC overflow after {written} words: symbols lost; further ones are counted"
+                    );
+                } else {
+                    debug!(
+                        backend = NAME,
+                        overflows,
+                        words = written,
+                        "ADC overflow {overflows} after {written} words: symbols lost"
+                    );
+                }
             }
             let n = ((data.len() / 2) as u64).min(words - written);
             out.write_all(&data[..n as usize * 2])
@@ -975,10 +1099,23 @@ fn stream_capture(
             if rx.reg_read(ADC_STATUS_REG)? & ADC_STATUS_OVERFLOW != 0 {
                 rx.reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW)?;
                 if discard == 0 {
+                    warn!(
+                        backend = NAME,
+                        at = written,
+                        window,
+                        gaps = gaps.len() + 1,
+                        "ADC overflow after {written} samples: a gap in the capture, the next {window} buffers discarded"
+                    );
                     gaps.push(CaptureGap {
                         at: written,
                         discarded: 0,
                     });
+                } else {
+                    debug!(
+                        backend = NAME,
+                        at = written,
+                        "ADC overflow again inside the gap after {written} samples"
+                    );
                 }
                 discard = window;
             }
@@ -1342,6 +1479,24 @@ impl IqSource for PlutoIqSource {
         self.stream = None;
         self.ctx.stop().context("Pluto RX stream")?;
         let streaming = self.ctx.is_streaming();
+        if overruns > 0 {
+            warn!(
+                backend = NAME,
+                overruns,
+                "Pluto RX dropped {overruns} buffer(s) (the reader fell behind the radio)"
+            );
+        }
+        debug!(
+            backend = NAME,
+            overruns,
+            streaming,
+            "Pluto RX stream stopped: {overruns} overrun(s){}",
+            if streaming {
+                "; the device still reports streaming"
+            } else {
+                ""
+            }
+        );
         let s = format!(
             "radio: overruns {overruns}; device stopped streaming: {}",
             if streaming { "NO" } else { "yes" }

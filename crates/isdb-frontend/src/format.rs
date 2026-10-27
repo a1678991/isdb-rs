@@ -80,6 +80,7 @@
 //! be delivered about once in 2³² s ≈ 136 years.
 
 use crate::params::{FORMAT_VERSION, MIN_READ_VERSION, Params};
+use tracing::{debug, warn};
 
 /// Header words per block.
 pub const HEADER_WORDS: usize = 9;
@@ -508,6 +509,25 @@ impl Reader {
             .expect_seq
             .map_or(0, |s| u64::from(h.seq.wrapping_sub(s)));
         if missing > 0 || self.skipped > 0 {
+            if self.expect_seq.is_none() {
+                // joined mid-block: nothing delivered was lost
+                debug!(
+                    words = self.skipped,
+                    seq = h.seq,
+                    "symbol stream joined mid-block: {} words skipped before block {}",
+                    self.skipped,
+                    h.seq
+                );
+            } else {
+                warn!(
+                    blocks = missing,
+                    words = self.skipped,
+                    seq = h.seq,
+                    "symbol stream loss before block {}: {missing} block(s) missing, {} words skipped",
+                    h.seq,
+                    self.skipped
+                );
+            }
             out.push(Event::Loss {
                 blocks: missing,
                 words: self.skipped,
@@ -536,6 +556,10 @@ impl Reader {
         }
         let left = (self.buf.len() - self.pos) as u64 + self.skipped;
         if left > 0 {
+            debug!(
+                words = left,
+                "symbol stream ended inside a block: {left} words dropped"
+            );
             out.push(Event::Truncated { words: left });
         }
         self.buf.clear();

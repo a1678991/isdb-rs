@@ -57,6 +57,7 @@ use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
+use tracing::{debug, warn};
 
 /// libhackrf error.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -215,11 +216,36 @@ unsafe extern "C" fn tx_cb(t: *mut ffi::hackrf_transfer) -> c_int {
     }
     if starved {
         out[filled..].fill(0);
-        ctx.counters.underruns.fetch_add(1, Ordering::Relaxed);
+        let n = ctx.counters.underruns.fetch_add(1, Ordering::Relaxed) + 1;
+        let buffers = ctx.counters.buffers.load(Ordering::Relaxed);
+        fault("underrun", n, buffers, out.len() - filled);
     }
     t.valid_length = t.buffer_length;
     ctx.counters.buffers.fetch_add(1, Ordering::Relaxed);
     0
+}
+
+/// An underrun or overrun, counted as `n` so far after `buffers` buffers:
+/// the first of a stream is `warn!`, the rest `debug!` (the sink reports
+/// the counts periodically).
+fn fault(what: &'static str, n: u64, buffers: u64, bytes: usize) {
+    if n == 1 {
+        warn!(
+            what,
+            count = n,
+            buffers,
+            bytes,
+            "HackRF {what} after {buffers} buffers ({bytes} bytes); further ones are counted"
+        );
+    } else {
+        debug!(
+            what,
+            count = n,
+            buffers,
+            bytes,
+            "HackRF {what} {n} after {buffers} buffers ({bytes} bytes)"
+        );
+    }
 }
 
 unsafe extern "C" fn rx_cb(t: *mut ffi::hackrf_transfer) -> c_int {
@@ -232,11 +258,12 @@ unsafe extern "C" fn rx_cb(t: *mut ffi::hackrf_transfer) -> c_int {
         .min(usize::try_from(t.buffer_length).unwrap_or(0));
     // SAFETY: `buffer` holds `valid_length` (≤ `buffer_length`) received bytes.
     let data = unsafe { std::slice::from_raw_parts(t.buffer as *const i8, len) };
-    ctx.counters.buffers.fetch_add(1, Ordering::Relaxed);
+    let buffers = ctx.counters.buffers.fetch_add(1, Ordering::Relaxed) + 1;
     match ctx.tx.try_send(data.to_vec()) {
         Ok(()) => 0,
         Err(TrySendError::Full(_)) => {
-            ctx.counters.overruns.fetch_add(1, Ordering::Relaxed);
+            let n = ctx.counters.overruns.fetch_add(1, Ordering::Relaxed) + 1;
+            fault("overrun", n, buffers, len);
             0
         }
         Err(TrySendError::Disconnected(_)) => {
@@ -359,6 +386,17 @@ impl Device {
             lib_release();
             return Err(e);
         }
+        debug!(
+            serial = serial.as_ref().map(|s| s.to_string_lossy().into_owned()),
+            library = library_version(),
+            release = library_release(),
+            "HackRF opened ({}): libhackrf {} (release {})",
+            serial
+                .as_ref()
+                .map_or("first found".into(), |s| s.to_string_lossy().into_owned()),
+            library_version(),
+            library_release()
+        );
         Ok(Self {
             dev,
             stream: Stream::None,
@@ -472,6 +510,10 @@ impl Device {
             return Err(e);
         }
         self.stream = Stream::Tx(ctx);
+        debug!(
+            depth,
+            "HackRF TX stream started, {depth} buffer(s) queued ahead"
+        );
         Ok(TxStream { sender, counters })
     }
 
@@ -492,6 +534,10 @@ impl Device {
             return Err(e);
         }
         self.stream = Stream::Rx(ctx);
+        debug!(
+            depth,
+            "HackRF RX stream started, queue of {depth} buffer(s)"
+        );
         Ok(RxStream { receiver, counters })
     }
 
@@ -512,6 +558,15 @@ impl Device {
             Stream::Rx(_) => ("hackrf_stop_rx", unsafe { ffi::hackrf_stop_rx(self.dev) }),
         };
         let r = check(call, rc);
+        match &r {
+            Ok(()) => debug!(call, "HackRF stream stopped ({call})"),
+            Err(e) => warn!(
+                call,
+                code = e.code,
+                "{call} failed ({}): the stream's context is kept until the device is closed",
+                e.name
+            ),
+        }
         if r.is_ok() {
             // SAFETY: the stop succeeded and waited for in-flight
             // transfers; the callback no longer runs.

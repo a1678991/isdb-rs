@@ -12,6 +12,7 @@ use isdb_fec::RS_204_188;
 use isdbs_core::frame::FRAMES;
 use isdbs_core::mainsig::codewords;
 use isdbs_core::tmcc::TmccInfo;
+use tracing::debug;
 
 /// One decoded TS packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,19 +45,30 @@ pub struct DecodedSuperframe {
 /// when its RS(64,48) failed (the TMCC changes at most every superframe,
 /// with advance notice in "order of change", BO.1408-1 §6.1.1). `None`
 /// when no TMCC is known.
+///
+/// Events (`debug!`): a superframe decoded under the fallback TMCC, and
+/// each superframe's RS(204,188) outcome (packets, uncorrectable packets,
+/// bytes corrected, main MER).
 pub fn decode_superframe(
     r: &Reception,
     sf: &Superframe,
     fallback: Option<&TmccInfo>,
     o: &DemodOptions,
 ) -> Option<DecodedSuperframe> {
+    if sf.info.is_none() && fallback.is_some() {
+        debug!(
+            first_frame = sf.first_frame,
+            "superframe at frame {}: own TMCC failed, decoding under the last good one",
+            sf.first_frame
+        );
+    }
     let info = sf.info.as_ref().or(fallback)?.clone();
     let fb: Vec<_> = (0..FRAMES)
         .map(|j| decode_frame(&r.frames[sf.first_frame + j].main, &info, j == 0, o))
         .collect();
     let refs: [&[u8]; FRAMES] = std::array::from_fn(|j| fb[j].bytes.as_slice());
     let ts = info.slot_ts_ids();
-    let packets = codewords(&info, &refs)
+    let packets: Vec<Packet> = codewords(&info, &refs)
         .into_iter()
         .map(|(frame, slot, mut cw)| {
             let corrected = RS_204_188.decode(&mut cw).ok();
@@ -74,6 +86,18 @@ pub fn decode_superframe(
         })
         .collect();
     let mer_db = fb.iter().map(|f| f.mer_db).sum::<f64>() / FRAMES as f64;
+    let uncorrectable = packets.iter().filter(|p| p.corrected.is_none()).count();
+    let corrected_bytes: usize = packets.iter().filter_map(|p| p.corrected).sum();
+    debug!(
+        first_frame = sf.first_frame,
+        packets = packets.len(),
+        uncorrectable,
+        corrected_bytes,
+        mer_db,
+        "superframe at frame {}: {} packets, RS uncorrectable {uncorrectable}, {corrected_bytes} byte(s) corrected; main MER {mer_db:.1} dB",
+        sf.first_frame,
+        packets.len()
+    );
     Some(DecodedSuperframe {
         packets,
         info,

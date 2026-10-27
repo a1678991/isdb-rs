@@ -8,6 +8,7 @@ use crate::rx::{RxOptions, receive};
 use isdb_frontend::fast::FastFrontend as Frontend;
 use isdb_frontend::params::{Design, ParamError, Params};
 use isdb_iq::survey::{KNOWN_SYSTEMS, Options, survey};
+use tracing::{debug, info};
 
 /// ISDB-S in `isdb_iq::survey::KNOWN_SYSTEMS`.
 pub fn system() -> &'static isdb_iq::survey::KnownSystem {
@@ -205,6 +206,26 @@ fn acquire_input(
 ) -> Result<Prior, ParamError> {
     let sv = survey(&x[..x.len().min(1 << 22)], fs, &Options::default());
     let cfo = carrier_offset_hz.unwrap_or_else(|| sv.best_carrier().map_or(0.0, |c| c.offset_hz));
+    let survey_says_isdbs = sv.system.is_some_and(|m| m.system.name == system().name);
+    debug!(
+        samples = x.len().min(1 << 22),
+        sample_rate_hz = fs,
+        carrier_offset_hz = cfo,
+        given = carrier_offset_hz.is_some(),
+        survey_says_isdbs,
+        "survey of {} samples at {fs:.0} Hz: carrier {cfo:+.0} Hz ({}), {}",
+        x.len().min(1 << 22),
+        if carrier_offset_hz.is_some() {
+            "given"
+        } else {
+            "strongest line"
+        },
+        if survey_says_isdbs {
+            "ISDB-S"
+        } else {
+            "system not recognised"
+        }
+    );
     let mut d = design(fs, cfo);
     let (t, mer) = match trim {
         Trim::Fixed(t) => {
@@ -218,11 +239,22 @@ fn acquire_input(
             measure_trim(&xi[..n], &d)?
         }
     };
+    info!(
+        carrier_offset_hz = cfo,
+        trim = t,
+        pilot_mer_db = mer,
+        survey_says_isdbs,
+        "acquired ISDB-S: carrier {cfo:+.0} Hz, trim {t:+.3} symbol ({}), burst MER {mer:.2} dB",
+        match trim {
+            Trim::Auto => "measured",
+            Trim::Fixed(_) => "fixed",
+        }
+    );
     Ok(Prior {
         carrier_offset_hz: cfo,
         trim: t,
         pilot_mer_db: mer,
-        survey_says_isdbs: sv.system.is_some_and(|m| m.system.name == system().name),
+        survey_says_isdbs,
     })
 }
 
@@ -250,7 +282,29 @@ pub fn symbols_with_prior(
         (Some(p), None, Trim::Auto) => {
             let mut d = design(fs, p.carrier_offset_hz);
             d.trim = p.trim;
-            (excerpt_mer(&d, 0.05)? >= p.pilot_mer_db - PRIOR_MARGIN_DB).then_some(*p)
+            let mer = excerpt_mer(&d, 0.05)?;
+            if mer >= p.pilot_mer_db - PRIOR_MARGIN_DB {
+                debug!(
+                    carrier_offset_hz = p.carrier_offset_hz,
+                    trim = p.trim,
+                    pilot_mer_db = mer,
+                    prior_mer_db = p.pilot_mer_db,
+                    "previous acquisition reused: burst MER {mer:.2} dB (prior {:.2} dB)",
+                    p.pilot_mer_db
+                );
+                Some(*p)
+            } else {
+                info!(
+                    carrier_offset_hz = p.carrier_offset_hz,
+                    trim = p.trim,
+                    pilot_mer_db = mer,
+                    prior_mer_db = p.pilot_mer_db,
+                    margin_db = PRIOR_MARGIN_DB,
+                    "acquiring again: burst MER {mer:.2} dB with the previous carrier and trim, more than {PRIOR_MARGIN_DB} dB below the {:.2} dB they gave",
+                    p.pilot_mer_db
+                );
+                None
+            }
         }
         _ => None,
     };
@@ -262,6 +316,15 @@ pub fn symbols_with_prior(
     d.trim = acq.trim;
     let (z, period) = run(&xi, &d)?;
     let period = period / isdb_frontend::params::ONE as f64;
+    debug!(
+        samples = xi.len(),
+        symbols = z.len(),
+        symbol_rate_hz = if period > 0.0 { fs / period } else { 0.0 },
+        "front end: {} samples to {} symbols; timing loop settled at {:.1} baud",
+        xi.len(),
+        z.len(),
+        if period > 0.0 { fs / period } else { 0.0 }
+    );
     Ok((
         Symbols {
             z,
