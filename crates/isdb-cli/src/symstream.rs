@@ -389,7 +389,10 @@ pub fn run(
     // on an error or a stop the parser stops when its channel closes, or,
     // if it is waiting for the decoder to drain, when the queue closes
     queued.close();
-    let _ = parser.join();
+    // a panic of the parser is re-raised, not lost behind the decoder's result
+    if let Err(p) = parser.join() {
+        std::panic::resume_unwind(p);
+    }
     r?;
     Ok(st)
 }
@@ -535,13 +538,18 @@ pub fn finish_radio(
     });
     let secs = decode(rx);
     cap_stop.store(true, Ordering::SeqCst);
-    let _ = feeder.join();
+    let fed = feeder.join();
     // a panic of the capture thread is re-raised here, not reported as an
     // ordinary end of the capture
     let capture = stream
         .thread
         .join()
         .unwrap_or_else(|p| std::panic::resume_unwind(p));
+    // the feeder's panic is re-raised once the capture thread (the radio)
+    // has stopped
+    if let Err(p) = fed {
+        std::panic::resume_unwind(p);
+    }
     match capture {
         Ok(c) => {
             if c.overflows > 0 {

@@ -312,9 +312,10 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
         }
     }
     drop(frames);
+    // a panic of the producer is re-raised, not reported as an ordinary error
     let end = worker
         .join()
-        .map_err(|_| anyhow::anyhow!("producer panicked"))??;
+        .unwrap_or_else(|p| std::panic::resume_unwind(p))?;
     crate::source::check_not_scrambled()?;
     for r in prx.finish() {
         on_rx(r, &mut ver, &mut stats)?;

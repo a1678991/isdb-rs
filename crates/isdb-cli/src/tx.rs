@@ -361,10 +361,12 @@ fn drive(
         aborted = true;
     }
     drop(frames); // unblocks the producer if it is waiting on the queue
-    let end = worker
-        .join()
-        .map_err(|_| anyhow::anyhow!("producer panicked"))?;
+    let joined = worker.join();
+    // The sink (a radio) is stopped before anything else, also when the
+    // producer panicked; its panic is then re-raised, not reported as an
+    // ordinary error that would hide it.
     let fin = sink.finish(aborted);
+    let end = joined.unwrap_or_else(|p| std::panic::resume_unwind(p));
     if let Some(e) = err {
         if let Ok(s) = &fin {
             info!("{s}");
