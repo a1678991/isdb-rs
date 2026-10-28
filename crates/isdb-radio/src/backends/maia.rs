@@ -28,13 +28,24 @@
 //! | `IQ12bit` | 3 bytes/sample | `ci16_le`, unpacked by maia-httpd, sign-extended | 2048 |
 //! | `IQ8bit` | 2 bytes/sample | `ci8`, the 12-bit sample / 16 rounded down (mean −0.47 LSB) | 128 |
 
-use crate::CaptureFormat;
-use anyhow::{Context as _, Result, bail};
+use crate::{CaptureFormat, RadioError, Result};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 use tracing::debug;
+
+/// The backend whose errors these are.
+const BACKEND: &str = "pluto";
+
+/// A reply of maia-sdr this module cannot use.
+fn reply(what: impl Into<String>, detail: impl Into<String>) -> RadioError {
+    RadioError::Reply {
+        backend: BACKEND,
+        what: what.into(),
+        detail: detail.into(),
+    }
+}
 
 /// Bytes of the recorder buffer (Tezuka v0.3.24: the `maia_iio_lite`
 /// gateware's DMA range).
@@ -98,9 +109,12 @@ impl Mode {
 /// response.
 fn http(host: &str, method: &str, path: &str, body: Option<&str>) -> Result<Vec<u8>> {
     let what = || format!("maia-sdr {method} http://{host}{path}");
-    let mut s = TcpStream::connect((host, 80)).with_context(what)?;
-    s.set_read_timeout(Some(Duration::from_secs(30)))?;
-    s.set_write_timeout(Some(Duration::from_secs(30)))?;
+    let failed = |e: std::io::Error| RadioError::device(BACKEND, what(), e);
+    let mut s = TcpStream::connect((host, 80)).map_err(failed)?;
+    s.set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(failed)?;
+    s.set_write_timeout(Some(Duration::from_secs(30)))
+        .map_err(failed)?;
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
     if let Some(b) = body {
         req += &format!(
@@ -110,24 +124,24 @@ fn http(host: &str, method: &str, path: &str, body: Option<&str>) -> Result<Vec<
     }
     req += "\r\n";
     req += body.unwrap_or("");
-    s.write_all(req.as_bytes()).with_context(what)?;
+    s.write_all(req.as_bytes()).map_err(failed)?;
     let mut resp = Vec::new();
-    s.read_to_end(&mut resp).with_context(what)?;
+    s.read_to_end(&mut resp).map_err(failed)?;
     let end = resp
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
-        .with_context(|| format!("{}: no HTTP header", what()))?;
+        .ok_or_else(|| reply(what(), "no HTTP header"))?;
     let head = String::from_utf8_lossy(&resp[..end]).to_string();
     let status = head.lines().next().unwrap_or_default();
     if status.split_whitespace().nth(1) != Some("200") {
-        bail!("{}: {status}", what());
+        return Err(reply(what(), status));
     }
     let mut length = None;
     for l in head.lines().skip(1) {
         if let Some((k, v)) = l.split_once(':') {
             let k = k.trim().to_ascii_lowercase();
             if k == "transfer-encoding" {
-                bail!("{}: {l} not supported", what());
+                return Err(reply(what(), format!("{l} not supported")));
             }
             if k == "content-length" {
                 length = v.trim().parse::<usize>().ok();
@@ -138,7 +152,10 @@ fn http(host: &str, method: &str, path: &str, body: Option<&str>) -> Result<Vec<
     if let Some(n) = length
         && body.len() != n
     {
-        bail!("{}: {} of {n} bytes received", what(), body.len());
+        return Err(reply(
+            what(),
+            format!("{} of {n} bytes received", body.len()),
+        ));
     }
     debug!(
         method,
@@ -153,7 +170,9 @@ fn http(host: &str, method: &str, path: &str, body: Option<&str>) -> Result<Vec<
 
 fn json(host: &str, method: &str, path: &str, body: Option<&str>) -> Result<Value> {
     let b = http(host, method, path, body)?;
-    serde_json::from_slice(&b).with_context(|| format!("maia-sdr {path}: not JSON"))
+    serde_json::from_slice(&b).map_err(|e| {
+        RadioError::device(BACKEND, format!("maia-sdr {path}: read the JSON reply"), e)
+    })
 }
 
 /// The files of a ustar archive: (name, contents).
@@ -171,11 +190,18 @@ fn untar(t: &[u8]) -> Result<Vec<(String, &[u8])>> {
             String::from_utf8_lossy(&f[..n]).trim().to_string()
         };
         let name = field(0..100);
-        let size = usize::from_str_radix(&field(124..136), 8)
-            .with_context(|| format!("tar entry {name:?}: bad size"))?;
+        let size = usize::from_str_radix(&field(124..136), 8).map_err(|_| {
+            reply(
+                "maia-sdr recording",
+                format!("tar entry {name:?}: bad size"),
+            )
+        })?;
         let start = i + 512;
         if start + size > t.len() {
-            bail!("tar entry {name:?}: truncated");
+            return Err(reply(
+                "maia-sdr recording",
+                format!("tar entry {name:?}: truncated"),
+            ));
         }
         if h[156] == b'0' || h[156] == 0 {
             out.push((name, &t[start..start + size]));
@@ -196,22 +222,29 @@ pub(crate) fn record(
     out: &mut dyn Write,
 ) -> Result<()> {
     if samples > mode.max_samples() {
-        bail!(
-            "maia-sdr recorder holds at most {} samples in {} ({} MiB)",
-            mode.max_samples(),
-            mode.name(),
-            BUFFER_BYTES >> 20
-        );
+        return Err(RadioError::CaptureLength {
+            backend: BACKEND,
+            samples,
+            limit: mode.max_samples(),
+            why: format!(
+                "the maia-sdr recorder buffer in {}, {} MiB",
+                mode.name(),
+                BUFFER_BYTES >> 20
+            ),
+        });
     }
     let api = json(host, "GET", "/api", None)?;
     if api["ddc"]["enabled"].as_bool() == Some(true) {
-        bail!("maia-sdr DDC is enabled: the recorder would record its output; disable it first");
+        return Err(reply(
+            "maia-sdr recorder",
+            "the DDC is enabled: the recorder would record its output; disable it first",
+        ));
     }
     if api["recorder"]["state"].as_str() != Some("Stopped") {
-        bail!(
-            "maia-sdr recorder is {} (want Stopped)",
-            api["recorder"]["state"]
-        );
+        return Err(reply(
+            "maia-sdr recorder",
+            format!("state {} (want Stopped)", api["recorder"]["state"]),
+        ));
     }
     let seconds = samples as f64 / rate_hz;
     let settings = serde_json::json!({
@@ -242,7 +275,10 @@ pub(crate) fn record(
                 "/api/recorder",
                 Some(r#"{"state_change":"Stop"}"#),
             );
-            bail!("maia-sdr recorder did not stop ({})", r["state"]);
+            return Err(reply(
+                "maia-sdr recorder",
+                format!("did not stop (state {})", r["state"]),
+            ));
         }
     }
     let tar = http(host, "GET", "/recording", None)?;
@@ -252,33 +288,43 @@ pub(crate) fn record(
             .iter()
             .find(|(n, _)| n.ends_with(suffix))
             .map(|(_, d)| *d)
-            .with_context(|| format!("maia-sdr recording has no *{suffix}"))
+            .ok_or_else(|| reply("maia-sdr recording", format!("no *{suffix}")))
     };
     let meta: Value = serde_json::from_slice(get(".sigmf-meta")?)
-        .context("maia-sdr recording metadata is not JSON")?;
+        .map_err(|e| RadioError::device(BACKEND, "read the maia-sdr recording metadata", e))?;
     let g = &meta["global"];
     if g["core:datatype"].as_str() != Some(mode.datatype()) {
-        bail!(
-            "maia-sdr {} recording datatype {} (want {})",
-            mode.name(),
-            g["core:datatype"],
-            mode.datatype()
-        );
+        return Err(reply(
+            "maia-sdr recording",
+            format!(
+                "{} recording datatype {} (want {})",
+                mode.name(),
+                g["core:datatype"],
+                mode.datatype()
+            ),
+        ));
     }
     let rec_rate = g["core:sample_rate"].as_f64().unwrap_or(0.0);
     if (rec_rate / rate_hz - 1.0).abs() > 10e-6 {
-        bail!("maia-sdr recorded at {rec_rate} Hz, the device was set to {rate_hz:.2} Hz");
+        return Err(reply(
+            "maia-sdr recording",
+            format!("recorded at {rec_rate} Hz, the device was set to {rate_hz:.2} Hz"),
+        ));
     }
     let data = get(".sigmf-data")?;
-    let bytes = usize::try_from(samples)? * mode.format().bytes_per_sample();
-    if data.len() < bytes {
-        bail!(
-            "maia-sdr recorded {} samples, {samples} requested",
-            data.len() / mode.format().bytes_per_sample()
-        );
-    }
-    out.write_all(&data[..bytes])
-        .context("write the maia-sdr recording")?;
+    let bps = mode.format().bytes_per_sample();
+    let wanted = usize::try_from(samples)
+        .ok()
+        .and_then(|n| n.checked_mul(bps))
+        .and_then(|n| data.get(..n));
+    let Some(wanted) = wanted else {
+        return Err(reply(
+            "maia-sdr recording",
+            format!("{} samples recorded, {samples} requested", data.len() / bps),
+        ));
+    };
+    out.write_all(wanted)
+        .map_err(|e| RadioError::io("write the maia-sdr recording", e))?;
     Ok(())
 }
 
@@ -336,6 +382,12 @@ mod tests {
                 ),
             ]
         );
-        assert!(untar(&t[..2050]).is_err());
+        assert!(matches!(
+            untar(&t[..2050]),
+            Err(RadioError::Reply {
+                backend: "pluto",
+                ..
+            })
+        ));
     }
 }

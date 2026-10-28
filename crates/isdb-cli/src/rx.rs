@@ -476,12 +476,12 @@ impl FileIqSource {
 }
 
 impl IqSource for FileIqSource {
-    fn read(&mut self, _stop: &AtomicBool) -> Result<Option<Vec<C32>>> {
+    fn read(&mut self, _stop: &AtomicBool) -> isdb_radio::Result<Option<Vec<C32>>> {
         let n = loop {
             match self.r.read(&mut self.buf) {
                 Ok(n) => break n,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(isdb_radio::RadioError::io("read the IQ input", e)),
             }
         };
         if n == 0 {
@@ -690,7 +690,9 @@ pub fn run(a: RxArgs) -> Result<()> {
         let opts = RxOptions {
             queue_seconds: RX_QUEUE_SECONDS,
         };
-        let (src, info) = backend.open_rx(&cfg, &opts)?;
+        let (src, info) = backend
+            .open_rx(&cfg, &opts)
+            .with_context(|| format!("open radio {spec} for RX"))?;
         info!(target: "isdb::rx", "opened: {info}");
         (
             src,

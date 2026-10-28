@@ -1,6 +1,6 @@
 //! Device selection strings: `NAME[:key=value[,key=value...]]`.
 
-use anyhow::{Error, Result, bail};
+use crate::{KeyValueProblem, RadioError, Result, SpecProblem};
 use std::fmt;
 use std::str::FromStr;
 
@@ -33,53 +33,70 @@ impl DeviceSpec {
 
 /// Parse `key=value` (key non-empty, without surrounding whitespace; the
 /// value may be empty and may contain `=`).
+///
+/// Fails with [`RadioError::KeyValue`].
 pub fn parse_key_value(s: &str) -> Result<(String, String)> {
-    let Some((k, v)) = s.split_once('=') else {
-        bail!("{s:?}: want NAME=VALUE");
-    };
+    split_key_value(s).map_err(|problem| RadioError::KeyValue {
+        text: s.to_string(),
+        problem,
+    })
+}
+
+fn split_key_value(s: &str) -> std::result::Result<(String, String), KeyValueProblem> {
+    let (k, v) = s.split_once('=').ok_or(KeyValueProblem::NoEquals)?;
     let k = k.trim();
     if k.is_empty() {
-        bail!("{s:?}: empty name before '='");
+        return Err(KeyValueProblem::EmptyName);
     }
     Ok((k.to_string(), v.trim().to_string()))
 }
 
 impl FromStr for DeviceSpec {
-    type Err = Error;
+    type Err = RadioError;
 
+    /// Fails with [`RadioError::Spec`].
     fn from_str(s: &str) -> Result<Self> {
-        let (name, rest) = match s.split_once(':') {
-            Some((n, r)) => (n.trim(), Some(r)),
-            None => (s.trim(), None),
-        };
-        if name.is_empty() {
-            bail!("device {s:?}: empty backend name (want NAME[:key=value,...])");
-        }
-        if !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
-            bail!("device {s:?}: backend name {name:?} is not [A-Za-z0-9_-]+");
-        }
-        let mut args: Vec<(String, String)> = Vec::new();
-        if let Some(rest) = rest {
-            if rest.trim().is_empty() {
-                bail!("device {s:?}: nothing after ':' (want NAME:key=value,...)");
-            }
-            for item in rest.split(',') {
-                let (k, v) =
-                    parse_key_value(item).map_err(|e| anyhow::anyhow!("device {s:?}: {e}"))?;
-                if args.iter().any(|(a, _)| *a == k) {
-                    bail!("device {s:?}: argument {k:?} given twice");
-                }
-                args.push((k, v));
-            }
-        }
-        Ok(Self {
-            backend: name.to_string(),
-            args,
+        parse_spec(s).map_err(|problem| RadioError::Spec {
+            spec: s.to_string(),
+            problem,
         })
     }
+}
+
+fn parse_spec(s: &str) -> std::result::Result<DeviceSpec, SpecProblem> {
+    let (name, rest) = match s.split_once(':') {
+        Some((n, r)) => (n.trim(), Some(r)),
+        None => (s.trim(), None),
+    };
+    if name.is_empty() {
+        return Err(SpecProblem::EmptyName);
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(SpecProblem::BadName(name.to_string()));
+    }
+    let mut args: Vec<(String, String)> = Vec::new();
+    if let Some(rest) = rest {
+        if rest.trim().is_empty() {
+            return Err(SpecProblem::NoArguments);
+        }
+        for item in rest.split(',') {
+            let (k, v) = split_key_value(item).map_err(|problem| SpecProblem::Argument {
+                text: item.to_string(),
+                problem,
+            })?;
+            if args.iter().any(|(a, _)| *a == k) {
+                return Err(SpecProblem::Repeated(k));
+            }
+            args.push((k, v));
+        }
+    }
+    Ok(DeviceSpec {
+        backend: name.to_string(),
+        args,
+    })
 }
 
 impl fmt::Display for DeviceSpec {
@@ -143,6 +160,39 @@ mod tests {
         }
         let e = p("sdr:serial").unwrap_err().to_string();
         assert!(e.contains("NAME=VALUE"), "{e}");
+        assert_eq!(e, r#"device "sdr:serial": "serial": want NAME=VALUE"#);
+    }
+
+    #[test]
+    fn syntax_errors_are_typed() {
+        let problem = |s: &str| match p(s) {
+            Err(RadioError::Spec { spec, problem }) => {
+                assert_eq!(spec, s);
+                problem
+            }
+            other => panic!("{s:?}: {other:?}"),
+        };
+        assert_eq!(problem(""), SpecProblem::EmptyName);
+        assert_eq!(problem("sdr/1"), SpecProblem::BadName("sdr/1".into()));
+        assert_eq!(problem("sdr: "), SpecProblem::NoArguments);
+        assert_eq!(
+            problem("sdr:=1"),
+            SpecProblem::Argument {
+                text: "=1".into(),
+                problem: KeyValueProblem::EmptyName
+            }
+        );
+        assert_eq!(
+            problem("sdr:serial=1,serial=2"),
+            SpecProblem::Repeated("serial".into())
+        );
+        assert!(matches!(
+            parse_key_value("gain"),
+            Err(RadioError::KeyValue {
+                problem: KeyValueProblem::NoEquals,
+                ..
+            })
+        ));
     }
 
     #[test]

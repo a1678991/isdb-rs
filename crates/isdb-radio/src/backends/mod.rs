@@ -1,7 +1,6 @@
 //! The backend registry: which radios this build supports.
 
-use crate::Backend;
-use anyhow::{Result, bail};
+use crate::{Backend, RadioError, Result};
 
 #[cfg(feature = "hackrf")]
 mod hackrf;
@@ -31,26 +30,39 @@ pub fn backends() -> Vec<&'static dyn Backend> {
 
 /// The compiled-in backend called `name`.
 ///
-/// Fails for an unknown name or a backend left out of this build, listing
-/// the compiled-in backends and the cargo feature enabling each known one.
+/// Fails with [`RadioError::UnknownBackend`] for an unknown name or a
+/// backend left out of this build; its message lists the compiled-in
+/// backends and the cargo feature enabling each known one.
 pub fn backend(name: &str) -> Result<&'static dyn Backend> {
-    let compiled = backends();
-    if let Some(b) = compiled.iter().find(|b| b.name() == name) {
+    if let Some(b) = COMPILED.iter().find(|b| b.name() == name) {
         return Ok(*b);
     }
-    let feature =
+    Err(RadioError::UnknownBackend {
+        name: name.to_string(),
+        feature: KNOWN.iter().find(|(k, _)| *k == name).map(|&(_, f)| f),
+    })
+}
+
+/// The message of [`RadioError::UnknownBackend`] for `name`, a known
+/// backend enabled by `feature` or (`None`) an unknown one.
+pub(crate) fn unknown_backend_message(name: &str, feature: Option<&str>) -> String {
+    let compiled = backends();
+    let feature_text =
         |f: &str| format!("isdb-radio feature `{f}`, forwarded by isdb-cli feature `{f}`");
-    let head = match KNOWN.iter().find(|(k, _)| *k == name) {
-        Some((_, f)) => format!("radio backend {name:?} is not compiled in ({})", feature(f)),
+    let head = match feature {
+        Some(f) => format!(
+            "radio backend {name:?} is not compiled in ({})",
+            feature_text(f)
+        ),
         None => format!("unknown radio backend {name:?}"),
     };
     let list = |it: &mut dyn Iterator<Item = &(&str, &str)>| {
-        it.map(|(n, f)| format!("{n} ({})", feature(f)))
+        it.map(|(n, f)| format!("{n} ({})", feature_text(f)))
             .collect::<Vec<_>>()
             .join(", ")
     };
     if compiled.is_empty() {
-        bail!(
+        return format!(
             "{head}; this build has no radio backends; known: {}",
             list(&mut KNOWN.iter())
         );
@@ -64,7 +76,7 @@ pub fn backend(name: &str) -> Result<&'static dyn Backend> {
     if !missing.is_empty() {
         msg += &format!("; not compiled in: {missing}");
     }
-    bail!("{msg}")
+    msg
 }
 
 #[cfg(test)]
@@ -85,6 +97,18 @@ mod tests {
 
     #[test]
     fn unknown_backend_names_the_features() {
+        assert!(matches!(
+            backend("sdr"),
+            Err(RadioError::UnknownBackend { name, feature: None }) if name == "sdr"
+        ));
+        for (name, f) in KNOWN {
+            if backend(name).is_err() {
+                assert!(matches!(
+                    backend(name),
+                    Err(RadioError::UnknownBackend { feature: Some(g), .. }) if g == *f
+                ));
+            }
+        }
         let e = backend("sdr").unwrap_err().to_string();
         assert!(e.starts_with("unknown radio backend \"sdr\"; "), "{e}");
         if backends().is_empty() {

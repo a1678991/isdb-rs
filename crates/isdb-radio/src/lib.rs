@@ -50,9 +50,17 @@
 //!
 //! # Errors
 //!
-//! The interface uses [`anyhow::Result`]: errors come from many layers
-//! (USB libraries, argument validation, I/O) and are reported to a person,
-//! not matched on, as in `isdb-analyze`.
+//! Every fallible call returns [`RadioError`] ([`Result`]). Errors come
+//! from several layers (a device selection that does not parse, a device
+//! argument or gain the backend refuses, a tuning outside the device's
+//! range, an operation the backend or device cannot do, a stream that
+//! stopped, a device library or I/O failure), and each layer is a variant
+//! with its facts as fields, so a caller can tell a refused argument from a
+//! missing device without reading the message. A device library's own
+//! error (`isdb_hackrf::Error`, `isdb_iio::Error`) is kept as the
+//! [`source`](std::error::Error::source) of [`RadioError::Device`], so a
+//! printed chain names the library call that failed. `isdb-cli` adds its
+//! context with `anyhow`.
 //!
 //! # Safety
 //!
@@ -69,7 +77,10 @@
 //! let spec: DeviceSpec = "sdr:serial=0000abcd".parse()?;
 //! assert_eq!((spec.backend.as_str(), spec.get("serial")), ("sdr", Some("0000abcd")));
 //! // Unknown here: the error lists the compiled-in backends.
-//! assert!(isdb_radio::backend(&spec.backend).is_err());
+//! assert!(matches!(
+//!     isdb_radio::backend(&spec.backend),
+//!     Err(isdb_radio::RadioError::UnknownBackend { .. })
+//! ));
 //!
 //! let cfg = RadioConfig {
 //!     center_hz: 473_142_857,
@@ -85,7 +96,7 @@
 //! for b in isdb_radio::backends() {
 //!     println!("{}:\n{}", b.name(), b.describe_tx(&cfg, &opts)?);
 //! }
-//! # Ok::<(), anyhow::Error>(())
+//! # Ok::<(), isdb_radio::RadioError>(())
 //! ```
 
 // Libraries report through `tracing` events and return values, never by
@@ -93,6 +104,7 @@
 #![warn(clippy::print_stdout, clippy::print_stderr)]
 
 mod backends;
+mod error;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 mod quant;
@@ -100,16 +112,22 @@ mod queued;
 mod spec;
 
 pub use backends::{backend, backends};
+pub use error::{
+    Direction, Key, KeyValueProblem, RadioError, Result, Rule, SpecProblem, StreamProblem,
+    Tolerance,
+};
 pub use isdbt_ofdm::C32;
 pub use quant::{Cs8, Cs12, IntFormat, Quantizer};
 pub use queued::{QueuedSink, RadioTx, StreamCounters, TxStream};
 pub use spec::{DeviceSpec, parse_key_value};
 
-use anyhow::{Result, bail};
 use std::ops::RangeInclusive;
 use std::sync::atomic::AtomicBool;
 
 /// Where a transmitter sends the baseband (an IQ file, a radio, …).
+///
+/// An implementation over a file or pipe reports its failures as
+/// [`RadioError::Io`].
 pub trait IqSink {
     /// Write one frame of samples, blocking as long as the device needs.
     /// A real-time sink returns early (dropping the samples) once `stop`
@@ -127,6 +145,9 @@ pub trait IqSink {
 }
 
 /// A source of baseband chunks (an IQ file, a radio, …).
+///
+/// An implementation over a file or pipe reports its failures as
+/// [`RadioError::Io`].
 pub trait IqSource {
     /// Next chunk; `None` at the end (or once `stop` is set).
     fn read(&mut self, stop: &AtomicBool) -> Result<Option<Vec<C32>>>;
@@ -214,18 +235,15 @@ impl TxOptions {
     /// ([`TxOptions::BACKOFF_DB`]).
     pub fn validate(&self) -> Result<()> {
         if !(self.frame_seconds.is_finite() && self.frame_seconds > 0.0) {
-            bail!(
-                "frame duration {} s: must be finite and > 0",
-                self.frame_seconds
-            );
+            return Err(RadioError::Duration {
+                what: "frame duration",
+                seconds: self.frame_seconds,
+            });
         }
         if !Self::BACKOFF_DB.contains(&self.backoff_db) {
-            bail!(
-                "backoff {} dB outside {}..{}",
-                self.backoff_db,
-                Self::BACKOFF_DB.start(),
-                Self::BACKOFF_DB.end()
-            );
+            return Err(RadioError::Backoff {
+                db: self.backoff_db,
+            });
         }
         Ok(())
     }
@@ -253,7 +271,10 @@ impl RxOptions {
     /// Check `queue_seconds` (finite, > 0).
     pub fn validate(&self) -> Result<()> {
         if !(self.queue_seconds.is_finite() && self.queue_seconds > 0.0) {
-            bail!("RX queue {} s: must be finite and > 0", self.queue_seconds);
+            return Err(RadioError::Duration {
+                what: "RX queue",
+                seconds: self.queue_seconds,
+            });
         }
         Ok(())
     }
@@ -428,7 +449,10 @@ pub trait Backend: Sync {
         stop: &AtomicBool,
     ) -> Result<Capture> {
         let _ = (cfg, samples, out, stop);
-        bail!("radio backend {:?} cannot capture", self.name())
+        Err(RadioError::Unsupported {
+            backend: self.name(),
+            what: "cannot capture",
+        })
     }
     /// The stages the device can run itself with `cfg`, found without
     /// changing its state (default: none).
@@ -449,7 +473,10 @@ pub trait Backend: Sync {
         stop: &AtomicBool,
     ) -> Result<SymbolsCapture> {
         let _ = (cfg, params, words, out, stop);
-        bail!("radio backend {:?} has no symbol front end", self.name())
+        Err(RadioError::Unsupported {
+            backend: self.name(),
+            what: "has no symbol front end",
+        })
     }
 }
 

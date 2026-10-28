@@ -401,13 +401,13 @@ dependencies = [
 name = "isdb-radio"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "isdb-frontend",
  "isdb-hackrf",
  "isdb-iio",
  "isdbt-ofdm",
  "isdbt-phy",
  "serde_json",
+ "thiserror",
  "tracing",
  "tracing-subscriber",
 ]

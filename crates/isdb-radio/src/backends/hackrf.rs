@@ -20,10 +20,9 @@
 //!   such transfers.
 
 use crate::{
-    Backend, Cs8, IqSink, IqSource, Quantizer, QueuedSink, RadioConfig, RadioTx, RxOptions,
-    StreamCounters, TxOptions, TxStream,
+    Backend, Cs8, Direction, IqSink, IqSource, Key, Quantizer, QueuedSink, RadioConfig, RadioError,
+    RadioTx, Result, Rule, RxOptions, StreamCounters, StreamProblem, TxOptions, TxStream,
 };
-use anyhow::{Context, Result, bail};
 use isdbt_ofdm::C32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
@@ -40,6 +39,17 @@ const RATE_HZ: std::ops::RangeInclusive<f64> = 2e6..=20e6;
 const MAX_BANDWIDTH_HZ: u32 = 28_000_000;
 /// Samples per libhackrf USB transfer (262 144 bytes of cs8).
 const TRANSFER_SAMPLES: usize = 131_072;
+
+/// A libhackrf failure, as a [`RadioError::Device`] doing `op`.
+trait At<T> {
+    fn at(self, op: &str) -> Result<T>;
+}
+
+impl<T> At<T> for isdb_hackrf::Result<T> {
+    fn at(self, op: &str) -> Result<T> {
+        self.map_err(|e| RadioError::device(NAME, op, e))
+    }
+}
 
 /// The values a gain takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,26 +88,45 @@ impl Gain {
         }
     }
 
-    /// Parse and check a value.
-    fn parse(&self, v: &str) -> Result<u32> {
-        let name = self.name;
+    /// Parse and check a value of a gain of direction `dir`.
+    fn parse(&self, dir: Direction, v: &str) -> Result<u32> {
+        let refuse = |rule| RadioError::Argument {
+            backend: NAME,
+            kind: Key::Gain(dir),
+            key: self.name.to_string(),
+            value: v.to_string(),
+            rule,
+        };
         match self.kind {
             GainKind::Db { max, step } => {
-                let x: u32 = v
-                    .parse()
-                    .with_context(|| format!("{NAME} gain {name}={v}: not a whole number of dB"))?;
+                let x: u32 = v.parse().map_err(|_| {
+                    refuse(Rule::NotANumber {
+                        what: "whole number of dB",
+                    })
+                })?;
                 if x > max || !x.is_multiple_of(step) {
-                    if step == 1 {
-                        bail!("{NAME} gain {name}={v}: outside 0..{max} dB");
-                    }
-                    bail!("{NAME} gain {name}={v}: must be 0..{max} dB in {step} dB steps");
+                    let (min, max) = (0.0, f64::from(max));
+                    return Err(refuse(if step == 1 {
+                        Rule::Range {
+                            min,
+                            max,
+                            unit: "dB",
+                        }
+                    } else {
+                        Rule::Steps {
+                            min,
+                            max,
+                            step: f64::from(step),
+                            unit: "dB",
+                        }
+                    }));
                 }
                 Ok(x)
             }
             GainKind::OnOff => match v.to_ascii_lowercase().as_str() {
                 "on" | "1" | "true" | "yes" => Ok(1),
                 "off" | "0" | "false" | "no" => Ok(0),
-                _ => bail!("{NAME} gain {name}={v}: want on or off"),
+                _ => Err(refuse(Rule::OneOf(&["on", "off"]))),
             },
         }
     }
@@ -139,20 +168,25 @@ const RX_GAINS: [Gain; 3] = [
 
 /// The values of the gains in `table` (its order): those in `cfg.gains`,
 /// the defaults for the others. Unknown and repeated names are errors.
-fn gains<const N: usize>(cfg: &RadioConfig, dir: &str, table: &[Gain; N]) -> Result<[u32; N]> {
+fn gains<const N: usize>(cfg: &RadioConfig, dir: Direction, table: &[Gain; N]) -> Result<[u32; N]> {
     let mut values = table.map(|g| g.default);
     for (i, (k, v)) in cfg.gains.iter().enumerate() {
         let Some(j) = table.iter().position(|g| g.name == k) else {
-            let known: Vec<String> = table.iter().map(Gain::help).collect();
-            bail!(
-                "{NAME} {dir} has no gain {k:?} (gains: {})",
-                known.join(", ")
-            );
+            return Err(RadioError::UnknownKey {
+                backend: NAME,
+                kind: Key::Gain(dir),
+                key: k.clone(),
+                known: table.iter().map(Gain::help).collect(),
+            });
         };
         if cfg.gains[..i].iter().any(|(p, _)| p == k) {
-            bail!("{NAME} gain {k:?} given twice");
+            return Err(RadioError::RepeatedKey {
+                backend: NAME,
+                kind: Key::Gain(dir),
+                key: k.clone(),
+            });
         }
-        values[j] = table[j].parse(v)?;
+        values[j] = table[j].parse(dir, v)?;
     }
     Ok(values)
 }
@@ -180,36 +214,66 @@ fn check_common(cfg: &RadioConfig) -> Result<Option<String>> {
     let mut serial = None;
     for (k, v) in &cfg.args {
         match k.as_str() {
-            "serial" if v.is_empty() => bail!("{NAME}: empty serial number"),
+            "serial" if v.is_empty() => {
+                return Err(RadioError::Argument {
+                    backend: NAME,
+                    kind: Key::Argument,
+                    key: k.clone(),
+                    value: v.clone(),
+                    rule: Rule::Empty,
+                });
+            }
             "serial" => serial = Some(v.clone()),
-            _ => bail!("{NAME}: unknown device argument {k:?} (known: serial)"),
+            _ => {
+                return Err(RadioError::UnknownKey {
+                    backend: NAME,
+                    kind: Key::Argument,
+                    key: k.clone(),
+                    known: vec!["serial".into()],
+                });
+            }
         }
     }
+    let tuning = |device, what, hz, min_hz, max_hz| RadioError::Tuning {
+        backend: NAME,
+        device,
+        what,
+        hz,
+        min_hz,
+        max_hz,
+    };
     if !FREQ_HZ.contains(&cfg.center_hz) {
-        bail!(
-            "frequency {} Hz outside the HackRF range 1 MHz..6 GHz",
-            cfg.center_hz
-        );
+        // u64 -> f64: frequencies below 2^53 Hz are exact.
+        #[allow(clippy::cast_precision_loss)]
+        let hz = cfg.center_hz as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let (min, max) = (*FREQ_HZ.start() as f64, *FREQ_HZ.end() as f64);
+        return Err(tuning("HackRF", "frequency", hz, Some(min), max));
     }
     if cfg.rate_den == 0 || !RATE_HZ.contains(&cfg.sample_rate_hz()) {
-        bail!(
-            "sample rate {}/{} Hz outside the HackRF range 2..20 MHz",
-            cfg.rate_num,
-            cfg.rate_den
-        );
+        return Err(tuning(
+            "HackRF",
+            "sample rate",
+            cfg.sample_rate_hz(),
+            Some(*RATE_HZ.start()),
+            *RATE_HZ.end(),
+        ));
     }
     if cfg.bandwidth_hz > MAX_BANDWIDTH_HZ {
-        bail!(
-            "baseband filter {} Hz above the largest HackRF (MAX2837) bandwidth, 28 MHz",
-            cfg.bandwidth_hz
-        );
+        return Err(tuning(
+            "HackRF (MAX2837)",
+            "baseband filter",
+            f64::from(cfg.bandwidth_hz),
+            None,
+            f64::from(MAX_BANDWIDTH_HZ),
+        ));
     }
     Ok(serial)
 }
 
 fn tx_settings(cfg: &RadioConfig) -> Result<TxSettings> {
     let serial = check_common(cfg)?;
-    let [txvga_db, amp] = gains(cfg, "TX", &TX_GAINS)?;
+    let [txvga_db, amp] = gains(cfg, Direction::Tx, &TX_GAINS)?;
     Ok(TxSettings {
         serial,
         txvga_db,
@@ -219,7 +283,7 @@ fn tx_settings(cfg: &RadioConfig) -> Result<TxSettings> {
 
 fn rx_settings(cfg: &RadioConfig) -> Result<RxSettings> {
     let serial = check_common(cfg)?;
-    let [lna_db, vga_db, amp] = gains(cfg, "RX", &RX_GAINS)?;
+    let [lna_db, vga_db, amp] = gains(cfg, Direction::Rx, &RX_GAINS)?;
     Ok(RxSettings {
         serial,
         lna_db,
@@ -268,15 +332,19 @@ impl Backend for HackRf {
     fn open_tx(&self, cfg: &RadioConfig, opts: &TxOptions) -> Result<(Box<dyn IqSink>, String)> {
         let s = tx_settings(cfg)?;
         opts.validate()?;
-        let mut d = isdb_hackrf::Device::open(s.serial.as_deref()).context("open HackRF")?;
+        let mut d = isdb_hackrf::Device::open(s.serial.as_deref()).at("open HackRF")?;
         let info = device_info(&mut d);
-        d.set_antenna_enable(false)?;
-        d.set_amp_enable(false)?;
-        d.set_sample_rate_manual(cfg.rate_num, cfg.rate_den)?;
-        let bw = d.set_baseband_filter(cfg.bandwidth_hz)?;
-        d.set_freq(cfg.center_hz)?;
-        d.set_txvga_gain(s.txvga_db)?;
-        d.set_amp_enable(s.amp)?;
+        let bw = (|| -> isdb_hackrf::Result<u32> {
+            d.set_antenna_enable(false)?;
+            d.set_amp_enable(false)?;
+            d.set_sample_rate_manual(cfg.rate_num, cfg.rate_den)?;
+            let bw = d.set_baseband_filter(cfg.bandwidth_hz)?;
+            d.set_freq(cfg.center_hz)?;
+            d.set_txvga_gain(s.txvga_db)?;
+            d.set_amp_enable(s.amp)?;
+            Ok(bw)
+        })()
+        .at("configure HackRF for TX")?;
         let gain = format!(
             "TX VGA {} dB, RF amp {}",
             s.txvga_db,
@@ -305,16 +373,20 @@ impl Backend for HackRf {
         let s = rx_settings(cfg)?;
         opts.validate()?;
         let depth = rx_transfers(cfg, opts);
-        let mut d = isdb_hackrf::Device::open(s.serial.as_deref()).context("open HackRF")?;
+        let mut d = isdb_hackrf::Device::open(s.serial.as_deref()).at("open HackRF")?;
         let info = device_info(&mut d);
-        d.set_antenna_enable(false)?;
-        d.set_sample_rate_manual(cfg.rate_num, cfg.rate_den)?;
-        let bw = d.set_baseband_filter(cfg.bandwidth_hz)?;
-        d.set_freq(cfg.center_hz)?;
-        d.set_lna_gain(s.lna_db)?;
-        d.set_vga_gain(s.vga_db)?;
-        d.set_amp_enable(s.amp)?;
-        let stream = d.start_rx(depth)?;
+        let bw = (|| -> isdb_hackrf::Result<u32> {
+            d.set_antenna_enable(false)?;
+            d.set_sample_rate_manual(cfg.rate_num, cfg.rate_den)?;
+            let bw = d.set_baseband_filter(cfg.bandwidth_hz)?;
+            d.set_freq(cfg.center_hz)?;
+            d.set_lna_gain(s.lna_db)?;
+            d.set_vga_gain(s.vga_db)?;
+            d.set_amp_enable(s.amp)?;
+            Ok(bw)
+        })()
+        .at("configure HackRF for RX")?;
+        let stream = d.start_rx(depth).at("start the HackRF RX stream")?;
         let gain = format!(
             "LNA {} dB, VGA {} dB, RF amp {}",
             s.lna_db,
@@ -382,14 +454,14 @@ impl RadioTx for isdb_hackrf::Device {
     type Format = Cs8;
 
     fn start_tx(&mut self, depth: usize) -> Result<TxStream<i8>> {
-        let s = isdb_hackrf::Device::start_tx(self, depth)?;
+        let s = isdb_hackrf::Device::start_tx(self, depth).at("start the HackRF TX stream")?;
         Ok(TxStream {
             sender: s.sender,
             counters: s.counters,
         })
     }
     fn stop(&mut self) -> Result<()> {
-        Ok(isdb_hackrf::Device::stop(self)?)
+        isdb_hackrf::Device::stop(self).at("stop the HackRF TX stream")
     }
     fn is_streaming(&mut self) -> bool {
         isdb_hackrf::Device::is_streaming(self)
@@ -415,10 +487,12 @@ impl IqSource for HackrfIqSource {
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     if st.counters.finished() {
-                        bail!("HackRF RX stream ended unexpectedly");
+                        return Err(rx_stream(StreamProblem::Ended));
                     }
                 }
-                Err(RecvTimeoutError::Disconnected) => bail!("HackRF RX stream closed"),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(rx_stream(StreamProblem::Closed));
+                }
             }
         }
     }
@@ -438,7 +512,7 @@ impl IqSource for HackrfIqSource {
             .as_ref()
             .map_or(0, |s| s.counters.overruns.load(Ordering::Relaxed));
         self.stream = None;
-        self.dev.stop()?;
+        self.dev.stop().at("stop the HackRF RX stream")?;
         let streaming = self.dev.is_streaming();
         if overruns > 0 {
             warn!(
@@ -463,9 +537,17 @@ impl IqSource for HackrfIqSource {
             if streaming { "NO" } else { "yes" }
         );
         if streaming {
-            bail!("{s}");
+            return Err(RadioError::StillStreaming { summary: s });
         }
         Ok(s)
+    }
+}
+
+/// A [`RadioError::Stream`] of the RX stream.
+fn rx_stream(problem: StreamProblem) -> RadioError {
+    RadioError::Stream {
+        stream: "HackRF RX",
+        problem,
     }
 }
 
@@ -518,6 +600,40 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("twice"), "{e}");
+        // The variants, not only the messages.
+        assert!(matches!(
+            tx_settings(&cfg(&[("lna", "16")])),
+            Err(RadioError::UnknownKey {
+                backend: "hackrf",
+                kind: Key::Gain(Direction::Tx),
+                ..
+            })
+        ));
+        assert!(matches!(
+            tx_settings(&cfg(&[("txvga", "1"), ("txvga", "2")])),
+            Err(RadioError::RepeatedKey { key, .. }) if key == "txvga"
+        ));
+        assert!(matches!(
+            tx_settings(&cfg(&[("txvga", "48")])),
+            Err(RadioError::Argument {
+                rule: Rule::Range { max: 47.0, .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            tx_settings(&cfg(&[("txvga", "20dB")])),
+            Err(RadioError::Argument {
+                rule: Rule::NotANumber { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            tx_settings(&cfg(&[("amp", "maybe")])),
+            Err(RadioError::Argument {
+                rule: Rule::OneOf(_),
+                ..
+            })
+        ));
         // The backoff is a TX option, checked by describe_tx.
         let o = TxOptions {
             backoff_db: 41.0,
@@ -525,6 +641,15 @@ mod tests {
         };
         let e = HackRf.describe_tx(&cfg(&[]), &o).unwrap_err().to_string();
         assert!(e.contains("backoff 41 dB outside 0..40"), "{e}");
+        // The default capture of a backend that does not capture.
+        let stop = AtomicBool::new(false);
+        assert!(matches!(
+            HackRf.capture(&cfg(&[]), 1, &mut std::io::sink(), &stop),
+            Err(RadioError::Unsupported {
+                backend: "hackrf",
+                what: "cannot capture"
+            })
+        ));
     }
 
     #[test]
@@ -533,7 +658,16 @@ mod tests {
         assert_eq!((s.lna_db, s.vga_db, s.amp), (16, 20, false));
         let s = rx_settings(&cfg(&[("lna", "40"), ("vga", "62"), ("amp", "off")])).unwrap();
         assert_eq!((s.lna_db, s.vga_db), (40, 62));
-        assert!(rx_settings(&cfg(&[("lna", "12")])).is_err());
+        assert!(matches!(
+            rx_settings(&cfg(&[("lna", "12")])),
+            Err(RadioError::Argument {
+                kind: Key::Gain(Direction::Rx),
+                rule: Rule::Steps { step: 8.0, .. },
+                ..
+            })
+        ));
+        let e = rx_settings(&cfg(&[("lna", "12")])).unwrap_err().to_string();
+        assert_eq!(e, "hackrf gain lna=12: must be 0..40 dB in 8 dB steps");
         assert!(rx_settings(&cfg(&[("lna", "48")])).is_err());
         assert!(rx_settings(&cfg(&[("vga", "21")])).is_err());
         assert!(rx_settings(&cfg(&[("vga", "64")])).is_err());
@@ -560,7 +694,7 @@ mod tests {
                 GainKind::Db { .. } => g.default.to_string(),
                 GainKind::OnOff => ["off", "on"][g.default as usize].to_string(),
             };
-            assert_eq!(g.parse(&v).unwrap(), g.default, "{}", g.name);
+            assert_eq!(g.parse(Direction::Tx, &v).unwrap(), g.default, "{}", g.name);
         }
         let e = tx_settings(&cfg(&[("lna", "16")])).unwrap_err().to_string();
         assert!(
@@ -577,6 +711,20 @@ mod tests {
             assert_eq!(tx_settings(&c).is_ok(), ok, "{bw}");
             assert_eq!(rx_settings(&c).is_ok(), ok, "{bw}");
         }
+        c.bandwidth_hz = 30_000_000;
+        let e = tx_settings(&c).unwrap_err();
+        assert!(matches!(
+            e,
+            RadioError::Tuning {
+                what: "baseband filter",
+                min_hz: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            e.to_string(),
+            "baseband filter 30000000 Hz above the largest HackRF (MAX2837) bandwidth, 28 MHz"
+        );
         // 1 s at 512/63 MHz = 62.004 transfers of 131 072 samples: 63.
         let c = cfg(&[]);
         assert_eq!(rx_transfers(&c, &RxOptions::default()), 63);
@@ -607,8 +755,21 @@ mod tests {
         c.args = vec![("uri".into(), "x".into())];
         let e = tx_settings(&c).unwrap_err().to_string();
         assert!(e.contains("unknown device argument \"uri\""), "{e}");
+        assert!(matches!(
+            tx_settings(&c),
+            Err(RadioError::UnknownKey {
+                kind: Key::Argument,
+                ..
+            })
+        ));
         c.args = vec![("serial".into(), String::new())];
-        assert!(tx_settings(&c).is_err());
+        assert!(matches!(
+            tx_settings(&c),
+            Err(RadioError::Argument {
+                rule: Rule::Empty,
+                ..
+            })
+        ));
         // The HackRF covers 1 MHz..6 GHz.
         let mut c = cfg(&[]);
         for (f, ok) in [
@@ -621,10 +782,30 @@ mod tests {
             assert_eq!(rx_settings(&c).is_ok(), ok, "{f}");
             assert_eq!(tx_settings(&c).is_ok(), ok, "{f}");
         }
+        c.center_hz = 999_999;
+        let e = tx_settings(&c).unwrap_err();
+        assert!(matches!(
+            e,
+            RadioError::Tuning {
+                what: "frequency",
+                ..
+            }
+        ));
+        assert_eq!(
+            e.to_string(),
+            "frequency 999999 Hz outside the HackRF range 1..6000 MHz"
+        );
         let mut c = cfg(&[]);
         c.rate_num = 1_000_000;
         c.rate_den = 1;
         assert!(tx_settings(&c).is_err());
+        assert!(matches!(
+            tx_settings(&c),
+            Err(RadioError::Tuning {
+                what: "sample rate",
+                ..
+            })
+        ));
         c.rate_den = 0;
         assert!(tx_settings(&c).is_err());
     }

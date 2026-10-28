@@ -21,7 +21,7 @@ isdbt-phy.workspace = true
 isdb-hackrf = { workspace = true, optional = true }
 isdb-iio = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-anyhow.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

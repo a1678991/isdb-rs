@@ -28,8 +28,6 @@ pub type hackrf_sample_block_cb_fn = unsafe extern "C" fn(transfer: *mut hackrf_
 
 pub const HACKRF_SUCCESS: c_int = 0;
 pub const HACKRF_TRUE: c_int = 1;
-pub const HACKRF_ERROR_INVALID_PARAM: c_int = -2;
-pub const HACKRF_ERROR_OTHER: c_int = -9999;
 
 unsafe extern "C" {
     pub fn hackrf_init() -> c_int;

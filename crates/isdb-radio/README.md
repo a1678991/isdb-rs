@@ -33,7 +33,19 @@ MB/s) are above what a Pluto streams over Gigabit Ethernet (about
 | `QueuedSink<R>`, `RadioTx`, `TxStream`, `StreamCounters` | the shared TX path of every radio fed with integer sample buffers: quantisation into `R::Format`, start after the prefill, back-pressure, stall detection, drain on finish, stop flag, underrun counters, "device stopped streaming" check |
 | `mock` (feature `mock`) | `MemorySink` and `MockRadio` (a `RadioTx` consuming in real time; in a `QueuedSink` it behaves like a radio backend) for tests |
 
-Errors are `anyhow::Error`: they are reported to a person, not matched on.
+Errors are `RadioError`, one variant per kind of failure with its facts
+as fields: a device selection that does not parse (`Spec`, `KeyValue`),
+an unknown backend (`UnknownBackend`), a device argument or gain the
+backend refuses (`UnknownKey`, `RepeatedKey`, `Argument` with the `Rule`
+it breaks, `Conflict`), an option or tuning out of range (`Backoff`,
+`Duration`, `Tuning`, `CaptureLength`), a frequency or rate the device
+did not take (`Readback`), an operation the backend or device cannot do
+(`Unsupported`, `Firmware`, `FrontEnd`), a stream that stopped
+(`Stream`, `StillStreaming`), a device reply it cannot use (`Reply`), and
+a device library or I/O failure (`Device`, `Io`). `Device` names the
+backend and the operation and keeps the library's error
+(`isdb_hackrf::Error`, `isdb_iio::Error`) as its `source`. An `IqSink` /
+`IqSource` over a file reports `Io`.
 
 Diagnostics are `tracing` events, never printed; the crate installs no
 subscriber (the `isdb` binary does). `info`: a device opened, with its
@@ -142,5 +154,5 @@ if let Ok(radio) = isdb_radio::backend(&spec.backend) {
     eprintln!("{}", radio.describe_tx(&cfg, &opts)?);
     // radio.open_tx(&cfg, &opts) would open the device.
 }
-# Ok::<(), anyhow::Error>(())
+# Ok::<(), isdb_radio::RadioError>(())
 ```

@@ -64,14 +64,45 @@ use tracing::{debug, warn};
 
 /// libhackrf error.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("{call}: {name} ({code})")]
-pub struct Error {
-    /// Function that failed.
-    pub call: &'static str,
-    /// libhackrf error code.
-    pub code: i32,
-    /// libhackrf error name.
-    pub name: String,
+#[non_exhaustive]
+pub enum Error {
+    /// A libhackrf call returned an error code.
+    #[error("{call}: {name} ({code})")]
+    Call {
+        /// Function that failed.
+        call: &'static str,
+        /// libhackrf error code.
+        code: i32,
+        /// libhackrf error name (`hackrf_error_name`).
+        name: String,
+    },
+    /// The libhackrf release is older than [`MIN_LIBRARY_RELEASE`]
+    /// ([`Device::open`] refuses it).
+    #[error(
+        "libhackrf {release} is older than {}.{:02}.1: its hackrf_stop_tx/rx do not wait for in-flight transfers",
+        MIN_LIBRARY_RELEASE.0,
+        MIN_LIBRARY_RELEASE.1
+    )]
+    OldLibrary {
+        /// The release string ([`library_release`]).
+        release: String,
+    },
+    /// A serial number with a NUL byte ([`Device::open`]).
+    #[error("serial number {serial:?} contains a NUL byte")]
+    NulInSerial {
+        /// The serial number given.
+        serial: String,
+    },
+}
+
+impl Error {
+    /// The libhackrf error code of a failed call ([`Error::Call`]).
+    pub fn code(&self) -> Option<i32> {
+        match self {
+            Self::Call { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
 }
 
 /// Result alias.
@@ -85,17 +116,27 @@ fn check(call: &'static str, rc: c_int) -> Result<()> {
     let name = unsafe { CStr::from_ptr(ffi::hackrf_error_name(rc)) }
         .to_string_lossy()
         .into_owned();
-    Err(Error {
+    Err(Error::Call {
         call,
         code: rc,
         name,
     })
 }
 
+/// Open devices; libhackrf is initialised while it is above 0.
 static LIB_USERS: Mutex<usize> = Mutex::new(0);
 
+/// [`LIB_USERS`], locked. A panic cannot poison it between a change of the
+/// count and the matching `hackrf_init` / `hackrf_exit` (neither unwinds),
+/// so a poisoned count is still the count.
+fn lib_users() -> std::sync::MutexGuard<'static, usize> {
+    LIB_USERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn lib_acquire() -> Result<()> {
-    let mut n = LIB_USERS.lock().unwrap();
+    let mut n = lib_users();
     if *n == 0 {
         // SAFETY: plain library initialisation.
         check("hackrf_init", unsafe { ffi::hackrf_init() })?;
@@ -105,7 +146,7 @@ fn lib_acquire() -> Result<()> {
 }
 
 fn lib_release() {
-    let mut n = LIB_USERS.lock().unwrap();
+    let mut n = lib_users();
     *n -= 1;
     if *n == 0 {
         // SAFETY: all devices using the library have been closed.
@@ -145,13 +186,8 @@ fn parse_release(s: &str) -> Option<(u32, u32)> {
 /// Refuse a libhackrf release older than [`MIN_LIBRARY_RELEASE`].
 fn check_release(release: &str) -> Result<()> {
     match parse_release(release) {
-        Some(v) if v < MIN_LIBRARY_RELEASE => Err(Error {
-            call: "hackrf_library_release",
-            code: ffi::HACKRF_ERROR_OTHER,
-            name: format!(
-                "libhackrf {release} is older than {}.{:02}.1: its hackrf_stop_tx/rx do not wait for in-flight transfers",
-                MIN_LIBRARY_RELEASE.0, MIN_LIBRARY_RELEASE.1
-            ),
+        Some(v) if v < MIN_LIBRARY_RELEASE => Err(Error::OldLibrary {
+            release: release.to_string(),
         }),
         _ => Ok(()),
     }
@@ -370,10 +406,8 @@ impl Device {
         check_release(&library_release())?;
         let serial = serial
             .map(|s| {
-                CString::new(s).map_err(|_| Error {
-                    call: "hackrf_open_by_serial",
-                    code: ffi::HACKRF_ERROR_INVALID_PARAM,
-                    name: "serial number contains a NUL byte".into(),
+                CString::new(s).map_err(|_| Error::NulInSerial {
+                    serial: s.to_string(),
                 })
             })
             .transpose()?;
@@ -565,9 +599,8 @@ impl Device {
             Ok(()) => debug!(call, "HackRF stream stopped ({call})"),
             Err(e) => warn!(
                 call,
-                code = e.code,
-                "{call} failed ({}): the stream's context is kept until the device is closed",
-                e.name
+                code = e.code(),
+                "{e}: the stream's context is kept until the device is closed"
             ),
         }
         if r.is_ok() {
@@ -616,7 +649,20 @@ mod tests {
         assert!(check_release("2026.01.3").is_ok());
         assert!(check_release("unknown").is_ok());
         let e = check_release("2021.03.1").unwrap_err();
-        assert!(e.name.contains("older than 2022.09.1"), "{e}");
+        assert!(e.to_string().contains("older than 2022.09.1"), "{e}");
+        assert!(matches!(e, Error::OldLibrary { release } if release == "2021.03.1"));
+    }
+
+    #[test]
+    fn a_serial_with_nul_is_refused_before_opening() {
+        // Refused before libhackrf is initialised: no device is opened.
+        match Device::open(Some("00\0ab")) {
+            Err(Error::NulInSerial { serial }) => assert_eq!(serial, "00\0ab"),
+            // An installed libhackrf older than the minimum is refused
+            // first.
+            Err(Error::OldLibrary { .. }) => {}
+            other => panic!("{:?}", other.err()),
+        }
     }
 }
 
