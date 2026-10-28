@@ -6,8 +6,8 @@
 //!   events, packages and their assets, time), and per asset the MPU and
 //!   packet continuity and the share of scrambled payloads;
 //! - `extract`: one elementary stream per asset (HEVC Annex B, LOAS audio,
-//!   caption files); scrambled payloads are skipped, or written as they
-//!   are (still encrypted) with `--write-scrambled`. Nothing is ever
+//!   caption files); scrambled payloads are written as they are (still
+//!   encrypted, one `.scrambled` file per asset). Nothing is ever
 //!   descrambled;
 //! - `validate`: structural checks (CRCs, table structure, descriptor
 //!   loops, packet and MPU continuity, assets without packets, packets of
@@ -63,7 +63,10 @@ struct ExtractArgs {
     /// The TLV stream file.
     file: PathBuf,
     /// Directory for the elementary streams (created; files are named
-    /// SERVICE-PACKETID.EXT).
+    /// SERVICE-PACKETID.EXT). Scrambled payloads are written as they are
+    /// (still encrypted, one `.scrambled` file per asset: the payloads
+    /// after their clear 8-byte header, back to back); nothing is
+    /// descrambled.
     #[arg(long)]
     out_dir: PathBuf,
     /// Only the assets of this service id (`0x0097` or decimal).
@@ -72,11 +75,6 @@ struct ExtractArgs {
     /// Only the asset on this MMTP packet id (repeatable).
     #[arg(long, value_parser = parse_u16)]
     asset: Vec<u16>,
-    /// Also write scrambled payloads, as they are (still encrypted, one
-    /// `.scrambled` file per asset: the payloads after their clear 8-byte
-    /// header, back to back). Nothing is descrambled.
-    #[arg(long)]
-    write_scrambled: bool,
     /// Replace existing files.
     #[arg(long)]
     overwrite: bool,
@@ -545,7 +543,7 @@ fn extract(a: &ExtractArgs) -> Result<()> {
         .with_context(|| format!("create {}", a.out_dir.display()))?;
     let mut sinks: BTreeMap<(u16, bool), Sink> = BTreeMap::new();
     let mut skipped_no_asset = 0u64;
-    let (st, d, n, skipped) = read(&a.file, a.write_scrambled, |d, m| {
+    let (st, d, n, skipped) = read(&a.file, true, |d, m| {
         let Some((svc, asset)) = d.asset_of(m.packet_id) else {
             skipped_no_asset += 1;
             return Ok(());
@@ -677,18 +675,11 @@ fn extract(a: &ExtractArgs) -> Result<()> {
         );
     }
     if !any {
-        println!("  nothing written: no unscrambled MFU of a selected asset in the file");
+        println!("  nothing written: no MFU of a selected asset in the file");
     }
     println!(
-        "  MPU payloads {}, scrambled {} (never descrambled{}); MFUs of no asset {}",
-        j["mpu_payloads"],
-        j["scrambled_mpu_payloads"],
-        if a.write_scrambled {
-            "; written as is"
-        } else {
-            "; not written, see --write-scrambled"
-        },
-        skipped_no_asset
+        "  MPU payloads {}, scrambled {} (written as is, never descrambled); MFUs of no asset {}",
+        j["mpu_payloads"], j["scrambled_mpu_payloads"], skipped_no_asset
     );
     Ok(())
 }

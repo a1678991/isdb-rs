@@ -239,9 +239,9 @@ assets.
 `extract` writes one file per asset: HEVC as an Annex B byte stream
 (`SERVICE-PACKETID.hevc`), MPEG-4 audio as LOAS (`.latm`), each caption
 subsample as its own file (`.ttml`, `.png`, …). Scrambled payloads are
-skipped; `--write-scrambled` writes them as they are, still encrypted
-(`.scrambled`). Nothing is descrambled. On the BS transponders of the lab
-feed every media payload is scrambled, so `extract` writes nothing there. The
+written as they are, still encrypted (`.scrambled`). Nothing is
+descrambled. On the BS transponders of the lab feed every media payload
+is scrambled, so `extract` writes only `.scrambled` files there. The
 same modes as ISDB-S apply from a radio: continuous with the FPGA front
 end, or blocks of IQ with the CPU front end (VERIFICATION.md "ISDB-S3
 receiver" and "Continuous reception through the FPGA front end").

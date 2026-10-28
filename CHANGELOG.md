@@ -120,7 +120,7 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 - `isdb-cli`: `isdb tlv inspect` decodes the tables (network, services,
   events, packages and assets, time; `--json`), `isdb tlv extract
   --out-dir` writes each asset's elementary stream (`--service`,
-  `--asset`, `--write-scrambled` for the encrypted payloads as they are),
+  `--asset`; scrambled payloads are written as they are, still encrypted),
   `isdb tlv validate` checks the structure. All three stream the file.
 - `isdb-tlv`: `tlv::FileReader`, a TLV stream file read a chunk at a
   time.

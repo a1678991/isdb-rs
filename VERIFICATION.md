@@ -1234,8 +1234,9 @@ BS11 and BS17 through the FPGA front end (`isdb rx --system isdbs3
   an MPT, aggregated VPS/SPS/PPS, an IRAP slice divided in three, two
   AudioMuxElements → four start codes and the slice whole, two LOAS
   frames; a lost fragment drops one MFU and is counted). `isdb tlv
-  extract` writes nothing for these streams by default, and with
-  `--write-scrambled` the payloads as they are (still encrypted).
+  extract` wrote nothing for these streams by default, and with
+  `--write-scrambled` the payloads as they are (still encrypted); the
+  option is gone since, and the payloads are always written as they are.
 - **Checks**: `isdb tlv validate` reports 0 errors and 0 warnings on all
   8 streams; a byte flipped inside a section is reported as a CRC error
   (fault injection; repeated copies are CRC-checked too). Opt-in test
