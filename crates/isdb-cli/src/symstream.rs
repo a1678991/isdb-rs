@@ -493,7 +493,7 @@ pub fn start_radio(
     let stop = std::sync::Arc::clone(stop);
     let thread = std::thread::spawn(move || {
         let mut w = ChannelWriter(tx);
-        backend.capture_symbols(&cfg, &p, u64::MAX, &mut w, &stop)
+        Ok(backend.capture_symbols(&cfg, &p, u64::MAX, &mut w, &stop)?)
     });
     Ok(RadioStream {
         bytes: rx,

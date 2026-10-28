@@ -9,8 +9,7 @@
 //! stop flag and the underrun counters — is shared by every such backend
 //! and tested against [`crate::mock::MockRadio`].
 
-use crate::{C32, IntFormat, IqSink, Quantizer, TxOptions};
-use anyhow::{Result, bail};
+use crate::{C32, IntFormat, IqSink, Quantizer, RadioError, Result, StreamProblem, TxOptions};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
@@ -133,7 +132,6 @@ impl<R: RadioTx> QueuedSink<R> {
         // Queue: the prefill plus one frame being converted.
         let stream = self.radio.start_tx(self.prefill + 1)?;
         self.counters = Some(stream.counters.clone());
-        self.stream = Some(stream);
         info!(
             prefill_frames = self.pending.len(),
             queue = self.prefill + 1,
@@ -143,24 +141,32 @@ impl<R: RadioTx> QueuedSink<R> {
             <R::Format as IntFormat>::NAME,
             self.prefill + 1
         );
+        // Kept as soon as it runs, so that finish() stops it even when
+        // queueing the prefill fails.
+        let stream = self.stream.insert(stream);
         for b in std::mem::take(&mut self.pending) {
-            self.send(b, &AtomicBool::new(false))?;
+            Self::send(stream, self.stall, b, &AtomicBool::new(false))?;
         }
         Ok(())
     }
 
+    /// Queue `b` on `stream`, waiting while the queue is full (up to
+    /// `stall` without progress of the device).
     fn send(
-        &mut self,
+        stream: &TxStream<<R::Format as IntFormat>::Component>,
+        stall: Duration,
         mut b: Vec<<R::Format as IntFormat>::Component>,
         stop: &AtomicBool,
     ) -> Result<()> {
-        let TxStream { sender, counters } = self.stream.as_ref().expect("streaming");
+        let TxStream { sender, counters } = stream;
         let mut last_progress = Instant::now();
         let mut last_buffers = counters.buffers();
         loop {
             match sender.try_send(b) {
                 Ok(()) => return Ok(()),
-                Err(TrySendError::Disconnected(_)) => bail!("radio stream ended unexpectedly"),
+                Err(TrySendError::Disconnected(_)) => {
+                    return Err(stream_error(StreamProblem::Closed));
+                }
                 Err(TrySendError::Full(back)) => b = back,
             }
             if stop.load(Ordering::Relaxed) {
@@ -172,17 +178,16 @@ impl<R: RadioTx> QueuedSink<R> {
                 return Ok(()); // dropped: we are stopping anyway
             }
             if counters.finished() {
-                bail!("radio stream finished unexpectedly");
+                return Err(stream_error(StreamProblem::Ended));
             }
             let n = counters.buffers();
             if n != last_buffers {
                 last_buffers = n;
                 last_progress = Instant::now();
-            } else if last_progress.elapsed() > self.stall {
-                bail!(
-                    "radio stalled: no buffer transferred for {:.1} s",
-                    self.stall.as_secs_f64()
-                );
+            } else if last_progress.elapsed() > stall {
+                return Err(stream_error(StreamProblem::Stalled {
+                    seconds: stall.as_secs_f64(),
+                }));
             }
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -196,14 +201,14 @@ impl<R: RadioTx> QueuedSink<R> {
 impl<R: RadioTx> IqSink for QueuedSink<R> {
     fn write(&mut self, samples: &[C32], stop: &AtomicBool) -> Result<()> {
         let b = self.quantizer.convert(samples);
-        if self.stream.is_none() {
-            self.pending.push(b);
-            if self.pending.len() >= self.prefill {
-                self.start()?;
-            }
-            return Ok(());
+        if let Some(stream) = &self.stream {
+            return Self::send(stream, self.stall, b, stop);
         }
-        self.send(b, stop)
+        self.pending.push(b);
+        if self.pending.len() >= self.prefill {
+            self.start()?;
+        }
+        Ok(())
     }
 
     fn status(&mut self) -> String {
@@ -274,13 +279,21 @@ impl<R: RadioTx> IqSink for QueuedSink<R> {
             if streaming { "NO" } else { "yes" }
         );
         if streaming {
-            bail!("{summary} — power-cycle the device");
+            return Err(RadioError::StillStreaming { summary });
         }
         Ok(summary)
     }
 
     fn realtime(&self) -> bool {
         true
+    }
+}
+
+/// A [`RadioError::Stream`] of the TX queue.
+fn stream_error(problem: StreamProblem) -> RadioError {
+    RadioError::Stream {
+        stream: "radio",
+        problem,
     }
 }
 
@@ -364,6 +377,92 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert_eq!(e, "backoff 41 dB outside 0..40");
+        let bad = TxOptions {
+            backoff_db: 41.0,
+            ..ok
+        };
+        assert!(matches!(
+            bad.validate(),
+            Err(RadioError::Backoff { db }) if db == 41.0
+        ));
+        let bad = TxOptions {
+            frame_seconds: 0.0,
+            ..ok
+        };
+        assert!(matches!(
+            bad.validate(),
+            Err(RadioError::Duration {
+                what: "frame duration",
+                ..
+            })
+        ));
+        assert!(matches!(
+            crate::RxOptions {
+                queue_seconds: -1.0
+            }
+            .validate(),
+            Err(RadioError::Duration {
+                what: "RX queue",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_stopped_radio_is_a_stream_error() {
+        let mut s = sink(1e6, 0.0, 1, 0.05);
+        let stop = AtomicBool::new(false);
+        s.write(&frame(1000, 0.1), &stop).unwrap();
+        s.radio_mut().stop().unwrap();
+        // The device's queue is gone: the next frame cannot be queued.
+        assert!(matches!(
+            s.write(&frame(1000, 0.1), &stop),
+            Err(RadioError::Stream {
+                stream: "radio",
+                problem: StreamProblem::Closed
+            })
+        ));
+    }
+
+    /// A radio that never stops streaming (and never consumes).
+    struct Stuck(Option<std::sync::mpsc::Receiver<Vec<i8>>>);
+
+    impl RadioTx for Stuck {
+        type Format = Cs8;
+        fn start_tx(&mut self, depth: usize) -> Result<TxStream<i8>> {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(depth);
+            self.0 = Some(receiver);
+            Ok(TxStream {
+                sender,
+                counters: Arc::new(crate::mock::MockCounters::default()),
+            })
+        }
+        fn stop(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn is_streaming(&mut self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_radio_still_streaming_after_finish_is_an_error() {
+        let opts = TxOptions {
+            prefill_frames: 1,
+            frame_seconds: 0.05,
+            backoff_db: 0.0,
+        };
+        let mut s = QueuedSink::new(Stuck(None), &opts).unwrap();
+        s.write(&frame(10, 0.1), &AtomicBool::new(false)).unwrap();
+        match s.finish(true) {
+            Err(RadioError::StillStreaming { summary }) => {
+                assert!(
+                    summary.contains("device stopped streaming: NO"),
+                    "{summary}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

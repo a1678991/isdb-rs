@@ -69,7 +69,7 @@ No broadcast specification. The surface is the libhackrf C API
 | `Device::stop` | stop any stream and free its callback context |
 | `Counters` | atomics: `buffers`, `underruns` (TX), `overruns` (RX), `finished` |
 | `library_version()`, `library_release()`, `MIN_LIBRARY_RELEASE`, `Device::board_id`, `firmware_version`, `is_streaming` | information |
-| `Error` | failing call, libhackrf code and name |
+| `Error` | `Call` (failing call, libhackrf code and name), `OldLibrary` (release older than `MIN_LIBRARY_RELEASE`), `NulInSerial` |
 
 Transmit a buffer of I/Q at 512/63 MHz (needs a device, so not run in
 tests):

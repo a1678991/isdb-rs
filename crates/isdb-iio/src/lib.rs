@@ -76,16 +76,89 @@ use tracing::{debug, warn};
 
 /// libiio error.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("{call} {what}: {message} (errno {code})")]
-pub struct Error {
-    /// Function that failed.
-    pub call: &'static str,
-    /// What it was called on (URI, device, channel and attribute).
-    pub what: String,
-    /// errno value (positive).
-    pub code: i32,
-    /// `iio_strerror` text.
-    pub message: String,
+#[non_exhaustive]
+pub enum Error {
+    /// A libiio call (or the thread spawn of a stream) failed with an
+    /// errno.
+    #[error("{call} {what}: {message} (errno {code})")]
+    Call {
+        /// Function that failed.
+        call: &'static str,
+        /// What it was called on (URI, device, channel and attribute).
+        what: String,
+        /// errno value (positive).
+        code: i32,
+        /// `iio_strerror` text.
+        message: String,
+    },
+    /// No device of this name in the context.
+    #[error("iio_context_find_device {name} in {uri}: no such device (errno {ENODEV})")]
+    NoDevice {
+        /// The device asked for.
+        name: String,
+        /// The context URI.
+        uri: String,
+    },
+    /// No channel of this name and direction in the device.
+    #[error(
+        "iio_device_find_channel {device} {name} ({}): no such channel (errno {ENODEV})",
+        if *output { "output" } else { "input" }
+    )]
+    NoChannel {
+        /// The device.
+        device: String,
+        /// The channel asked for.
+        name: String,
+        /// An output channel was asked for.
+        output: bool,
+    },
+    /// A name or value with a NUL byte, refused before calling libiio.
+    #[error("{call} {text:?}: contains a NUL byte (errno {EINVAL})")]
+    Nul {
+        /// The function it was meant for.
+        call: &'static str,
+        /// The text.
+        text: String,
+    },
+    /// A stream without channels or of zero samples, refused before
+    /// calling libiio.
+    #[error(
+        "iio_device_create_buffer {device} in {uri}: no channels or an empty buffer (errno {EINVAL})"
+    )]
+    EmptyStream {
+        /// The device.
+        device: String,
+        /// The context URI.
+        uri: String,
+    },
+    /// A streaming device whose channels are not all stored in 16 bits
+    /// (or, for a raw stream, of no size).
+    #[error(
+        "iio_device_get_sample_size {device} in {uri}: {bytes} bytes per sample for {channels} channels: only 16-bit channels are supported (errno {EINVAL})"
+    )]
+    SampleSize {
+        /// The device.
+        device: String,
+        /// The context URI.
+        uri: String,
+        /// Bytes per sample libiio reports.
+        bytes: isize,
+        /// Channels enabled.
+        channels: usize,
+    },
+}
+
+impl Error {
+    /// The errno value: the one libiio returned, or the one a C caller
+    /// would see for the refusals made here (ENODEV for a missing device
+    /// or channel, EINVAL for a refused argument).
+    pub fn code(&self) -> i32 {
+        match self {
+            Self::Call { code, .. } => *code,
+            Self::NoDevice { .. } | Self::NoChannel { .. } => ENODEV,
+            Self::Nul { .. } | Self::EmptyStream { .. } | Self::SampleSize { .. } => EINVAL,
+        }
+    }
 }
 
 /// Result alias.
@@ -103,7 +176,7 @@ fn strerror(code: i32) -> String {
 
 fn error(call: &'static str, what: impl Into<String>, code: i32) -> Error {
     let code = code.abs();
-    Error {
+    Error::Call {
         call,
         what: what.into(),
         code,
@@ -138,12 +211,13 @@ const EIO: i32 = 5;
 /// EINVAL, for arguments refused before calling libiio.
 const EINVAL: i32 = 22;
 
+/// ENODEV, for a device or channel not found.
+const ENODEV: i32 = 19;
+
 fn cstring(call: &'static str, s: &str) -> Result<CString> {
-    CString::new(s).map_err(|_| Error {
+    CString::new(s).map_err(|_| Error::Nul {
         call,
-        what: format!("{s:?}"),
-        code: EINVAL,
-        message: "contains a NUL byte".into(),
+        text: s.to_string(),
     })
 }
 
@@ -408,11 +482,9 @@ impl Context {
         // SAFETY: valid context and C string; the device lives as long as
         // the context.
         let dev = unsafe { ffi::iio_context_find_device(self.ctx.as_ptr(), c.as_ptr()) };
-        let dev = NonNull::new(dev).ok_or_else(|| Error {
-            call: "iio_context_find_device",
-            what: format!("{name} in {}", self.uri),
-            code: 19, // ENODEV
-            message: "no such device".into(),
+        let dev = NonNull::new(dev).ok_or_else(|| Error::NoDevice {
+            name: name.to_string(),
+            uri: self.uri.clone(),
         })?;
         Ok(Device {
             dev,
@@ -438,11 +510,9 @@ impl Context {
         let dev = self.device(device)?;
         let what = || format!("{device} in {}", self.uri);
         if channels.is_empty() || samples == 0 {
-            return Err(Error {
-                call: "iio_device_create_buffer",
-                what: what(),
-                code: EINVAL,
-                message: "no channels or an empty buffer".into(),
+            return Err(Error::EmptyStream {
+                device: device.to_string(),
+                uri: self.uri.clone(),
             });
         }
         let mut enabled = Vec::new();
@@ -466,14 +536,11 @@ impl Context {
             size != 2 * channels.len() as isize
         } {
             disable(&enabled);
-            return Err(Error {
-                call: "iio_device_get_sample_size",
-                what: what(),
-                code: EINVAL,
-                message: format!(
-                    "{size} bytes per sample for {} channels: only 16-bit channels are supported",
-                    channels.len()
-                ),
+            return Err(Error::SampleSize {
+                device: device.to_string(),
+                uri: self.uri.clone(),
+                bytes: size,
+                channels: channels.len(),
             });
         }
         // SAFETY: valid device.
@@ -675,20 +742,20 @@ impl Context {
             .as_ref()
             .err()
             .map(|e| e.raw_os_error().unwrap_or(11));
-        // Kept even when the spawn failed, so that stop() destroys the
-        // buffer and disables the channels.
-        self.streams.push(Stream {
+        let stream = Stream {
             buf,
             stop,
             thread: thread.ok(),
             channels,
             counters,
-        });
+        };
         if let Some(code) = spawn_error {
-            let s = self.streams.pop().expect("just pushed");
-            let _ = Self::end(s);
+            // Ended here as stop() would end it: the buffer is destroyed
+            // and the channels disabled.
+            let _ = Self::end(stream);
             return Err(error("std::thread::spawn", "stream thread", code));
         }
+        self.streams.push(stream);
         Ok(())
     }
 
@@ -990,15 +1057,10 @@ impl<'a> Device<'a> {
         // SAFETY: valid device and C string; the channel lives as long as
         // the context.
         let chn = unsafe { ffi::iio_device_find_channel(self.dev.as_ptr(), c.as_ptr(), output) };
-        let chn = NonNull::new(chn).ok_or_else(|| Error {
-            call: "iio_device_find_channel",
-            what: format!(
-                "{} {name} ({})",
-                self.name,
-                if output { "output" } else { "input" }
-            ),
-            code: 19, // ENODEV
-            message: "no such channel".into(),
+        let chn = NonNull::new(chn).ok_or_else(|| Error::NoChannel {
+            device: self.name.to_string(),
+            name: name.to_string(),
+            output,
         })?;
         Ok(Channel {
             chn,
@@ -1190,7 +1252,7 @@ mod tests {
     #[test]
     fn errors_carry_errno_text() {
         let e = error("iio_buffer_push", "cf-ad9361-dds-core-lpc", -110);
-        assert_eq!(e.code, 110);
+        assert_eq!(e.code(), 110);
         let s = e.to_string();
         assert!(
             s.starts_with("iio_buffer_push cf-ad9361-dds-core-lpc: ") && s.ends_with("(errno 110)"),
@@ -1198,7 +1260,11 @@ mod tests {
         );
         assert!(check("x", String::new, -22).is_err());
         assert_eq!(check("x", String::new, 7).unwrap(), 7);
-        assert!(cstring("x", "a\0b").is_err());
+        assert!(matches!(
+            cstring("x", "a\0b"),
+            Err(Error::Nul { call: "x", text }) if text == "a\0b"
+        ));
+        assert_eq!(cstring("x", "a\0b").unwrap_err().code(), EINVAL);
     }
 
     #[test]
@@ -1211,8 +1277,17 @@ mod tests {
     fn unreachable_uri_is_an_error() {
         // No backend accepts this URI; nothing touches the network.
         let e = Context::open("bogus:nothing").unwrap_err();
-        assert_eq!(e.call, "iio_create_context_from_uri");
-        assert_eq!(e.what, "bogus:nothing");
+        assert!(
+            matches!(
+                &e,
+                Error::Call {
+                    call: "iio_create_context_from_uri",
+                    what,
+                    ..
+                } if what == "bogus:nothing"
+            ),
+            "{e:?}"
+        );
     }
 }
 

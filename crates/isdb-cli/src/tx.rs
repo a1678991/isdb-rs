@@ -6,7 +6,7 @@ use crate::phyargs::{PhyArgs, TuneArgs, describe_params, parse_gain};
 use crate::producer::{self, EndReason, FrameKind, ProducedFrame, ProducerConfig};
 use crate::sink::{FileSink, IqFormat};
 use crate::source::Feed;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use isdb_radio::{DeviceSpec, IqSink, TxOptions};
 use isdbt_core::Params;
@@ -346,7 +346,7 @@ fn drive(
         if let Ok(s) = &fin {
             info!("{s}");
         }
-        return Err(e);
+        return Err(e.into());
     }
     rep.end = Some(end?);
     rep.sink = fin?;
@@ -474,7 +474,9 @@ pub fn run(a: TxArgs) -> Result<()> {
                 }
             );
         }
-        let (sink, info) = backend.open_tx(&cfg, &opts)?;
+        let (sink, info) = backend
+            .open_tx(&cfg, &opts)
+            .with_context(|| format!("open radio {spec} for TX"))?;
         info!("opened: {info}");
         sink
     } else {

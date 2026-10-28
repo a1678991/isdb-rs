@@ -77,7 +77,7 @@ No broadcast specification. The surface is the libiio 0.x C API
 | `Context::stop`, `is_streaming` | stop every stream (returns the first error a stream thread ended with) |
 | `Counters` | atomics: `buffers`, `underruns` (TX), `overruns` (RX), `finished` |
 | `library_version()` | information |
-| `Error` | failing call, what it was called on, errno and `iio_strerror` text |
+| `Error` | `Call` (failing call, what it was called on, errno and `iio_strerror` text), `NoDevice`, `NoChannel`, `Nul`, `EmptyStream`, `SampleSize` (refused before or around libiio); `code()` is the errno |
 
 Receive one buffer from an AD936x (needs a device, so not run in tests):
 

@@ -80,11 +80,10 @@
 
 use super::maia;
 use crate::{
-    Backend, Capture, CaptureFormat, CaptureGap, Cs12, IqSink, IqSource, Offload, Quantizer,
-    QueuedSink, RadioConfig, RadioTx, RxOptions, StreamCounters, SymbolsCapture, TxOptions,
-    TxStream,
+    Backend, Capture, CaptureFormat, CaptureGap, Cs12, Direction, IqSink, IqSource, Key, Offload,
+    Quantizer, QueuedSink, RadioConfig, RadioError, RadioTx, Result, Rule, RxOptions,
+    StreamCounters, StreamProblem, SymbolsCapture, Tolerance, TxOptions, TxStream,
 };
-use anyhow::{Context as _, Result, bail};
 use isdb_frontend::control::{self, Encoder, GPIO_IN_REG, GPIO_OUT_REG, Identity, Op, reg};
 use isdb_iio::Context;
 use isdbt_ofdm::C32;
@@ -165,6 +164,65 @@ const TX_LO: &str = "altvoltage1";
 /// RX gain control modes of the AD936x driver.
 const AGC_MODES: [&str; 4] = ["manual", "slow_attack", "fast_attack", "hybrid"];
 
+/// A libiio failure, as a [`RadioError::Device`] doing `op`.
+trait At<T> {
+    fn at(self, op: &str) -> Result<T>;
+}
+
+impl<T> At<T> for isdb_iio::Result<T> {
+    fn at(self, op: &str) -> Result<T> {
+        self.map_err(|e| RadioError::device(NAME, op, e))
+    }
+}
+
+/// A device argument value this backend refuses.
+fn bad_arg(key: &str, value: &str, rule: Rule) -> RadioError {
+    RadioError::Argument {
+        backend: NAME,
+        kind: Key::Argument,
+        key: key.to_string(),
+        value: value.to_string(),
+        rule,
+    }
+}
+
+/// A gain value of direction `dir` this backend refuses.
+fn bad_gain(dir: Direction, key: &str, value: &str, rule: Rule) -> RadioError {
+    RadioError::Argument {
+        backend: NAME,
+        kind: Key::Gain(dir),
+        key: key.to_string(),
+        value: value.to_string(),
+        rule,
+    }
+}
+
+/// Two device arguments or gains that do not go together.
+fn conflict(first: impl Into<String>, rule: &'static str, second: impl Into<String>) -> RadioError {
+    RadioError::Conflict {
+        backend: NAME,
+        first: first.into(),
+        rule,
+        second: second.into(),
+    }
+}
+
+/// A reply of the device this backend cannot use.
+fn reply(what: impl Into<String>, detail: impl Into<String>) -> RadioError {
+    RadioError::Reply {
+        backend: NAME,
+        what: what.into(),
+        detail: detail.into(),
+    }
+}
+
+/// The frequency of the LO channel `lo` read back, in Hz (never
+/// negative).
+fn read_lo(lo: &isdb_iio::Channel<'_>, op: &str) -> Result<u64> {
+    let v = lo.read_i64("frequency").at(op)?;
+    u64::try_from(v).map_err(|_| reply("LO frequency", format!("{v} Hz read back")))
+}
+
 /// What the device is opened for (which device arguments apply).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Dir {
@@ -227,7 +285,7 @@ fn on_off(k: &str, v: &str) -> Result<bool> {
     match v.to_ascii_lowercase().as_str() {
         "on" | "1" | "true" | "yes" => Ok(true),
         "off" | "0" | "false" | "no" => Ok(false),
-        _ => bail!("{NAME}: {k}={v}: want on or off"),
+        _ => Err(bad_arg(k, v, Rule::OneOf(&["on", "off"]))),
     }
 }
 
@@ -244,34 +302,50 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
         recorder: Recorder::Iio,
         bits: 16,
     };
-    let known = match dir {
-        Dir::Tx => "uri, channel, buffer, loopback",
-        Dir::Rx => "uri, channel, buffer",
-        Dir::Capture => {
-            "uri, channel, recorder, bits, buffer (recorder=stream and the symbol stream), kbuffers (the symbol stream)"
-        }
+    let known: &[&str] = match dir {
+        Dir::Tx => &["uri", "channel", "buffer", "loopback"],
+        Dir::Rx => &["uri", "channel", "buffer"],
+        Dir::Capture => &[
+            "uri",
+            "channel",
+            "recorder",
+            "bits",
+            "buffer (recorder=stream and the symbol stream)",
+            "kbuffers (the symbol stream)",
+        ],
     };
     for (k, v) in &cfg.args {
         match k.as_str() {
-            "uri" if v.is_empty() => bail!("{NAME}: empty uri"),
+            "uri" if v.is_empty() => return Err(bad_arg(k, v, Rule::Empty)),
             "uri" => a.uri = v.clone(),
             "channel" => {
                 a.channel = match v.as_str() {
                     "1" => 1,
                     "2" => 2,
-                    _ => bail!("{NAME}: channel={v}: want 1 or 2"),
+                    _ => return Err(bad_arg(k, v, Rule::OneOf(&["1", "2"]))),
                 }
             }
             "buffer" => {
-                let n: usize = v
-                    .parse()
-                    .with_context(|| format!("{NAME}: buffer={v}: not a number of samples"))?;
+                let n: usize = v.parse().map_err(|_| {
+                    bad_arg(
+                        k,
+                        v,
+                        Rule::NotANumber {
+                            what: "number of samples",
+                        },
+                    )
+                })?;
                 if !BUFFER_SAMPLES.contains(&n) || !n.is_multiple_of(1024) {
-                    bail!(
-                        "{NAME}: buffer={v}: must be {}..={} samples in multiples of 1024",
-                        BUFFER_SAMPLES.start(),
-                        BUFFER_SAMPLES.end()
-                    );
+                    return Err(bad_arg(
+                        k,
+                        v,
+                        Rule::Multiple {
+                            min: *BUFFER_SAMPLES.start() as u64,
+                            max: *BUFFER_SAMPLES.end() as u64,
+                            of: 1024,
+                            unit: "samples",
+                        },
+                    ));
                 }
                 a.buffer = n;
                 a.buffer_given = true;
@@ -279,13 +353,17 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
             "kbuffers" if dir == Dir::Capture => {
                 let n: u32 = v
                     .parse()
-                    .with_context(|| format!("{NAME}: kbuffers={v}: not a number"))?;
+                    .map_err(|_| bad_arg(k, v, Rule::NotANumber { what: "number" }))?;
                 if !SYMBOLS_KERNEL_BUFFERS_RANGE.contains(&n) {
-                    bail!(
-                        "{NAME}: kbuffers={v}: must be {}..={}",
-                        SYMBOLS_KERNEL_BUFFERS_RANGE.start(),
-                        SYMBOLS_KERNEL_BUFFERS_RANGE.end()
-                    );
+                    return Err(bad_arg(
+                        k,
+                        v,
+                        Rule::Range {
+                            min: f64::from(*SYMBOLS_KERNEL_BUFFERS_RANGE.start()),
+                            max: f64::from(*SYMBOLS_KERNEL_BUFFERS_RANGE.end()),
+                            unit: "",
+                        },
+                    ));
                 }
                 a.kernel_buffers = n;
             }
@@ -295,7 +373,7 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
                     "iio" => Recorder::Iio,
                     "maia" => Recorder::Maia,
                     "stream" => Recorder::Stream,
-                    _ => bail!("{NAME}: recorder={v}: want iio, maia or stream"),
+                    _ => return Err(bad_arg(k, v, Rule::OneOf(&["iio", "maia", "stream"]))),
                 }
             }
             "bits" if dir == Dir::Capture => {
@@ -303,33 +381,43 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
                     "8" => 8,
                     "12" => 12,
                     "16" => 16,
-                    _ => bail!("{NAME}: bits={v}: want 8, 12 or 16"),
+                    _ => return Err(bad_arg(k, v, Rule::OneOf(&["8", "12", "16"]))),
                 }
             }
-            _ => bail!("{NAME}: unknown device argument {k:?} (known: {known})"),
+            _ => {
+                return Err(RadioError::UnknownKey {
+                    backend: NAME,
+                    kind: Key::Argument,
+                    key: k.clone(),
+                    known: known.iter().map(|k| (*k).to_string()).collect(),
+                });
+            }
         }
     }
     if dir == Dir::Capture {
         if a.buffer_given && a.recorder == Recorder::Maia {
-            bail!(
-                "{NAME}: buffer applies to recorder=stream and the symbol stream, not recorder=maia"
-            );
+            return Err(conflict(
+                "buffer",
+                "applies to recorder=stream and the symbol stream, not",
+                "recorder=maia",
+            ));
         }
         if !a.buffer_given {
             a.buffer = DEFAULT_STREAM_BUFFER_SAMPLES;
         }
         if a.bits == 12 && a.recorder != Recorder::Maia {
-            bail!("{NAME}: bits=12 needs recorder=maia");
+            return Err(conflict("bits=12", "needs", "recorder=maia"));
         }
         if (a.bits == 8 || a.recorder == Recorder::Maia) && a.channel != 1 {
-            bail!(
-                "{NAME}: {} records RX1 only",
+            return Err(conflict(
                 if a.recorder == Recorder::Maia {
-                    "the maia-sdr recorder"
+                    "recorder=maia"
                 } else {
                     "bits=8"
-                }
-            );
+                },
+                "records RX1 only, not",
+                format!("channel={}", a.channel),
+            ));
         }
     }
     Ok(a)
@@ -374,44 +462,64 @@ fn check_tuning(
     freq: &std::ops::RangeInclusive<u64>,
     bw: &std::ops::RangeInclusive<u32>,
 ) -> Result<()> {
+    // u64 -> f64: frequencies below 2^53 Hz are exact.
+    #[allow(clippy::cast_precision_loss)]
+    let hz = |f: u64| f as f64;
     if !freq.contains(&cfg.center_hz) {
-        bail!(
-            "frequency {} Hz outside the Pluto (AD9361) range {}..{} MHz",
-            cfg.center_hz,
-            freq.start() / 1_000_000,
-            freq.end() / 1_000_000
-        );
+        return Err(RadioError::Tuning {
+            backend: NAME,
+            device: "Pluto (AD9361)",
+            what: "frequency",
+            hz: hz(cfg.center_hz),
+            min_hz: Some(hz(*freq.start())),
+            max_hz: hz(*freq.end()),
+        });
     }
     if cfg.rate_den == 0 || !RATE_HZ.contains(&cfg.sample_rate_hz()) {
-        bail!(
-            "sample rate {}/{} Hz outside the Pluto (AD9361) range 2.083334..61.44 MHz",
-            cfg.rate_num,
-            cfg.rate_den
-        );
+        return Err(rate_error(cfg));
     }
     if !bw.contains(&cfg.bandwidth_hz) {
-        bail!(
-            "RF bandwidth {} Hz outside the Pluto range {:.1}..{} MHz",
-            cfg.bandwidth_hz,
-            f64::from(*bw.start()) / 1e6,
-            bw.end() / 1_000_000
-        );
+        return Err(RadioError::Tuning {
+            backend: NAME,
+            device: "Pluto",
+            what: "RF bandwidth",
+            hz: f64::from(cfg.bandwidth_hz),
+            min_hz: Some(f64::from(*bw.start())),
+            max_hz: f64::from(*bw.end()),
+        });
     }
     Ok(())
 }
 
+/// The sample rate of `cfg` is outside [`RATE_HZ`].
+fn rate_error(cfg: &RadioConfig) -> RadioError {
+    RadioError::Tuning {
+        backend: NAME,
+        device: "Pluto (AD9361)",
+        what: "sample rate",
+        hz: cfg.sample_rate_hz(),
+        min_hz: Some(*RATE_HZ.start()),
+        max_hz: *RATE_HZ.end(),
+    }
+}
+
 /// Reject repeated and unknown gain names (`known` with their help text).
-fn check_gain_names(cfg: &RadioConfig, dir: &str, known: &[(&str, String)]) -> Result<()> {
+fn check_gain_names(cfg: &RadioConfig, dir: Direction, known: &[(&str, String)]) -> Result<()> {
     for (i, (k, _)) in cfg.gains.iter().enumerate() {
         if !known.iter().any(|(n, _)| n == k) {
-            let help: Vec<&str> = known.iter().map(|(_, h)| h.as_str()).collect();
-            bail!(
-                "{NAME} {dir} has no gain {k:?} (gains: {})",
-                help.join(", ")
-            );
+            return Err(RadioError::UnknownKey {
+                backend: NAME,
+                kind: Key::Gain(dir),
+                key: k.clone(),
+                known: known.iter().map(|(_, h)| h.clone()).collect(),
+            });
         }
         if cfg.gains[..i].iter().any(|(p, _)| p == k) {
-            bail!("{NAME} gain {k:?} given twice");
+            return Err(RadioError::RepeatedKey {
+                backend: NAME,
+                kind: Key::Gain(dir),
+                key: k.clone(),
+            });
         }
     }
     Ok(())
@@ -453,7 +561,7 @@ fn tx_settings(cfg: &RadioConfig) -> Result<TxSettings> {
     check_tuning(cfg, &TX_FREQ_HZ, &TX_BANDWIDTH_HZ)?;
     check_gain_names(
         cfg,
-        "TX",
+        Direction::Tx,
         &[(
             "att",
             "att=0..89.75 dB of attenuation in 0.25 dB steps (default 89.75)".into(),
@@ -462,13 +570,21 @@ fn tx_settings(cfg: &RadioConfig) -> Result<TxSettings> {
     let att_qdb = match gain(cfg, "att") {
         None => MAX_ATT_QDB,
         Some(v) => {
-            let db: f64 = v
-                .parse()
-                .with_context(|| format!("{NAME} gain att={v}: not a number of dB"))?;
+            let refuse = |rule| bad_gain(Direction::Tx, "att", v, rule);
+            let db: f64 = v.parse().map_err(|_| {
+                refuse(Rule::NotANumber {
+                    what: "number of dB",
+                })
+            })?;
             // The quarter-dB step equal to db * 4, if there is one.
             let q = db * 4.0;
             let Some(q) = (0..=MAX_ATT_QDB).find(|&n| f64::from(n) == q) else {
-                bail!("{NAME} gain att={v}: must be 0..89.75 dB in 0.25 dB steps");
+                return Err(refuse(Rule::Steps {
+                    min: 0.0,
+                    max: f64::from(MAX_ATT_QDB) / 4.0,
+                    step: 0.25,
+                    unit: "dB",
+                }));
             };
             q
         }
@@ -485,7 +601,7 @@ fn rx_settings_for(cfg: &RadioConfig, dir: Dir) -> Result<RxSettings> {
     check_tuning(cfg, &RX_FREQ_HZ, &RX_BANDWIDTH_HZ)?;
     check_gain_names(
         cfg,
-        "RX",
+        Direction::Rx,
         &[
             (
                 "agc",
@@ -500,23 +616,37 @@ fn rx_settings_for(cfg: &RadioConfig, dir: Dir) -> Result<RxSettings> {
     )?;
     let gain_db = match gain(cfg, "gain") {
         None => None,
-        Some(v) => Some(
-            v.parse::<i32>()
-                .ok()
-                .filter(|g| (-10..=77).contains(g))
-                .with_context(|| format!("{NAME} gain gain={v}: want whole dB in -10..77"))?,
-        ),
+        Some(v) => {
+            let refuse = |rule| bad_gain(Direction::Rx, "gain", v, rule);
+            let g = v.parse::<i32>().map_err(|_| {
+                refuse(Rule::NotANumber {
+                    what: "whole number of dB",
+                })
+            })?;
+            if !(-10..=77).contains(&g) {
+                return Err(refuse(Rule::Range {
+                    min: -10.0,
+                    max: 77.0,
+                    unit: "dB",
+                }));
+            }
+            Some(g)
+        }
     };
     let agc = match gain(cfg, "agc") {
         None if gain_db.is_some() => "manual",
         None => "slow_attack",
         Some(v) => match AGC_MODES.iter().find(|m| **m == v) {
             Some(m) => *m,
-            None => bail!("{NAME} gain agc={v}: want {}", AGC_MODES.join(", ")),
+            None => return Err(bad_gain(Direction::Rx, "agc", v, Rule::OneOf(&AGC_MODES))),
         },
     };
     if gain_db.is_some() && agc != "manual" {
-        bail!("{NAME}: gain is the manual gain; it cannot be combined with agc={agc}");
+        return Err(conflict(
+            "gain",
+            "is the manual gain; it cannot be combined with",
+            format!("agc={agc}"),
+        ));
     }
     Ok(RxSettings {
         dev,
@@ -585,8 +715,7 @@ impl Backend for Pluto {
             loopback: s.dev.loopback,
         };
         // From here on, dropping `tx` restores the safe state.
-        tx.configure(cfg, &s, &mut info)
-            .with_context(|| format!("configure Pluto {} for TX", s.dev.uri))?;
+        tx.configure(cfg, &s, &mut info)?;
         let gain = format!("TX{} attenuation {} dB", s.dev.channel, s.att_db());
         info!(
             backend = NAME,
@@ -653,14 +782,21 @@ impl Backend for Pluto {
     ) -> Result<Capture> {
         let s = rx_settings_for(cfg, Dir::Capture)?;
         let (format, limit, why) = capture_plan(&s.dev);
+        let too_long = || RadioError::CaptureLength {
+            backend: NAME,
+            samples,
+            limit,
+            why: why.clone(),
+        };
         if samples == 0 || samples > limit {
-            bail!("{NAME}: capture of {samples} samples: 1..={limit} ({why})");
+            return Err(too_long());
         }
         let host = match s.dev.recorder {
-            Recorder::Maia => Some(s.dev.uri.strip_prefix("ip:").with_context(|| {
-                format!(
-                    "{NAME}: recorder=maia needs a network uri (ip:HOST), not {}",
-                    s.dev.uri
+            Recorder::Maia => Some(s.dev.uri.strip_prefix("ip:").ok_or_else(|| {
+                conflict(
+                    "recorder=maia",
+                    "needs a network uri (ip:HOST), not",
+                    format!("uri={}", s.dev.uri),
                 )
             })?),
             _ => None,
@@ -673,28 +809,29 @@ impl Backend for Pluto {
                 .attr("fw_version")
                 .is_some_and(|v| v.starts_with("tezuka"))
         {
-            bail!(
-                "{NAME}: bits=8 through libiio needs Tezuka's 8-bit packing (firmware {}); use recorder=maia or bits=16",
-                ctx.attr("fw_version").unwrap_or_else(|| "?".into())
-            );
+            return Err(RadioError::Firmware {
+                backend: NAME,
+                firmware: ctx.attr("fw_version").unwrap_or_else(|| "?".into()),
+                need: "bits=8 through libiio needs Tezuka's 8-bit packing; use recorder=maia or bits=16",
+            });
         }
         let mut info = String::new();
-        configure_rx(&ctx, cfg, &s, &mut info)
-            .with_context(|| format!("configure Pluto {} for RX", s.dev.uri))?;
+        configure_rx(&ctx, cfg, &s, &mut info)?;
         std::thread::sleep(CAPTURE_SETTLE);
         let r1 = |dev: &str| -> Result<bool> {
-            Ok(ctx.device(dev)?.reg_read(R1_MODE_REG)? & R1_MODE_BIT != 0)
+            let mode = ctx
+                .device(dev)
+                .and_then(|d| d.reg_read(R1_MODE_REG))
+                .at("read the AD9361 core mode")?;
+            Ok(mode & R1_MODE_BIT != 0)
         };
         if r1(RX_DEV)? && r1(TX_DEV)? {
-            bail!(
-                "{NAME}: the AD9361 core runs in r1_mode (one channel per direction): the symbol front end's clock is then l_clk / 2, which its bitstream is not timed for; use the CPU front end (--offload none)"
-            );
+            return Err(RadioError::Unsupported {
+                backend: NAME,
+                what: "runs its AD9361 core in r1_mode (one channel per direction): the symbol front end's clock is then l_clk / 2, which its bitstream is not timed for; use the CPU front end (--offload none)",
+            });
         }
-        let rate = {
-            let rates = ctx.device(PHY)?.read("rx_path_rates")?;
-            path_rate(&rates, "RXSAMP")
-                .with_context(|| format!("{PHY} rx_path_rates {rates:?}: no RX rate"))?
-        };
+        let rate = rx_rate(&ctx)?;
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64());
@@ -739,18 +876,19 @@ impl Backend for Pluto {
                 )
             }
             _ => {
-                let n = usize::try_from(samples)?;
+                let n = usize::try_from(samples).map_err(|_| too_long())?;
                 let bytes = ctx
                     .capture(RX_DEV, s.dev.capture_channels(), n, 1)
-                    .with_context(|| format!("capture {samples} samples in one libiio buffer"))?;
+                    .at(&format!("capture {samples} samples in one libiio buffer"))?;
                 out.write_all(&bytes[..n * format.bytes_per_sample()])
-                    .context("write the capture")?;
+                    .map_err(|e| RadioError::io("write the capture", e))?;
                 (samples, Vec::new(), "libiio single buffer".to_string())
             }
         };
-        let phy = ctx.device(PHY)?;
-        let ch = phy.channel(s.dev.phy_channel(), false)?;
-        let gain_db = ch.read_f64("hardwaregain")?;
+        let read_back = "read back the RX settings";
+        let phy = ctx.device(PHY).at(read_back)?;
+        let ch = phy.channel(s.dev.phy_channel(), false).at(read_back)?;
+        let gain_db = ch.read_f64("hardwaregain").at(read_back)?;
         let gain = match s.agc {
             "manual" => format!("manual {gain_db} dB"),
             m => format!("AGC {m}, {gain_db} dB at the end"),
@@ -777,8 +915,8 @@ impl Backend for Pluto {
             samples: written,
             gaps,
             sample_rate_hz: rate,
-            lo_hz: u64::try_from(phy.channel(RX_LO, true)?.read_i64("frequency")?)?,
-            rf_bandwidth_hz: u64::try_from(ch.read_i64("rf_bandwidth")?).ok(),
+            lo_hz: read_lo(&phy.channel(RX_LO, true).at(read_back)?, read_back)?,
+            rf_bandwidth_hz: u64::try_from(ch.read_i64("rf_bandwidth").at(read_back)?).ok(),
             gain,
             device,
             method,
@@ -810,56 +948,56 @@ impl Backend for Pluto {
         let s = rx_settings_for(cfg, Dir::Capture)?;
         let mut ctx = open(&s.dev.uri)?;
         let device = device_info(&ctx);
-        let id = probe_front_end(&ctx)?.with_context(|| {
-            format!(
-                "{NAME}: this bitstream has no symbol front end (up_adc_gpio_in has no ID word)"
-            )
-        })?;
+        let need = (isdb_frontend::params::FORMAT_VERSION, params.taps());
+        let Some(id) = probe_front_end(&ctx)? else {
+            return Err(RadioError::FrontEnd {
+                backend: NAME,
+                found: None,
+                need,
+            });
+        };
         if !id.supports(params) {
-            bail!(
-                "{NAME}: the device's front end is format {} with {} taps; the parameters need format {} with {} taps",
-                id.version,
-                id.taps,
-                isdb_frontend::params::FORMAT_VERSION,
-                params.taps()
-            );
+            return Err(RadioError::FrontEnd {
+                backend: NAME,
+                found: Some((id.version, id.taps)),
+                need,
+            });
         }
         let mut info = String::new();
-        configure_rx(&ctx, cfg, &s, &mut info)
-            .with_context(|| format!("configure Pluto {} for RX", s.dev.uri))?;
+        configure_rx(&ctx, cfg, &s, &mut info)?;
         std::thread::sleep(CAPTURE_SETTLE);
-        let rate = {
-            let rates = ctx.device(PHY)?.read("rx_path_rates")?;
-            path_rate(&rates, "RXSAMP")
-                .with_context(|| format!("{PHY} rx_path_rates {rates:?}: no RX rate"))?
-        };
+        let rate = rx_rate(&ctx)?;
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64());
         // Configure through the command register; check one register.
         let t0 = std::time::Instant::now();
         let mut enc = {
-            let rx = ctx.device(RX_DEV)?;
-            let mut enc = Encoder::new(rx.reg_read(GPIO_OUT_REG)?);
+            let op = "configure the symbol front end";
+            let rx = ctx.device(RX_DEV).at(op)?;
+            let mut enc = Encoder::new(rx.reg_read(GPIO_OUT_REG).at(op)?);
             let cmds = enc.configure(params);
             for &w in &cmds {
-                rx.reg_write(GPIO_OUT_REG, w)?;
+                rx.reg_write(GPIO_OUT_REG, w).at(op)?;
             }
-            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Addr, u32::from(reg::KP)))?;
-            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Read, 0))?;
-            let kp = rx.reg_read(GPIO_IN_REG)?;
-            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Nop, 0))?;
+            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Addr, u32::from(reg::KP)))
+                .at(op)?;
+            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Read, 0)).at(op)?;
+            let kp = rx.reg_read(GPIO_IN_REG).at(op)?;
+            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Nop, 0)).at(op)?;
             if kp != i32::from(params.kp) as u32 {
-                bail!(
-                    "{NAME}: front end register kp reads {kp:#x} after writing {:#x}",
-                    params.kp
-                );
+                return Err(reply(
+                    "front end register kp",
+                    format!("reads {kp:#x} after writing {:#x}", params.kp),
+                ));
             }
-            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Ctrl, control::ctrl::START))?;
+            rx.reg_write(GPIO_OUT_REG, enc.word(Op::Ctrl, control::ctrl::START))
+                .at(op)?;
             rx.reg_write(
                 GPIO_OUT_REG,
                 enc.word(Op::Ctrl, control::ctrl::RUN | control::ctrl::SYMBOLS),
-            )?;
+            )
+            .at(op)?;
             enc
         };
         let config_s = t0.elapsed().as_secs_f64();
@@ -889,7 +1027,7 @@ impl Backend for Pluto {
             .device(RX_DEV)
             .and_then(|d| d.reg_write(GPIO_OUT_REG, enc.word(Op::Ctrl, 0)));
         let (written, overflows) = streamed?;
-        restored?;
+        restored.at("switch the RX back to IQ samples")?;
         if overflows > 0 {
             warn!(
                 backend = NAME,
@@ -904,15 +1042,16 @@ impl Backend for Pluto {
             overflows,
             "symbol capture done: {written} words, {overflows} overflow(s)"
         );
-        let phy = ctx.device(PHY)?;
-        let ch = phy.channel(s.dev.phy_channel(), false)?;
-        let gain_db = ch.read_f64("hardwaregain")?;
+        let read_back = "read back the RX settings";
+        let phy = ctx.device(PHY).at(read_back)?;
+        let ch = phy.channel(s.dev.phy_channel(), false).at(read_back)?;
+        let gain_db = ch.read_f64("hardwaregain").at(read_back)?;
         Ok(SymbolsCapture {
             words: written,
             overflows,
             sample_rate_hz: rate,
-            lo_hz: u64::try_from(phy.channel(RX_LO, true)?.read_i64("frequency")?)?,
-            rf_bandwidth_hz: u64::try_from(ch.read_i64("rf_bandwidth")?).ok(),
+            lo_hz: read_lo(&phy.channel(RX_LO, true).at(read_back)?, read_back)?,
+            rf_bandwidth_hz: u64::try_from(ch.read_i64("rf_bandwidth").at(read_back)?).ok(),
             gain: match s.agc {
                 "manual" => format!("manual {gain_db} dB"),
                 m => format!("AGC {m}, {gain_db} dB at the end"),
@@ -932,8 +1071,7 @@ impl Backend for Pluto {
         let depth = opts.buffers(cfg.sample_rate_hz(), s.dev.buffer);
         let mut ctx = open(&s.dev.uri)?;
         let mut info = device_info(&ctx);
-        configure_rx(&ctx, cfg, &s, &mut info)
-            .with_context(|| format!("configure Pluto {} for RX", s.dev.uri))?;
+        configure_rx(&ctx, cfg, &s, &mut info)?;
         let stream = ctx
             .start_rx(
                 RX_DEV,
@@ -942,7 +1080,7 @@ impl Backend for Pluto {
                 KERNEL_BUFFERS,
                 depth,
             )
-            .with_context(|| port_hint(&s.dev, "RX"))?;
+            .at(&port_hint(&s.dev, "RX"))?;
         info += &format!("; RX queue {depth} buffers of {} samples", s.dev.buffer);
         let gain = describe_rx_gain(&s);
         info!(
@@ -974,7 +1112,51 @@ impl Backend for Pluto {
 /// The symbol front end the bitstream reports in `up_adc_gpio_in`, if any
 /// (one register read; nothing is written).
 fn probe_front_end(ctx: &Context) -> Result<Option<Identity>> {
-    Ok(Identity::parse(ctx.device(RX_DEV)?.reg_read(GPIO_IN_REG)?))
+    let word = ctx
+        .device(RX_DEV)
+        .and_then(|d| d.reg_read(GPIO_IN_REG))
+        .at("probe the symbol front end")?;
+    Ok(Identity::parse(word))
+}
+
+/// The RX sample rate the AD936x runs at (`rx_path_rates`).
+fn rx_rate(ctx: &Context) -> Result<f64> {
+    let rates = ctx
+        .device(PHY)
+        .and_then(|d| d.read("rx_path_rates"))
+        .at("read the RX sample rate")?;
+    path_rate(&rates, "RXSAMP").ok_or_else(|| {
+        reply(
+            format!("{PHY} rx_path_rates"),
+            format!("{rates:?}: no RX rate"),
+        )
+    })
+}
+
+/// A [`RadioError::Stream`] of the RX device.
+fn rx_stream(problem: StreamProblem) -> RadioError {
+    RadioError::Stream {
+        stream: RX_DEV,
+        problem,
+    }
+}
+
+/// Clear the ADC core's overflow bit.
+fn clear_adc_overflow(ctx: &Context) -> Result<()> {
+    ctx.device(RX_DEV)
+        .and_then(|rx| rx.reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW))
+        .at("clear the ADC overflow bit")
+}
+
+/// Clear the ADC core's overflow bit if it is set; true if it was.
+fn adc_overflowed(ctx: &Context) -> Result<bool> {
+    let op = "check the ADC overflow bit";
+    let rx = ctx.device(RX_DEV).at(op)?;
+    if rx.reg_read(ADC_STATUS_REG).at(op)? & ADC_STATUS_OVERFLOW == 0 {
+        return Ok(false);
+    }
+    rx.reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW).at(op)?;
+    Ok(true)
 }
 
 /// Stream `words` 16-bit words from `voltage0` of the RX (the front end's
@@ -996,27 +1178,30 @@ fn stream_words(
             dev.kernel_buffers,
             STREAM_DEPTH,
         )
-        .with_context(|| port_hint(dev, "RX"))?;
+        .at(&port_hint(dev, "RX"))?;
     if stream.sample_bytes != 2 {
-        bail!(
-            "{RX_DEV} delivers {} bytes per word, 2 expected",
-            stream.sample_bytes
-        );
+        return Err(rx_stream(StreamProblem::SampleSize {
+            what: "word",
+            got: stream.sample_bytes,
+            want: 2,
+        }));
     }
-    ctx.device(RX_DEV)?
-        .reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW)?;
+    clear_adc_overflow(ctx)?;
     let (mut written, mut overflows) = (0u64, 0u64);
     let timeout = Duration::from_secs(10);
     let r = (|| -> Result<()> {
         while written < words && !stop.load(Ordering::SeqCst) {
             let data = match stream.receiver.recv_timeout(timeout) {
                 Ok(d) => d,
-                Err(RecvTimeoutError::Timeout) => bail!("no words from {RX_DEV} for {timeout:?}"),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(rx_stream(StreamProblem::Silent {
+                        what: "words",
+                        seconds: timeout.as_secs_f64(),
+                    }));
+                }
                 Err(RecvTimeoutError::Disconnected) => break,
             };
-            let rx = ctx.device(RX_DEV)?;
-            if rx.reg_read(ADC_STATUS_REG)? & ADC_STATUS_OVERFLOW != 0 {
-                rx.reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW)?;
+            if adc_overflowed(ctx)? {
                 overflows += 1;
                 // the first is a warning, the rest are counted in the
                 // summary event at the end of the capture
@@ -1038,14 +1223,14 @@ fn stream_words(
             }
             let n = ((data.len() / 2) as u64).min(words - written);
             out.write_all(&data[..n as usize * 2])
-                .context("write the words")?;
+                .map_err(|e| RadioError::io("write the words", e))?;
             written += n;
         }
         Ok(())
     })();
     let stopped = ctx.stop();
     r?;
-    stopped?;
+    stopped.at("stop the RX stream")?;
     Ok((written, overflows))
 }
 
@@ -1071,71 +1256,88 @@ fn stream_capture(
             KERNEL_BUFFERS,
             STREAM_DEPTH,
         )
-        .with_context(|| port_hint(dev, "RX"))?;
+        .at(&port_hint(dev, "RX"))?;
     if stream.sample_bytes != bps {
-        bail!(
-            "{RX_DEV} delivers {} bytes per sample, {bps} expected",
-            stream.sample_bytes
-        );
+        return Err(rx_stream(StreamProblem::SampleSize {
+            what: "sample",
+            got: stream.sample_bytes,
+            want: bps,
+        }));
     }
     // The bit is set whenever no transfer runs: clear it now that one does.
-    ctx.device(RX_DEV)?
-        .reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW)?;
+    clear_adc_overflow(ctx)?;
     // Buffers that may hold samples from before an unseen loss: the
     // device's kernel blocks, iiod's and the client's buffer, one in the
     // network and the host queue.
     let window = u64::from(KERNEL_BUFFERS) + 3 + STREAM_DEPTH as u64;
-    let (mut written, mut received, mut discard) = (0u64, 0u64, 0u64);
+    let (mut written, mut received) = (0u64, 0u64);
     let mut gaps = Vec::<CaptureGap>::new();
+    // The gap being discarded and the buffers still to discard into it.
+    let mut open: Option<(CaptureGap, u64)> = None;
     let timeout = Duration::from_secs(10);
     let r = (|| -> Result<()> {
         while received < samples && !stop.load(Ordering::SeqCst) {
             let data = match stream.receiver.recv_timeout(timeout) {
                 Ok(d) => d,
-                Err(RecvTimeoutError::Timeout) => bail!("no samples from {RX_DEV} for {timeout:?}"),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(rx_stream(StreamProblem::Silent {
+                        what: "samples",
+                        seconds: timeout.as_secs_f64(),
+                    }));
+                }
                 Err(RecvTimeoutError::Disconnected) => break,
             };
-            let rx = ctx.device(RX_DEV)?;
-            if rx.reg_read(ADC_STATUS_REG)? & ADC_STATUS_OVERFLOW != 0 {
-                rx.reg_write(ADC_STATUS_REG, ADC_STATUS_OVERFLOW)?;
-                if discard == 0 {
-                    warn!(
-                        backend = NAME,
-                        at = written,
-                        window,
-                        gaps = gaps.len() + 1,
-                        "ADC overflow after {written} samples: a gap in the capture, the next {window} buffers discarded"
-                    );
-                    gaps.push(CaptureGap {
-                        at: written,
-                        discarded: 0,
-                    });
-                } else {
-                    debug!(
-                        backend = NAME,
-                        at = written,
-                        "ADC overflow again inside the gap after {written} samples"
-                    );
+            if adc_overflowed(ctx)? {
+                match &mut open {
+                    None => {
+                        warn!(
+                            backend = NAME,
+                            at = written,
+                            window,
+                            gaps = gaps.len() + 1,
+                            "ADC overflow after {written} samples: a gap in the capture, the next {window} buffers discarded"
+                        );
+                        open = Some((
+                            CaptureGap {
+                                at: written,
+                                discarded: 0,
+                            },
+                            window,
+                        ));
+                    }
+                    Some((_, left)) => {
+                        debug!(
+                            backend = NAME,
+                            at = written,
+                            "ADC overflow again inside the gap after {written} samples"
+                        );
+                        *left = window;
+                    }
                 }
-                discard = window;
             }
             let n =
                 (data.len() / bps).min(usize::try_from(samples - received).unwrap_or(usize::MAX));
             received += n as u64;
-            if discard > 0 {
-                discard -= 1;
-                gaps.last_mut().expect("a gap is open").discarded += n as u64;
+            if let Some((mut gap, left)) = open.take() {
+                gap.discarded += n as u64;
+                if left > 1 {
+                    open = Some((gap, left - 1));
+                } else {
+                    gaps.push(gap);
+                }
                 continue;
             }
             out.write_all(&data[..n * bps])
-                .context("write the capture")?;
+                .map_err(|e| RadioError::io("write the capture", e))?;
             written += n as u64;
         }
+        // A capture that ends inside a gap.
+        gaps.extend(open.take().map(|(gap, _)| gap));
         Ok(())
     })();
     let stopped = ctx.stop();
     r?;
-    stopped?;
+    stopped.at("stop the RX stream")?;
     Ok((written, gaps))
 }
 
@@ -1157,7 +1359,7 @@ fn port_hint(dev: &DeviceArgs, dir: &str) -> String {
 }
 
 fn open(uri: &str) -> Result<Context> {
-    Context::open(uri).with_context(|| format!("open Pluto {uri}"))
+    Context::open(uri).at(&format!("open Pluto {uri}"))
 }
 
 /// `libiio 0.26 (v0.26), Analog Devices PlutoSDR Rev.C (Z7020-AD9361),
@@ -1192,58 +1394,86 @@ fn path_rate(rates: &str, key: &str) -> Option<f64> {
 }
 
 /// Program the sample rate into `ch` (a phy channel; TX and RX share the
-/// clock chain) and check the rate the device runs at.
+/// clock chain) and check the rate the device runs at; libiio failures
+/// are reported as doing `op`.
 fn set_rate(
     ctx: &Context,
     ch: &isdb_iio::Channel<'_>,
     cfg: &RadioConfig,
     rates_attr: &str,
     key: &str,
+    op: &str,
 ) -> Result<f64> {
     let want = cfg.sample_rate_hz();
     // round(rate_num / rate_den) in whole Hz, computed in integers.
     let (num, den) = (i64::from(cfg.rate_num), i64::from(cfg.rate_den));
     let hz = (2 * num + den)
         .checked_div(2 * den)
-        .context("sample rate denominator is 0")?;
+        .ok_or_else(|| rate_error(cfg))?;
     // The driver reads back whole Hz below the BBPLL rate (8126983 for
     // 8126984): rewriting reprograms the clock chain, which would glitch a
     // stream of the other direction, so 1 Hz counts as unchanged.
-    if ch.read_i64("sampling_frequency")?.abs_diff(hz) > 1 {
-        ch.write_i64("sampling_frequency", hz)?;
+    if ch.read_i64("sampling_frequency").at(op)?.abs_diff(hz) > 1 {
+        ch.write_i64("sampling_frequency", hz).at(op)?;
     }
-    let rates = ctx.device(PHY)?.read(rates_attr)?;
-    let got = path_rate(&rates, key)
-        .with_context(|| format!("{PHY} {rates_attr} {rates:?}: no BBPLL / {key} rate"))?;
+    let rates = ctx.device(PHY).and_then(|d| d.read(rates_attr)).at(op)?;
+    let got = path_rate(&rates, key).ok_or_else(|| {
+        reply(
+            format!("{PHY} {rates_attr}"),
+            format!("{rates:?}: no BBPLL / {key} rate"),
+        )
+    })?;
     let ppm = (got / want - 1.0) * 1e6;
     if ppm.abs() > MAX_RATE_ERROR_PPM {
-        bail!(
-            "sample rate {got:.2} Hz programmed for {want:.2} Hz ({ppm:+.1} ppm, more than {MAX_RATE_ERROR_PPM} ppm)"
-        );
+        return Err(RadioError::Readback {
+            backend: NAME,
+            what: "sample rate",
+            requested_hz: want,
+            programmed_hz: got,
+            tolerance: Tolerance::Ppm(MAX_RATE_ERROR_PPM),
+        });
     }
     Ok(got)
 }
 
 /// Program the LO (always when `force`, else only if it differs) and
-/// check the frequency read back.
-fn set_lo(lo: &isdb_iio::Channel<'_>, hz: u64, force: bool) -> Result<u64> {
-    let want = i64::try_from(hz)?;
-    if force || lo.read_i64("frequency")? != want {
-        lo.write_i64("frequency", want)?;
+/// check the frequency read back; libiio failures are reported as doing
+/// `op`.
+fn set_lo(lo: &isdb_iio::Channel<'_>, hz: u64, force: bool, op: &str) -> Result<u64> {
+    // u64 -> f64: frequencies below 2^53 Hz are exact.
+    #[allow(clippy::cast_precision_loss)]
+    let as_f64 = |f: u64| f as f64;
+    // Above i64::MAX Hz: refused by check_tuning long before.
+    let want = i64::try_from(hz).map_err(|_| RadioError::Tuning {
+        backend: NAME,
+        device: "Pluto (AD9361)",
+        what: "LO",
+        hz: as_f64(hz),
+        min_hz: Some(0.0),
+        max_hz: as_f64(i64::MAX.unsigned_abs()),
+    })?;
+    if force || lo.read_i64("frequency").at(op)? != want {
+        lo.write_i64("frequency", want).at(op)?;
     }
-    let got = u64::try_from(lo.read_i64("frequency")?)?;
+    let got = read_lo(lo, op)?;
     if got.abs_diff(hz) > MAX_LO_ERROR_HZ {
-        bail!("LO {got} Hz programmed for {hz} Hz (outside the device's tuning range?)");
+        return Err(RadioError::Readback {
+            backend: NAME,
+            what: "LO",
+            requested_hz: as_f64(hz),
+            programmed_hz: as_f64(got),
+            tolerance: Tolerance::Hz(as_f64(MAX_LO_ERROR_HZ)),
+        });
     }
     Ok(got)
 }
 
 /// Program the RF bandwidth; returns the value read back.
-fn set_bandwidth(ch: &isdb_iio::Channel<'_>, hz: u32) -> Result<i64> {
+fn set_bandwidth(ch: &isdb_iio::Channel<'_>, hz: u32) -> isdb_iio::Result<i64> {
     if ch.read_i64("rf_bandwidth")? != i64::from(hz) {
         ch.write_i64("rf_bandwidth", i64::from(hz))?;
     }
-    Ok(ch.read_i64("rf_bandwidth")?)
+    ch.read_i64("rf_bandwidth")
 }
 
 /// `; LO 473142857 Hz; sample rate 8126983.94 Hz (-0.02 ppm); RF bandwidth 6.00 MHz`.
@@ -1271,30 +1501,37 @@ fn parse_range(s: &str) -> Option<(f64, f64)> {
 }
 
 fn configure_rx(ctx: &Context, cfg: &RadioConfig, s: &RxSettings, info: &mut String) -> Result<()> {
-    let phy = ctx.device(PHY)?;
-    let ch = phy.channel(s.dev.phy_channel(), false)?;
-    let rate = set_rate(ctx, &ch, cfg, "rx_path_rates", "RXSAMP")?;
-    let bw = set_bandwidth(&ch, cfg.bandwidth_hz)?;
-    let lo = set_lo(&phy.channel(RX_LO, true)?, cfg.center_hz, false)?;
-    ch.write("gain_control_mode", s.agc)?;
+    let op = &format!("configure Pluto {} for RX", s.dev.uri);
+    let phy = ctx.device(PHY).at(op)?;
+    let ch = phy.channel(s.dev.phy_channel(), false).at(op)?;
+    let rate = set_rate(ctx, &ch, cfg, "rx_path_rates", "RXSAMP", op)?;
+    let bw = set_bandwidth(&ch, cfg.bandwidth_hz).at(op)?;
+    let lo = set_lo(&phy.channel(RX_LO, true).at(op)?, cfg.center_hz, false, op)?;
+    ch.write("gain_control_mode", s.agc).at(op)?;
     if s.agc == "manual" {
-        let avail = ch.read("hardwaregain_available")?;
+        let avail = ch.read("hardwaregain_available").at(op)?;
         if let Some((min, max)) = parse_range(&avail)
             && !(min..=max).contains(&f64::from(s.gain_db))
         {
-            bail!(
-                "{NAME} gain gain={}: outside {min}..{max} dB at this LO",
-                s.gain_db
-            );
+            return Err(bad_gain(
+                Direction::Rx,
+                "gain",
+                &s.gain_db.to_string(),
+                Rule::Range {
+                    min,
+                    max,
+                    unit: "dB at this LO",
+                },
+            ));
         }
-        ch.write_f64("hardwaregain", f64::from(s.gain_db))?;
+        ch.write_f64("hardwaregain", f64::from(s.gain_db)).at(op)?;
     }
     *info += &describe_programmed(cfg, lo, rate, bw);
     *info += &format!(
         "; RX{} gain {}",
         s.dev.channel,
         match s.agc {
-            "manual" => format!("manual {} dB", ch.read_f64("hardwaregain")?),
+            "manual" => format!("manual {} dB", ch.read_f64("hardwaregain").at(op)?),
             m => format!("AGC {m}"),
         }
     );
@@ -1316,39 +1553,44 @@ struct PlutoTx {
 impl PlutoTx {
     /// Program the device, attenuation last (it starts at the maximum).
     fn configure(&self, cfg: &RadioConfig, s: &TxSettings, info: &mut String) -> Result<()> {
-        let phy = self.ctx.device(PHY)?;
-        let ch = phy.channel(self.phy_channel, true)?;
-        ch.write_f64("hardwaregain", -f64::from(MAX_ATT_QDB) / 4.0)?;
-        let lo_ch = phy.channel(TX_LO, true)?;
+        let op = &format!("configure Pluto {} for TX", s.dev.uri);
+        let phy = self.ctx.device(PHY).at(op)?;
+        let ch = phy.channel(self.phy_channel, true).at(op)?;
+        ch.write_f64("hardwaregain", -f64::from(MAX_ATT_QDB) / 4.0)
+            .at(op)?;
+        let lo_ch = phy.channel(TX_LO, true).at(op)?;
         // Loopback: the LO stays off for the whole run. Otherwise it is
         // powered first (a previous close left it down) and tuned below,
         // which makes the synthesiser calibrate and lock.
-        lo_ch.write_i64("powerdown", i64::from(self.loopback))?;
+        lo_ch
+            .write_i64("powerdown", i64::from(self.loopback))
+            .at(op)?;
         // The DDS tone generator off: without a buffer the DAC sends zeros.
         self.ctx
-            .device(TX_DEV)?
-            .channel("altvoltage0", true)?
-            .write_i64("raw", 0)?;
-        let rate = set_rate(&self.ctx, &ch, cfg, "tx_path_rates", "TXSAMP")?;
-        let bw = set_bandwidth(&ch, cfg.bandwidth_hz)?;
-        let lo = set_lo(&lo_ch, cfg.center_hz, !self.loopback)?;
+            .device(TX_DEV)
+            .and_then(|d| d.channel("altvoltage0", true)?.write_i64("raw", 0))
+            .at(op)?;
+        let rate = set_rate(&self.ctx, &ch, cfg, "tx_path_rates", "TXSAMP", op)?;
+        let bw = set_bandwidth(&ch, cfg.bandwidth_hz).at(op)?;
+        let lo = set_lo(&lo_ch, cfg.center_hz, !self.loopback, op)?;
         // A loopback left on (by a TX that did not close) is turned off.
         if self.loopback || phy.read_debug("loopback").is_ok_and(|v| v != "0") {
-            phy.write_debug("loopback", if self.loopback { "1" } else { "0" })?;
+            phy.write_debug("loopback", if self.loopback { "1" } else { "0" })
+                .at(op)?;
         }
         // Check the stream channels before raising the level.
         for c in self.channels {
             self.ctx
-                .device(TX_DEV)?
-                .channel(c, true)
-                .with_context(|| port_hint(&s.dev, "TX"))?;
+                .device(TX_DEV)
+                .and_then(|d| d.channel(c, true).map(|_| ()))
+                .at(&port_hint(&s.dev, "TX"))?;
         }
-        ch.write_f64("hardwaregain", -s.att_db())?;
+        ch.write_f64("hardwaregain", -s.att_db()).at(op)?;
         *info += &describe_programmed(cfg, lo, rate, bw);
         *info += &format!(
             "; TX{} attenuation {} dB",
             s.dev.channel,
-            -ch.read_f64("hardwaregain")?
+            -ch.read_f64("hardwaregain").at(op)?
         );
         if self.loopback {
             *info += "; digital TX→RX loopback, TX LO powered down";
@@ -1404,14 +1646,14 @@ impl RadioTx for PlutoTx {
         let s = self
             .ctx
             .start_tx(TX_DEV, &self.channels, self.buffer, KERNEL_BUFFERS, depth)
-            .context("start Pluto TX stream")?;
+            .at("start the Pluto TX stream")?;
         Ok(TxStream {
             sender: s.sender,
             counters: s.counters,
         })
     }
     fn stop(&mut self) -> Result<()> {
-        self.ctx.stop().context("Pluto TX stream")?;
+        self.ctx.stop().at("stop the Pluto TX stream")?;
         self.safe_state();
         Ok(())
     }
@@ -1449,14 +1691,20 @@ impl IqSource for PlutoIqSource {
                 Err(RecvTimeoutError::Timeout) => {
                     if st.counters.finished() {
                         self.stream = None;
-                        self.ctx.stop().context("Pluto RX stream")?;
-                        bail!("Pluto RX stream ended unexpectedly");
+                        self.ctx.stop().at("stop the Pluto RX stream")?;
+                        return Err(RadioError::Stream {
+                            stream: "Pluto RX",
+                            problem: StreamProblem::Ended,
+                        });
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     self.stream = None;
-                    self.ctx.stop().context("Pluto RX stream")?;
-                    bail!("Pluto RX stream closed");
+                    self.ctx.stop().at("stop the Pluto RX stream")?;
+                    return Err(RadioError::Stream {
+                        stream: "Pluto RX",
+                        problem: StreamProblem::Closed,
+                    });
                 }
             }
         }
@@ -1477,7 +1725,7 @@ impl IqSource for PlutoIqSource {
             .as_ref()
             .map_or(0, |s| s.counters.overruns.load(Ordering::Relaxed));
         self.stream = None;
-        self.ctx.stop().context("Pluto RX stream")?;
+        self.ctx.stop().at("stop the Pluto RX stream")?;
         let streaming = self.ctx.is_streaming();
         if overruns > 0 {
             warn!(
@@ -1502,7 +1750,7 @@ impl IqSource for PlutoIqSource {
             if streaming { "NO" } else { "yes" }
         );
         if streaming {
-            bail!("{s}");
+            return Err(RadioError::StillStreaming { summary: s });
         }
         Ok(s)
     }
@@ -1586,6 +1834,37 @@ mod tests {
             e.contains("unknown device argument \"loopback\" (known: uri, channel, buffer)"),
             "{e}"
         );
+        // The variants, not only the messages.
+        let rule = |arg| match tx_settings(&cfg(&[arg], &[])) {
+            Err(RadioError::Argument {
+                backend: "pluto",
+                kind: Key::Argument,
+                rule,
+                ..
+            }) => rule,
+            other => panic!("{arg:?}: {other:?}"),
+        };
+        assert_eq!(rule(("uri", "")), Rule::Empty);
+        assert_eq!(rule(("channel", "3")), Rule::OneOf(&["1", "2"]));
+        assert!(matches!(rule(("buffer", "x")), Rule::NotANumber { .. }));
+        assert!(matches!(
+            rule(("buffer", "1000")),
+            Rule::Multiple { of: 1024, .. }
+        ));
+        assert!(matches!(
+            rx_settings(&cfg(&[("loopback", "on")], &[])),
+            Err(RadioError::UnknownKey {
+                kind: Key::Argument,
+                ..
+            })
+        ));
+        let e = tx_settings(&cfg(&[("buffer", "1000")], &[]))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            "pluto: buffer=1000: must be 1024..=4194304 samples in multiples of 1024"
+        );
     }
 
     #[test]
@@ -1668,7 +1947,7 @@ mod tests {
             ),
             (
                 vec![("recorder", "maia"), ("channel", "2")],
-                "maia-sdr recorder records RX1 only",
+                "recorder=maia records RX1 only, not channel=2",
             ),
             (vec![("recorder", "x")], "want iio, maia or stream"),
         ] {
@@ -1714,6 +1993,70 @@ mod tests {
                 "{args:?} {n}"
             );
         }
+        assert!(matches!(
+            Pluto.capture(&cfg(&[], &[]), 16_515_073, &mut std::io::sink(), &stop),
+            Err(RadioError::CaptureLength {
+                limit: 16_515_072,
+                ..
+            })
+        ));
+        assert!(matches!(
+            Pluto.capture(
+                &cfg(&[("recorder", "maia"), ("uri", "usb:1.2.3")], &[]),
+                1024,
+                &mut std::io::sink(),
+                &stop
+            ),
+            Err(RadioError::Conflict { second, .. }) if second == "uri=usb:1.2.3"
+        ));
+        assert!(matches!(
+            limit(&[("bits", "12")]),
+            Err(RadioError::Conflict { rule: "needs", .. })
+        ));
+        assert!(matches!(
+            rx_settings_for(&cfg(&[("kbuffers", "65")], &[]), Dir::Capture),
+            Err(RadioError::Argument {
+                rule: Rule::Range { max: 64.0, .. },
+                ..
+            })
+        ));
+        // The maia-sdr recorder refuses more than its buffer before any
+        // request.
+        let m = maia::Mode(16);
+        assert!(matches!(
+            maia::record(
+                "127.0.0.1",
+                1e6,
+                m.max_samples() + 1,
+                m,
+                &mut std::io::sink()
+            ),
+            Err(RadioError::CaptureLength { .. })
+        ));
+    }
+
+    #[test]
+    fn symbol_capture_checks_the_parameters_first() {
+        let design = isdb_frontend::Design::new(40e6, 33.7561e6, 0.03);
+        let mut p = isdb_frontend::Params::design(&design).unwrap();
+        p.h.clear();
+        let stop = AtomicBool::new(false);
+        assert!(matches!(
+            Pluto.capture_symbols(&cfg(&[], &[]), &p, 1, &mut std::io::sink(), &stop),
+            Err(RadioError::FrontEndParams(_))
+        ));
+    }
+
+    #[test]
+    fn library_failures_keep_the_library_error() {
+        use std::error::Error as _;
+        // No libiio backend accepts this URI; nothing touches the network.
+        let e = open("bogus:nothing").unwrap_err();
+        assert!(
+            matches!(&e, RadioError::Device { backend: "pluto", op, .. } if op == "open Pluto bogus:nothing")
+        );
+        let source = e.source().unwrap().downcast_ref::<isdb_iio::Error>();
+        assert!(source.is_some(), "{e:?}");
     }
 
     #[test]
@@ -1739,7 +2082,27 @@ mod tests {
             ),
             "{e}"
         );
-        assert!(tx_settings(&cfg(&[], &[("att", "1"), ("att", "2")])).is_err());
+        assert!(matches!(
+            tx_settings(&cfg(&[], &[("att", "1"), ("att", "2")])),
+            Err(RadioError::RepeatedKey {
+                kind: Key::Gain(Direction::Tx),
+                ..
+            })
+        ));
+        assert!(matches!(
+            tx_settings(&cfg(&[], &[("att", "90")])),
+            Err(RadioError::Argument {
+                rule: Rule::Steps { step: 0.25, .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            tx_settings(&cfg(&[], &[("txvga", "20")])),
+            Err(RadioError::UnknownKey {
+                kind: Key::Gain(Direction::Tx),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1761,6 +2124,26 @@ mod tests {
         ] {
             assert!(rx_settings(&cfg(&[], &bad)).is_err(), "{bad:?}");
         }
+        let gain_rule = |gains: &[(&str, &str)]| match rx_settings(&cfg(&[], gains)) {
+            Err(RadioError::Argument {
+                kind: Key::Gain(Direction::Rx),
+                rule,
+                ..
+            }) => rule,
+            other => panic!("{gains:?}: {other:?}"),
+        };
+        assert!(matches!(gain_rule(&[("gain", "80")]), Rule::Range { .. }));
+        assert!(matches!(
+            gain_rule(&[("gain", "1.5")]),
+            Rule::NotANumber { .. }
+        ));
+        assert_eq!(gain_rule(&[("agc", "auto")]), Rule::OneOf(&AGC_MODES));
+        let e = rx_settings(&cfg(&[], &[("agc", "slow_attack"), ("gain", "20")])).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "pluto: gain is the manual gain; it cannot be combined with agc=slow_attack"
+        );
+        assert!(matches!(e, RadioError::Conflict { .. }));
     }
 
     #[test]
@@ -1793,6 +2176,32 @@ mod tests {
             assert_eq!(tx_settings(&c).is_ok(), tx, "{bw}");
             assert_eq!(rx_settings(&c).is_ok(), rx, "{bw}");
         }
+        c.bandwidth_hz = 50_000_000;
+        let e = tx_settings(&c).unwrap_err();
+        assert!(matches!(
+            e,
+            RadioError::Tuning {
+                what: "RF bandwidth",
+                ..
+            }
+        ));
+        assert_eq!(
+            e.to_string(),
+            "RF bandwidth 50000000 Hz outside the Pluto range 0.2..40 MHz"
+        );
+        let mut c = cfg(&[], &[]);
+        c.center_hz = 46_999_999;
+        assert_eq!(
+            tx_settings(&c).unwrap_err().to_string(),
+            "frequency 46999999 Hz outside the Pluto (AD9361) range 47..6000 MHz"
+        );
+        let mut c = cfg(&[], &[]);
+        c.rate_num = 2_000_000;
+        c.rate_den = 1;
+        assert_eq!(
+            tx_settings(&c).unwrap_err().to_string(),
+            "sample rate 2000000 Hz outside the Pluto (AD9361) range 2.083334..61.44 MHz"
+        );
     }
 
     #[test]

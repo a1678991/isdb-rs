@@ -2,7 +2,7 @@
 //! sinks are in `isdb_radio`.
 
 use anyhow::{Context, Result};
-use isdb_radio::{Cs8, IqSink, Quantizer};
+use isdb_radio::{Cs8, IqSink, Quantizer, RadioError};
 use isdbt_ofdm::C32;
 use std::io::Write;
 use std::sync::atomic::AtomicBool;
@@ -50,7 +50,7 @@ impl FileSink {
 }
 
 impl IqSink for FileSink {
-    fn write(&mut self, s: &[C32], _stop: &AtomicBool) -> Result<()> {
+    fn write(&mut self, s: &[C32], _stop: &AtomicBool) -> isdb_radio::Result<()> {
         // Both buffers are reused across writes.
         self.bytes.clear();
         match self.format {
@@ -65,7 +65,9 @@ impl IqSink for FileSink {
                 self.bytes.extend(self.buf.iter().map(|&x| x as u8));
             }
         }
-        self.w.write_all(&self.bytes)?;
+        self.w
+            .write_all(&self.bytes)
+            .map_err(|e| RadioError::io(format!("write {}", self.path), e))?;
         self.samples += s.len() as u64;
         Ok(())
     }
@@ -77,8 +79,10 @@ impl IqSink for FileSink {
         }
     }
 
-    fn finish(&mut self, _aborted: bool) -> Result<String> {
-        self.w.flush()?;
+    fn finish(&mut self, _aborted: bool) -> isdb_radio::Result<String> {
+        self.w
+            .flush()
+            .map_err(|e| RadioError::io(format!("write {}", self.path), e))?;
         let extra = if self.format == IqFormat::Cs8 {
             format!("; {}", self.quantizer.describe())
         } else {

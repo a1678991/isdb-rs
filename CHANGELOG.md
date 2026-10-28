@@ -504,6 +504,28 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
   `isdbt-phy/tests/bitexact_hashes.rs`); the transmitter is ~17% faster,
   the receiver unchanged.
 
+
+- `isdb-radio`, `isdb-iio`, `isdb-hackrf`: typed errors, no panics in
+  library code. `isdb-radio` drops `anyhow`: every call returns
+  `isdb_radio::RadioError` (`isdb_radio::Result`), with a variant per
+  kind of failure and its facts as fields: `Spec` / `KeyValue` (device
+  selection syntax), `UnknownBackend`, `UnknownKey`, `RepeatedKey`,
+  `Argument` (with the `Rule` broken), `Conflict`, `Backoff`,
+  `Duration`, `Tuning`, `Readback`, `CaptureLength`, `Unsupported`,
+  `Firmware`, `FrontEnd`, `FrontEndParams`, `Stream`, `StillStreaming`,
+  `Reply`, `Device` (backend and operation named, the library's error as
+  `source`) and `Io`. `IqSink` / `IqSource` return it; the `isdb-cli`
+  file sinks report `Io` naming the file, and `isdb-cli` adds
+  `open radio SPEC for TX/RX` context. `isdb_iio::Error` becomes an enum
+  (`Call`, `NoDevice`, `NoChannel`, `Nul`, `EmptyStream`, `SampleSize`;
+  `code()` gives the errno) and `isdb_hackrf::Error` too (`Call`,
+  `OldLibrary`, `NulInSerial`; `code()`). Messages are the same
+  sentences except: HackRF frequency ranges read `1..6000 MHz`; Pluto
+  `kbuffers` and RX `gain` ranges read `outside 2..64` / `outside
+  -10..77 dB`; `agc` lists `manual, slow_attack, fast_attack or hybrid`;
+  the RX1-only refusals read `bits=8` / `recorder=maia records RX1 only,
+  not channel=2`; an RX that still streams after stopping also says
+  `power-cycle the device`. Panic census 2 unwrap / 6 expect → 0.
 - Every library crate denies printing: `#![warn(clippy::print_stdout,
   clippy::print_stderr)]` in its `lib.rs` (CI runs clippy with `-D
   warnings`), with `allow-print-in-tests` in the new `clippy.toml` for

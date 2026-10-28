@@ -9,12 +9,12 @@
 //!   the same prefill, back-pressure, drain and stop behaviour as a radio
 //!   backend.
 
+use crate::Result;
 use crate::{C32, Cs8, IntFormat, IqSink, RadioTx, StreamCounters, TxStream};
-use anyhow::Result;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{TryRecvError, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -25,11 +25,14 @@ pub struct MemorySink {
     pub samples: Arc<Mutex<Vec<C32>>>,
 }
 
+// The sample vectors behind the mutexes are only appended to, so a lock
+// poisoned by a panicking holder still guards whole samples: it is taken
+// over rather than turned into a panic here.
 impl IqSink for MemorySink {
     fn write(&mut self, s: &[C32], _stop: &AtomicBool) -> Result<()> {
         self.samples
             .lock()
-            .expect("not poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .extend_from_slice(s);
         Ok(())
     }
@@ -37,7 +40,10 @@ impl IqSink for MemorySink {
     fn finish(&mut self, _aborted: bool) -> Result<String> {
         Ok(format!(
             "{} samples in memory",
-            self.samples.lock().expect("not poisoned").len()
+            self.samples
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
         ))
     }
 
@@ -159,7 +165,7 @@ impl<F: IntFormat> RadioTx for MockRadio<F> {
                     }
                     let n = (pending.len() - pos).min(xfer - filled);
                     sent.lock()
-                        .expect("not poisoned")
+                        .unwrap_or_else(PoisonError::into_inner)
                         .extend_from_slice(&pending[pos..pos + n]);
                     pos += n;
                     filled += n;

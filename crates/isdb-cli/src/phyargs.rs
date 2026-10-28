@@ -296,7 +296,7 @@ pub fn sample_count(seconds: f64, rate: f64) -> u64 {
 /// Parse a `--gain NAME=VALUE` argument (the backend checks the name and
 /// the value).
 pub fn parse_gain(s: &str) -> Result<(String, String)> {
-    isdb_radio::parse_key_value(s)
+    Ok(isdb_radio::parse_key_value(s)?)
 }
 
 /// Parse a PID list such as `0x1fc8,0x0000,16`.
