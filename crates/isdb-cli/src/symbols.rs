@@ -94,7 +94,8 @@ pub(crate) fn parse_trim(s: &str) -> Result<TrimArg> {
 /// `isdb symbols` arguments.
 #[derive(Debug, Args)]
 pub struct SymbolsArgs {
-    /// The radio: BACKEND[:key=value,...] (e.g. `pluto:uri=ip:192.0.2.30`).
+    /// The radio: BACKEND[:key=value,...] (e.g. `pluto`, found by mDNS, or
+    /// `pluto:uri=ip:ADDRESS`).
     #[arg(long, value_name = "SPEC")]
     pub radio: DeviceSpec,
     /// Centre frequency: Hz or a channel name (`BS1`..`BS24`, `ND1`..`ND24`

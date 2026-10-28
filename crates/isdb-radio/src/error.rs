@@ -229,6 +229,21 @@ pub enum RadioError {
         /// What is wrong with the reply (it quotes the device's text).
         detail: String,
     },
+    /// The device's address was not given and mDNS found no device, or
+    /// several: nothing, or more than one, answered the query on the local
+    /// link.
+    #[error("{}", discovery(backend, query, found, hint))]
+    Discovery {
+        /// The backend.
+        backend: &'static str,
+        /// What was asked for (`_iio._tcp.local or pluto.local`).
+        query: String,
+        /// The devices that answered, `NAME (ADDRESS)`: none, or more
+        /// than one.
+        found: Vec<String>,
+        /// How to give the address instead.
+        hint: &'static str,
+    },
     /// A device library or protocol call failed; `source` is the
     /// library's error (`isdb_hackrf::Error`, `isdb_iio::Error`), the I/O
     /// error of a network request, or the parser's error of a reply.
@@ -473,6 +488,18 @@ fn argument(backend: &str, kind: Key, key: &str, value: &str, rule: &Rule) -> St
     match kind {
         Key::Argument => format!("{backend}: {key}={value}: {rule}"),
         Key::Gain(_) => format!("{backend} gain {key}={value}: {rule}"),
+    }
+}
+
+fn discovery(backend: &str, query: &str, found: &[String], hint: &str) -> String {
+    if found.is_empty() {
+        format!("{backend}: nothing answered the mDNS query for {query}; {hint}")
+    } else {
+        format!(
+            "{backend}: {} devices answered the mDNS query for {query} ({}); {hint}",
+            found.len(),
+            found.join(", ")
+        )
     }
 }
 

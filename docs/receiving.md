@@ -15,7 +15,7 @@ isdb rx --iq capture.cf32 --out out.ts                  # float32 I/Q (GNU Radio
 isdb rx --iq capture.cs8 --iq-format cs8 --out out.ts   # signed 8-bit I/Q (hackrf_transfer)
 some-producer | isdb rx --iq - --out out.ts              # stdin
 isdb rx --radio hackrf --channel 27 --seconds 30 --out out.ts # live, from a HackRF
-isdb rx --radio pluto:uri=ip:192.0.2.30 --channel 27 --out out.ts # a Pluto over Ethernet
+isdb rx --radio pluto --channel 27 --out out.ts # a Pluto found by mDNS
 ```
 
 IQ files must be complex baseband centred on the ISDB-T signal at
@@ -88,9 +88,9 @@ frequency given with `--freq` is the IF as it is.
 ```sh
 isdb rx --iq bs3.sigmf-meta --out 'bs3-{ts_id}.ts'          # one file per TS: bs3-4030.ts, …
 isdb rx --iq nd2.sigmf-meta --ts-id 0x6020 --out nd2.ts      # one TS
-isdb rx --radio pluto:uri=ip:192.0.2.30 --channel BS3 \
+isdb rx --radio pluto --channel BS3 \
         --seconds 30 --out 'bs3-{ts_id}.ts'                   # continuous, FPGA front end
-isdb rx --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --channel BS3 \
+isdb rx --radio pluto:recorder=maia,bits=8 --channel BS3 \
         --offload cpu --seconds 10 --out 'bs3-{ts_id}.ts'     # blocks of IQ, CPU front end
 isdb rx --symbols bs3.sym --out 'bs3-{ts_id}.ts'             # an FPGA words file (isdb symbols --out)
 ```
@@ -203,7 +203,7 @@ file of TLV packets (each with its 4-byte header) per TLV stream id.
 ```sh
 isdb rx --iq bs7-61-bw56.sigmf-meta --out 'bs7-{tlv_id}.tlv'   # bs7-b070.tlv, …
 isdb rx --iq bs11.sigmf-meta --ts-id 0xb0b0 --out b0b0.tlv     # one stream
-isdb rx --radio pluto:uri=ip:192.0.2.30 --channel BS7 \
+isdb rx --radio pluto --channel BS7 \
         --system isdbs3 --seconds 30 --out 'bs7-{tlv_id}.tlv'  # continuous, FPGA front end
 isdb rx --symbols bs7.sym --out 'bs7-{tlv_id}.tlv'             # an FPGA words file
 isdb iq s3tmcc bs7-61-bw56.sigmf-meta                           # the TMCC of every frame

@@ -239,10 +239,10 @@ reproduces the card's `system_top.bin` byte for byte (sha256
 
 **Verifying after deployment** (receive only):
 
-1. `isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq BS7 --probe`
+1. `isdb symbols --radio pluto --freq BS7 --probe`
    reads the ID word 0x15DB4020 (magic, format 4, 32 taps); the stock
    bitstream reads 0.
-2. `isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq BS7 --system
+2. `isdb symbols --radio pluto --freq BS7 --system
    isdb-s3 --offload auto --seconds 10 --out fpga.sym`: 0 loss events
    from the CRC-32C reader, the link rate at 51 MB/s (6 bits).
 3. Bit-exactness on the board: capture the same signal as IQ and run

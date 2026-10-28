@@ -67,7 +67,10 @@ HackRF One ──SMA coax── fixed attenuators ── DC block ── F/IEC a
 
 The `pluto` backend drives an AD936x radio running ADI's Pluto firmware
 (ADALM-Pluto, PlutoSky R2 and other compatibles) through libiio, over USB
-or Ethernet: `--radio pluto:uri=ip:ADDRESS` (default `ip:pluto.local`).
+or Ethernet: `--radio pluto` finds the board by mDNS (the one host on the
+link answering for `_iio._tcp.local` or `pluto.local`);
+`--radio pluto:uri=ip:ADDRESS` (or `usb:…`), or the `ISDB_PLUTO_URI`
+environment variable, gives it instead and sends no mDNS query.
 Device arguments, gains and ranges are listed in the
 [`isdb-radio` README](../crates/isdb-radio/README.md#backends).
 
@@ -75,7 +78,7 @@ Device arguments, gains and ranges are listed in the
   direction. Give the Pluto a static address on your LAN from its shell
   (over SSH: `192.168.2.1` on USB, or its current
   Ethernet address): `fw_setenv ipaddr_eth 192.0.2.30;
-  fw_setenv netmask_eth 255.255.0.0`, then `reboot`. The firmware writes
+  fw_setenv netmask_eth 255.255.255.0`, then `reboot`. The firmware writes
   `/etc/network/interfaces` from these variables at every boot (default
   `192.168.1.10/24`, which may collide with another device on a home
   network); it has no gateway setting, so the host must be on the same

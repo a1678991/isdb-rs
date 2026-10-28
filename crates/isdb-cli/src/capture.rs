@@ -18,9 +18,8 @@ use tracing::info;
 /// `isdb capture` arguments.
 #[derive(Debug, Args)]
 pub struct CaptureArgs {
-    /// The radio: BACKEND[:key=value,...] (e.g.
-    /// `pluto:uri=ip:192.0.2.30`, `pluto:uri=ip:192.0.2.30,recorder=maia,bits=8`,
-    /// `pluto:uri=ip:192.0.2.30,recorder=stream`).
+    /// The radio: BACKEND[:key=value,...] (e.g. `pluto`, found by mDNS,
+    /// `pluto:recorder=maia,bits=8`, `pluto:uri=ip:ADDRESS,recorder=stream`).
     #[arg(long, value_name = "SPEC")]
     pub radio: DeviceSpec,
     /// Centre frequency: Hz (`1049480000`, `1049.48M`) or a channel name:
@@ -475,7 +474,10 @@ mod tests {
             (1_049_480_000, 57_720_000, 1)
         );
         assert_eq!(c.bandwidth_hz, 46_176_000);
-        assert_eq!(c.args, vec![("uri".to_string(), "ip:192.0.2.1".to_string())]);
+        assert_eq!(
+            c.args,
+            vec![("uri".to_string(), "ip:192.0.2.1".to_string())]
+        );
         assert_eq!(
             c.gains,
             vec![("agc".to_string(), "slow_attack".to_string())]

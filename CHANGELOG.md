@@ -16,6 +16,17 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Added
 
+- `isdb-radio` `pluto`: without `uri`, the device is found by mDNS when
+  it is opened (one legacy unicast query for libiio's DNS-SD service
+  `_iio._tcp.local` and for `pluto.local`; the one host answering becomes
+  `ip:ADDRESS`, none or several is `RadioError::Discovery`). The
+  `ISDB_PLUTO_URI` environment variable, or `uri`, gives the device
+  instead and sends no query. `ip:pluto.local` is no longer the default.
+  `tools/pluto-console.py` takes `--user` / `--password` (default the ADI
+  firmware login) and `--tty`, each also from `ISDB_PLUTO_USER`,
+  `ISDB_PLUTO_PASSWORD`, `ISDB_PLUTO_TTY`; `tools/pluto-autorun.sh` keeps
+  the board's `avahi-daemon` running so that it answers.
+
 - `isdb-cli`: the transmit and tools side emits `tracing` events too
   (`isdb loopback`, `mux`, `ts edit`, the `--relay` builder and the
   inputs of `isdb tx`): every line on stderr is an event under

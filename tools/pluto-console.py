@@ -5,8 +5,12 @@ reachable on the network. Logs in if a login prompt appears,
 runs each command, and prints what the console returns. Standard library
 only (termios); no pyserial.
 
-Usage: tools/pluto-console.py --tty TTY --user USER --password PW CMD [CMD ...]
-  The login has no default.
+Usage: tools/pluto-console.py --tty TTY [--user USER] [--password PW] CMD [CMD ...]
+  Each option falls back to an environment variable: ISDB_PLUTO_TTY,
+  ISDB_PLUTO_USER, ISDB_PLUTO_PASSWORD. The login defaults to the ADI
+  firmware's (root / analog), which Tezuka keeps; a board whose password
+  was changed needs --password or ISDB_PLUTO_PASSWORD (the variable keeps
+  it out of the process list).
 
 It only sends the commands it is given; keep them read-only unless a
 change is intended.
@@ -52,13 +56,18 @@ def read_until(fd: int, marks: tuple[bytes, ...], timeout: float) -> bytes:
 
 
 PROMPTS = (b"#", b"$")
+# The ADI firmware's login (Tezuka keeps it); override with --user /
+# --password or ISDB_PLUTO_USER / ISDB_PLUTO_PASSWORD.
+DEFAULT_USER = "root"
+DEFAULT_PASSWORD = "analog"
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--tty", required=True)
-    p.add_argument("--user", required=True)
-    p.add_argument("--password", required=True)
+    env = os.environ.get
+    p.add_argument("--tty", default=env("ISDB_PLUTO_TTY"), required=not env("ISDB_PLUTO_TTY"))
+    p.add_argument("--user", default=env("ISDB_PLUTO_USER") or DEFAULT_USER)
+    p.add_argument("--password", default=env("ISDB_PLUTO_PASSWORD") or DEFAULT_PASSWORD)
     p.add_argument("--timeout", type=float, default=10.0, help="seconds per command")
     p.add_argument("cmds", nargs="+")
     a = p.parse_args()

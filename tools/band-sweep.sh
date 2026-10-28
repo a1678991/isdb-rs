@@ -5,7 +5,7 @@
 # above it) and deleted at once. Writes one JSON line per step to OUT.
 #
 # Usage: tools/band-sweep.sh START_HZ STOP_HZ OUT.jsonl
-#   PLUTO=ip:192.0.2.30  RATE=61.44M  BW=56M  STEP=48000000  GAIN=30
+#   PLUTO=URI (default: found by mDNS)  RATE=61.44M  BW=56M  STEP=48000000  GAIN=30
 #   SAMPLES=1Mi  KEEP=24e6 (centre ±Hz used, inside the analog filter)
 #   DIR=data/sweep (where each capture lives until it is analysed)
 # The captures go to DIR on disk (never tmpfs), one at a time; each run is
@@ -14,7 +14,7 @@ set -eu
 START=${1:?usage: tools/band-sweep.sh START_HZ STOP_HZ OUT.jsonl}
 STOP=${2:?usage: tools/band-sweep.sh START_HZ STOP_HZ OUT.jsonl}
 OUT=${3:?usage: tools/band-sweep.sh START_HZ STOP_HZ OUT.jsonl}
-PLUTO=${PLUTO:-ip:192.0.2.30}
+PLUTO=${PLUTO:-}
 RATE=${RATE:-61.44M}
 BW=${BW:-56M}
 STEP=${STEP:-48000000}
@@ -33,7 +33,7 @@ cap() { systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0 "$@"; }
 f=$((START + STEP / 2))
 while [ "$f" -le $((STOP - STEP / 2 + STEP - 1)) ]; do
     r="$DIR/step-$f"
-    if cap "$ISDB" capture --radio "pluto:uri=$PLUTO" --freq "$f" --rate "$RATE" \
+    if cap "$ISDB" capture --radio "pluto${PLUTO:+:uri=$PLUTO}" --freq "$f" --rate "$RATE" \
             --bw "$BW" --gain "gain=$GAIN" --samples "$SAMPLES" \
             --description "band sweep" -o "$r.sigmf-data" --overwrite >/dev/null 2>"$r.log"; then
         cap "$SPEC" "$r.sigmf-meta" --keep "$KEEP" >> "$OUT"

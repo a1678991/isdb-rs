@@ -138,13 +138,13 @@ ISDB-S3, ±17.4 MHz):
 ```sh
 D=data/$(date +%F); mkdir -p "$D"
 for n in 1 3 5 9 13 15 19 21 23; do   # ISDB-S at 2 samples per symbol, 16 bits
-  isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia --freq bs$n --rate 57.72M -o "$D/bs$n.sigmf-data"
+  isdb capture --radio pluto:recorder=maia --freq bs$n --rate 57.72M -o "$D/bs$n.sigmf-data"
 done
 for n in 7 11 17; do                   # ISDB-S3 (33.756 Mbaud) at the AD936x maximum
-  isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia --freq bs$n --rate 61.44M -o "$D/bs$n.sigmf-data"
+  isdb capture --radio pluto:recorder=maia --freq bs$n --rate 61.44M -o "$D/bs$n.sigmf-data"
 done
 for n in 1 7; do                       # longer, 8 bits: 1.7 s
-  isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --freq bs$n --rate 40M -o "$D/bs$n-40-cs8.sigmf-data"
+  isdb capture --radio pluto:recorder=maia,bits=8 --freq bs$n --rate 40M -o "$D/bs$n-40-cs8.sigmf-data"
 done
 isdb iq survey "$D"/*.sigmf-data       # symbol rate, carrier offset, system of each
 ```

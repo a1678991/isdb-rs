@@ -7,6 +7,8 @@ mod hackrf;
 #[cfg(feature = "pluto")]
 mod maia;
 #[cfg(feature = "pluto")]
+mod mdns;
+#[cfg(feature = "pluto")]
 mod pluto;
 
 /// Every backend this crate knows, compiled in or not: (name, `isdb-radio`

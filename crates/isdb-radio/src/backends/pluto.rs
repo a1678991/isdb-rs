@@ -3,8 +3,16 @@
 //! through `isdb-iio` / libiio.
 //!
 //! * Device arguments:
-//!   * `uri`: libiio context URI (default `ip:pluto.local`), e.g.
-//!     `ip:192.168.2.1` (USB RNDIS), `ip:192.0.2.30` (Ethernet), `usb:1.4.5`.
+//!   * `uri`: libiio context URI, e.g. `ip:192.168.2.1` (USB RNDIS),
+//!     `ip:192.0.2.30` (Ethernet), `usb:1.4.5`. Without it, the
+//!     `ISDB_PLUTO_URI` environment variable; without that, the device is
+//!     found by mDNS when it is opened: the one host on the link answering
+//!     for libiio's DNS-SD service `_iio._tcp.local` or for `pluto.local`
+//!     becomes `ip:ADDRESS` (none, or several, is an error naming them).
+//!     A given `uri` or `ISDB_PLUTO_URI` sends no mDNS query. The query
+//!     goes out on the interface of the IPv4 default route, so a Pluto on
+//!     USB alone needs `uri=ip:192.168.2.1` (or `usb:…`); the board
+//!     answers only while its `avahi-daemon` runs.
 //!     The network backend streams over iiod; Gigabit Ethernet keeps up
 //!     with 512/63 MHz (32.5 MB/s each way).
 //!   * `channel`: `1` or `2` (TX1/RX1 or TX2/RX2 port, default 1); 2 needs
@@ -78,7 +86,7 @@
 //!   TX (also on error or panic) stops the stream, sets the maximum
 //!   attenuation and powers the TX LO down.
 
-use super::maia;
+use super::{maia, mdns};
 use crate::{
     Backend, Capture, CaptureFormat, CaptureGap, Cs12, Direction, IqSink, IqSource, Key, Offload,
     Quantizer, QueuedSink, RadioConfig, RadioError, RadioTx, Result, Rule, RxOptions,
@@ -96,7 +104,14 @@ use tracing::{debug, info, warn};
 pub(crate) struct Pluto;
 
 const NAME: &str = "pluto";
-const DEFAULT_URI: &str = "ip:pluto.local";
+/// The device's address when `uri` is not given (and not discovered).
+const URI_ENV: &str = "ISDB_PLUTO_URI";
+/// What mDNS asks for: libiio's DNS-SD service (iiod announces it) and
+/// the host name of the ADI firmware.
+const MDNS_SERVICE: &str = "_iio._tcp.local";
+const MDNS_HOST: &str = "pluto.local";
+/// How long mDNS waits for an answer.
+const MDNS_WAIT: Duration = Duration::from_secs(2);
 const TX_FREQ_HZ: std::ops::RangeInclusive<u64> = 47_000_000..=6_000_000_000;
 const RX_FREQ_HZ: std::ops::RangeInclusive<u64> = 70_000_000..=6_000_000_000;
 /// AD936x sample rates without the programmable FIR (Hz).
@@ -245,7 +260,9 @@ enum Recorder {
 /// Device arguments.
 #[derive(Debug, Clone, PartialEq)]
 struct DeviceArgs {
-    uri: String,
+    /// The libiio URI: given (`uri`), or `None` until
+    /// [`DeviceArgs::resolve`] takes `ISDB_PLUTO_URI` or finds the device.
+    uri: Option<String>,
     /// 1 or 2.
     channel: u8,
     buffer: usize,
@@ -260,6 +277,58 @@ struct DeviceArgs {
 }
 
 impl DeviceArgs {
+    /// The URI to open (after [`DeviceArgs::resolve`]).
+    fn uri(&self) -> &str {
+        self.uri.as_deref().unwrap_or("(not resolved)")
+    }
+
+    /// Where the URI comes from, for a description before the device is
+    /// opened.
+    fn uri_source(&self) -> String {
+        match (&self.uri, env_uri()) {
+            (Some(u), _) => u.clone(),
+            (None, Some(u)) => format!("{u} ({URI_ENV})"),
+            (None, None) => format!("found by mDNS ({MDNS_SERVICE} or {MDNS_HOST}) when opened"),
+        }
+    }
+
+    /// Settle the URI: the given `uri`, else `ISDB_PLUTO_URI`, else the
+    /// one device answering mDNS. Only the last sends anything.
+    fn resolve(&mut self) -> Result<()> {
+        if self.uri.is_some() {
+            return Ok(());
+        }
+        if let Some(u) = env_uri() {
+            debug!(backend = NAME, uri = u, "Pluto URI from {URI_ENV}");
+            self.uri = Some(u);
+            return Ok(());
+        }
+        let query = format!("{MDNS_SERVICE} or {MDNS_HOST}");
+        let found = mdns::lookup(MDNS_SERVICE, MDNS_HOST, MDNS_WAIT)
+            .map_err(|e| RadioError::device(NAME, format!("mDNS query for {query}"), e))?;
+        let [one] = found.as_slice() else {
+            return Err(RadioError::Discovery {
+                backend: NAME,
+                query,
+                found: found
+                    .iter()
+                    .map(|a| format!("{} ({})", a.name, a.addr))
+                    .collect(),
+                hint: "give the device with uri=ip:ADDRESS (or usb:…) or ISDB_PLUTO_URI; a board answers mDNS only while its avahi-daemon runs",
+            });
+        };
+        info!(
+            backend = NAME,
+            name = one.name,
+            addr = %one.addr,
+            "Pluto found by mDNS: {} at {}",
+            one.name,
+            one.addr
+        );
+        self.uri = Some(format!("ip:{}", one.addr));
+        Ok(())
+    }
+
     /// The phy channel of the selected port: `voltage0` / `voltage1`.
     fn phy_channel(&self) -> &'static str {
         ["voltage0", "voltage1"][usize::from(self.channel - 1)]
@@ -293,7 +362,7 @@ fn on_off(k: &str, v: &str) -> Result<bool> {
 /// for captures (which have no streaming `buffer`).
 fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
     let mut a = DeviceArgs {
-        uri: DEFAULT_URI.into(),
+        uri: None,
         channel: 1,
         buffer: DEFAULT_BUFFER_SAMPLES,
         buffer_given: false,
@@ -317,7 +386,7 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
     for (k, v) in &cfg.args {
         match k.as_str() {
             "uri" if v.is_empty() => return Err(bad_arg(k, v, Rule::Empty)),
-            "uri" => a.uri = v.clone(),
+            "uri" => a.uri = Some(v.clone()),
             "channel" => {
                 a.channel = match v.as_str() {
                     "1" => 1,
@@ -658,7 +727,7 @@ fn rx_settings_for(cfg: &RadioConfig, dir: Dir) -> Result<RxSettings> {
 fn describe_device(dev: &DeviceArgs, dir: &str, cfg: &RadioConfig) -> String {
     format!(
         "  device       Pluto {}, {dir}{}\n  tuning       {}\n  rf bandwidth {:.2} MHz requested",
-        dev.uri,
+        dev.uri_source(),
         dev.channel,
         cfg.describe_tuning(),
         f64::from(cfg.bandwidth_hz) / 1e6,
@@ -703,9 +772,9 @@ impl Backend for Pluto {
     }
 
     fn open_tx(&self, cfg: &RadioConfig, opts: &TxOptions) -> Result<(Box<dyn IqSink>, String)> {
-        let s = tx_settings(cfg)?;
+        let mut s = tx_settings(cfg)?;
         opts.validate()?;
-        let ctx = open(&s.dev.uri)?;
+        let ctx = open(&mut s.dev)?;
         let mut info = device_info(&ctx);
         let tx = PlutoTx {
             ctx,
@@ -719,14 +788,14 @@ impl Backend for Pluto {
         let gain = format!("TX{} attenuation {} dB", s.dev.channel, s.att_db());
         info!(
             backend = NAME,
-            uri = s.dev.uri,
+            uri = s.dev.uri(),
             rate_hz = cfg.sample_rate_hz(),
             freq_hz = cfg.center_hz,
             bandwidth_hz = cfg.bandwidth_hz,
             gain,
             loopback = s.dev.loopback,
             "Pluto {} opened for TX: {}; {gain}{}",
-            s.dev.uri,
+            s.dev.uri(),
             cfg.describe_tuning(),
             if s.dev.loopback {
                 "; digital TX→RX loopback"
@@ -747,10 +816,13 @@ impl Backend for Pluto {
             describe_rx_gain(&s),
             match s.dev.recorder {
                 Recorder::Iio => "libiio single buffer".to_string(),
-                Recorder::Maia => format!(
-                    "maia-sdr recorder at http://{}/",
-                    s.dev.uri.strip_prefix("ip:").unwrap_or("?")
-                ),
+                Recorder::Maia => match s.dev.uri.as_deref() {
+                    Some(u) => format!(
+                        "maia-sdr recorder at http://{}/",
+                        u.strip_prefix("ip:").unwrap_or("?")
+                    ),
+                    None => "maia-sdr recorder on port 80 of the device's host".to_string(),
+                },
                 Recorder::Stream => format!(
                     "libiio stream, buffers of {} samples, {KERNEL_BUFFERS} in the kernel, ADC overflow bit checked after each",
                     s.dev.buffer
@@ -780,7 +852,7 @@ impl Backend for Pluto {
         out: &mut dyn std::io::Write,
         stop: &AtomicBool,
     ) -> Result<Capture> {
-        let s = rx_settings_for(cfg, Dir::Capture)?;
+        let mut s = rx_settings_for(cfg, Dir::Capture)?;
         let (format, limit, why) = capture_plan(&s.dev);
         let too_long = || RadioError::CaptureLength {
             backend: NAME,
@@ -791,17 +863,24 @@ impl Backend for Pluto {
         if samples == 0 || samples > limit {
             return Err(too_long());
         }
+        s.dev.resolve()?;
         let host = match s.dev.recorder {
-            Recorder::Maia => Some(s.dev.uri.strip_prefix("ip:").ok_or_else(|| {
-                conflict(
-                    "recorder=maia",
-                    "needs a network uri (ip:HOST), not",
-                    format!("uri={}", s.dev.uri),
-                )
-            })?),
+            Recorder::Maia => Some(
+                s.dev
+                    .uri()
+                    .strip_prefix("ip:")
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        conflict(
+                            "recorder=maia",
+                            "needs a network uri (ip:HOST), not",
+                            format!("uri={}", s.dev.uri()),
+                        )
+                    })?,
+            ),
             _ => None,
         };
-        let mut ctx = open(&s.dev.uri)?;
+        let mut ctx = open(&mut s.dev)?;
         let device = device_info(&ctx);
         if s.dev.bits == 8
             && s.dev.recorder != Recorder::Maia
@@ -838,7 +917,7 @@ impl Backend for Pluto {
         let gain = describe_rx_gain(&s);
         info!(
             backend = NAME,
-            uri = s.dev.uri,
+            uri = s.dev.uri(),
             rate_hz = rate,
             freq_hz = cfg.center_hz,
             bandwidth_hz = cfg.bandwidth_hz,
@@ -847,7 +926,7 @@ impl Backend for Pluto {
             recorder = ?s.dev.recorder,
             bits = s.dev.bits,
             "Pluto {} opened for a capture of {samples} samples: {}; RX{} gain {gain}; {:?} recorder, {} bits per component",
-            s.dev.uri,
+            s.dev.uri(),
             cfg.describe_tuning(),
             s.dev.channel,
             s.dev.recorder,
@@ -857,7 +936,7 @@ impl Backend for Pluto {
         let (written, gaps, method) = match (s.dev.recorder, host) {
             (Recorder::Maia, Some(h)) => {
                 let m = maia::Mode(s.dev.bits);
-                maia::record(h, rate, samples, m, out)?;
+                maia::record(&h, rate, samples, m, out)?;
                 (
                     samples,
                     Vec::new(),
@@ -925,8 +1004,8 @@ impl Backend for Pluto {
     }
 
     fn offloads(&self, cfg: &RadioConfig) -> Result<Vec<Offload>> {
-        let s = rx_settings_for(cfg, Dir::Capture)?;
-        let ctx = open(&s.dev.uri)?;
+        let mut s = rx_settings_for(cfg, Dir::Capture)?;
+        let ctx = open(&mut s.dev)?;
         Ok(probe_front_end(&ctx)?
             .map(|id| Offload::Symbols {
                 version: id.version,
@@ -945,8 +1024,8 @@ impl Backend for Pluto {
         stop: &AtomicBool,
     ) -> Result<SymbolsCapture> {
         params.validate()?;
-        let s = rx_settings_for(cfg, Dir::Capture)?;
-        let mut ctx = open(&s.dev.uri)?;
+        let mut s = rx_settings_for(cfg, Dir::Capture)?;
+        let mut ctx = open(&mut s.dev)?;
         let device = device_info(&ctx);
         let need = (isdb_frontend::params::FORMAT_VERSION, params.taps());
         let Some(id) = probe_front_end(&ctx)? else {
@@ -1004,7 +1083,7 @@ impl Backend for Pluto {
         let gain = describe_rx_gain(&s);
         info!(
             backend = NAME,
-            uri = s.dev.uri,
+            uri = s.dev.uri(),
             rate_hz = rate,
             freq_hz = cfg.center_hz,
             bandwidth_hz = cfg.bandwidth_hz,
@@ -1014,7 +1093,7 @@ impl Backend for Pluto {
             taps = id.taps,
             config_s,
             "Pluto {} opened for a symbol capture of {words} words: {}; RX{} gain {gain}; FPGA front end format {} with {} taps, configured in {config_s:.1} s",
-            s.dev.uri,
+            s.dev.uri(),
             cfg.describe_tuning(),
             s.dev.channel,
             id.version,
@@ -1066,10 +1145,10 @@ impl Backend for Pluto {
     }
 
     fn open_rx(&self, cfg: &RadioConfig, opts: &RxOptions) -> Result<(Box<dyn IqSource>, String)> {
-        let s = rx_settings(cfg)?;
+        let mut s = rx_settings(cfg)?;
         opts.validate()?;
         let depth = opts.buffers(cfg.sample_rate_hz(), s.dev.buffer);
-        let mut ctx = open(&s.dev.uri)?;
+        let mut ctx = open(&mut s.dev)?;
         let mut info = device_info(&ctx);
         configure_rx(&ctx, cfg, &s, &mut info)?;
         let stream = ctx
@@ -1085,7 +1164,7 @@ impl Backend for Pluto {
         let gain = describe_rx_gain(&s);
         info!(
             backend = NAME,
-            uri = s.dev.uri,
+            uri = s.dev.uri(),
             rate_hz = cfg.sample_rate_hz(),
             freq_hz = cfg.center_hz,
             bandwidth_hz = cfg.bandwidth_hz,
@@ -1093,7 +1172,7 @@ impl Backend for Pluto {
             queue = depth,
             buffer = s.dev.buffer,
             "Pluto {} opened for RX: {}; RX{} gain {gain}; RX queue {depth} buffers of {} samples",
-            s.dev.uri,
+            s.dev.uri(),
             cfg.describe_tuning(),
             s.dev.channel,
             s.dev.buffer
@@ -1358,8 +1437,16 @@ fn port_hint(dev: &DeviceArgs, dir: &str) -> String {
     }
 }
 
-fn open(uri: &str) -> Result<Context> {
+/// Open the device, settling its URI first ([`DeviceArgs::resolve`]).
+fn open(dev: &mut DeviceArgs) -> Result<Context> {
+    dev.resolve()?;
+    let uri = dev.uri();
     Context::open(uri).at(&format!("open Pluto {uri}"))
+}
+
+/// `ISDB_PLUTO_URI`, if set and not empty.
+fn env_uri() -> Option<String> {
+    std::env::var(URI_ENV).ok().filter(|u| !u.is_empty())
 }
 
 /// `libiio 0.26 (v0.26), Analog Devices PlutoSDR Rev.C (Z7020-AD9361),
@@ -1501,7 +1588,7 @@ fn parse_range(s: &str) -> Option<(f64, f64)> {
 }
 
 fn configure_rx(ctx: &Context, cfg: &RadioConfig, s: &RxSettings, info: &mut String) -> Result<()> {
-    let op = &format!("configure Pluto {} for RX", s.dev.uri);
+    let op = &format!("configure Pluto {} for RX", s.dev.uri());
     let phy = ctx.device(PHY).at(op)?;
     let ch = phy.channel(s.dev.phy_channel(), false).at(op)?;
     let rate = set_rate(ctx, &ch, cfg, "rx_path_rates", "RXSAMP", op)?;
@@ -1553,7 +1640,7 @@ struct PlutoTx {
 impl PlutoTx {
     /// Program the device, attenuation last (it starts at the maximum).
     fn configure(&self, cfg: &RadioConfig, s: &TxSettings, info: &mut String) -> Result<()> {
-        let op = &format!("configure Pluto {} for TX", s.dev.uri);
+        let op = &format!("configure Pluto {} for TX", s.dev.uri());
         let phy = self.ctx.device(PHY).at(op)?;
         let ch = phy.channel(self.phy_channel, true).at(op)?;
         ch.write_f64("hardwaregain", -f64::from(MAX_ATT_QDB) / 4.0)
@@ -1789,7 +1876,7 @@ mod tests {
         assert_eq!(
             s.dev,
             DeviceArgs {
-                uri: "ip:pluto.local".into(),
+                uri: None,
                 channel: 1,
                 buffer: 262_144,
                 buffer_given: false,
@@ -1809,7 +1896,7 @@ mod tests {
             &[],
         ))
         .unwrap();
-        assert_eq!(s.dev.uri, "ip:192.0.2.30");
+        assert_eq!(s.dev.uri(), "ip:192.0.2.30");
         assert_eq!(s.dev.stream_channels(), ["voltage2", "voltage3"]);
         assert_eq!(s.dev.phy_channel(), "voltage1");
         assert_eq!((s.dev.buffer, s.dev.loopback), (65_536, true));
@@ -2048,10 +2135,55 @@ mod tests {
     }
 
     #[test]
+    fn a_given_uri_is_used_as_is_and_sends_no_mdns_query() {
+        let mut s = rx_settings(&cfg(&[("uri", "usb:1.4.5")], &[])).unwrap();
+        assert_eq!(s.dev.uri_source(), "usb:1.4.5");
+        // returns at once: the URI is given
+        s.dev.resolve().unwrap();
+        assert_eq!(s.dev.uri(), "usb:1.4.5");
+    }
+
+    #[test]
+    fn without_a_uri_the_description_says_how_it_is_found() {
+        let s = rx_settings(&cfg(&[], &[])).unwrap();
+        let d = s.dev.uri_source();
+        if env_uri().is_some() {
+            assert!(d.ends_with("(ISDB_PLUTO_URI)"), "{d}");
+        } else {
+            assert_eq!(
+                d,
+                "found by mDNS (_iio._tcp.local or pluto.local) when opened"
+            );
+        }
+    }
+
+    #[test]
+    fn discovery_errors_name_what_answered() {
+        let e = |found: &[&str]| {
+            RadioError::Discovery {
+                backend: NAME,
+                query: "_iio._tcp.local or pluto.local".into(),
+                found: found.iter().map(ToString::to_string).collect(),
+                hint: "give uri",
+            }
+            .to_string()
+        };
+        assert_eq!(
+            e(&[]),
+            "pluto: nothing answered the mDNS query for _iio._tcp.local or pluto.local; give uri"
+        );
+        assert_eq!(
+            e(&["a (192.0.2.1)", "b (192.0.2.2)"]),
+            "pluto: 2 devices answered the mDNS query for _iio._tcp.local or pluto.local (a (192.0.2.1), b (192.0.2.2)); give uri"
+        );
+    }
+
+    #[test]
     fn library_failures_keep_the_library_error() {
         use std::error::Error as _;
         // No libiio backend accepts this URI; nothing touches the network.
-        let e = open("bogus:nothing").unwrap_err();
+        let mut s = rx_settings(&cfg(&[("uri", "bogus:nothing")], &[])).unwrap();
+        let e = open(&mut s.dev).unwrap_err();
         assert!(
             matches!(&e, RadioError::Device { backend: "pluto", op, .. } if op == "open Pluto bogus:nothing")
         );
@@ -2255,9 +2387,12 @@ mod tests {
         };
         assert!(Pluto.describe_tx(&cfg(&[], &[]), &o).is_err());
         let d = Pluto
-            .describe_rx(&cfg(&[("channel", "2")], &[("gain", "40")]))
+            .describe_rx(&cfg(
+                &[("uri", "ip:192.0.2.30"), ("channel", "2")],
+                &[("gain", "40")],
+            ))
             .unwrap();
-        assert!(d.contains("device       Pluto ip:pluto.local, RX2"), "{d}");
+        assert!(d.contains("device       Pluto ip:192.0.2.30, RX2"), "{d}");
         assert!(d.contains("RX gain      manual 40 dB"), "{d}");
     }
 }

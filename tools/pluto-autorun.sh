@@ -4,21 +4,22 @@
 # /etc/init.d/S98autostart; delete this file to restore Tezuka's defaults.
 #
 # Install (Tezuka on a PlutoSky R2; persistent in the board's jffs2):
-#   ssh PLUTO 'f=/mnt/jffs2/autorun.sh; cat > $f.new && sh -n $f.new &&
+#   ssh root@PLUTO 'f=/mnt/jffs2/autorun.sh; cat > $f.new && sh -n $f.new &&
 #     { [ ! -e $f ] || cp $f $f.prev; } && mv $f.new $f && chmod 600 $f && sync' \
 #     < tools/pluto-autorun.sh
 # (written to .new and syntax-checked before it replaces the old hook,
 # which is kept as autorun.sh.prev)
 # The copy on the bench board is this file without this install note.
 isdb_quiet() {
-  # watchers and controllers first, so nothing restarts what follows
+  # avahi-daemon stays: `--radio pluto` without a uri finds the board by
+  # mDNS. Watchers and controllers first, so nothing restarts what follows
   # ([x]yz patterns never match the shell running this script)
   for p in '[w]atchdatveasy' '[w]atchconsolefreq' '[w]atchconsoletx' '[a]pi_controller' \
            '[m]qtt_obs_ctrl' '[b]itrate_strategy' '[m]qtt_longmynd' '[l]nb_config'; do
     pkill -f "$p"
   done
   killall -q pluto_mqtt_ctrl pluto_stream zynqrx mqtt_pubd mosquitto_sub gpspipe \
-             inotifywait mosquitto gpsd avahi-daemon rpc.mountd rpc.statd rpcbind classifier
+             inotifywait mosquitto gpsd rpc.mountd rpc.statd rpcbind classifier
   for d in /sys/bus/iio/devices/iio:device*; do
     [ "$(cat $d/name)" = ad9361-phy ] || continue
     echo 1 > $d/out_altvoltage1_TX_LO_powerdown

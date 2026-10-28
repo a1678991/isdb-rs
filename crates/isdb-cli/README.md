@@ -326,12 +326,12 @@ and writes them as cs16 (little-endian I/Q) or cs8 with
 never transmits and has no `--rf-enable`.
 
 ```sh
-isdb capture --radio pluto:uri=ip:192.0.2.30 --freq BS1 --rate 57.72M -o bs1.sigmf-data
-isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia,bits=8 --freq ND2 --rate 40M \
+isdb capture --radio pluto --freq BS1 --rate 57.72M -o bs1.sigmf-data
+isdb capture --radio pluto:recorder=maia,bits=8 --freq ND2 --rate 40M \
     -o nd2.sigmf-data --survey                   # 64 Mi samples (1.7 s) in one piece
-isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=stream,bits=8 --freq T27 \
+isdb capture --radio pluto:recorder=stream,bits=8 --freq T27 \
     --rate 16M --seconds 600 -o t27.sigmf-data  # streamed, losses marked
-isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=stream,bits=8 --freq BS1 \
+isdb capture --radio pluto:recorder=stream,bits=8 --freq BS1 \
     --rate 32M --seconds 60 --discard           # link test: rate and losses, no file
 ```
 
@@ -398,8 +398,8 @@ strongest one. `--json` prints one object per file. The analysis is
 ### `isdb symbols` — radio → satellite symbols (receive only)
 
 ```sh
-isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq BS1 --probe
-isdb symbols --radio pluto:uri=ip:192.0.2.30 --freq BS1 --seconds 10 -o bs1.syms
+isdb symbols --radio pluto --freq BS1 --probe
+isdb symbols --radio pluto --freq BS1 --seconds 10 -o bs1.syms
 ```
 
 The single-carrier front end of `isdb-frontend` (matched filter, timing

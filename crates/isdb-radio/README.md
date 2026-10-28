@@ -61,7 +61,7 @@ requests and each stream's end.
 | Name | Feature | Device args | Gains (TX) | Gains (RX) |
 |------|---------|-------------|------------|------------|
 | `hackrf` | `hackrf` (default) | `serial` | `txvga` 0..47 dB, `amp` on/off | `lna` 0..40 dB (8 dB steps), `vga` 0..62 dB (2 dB steps), `amp` on/off |
-| `pluto` | `pluto` (default) | `uri` (default `ip:pluto.local`), `channel` 1/2, `buffer` (samples), TX: `loopback` on/off; capture: `recorder` iio/maia/stream, `bits` 8/12/16 (`buffer` with `recorder=stream` only) | `att` 0..89.75 dB attenuation (0.25 dB steps, default 89.75) | `agc` manual/slow_attack/fast_attack/hybrid (default slow_attack), `gain` dB (manual) |
+| `pluto` | `pluto` (default) | `uri` (default `ISDB_PLUTO_URI`, else found by mDNS), `channel` 1/2, `buffer` (samples), TX: `loopback` on/off; capture: `recorder` iio/maia/stream, `bits` 8/12/16 (`buffer` with `recorder=stream` only) | `att` 0..89.75 dB attenuation (0.25 dB steps, default 89.75) | `agc` manual/slow_attack/fast_attack/hybrid (default slow_attack), `gain` dB (manual) |
 
 The `hackrf` backend links the system libhackrf through `isdb-hackrf`,
 the `pluto` backend the system libiio (0.x) through `isdb-iio`; with
@@ -75,7 +75,13 @@ computes it, and `open_tx` / `open_rx` report the value programmed.
 
 The `pluto` backend drives an AD936x running ADI's Pluto firmware or a
 derivative such as Tezuka (ADALM-Pluto, PlutoSky R2, …) over any libiio
-URI; Gigabit Ethernet (`uri=ip:ADDRESS`) carries 512/63 MHz in one
+URI. Without `uri` it takes `ISDB_PLUTO_URI`, and without that it asks
+the local link by mDNS when the device is opened (one legacy unicast
+query for libiio's DNS-SD service `_iio._tcp.local` and for
+`pluto.local`, on the interface of the IPv4 default route, at most 2 s):
+the one host that answers becomes `ip:ADDRESS`; none or several is a
+`RadioError::Discovery` naming them. A given `uri` or `ISDB_PLUTO_URI`
+sends no query. The board answers only while its `avahi-daemon` runs; Gigabit Ethernet (`uri=ip:ADDRESS`) carries 512/63 MHz in one
 direction (TX and RX at once exceed what iiod serves with ADI's
 firmware, one CPU enabled: the receive side drops samples). It transmits through a `QueuedSink` of `Cs12` buffers (12-bit
 samples left-aligned in `i16`, the DAC's bits 15..4) in IIO buffers of

@@ -6,7 +6,7 @@
 # /proc. One awk process does all the reading (forking per sample takes
 # ≈ 1 s on the Pluto's CPU, too slow to see a 10 ms event).
 #
-#   ssh PLUTO 'sh -s DUR "PIDS"' < tools/pluto-sample.sh > samples.txt
+#   ssh root@PLUTO 'sh -s DUR "PIDS"' < tools/pluto-sample.sh > samples.txt
 #
 # DUR: seconds (default 25). PIDS: space-separated process ids to follow
 # (default: iiod's). Output, one line per sample:
