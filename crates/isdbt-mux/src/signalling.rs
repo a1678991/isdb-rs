@@ -221,8 +221,9 @@ pub struct VdcDerived {
 }
 
 impl VideoDecodeControlCfg {
-    /// Configuration errors independent of the media.
-    pub fn check(&self, what: &str) -> Result<()> {
+    /// Configuration errors independent of the media; `key` is the TOML
+    /// path of the stream (`service[0].stream[1]`).
+    pub fn check(&self, key: &str) -> Result<()> {
         match self.mode {
             VdcMode::Off
                 if self.still_picture.is_some()
@@ -230,19 +231,23 @@ impl VideoDecodeControlCfg {
                     || self.video_encode_format.is_some()
                     || self.transfer_characteristics.is_some() =>
             {
-                Err(MuxError::Config(format!(
-                    "{what}: video_decode_control mode = \"off\" takes no field values"
-                )))
+                Err(MuxError::config(
+                    format!("{key}.video_decode_control"),
+                    "mode = \"off\" takes no field values",
+                ))
             }
             VdcMode::Explicit
                 if self.video_encode_format.is_none()
                     || self.transfer_characteristics.is_none() =>
             {
-                Err(MuxError::Config(format!(
-                    "{what}: video_decode_control mode = \"explicit\" needs video_encode_format ({}) and transfer_characteristics ({})",
-                    variant_list::<VideoEncodeFormat>(),
-                    variant_list::<TransferCharacteristics>()
-                )))
+                Err(MuxError::config(
+                    format!("{key}.video_decode_control"),
+                    format!(
+                        "mode = \"explicit\" needs video_encode_format ({}) and transfer_characteristics ({})",
+                        variant_list::<VideoEncodeFormat>(),
+                        variant_list::<TransferCharacteristics>()
+                    ),
+                ))
             }
             _ => Ok(()),
         }
@@ -552,7 +557,13 @@ impl TryFrom<u8> for U4 {
         if v <= 15 {
             Ok(U4(v))
         } else {
-            Err(MuxError::Config(format!("{v} does not fit in 4 bits")))
+            Err(MuxError::Range {
+                key: "user_defined".to_string(),
+                value: i64::from(v),
+                min: 0,
+                max: 15,
+                note: " (4 bits)",
+            })
         }
     }
 }
@@ -620,13 +631,15 @@ impl CopyControlFields {
     /// The 4-bit user_defined value: raw override, or copy_control_type
     /// (default '01') then APS_control_data (default '00') if '01', else
     /// reserved_future_use '11' (Annex F Table F-1; '1' per B10 §3.1).
-    pub fn user_defined_code(&self, what: &str) -> Result<u8> {
+    /// `key` is the TOML path of the table the fields come from
+    /// (`service[0].copy_control`), for the errors.
+    pub fn user_defined_code(&self, key: &str) -> Result<u8> {
         if let Some(u) = self.user_defined {
             if self.copy_control_type.is_some() || self.aps_control_data.is_some() {
-                return Err(MuxError::Config(format!(
-                    "{what}: user_defined (raw experiment override) conflicts with copy_control_type / \
-                     aps_control_data; give one or the other"
-                )));
+                return Err(MuxError::Conflict {
+                    key: format!("{key}.user_defined"),
+                    other: "copy_control_type / aps_control_data".to_string(),
+                });
             }
             return Ok(u.get());
         }
@@ -638,11 +651,13 @@ impl CopyControlFields {
                 .unwrap_or(ApsControlData::CopyFree)
                 .code()
         } else if self.aps_control_data.is_some() {
-            return Err(MuxError::Config(format!(
-                "{what}: aps_control_data exists only with copy_control_type = \"serial-output-encoded\" \
-                 (B10 Annex F Table F-1); for \"{}\" the 2 bits are reserved_future_use",
-                cct.name()
-            )));
+            return Err(MuxError::NotApplicable {
+                key: format!("{key}.aps_control_data"),
+                applies_to: format!(
+                    "copy_control_type = \"serial-output-encoded\" (B10 Annex F Table F-1); for \"{}\" the 2 bits are reserved_future_use",
+                    cct.name()
+                ),
+            });
         } else {
             0b11
         };
@@ -823,12 +838,14 @@ fn yes() -> bool {
 impl CopyControlCfg {
     /// The descriptor-level fields; an error while `recording_control` is
     /// still `"source"` (it is resolved when the relayed source is probed).
-    pub fn fields(&self, what: &str) -> Result<CopyControlFields> {
+    /// `key` is the TOML path of the table (`service[0].copy_control`).
+    pub fn fields(&self, key: &str) -> Result<CopyControlFields> {
         let recording_control = self.recording_control.value().ok_or_else(|| {
-            MuxError::Config(format!(
-                "{what}: recording_control = \"source\" needs a ts-program stream in the service \
-                 (the relayed source program provides the value)"
-            ))
+            MuxError::config(
+                format!("{key}.recording_control"),
+                "recording_control = \"source\" needs a ts-program stream in the service \
+                 (the relayed source program provides the value)",
+            )
         })?;
         Ok(CopyControlFields {
             recording_control,
@@ -841,39 +858,44 @@ impl CopyControlCfg {
 
     /// Configuration errors (`recording_control = "source"` is accepted
     /// here; [`crate::config::Config::validate`] checks that the service
-    /// relays a `ts-program`).
-    pub fn check(&self, what: &str) -> Result<()> {
+    /// relays a `ts-program`). `key` is the TOML path of the table
+    /// (`service[0].copy_control`).
+    pub fn check(&self, key: &str) -> Result<()> {
         let mut f = self.clone();
         if f.recording_control == RecordingControlCfg::Source {
             f.recording_control = DigitalRecordingControl::CopyFree.into();
         }
-        f.fields(what)?.user_defined_code(what)?;
-        for c in &self.component_control {
+        f.fields(key)?.user_defined_code(key)?;
+        for (i, c) in self.component_control.iter().enumerate() {
             c.fields()
-                .user_defined_code(&format!("{what} component {:#04x}", c.component_tag))?;
+                .user_defined_code(&format!("{key}.component_control[{i}]"))?;
         }
         if self.in_pmt && !self.component_control.is_empty() {
-            return Err(MuxError::Config(format!(
-                "{what}: copy_control.component_control with in_pmt = true; B10 §6.2.23: \"When this \
-                 descriptor is transmitted by PMT, component control flag should always be '0'\""
-            )));
+            return Err(MuxError::config(
+                format!("{key}.component_control"),
+                "given with in_pmt = true; B10 §6.2.23: \"When this \
+                 descriptor is transmitted by PMT, component control flag should always be '0'\"",
+            ));
         }
         Ok(())
     }
 
-    /// The descriptor (`with_components`: include the component loop).
-    pub fn descriptor(&self, with_components: bool, what: &str) -> Result<DigitalCopyControl> {
+    /// The descriptor (`with_components`: include the component loop);
+    /// `key` is the TOML path of the table (`service[0].copy_control`).
+    pub fn descriptor(&self, with_components: bool, key: &str) -> Result<DigitalCopyControl> {
         let components = if with_components && !self.component_control.is_empty() {
             Some(
                 self.component_control
                     .iter()
-                    .map(|c| {
+                    .enumerate()
+                    .map(|(i, c)| {
                         let f = c.fields();
                         Ok(ComponentCopyControl {
                             component_tag: c.component_tag,
                             digital_recording_control_data: f.recording_control.code(),
                             reserved_future_use: true,
-                            user_defined: f.user_defined_code(what)?,
+                            user_defined: f
+                                .user_defined_code(&format!("{key}.component_control[{i}]"))?,
                             maximum_bitrate: f.maximum_bitrate.map(|m| m.0),
                         })
                     })
@@ -882,10 +904,10 @@ impl CopyControlCfg {
         } else {
             None
         };
-        let f = self.fields(what)?;
+        let f = self.fields(key)?;
         Ok(DigitalCopyControl {
             digital_recording_control_data: f.recording_control.code(),
-            user_defined: f.user_defined_code(what)?,
+            user_defined: f.user_defined_code(key)?,
             maximum_bitrate: f.maximum_bitrate.map(|m| m.0),
             component_control: components,
         })
@@ -918,30 +940,44 @@ impl RemoteControlKeyId {
 }
 
 impl RemoteControlKeyId {
-    fn check(v: i64) -> std::result::Result<Self, String> {
-        match u8::try_from(v) {
-            Ok(k) if Self::RANGE.contains(&k) => Ok(Self(k)),
-            _ => Err(format!(
-                "remote_control_key_id {v} outside 1..=12: B10 §6.2.42 leaves the 8-bit key number to the \
-                 operator; isdbt-mux restricts it to the 12 one-touch keys of terrestrial receivers \
-                 (TR-B14 practice; the receiver shows the services as channel key·10 + index). \
-                 For an out-of-range experiment use [nit] byte_patches"
-            )),
-        }
+    /// Why the range is 1..=12, for the error.
+    const RANGE_NOTE: &'static str = ": B10 §6.2.42 leaves the 8-bit key number to the \
+         operator; isdbt-mux restricts it to the 12 one-touch keys of terrestrial receivers \
+         (TR-B14 practice; the receiver shows the services as channel key·10 + index). \
+         For an out-of-range experiment use [nit] byte_patches";
+
+    fn check(v: i64) -> Option<Self> {
+        u8::try_from(v)
+            .ok()
+            .filter(|k| Self::RANGE.contains(k))
+            .map(Self)
     }
 }
 
 impl TryFrom<i64> for RemoteControlKeyId {
     type Error = MuxError;
+    /// [`MuxError::Range`] at `network.remote_control_key_id` outside
+    /// [`RemoteControlKeyId::RANGE`].
     fn try_from(v: i64) -> Result<Self> {
-        Self::check(v).map_err(MuxError::Config)
+        Self::check(v).ok_or_else(|| MuxError::Range {
+            key: "network.remote_control_key_id".to_string(),
+            value: v,
+            min: i64::from(*Self::RANGE.start()),
+            max: i64::from(*Self::RANGE.end()),
+            note: Self::RANGE_NOTE,
+        })
     }
 }
 
 impl<'de> Deserialize<'de> for RemoteControlKeyId {
     fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         let v = i64::deserialize(d)?;
-        RemoteControlKeyId::check(v).map_err(de::Error::custom)
+        RemoteControlKeyId::check(v).ok_or_else(|| {
+            de::Error::custom(format!(
+                "remote_control_key_id {v} outside 1..=12{}",
+                Self::RANGE_NOTE
+            ))
+        })
     }
 }
 
@@ -973,21 +1009,27 @@ mod tests {
             0b0011
         );
         assert_eq!(f(None, None, Some(0)).user_defined_code("t").unwrap(), 0);
-        assert!(
-            f(Some(CopyControlType::Undefined00), None, Some(0))
-                .user_defined_code("t")
-                .is_err()
-        );
-        assert!(
+        assert!(matches!(
+            f(Some(CopyControlType::Undefined00), None, Some(0)).user_defined_code("t"),
+            Err(MuxError::Conflict { key, .. }) if key == "t.user_defined"
+        ));
+        assert!(matches!(
             f(
                 Some(CopyControlType::Undefined10),
                 Some(ApsControlData::CopyFree),
                 None
             )
-            .user_defined_code("t")
-            .is_err()
-        );
-        assert!(U4::try_from(16).is_err());
+            .user_defined_code("t"),
+            Err(MuxError::NotApplicable { key, .. }) if key == "t.aps_control_data"
+        ));
+        assert!(matches!(
+            U4::try_from(16),
+            Err(MuxError::Range {
+                value: 16,
+                max: 15,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -995,8 +1037,12 @@ mod tests {
         assert!(RemoteControlKeyId::try_from(0).is_err());
         assert_eq!(RemoteControlKeyId::try_from(1).unwrap().get(), 1);
         assert_eq!(RemoteControlKeyId::try_from(12).unwrap().get(), 12);
-        let e = RemoteControlKeyId::try_from(13).unwrap_err().to_string();
-        assert!(e.contains("1..=12"), "{e}");
+        let e = RemoteControlKeyId::try_from(13).unwrap_err();
+        assert!(
+            matches!(&e, MuxError::Range { key, value: 13, min: 1, max: 12, .. } if key == "network.remote_control_key_id"),
+            "{e}"
+        );
+        assert!(e.to_string().contains("1..=12"), "{e}");
         assert!(RemoteControlKeyId::try_from(300).is_err());
     }
 

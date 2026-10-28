@@ -676,7 +676,7 @@ fn configuration_errors() {
         "source = \"bml\"",
         "",
     ));
-    assert!(e.contains("organization_id 0"), "{e}");
+    assert!(e.contains("organization_id: 0 is reserved"), "{e}");
     // bad URL scheme, prefetch, bad bitmap, es without pid
     let e = load_err(&config(
         &HYBRIDCAST.replace("https://", "ftp://"),
@@ -707,7 +707,10 @@ fn configuration_errors() {
         "source = \"bml\"",
         "",
     ));
-    assert!(e.contains("needs pid"), "{e}");
+    assert!(
+        e.contains("hybridcast.pid is missing (carriage = \"es\" needs it)"),
+        "{e}"
+    );
     let e = load_err(&config(
         &format!("{HYBRIDCAST}  carriage = \"es\"\n  pid = 0x0141\n"),
         "source = \"bml\"",

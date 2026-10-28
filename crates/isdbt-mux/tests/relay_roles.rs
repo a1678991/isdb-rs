@@ -529,7 +529,7 @@ fn explicit_pid_map_and_plan_overrides_are_checked() {
         ),
         (
             "  pids = { video = 0x0100, audio = 0x0100 }",
-            "given to two roles",
+            "pids: PID 0x0100 is listed twice",
         ),
         ("  pids = { video = 0x0005 }", "outside 0x0010–0x1FFE"),
         ("  pids = { video = [] }", "at least one PID"),

@@ -553,6 +553,30 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
   `ParamError` texts name the bank and phase, `bits 9: 2..=8` replaces
   `9 bits: 2..=8`, and a recording without metadata and sample rate now
   names the metadata path it looked for.
+
+- `isdbt-mux`: configuration errors are typed. `MuxError::Config` is
+  `Config { key, problem }`, `key` being the dotted TOML path of the value
+  (`service[0].stream[1].bml.block_size`, indices from 0 in file order),
+  and the rules with several producers have their own variants: `Toml`
+  (parser message), `Hex`, `Format` (times, durations, offsets, versions),
+  `Range`, `TimeRange` (outside the 16-bit MJD), `Reserved`, `PidRange`,
+  `PidInUse`, `InactiveLayer`, `Missing`, `NotApplicable`, `Conflict`,
+  `Duplicate`; `CallOrder` (playback control after the first frame) and
+  `Internal` (an invariant of the multiplexer, reported instead of a
+  panic). `MuxError::key()` returns the path. The helpers that build these
+  errors take the key: `config::parse_hex`, `jst::parse` / `parse_hms` /
+  `parse_hm` / `to_mjd_time` / `bcd_duration`, `si::channel_frequency_code`,
+  `si::validate_targets`, `si::additional_bxml_info` / `bxml_info`,
+  `hybridcast::split_url` / `check` / `ait_section`,
+  `HybridcastCfg::profile_version`, `carousel::check_resource_name` /
+  `multipart_entity` / `bml_versions` / `load` (and `CarouselSource::key`);
+  `carousel::transcode_utf8_to_euc_jp` reports `MuxError::Media` with the
+  file path. Messages now start with the key instead of
+  `service 0x0400 stream 0x0111`. A `[[raw_table]]` with `sections = []`
+  is refused at load (it reached an `unreachable!`); `analysis::analyze`
+  asserts one arrival time per packet. The library's runtime `unwrap` /
+  `expect` / `unreachable!` sites went from 13 / 17 / 1 to 10 / 3 / 0 (the
+  10 unwraps are `const` PIDs, checked at compile time).
 - Every library crate denies printing: `#![warn(clippy::print_stdout,
   clippy::print_stderr)]` in its `lib.rs` (CI runs clippy with `-D
   warnings`), with `allow-print-in-tests` in the new `clippy.toml` for

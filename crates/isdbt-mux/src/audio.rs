@@ -476,8 +476,11 @@ impl BitWriter {
             if self.bits.is_multiple_of(8) {
                 self.bytes.push(0);
             }
-            if v >> k & 1 != 0 {
-                *self.bytes.last_mut().unwrap() |= 0x80 >> (self.bits % 8);
+            // a byte was pushed at bit 0 of every byte, so `last` exists
+            if v >> k & 1 != 0
+                && let Some(b) = self.bytes.last_mut()
+            {
+                *b |= 0x80 >> (self.bits % 8);
             }
             self.bits += 1;
         }

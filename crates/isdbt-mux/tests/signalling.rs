@@ -253,7 +253,7 @@ fn audio_quality_indicator_typed() {
     let e = cfg_err(&format!(
         "{VDC_LINE}\n=>\n{VDC_LINE}\n  audio_quality_indicator = \"mode-2\""
     ));
-    assert!(e.contains("only to aac-adts"), "{e}");
+    assert!(e.contains("applies only to kind = \"aac-adts\""), "{e}");
 }
 
 /// bench-minimal.toml: derived values and copy-free.
@@ -680,7 +680,10 @@ fn old_numeric_forms_name_the_variants() {
     let e = cfg_err(&format!(
         "{CC_LINE}\n=>\ncopy_control = {{ recording_control = \"copy-one-generation\", copy_control_type = \"undefined-00\", user_defined = 0 }}"
     ));
-    assert!(e.contains("conflicts"), "{e}");
+    assert!(
+        e.contains("user_defined and copy_control_type / aps_control_data both given"),
+        "{e}"
+    );
     // ... and works alone (bisection: user_defined 0 was refused by the recorder)
     assert_eq!(
         cfg_err(&format!(

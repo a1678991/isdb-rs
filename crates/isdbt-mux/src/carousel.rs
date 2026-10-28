@@ -138,8 +138,9 @@ pub fn resource_type_value(media_type: &str) -> Option<u16> {
 }
 
 /// Check a resource name against the B24 Vol. 2 §9.2.1.2 grammar
-/// (`startChar *echar`, ≤ 127 bytes).
-pub fn check_resource_name(name: &str) -> Result<()> {
+/// (`startChar *echar`, ≤ 127 bytes); `key` is the TOML path the name
+/// comes from, for the error.
+pub fn check_resource_name(name: &str, key: &str) -> Result<()> {
     let ok = !name.is_empty()
         && name.len() <= 127
         && (name.as_bytes()[0].is_ascii_alphanumeric() || name.starts_with('_'))
@@ -149,9 +150,12 @@ pub fn check_resource_name(name: &str) -> Result<()> {
     if ok {
         Ok(())
     } else {
-        Err(MuxError::Config(format!(
-            "resource name {name:?} is not a B24 Vol. 2 §9.2.1.2 resourceName (alphanumeric or '_' first, then also -.!~'();/@=+$, up to 127 bytes)"
-        )))
+        Err(MuxError::config(
+            key,
+            format!(
+                "resource name {name:?} is not a B24 Vol. 2 §9.2.1.2 resourceName (alphanumeric or '_' first, then also -.!~'();/@=+$, up to 127 bytes)"
+            ),
+        ))
     }
 }
 
@@ -212,7 +216,12 @@ pub fn multipart_content_type(boundary: &str) -> String {
 /// Build the multipart/mixed entity of `resources` (B24 Vol. 2 §9.1.2.2),
 /// with the resource list (§9.1.2.3 Tables 9-1/9-2) as the first
 /// body-part when `with_list`. Returns the entity and the boundary used.
-pub fn multipart_entity(resources: &[Resource], with_list: bool) -> Result<(Vec<u8>, String)> {
+/// `key` is the TOML path of the module, for the errors.
+pub fn multipart_entity(
+    resources: &[Resource],
+    with_list: bool,
+    key: &str,
+) -> Result<(Vec<u8>, String)> {
     // a boundary that no resource contains
     let mut boundary = BOUNDARY.to_string();
     let mut n = 0u32;
@@ -270,10 +279,13 @@ pub fn multipart_entity(resources: &[Resource], with_list: bool) -> Result<(Vec<
         for (i, r) in resources.iter().enumerate() {
             let (off, hl) = offsets[i + 1];
             let tv = resource_type_value(&r.media_type).ok_or_else(|| {
-                MuxError::Config(format!(
-                    "resource {:?}: media type {:?} has no resourceTypeValue in B24 Vol. 2 Table 9-6; send the module without a resource list (resource_list = false)",
-                    r.name, r.media_type
-                ))
+                MuxError::config(
+                    key,
+                    format!(
+                        "resource {:?}: media type {:?} has no resourceTypeValue in B24 Vol. 2 Table 9-6; send the module without a resource list (resource_list = false)",
+                        r.name, r.media_type
+                    ),
+                )
             })?;
             // resourceNameLength is 7 bits, so the 13 + name entry fits a byte
             let name_len = u8::try_from(r.name.len())
@@ -322,7 +334,10 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 /// Parsed multipart entity (for tests and inspection): the resources in
 /// order, the resource list excluded.
 pub fn parse_multipart(entity: &[u8]) -> Result<Vec<Resource>> {
-    let bad = |m: &str| MuxError::Config(format!("multipart entity: {m}"));
+    let bad = |m: &str| MuxError::Media {
+        path: "multipart entity".to_string(),
+        msg: m.to_string(),
+    };
     let hdr_end = find(entity, b"\r\n\r\n", 0).ok_or_else(|| bad("no entity header end"))?;
     let top = std::str::from_utf8(&entity[..hdr_end]).map_err(|_| bad("header not ASCII"))?;
     let boundary = top
@@ -396,6 +411,8 @@ pub struct CarouselSource {
     pub base_dir: PathBuf,
     /// Name for messages.
     pub what: String,
+    /// TOML path of the stream (`service[0].stream[1]`), for the errors.
+    pub key: String,
 }
 
 /// The files a carousel was built from: (name, modification time, size).
@@ -471,12 +488,15 @@ pub fn snapshot(src: &CarouselSource) -> Result<Snapshot> {
 
 /// Read the files of a `bml-carousel` stream and build its sections.
 /// `hybridcast` adds the AIT module (and the launcher `startup.bml`
-/// unless the files have one) when its carriage is the carousel.
+/// unless the files have one) when its carriage is the carousel. `what`
+/// names the stream in the report, `key` is its TOML path
+/// (`service[0].stream[1]`) for the errors.
 pub fn load(
     st: &StreamCfg,
     hybridcast: Option<&HybridcastCfg>,
     base_dir: &Path,
     what: &str,
+    key: &str,
 ) -> Result<Carousel> {
     build(
         &CarouselSource {
@@ -484,6 +504,7 @@ pub fn load(
             hybridcast: hybridcast.cloned(),
             base_dir: base_dir.to_path_buf(),
             what: what.to_string(),
+            key: key.to_string(),
         },
         None,
     )
@@ -501,34 +522,42 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
     let hybridcast = src.hybridcast.as_ref();
     let base_dir = src.base_dir.as_path();
     let what = src.what.as_str();
+    let key = src.key.as_str();
+    // the service of the stream: `service[i]` of `service[i].stream[n]`
+    let service_key = key.split(".stream[").next().unwrap_or(key);
     let snap = snapshot(src)?;
     let bml = st.bml.clone().unwrap_or_default();
     let component_tag = st.component_tag.unwrap_or(DEFAULT_COMPONENT_TAG);
     let dir = st.source.as_ref().map(|s| base_dir.join(s));
-    let read = |name: &str| -> Result<Vec<u8>> {
-        let d = dir.as_ref().ok_or_else(|| {
-            MuxError::Config(format!(
-                "{what}: module file {name:?} needs source = the directory it is in"
-            ))
+    let read = |name: &str| -> Result<(Vec<u8>, String)> {
+        let d = dir.as_ref().ok_or_else(|| MuxError::Missing {
+            key: format!("{key}.source"),
+            needed_by: format!("bml.modules file {name:?} (source is the directory it is in)"),
         })?;
         let p = d.join(name);
-        std::fs::read(&p).map_err(|e| MuxError::Media {
-            path: p.display().to_string(),
+        let path = p.display().to_string();
+        let data = std::fs::read(&p).map_err(|e| MuxError::Media {
+            path: path.clone(),
             msg: e.to_string(),
-        })
+        })?;
+        Ok((data, path))
     };
-    let resource = |name: &str, data: Vec<u8>| -> Result<Resource> {
-        check_resource_name(name)?;
+    // `file_key`: the TOML path the file name comes from
+    let resource = |name: &str, data: Vec<u8>, path: &str, file_key: &str| -> Result<Resource> {
+        check_resource_name(name, file_key)?;
         let media_type = media_type(name, &bml.types).ok_or_else(|| {
-            MuxError::Config(format!(
-                "{what}: no media type for {name:?}; known extensions: {} (B24 Vol. 2 Table 9-6); add [service.stream.bml] types = {{ \"<ext>\" = \"<media type>\" }}",
-                known_extensions()
-            ))
+            MuxError::config(
+                file_key,
+                format!(
+                    "no media type for {name:?}; known extensions: {} (B24 Vol. 2 Table 9-6); add [service.stream.bml] types = {{ \"<ext>\" = \"<media type>\" }}",
+                    known_extensions()
+                ),
+            )
         })?;
         let data = if bml.source_encoding == SourceEncoding::Utf8
             && media_type.to_ascii_lowercase().starts_with("text/")
         {
-            transcode_utf8_to_euc_jp(&data, &format!("{what}: {name}"))?
+            transcode_utf8_to_euc_jp(&data, path)?
         } else {
             data
         };
@@ -572,12 +601,24 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
             name: None,
         });
     }
+    // TOML path of layout entry `i`: a listed module, the default layout
+    // (every file of `source`), or the Hybridcast AIT module
+    let user_modules = bml.modules.len();
+    let module_key = |i: usize| -> String {
+        if i < user_modules {
+            format!("{key}.bml.modules[{i}]")
+        } else if user_modules == 0 && i == 0 {
+            format!("{key}.source")
+        } else {
+            format!("{service_key}.hybridcast.module_id")
+        }
+    };
     for (i, m) in layout.iter().enumerate() {
         if layout[..i].iter().any(|x| x.id == m.id) {
-            return Err(MuxError::Config(format!(
-                "{what}: moduleId {:#06x} is listed twice",
-                m.id
-            )));
+            return Err(MuxError::Duplicate {
+                key: format!("{key}.bml.modules[{i}].id"),
+                value: format!("moduleId {:#06x}", m.id),
+            });
         }
     }
 
@@ -587,12 +628,12 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
     let mut report = Vec::new();
     if let Some(h) = hc {
         if layout.iter().any(|m| m.id == h.module_id) {
-            return Err(MuxError::Config(format!(
-                "{what}: hybridcast module_id {:#06x} is also a bml module; choose another",
-                h.module_id
-            )));
+            return Err(MuxError::config(
+                format!("{service_key}.hybridcast.module_id"),
+                format!("{:#06x} is also a bml module; choose another", h.module_id),
+            ));
         }
-        let ait = crate::hybridcast::ait_section(h)?;
+        let ait = crate::hybridcast::ait_section(h, &format!("{service_key}.hybridcast"))?;
         layout.push(BmlModuleCfg {
             id: h.module_id,
             files: Vec::new(),
@@ -611,14 +652,16 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
         let has_startup = layout.iter().any(|m| m.files.iter().any(|f| f == STARTUP));
         if h.launcher && !has_startup {
             let Some(m0) = layout.iter().find(|m| m.id == 0) else {
-                return Err(MuxError::Config(format!(
-                    "{what}: the hybridcast launcher startup.bml goes into module 0x0000; list a module with id = 0"
-                )));
+                return Err(MuxError::config(
+                    format!("{key}.bml.modules"),
+                    "the hybridcast launcher startup.bml goes into module 0x0000; list a module with id = 0",
+                ));
             };
             if !m0.multipart && !m0.files.is_empty() {
-                return Err(MuxError::Config(format!(
-                    "{what}: module 0x0000 is a single-file module; the hybridcast launcher needs a multipart module 0 (multipart = true) or your own startup.bml"
-                )));
+                return Err(MuxError::config(
+                    format!("{key}.bml.modules"),
+                    "module 0x0000 is a single-file module; the hybridcast launcher needs a multipart module 0 (multipart = true) or your own startup.bml",
+                ));
             }
             let doc = crate::hybridcast::launcher_bml(
                 h,
@@ -653,37 +696,45 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
     }
 
     // ---- build the modules
-    let versions = bml_versions(&bml, what)?;
+    let versions = bml_versions(&bml, key)?;
     let mut modules = Vec::new();
-    for m in &layout {
+    for (mi, m) in layout.iter().enumerate() {
         let mut resources = Vec::new();
         // generated resources first in module 0 (startup.bml), the files after
         for (_, r) in generated.iter().filter(|(id, _)| *id == m.id) {
             resources.push(r.clone());
         }
-        for f in &m.files {
-            let data = read(f)?;
+        for (fi, f) in m.files.iter().enumerate() {
+            let file_key = if mi < user_modules {
+                format!("{key}.bml.modules[{mi}].files[{fi}]")
+            } else {
+                module_key(mi)
+            };
+            let (data, path) = read(f)?;
             let name = Path::new(f)
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| f.clone());
             if resources.iter().any(|r| r.name == name) {
-                return Err(MuxError::Config(format!(
-                    "{what}: module {:#06x} lists resource {name:?} twice",
-                    m.id
-                )));
+                return Err(MuxError::Duplicate {
+                    key: format!("{}.files", module_key(mi)),
+                    value: format!("resource {name:?}"),
+                });
             }
-            resources.push(resource(&name, data)?);
+            resources.push(resource(&name, data, &path, &file_key)?);
         }
         if resources.is_empty() {
-            return Err(MuxError::Config(format!(
-                "{what}: module {:#06x} has no files (give source = <directory> holding startup.bml and the other BML files, or modules = [{{ id = …, files = […] }}])",
-                m.id
-            )));
+            return Err(MuxError::config(
+                module_key(mi),
+                format!(
+                    "module {:#06x} has no files (give source = <directory> holding startup.bml and the other BML files, or modules = [{{ id = …, files = […] }}])",
+                    m.id
+                ),
+            ));
         }
         let multipart = m.multipart || resources.len() > 1;
         let (bytes, mut info) = if multipart {
-            let (bytes, boundary) = multipart_entity(&resources, m.resource_list)?;
+            let (bytes, boundary) = multipart_entity(&resources, m.resource_list, &module_key(mi))?;
             (
                 bytes,
                 vec![ModuleDescriptor::Type {
@@ -745,9 +796,12 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
                 || (!m.multipart && m.name.as_deref() == Some(STARTUP))
         });
         if !has {
-            return Err(MuxError::Config(format!(
-                "{what}: entry_point = true needs {STARTUP} in module 0x0000 (B24 Vol. 2 §9.2.2); add the file, set bml.entry_point = false, or configure [service.hybridcast] to generate a launcher"
-            )));
+            return Err(MuxError::config(
+                format!("{key}.bml.entry_point"),
+                format!(
+                    "entry_point = true needs {STARTUP} in module 0x0000 (B24 Vol. 2 §9.2.2); add the file, set bml.entry_point = false, or configure [service.hybridcast] to generate a launcher"
+                ),
+            ));
         }
     }
 
@@ -810,15 +864,18 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
         });
     }
     let dii_bytes = dii.section().encode().map_err(|e| {
-        MuxError::Config(format!(
-            "{what}: DII does not fit one 4096-byte section ({} modules): {e}",
-            modules.len()
-        ))
+        MuxError::config(
+            format!("{key}.bml.modules"),
+            format!(
+                "the DII does not fit one 4096-byte section ({} modules): {e}",
+                modules.len()
+            ),
+        )
     })?;
     let mut ddbs = Vec::new();
-    for m in &modules {
+    for (mi, m) in modules.iter().enumerate() {
         for s in module_blocks(did, m.id, module_versions[&m.id], bml.block_size, &m.bytes)
-            .map_err(|e| MuxError::Config(format!("{what}: module {:#06x}: {e}", m.id)))?
+            .map_err(|e| MuxError::config(module_key(mi), format!("module {:#06x}: {e}", m.id)))?
         {
             ddbs.push(s.encode()?);
         }
@@ -918,10 +975,14 @@ pub fn build(src: &CarouselSource, prev: Option<&Carousel>) -> Result<Carousel> 
 
 /// Transcode a UTF-8 text resource to EUC-JP (`bml.source_encoding =
 /// "utf-8"`); an XML declaration naming UTF-8 is rewritten to EUC-JP.
-/// Characters EUC-JP cannot code are an error naming the first one.
-pub fn transcode_utf8_to_euc_jp(data: &[u8], what: &str) -> Result<Vec<u8>> {
-    let text = std::str::from_utf8(data)
-        .map_err(|e| MuxError::Config(format!("{what}: not valid UTF-8 ({e})")))?;
+/// Characters EUC-JP cannot code are an error naming the first one
+/// ([`MuxError::Media`] with `path`, the file the text comes from).
+pub fn transcode_utf8_to_euc_jp(data: &[u8], path: &str) -> Result<Vec<u8>> {
+    let media = |msg: String| MuxError::Media {
+        path: path.to_string(),
+        msg,
+    };
+    let text = std::str::from_utf8(data).map_err(|e| media(format!("not valid UTF-8 ({e})")))?;
     let mut text = text.to_string();
     for from in [
         "encoding=\"UTF-8\"",
@@ -945,20 +1006,24 @@ pub fn transcode_utf8_to_euc_jp(data: &[u8], what: &str) -> Result<Vec<u8>> {
             })
             .map(|c| format!("{c:?} (U+{:04X})", c as u32))
             .unwrap_or_default();
-        return Err(MuxError::Config(format!(
-            "{what}: {bad} cannot be coded in EUC-JP (JIS X 0208); replace it"
+        return Err(media(format!(
+            "{bad} cannot be coded in EUC-JP (JIS X 0208); replace it"
         )));
     }
     Ok(out.into_owned())
 }
 
 /// `bml_version = "major.minor"` → the versions sent with
-/// default_version_flag 0.
-pub fn bml_versions(bml: &BmlCfg, what: &str) -> Result<Option<BmlVersions>> {
+/// default_version_flag 0. `key` is the TOML path of the stream.
+pub fn bml_versions(bml: &BmlCfg, key: &str) -> Result<Option<BmlVersions>> {
     let Some(v) = bml.bml_version.as_deref().filter(|v| !v.trim().is_empty()) else {
         return Ok(None);
     };
-    let bad = || MuxError::Config(format!("{what}: bml_version {v:?}: give \"major.minor\""));
+    let bad = || MuxError::Format {
+        key: format!("{key}.bml.bml_version"),
+        value: v.to_string(),
+        want: "\"major.minor\"",
+    };
     let (a, b) = v.split_once('.').ok_or_else(bad)?;
     Ok(Some(BmlVersions {
         bml_major: a.trim().parse().map_err(|_| bad())?,
@@ -1005,7 +1070,7 @@ mod tests {
                 data: vec![0x89, b'P', b'N', b'G', 0, 1, 2],
             },
         ];
-        let (e, _) = multipart_entity(&res, true).unwrap();
+        let (e, _) = multipart_entity(&res, true, "m").unwrap();
         assert!(e.starts_with(
             b"Content-Type: multipart/mixed; boundary=\"IETF_RFC1945_Multipart_Mixed\"\r\n\r\n--IETF_RFC1945_Multipart_Mixed\r\n"
         ));
@@ -1051,7 +1116,7 @@ mod tests {
         assert_eq!(p, all.len());
         // without a list: parses to the same resources
         assert_eq!(
-            parse_multipart(&multipart_entity(&res, false).unwrap().0).unwrap(),
+            parse_multipart(&multipart_entity(&res, false, "m").unwrap().0).unwrap(),
             res
         );
     }
@@ -1063,7 +1128,7 @@ mod tests {
             media_type: "text/css".into(),
             data: format!("--{BOUNDARY}").into_bytes(),
         }];
-        let (e, b) = multipart_entity(&res, true).unwrap();
+        let (e, b) = multipart_entity(&res, true, "m").unwrap();
         assert_eq!(b, format!("{BOUNDARY}-1"));
         assert!(contains(
             &e,
@@ -1089,10 +1154,10 @@ mod tests {
 
     #[test]
     fn resource_names() {
-        assert!(check_resource_name("startup.bml").is_ok());
-        assert!(check_resource_name("_a-b.c").is_ok());
-        assert!(check_resource_name("-a").is_err());
-        assert!(check_resource_name("a b").is_err());
-        assert!(check_resource_name("").is_err());
+        assert!(check_resource_name("startup.bml", "k").is_ok());
+        assert!(check_resource_name("_a-b.c", "k").is_ok());
+        assert!(check_resource_name("-a", "k").is_err());
+        assert!(check_resource_name("a b", "k").is_err());
+        assert!(check_resource_name("", "k").is_err());
     }
 }
