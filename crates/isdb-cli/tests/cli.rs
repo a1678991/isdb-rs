@@ -2119,7 +2119,9 @@ fn tools_diagnostics_are_structured_events() {
     let ev = events(&o);
     let cc = ev
         .iter()
-        .find(|e| field(e, "message").contains("; relayed as: "))
+        // the CLI's own note (the multiplexer library reports the same
+        // decision under its own target, isdbt_mux::…)
+        .find(|e| e["target"] == "isdb::mux" && field(e, "message").contains("; relayed as: "))
         .expect("the copy-control note event");
     assert_eq!(cc["level"], "INFO", "{cc}");
     assert_eq!(cc["target"], "isdb::mux", "{cc}");
@@ -2144,7 +2146,20 @@ fn tools_diagnostics_are_structured_events() {
     ]);
     assert!(o.status.success());
     let ev = events(&o);
-    assert!(ev.iter().all(|e| e["target"] == "isdb::loopback"), "{ev:?}");
+    // the CLI's events are all `isdb::loopback`; the PHY libraries add
+    // their own (isdbt_ofdm::rx lock, …), which this test does not cover
+    assert!(
+        ev.iter()
+            .filter(|e| e["target"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("isdb::")))
+            .all(|e| e["target"] == "isdb::loopback"),
+        "{ev:?}"
+    );
+    assert!(
+        ev.iter().any(|e| e["target"] == "isdbt_ofdm::rx"),
+        "the receiver library's lock event reaches the CLI's subscriber"
+    );
     let verdict = ev.last().expect("the verdict event");
     assert_eq!(verdict["message"], "PASS", "{verdict}");
     assert_eq!(verdict["pass"], true, "{verdict}");
@@ -2212,6 +2227,14 @@ fn rx_diagnostics_are_structured_events() {
     for line in err.lines() {
         let j: serde_json::Value =
             serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"));
+        // the receiver libraries emit their own events (isdbt_ofdm::rx, …);
+        // this test is about the CLI's
+        if !j["target"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("isdb::"))
+        {
+            continue;
+        }
         assert_eq!(j["level"], "INFO", "{line}");
         assert_eq!(j["target"], "isdb::rx", "{line}");
         if j["state"].is_string() {
