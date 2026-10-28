@@ -87,7 +87,7 @@ fn main() {
     // small timing-detector slope limits its integral gain register).
     d.loop_bandwidth = if alpha < 0.1 { 2e-4 } else { 2e-3 };
     let p = Params::design(&d).unwrap();
-    let doc = document(&p, &input);
+    let doc = document(&p, &input).unwrap();
     std::fs::write(&out, serde_json::to_vec(&doc).unwrap()).unwrap();
     eprintln!(
         "{}: {} samples, {} symbols, {} words",

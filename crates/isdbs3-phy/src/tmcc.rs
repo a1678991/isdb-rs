@@ -69,6 +69,7 @@ pub struct Decoded {
 
 /// Why a frame's TMCC did not decode.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// LDPC did not converge.
     #[error("TMCC LDPC: {0}")]
@@ -79,9 +80,13 @@ pub enum Error {
 }
 
 /// Decode 31 680 TMCC LLRs.
+///
+/// # Panics
+///
+/// If `llr` does not hold [`isdbs3_core::params::TMCC_SIGNAL_BITS`] values.
 pub fn decode(llr: &[f32], max_iter: usize) -> Result<Decoded, Error> {
     assert_eq!(llr.len(), isdbs3_core::params::TMCC_SIGNAL_BITS);
-    let code = isdbs3_core::ldpc::code(CodeRate::new(61).expect("61/120"));
+    let code = isdbs3_core::ldpc::code(CodeRate::TMCC);
     // rebuild the shortened word: known zeros as strong LLRs
     const KNOWN: f32 = 1.0e4;
     let mut w = vec![KNOWN; code.n()];

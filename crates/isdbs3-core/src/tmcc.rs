@@ -375,6 +375,10 @@ fn put(out: &mut Vec<u8>, v: u32, n: usize) {
 
 impl TmccInfo {
     /// Parse 9 422 information bits.
+    ///
+    /// # Panics
+    ///
+    /// If `bits` does not hold [`TMCC_INFO_BITS`] bits.
     pub fn parse(bits: &[u8]) -> Self {
         assert_eq!(bits.len(), TMCC_INFO_BITS);
         let mut r = Reader { b: bits, pos: 0 };
@@ -495,7 +499,7 @@ pub fn disperse(data: &mut [u8]) {
 pub fn encode(info: &TmccInfo) -> Vec<u8> {
     let mut d = isdb_fec::bch::encode(&info.bits());
     disperse(&mut d);
-    let code = crate::ldpc::code(CodeRate::new(61).expect("61/120"));
+    let code = crate::ldpc::code(CodeRate::TMCC);
     let mut word = vec![0u8; NULL_HEAD];
     word.extend_from_slice(&d);
     word.resize(NULL_HEAD + DATA_BITS + NULL_TAIL, 0);

@@ -276,7 +276,8 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
     // pass would stop there.
     let preps: Vec<Prep> = parallel_map(&sy.frames, |&f| prepare(z, &sy.slots, f, es_n0, opt));
     let mut ready: Vec<Ready> = Vec::new();
-    let mut order: Vec<Result<usize, RxFrame>> = Vec::new(); // index into `ready`, or a frame without slots
+    // a frame without slots, or None for the next of `ready`
+    let mut order: Vec<Option<RxFrame>> = Vec::new();
     // the last TMCC decoded in this block, for the change events
     let mut last_tmcc: Option<TmccInfo> = None;
     for (fi, (prep, &f)) in preps.into_iter().zip(&sy.frames).enumerate() {
@@ -288,7 +289,7 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
                     frame = fi,
                     start, "frame {fi} (symbol {start}): TMCC not decoded: {e}"
                 );
-                order.push(Err(RxFrame {
+                order.push(Some(RxFrame {
                     slot_index: f,
                     tmcc: Err(e),
                     tmcc_iterations: None,
@@ -303,7 +304,7 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
                     "frame {fi} (symbol {start}): TMCC decoded ({}) but its slot allocation is inconsistent",
                     describe_tmcc(&t.info)
                 );
-                order.push(Err(RxFrame {
+                order.push(Some(RxFrame {
                     slot_index: f,
                     tmcc: Ok(t.info),
                     tmcc_iterations: Some(t.ldpc_iterations),
@@ -341,7 +342,7 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
                     );
                 }
                 last_tmcc = Some(t.info.clone());
-                order.push(Ok(ready.len()));
+                order.push(None);
                 ready.push((fi, f, t, lay, ms, pil));
             }
         }
@@ -375,19 +376,20 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
             pts_for: p,
         })
         .collect();
-    let mut decoded = decode_frames(&inputs, &opt.ldpc).into_iter();
-    let mut n0s = n0s.into_iter();
-    let mut ready = ready.into_iter();
+    let decoded = decode_frames(&inputs, &opt.ldpc);
+    // one item per ready frame (decode_frames: one result per input)
+    let mut done = ready.into_iter().zip(n0s).zip(decoded);
     for o in order {
-        let Ok(_) = o else {
-            rx.frames.push(o.expect_err("frame without slots"));
+        if let Some(frame) = o {
+            rx.frames.push(frame);
             continue;
+        }
+        let Some((((fi, f, t, lay, _, _), n0), frame_slots)) = done.next() else {
+            break;
         };
-        let (fi, f, t, lay, _, _) = ready.next().expect("one per ready frame");
-        let n0 = n0s.next().expect("one per ready frame");
         let (mut slots, mut ldpc_failed, mut bch_failed, mut iterations) =
             (0usize, 0usize, 0usize, 0usize);
-        for d in decoded.next().expect("one per ready frame") {
+        for d in frame_slots {
             let s: &Slot = &lay[d.slot];
             let rel = t.info.slot_stream[d.slot];
             let head = u16::from_be_bytes([bits_byte(&d.header, 0), bits_byte(&d.header, 1)]);
@@ -524,7 +526,7 @@ fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Ve
             .map(|c| sc.spawn(move || c.iter().map(f).collect::<Vec<R>>()))
             .collect();
         hs.into_iter()
-            .flat_map(|h| h.join().expect("frame thread"))
+            .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     })
 }

@@ -12,7 +12,7 @@ pub fn map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> 
             .map(|c| sc.spawn(move || c.iter().map(f).collect::<Vec<R>>()))
             .collect();
         hs.into_iter()
-            .flat_map(|h| h.join().expect("worker thread"))
+            .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     })
 }
@@ -47,7 +47,7 @@ pub fn first_max(
             })
             .collect();
         hs.into_iter()
-            .map(|h| h.join().expect("worker thread"))
+            .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     });
     let mut best = (floor, start);

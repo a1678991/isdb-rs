@@ -244,10 +244,7 @@ impl TmccInfo {
                     unit,
                 });
             }
-            let rank = Combination::ALL
-                .iter()
-                .position(|&x| x == comb)
-                .expect("listed");
+            let rank = comb.rank();
             if prev.is_some_and(|p| rank < p) {
                 return Err(TmccError::Order);
             }

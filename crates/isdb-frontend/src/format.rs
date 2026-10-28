@@ -325,6 +325,10 @@ impl Packer {
     /// A packer writing blocks of format `version` (1..=[`FORMAT_VERSION`];
     /// older versions differ only in the trailer here: for tests and for
     /// writing streams an older reader takes).
+    ///
+    /// # Panics
+    ///
+    /// If `version` is outside 1..=[`FORMAT_VERSION`].
     pub fn with_version(p: &Params, version: u16) -> Self {
         assert!(
             (MIN_READ_VERSION..=FORMAT_VERSION).contains(&version),
@@ -568,15 +572,19 @@ impl Reader {
     }
 }
 
-/// Unpack `bits`-bit symbol pairs from payload words.
+/// Unpack `bits`-bit symbol pairs from payload words: every whole pair in
+/// the words' bits (bits left over at the end are ignored).
+///
+/// # Panics
+///
+/// If `bits` is not 1..=8 (a [`Header`] from [`Header::parse`] has 2..=8).
 pub fn unpack(words: &[u16], bits: u8) -> Vec<[i8; 2]> {
+    assert!((1..=8).contains(&bits), "{bits} bits per component: 1..=8");
     let b = u32::from(bits);
-    let n = words.len() * 16 / (2 * b as usize);
-    let mut out = Vec::with_capacity(n);
+    let mut out = Vec::with_capacity(words.len() * 16 / (2 * b as usize));
     let (mut acc, mut nacc) = (0u64, 0u32);
-    let mut it = words.iter();
-    // Sign extension of a `bits`-bit field, bits ≤ 8 (Header::parse), so
-    // the value fits i8.
+    // Sign extension of a `bits`-bit field, bits ≤ 8, so the value fits
+    // i8.
     #[allow(clippy::cast_possible_truncation)]
     let sign = |v: u64| -> i8 {
         let v = v as i64;
@@ -586,15 +594,17 @@ pub fn unpack(words: &[u16], bits: u8) -> Vec<[i8; 2]> {
             v
         }) as i8
     };
-    for _ in 0..n {
-        while nacc < 2 * b {
-            acc |= u64::from(*it.next().expect("enough words")) << nacc;
-            nacc += 16;
+    let mask = (1u64 << b) - 1;
+    // fewer than 2·bits ≤ 16 bits wait in `acc` before each word: at most
+    // 31 after it
+    for &w in words {
+        acc |= u64::from(w) << nacc;
+        nacc += 16;
+        while nacc >= 2 * b {
+            out.push([sign(acc & mask), sign((acc >> b) & mask)]);
+            acc >>= 2 * b;
+            nacc -= 2 * b;
         }
-        let mask = (1u64 << b) - 1;
-        out.push([sign(acc & mask), sign((acc >> b) & mask)]);
-        acc >>= 2 * b;
-        nacc -= 2 * b;
     }
     out
 }
@@ -1028,6 +1038,49 @@ mod tests {
             if let Err(e) = cut_check(3, bits, cut_at, cut_len, false) {
                 prop_assert!(false, "{}", e);
             }
+        }
+
+        /// The reader takes any byte stream without panicking: noise with
+        /// valid headers of any version, width and length planted in it
+        /// (so that blocks of every shape are attempted), fed in pieces
+        /// of any size. Whatever it delivers is a whole block.
+        #[test]
+        fn prop_reader_takes_any_bytes(
+            noise in proptest::collection::vec(any::<u8>(), 0..6000),
+            headers in proptest::collection::vec(
+                (0usize..6000, 1u16..=FORMAT_VERSION, 2u8..=8, 8u8..=15, any::<u32>()), 0..6),
+            split in 1usize..700,
+        ) {
+            let mut bytes = noise;
+            for (at, version, bits, block_log2, seq) in headers {
+                let h = Header { version, bits, block_log2, flags: 0, seq, gain: 0, period: 0 };
+                let at = at.min(bytes.len()) & !1;
+                for (i, w) in h.words().iter().enumerate() {
+                    for (j, b) in w.to_le_bytes().into_iter().enumerate() {
+                        if let Some(x) = bytes.get_mut(at + 2 * i + j) {
+                            *x = b;
+                        }
+                    }
+                }
+            }
+            let mut r = Reader::new();
+            let mut ev = Vec::new();
+            for piece in bytes.chunks(split) {
+                r.feed_bytes(piece, &mut ev);
+            }
+            r.finish(&mut ev);
+            for e in &ev {
+                if let Event::Block { header, symbols } = e {
+                    prop_assert_eq!(symbols.len(), header.symbols());
+                }
+            }
+        }
+
+        /// `unpack` of any words: every whole symbol pair, for every width.
+        #[test]
+        fn prop_unpack_any_words(words in proptest::collection::vec(any::<u16>(), 0..300), bits in 1u8..=8) {
+            let syms = unpack(&words, bits);
+            prop_assert_eq!(syms.len(), words.len() * 16 / (2 * usize::from(bits)));
         }
     }
 }

@@ -115,19 +115,27 @@ pub fn deinterleave(rows: &[[u8; SLOT_BYTES]; FRAMES]) -> [[u8; SLOT_BYTES]; FRA
 /// frame `f`'s output of the inner decoder, 203 bytes per sent slot in the
 /// order of [`sent_slots`]. Returns `(frame, slot, codeword)` in the order
 /// the packets were sent (frame by frame, slot by slot).
+///
+/// # Panics
+///
+/// If a frame holds fewer than 203 bytes per sent slot of `info` (what
+/// the inner decoder returns for `info` always does).
 pub fn codewords(
     info: &TmccInfo,
     frames: &[&[u8]; FRAMES],
 ) -> Vec<(usize, usize, [u8; PACKET_BYTES])> {
     let slots = sent_slots(info);
+    let rows_of: [&[[u8; SLOT_BYTES]]; FRAMES] =
+        std::array::from_fn(|f| frames[f].as_chunks::<SLOT_BYTES>().0);
+    assert!(
+        rows_of.iter().all(|r| r.len() >= slots.len()),
+        "frame bytes for {} sent slots of {SLOT_BYTES} bytes",
+        slots.len()
+    );
     let d = dispersal();
     let mut out = vec![(0, 0, [0u8; PACKET_BYTES]); FRAMES * slots.len()];
     for (n, &s) in slots.iter().enumerate() {
-        let rows: [[u8; SLOT_BYTES]; FRAMES] = std::array::from_fn(|f| {
-            frames[f][n * SLOT_BYTES..(n + 1) * SLOT_BYTES]
-                .try_into()
-                .expect("203 bytes per sent slot")
-        });
+        let rows: [[u8; SLOT_BYTES]; FRAMES] = std::array::from_fn(|f| rows_of[f][n]);
         let orig = deinterleave(&rows);
         for (i, row) in orig.iter().enumerate() {
             let mut cw = [0u8; PACKET_BYTES];

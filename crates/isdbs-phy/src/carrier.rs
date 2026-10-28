@@ -120,11 +120,11 @@ pub fn track(z: &[Cplx], frames: &[FrameMark], bandwidth: f64) -> Vec<Vec<Pilot>
             let d = (tracked[i] - tracked[i - 1] + PI).rem_euclid(TAU) - PI;
             tracked[i] = tracked[i - 1] + d;
         }
-        let mut it = flat.iter().zip(tracked);
+        // one tracked phase per pilot of the group, in the same order
+        let mut phases = tracked.into_iter();
         for ps in &mut all[k..e] {
             ps.sort_by(|a, b| a.at.total_cmp(&b.at));
-            for p in ps.iter_mut() {
-                let (_, ph) = it.next().expect("same count");
+            for (p, ph) in ps.iter_mut().zip(&mut phases) {
                 p.phase = ph;
             }
         }

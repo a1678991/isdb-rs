@@ -157,6 +157,20 @@ impl Combination {
         Self::Bpsk1_2,
     ];
 
+    /// Position in [`Combination::ALL`]: 0 for the most efficient, the
+    /// slot order of BO.1408-1 §3.2.
+    pub const fn rank(self) -> usize {
+        match self {
+            Self::Tc8psk2_3 => 0,
+            Self::Qpsk7_8 => 1,
+            Self::Qpsk5_6 => 2,
+            Self::Qpsk3_4 => 3,
+            Self::Qpsk2_3 => 4,
+            Self::Qpsk1_2 => 5,
+            Self::Bpsk1_2 => 6,
+        }
+    }
+
     /// The 4-bit word of Table 1.
     pub const fn word(self) -> u8 {
         match self {
@@ -346,6 +360,19 @@ mod tests {
         }
         for w in [0b0000, 0b1000, 0b1110, DUMMY_WORD] {
             assert_eq!(Combination::from_word(w), None);
+        }
+    }
+
+    /// §3.2: the rank is the position in `ALL`, which runs from the most
+    /// to the least efficient.
+    #[test]
+    fn spec_rank_is_the_efficiency_order() {
+        for (i, c) in Combination::ALL.into_iter().enumerate() {
+            assert_eq!(c.rank(), i);
+        }
+        for w in Combination::ALL.windows(2) {
+            let ((a, b), (c, d)) = (w[0].efficiency(), w[1].efficiency());
+            assert!(a * d >= c * b, "{:?} before {:?}", w[0], w[1]);
         }
     }
 

@@ -148,22 +148,22 @@ impl Meta {
             })
             .collect();
         let doc = json!({"global": g, "captures": captures, "annotations": []});
-        let mut s = serde_json::to_string_pretty(&doc).expect("JSON values serialise");
-        s.push('\n');
-        s
+        // `Value`'s alternate Display is serde_json's pretty printer
+        // (two-space indent, as `to_string_pretty`), and cannot fail
+        format!("{doc:#}\n")
     }
 
     /// Parse SigMF metadata. Needs `core:datatype` and `core:sample_rate`;
     /// unknown fields are kept.
     pub fn from_json(text: &str) -> Result<Self> {
-        let bad = |m: &str| Error::Format(format!("SigMF metadata: {m}"));
-        let doc: Value = serde_json::from_str(text).map_err(|e| bad(&e.to_string()))?;
+        let missing = |field| Error::MissingField { field };
+        let doc: Value = serde_json::from_str(text).map_err(Error::Json)?;
         let mut g = doc
             .get("global")
             .and_then(Value::as_object)
             .cloned()
-            .ok_or_else(|| bad("no global object"))?;
-        let datatype = opt_str(&mut g, "core:datatype").ok_or_else(|| bad("no core:datatype"))?;
+            .ok_or_else(|| missing("global object"))?;
+        let datatype = opt_str(&mut g, "core:datatype").ok_or_else(|| missing("core:datatype"))?;
         // JSON numbers are f64; the full scale is held at the f32 precision
         // of the samples it divides (rounding to nearest is the conversion).
         #[allow(clippy::cast_possible_truncation)]
@@ -176,22 +176,24 @@ impl Meta {
             .remove("core:sample_rate")
             .and_then(|v| v.as_f64())
             .filter(|r| r.is_finite() && *r > 0.0)
-            .ok_or_else(|| bad("no positive core:sample_rate"))?;
+            .ok_or(Error::SampleRate)?;
         g.remove("core:version");
         g.remove("core:extensions");
         let description = opt_str(&mut g, "core:description");
         let recorder = opt_str(&mut g, "core:recorder");
         let hw = opt_str(&mut g, "core:hw");
         let mut captures = Vec::new();
-        for c in doc
+        for (index, c) in doc
             .get("captures")
             .and_then(Value::as_array)
             .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .enumerate()
         {
             let mut m = c
                 .as_object()
                 .cloned()
-                .ok_or_else(|| bad("capture is not an object"))?;
+                .ok_or(Error::CaptureNotObject { index })?;
             let sample_start = m
                 .remove("core:sample_start")
                 .and_then(|v| v.as_u64())
@@ -209,9 +211,7 @@ impl Meta {
             .windows(2)
             .any(|w| w[1].sample_start <= w[0].sample_start)
         {
-            return Err(bad(
-                "capture segments not in increasing core:sample_start order",
-            ));
+            return Err(Error::CaptureOrder);
         }
         Ok(Self {
             format,
@@ -311,16 +311,60 @@ mod tests {
 
     #[test]
     fn malformed_metadata() {
-        for bad in [
-            "{}",
-            r#"{"global":{"core:sample_rate":1.0}}"#,
-            r#"{"global":{"core:datatype":"ci16_le"}}"#,
-            r#"{"global":{"core:datatype":"ci16_le","core:sample_rate":-1}}"#,
-            r#"{"global":{"core:datatype":"cu8","core:sample_rate":1}}"#,
-            r#"{"global":{"core:datatype":"ci8","core:sample_rate":1},
-                "captures":[{"core:sample_start":5},{"core:sample_start":5}]}"#,
-        ] {
-            assert!(Meta::from_json(bad).is_err(), "{bad}");
-        }
+        let err = |text: &str| Meta::from_json(text).unwrap_err();
+        assert!(matches!(err("{"), Error::Json(_)));
+        assert!(matches!(
+            err("{}"),
+            Error::MissingField {
+                field: "global object"
+            }
+        ));
+        assert!(matches!(
+            err(r#"{"global":{"core:sample_rate":1.0}}"#),
+            Error::MissingField {
+                field: "core:datatype"
+            }
+        ));
+        assert!(matches!(
+            err(r#"{"global":{"core:datatype":"ci16_le"}}"#),
+            Error::SampleRate
+        ));
+        assert!(matches!(
+            err(r#"{"global":{"core:datatype":"ci16_le","core:sample_rate":-1}}"#),
+            Error::SampleRate
+        ));
+        assert!(matches!(
+            err(r#"{"global":{"core:datatype":"cu8","core:sample_rate":1}}"#),
+            Error::Datatype { datatype } if datatype == "cu8"
+        ));
+        assert!(matches!(
+            err(
+                r#"{"global":{"core:datatype":"ci16_le","isdb:full_scale":0,"core:sample_rate":1}}"#
+            ),
+            Error::FullScale { .. }
+        ));
+        assert!(matches!(
+            err(r#"{"global":{"core:datatype":"ci8","core:sample_rate":1},
+                "captures":[{"core:sample_start":0},7]}"#),
+            Error::CaptureNotObject { index: 1 }
+        ));
+        assert!(matches!(
+            err(r#"{"global":{"core:datatype":"ci8","core:sample_rate":1},
+                "captures":[{"core:sample_start":5},{"core:sample_start":5}]}"#),
+            Error::CaptureOrder
+        ));
+    }
+
+    #[test]
+    fn to_json_is_serde_json_pretty() {
+        let mut m = Meta::new(SampleFormat::AD936X_CS16, 57_719_999.0);
+        m.captures.push(Segment {
+            sample_start: 0,
+            frequency: Some(1_049_480_000.0),
+            ..Default::default()
+        });
+        let text = m.to_json();
+        let doc: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(text, serde_json::to_string_pretty(&doc).unwrap() + "\n");
     }
 }

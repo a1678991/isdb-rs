@@ -292,6 +292,10 @@ impl ViterbiDecoder {
     /// Feed mother-code LLR pairs `[Lx₀, Ly₀, Lx₁, Ly₁, …]` (depunctured,
     /// 0.0 at punctured positions); appends decided bits to `out`, lagging the
     /// input by at least `traceback` steps.
+    ///
+    /// # Panics
+    ///
+    /// If `pairs` has an odd length.
     pub fn push(&mut self, pairs: &[f32], out: &mut Vec<u8>) {
         assert_eq!(pairs.len() % 2, 0);
         for (i, p) in pairs.as_chunks::<2>().0.iter().enumerate() {

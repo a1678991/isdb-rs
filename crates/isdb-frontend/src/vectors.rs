@@ -6,13 +6,14 @@
 use crate::control::{Encoder, Op, ctrl};
 use crate::fixed::{Frontend, Symbol};
 use crate::format::Packer;
-use crate::params::{FORMAT_VERSION, LOOP_DELAY, PHASES, Params};
+use crate::params::{FORMAT_VERSION, LOOP_DELAY, PHASES, ParamError, Params};
 use crate::tables::cos_table;
 use serde_json::{Value, json};
 
-/// The JSON document for `params`, `input` and the model's outputs.
-pub fn document(params: &Params, input: &[[i16; 2]]) -> Value {
-    let mut f = Frontend::new(params.clone()).expect("valid parameters");
+/// The JSON document for `params`, `input` and the model's outputs; the
+/// [`ParamError`] of [`Params::validate`] if `params` are not valid.
+pub fn document(params: &Params, input: &[[i16; 2]]) -> Result<Value, ParamError> {
+    let mut f = Frontend::new(params.clone())?;
     let mut syms: Vec<Symbol> = Vec::new();
     f.process(input, &mut syms);
     let mut pk = Packer::new(params);
@@ -25,7 +26,7 @@ pub fn document(params: &Params, input: &[[i16; 2]]) -> Value {
     let mut commands = enc.configure(params);
     commands.push(enc.word(Op::Ctrl, ctrl::START));
     commands.push(enc.word(Op::Ctrl, ctrl::RUN | ctrl::SYMBOLS));
-    json!({
+    Ok(json!({
         "format_version": FORMAT_VERSION,
         "commands": commands,
         "loop_delay": LOOP_DELAY,
@@ -35,7 +36,7 @@ pub fn document(params: &Params, input: &[[i16; 2]]) -> Value {
         "input": input.iter().map(|s| [s[0], s[1]]).collect::<Vec<_>>(),
         "symbols": syms.iter().map(symbol_json).collect::<Vec<_>>(),
         "words": words,
-    })
+    }))
 }
 
 /// The registers as JSON (field names as in [`Params`]).

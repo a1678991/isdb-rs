@@ -184,15 +184,28 @@ fn median(v: &[f64]) -> f64 {
     *s.select_nth_unstable_by(mid, f64::total_cmp).1
 }
 
+/// The index and value of the largest of `v` in `total_cmp` order, the
+/// last of equal ones (as `Iterator::max_by`); `(0, −∞)` for an empty `v`
+/// (no caller passes one: an inclusive range, a spectrum of
+/// `psd_len` ≥ 1 bins).
+fn last_max(v: &[f64]) -> (usize, f64) {
+    let Some((&first, rest)) = v.split_first() else {
+        return (0, f64::NEG_INFINITY);
+    };
+    rest.iter().enumerate().fold((0, first), |best, (i, &x)| {
+        if best.1.total_cmp(&x).is_gt() {
+            best
+        } else {
+            (i + 1, x)
+        }
+    })
+}
+
 /// Peak of `p[lo..=hi]` (power per bin) with parabolic interpolation on
 /// the dB values: (fractional bin, level above the median of the range).
 fn peak(p: &[f64], lo: usize, hi: usize) -> (f64, f64) {
     let range = &p[lo..=hi];
-    let (i, &max) = range
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.total_cmp(b.1))
-        .expect("non-empty range");
+    let (i, max) = last_max(range);
     let k = lo + i;
     let db = |x: f64| 10.0 * x.max(1e-300).log10();
     let mut frac = 0.0;
@@ -260,11 +273,7 @@ fn band(psd: &[f64], fs: f64) -> Band {
             psd[a..=b].iter().sum::<f64>() / (b - a + 1) as f64
         })
         .collect();
-    let (top, &level) = smooth
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.total_cmp(b.1))
-        .expect("non-empty spectrum");
+    let (top, level) = last_max(&smooth);
     // Walk out from the top while the spectrum stays above level − drop;
     // the edge is interpolated between the last bin above and the first
     // below. None if the band edge of the sampled spectrum is reached.
@@ -431,6 +440,29 @@ pub fn survey(x: &[C32], fs: f64, opts: &Options) -> Survey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn last_max_is_max_by() {
+        let nan = f64::NAN;
+        for v in [
+            &[][..],
+            &[1.0],
+            &[1.0, 3.0, 3.0, 2.0],
+            &[3.0, 1.0, 3.0],
+            &[-nan, -nan],
+            &[1.0, nan, 2.0, -nan],
+            &[f64::NEG_INFINITY, -1.0, f64::INFINITY, f64::INFINITY],
+        ] {
+            let want = v
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map_or((0, f64::NEG_INFINITY), |(i, &x)| (i, x));
+            let got = last_max(v);
+            assert_eq!(got.0, want.0, "{v:?}");
+            assert_eq!(got.1.to_bits(), want.1.to_bits(), "{v:?}");
+        }
+    }
 
     /// A QPSK (or 8PSK) signal at `sps` samples per symbol with a
     /// raised-cosine-like smooth pulse, offset `cfo` cycles per sample.

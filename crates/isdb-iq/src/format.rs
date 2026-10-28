@@ -53,17 +53,15 @@ impl SampleFormat {
             "ci16_le" => {
                 let full_scale = full_scale.unwrap_or(32768.0);
                 if !(full_scale.is_finite() && full_scale > 0.0) {
-                    return Err(Error::Format(format!(
-                        "isdb:full_scale {full_scale}: must be > 0"
-                    )));
+                    return Err(Error::FullScale { full_scale });
                 }
                 Self::Cs16 { full_scale }
             }
             "cf32_le" => Self::Cf32,
             d => {
-                return Err(Error::Format(format!(
-                    "SigMF datatype {d:?} not supported (ci8, ci16_le, cf32_le)"
-                )));
+                return Err(Error::Datatype {
+                    datatype: d.to_owned(),
+                });
             }
         })
     }
@@ -97,10 +95,14 @@ impl SampleFormat {
                     )
                 }));
             }
-            Self::Cf32 => out.extend(bytes.as_chunks::<8>().0.iter().map(|s| {
-                let f = |i: usize| f32::from_le_bytes(s[i..i + 4].try_into().expect("4 bytes"));
-                C32::new(f(0), f(4))
-            })),
+            Self::Cf32 => out.extend(bytes.as_chunks::<8>().0.iter().map(
+                |&[a, b, c, d, e, f, g, h]| {
+                    C32::new(
+                        f32::from_le_bytes([a, b, c, d]),
+                        f32::from_le_bytes([e, f, g, h]),
+                    )
+                },
+            )),
         }
     }
 }
@@ -134,11 +136,7 @@ impl FromStr for SampleFormat {
                 let fs = s
                     .strip_prefix("cs16/")
                     .and_then(|v| v.parse::<f32>().ok())
-                    .ok_or_else(|| {
-                        Error::Format(format!(
-                            "sample format {s:?}: want cs8, cs16, cs16/FULLSCALE or cf32"
-                        ))
-                    })?;
+                    .ok_or_else(|| Error::FormatName { name: s.clone() })?;
                 Self::from_sigmf("ci16_le", Some(fs))
             }
         }
@@ -185,9 +183,18 @@ mod tests {
             let back = SampleFormat::from_sigmf(f.sigmf_datatype(), Some(f.full_scale())).unwrap();
             assert_eq!(back, f, "{s}");
         }
-        assert!("cs12".parse::<SampleFormat>().is_err());
-        assert!("cs16/0".parse::<SampleFormat>().is_err());
-        assert!(SampleFormat::from_sigmf("ru8", None).is_err());
+        assert!(matches!(
+            "CS12".parse::<SampleFormat>(),
+            Err(Error::FormatName { name }) if name == "cs12"
+        ));
+        assert!(matches!(
+            "cs16/0".parse::<SampleFormat>(),
+            Err(Error::FullScale { full_scale: 0.0 })
+        ));
+        assert!(matches!(
+            SampleFormat::from_sigmf("ru8", None),
+            Err(Error::Datatype { datatype }) if datatype == "ru8"
+        ));
         assert_eq!(
             SampleFormat::from_sigmf("ci16_le", None)
                 .unwrap()
