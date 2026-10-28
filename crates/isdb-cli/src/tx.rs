@@ -121,6 +121,29 @@ pub struct TxArgs {
     pub status_secs: f64,
 }
 
+/// Where `isdb tx` sends the baseband: `--radio` or `--iq`.
+enum Sink<'a> {
+    /// `--radio SPEC`.
+    Radio(&'a DeviceSpec),
+    /// `--iq PATH`.
+    Iq(&'a str),
+}
+
+impl TxArgs {
+    /// The sink given. clap admits one of `--radio` / `--iq` (the `sink`
+    /// group; `--iq` is required without `--radio` unless `--print-config`,
+    /// which exits before a sink is needed); the other combinations are
+    /// refused here rather than assumed away.
+    fn sink(&self) -> Result<Sink<'_>> {
+        match (self.radio.as_ref(), self.iq.as_deref()) {
+            (Some(spec), None) => Ok(Sink::Radio(spec)),
+            (None, Some(path)) => Ok(Sink::Iq(path)),
+            (None, None) => bail!("give --iq PATH or --radio SPEC"),
+            (Some(_), Some(_)) => bail!("--iq and --radio are exclusive"),
+        }
+    }
+}
+
 /// Streaming options independent of the sink.
 #[derive(Debug, Clone)]
 pub struct TxOpts {
@@ -238,7 +261,7 @@ fn stream_controlled(
         record: false,
         depth: opts.queue_frames,
     };
-    let (frames, worker) = producer::spawn(cfg, input, stop.clone(), controls);
+    let (frames, worker) = producer::spawn(cfg, input, stop.clone(), controls)?;
     drive(params, frames, worker, sink, opts, &stop)
 }
 
@@ -442,50 +465,52 @@ pub fn run(a: TxArgs) -> Result<()> {
         params.samples_per_frame()
     );
     let stop = crate::stop::flag();
-    let mut sink: Box<dyn IqSink> = if let Some(spec) = &a.radio {
-        let backend = isdb_radio::backend(&spec.backend)?;
-        let (cfg, tuning) = a.tune.radio_config(spec, &a.gain)?;
-        let opts = TxOptions {
-            prefill_frames: a.prefill_frames,
-            frame_seconds: frame_s,
-            backoff_db: a.backoff_db,
-        };
-        let settings = backend.describe_tx(&cfg, &opts)?;
-        info!(
-            backend = backend.name(),
-            "{} TX settings{}:\n{settings}",
-            backend.name(),
-            tuning.channel_label()
-        );
-        // clap admits --radio only with exactly one of --rf-enable and
-        // --dry-run; the gate does not rely on it.
-        if !a.rf_enable || a.dry_run {
-            bail!(
-                "dry run, not transmitting: use --rf-enable instead of --dry-run to radiate with the settings above (coax/attenuator or shielded setup only)"
-            );
-        }
-        if seconds == 0.0 {
+    let mut sink: Box<dyn IqSink> = match a.sink()? {
+        Sink::Radio(spec) => {
+            let backend = isdb_radio::backend(&spec.backend)?;
+            let (cfg, tuning) = a.tune.radio_config(spec, &a.gain)?;
+            let opts = TxOptions {
+                prefill_frames: a.prefill_frames,
+                frame_seconds: frame_s,
+                backoff_db: a.backoff_db,
+            };
+            let settings = backend.describe_tx(&cfg, &opts)?;
             info!(
-                "note: unbounded transmission ({}); stop with Ctrl-C",
-                if endless {
-                    "the input never ends"
-                } else {
-                    "until the input ends"
-                }
+                backend = backend.name(),
+                "{} TX settings{}:\n{settings}",
+                backend.name(),
+                tuning.channel_label()
             );
+            // clap admits --radio only with exactly one of --rf-enable and
+            // --dry-run; the gate does not rely on it.
+            if !a.rf_enable || a.dry_run {
+                bail!(
+                    "dry run, not transmitting: use --rf-enable instead of --dry-run to radiate with the settings above (coax/attenuator or shielded setup only)"
+                );
+            }
+            if seconds == 0.0 {
+                info!(
+                    "note: unbounded transmission ({}); stop with Ctrl-C",
+                    if endless {
+                        "the input never ends"
+                    } else {
+                        "until the input ends"
+                    }
+                );
+            }
+            let (sink, info) = backend
+                .open_tx(&cfg, &opts)
+                .with_context(|| format!("open radio {spec} for TX"))?;
+            info!("opened: {info}");
+            sink
         }
-        let (sink, info) = backend
-            .open_tx(&cfg, &opts)
-            .with_context(|| format!("open radio {spec} for TX"))?;
-        info!("opened: {info}");
-        sink
-    } else {
-        let path = a.iq.as_deref().expect("clap group");
-        if a.dry_run {
-            bail!("dry run: nothing written");
+        Sink::Iq(path) => {
+            if a.dry_run {
+                bail!("dry run: nothing written");
+            }
+            check_iq_bound(path, endless, a.seconds)?;
+            Box::new(FileSink::create(path, a.iq_format, a.backoff_db)?)
         }
-        check_iq_bound(path, endless, a.seconds)?;
-        Box::new(FileSink::create(path, a.iq_format, a.backoff_db)?)
     };
     let opts = TxOpts {
         // a replayed file carries its own lead-in and flush
@@ -536,7 +561,7 @@ pub fn run(a: TxArgs) -> Result<()> {
             depth: opts.queue_frames,
         };
         let (frames, worker) =
-            crate::iqplay::spawn(f, cfg, stop.clone(), keys.as_mut().and_then(Keys::take_rx));
+            crate::iqplay::spawn(f, cfg, stop.clone(), keys.as_mut().and_then(Keys::take_rx))?;
         (
             drive(&params, frames, worker, sink.as_mut(), &opts, &stop)?,
             keys,

@@ -165,13 +165,13 @@ fn mmss(s: f64) -> String {
 }
 
 /// Start the playback thread (the same frame stream as
-/// [`crate::producer::spawn`]).
+/// [`crate::producer::spawn`]). Fails only when the OS refuses the thread.
 pub fn spawn(
     file: IqFile,
     cfg: PlayConfig,
     stop: Arc<AtomicBool>,
     controls: Option<Receiver<Command>>,
-) -> (Receiver<ProducedFrame>, JoinHandle<Result<EndReason>>) {
+) -> Result<(Receiver<ProducedFrame>, JoinHandle<Result<EndReason>>)> {
     let (out, rx) = sync_channel::<ProducedFrame>(cfg.depth.max(1));
     let h = std::thread::Builder::new()
         .name("iq-playback".into())
@@ -285,6 +285,6 @@ pub fn spawn(
                 index += 1;
             }
         })
-        .expect("spawn iq playback");
-    (rx, h)
+        .context("spawn the IQ playback thread")?;
+    Ok((rx, h))
 }

@@ -155,9 +155,14 @@ pub fn metadata(a: &CaptureArgs, caps: &[Capture]) -> Result<Meta> {
                 extra,
             }
         };
-        m.captures.push(segment(0, (i > 0).then_some(0)));
+        // The capture's segments in order; the last is held back until the
+        // loss after it is known.
+        let mut last = segment(0, (i > 0).then_some(0));
         for g in c.gaps.iter().filter(|g| g.at > 0 && g.at < c.samples) {
-            m.captures.push(segment(g.at, Some(g.discarded)));
+            m.captures.push(std::mem::replace(
+                &mut last,
+                segment(g.at, Some(g.discarded)),
+            ));
         }
         // A loss found after the last sample written (the capture ended in
         // the samples discarded around it) has no segment to start: its
@@ -169,10 +174,10 @@ pub fn metadata(a: &CaptureArgs, caps: &[Capture]) -> Result<Meta> {
             .map(|g| g.discarded)
             .sum();
         if after > 0 {
-            let last = m.captures.last_mut().expect("pushed above");
             last.extra
                 .insert("isdb:samples_discarded_after".into(), json!(after));
         }
+        m.captures.push(last);
         start += c.samples;
     }
     Ok(m)

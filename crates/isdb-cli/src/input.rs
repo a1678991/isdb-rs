@@ -246,53 +246,65 @@ impl MuxInput {
         }
         layers
     }
+}
 
-    fn take_paced(&mut self, counts: [usize; 3], stop: &AtomicBool) -> [Vec<Packet>; 3] {
+impl Pacer {
+    /// The next frame's packets of [`MuxInput`] paced by the PCR: the
+    /// input's `stream`, `route` and counters are passed in (the pacer is a
+    /// field of the same input).
+    fn take(
+        &mut self,
+        stream: &mut PacketStream,
+        route: &[u8; 8192],
+        dropped_nulls: &mut u64,
+        saturated: &mut [u64; 3],
+        counts: [usize; 3],
+        stop: &AtomicBool,
+    ) -> [Vec<Packet>; 3] {
         let mut layers: [Vec<Packet>; 3] = std::array::from_fn(|l| Vec::with_capacity(counts[l]));
-        let pc = self.pacer.as_mut().expect("paced");
-        let frame_start = pc.frame * pc.frame_ticks;
-        let limit = frame_start + pc.frame_ticks;
-        pc.frame += 1;
+        let frame_start = self.frame * self.frame_ticks;
+        let limit = frame_start + self.frame_ticks;
+        self.frame += 1;
         loop {
             // Next packet in input order: the one held back by a full layer,
             // else the clock's next timed packet (reading more input until
             // the clock can time one).
-            let (l, p, t) = match pc.carry.take() {
+            let (l, p, t) = match self.carry.take() {
                 Some(c) => c,
                 None => {
-                    while pc.clock.ready() == 0 && !pc.ended {
-                        match self.stream.next(stop) {
-                            Some(p) => pc.clock.push(&p, p),
-                            None if self.stream.ended() => {
-                                pc.clock.finish();
-                                pc.ended = true;
+                    while self.clock.ready() == 0 && !self.ended {
+                        match stream.next(stop) {
+                            Some(p) => self.clock.push(&p, p),
+                            None if stream.ended() => {
+                                self.clock.finish();
+                                self.ended = true;
                             }
                             None => return layers, // stopped
                         }
                     }
-                    let Some(x) = pc.clock.pop() else { break };
+                    let Some(x) = self.clock.pop() else { break };
                     if is_null(&x.item) {
-                        self.dropped_nulls += 1;
+                        *dropped_nulls += 1;
                         continue;
                     }
-                    (self.route[pid(&x.item) as usize] as usize, x.item, x.t)
+                    (route[pid(&x.item) as usize] as usize, x.item, x.t)
                 }
             };
             if t >= limit {
-                pc.carry = Some((l, p, t)); // due in a later frame
+                self.carry = Some((l, p, t)); // due in a later frame
                 break;
             }
             if layers[l].len() >= counts[l] {
                 // Layer full: the packet waits for the next frame (order kept).
-                pc.carry = Some((l, p, t));
-                self.saturated[l] += 1;
+                self.carry = Some((l, p, t));
+                saturated[l] += 1;
                 break;
             }
-            pc.lag = frame_start.saturating_sub(t);
-            pc.max_lag = pc.max_lag.max(pc.lag);
-            pc.bytes[l] += 188;
-            pc.first_t.get_or_insert(t);
-            pc.last_t = t;
+            self.lag = frame_start.saturating_sub(t);
+            self.max_lag = self.max_lag.max(self.lag);
+            self.bytes[l] += 188;
+            self.first_t.get_or_insert(t);
+            self.last_t = t;
             layers[l].push(p);
         }
         layers
@@ -301,10 +313,16 @@ impl MuxInput {
 
 impl FrameInput for MuxInput {
     fn take_frame(&mut self, counts: [usize; 3], stop: &AtomicBool) -> Option<FramePackets> {
-        let mut layers = if self.pacer.is_some() {
-            self.take_paced(counts, stop)
-        } else {
-            self.take_unpaced(counts, stop)
+        let mut layers = match &mut self.pacer {
+            Some(pc) => pc.take(
+                &mut self.stream,
+                &self.route,
+                &mut self.dropped_nulls,
+                &mut self.saturated,
+                counts,
+                stop,
+            ),
+            None => self.take_unpaced(counts, stop),
         };
         let real = pad(&mut layers, counts);
         let drained = match &self.pacer {

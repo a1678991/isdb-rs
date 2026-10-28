@@ -466,8 +466,19 @@ vectors, and the TMCC acceptance over the 21 lab recordings.
   shape alone (W3's reader, L2a's trace): measure it, and look at
   inlining before anything else.
 
-**Left** (not dispatched): `isdb-cli`'s 14 `expect`s (a binary, where an
-`expect` ends the program with its message); `cast_sign_loss` /
+**`isdb-cli`, done afterwards** ("panic triage of the isdb binary"): its
+14 `expect`s and 1 `assert_eq!` are 0 now. Types carry six
+(`split_first_chunk::<188>` in the TS splitter, the capture's last segment
+held by value, the anchor offset bound by a `match`, the PCR pacer passed
+in as `&mut Pacer`, the verifier numbering frames itself instead of
+asserting the producer's index); the clap groups are matched once as
+`rx::Input` / `tx::Sink` enums, the impossible combination an explicit
+error (four sites; the RF-safety gate is unchanged and still before the
+device is opened); thread spawns and the loopback's recorded packets
+return `Result`; the two joins re-raise a worker's panic
+(`resume_unwind`) and the front-end block queue recovers a poisoned lock.
+
+**Left** (not dispatched): `cast_sign_loss` /
 `cast_possible_wrap` (213) and `cast_precision_loss` (629, mostly
 `usize as f64` in reports and the new event fields) stay off, as in
 `type-safety.md` §2.

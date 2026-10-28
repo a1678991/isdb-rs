@@ -16,7 +16,7 @@ use anyhow::Result;
 use isdb_iq::C32;
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 /// Front ends running at once (blocks after the first). The front end is
@@ -92,7 +92,10 @@ where
                 after(timing);
             }
         }
-        producer.join().expect("producer thread")
+        // a panic of the producer is re-raised, not turned into an error
+        producer
+            .join()
+            .unwrap_or_else(|p| std::panic::resume_unwind(p))
     })
 }
 
@@ -133,7 +136,10 @@ fn front_stage<S, P>(
             let (queue, out, prior) = (Arc::clone(&queue), out.clone(), &prior);
             sc.spawn(move || {
                 loop {
-                    let Some((i, b)) = queue.lock().expect("block queue").next() else {
+                    // The queue is only advanced: a worker that panicked
+                    // while holding the lock leaves it consistent.
+                    let Some((i, b)) = queue.lock().unwrap_or_else(PoisonError::into_inner).next()
+                    else {
                         return;
                     };
                     let (r, _) = one(b, Some(prior));

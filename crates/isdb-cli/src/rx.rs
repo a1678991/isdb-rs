@@ -128,6 +128,34 @@ pub struct RxArgs {
     pub symbols: Option<String>,
 }
 
+/// What `isdb rx` reads: `--iq`, `--radio` or `--symbols`.
+enum Input<'a> {
+    /// `--iq PATH`.
+    Iq(&'a str),
+    /// `--radio SPEC`.
+    Radio(&'a DeviceSpec),
+    /// `--symbols PATH`.
+    Symbols(&'a str),
+}
+
+impl RxArgs {
+    /// The input given. clap admits exactly one (the required `source`
+    /// group); any other combination is refused here rather than assumed
+    /// away.
+    fn input(&self) -> Result<Input<'_>> {
+        match (
+            self.iq.as_deref(),
+            self.radio.as_ref(),
+            self.symbols.as_deref(),
+        ) {
+            (Some(p), None, None) => Ok(Input::Iq(p)),
+            (None, Some(spec), None) => Ok(Input::Radio(spec)),
+            (None, None, Some(p)) => Ok(Input::Symbols(p)),
+            _ => bail!("give exactly one of --iq, --radio and --symbols"),
+        }
+    }
+}
+
 /// `isdb rx --ldpc`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum LdpcArg {
@@ -676,39 +704,45 @@ pub fn run(a: RxArgs) -> Result<()> {
     let seconds = crate::tx::resolve_seconds(a.seconds)?;
     let max_samples = (seconds > 0.0).then(|| crate::phyargs::sample_count(seconds, fs));
     let stop = crate::stop::flag();
-    let (mut src, input_desc): (Box<dyn IqSource>, String) = if let Some(spec) = &a.radio {
-        let backend = isdb_radio::backend(&spec.backend)?;
-        let (cfg, tuning) = a.tune.radio_config(spec, &a.gain)?;
-        let settings = backend.describe_rx(&cfg)?;
-        info!(
-            target: "isdb::rx",
-            backend = backend.name(),
-            "{} RX settings{}:\n{settings}",
-            backend.name(),
-            tuning.channel_label()
-        );
-        let opts = RxOptions {
-            queue_seconds: RX_QUEUE_SECONDS,
-        };
-        let (src, info) = backend
-            .open_rx(&cfg, &opts)
-            .with_context(|| format!("open radio {spec} for RX"))?;
-        info!(target: "isdb::rx", "opened: {info}");
-        (
-            src,
-            format!(
-                "radio {spec}{}, {}",
-                tuning.channel_label(),
-                cfg.describe_tuning()
-            ),
-        )
-    } else {
-        let p = a.iq.as_deref().expect("clap group");
-        let (path, format) = sigmf_input(p, a.iq_format)?;
-        (
-            Box::new(FileIqSource::open(&path, format)?),
-            format!("{path} ({format:?})"),
-        )
+    let (mut src, input_desc): (Box<dyn IqSource>, String) = match a.input()? {
+        Input::Radio(spec) => {
+            let backend = isdb_radio::backend(&spec.backend)?;
+            let (cfg, tuning) = a.tune.radio_config(spec, &a.gain)?;
+            let settings = backend.describe_rx(&cfg)?;
+            info!(
+                target: "isdb::rx",
+                backend = backend.name(),
+                "{} RX settings{}:\n{settings}",
+                backend.name(),
+                tuning.channel_label()
+            );
+            let opts = RxOptions {
+                queue_seconds: RX_QUEUE_SECONDS,
+            };
+            let (src, info) = backend
+                .open_rx(&cfg, &opts)
+                .with_context(|| format!("open radio {spec} for RX"))?;
+            info!(target: "isdb::rx", "opened: {info}");
+            (
+                src,
+                format!(
+                    "radio {spec}{}, {}",
+                    tuning.channel_label(),
+                    cfg.describe_tuning()
+                ),
+            )
+        }
+        Input::Iq(p) => {
+            let (path, format) = sigmf_input(p, a.iq_format)?;
+            (
+                Box::new(FileIqSource::open(&path, format)?),
+                format!("{path} ({format:?})"),
+            )
+        }
+        // resolve_system sends --symbols to ISDB-S / ISDB-S3
+        Input::Symbols(_) => {
+            bail!("--symbols is an ISDB-S / ISDB-S3 input (--system isdbs or isdbs3)")
+        }
     };
     info!(
         target: "isdb::rx",
@@ -876,115 +910,118 @@ fn run_isdbs(a: RxArgs) -> Result<()> {
     let stop = crate::stop::flag();
     let mut out = crate::rxs::Outputs::new(a.out.as_deref(), &a.ts_id, a.strip_nulls)?;
     let mut stats = crate::rxs::Stats::default();
-    let (secs, input) = if let Some(p) = &a.symbols {
-        info!(target: "isdb::rx", input = p, "ISDB-S from the Symbols words of {p}");
-        let rs = isdbs_phy::frontend::system().symbol_rate_hz;
-        stats.symbol_rate_hz = rs;
-        let s = crate::rxs::run_stream(
-            crate::symstream::file_bytes(std::path::Path::new(p))?,
-            crate::symstream::Source::File,
-            rs,
-            a.status_secs > 0.0,
-            &stop,
-            &mut out,
-            &mut stats,
-        )?;
-        (s, p.clone())
-    } else if let Some(spec) = &a.radio {
-        let (hz, channel) = match (a.tune.channel, a.tune.freq) {
-            (Some(c), None) => (c.tune_hz()?, Some(c)),
-            (None, Some(f)) => (f, None),
-            (None, None) => bail!("give --channel BS<n>|ND<n> or --freq HZ (the satellite IF)"),
-            (Some(_), Some(_)) => bail!("--channel and --freq are exclusive"),
-        };
-        if a.tune.freq_corr_ppm != 0.0 {
-            bail!(
-                "--freq-corr-ppm is not applied to ISDB-S reception (the receiver tracks the carrier and symbol clock)"
-            );
+    let (secs, input) = match a.input()? {
+        Input::Symbols(p) => {
+            info!(target: "isdb::rx", input = p, "ISDB-S from the Symbols words of {p}");
+            let rs = isdbs_phy::frontend::system().symbol_rate_hz;
+            stats.symbol_rate_hz = rs;
+            let s = crate::rxs::run_stream(
+                crate::symstream::file_bytes(std::path::Path::new(p))?,
+                crate::symstream::Source::File,
+                rs,
+                a.status_secs > 0.0,
+                &stop,
+                &mut out,
+                &mut stats,
+            )?;
+            (s, p.to_owned())
         }
-        let rate = a.rate.unwrap_or(crate::rxs::DEFAULT_RATE);
-        let bw = a.bw.unwrap_or(crate::rxs::DEFAULT_BW);
-        info!(
-            target: "isdb::rx",
-            radio = %spec,
-            center_hz = hz,
-            sample_rate_hz = rate,
-            seconds,
-            "ISDB-S from radio {spec}{} at {:.3} MHz, {:.2} Msps; {}",
-            channel.map(|c| c.label()).unwrap_or_default(),
-            hz as f64 / 1e6,
-            rate / 1e6,
-            if seconds > 0.0 {
-                format!("for {seconds} s of signal")
-            } else {
-                "until Ctrl-C".into()
-            }
-        );
-        let backend = isdb_radio::backend(&spec.backend)?;
-        let cfg = isdb_radio::RadioConfig {
-            center_hz: hz,
-            nominal_hz: hz,
-            rate_num: crate::phyargs::whole_u32(rate, "--rate")?,
-            rate_den: 1,
-            bandwidth_hz: crate::phyargs::whole_u32(bw, "--bw")?,
-            args: spec.args.clone(),
-            gains: a.gain.clone(),
-        };
-        let s = if let Some(taps) = crate::symstream::fpga_taps(backend, &cfg, a.offload)? {
-            if a.block_seconds.is_some() {
+        Input::Radio(spec) => {
+            let (hz, channel) = match (a.tune.channel, a.tune.freq) {
+                (Some(c), None) => (c.tune_hz()?, Some(c)),
+                (None, Some(f)) => (f, None),
+                (None, None) => bail!("give --channel BS<n>|ND<n> or --freq HZ (the satellite IF)"),
+                (Some(_), Some(_)) => bail!("--channel and --freq are exclusive"),
+            };
+            if a.tune.freq_corr_ppm != 0.0 {
                 bail!(
-                    "--block-seconds: the FPGA front end streams continuously (--offload cpu for blocks)"
+                    "--freq-corr-ppm is not applied to ISDB-S reception (the receiver tracks the carrier and symbol clock)"
                 );
             }
-            info!(target: "isdb::rx", taps, "the radio's FPGA front end ({taps} taps): continuous reception");
-            crate::rxs::run_radio_fpga(
-                backend,
-                &cfg,
-                taps,
+            let rate = a.rate.unwrap_or(crate::rxs::DEFAULT_RATE);
+            let bw = a.bw.unwrap_or(crate::rxs::DEFAULT_BW);
+            info!(
+                target: "isdb::rx",
+                radio = %spec,
+                center_hz = hz,
+                sample_rate_hz = rate,
                 seconds,
-                a.carrier_offset,
-                a.status_secs > 0.0,
-                &stop,
-                &mut out,
-                &mut stats,
-            )?
-        } else {
-            crate::rxs::run_radio(
-                spec,
-                hz,
-                channel,
-                rate,
-                bw,
-                &a.gain,
-                a.block_seconds.unwrap_or(f64::INFINITY),
-                seconds,
-                a.carrier_offset,
-                a.status_secs > 0.0,
-                &stop,
-                &mut out,
-                &mut stats,
-            )?
-        };
-        (s, format!("radio {spec}"))
-    } else {
-        let p = a.iq.as_deref().expect("clap group");
-        if p == "-" {
-            bail!(
-                "ISDB-S reception reads a SigMF recording (rate and format from its metadata), not stdin"
+                "ISDB-S from radio {spec}{} at {:.3} MHz, {:.2} Msps; {}",
+                channel.map(|c| c.label()).unwrap_or_default(),
+                hz as f64 / 1e6,
+                rate / 1e6,
+                if seconds > 0.0 {
+                    format!("for {seconds} s of signal")
+                } else {
+                    "until Ctrl-C".into()
+                }
             );
+            let backend = isdb_radio::backend(&spec.backend)?;
+            let cfg = isdb_radio::RadioConfig {
+                center_hz: hz,
+                nominal_hz: hz,
+                rate_num: crate::phyargs::whole_u32(rate, "--rate")?,
+                rate_den: 1,
+                bandwidth_hz: crate::phyargs::whole_u32(bw, "--bw")?,
+                args: spec.args.clone(),
+                gains: a.gain.clone(),
+            };
+            let s = if let Some(taps) = crate::symstream::fpga_taps(backend, &cfg, a.offload)? {
+                if a.block_seconds.is_some() {
+                    bail!(
+                        "--block-seconds: the FPGA front end streams continuously (--offload cpu for blocks)"
+                    );
+                }
+                info!(target: "isdb::rx", taps, "the radio's FPGA front end ({taps} taps): continuous reception");
+                crate::rxs::run_radio_fpga(
+                    backend,
+                    &cfg,
+                    taps,
+                    seconds,
+                    a.carrier_offset,
+                    a.status_secs > 0.0,
+                    &stop,
+                    &mut out,
+                    &mut stats,
+                )?
+            } else {
+                crate::rxs::run_radio(
+                    spec,
+                    hz,
+                    channel,
+                    rate,
+                    bw,
+                    &a.gain,
+                    a.block_seconds.unwrap_or(f64::INFINITY),
+                    seconds,
+                    a.carrier_offset,
+                    a.status_secs > 0.0,
+                    &stop,
+                    &mut out,
+                    &mut stats,
+                )?
+            };
+            (s, format!("radio {spec}"))
         }
-        if a.iq_format.is_some() {
-            bail!("--iq-format: an ISDB-S recording's format comes from its SigMF metadata");
+        Input::Iq(p) => {
+            if p == "-" {
+                bail!(
+                    "ISDB-S reception reads a SigMF recording (rate and format from its metadata), not stdin"
+                );
+            }
+            if a.iq_format.is_some() {
+                bail!("--iq-format: an ISDB-S recording's format comes from its SigMF metadata");
+            }
+            let max = (seconds > 0.0).then(|| {
+                let fs = isdb_iq::Recording::open(std::path::Path::new(p), None, None)
+                    .map(|r| r.sample_rate)
+                    .unwrap_or(0.0);
+                crate::phyargs::sample_count(seconds, fs)
+            });
+            info!(target: "isdb::rx", input = p, "ISDB-S from {p}");
+            let s = crate::rxs::run_file(p, max, a.carrier_offset, &mut out, &mut stats)?;
+            (s, p.to_string())
         }
-        let max = (seconds > 0.0).then(|| {
-            let fs = isdb_iq::Recording::open(std::path::Path::new(p), None, None)
-                .map(|r| r.sample_rate)
-                .unwrap_or(0.0);
-            crate::phyargs::sample_count(seconds, fs)
-        });
-        info!(target: "isdb::rx", input = p, "ISDB-S from {p}");
-        let s = crate::rxs::run_file(p, max, a.carrier_offset, &mut out, &mut stats)?;
-        (s, p.to_string())
     };
     out.flush()?;
     crate::rxs::report(&stats, secs);
@@ -1021,114 +1058,117 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
     let mut out = crate::rxs3::Outputs::new(a.out.as_deref(), &a.ts_id)?;
     let mut stats = crate::rxs3::Stats::default();
     stats.ldpc = a.ldpc.ldpc();
-    let (secs, input) = if let Some(p) = &a.symbols {
-        info!(target: "isdb::rx", input = p, "ISDB-S3 from the Symbols words of {p}");
-        let rs = isdbs3_phy::frontend::system().symbol_rate_hz;
-        let s = crate::rxs3::run_stream(
-            crate::symstream::file_bytes(std::path::Path::new(p))?,
-            crate::symstream::Source::File,
-            rs,
-            a.status_secs > 0.0,
-            &stop,
-            &mut out,
-            &mut stats,
-        )?;
-        (s, p.clone())
-    } else if let Some(spec) = &a.radio {
-        let (hz, channel) = match (a.tune.channel, a.tune.freq) {
-            (Some(c), None) => (c.tune_hz()?, Some(c)),
-            (None, Some(f)) => (f, None),
-            (None, None) => bail!("give --channel BS<n>|ND<n> or --freq HZ (the satellite IF)"),
-            (Some(_), Some(_)) => bail!("--channel and --freq are exclusive"),
-        };
-        if a.tune.freq_corr_ppm != 0.0 {
-            bail!(
-                "--freq-corr-ppm is not applied to ISDB-S3 reception (the receiver tracks the carrier and symbol clock)"
-            );
+    let (secs, input) = match a.input()? {
+        Input::Symbols(p) => {
+            info!(target: "isdb::rx", input = p, "ISDB-S3 from the Symbols words of {p}");
+            let rs = isdbs3_phy::frontend::system().symbol_rate_hz;
+            let s = crate::rxs3::run_stream(
+                crate::symstream::file_bytes(std::path::Path::new(p))?,
+                crate::symstream::Source::File,
+                rs,
+                a.status_secs > 0.0,
+                &stop,
+                &mut out,
+                &mut stats,
+            )?;
+            (s, p.to_owned())
         }
-        let rate = a.rate.unwrap_or(crate::rxs3::DEFAULT_RATE);
-        let bw = a.bw.unwrap_or(crate::rxs3::DEFAULT_BW);
-        info!(
-            target: "isdb::rx",
-            radio = %spec,
-            center_hz = hz,
-            sample_rate_hz = rate,
-            seconds,
-            "ISDB-S3 from radio {spec}{} at {:.3} MHz, {:.2} Msps; {}",
-            channel.map(|c| c.label()).unwrap_or_default(),
-            hz as f64 / 1e6,
-            rate / 1e6,
-            if seconds > 0.0 {
-                format!("for {seconds} s of signal")
-            } else {
-                "until Ctrl-C".into()
-            }
-        );
-        let backend = isdb_radio::backend(&spec.backend)?;
-        let cfg = isdb_radio::RadioConfig {
-            center_hz: hz,
-            nominal_hz: hz,
-            rate_num: crate::phyargs::whole_u32(rate, "--rate")?,
-            rate_den: 1,
-            bandwidth_hz: crate::phyargs::whole_u32(bw, "--bw")?,
-            args: spec.args.clone(),
-            gains: a.gain.clone(),
-        };
-        let s = if let Some(taps) = crate::symstream::fpga_taps(backend, &cfg, a.offload)? {
-            if a.block_seconds.is_some() {
+        Input::Radio(spec) => {
+            let (hz, channel) = match (a.tune.channel, a.tune.freq) {
+                (Some(c), None) => (c.tune_hz()?, Some(c)),
+                (None, Some(f)) => (f, None),
+                (None, None) => bail!("give --channel BS<n>|ND<n> or --freq HZ (the satellite IF)"),
+                (Some(_), Some(_)) => bail!("--channel and --freq are exclusive"),
+            };
+            if a.tune.freq_corr_ppm != 0.0 {
                 bail!(
-                    "--block-seconds: the FPGA front end streams continuously (--offload cpu for blocks)"
+                    "--freq-corr-ppm is not applied to ISDB-S3 reception (the receiver tracks the carrier and symbol clock)"
                 );
             }
-            info!(target: "isdb::rx", taps, "the radio's FPGA front end ({taps} taps): continuous reception");
-            crate::rxs3::run_radio_fpga(
-                backend,
-                &cfg,
-                taps,
+            let rate = a.rate.unwrap_or(crate::rxs3::DEFAULT_RATE);
+            let bw = a.bw.unwrap_or(crate::rxs3::DEFAULT_BW);
+            info!(
+                target: "isdb::rx",
+                radio = %spec,
+                center_hz = hz,
+                sample_rate_hz = rate,
                 seconds,
-                a.carrier_offset,
-                a.status_secs > 0.0,
-                &stop,
-                &mut out,
-                &mut stats,
-            )?
-        } else {
-            crate::rxs3::run_radio(
-                spec,
-                hz,
-                channel,
-                rate,
-                bw,
-                &a.gain,
-                a.block_seconds.unwrap_or(f64::INFINITY),
-                seconds,
-                a.carrier_offset,
-                a.status_secs > 0.0,
-                &stop,
-                &mut out,
-                &mut stats,
-            )?
-        };
-        (s, format!("radio {spec}"))
-    } else {
-        let p = a.iq.as_deref().expect("clap group");
-        if p == "-" {
-            bail!(
-                "ISDB-S3 reception reads a SigMF recording (rate and format from its metadata), not stdin"
+                "ISDB-S3 from radio {spec}{} at {:.3} MHz, {:.2} Msps; {}",
+                channel.map(|c| c.label()).unwrap_or_default(),
+                hz as f64 / 1e6,
+                rate / 1e6,
+                if seconds > 0.0 {
+                    format!("for {seconds} s of signal")
+                } else {
+                    "until Ctrl-C".into()
+                }
             );
+            let backend = isdb_radio::backend(&spec.backend)?;
+            let cfg = isdb_radio::RadioConfig {
+                center_hz: hz,
+                nominal_hz: hz,
+                rate_num: crate::phyargs::whole_u32(rate, "--rate")?,
+                rate_den: 1,
+                bandwidth_hz: crate::phyargs::whole_u32(bw, "--bw")?,
+                args: spec.args.clone(),
+                gains: a.gain.clone(),
+            };
+            let s = if let Some(taps) = crate::symstream::fpga_taps(backend, &cfg, a.offload)? {
+                if a.block_seconds.is_some() {
+                    bail!(
+                        "--block-seconds: the FPGA front end streams continuously (--offload cpu for blocks)"
+                    );
+                }
+                info!(target: "isdb::rx", taps, "the radio's FPGA front end ({taps} taps): continuous reception");
+                crate::rxs3::run_radio_fpga(
+                    backend,
+                    &cfg,
+                    taps,
+                    seconds,
+                    a.carrier_offset,
+                    a.status_secs > 0.0,
+                    &stop,
+                    &mut out,
+                    &mut stats,
+                )?
+            } else {
+                crate::rxs3::run_radio(
+                    spec,
+                    hz,
+                    channel,
+                    rate,
+                    bw,
+                    &a.gain,
+                    a.block_seconds.unwrap_or(f64::INFINITY),
+                    seconds,
+                    a.carrier_offset,
+                    a.status_secs > 0.0,
+                    &stop,
+                    &mut out,
+                    &mut stats,
+                )?
+            };
+            (s, format!("radio {spec}"))
         }
-        if a.iq_format.is_some() {
-            bail!("--iq-format: an ISDB-S3 recording's format comes from its SigMF metadata");
+        Input::Iq(p) => {
+            if p == "-" {
+                bail!(
+                    "ISDB-S3 reception reads a SigMF recording (rate and format from its metadata), not stdin"
+                );
+            }
+            if a.iq_format.is_some() {
+                bail!("--iq-format: an ISDB-S3 recording's format comes from its SigMF metadata");
+            }
+            let max = (seconds > 0.0).then(|| {
+                let fs = isdb_iq::Recording::open(std::path::Path::new(p), None, None)
+                    .map(|r| r.sample_rate)
+                    .unwrap_or(0.0);
+                crate::phyargs::sample_count(seconds, fs)
+            });
+            info!(target: "isdb::rx", input = p, "ISDB-S3 from {p}");
+            let s = crate::rxs3::run_file(p, max, a.carrier_offset, &mut out, &mut stats)?;
+            (s, p.to_string())
         }
-        let max = (seconds > 0.0).then(|| {
-            let fs = isdb_iq::Recording::open(std::path::Path::new(p), None, None)
-                .map(|r| r.sample_rate)
-                .unwrap_or(0.0);
-            crate::phyargs::sample_count(seconds, fs)
-        });
-        info!(target: "isdb::rx", input = p, "ISDB-S3 from {p}");
-        let s = crate::rxs3::run_file(p, max, a.carrier_offset, &mut out, &mut stats)?;
-        (s, p.to_string())
     };
     out.flush()?;
     crate::rxs3::report(&stats, secs);

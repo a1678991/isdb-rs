@@ -15,7 +15,7 @@
 use crate::input::FrameInput;
 use crate::keys::Command;
 use crate::source::{Feed, Packet};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use isdbt_core::{Layer, Params};
 use isdbt_ofdm::C32;
 use isdbt_phy::Transmitter;
@@ -100,13 +100,14 @@ pub fn frames_for_seconds(params: &Params, seconds: f64) -> u64 {
 }
 
 /// Start the producer thread. `controls` (playback keys) are applied to
-/// the input before each data frame.
+/// the input before each data frame. Fails only when the OS refuses the
+/// thread.
 pub fn spawn(
     cfg: ProducerConfig,
     mut input: Box<dyn FrameInput>,
     stop: Arc<AtomicBool>,
     controls: Option<Receiver<Command>>,
-) -> (Receiver<ProducedFrame>, JoinHandle<Result<EndReason>>) {
+) -> Result<(Receiver<ProducedFrame>, JoinHandle<Result<EndReason>>)> {
     let (out, rx) = sync_channel::<ProducedFrame>(cfg.depth.max(1));
     let h = std::thread::Builder::new()
         .name("tx-producer".into())
@@ -256,8 +257,8 @@ pub fn spawn(
             }
             Ok(reason)
         })
-        .expect("spawn producer");
-    (rx, h)
+        .context("spawn the producer thread")?;
+    Ok((rx, h))
 }
 
 /// Pace by default only for live input written to a non-real-time sink.
@@ -302,7 +303,8 @@ mod tests {
             Box::new(SyntheticInput::new()),
             Arc::new(AtomicBool::new(false)),
             None,
-        );
+        )
+        .unwrap();
         let frames: Vec<_> = rx.iter().collect();
         assert_eq!(h.join().unwrap().unwrap(), EndReason::Limit);
         let kinds: Vec<_> = frames.iter().map(|f| f.kind).collect();
@@ -339,7 +341,7 @@ mod tests {
             record: false,
             depth: 1,
         };
-        let (rx, h) = spawn(cfg, Box::new(SyntheticInput::new()), stop.clone(), None);
+        let (rx, h) = spawn(cfg, Box::new(SyntheticInput::new()), stop.clone(), None).unwrap();
         let first = rx.recv().unwrap();
         assert_eq!(first.kind, FrameKind::Data);
         stop.store(true, Ordering::SeqCst);

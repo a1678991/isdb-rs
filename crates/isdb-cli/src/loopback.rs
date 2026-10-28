@@ -123,9 +123,13 @@ impl Verifier {
         }
     }
 
-    /// Record a transmitted frame.
-    pub fn sent(&mut self, index: u64, packets: Arc<[Vec<Packet>; 3]>, real: [usize; 3]) {
-        assert_eq!(index, self.real.len() as u64, "frames recorded in order");
+    /// Record the next transmitted frame. Frames are numbered in the order
+    /// they are recorded (the first is 0); receiver frames are matched to
+    /// that numbering by content (the anchor), so no outside index is
+    /// needed. `run` records every produced frame in order, so it is also
+    /// the producer's frame index.
+    pub fn sent(&mut self, packets: Arc<[Vec<Packet>; 3]>, real: [usize; 3]) {
+        let index = self.real.len() as u64;
         self.real.push(real);
         self.verified.push(false);
         self.ring.push_back(Sent { index, packets });
@@ -149,25 +153,28 @@ impl Verifier {
         if !fr.valid {
             return;
         }
-        if self.offset.is_none() {
-            let has_data = fr.layers.iter().flatten().flatten().any(|p| !is_null(p));
-            let hit = if has_data {
-                self.ring
-                    .iter()
-                    .find(|s| self.matches(fr, s))
-                    .map(|s| s.index)
-            } else {
-                None
-            };
-            match hit {
-                Some(i) => self.offset = Some(i as i64 - fr.tx_frame),
-                None => {
+        let offset = match self.offset {
+            Some(o) => o,
+            None => {
+                let has_data = fr.layers.iter().flatten().flatten().any(|p| !is_null(p));
+                let hit = if has_data {
+                    self.ring
+                        .iter()
+                        .find(|s| self.matches(fr, s))
+                        .map(|s| s.index)
+                } else {
+                    None
+                };
+                let Some(i) = hit else {
                     self.unanchored += 1;
                     return;
-                }
+                };
+                let o = i as i64 - fr.tx_frame;
+                self.offset = Some(o);
+                o
             }
-        }
-        let idx = fr.tx_frame + self.offset.expect("anchored");
+        };
+        let idx = fr.tx_frame + offset;
         self.frames_compared += 1;
         let Some(s) = self.lookup(idx) else {
             self.frames_unknown += 1;
@@ -268,7 +275,7 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
         record: true,
         depth: 2,
     };
-    let (frames, worker) = producer::spawn(cfg, input, stop.clone(), None);
+    let (frames, worker) = producer::spawn(cfg, input, stop.clone(), None)?;
     let mut ch = Channel::new(
         a.snr_db,
         a.cfo_carriers,
@@ -292,7 +299,11 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        ver.sent(f.index, f.packets.clone().expect("recording"), f.real);
+        // `record: true` above: the producer attaches every frame's packets
+        let packets = f.packets.clone().with_context(|| {
+            format!("frame {}: the producer did not record its packets", f.index)
+        })?;
+        ver.sent(packets, f.real);
         sent_frames += 1;
         sent_data += u64::from(f.kind == FrameKind::Data);
         prx.push(ch.process(f.samples));
@@ -409,7 +420,7 @@ mod tests {
         };
         let mut v = Verifier::new(&params);
         for i in 0..5 {
-            v.sent(i, Arc::new(frame(i)), [n, 0, 0]);
+            v.sent(Arc::new(frame(i)), [n, 0, 0]);
         }
         // Receiver output for TX frames 1..=3, numbered from its own lock.
         let mk = |i: u64, rx_idx: i64, corrupt: bool| {

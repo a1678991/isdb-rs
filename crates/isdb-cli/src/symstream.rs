@@ -536,7 +536,13 @@ pub fn finish_radio(
     let secs = decode(rx);
     cap_stop.store(true, Ordering::SeqCst);
     let _ = feeder.join();
-    match stream.thread.join().expect("capture thread") {
+    // a panic of the capture thread is re-raised here, not reported as an
+    // ordinary end of the capture
+    let capture = stream
+        .thread
+        .join()
+        .unwrap_or_else(|p| std::panic::resume_unwind(p));
+    match capture {
         Ok(c) => {
             if c.overflows > 0 {
                 warn!(

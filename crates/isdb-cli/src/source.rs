@@ -111,13 +111,13 @@ pub fn split_packets(
     mut emit: impl FnMut(Packet) -> bool,
 ) -> (usize, bool) {
     let mut i = 0;
-    while i + 188 <= buf.len() {
-        if buf[i] != 0x47 || (i + 376 <= buf.len() && buf[i + 188] != 0x47) {
+    while let Some((pkt, rest)) = buf[i..].split_first_chunk::<188>() {
+        if pkt[0] != 0x47 || (rest.len() >= 188 && rest[0] != 0x47) {
             i += 1;
             *skipped += 1;
             continue;
         }
-        if !emit(buf[i..i + 188].try_into().expect("188 bytes")) {
+        if !emit(*pkt) {
             return (i, false);
         }
         i += 188;
