@@ -95,6 +95,7 @@ pub struct Synchronizer {
 
 /// Split the unit of format `f` at the start of `v` into prefix, packet and
 /// trailer; `None` when `v` is shorter than one unit.
+#[inline(always)]
 fn split_unit(v: &[u8], f: PacketFormat) -> Option<UnitParts<'_>> {
     // One arm per format so every split is by a constant.
     match f {
@@ -183,6 +184,7 @@ impl Synchronizer {
     }
 
     /// [`Self::next_unit`], also returning the unit split by [`split_unit`].
+    #[inline(always)]
     fn next_parts<'b>(
         &mut self,
         buf: &'b [u8],
