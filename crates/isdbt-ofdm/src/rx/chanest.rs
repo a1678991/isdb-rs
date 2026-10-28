@@ -97,8 +97,9 @@ impl ChannelEstimator {
 
     /// Estimate the channel of symbol `t`.
     ///
-    /// `ring(d)` returns the spectrum of symbol `t + d` if available
-    /// (|d| ≤ [`lookahead`]`(w)`); `phase_t` is the SP phase (frame symbol
+    /// `current` is the spectrum of symbol `t`, `ring(d)` the spectrum of
+    /// symbol `t + d` if available (|d| ≤ [`lookahead`]`(w)`; `ring(0)` is
+    /// `current`); `phase_t` is the SP phase (frame symbol
     /// index mod 4) of symbol `t`.  `w` ≥ 1 is the number of SP
     /// occurrences used on each side: each grid carrier's estimate is the
     /// least-squares straight line through its `2w` nearest SP
@@ -106,6 +107,7 @@ impl ChannelEstimator {
     /// the two nearest; larger `w` trades Doppler tolerance for noise).
     pub fn estimate<'a>(
         &mut self,
+        current: &[C32],
         ring: impl Fn(i32) -> Option<&'a [C32]>,
         phase_t: usize,
         w: usize,
@@ -113,7 +115,7 @@ impl ChannelEstimator {
         if self.segments.is_empty() {
             return;
         }
-        let y0 = ring(0).expect("current symbol");
+        let y0 = current;
         let c = self.c;
         // `w` is DemodConfig::sp_time_window, a handful of symbols (the ring
         // holds 2·lookahead(w) + 1 of them), so it fits an i32.

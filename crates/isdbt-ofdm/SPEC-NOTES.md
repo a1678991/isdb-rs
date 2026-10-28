@@ -237,7 +237,8 @@ still needs a real-world capture or receiver check.
   the AC CRC in Fig. 3-35.  The reversed bit order would also give a valid
   (reciprocal) cyclic code, so this cannot be settled from the text.
 - Self-checks: g(x) divides x^273 + 1; the 17-element Singer difference set
-  of PG(2,16) gives parity checks orthogonal to g(x) (found at run time),
+  of PG(2,16) gives parity checks orthogonal to g(x) (a constant, re-derived
+  by the Singer construction in the tests),
   majority-logic decoding corrects 8 errors (tests).
 - Confirmation: agrees with the independent gr-isdbt implementation
   (polynomial division with B20 as the highest-degree coefficient, parity

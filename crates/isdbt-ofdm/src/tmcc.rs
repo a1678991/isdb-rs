@@ -245,6 +245,56 @@ impl SegmentsCode {
     }
 }
 
+/// A field of one layer's transmission-parameter information (Table
+/// 3-23), as an [`Error::Tmcc`] names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TmccField {
+    /// Carrier modulation, Table 3-28 ([`ModulationCode`]).
+    Modulation,
+    /// Convolutional-coding rate, Table 3-29 ([`RateCode`]).
+    CodeRate,
+    /// Time-interleaving length, Table 3-30 ([`InterleaveCode`]).
+    Interleave,
+    /// Number of segments, Table 3-31 ([`SegmentsCode`]).
+    Segments,
+}
+
+impl TmccField {
+    /// Width of the field's code: 3 bits, 4 for the segment count.
+    pub const fn bits(self) -> u8 {
+        match self {
+            TmccField::Segments => 4,
+            _ => 3,
+        }
+    }
+
+    /// The field's "unused hierarchical layer" code: all ones.
+    pub const fn unused_code(self) -> u8 {
+        (1 << self.bits()) - 1
+    }
+
+    /// The table that assigns the field's codes.
+    pub const fn table(self) -> &'static str {
+        match self {
+            TmccField::Modulation => "Table 3-28",
+            TmccField::CodeRate => "Table 3-29",
+            TmccField::Interleave => "Table 3-30",
+            TmccField::Segments => "Table 3-31",
+        }
+    }
+}
+
+impl fmt::Display for TmccField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            TmccField::Modulation => "modulation",
+            TmccField::CodeRate => "code-rate",
+            TmccField::Interleave => "time-interleave",
+            TmccField::Segments => "segment count",
+        })
+    }
+}
+
 /// Transmission-parameter information of one layer (Table 3-23): the four
 /// codes as received, each a lossless coded enum of its table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -285,42 +335,37 @@ impl TmccLayer {
     }
 
     /// Typed configuration; `Ok(None)` for an unused layer (modulation
-    /// '111'), `Err` for reserved / inconsistent codes.
+    /// '111').
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Tmcc`] naming the first field (in Table 3-23 order) of a
+    /// used layer whose code is reserved or "unused".
     pub fn config(self) -> Result<Option<LayerConfig>, Error> {
+        let invalid = |field: TmccField, code: u8| Error::Tmcc { field, code };
         let modulation = match self.modulation {
             ModulationCode::Unused => return Ok(None),
             ModulationCode::Assigned(m) => m,
-            ModulationCode::Reserved(c) => {
-                return Err(Error::Tmcc(format!("reserved modulation code {c:03b}")));
+            c @ ModulationCode::Reserved(_) => {
+                return Err(invalid(TmccField::Modulation, c.code()));
             }
         };
         let code_rate = match self.code_rate {
             RateCode::Assigned(r) => r,
-            RateCode::Reserved(c) => {
-                return Err(Error::Tmcc(format!("reserved code-rate code {c:03b}")));
-            }
-            RateCode::Unused => {
-                return Err(Error::Tmcc(
-                    "unused code-rate code 111 in a used layer".into(),
-                ));
+            c @ (RateCode::Reserved(_) | RateCode::Unused) => {
+                return Err(invalid(TmccField::CodeRate, c.code()));
             }
         };
         let time_interleave = match self.interleave {
             InterleaveCode::Assigned(t) => t,
             c @ (InterleaveCode::Reserved(_) | InterleaveCode::Unused) => {
-                return Err(Error::Tmcc(format!(
-                    "reserved/unused interleave code {:03b}",
-                    c.code()
-                )));
+                return Err(invalid(TmccField::Interleave, c.code()));
             }
         };
         let segments = match self.segments {
             SegmentsCode::Segments(n) => n,
             c @ (SegmentsCode::Reserved(_) | SegmentsCode::Unused) => {
-                return Err(Error::Tmcc(format!(
-                    "reserved segment count code {:04b}",
-                    c.code()
-                )));
+                return Err(invalid(TmccField::Segments, c.code()));
             }
         };
         Ok(Some(LayerConfig {
@@ -360,13 +405,18 @@ impl TmccParams {
     }
 
     /// Validated parameters for a known mode / guard interval.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Tmcc`] for a reserved or "unused" code in a used layer
+    /// ([`TmccLayer::config`]); [`Error::TmccParams`] when the layers'
+    /// codes are each valid but break a [`Params::new`] constraint.
     pub fn to_params(&self, mode: Mode, guard: GuardInterval) -> Result<Params, Error> {
         let mut layers = [None; 3];
         for (dst, l) in layers.iter_mut().zip(&self.layers) {
             *dst = l.config()?;
         }
-        Params::new(mode, guard, self.partial_reception, layers)
-            .map_err(|e| Error::Tmcc(e.to_string()))
+        Params::new(mode, guard, self.partial_reception, layers).map_err(Error::TmccParams)
     }
 }
 
@@ -407,13 +457,17 @@ impl TmccInfo {
     }
 
     /// The current parameters as validated [`Params`].
+    ///
+    /// # Errors
+    ///
+    /// As [`TmccParams::to_params`].
     pub fn params(&self, mode: Mode, guard: GuardInterval) -> Result<Params, Error> {
         self.current.to_params(mode, guard)
     }
 
     /// Serialise B20..B121 (102 bits).
     pub fn to_bits(&self) -> [u8; 102] {
-        let mut w = BitWriter::default();
+        let mut w = BitWriter::<102>::new();
         w.put(u32::from(self.system_id), 2);
         w.put(u32::from(self.switching_countdown), 4);
         w.put(u32::from(self.emergency_alarm), 1);
@@ -428,8 +482,7 @@ impl TmccInfo {
         }
         w.put(u32::from(self.phase_shift_correction), 3);
         w.put(u32::from(self.reserved), 12);
-        assert_eq!(w.bits.len(), 102);
-        w.bits.try_into().expect("102 bits")
+        w.finish()
     }
 
     /// Parse B20..B121.
@@ -506,7 +559,7 @@ pub fn decode_frame(bits: &[u8; 204]) -> TmccDecoded {
     let mut word = [0u8; 184];
     word.copy_from_slice(&bits[20..204]);
     let parity = dsc::decode(&mut word);
-    let info_bits: [u8; 102] = word[..102].try_into().expect("102");
+    let info_bits: [u8; 102] = std::array::from_fn(|i| word[i]);
     TmccDecoded {
         info: TmccInfo::from_bits(&info_bits),
         sync_odd,
@@ -515,16 +568,33 @@ pub fn decode_frame(bits: &[u8; 204]) -> TmccDecoded {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct BitWriter {
-    pub bits: Vec<u8>,
+/// Writes MSB-first fields into exactly `N` one-bit values.
+pub(crate) struct BitWriter<const N: usize> {
+    bits: [u8; N],
+    pos: usize,
 }
 
-impl BitWriter {
+impl<const N: usize> BitWriter<N> {
+    pub fn new() -> Self {
+        Self {
+            bits: [0; N],
+            pos: 0,
+        }
+    }
+
+    /// The low `n` bits of `v`, most significant first. Writing past `N`
+    /// bits is a bug of the caller's field layout (an index panic).
     pub fn put(&mut self, v: u32, n: usize) {
         for i in (0..n).rev() {
-            self.bits.push(((v >> i) & 1) as u8);
+            self.bits[self.pos] = ((v >> i) & 1) as u8;
+            self.pos += 1;
         }
+    }
+
+    /// The `N` bits; every caller writes a fixed layout of exactly `N`.
+    pub fn finish(self) -> [u8; N] {
+        debug_assert_eq!(self.pos, N, "field layout of {N} bits");
+        self.bits
     }
 }
 

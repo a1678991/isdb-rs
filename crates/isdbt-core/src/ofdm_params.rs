@@ -5,7 +5,7 @@
 //! centre carrier (§3.14.1).
 
 use crate::params::{
-    GuardInterval, Mode, Modulation, Params, SEGMENTS, SYMBOLS_PER_FRAME, Segments,
+    GuardInterval, Mode, Modulation, Params, SEGMENTS, SYMBOLS_PER_FRAME, Segments, TimeInterleave,
 };
 
 /// Carrier number of the RF centre frequency, Kc (§3.14.1: 702/1404/2808;
@@ -77,6 +77,40 @@ fn table_3_12(mode: Mode, length: usize) -> Option<(usize, usize, usize)> {
         .find(|e| e.0 == length)
 }
 
+// Row `c` of each mode is the TimeInterleave of code `c`: the table's I
+// column agrees with `TimeInterleave::length`, so the methods below can
+// index by code.
+const _: () = {
+    let modes = [Mode::M1, Mode::M2, Mode::M3];
+    let mut m = 0;
+    while m < 3 {
+        let mut c = 0;
+        while c < 4 {
+            assert!(TABLE_3_12[m][c].0 == TimeInterleave::ALL[c].length(modes[m]));
+            c += 1;
+        }
+        m += 1;
+    }
+};
+
+impl TimeInterleave {
+    fn table_3_12(self, mode: Mode) -> (usize, usize, usize) {
+        TABLE_3_12[mode.number() as usize - 1][self.code() as usize]
+    }
+
+    /// Delay-adjustment symbols applied before time interleaving in `mode`,
+    /// Table 3-12 (28 for I = 4 in Mode 1, 109 for I = 1 in Mode 3, …).
+    pub fn adjustment_symbols(self, mode: Mode) -> usize {
+        self.table_3_12(mode).1
+    }
+
+    /// Delayed frames in transmission and reception in `mode`, Table 3-12
+    /// (= (adjustment + 95·I) / 204).
+    pub fn delayed_frames(self, mode: Mode) -> usize {
+        self.table_3_12(mode).2
+    }
+}
+
 /// Number of delay-adjustment symbols applied before time interleaving for
 /// interleave length `length` (= I), Table 3-12.  `None` if `I` is not a
 /// value of the table for `mode`.
@@ -93,6 +127,10 @@ pub fn time_interleave_delayed_frames(mode: Mode, length: usize) -> Option<usize
 /// Position (0 = lowest frequency .. 12 = highest) of OFDM segment number
 /// `seg` on the transmission spectrum (Fig. 3-32: 11, 9, 7, 5, 3, 1, 0, 2,
 /// 4, 6, 8, 10, 12 in ascending frequency).
+///
+/// # Panics
+///
+/// If `seg` ≥ 13.
 pub fn segment_position(seg: usize) -> usize {
     assert!(seg < SEGMENTS, "segment {seg}");
     if seg == 0 {
@@ -160,9 +198,12 @@ pub fn samples_per_symbol(mode: Mode, guard: GuardInterval) -> usize {
 impl Params {
     /// True if data segment / OFDM segment `seg` (0..13, §3.11.2 numbering)
     /// is differentially modulated (its layer uses DQPSK, §3.12.1).
+    ///
+    /// # Panics
+    ///
+    /// If `seg` ≥ 13.
     pub fn segment_is_differential(&self, seg: usize) -> bool {
-        let layer = self.layer_of_segment(seg);
-        self.layers()[layer.index()].is_some_and(|l| l.modulation.is_differential())
+        self.segment_layer(seg).1.modulation.is_differential()
     }
 
     /// Time-interleave length I of `layer` (0 if the layer is unused).
@@ -239,6 +280,8 @@ mod tests {
                 let i = k.length(mode);
                 let adj = time_interleave_adjustment_symbols(mode, i).unwrap();
                 let frames = time_interleave_delayed_frames(mode, i).unwrap();
+                assert_eq!(k.adjustment_symbols(mode), adj, "{mode:?} {k:?}");
+                assert_eq!(k.delayed_frames(mode), frames, "{mode:?} {k:?}");
                 assert_eq!(
                     adj + TIME_INTERLEAVE_M_MAX * i,
                     frames * SYMBOLS_PER_FRAME,

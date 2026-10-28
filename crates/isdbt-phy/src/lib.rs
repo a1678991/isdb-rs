@@ -103,13 +103,27 @@ pub enum Error {
     /// Symbol-domain error.
     #[error(transparent)]
     Ofdm(#[from] isdbt_ofdm::Error),
-    /// Input does not match the configured layers.
-    #[error("{0}")]
-    Input(String),
+    /// Packets given for a layer the parameters leave unused.
+    #[error("layer {layer} unused but {got} packets given")]
+    UnusedLayer {
+        /// The unused layer.
+        layer: Layer,
+        /// Packets given for it.
+        got: usize,
+    },
+    /// A §3.2.1 multiplex frame whose length is not the Table 3-5 n of
+    /// the parameters.
+    #[error("multiplex frame of {got} packets, expected {expected}")]
+    MultiplexFrameLength {
+        /// TSPs per multiplex frame.
+        expected: usize,
+        /// Packets given.
+        got: usize,
+    },
     /// Broadcasting-TS additional information (B31 Part 2 §5.5) that
     /// cannot be encoded or does not parse ([`broadcast_ts`]).
-    #[error("broadcast TS: {0}")]
-    BroadcastTs(String),
+    #[error(transparent)]
+    BroadcastTs(#[from] broadcast_ts::BroadcastTsError),
     /// A [`PipelinedReceiver`] worker thread panicked (its frames after
     /// the panic are missing).
     #[error("receiver worker thread {0} panicked")]
@@ -189,11 +203,10 @@ impl Transmitter {
             match enc {
                 Some(e) => bits[i] = e.encode_frame_188(layers[i])?,
                 None if !layers[i].is_empty() => {
-                    return Err(Error::Input(format!(
-                        "layer {} unused but {} packets given",
-                        Layer::ALL[i],
-                        layers[i].len()
-                    )));
+                    return Err(Error::UnusedLayer {
+                        layer: Layer::ALL[i],
+                        got: layers[i].len(),
+                    });
                 }
                 None => {}
             }
@@ -336,31 +349,33 @@ impl FrameDecoder {
 
     /// Decode one demodulated frame.
     pub fn decode(&mut self, f: DemodFrame) -> Result<RxFrame> {
-        if self.chain.as_ref().is_none_or(|c| c.params != f.params) {
-            let p = f.params.clone();
-            debug!(
-                frame = f.frame_number,
-                mode = p.mode().number(),
-                guard = p.guard().denominator(),
-                layers = p.active_layers().count(),
-                "channel decoders configured from the TMCC of frame {}: mode {}, GI 1/{}, {} layer(s)",
-                f.frame_number,
-                p.mode().number(),
-                p.guard().denominator(),
-                p.active_layers().count()
-            );
-            self.chain = Some(RxChain {
-                decoders: std::array::from_fn(|i| {
-                    p.layers()[i]
-                        .as_ref()
-                        .map(|l| LayerDecoder::new(p.mode(), l))
-                }),
-                pattern: MultiplexPattern::new(&p),
-                params: p,
-                prev_valid: false,
-            });
-        }
-        let chain = self.chain.as_mut().expect("chain set above");
+        let chain = match self.chain.take() {
+            Some(c) if c.params == f.params => self.chain.insert(c),
+            _ => {
+                let p = f.params.clone();
+                debug!(
+                    frame = f.frame_number,
+                    mode = p.mode().number(),
+                    guard = p.guard().denominator(),
+                    layers = p.active_layers().count(),
+                    "channel decoders configured from the TMCC of frame {}: mode {}, GI 1/{}, {} layer(s)",
+                    f.frame_number,
+                    p.mode().number(),
+                    p.guard().denominator(),
+                    p.active_layers().count()
+                );
+                self.chain.insert(RxChain {
+                    decoders: std::array::from_fn(|i| {
+                        p.layers()[i]
+                            .as_ref()
+                            .map(|l| LayerDecoder::new(p.mode(), l))
+                    }),
+                    pattern: MultiplexPattern::new(&p),
+                    params: p,
+                    prev_valid: false,
+                })
+            }
+        };
         let mut layers: [Option<Vec<Packet>>; 3] = Default::default();
         let mut rs: [Option<RsStats>; 3] = Default::default();
         for (i, dec) in chain.decoders.iter_mut().enumerate() {

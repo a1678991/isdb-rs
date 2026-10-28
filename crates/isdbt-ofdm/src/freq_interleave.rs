@@ -121,6 +121,10 @@ impl FrequencyInterleaver {
     }
 
     /// Interleave one OFDM symbol (data-segment order in and out).
+    ///
+    /// # Panics
+    ///
+    /// If `input` or `out` does not have one value per data carrier.
     pub fn interleave<T: Copy>(&self, input: &[T], out: &mut [T]) {
         assert_eq!(input.len(), self.perm.len());
         assert_eq!(out.len(), self.perm.len());
@@ -130,6 +134,10 @@ impl FrequencyInterleaver {
     }
 
     /// Inverse of [`Self::interleave`].
+    ///
+    /// # Panics
+    ///
+    /// If `input` or `out` does not have one value per data carrier.
     pub fn deinterleave<T: Copy>(&self, input: &[T], out: &mut [T]) {
         assert_eq!(input.len(), self.perm.len());
         assert_eq!(out.len(), self.perm.len());

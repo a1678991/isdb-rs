@@ -73,6 +73,7 @@ use isdbt_core::{GuardInterval, Layer, Mode, Params, TRANSMISSION_TSP, TSP};
 use isdbt_fec::remux::{MultiplexPattern, Slot, null_tsp};
 use isdbt_fec::rs::{gf_alpha_pow, gf_mul};
 use isdbt_ofdm::tmcc::TmccInfo;
+use std::result::Result as StdResult;
 use tracing::debug;
 
 use crate::{Error, Packet, Result};
@@ -108,30 +109,122 @@ pub const MAX_TIME_100NS: u32 = 9_999_999;
 
 const _: () = assert!(MAX_NETWORK_SYNC_LEN == 159);
 
-fn err(msg: impl Into<String>) -> Error {
-    Error::BroadcastTs(msg.into())
+/// Why broadcasting-TS additional information (§5.5) cannot be encoded
+/// or does not parse.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum BroadcastTsError {
+    /// A CRC_32 (H.222.0 Annex A) over `what` does not check (Tables 5-10,
+    /// 5-12).
+    #[error("{what} CRC_32 mismatch")]
+    Crc {
+        /// The syntax element the CRC covers.
+        what: &'static str,
+    },
+    /// A mode code of `mode_GI_information` is the reserved '00' (Table
+    /// 5-11).
+    #[error("IIP: reserved {what} '{code:02b}'")]
+    ReservedMode {
+        /// `current_mode` or `next_mode`.
+        what: &'static str,
+        /// The code.
+        code: u8,
+    },
+    /// A value does not fit the width of its field (Table 5-12).
+    #[error("{what} {value} does not fit {bits} bits")]
+    Width {
+        /// The field.
+        what: &'static str,
+        /// The value.
+        value: u64,
+        /// The field width.
+        bits: u32,
+    },
+    /// A count or length above the limit of Tables 5-9 / 5-12.
+    #[error("{what} {value} exceeds {max}")]
+    TooLarge {
+        /// What was counted.
+        what: &'static str,
+        /// The count or length.
+        value: usize,
+        /// The limit.
+        max: usize,
+    },
+    /// `SFN_synchronization_information` shorter than its fixed fields
+    /// (Table 5-12).
+    #[error("SFN_synchronization_information of {len} bytes is too short")]
+    SfnTooShort {
+        /// Bytes after `network_synchronization_information_length`.
+        len: usize,
+    },
+    /// `equipment_loop_length` is not a multiple of 5 or disagrees with
+    /// the length of the information (Table 5-12).
+    #[error("equipment_loop_length {loop_len} does not match {len} bytes")]
+    EquipmentLoopLength {
+        /// `equipment_loop_length`.
+        loop_len: usize,
+        /// Bytes after `network_synchronization_information_length`.
+        len: usize,
+    },
+    /// A [`NetworkSync::Reserved`] with a `synchronization_id` that is not
+    /// reserved (0x00 and 0xFF have their own variants).
+    #[error("synchronization_id 0x{id:02X} is not a reserved value")]
+    NotReservedSyncId {
+        /// The identifier.
+        id: u8,
+    },
+    /// The IIP's sync byte is not 0x47.
+    #[error("IIP sync byte 0x{0:02X}")]
+    SyncByte(u8),
+    /// The IIP's `adaptation_field_control` is not '01' (Table 5-8).
+    #[error("IIP adaptation_field_control '{0}' (expected '01')")]
+    AdaptationField(AdaptationFieldControl),
+    /// The IIP's TS header does not encode.
+    #[error("IIP header")]
+    Header(#[source] isdb_ts::Error),
+    /// The multiplex frame has no null slot to carry the IIP.
+    #[error("multiplex frame has no null slot for the IIP")]
+    NoIipSlot,
+    /// Neither this frame nor the previous one carried an IIP.
+    #[error("no IIP in this or the previous frame")]
+    NoIip,
+    /// The frame's only IIP does not parse.
+    #[error("no usable IIP")]
+    UnusableIip(#[source] Box<BroadcastTsError>),
 }
 
 // ---------------------------------------------------------------------------
 // Bit packing (MSB first, as every bslbf/uimsbf field of the tables).
 
-#[derive(Default)]
-struct BitWriter {
-    bytes: Vec<u8>,
+/// Writes MSB-first fields into exactly `N` bytes.
+struct BitWriter<const N: usize> {
+    bytes: [u8; N],
     n: usize,
 }
 
-impl BitWriter {
+impl<const N: usize> BitWriter<N> {
+    fn new() -> Self {
+        Self {
+            bytes: [0; N],
+            n: 0,
+        }
+    }
+
+    /// The low `bits` bits of `v`, most significant first. Writing past
+    /// `N` bytes is a bug of the caller's field layout (an index panic).
     fn put(&mut self, v: u32, bits: usize) {
         for i in (0..bits).rev() {
-            if self.n.is_multiple_of(8) {
-                self.bytes.push(0);
-            }
             if (v >> i) & 1 == 1 {
                 self.bytes[self.n / 8] |= 0x80 >> (self.n % 8);
             }
             self.n += 1;
         }
+    }
+
+    /// The `N` bytes; every caller writes a fixed layout of `8·N` bits.
+    fn finish(self) -> [u8; N] {
+        debug_assert_eq!(self.n, 8 * N, "field layout of {N} bytes");
+        self.bytes
     }
 }
 
@@ -506,16 +599,29 @@ impl ModeGi {
     }
 
     /// The current mode and guard interval.
-    pub fn current(&self) -> Result<(Mode, GuardInterval)> {
-        let mode = Self::mode_from_code(self.current_mode)
-            .ok_or_else(|| err("IIP: reserved current_mode '00'"))?;
+    ///
+    /// # Errors
+    ///
+    /// [`BroadcastTsError::ReservedMode`] for `current_mode` '00'.
+    pub fn current(&self) -> StdResult<(Mode, GuardInterval), BroadcastTsError> {
+        let mode =
+            Self::mode_from_code(self.current_mode).ok_or(BroadcastTsError::ReservedMode {
+                what: "current_mode",
+                code: self.current_mode & 0b11,
+            })?;
         Ok((mode, Self::guard_from_code(self.current_guard)))
     }
 
     /// The next mode and guard interval.
-    pub fn next(&self) -> Result<(Mode, GuardInterval)> {
-        let mode = Self::mode_from_code(self.next_mode)
-            .ok_or_else(|| err("IIP: reserved next_mode '00'"))?;
+    ///
+    /// # Errors
+    ///
+    /// [`BroadcastTsError::ReservedMode`] for `next_mode` '00'.
+    pub fn next(&self) -> StdResult<(Mode, GuardInterval), BroadcastTsError> {
+        let mode = Self::mode_from_code(self.next_mode).ok_or(BroadcastTsError::ReservedMode {
+            what: "next_mode",
+            code: self.next_mode & 0b11,
+        })?;
         Ok((mode, Self::guard_from_code(self.next_guard)))
     }
 }
@@ -564,28 +670,33 @@ impl ModulationControl {
 
     /// The parameters in force: current mode / guard interval with the
     /// TMCC current information.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BroadcastTs`] for a reserved mode code, [`Error::Ofdm`]
+    /// for TMCC information that names no valid parameters.
     pub fn params(&self) -> Result<Params> {
         let (mode, guard) = self.mode_gi.current()?;
-        self.tmcc.params(mode, guard).map_err(Error::Ofdm)
+        Ok(self.tmcc.params(mode, guard)?)
     }
 
     /// The announced next parameters (next mode / guard interval with the
     /// TMCC next information); `Ok(None)` when the TMCC carries no next
     /// information.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::params`], for the next information.
     pub fn next_params(&self) -> Result<Option<Params>> {
         let (mode, guard) = self.mode_gi.next()?;
         if self.tmcc.next.layers.iter().all(|l| l.is_unused()) {
             return Ok(None);
         }
-        self.tmcc
-            .next
-            .to_params(mode, guard)
-            .map(Some)
-            .map_err(Error::Ofdm)
+        Ok(Some(self.tmcc.next.to_params(mode, guard)?))
     }
 
     fn content(&self) -> [u8; MODULATION_CONTROL_LEN - 4] {
-        let mut w = BitWriter::default();
+        let mut w = BitWriter::<{ MODULATION_CONTROL_LEN - 4 }>::new();
         w.put(u32::from(self.tmcc_sync_odd), 1);
         w.put(u32::from(self.ac_in_dummy_bytes), 1);
         w.put(u32::from(self.reserved & 0b11), 2);
@@ -598,8 +709,7 @@ impl ModulationControl {
             w.put(u32::from(bit), 1);
         }
         w.put(u32::from(self.reserved_future_use & 0x3FF), 10);
-        debug_assert_eq!(w.n, 128);
-        w.bytes.try_into().expect("128 bits")
+        w.finish()
     }
 
     /// Serialise with CRC_32.
@@ -611,12 +721,16 @@ impl ModulationControl {
         out
     }
 
-    /// Parse; `Err` on a CRC_32 mismatch.
-    pub fn from_bytes(b: &[u8; MODULATION_CONTROL_LEN]) -> Result<Self> {
+    /// Parse.
+    ///
+    /// # Errors
+    ///
+    /// [`BroadcastTsError::Crc`] on a CRC_32 mismatch.
+    pub fn from_bytes(b: &[u8; MODULATION_CONTROL_LEN]) -> StdResult<Self, BroadcastTsError> {
         if crc32(b) != 0 {
-            return Err(err(
-                "modulation_control_configuration_information CRC_32 mismatch",
-            ));
+            return Err(BroadcastTsError::Crc {
+                what: "modulation_control_configuration_information",
+            });
         }
         let mut r = BitReader { data: b, pos: 0 };
         let tmcc_sync_odd = r.get(1) == 1;
@@ -716,9 +830,13 @@ impl Default for NetworkSync {
     }
 }
 
-fn check_24(name: &str, v: u32) -> Result<()> {
+fn check_24(what: &'static str, v: u32) -> StdResult<(), BroadcastTsError> {
     if v > 0xFF_FFFF {
-        return Err(err(format!("{name} {v} does not fit 24 bits")));
+        return Err(BroadcastTsError::Width {
+            what,
+            value: u64::from(v),
+            bits: 24,
+        });
     }
     Ok(())
 }
@@ -726,7 +844,13 @@ fn check_24(name: &str, v: u32) -> Result<()> {
 impl NetworkSync {
     /// Serialise: the bytes that follow
     /// `network_synchronization_information_length`.
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+    ///
+    /// # Errors
+    ///
+    /// A [`BroadcastTsError`] for a field that does not fit its width, an
+    /// equipment loop or information over the Table 5-9 limit, or a
+    /// `Reserved` identifier that is not reserved.
+    pub fn to_bytes(&self) -> StdResult<Vec<u8>, BroadcastTsError> {
         let out = match self {
             Self::Absent => Vec::new(),
             Self::Stuffing(n) => {
@@ -736,9 +860,7 @@ impl NetworkSync {
             }
             Self::Reserved { id, body } => {
                 if *id == 0x00 || *id == 0xFF {
-                    return Err(err(format!(
-                        "synchronization_id 0x{id:02X} is not a reserved value"
-                    )));
+                    return Err(BroadcastTsError::NotReservedSyncId { id: *id });
                 }
                 let mut v = Vec::with_capacity(body.len() + 1);
                 v.push(*id);
@@ -747,11 +869,11 @@ impl NetworkSync {
             }
             Self::Sfn(s) => {
                 if s.equipment.len() > SfnSync::MAX_EQUIPMENT {
-                    return Err(err(format!(
-                        "equipment loop of {} entries exceeds {}",
-                        s.equipment.len(),
-                        SfnSync::MAX_EQUIPMENT
-                    )));
+                    return Err(BroadcastTsError::TooLarge {
+                        what: "equipment loop entry count",
+                        value: s.equipment.len(),
+                        max: SfnSync::MAX_EQUIPMENT,
+                    });
                 }
                 check_24("synchronization_time_stamp", s.time_stamp)?;
                 check_24("maximum_delay", s.maximum_delay)?;
@@ -759,16 +881,19 @@ impl NetworkSync {
                 v.push(0x00);
                 v.extend_from_slice(&s.time_stamp.to_be_bytes()[1..]);
                 v.extend_from_slice(&s.maximum_delay.to_be_bytes()[1..]);
-                v.push(
-                    u8::try_from(5 * s.equipment.len())
-                        .map_err(|_| err("equipment loop length does not fit 8 bits"))?,
-                );
+                let loop_len = 5 * s.equipment.len();
+                v.push(u8::try_from(loop_len).map_err(|_| BroadcastTsError::Width {
+                    what: "equipment_loop_length",
+                    value: loop_len as u64,
+                    bits: 8,
+                })?);
                 for e in &s.equipment {
                     if e.equipment_id > 0xFFF {
-                        return Err(err(format!(
-                            "equipment_id {} does not fit 12 bits",
-                            e.equipment_id
-                        )));
+                        return Err(BroadcastTsError::Width {
+                            what: "equipment_id",
+                            value: u64::from(e.equipment_id),
+                            bits: 12,
+                        });
                     }
                     check_24("time_offset", e.time_offset)?;
                     // equipment_id <= 0xFFF (checked above): the high byte of
@@ -791,18 +916,24 @@ impl NetworkSync {
             }
         };
         if out.len() > MAX_NETWORK_SYNC_LEN {
-            return Err(err(format!(
-                "network_synchronization_information of {} bytes exceeds {}",
-                out.len(),
-                MAX_NETWORK_SYNC_LEN
-            )));
+            return Err(BroadcastTsError::TooLarge {
+                what: "network_synchronization_information length",
+                value: out.len(),
+                max: MAX_NETWORK_SYNC_LEN,
+            });
         }
         Ok(out)
     }
 
     /// Parse the bytes that follow
     /// `network_synchronization_information_length`.
-    pub fn from_bytes(b: &[u8]) -> Result<Self> {
+    ///
+    /// # Errors
+    ///
+    /// A [`BroadcastTsError`] for SFN information that is too short, whose
+    /// `equipment_loop_length` disagrees with its length, or whose CRC_32
+    /// does not check.
+    pub fn from_bytes(b: &[u8]) -> StdResult<Self, BroadcastTsError> {
         let Some((&id, rest)) = b.split_first() else {
             return Ok(Self::Absent);
         };
@@ -810,20 +941,19 @@ impl NetworkSync {
             0xFF => Ok(Self::Stuffing(rest.len())),
             0x00 => {
                 if rest.len() < SfnSync::FIXED_LEN - 1 {
-                    return Err(err(format!(
-                        "SFN_synchronization_information of {} bytes is too short",
-                        b.len()
-                    )));
+                    return Err(BroadcastTsError::SfnTooShort { len: b.len() });
                 }
                 let loop_len = usize::from(rest[6]);
                 if !loop_len.is_multiple_of(5) || rest.len() != 7 + loop_len + 4 {
-                    return Err(err(format!(
-                        "equipment_loop_length {loop_len} does not match {} bytes",
-                        b.len()
-                    )));
+                    return Err(BroadcastTsError::EquipmentLoopLength {
+                        loop_len,
+                        len: b.len(),
+                    });
                 }
                 if crc32(rest) != 0 {
-                    return Err(err("SFN_synchronization_information CRC_32 mismatch"));
+                    return Err(BroadcastTsError::Crc {
+                        what: "SFN_synchronization_information",
+                    });
                 }
                 let u24 = |x: &[u8]| u32::from_be_bytes([0, x[0], x[1], x[2]]);
                 let equipment = rest[7..7 + loop_len]
@@ -881,7 +1011,11 @@ impl Iip {
     /// Serialise: header with `payload_unit_start_indicator` '1',
     /// `adaptation_field_control` '01', the payload, and 0xFF stuffing
     /// (Table 5-8 / 5-9).
-    pub fn to_packet(&self) -> Result<Packet> {
+    ///
+    /// # Errors
+    ///
+    /// As [`NetworkSync::to_bytes`].
+    pub fn to_packet(&self) -> StdResult<Packet, BroadcastTsError> {
         let ns = self.network_sync.to_bytes()?;
         let mut p = [0xFFu8; TSP];
         let mut header = Header::new(
@@ -890,13 +1024,16 @@ impl Iip {
             self.continuity_counter,
         );
         header.payload_unit_start_indicator = true;
-        p[..4].copy_from_slice(&header.encode().map_err(|e| err(e.to_string()))?);
+        p[..4].copy_from_slice(&header.encode().map_err(BroadcastTsError::Header)?);
         p[4..6].copy_from_slice(&self.packet_pointer.to_be_bytes());
         p[6..26].copy_from_slice(&self.modulation_control.to_bytes());
         p[26] = self.branch_number;
         p[27] = self.last_branch_number;
-        p[28] = u8::try_from(ns.len())
-            .map_err(|_| err("network_synchronization_information length does not fit 8 bits"))?;
+        p[28] = u8::try_from(ns.len()).map_err(|_| BroadcastTsError::Width {
+            what: "network_synchronization_information_length",
+            value: ns.len() as u64,
+            bits: 8,
+        })?;
         p[29..29 + ns.len()].copy_from_slice(&ns);
         Ok(p)
     }
@@ -905,22 +1042,29 @@ impl Iip {
     /// '01' (the payload offset depends on it), the length field and both
     /// CRC_32s; `transport_error_indicator`, `payload_unit_start_indicator`
     /// and `transport_priority` are not checked.
-    pub fn from_packet(p: &Packet) -> Result<Self> {
-        let header = Header::decode(p).map_err(|e| err(e.to_string()))?;
+    ///
+    /// # Errors
+    ///
+    /// A [`BroadcastTsError`] for a wrong sync byte or
+    /// `adaptation_field_control`, a length field over the limit, a CRC_32
+    /// mismatch or malformed network synchronisation information.
+    pub fn from_packet(p: &Packet) -> StdResult<Self, BroadcastTsError> {
+        let header = Header::of_packet(p);
         if header.sync_byte != SYNC_BYTE {
-            return Err(err(format!("IIP sync byte 0x{:02X}", header.sync_byte)));
+            return Err(BroadcastTsError::SyncByte(header.sync_byte));
         }
         if header.adaptation_field_control != AdaptationFieldControl::PayloadOnly {
-            return Err(err(format!(
-                "IIP adaptation_field_control '{}' (expected '01')",
-                header.adaptation_field_control
-            )));
+            return Err(BroadcastTsError::AdaptationField(
+                header.adaptation_field_control,
+            ));
         }
         let ns_len = usize::from(p[28]);
         if ns_len > MAX_NETWORK_SYNC_LEN {
-            return Err(err(format!(
-                "network_synchronization_information_length {ns_len} exceeds {MAX_NETWORK_SYNC_LEN}"
-            )));
+            return Err(BroadcastTsError::TooLarge {
+                what: "network_synchronization_information_length",
+                value: ns_len,
+                max: MAX_NETWORK_SYNC_LEN,
+            });
         }
         let mut mc = [0u8; MODULATION_CONTROL_LEN];
         mc.copy_from_slice(&p[6..26]);
@@ -965,15 +1109,19 @@ pub struct BroadcastTsWriter {
 }
 
 impl BroadcastTsWriter {
-    /// Writer for `params`.  Fails if the multiplex frame has no null slot
-    /// to carry the IIP.
+    /// Writer for `params`.
+    ///
+    /// # Errors
+    ///
+    /// [`BroadcastTsError::NoIipSlot`] if the multiplex frame has no null
+    /// slot to carry the IIP.
     pub fn new(params: Params) -> Result<Self> {
         let pattern = MultiplexPattern::new(&params);
         let iip_slot = pattern
             .slots()
             .iter()
             .position(Option::is_none)
-            .ok_or_else(|| err("multiplex frame has no null slot for the IIP"))?;
+            .ok_or(BroadcastTsError::NoIipSlot)?;
         Ok(Self {
             tmcc: TmccInfo::from_params(&params),
             params,
@@ -1001,7 +1149,12 @@ impl BroadcastTsWriter {
     }
 
     /// Network synchronisation information to carry in every IIP (default:
-    /// the one-byte "not added" form).  Fails if it does not fit.
+    /// the one-byte "not added" form).
+    ///
+    /// # Errors
+    ///
+    /// As [`NetworkSync::to_bytes`]; the writer keeps its previous
+    /// information.
     pub fn set_network_sync(&mut self, network_sync: NetworkSync) -> Result<()> {
         network_sync.to_bytes()?;
         self.network_sync = network_sync;
@@ -1030,26 +1183,36 @@ impl BroadcastTsWriter {
 
     /// One frame from per-layer packets (exactly `pattern().count(layer)`
     /// each); null slots carry null packets.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Fec`] if a layer's packet count is not the pattern's.
     pub fn frame(&mut self, layers: [&[Packet]; 3]) -> Result<Vec<BroadcastTsp>> {
         let mux = self.pattern.assemble(layers, null_tsp)?;
-        Ok(self.wrap(&mux))
+        self.wrap(&mux)
     }
 
     /// One frame from a §3.2.1 multiplex frame of `pattern().len()`
     /// packets in slot order.  The packet in the IIP slot (a null slot,
     /// transmitted by no layer) is replaced by the IIP.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MultiplexFrameLength`] if `frame` is not `pattern().len()`
+    /// packets.
     pub fn multiplex_frame(&mut self, frame: &[Packet]) -> Result<Vec<BroadcastTsp>> {
         if frame.len() != self.pattern.len() {
-            return Err(Error::Input(format!(
-                "multiplex frame of {} packets, expected {}",
-                frame.len(),
-                self.pattern.len()
-            )));
+            return Err(Error::MultiplexFrameLength {
+                expected: self.pattern.len(),
+                got: frame.len(),
+            });
         }
-        Ok(self.wrap(frame))
+        self.wrap(frame)
     }
 
-    fn wrap(&mut self, frame: &[Packet]) -> Vec<BroadcastTsp> {
+    /// Wrap one multiplex frame. Fails only if the IIP does not encode,
+    /// which `set_network_sync` has excluded.
+    fn wrap(&mut self, frame: &[Packet]) -> Result<Vec<BroadcastTsp>> {
         let n = frame.len();
         let odd = self.frames % 2 == 1;
         let countdown = self.tmcc.switching_countdown & 0xF;
@@ -1069,9 +1232,7 @@ impl BroadcastTsWriter {
             last_branch_number: 0,
             network_sync: self.network_sync.clone(),
         };
-        let iip_packet = iip
-            .to_packet()
-            .expect("network_sync validated by set_network_sync");
+        let iip_packet = iip.to_packet()?;
         self.continuity_counter = self.continuity_counter.next();
 
         let out = self
@@ -1097,7 +1258,7 @@ impl BroadcastTsWriter {
             .collect();
         self.frames += 1;
         self.prev_countdown = countdown;
-        out
+        Ok(out)
     }
 }
 
@@ -1119,7 +1280,7 @@ pub struct BroadcastFrame {
     /// Slot of the carried IIP.
     pub iip_slot: Option<usize>,
     /// Why the TSP with `layer_indicator` '1000' did not parse, if so.
-    pub iip_error: Option<String>,
+    pub iip_error: Option<BroadcastTsError>,
     /// TSPs whose (204,196) parity does not check.  Equals the frame
     /// length when the sender adds no parity.
     pub parity_errors: usize,
@@ -1170,18 +1331,27 @@ impl BroadcastFrame {
     /// The modulation control that applies to this frame: from
     /// [`iip`](Self::iip), else (first frame, steady state assumed) from
     /// [`carried_iip`](Self::carried_iip).
-    pub fn modulation_control(&self) -> Result<&ModulationControl> {
+    ///
+    /// # Errors
+    ///
+    /// [`BroadcastTsError::UnusableIip`] (with the parse error as its
+    /// source) or [`BroadcastTsError::NoIip`] when there is none.
+    pub fn modulation_control(&self) -> StdResult<&ModulationControl, BroadcastTsError> {
         self.iip
             .as_ref()
             .or(self.carried_iip.as_ref())
             .map(|i| &i.modulation_control)
             .ok_or_else(|| match &self.iip_error {
-                Some(e) => err(format!("no usable IIP: {e}")),
-                None => err("no IIP in this or the previous frame"),
+                Some(e) => BroadcastTsError::UnusableIip(Box::new(e.clone())),
+                None => BroadcastTsError::NoIip,
             })
     }
 
     /// Transmission parameters of this frame from the IIP.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::modulation_control`] and [`ModulationControl::params`].
     pub fn params(&self) -> Result<Params> {
         self.modulation_control()?.params()
     }
@@ -1197,7 +1367,7 @@ pub struct BroadcastTsReader {
     info: Vec<IsdbtInformation>,
     carried_iip: Option<Iip>,
     iip_slot: Option<usize>,
-    iip_error: Option<String>,
+    iip_error: Option<BroadcastTsError>,
     parity_errors: usize,
     prev_iip: Option<Iip>,
 }
@@ -1238,7 +1408,7 @@ impl BroadcastTsReader {
                     self.iip_slot = Some(self.packets.len());
                     self.carried_iip = Some(iip);
                 }
-                Err(e) => self.iip_error = Some(e.to_string()),
+                Err(e) => self.iip_error = Some(e),
             }
         }
         self.packets.push(packet);
@@ -1260,12 +1430,12 @@ impl BroadcastTsReader {
             debug!(
                 packets = self.packets.len(),
                 parity_errors = self.parity_errors,
-                iip_error = self.iip_error.as_deref(),
+                iip_error = self.iip_error.as_ref().map(tracing::field::display),
                 "broadcast TS frame of {} TSPs: {} RS(204,196) parity errors{}",
                 self.packets.len(),
                 self.parity_errors,
                 self.iip_error
-                    .as_deref()
+                    .as_ref()
                     .map(|e| format!("; IIP not parsed: {e}"))
                     .unwrap_or_default()
             );
@@ -1449,7 +1619,12 @@ mod tests {
 
         let mut bad = b;
         bad[7] ^= 1;
-        assert!(ModulationControl::from_bytes(&bad).is_err());
+        assert_eq!(
+            ModulationControl::from_bytes(&bad),
+            Err(BroadcastTsError::Crc {
+                what: "modulation_control_configuration_information"
+            })
+        );
 
         assert_eq!(ModeGi::guard_code(GuardInterval::G1_32), 0b00);
         assert_eq!(ModeGi::guard_code(GuardInterval::G1_4), 0b11);
@@ -1473,9 +1648,38 @@ mod tests {
         let mut mc = ModulationControl::steady(&params, false);
         mc.tmcc.next = isdbt_ofdm::tmcc::TmccParams::NONE;
         assert_eq!(mc.next_params().unwrap(), None);
+        mc.mode_gi.next_mode = 0;
+        assert_eq!(
+            mc.mode_gi.next(),
+            Err(BroadcastTsError::ReservedMode {
+                what: "next_mode",
+                code: 0
+            })
+        );
         mc.mode_gi.current_mode = 0;
         let b = mc.to_bytes();
-        assert!(ModulationControl::from_bytes(&b).unwrap().params().is_err());
+        let e = ModulationControl::from_bytes(&b)
+            .unwrap()
+            .params()
+            .unwrap_err();
+        assert!(matches!(
+            e,
+            Error::BroadcastTs(BroadcastTsError::ReservedMode {
+                what: "current_mode",
+                code: 0
+            })
+        ));
+        assert_eq!(e.to_string(), "IIP: reserved current_mode '00'");
+        // A reserved TMCC code reaches the caller as the TMCC error.
+        let mut mc = ModulationControl::steady(&params, false);
+        mc.tmcc.current.layers[0].modulation = isdbt_ofdm::tmcc::ModulationCode::from_code(0b100);
+        assert!(matches!(
+            mc.params(),
+            Err(Error::Ofdm(isdbt_ofdm::Error::Tmcc {
+                field: isdbt_ofdm::tmcc::TmccField::Modulation,
+                code: 0b100
+            }))
+        ));
     }
 
     /// Table 5-12: SFN information layout, the CRC_32 range (time stamp …
@@ -1516,10 +1720,53 @@ mod tests {
 
         let mut bad = b.clone();
         bad[2] ^= 0x80;
-        assert!(NetworkSync::from_bytes(&bad).is_err());
+        assert_eq!(
+            NetworkSync::from_bytes(&bad),
+            Err(BroadcastTsError::Crc {
+                what: "SFN_synchronization_information"
+            })
+        );
         let mut short = b.clone();
         short.pop();
-        assert!(NetworkSync::from_bytes(&short).is_err());
+        assert_eq!(
+            NetworkSync::from_bytes(&short),
+            Err(BroadcastTsError::EquipmentLoopLength {
+                loop_len: 10,
+                len: 21
+            })
+        );
+        assert_eq!(
+            NetworkSync::from_bytes(&b[..8]),
+            Err(BroadcastTsError::SfnTooShort { len: 8 })
+        );
+        let mut wide = sfn.clone();
+        wide.equipment[1].equipment_id = 0x1000;
+        assert_eq!(
+            NetworkSync::Sfn(wide).to_bytes(),
+            Err(BroadcastTsError::Width {
+                what: "equipment_id",
+                value: 0x1000,
+                bits: 12
+            })
+        );
+        let mut late = sfn.clone();
+        late.maximum_delay = 0x100_0000;
+        assert!(matches!(
+            NetworkSync::Sfn(late).to_bytes(),
+            Err(BroadcastTsError::Width {
+                what: "maximum_delay",
+                bits: 24,
+                ..
+            })
+        ));
+        assert_eq!(
+            NetworkSync::Reserved {
+                id: 0xFF,
+                body: Vec::new()
+            }
+            .to_bytes(),
+            Err(BroadcastTsError::NotReservedSyncId { id: 0xFF })
+        );
 
         assert_eq!(SfnSync::MAX_EQUIPMENT, 29);
         let full = NetworkSync::Sfn(SfnSync {
@@ -1531,7 +1778,14 @@ mod tests {
             equipment: vec![sfn.equipment[0]; 30],
             ..sfn
         });
-        assert!(over.to_bytes().is_err());
+        assert_eq!(
+            over.to_bytes(),
+            Err(BroadcastTsError::TooLarge {
+                what: "equipment loop entry count",
+                value: 30,
+                max: 29
+            })
+        );
 
         assert_eq!(NetworkSync::Absent.to_bytes().unwrap(), Vec::<u8>::new());
         assert_eq!(NetworkSync::from_bytes(&[]).unwrap(), NetworkSync::Absent);
@@ -1545,7 +1799,14 @@ mod tests {
             body: vec![1, 2, 3],
         };
         assert_eq!(NetworkSync::from_bytes(&r.to_bytes().unwrap()).unwrap(), r);
-        assert!(NetworkSync::Stuffing(159).to_bytes().is_err());
+        assert_eq!(
+            NetworkSync::Stuffing(159).to_bytes(),
+            Err(BroadcastTsError::TooLarge {
+                what: "network_synchronization_information length",
+                value: 160,
+                max: 159
+            })
+        );
     }
 
     /// Table 5-8 / 5-9: header (PUSI '1', priority '0', scrambling '00',
@@ -1573,13 +1834,34 @@ mod tests {
 
         let mut bad = p;
         bad[3] = 0x39; // AFC '11'
-        assert!(Iip::from_packet(&bad).is_err());
+        assert_eq!(
+            Iip::from_packet(&bad),
+            Err(BroadcastTsError::AdaptationField(
+                AdaptationFieldControl::AdaptationAndPayload
+            ))
+        );
+        let mut bad = p;
+        bad[0] = 0x48;
+        assert_eq!(
+            Iip::from_packet(&bad),
+            Err(BroadcastTsError::SyncByte(0x48))
+        );
         let mut bad = p;
         bad[28] = 160;
-        assert!(Iip::from_packet(&bad).is_err());
+        assert_eq!(
+            Iip::from_packet(&bad),
+            Err(BroadcastTsError::TooLarge {
+                what: "network_synchronization_information_length",
+                value: 160,
+                max: 159
+            })
+        );
         let mut bad = p;
         bad[10] ^= 1;
-        assert!(Iip::from_packet(&bad).is_err());
+        assert!(matches!(
+            Iip::from_packet(&bad),
+            Err(BroadcastTsError::Crc { .. })
+        ));
         // A PID above 13 bits cannot be constructed (`Pid::new` is `None`),
         // so `to_packet` has no range check to fail.
         assert!(Pid::new(0x2000).is_none());
@@ -1638,8 +1920,11 @@ mod tests {
             assert_eq!(iips, 1);
         }
         assert_eq!(w.frames(), 3);
-        assert!(w.frame([&a[1..], &b, &[]]).is_err());
-        assert!(w.multiplex_frame(&a).is_err());
+        assert!(matches!(w.frame([&a[1..], &b, &[]]), Err(Error::Fec(_))));
+        assert!(matches!(
+            w.multiplex_frame(&a),
+            Err(Error::MultiplexFrameLength { got, expected }) if got == a.len() && expected == n
+        ));
     }
 
     /// `initialization_timing_head_packet_flag` is set on the head packet
@@ -1743,9 +2028,31 @@ mod tests {
         }
         got.extend(r.finish());
         assert_eq!(got.len(), 1);
-        assert!(got[0].iip_error.is_some());
+        assert!(matches!(
+            got[0].iip_error,
+            Some(BroadcastTsError::Crc { .. })
+        ));
         assert!(got[0].carried_iip.is_none());
-        assert!(got[0].params().is_err());
+        let e = got[0].modulation_control().unwrap_err();
+        assert!(matches!(e, BroadcastTsError::UnusableIip(_)));
+        assert_eq!(
+            std::error::Error::source(&e).map(ToString::to_string),
+            got[0].iip_error.as_ref().map(ToString::to_string)
+        );
+        assert!(matches!(
+            got[0].params(),
+            Err(Error::BroadcastTs(BroadcastTsError::UnusableIip(_)))
+        ));
+        let empty = BroadcastFrame {
+            iip: None,
+            carried_iip: None,
+            iip_error: None,
+            ..got[0].clone()
+        };
+        assert_eq!(
+            empty.modulation_control().unwrap_err(),
+            BroadcastTsError::NoIip
+        );
         assert_eq!(got[0].parity_errors, 1);
     }
 

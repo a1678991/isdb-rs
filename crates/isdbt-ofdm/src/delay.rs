@@ -31,6 +31,10 @@ impl<T: Copy> MultiDelay<T> {
     }
 
     /// Lines with the given delays, line `i` initially holding `fills[i]`.
+    ///
+    /// # Panics
+    ///
+    /// If `fills` does not have one value per line.
     pub fn with_fills(delays: Vec<usize>, fills: &[T]) -> Self {
         assert_eq!(delays.len(), fills.len());
         let mut buf = Vec::with_capacity(delays.iter().sum());
@@ -50,6 +54,11 @@ impl<T: Copy> MultiDelay<T> {
     /// Lines with the given delays and explicit initial contents:
     /// `contents[i]` (length `delays[i]`) is output by line `i` during the
     /// first `delays[i]` pushes, in order.
+    ///
+    /// # Panics
+    ///
+    /// If `contents` does not have one vector per line, each of its line's
+    /// delay.
     pub fn with_contents(delays: Vec<usize>, contents: Vec<Vec<T>>) -> Self {
         assert_eq!(delays.len(), contents.len());
         let mut buf = Vec::with_capacity(delays.iter().sum());
@@ -79,6 +88,10 @@ impl<T: Copy> MultiDelay<T> {
 
     /// Push one element per line (`input.len() == lines()`), writing the
     /// delayed outputs to `output`.
+    ///
+    /// # Panics
+    ///
+    /// If `input` or `output` does not have one element per line.
     pub fn push(&mut self, input: &[T], output: &mut [T]) {
         assert_eq!(input.len(), self.delays.len());
         assert_eq!(output.len(), self.delays.len());
@@ -116,25 +129,46 @@ impl<T: Copy> MultiDelay<T> {
 /// alignment delays).
 #[derive(Debug, Clone)]
 pub struct Fifo<T> {
-    buf: std::collections::VecDeque<T>,
+    /// A ring of the held elements; the oldest is at `head`.
+    ring: Vec<T>,
+    head: usize,
 }
 
 impl<T: Copy> Fifo<T> {
     /// FIFO pre-filled with `len` copies of `fill`.
     pub fn new(len: usize, fill: T) -> Self {
+        Self::from_vec(vec![fill; len])
+    }
+
+    /// FIFO holding `contents`, oldest first: they are the first
+    /// `contents.len()` elements out.
+    pub fn from_vec(contents: Vec<T>) -> Self {
         Self {
-            buf: std::iter::repeat_n(fill, len).collect(),
+            ring: contents,
+            head: 0,
         }
     }
 
-    /// Push a block and pop the same number of elements.
-    pub fn process(&mut self, data: &mut [T]) {
-        if self.buf.is_empty() {
-            return;
-        }
-        for x in data.iter_mut() {
-            self.buf.push_back(*x);
-            *x = self.buf.pop_front().expect("non-empty");
+    /// Number of elements held (the delay).
+    pub fn len(&self) -> usize {
+        self.ring.len()
+    }
+
+    /// True for a zero delay.
+    pub fn is_empty(&self) -> bool {
+        self.ring.is_empty()
+    }
+
+    /// Push a block and pop the same number of elements: each element
+    /// trades places with the oldest one held.
+    pub fn process(&mut self, mut data: &mut [T]) {
+        let len = self.ring.len();
+        while !data.is_empty() && len > 0 {
+            let n = (len - self.head).min(data.len());
+            let (now, rest) = data.split_at_mut(n);
+            now.swap_with_slice(&mut self.ring[self.head..self.head + n]);
+            self.head = (self.head + n) % len;
+            data = rest;
         }
     }
 }
@@ -183,5 +217,27 @@ mod tests {
         let mut d = [1, 2, 3];
         f.process(&mut d);
         assert_eq!(d, [0, 0, 1]);
+        // Blocks shorter and longer than the ring, across its wrap.
+        let mut f = Fifo::from_vec(vec![10u32, 11, 12]);
+        let mut out = Vec::new();
+        for block in [
+            &[0u32][..],
+            &[1, 2, 3, 4],
+            &[],
+            &[5, 6],
+            &[7, 8, 9, 10, 11, 12, 13],
+        ] {
+            let mut b = block.to_vec();
+            f.process(&mut b);
+            out.extend(b);
+        }
+        let want: Vec<u32> = [10, 11, 12].into_iter().chain(0..11).collect();
+        assert_eq!(out, want);
+        assert_eq!(f.len(), 3);
+        let mut z = Fifo::new(0, 0u8);
+        let mut d = [4, 5];
+        z.process(&mut d);
+        assert_eq!(d, [4, 5]);
+        assert!(z.is_empty());
     }
 }

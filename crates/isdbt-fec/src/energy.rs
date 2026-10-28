@@ -48,6 +48,10 @@ pub fn frame_sequence(slots: usize) -> Vec<u8> {
 /// bytes following a sync byte, then the next sync byte (slot offset 203).
 /// The PRBS restarts at the frame start, advances through every byte, and is
 /// not applied at sync-byte offsets (§3.5). Self-inverse.
+///
+/// # Panics
+///
+/// If `frame` is not whole 204-byte slots or `prbs` is shorter than it.
 pub fn disperse_frame(frame: &mut [u8], prbs: &[u8]) {
     assert_eq!(frame.len() % TRANSMISSION_TSP, 0);
     assert!(prbs.len() >= frame.len());

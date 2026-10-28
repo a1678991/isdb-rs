@@ -74,6 +74,10 @@ impl OfdmTx {
 
     /// Append one symbol (guard + useful part, `Ng + N` samples) for the
     /// `K` carrier values `carriers` to `out`.
+    ///
+    /// # Panics
+    ///
+    /// If `carriers` does not hold the mode's `K` values.
     pub fn modulate(&mut self, carriers: &[C32], out: &mut Vec<C32>) {
         assert_eq!(carriers.len(), self.mode.total_carriers());
         self.buf.fill(C32::default());

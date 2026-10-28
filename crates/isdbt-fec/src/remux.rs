@@ -78,6 +78,13 @@ impl MultiplexPattern {
     /// Derive the pattern for `params` by simulating the §3.2.2 model
     /// receiver over one frame. The slot count equals Table 3-5's n and the
     /// per-layer counts equal Table 3-3 (asserted).
+    ///
+    /// # Panics
+    ///
+    /// Never for a [`Params`]: the simulation asserts the model receiver's
+    /// self-consistency (Table 3-3 counts, every S3 section drained when
+    /// S4 switches, no packet left at the frame end), which
+    /// `tests/remux_patterns.rs` checks over the whole parameter space.
     pub fn new(params: &Params) -> Self {
         Self::simulate(params, true)
     }
