@@ -607,7 +607,10 @@ pcr_pid = 0x01FF
     ))
     .unwrap_err()
     .to_string();
-    assert!(e.contains("apply only to kind = \"ts-program\""), "{e}");
+    assert!(
+        e.contains("stream[0].at_eof applies only to kind = \"ts-program\""),
+        "{e}"
+    );
     // a ts-program takes its PIDs from the source
     let e = Config::from_toml(&base(&format!(
         "  kind = \"ts-program\"\n  source = \"{}\"\n  pid = 0x0111",
@@ -619,7 +622,7 @@ pcr_pid = 0x01FF
     let e = Config::from_toml(&base("  kind = \"ts-program\""))
         .unwrap_err()
         .to_string();
-    assert!(e.contains("needs source"), "{e}");
+    assert!(e.contains("stream[0].source is missing"), "{e}");
     // a missing file is a media error at multiplexer creation
     let cfg = Config::from_toml(&base(&format!(
         "  kind = \"ts-program\"\n  source = \"{}\"",
@@ -789,14 +792,19 @@ fn ca_drop_relays_no_conditional_access() {
     );
     no_validation_errors(&out, "ca = drop");
     // ca is a ts-program key
-    let e = Config::from_toml(&toml_of(&src_path).replace(
-        "kind = \"ts-program\"",
-        "kind = \"declared\"\n  pid = 0x0111\n  stream_type = 0x02\n  ca = \"drop\"",
-    ))
+    let e = Config::from_toml(
+        &toml_of(&src_path)
+            .replace(
+                "kind = \"ts-program\"",
+                "kind = \"declared\"\n  pid = 0x0111\n  stream_type = 0x02\n  ca = \"drop\"",
+            )
+            .replace("  pid_map = [[0x0140, 0x0111], [0x0141, 0x0112]]\n", "")
+            .replace("  eit_from_source = true\n", ""),
+    )
     .err()
     .map(|e| e.to_string())
     .unwrap_or_default();
-    assert!(e.contains("ca apply only"), "{e}");
+    assert!(e.contains("stream[0].ca applies only"), "{e}");
 }
 
 /// CA_PIDs follow the PID mapping: with `pid_map = "auto"` an ECM PID

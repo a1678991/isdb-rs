@@ -754,7 +754,9 @@ table_id on a PID that B10 Table 5-1 does not allow.
 ## Load-time checks
 
 `Config::from_toml` and the multiplexer reject a configuration, with a
-message naming the table, service and stream, when:
+message that starts with the TOML key of the value (indices count the
+entries of the file from 0: `config: service[0].stream[1].bml.block_size:
+5000 outside 1..=4066 (…)`), when:
 
 - a key is unknown, or a named value is given as a number or an unknown
   name (the message lists the valid names and codes);

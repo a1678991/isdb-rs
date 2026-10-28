@@ -1006,14 +1006,26 @@ pub struct PidPlan {
     pub data: PidList,
 }
 
+impl PidPlan {
+    /// The default output PIDs per role (compile-time checked).
+    const DEFAULT: [Pid; 5] = [
+        Pid::new(0x0111).unwrap(),
+        Pid::new(0x0112).unwrap(),
+        Pid::new(0x0130).unwrap(),
+        Pid::new(0x0138).unwrap(),
+        Pid::new(0x0140).unwrap(),
+    ];
+}
+
 impl Default for PidPlan {
     fn default() -> Self {
+        let [video, audio, captions, superimpose, data] = Self::DEFAULT.map(|p| PidList(vec![p]));
         Self {
-            video: PidList(vec![Pid::new(0x0111).unwrap()]),
-            audio: PidList(vec![Pid::new(0x0112).unwrap()]),
-            captions: PidList(vec![Pid::new(0x0130).unwrap()]),
-            superimpose: PidList(vec![Pid::new(0x0138).unwrap()]),
-            data: PidList(vec![Pid::new(0x0140).unwrap()]),
+            video,
+            audio,
+            captions,
+            superimpose,
+            data,
         }
     }
 }
@@ -1377,13 +1389,13 @@ pub struct HybridcastCfg {
 }
 
 impl HybridcastCfg {
-    /// profile_version as (major, minor, micro).
-    pub fn profile_version(&self) -> Result<(u8, u8, u8)> {
-        let bad = || {
-            MuxError::Config(format!(
-                "hybridcast profile_version {:?}: give \"major.minor.micro\" (0..255 each)",
-                self.profile_version
-            ))
+    /// profile_version as (major, minor, micro); `key` is the TOML path of
+    /// this table (`service[0].hybridcast`), for the error.
+    pub fn profile_version(&self, key: &str) -> Result<(u8, u8, u8)> {
+        let bad = || MuxError::Format {
+            key: format!("{key}.profile_version"),
+            value: self.profile_version.clone(),
+            want: "\"major.minor.micro\" (0..255 each)",
         };
         let v: Vec<u8> = self
             .profile_version
@@ -1459,14 +1471,18 @@ fn default_udf() -> u8 {
 impl Config {
     /// Parse TOML text and [`Config::validate`] it.
     pub fn from_toml(text: &str) -> Result<Self> {
-        let c: Self = toml::from_str(text).map_err(|e| MuxError::Config(e.to_string()))?;
+        let c: Self = toml::from_str(text).map_err(|e| MuxError::Toml {
+            message: e.to_string(),
+        })?;
         c.validate()?;
         Ok(c)
     }
 
     /// Serialise to TOML.
     pub fn to_toml(&self) -> Result<String> {
-        toml::to_string_pretty(self).map_err(|e| MuxError::Config(e.to_string()))
+        toml::to_string_pretty(self).map_err(|e| MuxError::Toml {
+            message: e.to_string(),
+        })
     }
 
     /// original_network_id (defaults to network_id).
@@ -1477,24 +1493,28 @@ impl Config {
     }
 }
 
-/// Decode a hex string (whitespace, ':' and '_' ignored).
-pub fn parse_hex(s: &str) -> Result<Vec<u8>> {
+/// Decode a hex string (whitespace, ':' and '_' ignored); `key` is its
+/// TOML path, for the error ([`MuxError::Hex`]).
+pub fn parse_hex(s: &str, key: &str) -> Result<Vec<u8>> {
     let digits: Vec<u8> = s
         .bytes()
         .filter(|b| !b.is_ascii_whitespace() && *b != b':' && *b != b'_')
         .collect();
+    let err = |bad| MuxError::Hex {
+        key: key.to_string(),
+        value: s.to_string(),
+        bad,
+    };
     if !digits.len().is_multiple_of(2) {
-        return Err(MuxError::Config(format!(
-            "hex string has an odd number of digits: {s:?}"
-        )));
+        return Err(err(None));
     }
     digits
         .chunks(2)
         .map(|c| {
-            let h =
-                std::str::from_utf8(c).map_err(|_| MuxError::Config(format!("bad hex {s:?}")))?;
-            u8::from_str_radix(h, 16)
-                .map_err(|_| MuxError::Config(format!("bad hex digits {h:?} in {s:?}")))
+            std::str::from_utf8(c)
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+                .ok_or_else(|| err(Some(String::from_utf8_lossy(c).into_owned())))
         })
         .collect()
 }

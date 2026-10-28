@@ -35,7 +35,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::audio::AdtsEs;
 use crate::config::{ClockSource, Config, StreamKind};
-use crate::error::{MuxError, Result};
+use crate::error::{MuxError, Result, key};
 use crate::float;
 use crate::jst::{self, JstSeconds};
 use crate::playback::PlaybackStatus;
@@ -222,12 +222,19 @@ impl Multiplexer {
         let start_pcr = cfg.clock.start_pcr;
         let clock_start = match cfg.clock.source {
             ClockSource::System => match &cfg.clock.start {
-                Some(s) => jst::parse(s)?,
+                Some(s) => jst::parse(s, "clock.start")?,
                 None => jst::now(),
             },
-            ClockSource::Fixed => jst::parse(cfg.clock.start.as_deref().ok_or_else(|| {
-                MuxError::Config("clock.source = fixed needs clock.start".into())
-            })?)?,
+            ClockSource::Fixed => jst::parse(
+                cfg.clock
+                    .start
+                    .as_deref()
+                    .ok_or_else(|| MuxError::Missing {
+                        key: "clock.start".to_string(),
+                        needed_by: "clock.source = \"fixed\"".to_string(),
+                    })?,
+                "clock.start",
+            )?,
         };
         if !(0x7880..=0x7FE8).contains(&cfg.network.network_id) {
             warn!(
@@ -241,16 +248,17 @@ impl Multiplexer {
             ));
         }
         if cfg.network.channels.is_empty() && cfg.network.frequencies.is_empty() {
-            return Err(MuxError::Config(
-                "network: give at least one channel or frequency".into(),
+            return Err(MuxError::config(
+                "network.channels",
+                "give at least one channel (or network.frequencies)",
             ));
         }
-        for s in &cfg.services {
+        for (i, s) in cfg.services.iter().enumerate() {
             if params.layers()[s.layer.index()].is_none() {
-                return Err(MuxError::Config(format!(
-                    "service {:#06x} is on layer {:?}, which is not active",
-                    s.service_id, s.layer
-                )));
+                return Err(MuxError::InactiveLayer {
+                    key: format!("{}.layer", key::service(i)),
+                    layer: isdbt_core::Layer::ALL[s.layer.index()],
+                });
             }
         }
         let t0 = start_pcr;
@@ -264,7 +272,7 @@ impl Multiplexer {
         let mut expanded = cfg.clone();
         // CA_descriptors of relayed sources' CATs (ca = "keep")
         let mut relayed_cat: Vec<crate::config::RawDescriptor> = Vec::new();
-        for s in expanded.services.iter_mut() {
+        for (si_idx, s) in expanded.services.iter_mut().enumerate() {
             let mut streams = Vec::new();
             let mut events = None;
             // copy restriction of the relayed source(s), for
@@ -275,16 +283,15 @@ impl Multiplexer {
                 .as_ref()
                 .is_some_and(|c| c.recording_control == RecordingControlCfg::Source);
             let mut es_copy_descriptors = false;
-            for st in std::mem::take(&mut s.streams) {
+            // `cfg` is the configuration as given: index k is the file's
+            for (k, st) in std::mem::take(&mut s.streams).into_iter().enumerate() {
                 if st.kind != StreamKind::TsProgram || st.relay_es.is_some() {
                     streams.push(st);
                     continue;
                 }
-                let src = st.source.as_ref().ok_or_else(|| {
-                    MuxError::Config(format!(
-                        "service {:#06x}: ts-program needs a source file",
-                        s.service_id
-                    ))
+                let src = st.source.as_ref().ok_or_else(|| MuxError::Missing {
+                    key: format!("{}.stream[{k}].source", key::service(si_idx)),
+                    needed_by: "kind = \"ts-program\" (the recorded TS file)".to_string(),
                 })?;
                 let probe = relay::probe(&base_dir.join(src), &st)?;
                 notes.push(probe.report());
@@ -420,10 +427,13 @@ impl Multiplexer {
                 .iter()
                 .any(|st| st.relay_es.is_some() && st.pid == s.pcr_pid)
             {
-                return Err(MuxError::Config(format!(
-                    "service {:#06x}: pcr_pid {:#06x} is a relayed elementary stream; the relayed packets keep their payload, so the PCR needs its own PID (e.g. pcr_pid = 0x01FF)",
-                    s.service_id, s.pcr_pid
-                )));
+                return Err(MuxError::config(
+                    format!("{}.pcr_pid", key::service(si_idx)),
+                    format!(
+                        "{:#06x} is a relayed elementary stream; the relayed packets keep their payload, so the PCR needs its own PID (e.g. pcr_pid = 0x01FF)",
+                        s.pcr_pid
+                    ),
+                ));
             }
         }
         expanded.cat.descriptors.extend(relayed_cat);
@@ -438,50 +448,54 @@ impl Multiplexer {
         let mut pid_layer: std::collections::HashMap<Pid, (usize, String, bool)> =
             Default::default();
         // `section`: section streams may share a PID with other section
-        // streams (one continuity counter); nothing else may share.
-        let mut claim = |pid: Pid, layer: usize, what: String, section: bool| -> Result<()> {
+        // streams (one continuity counter); nothing else may share. `key`
+        // names the claimant (the TOML path of its PID, or what it is).
+        let mut claim = |pid: Pid, layer: usize, key: String, section: bool| -> Result<()> {
             if pid == Pid::NULL {
-                return Err(MuxError::Config(format!(
-                    "{what}: PID {pid:#06x} is the null packet PID (H.222.0 Table 2-3)"
-                )));
+                return Err(MuxError::config(
+                    key,
+                    "PID 0x1fff is the null packet PID (H.222.0 Table 2-3)",
+                ));
             }
-            if let Some((l, w, sec)) = pid_layer.get(&pid) {
-                if *l != layer {
-                    return Err(MuxError::Config(format!(
-                        "{what}: PID {pid:#06x} already used by {w} on another layer (would need B31 Part 2 §3.2.2 duplicate packets)"
-                    )));
-                }
-                if !(section && *sec) {
-                    return Err(MuxError::Config(format!(
-                        "{what}: PID {pid:#06x} already used by {w}"
-                    )));
-                }
+            if let Some((l, w, sec)) = pid_layer.get(&pid)
+                && (*l != layer || !(section && *sec))
+            {
+                return Err(MuxError::PidInUse {
+                    key,
+                    pid,
+                    by: w.clone(),
+                    other_layer: *l != layer,
+                });
             }
-            pid_layer.insert(pid, (layer, what, section));
+            pid_layer.insert(pid, (layer, key, section));
             Ok(())
         };
         for (si_idx, s) in cfg.services.iter().enumerate() {
             let mut infos = Vec::new();
             let mut svc_streams: Vec<(Pid, Media, u64, usize)> = Vec::new();
-            for st in &s.streams {
+            for (k, st) in s.streams.iter().enumerate() {
+                let stk = key::stream(si_idx, s, k);
                 let layer = st.layer.unwrap_or(s.layer).index();
                 if params.layers()[layer].is_none() {
-                    return Err(MuxError::Config(format!(
-                        "stream {:#06x} on inactive layer {}",
-                        st.pid,
-                        ["A", "B", "C"][layer]
-                    )));
+                    return Err(MuxError::InactiveLayer {
+                        key: if st.layer.is_some() {
+                            format!("{stk}.layer")
+                        } else {
+                            format!("{}.layer", key::service(si_idx))
+                        },
+                        layer: isdbt_core::Layer::ALL[layer],
+                    });
                 }
                 if !st.pid.is_assignable() {
-                    return Err(MuxError::Config(format!(
-                        "stream PID {:#06x} outside 0x0010–0x1FFE (H.222.0 Table 2-3)",
-                        st.pid
-                    )));
+                    return Err(MuxError::PidRange {
+                        key: format!("{stk}.pid"),
+                        pid: st.pid,
+                    });
                 }
                 claim(
                     st.pid,
                     layer,
-                    format!("service {:#06x} stream", s.service_id),
+                    format!("{stk}.pid"),
                     st.kind == StreamKind::BmlCarousel,
                 )?;
                 match st.kind {
@@ -491,28 +505,37 @@ impl Multiplexer {
                             s.hybridcast.as_ref(),
                             base_dir,
                             &format!("service {:#06x} stream {:#06x}", s.service_id, st.pid),
+                            &stk,
                         )?;
                         notes.extend(c.report.iter().cloned());
                         infos.push(StreamInfo::Carousel(std::sync::Arc::new(c)));
                     }
                     StreamKind::TsProgram => {
-                        let (ri, ei) = st.relay_es.ok_or_else(|| {
-                            MuxError::Config("ts-program stream not expanded".into())
+                        let (ri, ei) = st.relay_es.ok_or(MuxError::Internal {
+                            what: "a ts-program stream left unexpanded",
                         })?;
                         infos.push(plans[ri].0.es[ei].info.clone());
                     }
                     StreamKind::Declared => {
                         if st.stream_type.is_none() {
-                            return Err(MuxError::Config(format!(
-                                "declared stream {:#06x} needs stream_type",
-                                st.pid
-                            )));
+                            return Err(MuxError::Missing {
+                                key: format!("{stk}.stream_type"),
+                                needed_by: "kind = \"declared\"".to_string(),
+                            });
                         }
                         infos.push(StreamInfo::None);
                     }
                     StreamKind::Mpeg2Video | StreamKind::AacAdts => {
-                        let src = st.source.as_ref().ok_or_else(|| {
-                            MuxError::Config(format!("stream {:#06x} needs a source file", st.pid))
+                        let src = st.source.as_ref().ok_or_else(|| MuxError::Missing {
+                            key: format!("{stk}.source"),
+                            needed_by: format!(
+                                "kind = \"{}\"",
+                                if st.kind == StreamKind::Mpeg2Video {
+                                    "mpeg2-video"
+                                } else {
+                                    "aac-adts"
+                                }
+                            ),
                         })?;
                         let path = base_dir.join(src);
                         let p = path.display().to_string();
@@ -720,21 +743,21 @@ impl Multiplexer {
             if !o.enabled {
                 continue;
             }
-            si::validate_targets(kind, &o)?;
+            let tk = si::table_key(cfg, kind);
+            si::validate_targets(kind, &o, &tk)?;
             let pid = o.pid.unwrap_or_else(|| si.default_pid(kind));
             let layer = o
                 .layer
                 .map(|l| l.index())
                 .unwrap_or_else(|| si.default_layer(kind));
             if params.layers()[layer].is_none() {
-                return Err(MuxError::Config(format!(
-                    "{} on inactive layer {}",
-                    kind.name(),
-                    layer
-                )));
+                return Err(MuxError::InactiveLayer {
+                    key: format!("{tk}.layer"),
+                    layer: isdbt_core::Layer::ALL[layer],
+                });
             }
             // EIT p/f and schedule (and TOT/TDT) may share a PID: one CC sequence.
-            claim(pid, layer, kind.name(), true)?;
+            claim(pid, layer, format!("{tk}.pid"), true)?;
             let interval = ms(o
                 .interval_ms
                 .unwrap_or_else(|| SiBuilder::default_interval_ms(kind)));
@@ -810,25 +833,32 @@ impl Multiplexer {
                     .unwrap_or(s.layer)
                     .index(),
             };
-            let n = pattern.count(isdbt_core::Layer::ALL[layer]);
+            let id = isdbt_core::Layer::ALL[layer];
+            let n = pattern.count(id);
             if per_frame == 0 || !n.is_multiple_of(per_frame) {
-                return Err(MuxError::Config(format!(
-                    "pcr_per_frame {per_frame} does not divide the {n} TSPs per frame of layer {}",
-                    ["A", "B", "C"][layer]
-                )));
+                return Err(MuxError::config(
+                    "timing.pcr_per_frame",
+                    format!("{per_frame} does not divide the {n} TSPs per frame of layer {id}"),
+                ));
             }
             if frame_ticks / per_frame as u64 > HZ / 10 {
-                return Err(MuxError::Config(format!(
-                    "PCR interval {} ms exceeds 100 ms (H.222.0 §2.7.2); raise pcr_per_frame",
-                    frame_ticks * 1000 / per_frame as u64 / HZ
-                )));
+                return Err(MuxError::config(
+                    "timing.pcr_per_frame",
+                    format!(
+                        "the PCR interval {} ms exceeds 100 ms (H.222.0 §2.7.2); raise pcr_per_frame",
+                        frame_ticks * 1000 / per_frame as u64 / HZ
+                    ),
+                ));
             }
             let offset = per_layer_count[layer];
             per_layer_count[layer] += 1;
             let step = n / per_frame;
             if offset >= step {
-                return Err(MuxError::Config(
-                    "too many PCR services on one layer".into(),
+                return Err(MuxError::config(
+                    format!("{}.pcr_pid", key::service(i)),
+                    format!(
+                        "too many PCR services on layer {id} ({step} PCR positions per period)"
+                    ),
                 ));
             }
             let positions = (0..per_frame).map(|q| offset + q * step).collect();
@@ -842,7 +872,7 @@ impl Multiplexer {
                 claim(
                     s.pcr_pid,
                     layer,
-                    format!("service {:#06x} PCR", s.service_id),
+                    format!("{}.pcr_pid", key::service(i)),
                     false,
                 )?;
             }
@@ -1089,11 +1119,15 @@ impl Multiplexer {
     /// seek, play rate; [`crate::playback`]). Call before the first frame:
     /// AAC audio is then re-packetised one ADTS frame per PES so that
     /// frames can be skipped or repeated. Without relays it does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`MuxError::CallOrder`] after the first frame.
     pub fn enable_playback_control(&mut self) -> Result<()> {
         if self.frame > 0 {
-            return Err(MuxError::Config(
-                "playback control must be enabled before the first frame".into(),
-            ));
+            return Err(MuxError::CallOrder {
+                what: "playback control must be enabled before the first frame",
+            });
         }
         for r in &mut self.relays {
             r.enable_control();
@@ -1710,7 +1744,9 @@ impl Multiplexer {
             let (decode, remaining) = match &e.current {
                 Some((b, pos, _, d)) => (*d, b.len() - pos),
                 None => {
-                    let a = e.ahead.as_ref().expect("prepared");
+                    let a = e.ahead.as_ref().ok_or(MuxError::Internal {
+                        what: "an elementary stream without its next PES after prepare",
+                    })?;
                     if t + lead < a.first_decode {
                         continue; // H.222.0 §2.4.2.6: ≤ 1 s in the T-STD
                     }
@@ -1729,14 +1765,20 @@ impl Multiplexer {
         let Some((_, ei)) = best else { return Ok(None) };
         let e = &mut self.es[ei];
         if e.current.is_none() {
-            let a = e.ahead.take().expect("prepared");
+            let a = e.ahead.take().ok_or(MuxError::Internal {
+                what: "an elementary stream without its next PES after prepare",
+            })?;
             for &(d, b) in &a.aus {
                 e.tstd.add_au(d, b);
             }
             e.current = Some((a.bytes, 0, a.rai, a.first_decode));
             e.pes_sent += 1;
         }
-        let (bytes, pos, rai, decode) = e.current.as_mut().expect("current");
+        let Some((bytes, pos, rai, decode)) = e.current.as_mut() else {
+            return Err(MuxError::Internal {
+                what: "an elementary stream without a current PES after taking one",
+            });
+        };
         let pusi = *pos == 0;
         let mut fields = AdaptationFields::default();
         let mut has_af = false;
@@ -1866,8 +1908,12 @@ fn sent_copy_control(si: &SiBuilder, i: usize, now: JstSeconds) -> Result<String
             return Ok(Vec::new());
         }
         let mut v = si.build(kind, now, o.version)?;
-        for x in &o.extra_sections {
-            v.push(crate::config::parse_hex(x)?);
+        let tk = si::table_key(&si.cfg, kind);
+        for (j, x) in o.extra_sections.iter().enumerate() {
+            v.push(crate::config::parse_hex(
+                x,
+                &format!("{tk}.extra_sections[{j}]"),
+            )?);
         }
         Ok(v)
     };

@@ -50,13 +50,25 @@ pub struct Report {
 
 /// Analyse `packets` whose first bytes arrive at `times` (27 MHz).
 /// `packet_ticks` is the duration of one packet (for the last-byte time).
+///
+/// # Panics
+///
+/// When `times` does not give one arrival time per packet
+/// (`times.len() != packets.len()`).
 pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
+    assert_eq!(
+        times.len(),
+        packets.len(),
+        "analyze: one arrival time per packet"
+    );
     let mut r = Report::default();
     let mut demux = SectionDemux::new();
+    // the section PIDs of B10 Table 5-1; 13-bit literals, which
+    // `from_wire` keeps as they are
     for p in [
         0x0000u16, 0x0001, 0x0010, 0x0011, 0x0012, 0x0013, 0x0014, 0x0024, 0x0025, 0x0026, 0x0027,
     ] {
-        demux.add_pid(Pid::new(p).expect("Table 5-1 PID"));
+        demux.add_pid(Pid::from_wire(p));
     }
     let mut pmt_pids: HashSet<Pid> = HashSet::new();
     let mut es_pids: HashSet<Pid> = HashSet::new();
@@ -65,7 +77,10 @@ pub fn analyze(packets: &[Packet], times: &[u64], packet_ticks: u64) -> Report {
     // Arrival time of packet `i`: the demux indices are the `enumerate()`
     // index of `packets` widened to u64, so they convert back exactly (a
     // stray index panics like any out-of-range slice index would).
-    let at = |i: u64| times[usize::try_from(i).expect("packet index")];
+    let at = |i: u64| {
+        times
+            [usize::try_from(i).expect("demux packet indices are enumerate() indices of `packets`")]
+    };
     let finish_pes = |r: &mut Report, out: Vec<PesOutput>| {
         for o in out {
             match o {

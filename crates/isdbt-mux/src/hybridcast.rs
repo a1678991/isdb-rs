@@ -38,9 +38,10 @@ pub struct SplitUrl {
 }
 
 /// Split a start URL (B24 Vol. 4 §5.3.2 URL_base + §5.3.3 initial_path;
-/// STD-0010 §7.4.1 "the URL is URL_base + URL_extension + initial_path").
-pub fn split_url(url: &str) -> Result<SplitUrl> {
-    let bad = |m: &str| MuxError::Config(format!("hybridcast url {url:?}: {m}"));
+/// STD-0010 §7.4.1 "the URL is URL_base + URL_extension + initial_path");
+/// `key` is the TOML path of `url`, for the error.
+pub fn split_url(url: &str, key: &str) -> Result<SplitUrl> {
+    let bad = |m: &str| MuxError::config(key, format!("{url:?}: {m}"));
     let (scheme, rest) = url
         .split_once("://")
         .ok_or_else(|| bad("needs a scheme (http:// or https://)"))?;
@@ -68,70 +69,74 @@ pub fn split_url(url: &str) -> Result<SplitUrl> {
     })
 }
 
-/// Check the fixed-size fields of a configuration (called at load).
-pub fn check(cfg: &HybridcastCfg, what: &str) -> Result<()> {
+/// Check the fixed-size fields of a configuration (called at load); `key`
+/// is the TOML path of the table (`service[0].hybridcast`).
+pub fn check(cfg: &HybridcastCfg, key: &str) -> Result<()> {
     if cfg.organization_id == 0 {
-        return Err(MuxError::Config(format!(
-            "{what}: organization_id 0 is reserved (IPTVFJ STD-0013 §5.2.1: \"value '0' cannot be entered in an AIT\")"
-        )));
+        return Err(MuxError::Reserved {
+            key: format!("{key}.organization_id"),
+            value: 0,
+            note: " (IPTVFJ STD-0013 §5.2.1: \"value '0' cannot be entered in an AIT\")",
+        });
     }
     if cfg.control_code.name() == "reserved"
         || cfg.control_code == isdb_si::values::ApplicationControlCode::Prefetch
     {
-        return Err(MuxError::Config(format!(
-            "{what}: control_code must be autostart, present or kill (STD-0013 §5.2.3: PREFETCH shall not be used)"
-        )));
+        return Err(MuxError::config(
+            format!("{key}.control_code"),
+            "must be autostart, present or kill (STD-0013 §5.2.3: PREFETCH shall not be used)",
+        ));
     }
     if cfg.visibility.name() == "reserved" {
-        return Err(MuxError::Config(format!(
-            "{what}: visibility '10' is reserved"
-        )));
+        return Err(MuxError::Reserved {
+            key: format!("{key}.visibility"),
+            value: u32::from(cfg.visibility.code()),
+            note: " (B24 Vol. 4 §5.3.1)",
+        });
     }
     if cfg.permission_bitmap >> 13 != 0 {
-        return Err(MuxError::Config(format!(
-            "{what}: permission_bitmap {:#06x}: the upper 3 bits select the bitmap layout; STD-0013 §8.2.4.2.17.1 defines '000' (0x1FFF = all, 0 = none) and '001' (per-function bits)",
-            cfg.permission_bitmap
-        )));
+        return Err(MuxError::Reserved {
+            key: format!("{key}.permission_bitmap"),
+            value: u32::from(cfg.permission_bitmap),
+            note: " (the upper 3 bits select the bitmap layout; STD-0013 §8.2.4.2.17.1 defines '000' (0x1FFF = all, 0 = none) and '001' (per-function bits))",
+        });
     }
     if cfg.application_priority > 3 {
-        return Err(MuxError::Config(format!(
-            "{what}: application_priority is 2 bits (0..3)"
-        )));
+        return Err(MuxError::Range {
+            key: format!("{key}.application_priority"),
+            value: i64::from(cfg.application_priority),
+            min: 0,
+            max: 3,
+            note: " (2 bits, B24 Vol. 4 Table 7-1)",
+        });
     }
     if cfg.ait_version > 31 {
-        return Err(MuxError::Config(format!(
-            "{what}: ait_version is 5 bits (0..31)"
-        )));
+        return Err(MuxError::Range {
+            key: format!("{key}.ait_version"),
+            value: i64::from(cfg.ait_version),
+            min: 0,
+            max: 31,
+            note: " (5 bits)",
+        });
     }
-    cfg.profile_version()?;
-    split_url(&cfg.url)?;
-    for b in &cfg.boundaries {
+    cfg.profile_version(key)?;
+    split_url(&cfg.url, &format!("{key}.url"))?;
+    for (i, b) in cfg.boundaries.iter().enumerate() {
         if !(b.starts_with("http://") || b.starts_with("https://")) {
-            return Err(MuxError::Config(format!(
-                "{what}: boundary {b:?} must start with http:// or https:// (STD-0013 §6.1.3.1)"
-            )));
+            return Err(MuxError::config(
+                format!("{key}.boundaries[{i}]"),
+                format!("{b:?} must start with http:// or https:// (STD-0013 §6.1.3.1)"),
+            ));
         }
     }
-    if cfg.resource.is_empty()
-        || cfg.resource.len() > 127
-        || !cfg
-            .resource
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-.!~'();/@=+$,".contains(&b))
-        || !(cfg.resource.as_bytes()[0].is_ascii_alphanumeric() || cfg.resource.starts_with('_'))
-    {
-        return Err(MuxError::Config(format!(
-            "{what}: resource {:?} is not a B24 Vol. 2 §9.2.1.2 resource name (alphanumeric or '_' first, then also -.!~'();/@=+$, up to 127 bytes)",
-            cfg.resource
-        )));
-    }
-    Ok(())
+    crate::carousel::check_resource_name(&cfg.resource, &format!("{key}.resource"))
 }
 
-/// Encode the AIT section (table_id 0x74) of `cfg`.
-pub fn ait_section(cfg: &HybridcastCfg) -> Result<Vec<u8>> {
-    let url = split_url(&cfg.url)?;
-    let (major, minor, micro) = cfg.profile_version()?;
+/// Encode the AIT section (table_id 0x74) of `cfg`; `key` is the TOML
+/// path of the table, for the errors.
+pub fn ait_section(cfg: &HybridcastCfg, key: &str) -> Result<Vec<u8>> {
+    let url = split_url(&cfg.url, &format!("{key}.url"))?;
+    let (major, minor, micro) = cfg.profile_version(key)?;
     let mut body = AitBody::new();
     body.common_descriptors
         .push(AitDescriptor::TransportProtocol(
@@ -253,15 +258,19 @@ mod tests {
 
     #[test]
     fn url_split() {
-        let u = split_url("https://example.com/hybrid/appsA/app1/index.html").unwrap();
+        let u = split_url("https://example.com/hybrid/appsA/app1/index.html", "url").unwrap();
         assert_eq!(u.base, "https://example.com/hybrid/appsA/app1/");
         assert_eq!(u.initial_path, "index.html");
         assert_eq!(u.origin, "https://example.com");
-        let u = split_url("http://host:8080").unwrap();
+        let u = split_url("http://host:8080", "url").unwrap();
         assert_eq!(u.base, "http://host:8080/");
         assert_eq!(u.initial_path, "");
-        assert!(split_url("ftp://x/y").is_err());
-        assert!(split_url("example.com/x").is_err());
-        assert!(split_url("http://ex ample.com/x").is_err());
+        for bad in ["ftp://x/y", "example.com/x", "http://ex ample.com/x"] {
+            let e = split_url(bad, "service[0].hybridcast.url").unwrap_err();
+            assert!(
+                matches!(&e, MuxError::Config { key, .. } if key == "service[0].hybridcast.url"),
+                "{e}"
+            );
+        }
     }
 }

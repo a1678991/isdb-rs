@@ -1188,11 +1188,14 @@ impl Scan {
     }
 
     fn eit_entry(&mut self, sid: u16) -> &mut (u16, Option<SourceEvent>, Option<SourceEvent>) {
-        if let Some(i) = self.eit.iter().position(|x| x.0 == sid) {
-            return &mut self.eit[i];
-        }
-        self.eit.push((sid, None, None));
-        self.eit.last_mut().expect("pushed")
+        let i = match self.eit.iter().position(|x| x.0 == sid) {
+            Some(i) => i,
+            None => {
+                self.eit.push((sid, None, None));
+                self.eit.len() - 1
+            }
+        };
+        &mut self.eit[i]
     }
 
     fn program(&self, number: u16, pmt_pid: Pid) -> SourceProgram {
@@ -1250,8 +1253,14 @@ fn component_tag_of(typed: &[Descriptor]) -> Option<u8> {
 /// packet counts and the first PES header of every PID.
 fn scan(pkts: &[Packet]) -> Scan {
     let mut demux = SectionDemux::new();
-    for pid in [0x0000, 0x0001, 0x0011, 0x0012, 0x0014] {
-        demux.add_pid(Pid::new(pid).expect("Table 5-1 PID"));
+    for pid in [
+        crate::si::pid::PAT,
+        crate::si::pid::CAT,
+        crate::si::pid::SDT,
+        crate::si::pid::EIT,
+        crate::si::pid::TOT,
+    ] {
+        demux.add_pid(pid);
     }
     let mut sc = Scan {
         programs: Vec::new(),
@@ -1484,13 +1493,16 @@ fn rank_and_assign(es: &mut [RelayedEs], plan: Option<&PidPlan>) {
         let Some(plan) = plan else { continue };
         let Some(&first) = idx.first() else { continue };
         let list = es[first].role.plan(plan).to_vec();
-        let mut next = *list.last().expect("validated non-empty");
+        // an empty role list (Config::validate refuses it) assigns nothing
+        let Some(&last) = list.last() else { continue };
+        let mut next = last;
         for (n, &i) in idx.iter().enumerate() {
             let pid = match list.get(n) {
                 Some(&p) if !used.contains(&p) => p,
                 _ => {
                     while next.get() < 0x1FFE {
-                        next = Pid::new(next.get() + 1).expect("at most 0x1FFE");
+                        // below 0x1FFF: 13 bits, from_wire keeps it as is
+                        next = Pid::from_wire(next.get() + 1);
                         if !used.contains(&next) && !reserved.contains(&next) {
                             break;
                         }
@@ -1875,12 +1887,12 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
                 (None, PidMap::Auto) => {
                     let mut p = src;
                     while used.contains(&p) || reserved.contains(&p) {
-                        p = Pid::new(if p.get() >= 0x1FFE {
+                        // at most 0x1FFE: 13 bits, from_wire keeps it as is
+                        p = Pid::from_wire(if p.get() >= 0x1FFE {
                             0x0030
                         } else {
                             p.get() + 1
-                        })
-                        .expect("at most 0x1FFE");
+                        });
                     }
                     p
                 }
@@ -1941,7 +1953,7 @@ pub fn probe(path: &Path, st: &StreamCfg) -> Result<Probe> {
             .collect();
     }
     let dropped_pids: Vec<(Pid, String)> = (0..8192u16)
-        .map(|p| Pid::new(p).expect("13 bits"))
+        .map(Pid::from_wire) // 0..8192: every 13-bit value
         .filter(|&p| {
             sc.pid_packets[usize::from(p)] > 0
                 && !es.iter().any(|e| e.src_pid == p)
@@ -2282,7 +2294,7 @@ fn hex(b: &[u8]) -> String {
 
 /// Bytes of a hex string written by [`hex`].
 fn parse_hex_lossy(s: &str) -> Vec<u8> {
-    crate::config::parse_hex(s).unwrap_or_default()
+    crate::config::parse_hex(s, "hex").unwrap_or_default()
 }
 
 /// The stream configuration a relayed ES takes in the service (so the PMT,
@@ -2382,7 +2394,8 @@ pub fn source_events(p: &Probe) -> Vec<EventCfg> {
         };
         anchor.get_or_insert((e.start, off));
         if v.last().is_some_and(|l: &EventCfg| {
-            l.start_offset_s.unwrap_or(0) + i64::from(jst::parse_hms(&l.duration).unwrap_or(0))
+            l.start_offset_s.unwrap_or(0)
+                + i64::from(jst::parse_hms(&l.duration, "duration").unwrap_or(0))
                 > off
         }) {
             continue;
@@ -2549,8 +2562,9 @@ enum UnitKind {
     /// A PES as received; for video, its first picture_coding_type.
     Pes { picture: Option<u8> },
     /// One ADTS frame re-packetised as its own PES (playback control);
-    /// `dur` ticks long; `copy`: a repetition made for slow motion.
-    AudioFrame { dur: i64, copy: bool },
+    /// `dur` ticks long; `copy`: a repetition made for slow motion; `pts`:
+    /// the frame's source PTS (every frame has one).
+    AudioFrame { dur: i64, copy: bool, pts: i64 },
     /// One packet's payload (carousels, ECM / EMM).
     Packet,
 }
@@ -2814,8 +2828,9 @@ impl Relay {
         // 1-based slot of a relayed PID in `es` (0: not relayed); the
         // sources are distinct PIDs, so there are at most 8192 of them.
         let slot = |i: usize| {
-            u16::try_from(i + 1)
-                .map_err(|_| MuxError::Config(format!("{} streams to relay", i + 1)))
+            u16::try_from(i + 1).map_err(|_| MuxError::Internal {
+                what: "more than 8192 distinct source PIDs to relay",
+            })
         };
         for (i, e) in probe.es.iter().enumerate() {
             index[usize::from(e.src_pid)] = slot(i)?;
@@ -3416,7 +3431,8 @@ impl Relay {
         }
         sp.buf.extend_from_slice(&u.bytes[es0.min(u.bytes.len())..]);
         loop {
-            let sp = e.adts.as_mut().expect("set above");
+            // set above
+            let Some(sp) = e.adts.as_mut() else { return };
             // resynchronise on a syncword
             let Some(s) = (0..sp.buf.len()).find(|&i| adts_len(&sp.buf[i..]).is_some()) else {
                 let keep = sp.buf.len().min(6);
@@ -3483,7 +3499,11 @@ impl Relay {
                 pts: Some(pts),
                 dts: None,
                 decode: None,
-                kind: UnitKind::AudioFrame { dur, copy: false },
+                kind: UnitKind::AudioFrame {
+                    dur,
+                    copy: false,
+                    pts,
+                },
                 prepared: None,
                 kept: false,
             });
@@ -3582,8 +3602,8 @@ impl Relay {
                 self.reading_done = true;
                 return;
             }
-            let tl = self.timeline.as_ref().expect("started");
-            c.anchor = Some(tl.map(c.c_read));
+            // the timeline exists from the relay's start on
+            c.anchor = self.timeline.as_ref().map(|tl| tl.map(c.c_read));
             c.pass_file_t = 0;
             self.reset_pass();
             return;
@@ -3706,12 +3726,11 @@ impl Relay {
                     }
                     u.decode = Some(out.max(0) as u64);
                 }
-                UnitKind::AudioFrame { dur, copy } => {
+                UnitKind::AudioFrame { dur, copy, pts: c } => {
                     if copy {
                         e.queue.pop_front(); // a repetition prepared for an older timeline
                         continue;
                     }
-                    let c = u.pts.expect("audio frames carry a PTS");
                     match e.slots.peek(tl.map(c), tl.map(c + dur), dur) {
                         Slot::Skip => {
                             e.queue.pop_front();
@@ -3729,7 +3748,11 @@ impl Relay {
                             };
                             if again {
                                 let mut cp = u.clone();
-                                cp.kind = UnitKind::AudioFrame { dur, copy: true };
+                                cp.kind = UnitKind::AudioFrame {
+                                    dur,
+                                    copy: true,
+                                    pts: c,
+                                };
                                 set(&mut cp);
                                 u.prepared = None;
                                 e.queue.push_front(cp);
@@ -3775,10 +3798,9 @@ impl Relay {
     pub(crate) fn emit(&mut self, ei: usize, t: u64) -> Result<Packet> {
         let e = &mut self.es[ei];
         if e.cur.is_none() {
-            let u = e
-                .queue
-                .pop_front()
-                .ok_or_else(|| MuxError::Config("relay: emit on an empty queue".into()))?;
+            let u = e.queue.pop_front().ok_or(MuxError::Internal {
+                what: "relay: emit on an empty queue",
+            })?;
             if let (Some(ts), Some(d), EsMode::Pes) = (e.tstd.as_mut(), u.decode, e.mode) {
                 ts.add_au(d, u.bytes.len());
             }
@@ -3802,7 +3824,11 @@ impl Relay {
             }
             e.cur = Some((u, 0, 0));
         }
-        let (u, i, pos) = e.cur.as_mut().expect("current unit");
+        let Some((u, i, pos)) = e.cur.as_mut() else {
+            return Err(MuxError::Internal {
+                what: "relay: no current unit after taking one",
+            });
+        };
         let c = u.chunks[*i];
         let data = &u.bytes[*pos..*pos + c.len];
         let cc = e.cc.next(true);

@@ -37,6 +37,7 @@ use crate::config::{
     AddDescriptor, AitCarriage, BmlCfg, Config, LayerName, RawDescriptor, StreamCfg, StreamKind,
     TableOpts, parse_hex,
 };
+use crate::error::key;
 use crate::error::{MuxError, Result};
 use crate::jst::{self, JstSeconds};
 use crate::signalling::VdcDerived;
@@ -120,6 +121,30 @@ impl TableKind {
     }
 }
 
+/// TOML path of the table `kind` of `cfg` is configured by (`nit`,
+/// `service[0].pmt`, `raw_table[1]`, `service[0].stream[2]` for a
+/// carousel, `service[0].hybridcast` for an AIT component).
+pub fn table_key(cfg: &Config, kind: TableKind) -> String {
+    match kind {
+        TableKind::Pat => "pat".into(),
+        TableKind::Cat => "cat".into(),
+        TableKind::Pmt(i) => format!("{}.pmt", key::service(i)),
+        TableKind::Nit => "nit".into(),
+        TableKind::Sdt => "sdt".into(),
+        TableKind::EitPf => "eit".into(),
+        TableKind::EitSchedule => "eit_schedule".into(),
+        TableKind::Tot => "tot".into(),
+        TableKind::Tdt => "tdt".into(),
+        TableKind::Bit => "bit".into(),
+        TableKind::Raw(i) => format!("raw_table[{i}]"),
+        TableKind::Carousel(i, k) => match cfg.services.get(i) {
+            Some(s) => key::stream(i, s, k),
+            None => format!("service[{i}].stream[{k}]"),
+        },
+        TableKind::Ait(i) => format!("{}.hybridcast", key::service(i)),
+    }
+}
+
 /// Elementary-stream facts the SI derives descriptors from.
 #[derive(Debug, Clone)]
 pub enum StreamInfo {
@@ -162,22 +187,23 @@ pub struct Event {
 /// overlap and are sorted chronologically).
 pub fn resolve_events(cfg: &Config, clock_start: JstSeconds) -> Result<Vec<Vec<Event>>> {
     let mut all = Vec::new();
-    for s in &cfg.services {
+    for (si, s) in cfg.services.iter().enumerate() {
         let mut v: Vec<Event> = Vec::new();
         let mut prev_end: Option<JstSeconds> = None;
         for (i, e) in s.events.iter().enumerate() {
+            let evk = key::event(si, i);
             let start = match (&e.start, e.start_offset_s) {
-                (Some(t), None) => jst::parse(t)?,
+                (Some(t), None) => jst::parse(t, &format!("{evk}.start"))?,
                 (None, Some(o)) => clock_start + o,
                 (None, None) => prev_end.unwrap_or(clock_start - clock_start.rem_euclid(3600)),
                 (Some(_), Some(_)) => {
-                    return Err(MuxError::Config(format!(
-                        "event {:#06x}: give start or start_offset_s, not both",
-                        e.event_id
-                    )));
+                    return Err(MuxError::Conflict {
+                        key: format!("{evk}.start"),
+                        other: "start_offset_s".to_string(),
+                    });
                 }
             };
-            let duration = jst::parse_hms(&e.duration)?;
+            let duration = jst::parse_hms(&e.duration, &format!("{evk}.duration"))?;
             prev_end = Some(start + i64::from(duration));
             v.push(Event {
                 index: i,
@@ -189,10 +215,15 @@ pub fn resolve_events(cfg: &Config, clock_start: JstSeconds) -> Result<Vec<Vec<E
         v.sort_by_key(|e| e.start);
         for w in v.windows(2) {
             if w[0].start + i64::from(w[0].duration) > w[1].start {
-                return Err(MuxError::Config(format!(
-                    "service {:#06x}: events {:#06x} and {:#06x} overlap",
-                    s.service_id, w[0].event_id, w[1].event_id
-                )));
+                return Err(MuxError::config(
+                    key::event(si, w[1].index),
+                    format!(
+                        "event {:#06x} overlaps event {:#06x} ({})",
+                        w[1].event_id,
+                        w[0].event_id,
+                        key::event(si, w[0].index)
+                    ),
+                ));
             }
         }
         all.push(v);
@@ -250,28 +281,38 @@ pub fn transmission_mode_code(m: Mode) -> u8 {
 }
 
 /// Frequency code (1/7 MHz units, B10 §6.2.31) of UHF channel `ch`:
-/// centre 473 + 6·(ch − 13) + 1/7 MHz.
-pub fn channel_frequency_code(ch: u32) -> Result<u16> {
+/// centre 473 + 6·(ch − 13) + 1/7 MHz. `key` is the TOML path of `ch`,
+/// for the error.
+pub fn channel_frequency_code(ch: u32, key: &str) -> Result<u16> {
     let ch = u16::try_from(ch)
         .ok()
         .filter(|ch| (13..=62).contains(ch))
-        .ok_or_else(|| MuxError::Config(format!("UHF channel {ch} outside 13..62")))?;
+        .ok_or_else(|| MuxError::Range {
+            key: key.to_string(),
+            value: i64::from(ch),
+            min: 13,
+            max: 62,
+            note: " (UHF channel)",
+        })?;
     Ok((473 + 6 * (ch - 13)) * 7 + 1) // at most 767 * 7 + 1 = 5370
 }
 
-fn text(s: &str) -> Result<AribString> {
-    isdb_text::encode(s).map_err(|e| MuxError::Config(format!("text {s:?}: {e}")))
+/// `key`: the TOML path of `s`.
+fn text(s: &str, key: &str) -> Result<AribString> {
+    isdb_text::encode(s).map_err(|e| MuxError::config(key, format!("text {s:?}: {e}")))
 }
 
-fn raw_si(d: &RawDescriptor) -> Result<Descriptor> {
-    Ok(Descriptor::Unknown {
-        tag: d.tag,
-        data: parse_hex(&d.hex)?,
-    })
-}
-
-fn raw_list(ds: &[RawDescriptor]) -> Result<Vec<Descriptor>> {
-    ds.iter().map(raw_si).collect()
+/// The raw descriptors of the TOML array at `list_key`.
+fn raw_list(ds: &[RawDescriptor], list_key: &str) -> Result<Vec<Descriptor>> {
+    ds.iter()
+        .enumerate()
+        .map(|(i, d)| {
+            Ok(Descriptor::Unknown {
+                tag: d.tag,
+                data: parse_hex(&d.hex, &format!("{list_key}[{i}].hex"))?,
+            })
+        })
+        .collect()
 }
 
 fn to_raw(d: &Descriptor) -> Result<RawDesc> {
@@ -329,11 +370,16 @@ pub(crate) fn parse_target(s: &str) -> Option<Target> {
     })
 }
 
-/// Validate the loop selectors of `opts` for `kind`.
-pub fn validate_targets(kind: TableKind, opts: &TableOpts) -> Result<()> {
-    for a in &opts.add_descriptors {
+/// Validate the loop selectors, hex strings and sections of `opts` for
+/// `kind`; `tk` is the TOML path of the table ([`table_key`]).
+pub fn validate_targets(kind: TableKind, opts: &TableOpts, tk: &str) -> Result<()> {
+    for (i, a) in opts.add_descriptors.iter().enumerate() {
+        let ak = format!("{tk}.add_descriptors[{i}]");
         let t = parse_target(&a.target).ok_or_else(|| {
-            MuxError::Config(format!("{}: bad loop selector {:?}", kind.name(), a.target))
+            MuxError::config(
+                format!("{ak}.loop"),
+                format!("bad loop selector {:?}", a.target),
+            )
         })?;
         let ok = match kind {
             TableKind::Cat | TableKind::Tot => t == Target::Main,
@@ -349,44 +395,71 @@ pub fn validate_targets(kind: TableKind, opts: &TableOpts) -> Result<()> {
             | TableKind::Ait(_) => false,
         };
         if !ok {
-            return Err(MuxError::Config(format!(
-                "{}: loop selector {:?} does not apply",
-                kind.name(),
-                a.target
-            )));
+            return Err(MuxError::config(
+                format!("{ak}.loop"),
+                format!(
+                    "loop selector {:?} does not apply to the {}",
+                    a.target,
+                    kind.name()
+                ),
+            ));
         }
-        parse_hex(&a.hex)?;
+        parse_hex(&a.hex, &format!("{ak}.hex"))?;
     }
-    for s in opts.replace_sections.iter().chain(&opts.extra_sections) {
-        let b = parse_hex(s)?;
+    let sections = opts
+        .replace_sections
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (replace_key(kind, tk, i), s))
+        .chain(
+            opts.extra_sections
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (format!("{tk}.extra_sections[{i}]"), s)),
+        );
+    for (k, s) in sections {
+        let b = parse_hex(s, &k)?;
         if total_len(&b) != Some(b.len()) {
-            return Err(MuxError::Config(format!(
-                "{}: section hex is not one complete section ({} bytes)",
-                kind.name(),
-                b.len()
-            )));
+            return Err(MuxError::config(
+                k,
+                format!(
+                    "section hex is not one complete section ({} bytes)",
+                    b.len()
+                ),
+            ));
         }
     }
-    for p in &opts.byte_patches {
-        parse_hex(&p.hex)?;
+    for (i, p) in opts.byte_patches.iter().enumerate() {
+        parse_hex(&p.hex, &format!("{tk}.byte_patches[{i}].hex"))?;
     }
     Ok(())
 }
 
+/// TOML path of replacement section `i` of the table at `tk` (a raw
+/// table's are its `sections`).
+fn replace_key(kind: TableKind, tk: &str, i: usize) -> String {
+    match kind {
+        TableKind::Raw(_) => format!("{tk}.sections[{i}]"),
+        _ => format!("{tk}.replace_sections[{i}]"),
+    }
+}
+
 /// Insert the matching added descriptors into `loop_`.
+/// `tk`: the TOML path of the table the `adds` belong to.
 fn add_into(
     loop_: &mut Vec<Descriptor>,
     adds: &[AddDescriptor],
+    tk: &str,
     pred: impl Fn(&Target) -> bool,
 ) -> Result<()> {
     let mut front = Vec::new();
-    for a in adds {
+    for (i, a) in adds.iter().enumerate() {
         if let Some(t) = parse_target(&a.target)
             && pred(&t)
         {
             let d = Descriptor::Unknown {
                 tag: a.tag,
-                data: parse_hex(&a.hex)?,
+                data: parse_hex(&a.hex, &format!("{tk}.add_descriptors[{i}].hex"))?,
             };
             if a.first {
                 front.push(d);
@@ -405,14 +478,18 @@ fn add_into(
 fn add_into_raw(
     loop_: &mut Vec<RawDesc>,
     adds: &[AddDescriptor],
+    tk: &str,
     pred: impl Fn(&Target) -> bool,
 ) -> Result<()> {
     let mut front = Vec::new();
-    for a in adds {
+    for (i, a) in adds.iter().enumerate() {
         if let Some(t) = parse_target(&a.target)
             && pred(&t)
         {
-            let d = RawDesc::new(a.tag, parse_hex(&a.hex)?);
+            let d = RawDesc::new(
+                a.tag,
+                parse_hex(&a.hex, &format!("{tk}.add_descriptors[{i}].hex"))?,
+            );
             if a.first {
                 front.push(d);
             } else {
@@ -480,8 +557,9 @@ fn fix_crc(sec: &mut [u8]) {
 }
 
 /// Post-encode overrides: section_syntax_indicator, byte patches, extra
-/// sections. `has_crc` tells whether the generated form carries CRC_32.
-fn post(mut secs: Vec<Vec<u8>>, o: &TableOpts, has_crc: bool) -> Result<Vec<Vec<u8>>> {
+/// sections. `has_crc` tells whether the generated form carries CRC_32;
+/// `tk` is the TOML path of the table.
+fn post(mut secs: Vec<Vec<u8>>, o: &TableOpts, has_crc: bool, tk: &str) -> Result<Vec<Vec<u8>>> {
     if let Some(ssi) = o.header.section_syntax_indicator {
         for s in &mut secs {
             s[1] = (s[1] & 0x7F) | if ssi { 0x80 } else { 0 };
@@ -490,18 +568,22 @@ fn post(mut secs: Vec<Vec<u8>>, o: &TableOpts, has_crc: bool) -> Result<Vec<Vec<
             }
         }
     }
-    for p in &o.byte_patches {
-        let bytes = parse_hex(&p.hex)?;
+    for (pi, p) in o.byte_patches.iter().enumerate() {
+        let pk = format!("{tk}.byte_patches[{pi}]");
+        let bytes = parse_hex(&p.hex, &format!("{pk}.hex"))?;
         for (i, s) in secs.iter_mut().enumerate() {
             if p.section.is_some_and(|k| k != i) {
                 continue;
             }
             if p.offset + bytes.len() > s.len() {
-                return Err(MuxError::Config(format!(
-                    "byte patch at {} runs past the {}-byte section",
-                    p.offset,
-                    s.len()
-                )));
+                return Err(MuxError::config(
+                    pk,
+                    format!(
+                        "the patch at offset {} runs past the {}-byte section {i}",
+                        p.offset,
+                        s.len()
+                    ),
+                ));
             }
             s[p.offset..p.offset + bytes.len()].copy_from_slice(&bytes);
             if p.fix_crc && has_crc {
@@ -509,25 +591,29 @@ fn post(mut secs: Vec<Vec<u8>>, o: &TableOpts, has_crc: bool) -> Result<Vec<Vec<
             }
         }
     }
-    for x in &o.extra_sections {
-        secs.push(parse_hex(x)?);
+    for (i, x) in o.extra_sections.iter().enumerate() {
+        secs.push(parse_hex(x, &format!("{tk}.extra_sections[{i}]"))?);
     }
     Ok(secs)
 }
 
-fn encode_long<B: LongBody>(mut secs: Vec<Long<B>>, o: &TableOpts) -> Result<Vec<Vec<u8>>> {
+fn encode_long<B: LongBody>(
+    mut secs: Vec<Long<B>>,
+    o: &TableOpts,
+    tk: &str,
+) -> Result<Vec<Vec<u8>>> {
     let mut out = Vec::new();
     for s in &mut secs {
         apply_long_header(&mut s.header, o);
         out.push(s.encode()?);
     }
-    post(out, o, true)
+    post(out, o, true, tk)
 }
 
-fn encode_short<B: ShortBody>(mut s: Short<B>, o: &TableOpts) -> Result<Vec<Vec<u8>>> {
+fn encode_short<B: ShortBody>(mut s: Short<B>, o: &TableOpts, tk: &str) -> Result<Vec<Vec<u8>>> {
     apply_short_header(&mut s.header, o);
     let v = vec![s.encode()?];
-    post(v, o, B::HAS_CRC)
+    post(v, o, B::HAS_CRC, tk)
 }
 
 fn si_header(table_id: u8, ext: u16, version: u8) -> LongHeader {
@@ -670,19 +756,26 @@ impl SiBuilder {
     /// Generate the sections of `kind` at wall-clock `now` with `version`.
     pub fn build(&self, kind: TableKind, now: JstSeconds, version: u8) -> Result<Vec<Vec<u8>>> {
         let o = self.opts(kind);
+        let tk = table_key(&self.cfg, kind);
         if !o.replace_sections.is_empty() {
-            return o.replace_sections.iter().map(|h| parse_hex(h)).collect();
+            return o
+                .replace_sections
+                .iter()
+                .enumerate()
+                .map(|(i, h)| parse_hex(h, &replace_key(kind, &tk, i)))
+                .collect();
         }
         let v = version & 0x1F;
+        let tk = tk.as_str();
         match kind {
-            TableKind::Pat => self.pat(&o, v),
-            TableKind::Cat => self.cat(&o, v),
-            TableKind::Pmt(i) => self.pmt(i, &o, v),
-            TableKind::Nit => self.nit(&o, v),
-            TableKind::Sdt => self.sdt(&o, v),
-            TableKind::EitPf => self.eit_pf(&o, v, now),
-            TableKind::EitSchedule => self.eit_schedule(&o, v, now),
-            TableKind::Tot => self.tot(&o, now),
+            TableKind::Pat => self.pat(&o, v, tk),
+            TableKind::Cat => self.cat(&o, v, tk),
+            TableKind::Pmt(i) => self.pmt(i, &o, v, tk),
+            TableKind::Nit => self.nit(&o, v, tk),
+            TableKind::Sdt => self.sdt(&o, v, tk),
+            TableKind::EitPf => self.eit_pf(&o, v, now, tk),
+            TableKind::EitSchedule => self.eit_schedule(&o, v, now, tk),
+            TableKind::Tot => self.tot(&o, now, tk),
             TableKind::Tdt => encode_short(
                 Short {
                     header: ShortHeader {
@@ -691,33 +784,52 @@ impl SiBuilder {
                         reserved1: 0b11,
                     },
                     body: TdtBody {
-                        jst_time: jst::to_mjd_time(now)?,
+                        jst_time: jst::to_mjd_time(now, CLOCK_KEY)?,
                     },
                 },
                 &o,
+                tk,
             ),
-            TableKind::Bit => self.bit(&o, v),
-            TableKind::Raw(_) => unreachable!("raw tables always have replace_sections"),
+            TableKind::Bit => self.bit(&o, v, tk),
+            // a raw table is its sections (Config::validate requires one)
+            TableKind::Raw(_) => Err(MuxError::Missing {
+                key: format!("{tk}.sections"),
+                needed_by: "[[raw_table]] (one section at least)".to_string(),
+            }),
             // The carousel's own versions (transaction_id, moduleVersion)
             // are configured; the stream version is not applied.
             TableKind::Carousel(i, k) => post(
                 self.carousel(i, k)
-                    .ok_or_else(|| MuxError::Config(format!("{} not loaded", kind.name())))?
+                    .ok_or(MuxError::Internal {
+                        what: "a carousel table built before its carousel was loaded",
+                    })?
                     .sections
                     .clone(),
                 &o,
                 true,
+                tk,
             ),
             TableKind::Ait(i) => {
-                let h = self.cfg.services[i].hybridcast.as_ref().ok_or_else(|| {
-                    MuxError::Config(format!("{} without [service.hybridcast]", kind.name()))
-                })?;
-                post(vec![crate::hybridcast::ait_section(h)?], &o, true)
+                let h = self.cfg.services[i]
+                    .hybridcast
+                    .as_ref()
+                    .ok_or(MuxError::Internal {
+                        what: "an AIT table of a service without [service.hybridcast]",
+                    })?;
+                post(
+                    vec![crate::hybridcast::ait_section(
+                        h,
+                        &format!("{}.hybridcast", key::service(i)),
+                    )?],
+                    &o,
+                    true,
+                    tk,
+                )
             }
         }
     }
 
-    fn pat(&self, o: &TableOpts, v: u8) -> Result<Vec<Vec<u8>>> {
+    fn pat(&self, o: &TableOpts, v: u8, tk: &str) -> Result<Vec<Vec<u8>>> {
         let nit_pid = self.cfg.nit.pid.unwrap_or(pid::NIT);
         let mut entries = vec![PatEntry::new(0, nit_pid)];
         let mut svcs: Vec<_> = self.cfg.services.iter().collect();
@@ -732,19 +844,26 @@ impl SiBuilder {
                 entries,
             )],
             o,
+            tk,
         )
     }
 
-    fn cat(&self, o: &TableOpts, v: u8) -> Result<Vec<Vec<u8>>> {
+    fn cat(&self, o: &TableOpts, v: u8, tk: &str) -> Result<Vec<Vec<u8>>> {
         let mut ds: Vec<RawDesc> = self
             .cfg
             .cat
             .descriptors
             .iter()
-            .map(|d| Ok(RawDesc::new(d.tag, parse_hex(&d.hex)?)))
+            .enumerate()
+            .map(|(i, d)| {
+                Ok(RawDesc::new(
+                    d.tag,
+                    parse_hex(&d.hex, &format!("cat.descriptors[{i}].hex"))?,
+                ))
+            })
             .collect::<Result<_>>()?;
-        add_into_raw(&mut ds, &o.add_descriptors, |t| *t == Target::Main)?;
-        encode_long(vec![Cat::section(v, ds)], o)
+        add_into_raw(&mut ds, &o.add_descriptors, tk, |t| *t == Target::Main)?;
+        encode_long(vec![Cat::section(v, ds)], o, tk)
     }
 
     /// Digital copy control descriptor of service `sid` (B10 §6.2.23); the
@@ -753,11 +872,11 @@ impl SiBuilder {
     fn copy_control(
         cc: &crate::config::CopyControlCfg,
         in_pmt: bool,
-        sid: u16,
+        i: usize,
     ) -> Result<Descriptor> {
         Ok(Descriptor::DigitalCopyControl(cc.descriptor(
             !in_pmt,
-            &format!("service {sid:#06x} copy_control"),
+            &format!("{}.copy_control", key::service(i)),
         )?))
     }
 
@@ -773,25 +892,32 @@ impl SiBuilder {
         })
     }
 
-    fn pmt(&self, i: usize, o: &TableOpts, v: u8) -> Result<Vec<Vec<u8>>> {
+    fn pmt(&self, i: usize, o: &TableOpts, v: u8, tk: &str) -> Result<Vec<Vec<u8>>> {
         let s = &self.cfg.services[i];
+        let svc = key::service(i);
         let mut program = Vec::new();
         if let Some(cc) = &s.copy_control
             && cc.in_pmt
         {
-            program.push(to_raw(&Self::copy_control(cc, true, s.service_id)?)?);
+            program.push(to_raw(&Self::copy_control(cc, true, i)?)?);
         }
         if let Some(ca) = &s.content_availability
             && ca.in_pmt
         {
             program.push(to_raw(&Self::content_availability(ca))?);
         }
-        for d in &s.program_descriptors {
-            program.push(RawDesc::new(d.tag, parse_hex(&d.hex)?));
+        for (j, d) in s.program_descriptors.iter().enumerate() {
+            program.push(RawDesc::new(
+                d.tag,
+                parse_hex(&d.hex, &format!("{svc}.program_descriptors[{j}].hex"))?,
+            ));
         }
-        add_into_raw(&mut program, &o.add_descriptors, |t| *t == Target::Program)?;
+        add_into_raw(&mut program, &o.add_descriptors, tk, |t| {
+            *t == Target::Program
+        })?;
         let mut streams = Vec::new();
         for (k, st) in s.streams.iter().enumerate() {
+            let stk = key::stream(i, s, k);
             let mut ds = Vec::new();
             if let Some(tag) = st.component_tag {
                 ds.push(to_raw(&Descriptor::StreamIdentifier(StreamIdentifier {
@@ -842,36 +968,37 @@ impl SiBuilder {
                 let bml = st.bml.clone().unwrap_or_default();
                 ds.push(to_raw(&Descriptor::DataComponent(DataComponent {
                     data_component_id: bml.data_component_id,
-                    additional_data_component_info: additional_bxml_info(&bml, s.service_id)?,
+                    additional_data_component_info: additional_bxml_info(&bml, &stk)?,
                 }))?);
             }
-            for d in &st.descriptors {
-                ds.push(RawDesc::new(d.tag, parse_hex(&d.hex)?));
+            for (j, d) in st.descriptors.iter().enumerate() {
+                ds.push(RawDesc::new(
+                    d.tag,
+                    parse_hex(&d.hex, &format!("{stk}.descriptors[{j}].hex"))?,
+                ));
             }
-            add_into_raw(&mut ds, &o.add_descriptors, |t| *t == Target::Es(st.pid))?;
+            add_into_raw(&mut ds, &o.add_descriptors, tk, |t| {
+                *t == Target::Es(st.pid)
+            })?;
             streams.push(PmtStream::new(stream_type(st), st.pid, ds));
         }
         if let Some(h) = &s.hybridcast
             && h.carriage == AitCarriage::Es
         {
             // B24 Vol. 4 §7.3: the AIT component with ait_identifier_info
-            let pid = h.pid.ok_or_else(|| {
-                MuxError::Config(format!(
-                    "service {:#06x} hybridcast: carriage = \"es\" needs pid",
-                    s.service_id
-                ))
-            })?;
-            let dcid = h.data_component_id.ok_or_else(|| {
-                MuxError::Config(format!(
-                    "service {:#06x} hybridcast: carriage = \"es\" needs data_component_id",
-                    s.service_id
-                ))
-            })?;
+            let missing = |field: &str| MuxError::Missing {
+                key: format!("{svc}.hybridcast.{field}"),
+                needed_by: "carriage = \"es\"".to_string(),
+            };
+            let pid = h.pid.ok_or_else(|| missing("pid"))?;
+            let dcid = h
+                .data_component_id
+                .ok_or_else(|| missing("data_component_id"))?;
             let mut ds = vec![to_raw(&Descriptor::DataComponent(DataComponent {
                 data_component_id: dcid,
                 additional_data_component_info: crate::hybridcast::ait_identifier_info(h)?,
             }))?];
-            add_into_raw(&mut ds, &o.add_descriptors, |t| *t == Target::Es(pid))?;
+            add_into_raw(&mut ds, &o.add_descriptors, tk, |t| *t == Target::Es(pid))?;
             streams.push(PmtStream::new(AIT_STREAM_TYPE, pid, ds));
         }
         encode_long(
@@ -881,6 +1008,7 @@ impl SiBuilder {
                 Pmt::new(s.pcr_pid, program, streams),
             )],
             o,
+            tk,
         )
     }
 
@@ -905,34 +1033,35 @@ impl SiBuilder {
             return Ok(q);
         }
         let s = &self.cfg.services[i];
+        let hk = format!("{}.hierarchical", key::stream(i, s, k));
         let r = s
             .streams
             .iter()
             .position(|x| x.pid == h.reference_pid)
             .ok_or_else(|| {
-                MuxError::Config(format!(
-                    "hierarchical reference_pid {:#06x} is not a stream of service {:#06x}",
-                    h.reference_pid, s.service_id
-                ))
+                MuxError::config(
+                    format!("{hk}.reference_pid"),
+                    format!("{:#06x} is not a stream of the service", h.reference_pid),
+                )
             })?;
         let (a, b) = (
             self.layer_rank(self.stream_layer(i, k)),
             self.layer_rank(self.stream_layer(i, r)),
         );
         if a == b {
-            return Err(MuxError::Config(format!(
-                "stream {:#06x}: both hierarchical streams have the same robustness; set high_quality",
-                s.streams[k].pid
-            )));
+            return Err(MuxError::config(
+                hk,
+                "both hierarchical streams have the same robustness; set high_quality",
+            ));
         }
         Ok(a > b)
     }
 
-    fn nit(&self, o: &TableOpts, v: u8) -> Result<Vec<Vec<u8>>> {
+    fn nit(&self, o: &TableOpts, v: u8, tk: &str) -> Result<Vec<Vec<u8>>> {
         let c = &self.cfg;
         let n = &c.network;
         let mut net = vec![Descriptor::NetworkName(NetworkName {
-            name: text(&n.name)?,
+            name: text(&n.name, "network.name")?,
         })];
         if n.system_management {
             // B10 Table 6-34/6-35/6-36: broadcasting_flag '00' (broadcasting),
@@ -944,11 +1073,14 @@ impl SiBuilder {
                 additional_identification_info: Vec::new(),
             }));
         }
-        add_into(&mut net, &o.add_descriptors, |t| *t == Target::Network)?;
+        add_into(&mut net, &o.add_descriptors, tk, |t| *t == Target::Network)?;
 
         let mut freqs = Vec::new();
-        for &ch in &n.channels {
-            freqs.push(channel_frequency_code(ch)?);
+        for (j, &ch) in n.channels.iter().enumerate() {
+            freqs.push(channel_frequency_code(
+                ch,
+                &format!("network.channels[{j}]"),
+            )?);
         }
         freqs.extend_from_slice(&n.frequencies);
         let mut ts = vec![Descriptor::TerrestrialDeliverySystem(
@@ -971,7 +1103,10 @@ impl SiBuilder {
         };
         ts.push(Descriptor::TsInformation(TsInformation {
             remote_control_key_id: n.remote_control_key_id.get(),
-            ts_name: text(n.ts_name.as_deref().unwrap_or(&n.name))?,
+            ts_name: match n.ts_name.as_deref() {
+                Some(t) => text(t, "network.ts_name")?,
+                None => text(&n.name, "network.name")?,
+            },
             transmission_types: n
                 .transmission_types
                 .iter()
@@ -999,7 +1134,7 @@ impl SiBuilder {
                 service_ids: partial,
             }));
         }
-        add_into(&mut ts, &o.add_descriptors, |t| *t == Target::Ts)?;
+        add_into(&mut ts, &o.add_descriptors, tk, |t| *t == Target::Ts)?;
         let body = NitBody(NetworkLoops {
             reserved_future_use_1: 0xF,
             descriptors: net,
@@ -1017,6 +1152,7 @@ impl SiBuilder {
                 body,
             }],
             o,
+            tk,
         )
     }
 
@@ -1026,25 +1162,29 @@ impl SiBuilder {
             && !self.events[i].is_empty()
     }
 
-    fn sdt(&self, o: &TableOpts, v: u8) -> Result<Vec<Vec<u8>>> {
+    fn sdt(&self, o: &TableOpts, v: u8, tk: &str) -> Result<Vec<Vec<u8>>> {
         let c = &self.cfg;
         let mut idx: Vec<usize> = (0..c.services.len()).collect();
         idx.sort_by_key(|&i| c.services[i].service_id);
         let mut services = Vec::new();
         for i in idx {
             let s = &c.services[i];
+            let svc = key::service(i);
             let mut ds = vec![Descriptor::Service(ServiceDescriptor {
                 service_type: s.service_type,
-                provider_name: text(&s.provider)?,
-                service_name: text(&s.name)?,
+                provider_name: text(&s.provider, &format!("{svc}.provider"))?,
+                service_name: text(&s.name, &format!("{svc}.name"))?,
             })];
             if let Some(cc) = &s.copy_control
                 && cc.in_sdt
             {
-                ds.push(Self::copy_control(cc, false, s.service_id)?);
+                ds.push(Self::copy_control(cc, false, i)?);
             }
-            ds.extend(raw_list(&s.sdt_descriptors)?);
-            add_into(&mut ds, &o.add_descriptors, |t| {
+            ds.extend(raw_list(
+                &s.sdt_descriptors,
+                &format!("{svc}.sdt_descriptors"),
+            )?);
+            add_into(&mut ds, &o.add_descriptors, tk, |t| {
                 matches!(t, Target::Service(None)) || *t == Target::Service(Some(s.service_id))
             })?;
             services.push(SdtService {
@@ -1069,16 +1209,24 @@ impl SiBuilder {
                 body,
             }],
             o,
+            tk,
         )
     }
 
-    fn event_descriptors(&self, i: usize, e: &Event, o: &TableOpts) -> Result<Vec<Descriptor>> {
+    fn event_descriptors(
+        &self,
+        i: usize,
+        e: &Event,
+        o: &TableOpts,
+        tk: &str,
+    ) -> Result<Vec<Descriptor>> {
         let s = &self.cfg.services[i];
         let ec = &s.events[e.index];
+        let evk = key::event(i, e.index);
         let mut ds = vec![Descriptor::ShortEvent(ShortEvent {
             language: *b"jpn",
-            event_name: text(&ec.name)?,
-            text: text(&ec.text)?,
+            event_name: text(&ec.name, &format!("{evk}.name"))?,
+            text: text(&ec.text, &format!("{evk}.text"))?,
         })];
         for (k, st) in s.streams.iter().enumerate() {
             if !st.eit_component {
@@ -1169,7 +1317,7 @@ impl SiBuilder {
             ds.push(Descriptor::DataContent(DataContent {
                 data_component_id: bml.data_component_id,
                 entry_component: st.component_tag.unwrap_or(carousel::DEFAULT_COMPONENT_TAG),
-                selector: bxml_info(&bml, carousels, s.service_id)?,
+                selector: bxml_info(&bml, carousels, &key::stream(i, s, k))?,
                 component_refs: refs,
                 language: *b"jpn",
                 text: AribString(Vec::new()),
@@ -1192,16 +1340,16 @@ impl SiBuilder {
         if let Some(cc) = &s.copy_control
             && cc.in_eit
         {
-            ds.push(Self::copy_control(cc, false, s.service_id)?);
+            ds.push(Self::copy_control(cc, false, i)?);
         }
         if let Some(ca) = &s.content_availability
             && ca.in_eit
         {
             ds.push(Self::content_availability(ca));
         }
-        ds.extend(raw_list(&ec.descriptors)?);
+        ds.extend(raw_list(&ec.descriptors, &format!("{evk}.descriptors"))?);
         let sid = s.service_id;
-        add_into(&mut ds, &o.add_descriptors, |t| match t {
+        add_into(&mut ds, &o.add_descriptors, tk, |t| match t {
             Target::Event(None, None) => true,
             Target::Event(Some(x), None) => *x == sid,
             Target::Event(Some(x), Some(y)) => *x == sid && *y == e.event_id,
@@ -1216,14 +1364,16 @@ impl SiBuilder {
         e: &Event,
         running_status: u8,
         o: &TableOpts,
+        tk: &str,
     ) -> Result<EitEvent> {
+        let evk = key::event(i, e.index);
         Ok(EitEvent {
             event_id: e.event_id,
-            start_time: jst::to_mjd_time(e.start)?,
-            duration: jst::bcd_duration(e.duration)?,
+            start_time: jst::to_mjd_time(e.start, &format!("{evk}.start"))?,
+            duration: jst::bcd_duration(e.duration, &format!("{evk}.duration"))?,
             running_status: running_status & 7,
             free_ca_mode: self.cfg.services[i].free_ca_mode,
-            descriptors: self.event_descriptors(i, e, o)?,
+            descriptors: self.event_descriptors(i, e, o, tk)?,
         })
     }
 
@@ -1243,7 +1393,7 @@ impl SiBuilder {
         (present, following)
     }
 
-    fn eit_pf(&self, o: &TableOpts, v: u8, now: JstSeconds) -> Result<Vec<Vec<u8>>> {
+    fn eit_pf(&self, o: &TableOpts, v: u8, now: JstSeconds, tk: &str) -> Result<Vec<Vec<u8>>> {
         let c = &self.cfg;
         let mut idx: Vec<usize> = (0..c.services.len())
             .filter(|&i| c.services[i].eit_pf)
@@ -1260,7 +1410,7 @@ impl SiBuilder {
                 h.section_number = sn;
                 h.last_section_number = 1;
                 let events = match ev {
-                    Some(e) => vec![self.eit_event(i, e, rs, o)?],
+                    Some(e) => vec![self.eit_event(i, e, rs, o, tk)?],
                     None => Vec::new(),
                 };
                 secs.push(Long {
@@ -1275,24 +1425,32 @@ impl SiBuilder {
                 });
             }
         }
-        encode_long(secs, o)
+        encode_long(secs, o, tk)
     }
 
     /// EIT schedule per B10 Part 2 Annex 1.4.2.1: 0x50 + 4-day blocks,
     /// 32 segments of 3 h × 8 sections, empty segments as one empty section.
-    fn eit_schedule(&self, o: &TableOpts, v: u8, now: JstSeconds) -> Result<Vec<Vec<u8>>> {
+    fn eit_schedule(
+        &self,
+        o: &TableOpts,
+        v: u8,
+        now: JstSeconds,
+        tk: &str,
+    ) -> Result<Vec<Vec<u8>>> {
         let c = &self.cfg;
+        let clock_range = || MuxError::TimeRange {
+            key: CLOCK_KEY.to_string(),
+            seconds: now,
+        };
         let t0 = if c.eit_schedule.reference == crate::config::EitScheduleReference::Month {
-            let d = jst::to_datetime(now)
-                .ok_or_else(|| MuxError::Config("clock out of range".into()))?;
+            let d = jst::to_datetime(now).ok_or_else(clock_range)?;
             let first = isdb_si::time::DateTime {
                 date: isdb_si::time::Date { day: 1, ..d.date },
                 hour: 0,
                 minute: 0,
                 second: 0,
             };
-            jst::from_datetime(first)
-                .ok_or_else(|| MuxError::Config("clock out of range".into()))?
+            jst::from_datetime(first).ok_or_else(clock_range)?
         } else {
             now - now.rem_euclid(86_400)
         };
@@ -1325,29 +1483,35 @@ impl SiBuilder {
                 // sections per segment (one section per segment unless it overflows 4096 bytes)
                 let mut per_seg: Vec<Vec<Vec<EitEvent>>> = Vec::new();
                 for seg in 0..=last_seg {
-                    let mut sections: Vec<Vec<EitEvent>> = vec![Vec::new()];
+                    // the full sections of the segment, then the one filling
+                    let mut sections: Vec<Vec<EitEvent>> = Vec::new();
+                    let mut current: Vec<EitEvent> = Vec::new();
                     let mut size = 0usize;
                     for e in segs.get(&(table, seg)).map(|v| v.as_slice()).unwrap_or(&[]) {
-                        let ev = self.eit_event(i, e, 0, o)?;
+                        let ev = self.eit_event(i, e, 0, o, tk)?;
                         let sz = 12 + isdb_si::descriptor::loop_bytes(&ev.descriptors)?.len();
-                        if size + sz > 4000 && !sections.last().unwrap().is_empty() {
-                            if sections.len() == 8 {
-                                return Err(MuxError::Config(
-                                    "EIT schedule segment needs more than 8 sections".into(),
+                        if size + sz > 4000 && !current.is_empty() {
+                            if sections.len() == 7 {
+                                return Err(MuxError::config(
+                                    format!("{}.event", key::service(i)),
+                                    format!(
+                                        "the events of EIT schedule table {tid:#04x} segment {seg} need more than 8 sections (B10 Part 2 Annex 1.4.2.1)"
+                                    ),
                                 ));
                             }
-                            sections.push(Vec::new());
+                            sections.push(std::mem::take(&mut current));
                             size = 0;
                         }
                         size += sz;
-                        sections.last_mut().unwrap().push(ev);
+                        current.push(ev);
                     }
+                    sections.push(current);
                     per_seg.push(sections);
                 }
                 // segment (<= 31) * 8 + section within it (< 8) fits a byte
                 let section_number = |n: usize| {
-                    u8::try_from(n).map_err(|_| {
-                        MuxError::Config(format!("EIT schedule section number {n} exceeds 255"))
+                    u8::try_from(n).map_err(|_| MuxError::Internal {
+                        what: "EIT schedule section_number above 255",
                     })
                 };
                 let last_section = section_number(
@@ -1374,36 +1538,42 @@ impl SiBuilder {
                 }
             }
         }
-        encode_long(out, o)
+        encode_long(out, o, tk)
     }
 
-    fn tot(&self, o: &TableOpts, now: JstSeconds) -> Result<Vec<Vec<u8>>> {
+    fn tot(&self, o: &TableOpts, now: JstSeconds, tk: &str) -> Result<Vec<Vec<u8>>> {
         let mut ds = Vec::new();
         if !self.cfg.tot.local_time_offset.is_empty() {
             let mut entries = Vec::new();
-            for l in &self.cfg.tot.local_time_offset {
+            for (j, l) in self.cfg.tot.local_time_offset.iter().enumerate() {
+                let lk = format!("tot.local_time_offset[{j}]");
                 let cc = l.country_code.as_bytes();
                 if cc.len() != 3 {
-                    return Err(MuxError::Config(format!(
-                        "country_code {:?}",
-                        l.country_code
-                    )));
+                    return Err(MuxError::Format {
+                        key: format!("{lk}.country_code"),
+                        value: l.country_code.clone(),
+                        want: "3 bytes (ISO 3166-1 alpha-3, B10 §6.2.20: \"JPN\")",
+                    });
                 }
-                let (h1, m1) = jst::parse_hm(&l.offset)?;
-                let (h2, m2) = jst::parse_hm(&l.next_offset)?;
+                let (h1, m1) = jst::parse_hm(&l.offset, &format!("{lk}.offset"))?;
+                let (h2, m2) = jst::parse_hm(&l.next_offset, &format!("{lk}.next_offset"))?;
+                let change_key = format!("{lk}.time_of_change");
                 entries.push(LocalTimeOffsetEntry {
                     country_code: [cc[0], cc[1], cc[2]],
                     country_region_id: l.country_region_id & 0x3F,
                     reserved: true,
                     local_time_offset_polarity: l.polarity,
                     local_time_offset: BcdOffset::from_hm(h1, m1)?,
-                    time_of_change: jst::to_mjd_time(jst::parse(&l.time_of_change)?)?,
+                    time_of_change: jst::to_mjd_time(
+                        jst::parse(&l.time_of_change, &change_key)?,
+                        &change_key,
+                    )?,
                     next_time_offset: BcdOffset::from_hm(h2, m2)?,
                 });
             }
             ds.push(Descriptor::LocalTimeOffset(LocalTimeOffset { entries }));
         }
-        add_into(&mut ds, &o.add_descriptors, |t| *t == Target::Main)?;
+        add_into(&mut ds, &o.add_descriptors, tk, |t| *t == Target::Main)?;
         encode_short(
             Short {
                 header: ShortHeader {
@@ -1412,25 +1582,27 @@ impl SiBuilder {
                     reserved1: 0b11,
                 },
                 body: TotBody {
-                    jst_time: jst::to_mjd_time(now)?,
+                    jst_time: jst::to_mjd_time(now, CLOCK_KEY)?,
                     reserved: 0xF,
                     descriptors: ds,
                 },
             },
             o,
+            tk,
         )
     }
 
-    fn bit(&self, o: &TableOpts, v: u8) -> Result<Vec<Vec<u8>>> {
+    fn bit(&self, o: &TableOpts, v: u8, tk: &str) -> Result<Vec<Vec<u8>>> {
         let b = &self.cfg.bit;
-        let mut first = raw_list(&b.first_descriptors)?;
-        add_into(&mut first, &o.add_descriptors, |t| *t == Target::First)?;
+        let mut first = raw_list(&b.first_descriptors, "bit.first_descriptors")?;
+        add_into(&mut first, &o.add_descriptors, tk, |t| *t == Target::First)?;
         let mut broadcasters = Vec::new();
-        for bc in &b.broadcasters {
+        for (j, bc) in b.broadcasters.iter().enumerate() {
+            let bk = format!("bit.broadcasters[{j}]");
             let mut ds = Vec::new();
             if let Some(n) = &bc.name {
                 ds.push(Descriptor::BroadcasterName(BroadcasterName {
-                    name: text(n)?,
+                    name: text(n, &format!("{bk}.name"))?,
                 }));
             }
             if let Some(t) = &bc.terrestrial {
@@ -1451,9 +1623,9 @@ impl SiBuilder {
                     }),
                 }));
             }
-            ds.extend(raw_list(&bc.descriptors)?);
+            ds.extend(raw_list(&bc.descriptors, &format!("{bk}.descriptors"))?);
             let id = bc.broadcaster_id;
-            add_into(&mut ds, &o.add_descriptors, |t| {
+            add_into(&mut ds, &o.add_descriptors, tk, |t| {
                 matches!(t, Target::Broadcaster(None)) || *t == Target::Broadcaster(Some(id))
             })?;
             broadcasters.push(BitBroadcaster {
@@ -1474,9 +1646,14 @@ impl SiBuilder {
                 body,
             }],
             o,
+            tk,
         )
     }
 }
+
+/// The key of errors about the stream clock (the TDT/TOT time, EIT
+/// schedule reference): it starts at `clock.start` (or the system time).
+const CLOCK_KEY: &str = "clock.start";
 
 /// stream_type of a configured stream (H.222.0 Table 2-34: 0x02 = ITU-T
 /// H.262 video, 0x0F = ISO/IEC 13818-7 audio with ADTS transport syntax).
@@ -1497,10 +1674,10 @@ pub fn stream_type(s: &StreamCfg) -> u8 {
 pub const AIT_STREAM_TYPE: u8 = 0x05;
 
 /// additional_arib_bxml_info() of a `bml-carousel` (B24 Vol. 2 Table 9-12
-/// with Vol. 3 Annex C.1).
-pub fn additional_bxml_info(bml: &BmlCfg, sid: u16) -> Result<Vec<u8>> {
-    let what = format!("service {sid:#06x} bml");
-    let versions = carousel::bml_versions(bml, &what)?;
+/// with Vol. 3 Annex C.1). `key` is the TOML path of the stream, for the
+/// errors.
+pub fn additional_bxml_info(bml: &BmlCfg, key: &str) -> Result<Vec<u8>> {
+    let versions = carousel::bml_versions(bml, key)?;
     let entry = if bml.entry_point {
         BxmlEntry::Entry(BxmlEntryPoint {
             auto_start: bml.auto_start,
@@ -1530,9 +1707,9 @@ pub fn additional_bxml_info(bml: &BmlCfg, sid: u16) -> Result<Vec<u8>> {
 }
 
 /// arib_bxml_info() selector of the EIT data content descriptor (B24
-/// Vol. 2 Table 9-13 with Vol. 3 Annex C.2.1).
-pub fn bxml_info(bml: &BmlCfg, carousels: Vec<CarouselInfo>, sid: u16) -> Result<Vec<u8>> {
-    let what = format!("service {sid:#06x} bml");
+/// Vol. 2 Table 9-13 with Vol. 3 Annex C.2.1). `key` is the TOML path of
+/// the stream, for the errors.
+pub fn bxml_info(bml: &BmlCfg, carousels: Vec<CarouselInfo>, key: &str) -> Result<Vec<u8>> {
     Ok(AribBxmlInfo {
         transmission_format: TRANSMISSION_FORMAT_CAROUSEL,
         reserved_1: true,
@@ -1546,7 +1723,7 @@ pub fn bxml_info(bml: &BmlCfg, carousels: Vec<CarouselInfo>, sid: u16) -> Result
         style_for_tv: bml.style_for_tv,
         update: false,
         language: *b"jpn",
-        versions: carousel::bml_versions(bml, &what)?,
+        versions: carousel::bml_versions(bml, key)?,
         carousels,
         ondemand_retrieval: bml.ondemand_retrieval,
         file_storable: false,
@@ -1573,9 +1750,12 @@ mod tests {
     #[test]
     fn frequency_codes() {
         // ch 13: 473 + 1/7 MHz = 3312/7 MHz; ch 62: 767 + 1/7 MHz
-        assert_eq!(channel_frequency_code(13).unwrap(), 3312);
-        assert_eq!(channel_frequency_code(62).unwrap(), 767 * 7 + 1);
-        assert!(channel_frequency_code(12).is_err());
+        assert_eq!(channel_frequency_code(13, "c").unwrap(), 3312);
+        assert_eq!(channel_frequency_code(62, "c").unwrap(), 767 * 7 + 1);
+        assert!(matches!(
+            channel_frequency_code(12, "network.channels[0]"),
+            Err(MuxError::Range { key, value: 12, min: 13, max: 62, .. }) if key == "network.channels[0]"
+        ));
     }
 
     #[test]
@@ -1612,10 +1792,17 @@ mod tests {
     #[test]
     fn hex_and_targets() {
         assert_eq!(
-            parse_hex("02 b0:0d_ff").unwrap(),
+            parse_hex("02 b0:0d_ff", "k").unwrap(),
             vec![0x02, 0xB0, 0x0D, 0xFF]
         );
-        assert!(parse_hex("abc").is_err());
+        assert!(matches!(
+            parse_hex("abc", "nit.add_descriptors[0].hex"),
+            Err(MuxError::Hex { key, bad: None, .. }) if key == "nit.add_descriptors[0].hex"
+        ));
+        assert!(matches!(
+            parse_hex("0g", "k"),
+            Err(MuxError::Hex { bad: Some(d), .. }) if d == "0g"
+        ));
         assert_eq!(
             parse_target("es:0x0111"),
             Some(Target::Es(Pid::new(0x111).unwrap()))

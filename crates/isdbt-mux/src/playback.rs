@@ -92,7 +92,11 @@ impl Timeline {
 
     /// The last segment.
     pub fn last(&self) -> Seg {
-        *self.segs.last().expect("a timeline has a segment")
+        // `new` makes one segment and no method removes the last one
+        *self
+            .segs
+            .last()
+            .expect("a Timeline keeps at least one segment")
     }
 
     /// Content time shown at mux time `o` (by the segment in force then).
