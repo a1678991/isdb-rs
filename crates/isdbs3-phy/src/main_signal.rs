@@ -250,8 +250,10 @@ pub fn decode_frame(
         }],
         ldpc,
     )
-    .pop()
-    .expect("one frame in, one out")
+    // one frame in, one out: its slots
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// [`decode_frame`] for several frames at once: every codeword of every
@@ -295,7 +297,7 @@ pub fn decode_frames(frames: &[FrameInput<'_>], ldpc: &Ldpc) -> Vec<Vec<SlotData
                     .collect();
                 handles
                     .into_iter()
-                    .flat_map(|h| h.join().expect("decoder thread"))
+                    .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
                     .collect()
             })
         }
@@ -354,7 +356,7 @@ pub fn decode_frames(frames: &[FrameInput<'_>], ldpc: &Ldpc) -> Vec<Vec<SlotData
                     .collect();
                 handles
                     .into_iter()
-                    .flat_map(|h| h.join().expect("decoder thread"))
+                    .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
                     .collect()
             })
         }
@@ -374,7 +376,7 @@ pub fn decode_frames(frames: &[FrameInput<'_>], ldpc: &Ldpc) -> Vec<Vec<SlotData
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().expect("BCH thread"))
+            .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     })
 }

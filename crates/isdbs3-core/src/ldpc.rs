@@ -8,10 +8,7 @@ use std::sync::OnceLock;
 /// The code of rate `r` (built on first use, shared afterwards).
 pub fn code(r: CodeRate) -> &'static Code {
     static CODES: [OnceLock<Code>; 11] = [const { OnceLock::new() }; 11];
-    let i = crate::params::RATES
-        .iter()
-        .position(|&x| x == r.numerator())
-        .expect("rate");
+    let i = r.index();
     CODES[i].get_or_init(|| {
         let (num, rows) = crate::ldpc_tables::TABLES[i];
         assert_eq!(num, u32::from(r.numerator()));

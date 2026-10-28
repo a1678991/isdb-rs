@@ -113,7 +113,7 @@ pub fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64,
         let handles: Vec<_> = tried.iter().map(|&c| sc.spawn(move || score(c))).collect();
         handles
             .into_iter()
-            .map(|h| h.join().expect("carrier thread"))
+            .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect::<Result<_, _>>()
     })?;
     // a still phase first, then the Es/N0

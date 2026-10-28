@@ -220,10 +220,139 @@ impl Design {
     }
 }
 
-/// Why a [`Design`] or [`Params`] is rejected.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("front end parameters: {0}")]
-pub struct ParamError(pub String);
+/// Why a [`Design`] or [`Params`] is rejected: the rule of
+/// [`Params::design`] or [`Params::validate`] that failed, with the values
+/// it saw.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ParamError {
+    /// The design's input samples per symbol are outside 1.0625..4 (at
+    /// most one symbol per input sample; the Q8.24 period holds less
+    /// than 4).
+    #[error("front end parameters: {sps:.3} samples per symbol: 1.0625..4 supported")]
+    SamplesPerSymbol {
+        /// Samples per symbol of the design.
+        sps: f64,
+    },
+    /// Taps per phase odd or outside 4..=[`MAX_TAPS`].
+    #[error("front end parameters: {taps} taps: even, 4..={MAX_TAPS}")]
+    Taps {
+        /// Taps per phase.
+        taps: usize,
+    },
+    /// The output trim is more than half a symbol.
+    #[error("front end parameters: trim {trim} symbols: within ±0.5")]
+    Trim {
+        /// The trim, symbol periods.
+        trim: f64,
+    },
+    /// A loop gain the mantissa-and-shift registers cannot hold.
+    #[error(
+        "front end parameters: loop gain {gain:.3e} outside the registers' range (TED slope {ted_slope:.3e}); change loop_bandwidth"
+    )]
+    LoopGain {
+        /// The gain, period units per error unit.
+        gain: f64,
+        /// The timing-detector slope it was derived from.
+        ted_slope: f64,
+    },
+    /// An integer setting or register outside its range.
+    #[error("front end parameters: {what} {value}: {min}..={max}")]
+    Range {
+        /// The [`Design`] or [`Params`] field.
+        what: &'static str,
+        /// Its value.
+        value: i64,
+        /// Smallest allowed value.
+        min: i64,
+        /// Largest allowed value.
+        max: i64,
+    },
+    /// A bank without [`PHASES`] phases.
+    #[error("front end parameters: {h} / {g} / {k} phases, {PHASES} expected")]
+    Phases {
+        /// Phases of `h`.
+        h: usize,
+        /// Phases of `g`.
+        g: usize,
+        /// Phases of `k`.
+        k: usize,
+    },
+    /// A phase whose tap count differs from [`Params::taps`].
+    #[error(
+        "front end parameters: ragged coefficient bank: {bank}[{phase}] has {len} taps, {taps} expected"
+    )]
+    RaggedBank {
+        /// The bank (`h`, `g` or `k`).
+        bank: &'static str,
+        /// The phase.
+        phase: usize,
+        /// Its taps.
+        len: usize,
+        /// The taps of the first phase of `h`.
+        taps: usize,
+    },
+    /// A coefficient outside [`COEF_BITS`] signed bits.
+    #[error(
+        "front end parameters: coefficient {value} in {bank}[{phase}] outside {COEF_BITS} bits"
+    )]
+    Coefficient {
+        /// The bank (`h`, `g` or `k`).
+        bank: &'static str,
+        /// The phase.
+        phase: usize,
+        /// The coefficient.
+        value: i32,
+    },
+    /// A phase whose coefficient magnitudes sum above [`COEF_SUM_MAX`].
+    #[error(
+        "front end parameters: coefficient magnitudes of {bank}[{phase}] sum to {sum}, above 2^17 − 1"
+    )]
+    CoefficientSum {
+        /// The bank (`h`, `g` or `k`).
+        bank: &'static str,
+        /// The phase.
+        phase: usize,
+        /// The sum of magnitudes.
+        sum: i64,
+    },
+    /// A timing-detector bank non-zero outside its centre [`TED_TAPS`]
+    /// taps ([`ted_tap`]).
+    #[error(
+        "front end parameters: detector bank {bank} must be zero outside its centre {TED_TAPS} taps"
+    )]
+    DetectorTaps {
+        /// The bank (`h` or `g`).
+        bank: &'static str,
+    },
+    /// The period bounds are not 1 < min ≤ nominal ≤ max < 4 samples.
+    #[error(
+        "front end parameters: period bounds {min} / {nominal} / {max} (Q8.24): 1 < min ≤ nominal ≤ max < 4 samples"
+    )]
+    PeriodBounds {
+        /// `period_min`.
+        min: u32,
+        /// `period_nominal`.
+        nominal: u32,
+        /// `period_max`.
+        max: u32,
+    },
+    /// [`crate::s3sync::best_trim`] was given no candidates.
+    #[error("front end parameters: no trim candidates")]
+    NoTrimCandidates,
+}
+
+impl ParamError {
+    /// [`ParamError::Range`]: `what` = `value`, outside `min..=max`.
+    fn range(what: &'static str, value: impl Into<i64>, min: i64, max: i64) -> Self {
+        Self::Range {
+            what,
+            value: value.into(),
+            min,
+            max,
+        }
+    }
+}
 
 impl Params {
     /// The parameters for `d`.
@@ -237,18 +366,16 @@ impl Params {
     pub fn design(d: &Design) -> Result<Self, ParamError> {
         let sps = d.sps();
         if !(1.0625..4.0).contains(&sps) {
-            return Err(ParamError(format!(
-                "{sps:.3} samples per symbol: 1.0625..4 supported"
-            )));
+            return Err(ParamError::SamplesPerSymbol { sps });
         }
         if !(4..=MAX_TAPS).contains(&d.taps) || !d.taps.is_multiple_of(2) {
-            return Err(ParamError(format!("{} taps: even, 4..={MAX_TAPS}", d.taps)));
+            return Err(ParamError::Taps { taps: d.taps });
         }
         if !(2..=8).contains(&d.bits) {
-            return Err(ParamError(format!("{} bits: 2..=8", d.bits)));
+            return Err(ParamError::range("bits", d.bits, 2, 8));
         }
         if !(-0.5..=0.5).contains(&d.trim) {
-            return Err(ParamError(format!("trim {} symbols: within ±0.5", d.trim)));
+            return Err(ParamError::Trim { trim: d.trim });
         }
         let (mut h, mut g) = tables::matched_filter_banks(sps, d.roll_off, d.taps, d.kaiser_beta);
         for bank in [&mut h, &mut g] {
@@ -283,9 +410,10 @@ impl Params {
             let x = g * 2f64.powi(frac as i32);
             let shift = (16383.0 / x).log2().floor();
             if !(0.0..=f64::from(MAX_GAIN_SHIFT)).contains(&shift) {
-                return Err(ParamError(format!(
-                    "loop gain {g:.3e} outside the registers' range (TED slope {kd:.3e}); change loop_bandwidth"
-                )));
+                return Err(ParamError::LoopGain {
+                    gain: g,
+                    ted_slope: kd,
+                });
             }
             Ok(((x * 2f64.powi(shift as i32)).round() as i16, shift as u8))
         };
@@ -330,42 +458,44 @@ impl Params {
 
     /// Check the invariants the arithmetic relies on.
     pub fn validate(&self) -> Result<(), ParamError> {
-        let err = |s: String| Err(ParamError(s));
         let taps = self.taps();
         if self.h.len() != PHASES || self.g.len() != PHASES || self.k.len() != PHASES {
-            return err(format!(
-                "{} / {} / {} phases, {PHASES} expected",
-                self.h.len(),
-                self.g.len(),
-                self.k.len()
-            ));
+            return Err(ParamError::Phases {
+                h: self.h.len(),
+                g: self.g.len(),
+                k: self.k.len(),
+            });
         }
         if !(4..=MAX_TAPS).contains(&taps) || !taps.is_multiple_of(2) {
-            return err(format!("{taps} taps"));
+            return Err(ParamError::Taps { taps });
         }
         let lim = 1i32 << (COEF_BITS - 1);
-        for bank in [&self.h, &self.g, &self.k] {
-            for ph in bank {
+        for (bank, phases) in [("h", &self.h), ("g", &self.g), ("k", &self.k)] {
+            for (phase, ph) in phases.iter().enumerate() {
                 if ph.len() != taps {
-                    return err("ragged coefficient bank".into());
+                    return Err(ParamError::RaggedBank {
+                        bank,
+                        phase,
+                        len: ph.len(),
+                        taps,
+                    });
                 }
-                if ph.iter().any(|&c| c < -lim || c >= lim) {
-                    return err(format!("coefficient outside {COEF_BITS} bits"));
+                if let Some(&value) = ph.iter().find(|&&c| c < -lim || c >= lim) {
+                    return Err(ParamError::Coefficient { bank, phase, value });
                 }
-                if ph.iter().map(|&c| i64::from(c).abs()).sum::<i64>() > COEF_SUM_MAX {
-                    return err("coefficient magnitudes sum above 2^17 − 1".into());
+                let sum = ph.iter().map(|&c| i64::from(c).abs()).sum::<i64>();
+                if sum > COEF_SUM_MAX {
+                    return Err(ParamError::CoefficientSum { bank, phase, sum });
                 }
             }
         }
-        for bank in [&self.h, &self.g] {
-            if bank.iter().any(|ph| {
+        for (bank, phases) in [("h", &self.h), ("g", &self.g)] {
+            if phases.iter().any(|ph| {
                 ph.iter()
                     .enumerate()
                     .any(|(t, &c)| c != 0 && !ted_tap(t, taps))
             }) {
-                return err(format!(
-                    "detector banks h and g must be zero outside their centre {TED_TAPS} taps"
-                ));
+                return Err(ParamError::DetectorTaps { bank });
             }
         }
         if i64::from(self.period_min) <= ONE
@@ -373,22 +503,36 @@ impl Params {
             || self.period_nominal > self.period_max
             || i64::from(self.period_max) >= 4 * ONE
         {
-            return err("period bounds: 1 < min ≤ nominal ≤ max < 4 samples".into());
+            return Err(ParamError::PeriodBounds {
+                min: self.period_min,
+                nominal: self.period_nominal,
+                max: self.period_max,
+            });
         }
-        if !(2..=8).contains(&self.bits) || self.q_shift > 15 {
-            return err(format!("bits {} / q_shift {}", self.bits, self.q_shift));
-        }
-        if !(8..=15).contains(&self.block_log2) {
-            return err(format!("block_log2 {}: 8..=15", self.block_log2));
-        }
-        if self.agc_init >= 1 << GAIN_ACC_BITS
-            || self.integrator_max < 0
-            || self.integrator_max >= 1 << 22
-            || self.ted_shift > 30
-            || self.kp_shift > MAX_GAIN_SHIFT
-            || self.ki_shift > MAX_GAIN_SHIFT
-        {
-            return err("agc_init, integrator_max or ted_shift out of range".into());
+        let gain_shift = i64::from(MAX_GAIN_SHIFT);
+        for (what, value, min, max) in [
+            ("bits", i64::from(self.bits), 2, 8),
+            ("q_shift", i64::from(self.q_shift), 0, 15),
+            ("block_log2", i64::from(self.block_log2), 8, 15),
+            (
+                "agc_init",
+                i64::from(self.agc_init),
+                0,
+                (1 << GAIN_ACC_BITS) - 1,
+            ),
+            (
+                "integrator_max",
+                i64::from(self.integrator_max),
+                0,
+                (1 << 22) - 1,
+            ),
+            ("ted_shift", i64::from(self.ted_shift), 0, 30),
+            ("kp_shift", i64::from(self.kp_shift), 0, gain_shift),
+            ("ki_shift", i64::from(self.ki_shift), 0, gain_shift),
+        ] {
+            if !(min..=max).contains(&value) {
+                return Err(ParamError::range(what, value, min, max));
+            }
         }
         Ok(())
     }
@@ -407,4 +551,121 @@ impl Params {
 pub fn ted_tap(t: usize, taps: usize) -> bool {
     let lo = taps.saturating_sub(TED_TAPS) / 2;
     (lo..lo + TED_TAPS.min(taps)).contains(&t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A valid design: ISDB-S at 40 Msps.
+    fn design() -> Design {
+        Design::new(40e6, 28.86e6, 0.35)
+    }
+
+    fn params() -> Params {
+        Params::design(&design()).unwrap()
+    }
+
+    #[test]
+    fn design_errors_name_the_rule() {
+        let mut d = design();
+        d.symbol_rate = 1e6;
+        assert!(matches!(
+            Params::design(&d),
+            Err(ParamError::SamplesPerSymbol { .. })
+        ));
+        let mut d = design();
+        d.taps = 5;
+        assert_eq!(Params::design(&d), Err(ParamError::Taps { taps: 5 }));
+        let mut d = design();
+        d.bits = 9;
+        assert!(matches!(
+            Params::design(&d),
+            Err(ParamError::Range {
+                what: "bits",
+                value: 9,
+                ..
+            })
+        ));
+        let mut d = design();
+        d.trim = 0.7;
+        assert!(matches!(Params::design(&d), Err(ParamError::Trim { .. })));
+        let mut d = design();
+        d.loop_bandwidth = 1e-15;
+        assert!(matches!(
+            Params::design(&d),
+            Err(ParamError::LoopGain { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_errors_name_the_rule() {
+        assert_eq!(params().validate(), Ok(()));
+        let mut p = params();
+        p.k.pop();
+        assert_eq!(
+            p.validate(),
+            Err(ParamError::Phases {
+                h: PHASES,
+                g: PHASES,
+                k: PHASES - 1
+            })
+        );
+        let mut p = params();
+        p.g[3].push(0);
+        assert!(matches!(
+            p.validate(),
+            Err(ParamError::RaggedBank {
+                bank: "g",
+                phase: 3,
+                ..
+            })
+        ));
+        let mut p = params();
+        p.k[1][0] = 1 << 17;
+        assert!(matches!(
+            p.validate(),
+            Err(ParamError::Coefficient {
+                bank: "k",
+                phase: 1,
+                value: 131_072
+            })
+        ));
+        let mut p = params();
+        p.k[2].fill(100_000);
+        assert!(matches!(
+            p.validate(),
+            Err(ParamError::CoefficientSum {
+                bank: "k",
+                phase: 2,
+                ..
+            })
+        ));
+        let mut p = params();
+        p.h[0][0] = 1;
+        assert_eq!(p.validate(), Err(ParamError::DetectorTaps { bank: "h" }));
+        let mut p = params();
+        p.period_min = p.period_max + 1;
+        assert!(matches!(p.validate(), Err(ParamError::PeriodBounds { .. })));
+        let mut p = params();
+        p.block_log2 = 7;
+        assert!(matches!(
+            p.validate(),
+            Err(ParamError::Range {
+                what: "block_log2",
+                value: 7,
+                min: 8,
+                max: 15
+            })
+        ));
+        let mut p = params();
+        p.ki_shift = MAX_GAIN_SHIFT + 1;
+        assert!(matches!(
+            p.validate(),
+            Err(ParamError::Range {
+                what: "ki_shift",
+                ..
+            })
+        ));
+    }
 }

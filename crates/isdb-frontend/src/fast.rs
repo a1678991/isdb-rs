@@ -301,14 +301,16 @@ impl FastFrontend {
     }
 
     /// The 16-bit kernel's operands at the current phase and position:
-    /// six split coefficient rows and the `i16` delay line.
+    /// six split coefficient rows and the `i16` delay line. `W` is the
+    /// padded width (`split` holds six rows of `W` per phase, and the
+    /// line at least `W` samples from `pos`).
     #[inline(always)]
-    fn split_operands<const W: usize>(&self) -> (&[i16], &[i16], &[i16]) {
-        let at = self.phase() * 6 * W;
+    fn split_operands<const W: usize>(&self) -> (&[[i16; W]; 6], &[i16; W], &[i16; W]) {
+        let phases = self.split.as_chunks::<W>().0.as_chunks::<6>().0;
         (
-            &self.split[at..at + 6 * W],
-            &self.si[self.pos..self.pos + W],
-            &self.sq[self.pos..self.pos + W],
+            &phases[self.phase()],
+            &self.si[self.pos..].as_chunks::<W>().0[0],
+            &self.sq[self.pos..].as_chunks::<W>().0[0],
         )
     }
 
@@ -535,18 +537,15 @@ fn dot_n<const W: usize>(c: &[i16; W], x: &[i16; W]) -> i32 {
 }
 
 /// The six dot products of one symbol on the split coefficients
-/// (`c6` = h.hi, h.lo, g.hi, g.lo, k.hi, k.lo, each `W` long) and the
-/// `i16` delay line: 16×16-bit products summed in `i32` (exact within
-/// [`I32_INPUT_MAX`], module documentation), combined in `i64`. `W` is
-/// the padded width, a constant per instantiation, so LLVM unrolls and
-/// vectorises the loops (`pmaddwd` / `vpmaddwd` / NEON `smlal`).
+/// (`c6` = h.hi, h.lo, g.hi, g.lo, k.hi, k.lo) and the `i16` delay line:
+/// 16×16-bit products summed in `i32` (exact within [`I32_INPUT_MAX`],
+/// module documentation), combined in `i64`. `W` is the padded width, a
+/// constant per instantiation, so LLVM unrolls and vectorises the loops
+/// (`pmaddwd` / `vpmaddwd` / NEON `smlal`).
 #[inline(always)]
-fn dot6_n<const W: usize>(c6: &[i16], li: &[i16], lq: &[i16]) -> [i64; 6] {
-    let xi: &[i16; W] = li.try_into().expect("width");
-    let xq: &[i16; W] = lq.try_into().expect("width");
-    let c = |d: usize| -> &[i16; W] { c6[d * W..(d + 1) * W].try_into().expect("width") };
+fn dot6_n<const W: usize>(c6: &[[i16; W]; 6], xi: &[i16; W], xq: &[i16; W]) -> [i64; 6] {
     let bank = |b: usize, x: &[i16; W]| -> i64 {
-        (i64::from(dot_n(c(2 * b), x)) << 9) + i64::from(dot_n(c(2 * b + 1), x))
+        (i64::from(dot_n(&c6[2 * b], x)) << 9) + i64::from(dot_n(&c6[2 * b + 1], x))
     };
     [
         bank(0, xi),
@@ -566,7 +565,7 @@ fn dot6_n<const W: usize>(c6: &[i16], li: &[i16], lq: &[i16]) -> [i64; 6] {
 #[cfg(target_arch = "x86_64")]
 macro_rules! load16 {
     ($a:expr) => {{
-        let a: &[i16; 16] = $a.try_into().expect("16 taps");
+        let a: &[i16; 16] = $a;
         _mm256_setr_epi16(
             a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13],
             a[14], a[15],
@@ -577,7 +576,7 @@ macro_rules! load16 {
 #[cfg(target_arch = "x86_64")]
 macro_rules! load8 {
     ($a:expr) => {{
-        let a: &[i16; 8] = $a.try_into().expect("8 taps");
+        let a: &[i16; 8] = $a;
         _mm_setr_epi16(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])
     }};
 }
@@ -605,8 +604,9 @@ macro_rules! hsum128 {
 #[cfg(all(target_arch = "x86_64", isdb_frontend_avx512))]
 macro_rules! load32 {
     ($a:expr) => {{
-        let a: &[i16] = $a;
-        let (lo, hi) = (load16!(&a[..16]), load16!(&a[16..32]));
+        let a: &[i16; 32] = $a;
+        let h = a.as_chunks::<16>().0;
+        let (lo, hi) = (load16!(&h[0]), load16!(&h[1]));
         _mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo), hi)
     }};
 }
@@ -625,27 +625,27 @@ macro_rules! fold512 {
 /// the end. The same integers (every partial sum below 2²⁸).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma,bmi1,bmi2,lzcnt,popcnt")]
-fn dot6_avx2<const W: usize>(c6: &[i16], li: &[i16], lq: &[i16]) -> [i64; 6] {
+fn dot6_avx2<const W: usize>(c6: &[[i16; W]; 6], xi: &[i16; W], xq: &[i16; W]) -> [i64; 6] {
     use std::arch::x86_64::*;
-    let xi: &[i16; W] = li.try_into().expect("width");
-    let xq: &[i16; W] = lq.try_into().expect("width");
-    let c6: &[i16] = &c6[..6 * W];
     let full = W / 16;
+    let (xi16, xq16) = (xi.as_chunks::<16>().0, xq.as_chunks::<16>().0);
+    let (xi8, xq8) = (xi.as_chunks::<8>().0, xq.as_chunks::<8>().0);
     let mut r = [0i32; 12];
-    for (row, out) in r.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-        let c = &c6[row * W..(row + 1) * W];
+    for (c, out) in c6.iter().zip(r.as_chunks_mut::<2>().0) {
+        let (c16, c8) = (c.as_chunks::<16>().0, c.as_chunks::<8>().0);
         let (mut ai, mut aq) = (_mm256_setzero_si256(), _mm256_setzero_si256());
         for b in 0..full {
-            let cv = load16!(&c[16 * b..16 * b + 16]);
-            ai = _mm256_add_epi32(ai, _mm256_madd_epi16(cv, load16!(&xi[16 * b..16 * b + 16])));
-            aq = _mm256_add_epi32(aq, _mm256_madd_epi16(cv, load16!(&xq[16 * b..16 * b + 16])));
+            let cv = load16!(&c16[b]);
+            ai = _mm256_add_epi32(ai, _mm256_madd_epi16(cv, load16!(&xi16[b])));
+            aq = _mm256_add_epi32(aq, _mm256_madd_epi16(cv, load16!(&xq16[b])));
         }
         let (mut si, mut sq) = (fold256!(ai), fold256!(aq));
         if !W.is_multiple_of(16) {
-            let at = 16 * full;
-            let cv = load8!(&c[at..at + 8]);
-            si = _mm_add_epi32(si, _mm_madd_epi16(cv, load8!(&xi[at..at + 8])));
-            sq = _mm_add_epi32(sq, _mm_madd_epi16(cv, load8!(&xq[at..at + 8])));
+            // W is a multiple of 8: a last half block of 8 taps
+            let at = 2 * full;
+            let cv = load8!(&c8[at]);
+            si = _mm_add_epi32(si, _mm_madd_epi16(cv, load8!(&xi8[at])));
+            sq = _mm_add_epi32(sq, _mm_madd_epi16(cv, load8!(&xq8[at])));
         }
         out[0] = hsum128!(si);
         out[1] = hsum128!(sq);
@@ -661,35 +661,40 @@ fn dot6_avx2<const W: usize>(c6: &[i16], li: &[i16], lq: &[i16]) -> [i64; 6] {
 #[target_feature(
     enable = "avx2,fma,bmi1,bmi2,lzcnt,popcnt,avx512f,avx512bw,avx512vl,avx512dq,avx512cd"
 )]
-fn dot6_avx512<const W: usize>(c6: &[i16], li: &[i16], lq: &[i16]) -> [i64; 6] {
+fn dot6_avx512<const W: usize>(c6: &[[i16; W]; 6], xi: &[i16; W], xq: &[i16; W]) -> [i64; 6] {
     use std::arch::x86_64::*;
-    let xi: &[i16; W] = li.try_into().expect("width");
-    let xq: &[i16; W] = lq.try_into().expect("width");
-    let c6: &[i16] = &c6[..6 * W];
     let full = W / 32;
+    let (xi32, xq32) = (xi.as_chunks::<32>().0, xq.as_chunks::<32>().0);
+    let (xi16, xq16) = (xi.as_chunks::<16>().0, xq.as_chunks::<16>().0);
+    let (xi8, xq8) = (xi.as_chunks::<8>().0, xq.as_chunks::<8>().0);
     let mut r = [0i32; 12];
-    for (row, out) in r.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-        let c = &c6[row * W..(row + 1) * W];
+    for (c, out) in c6.iter().zip(r.as_chunks_mut::<2>().0) {
+        let (c32, c16, c8) = (
+            c.as_chunks::<32>().0,
+            c.as_chunks::<16>().0,
+            c.as_chunks::<8>().0,
+        );
         let (mut ai, mut aq) = (_mm512_setzero_si512(), _mm512_setzero_si512());
         for b in 0..full {
-            let at = 32 * b;
-            let cv = load32!(&c[at..at + 32]);
-            ai = _mm512_add_epi32(ai, _mm512_madd_epi16(cv, load32!(&xi[at..at + 32])));
-            aq = _mm512_add_epi32(aq, _mm512_madd_epi16(cv, load32!(&xq[at..at + 32])));
+            let cv = load32!(&c32[b]);
+            ai = _mm512_add_epi32(ai, _mm512_madd_epi16(cv, load32!(&xi32[b])));
+            aq = _mm512_add_epi32(aq, _mm512_madd_epi16(cv, load32!(&xq32[b])));
         }
         let (mut ai, mut aq) = (fold512!(ai), fold512!(aq));
-        let mut at = 32 * full;
-        if W - at >= 16 {
-            let cv = load16!(&c[at..at + 16]);
-            ai = _mm256_add_epi32(ai, _mm256_madd_epi16(cv, load16!(&xi[at..at + 16])));
-            aq = _mm256_add_epi32(aq, _mm256_madd_epi16(cv, load16!(&xq[at..at + 16])));
-            at += 16;
+        // taps done so far, in units of 8
+        let mut at = 4 * full;
+        if W - 8 * at >= 16 {
+            let b = at / 2;
+            let cv = load16!(&c16[b]);
+            ai = _mm256_add_epi32(ai, _mm256_madd_epi16(cv, load16!(&xi16[b])));
+            aq = _mm256_add_epi32(aq, _mm256_madd_epi16(cv, load16!(&xq16[b])));
+            at += 2;
         }
         let (mut si, mut sq) = (fold256!(ai), fold256!(aq));
-        if W - at >= 8 {
-            let cv = load8!(&c[at..at + 8]);
-            si = _mm_add_epi32(si, _mm_madd_epi16(cv, load8!(&xi[at..at + 8])));
-            sq = _mm_add_epi32(sq, _mm_madd_epi16(cv, load8!(&xq[at..at + 8])));
+        if W - 8 * at >= 8 {
+            let cv = load8!(&c8[at]);
+            si = _mm_add_epi32(si, _mm_madd_epi16(cv, load8!(&xi8[at])));
+            sq = _mm_add_epi32(sq, _mm_madd_epi16(cv, load8!(&xq8[at])));
         }
         out[0] = hsum128!(si);
         out[1] = hsum128!(sq);

@@ -72,7 +72,8 @@ pub fn decode_superframe(
         .into_iter()
         .map(|(frame, slot, mut cw)| {
             let corrected = RS_204_188.decode(&mut cw).ok();
-            let mut bytes: [u8; 188] = cw[..188].try_into().expect("188");
+            // the message of the RS(204,188) word
+            let mut bytes: [u8; 188] = std::array::from_fn(|i| cw[i]);
             if corrected.is_none() {
                 bytes[1] |= 0x80;
             }
@@ -140,7 +141,7 @@ pub fn decode_all(r: &Reception, o: &DemodOptions) -> Vec<DecodedSuperframe> {
             })
             .collect();
         for h in handles {
-            out.extend(h.join().expect("decoder thread"));
+            out.extend(h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)));
         }
     });
     out.into_iter().flatten().collect()

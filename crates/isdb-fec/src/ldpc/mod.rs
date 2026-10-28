@@ -59,6 +59,10 @@ pub struct Decoded {
 impl Code {
     /// The code of length `n` from `table` (rows of parity positions, one
     /// row per group of [`GROUP`] information bits): k = 374 · rows.
+    ///
+    /// # Panics
+    ///
+    /// If k ≥ n or n − k is not a multiple of [`GROUP`].
     pub fn new(n: usize, table: &[&[u16]]) -> Self {
         let k = GROUP * table.len();
         assert!(k < n, "k {k} ≥ n {n}");
@@ -115,6 +119,10 @@ impl Code {
     }
 
     /// Parity of the `k` information bits (0/1), `n − k` bits.
+    ///
+    /// # Panics
+    ///
+    /// If `info` is not k long.
     pub fn parity(&self, info: &[u8]) -> Vec<u8> {
         assert_eq!(info.len(), self.k);
         let mut p = vec![0u8; self.n - self.k];
@@ -155,7 +163,12 @@ impl Code {
 
     /// Layered normalised min-sum: `llr` (length n, updated in place to the
     /// a-posteriori LLRs) → `bits` (hard decisions). `scale` multiplies the
-    /// check-to-variable magnitudes (0.75–0.8 is usual).
+    /// check-to-variable magnitudes (0.75–0.8 is usual). With `max_iter`
+    /// 0 only the hard decision of the input is checked.
+    ///
+    /// # Panics
+    ///
+    /// If `llr` is not n long.
     pub fn decode(
         &self,
         llr: &mut [f32],
@@ -169,7 +182,8 @@ impl Code {
             bits.extend(llr.iter().map(|&l| u8::from(l < 0.0)));
         };
         hard(llr, bits);
-        if self.syndrome_weight(bits) == 0 {
+        let mut unsatisfied = self.syndrome_weight(bits);
+        if unsatisfied == 0 {
             return Ok(Decoded { iterations: 0 });
         }
         // check-to-variable messages, one per edge
@@ -203,18 +217,15 @@ impl Code {
                 }
             }
             hard(llr, bits);
-            let u = self.syndrome_weight(bits);
-            if u == 0 {
+            unsatisfied = self.syndrome_weight(bits);
+            if unsatisfied == 0 {
                 return Ok(Decoded { iterations: it });
             }
-            if it == max_iter {
-                return Err(NotConverged {
-                    iterations: it,
-                    unsatisfied: u,
-                });
-            }
         }
-        unreachable!()
+        Err(NotConverged {
+            iterations: max_iter,
+            unsatisfied,
+        })
     }
 }
 
@@ -263,8 +274,15 @@ mod tests {
             })
             .collect();
         let mut bits = Vec::new();
+        let mut llr0 = llr.clone();
         let d = code.decode(&mut llr, &mut bits, 50, 0.8).expect("decodes");
         assert!(d.iterations >= 1);
         assert_eq!(bits, c);
+        // no iterations allowed: the input's hard decision is not a
+        // codeword, so not converged after 0 (was a panic)
+        let e = code.decode(&mut llr0, &mut bits, 0, 0.8).unwrap_err();
+        assert_eq!(e.iterations, 0);
+        assert_eq!(e.unsatisfied, code.syndrome_weight(&bits));
+        assert!(e.unsatisfied > 0);
     }
 }

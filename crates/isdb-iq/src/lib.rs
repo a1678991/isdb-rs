@@ -60,9 +60,66 @@ pub enum Error {
         /// The I/O error.
         source: std::io::Error,
     },
-    /// Malformed or unsupported SigMF metadata or sample format.
-    #[error("{0}")]
-    Format(String),
+    /// The `isdb:full_scale` of a `ci16_le` recording (or the full scale
+    /// of a `cs16/FULLSCALE` format name) is not a positive number.
+    #[error("isdb:full_scale {full_scale}: must be > 0")]
+    FullScale {
+        /// The value given.
+        full_scale: f32,
+    },
+    /// A SigMF `core:datatype` this crate does not read.
+    #[error("SigMF datatype {datatype:?} not supported (ci8, ci16_le, cf32_le)")]
+    Datatype {
+        /// The datatype, as written in the metadata.
+        datatype: String,
+    },
+    /// A sample format name [`SampleFormat`]'s `FromStr` does not know.
+    #[error("sample format {name:?}: want cs8, cs16, cs16/FULLSCALE or cf32")]
+    FormatName {
+        /// The name, as given (trimmed, lower case).
+        name: String,
+    },
+    /// The SigMF metadata file of a recording is not valid.
+    #[error("{path}: {source}")]
+    Meta {
+        /// The `.sigmf-meta` file.
+        path: String,
+        /// What is wrong with it.
+        source: Box<Error>,
+    },
+    /// A recording without SigMF metadata, opened without the setting
+    /// the metadata would have given.
+    #[error("{data_path}: no SigMF metadata ({meta_path}); give the {missing}")]
+    NoMeta {
+        /// The data file.
+        data_path: String,
+        /// Where its metadata was looked for.
+        meta_path: String,
+        /// The missing setting (`sample format`, `sample rate`).
+        missing: &'static str,
+    },
+    /// SigMF metadata that is not JSON.
+    #[error("SigMF metadata: {0}")]
+    Json(#[source] serde_json::Error),
+    /// SigMF metadata without a field it needs.
+    #[error("SigMF metadata: no {field}")]
+    MissingField {
+        /// The field (`global object`, `core:datatype`).
+        field: &'static str,
+    },
+    /// SigMF metadata whose `core:sample_rate` is missing, not a number or
+    /// not positive.
+    #[error("SigMF metadata: no positive core:sample_rate")]
+    SampleRate,
+    /// A SigMF capture segment that is not a JSON object.
+    #[error("SigMF metadata: capture {index} is not an object")]
+    CaptureNotObject {
+        /// Its index in `captures`.
+        index: usize,
+    },
+    /// SigMF capture segments whose `core:sample_start` does not increase.
+    #[error("SigMF metadata: capture segments not in increasing core:sample_start order")]
+    CaptureOrder,
 }
 
 /// Result of this crate.

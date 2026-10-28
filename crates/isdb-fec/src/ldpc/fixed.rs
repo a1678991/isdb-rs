@@ -79,6 +79,10 @@ impl<const W: usize> Decoder<W> {
     /// next codeword at once, so one slow or failing codeword does not
     /// hold the others. Returns each codeword's result and hard decisions
     /// (0/1, length n), in input order, the same as decoding it alone.
+    ///
+    /// # Panics
+    ///
+    /// If a word's length is not the code's n.
     pub fn decode_all(
         &mut self,
         code: &Code,
@@ -118,8 +122,10 @@ impl<const W: usize> Decoder<W> {
                 let fresh: [bool; W] = std::array::from_fn(|i| held[i].is_some() && iters[i] == 0);
                 let (sat, unsat) = syndrome(code, &self.l);
                 for i in 0..W {
-                    if fresh[i] && (sat[i] || p.max_iter == 0) {
-                        let w = held[i].take().expect("held");
+                    if fresh[i]
+                        && (sat[i] || p.max_iter == 0)
+                        && let Some(w) = held[i].take()
+                    {
                         out[w] = Some(self.result(i, 0, sat[i], unsat[i]));
                     }
                 }
@@ -138,14 +144,21 @@ impl<const W: usize> Decoder<W> {
                 }
             }
         }
+        // The loop ends when no lane holds a codeword and none is left to
+        // load: every codeword has left its lane with a result.
         out.into_iter()
-            .map(|o| o.expect("every codeword decoded"))
+            .map(|o| o.expect("decode_all: every codeword leaves its lane with a result"))
             .collect()
     }
 
     /// Decode up to `W` codewords of `code` in one batch: `llrs[i]` are
     /// the quantised input LLRs, `bits[i]` receives the hard decisions.
     /// The same results as [`Decoder::decode_all`].
+    ///
+    /// # Panics
+    ///
+    /// If `llrs` holds no codeword or more than `W`, `bits` not one
+    /// vector per codeword, or a codeword's length is not the code's n.
     pub fn decode(
         &mut self,
         code: &Code,

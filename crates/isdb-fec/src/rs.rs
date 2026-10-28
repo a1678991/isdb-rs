@@ -157,6 +157,10 @@ pub const RS_64_48: Rs = Rs { n: 64 };
 
 impl Rs {
     /// The code of codeword length `n` (17..=255).
+    ///
+    /// # Panics
+    ///
+    /// If `n` is outside 17..=255.
     pub const fn new(n: usize) -> Self {
         assert!(n > PARITY && n <= MOTHER_N);
         Self { n }
@@ -178,6 +182,10 @@ impl Rs {
     }
 
     /// The 16 parity bytes r(x) = d(x)·x¹⁶ mod g(x) of the `k` data bytes.
+    ///
+    /// # Panics
+    ///
+    /// If `data` is not k bytes long.
     pub fn parity(&self, data: &[u8]) -> [u8; PARITY] {
         assert_eq!(data.len(), self.k(), "RS({},{}) data", self.n, self.k());
         let g = gen_tail();
@@ -197,6 +205,10 @@ impl Rs {
 
     /// Systematic encoding into `word` (n bytes): its first k bytes are the
     /// data, the last 16 are overwritten with the parity.
+    ///
+    /// # Panics
+    ///
+    /// If `word` is not n bytes long.
     pub fn encode_in_place(&self, word: &mut [u8]) {
         assert_eq!(word.len(), self.n, "RS({},{}) word", self.n, self.k());
         let k = self.k();
@@ -206,6 +218,10 @@ impl Rs {
 
     /// The 16 syndromes S_j = c(λ^j), j = 0..15, of an n-byte word (the
     /// roots of g(x)). All zero ⇔ the word is a codeword.
+    ///
+    /// # Panics
+    ///
+    /// If `word` is not n bytes long.
     pub fn syndromes(&self, word: &[u8]) -> [u8; PARITY] {
         assert_eq!(word.len(), self.n, "RS({},{}) word", self.n, self.k());
         let mut s = [0u8; PARITY];

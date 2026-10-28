@@ -178,11 +178,13 @@ impl Frontend {
     fn symbol(&mut self) -> Symbol {
         let p = &self.p;
         let phase = phase_of(self.t_acc);
-        if self.pending.len() == LOOP_DELAY {
-            let (e, err) = self
-                .pending
-                .pop_front()
-                .expect("queue holds LOOP_DELAY entries");
+        // the errors of the symbol LOOP_DELAY back, once the queue is full
+        let due = if self.pending.len() == LOOP_DELAY {
+            self.pending.pop_front()
+        } else {
+            None
+        };
+        if let Some((e, err)) = due {
             let vmax = i64::from(p.integrator_max) << KI_FRAC;
             let ki_e = round_shift(i64::from(p.ki) * i64::from(e), u32::from(p.ki_shift));
             self.v = (self.v + ki_e).clamp(-vmax, vmax);

@@ -115,12 +115,17 @@ pub fn measure_trim(x: &[[i16; 2]], d: &Design) -> Result<(f64, f64), ParamError
     let scores: Vec<f64> = std::thread::scope(|sc| {
         let hs: Vec<_> = cands.iter().map(|&t| sc.spawn(move || score(t))).collect();
         hs.into_iter()
-            .map(|h| h.join().expect("trim thread"))
+            .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect::<Result<_, _>>()
     })?;
-    let i = (0..scores.len())
-        .max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
-        .expect("candidates");
+    // the best of the 11 candidates (the last of equal ones, as `max_by`)
+    let i = (1..scores.len()).fold(0, |best, a| {
+        if scores[best].total_cmp(&scores[a]).is_gt() {
+            best
+        } else {
+            a
+        }
+    });
     if i == 0 || i + 1 == scores.len() || !scores[i].is_finite() {
         return Ok((cands[i], scores[i]));
     }

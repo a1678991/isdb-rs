@@ -474,6 +474,32 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdb-frontend`, `isdb-iq`, `isdbs-phy`, `isdbs3-phy`, `isdbs-core`,
+  `isdbs3-core`, `isdb-fec`: typed errors and panic triage
+  (`docs/plans/errors-and-logging.md` §5, group W5). **Breaking:**
+  `isdb_frontend::params::ParamError` is an enum naming the violated rule
+  with its values (`SamplesPerSymbol`, `Taps`, `Trim`, `LoopGain`,
+  `Range { what, value, min, max }`, `Phases`, `RaggedBank`,
+  `Coefficient`, `CoefficientSum`, `DetectorTaps`, `PeriodBounds`,
+  `NoTrimCandidates`) instead of a `String`; `isdb_iq::Error::Format`
+  is replaced by `FullScale`, `Datatype`, `FormatName`, `Meta { path,
+  source }`, `NoMeta { missing, .. }`, `Json`, `MissingField`,
+  `SampleRate`, `CaptureNotObject`, `CaptureOrder`;
+  `isdb_frontend::vectors::document` returns `Result`;
+  `isdbs3_phy::tmcc::Error` is `#[non_exhaustive]`. New:
+  `isdbs_core::Combination::rank`, `isdbs3_core::CodeRate::TMCC` and
+  `CodeRate::index`. 42 of the 43 library `expect`s and the
+  `unreachable!` are gone: slice-to-array conversions take arrays
+  (`as_chunks`, array patterns), the fast front end's kernels take
+  `&[[i16; W]; 6]` / `&[i16; W]`, worker threads' panics are resumed
+  instead of re-raised under a new message, and lookups use the enum or
+  newtype. `isdb_fec::ldpc::Code::decode` with `max_iter` 0 returns
+  `NotConverged` instead of panicking; `isdb_frontend::format::unpack`
+  reads the words in one pass and states its `bits` contract (1..=8;
+  0 divided by zero). Messages: the
+  `ParamError` texts name the bank and phase, `bits 9: 2..=8` replaces
+  `9 bits: 2..=8`, and a recording without metadata and sample rate now
+  names the metadata path it looked for.
 - Every library crate denies printing: `#![warn(clippy::print_stdout,
   clippy::print_stderr)]` in its `lib.rs` (CI runs clippy with `-D
   warnings`), with `allow-print-in-tests` in the new `clippy.toml` for

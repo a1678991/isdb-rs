@@ -317,7 +317,7 @@ fn search(mag: &(dyn Fn(usize) -> f64 + Sync)) -> (f64, usize) {
             })
             .collect();
         hs.into_iter()
-            .map(|h| h.join().expect("sync search thread"))
+            .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     });
     // chunks in order: a later chunk wins only with a strictly larger peak
@@ -369,12 +369,12 @@ pub fn best_trim(
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().expect("trim thread"))
+            .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect::<Result<_, _>>()
     })?;
     let i = (0..scores.len())
         .max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
-        .ok_or_else(|| crate::params::ParamError("no trim candidates".into()))?;
+        .ok_or(crate::params::ParamError::NoTrimCandidates)?;
     let chosen = |trim: f64, snr_db: f64| {
         debug!(
             trim,
@@ -448,6 +448,15 @@ pub fn wrap(a: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn best_trim_without_candidates_is_an_error() {
+        let d = crate::params::Design::new(40e6, 33.7561e6, 0.03);
+        assert!(matches!(
+            best_trim(&[[0, 0]; 64], &d, &[]),
+            Err(crate::params::ParamError::NoTrimCandidates)
+        ));
+    }
 
     /// A synthetic slot stream: sync words, random QPSK elsewhere, a
     /// phase ramp and noise of a given SNR.

@@ -154,6 +154,11 @@ pub struct Uncorrectable;
 /// Correct `word` (a shortened codeword of length n ≤ 65 535, message then
 /// 192 parity bits, transmission order) in place; the number of bits
 /// corrected.
+///
+/// # Panics
+///
+/// If `word` is not longer than the 192 parity bits or longer than
+/// 65 535 bits.
 pub fn decode(word: &mut [u8]) -> Result<usize, Uncorrectable> {
     let n = word.len();
     assert!(n > PARITY && n <= N_MAX, "BCH length {n}");

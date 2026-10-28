@@ -126,11 +126,13 @@ impl FloatFrontend {
     fn symbol(&mut self) -> FloatSymbol {
         let p = &self.p;
         let one = ONE as f64;
-        if self.pending.len() == LOOP_DELAY {
-            let (e, err) = self
-                .pending
-                .pop_front()
-                .expect("queue holds LOOP_DELAY entries");
+        // the errors of the symbol LOOP_DELAY back, once the queue is full
+        let due = if self.pending.len() == LOOP_DELAY {
+            self.pending.pop_front()
+        } else {
+            None
+        };
+        if let Some((e, err)) = due {
             let vmax = f64::from(p.integrator_max) * 2f64.powi(KI_FRAC as i32);
             self.v = (self.v + f64::from(p.ki) * e / 2f64.powi(i32::from(p.ki_shift)))
                 .clamp(-vmax, vmax);

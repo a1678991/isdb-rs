@@ -14,6 +14,10 @@ use isdbs_core::frame::{HEADER_BYTES, HEADER_SYMBOLS, TMCC_BYTES_PER_FRAME, W1, 
 
 /// The 12 header bytes decoded from the 192 derotated header symbols of a
 /// frame (soft BPSK: LLR ∝ Re z, scaled by `llr_scale`).
+///
+/// # Panics
+///
+/// If `h` holds fewer than [`HEADER_SYMBOLS`] symbols.
 pub fn header_bytes(h: &[Cplx], llr_scale: f64) -> [u8; HEADER_BYTES] {
     assert!(h.len() >= HEADER_SYMBOLS);
     let llr: Vec<f32> = h[..HEADER_SYMBOLS]
@@ -57,5 +61,7 @@ pub fn check(h: &[u8; HEADER_BYTES]) -> HeaderCheck {
 
 /// The 8 TMCC bytes of a decoded header.
 pub fn block(h: &[u8; HEADER_BYTES]) -> [u8; TMCC_BYTES_PER_FRAME] {
-    h[2..10].try_into().expect("8 bytes")
+    // W1 (2 bytes), the TMCC bytes, W2/W3 (2 bytes)
+    let [_, _, tmcc @ .., _, _] = *h;
+    tmcc
 }

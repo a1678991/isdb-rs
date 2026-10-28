@@ -76,8 +76,10 @@ impl Recording {
         let meta_path = meta_path_for(&data_path);
         let meta = if meta_path.exists() {
             let text = std::fs::read_to_string(&meta_path).map_err(io(&meta_path))?;
-            let m = Meta::from_json(&text)
-                .map_err(|e| Error::Format(format!("{}: {e}", meta_path.display())))?;
+            let m = Meta::from_json(&text).map_err(|e| Error::Meta {
+                path: meta_path.display().to_string(),
+                source: Box::new(e),
+            })?;
             debug!(
                 path = %meta_path.display(),
                 format = %m.format,
@@ -100,21 +102,17 @@ impl Recording {
             );
             None
         };
-        let format = format.or(meta.as_ref().map(|m| m.format)).ok_or_else(|| {
-            Error::Format(format!(
-                "{}: no SigMF metadata ({}); give the sample format",
-                data_path.display(),
-                meta_path.display()
-            ))
-        })?;
+        let no_meta = |missing| Error::NoMeta {
+            data_path: data_path.display().to_string(),
+            meta_path: meta_path.display().to_string(),
+            missing,
+        };
+        let format = format
+            .or(meta.as_ref().map(|m| m.format))
+            .ok_or_else(|| no_meta("sample format"))?;
         let sample_rate = sample_rate
             .or(meta.as_ref().map(|m| m.sample_rate))
-            .ok_or_else(|| {
-                Error::Format(format!(
-                    "{}: no SigMF metadata; give the sample rate",
-                    data_path.display()
-                ))
-            })?;
+            .ok_or_else(|| no_meta("sample rate"))?;
         let frequency = meta
             .as_ref()
             .and_then(|m| m.captures.first())
@@ -201,7 +199,20 @@ mod tests {
         b.push(7);
         std::fs::write(&data, &b).unwrap();
         // No metadata: format and rate are required.
-        assert!(Recording::open(&data, None, None).is_err());
+        assert!(matches!(
+            Recording::open(&data, None, Some(10.0)),
+            Err(Error::NoMeta {
+                missing: "sample format",
+                ..
+            })
+        ));
+        assert!(matches!(
+            Recording::open(&data, Some(SampleFormat::Cs8), None),
+            Err(Error::NoMeta {
+                missing: "sample rate",
+                ..
+            })
+        ));
         let mut r = Recording::open(&data, Some(SampleFormat::AD936X_CS16), Some(10.0)).unwrap();
         assert_eq!(r.samples, 3);
         assert_eq!(
@@ -227,6 +238,14 @@ mod tests {
             assert_eq!(r.segments(), vec![0..2, 2..3]);
             assert_eq!(r.read(0, 1).unwrap(), vec![C32::new(0.5, -0.5)]);
         }
+        // Invalid metadata: the file and the reason.
+        std::fs::write(dir.join("r.sigmf-meta"), "{}").unwrap();
+        let e = Recording::open(&data, None, None).unwrap_err();
+        assert!(
+            matches!(&e, Error::Meta { source, .. }
+                if matches!(**source, Error::MissingField { field: "global object" })),
+            "{e:?}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

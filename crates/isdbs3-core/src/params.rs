@@ -123,6 +123,10 @@ pub struct CodeRate(u8);
 pub const RATES: [u8; 11] = [41, 49, 61, 73, 81, 89, 93, 97, 101, 105, 109];
 
 impl CodeRate {
+    /// 61/120, the rate of the TMCC signal's shortened LDPC code
+    /// (Fig. 3.2-5).
+    pub const TMCC: Self = Self(61);
+
     /// Rate r/120 if r is one of [`RATES`].
     pub fn new(r: u8) -> Option<Self> {
         RATES.contains(&r).then_some(Self(r))
@@ -130,6 +134,15 @@ impl CodeRate {
     /// The numerator r.
     pub const fn numerator(self) -> u8 {
         self.0
+    }
+    /// The position of r in [`RATES`] (0 for 41/120, 10 for 109/120).
+    pub const fn index(self) -> usize {
+        // a CodeRate holds one of RATES (`new`, `from_code`, `TMCC`)
+        let mut i = 0;
+        while i + 1 < RATES.len() && RATES[i] != self.0 {
+            i += 1;
+        }
+        i
     }
     /// LDPC information bits: 374 · r.
     pub const fn k_ldpc(self) -> usize {
@@ -148,10 +161,14 @@ impl CodeRate {
     /// and 1010; 1010 is read as 105/120, the only rate missing — SPEC-NOTES
     /// "TMCC code-rate table".)
     pub fn code(self) -> u8 {
-        (1u8..)
-            .zip(RATES)
-            .find_map(|(code, r)| (r == self.0).then_some(code))
-            .expect("rate")
+        let mut code = 1;
+        for r in RATES {
+            if r == self.0 {
+                break;
+            }
+            code += 1;
+        }
+        code
     }
     /// From a TMCC code (B44 v2.1 Table 3.11-2 reading above).
     pub fn from_code(c: u8) -> Option<Self> {
@@ -283,11 +300,14 @@ mod tests {
 
     #[test]
     fn code_tables_round_trip() {
-        for r in RATES {
+        for (i, r) in RATES.into_iter().enumerate() {
             let c = CodeRate::new(r).unwrap();
             assert_eq!(CodeRate::from_code(c.code()), Some(c));
+            assert_eq!(c.index(), i);
+            assert_eq!(usize::from(c.code()), i + 1);
         }
         assert_eq!(CodeRate::from_code(0b1010).unwrap().numerator(), 105);
+        assert_eq!(CodeRate::new(61), Some(CodeRate::TMCC));
         assert_eq!(Modulation::from_code(0b0100), Some(Modulation::Apsk16));
         assert_eq!(Modulation::from_code(0b1111), None);
     }
