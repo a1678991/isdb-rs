@@ -406,3 +406,68 @@ the worktree.
 variants added or changed per crate, public signature changes,
 messages that changed (and the tests/docs updated for them), any check
 that did not pass.
+
+## 6. Status (2026-10-28): both waves done
+
+All five wave-2 groups merged (`23bbc15` W4, `a31c65c` W2, `28ae21a` W5,
+`262d33c` W1, `f201969` W3); every merge ran the full workspace test
+suite, and the finished tree passes the whole CI ladder (fmt, clippy
+`-D warnings` incl. the two `--no-default-features` builds, tests,
+doctests, rustdoc, cargo-deny, MSRV 1.88, the `oracle/rust_tx3` helper).
+
+**Library panic sites** (`tools/panic-census.py`, `isdb-cli` excluded):
+
+| | at `cd29a67` (start) | now |
+|---|---|---|
+| `unwrap` | 31 | 12, every one inside a `const` item (a bad value fails the build) |
+| `expect` | 126 | 4: three documented invariants the function establishes itself (`isdb-fec` `decode_all`, `isdbt-mux` `analysis` packet index, `playback` timeline) and the `SilentFrame` test-fixture generator |
+| `panic!` | 4 | 3: two argument contracts with `# Panics` (`isdbt-core` `segment_layer`, `isdbt-fec` `MultiplexPattern::new`'s model self-check) and `SilentFrame` |
+| `unreachable!` | 7 | 0 |
+
+Two of the removed sites were **reachable from input**: a mux TOML
+`[[raw_table]]` with `sections = []` (now refused at load), and the float
+LDPC decoder with `max_iter = 0` on a non-codeword (now `NotConverged`).
+
+**Error types.** No library uses `anyhow` any more (`isdb-radio` →
+`RadioError` with the libiio / libhackrf error as `#[source]`;
+`isdb_analyze::edit` → `EditError` / `MutateError`). The free-text
+payloads are gone where the values were in hand: `MuxError::Config(String)`
+(109 producers) → `Config { key, problem }` plus 13 typed variants keyed
+by the TOML path; `isdb_ts::Error` gained `Range`, `Reserved`, `Mismatch`,
+`NotAccepted` (18 of 60 `Invalid` producers moved, the rest are length
+inconsistencies); `isdbt_ofdm::Error::Tmcc { field, code }`;
+`isdbt_phy::BroadcastTsError`; `isdb_frontend::ParamError` and
+`isdb_iq::Error` enums; `isdb_iio::Error` / `isdb_hackrf::Error` enums.
+
+**Speed**, measured interleaved against the tree before each change on a
+quiet machine: muxer 4.52–4.63× real time (base 4.53–4.68×); ISDB-T
+receiver unchanged, transmitter ≈ 17 % faster (W4's allocation-free
+mapper and ring FIFOs); satellite front end unchanged, its 16-tap
+fallback kernel ≈ 2.4× faster (array arguments let it vectorise); LDPC
+unchanged; TS readers slightly faster than before after `580282c`
+inlined W3's unit split (which had cost `SliceReader` 13 %). Output is
+bit-identical: ISDB-T TX IQ / RX LLRs / RX TS hashed for three
+configurations (`isdbt-phy/tests/bitexact_hashes.rs`, ignored), the FPGA
+vectors, and the TMCC acceptance over the 21 lab recordings.
+
+**Lessons for the next dispatch**
+
+- Run the **full** workspace suite after every merge, not the merged
+  crates' tests: two `isdb-cli` tests broke when the libraries started
+  emitting events under the CLI's subscriber, and only a later agent
+  noticed (`4f60aa8`).
+- `oracle/rust_tx3` has its own `Cargo.lock`; a new dependency of a path
+  crate needs `cargo metadata --manifest-path oracle/rust_tx3/Cargo.toml
+  --offline` there too (`946cd0e`). `mise run check` catches it.
+- `tools/panic-census.py` now cuts at the test *module*, not the first
+  `#[cfg(test)]` (W5 found one on a struct field), and skips files a
+  parent declares `#[cfg(test)] mod name;`.
+- A typed refactor of a per-packet path can cost speed through code
+  shape alone (W3's reader, L2a's trace): measure it, and look at
+  inlining before anything else.
+
+**Left** (not dispatched): `isdb-cli`'s 14 `expect`s (a binary, where an
+`expect` ends the program with its message); `cast_sign_loss` /
+`cast_possible_wrap` (213) and `cast_precision_loss` (629, mostly
+`usize as f64` in reports and the new event fields) stay off, as in
+`type-safety.md` §2.
