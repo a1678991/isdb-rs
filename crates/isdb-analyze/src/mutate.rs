@@ -27,13 +27,147 @@
 //! `HH:MM:SS` durations, `HH:MM` offsets, `none` for absent optionals.
 
 use crate::decode::Table;
-use anyhow::{Context, Result, anyhow, bail};
 use isdb_si::AnyTable;
 use isdb_si::descriptor::{self as d, Descriptor};
 use isdb_si::time::{BcdDuration, BcdOffset, Date, DateTime, MjdTime};
 use isdb_text::AribString;
 use isdb_ts::Pid;
 use isdb_ts::section::LongHeader;
+
+/// Why an expression or a value does not parse, or does not apply to the
+/// section it targets (the grammar of the module docs).  The codecs' own
+/// refusals arrive as [`MutateError::Codec`] with the codec error as
+/// source.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum MutateError {
+    /// Text not in the form the grammar gives it.
+    #[error("{problem}: {input:?}")]
+    Syntax {
+        /// The form expected (`"not an integer"`, `"stream as TYPE:PID"`).
+        problem: &'static str,
+        /// The text.
+        input: String,
+    },
+    /// An integer too large for the field's type.
+    #[error("{value} does not fit {ty}")]
+    TooLarge {
+        /// The integer.
+        value: u64,
+        /// The field's type (`u8`, `version_number (5 bits)`).
+        ty: &'static str,
+    },
+    /// Not a 13-bit PID (H.222.0 Table 2-3).
+    #[error("PID {value:#x} is not a 13-bit value (0..=0x1FFF)")]
+    Pid {
+        /// The integer given.
+        value: u64,
+    },
+    /// A `frequency_mhz` outside the 16-bit field of 1/7 MHz units of the
+    /// terrestrial_delivery_system_descriptor (B10 Part 2 §6.2.31).
+    #[error("frequency_mhz {mhz} is outside the 16-bit 1/7 MHz field")]
+    FrequencyMhz {
+        /// The value given, MHz.
+        mhz: f64,
+    },
+    /// A list index past the end.
+    #[error("{what} {index} out of range (len {len})")]
+    Index {
+        /// `"index"` or `"descriptor index"`.
+        what: &'static str,
+        /// The index.
+        index: usize,
+        /// The list's length.
+        len: usize,
+    },
+    /// No list element with the id, or descriptor with the tag, selected.
+    #[error("no {what} {sel}")]
+    NoElement {
+        /// `"element with id"` or `"descriptor with tag"`.
+        what: &'static str,
+        /// The selector text.
+        sel: String,
+    },
+    /// A table name the grammar does not know.
+    #[error("unknown table {name:?} (pat, cat, pmt, nit, sdt, bat, eit, tdt, tot, bit)")]
+    UnknownTable {
+        /// The name.
+        name: String,
+    },
+    /// A field the element does not have.
+    #[error("{owner} has no field {field:?} (fields: {known})")]
+    NoField {
+        /// The element (`"PAT"`, `"PMT stream"`, `"element"`).
+        owner: &'static str,
+        /// The field named.
+        field: String,
+        /// The fields it has.
+        known: String,
+    },
+    /// The path or the operation does not apply where it points.
+    #[error("{at}: {problem}")]
+    Path {
+        /// The path segment or element.
+        at: String,
+        /// Why not.
+        problem: &'static str,
+    },
+    /// The codec refused the value or the section (a time outside Annex C,
+    /// a field wider than its bits, a section that does not decode).
+    #[error("{what}")]
+    Codec {
+        /// What was being decoded or encoded.
+        what: String,
+        /// The codec's error.
+        #[source]
+        source: isdb_ts::Error,
+    },
+    /// The text has no ARIB STD-B24 encoding.
+    #[error("ARIB encode of {text:?}")]
+    Text {
+        /// The text.
+        text: String,
+        /// The encoder's error.
+        #[source]
+        source: isdb_text::EncodeError,
+    },
+    /// The value of the named field.
+    #[error("{name}")]
+    Field {
+        /// The field.
+        name: &'static str,
+        /// Why its value was refused.
+        #[source]
+        source: Box<MutateError>,
+    },
+}
+
+/// Result alias using [`MutateError`].
+pub type Result<T, E = MutateError> = std::result::Result<T, E>;
+
+fn syntax(problem: &'static str, input: &str) -> MutateError {
+    MutateError::Syntax {
+        problem,
+        input: input.to_string(),
+    }
+}
+
+fn path_err(at: impl Into<String>, problem: &'static str) -> MutateError {
+    MutateError::Path {
+        at: at.into(),
+        problem,
+    }
+}
+
+fn codec(what: impl Into<String>) -> impl FnOnce(isdb_ts::Error) -> MutateError {
+    let what = what.into();
+    move |source| MutateError::Codec { what, source }
+}
+
+/// `s` parsed as a number, or [`MutateError::Syntax`] with `problem`.
+fn num<T: std::str::FromStr>(s: &str, problem: &'static str) -> Result<T> {
+    s.trim().parse().map_err(|_| syntax(problem, s))
+}
 
 /// A path segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +240,7 @@ pub fn pid(s: &str) -> Result<Pid> {
     u16::try_from(v)
         .ok()
         .and_then(Pid::new)
-        .ok_or_else(|| anyhow!("PID {v:#x} is not a 13-bit value (0..=0x1FFF)"))
+        .ok_or(MutateError::Pid { value: v })
 }
 
 /// Parse an integer (decimal or 0x hex).
@@ -117,7 +251,7 @@ pub fn int(s: &str) -> Result<u64> {
     } else {
         s.parse()
     };
-    r.with_context(|| format!("not an integer: {s:?}"))
+    r.map_err(|_| syntax("not an integer", s))
 }
 
 fn split_top(s: &str, sep: char) -> Vec<String> {
@@ -145,7 +279,7 @@ fn seg(s: &str) -> Result<Seg> {
         Some(i) => {
             let sel = s[i + 1..]
                 .strip_suffix(']')
-                .ok_or_else(|| anyhow!("unbalanced [] in {s:?}"))?;
+                .ok_or_else(|| syntax("unbalanced []", s))?;
             Ok(Seg {
                 name: s[..i].to_string(),
                 sel: Some(sel.to_string()),
@@ -163,7 +297,7 @@ impl Expr {
     pub fn parse(s: &str) -> Result<Self> {
         let (lhs, rhs) = s
             .split_once('=')
-            .ok_or_else(|| anyhow!("expression needs '=': {s:?}"))?;
+            .ok_or_else(|| syntax("expression needs '='", s))?;
         let mut parts = split_top(lhs.trim(), '.');
         let head = parts.remove(0);
         let hs = seg(&head)?;
@@ -201,10 +335,8 @@ impl Expr {
     /// Sections this expression applies to.
     pub fn target(&self) -> Result<Target> {
         let t = |pids: &[u16], tid: u8| Target {
-            pids: pids
-                .iter()
-                .map(|&p| Pid::new(p).expect("Table 5-1 PID"))
-                .collect(),
+            // B10 Part 2 Table 5-1 PIDs, all below 0x2000.
+            pids: pids.iter().map(|&p| Pid::from_wire(p)).collect(),
             table_id: self.tid.unwrap_or(tid),
             ext: self.ext,
         };
@@ -219,7 +351,11 @@ impl Expr {
             "tdt" => t(&[0x0014], 0x70),
             "tot" => t(&[0x0014], 0x73),
             "bit" => t(&[0x0024], 0xC4),
-            o => bail!("unknown table {o:?} (pat, cat, pmt, nit, sdt, bat, eit, tdt, tot, bit)"),
+            o => {
+                return Err(MutateError::UnknownTable {
+                    name: o.to_string(),
+                });
+            }
         })
     }
 
@@ -241,7 +377,7 @@ impl Expr {
                         op,
                         |e| u64::from(e.program_number),
                         pat_entry,
-                        |_, _, _| bail!("no fields"),
+                        |_, _, _| Err(path_err("PAT entry", "no fields")),
                     );
                 }
                 if header(&mut x.header, p, op)? {
@@ -261,21 +397,25 @@ impl Expr {
                                 "program_number" => e.program_number = val(v)?,
                                 "pid" => e.pid = val(v)?,
                                 "reserved" => e.reserved = val(v)?,
-                                f => bail!(
-                                    "PAT entry has no field {f:?} (program_number, pid, reserved)"
-                                ),
+                                f => {
+                                    return Err(no_field(
+                                        "PAT entry",
+                                        f,
+                                        "program_number, pid, reserved",
+                                    ));
+                                }
                             }
                             Ok(())
                         },
                     ),
-                    f => bail!("PAT has no field {f:?}"),
+                    f => Err(no_field("PAT", f, "entries, programs, version, tidext, …")),
                 }
             }
             Table::Cat(x) => {
                 if header(&mut x.header, p, op)? {
                     return Ok(());
                 }
-                need(p, &["desc", "descriptors"])?;
+                need(p, "CAT", &["desc", "descriptors"])?;
                 ts_desc_loop(&mut x.body.descriptors, &p[0], &p[1..], op)
             }
             Table::Pmt(x) => {
@@ -283,7 +423,7 @@ impl Expr {
                     return Ok(());
                 }
                 if p.is_empty() {
-                    bail!("PMT: path required");
+                    return Err(path_err("PMT", "path required"));
                 }
                 let b = &mut x.body;
                 match p[0].name.as_str() {
@@ -302,7 +442,7 @@ impl Expr {
                         |v| {
                             let (t, pid) = v
                                 .split_once(':')
-                                .ok_or_else(|| anyhow!("stream as TYPE:PID"))?;
+                                .ok_or_else(|| syntax("stream as TYPE:PID", v))?;
                             Ok(isdb_ts::psi::PmtStream::new(
                                 field(t, "stream_type")?,
                                 self::pid(pid)?,
@@ -322,12 +462,20 @@ impl Expr {
                                 "pid" | "elementary_pid" => s.elementary_pid = val(v)?,
                                 "reserved_pid" => s.reserved_pid = val(v)?,
                                 "reserved_info" => s.reserved_info = val(v)?,
-                                f => bail!("PMT stream has no field {f:?}"),
+                                f => {
+                                    return Err(no_field(
+                                        "PMT stream",
+                                        f,
+                                        "stream_type, pid, reserved_pid, reserved_info, desc",
+                                    ));
+                                }
                             }
                             Ok(())
                         },
                     )?,
-                    f => bail!("PMT has no field {f:?} (pcr_pid, desc, streams, version …)"),
+                    f => {
+                        return Err(no_field("PMT", f, "pcr_pid, desc, streams, version …"));
+                    }
                 }
                 Ok(())
             }
@@ -336,17 +484,29 @@ impl Expr {
     }
 }
 
-fn need(p: &[Seg], names: &[&str]) -> Result<()> {
-    if p.is_empty() || !names.contains(&p[0].name.as_str()) {
-        bail!("expected one of {names:?}");
+fn no_field(owner: &'static str, field: &str, known: &str) -> MutateError {
+    MutateError::NoField {
+        owner,
+        field: field.to_string(),
+        known: known.to_string(),
     }
-    Ok(())
+}
+
+fn need(p: &[Seg], owner: &'static str, names: &[&str]) -> Result<()> {
+    match p.first() {
+        Some(s) if names.contains(&s.name.as_str()) => Ok(()),
+        s => Err(no_field(
+            owner,
+            s.map_or("", |s| s.name.as_str()),
+            &names.join(", "),
+        )),
+    }
 }
 
 fn pat_entry(v: &str) -> Result<isdb_ts::psi::PatEntry> {
     let (a, b) = v
         .split_once(':')
-        .ok_or_else(|| anyhow!("PAT entry as PROGRAM:PID"))?;
+        .ok_or_else(|| syntax("PAT entry as PROGRAM:PID", v))?;
     Ok(isdb_ts::psi::PatEntry::new(
         field(a, "program_number")?,
         pid(b)?,
@@ -355,18 +515,16 @@ fn pat_entry(v: &str) -> Result<isdb_ts::psi::PatEntry> {
 
 /// The value of a scalar leaf: exactly one segment, no selector, `Set`.
 fn leaf<'a>(p: &[Seg], op: &'a Op) -> Result<&'a str> {
-    if p.len() != 1 || p[0].sel.is_some() {
-        bail!(
-            "{} is not a scalar field path",
+    match (p, op) {
+        ([s], Op::Set(v)) if s.sel.is_none() => Ok(v),
+        ([s], _) if s.sel.is_none() => Err(path_err(&s.name, "add/del on a scalar field")),
+        _ => Err(path_err(
             p.iter()
                 .map(|s| s.name.as_str())
                 .collect::<Vec<_>>()
-                .join(".")
-        );
-    }
-    match op {
-        Op::Set(v) => Ok(v),
-        _ => bail!("add/del on scalar field {}", p[0].name),
+                .join("."),
+            "not a scalar field path",
+        )),
     }
 }
 
@@ -376,54 +534,60 @@ fn header(h: &mut LongHeader, p: &[Seg], op: &Op) -> Result<bool> {
         return Ok(false);
     }
     let f = p[0].name.as_str();
-    let known = matches!(
-        f,
-        "version"
-            | "version_number"
-            | "tidext"
-            | "table_id_extension"
-            | "network_id"
-            | "transport_stream_id_ext"
-            | "program_number"
-            | "service_id"
-            | "cni"
-            | "current_next_indicator"
-            | "sn"
-            | "section_number"
-            | "lsn"
-            | "last_section_number"
-            | "table_id"
-            | "private_indicator"
-            | "reserved1"
-            | "reserved2"
-    );
-    if !known {
-        return Ok(false);
-    }
-    let v = leaf(p, op)?;
-    match f {
-        "version" | "version_number" => {
+    // Resolve the field before reading the value: a name that is not a
+    // header field is left to the table (Ok(false)).
+    let set: fn(&mut LongHeader, &str) -> Result<()> = match f {
+        "version" | "version_number" => |h, v| {
             let x: u8 = val(v)?;
             if x > 31 {
-                bail!("version_number is 5 bits");
+                return Err(MutateError::TooLarge {
+                    value: x.into(),
+                    ty: "version_number (5 bits)",
+                });
             }
-            h.version_number = x
-        }
+            h.version_number = x;
+            Ok(())
+        },
         "tidext"
         | "table_id_extension"
         | "network_id"
         | "transport_stream_id_ext"
         | "program_number"
-        | "service_id" => h.table_id_extension = val(v)?,
-        "cni" | "current_next_indicator" => h.current_next_indicator = val(v)?,
-        "sn" | "section_number" => h.section_number = val(v)?,
-        "lsn" | "last_section_number" => h.last_section_number = val(v)?,
-        "table_id" => h.table_id = val(v)?,
-        "private_indicator" => h.private_indicator = val(v)?,
-        "reserved1" => h.reserved1 = val(v)?,
-        "reserved2" => h.reserved2 = val(v)?,
-        _ => unreachable!(),
-    }
+        | "service_id" => |h, v| {
+            h.table_id_extension = val(v)?;
+            Ok(())
+        },
+        "cni" | "current_next_indicator" => |h, v| {
+            h.current_next_indicator = val(v)?;
+            Ok(())
+        },
+        "sn" | "section_number" => |h, v| {
+            h.section_number = val(v)?;
+            Ok(())
+        },
+        "lsn" | "last_section_number" => |h, v| {
+            h.last_section_number = val(v)?;
+            Ok(())
+        },
+        "table_id" => |h, v| {
+            h.table_id = val(v)?;
+            Ok(())
+        },
+        "private_indicator" => |h, v| {
+            h.private_indicator = val(v)?;
+            Ok(())
+        },
+        "reserved1" => |h, v| {
+            h.reserved1 = val(v)?;
+            Ok(())
+        },
+        "reserved2" => |h, v| {
+            h.reserved2 = val(v)?;
+            Ok(())
+        },
+        _ => return Ok(false),
+    };
+    set(h, leaf(p, op)?)?;
     Ok(true)
 }
 
@@ -434,11 +598,18 @@ fn select<T>(v: &[T], sel: &str, id: &impl Fn(&T) -> u64) -> Result<usize> {
         let want = int(sel)?;
         v.iter()
             .position(|x| id(x) == want)
-            .ok_or_else(|| anyhow!("no element with id {sel}"))
+            .ok_or_else(|| MutateError::NoElement {
+                what: "element with id",
+                sel: sel.to_string(),
+            })
     } else {
-        let i: usize = sel.parse().with_context(|| format!("bad index {sel:?}"))?;
+        let i: usize = num(sel, "bad index")?;
         if i >= v.len() {
-            bail!("index {i} out of range (len {})", v.len());
+            return Err(MutateError::Index {
+                what: "index",
+                index: i,
+                len: v.len(),
+            });
         }
         Ok(i)
     }
@@ -463,7 +634,9 @@ fn list<T>(
                     Op::Del(_) => {
                         v.remove(i);
                     }
-                    Op::Add(_) => bail!("add needs a list, not an element"),
+                    Op::Add(_) => {
+                        return Err(path_err(&seg.name, "add needs a list, not an element"));
+                    }
                 }
                 Ok(())
             } else {
@@ -472,7 +645,10 @@ fn list<T>(
         }
         None => {
             if !rest.is_empty() {
-                bail!("{}: select an element with [index] or [0xID]", seg.name);
+                return Err(path_err(
+                    &seg.name,
+                    "select an element with [index] or [0xID]",
+                ));
             }
             match op {
                 Op::Add(x) => v.push(new(x)?),
@@ -480,7 +656,12 @@ fn list<T>(
                     let i = select(v, x, &id)?;
                     v.remove(i);
                 }
-                Op::Set(_) => bail!("{}: cannot set a whole list; use [i], add or del", seg.name),
+                Op::Set(_) => {
+                    return Err(path_err(
+                        &seg.name,
+                        "cannot set a whole list; use [i], add or del",
+                    ));
+                }
             }
             Ok(())
         }
@@ -503,7 +684,10 @@ fn val<T: FromVal>(s: &str) -> Result<T> {
 
 /// [`val`] with the field name on the error (`table_id: 300 does not fit u8`).
 pub(crate) fn field<T: FromVal>(s: &str, name: &'static str) -> Result<T> {
-    val(s).context(name)
+    val(s).map_err(|e| MutateError::Field {
+        name,
+        source: Box::new(e),
+    })
 }
 
 macro_rules! int_val {
@@ -511,7 +695,7 @@ macro_rules! int_val {
         impl FromVal for $t {
             fn from_val(s: &str) -> Result<Self> {
                 let v = int(s)?;
-                <$t>::try_from(v).map_err(|_| anyhow!("{v} does not fit {}", stringify!($t)))
+                <$t>::try_from(v).map_err(|_| MutateError::TooLarge { value: v, ty: stringify!($t) })
             }
         }
     )*};
@@ -529,7 +713,7 @@ impl FromVal for bool {
         match s.trim() {
             "1" | "true" => Ok(true),
             "0" | "false" => Ok(false),
-            o => bail!("not a boolean: {o:?}"),
+            o => Err(syntax("not a boolean", o)),
         }
     }
 }
@@ -538,31 +722,33 @@ impl FromVal for AribString {
     fn from_val(s: &str) -> Result<Self> {
         if let Some(h) = s.strip_prefix("hex:") {
             return Ok(AribString(
-                crate::tree::unhex(h).ok_or_else(|| anyhow!("bad hex"))?,
+                crate::tree::unhex(h).ok_or_else(|| syntax("bad hex", h))?,
             ));
         }
         let t = s
             .strip_prefix('"')
             .and_then(|x| x.strip_suffix('"'))
             .unwrap_or(s);
-        AribString::encode(t).map_err(|e| anyhow!("ARIB encode of {t:?}: {e:?}"))
+        AribString::encode(t).map_err(|source| MutateError::Text {
+            text: t.to_string(),
+            source,
+        })
     }
 }
 
 impl FromVal for [u8; 3] {
     fn from_val(s: &str) -> Result<Self> {
-        let b = s.trim().as_bytes();
-        if b.len() != 3 {
-            bail!("3-character code expected");
+        match *s.trim().as_bytes() {
+            [a, b, c] => Ok([a, b, c]),
+            _ => Err(syntax("3-character code expected", s)),
         }
-        Ok([b[0], b[1], b[2]])
     }
 }
 
 impl FromVal for Vec<u8> {
     fn from_val(s: &str) -> Result<Self> {
         let h = s.trim().strip_prefix("hex:").unwrap_or(s.trim());
-        crate::tree::unhex(h).ok_or_else(|| anyhow!("bad hex {h:?}"))
+        crate::tree::unhex(h).ok_or_else(|| syntax("bad hex", h))
     }
 }
 
@@ -595,25 +781,24 @@ impl FromVal for MjdTime {
             return Ok(MjdTime::from_u40(int(s)?));
         }
         let s = s.trim_end_matches(" JST");
-        let (d, t) = s
-            .split_once([' ', 'T'])
-            .ok_or_else(|| anyhow!("time as YYYY-MM-DD HH:MM:SS"))?;
+        const FORM: &str = "time as YYYY-MM-DD HH:MM:SS";
+        let (d, t) = s.split_once([' ', 'T']).ok_or_else(|| syntax(FORM, s))?;
         let dp: Vec<&str> = d.split('-').collect();
         let tp: Vec<&str> = t.split(':').collect();
-        if dp.len() != 3 || tp.len() != 3 {
-            bail!("time as YYYY-MM-DD HH:MM:SS");
-        }
+        let (&[y, mo, da], &[h, mi, se]) = (&dp[..], &tp[..]) else {
+            return Err(syntax(FORM, s));
+        };
         let dt = DateTime {
             date: Date {
-                year: dp[0].parse()?,
-                month: dp[1].parse()?,
-                day: dp[2].parse()?,
+                year: num(y, FORM)?,
+                month: num(mo, FORM)?,
+                day: num(da, FORM)?,
             },
-            hour: tp[0].parse()?,
-            minute: tp[1].parse()?,
-            second: tp[2].parse()?,
+            hour: num(h, FORM)?,
+            minute: num(mi, FORM)?,
+            second: num(se, FORM)?,
         };
-        MjdTime::from_jst(dt).map_err(|e| anyhow!("{e}"))
+        MjdTime::from_jst(dt).map_err(codec(format!("JST time {s:?}")))
     }
 }
 
@@ -626,12 +811,13 @@ impl FromVal for BcdDuration {
         if s.starts_with("0x") {
             return Ok(BcdDuration(field(s, "duration")?));
         }
+        const FORM: &str = "duration as HH:MM:SS";
         let p: Vec<&str> = s.split(':').collect();
-        if p.len() != 3 {
-            bail!("duration as HH:MM:SS");
-        }
-        BcdDuration::from_hms(p[0].parse()?, p[1].parse()?, p[2].parse()?)
-            .map_err(|e| anyhow!("{e}"))
+        let &[h, m, sec] = &p[..] else {
+            return Err(syntax(FORM, s));
+        };
+        BcdDuration::from_hms(num(h, FORM)?, num(m, FORM)?, num(sec, FORM)?)
+            .map_err(codec(format!("duration {s:?}")))
     }
 }
 
@@ -641,10 +827,9 @@ impl FromVal for BcdOffset {
         if s.starts_with("0x") {
             return Ok(BcdOffset(field(s, "local_time_offset")?));
         }
-        let (h, m) = s
-            .split_once(':')
-            .ok_or_else(|| anyhow!("offset as HH:MM"))?;
-        BcdOffset::from_hm(h.parse()?, m.parse()?).map_err(|e| anyhow!("{e}"))
+        const FORM: &str = "offset as HH:MM";
+        let (h, m) = s.split_once(':').ok_or_else(|| syntax(FORM, s))?;
+        BcdOffset::from_hm(num(h, FORM)?, num(m, FORM)?).map_err(codec(format!("offset {s:?}")))
     }
 }
 
@@ -656,27 +841,34 @@ impl FromVal for BcdOffset {
 /// with the typed B10 decoders.
 pub fn descriptor_from_hex(s: &str) -> Result<Descriptor> {
     let b: Vec<u8> = val(s)?;
-    Descriptor::decode(&b).map_err(|e| anyhow!("descriptor {s}: {e}"))
+    Descriptor::decode(&b).map_err(codec(format!("descriptor {s}")))
 }
 
 fn desc_select(v: &[Descriptor], sel: &str) -> Result<usize> {
     let sel = sel.trim();
     if sel.starts_with("0x") || sel.starts_with("0X") {
         let (t, k) = match sel.split_once('#') {
-            Some((t, k)) => (t, k.parse::<usize>()?),
+            Some((t, k)) => (t, num::<usize>(k, "occurrence after # is not a number")?),
             None => (sel, 0),
         };
-        let tag = field(t, "descriptor_tag")?;
+        let tag: u8 = field(t, "descriptor_tag")?;
         v.iter()
             .enumerate()
             .filter(|(_, d)| d.tag() == tag)
             .nth(k)
             .map(|(i, _)| i)
-            .ok_or_else(|| anyhow!("no descriptor with tag {sel}"))
+            .ok_or_else(|| MutateError::NoElement {
+                what: "descriptor with tag",
+                sel: sel.to_string(),
+            })
     } else {
-        let i: usize = sel.parse()?;
+        let i: usize = num(sel, "bad index")?;
         if i >= v.len() {
-            bail!("descriptor index {i} out of range (len {})", v.len());
+            return Err(MutateError::Index {
+                what: "descriptor index",
+                index: i,
+                len: v.len(),
+            });
         }
         Ok(i)
     }
@@ -693,7 +885,7 @@ pub fn desc_loop(v: &mut Vec<Descriptor>, seg: &Seg, rest: &[Seg], op: &Op) -> R
                     Op::Del(_) => {
                         v.remove(i);
                     }
-                    Op::Add(_) => bail!("add on a selected descriptor"),
+                    Op::Add(_) => return Err(path_err(&seg.name, "add on a selected descriptor")),
                 }
                 Ok(())
             } else {
@@ -702,7 +894,10 @@ pub fn desc_loop(v: &mut Vec<Descriptor>, seg: &Seg, rest: &[Seg], op: &Op) -> R
         }
         None => {
             if !rest.is_empty() {
-                bail!("select a descriptor with [index] or [0xTAG]");
+                return Err(path_err(
+                    &seg.name,
+                    "select a descriptor with [index] or [0xTAG]",
+                ));
             }
             match op {
                 Op::Add(x) => v.push(descriptor_from_hex(x)?),
@@ -710,7 +905,9 @@ pub fn desc_loop(v: &mut Vec<Descriptor>, seg: &Seg, rest: &[Seg], op: &Op) -> R
                     let i = desc_select(v, x)?;
                     v.remove(i);
                 }
-                Op::Set(_) => bail!("cannot set a whole descriptor loop"),
+                Op::Set(_) => {
+                    return Err(path_err(&seg.name, "cannot set a whole descriptor loop"));
+                }
             }
             Ok(())
         }
@@ -729,7 +926,7 @@ fn ts_desc_loop(
         .iter()
         .map(|x| {
             Descriptor::decode_body(x.tag, &x.data)
-                .map_err(|e| anyhow!("descriptor {:#04x}: {e}", x.tag))
+                .map_err(codec(format!("descriptor {:#04x}", x.tag)))
         })
         .collect::<Result<_>>()?;
     desc_loop(&mut typed, seg, rest, op)?;
@@ -737,8 +934,15 @@ fn ts_desc_loop(
         .iter()
         .map(|x| {
             let mut b = Vec::new();
-            x.encode(&mut b).map_err(|e| anyhow!("{e}"))?;
-            Ok(isdb_ts::descriptor::Descriptor::new(b[0], b[2..].to_vec()))
+            x.encode(&mut b)
+                .map_err(codec(format!("descriptor {:#04x}", x.tag())))?;
+            // encode wrote tag, length, body.
+            match b.as_slice() {
+                [tag, _, body @ ..] => {
+                    Ok(isdb_ts::descriptor::Descriptor::new(*tag, body.to_vec()))
+                }
+                _ => Err(path_err(x.name(), "encoded without a tag and length")),
+            }
         })
         .collect::<Result<_>>()?;
     Ok(())
@@ -749,7 +953,7 @@ macro_rules! fields {
         let v = leaf($p, $op)?;
         match $p[0].name.as_str() {
             $( stringify!($f) $(| $alias)* => { $obj.$f = val(v)?; Ok(()) } )*
-            other => Err(anyhow!("no field {other:?}; fields: {}", [$(stringify!($f)),*].join(", "))),
+            other => Err(no_field("element", other, &[$(stringify!($f)),*].join(", "))),
         }
     }};
 }
@@ -766,17 +970,17 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                 op,
                 |&f| u64::from(f),
                 val,
-                |_, _, _| bail!("scalar element"),
+                scalar_element,
             ),
             "frequencies" | "frequency" => {
                 x.frequencies = val(leaf(p, op)?)?;
                 Ok(())
             }
             "frequency_mhz" => {
-                let mhz: f64 = leaf(p, op)?.parse()?;
+                let mhz: f64 = num(leaf(p, op)?, "frequency_mhz is not a number")?;
                 let units = (mhz * 7.0).round();
                 if !(0.0..=f64::from(u16::MAX)).contains(&units) {
-                    bail!("frequency_mhz {mhz} is outside the 16-bit 1/7 MHz field");
+                    return Err(MutateError::FrequencyMhz { mhz });
                 }
                 // Checked against the field's range just above.
                 #[allow(clippy::cast_possible_truncation)]
@@ -807,7 +1011,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                         op,
                         |&s| u64::from(s),
                         val,
-                        |_, _, _| bail!("scalar element"),
+                        scalar_element,
                     ),
                     _ => fields!(t, r, op; transmission_type_info, service_ids),
                 },
@@ -822,7 +1026,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                 op,
                 |&s| u64::from(s),
                 val,
-                |_, _, _| bail!("scalar element"),
+                scalar_element,
             ),
             _ => fields!(x, p, op; service_ids),
         },
@@ -835,7 +1039,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
             |s| {
                 let (a, b) = s
                     .split_once(':')
-                    .ok_or_else(|| anyhow!("service as SID:TYPE"))?;
+                    .ok_or_else(|| syntax("service as SID:TYPE", s))?;
                 Ok(d::ServiceListEntry {
                     service_id: val(a)?,
                     service_type: val(b)?,
@@ -892,7 +1096,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
             |s| {
                 let (c, r) = s
                     .split_once(':')
-                    .ok_or_else(|| anyhow!("rating as CCC:RATING"))?;
+                    .ok_or_else(|| syntax("rating as CCC:RATING", s))?;
                 Ok(d::ParentalRatingEntry {
                     country_code: val(c)?,
                     rating: val(r)?,
@@ -906,7 +1110,12 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
             &p[1..],
             op,
             |e| u64::from(e.country_region_id),
-            |_| bail!("add local_time_offset entries as a whole descriptor (desc.add=hex)"),
+            |_| {
+                Err(path_err(
+                    "local_time_offset",
+                    "add entries as a whole descriptor (desc.add=hex)",
+                ))
+            },
             |e, r, op| fields!(e, r, op; country_code, country_region_id, reserved, local_time_offset_polarity | "polarity", local_time_offset, time_of_change, next_time_offset),
         ),
         Descriptor::SiParameter(x) => match f {
@@ -947,7 +1156,7 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                         |s| {
                             let (a, b) = s
                                 .split_once(':')
-                                .ok_or_else(|| anyhow!("broadcaster as ONID:BID"))?;
+                                .ok_or_else(|| syntax("broadcaster as ONID:BID", s))?;
                             Ok(d::NetworkBroadcaster {
                                 original_network_id: val(a)?,
                                 broadcaster_id: val(b)?,
@@ -957,24 +1166,35 @@ fn descriptor(dsc: &mut Descriptor, p: &[Seg], op: &Op) -> Result<()> {
                     ),
                     _ => fields!(t, p, op; terrestrial_broadcaster_id, private_data),
                 },
-                d::ExtendedBroadcasterBody::Other { .. } => {
-                    bail!("broadcaster_type other than 0x1/0x2: replace the descriptor with hex")
-                }
+                d::ExtendedBroadcasterBody::Other { .. } => Err(path_err(
+                    f,
+                    "broadcaster_type other than 0x1/0x2: replace the descriptor with hex",
+                )),
             }
         }
         Descriptor::Unknown { data, .. } => {
             if f != "data" {
-                bail!("untyped descriptor: only `data` (hex) can be set");
+                return Err(path_err(
+                    f,
+                    "untyped descriptor: only `data` (hex) can be set",
+                ));
             }
             *data = val(leaf(p, op)?)?;
             Ok(())
         }
-        other => bail!(
-            "{} fields are not editable by path; replace it with desc[0x{:02x}]=<hex>",
-            other.name(),
-            other.tag()
-        ),
+        other => Err(path_err(
+            format!("{} (tag {:#04x})", other.name(), other.tag()),
+            "fields not editable by path; replace the descriptor with desc[0xTT]=<hex>",
+        )),
     }
+}
+
+/// The element closure of a list of scalars: there is nothing below one.
+fn scalar_element<T>(_: &mut T, r: &[Seg], _: &Op) -> Result<()> {
+    Err(path_err(
+        r.first().map_or("", |s| s.name.as_str()),
+        "scalar element",
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -997,7 +1217,7 @@ fn network_loops(n: &mut isdb_si::tables::NetworkLoops, p: &[Seg], op: &Op) -> R
             |s| {
                 let (a, b) = s
                     .split_once(':')
-                    .ok_or_else(|| anyhow!("TS as TSID:ONID"))?;
+                    .ok_or_else(|| syntax("TS as TSID:ONID", s))?;
                 Ok(isdb_si::tables::TransportStreamEntry {
                     transport_stream_id: val(a)?,
                     original_network_id: val(b)?,
@@ -1018,7 +1238,7 @@ fn network_loops(n: &mut isdb_si::tables::NetworkLoops, p: &[Seg], op: &Op) -> R
 
 fn si_table(a: &mut AnyTable, p: &[Seg], op: &Op) -> Result<()> {
     if p.is_empty() {
-        bail!("path required");
+        return Err(path_err(a.name(), "path required"));
     }
     match a {
         AnyTable::Nit(t) => {
@@ -1133,16 +1353,16 @@ fn si_table(a: &mut AnyTable, p: &[Seg], op: &Op) -> Result<()> {
                 _ => fields!(t.body, p, op; broadcast_view_propriety, reserved_future_use),
             }
         }
-        other => bail!("{} is not editable by path", other.name()),
+        other => Err(path_err(other.name(), "not editable by path")),
     }
 }
 
 /// Apply `expr` to one section (decode → mutate → encode).  Returns the
 /// new section bytes.
 pub fn apply_to_section(expr: &Expr, pid: Pid, sec: &[u8]) -> Result<Vec<u8>> {
-    let mut t = crate::decode::decode(pid, sec).map_err(|e| anyhow!("decode: {e}"))?;
+    let mut t = crate::decode::decode(pid, sec).map_err(codec("decode"))?;
     expr.apply(&mut t)?;
-    t.encode().map_err(|e| anyhow!("encode: {e}"))
+    t.encode().map_err(codec("encode"))
 }
 
 #[cfg(test)]

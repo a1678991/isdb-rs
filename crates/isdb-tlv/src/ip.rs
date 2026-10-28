@@ -61,6 +61,7 @@ pub struct Datagram {
 
 /// Why a TLV packet's IP content could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum IpError {
     /// Shorter than its headers.
     #[error("IP: truncated")]

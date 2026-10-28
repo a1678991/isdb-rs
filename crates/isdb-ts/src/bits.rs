@@ -39,6 +39,11 @@ impl<'a> BitReader<'a> {
     }
 
     /// Read an `n`-bit unsigned field, `n <= 64`.
+    ///
+    /// # Panics
+    ///
+    /// If `n > 64`: the width is the decoder's constant from the syntax
+    /// table, not input.
     pub fn read(&mut self, n: u32) -> Result<u64> {
         assert!(n <= 64);
         if (n as usize) > self.remaining_bits() {
@@ -70,6 +75,11 @@ impl<'a> BitReader<'a> {
     /// how a decoder takes a field narrower than 64 bits without an `as`
     /// cast: the width is asserted here, once, so the narrowing is proven
     /// where it happens and the field lands in a type that fits it.
+    ///
+    /// # Panics
+    ///
+    /// If `n` exceeds the type's width (8 here, 16, 32 and 32 for the
+    /// others): the width is the decoder's constant, not input.
     pub fn read_u8(&mut self, n: u32) -> Result<u8> {
         assert!(n <= 8, "read_u8: {n} bits");
         // n <= 8 is asserted above, so the value fits.
@@ -78,6 +88,10 @@ impl<'a> BitReader<'a> {
     }
 
     /// Read an `n`-bit field into a `u16`, `n <= 16`.
+    ///
+    /// # Panics
+    ///
+    /// If `n > 16` (see [`read_u8`](Self::read_u8)).
     pub fn read_u16(&mut self, n: u32) -> Result<u16> {
         assert!(n <= 16, "read_u16: {n} bits");
         // n <= 16 is asserted above, so the value fits.
@@ -86,6 +100,10 @@ impl<'a> BitReader<'a> {
     }
 
     /// Read an `n`-bit field into a `u32`, `n <= 32`.
+    ///
+    /// # Panics
+    ///
+    /// If `n > 32` (see [`read_u8`](Self::read_u8)).
     pub fn read_u32(&mut self, n: u32) -> Result<u32> {
         assert!(n <= 32, "read_u32: {n} bits");
         // n <= 32 is asserted above, so the value fits.
@@ -94,6 +112,10 @@ impl<'a> BitReader<'a> {
     }
 
     /// Read an `n`-bit field into a `usize`, `n <= 32` (a length or count).
+    ///
+    /// # Panics
+    ///
+    /// If `n > 32` (see [`read_u8`](Self::read_u8)).
     pub fn read_usize(&mut self, n: u32) -> Result<usize> {
         assert!(n <= 32, "read_usize: {n} bits");
         // n <= 32 is asserted above and usize is at least 32 bits on every
@@ -174,6 +196,11 @@ impl BitWriter {
     }
 
     /// Write the low `n` bits of `v`; errors if `v` needs more than `n` bits.
+    ///
+    /// # Panics
+    ///
+    /// If `n > 64`: the width is the encoder's constant from the syntax
+    /// table, not input.
     pub fn write(&mut self, what: &'static str, n: u32, v: u64) -> Result<()> {
         assert!(n <= 64);
         if n < 64 && v >> n != 0 {
@@ -184,24 +211,33 @@ impl BitWriter {
             });
         }
         for i in (0..n).rev() {
-            if self.bit & 7 == 0 {
-                self.buf.push(0);
-            }
-            let b = u8::from((v >> i) & 1 == 1);
-            let last = self.buf.len() - 1;
-            self.buf[last] |= b << (7 - (self.bit % 8));
-            self.bit += 1;
+            self.bit_out((v >> i) & 1 == 1);
         }
         Ok(())
     }
 
+    /// Append one bit.
+    fn bit_out(&mut self, b: bool) {
+        if self.bit & 7 == 0 {
+            self.buf.push(0);
+        }
+        if let Some(last) = self.buf.last_mut() {
+            *last |= u8::from(b) << (7 - (self.bit % 8));
+        }
+        self.bit += 1;
+    }
+
     /// Write a 1-bit flag.
     pub fn bool(&mut self, v: bool) {
-        self.write("flag", 1, u64::from(v))
-            .expect("1-bit flag fits");
+        self.bit_out(v);
     }
 
     /// Append whole bytes; the writer must be byte aligned.
+    ///
+    /// # Panics
+    ///
+    /// If the writer is not byte aligned: every ARIB/MPEG syntax puts its
+    /// byte fields on byte boundaries, so this is an encoder bug.
     pub fn bytes(&mut self, data: &[u8]) {
         assert!(self.bit & 7 == 0, "BitWriter::bytes at unaligned position");
         self.buf.extend_from_slice(data);
@@ -213,7 +249,12 @@ impl BitWriter {
         self.bit
     }
 
-    /// Finish; panics unless byte aligned (every ARIB/MPEG syntax is).
+    /// Finish.
+    ///
+    /// # Panics
+    ///
+    /// Unless byte aligned (every ARIB/MPEG syntax is, so this is an
+    /// encoder bug).
     pub fn into_bytes(self) -> Vec<u8> {
         assert!(
             self.bit & 7 == 0,

@@ -260,7 +260,7 @@ impl Scanner {
             decoded: HashMap::new(),
         };
         for pid in 0..=0x002F {
-            s.add_si_pid(Pid::new(pid).expect("13 bits"));
+            s.add_si_pid(Pid::from_wire(pid)); // below 0x2000: kept as is
         }
         s
     }

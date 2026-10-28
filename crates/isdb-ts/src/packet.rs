@@ -28,6 +28,16 @@ pub const PACKET_SIZE: usize = 188;
 pub const PAYLOAD_CAPACITY: usize = 184;
 /// sync_byte value '0100 0111' (§2.4.3.3).
 pub const SYNC_BYTE: u8 = 0x47;
+/// [`Packet::null`] encoded: PID 0x1FFF, adaptation_field_control '01',
+/// continuity_counter 0, data_bytes 0xFF (§2.4.3.3, Table 2-3).
+pub const NULL_PACKET: [u8; PACKET_SIZE] = {
+    let mut p = [0xFF; PACKET_SIZE];
+    p[0] = SYNC_BYTE;
+    p[1] = 0x1F; // TEI, PUSI, priority 0; PID bits 12–8
+    p[2] = 0xFF; // PID bits 7–0
+    p[3] = 0x10; // scrambling '00', adaptation_field_control '01', CC 0
+    p
+};
 
 /// A user-defined transport_scrambling_control code ('01'–'11', Table 2-4)
 /// as decoded.
@@ -505,13 +515,13 @@ impl AdaptationField {
         };
         let afl = afl as usize;
         if 1 + afl > b.len() {
-            return Err(Error::invalid(
-                "adaptation_field_length",
-                format!(
-                    "{afl} runs past the packet ({} bytes available)",
-                    b.len() - 1
-                ),
-            ));
+            // Runs past the packet.
+            return Err(Error::Range {
+                what: "adaptation_field_length",
+                value: afl as u64,
+                min: 0,
+                max: (b.len() - 1) as u64,
+            });
         }
         if afl == 0 {
             return Ok((AdaptationField::Empty, 1));
@@ -558,10 +568,14 @@ impl AdaptationField {
         let extension = if ext_flag {
             let n = r.u8()? as usize;
             if n == 0 {
-                return Err(Error::invalid(
-                    "adaptation_field_extension_length",
-                    "0 leaves no room for the ltw/piecewise_rate/seamless_splice flags byte",
-                ));
+                // 0 leaves no room for the ltw/piecewise_rate/seamless_splice
+                // flags byte (SPEC-NOTES).
+                return Err(Error::Range {
+                    what: "adaptation_field_extension_length",
+                    value: 0,
+                    min: 1,
+                    max: 0xFF,
+                });
             }
             let e = r.bytes(n).map_err(|_| {
                 Error::invalid(
@@ -834,11 +848,18 @@ impl Packet {
     /// Adaptation-field-only packet ('10', adaptation_field_length 183)
     /// carrying `pcr` (§2.4.3.4/§2.4.3.5).
     pub fn pcr_only(pid: Pid, cc: ContinuityCounter, pcr: Pcr) -> Self {
-        let fields = AdaptationFields {
+        let mut fields = AdaptationFields {
             pcr: Some(pcr),
             ..Default::default()
         };
-        Self::with_adaptation(pid, false, cc, Some(fields), &[]).expect("PCR fits in 183 bytes")
+        // The flags byte and the 6-byte PCR leave 176 of the 183 bytes for
+        // stuffing (what with_adaptation computes for an empty payload).
+        fields.stuffing = vec![0xFF; PAYLOAD_CAPACITY - 1 - fields.length()];
+        Self {
+            header: Header::new(pid, AdaptationFieldControl::AdaptationOnly, cc),
+            adaptation_field: Some(AdaptationField::Fields(fields)),
+            payload: Vec::new(),
+        }
     }
 
     /// Null packet: PID 0x1FFF, payload_unit_start_indicator '0',
@@ -891,10 +912,12 @@ impl<'a> View<'a> {
         if header.has_adaptation_field() {
             let afl = b[4] as usize;
             if 5 + afl > PACKET_SIZE {
-                return Err(Error::invalid(
-                    "adaptation_field_length",
-                    format!("{afl} runs past the packet"),
-                ));
+                return Err(Error::Range {
+                    what: "adaptation_field_length",
+                    value: afl as u64,
+                    min: 0,
+                    max: (PACKET_SIZE - 5) as u64,
+                });
             }
             adaptation_field = Some(&b[4..5 + afl]);
             pos = 5 + afl;

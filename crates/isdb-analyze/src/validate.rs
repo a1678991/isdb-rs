@@ -1644,8 +1644,8 @@ fn pes_checks(cap: &Capture, pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>, o: &mut Out
             u.sort_unstable();
             let gaps: Vec<i64> = u.windows(2).map(|w| w[1] - w[0]).collect();
             let over = gaps.iter().filter(|&&g| g > 63_000).count();
-            if over > 0 {
-                let mx = *gaps.iter().max().unwrap();
+            // The largest gap, when one is over the limit.
+            if let Some(&mx) = gaps.iter().filter(|&&g| g > 63_000).max() {
                 o.add(
                     Error,
                     "pes.pts",
@@ -1816,7 +1816,8 @@ fn aac_checks(cap: &Capture, si: &SiView, pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>
     for (&pid, t) in &cap.pes {
         let Some(a) = &t.aac else { continue };
         let loc = pid_loc(pid);
-        if a.frames == 0 {
+        // The first frame's header (`first` is set with the first frame).
+        let Some(h) = a.first.filter(|_| a.frames > 0) else {
             if t.pes_count == 0 {
                 continue; // no packets at all: reported by the PID checks
             }
@@ -1831,7 +1832,7 @@ fn aac_checks(cap: &Capture, si: &SiView, pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>
                 ),
             );
             continue;
-        }
+        };
         for (rule, c) in &a.rules {
             let sev = match rule.severity() {
                 b32::Severity::Error => Error,
@@ -1880,7 +1881,6 @@ fn aac_checks(cap: &Capture, si: &SiView, pmts: &BTreeMap<u16, (Pid, Long<Pmt>)>
         let fs = a.sampling_frequency().unwrap_or(0);
         let ch = a.coded_channels.unwrap_or(0);
         let bps = a.bit_rate().unwrap_or(0.0);
-        let h = a.first.expect("frames > 0");
         o.push(
             Info,
             "aac.summary",

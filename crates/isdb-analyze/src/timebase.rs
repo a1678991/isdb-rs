@@ -164,10 +164,9 @@ impl Timebase {
     /// Mean transport rate in bits/s implied by the PCR samples
     /// (packets × 188 × 8 / elapsed PCR time).
     pub fn rate_bps(&self) -> Option<f64> {
-        if self.samples.len() < 2 {
+        let [a, .., b] = self.samples[..] else {
             return self.nominal_bps;
-        }
-        let (a, b) = (self.samples[0], *self.samples.last().unwrap());
+        };
         (b.1 > a.1).then(|| (b.0 - a.0) as f64 * 188.0 * 8.0 / (b.1 - a.1))
     }
 }

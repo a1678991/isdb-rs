@@ -242,3 +242,107 @@ fn extract_roundtrips_through_hex_loader() {
     assert_eq!(v.len(), 1);
     assert_eq!(v[0], (pid(0x0010), nit()));
 }
+
+/// Each refusal of the edit layer and of the expression grammar is its
+/// own variant, with the facts as fields.
+#[test]
+fn edit_and_expression_errors_are_typed() {
+    use isdb_analyze::edit::EditError;
+    use isdb_analyze::mutate::MutateError;
+    assert!(matches!(
+        Selector::parse("0x10"),
+        Err(EditError::Selector { .. })
+    ));
+    assert!(matches!(
+        Selector::parse("0x2000:0x40"),
+        Err(EditError::Mutate(MutateError::Pid { value: 0x2000 }))
+    ));
+    assert!(matches!(
+        Expr::parse("nit.version"),
+        Err(MutateError::Syntax {
+            problem: "expression needs '='",
+            ..
+        })
+    ));
+    assert!(matches!(
+        Expr::parse("foo.x=1").unwrap().target(),
+        Err(MutateError::UnknownTable { .. })
+    ));
+
+    let p = build(&default_spec(1));
+    let apply = |op: EditOp| edit::apply(&mut p.clone(), &[op], &EditOptions::default());
+    let mutate = |s: &str| apply(EditOp::Mutate(Expr::parse(s).unwrap()));
+    let e = mutate("nit.ts[0].desc[0xFA].gaurd=1").unwrap_err();
+    assert!(
+        matches!(&e, EditError::Section { pid: p, source: MutateError::NoField { field, known, .. }, .. }
+            if *p == pid(0x0010) && field == "gaurd" && known.contains("guard_interval")),
+        "{e:?}"
+    );
+    let e = mutate("nit.ts[5].tsid=1").unwrap_err();
+    assert!(
+        matches!(
+            e,
+            EditError::Section {
+                source: MutateError::Index {
+                    index: 5,
+                    len: 1,
+                    ..
+                },
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    let e = mutate("nit.version=32").unwrap_err();
+    assert!(
+        matches!(
+            e,
+            EditError::Section {
+                source: MutateError::TooLarge { value: 32, .. },
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    let sel = Selector::parse("0x0010:0x41").unwrap();
+    let e = apply(EditOp::Replace {
+        sel,
+        sections: vec![nit()],
+    })
+    .unwrap_err();
+    assert!(matches!(e, EditError::NoSection { .. }), "{e:?}");
+    let e = apply(EditOp::Insert {
+        pid: pid(0x0010),
+        sections: vec![nit()],
+        interval_s: 0.0,
+        offset_s: 0.0,
+    })
+    .unwrap_err();
+    assert!(matches!(e, EditError::Interval { .. }), "{e:?}");
+    let e = edit::rewrite_pid(
+        &mut p.clone(),
+        PCR_PID,
+        |_| Ok(None),
+        vec![],
+        NullSlots::WhenNeeded,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(e, EditError::CarriesPcr { pid } if pid == PCR_PID),
+        "{e:?}"
+    );
+
+    let e = edit::sections_from_hex("\n0xzz\n", None).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            EditError::Fixture {
+                line: 2,
+                problem: "bad hex"
+            }
+        ),
+        "{e:?}"
+    );
+    let e = edit::load_sections(std::path::Path::new("/nonexistent/W3.hex"), &sel).unwrap_err();
+    assert!(matches!(e, EditError::Io { op: "read", .. }), "{e:?}");
+}

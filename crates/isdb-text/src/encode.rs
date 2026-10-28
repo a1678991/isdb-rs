@@ -255,19 +255,20 @@ pub fn encode_with(text: &str, opts: &EncodeOptions) -> Result<AribString, Encod
         gr,
         narrow: false,
     };
-    let mut layers: Vec<Vec<Node>> = vec![vec![Node {
+    // `prev` is the newest layer; `layers` the ones before it, oldest first.
+    let mut layers: Vec<Vec<Node>> = Vec::new();
+    let mut prev: Vec<Node> = vec![Node {
         state: init,
         cost: 0,
         prev: usize::MAX,
         bytes: Vec::new(),
-    }]];
+    }];
 
     for &(idx, ch) in &toks {
         let cands = candidates(ch, opts.width);
         if cands.is_empty() {
             return Err(EncodeError::Unencodable { index: idx, ch });
         }
-        let prev = layers.last().expect("non-empty");
         let mut next: Vec<Node> = Vec::new();
         let mut index: HashMap<State, usize> = HashMap::new();
         let mut push =
@@ -334,14 +335,14 @@ pub fn encode_with(text: &str, opts: &EncodeOptions) -> Result<AribString, Encod
         }
         let best = next.iter().map(|n| n.cost).min().unwrap_or(0);
         next.retain(|n| n.cost <= best + PRUNE);
-        layers.push(next);
+        layers.push(std::mem::replace(&mut prev, next));
     }
 
     // Backtrack from the cheapest final node (first on ties).
-    let last = layers.last().expect("non-empty");
+    let last = &prev;
     let mut i = (0..last.len()).min_by_key(|&i| last[i].cost).unwrap_or(0);
     let mut chunks = Vec::new();
-    for layer in layers.iter().rev() {
+    for layer in std::iter::once(last).chain(layers.iter().rev()) {
         let node = &layer[i];
         if node.prev == usize::MAX {
             break;

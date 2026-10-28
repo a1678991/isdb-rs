@@ -474,6 +474,29 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- `isdb-ts`, `isdb-si`, `isdb-tlv`, `isdb-mmt`, `isdb-text`,
+  `isdb-analyze`: typed errors and panic triage (wave 2, group W3, of
+  `docs/plans/errors-and-logging.md`). `isdb_ts::Error` gains `Range {
+  what, value, min, max }`, `Reserved { what, value }`, `Mismatch { what,
+  value, expected }` (a field the syntax fixes to one value) and
+  `NotAccepted { what, value }` (the table_id of another table); 18 of the
+  60 `Invalid` producers moved to them (section_length minima,
+  adaptation_field and extension lengths, section_syntax_indicator,
+  packet_start_code_prefix, the DSM-CC protocolDiscriminator / dsmccType
+  / messageId, table_id 0xFF and table_ids a decoder does not take,
+  blockSize 0, JST_time / duration / BCD fields), and `u8_to_bcd` reports
+  `Range` instead of `Overflow`; `Invalid` stays for inconsistent lengths
+  and contradicting fields. `isdb_analyze::edit` and `mutate` no longer
+  use `anyhow`: `EditError` and `MutateError` with the facts as fields
+  (`anyhow` is a dev-dependency only); `isdb ts edit` adds which
+  `--remove` / `--replace` / `--set` / `--insert` argument failed. New
+  `isdb_ts::packet::NULL_PACKET`. `isdb_tlv::IpError` and
+  `isdb_mmt::table::SectionError` are `#[non_exhaustive]`; `SectionError`
+  implements `Display` and `Error`. Library panic sites (census of
+  `tools/panic-census.py`, non-test code) 12 unwrap / 12 expect / 4
+  unreachable → 1 / 0 / 0 (the remaining `unwrap` and one `assert!` are
+  const-evaluated); the 188-byte slice-to-array `expect`s of the readers
+  are gone (`split_first_chunk`).
 - Every library crate denies printing: `#![warn(clippy::print_stdout,
   clippy::print_stderr)]` in its `lib.rs` (CI runs clippy with `-D
   warnings`), with `allow-print-in-tests` in the new `clippy.toml` for

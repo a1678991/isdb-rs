@@ -20,7 +20,7 @@ use isdb_ts::Pid;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-fn int(s: &str) -> Result<u64> {
+fn int(s: &str) -> Result<u64, isdb_analyze::mutate::MutateError> {
     isdb_analyze::mutate::int(s)
 }
 
@@ -380,17 +380,21 @@ pub fn run(args: TsArgs) -> Result<()> {
                 ops.push(EditOp::NullPids(nulls));
             }
             for s in &a.remove {
-                ops.push(EditOp::Remove(Selector::parse(s)?));
+                ops.push(EditOp::Remove(
+                    Selector::parse(s).with_context(|| format!("--remove {s}"))?,
+                ));
             }
             for s in &a.replace {
-                let (sel, sections, _) = load_for(s)?;
+                let (sel, sections, _) = load_for(s).with_context(|| format!("--replace {s}"))?;
                 ops.push(EditOp::Replace { sel, sections });
             }
             for s in &a.set {
-                ops.push(EditOp::Mutate(Expr::parse(s)?));
+                ops.push(EditOp::Mutate(
+                    Expr::parse(s).with_context(|| format!("--set {s}"))?,
+                ));
             }
             for s in &a.insert {
-                let (sel, sections, rest) = load_for(s)?;
+                let (sel, sections, rest) = load_for(s).with_context(|| format!("--insert {s}"))?;
                 let ms = rest
                     .rsplit_once('@')
                     .ok_or_else(|| anyhow!("--insert needs @INTERVAL_MS: {s:?}"))?
@@ -418,7 +422,8 @@ pub fn run(args: TsArgs) -> Result<()> {
                     null_slots: policy,
                     nominal_bps: a.bitrate,
                 },
-            )?;
+            )
+            .with_context(|| format!("editing {}", a.input.display()))?;
             edit::write_packets(&a.output, &pkts)?;
             if a.json {
                 print_json(&rep)?;

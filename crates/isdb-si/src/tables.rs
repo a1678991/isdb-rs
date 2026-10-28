@@ -545,10 +545,11 @@ impl StuffingSection {
         let mut r = BitReader::new(sec, "stuffing_section");
         let table_id = r.u8()?;
         if table_id != 0x72 {
-            return Err(Error::invalid(
-                "table_id",
-                format!("{table_id:#04x} is not a stuffing_section"),
-            ));
+            // Not a stuffing_section (0x72).
+            return Err(Error::NotAccepted {
+                what: "table_id",
+                value: table_id.into(),
+            });
         }
         let section_syntax_indicator = r.bool()?;
         let reserved_future_use = r.bool()?;

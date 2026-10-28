@@ -123,16 +123,25 @@ fn elem_key(n: &Node, field: &str) -> Option<String> {
 fn list_keys(items: &[Node], leaf: &str) -> Vec<String> {
     // Descriptor loops (field named `*descriptors` / `program_info`, or
     // structs with a `tag` field): key by type name + occurrence.
-    let all_struct = !items.is_empty() && items.iter().all(|x| matches!(x, Node::Struct(..)));
+    // The struct names, when every item is a struct.
+    let names: Option<Vec<&String>> = items
+        .iter()
+        .map(|x| match x {
+            Node::Struct(name, _) => Some(name),
+            _ => None,
+        })
+        .collect();
+    let names = names.filter(|_| !items.is_empty());
+    let all_struct = names.is_some();
     let desc_loop = leaf.ends_with("descriptors") || leaf == "program_info";
-    if all_struct && (desc_loop || items.iter().all(|x| tree::get(x, "tag").is_some())) {
+    if let Some(names) = names
+        && (desc_loop || items.iter().all(|x| tree::get(x, "tag").is_some()))
+    {
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
         return items
             .iter()
-            .map(|x| {
-                let Node::Struct(name, _) = x else {
-                    unreachable!()
-                };
+            .zip(names)
+            .map(|(x, name)| {
                 let base = if name == "Unknown" || name == "Undecodable" {
                     format!("tag={}", elem_key(x, "tag").unwrap_or_default())
                 } else {
@@ -146,12 +155,9 @@ fn list_keys(items: &[Node], leaf: &str) -> Vec<String> {
     }
     if all_struct {
         for f in ID_FIELDS {
-            let keys: Vec<Option<String>> = items.iter().map(|x| elem_key(x, f)).collect();
-            if keys.iter().all(Option::is_some) {
-                let ks: Vec<String> = keys
-                    .into_iter()
-                    .map(|k| format!("{f}={}", k.unwrap()))
-                    .collect();
+            let keys: Option<Vec<String>> = items.iter().map(|x| elem_key(x, f)).collect();
+            if let Some(keys) = keys {
+                let ks: Vec<String> = keys.into_iter().map(|k| format!("{f}={k}")).collect();
                 let uniq: BTreeSet<&String> = ks.iter().collect();
                 if uniq.len() == ks.len() {
                     return ks;
@@ -373,16 +379,19 @@ pub fn diff(a: &Capture, b: &Capture, opts: &DiffOptions) -> DiffReport {
     for (x, y, pairing) in pair_keys(&keys_a, &keys_b) {
         let s_a = x.map(|k| &a.slots[&k]);
         let s_b = y.map(|k| &b.slots[&k]);
-        let tid = x.or(y).unwrap().table_id;
+        // pair_keys pairs or lists every key, so one side is present.
+        let Some(tid) = x.or(y).map(|k| k.table_id) else {
+            continue;
+        };
         let ia = s_a.and_then(|s| inspect::occurrence_intervals(&ta, &s.occurrences, a.packets).0);
         let ib = s_b.and_then(|s| inspect::occurrence_intervals(&tb, &s.occurrences, b.packets).0);
         let mut changes = Vec::new();
         let identical = matches!((s_a, s_b), (Some(p), Some(q)) if p.latest == q.latest);
-        if let (Some(p), Some(q), false) = (s_a, s_b, identical) {
-            let na = decode::decode(x.unwrap().pid, &p.latest)
+        if let (Some(ka), Some(kb), Some(p), Some(q), false) = (x, y, s_a, s_b, identical) {
+            let na = decode::decode(ka.pid, &p.latest)
                 .map(|t| t.tree())
                 .unwrap_or_else(|e| Node::Str(format!("decode error: {e}")));
-            let nb = decode::decode(y.unwrap().pid, &q.latest)
+            let nb = decode::decode(kb.pid, &q.latest)
                 .map(|t| t.tree())
                 .unwrap_or_else(|e| Node::Str(format!("decode error: {e}")));
             diff_nodes("", &na, &nb, &mut changes);
@@ -457,7 +466,11 @@ impl DiffReport {
         type Counts = (usize, usize, usize, usize);
         let mut sched: BTreeMap<(Pid, u8, u16), Counts> = BTreeMap::new();
         for s in &self.sections {
-            let k = s.key_a.or(s.key_b).unwrap();
+            // diff() fills at least one key; an entry with neither has
+            // nothing to print.
+            let Some(k) = s.key_a.or(s.key_b) else {
+                continue;
+            };
             if !all && (0x50..=0x6F).contains(&k.table_id) {
                 let e = sched
                     .entry((k.pid, k.table_id, k.ext.unwrap_or(0)))
@@ -474,8 +487,8 @@ impl DiffReport {
                 (Some(x), Some(y)) if x == y => format!("{x}"),
                 (Some(x), Some(y)) => format!("A {x} ~ B {y} ({})", s.pairing),
                 (Some(x), None) => format!("{x} ONLY IN A"),
-                (None, Some(y)) => format!("{y} ONLY IN B"),
-                _ => unreachable!(),
+                // k is key_b here (the let-else above excludes no key).
+                (None, _) => format!("{k} ONLY IN B"),
             };
             let st = if s.identical {
                 "identical".to_string()
