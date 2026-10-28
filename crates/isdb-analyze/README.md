@@ -41,7 +41,7 @@ checks; **info** = observations. Live data never suppresses a finding.
   B32 Part 2 ADTS rule identities and texts, the quality modes
   (`isdbt_mux::adts::b32`) and, in tests, `SilentFrame` — the ADTS header
   parse is re-implemented independently in `aac`; `serde`/`serde_json`
-  for JSON reports, `anyhow`.
+  for JSON reports, `thiserror` for the `edit` / `mutate` errors.
 - Used by: `isdb-cli` (`isdb ts inspect|validate|diff|edit|extract`, used
   on captures, `isdb mux` output and `isdb rx` output alike; usage in
   [docs/analysis.md](https://github.com/a1678991/isdb-rs/blob/main/docs/analysis.md)). It shares no packing code

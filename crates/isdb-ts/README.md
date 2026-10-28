@@ -61,7 +61,8 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
   `packetize::packetize_sections`; `cc::{Counter, CcChecker, Tracker}`.
 - `reader::{SliceReader, StreamReader}` → packets with index, byte offset
   and framing; `stats::Stats`.
-- `Error` (`Truncated`, `Invalid`, `Crc`, `Overflow`, each naming the syntax
+- `Error` (`Truncated`, `Invalid`, `Range`, `Reserved`, `Mismatch`,
+  `NotAccepted`, `Crc`, `Overflow`, each naming the syntax
   element) and `Violation` (clause + message) are re-exported at the root.
 
 Build a PAT, packetise it, read it back and check that decoding is lossless:

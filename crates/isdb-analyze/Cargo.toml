@@ -25,6 +25,9 @@ isdb-text.workspace = true
 isdbt-mux = { version = "0.1.0", path = "../isdbt-mux" }
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
 anyhow.workspace = true
 
 [lints]

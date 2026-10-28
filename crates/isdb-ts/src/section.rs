@@ -120,19 +120,23 @@ pub fn split_long_unchecked(sec: &[u8]) -> Result<(LongHeader, &[u8], u32)> {
     let table_id = r.u8()?;
     let ssi = r.bool()?;
     if !ssi {
-        return Err(Error::invalid(
-            "long section header",
-            "section_syntax_indicator is 0",
-        ));
+        return Err(Error::Mismatch {
+            what: "section_syntax_indicator",
+            value: 0,
+            expected: 1,
+        });
     }
     let private_indicator = r.bool()?;
     let reserved1 = r.read_u8(2)?;
     let section_length = r.read_usize(12)?;
     if section_length < 9 {
-        return Err(Error::invalid(
-            "long section header",
-            format!("section_length {section_length} < 9"),
-        ));
+        // Five header bytes after section_length and the CRC_32.
+        return Err(Error::Range {
+            what: "section_length",
+            value: section_length as u64,
+            min: 9,
+            max: 0xFFF,
+        });
     }
     if sec.len() != 3 + section_length {
         return Err(Error::invalid(
@@ -200,10 +204,11 @@ pub fn split_short(sec: &[u8], has_crc: bool) -> Result<(ShortHeader, &[u8])> {
     let mut r = BitReader::new(sec, "short section header");
     let table_id = r.u8()?;
     if r.bool()? {
-        return Err(Error::invalid(
-            "short section header",
-            "section_syntax_indicator is 1",
-        ));
+        return Err(Error::Mismatch {
+            what: "section_syntax_indicator",
+            value: 1,
+            expected: 0,
+        });
     }
     let private_indicator = r.bool()?;
     let reserved1 = r.read_u8(2)?;
@@ -225,10 +230,13 @@ pub fn split_short(sec: &[u8], has_crc: bool) -> Result<(ShortHeader, &[u8])> {
     };
     if has_crc {
         if section_length < 4 {
-            return Err(Error::invalid(
-                "short section header",
-                "too short for CRC_32",
-            ));
+            // Too short for CRC_32.
+            return Err(Error::Range {
+                what: "section_length",
+                value: section_length as u64,
+                min: 4,
+                max: 0xFFF,
+            });
         }
         let residue = crc32(sec);
         if residue != 0 {
@@ -310,10 +318,10 @@ impl<B: LongBody> Long<B> {
     pub fn decode(sec: &[u8]) -> Result<Self> {
         let (header, body) = split_long(sec)?;
         if !B::accepts_table_id(header.table_id) {
-            return Err(Error::invalid(
-                "table_id",
-                format!("{:#04x} not accepted here", header.table_id),
-            ));
+            return Err(Error::NotAccepted {
+                what: "table_id",
+                value: u64::from(header.table_id),
+            });
         }
         Ok(Self {
             body: B::decode(&header, body)?,
@@ -343,10 +351,10 @@ impl<B: ShortBody> Short<B> {
     pub fn decode(sec: &[u8]) -> Result<Self> {
         let (header, body) = split_short(sec, B::HAS_CRC)?;
         if !B::accepts_table_id(header.table_id) {
-            return Err(Error::invalid(
-                "table_id",
-                format!("{:#04x} not accepted here", header.table_id),
-            ));
+            return Err(Error::NotAccepted {
+                what: "table_id",
+                value: u64::from(header.table_id),
+            });
         }
         Ok(Self {
             body: B::decode(&header, body)?,

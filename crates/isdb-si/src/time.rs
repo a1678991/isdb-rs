@@ -172,14 +172,21 @@ pub fn bcd_to_u8(b: u8) -> Option<u8> {
 
 /// Encode 0..=99 as two 4-bit BCD digits.
 pub fn u8_to_bcd(v: u8) -> Result<u8> {
-    if v > 99 {
-        return Err(Error::Overflow {
-            what: "BCD digit pair",
-            value: u64::from(v),
-            bits: 8,
+    at_most("BCD digit pair", v, 99)?;
+    Ok(((v / 10) << 4) | (v % 10))
+}
+
+/// [`Error::Range`] unless `v <= max`.
+fn at_most(what: &'static str, v: u8, max: u8) -> Result<()> {
+    if v > max {
+        return Err(Error::Range {
+            what,
+            value: v.into(),
+            min: 0,
+            max: max.into(),
         });
     }
-    Ok(((v / 10) << 4) | (v % 10))
+    Ok(())
 }
 
 /// Decode 6 BCD digits `hhmmss` packed in the low 24 bits.
@@ -273,12 +280,9 @@ impl MjdTime {
     /// the Annex C range, or its MJD does not fit the 16-bit field (§5.2.8
     /// Note: "present date can be indicated up to April 22, 2038").
     pub fn from_jst(dt: DateTime) -> Result<Self> {
-        if dt.hour > 23 || dt.minute > 59 || dt.second > 59 {
-            return Err(Error::invalid(
-                "JST_time",
-                format!("time of day {dt} out of range"),
-            ));
-        }
+        at_most("JST_time hour", dt.hour, 23)?;
+        at_most("JST_time minute", dt.minute, 59)?;
+        at_most("JST_time second", dt.second, 59)?;
         let mjd = date_to_mjd(dt.date).ok_or_else(|| {
             Error::invalid("JST_time", format!("date {dt} outside Annex C range"))
         })?;
@@ -386,12 +390,8 @@ impl BcdDuration {
 
     /// Encode `hours:minutes:seconds` (hours 0..=99).
     pub fn from_hms(h: u8, m: u8, s: u8) -> Result<Self> {
-        if m > 59 || s > 59 {
-            return Err(Error::invalid(
-                "duration",
-                format!("{h:02}:{m:02}:{s:02} out of range"),
-            ));
-        }
+        at_most("duration minutes", m, 59)?;
+        at_most("duration seconds", s, 59)?;
         Ok(Self(hms_bcd(h, m, s)?))
     }
 }

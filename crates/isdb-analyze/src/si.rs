@@ -275,12 +275,12 @@ pub fn summarize(cap: &Capture) -> SiSummary {
         match t {
             AnyTable::Nit(n) => {
                 let ext = n.header.table_id_extension;
-                let net = match s
+                let i = match s
                     .networks
-                    .iter_mut()
+                    .iter()
                     .position(|x| x.network_id == ext && x.table_id == n.header.table_id)
                 {
-                    Some(i) => &mut s.networks[i],
+                    Some(i) => i,
                     None => {
                         s.networks.push(Network {
                             table_id: n.header.table_id,
@@ -291,9 +291,10 @@ pub fn summarize(cap: &Capture) -> SiSummary {
                             other_descriptors: vec![],
                             transport_streams: vec![],
                         });
-                        s.networks.last_mut().unwrap()
+                        s.networks.len() - 1
                     }
                 };
+                let net = &mut s.networks[i];
                 for d in &n.body.0.descriptors {
                     match d {
                         Descriptor::NetworkName(x) => net.name = Some(text(&x.name)),

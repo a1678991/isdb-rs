@@ -105,24 +105,27 @@ fn read_header<'a>(
 ) -> Result<(u32, MessageHeaderTail, &'a [u8])> {
     let pd = r.u8()?;
     if pd != PROTOCOL_DISCRIMINATOR {
-        return Err(Error::invalid(
-            what,
-            format!("protocolDiscriminator {pd:#04x}, expected 0x11"),
-        ));
+        return Err(Error::Mismatch {
+            what: "protocolDiscriminator",
+            value: pd.into(),
+            expected: PROTOCOL_DISCRIMINATOR.into(),
+        });
     }
     let ty = r.u8()?;
     if ty != DSMCC_TYPE_UN_DOWNLOAD {
-        return Err(Error::invalid(
-            what,
-            format!("dsmccType {ty:#04x}, expected 0x03"),
-        ));
+        return Err(Error::Mismatch {
+            what: "dsmccType",
+            value: ty.into(),
+            expected: DSMCC_TYPE_UN_DOWNLOAD.into(),
+        });
     }
     let mid = r.u16()?;
     if mid != message_id {
-        return Err(Error::invalid(
-            what,
-            format!("messageId {mid:#06x}, expected {message_id:#06x}"),
-        ));
+        return Err(Error::Mismatch {
+            what: "messageId",
+            value: mid.into(),
+            expected: message_id.into(),
+        });
     }
     let id = r.u32()?;
     let reserved = r.u8()?;
@@ -740,7 +743,12 @@ pub fn module_blocks(
     module: &[u8],
 ) -> Result<Vec<Ddb>> {
     if block_size == 0 {
-        return Err(Error::invalid("blockSize", "0"));
+        return Err(Error::Range {
+            what: "blockSize",
+            value: 0,
+            min: 1,
+            max: u16::MAX.into(),
+        });
     }
     let n = module.len().div_ceil(block_size as usize).max(1);
     // The last block number must fit the 8-bit section_number: n <= 256.

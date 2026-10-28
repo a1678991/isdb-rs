@@ -303,6 +303,7 @@ dependencies = [
  "isdbt-mux",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

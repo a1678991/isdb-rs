@@ -361,7 +361,11 @@ pub fn normalize(n: Node, field: &str) -> Node {
     match n {
         Node::Struct(name, mut fields) => {
             match name.as_str() {
-                "Some" if fields.len() == 1 => return normalize(fields.pop().unwrap().1, field),
+                "Some" if fields.len() == 1 => {
+                    if let Some((_, v)) = fields.pop() {
+                        return normalize(v, field);
+                    }
+                }
                 "AribString" if fields.len() == 1 => {
                     if let Node::List(v) = &fields[0].1
                         && let Some(raw) = bytes(v)
@@ -427,7 +431,7 @@ pub fn normalize(n: Node, field: &str) -> Node {
                 }
                 _ => {}
             }
-            let fields: Vec<(String, Node)> = fields
+            let mut fields: Vec<(String, Node)> = fields
                 .into_iter()
                 .map(|(k, v)| {
                     let ctx = if k.chars().all(|c| c.is_ascii_digit()) {
@@ -442,8 +446,10 @@ pub fn normalize(n: Node, field: &str) -> Node {
             // Collapse single-field tuple wrappers (enum variants / newtypes):
             // `NetworkName(NetworkName { .. })` → `NetworkName { .. }`,
             // `NitBody(NetworkLoops { .. })` → `NitBody { .. }`.
-            if fields.len() == 1 && fields[0].0 == "0" {
-                let inner = fields.into_iter().next().unwrap().1;
+            if fields.len() == 1
+                && fields[0].0 == "0"
+                && let Some((_, inner)) = fields.pop()
+            {
                 return match inner {
                     Node::Struct(_, f) => Node::Struct(name, f),
                     other => Node::Struct(name, vec![("0".into(), other)]),

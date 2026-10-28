@@ -47,7 +47,7 @@ and equation numbers are those of the 05/2006 edition
   length with "ltw_flag 1 piecewise_rate_flag 1 seamless_splice_flag 1
   Reserved 5".
 - Interpretation: a length of 0 cannot hold the mandatory flags byte; the
-  decoder returns `Error::Invalid { what: "adaptation_field_extension_length" }`
+  decoder returns `Error::Range { what: "adaptation_field_extension_length", min: 1, .. }`
   rather than invent flags. Any length ≥ 1 is decoded; bytes after the
   flagged fields are the trailing `reserved` bytes, kept verbatim.
 - Confirmation: structural (status: confirmed by the syntax).

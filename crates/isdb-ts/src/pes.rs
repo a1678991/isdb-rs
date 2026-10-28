@@ -783,10 +783,12 @@ impl PesPacket {
             });
         }
         if b[..3] != START_CODE_PREFIX {
-            return Err(Error::invalid(
-                "packet_start_code_prefix",
-                format!("{:02x?}, shall be 00 00 01", &b[..3]),
-            ));
+            let be24 = |p: [u8; 3]| u64::from(u32::from_be_bytes([0, p[0], p[1], p[2]]));
+            return Err(Error::Mismatch {
+                what: "packet_start_code_prefix",
+                value: be24([b[0], b[1], b[2]]),
+                expected: be24(START_CODE_PREFIX),
+            });
         }
         let stream_id = b[3];
         let len = u16::from_be_bytes([b[4], b[5]]) as usize;

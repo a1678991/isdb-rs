@@ -84,10 +84,35 @@ pub struct Synchronizer {
     pub count: usize,
     /// Fixed format, or `None` to autodetect.
     pub forced: Option<PacketFormat>,
+    /// Format of the last acquisition (kept across a sync loss: the search
+    /// tries it first).
     format: Option<PacketFormat>,
-    synced: bool,
+    /// The format while in sync, `None` while searching.
+    synced: Option<PacketFormat>,
     /// Counters.
     pub stats: ReaderStats,
+}
+
+/// Split the unit of format `f` at the start of `v` into prefix, packet and
+/// trailer; `None` when `v` is shorter than one unit.
+fn split_unit(v: &[u8], f: PacketFormat) -> Option<UnitParts<'_>> {
+    // One arm per format so every split is by a constant.
+    match f {
+        PacketFormat::Ts188 => {
+            let (packet, _) = v.split_first_chunk::<PACKET_SIZE>()?;
+            Some((&[], packet, &[]))
+        }
+        PacketFormat::Ts192 => {
+            let (prefix, rest) = v.split_first_chunk::<4>()?;
+            let (packet, _) = rest.split_first_chunk::<PACKET_SIZE>()?;
+            Some((prefix, packet, &[]))
+        }
+        PacketFormat::Ts204 => {
+            let (packet, rest) = v.split_first_chunk::<PACKET_SIZE>()?;
+            let (trailer, _) = rest.split_first_chunk::<16>()?;
+            Some((&[], packet, trailer))
+        }
+    }
 }
 
 impl Synchronizer {
@@ -97,7 +122,7 @@ impl Synchronizer {
             count: count.max(1),
             forced: None,
             format: None,
-            synced: false,
+            synced: None,
             stats: ReaderStats::default(),
         }
     }
@@ -154,21 +179,30 @@ impl Synchronizer {
     /// Advance `*pos` in `buf` to the start of the next unit and return its
     /// format, or `None` if more data is needed (`!eof`) or the data ended.
     pub fn next_unit(&mut self, buf: &[u8], pos: &mut usize, eof: bool) -> Option<PacketFormat> {
+        self.next_parts(buf, pos, eof).map(|(f, _)| f)
+    }
+
+    /// [`Self::next_unit`], also returning the unit split by [`split_unit`].
+    fn next_parts<'b>(
+        &mut self,
+        buf: &'b [u8],
+        pos: &mut usize,
+        eof: bool,
+    ) -> Option<(PacketFormat, UnitParts<'b>)> {
         loop {
             let v = &buf[*pos..];
-            if self.synced {
-                let f = self.format.expect("synced implies format");
-                if v.len() < f.size() {
+            if let Some(f) = self.synced {
+                let Some(parts) = split_unit(v, f) else {
                     if eof {
                         self.stats.trailing_bytes += v.len() as u64;
                         *pos = buf.len();
                     }
                     return None;
+                };
+                if parts.1[0] == SYNC_BYTE {
+                    return Some((f, parts));
                 }
-                if v[f.sync_offset()] == SYNC_BYTE {
-                    return Some(f);
-                }
-                self.synced = false;
+                self.synced = None;
                 self.stats.sync_losses += 1;
                 *pos += 1;
                 self.stats.skipped_bytes += 1;
@@ -183,7 +217,7 @@ impl Synchronizer {
                     self.stats.skipped_bytes += p as u64;
                     self.stats.acquisitions += 1;
                     self.format = Some(f);
-                    self.synced = true;
+                    self.synced = Some(f);
                 }
                 Err(discard) => {
                     *pos += discard;
@@ -245,18 +279,14 @@ impl<'a> Iterator for SliceReader<'a> {
     type Item = PacketRef<'a>;
 
     fn next(&mut self) -> Option<PacketRef<'a>> {
-        let f = self.sync.next_unit(self.buf, &mut self.pos, true)?;
-        let unit = &self.buf[self.pos..self.pos + f.size()];
-        let off = f.sync_offset();
-        let packet: &[u8; PACKET_SIZE] =
-            unit[off..off + PACKET_SIZE].try_into().expect("188 bytes");
+        let (f, (prefix, packet, trailer)) = self.sync.next_parts(self.buf, &mut self.pos, true)?;
         let r = PacketRef {
             index: self.index,
-            offset: (self.pos + off) as u64,
+            offset: (self.pos + f.sync_offset()) as u64,
             format: f,
             packet,
-            prefix: &unit[..off],
-            trailer: &unit[off + PACKET_SIZE..],
+            prefix,
+            trailer,
         };
         self.pos += f.size();
         self.index += 1;
@@ -274,27 +304,49 @@ pub struct OwnedPacket {
     pub offset: u64,
     /// Framing of the unit.
     pub format: PacketFormat,
-    unit: [u8; MAX_UNIT],
+    packet: [u8; PACKET_SIZE],
+    /// The prefix (192-byte unit) or the trailer (204-byte unit) in its
+    /// first 4 or 16 bytes.
+    extra: [u8; 16],
 }
 
 impl OwnedPacket {
+    fn new(index: u64, offset: u64, format: PacketFormat, unit: UnitParts<'_>) -> Self {
+        let (prefix, packet, trailer) = unit;
+        let mut extra = [0; 16];
+        // split_unit made the prefix 0 or 4 bytes and the trailer 0 or 16,
+        // and a unit has only one of them.
+        let tail = if prefix.is_empty() { trailer } else { prefix };
+        if let Some(d) = extra.get_mut(..tail.len()) {
+            d.copy_from_slice(tail);
+        }
+        Self {
+            index,
+            offset,
+            format,
+            packet: *packet,
+            extra,
+        }
+    }
+
     /// The 188-byte transport packet.
     pub fn packet(&self) -> &[u8; PACKET_SIZE] {
-        let o = self.format.sync_offset();
-        self.unit[o..o + PACKET_SIZE].try_into().expect("188 bytes")
+        &self.packet
     }
 
     /// The 4-byte prefix of a 192-byte unit (empty otherwise).
     pub fn prefix(&self) -> &[u8] {
-        &self.unit[..self.format.sync_offset()]
+        &self.extra[..self.format.sync_offset()]
     }
 
     /// The 16-byte trailer of a 204-byte unit (empty otherwise).
     pub fn trailer(&self) -> &[u8] {
-        let o = self.format.sync_offset() + PACKET_SIZE;
-        &self.unit[o..self.format.size()]
+        &self.extra[..self.format.size() - self.format.sync_offset() - PACKET_SIZE]
     }
 }
+
+/// Prefix, packet and trailer of one unit ([`split_unit`]).
+type UnitParts<'a> = (&'a [u8], &'a [u8; PACKET_SIZE], &'a [u8]);
 
 /// Iterator over the transport packets (H.222.0 Table 2-1) of a [`Read`]
 /// source.
@@ -358,15 +410,13 @@ impl<R: Read> StreamReader<R> {
     pub fn next_packet(&mut self) -> io::Result<Option<OwnedPacket>> {
         loop {
             self.fill()?;
-            if let Some(f) = self.sync.next_unit(&self.buf, &mut self.pos, self.eof) {
-                let mut unit = [0u8; MAX_UNIT];
-                unit[..f.size()].copy_from_slice(&self.buf[self.pos..self.pos + f.size()]);
-                let p = OwnedPacket {
-                    index: self.index,
-                    offset: self.base + (self.pos + f.sync_offset()) as u64,
-                    format: f,
+            if let Some((f, unit)) = self.sync.next_parts(&self.buf, &mut self.pos, self.eof) {
+                let p = OwnedPacket::new(
+                    self.index,
+                    self.base + (self.pos + f.sync_offset()) as u64,
+                    f,
                     unit,
-                };
+                );
                 self.pos += f.size();
                 self.index += 1;
                 return Ok(Some(p));
@@ -437,6 +487,12 @@ mod tests {
             assert_eq!(pkts[0].offset, 5 + fmt.sync_offset() as u64);
             assert_eq!(pkts[3].packet[4], 3);
             assert_eq!(pkts[3].index, 3);
+            let (prefix, trailer): (&[u8], &[u8]) = match fmt {
+                PacketFormat::Ts192 => (&[0, 0, 0, 3], &[]),
+                PacketFormat::Ts204 => (&[], &[0xA5; 16]),
+                _ => (&[], &[]),
+            };
+            assert_eq!((pkts[3].prefix, pkts[3].trailer), (prefix, trailer));
             let mut sr = StreamReader::new(&data[..]);
             let mut n = 0;
             while let Some(p) = sr.next_packet().unwrap() {

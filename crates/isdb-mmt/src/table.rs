@@ -310,8 +310,10 @@ pub struct SectionHeader {
     pub last_section_number: u8,
 }
 
-/// Why a section was not decoded.
+/// Why a section was not decoded (§7.2.3.2 section envelope and CRC-32,
+/// the table syntax of §7.3.3 / §5.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SectionError {
     /// Shorter than its header or its `section_length`.
     Truncated,
@@ -320,6 +322,18 @@ pub enum SectionError {
     /// The body does not follow the table's structure.
     Malformed,
 }
+
+impl std::fmt::Display for SectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SectionError::Truncated => "section: truncated",
+            SectionError::Crc => "section: CRC_32 mismatch",
+            SectionError::Malformed => "section: body does not follow the table syntax",
+        })
+    }
+}
+
+impl std::error::Error for SectionError {}
 
 /// Check a long-form section (CRC over the whole section) and read its
 /// header; returns the header and the bytes between the header and the

@@ -13,17 +13,118 @@
 //! (larger replacements, inserted sections), null packets are used as
 //! extra slots according to [`NullSlots`].
 
-use crate::mutate::{Expr, Target};
+use crate::mutate::{Expr, MutateError, Target};
 use crate::scan;
 use crate::timebase::Timebase;
-use anyhow::{Context, Result, anyhow, bail};
 use isdb_ts::Pid;
 use isdb_ts::cc::Counter;
 use isdb_ts::demux::{Assembled, SectionAssembler};
-use isdb_ts::packet::{PACKET_SIZE, PAYLOAD_CAPACITY, Packet, View};
+use isdb_ts::packet::{NULL_PACKET, PACKET_SIZE, PAYLOAD_CAPACITY, Packet, View};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Why an edit could not be made (the operations of [`EditOp`], the
+/// section fixtures of [`sections_from_hex`] / [`load_sections`]).
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum EditError {
+    /// A selector not of the form `PID:TID[:EXT[:SN]]`.
+    #[error("selector as PID:TID[:EXT[:SN]]: {input:?}")]
+    Selector {
+        /// The text given.
+        input: String,
+    },
+    /// An expression, or a value in one, that does not parse or apply
+    /// ([`crate::mutate`]).
+    #[error(transparent)]
+    Mutate(#[from] MutateError),
+    /// A mutation refused on one section.
+    #[error("on pid {pid:#06x} packet {packet}")]
+    Section {
+        /// The PID carrying the section.
+        pid: Pid,
+        /// Index of the section's first packet.
+        packet: u64,
+        /// Why.
+        #[source]
+        source: MutateError,
+    },
+    /// Section rewriting on a PID that carries PCRs (H.222.0 §2.4.3.5) would
+    /// remove them.
+    #[error("PID {pid:#06x} carries PCRs; section rewriting would remove them")]
+    CarriesPcr {
+        /// The PID.
+        pid: Pid,
+    },
+    /// A replacement that is not one complete section (H.222.0 §2.4.4.10
+    /// section_length).
+    #[error("replacement is not one complete section ({len} bytes)")]
+    NotOneSection {
+        /// Its length.
+        len: usize,
+    },
+    /// `replace` with nothing to replace.
+    #[error("no section matches {sel:?}; use insert to add a new table")]
+    NoSection {
+        /// The selector.
+        sel: Selector,
+    },
+    /// A mutation whose table is on no PID of the stream.
+    #[error("no section matches {table}")]
+    NoTable {
+        /// The table name of the expression.
+        table: String,
+    },
+    /// An insertion interval that is zero or negative.
+    #[error("interval must be positive (got {interval_s} s)")]
+    Interval {
+        /// The interval given, seconds.
+        interval_s: f64,
+    },
+    /// Insertions need a time base: PCRs (H.222.0 §2.4.2.2) or a nominal
+    /// rate.
+    #[error("no PCR in the stream: give a nominal bit rate to time insertions")]
+    NoTimebase,
+    /// A line of a hex fixture that does not read.
+    #[error("line {line}: {problem}")]
+    Fixture {
+        /// 1-based line number.
+        line: usize,
+        /// What is wrong with it.
+        problem: &'static str,
+    },
+    /// A section file without a section matching the selector.
+    #[error("no section matching {sel:?} in {}", path.display())]
+    NoSectionIn {
+        /// The selector.
+        sel: Selector,
+        /// The file.
+        path: PathBuf,
+    },
+    /// Reading or writing a file.
+    #[error("{op} {}", path.display())]
+    Io {
+        /// `"read"` or `"write"`.
+        op: &'static str,
+        /// The file.
+        path: PathBuf,
+        /// The OS error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// A packet the TS codec would not build.
+    #[error(transparent)]
+    Codec(#[from] isdb_ts::Error),
+}
+
+/// Result alias using [`EditError`].
+pub type Result<T, E = EditError> = std::result::Result<T, E>;
+
+fn io_err(op: &'static str, path: &Path) -> impl FnOnce(std::io::Error) -> EditError {
+    let path = path.to_path_buf();
+    move |source| EditError::Io { op, path, source }
+}
 
 /// A TS packet.
 pub type Pkt = [u8; PACKET_SIZE];
@@ -61,7 +162,9 @@ impl Selector {
     pub fn parse(s: &str) -> Result<Self> {
         let p: Vec<&str> = s.split(':').collect();
         if p.len() < 2 || p.len() > 4 {
-            bail!("selector as PID:TID[:EXT[:SN]]: {s:?}");
+            return Err(EditError::Selector {
+                input: s.to_string(),
+            });
         }
         use crate::mutate::field;
         Ok(Selector {
@@ -213,7 +316,7 @@ fn pid_of(p: &Pkt) -> Pid {
 
 /// Replace every packet of `pids` with a null packet; returns the count.
 pub fn null_pids(pkts: &mut [Pkt], pids: &[Pid]) -> usize {
-    let null = Packet::null().encode().expect("null packet encodes");
+    let null = NULL_PACKET;
     let set: BTreeSet<Pid> = pids.iter().copied().collect();
     let mut n = 0;
     for p in pkts.iter_mut() {
@@ -266,7 +369,7 @@ pub fn rewrite_pid(
         }
         if let Ok(v) = View::parse(p) {
             if v.pcr().is_some() {
-                bail!("PID {pid:#06x} carries PCRs; section rewriting would remove them");
+                return Err(EditError::CarriesPcr { pid });
             }
             if p[1] & 0x80 == 0 && first_cc.is_none() {
                 first_cc = Some(v.header.continuity_counter);
@@ -293,10 +396,7 @@ pub fn rewrite_pid(
                 }
                 for b in v {
                     if isdb_ts::section::total_len(&b) != Some(b.len()) {
-                        bail!(
-                            "replacement is not one complete section ({} bytes)",
-                            b.len()
-                        );
+                        return Err(EditError::NotOneSection { len: b.len() });
                     }
                     reqs.push(Request {
                         earliest: o.start,
@@ -388,11 +488,13 @@ pub fn rewrite_pid(
             pusi = true;
             payload.push(0);
         }
-        while fill
-            && payload.len() < PAYLOAD_CAPACITY
-            && q.front().is_some_and(|r| r.earliest <= idx)
-        {
-            let r = q.pop_front().unwrap();
+        while fill && payload.len() < PAYLOAD_CAPACITY {
+            if !q.front().is_some_and(|r| r.earliest <= idx) {
+                break;
+            }
+            let Some(r) = q.pop_front() else {
+                break;
+            };
             rep.max_delay_packets = rep.max_delay_packets.max(idx - r.earliest);
             let room = PAYLOAD_CAPACITY - payload.len();
             if r.bytes.len() <= room {
@@ -405,10 +507,7 @@ pub fn rewrite_pid(
             }
         }
         payload.resize(PAYLOAD_CAPACITY, 0xFF); // §2.4.4 stuffing after a section end
-        let p = Packet::with_payload(pid, pusi, cc.next(true), &payload)
-            .map_err(|e| anyhow!("{e}"))?
-            .encode()
-            .map_err(|e| anyhow!("{e}"))?;
+        let p = Packet::with_payload(pid, pusi, cc.next(true), &payload)?.encode()?;
         out.push((slot, p));
         used.insert(slot);
         if !orig {
@@ -417,7 +516,7 @@ pub fn rewrite_pid(
     }
     rep.sections_out = sent;
     rep.dropped = total_reqs - sent;
-    let null = Packet::null().encode().expect("null packet encodes");
+    let null = NULL_PACKET;
     for &i in &orig_set {
         if !used.contains(&i) {
             pkts[i] = null;
@@ -565,7 +664,7 @@ pub fn apply(pkts: &mut [Pkt], ops: &[EditOp], opts: &EditOptions) -> Result<Vec
                     .map(|o| o.bytes[6])
                     .collect();
                 if !occ.iter().any(|o| sel.matches(sel.pid, &o.bytes)) {
-                    bail!("no section matches {sel:?}; use insert to add a new table");
+                    return Err(EditError::NoSection { sel: *sel });
                 }
                 let s = *sel;
                 r.rewrites.push(rewrite_pid(
@@ -586,7 +685,9 @@ pub fn apply(pkts: &mut [Pkt], ops: &[EditOp], opts: &EditOptions) -> Result<Vec
                 offset_s,
             } => {
                 if *interval_s <= 0.0 {
-                    bail!("interval must be positive");
+                    return Err(EditError::Interval {
+                        interval_s: *interval_s,
+                    });
                 }
                 let cap = scan::scan_packets(
                     pkts,
@@ -597,7 +698,7 @@ pub fn apply(pkts: &mut [Pkt], ops: &[EditOp], opts: &EditOptions) -> Result<Vec
                 );
                 let tb: Timebase = crate::inspect::timebase(&cap, opts.nominal_bps);
                 if !tb.known() {
-                    bail!("no PCR in the stream: give a nominal bit rate to time insertions");
+                    return Err(EditError::NoTimebase);
                 }
                 let n = pkts.len() as u64;
                 let end = tb.time(n.saturating_sub(1)).unwrap_or(0.0);
@@ -626,7 +727,9 @@ pub fn apply(pkts: &mut [Pkt], ops: &[EditOp], opts: &EditOptions) -> Result<Vec
                 let t = expr.target()?;
                 let pids = target_pids(pkts, &t);
                 if pids.is_empty() {
-                    bail!("no section matches {}", expr.table);
+                    return Err(EditError::NoTable {
+                        table: expr.table.clone(),
+                    });
                 }
                 for pid in pids {
                     let mut cache: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
@@ -640,8 +743,13 @@ pub fn apply(pkts: &mut [Pkt], ops: &[EditOp], opts: &EditOptions) -> Result<Vec
                             if let Some(v) = cache.get(&o.bytes) {
                                 return Ok(Some(vec![v.clone()]));
                             }
-                            let v = crate::mutate::apply_to_section(expr, pid, &o.bytes)
-                                .with_context(|| format!("on pid {pid:#06x} packet {}", o.start))?;
+                            let v = crate::mutate::apply_to_section(expr, pid, &o.bytes).map_err(
+                                |source| EditError::Section {
+                                    pid,
+                                    packet: o.start,
+                                    source,
+                                },
+                            )?;
                             cache.insert(o.bytes.clone(), v.clone());
                             Ok(Some(vec![v]))
                         },
@@ -683,14 +791,18 @@ pub fn sections_from_hex(text: &str, sel: Option<&Selector>) -> Result<Vec<(Pid,
             continue;
         }
         let t: Vec<&str> = l.split_whitespace().collect();
-        let (pid, hex) = match t.len() {
-            1 => (sel.map_or(Pid::PAT, |s| s.pid), t[0]),
-            3 => (crate::mutate::pid(t[0])?, t[2]),
-            _ => bail!("line {}: expected `pid tid hex` or `hex`", n + 1),
+        let line = |problem| EditError::Fixture {
+            line: n + 1,
+            problem,
         };
-        let b = crate::tree::unhex(hex).ok_or_else(|| anyhow!("line {}: bad hex", n + 1))?;
+        let (pid, hex) = match t[..] {
+            [hex] => (sel.map_or(Pid::PAT, |s| s.pid), hex),
+            [pid, _, hex] => (crate::mutate::pid(pid)?, hex),
+            _ => return Err(line("expected `pid tid hex` or `hex`")),
+        };
+        let b = crate::tree::unhex(hex).ok_or_else(|| line("bad hex"))?;
         if isdb_ts::section::total_len(&b) != Some(b.len()) {
-            bail!("line {}: not one complete section", n + 1);
+            return Err(line("not one complete section"));
         }
         if sel.is_none_or(|s| s.matches(if t.len() == 1 { s.pid } else { pid }, &b)) {
             v.push((pid, b));
@@ -713,18 +825,21 @@ pub fn load_sections(path: &Path, sel: &Selector) -> Result<Vec<Vec<u8>>> {
                 skip_packet_checks: true,
                 ..Default::default()
             },
-        )?;
+        )
+        .map_err(io_err("read", path))?;
         sections_from_capture(&cap, sel)
     } else {
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let text = std::fs::read_to_string(path).map_err(io_err("read", path))?;
         sections_from_hex(&text, Some(sel))?
             .into_iter()
             .map(|x| x.1)
             .collect()
     };
     if v.is_empty() {
-        bail!("no section matching {sel:?} in {}", path.display());
+        return Err(EditError::NoSectionIn {
+            sel: *sel,
+            path: path.to_path_buf(),
+        });
     }
     Ok(v)
 }
@@ -771,5 +886,5 @@ pub fn write_packets(path: &Path, pkts: &[Pkt]) -> Result<()> {
     for p in pkts {
         buf.extend_from_slice(p);
     }
-    std::fs::write(path, buf).with_context(|| format!("write {}", path.display()))
+    std::fs::write(path, buf).map_err(io_err("write", path))
 }

@@ -51,6 +51,26 @@ fn is_typed_table_id(table_id: u8) -> bool {
     )
 }
 
+/// The typed decoder of `table_id` applied to `sec`; `None` when this
+/// crate has none (the table_ids of [`is_typed_table_id`] all have one).
+fn decode_typed(table_id: u8, sec: &[u8]) -> Option<Result<AnyTable>> {
+    Some(match table_id {
+        0x40 | 0x41 => Nit::decode(sec).map(AnyTable::Nit),
+        0x4A => Bat::decode(sec).map(AnyTable::Bat),
+        0x42 | 0x46 => Sdt::decode(sec).map(AnyTable::Sdt),
+        0x4E..=0x6F => Eit::decode(sec).map(AnyTable::Eit),
+        0x70 => Tdt::decode(sec).map(AnyTable::Tdt),
+        0x73 => Tot::decode(sec).map(AnyTable::Tot),
+        0x71 => Rst::decode(sec).map(AnyTable::Rst),
+        0x72 => StuffingSection::decode(sec).map(AnyTable::St),
+        0xC2 => Pcat::decode(sec).map(AnyTable::Pcat),
+        0xC4 => Bit::decode(sec).map(AnyTable::Bit),
+        0xC5 | 0xC6 => Nbit::decode(sec).map(AnyTable::Nbit),
+        0xC7 => Ldt::decode(sec).map(AnyTable::Ldt),
+        _ => return None,
+    })
+}
+
 /// A section whose (PID, table_id) has no typed decoder in this crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSection {
@@ -109,10 +129,12 @@ impl AnyTable {
             have: 0,
         })?;
         if table_id == 0xFF {
-            return Err(Error::invalid(
-                "table_id",
-                "0xFF is stuffing, not a table (B10 Part 2 §5.1.2)",
-            ));
+            // Stuffing, not a table (B10 Part 2 §5.1.2; H.222.0 Table 2-31
+            // "forbidden").
+            return Err(Error::Reserved {
+                what: "table_id",
+                value: 0xFF,
+            });
         }
         let total = total_len(sec).ok_or(Error::Truncated {
             what: "section header",
@@ -125,7 +147,10 @@ impl AnyTable {
                 format!("buffer is {} bytes, section_length says {total}", sec.len()),
             ));
         }
-        if !table_allowed_on_pid(table_id, pid) {
+        let typed = table_allowed_on_pid(table_id, pid)
+            .then(|| decode_typed(table_id, sec))
+            .flatten();
+        let Some(typed) = typed else {
             if is_typed_table_id(table_id) {
                 debug!(
                     pid = %pid,
@@ -144,22 +169,8 @@ impl AnyTable {
                 long_header,
                 bytes: sec.to_vec(),
             }));
-        }
-        Ok(match table_id {
-            0x40 | 0x41 => AnyTable::Nit(Nit::decode(sec)?),
-            0x4A => AnyTable::Bat(Bat::decode(sec)?),
-            0x42 | 0x46 => AnyTable::Sdt(Sdt::decode(sec)?),
-            0x4E..=0x6F => AnyTable::Eit(Eit::decode(sec)?),
-            0x70 => AnyTable::Tdt(Tdt::decode(sec)?),
-            0x73 => AnyTable::Tot(Tot::decode(sec)?),
-            0x71 => AnyTable::Rst(Rst::decode(sec)?),
-            0x72 => AnyTable::St(StuffingSection::decode(sec)?),
-            0xC2 => AnyTable::Pcat(Pcat::decode(sec)?),
-            0xC4 => AnyTable::Bit(Bit::decode(sec)?),
-            0xC5 | 0xC6 => AnyTable::Nbit(Nbit::decode(sec)?),
-            0xC7 => AnyTable::Ldt(Ldt::decode(sec)?),
-            _ => unreachable!("table_allowed_on_pid covers only typed table_ids"),
-        })
+        };
+        typed
     }
 
     /// Encode back to complete section bytes (lengths and CRC_32
