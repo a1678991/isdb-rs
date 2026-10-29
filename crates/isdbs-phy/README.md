@@ -187,6 +187,17 @@ with the receiver and runs several blocks' front ends at once
   TSs) and TC8PSK 2/3 × 44 + BPSK 1/2 × 4 (two TSs) at 12 dB; the CS
   layout (QPSK 3/4 × 48, one TS), QPSK 7/8 × 40 + QPSK 1/2 × 8 (three
   TSs) and QPSK 5/6 × 30 + QPSK 2/3 × 18 (two TSs) at 8 dB.
+- Sample-domain loopback (`tests/loopback.rs`
+  `sample_domain_bs_layout_at_40_msps`): the BS layout, one null
+  superframe, three of distinct packets and one null frame through
+  `Transmitter`, `isdb_frontend::shape::Shaper` at 40 Msps (RMS 0.3 of
+  full scale) and `frontend::symbols` (the survey's carrier, the trim
+  searched on the bursts), then `receive` and `ts::decode_all`: the three
+  data superframes byte-exact per TS_ID, none uncorrectable, the trim
+  found within ±0.05 symbol of 0 (measured: 0.000, main MER 44.6 dB). The
+  front end's loops settle in the first symbols of the lead superframe,
+  so its first slots (17 of 384) are uncorrectable: the reason a
+  transmission starts with a null superframe.
 - Opt-in recordings, main signal (`ISDB_RS_ISDBS_TS_IQ`): no
   uncorrectable RS word, sync byte on every packet, continuity counters
   without a gap per TS_ID and PID.

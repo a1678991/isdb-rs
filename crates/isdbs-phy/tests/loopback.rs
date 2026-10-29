@@ -1,13 +1,19 @@
 //! Symbol-domain loopback: TS packets per TS → `tx::Transmitter` → carrier
 //! offset, phase and AWGN → `receive` → `ts::decode_all` → the same
 //! packets per TS_ID, byte-exact, under the TMCC sent and in the slots the
-//! transmitter reported.
+//! transmitter reported. Sample domain: the same through the transmit
+//! pulse shaper (`isdb_frontend::shape::Shaper`) at 40 Msps and the
+//! receive front end (`frontend::symbols`, carrier and trim found on the
+//! signal).
 
+use isdb_frontend::shape::Shaper;
 use isdbs_core::combination::Combination;
+use isdbs_core::frame::FRAME_SYMBOLS;
 use isdbs_core::tmcc::TmccInfo;
 use isdbs_phy::demod::DemodOptions;
 use isdbs_phy::tx::{NULL_PACKET, Packet, SUPERFRAME_SYMBOLS, Transmitter};
-use isdbs_phy::{Cplx, RxOptions, receive, ts};
+use isdbs_phy::{Cplx, RxOptions, frontend, receive, ts};
+use num_complex::Complex32;
 
 /// Deterministic packet whose payload encodes (relative TS, superframe,
 /// index); PID 0x0100.
@@ -224,5 +230,128 @@ fn qpsk_5_6_and_2_3() {
         &[(0x4010, 25), (0x4011, 12)],
         8.0,
         5,
+    );
+}
+
+/// The sample domain at 40 Msps (1.386 samples per symbol), the BS layout:
+/// one null superframe, three of distinct packets and one null frame (so
+/// the filter tails do not cut the last superframe) → `Shaper` (α = 0.35)
+/// at RMS 0.3 of the front end's full scale (10.5 dB below it) →
+/// `frontend::symbols` (the survey's carrier, the trim measured on the
+/// bursts) → `receive` → `ts::decode_all`: every packet byte-exact per
+/// TS_ID, none uncorrectable, and the trim found within ±0.05 symbol of 0
+/// (the timing detector is unbiased on a clean pulse, `isdb-frontend`
+/// README "The timing trim").
+#[test]
+fn sample_domain_bs_layout_at_40_msps() {
+    let ts_ids = [(0x4010, 16), (0x4011, 16), (0x4012, 16)];
+    let info = TmccInfo::assign(&[(Combination::Tc8psk2_3, 48)], &ts_ids).unwrap();
+    let mut tx = Transmitter::new(info.clone()).unwrap();
+    let sys = frontend::system();
+    let fs = 40e6;
+    let mut sh = Shaper::new(fs, sys.symbol_rate_hz, sys.roll_off).unwrap();
+    let mut x = Vec::new();
+    let push = |sh: &mut Shaper, z: &[Cplx], x: &mut Vec<Complex32>| {
+        // unit-modulus f64 symbols rounded to the shaper's f32 on purpose
+        #[allow(clippy::cast_possible_truncation)]
+        let v: Vec<Complex32> = z
+            .iter()
+            .map(|c| Complex32::new(c.re as f32, c.im as f32))
+            .collect();
+        sh.push(&v, x);
+    };
+    push(&mut sh, &tx.null_superframe().symbols, &mut x);
+    let mut sent: Vec<Vec<Vec<Packet>>> = Vec::new();
+    for sf in 0..DATA_SUPERFRAMES {
+        let per_ts: Vec<Vec<Packet>> = (0..tx.ts_count())
+            .map(|r| {
+                let n = u32::try_from(tx.packets_per_superframe(r)).unwrap();
+                (0..n)
+                    .map(|i| packet(u8::try_from(r).unwrap(), sf, i))
+                    .collect()
+            })
+            .collect();
+        let refs: Vec<&[Packet]> = per_ts.iter().map(Vec::as_slice).collect();
+        push(&mut sh, &tx.superframe(&refs).unwrap().symbols, &mut x);
+        sent.push(per_ts);
+    }
+    push(
+        &mut sh,
+        &tx.null_superframe().symbols[..FRAME_SYMBOLS],
+        &mut x,
+    );
+    sh.finish(&mut x);
+    let symbols = 4 * SUPERFRAME_SYMBOLS + FRAME_SYMBOLS + 2 * sh.span() - 1;
+    assert_eq!(x.len() as u64, sh.samples_for(symbols as u64));
+    for v in &mut x {
+        *v *= 0.3;
+    }
+    let t = std::time::Instant::now();
+    let s = frontend::symbols(&x, fs, None).unwrap();
+    let front_s = t.elapsed().as_secs_f64();
+    assert!(
+        s.trim.abs() <= 0.05,
+        "trim {:+.3} symbol on a clean pulse",
+        s.trim
+    );
+    let r = receive(&s.z, &RxOptions::default());
+    assert_eq!(r.slips, 0);
+    let d = ts::decode_all(&r, &DemodOptions::default());
+    // The front end's loops settle during the first symbols of the lead
+    // superframe (its first frame starts at the filters' delay, ≈ 28
+    // symbols in): its first slots, spread over its 8 frames by the
+    // interleaver, may be uncorrectable, and the whole superframe may be
+    // missed. The data superframes are always whole and intact.
+    assert!(
+        (3..=4).contains(&d.len()),
+        "{} superframes decoded",
+        d.len()
+    );
+    let data = &d[d.len() - 3..];
+    let lead_lost = if d.len() == 4 {
+        assert!(
+            d[0].packets
+                .iter()
+                .all(|p| p.bytes == NULL_PACKET || p.corrected.is_none()),
+            "the lead superframe carries null packets"
+        );
+        d[0].packets
+            .iter()
+            .filter(|p| p.corrected.is_none())
+            .count()
+    } else {
+        0
+    };
+    let mut corrected = 0;
+    for (k, dsf) in data.iter().enumerate() {
+        assert_eq!(dsf.info, info, "data superframe {k}: TMCC");
+        for p in &dsf.packets {
+            corrected += p.corrected.unwrap_or_else(|| {
+                panic!(
+                    "data superframe {k}: frame {} slot {} uncorrectable",
+                    p.frame, p.slot
+                )
+            });
+        }
+        for (rel, &(id, _)) in ts_ids.iter().enumerate() {
+            let back: Vec<Packet> = dsf
+                .packets
+                .iter()
+                .filter(|p| p.ts_id == id)
+                .map(|p| p.bytes)
+                .collect();
+            assert!(
+                back == sent[k][rel],
+                "data superframe {k}, TS_ID {id:#06x}: packets differ"
+            );
+        }
+    }
+    let mer = data.iter().map(|d| d.mer_db).sum::<f64>() / 3.0;
+    eprintln!(
+        "40 Msps, BS layout: trim {:+.4} symbol, carrier {:+.0} Hz, symbol rate {:.1} Bd; main MER {mer:.1} dB; {} superframes decoded (lead: {lead_lost} uncorrectable), data RS-corrected bytes {corrected}; front end and trim search {front_s:.2} s",
+        s.trim,
+        s.carrier_offset_hz,
+        s.symbol_rate_hz,
+        d.len(),
     );
 }
