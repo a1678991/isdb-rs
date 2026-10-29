@@ -269,7 +269,10 @@ are in `specs/pdf/` (gitignored).
 Collected on 2026-10-20 for the ISDB-S and ISDB-S3 receivers. BO.1408-1
 and the ordinance's Chapter 5 §2 are implemented on the receive side, to
 TS packets per TS_ID (`isdb-fec`, `isdbs-core`, `isdbs-phy`, `isdb rx
---system isdbs`; coverage in §2.7). ARIB STD-B44, the TLV layer of
+--system isdbs`), and on the transmit side, from TS packets per TS to
+root-raised-cosine IQ (`isdbs-core` `TmccInfo::assign`, `isdbs-phy`
+`tx`, `isdb-frontend` `shape`, `isdb tx --system isdbs`); coverage in
+§2.7. ARIB STD-B44, the TLV layer of
 B32 Part 3 and STD-B60 are implemented on the receive side, to TLV
 streams per stream id with MMTP and MMT-SI identification (`isdb-fec`,
 `isdbs3-core`, `isdbs3-phy`, `isdb-tlv`, `isdb rx --system isdbs3`;
@@ -506,9 +509,15 @@ the CA descriptors. B19 is unrelated (§1.1).
 
 ### 2.7 ITU-R BO.1408-1 and MIC Ordinance No. 87, Chapter 5 §2 (ISDB-S)
 
-Reception to TS packets per TS_ID (`isdb rx --system isdbs`). The
-transmitter (Phase 4) is not implemented, so there is no loopback (P)
-coverage of the whole chain yet; the per-stage round trips are P.
+Reception to TS packets per TS_ID (`isdb rx --system isdbs`) and
+transmission from them (`isdb tx --system isdbs`, to IQ files; `isdb
+loopback --system isdbs`). The per-stage round trips are P, and so is the
+whole chain: TS packets → `isdbs_phy::tx::Transmitter` → `receive` +
+`ts::decode_all`, byte-exact per TS_ID, in the symbol domain on five
+combination mixes and in the sample domain through the pulse shaper and
+the receive front end. There is no independent ISDB-S transmitter to
+compare with; the receiver the loopback checks against is the one the
+live transponders confirmed (LS).
 
 | Clause / table | Implementation | Tests | Status |
 |---|---|---|---|
@@ -527,6 +536,9 @@ coverage of the whole chain yet; the per-stage round trips are P.
 | §9, Figs. 14–15 (TC8PSK: B1 uncoded, B0 coded; B1 the higher bit) | `isdbs_phy::demod` (set-partition metrics) | `prop_frame_round_trip`, `tc8psk_noise_and_wrong_reading` | S, P, LS |
 | §2, Fig. 2–3, §5 (sync byte not sent, restored; RS(204,188) per slot) | `isdbs_core::mainsig::codewords`, `isdbs_phy::ts` | `prop_superframe_round_trip`, `isdbs_ts_recordings` | P, LS (311 520 packets of 19 transponders, 0 uncorrectable) |
 | Art. 52 (28.860 Mbaud), annexed table 47 (α = 0.35) | `isdb_iq::survey::KNOWN_SYSTEMS`, `isdb-frontend` | the front-end tests | LS |
+| BO.1408-1 Annex 1 §9, Art. 52(5), annexed table 47 (transmit: square-root raised-cosine filter, α = 0.35, ahead of the modulator) | `isdb_frontend::shape::Shaper` (the receive matched filter's pulse `tables::rrc`, cut at ±16 symbols, 1 024 phases, any rate ≥ (1 + α)·R) | `prop_chunking_is_invisible`, `impulse_response_is_the_delayed_pulse`, `shaped_signal_is_isi_free` (MER 57.6 dB at 40 Msps through an ideal matched filter), `output_rms_is_one`, `front_end_recovers_the_shaped_symbols`, `sample_domain_bs_layout_at_40_msps` | S, P (the cascade with the receive front end; no on-air check, the transmitter not being radiated) |
+| BO.1408-1 Fig. 1 (the transmitter: TS per TS_ID → RS(204,188) → slots, energy dispersal, interleaving → inner code, mapping → frame with header and bursts) | `isdbs_phy::tx::{Transmitter, frame_symbols}`, `isdbs_core::mainsig::frame_bytes`, `isdbs_phy::demod::encode_frame_with_state`; CLI `txs.rs` | `frame_symbols_follows_table_45`, `slot_tables`, `null_superframe_decodes_to_null_packets`, `errors`, the five symbol-domain loopbacks of `tests/loopback.rs`, `sample_domain_bs_layout_at_40_msps`, `isdbs_tx_then_rx_reproduces_every_ts_byte_exact`, `isdbs_loopback_passes_with_impairments` | P (TX → RX inverse, byte-exact per TS_ID; against the LS-confirmed receiver) |
+| §3.2, §6.1, Figs. 7–10 (TMCC information built from a slot layout: combinations sorted by efficiency, dummy entries, relative TS of each slot, TS_IDs) | `isdbs_core::tmcc::TmccInfo::assign`; CLI `--combination`, `--ts` | `assign_reproduces_the_live_words`, `assign_mixed_layout`, `assign_errors`, `prop_assign_matches_slot_tables`, `layouts_and_their_errors` | S, P (the BS and CS layouts reproduce a live transponder's TMCC word but for its order of change / uplink information; uplink and reserved bits as observed on BS, SPEC-NOTES "tmcc-other") |
 | §5, Fig. 6, annexed table 48 別記 2 (inter-frame interleaving, depth 8) | `isdbs_core::mainsig::{interleave, deinterleave}` | `spec_fig_6_interleaver`, `prop_interleave_round_trip` | S, P, LS |
 | §6.1.3, Fig. 10 (relative TS ID → TS_ID; one TS per TS_ID) | `isdbs_phy::ts::Packet::ts_id`, `isdb rx --out …{ts_id}…` | `outputs_split_by_ts_id`, the acceptance tool | LS (every PAT transport_stream_id equals the TMCC TS_ID) |
 

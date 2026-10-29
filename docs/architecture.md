@@ -51,10 +51,10 @@ graph TD
   hrf[isdb-hackrf<br/>libhackrf FFI]
   iio[isdb-iio<br/>libiio FFI]
   iq[isdb-iq<br/>IQ recordings, SigMF, survey]
-  fe[isdb-frontend<br/>IQ → symbols, FPGA model]
+  fe[isdb-frontend<br/>IQ ⇄ symbols, FPGA model, pulse shaper]
   sfec[isdb-fec<br/>shared RS, K=7 code, PRBS]
   score[isdbs-core<br/>ISDB-S parameters, TMCC]
-  sphy[isdbs-phy<br/>ISDB-S frame sync, carrier, TMCC]
+  sphy[isdbs-phy<br/>ISDB-S RX and TX on the symbol side]
   cli[isdb-cli<br/>the isdb binary]
 
   si --> ts
@@ -115,16 +115,21 @@ survey of a single-carrier recording, used by `isdb capture` and `isdb iq
 survey`; the radio's raw captures (`Backend::capture`) reach it only
 through the CLI. `isdb-frontend` is the first stage of the satellite
 receivers (IQ to symbols): a bit-exact fixed-point model whose FPGA
-implementation lives in `fpga/` (Amaranth, outside cargo). `isdb-radio`
+implementation lives in `fpga/` (Amaranth, outside cargo); its
+`shape::Shaper` is the last stage of the ISDB-S transmitter, the inverse
+(symbols to root-raised-cosine IQ at any rate ≥ (1 + α)·R). `isdb-radio`
 depends on it for the stages a radio can run itself (`Offload`,
 `Backend::capture_symbols`: the FPGA's discovery and configuration
 words), and `isdb symbols` picks the FPGA or the CPU at run time.
 `isdb-fec` holds the channel-coding blocks both systems use (the RS(255,239)
 shortened codes, the K = 7 code with its Viterbi decoder, the PRBS
 generators); `isdbt-fec` re-exports them under its old paths.
-`isdbs-core` (ISDB-S parameters and the TMCC codec) and `isdbs-phy`
-(frame sync, carrier recovery and TMCC decoding on the front end's
-symbols) are the ISDB-S receiver so far; `isdb iq tmcc` drives them. The PHY crates carry TS packets
+`isdbs-core` (ISDB-S parameters, the TMCC codec and its builder from a
+slot layout) and `isdbs-phy` (frame sync, carrier recovery, TMCC and
+main-signal decoding on the front end's symbols, and the transmitter from
+TS packets to superframe symbols) are the ISDB-S receiver and
+transmitter; `isdb iq tmcc`, `isdb rx`, `isdb tx` and `isdb loopback`
+(`--system isdbs`) drive them. The PHY crates carry TS packets
 as plain `[u8; 188]` and do not depend on `isdb-ts`. `isdb-analyze` uses
 `isdbt-mux` only for the ARIB STD-B32 Part 2 ADTS rule identities and
 quality modes; it parses ADTS headers itself.
@@ -173,6 +178,35 @@ RX                                                                        │
 Soft bits between the demodulator and the FEC decoder are `f32` LLRs,
 `ln P(b=0)/P(b=1)` (positive means 0, 0.0 for erased positions); coded bits
 are `u8` 0/1; samples are `Complex32` at 512/63 MHz.
+
+ISDB-S, both directions (BO.1408-1; the unit is the superframe, 8 frames
+of 39 936 symbols, 11.07 ms at 28.86 Mbaud):
+
+```text
+TX
+ TS packets per relative TS (isdb-cli: TS files / synthetic, null padding)
+        │  isdbs_core::TmccInfo::assign: slot layout → TMCC information
+        ▼
+ isdbs_phy::tx::Transmitter::superframe   (one call = one superframe)
+        │  RS(204,188) → energy dispersal, depth-8 interleave, sync bytes
+        │    and dummy slots dropped        isdbs_core::mainsig
+        │  → inner code and mapping per frame   isdbs_phy::demod
+        │  → header (W1, TMCC, W2/W3) + bursts + main  tx::frame_symbols
+        │                          ⇒ 319 488 unit-modulus symbols (f64)
+        ▼
+ isdb_frontend::shape::Shaper   RRC α = 0.35, any rate ≥ 38.96 Msps,
+        │                      fractional phase carried across calls
+        ▼                      ⇒ C32, unit RMS (442 810.81 / superframe at 40 Msps)
+ isdb_radio::IqSink: IQ file at --backoff-db (cf32 too) + SigMF sidecar,
+   or a radio (underruns at this rate over Gigabit Ethernet)
+RX
+ recording / radio capture ─► isdbs_phy::frontend (survey carrier, trim
+   search, isdb_frontend::fast::FastFrontend) ⇒ symbols
+        ▼
+ isdbs_phy::receive: frame sync, carrier on bursts, TMCC ⇒ Reception
+        ▼
+ isdbs_phy::ts::decode_all ⇒ DecodedSuperframe { packets per TS_ID }
+```
 
 ### The multiplexer
 
@@ -233,6 +267,15 @@ rx:  dyn IqSource: file
        ─► PipelinedReceiver
        (demod thread ─► FEC-decode thread) ─► outputs + status
 loopback: producer ─► software channel ─► PipelinedReceiver ─► verifier
+tx --system isdbs: reader thread per file TS ─► producer thread
+       (pre-roll frame, lead, data, flush frame: Transmitter ─► Shaper)
+       ─superframes (bounded)─► main thread: dyn IqSink (file at the
+       backoff + SigMF sidecar | radio through the same gate)
+rx --system isdbs: blocks (recording segments, radio captures) ─► front
+       end threads ─► receiver ─► one TS per TS_ID
+loopback --system isdbs: ISDB-S producer ─► software channel (CFO in Hz)
+       ─► one buffer ─► front end ─► receive + decode_all ─► verifier
+       (anchor by content, numbering by frame start, per TS_ID)
 ```
 
 `isdb-cli` adds I/O, threading, pacing, the `--rf-enable` / `--dry-run`
@@ -296,7 +339,11 @@ higher rungs are progressively more independent:
 3. **Inverse pairs** — every TX stage against its RX inverse
    (interleavers, mappers, codes, TMCC), then the whole PHY as TX →
    impairments (AWGN, CFO, sample offset, clock offset, echo) → RX,
-   byte-exact; the CLI repeats it end to end (`isdb loopback`).
+   byte-exact; the CLI repeats it end to end (`isdb loopback`, ISDB-T and
+   `--system isdbs`). ISDB-S has no independent transmitter to check
+   against, but its receiver was confirmed on air first (rung 5), so the
+   transmitter is checked against a receiver that live transponders
+   validated.
 4. **Independent oracles** — gr-isdbt as a separate program: Rust TX
    decoded by gr-isdbt and gr-isdbt TX decoded by Rust, byte-exact in 8
    parameter sets, plus a carrier-level comparison of the two modulators;

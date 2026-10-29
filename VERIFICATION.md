@@ -16,7 +16,8 @@ checks something the rung below cannot:
    tested as an identity (interleavers, mappers, codes), and the whole PHY
    runs TX → channel impairments (AWGN, CFO, sample offset, echo) → RX with
    a byte-exact comparison (`isdbt-ofdm`/`isdbt-phy` loopback tests,
-   `isdb loopback`).
+   `isdb loopback`); ISDB-S likewise, per TS_ID
+   ([below](#isdb-s-transmitter-and-loopback)).
 4. **Independent oracle.** gr-isdbt (GNU Radio) is run as a separate program
    and cross-decodes with the Rust chain in both directions
    ([below](#phy-differential-test-against-gr-isdbt)). It detects
@@ -1071,6 +1072,116 @@ transponder numbering, not station identities.
   capture after another (over Gigabit Ethernet ISDB-S cannot be streamed
   without losses), so the TS has a gap between blocks; continuous
   reception needs the FPGA symbol front end.
+
+## ISDB-S transmitter and loopback
+
+The transmit direction (2026-10-29; [plan](docs/plans/isdbs-loopback.md)):
+`isdbs_core::TmccInfo::assign` (slot layout → TMCC information),
+`isdbs_phy::tx::Transmitter` (TS packets per TS → superframe symbols),
+`isdb_frontend::shape::Shaper` (symbols → root-raised-cosine IQ), and
+`isdb tx` / `isdb loopback --system isdbs`. There is no independent
+ISDB-S transmitter to compare with, so this rung is an inverse pair
+(ladder rung 3): the transmitter is checked against the receiver that the
+21 live transponders confirmed (the two rungs above). Nothing was
+radiated: the radio path was exercised with `--dry-run` only.
+
+**Symbol domain** (`isdbs-phy` `tests/loopback.rs`): one null and three
+data superframes of distinct packets per TS → `Transmitter` → carrier
+offset 2·10⁻⁴ cycle/symbol, a phase, AWGN → `receive` + `ts::decode_all`.
+Every packet comes back byte-exact per TS_ID and in order, in the
+(frame, slot, TS_ID) the transmitter reported, under the TMCC sent:
+
+| Layout | Es/N0 | Main MER | Packets | RS bytes corrected (max per packet) |
+|---|---|---|---|---|
+| TC8PSK 2/3 × 48, three TSs of 16 (the BS layout) | 12 dB | 12.0 dB | 1 536 | 0 |
+| TC8PSK 2/3 × 44 + BPSK 1/2 × 4, TSs of 30 and 15 | 12 dB | 11.9 dB | 1 440 | 0 |
+| QPSK 3/4 × 48, one TS of 36 (the CS layout) | 8 dB | 8.0 dB | 1 152 | 1 (1) |
+| QPSK 7/8 × 40 + QPSK 1/2 × 8, three TSs | 8 dB | 8.1 dB | 1 248 | 27 (2) |
+| QPSK 5/6 × 30 + QPSK 2/3 × 18, two TSs | 8 dB | 8.1 dB | 1 184 | 0 |
+
+**The pulse shaper** (`isdb-frontend` `tests/shape.rs`, span 16, 1 024
+phases, no window): through an ideal matched filter at the symbol
+instants, random 8PSK has MER 57.6 / 59.1 / 58.8 dB at 40 / 57.72 /
+61.44 Msps (the truncated cascade's bound is 58.8 dB); output RMS 1
+within 10⁻⁵; any chunking gives the same samples bit for bit; a
+superframe at 40 Msps is 442 810.81 samples (442 810 or 442 811 per
+superframe, the phase carried on). Through the real receive front end
+(`FastFrontend`, ISDB-S at 40 Msps, trim 0) the 8PSK MER after the loop
+settles is 41.2 dB before and 36.2 dB after the 6-bit output quantiser.
+One core shapes 67–73 Msps: 1.2–1.7× real time at the radios' rates.
+
+**Sample domain** (`isdbs-phy` `sample_domain_bs_layout_at_40_msps`): the
+BS layout, one null superframe, three data superframes and a null frame
+→ `Shaper` at 40 Msps, RMS 0.3 of full scale → `frontend::symbols`
+(survey carrier, trim searched on the bursts) → `receive` + `decode_all`:
+the data superframes byte-exact, none uncorrectable, main MER 44.6 dB.
+**The trim found is 0.000 symbol** (the search runs −0.20…+0.05 in
+0.025 steps with a parabola through the best three; the test bounds it
+at ±0.05): on a clean pulse the front end's timing detector is unbiased,
+so the −0.05…−0.10 symbol it needs on the lab's satellite IF comes from
+the IF chain, not from the detector (`isdb-frontend` README, "The timing
+trim"). The survey's carrier is 0 Hz within 1 Hz. One finding: **the
+first superframe's first slots do not decode** (17 of its 384 packets
+uncorrectable): the front end's loops settle during the first symbols,
+and the depth-8 interleaver spreads that frame's damage over the first
+slots of all 8 frames. `isdb tx` therefore sends a pre-roll frame (the
+last frame of a null superframe) before the first superframe; with it
+every superframe of a file decodes clean (1 920 of 1 920 packets on
+`isdb rx`), including the lead.
+
+**`isdb tx --system isdbs` → `isdb rx --iq`** (`tests/cli.rs`
+`isdbs_tx_then_rx_reproduces_every_ts_byte_exact`): two TS files of 576
+packets on 24 + 24 slots of the BS layout → cf32 at RMS −10.0 dBFS and its
+SigMF sidecar (`isdb:system "ISDB-S"`, 40 Msps) → `rx` picks ISDB-S by
+itself (the rate is not 512/63 MHz, the survey finds 28.86 Mbaud) and
+writes each TS_ID's 576 packets byte-exact, 0 uncorrectable. In cs8 at
+10 dB backoff: 0 of 17 048 304 components clipped (a shaped PSK signal
+peaks low), main MER 39.6 dB on `rx` (the 8-bit quantiser), RS-clean.
+
+**Loopback SNR** (`tools/isdbs-loopback-sweep.sh`, release build, 6 data
+superframes per run, seeds 1, 3, 5). `--snr-db` is the ratio over the
+40 MHz of samples; after the matched filter Es/N0 is 10·log10(40/28.86) =
+1.42 dB higher, which the main MER shows (13.4 dB at 12 dB, decided-point
+MER biased upwards below about 5 dB). PASS needs every input packet
+byte-exact (a superframe with an uncorrectable packet fails, and before
+the anchor is lost). The RS column counts the words with corrected bytes
+among all decoded packets (7 superframes with the lead):
+
+| Layout | FAIL at | Marginal | PASS from (every seed) | RS words corrected at the threshold |
+|---|---|---|---|---|
+| TC8PSK 2/3 × 48 (BS) | ≤ 5.5 dB (MER 6.9) | 6 dB: 2 of 3 runs (MER 7.4) | 7 dB (MER 8.4) | ≈ 280 of 2 688 |
+| QPSK 7/8 × 48 | 5 dB (MER 6.7) | | 6 dB (MER 7.5) | ≈ 300 of 2 352 |
+| QPSK 3/4 × 48 (CS) | ≤ 3 dB (MER 5.1) | 3.5 dB: 1 of 3 (MER 5.4) | 4 dB (MER 5.8) | ≈ 860 of 2 016 |
+| QPSK 1/2 × 48 | ≤ 0.5 dB (MER 3.2) | | 1 dB (MER 3.6) | ≈ 920 of 1 344 |
+
+With a 50 kHz carrier offset and 12 345 samples dropped at the start
+(BS) or −200 kHz and 999 samples of silence (CS) the thresholds are the
+same (BS 6 dB: 2 of 3, 7 dB: 3 of 3; CS 4 and 5 dB: 3 of 3); the survey
+finds the carrier to the hertz (+50 000, −200 000 Hz) and the trim search
+lands within ±0.002 symbol of 0.
+Without the flush frame (`--no-flush`) the last data superframe's final
+symbols never leave the filters and its 384 packets are reported lost
+(FAIL); a TS file shorter than the superframes asked ends the run at its
+end with every packet delivered (`isdbs_loopback_detects_loss`).
+
+**Speed** (release build, 32-thread host): `tx --system isdbs --iq`
+produces 1.1× real time at 40 Msps (9.8 ms of transmitter and shaper per
+11.07 ms superframe, the shaper on one core most of it; 0.8× in a dev
+build now that the ISDB-S crates are optimised there, 0.02× before);
+`loopback --system isdbs` of 1.01 s of signal (90 superframes) takes
+2.9 s: production and channel 0.96 s, front end 1.56 s (survey, the
+11-candidate trim search over the first 0.15 s, the bit-exact front end
+over the whole buffer), receiver and decoding 0.31 s; the default 6
+superframes take about 0.6 s, and the CLI tests 1–2 s each in
+`cargo test`.
+
+**Radio** (`isdbs_radio_dry_runs`, no device opened): a Pluto dry run at
+BS1 programs 1049.48 MHz (the IF, behind `--freq-unrestricted`), 40 Msps
+and a 40 MHz filter; the HackRF backend refuses 40 Msps. A Gigabit
+Ethernet Pluto cannot take 160 MB/s of cs12 samples (≈ 65 MB/s measured,
+[above](#8-bit-captures-and-streaming-over-gigabit-ethernet)), so a
+transmission would underrun; continuous ISDB-S transmission needs a
+modulator in the FPGA.
 
 ## ISDB-S3 receiver
 

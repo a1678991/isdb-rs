@@ -12,8 +12,11 @@ the specifications' own numbers, and against independent receivers. It is
 meant for receiver testing, protocol study and broadcast-engineering
 experiments on a conducted bench. ISDB-T is implemented end to end.
 ISDB-S is received to transport streams, one per TS_ID (`isdb rx --system
-isdbs`, from satellite IF recordings or block by block from a radio); its
-transmitter is not written yet. ISDB-S3 is received to TLV streams,
+isdbs`, from satellite IF recordings or block by block from a radio), and
+transmitted from them (`isdb tx --system isdbs`) to IQ files that `isdb rx`
+reads back byte-exact, with a software loopback (`isdb loopback --system
+isdbs`); its ≥ 39 Msps do not stream to a radio over Gigabit Ethernet, so
+transmission to a radio waits for a modulator in the FPGA. ISDB-S3 is received to TLV streams,
 one per TLV stream id (`isdb rx --system isdbs3`), with the MMTP packets
 and MMT-SI tables they carry decoded: services, events, packages and
 assets (`isdb tlv inspect`); unscrambled assets are written as
@@ -128,6 +131,17 @@ payload is scrambled, and nothing is descrambled).
   the SNR. Live from a radio it decodes one contiguous capture after
   another (no continuous stream over Gigabit Ethernet without the FPGA
   front end), slower than real time on the CPU.
+- **ISDB-S transmission** (`isdbs-core` `TmccInfo::assign`, `isdbs-phy`
+  `tx::Transmitter`, `isdb-frontend` `shape::Shaper`, `isdb tx --system
+  isdbs`, `isdb loopback --system isdbs`): a slot layout of up to four
+  combinations and eight TSs → TMCC, RS(204,188), energy dispersal,
+  interleaving, inner code and mapping, header and bursts → superframes
+  of symbols → root-raised-cosine IQ at any rate ≥ 38.96 Msps (40 Msps by
+  default), written with a SigMF sidecar that `isdb rx` reads back
+  byte-exact; the loopback passes the BS layout (TC8PSK 2/3) from 7 dB
+  SNR and the CS layout (QPSK 3/4) from 4 dB with carrier offset and a
+  mid-stream start. A radio is driven through the same gate, but a
+  Gigabit-Ethernet Pluto underruns at that rate and a HackRF refuses it.
 - **ISDB-S3 reception** (`isdbs3-core`, `isdbs3-phy`, `isdb-tlv`, `isdb
   iq s3tmcc`, `isdb rx --system isdbs3`, `isdb tlv inspect`; ARIB
   STD-B44, B32 Part 3, B60): slot and frame sync on the π/2-BPSK sync
@@ -159,14 +173,14 @@ payload is scrambled, and nothing is descrambled).
 | [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | minimal safe wrapper over the system libhackrf (FFI), used by the `isdb-radio` HackRF backend |
 | [`isdb-iio`](crates/isdb-iio/README.md) | — | minimal safe wrapper over the system libiio 0.x (FFI), used by the `isdb-radio` Pluto backend |
 | [`isdb-iq`](crates/isdb-iq/README.md) | — (quotes the ISDB-S / ISDB-S3 symbol rates) | IQ recordings independent of the system: sample formats, SigMF metadata, single-carrier survey (symbol rate, carrier offset, band, system) |
-| [`isdb-frontend`](crates/isdb-frontend/README.md) | — (rates from `isdb-iq`) | single-carrier front end IQ → symbols for ISDB-S / ISDB-S3: bit-exact fixed-point model of the FPGA stage, floating-point reference, `Symbols` boundary format, FPGA control map; the HDL is in [`fpga/`](fpga/README.md) |
-| [`isdbs-core`](crates/isdbs-core/README.md) | BO.1408-1; MIC Ordinance No. 87 annexed tables 45–51 | ISDB-S frame geometry, combinations, slot assignment, TMCC information codec and signal, burst |
-| [`isdbs-phy`](crates/isdbs-phy/README.md) | BO.1408-1 | ISDB-S receive chain after the front end: frame sync, carrier recovery, TMCC decoding, main signal to TS packets per TS_ID |
+| [`isdb-frontend`](crates/isdb-frontend/README.md) | BO.1408-1 §9 (roll-off; rates from `isdb-iq`) | single-carrier front end for ISDB-S / ISDB-S3, both directions: receive IQ → symbols (bit-exact fixed-point model of the FPGA stage, floating-point reference, `Symbols` boundary format, FPGA control map; the HDL is in [`fpga/`](fpga/README.md)); transmit symbols → IQ (`shape::Shaper`, root-raised-cosine pulse shaper at any rate ≥ (1 + α)·R) |
+| [`isdbs-core`](crates/isdbs-core/README.md) | BO.1408-1; MIC Ordinance No. 87 annexed tables 45–51 | ISDB-S frame geometry, combinations, slot assignment, TMCC information codec and signal (and its builder from a slot layout), burst |
+| [`isdbs-phy`](crates/isdbs-phy/README.md) | BO.1408-1 | ISDB-S receive chain after the front end (frame sync, carrier recovery, TMCC decoding, main signal to TS packets per TS_ID) and the transmitter from TS packets per TS to superframe symbols |
 | [`isdbs3-core`](crates/isdbs3-core/README.md) | B44 v2.1 | ISDB-S3 geometry, code rates, LDPC tables, constellations, interleaver, energy dispersal, TMCC codec, slot allocation |
 | [`isdbs3-phy`](crates/isdbs3-phy/README.md) | B44 v2.1 | ISDB-S3 receive chain after the front end: slot/frame sync, equaliser, TMCC, main signal (LDPC, BCH) to slot data |
 | [`isdb-tlv`](crates/isdb-tlv/README.md) | B32 Part 3, B60 | TLV packets from slots, compressed IP, MMTP, MMT-SI and TLV-SI identification |
 | [`isdb-mmt`](crates/isdb-mmt/README.md) | B60 | MMT-SI and TLV-SI table contents (MPT, PLT, MH-EIT, MH-SDT, MH-TOT, MH-BIT, TLV-NIT, AMT), MPU/MFU reassembly, HEVC / LOAS / caption elementary streams |
-| [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary |
+| [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary: ISDB-T and ISDB-S `tx` / `rx` / `loopback`, ISDB-S3 `rx`, the multiplexer, TS / TLV / IQ tools, capture |
 
 How they fit together, the frame/latency contract and the data flow:
 [docs/architecture.md](docs/architecture.md).
@@ -390,10 +404,11 @@ end, but some parts have had less independent checking than others:
   written from ISO/IEC 13818-7 itself; H.264 one-seg packetisation.
 - ISDB-S (ITU-R BO.1408 / MIC Ordinance No. 87 of 2011; ARIB STD-B20) and
   ISDB-S3 (ARIB STD-B44) reception, then transmission, reusing the TS/SI
-  crates — satellite IF capture and survey done; ISDB-S received to TS;
-  ISDB-S3 received to TLV streams with MMT-SI identified; next the ISDB-S
-  modulator (loopback), TLV-SI checked on a longer recording, and
-  real-time LDPC (SIMD).
+  crates — satellite IF capture and survey done; ISDB-S received to TS
+  and transmitted to IQ files (software loopback byte-exact); ISDB-S3
+  received to TLV streams with MMT-SI identified; next an ISDB-S
+  modulator in the radio's FPGA (continuous transmission), TLV-SI
+  checked on a longer recording, and real-time LDPC (SIMD).
 
 ## Development
 

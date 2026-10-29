@@ -33,8 +33,8 @@ added `isdb:system`, which `isdb tx --system isdbs` writes.
 ## Position in the stack
 
 - Depends on: `num-complex`, `rustfft`, `serde_json`, `thiserror`.
-- Used by: `isdb-cli` (`isdb capture` writes its metadata, `isdb iq
-  survey` runs the survey). The planned ISDB-S / ISDB-S3 front ends will
+- Used by: `isdb-cli` (`isdb capture` and `isdb tx --system isdbs`
+  write its metadata, `isdb iq survey` runs the survey). The planned ISDB-S / ISDB-S3 front ends will
   read their input through `Recording`.
 
 ## Key types and entry points

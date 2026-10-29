@@ -153,7 +153,8 @@ with the receiver and runs several blocks' front ends at once
 
 - Depends on: `isdb-frontend`, `isdb-iq` (survey), `isdb-fec`,
   `isdbs-core`, `num-complex`.
-- Used by: `isdb-cli` (`isdb iq tmcc`, `isdb rx --system isdbs`).
+- Used by: `isdb-cli` (`isdb iq tmcc`, `isdb rx --system isdbs`; `tx`
+  in `isdb tx` and `isdb loopback --system isdbs`).
 
 ## Tests
 

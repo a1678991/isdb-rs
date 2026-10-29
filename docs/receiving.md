@@ -72,7 +72,9 @@ ISDB-S transponder: frame sync and TMCC, then the main signal of every
 superframe (TC8PSK, QPSK or BPSK, Viterbi, de-interleaving, energy
 dispersal, RS(204,188)). A transponder carries up to 8 transport streams,
 told apart by the TS_ID the TMCC gives each slot, so the output is per
-TS_ID instead of per layer.
+TS_ID instead of per layer. Files written by `isdb tx --system isdbs
+--iq` carry the SigMF sidecar this needs and are received the same way,
+byte-exact ([transmitting.md](transmitting.md#isdb-s-bs-and-110-cs)).
 
 A satellite channel is tuned at its IF, RF minus the LO of a Japanese
 dual-polarisation LNB: the right-hand-circular channels (BS1–BS23 odd,
@@ -307,3 +309,42 @@ packet by packet per layer and as a reproduced TS. It prints PASS/FAIL
 counts and lost packets per layer and exits non-zero on failure; `--json`
 gives a machine-readable verdict. Inputs are the same as for `isdb tx`
 (`--synthetic` is the default when none is given).
+
+### ISDB-S
+
+`--system isdbs` runs the ISDB-S transmitter of `isdb tx --system isdbs`
+([transmitting.md](transmitting.md#isdb-s-bs-and-110-cs)) into the ISDB-S
+receiver of `isdb rx`, with the same layout and input options
+(`--combination`, `--ts`, `--rate`; one synthetic TS 0x4010 on the BS
+layout by default):
+
+```sh
+# the BS layout, 6 dB above the threshold, 50 kHz off, started mid-stream
+isdb loopback --system isdbs --snr-db 12 --cfo-hz 50000 --sample-offset -12345
+# the CS layout near its threshold
+isdb loopback --system isdbs --combination qpsk3/4:48 --snr-db 5
+# two TSs from files, until they end
+isdb loopback --system isdbs --ts 0x4010:24=a.ts --ts 0x4011:24=b.ts --snr-db 15
+```
+
+`--superframes N` data superframes (default 6, or until EOF with a TS
+file), `--lead-superframes` (1), `--cfo-hz` the carrier offset in Hz, and
+`--snr-db`, `--seed` (odd seeds: the generator ignores bit 0),
+`--sample-offset`, `--no-flush` and `--json` as for ISDB-T; the ISDB-T
+options (`--frames`, `--cfo-carriers`, `--lead-frames`, the layer and
+input options) are refused. The whole signal is kept in one buffer (about
+3.5 MB per superframe at 40 Msps) and received as `isdb rx --iq` receives
+a recording: at 10 dB below full scale through the survey's carrier, the
+trim search and the bit-exact front end, then frame sync, the TMCC and
+the main signal. The first decoded superframe that carries an input
+packet is anchored to the sent superframe with the same content; the
+later ones are numbered by where they start (319 488 symbols apart) and
+compared packet by packet per TS_ID, and every superframe's TMCC with the
+one sent. The report gives per TS_ID the packets byte-exact, failed and
+lost, the RS corrections and the main MER; PASS needs every input packet
+exact and every TMCC as sent. `--snr-db` is measured over the sample
+rate's bandwidth, so Es/N0 after the matched filter is 1.42 dB higher at
+40 Msps (the main MER shows it). With 6 superframes the BS layout
+(TC8PSK 2/3) passes from 7 dB (6 dB in 4 of 6 runs) and the CS layout
+(QPSK 3/4) from 4 dB (VERIFICATION.md "ISDB-S transmitter and loopback";
+`tools/isdbs-loopback-sweep.sh`).

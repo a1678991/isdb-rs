@@ -9,6 +9,14 @@ chain under impairments in one process. Follow
 [CONTRIBUTING.md](../../CONTRIBUTING.md) (spec-first, SPEC-NOTES,
 conventional commits, no real station identities).
 
+**Status (2026-10-29): done**, all of §4 and §5; commits and findings in
+[isdb-s.md §0.22](isdb-s.md#022-phase-4-status-isdb-s-modulator-and-loopback-done-2026-10-29).
+One change against §3: the transmission starts with a pre-roll frame
+(the last frame of a null superframe) before the lead superframe,
+because the receive front end's loops settle during the first symbols
+and the interleaver would spread that damage over the first slots of the
+first superframe.
+
 ## 1. What exists and what is missing
 
 Transmit-direction code already in the tree (all tested as the inverse
