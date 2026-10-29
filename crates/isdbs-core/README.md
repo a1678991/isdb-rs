@@ -3,8 +3,8 @@
 ISDB-S transmission parameters: the system of ITU-R BO.1408-1 Annex 1
 (ARIB STD-B20) with the frame layout of MIC Ordinance No. 87 of 2011,
 Chapter 5 §2 (annexed tables 45–51). No signal processing: geometry,
-codes and the TMCC information, shared by the receiver (`isdbs-phy`) and
-the planned modulator.
+codes and the TMCC information, shared by the receiver and the
+transmitter of `isdbs-phy`.
 
 ## Spec scope
 
@@ -30,7 +30,8 @@ meaning of the "other information" values (pending).
 ## Position in the stack
 
 - Depends on: `isdb-fec`, `thiserror`.
-- Used by: `isdbs-phy` (receiver), `isdb-cli` (`isdb iq tmcc`, `isdb rx`).
+- Used by: `isdbs-phy` (receiver and transmitter), `isdb-cli` (`isdb iq
+  tmcc`, `isdb rx`).
 
 ## Key types and entry points
 
@@ -41,6 +42,7 @@ meaning of the "other information" values (pending).
 | `Combination` (`word`, `from_word`, `slot_unit`, `efficiency`, `puncturing`) | the seven assigned words of Table 1 / table 48 |
 | `CombinationWord::{Assigned(Combination), Dummy, Reserved(ReservedCode)}` (`from_word`, `word`) | all 16 words of Table 1, lossless; a `Reserved` word can only be decoded (private constructor), so `==` is wire equality; the `word` of a `tmcc::CombinationEntry` |
 | `TmccInfo::{decode, encode, validate, slot_combinations, slot_ts_ids}` | the TMCC information |
+| `TmccInfo::assign` | the TMCC information of a slot layout: (combination, slots) in any order and (TS_ID, sent slots) per relative TS; the other fields at their observed values |
 | `tmcc::{headers, decode_blocks, derandomise}` | a superframe's 8 header blocks ↔ information |
 | `slots::runs` | `Run { combination, slots, valid_slots, symbols }` per combination |
 | `burst::frame_bits` | burst data |
@@ -61,8 +63,18 @@ meaning of the "other information" values (pending).
   `spec_dispersal_alignment` (PRBS from the second byte, sync bytes
   skipped with the sequence running), `spec_sent_slots`.
 - Live words: `live_words_decode_consistently` (a BS and a CS TMCC word
-  received from the lab's satellite IF, RS-clean, round trip).
+  received from the lab's satellite IF, RS-clean, round trip);
+  `assign_reproduces_the_live_words` (`TmccInfo::assign` of the BS layout,
+  TC8PSK 2/3 × 48 with three TSs of 16 slots, and of the CS layout, QPSK
+  3/4 × 48 with one TS of 36, is the received word but for the order of
+  change / the CS uplink value).
+- Builder: `assign_mixed_layout` (TC8PSK 2/3 × 44 + BPSK 1/2 × 4 given
+  least efficient first: sorted, slots shared in slot order, dummy and
+  FFFFh entries, encode/decode and header round trips), `assign_errors`
+  (every error variant).
 - Property tests (`tests/props.rs`): `prop_tmcc_info_lossless`,
-  `prop_tmcc_signal_corrects_8_bytes`, `prop_slot_assignment_fills_the_frame`;
+  `prop_tmcc_signal_corrects_8_bytes`, `prop_slot_assignment_fills_the_frame`,
+  `prop_assign_matches_slot_tables` (any layout and TS split: valid,
+  lossless, each TS's slots in slot order, `None` on the dummy slots);
   in `mainsig`: `prop_interleave_round_trip`, `prop_superframe_round_trip`
   (RS-coded packets → dispersal, interleaving → back).

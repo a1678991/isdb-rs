@@ -100,4 +100,83 @@ proptest! {
         let valid: usize = r.iter().map(|x| x.valid_slots).sum();
         prop_assert_eq!(valid, info.slot_combinations().iter().filter(|c| c.is_some()).count());
     }
+
+    /// `TmccInfo::assign` on any layout (up to four combinations given in
+    /// any order, filling 48 slots in whole units) and any split of its
+    /// sent slots into up to eight TSs: the result validates, round-trips
+    /// through `encode`/`decode`, its combinations are in efficiency
+    /// order, and its slot table gives each TS its slots in slot order,
+    /// `None` exactly on the dummy slots.
+    #[test]
+    fn prop_assign_matches_slot_tables(
+        picks in proptest::collection::vec((0usize..7, 1usize..=12), 1..=4),
+        reverse in any::<bool>(),
+        cuts in proptest::collection::vec(any::<u16>(), 0..8),
+    ) {
+        let mut layout: Vec<(Combination, usize)> = Vec::new();
+        let mut used = 0;
+        for (c, units) in picks {
+            let comb = Combination::ALL[c];
+            let n = units * comb.slot_unit().0;
+            if layout.iter().all(|&(x, _)| x != comb) && used + n <= SLOTS {
+                layout.push((comb, n));
+                used += n;
+            }
+        }
+        // fill with TC8PSK (unit 1)
+        if used < SLOTS {
+            if let Some(e) = layout.iter_mut().find(|e| e.0 == Combination::Tc8psk2_3) {
+                e.1 += SLOTS - used;
+            } else if layout.len() < 4 {
+                layout.push((Combination::Tc8psk2_3, SLOTS - used));
+            } else {
+                return Ok(());
+            }
+        }
+        if reverse {
+            layout.reverse();
+        }
+        let given: Vec<(Combination, u8)> =
+            layout.iter().map(|&(c, n)| (c, u8::try_from(n).unwrap())).collect();
+        let sent: usize = layout
+            .iter()
+            .map(|&(c, n)| n / c.slot_unit().0 * c.slot_unit().1)
+            .sum();
+        // split the sent slots at distinct cut points into 1..=8 TSs
+        let mut at: Vec<usize> = cuts
+            .iter()
+            .map(|&c| 1 + usize::from(c) % sent.max(2))
+            .filter(|&c| c < sent)
+            .collect();
+        at.sort_unstable();
+        at.dedup();
+        at.insert(0, 0);
+        at.push(sent);
+        let ts: Vec<(u16, u8)> = at
+            .windows(2)
+            .zip(0x4010u16..)
+            .map(|(w, id)| (id, u8::try_from(w[1] - w[0]).unwrap()))
+            .collect();
+        let info = TmccInfo::assign(&given, &ts).unwrap();
+        prop_assert!(info.validate().is_ok());
+        prop_assert_eq!(TmccInfo::decode(&info.encode()), info.clone());
+        let ranks: Vec<usize> = info
+            .combinations
+            .iter()
+            .filter_map(CombinationEntry::combination)
+            .map(Combination::rank)
+            .collect();
+        prop_assert!(ranks.is_sorted());
+        let comb = info.slot_combinations();
+        let ids = info.slot_ts_ids();
+        for s in 0..SLOTS {
+            prop_assert_eq!(ids[s].is_some(), comb[s].is_some());
+        }
+        let want: Vec<u16> = ts
+            .iter()
+            .flat_map(|&(id, n)| std::iter::repeat_n(id, n.into()))
+            .collect();
+        let got: Vec<u16> = ids.iter().flatten().copied().collect();
+        prop_assert_eq!(got, want);
+    }
 }
