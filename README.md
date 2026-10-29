@@ -19,7 +19,8 @@ isdbs`); its ≥ 39 Msps do not stream to a radio over Gigabit Ethernet, so
 for a radio the pulse shaping moves into the PlutoSky R2's FPGA: the host
 sends 4-bit symbol codes (14 MB/s) and the transmit block there shapes
 them (`isdb tx --system isdbs --radio pluto --offload fpga`, verified on
-the board through the AD9361's digital loopback). ISDB-S3 is received to TLV streams,
+the board through the AD9361's digital loopback and conducted into a
+PIX-DT295 tuner, which locks and records the bench service). ISDB-S3 is received to TLV streams,
 one per TLV stream id (`isdb rx --system isdbs3`), with the MMTP packets
 and MMT-SI tables they carry decoded: services, events, packages and
 assets (`isdb tlv inspect`); unscrambled assets are written as
@@ -150,8 +151,11 @@ payload is scrambled, and nothing is descrambled).
   root-raised-cosine interpolator) shapes them on the board: verified
   on the PlutoSky R2 through the AD9361's digital loopback into the
   FPGA receive front end, two TSs byte-exact over 20 s with 0 losses
-  (VERIFICATION.md "ISDB-S transmitter in the FPGA: on the board").
-  Over the air into a receiver is the next step.
+  (VERIFICATION.md "ISDB-S transmitter in the FPGA: on the board"), and
+  conducted through a 30 dB pad into a PIX-DT295 tuner, which locks at
+  the first tune and records the bench service's TS clean
+  (`tools/isdbs-bench-tx.sh`; "into the PIX-DT295" there). PCR-paced
+  placement of a live TS feed is the next step.
 - **ISDB-S3 reception** (`isdbs3-core`, `isdbs3-phy`, `isdb-tlv`, `isdb
   iq s3tmcc`, `isdb rx --system isdbs3`, `isdb tlv inspect`; ARIB
   STD-B44, B32 Part 3, B60): slot and frame sync on the π/2-BPSK sync

@@ -201,7 +201,12 @@ Each step is a commit with tests and docs, as the RX path was built
 **Done 2026-10-29 through rung 3** (VERIFICATION.md "ISDB-S transmitter
 in the FPGA: the image" and "on the board"): the image builds and meets
 timing, both blocks answer on the board, and the loopback self-test
-passes byte-exact. Rung 4 (over the air into the PIX-DT295) is open.
+passes byte-exact. **Rung 4 done the same day** (VERIFICATION.md "ISDB-S
+transmitter in the FPGA: into the PIX-DT295"): conducted through a 30 dB
+pad and a DC block, the PIX-DT295 locks at the first tune and records a
+clean TS with the multiplexer's SI; the live feed's PCR timing is the
+open follow-up (a PCR pacer in the ISDB-S producer), with a
+satellite-shaped NIT.
 
 1. Model unit and property tests (step 2); the symbol-domain and
    sample-domain loopbacks of isdbs-loopback.md with the fixed model.

@@ -1732,6 +1732,39 @@ shows a user-space bus fault from Tezuka's `pluto_stream` writing the
 absent DVB registers at start-up (the hazard the investigation named);
 the autorun hook kills it, and the board was unaffected.
 
+## ISDB-S transmitter in the FPGA: into the PIX-DT295 (2026-10-29)
+
+The conducted test of plan isdbs-fpga-tx.md §4 rung 4: the PlutoSky R2's
+TX1 port through a 30 dB fixed attenuator and a DC block into the
+PIX-DT295's satellite input, the tuner driven by its Linux user-mode
+driver (the `PIX-DT295` project: `dt295 init`, `tune --isdbs bs1 --tsid
+4010`, `stream --raw-config`). `tools/isdbs-bench-tx.sh`: the media-free
+bench service of `isdbt-mux` (declared streams, TS_ID 0x4010, two
+services with SDT / EIT / NIT, 29.96 Mbit/s CBR), paced at its own rate
+through a FIFO, as the one TS of the BS layout (TC8PSK 2/3 × 48,
+52.17 Mbit/s with null padding) on the BS1 IF, through the FPGA transmit
+block, TX attenuation 45 dB (about −68 dBm at the tuner).
+
+| | |
+|---|---|
+| transmitter | ran 2 min and again 25 min without a host underrun; the block missed only its first word (8–16 symbols at start) |
+| tuner | **locked at the first tune**: `Locked` after 121 ms (TC90532 0xC3 = 00), error counters 000000/000000 over every poll; relocked after a cold restart of the tuner the same way |
+| `dt295 stream` 20 s | 130 041 856 bytes at 51.99 Mbit/s, 691 712 packets, 0 sync losses, 0 TEI, 0 CC errors, every packet `scrambling_control 00`, 216 PAT sections all CRC-good |
+| `isdb ts inspect` on the recording | PAT ts 0x4010 with both programs, NIT "ベンチ" (terrestrial-shaped), SDT with both services and names, EIT present/following events, PCR, TOT / BIT: the multiplexer's SI as sent |
+| `isdb ts validate` | timing findings only: PAT / PMT intervals up to 0.17–0.21 s (≤ 0.1 s required), PCR intervals > 0.1 s, 12–30 ms rms PCR jitter against a CBR fit |
+
+The timing findings come from the pacing path, not the air interface:
+the ISDB-S producer places the packets of a live feed in arrival order,
+one superframe (11 ms) at a time from a reader queue, so the
+multiplexer's schedule is smeared by the queueing delay (a smaller
+feed-chunk size made it worse: 30 ms rms against 12 ms). The receiver
+locks and reads the SI through it; a decoder would see PCR jitter far
+outside H.222.0's ±500 ns. **Follow-up:** PCR-paced placement in the
+ISDB-S producer (the `Pacer` of the ISDB-T `--mux-ts` path), and a
+satellite-shaped NIT (satellite delivery system descriptor, BS
+network_id) in the multiplexer. The 60 s file's loop seam adds one PCR
+discontinuity and 3 continuity errors per minute.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received
