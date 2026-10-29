@@ -160,13 +160,17 @@ const SYMBOLS_KERNEL_BUFFERS_RANGE: std::ops::RangeInclusive<u32> = 2..=64;
 /// overflow bit (sticky, write 1 to clear).
 const ADC_STATUS_REG: u32 = 0x8000_0088;
 const ADC_STATUS_OVERFLOW: u32 = 0x4;
-/// `axi_ad9361` common control register (ADI `up_adc_common` / `up_dac_common`
-/// REG 0x11): bit 2 is `r1_mode`. With r1_mode set on the ADC and the DAC,
+/// `r1_mode` of the AD9361 core's receive side (ADI `up_adc_common` REG
+/// 0x11, bit 2) and of its transmit side (`up_dac_common` REG 0x12, bit 5;
+/// REG 0x11 bit 2 there is `ext_sync_disarm`). With r1_mode set on both,
 /// `util_ad9361_divclk` takes its other input (l_clk / 2 instead of / 4 in
 /// LVDS), a case the symbol front end's bitstream is not timed for
 /// (fpga/README.md "Clock"), so the FPGA path is refused then.
-const R1_MODE_REG: u32 = 0x8000_0044;
-const R1_MODE_BIT: u32 = 1 << 2;
+const ADC_R1_MODE_REG: u32 = 0x8000_0044;
+const ADC_R1_MODE_BIT: u32 = 1 << 2;
+/// See [`ADC_R1_MODE_REG`].
+const DAC_R1_MODE_REG: u32 = 0x8000_0048;
+const DAC_R1_MODE_BIT: u32 = 1 << 5;
 /// Settling time between programming the RX and capturing (LO lock, AGC).
 const CAPTURE_SETTLE: Duration = Duration::from_millis(100);
 
@@ -897,14 +901,16 @@ impl Backend for Pluto {
         let mut info = String::new();
         configure_rx(&ctx, cfg, &s, &mut info)?;
         std::thread::sleep(CAPTURE_SETTLE);
-        let r1 = |dev: &str| -> Result<bool> {
+        let r1 = |dev: &str, reg: u32, bit: u32| -> Result<bool> {
             let mode = ctx
                 .device(dev)
-                .and_then(|d| d.reg_read(R1_MODE_REG))
+                .and_then(|d| d.reg_read(reg))
                 .at("read the AD9361 core mode")?;
-            Ok(mode & R1_MODE_BIT != 0)
+            Ok(mode & bit != 0)
         };
-        if r1(RX_DEV)? && r1(TX_DEV)? {
+        if r1(RX_DEV, ADC_R1_MODE_REG, ADC_R1_MODE_BIT)?
+            && r1(TX_DEV, DAC_R1_MODE_REG, DAC_R1_MODE_BIT)?
+        {
             return Err(RadioError::Unsupported {
                 backend: NAME,
                 what: "runs its AD9361 core in r1_mode (one channel per direction): the symbol front end's clock is then l_clk / 2, which its bitstream is not timed for; use the CPU front end (--offload none)",

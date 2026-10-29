@@ -29,7 +29,9 @@ Tezuka's plutoskyr2 build sets; `/ 2` only when the AD9361 core's ADC
 and DAC are both in r1_mode). Measured on the board (read-only, 2026-10-26):
 `cf-ad9361-lpc` register 0x80000054 (`adc_clk_count`) = 0x1999A, i.e.
 l_clk = 104 858 × 100 MHz / 2¹⁶ = 160.0 MHz; register 0x80000044
-(control) bit 2 (`r1_mode`) = 0 on both cores; `rx_path_rates` RXSAMP
+(control) bit 2 (`r1_mode`) = 0 on the ADC core (on the DAC core r1_mode
+is register 0x80000048 bit 5, and 0x44 bit 2 is `ext_sync_disarm`; the
+DAC's r1_mode is still to be read, docs/plans/isdbs-fpga-tx.md §5); `rx_path_rates` RXSAMP
 40 MHz. So **the block clock is the sample rate, 40 MHz, one sample per
 clock**, and `util_wfifo` hands samples over in bursts of eight on
 consecutive clocks. (The format-3 design assumed four clocks per sample:
@@ -215,7 +217,7 @@ max delay (the word is static whenever the host reads it); the block's
 paths in `clk_div_sel_1_s` (l_clk / 2, only with r1_mode on both AD9361
 cores, never on this board) false. The host refuses the symbol path if
 r1_mode is ever set (`isdb-radio` pluto backend reads register
-0x80000044 bit 2 of both cores).
+0x80000044 bit 2 of the ADC core and 0x80000048 bit 5 of the DAC core).
 
 **What the image leaves out:** Tezuka's DVB-S2 transmitter (`dvb.tcl`,
 40 DSP48E1), for the DSP budget. To transmit DVB-S2, boot the stock

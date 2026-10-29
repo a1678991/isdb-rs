@@ -889,7 +889,9 @@ SNR of about 17 dB from the spectrum.
 The block's clock on the PlutoSky R2 was measured on the board
 (read-only): `cf-ad9361-lpc` register 0x80000054 (`adc_clk_count`) =
 0x1999A → l_clk = 160.0 MHz; register 0x80000044 bit 2 (`r1_mode`) = 0
-on both AD9361 cores; Tezuka's plutoskyr2 build is LVDS, so
+on the ADC core (the same read on the DAC core returned 0 too, but
+there that bit is `ext_sync_disarm`: the DAC's r1_mode is 0x80000048
+bit 5, not yet read; docs/plans/isdbs-fpga-tx.md §5); Tezuka's plutoskyr2 build is LVDS, so
 `util_ad9361_divclk` (the block's clock) is l_clk / 4 = 40 MHz = the
 sample rate. The format-3 HDL assumed four clocks per sample. Format 4:
 

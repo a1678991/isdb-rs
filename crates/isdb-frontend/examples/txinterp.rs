@@ -11,7 +11,16 @@
 //! cargo run --release -p isdb-frontend --example txinterp -- grid|arith|loop|rate|peak
 
 // Throwaway study code: lints relaxed.
-#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
+
+// A study tool, not library code: its casts are measurement conversions
+// (f64 counts and levels to integer words) and its index loops mirror the
+// arithmetic they measure, so the workspace's cast and loop lints are
+// silenced here only.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_lossless,
+    clippy::needless_range_loop
+)]
 
 use isdb_frontend::fast::FastFrontend;
 use isdb_frontend::metrics::psk_mer;
