@@ -1,16 +1,21 @@
 //! Symbol-domain loopback: TS packets per TS → `tx::Transmitter` → carrier
 //! offset, phase and AWGN → `receive` → `ts::decode_all` → the same
 //! packets per TS_ID, byte-exact, under the TMCC sent and in the slots the
-//! transmitter reported. Sample domain: the same through the transmit
-//! pulse shaper (`isdb_frontend::shape::Shaper`) at 40 Msps and the
-//! receive front end (`frontend::symbols`, carrier and trim found on the
-//! signal).
+//! transmitter reported; once from the `f64` symbols, once from the TX
+//! boundary codes (`superframe_codes`), whose points equal the symbols.
+//! Sample domain: the same through the transmit pulse shaper
+//! (`isdb_frontend::shape::Shaper`) or the FPGA interpolator's model
+//! (`isdb_frontend::shape::fixed::Interpolator`, from the codes) at
+//! 40 Msps and the receive front end (`frontend::symbols`, carrier and
+//! trim found on the signal).
 
 use isdb_frontend::shape::Shaper;
+use isdb_frontend::shape::fixed::{Interpolator, TxDesign, TxParams};
+use isdb_frontend::txformat;
 use isdbs_core::combination::Combination;
 use isdbs_core::frame::FRAME_SYMBOLS;
 use isdbs_core::tmcc::TmccInfo;
-use isdbs_phy::demod::DemodOptions;
+use isdbs_phy::demod::{DemodOptions, psk8_point};
 use isdbs_phy::tx::{NULL_PACKET, Packet, SUPERFRAME_SYMBOLS, Transmitter};
 use isdbs_phy::{Cplx, RxOptions, frontend, receive, ts};
 use num_complex::Complex32;
@@ -61,6 +66,36 @@ const DATA_SUPERFRAMES: u32 = 3;
 /// Carrier offset, cycles per symbol (≈ 5.8 kHz at 28.86 Mbaud).
 const CFO: f64 = 2e-4;
 
+/// What the channel carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// `Transmitter::superframe`'s `f64` symbols.
+    Symbols,
+    /// The points of `Transmitter::superframe_codes`' codes.
+    Codes,
+}
+
+/// The table-46 label [C2 C1 C0] of angle index k.
+fn label_of(k: u8) -> u8 {
+    let l = txformat::LABEL_ANGLE.iter().position(|&a| a == k).unwrap();
+    u8::try_from(l).unwrap()
+}
+
+/// Codes and symbols of one superframe agree: every code a point (no zero
+/// symbol in a superframe), `psk8_point` of its table-46 label and
+/// `txformat::point` of the code the symbol within 10⁻¹².
+fn assert_codes_are_symbols(codes: &[u8], symbols: &[Cplx]) {
+    assert_eq!(codes.len(), symbols.len());
+    for (n, (&c, &v)) in codes.iter().zip(symbols).enumerate() {
+        let k = txformat::angle(c).unwrap_or_else(|| panic!("symbol {n}: code {c}"));
+        assert!(
+            (psk8_point(label_of(k)) - v).norm() < 1e-12,
+            "symbol {n}: code {c}, symbol {v}"
+        );
+        assert!((txformat::point(c) - v).norm() < 1e-12);
+    }
+}
+
 /// Totals of one loopback, for the report line.
 struct Outcome {
     packets: usize,
@@ -71,19 +106,36 @@ struct Outcome {
 
 /// One null superframe and three of distinct packets through the
 /// transmitter, the channel (CFO, phase, AWGN at `snr_db` Es/N0) and the
-/// receiver: everything sent comes back.
+/// receiver: everything sent comes back. With [`Source::Codes`] a twin
+/// transmitter makes the codes of the same superframes, which must stand
+/// for the symbols, and the channel carries the codes' points.
 fn loopback(
     combinations: &[(Combination, u8)],
     ts_ids: &[(u16, u8)],
     snr_db: f64,
     seed: u64,
+    source: Source,
 ) -> Outcome {
     let info = TmccInfo::assign(combinations, ts_ids).unwrap();
     let mut tx = Transmitter::new(info.clone()).unwrap();
+    let mut tc = tx.clone();
     assert_eq!(tx.ts_count(), ts_ids.len());
     let mut z = vec![Cplx::new(0.0, 0.0); LEAD];
+    // the symbols sent: the transmitter's, or its codes' points
+    let send = |z: &mut Vec<Cplx>, symbols: &[Cplx], codes: Option<Vec<u8>>| match codes {
+        Some(c) => {
+            assert_codes_are_symbols(&c, symbols);
+            z.extend(c.iter().map(|&c| txformat::point(c)));
+        }
+        None => z.extend(symbols),
+    };
     let null = tx.null_superframe();
-    z.extend(&null.symbols);
+    let codes = (source == Source::Codes).then(|| {
+        let c = tc.null_superframe_codes();
+        assert_eq!(c.placed, null.placed);
+        c.codes
+    });
+    send(&mut z, &null.symbols, codes);
     let mut placed = vec![null.placed];
     let mut sent: Vec<Vec<Vec<Packet>>> = Vec::new();
     for sf in 0..DATA_SUPERFRAMES {
@@ -98,7 +150,12 @@ fn loopback(
         let refs: Vec<&[Packet]> = per_ts.iter().map(Vec::as_slice).collect();
         let s = tx.superframe(&refs).unwrap();
         assert_eq!(s.symbols.len(), SUPERFRAME_SYMBOLS);
-        z.extend(&s.symbols);
+        let codes = (source == Source::Codes).then(|| {
+            let c = tc.superframe_codes(&refs).unwrap();
+            assert_eq!(c.placed, s.placed);
+            c.codes
+        });
+        send(&mut z, &s.symbols, codes);
         placed.push(s.placed);
         sent.push(per_ts);
     }
@@ -173,7 +230,7 @@ fn loopback(
         out.mer_db
     );
     eprintln!(
-        "{}: {snr_db} dB, MER {:.1} dB, {} packets byte-exact, {} RS byte(s) corrected (at most {} in a packet)",
+        "{} from the {source:?}: {snr_db} dB, MER {:.1} dB, {} packets byte-exact, {} RS byte(s) corrected (at most {} in a packet)",
         isdbs_phy::rx::describe_tmcc(&info),
         out.mer_db,
         out.packets,
@@ -186,81 +243,93 @@ fn loopback(
 /// The BS layout: TC8PSK 2/3 × 48, three TSs of 16 slots, 12 dB.
 #[test]
 fn bs_layout_three_ts() {
-    loopback(
-        &[(Combination::Tc8psk2_3, 48)],
-        &[(0x4010, 16), (0x4011, 16), (0x4012, 16)],
-        12.0,
-        1,
-    );
+    for source in [Source::Symbols, Source::Codes] {
+        loopback(
+            &[(Combination::Tc8psk2_3, 48)],
+            &[(0x4010, 16), (0x4011, 16), (0x4012, 16)],
+            12.0,
+            1,
+            source,
+        );
+    }
 }
 
 /// The CS layout: QPSK 3/4 × 48, one TS of 36 sent slots, 8 dB.
 #[test]
 fn cs_layout_one_ts() {
-    loopback(&[(Combination::Qpsk3_4, 48)], &[(0x4010, 36)], 8.0, 2);
+    for source in [Source::Symbols, Source::Codes] {
+        loopback(
+            &[(Combination::Qpsk3_4, 48)],
+            &[(0x4010, 36)],
+            8.0,
+            2,
+            source,
+        );
+    }
 }
 
 /// TC8PSK 2/3 × 44 + BPSK 1/2 × 4 (45 sent slots), two TSs, 12 dB.
 #[test]
 fn tc8psk_and_bpsk() {
-    loopback(
-        &[(Combination::Tc8psk2_3, 44), (Combination::Bpsk1_2, 4)],
-        &[(0x4010, 30), (0x4011, 15)],
-        12.0,
-        3,
-    );
+    for source in [Source::Symbols, Source::Codes] {
+        loopback(
+            &[(Combination::Tc8psk2_3, 44), (Combination::Bpsk1_2, 4)],
+            &[(0x4010, 30), (0x4011, 15)],
+            12.0,
+            3,
+            source,
+        );
+    }
 }
 
 /// QPSK 7/8 × 40 + QPSK 1/2 × 8 (39 sent slots), three TSs.
 #[test]
 fn qpsk_7_8_and_1_2() {
-    loopback(
-        &[(Combination::Qpsk1_2, 8), (Combination::Qpsk7_8, 40)],
-        &[(0x4010, 20), (0x4011, 12), (0x4012, 7)],
-        8.0,
-        4,
-    );
+    for source in [Source::Symbols, Source::Codes] {
+        loopback(
+            &[(Combination::Qpsk1_2, 8), (Combination::Qpsk7_8, 40)],
+            &[(0x4010, 20), (0x4011, 12), (0x4012, 7)],
+            8.0,
+            4,
+            source,
+        );
+    }
 }
 
 /// QPSK 5/6 × 30 + QPSK 2/3 × 18 (37 sent slots), two TSs.
 #[test]
 fn qpsk_5_6_and_2_3() {
-    loopback(
-        &[(Combination::Qpsk5_6, 30), (Combination::Qpsk2_3, 18)],
-        &[(0x4010, 25), (0x4011, 12)],
-        8.0,
-        5,
-    );
+    for source in [Source::Symbols, Source::Codes] {
+        loopback(
+            &[(Combination::Qpsk5_6, 30), (Combination::Qpsk2_3, 18)],
+            &[(0x4010, 25), (0x4011, 12)],
+            8.0,
+            5,
+            source,
+        );
+    }
 }
 
-/// The sample domain at 40 Msps (1.386 samples per symbol), the BS layout:
-/// one null superframe, three of distinct packets and one null frame (so
-/// the filter tails do not cut the last superframe) → `Shaper` (α = 0.35)
-/// at RMS 0.3 of the front end's full scale (10.5 dB below it) →
-/// `frontend::symbols` (the survey's carrier, the trim measured on the
-/// bursts) → `receive` → `ts::decode_all`: every packet byte-exact per
-/// TS_ID, none uncorrectable, and the trim found within ±0.05 symbol of 0
-/// (the timing detector is unbiased on a clean pulse, `isdb-frontend`
-/// README "The timing trim").
-#[test]
-fn sample_domain_bs_layout_at_40_msps() {
+/// The BS layout's stream for the sample-domain loopbacks: one null
+/// superframe, three of distinct packets and one null frame (so the
+/// filter tails do not cut the last superframe), as symbols and as codes
+/// from twin transmitters, and the packets sent per data superframe and
+/// relative TS.
+struct BsStream {
+    info: TmccInfo,
+    ts_ids: [(u16, u8); 3],
+    symbols: Vec<Cplx>,
+    codes: Vec<u8>,
+    sent: Vec<Vec<Vec<Packet>>>,
+}
+
+fn bs_stream() -> BsStream {
     let ts_ids = [(0x4010, 16), (0x4011, 16), (0x4012, 16)];
     let info = TmccInfo::assign(&[(Combination::Tc8psk2_3, 48)], &ts_ids).unwrap();
     let mut tx = Transmitter::new(info.clone()).unwrap();
-    let sys = frontend::system();
-    let fs = 40e6;
-    let mut sh = Shaper::new(fs, sys.symbol_rate_hz, sys.roll_off).unwrap();
-    let mut x = Vec::new();
-    let push = |sh: &mut Shaper, z: &[Cplx], x: &mut Vec<Complex32>| {
-        // unit-modulus f64 symbols rounded to the shaper's f32 on purpose
-        #[allow(clippy::cast_possible_truncation)]
-        let v: Vec<Complex32> = z
-            .iter()
-            .map(|c| Complex32::new(c.re as f32, c.im as f32))
-            .collect();
-        sh.push(&v, x);
-    };
-    push(&mut sh, &tx.null_superframe().symbols, &mut x);
+    let mut tc = tx.clone();
+    let mut symbols = tx.null_superframe().symbols;
+    let mut codes = tc.null_superframe_codes().codes;
     let mut sent: Vec<Vec<Vec<Packet>>> = Vec::new();
     for sf in 0..DATA_SUPERFRAMES {
         let per_ts: Vec<Vec<Packet>> = (0..tx.ts_count())
@@ -272,26 +341,107 @@ fn sample_domain_bs_layout_at_40_msps() {
             })
             .collect();
         let refs: Vec<&[Packet]> = per_ts.iter().map(Vec::as_slice).collect();
-        push(&mut sh, &tx.superframe(&refs).unwrap().symbols, &mut x);
+        symbols.extend(tx.superframe(&refs).unwrap().symbols);
+        codes.extend(tc.superframe_codes(&refs).unwrap().codes);
         sent.push(per_ts);
     }
-    push(
-        &mut sh,
-        &tx.null_superframe().symbols[..FRAME_SYMBOLS],
-        &mut x,
-    );
+    symbols.extend(&tx.null_superframe().symbols[..FRAME_SYMBOLS]);
+    codes.extend(&tc.null_superframe_codes().codes[..FRAME_SYMBOLS]);
+    assert_codes_are_symbols(&codes, &symbols);
+    BsStream {
+        info,
+        ts_ids,
+        symbols,
+        codes,
+        sent,
+    }
+}
+
+/// The sample domain at 40 Msps (1.386 samples per symbol), the BS layout:
+/// the stream of [`bs_stream`] → `Shaper` (α = 0.35) at RMS 0.3 of the
+/// front end's full scale (10.5 dB below it) → `frontend::symbols` (the
+/// survey's carrier, the trim measured on the bursts) → `receive` →
+/// `ts::decode_all`: every packet byte-exact per TS_ID, none
+/// uncorrectable, and the trim found within ±0.05 symbol of 0 (the timing
+/// detector is unbiased on a clean pulse, `isdb-frontend` README "The
+/// timing trim").
+#[test]
+fn sample_domain_bs_layout_at_40_msps() {
+    let s = bs_stream();
+    let sys = frontend::system();
+    let fs = 40e6;
+    let mut sh = Shaper::new(fs, sys.symbol_rate_hz, sys.roll_off).unwrap();
+    // unit-modulus f64 symbols rounded to the shaper's f32 on purpose
+    #[allow(clippy::cast_possible_truncation)]
+    let v: Vec<Complex32> = s
+        .symbols
+        .iter()
+        .map(|c| Complex32::new(c.re as f32, c.im as f32))
+        .collect();
+    let mut x = Vec::new();
+    sh.push(&v, &mut x);
     sh.finish(&mut x);
     let symbols = 4 * SUPERFRAME_SYMBOLS + FRAME_SYMBOLS + 2 * sh.span() - 1;
     assert_eq!(x.len() as u64, sh.samples_for(symbols as u64));
     for v in &mut x {
         *v *= 0.3;
     }
+    receive_bs("f32 shaper", &x, fs, &s);
+}
+
+/// The same with the FPGA's transmit arithmetic: the stream's codes
+/// (`superframe_codes`, made from the bits) packed eight to a DMA word,
+/// then three zero words (the line drains), through the bit-exact model
+/// of the transmit interpolator (`shape::fixed::Interpolator`, ISDB-S at
+/// 40 Msps, 10 dB backoff: RMS 0.316 of full scale); its 12-bit integers
+/// are the front end's input exactly (/2048, and `frontend::symbols`
+/// scales back). Every data packet byte-exact per TS_ID, none
+/// uncorrectable, the trim within ±0.05 symbol of 0, no stall.
+#[test]
+fn sample_domain_fixed_interpolator_bs_layout_at_40_msps() {
+    let s = bs_stream();
+    let fs = 40e6;
+    let p = TxParams::design(&TxDesign::for_system(frontend::system(), fs)).unwrap();
+    let mut m = Interpolator::new(p.clone()).unwrap();
+    let words = txformat::pack(&s.codes);
+    assert_eq!(
+        words.len() * 8,
+        s.codes.len(),
+        "whole frames are whole words"
+    );
+    m.push_words(&words);
+    m.push_words(&[0; 3]);
+    // until the last zero code has entered
+    let entered = s.codes.len() as u64 + 24;
+    let n = usize::try_from(((entered << 24) - 1) / u64::from(p.step) + 1).unwrap();
+    let mut y = Vec::new();
+    m.process(n, &mut y);
+    assert_eq!(
+        (m.consumed(), m.missed(), m.underrun()),
+        (entered, 0, false)
+    );
+    let x: Vec<Complex32> = y
+        .iter()
+        .map(|v| Complex32::new(f32::from(v[0]) / 2048.0, f32::from(v[1]) / 2048.0))
+        .collect();
+    assert_eq!(
+        frontend::to_input(&x),
+        y,
+        "the model's integers are the front end's input"
+    );
+    receive_bs("fixed interpolator", &x, fs, &s);
+}
+
+/// The receive side of the sample-domain loopbacks (module
+/// documentation): front end, frames, TS, the checks.
+fn receive_bs(what: &str, x: &[Complex32], fs: f64, s: &BsStream) {
+    let (info, ts_ids, sent) = (&s.info, &s.ts_ids, &s.sent);
     let t = std::time::Instant::now();
-    let s = frontend::symbols(&x, fs, None).unwrap();
+    let s = frontend::symbols(x, fs, None).unwrap();
     let front_s = t.elapsed().as_secs_f64();
     assert!(
         s.trim.abs() <= 0.05,
-        "trim {:+.3} symbol on a clean pulse",
+        "{what}: trim {:+.3} symbol on a clean pulse",
         s.trim
     );
     let r = receive(&s.z, &RxOptions::default());
@@ -324,7 +474,7 @@ fn sample_domain_bs_layout_at_40_msps() {
     };
     let mut corrected = 0;
     for (k, dsf) in data.iter().enumerate() {
-        assert_eq!(dsf.info, info, "data superframe {k}: TMCC");
+        assert_eq!(&dsf.info, info, "data superframe {k}: TMCC");
         for p in &dsf.packets {
             corrected += p.corrected.unwrap_or_else(|| {
                 panic!(
@@ -348,7 +498,7 @@ fn sample_domain_bs_layout_at_40_msps() {
     }
     let mer = data.iter().map(|d| d.mer_db).sum::<f64>() / 3.0;
     eprintln!(
-        "40 Msps, BS layout: trim {:+.4} symbol, carrier {:+.0} Hz, symbol rate {:.1} Bd; main MER {mer:.1} dB; {} superframes decoded (lead: {lead_lost} uncorrectable), data RS-corrected bytes {corrected}; front end and trim search {front_s:.2} s",
+        "40 Msps, BS layout, {what}: trim {:+.4} symbol, carrier {:+.0} Hz, symbol rate {:.1} Bd; main MER {mer:.1} dB; {} superframes decoded (lead: {lead_lost} uncorrectable), data RS-corrected bytes {corrected}; front end and trim search {front_s:.2} s",
         s.trim,
         s.carrier_offset_hz,
         s.symbol_rate_hz,
