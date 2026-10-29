@@ -110,7 +110,8 @@
 //!   while the zero buffers that end the stream still play. Closing (also
 //!   on error or panic) stops the stream, then CTRL 0 (the IQ
 //!   pass-through), then the attenuation and the LO as above; opening for
-//!   IQ sends CTRL 0 first when the bitstream has the block.
+//!   IQ sends CTRL 0 when the bitstream has the block, before the level is
+//!   raised.
 
 use super::{maia, mdns};
 use crate::{
@@ -905,9 +906,11 @@ impl Backend for Pluto {
             loopback: s.dev.loopback,
             block: None,
         };
-        // From here on, dropping `tx` restores the safe state.
-        tx.pass_through()?;
+        // From here on, dropping `tx` restores the safe state. The
+        // pass-through once the attenuation is at its maximum and the DDS
+        // off, so that whatever the DAC then takes cannot go out loud.
         tx.program(cfg, &s, &mut info)?;
+        tx.pass_through()?;
         tx.set_level(&s, &mut info)?;
         info += &format!(
             "; buffers of {} samples, {} in the kernel",

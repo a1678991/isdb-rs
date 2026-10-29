@@ -186,9 +186,10 @@ of 64 MB/s. The block shapes the symbols to the DAC rate on the board.
   queued and sent zeros) are counted as for IQ.
 - **Closing** (also on error or panic): the stream stops, then CTRL 0
   (the IQ pass-through), then the maximum attenuation, the LO down and
-  the loopback off. Opening the IQ path sends CTRL 0 first when the
-  bitstream has the block, so a block left selected by a killed process
-  never takes IQ samples for codes.
+  the loopback off. Opening the IQ path sends CTRL 0 when the bitstream
+  has the block (after the attenuation is at its maximum and the DDS off,
+  before the level is raised), so a block left selected by a killed
+  process never takes IQ samples for codes.
 
 The command sequence is tested against a model of the block's decoder
 (`TxBlock` in `backends/pluto.rs`: refusals, STATUS checks, CTRL 0 after a
