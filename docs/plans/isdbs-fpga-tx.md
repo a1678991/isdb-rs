@@ -130,15 +130,18 @@ Each step is a commit with tests and docs, as the RX path was built
    it reads 0x80000044 bit 2 on both cores; on the DAC core that bit is
    `ext_sync_disarm` and `r1_mode` is 0x80000048 bit 5 (ADI
    `up_dac_common.v`, confirmed). Small, independent, do first.
-2. **Fixed-point model** `isdb_frontend::shape::fixed` (`TxDesign` →
-   `TxParams` with `validate`, the model, codes/packing, vectors):
+2. **Fixed-point model** (done; frozen as §2 says)
+   `isdb_frontend::shape::fixed` (`TxDesign` → `TxParams` with
+   `validate`, the model, codes/packing, vectors):
    bit-exact spec in interpolator.md §4; tests against the f32 `Shaper`
    (≥ 40 dB through an ideal matched filter), through `FastFrontend` at
    40 Msps (≥ 36.0 dB at the 6-bit output), chunking invisible, underrun
    gaps, symmetry enforced. `control::tx` register map, ID word,
    `Encoder::configure_tx`. The CLI's `--offload cpu` for files can use
    this model so that the file path and the FPGA path are the same bits.
-3. **Label path in `isdbs-phy`**: `Transmitter::superframe_codes`
+3. **Label path in `isdbs-phy`** (done: the codes come from one encoder
+   path with the points; loopbacks from the codes byte-exact, symbol and
+   sample domain through the fixed model): `Transmitter::superframe_codes`
    (codes produced natively from the bits, not recovered from the f64
    points: `qpsk_point` and `psk8_point` differ by an ulp), refuse a
    dummy combination with slots (the one case that leaves 0+0i symbols),

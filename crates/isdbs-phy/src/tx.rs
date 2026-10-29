@@ -18,9 +18,17 @@
 //! the next but the six-bit register of the inner coder, which W1 flushes
 //! (§6.3). The symbols are unit-modulus constellation points at one sample
 //! per symbol; pulse shaping is the front end's business.
+//!
+//! The same superframe comes in two forms from the same bits:
+//! [`Transmitter::superframe`] gives the `f64` points ([`Superframe`]),
+//! [`Transmitter::superframe_codes`] their TX boundary codes
+//! ([`SuperframeCodes`], `isdb_frontend::txformat`: 8 + k for the point
+//! e^{jkπ/4} of annexed table 46), which an FPGA transmit block, or
+//! `isdb_frontend::shape::fixed::Interpolator`, shapes. Neither is derived
+//! from the other: one encoder path writes both.
 
 use crate::Cplx;
-use crate::demod::{Mapping, encode_frame_with_state};
+use crate::demod::{Mapping, Point, encode_points};
 use isdb_fec::{ConvEncoder, RS_204_188};
 use isdbs_core::burst::frame_bits;
 use isdbs_core::frame::{
@@ -28,7 +36,7 @@ use isdbs_core::frame::{
     PACKET_BYTES, burst_symbol_position, main_symbol_position,
 };
 use isdbs_core::mainsig::{SYNC_BYTE, frame_bytes, sent_slots};
-use isdbs_core::tmcc::{TM, TmccError, TmccInfo, headers};
+use isdbs_core::tmcc::{CombinationWord, TM, TmccError, TmccInfo, headers};
 
 /// An MPEG-2 TS packet (ITU-T H.222.0 §2.4.3), sync byte 0x47 first.
 pub type Packet = [u8; 188];
@@ -49,8 +57,9 @@ pub const NULL_PACKET: Packet = {
 };
 
 /// BPSK of a bit: 0 at 0°, 1 at 180° (annexed table 46).
+#[cfg(test)]
 fn bpsk(bit: u8) -> Cplx {
-    Cplx::new(if bit & 1 == 0 { 1.0 } else { -1.0 }, 0.0)
+    Cplx::bpsk(bit)
 }
 
 /// A frame's 39 936 symbols in the layout of annexed table 45: the 12
@@ -77,14 +86,36 @@ pub fn frame_symbols(
     header: &[u8; HEADER_BYTES],
     main: &[Cplx],
 ) -> Vec<Cplx> {
+    frame_points(enc, header, main)
+}
+
+/// [`frame_symbols`] as TX boundary codes (`isdb_frontend::txformat`):
+/// the header and bursts as BPSK codes (8 for bit 0, 12 for bit 1), the
+/// main signal's codes (from
+/// [`crate::demod::encode_frame_codes_with_state`]) where
+/// [`main_symbol_position`] puts them.
+///
+/// # Panics
+///
+/// If `main` does not hold [`MAIN_SYMBOLS`] codes.
+pub fn frame_codes(enc: &mut ConvEncoder, header: &[u8; HEADER_BYTES], main: &[u8]) -> Vec<u8> {
+    frame_points(enc, header, main)
+}
+
+/// [`frame_symbols`] and [`frame_codes`], over either kind of [`Point`].
+fn frame_points<P: Point>(
+    enc: &mut ConvEncoder,
+    header: &[u8; HEADER_BYTES],
+    main: &[P],
+) -> Vec<P> {
     assert_eq!(main.len(), MAIN_SYMBOLS, "main-signal symbols of a frame");
-    let mut out = vec![Cplx::new(0.0, 0.0); FRAME_SYMBOLS];
+    let mut out = vec![P::ZERO; FRAME_SYMBOLS];
     let mut k = 0;
     for &byte in header {
         for i in (0..8).rev() {
             let (x, y) = enc.push((byte >> i) & 1);
-            out[k] = bpsk(x);
-            out[k + 1] = bpsk(y);
+            out[k] = P::bpsk(x);
+            out[k + 1] = P::bpsk(y);
             k += 2;
         }
     }
@@ -92,7 +123,7 @@ pub fn frame_symbols(
     let burst = frame_bits();
     for b in 0..BURSTS {
         for j in 0..BURST_SYMBOLS {
-            out[burst_symbol_position(b, j)] = bpsk(burst[b * BURST_SYMBOLS + j]);
+            out[burst_symbol_position(b, j)] = P::bpsk(burst[b * BURST_SYMBOLS + j]);
         }
     }
     for (m, &v) in main.iter().enumerate() {
@@ -109,8 +140,23 @@ pub enum TxError {
     #[error(transparent)]
     Tmcc(#[from] TmccError),
     /// The TMCC information sends no slot (every combination dummy).
+    /// [`TmccInfo::validate`] and [`TxError::DummySlots`] leave no such
+    /// information; kept as a guard.
     #[error("the TMCC information sends no slot")]
     NoSentSlot,
+    /// A dummy combination entry (word 1111) with slots: BO.1408-1 §6.1.2
+    /// sets a dummy entry's slot count to zero, and the slots it would
+    /// cover carry no symbol of any kind (the main signal would hold 0 + 0j
+    /// there, which no TC8PSK label represents).
+    #[error(
+        "TMCC combination entry {entry}: dummy (1111) with {slots} slots, 0 required (BO.1408-1 §6.1.2)"
+    )]
+    DummySlots {
+        /// The entry, 0..4.
+        entry: usize,
+        /// Its slot count.
+        slots: u8,
+    },
     /// [`Transmitter::superframe`] got packet lists for a different number
     /// of TSs than [`Transmitter::ts_count`].
     #[error("packets for {got} TSs, the TMCC carries {want}")]
@@ -138,6 +184,17 @@ pub enum TxError {
         /// Index of the packet in its list.
         index: usize,
     },
+}
+
+/// One superframe as TX boundary codes ([`Transmitter::superframe_codes`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuperframeCodes {
+    /// The [`SUPERFRAME_SYMBOLS`] codes in transmission order: code `n`
+    /// is symbol `n` of [`Superframe::symbols`] for the same input (8 + k
+    /// for the point e^{jkπ/4}, `isdb_frontend::txformat`).
+    pub codes: Vec<u8>,
+    /// As [`Superframe::placed`].
+    pub placed: Vec<(usize, usize, u16)>,
 }
 
 /// One superframe of symbols.
@@ -182,10 +239,22 @@ impl Transmitter {
     /// # Errors
     ///
     /// [`TxError::Tmcc`] when `info` does not
-    /// [`validate`](TmccInfo::validate); [`TxError::NoSentSlot`] when it
-    /// sends no slot.
+    /// [`validate`](TmccInfo::validate); [`TxError::DummySlots`] for a
+    /// dummy combination entry with slots (§6.1.2; [`TmccInfo::assign`]
+    /// never builds one); [`TxError::NoSentSlot`] when it sends no slot.
     pub fn new(info: TmccInfo) -> Result<Self, TxError> {
         info.validate()?;
+        if let Some((entry, c)) = info
+            .combinations
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.word == CombinationWord::Dummy && c.slots != 0)
+        {
+            return Err(TxError::DummySlots {
+                entry,
+                slots: c.slots,
+            });
+        }
         let sent = sent_slots(&info);
         if sent.is_empty() {
             return Err(TxError::NoSentSlot);
@@ -269,6 +338,38 @@ impl Transmitter {
     /// [`TxError::TsCount`], [`TxError::PacketCount`],
     /// [`TxError::SyncByte`]; nothing is sent then.
     pub fn superframe(&mut self, ts: &[&[Packet]]) -> Result<Superframe, TxError> {
+        self.check(ts)?;
+        let (symbols, placed) = self.build(|r, k| &ts[r][k]);
+        Ok(Superframe { symbols, placed })
+    }
+
+    /// [`superframe`](Self::superframe) as TX boundary codes, made from
+    /// the bits by the same encoder (not from the points): for the same
+    /// input and state, code `n` is the code of symbol `n`.
+    ///
+    /// # Errors
+    ///
+    /// As [`superframe`](Self::superframe); nothing is sent then.
+    pub fn superframe_codes(&mut self, ts: &[&[Packet]]) -> Result<SuperframeCodes, TxError> {
+        self.check(ts)?;
+        let (codes, placed) = self.build(|r, k| &ts[r][k]);
+        Ok(SuperframeCodes { codes, placed })
+    }
+
+    /// A superframe of [`NULL_PACKET`]s in every sent slot.
+    pub fn null_superframe(&mut self) -> Superframe {
+        let (symbols, placed) = self.build(|_, _| &NULL_PACKET);
+        Superframe { symbols, placed }
+    }
+
+    /// [`null_superframe`](Self::null_superframe) as TX boundary codes.
+    pub fn null_superframe_codes(&mut self) -> SuperframeCodes {
+        let (codes, placed) = self.build(|_, _| &NULL_PACKET);
+        SuperframeCodes { codes, placed }
+    }
+
+    /// The input rules of [`superframe`](Self::superframe).
+    fn check(&self, ts: &[&[Packet]]) -> Result<(), TxError> {
         if ts.len() != self.ts_count {
             return Err(TxError::TsCount {
                 want: self.ts_count,
@@ -291,17 +392,15 @@ impl Transmitter {
                 });
             }
         }
-        Ok(self.build(|r, k| &ts[r][k]))
-    }
-
-    /// A superframe of [`NULL_PACKET`]s in every sent slot.
-    pub fn null_superframe(&mut self) -> Superframe {
-        self.build(|_, _| &NULL_PACKET)
+        Ok(())
     }
 
     /// The superframe whose relative TS `r` carries `packet(r, k)` as its
-    /// `k`-th packet.
-    fn build<'a>(&mut self, packet: impl Fn(usize, usize) -> &'a Packet) -> Superframe {
+    /// `k`-th packet, as points or codes, and where each packet went.
+    fn build<'a, P: Point>(
+        &mut self,
+        packet: impl Fn(usize, usize) -> &'a Packet,
+    ) -> (Vec<P>, Vec<(usize, usize, u16)>) {
         let n = self.sent.len();
         let mut next = [0usize; TM];
         let mut placed = Vec::with_capacity(FRAMES * n);
@@ -322,15 +421,15 @@ impl Transmitter {
         let frames: Vec<usize> = (0..FRAMES).collect();
         let (info, mapping) = (&self.info, self.mapping);
         let mains = crate::par::map(&frames, |&f| {
-            encode_frame_with_state(&bytes[f], info, f == 0, mapping)
+            encode_points::<P>(&bytes[f], info, f == 0, mapping)
         });
         let mut symbols = Vec::with_capacity(SUPERFRAME_SYMBOLS);
         for (h, (main, end)) in self.headers.iter().zip(mains) {
-            symbols.extend(frame_symbols(&mut self.enc, h, &main));
+            symbols.extend(frame_points(&mut self.enc, h, &main));
             self.enc = end;
         }
         self.superframes += 1;
-        Superframe { symbols, placed }
+        (symbols, placed)
     }
 }
 
@@ -447,6 +546,68 @@ mod tests {
         );
     }
 
+    /// `superframe_codes` and `null_superframe_codes` are the symbols as
+    /// codes: the same length and `placed`, `txformat::point(code)` the
+    /// symbol within 10⁻¹², over consecutive superframes (the inner coder's
+    /// state carried) and under every mapping; the same input errors.
+    #[test]
+    fn codes_are_the_symbols() {
+        use isdb_frontend::txformat;
+        let info = TmccInfo::assign(
+            &[(Combination::Tc8psk2_3, 40), (Combination::Qpsk1_2, 8)],
+            &[(0x4010, 28), (0x4011, 16)],
+        )
+        .unwrap();
+        for bits in [0u8, 1, 2, 4, 7] {
+            let m = Mapping {
+                conjugate: bits & 1 != 0,
+                qpsk_p1_on_q: bits & 2 != 0,
+                tc8psk_c1_is_y: bits & 4 == 0,
+            };
+            let mut ts = Transmitter::new(info.clone()).unwrap().with_mapping(m);
+            let mut tc = ts.clone();
+            for sf in 0..3u8 {
+                let (z, c) = if sf == 1 {
+                    let packets: Vec<Vec<Packet>> = (0..ts.ts_count())
+                        .map(|r| {
+                            (0..ts.packets_per_superframe(r))
+                                .map(|i| {
+                                    let mut p = NULL_PACKET;
+                                    p[4..8]
+                                        .copy_from_slice(&u32::try_from(i).unwrap().to_be_bytes());
+                                    p[8] = u8::try_from(r).unwrap();
+                                    p
+                                })
+                                .collect()
+                        })
+                        .collect();
+                    let refs: Vec<&[Packet]> = packets.iter().map(Vec::as_slice).collect();
+                    (
+                        ts.superframe(&refs).unwrap(),
+                        tc.superframe_codes(&refs).unwrap(),
+                    )
+                } else {
+                    (ts.null_superframe(), tc.null_superframe_codes())
+                };
+                assert_eq!(c.codes.len(), SUPERFRAME_SYMBOLS);
+                assert_eq!(c.placed, z.placed);
+                for (n, (&code, &v)) in c.codes.iter().zip(&z.symbols).enumerate() {
+                    assert!(
+                        (txformat::point(code) - v).norm() < 1e-12,
+                        "mapping {bits} superframe {sf} symbol {n}: code {code}, symbol {v}"
+                    );
+                }
+            }
+            assert_eq!(tc.superframes(), ts.superframes());
+        }
+        let mut t = Transmitter::new(bs()).unwrap();
+        assert_eq!(
+            t.superframe_codes(&[]).unwrap_err(),
+            TxError::TsCount { want: 3, got: 0 }
+        );
+        assert_eq!(t.superframes(), 0);
+    }
+
     /// Every error of `new` and `superframe`.
     #[test]
     fn errors() {
@@ -461,7 +622,25 @@ mod tests {
             word: CombinationWord::Dummy,
             slots: 48,
         };
-        assert_eq!(Transmitter::new(none).unwrap_err(), TxError::NoSentSlot);
+        assert_eq!(
+            Transmitter::new(none).unwrap_err(),
+            TxError::DummySlots {
+                entry: 0,
+                slots: 48
+            }
+        );
+        // a dummy entry with slots after a real one: validates (the counts
+        // sum to 48) but would leave 0 + 0j symbols
+        let mut tail = bs();
+        tail.combinations[0].slots = 44;
+        tail.combinations[1] = CombinationEntry {
+            word: CombinationWord::Dummy,
+            slots: 4,
+        };
+        assert_eq!(tail.validate(), Ok(()));
+        let e = Transmitter::new(tail).unwrap_err();
+        assert_eq!(e, TxError::DummySlots { entry: 1, slots: 4 });
+        assert!(e.to_string().contains("§6.1.2"), "{e}");
         let mut t = Transmitter::new(bs()).unwrap();
         let full = vec![NULL_PACKET; 128];
         assert_eq!(

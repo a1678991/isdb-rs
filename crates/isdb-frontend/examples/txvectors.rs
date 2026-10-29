@@ -13,8 +13,9 @@
 //! | `tx-3-long-stall.json` | 40 Msps, 10 dB: 2 000 point codes, one stall of 64 requests (512 symbols) before word 100 |
 //! | `tx-4-bank.json` | 61.44 Msps, 3 dB: another step, shift (6) and bank, which the simulation must load through the port (the `gpio` words); the output clips |
 //!
-//! The vectors with real ISDB-S frames come from `isdbs-phy`'s
-//! `examples/txvectors.rs` (`tx-5-isdbs.json`).
+//! The vectors with real ISDB-S codes come from `isdbs-phy`'s
+//! `examples/txvectors.rs` (`tx-5-isdbs.json`; `isdb-frontend` cannot
+//! depend on the transmitter).
 
 use isdb_frontend::shape::fixed::TxDesign;
 use isdb_frontend::txformat;
