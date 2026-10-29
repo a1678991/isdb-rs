@@ -1,8 +1,8 @@
-# fpga — FPGA implementations of receive stages
+# fpga — FPGA implementations of receive and transmit stages
 
-Amaranth HDL for the stages of the receive chain that a radio's FPGA
-can run instead of the host CPU (plan: the run-time choice between CPU
-and FPGA implementations of a stage, like a SIMD kernel). Each stage has
+Amaranth HDL for the stages of the receive and transmit chains that a
+radio's FPGA can run instead of the host CPU (plan: the run-time choice
+between CPU and FPGA implementations of a stage, like a SIMD kernel). Each stage has
 a Rust reference model in the workspace that it must match **bit for
 bit**. The model writes test vectors, and the HDL simulation here
 reproduces them.
@@ -22,6 +22,11 @@ per register bit (11 to 22 inputs, 560 in all), derived from the
 polynomial by symbolic simulation of the bit-serial register, not typed
 in.
 
+The second is the ISDB-S transmitter's pulse shaper (`SymbolsTx`,
+[below](#the-transmit-block-symbolstx)): one 4-bit code per symbol in
+from the TX DMA (14.4 MB/s), 12-bit I/Q at 40 Msps out to the DAC, in the
+place of Tezuka's TX FIR interpolator.
+
 **Clock.** The block runs on `util_ad9361_adc_fifo/dout_clk` =
 `util_ad9361_divclk` = `axi_ad9361` l_clk / 4 (maia-hdl
 `projects/common/xilinx_ad9361.tcl`: `SEL_0_DIV 4` with `lvds`, which
@@ -31,7 +36,8 @@ and DAC are both in r1_mode). Measured on the board (read-only, 2026-10-26):
 l_clk = 104 858 × 100 MHz / 2¹⁶ = 160.0 MHz; register 0x80000044
 (control) bit 2 (`r1_mode`) = 0 on the ADC core (on the DAC core r1_mode
 is register 0x80000048 bit 5, and 0x44 bit 2 is `ext_sync_disarm`; the
-DAC's r1_mode is still to be read, docs/plans/isdbs-fpga-tx.md §5); `rx_path_rates` RXSAMP
+DAC's r1_mode reads 0 too, 2026-10-29, VERIFICATION.md "ISDB-S
+transmitter in the FPGA: board checks"); `rx_path_rates` RXSAMP
 40 MHz. So **the block clock is the sample rate, 40 MHz, one sample per
 clock**, and `util_wfifo` hands samples over in bursts of eight on
 consecutive clocks. (The format-3 design assumed four clocks per sample:
@@ -49,11 +55,14 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 |---|---|
 | `isdb_fpga/frontend.py` | `SymbolFrontend`: mixer, polyphase filters (output bank `k` on every tap, detector banks `h`, `g` on the centre 8; one 64-entry coefficient ROM per tap and bank), adder trees, timing loop, AGC, quantiser, packer; one sample per clock, fully pipelined. The cycle-by-cycle schedule is in its docstring |
 | `isdb_fpga/control.py` | `Control`: the command decoder and register file on `up_adc_gpio_out`, the ID word and readback on `up_adc_gpio_in` (`isdb_frontend::control`) |
-| `isdb_fpga/top.py` | `SymbolsRx`: the block for the bitstream (front end + control + output selection), and where it connects in Tezuka's block design |
-| `isdb_fpga/sim.py` | simulation against a vectors file; `python -m isdb_fpga.sim VECTORS.json [--pattern every\|wfifo\|jitter] [--load-port] [--via-gpio]` |
-| `tests/test_isdb_fpga.py` | unit tests (the CRC-32C network against a bit-serial register and the standard check value) and the vector tests |
-| `synth/estimate.py` | Yosys `synth_xilinx` resource estimate |
-| `synth/verilog.py` | Verilog of `SymbolsRx` (through the venv's Yosys) |
+| `isdb_fpga/top.py` | `SymbolsRx` and `SymbolsTx`: the blocks for the bitstream (core + control + output selection), and where they connect in Tezuka's block design |
+| `isdb_fpga/tx.py` | `SymbolTx`: the transmit datapath (accumulator, code line, one RAMB18 per tap pair, multiplier-free terms, adder trees, rounding and saturation), the DMA unpacker and the counters; `TxControl` on `up_dac_gpio_out` / `up_dac_gpio_in`. The schedule is in its docstring |
+| `isdb_fpga/txmodel.py` | a Python model of the transmit block's contract and the TX vectors writer (`python -m isdb_fpga.txmodel OUT.json [--preset isdbs\|stress]`), the stand-in for the Rust model's vectors |
+| `isdb_fpga/sim.py` | simulation against a vectors file; `python -m isdb_fpga.sim VECTORS.json [--pattern every\|wfifo\|jitter] [--load-port] [--via-gpio]`; a TX vectors file: `[--pattern every\|rfifo\|jitter] [--latency N] [--load-port] [--via-gpio]` |
+| `tests/test_isdb_fpga.py` | unit tests (the CRC-32C network against a bit-serial register and the standard check value) and the vector tests of both blocks |
+| `synth/estimate.py` | Yosys `synth_xilinx` resource estimate (of `SymbolsTx` for a TX vectors file) |
+| `synth/verilog.py` | Verilog of `SymbolsRx` or `SymbolsTx` (through the venv's Yosys) |
+| `synth/tx_parts.py` | the transmit block's estimate split: the whole block, the core, the core with a constant SHIFT |
 
 ## Running
 
@@ -62,10 +71,17 @@ The Python environment is a uv project pinned in `pyproject.toml` /
 in user space). Nothing here needs a vendor toolchain:
 
 ```sh
-mise run fpga:test       # vectors from the Rust model, then the HDL simulation
-mise run fpga:estimate   # resource estimate of the 32-tap block
-mise run fpga:verilog    # fpga/build/isdb_symbols_rx.v for a vendor flow
+mise run fpga:test         # vectors from the models, then the HDL simulation of both blocks
+mise run fpga:estimate     # resource estimate of the 32-tap block
+mise run fpga:verilog      # fpga/build/isdb_symbols_rx.v for a vendor flow
+mise run fpga:tx-estimate  # resource estimate of the transmit block
+mise run fpga:tx-verilog   # fpga/build/isdb_symbols_tx.v (the default bank as BRAM init)
 ```
+
+(`fpga:tx-vectors`, which `fpga:test` runs, writes the Python model's
+two TX sets; the Rust model's TX vectors, in the same directory, are
+simulated too. On a host where `uv run --locked` asks for a relock, run
+the steps with `uv run --frozen`.)
 
 Results (format 4, 2026-10-26):
 
@@ -96,7 +112,138 @@ Results (format 4, 2026-10-26):
   uses 106 of the xc7z020's 220: 28 `axi_ad9361`, 18 maia-sdr, 40 the
   DVB-S2 transmitter (encoder 2, RRC interpolator 38) and 20 the TX FIR
   interpolator. The isdb image leaves out the DVB-S2 transmitter
-  (`apply.sh`), which reception does not use: 66 + 112 = 178 of 220.
+  (`apply.sh`), which reception does not use: 66 + 112 = 178 of 220
+  (158 with the transmit block in the TX FIR's place, below).
+
+## The transmit block (`SymbolsTx`)
+
+The last stage of the ISDB-S transmitter (plan
+[isdbs-fpga-tx.md](../docs/plans/isdbs-fpga-tx.md), step 5): the host
+keeps the coder (`isdbs_phy::tx`) and sends one code per symbol; the
+block maps the codes to the eight points e^{jkπ/4} that every ISDB-S
+symbol is on and interpolates them with the root-raised-cosine pulse to
+the DAC rate (40 Msps at 28.86 Mbaud, 1.386 samples per symbol). The
+model it must match bit for bit is `isdb_frontend::shape::fixed`
+(Rust); `isdb_fpga/txmodel.py` states the same contract in Python and
+writes vectors of the same shape, which the HDL was built and checked
+against before the Rust vectors existed.
+
+- **Codes.** 4 bits per symbol: 0 = the zero symbol, 8 + k = the point
+  e^{jkπ/4}, 1..7 reserved (zero). One DMA sample (the I and Q words
+  `util_upack2` delivers per `fifo_rd_en`) carries 8: codes 0..3 in the
+  I word (code 0 in bits 3..0, first in time), 4..7 in the Q word.
+- **Datapath** (`tx.py` docstring: the schedule, D0..D9). Q0.24 phase
+  accumulator (`step = round(2²⁴·R/fs)`), a line of 2S = 24 codes,
+  P = 512 rows at (q + ½)/P picked by q = frac[23:15]. Per tap one ROM
+  value, bank a for even k and b = a/√2 for odd k, and a sign or zero per
+  component: no multiplier. The bank is exactly symmetric
+  (a[q][t] = a[P−1−q][2S−1−t]), so one true-dual-port RAMB18 per tap
+  pair holds a and b for both taps (port A at {k_t & 1, q}, also the load
+  port; port B at {k_u & 1, ~q}). A term is v, ~v (= −v − 1) or 0 and
+  the count of negated terms is one more leaf of the 25 → 1 adder tree
+  (exact, and no carry chain per tap); `round_shift` by the run-time
+  SHIFT, saturation to 12 bits, `dac_data[15:4]`. No forced wrap at
+  START: the line is all zero, frac 0, sample 0 is 0. Latency 9 enabled
+  clocks, constant; nothing feeds back.
+- **Clock and rate.** The DAC unpacker's clock, `util_ad9361_divclk`
+  (the RX block's too: the sample rate, 40 MHz). One output sample per
+  request strobe (`util_rfifo`'s `din_valid_0`, bursts of eight that
+  average the sample rate): the whole pipeline is clock-enabled by it,
+  as Tezuka's FIR runs on `dac_valid` in this place. While selected the
+  block holds the rfifo's `din_valid_in` high (as txfir.tcl's
+  `dac_fifo_valid_or`), so the rfifo writes on every clock; since the
+  din clock is the DAC rate, its request is high on every clock in steady
+  state and the two agree (a skipped strobe would repeat a sample, as it
+  would with Tezuka's FIR).
+- **DMA words.** An 8-code unpack register and one staging word: the
+  block keeps two words held or requested (`fifo_rd_en`, one pulse per
+  word) and takes the answers in order at any fixed latency (one clock
+  at the upack's default PIPELINE_STAGES 0; tested at 1 and 3). A word
+  lasts at least 8 samples, so the symbol cadence never waits on the
+  DMA. An answer with `fifo_rd_underflow` instead of `fifo_rd_valid` is
+  a word of 8 zero symbols: when its first symbol enters, MISSED += 8,
+  FIRST_MISS latches CONSUMED at the first miss, the sticky underrun bit
+  is set; CONSUMED counts the symbols entered from delivered words.
+  Counting at entry makes the counters a function of the sample count,
+  independent of the prefetch. Requests start 4 clocks after the block
+  becomes active (an answer to a pass-through read is never taken for
+  its own); samples start once the first word is in. After START the
+  output is 0 until the first new sample arrives; while not running it
+  is 0.
+
+| Port | Connects to |
+|---|---|
+| `req` | `axi_ad9361_dac_fifo/din_valid_0` (the rfifo's request) |
+| `rd_en` | `util_ad9361_dac_upack/fifo_rd_en` (`req` itself when not selected) |
+| `rd_data0`, `rd_data1`, `rd_valid`, `rd_underflow` | `util_ad9361_dac_upack/fifo_rd_data_0`, `_1`, `fifo_rd_valid`, `fifo_rd_underflow` |
+| `pass_data0`, `pass_data1`, `pass_valid` | the same unpacker nets (today's path, passed through) |
+| `out_data0`, `out_data1`, `out_valid` | `axi_ad9361_dac_fifo/din_data_0`, `_1`, `din_valid_in_0` and `_1` (valid high while selected) |
+| `gpio_out` | `axi_ad9361/up_dac_gpio_out` (bit 0 not used: txfir's `active` in the stock image, also written by the kernel's interpolation attribute) |
+| `gpio_in` | `axi_ad9361/up_dac_gpio_in` (unconnected in Tezuka v0.3.24: reads 0, VERIFICATION.md "board checks") |
+| clock, reset | `util_ad9361_divclk/clk_out`, `util_ad9361_divclk_reset/peripheral_reset` (the unpacker's) |
+
+Channels 2 and 3 (TX2), the channel enables and `din_unf` (the DAC
+core's underflow flag, 0x80000088 bit 0: it now also reports the
+block's missed words) stay as `xilinx_ad9361.tcl` connects them;
+`fpga/tezuka/isdb_symbols_tx.tcl` has the exact connections. The host
+enables `voltage0` and `voltage1` of `cf-ad9361-dds-core-lpc` (both
+words of a sample are codes; with `voltage0` alone Q0 would come from
+the DDS).
+
+**Control** (`TxControl`): the RX block's command protocol (`control.py`:
+two-register synchroniser, toggle bit 31, ops NOP 0 / ADDR 1 / HI 2 /
+WRITE 3 / READ 4 / CTRL 5 / WRITE_S 6, argument in bits 27..1, bit 0
+untouched) on the DAC core's GPIO pair, `cf-ad9361-dds-core-lpc` debug
+addresses 0x800000BC (`gpio_out`) and 0x800000B8 (`gpio_in`). The ID word
+after any command but READ, and after reset, is 0xB5D11918: magic
+0xB5D1, version 1, log2 P = 9, 24 taps; a bitstream without the block
+reads 0.
+
+| Address | Register |
+|---|---|
+| 0x00 | STEP (24 bits kept) |
+| 0x01 | SHIFT (5 bits) |
+| 0x02 | STATUS, read only: bit 0 run, bit 1 selected, bit 2 underrun (sticky until START) |
+| 0x03 / 0x04 / 0x05 / 0x06 | CONSUMED / MISSED / FIRST_MISS / SAMPLES (outputs since START, low 32 bits), read only |
+| 0x4000 + q·32 + t | bank a, row q, tap t < 2S (a far tap t ≥ S writes its mirror, so either half loads the bank) |
+| 0x8000 + q·32 + t | bank b, likewise |
+| CTRL argument | bit 0 RUN, bit 1 START (one pulse: frac, the line, the counters, the unpack register), bit 2 SELECT (the block drives the rfifo and owns the upack's read) |
+
+The default bank (ISDB-S, 40 Msps, 10 dB backoff) is the memories'
+initial content (`mise run fpga:tx-verilog` takes it from a vectors
+file), so a configuration is STEP, SHIFT and CTRL; another rate or
+backoff reloads the bank (12 288 writes of the near half, 7.6 s through
+iiod). A start without lead-in misses: CTRL START|SELECT (the block owns
+the DMA, requests nothing and sends zeros), start the TX DMA (push the
+first buffers), then CTRL RUN|SELECT; with RUN at once the words the DMA
+does not have yet count as missed from FIRST_MISS 0. CTRL 0 makes the
+block transparent again.
+
+Results (2026-10-29, Python-model vectors: `txvec-py-1-isdbs.json`,
+ISDB-S at 40 Msps with 5 DMA stalls of 1 to 6 requests, and
+`txvec-py-2-stress.json`, a symbol on all samples but one, SHIFT 2 below
+the bank's so that 70 % of the samples saturate, a stall at the first
+word and the DMA dry before the end; 3 000 samples each):
+
+- **Simulation:** bit-exact, every sample's frac, q, line, carry and
+  entered code, its sums before rounding, its output, and the four
+  counters: with a request on every clock, with `util_rfifo`'s bursts of
+  eight (and pauses), with random strobes and a 3-clock upack; with the
+  bank loaded through the port (every tap, and the near half only) into
+  empty memories; with the whole configuration (STEP, SHIFT, both banks:
+  13 318 commands) sent on `gpio_out`, the ID word and the readback of
+  STEP, SHIFT, STATUS and the counters on `gpio_in`; with START while
+  running (the pipeline's old content never reaches the output). One LSB
+  off in a bank-a entry, in a bank-b entry, or in a far tap written
+  through the port fails the comparison, and so does one stalled request
+  more than the vectors say.
+- **Estimate** of `SymbolsTx` (Yosys `synth_xilinx`, before place and
+  route): **0 DSP48E1, 2 711 LUT, 2 904 FF, 12 RAMB18E1**, 324 CARRY4,
+  no LUTRAM. The datapath alone (the throwaway sketch,
+  `synth/tx_sketch.py mux 512 12`) was 1 962 LUT / 2 266 FF; the rest is
+  the run-time SHIFT (130 LUT), the control and readback, the unpacker,
+  the counters and the clock enable (`synth/tx_parts.py`). Device: 5 % of
+  the xc7z020's LUTs.
 
 ## Integration
 
@@ -140,21 +287,26 @@ node and a driver. The GPIO route needs neither.
 ### Building the PlutoSky R2 bitstream (`tezuka/`)
 
 ```sh
-fpga/tezuka/build.sh WORK stock   # the unmodified design
-fpga/tezuka/build.sh WORK isdb    # with SymbolsRx
+fpga/tezuka/build.sh WORK stock     # the unmodified design
+fpga/tezuka/build.sh WORK isdb      # with SymbolsRx and SymbolsTx
+fpga/tezuka/build.sh WORK isdb-tx   # with SymbolsTx alone
 fpga/tezuka/sdbin.sh WORK/out/isdb/plutoskyr2.xsa isdb_top.bin
 ```
 
 `build.sh` clones the pinned upstream revisions into WORKDIR (outside
 the repository; several GB), builds maia-hdl's IP cores and the
-`plutoskyr2` XSA. `apply.sh` (called in `isdb` mode) regenerates
-`fpga/build/isdb_symbols_rx.v`, sets an `isdb_symbols` flag in the
-plutoskyr2 case of maia-hdl's `system_bd.tcl` and sources
-`isdb_symbols.tcl` after `cs12_cs8.tcl`, drops the plutoskyr2 case's
-`dvb` flag (the DVB-S2 transmitter, for its DSP slices) and adds
-`isdb_symbols.xdc` (below). `sdbin.sh` turns an XSA into
-the file U-Boot loads from the SD card (Tezuka's `postimage-sd.sh`
-conversion).
+`plutoskyr2` XSA. `apply.sh` (called in the `isdb` modes; `--tx-only`
+for `isdb-tx`) regenerates `fpga/build/isdb_symbols_rx.v` and
+`isdb_symbols_tx.v`, sets the `isdb_symbols` and `isdb_symbols_tx` flags
+in the plutoskyr2 case of maia-hdl's `system_bd.tcl`, sources
+`isdb_symbols.tcl` after `cs12_cs8.tcl` and `isdb_symbols_tx.tcl` where
+`txfir.tcl` would be, drops the plutoskyr2 case's `dvb` flag (the DVB-S2
+transmitter, for its DSP slices, and because its AXIS switches would sit
+in the DMA path the transmit block reads) and its `txfir` flag (the ×8
+TX FIR, whose place the transmit block takes), and adds
+`isdb_symbols.xdc` and `isdb_symbols_tx.xdc` (below). `sdbin.sh` turns
+an XSA into the file U-Boot loads from the SD card (Tezuka's
+`postimage-sd.sh` conversion).
 
 | Upstream | Revision |
 |---|---|
@@ -174,9 +326,17 @@ oss-cad-suite); the XSA target built directly (the Makefile's
 in an install to the upstream author's path); dvb_fpga's own submodules
 fetched recursively.
 
-**Status (2026-10-26): the format-4 image builds and closes timing with
+**Status (2026-10-26): the format-4 image (the front end alone: the
+`isdb` mode before the transmit block) builds and closes timing with
 Vivado 2026.1 (ADI's "Timing Constraints" check passes); `isdb_top.bin`
-is ready to deploy. Not yet run on the board.**
+is ready to deploy. Not yet run on the board.** The image with the
+transmit block (2026-10-29) is not built yet (plan step 6). Expected,
+from the table below, Tezuka's figures for the TX FIR and the Yosys
+estimate: DSP 178 − 20 = **158** (72 %), LUT ≈ 21 694 − 564 + 2 700 ≈
+**23.8k** (45 %), FF ≈ 28 421 − 1 297 + 2 900 ≈ 30.0k (28 %), BRAM36
+62 + 6 = **68** (49 %); the `isdb-tx` image 46 DSP. Its paths are short
+(the deepest a 25-bit add or the 5-level barrel shift) in the same
+62.5 MHz constraint as the front end's.
 
 | xc7z020clg484-2 | LUT | FF | BRAM36 | DSP | WNS | WHS |
 |---|---|---|---|---|---|---|
@@ -210,7 +370,9 @@ before `util_clkdiv`'s generated clocks exist, so the block was still
 timed in the r1_mode clock. `use_dsp = "no"` on the adders and the XDC
 as implementation-only, processed late, fixed both.
 
-`isdb_symbols.xdc`: `gpio_out` into the block's synchroniser is a false
+`isdb_symbols.xdc` (and `isdb_symbols_tx.xdc`, the same three on the DAC
+core's `up_dac_gpio_out`, `up_rdata` of `i_up_dac_common` and the
+`isdb_symbols_tx` cells): `gpio_out` into the block's synchroniser is a false
 path (Tezuka's and ADI's constraints declare the same register's bits 0–2
 false paths); `gpio_in` into `axi_ad9361`'s `up_rdata` a datapath-only
 max delay (the word is static whenever the host reads it); the block's
@@ -220,8 +382,11 @@ r1_mode is ever set (`isdb-radio` pluto backend reads register
 0x80000044 bit 2 of the ADC core and 0x80000048 bit 5 of the DAC core).
 
 **What the image leaves out:** Tezuka's DVB-S2 transmitter (`dvb.tcl`,
-40 DSP48E1), for the DSP budget. To transmit DVB-S2, boot the stock
-`system_top.bin`.
+40 DSP48E1), for the DSP budget, and its ×8 TX FIR interpolator
+(`txfir.tcl`, 20 DSP48E1; the kernel's parent/8 `sampling_frequency` of
+the DDS device then has no effect). To transmit DVB-S2, or at sample
+rates below the AD9361's 2.08 Msps (what the ×8 FIR is for), boot the
+stock `system_top.bin`.
 
 **Deploying.** Never flash. The card's FAT
 partition already holds several bitstreams (`system_top.bin`,
@@ -252,6 +417,25 @@ reproduces the card's `system_top.bin` byte for byte (sha256
    must be identical (the FPGA vectors are the bench version of this).
 4. Rest of the chain: `isdb iq s3sync --read fpga.sym` (Es/N0 as from
    the CPU front end) and `isdb rx --system isdbs3` on the symbols.
+
+**Verifying the transmit block** (plan §4.3; nothing radiated: the
+AD9361's data-port loopback, TX LO down, which the board checks found
+sample-exact; the host side is plan step 4):
+
+1. `cf-ad9361-dds-core-lpc` register 0x800000B8 reads the ID word
+   0xB5D11918 (the stock and the receive-only bitstreams read 0); after
+   CTRL RUN|SELECT, STATUS (0x02) reads 3.
+2. `isdb tx --system isdbs --radio pluto:loopback=on --offload fpga
+   --rf-enable` in one process and `isdb rx --system isdbs --radio pluto
+   --offload fpga` in another (two libiio contexts, both at 40 Msps):
+   every TS byte-exact against its input, 0 uncorrectable, 0 host
+   underruns, MISSED = 0, 0 RX losses, 8PSK MER ≥ 36.0 dB at the 6-bit
+   output, the measured trim within ±0.05 T of 0.
+3. Bit-exactness on the board: a buffered 12-bit IQ capture in loopback
+   equals the model's samples for the same codes after an offset search
+   (the TX vectors are the bench version of this).
+4. A deliberate starvation run: FIRST_MISS lands in the superframe the
+   receiver reports lost.
 
 ## Licences
 

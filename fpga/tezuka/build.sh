@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Build the PlutoSky R2 bitstream (XSA) of Tezuka v0.3.24, stock or with the
-# isdb-rs symbol front end, from the pinned upstream revisions.
+# isdb-rs blocks, from the pinned upstream revisions.
 #
-# Usage: fpga/tezuka/build.sh WORKDIR [stock|isdb]
+# Usage: fpga/tezuka/build.sh WORKDIR [stock|isdb|isdb-tx]
 #   WORKDIR  a directory outside this repository with room for the sources
 #            and the Vivado run (several GB; an NFS path is fine)
 #   stock    the unmodified design, to check the toolchain (default)
 #   isdb     with SymbolsRx (fpga/build/isdb_symbols_rx.v) on the RX path
+#            and SymbolsTx (fpga/build/isdb_symbols_tx.v) on the DAC path
+#   isdb-tx  with SymbolsTx alone
 #
 # Needs: Vivado (VIVADO_SETTINGS: the path of its settings64.sh)
 # with Zynq-7000 devices and a licence that covers xc7z020 (the free BASIC
@@ -24,7 +26,7 @@
 #     XilinxUnisimLibrary  1c8e05fd1e9a79ceb8b996a0996674122eed086f (submodule)
 set -euo pipefail
 
-WORK=${1:?usage: fpga/tezuka/build.sh WORKDIR [stock|isdb]}
+WORK=${1:?usage: fpga/tezuka/build.sh WORKDIR [stock|isdb|isdb-tx]}
 MODE=${2:-stock}
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
@@ -32,7 +34,7 @@ VIVADO_SETTINGS=${VIVADO_SETTINGS:?set VIVADO_SETTINGS to the path of Vivado's s
 TEZUKA_REV=a304a1f7ecba49dc4cd9d57a7935ec52504c7334
 MAIA_REV=f7092ba
 
-case "$MODE" in stock|isdb) ;; *) echo "mode: stock or isdb" >&2; exit 2 ;; esac
+case "$MODE" in stock|isdb|isdb-tx) ;; *) echo "mode: stock, isdb or isdb-tx" >&2; exit 2 ;; esac
 case "$WORK" in "$REPO"|"$REPO"/*) echo "WORKDIR must be outside the repository" >&2; exit 2 ;; esac
 mkdir -p "$WORK"
 cd "$WORK"
@@ -68,6 +70,8 @@ git -C maia-sdr checkout -q -- maia-hdl/projects
 git -C maia-sdr clean -q -fdx -- maia-hdl/projects/tezuka maia-hdl/projects/common maia-hdl/projects/boards
 if [ "$MODE" = isdb ]; then
     "$HERE/apply.sh" "$WORK/maia-sdr" "$REPO"
+elif [ "$MODE" = isdb-tx ]; then
+    "$HERE/apply.sh" "$WORK/maia-sdr" "$REPO" --tx-only
 fi
 
 # The install target copies to a hardcoded path of the upstream author's

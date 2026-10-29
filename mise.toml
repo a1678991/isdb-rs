@@ -124,9 +124,17 @@ run = [
   "cargo run -q --release --locked -p isdb-frontend --example vectors -- fpga/build/vec-4-s-t32-trim.json - s 32 3000 6 8 -0.075",
 ]
 
+[tasks."fpga:tx-vectors"]
+description = "write the transmit block's test vectors from its Python model (fpga/isdb_fpga/txmodel.py) into fpga/build"
+dir = "fpga"
+run = [
+  "uv run --locked python -m isdb_fpga.txmodel build/txvec-py-1-isdbs.json --preset isdbs",
+  "uv run --locked python -m isdb_fpga.txmodel build/txvec-py-2-stress.json --preset stress",
+]
+
 [tasks."fpga:test"]
-description = "simulate the FPGA front end against the Rust model, bit for bit"
-depends = ["fpga:vectors"]
+description = "simulate the FPGA front end and transmit block against their models, bit for bit"
+depends = ["fpga:vectors", "fpga:tx-vectors"]
 dir = "fpga"
 run = "uv run --locked python -m unittest discover -s tests -v"
 
@@ -135,6 +143,18 @@ description = "Verilog of the 32-tap front end block for a vendor flow (fpga/bui
 depends = ["fpga:vectors"]
 dir = "fpga"
 run = "uv run --locked python synth/verilog.py build/vec-2-s3-t32.json 32 build/isdb_symbols_rx.v"
+
+[tasks."fpga:tx-verilog"]
+description = "Verilog of the transmit block, the default bank as BRAM init (fpga/build/isdb_symbols_tx.v)"
+depends = ["fpga:tx-vectors"]
+dir = "fpga"
+run = "uv run --locked python synth/verilog.py build/txvec-py-1-isdbs.json build/isdb_symbols_tx.v"
+
+[tasks."fpga:tx-estimate"]
+description = "Yosys synth_xilinx resource estimate of the transmit block"
+depends = ["fpga:tx-vectors"]
+dir = "fpga"
+run = "uv run --locked python synth/estimate.py build/txvec-py-1-isdbs.json"
 
 [tasks."fpga:estimate"]
 description = "Yosys synth_xilinx resource estimate of the 32-tap front end"
