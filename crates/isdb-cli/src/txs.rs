@@ -1051,7 +1051,10 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
             Ok((a.tune.config(&t, bb, spec, &a.gain), t))
         },
         |path| {
-            if crate::tx::is_stream_path(path) {
+            // the data file first: a sidecar is never left without one
+            let stream = crate::tx::is_stream_path(path);
+            let sink = FileSink::create(path, a.iq_format, a.backoff_db)?.with_cf32_backoff();
+            if stream {
                 info!(
                     target: "isdb::tx",
                     "--iq {path}: a stream, no SigMF sidecar written (`isdb rx --iq` needs one to read ISDB-S from a file)"
@@ -1070,7 +1073,7 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
                     .with_context(|| format!("write {}", meta.display()))?;
                 info!(target: "isdb::tx", sidecar = %meta.display(), "SigMF metadata: {}", meta.display());
             }
-            Ok(FileSink::create(path, a.iq_format, a.backoff_db)?.with_cf32_backoff())
+            Ok(sink)
         },
     )?;
     let lead = a.sat.lead_superframes.unwrap_or(1);
