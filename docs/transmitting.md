@@ -4,7 +4,8 @@
 IQ file or a radio (`--radio`; the backends are HackRF One, `hackrf`,
 and the ADALM-Pluto family, `pluto`, see [below](#adalm-pluto-and-plutosky-r2)). This page covers the conducted bench set-up, the
 levels and channel plan, the `isdb tx` inputs and options, relaying a
-recorded program, ISDB-S (`--system isdbs`, to IQ files; [below](#isdb-s-bs-and-110-cs)),
+recorded program, ISDB-S (`--system isdbs`, to IQ files, and to a Pluto
+whose FPGA has the transmit block; [below](#isdb-s-bs-and-110-cs)),
 and what real receivers turned out to need.
 
 ## Safety and legal requirements
@@ -132,6 +133,9 @@ Device arguments, gains and ranges are listed in the
   streams (with ADI's firmware iiod runs on one enabled CPU and cannot
   serve 65 MB/s; not yet retested on Tezuka, which enables both), so
   the receiver does not lock; TX and RX each keep real time on their own.
+  ISDB-S through the FPGA blocks loads the link far less (14.4 MB/s of
+  codes out, 43 MB/s of symbols back): the self-test of
+  [the ISDB-S section](#isdb-s-bs-and-110-cs).
 - **Ports.** Never transmit into an open TX port or an antenna; connect
   the attenuators (or a dummy load) first. `channel=2` selects TX2/RX2
   (firmware mode `2r2t`).
@@ -568,17 +572,74 @@ streaming"); a HackRF stops at 20 Msps. `--radio` is wired through the
 same `--rf-enable` / `--dry-run` gate and backends: `--channel BS1` is
 tuned at its IF (1049.48 MHz; outside the UHF band, so with
 `--freq-unrestricted`), the sample rate is `--rate` (ppm-corrected) and
-`--bb-filter-hz` defaults to 40 MHz, the Pluto's widest TX filter. A Pluto
-then underruns (counted in the status lines; `isdb tx` warns at start),
-and the HackRF backend refuses 40 Msps. Continuous ISDB-S transmission
-needs a modulator in the radio's FPGA, the mirror of the symbol front
-end; that is future work. Test the chain with files and `isdb loopback
---system isdbs` ([receiving.md](receiving.md#software-loopback)).
+`--bb-filter-hz` defaults to 40 MHz, the Pluto's widest TX filter. With
+IQ samples a Pluto then underruns (counted in the status lines; `isdb tx`
+warns at start), and the HackRF backend refuses 40 Msps. Test the chain
+with files and `isdb loopback --system isdbs`
+([receiving.md](receiving.md#software-loopback)).
+
+**To a radio — the FPGA transmit block.** A PlutoSky R2 booted with the
+isdb bitstream that has the transmit block (`SymbolsTx`,
+[fpga/README.md](../fpga/README.md) "The transmit block") takes the
+symbols instead of the samples: one 4-bit code per symbol, eight per DMA
+sample, 14.43 MB/s, which the block shapes on the board with the
+root-raised-cosine interpolator of `isdb_frontend::shape::fixed`
+(512 phases × 24 taps, the same arithmetic bit for bit) at the DAC rate.
+`--offload` chooses:
+
+- `auto` (default): the codes when the radio reports a compatible block
+  (with `--rf-enable` it is probed read-only, one register, before it is
+  opened), else IQ samples as above;
+- `fpga`: the codes, an error without the block;
+- `cpu`: IQ samples always. `--iq` files always get the CPU's samples
+  (`--offload fpga` with `--iq` is refused).
+
+A dry run opens nothing and so cannot probe: `--offload fpga --dry-run`
+prints the block's settings (the modulator, the link at 14.43 MB/s, the
+buffers and `kbuffers`, the level as the block's backoff), `auto` both
+paths. On air come the same pre-roll frame, lead superframes, data and
+null flush frame as on the IQ path; the producer runs at about 11× real
+time without the shaper (release build). Opening configures the block
+(13 315 commands, about 8 s through iiod), selects it before any code is
+streamed and starts it once the stream's first buffer is in the board,
+so a clean run misses no symbol; the status lines add the block's MISSED,
+the summary its CONSUMED, MISSED, FIRST_MISS and the DAC underflow flag.
+Closing, also on an error, stops the stream, puts the DAC back on the IQ
+pass-through, then the attenuation at its maximum and the LO down. The
+device arguments and their defaults (`buffer=65536`, `kbuffers=16`, TX1
+only) are in the [`isdb-radio` README](../crates/isdb-radio/README.md).
 
 ```sh
 # check the settings, nothing opened
 isdb tx --system isdbs --radio pluto --channel BS1 --freq-unrestricted --gain att=60 --dry-run
+isdb tx --system isdbs --radio pluto --channel BS1 --freq-unrestricted --offload fpga --dry-run
 ```
+
+**The self-test, nothing radiated.** The AD9361's digital data-port
+loopback (`loopback=on`: the TX LO powered down, the attenuation at its
+maximum) returns the DAC words to the RX path sample-exact (VERIFICATION.md
+"ISDB-S transmitter in the FPGA: board checks"), so the transmit block and
+the receive front end of the same board can check each other end to end,
+two processes with their own libiio contexts, both at 40 Msps:
+
+```sh
+# one shell: lead-in long enough for the receiver to acquire and configure
+isdb tx --system isdbs --radio pluto:uri=ip:192.0.2.30,loopback=on \
+    --channel BS1 --freq-unrestricted --offload fpga --rf-enable \
+    --ts 0x4010:24=a.ts --ts 0x4011:24=b.ts --lead-superframes 1500
+# another, once the first prints "FPGA transmit block running"
+isdb rx --system isdbs --radio pluto:uri=ip:192.0.2.30 --channel BS1 \
+    --offload fpga --ts-id 0x4010 --ts-id 0x4011 --seconds 20 \
+    --out 'o-{ts_id}.ts' --strip-nulls --json
+```
+
+Acceptance: every output TS byte-exact against its input, 0 uncorrectable
+RS words, 0 host underruns and MISSED 0 in the transmitter's summary, 0
+losses in the receiver's `stream`. `isdb-cli`'s opt-in test
+`tx_symbols_loopback_on_a_pluto` runs exactly this
+(`ISDB_RS_PLUTO_TX_LOOPBACK_URI`, [test-data.md](test-data.md)); the
+receiver must end before the transmitter closes the loopback, so the
+test's files carry null packets after the data.
 
 ## Receiver compatibility notes
 

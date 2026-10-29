@@ -971,6 +971,297 @@ fn isdbs_radio_dry_runs() {
     }
 }
 
+/// `tx --system isdbs --offload`: `fpga` with a dry run prints the FPGA
+/// transmit block's settings (the modulator, the 14.43 MB/s code link, the
+/// buffers and kernel buffers, the level in the block's banks, not a cs12
+/// quantiser) without opening the device; `auto` describes both paths;
+/// `fpga` with `--iq` and `--offload` with ISDB-T are refused, `cpu`
+/// with `--iq` is the file path; a backend without a block refuses
+/// `fpga`.
+#[cfg(feature = "pluto")]
+#[test]
+fn isdbs_offload_dry_runs() {
+    // TEST-NET-1 (RFC 5737): a dry run never connects.
+    let dry = |extra: &[&str]| {
+        let mut args = vec![
+            "tx",
+            "--system",
+            "isdbs",
+            "--channel",
+            "BS1",
+            "--freq-unrestricted",
+            "--dry-run",
+        ];
+        args.extend_from_slice(extra);
+        let o = run(&args);
+        assert!(!o.status.success(), "{extra:?}");
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    let e = dry(&[
+        "--radio",
+        "pluto:uri=ip:192.0.2.1,loopback=on",
+        "--offload",
+        "fpga",
+        "--gain",
+        "att=30",
+    ]);
+    for want in [
+        "pluto TX settings (BS1 IF):",
+        "TX atten     30 dB",
+        "nothing radiated",
+        "modulator    FPGA transmit block of cf-ad9361-dds-core-lpc (SymbolsTx, TX format 1)",
+        "banks of 512 phases × 24 taps",
+        "14.43 MB/s at 28.860 Mbaud; buffers of 65536 samples (18.2 ms), kbuffers 16 in the kernel",
+        "level        RMS 10.0 dB below the 12-bit DAC full scale (647.6 LSB), in the block's banks",
+        "not transmitting",
+    ] {
+        assert!(e.contains(want), "{want:?} not in\n{e}");
+    }
+    assert!(!e.contains("cs12 full scale"), "{e}");
+    assert!(
+        !e.contains("underruns"),
+        "no IQ warning on the FPGA path: {e}"
+    );
+    let e = dry(&[
+        "--radio",
+        "pluto:uri=ip:192.0.2.1,kbuffers=8,buffer=32768",
+        "--offload",
+        "fpga",
+        "--backoff-db",
+        "12",
+    ]);
+    assert!(
+        e.contains("buffers of 32768 samples (9.1 ms), kbuffers 8 in the kernel"),
+        "{e}"
+    );
+    assert!(e.contains("RMS 12.0 dB below"), "{e}");
+    let e = dry(&[
+        "--radio",
+        "pluto:uri=ip:192.0.2.1,channel=2",
+        "--offload",
+        "fpga",
+    ]);
+    assert!(
+        e.contains("channel=2 is not wired to the FPGA transmit block"),
+        "{e}"
+    );
+    // auto: both paths, the choice made when the radio is opened
+    let e = dry(&["--radio", "pluto:uri=ip:192.0.2.1"]);
+    for want in [
+        "modulator    FPGA transmit block",
+        "--offload auto: the FPGA path above if the radio reports a compatible transmit block when it is opened",
+        "10.0 dB below cs12 full scale",
+        "not transmitting",
+    ] {
+        assert!(e.contains(want), "{want:?} not in\n{e}");
+    }
+    // cpu: today's IQ path and its warning
+    let e = dry(&["--radio", "pluto:uri=ip:192.0.2.1", "--offload", "cpu"]);
+    assert!(
+        e.contains("below cs12 full scale") && e.contains("underruns"),
+        "{e}"
+    );
+    assert!(!e.contains("modulator"), "{e}");
+    if cfg!(feature = "hackrf") {
+        let e = dry(&["--radio", "hackrf", "--offload", "fpga"]);
+        assert!(e.contains("has no FPGA transmit block"), "{e}");
+    }
+    // files: fpga refused, cpu fine; ISDB-T has no --offload
+    let d = tmp("isdbs-offload");
+    let iq = d.join("x.cf32");
+    let o = run(&[
+        "tx",
+        "--system",
+        "isdbs",
+        "--iq",
+        s(&iq),
+        "--seconds",
+        "1",
+        "--offload",
+        "fpga",
+    ]);
+    assert!(!o.status.success());
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        e.contains("--offload fpga: the FPGA transmit block is a radio's"),
+        "{e}"
+    );
+    let o = run(&[
+        "tx",
+        "--system",
+        "isdbs",
+        "--iq",
+        s(&iq),
+        "--seconds",
+        "1",
+        "--offload",
+        "cpu",
+        "--dry-run",
+    ]);
+    assert!(!o.status.success());
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains("dry run: nothing written"), "{e}");
+    let o = run(&[
+        "tx",
+        "--synthetic",
+        "--iq",
+        s(&iq),
+        "--seconds",
+        "1",
+        "--offload",
+        "cpu",
+    ]);
+    assert!(!o.status.success());
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains("--offload: ISDB-S option(s)"), "{e}");
+    assert!(!iq.exists(), "nothing written");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+/// Opt-in hardware test of the FPGA transmit path, nothing radiated:
+/// `ISDB_RS_PLUTO_TX_LOOPBACK_URI` names a PlutoSky R2 (libiio URI, e.g.
+/// `ip:192.0.2.30`) running a bitstream with both FPGA blocks (the
+/// transmit block `SymbolsTx` and the receive front end). `isdb tx
+/// --system isdbs --offload fpga` sends two TS files into the AD9361's
+/// digital loopback (`loopback=on`: the TX LO powered down, the
+/// attenuation at its maximum) while `isdb rx --system isdbs --offload
+/// fpga` receives them through the same board: every TS byte-exact, 0
+/// uncorrectable RS words, 0 host underruns, MISSED 0, 0 RX losses.
+///
+/// Timeline from the moment the transmit block runs (the receiver starts
+/// then, and streams after its acquisition and its front end's
+/// configuration, 3–12 s): 1500 null superframes of lead-in (16.6 s),
+/// the data (90 superframes, 1 s), then null packets in the files for
+/// another 1500 superframes, during which the receiver's 20 s of signal
+/// end, before the transmitter closes and the loopback with it (after
+/// which the RX path would take the RF input again). It transmits (into
+/// the loopback), so it has its own variable: `ISDB_RS_PLUTO_URI` is
+/// receive only.
+#[cfg(feature = "pluto")]
+#[test]
+fn tx_symbols_loopback_on_a_pluto() {
+    use std::io::BufRead;
+    let Some(uri) = std::env::var_os("ISDB_RS_PLUTO_TX_LOOPBACK_URI") else {
+        eprintln!(
+            "SKIP tx_symbols_loopback_on_a_pluto: ISDB_RS_PLUTO_TX_LOOPBACK_URI not set (e.g. ip:192.0.2.30)"
+        );
+        return;
+    };
+    let _radio = RADIO
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let uri = uri.to_string_lossy().into_owned();
+    let d = tmp("tx-symbols-loopback");
+    // 24 slots per frame: 192 packets per superframe; 90 superframes, 1 s,
+    // then 1500 superframes of null packets (the receiver strips them)
+    let a = packets(0x0111, 0..90 * 192);
+    let b = packets(0x0121, 50_000..50_000 + 90 * 192);
+    let mut null = [0xFFu8; 188];
+    null[..4].copy_from_slice(&[0x47, 0x1F, 0xFF, 0x10]);
+    let tail: Vec<u8> = (0..1500 * 192).flat_map(|_| null).collect();
+    std::fs::write(d.join("a.ts"), [a.as_slice(), &tail].concat()).unwrap();
+    std::fs::write(d.join("b.ts"), [b.as_slice(), &tail].concat()).unwrap();
+    let ts_a = format!("0x4010:24={}", s(&d.join("a.ts")));
+    let ts_b = format!("0x4011:24={}", s(&d.join("b.ts")));
+    let radio = format!("pluto:uri={uri},loopback=on");
+    let tx_args = [
+        "tx",
+        "--system",
+        "isdbs",
+        "--radio",
+        &radio,
+        "--channel",
+        "BS1",
+        "--freq-unrestricted",
+        "--offload",
+        "fpga",
+        "--rf-enable",
+        "--ts",
+        &ts_a,
+        "--ts",
+        &ts_b,
+        "--lead-superframes",
+        "1500",
+        "--seconds",
+        "40",
+    ];
+    eprintln!("$ isdb {}", tx_args.join(" "));
+    let mut tx = Command::new(ISDB)
+        .args(tx_args)
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run isdb tx");
+    // wait for the block to run; collect the transmitter's log
+    let (lines_tx, lines_rx) = std::sync::mpsc::channel::<String>();
+    let err = tx.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut all = String::new();
+        for l in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+            eprintln!("[tx] {l}");
+            all += &l;
+            all.push('\n');
+            let _ = lines_tx.send(l);
+        }
+        all
+    });
+    let t = Instant::now();
+    loop {
+        match lines_rx.recv_timeout(Duration::from_secs(60)) {
+            Ok(l) if l.contains("FPGA transmit block running") => break,
+            Ok(_) => {}
+            Err(_) => {
+                let _ = tx.kill();
+                panic!(
+                    "the transmitter did not start its block in {:.0} s:\n{}",
+                    t.elapsed().as_secs_f64(),
+                    reader.join().unwrap()
+                );
+            }
+        }
+    }
+    let rx_radio = format!("pluto:uri={uri}");
+    let o = run(&[
+        "rx",
+        "--system",
+        "isdbs",
+        "--radio",
+        &rx_radio,
+        "--channel",
+        "BS1",
+        "--offload",
+        "fpga",
+        "--ts-id",
+        "0x4010",
+        "--ts-id",
+        "0x4011",
+        "--seconds",
+        "20",
+        "--out",
+        s(&d.join("o-{ts_id}.ts")),
+        "--strip-nulls",
+        "--json",
+    ]);
+    let st = tx.wait().expect("wait for isdb tx");
+    let tx_log = reader.join().unwrap();
+    assert!(o.status.success(), "rx failed");
+    assert!(st.success(), "tx failed:\n{tx_log}");
+    assert!(tx_log.contains("done (InputEnded)"), "{tx_log}");
+    assert!(tx_log.contains("underruns 0;"), "host underruns:\n{tx_log}");
+    assert!(
+        tx_log.contains("MISSED 0,") && tx_log.contains("FIRST_MISS -"),
+        "the block missed symbols:\n{tx_log}"
+    );
+    let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(j["system"], "ISDB-S");
+    assert_eq!(j["stream"]["losses"], 0, "{j}");
+    for t in j["ts"].as_array().unwrap() {
+        assert_eq!(t["rs_uncorrectable"], 0, "{t}");
+    }
+    assert_same(&d.join("o-4010.ts"), &a, "TS_ID 0x4010");
+    assert_same(&d.join("o-4011.ts"), &b, "TS_ID 0x4011");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
 #[cfg(feature = "pluto")]
 #[test]
 fn capture_dry_run_validates_without_a_device() {

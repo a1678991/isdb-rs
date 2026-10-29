@@ -169,7 +169,7 @@ packet), the data, then `Transmitter::flush_frames` null frames (`--no-flush`
 to omit) that push the last input packets through the interleavers and the
 receiver look-ahead.
 
-### `isdb tx --system isdbs` — TSs per TS_ID → ISDB-S → IQ file
+### `isdb tx --system isdbs` — TSs per TS_ID → ISDB-S → IQ file or radio
 
 `--system isdbt|isdbs` (default `isdbt`). With `isdbs` the transmitter is
 ISDB-S (ITU-R BO.1408-1, the ARIB STD-B20 system): `isdbs_core::TmccInfo::assign`
@@ -189,6 +189,7 @@ superframe's packets per TS into 319 488 symbols and
 | `--no-flush` | — | omit the null flush frame and the shaper's tail (a receiver then loses the last superframe) |
 | `--seconds S` | 0 | bound on the lead and data superframes (the flush frame, 1.4 ms, follows); an endless input into an `--iq` regular file needs it, as for ISDB-T |
 | `--radio`, `--gain`, `--rf-enable`, `--dry-run`, `--channel`, `--freq`, `--freq-unrestricted`, `--freq-corr-ppm`, `--bb-filter-hz`, `--feed`, `--realtime`, `--queue-frames`, `--prefill-frames`, `--status-secs` | as ISDB-T | the gate and the dry run are the same; `--channel BSn` / `NDn` tunes the IF (`Channel::tune_hz`), outside the UHF band, so it needs `--freq-unrestricted`; the radio's sample rate is `--rate` (ppm-corrected), `--bb-filter-hz` defaults to 40 MHz (the Pluto's widest TX filter) and a queue frame is one superframe |
+| `--offload auto\|fpga\|cpu` | auto | with `--radio`: where the pulse shaping runs. `fpga`: symbol codes (`Transmitter::superframe_codes`, 14.43 MB/s) to the radio's FPGA transmit block (`isdb_radio::Offload::TxSymbols`), which shapes them on the board; an error without a compatible block. `cpu`: IQ samples from the CPU shaper (a Pluto underruns at ISDB-S rates). `auto`: `fpga` when the radio reports a compatible block, else `cpu`. With `--rf-enable` the radio is probed read-only (one register) before it is opened; a dry run opens nothing, so `fpga` describes the codes' path and `auto` both. With `--iq` the samples are always the CPU's (`fpga` is refused). An ISDB-T option otherwise refused |
 
 ISDB-T-only options (`--mode`, `--gi`, `--partial`, `--layer-*`,
 `--a-ts/--b-ts/--c-ts`, `--mux-ts`, `--a-pids/--c-pids`, `--synthetic`,
@@ -210,21 +211,34 @@ the interleaver each span one superframe.
 
 Threads as for ISDB-T: reader thread per file TS → producer thread
 (`txs.rs`: the packets of a superframe per TS, `Transmitter::superframe`,
-the shaper) → bounded queue → `IqSink`. Status lines per `--status-secs`:
-air time, superframes, null fill per TS_ID, producer speed (input and
-modulation per superframe); the summary gives per TS_ID the input packets
-and the null padding (`ts_id`, `input_packets`, `null_packets`,
-`null_fill_pct` fields). The producer runs at 1.1× real time at 40 Msps
-in a release build (9.8 ms per 11.07 ms superframe, the shaper on one core
-most of it).
+the shaper; or `Transmitter::superframe_codes` and no shaper) → bounded
+queue → `IqSink` (a file, a radio) or `SymbolSink` (a radio's FPGA
+transmit block). Status lines per `--status-secs`: air time, superframes,
+null fill per TS_ID, producer speed (input and modulation per superframe),
+the sink's counters (the block's MISSED on the codes' path); the summary
+gives per TS_ID the input packets and the null padding (`ts_id`,
+`input_packets`, `null_packets`, `null_fill_pct` fields). Producer speed,
+release build, BS layout, synthetic packets (the ignored test
+`txs::tests::producer_speed_of_both_paths`): 1.14× real time with the
+shaper at 40 Msps (9.7 ms per 11.07 ms superframe, the shaper on one core
+most of it), **11.1× on the codes' path** (1.0 ms per superframe: no
+shaping, and the codes come from the bits without the `f64` points);
+the dev build (the ISDB-S crates optimised, below) 1.10× and 10.4×.
 
-**The radio limit.** ISDB-S needs ≥ 38.96 Msps. To a Pluto that is
-40 Msps × 4 bytes = 160 MB/s, beyond Gigabit Ethernet (≈ 65 MB/s
-measured); a HackRF stops at 20 Msps. `--radio` therefore works through
-the gate and the dry run, and a Pluto underruns (the sink counts it, a
-warning says so at start); the HackRF backend refuses the rate. Continuous
-ISDB-S transmission needs a modulator in the radio's FPGA (the mirror of
-the symbol front end), which is future work.
+**The radio limit, and the FPGA path.** ISDB-S needs ≥ 38.96 Msps. To a
+Pluto that is 40 Msps × 4 bytes = 160 MB/s of IQ, beyond Gigabit
+Ethernet (≈ 65 MB/s measured); a HackRF stops at 20 Msps. With a
+bitstream that has the FPGA transmit block (`SymbolsTx`, `fpga/`), the
+Pluto takes the symbols as 4-bit codes instead (`--offload fpga`, or
+`auto`, the default, when the block is found): 14.43 MB/s, shaped on the
+board with the same arithmetic as `isdb_frontend::shape::fixed`. The
+pre-roll, lead and flush frame are the same symbols as on the IQ path;
+the shaper's tail is not needed (the block's filter drains on the zero
+symbols that end the stream). The status lines add the block's MISSED,
+the summary its CONSUMED, MISSED, FIRST_MISS and the DAC underflow flag;
+the device side is in the `isdb-radio` README ("TX symbol codes"). Without
+the block a Pluto underruns on the IQ path (the sink counts it, a warning
+says so at start), and the HackRF backend refuses the rate.
 
 ### `isdb rx` — IQ / radio → TS (ISDB-T, ISDB-S)
 
@@ -786,9 +800,12 @@ tx:  reader thread(s) ─packets (bounded, ~2 s)─► producer thread
 tx --system isdbs:
      reader thread per file TS ─packets─► producer thread (txs.rs:
        pre-roll frame, lead, data, flush frame; per superframe
-       isdbs_phy::tx::Transmitter ─symbols─► isdb_frontend::shape::Shaper)
-       ─superframes (bounded)─► main thread: dyn IqSink
-       (FileSink at --backoff-db, cf32 too, + SigMF sidecar | the radio,
+       isdbs_phy::tx::Transmitter ─symbols─► isdb_frontend::shape::Shaper,
+       or ─codes─► nothing more with --offload fpga)
+       ─superframes (bounded)─► main thread: TxSink
+       (Iq: FileSink at --backoff-db, cf32 too, + SigMF sidecar | the
+        radio; Codes: dyn SymbolSink, the radio's FPGA transmit block
+        (pluto: CodeEncoder → isdb-iio TX thread, voltage0 + voltage1);
         same gate)
 rx:  dyn IqSource (file | Backend::open_rx, e.g. HackRF RX callback,
        Pluto isdb-iio RX thread)
@@ -810,7 +827,8 @@ demodulator is the bottleneck).
 ISDB-S (release build, a 32-thread host): `tx --system isdbs --iq` runs
 at 1.1× real time at 40 Msps (9.8 ms of transmitter and shaper per
 11.07 ms superframe; the dev build, with the ISDB-S crates optimised as
-below, at 0.8×). `loopback --system isdbs --superframes 90` (1.01 s of
+below, at 0.8×). The codes' path to an FPGA transmit block (no shaper)
+produces at 11.1× (1.0 ms per superframe; dev build 10.4×). `loopback --system isdbs --superframes 90` (1.01 s of
 signal) took 2.9 s: production and channel 0.96 s, front end 1.56 s
 (survey, the 11-candidate trim search and the bit-exact front end over
 the whole buffer), receiver and decoding 0.31 s; the default 6

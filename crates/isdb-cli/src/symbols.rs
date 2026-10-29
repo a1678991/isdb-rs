@@ -35,15 +35,16 @@ pub enum SystemArg {
     IsdbS3,
 }
 
-/// Where the front end runs.
+/// Where a stage that a radio's FPGA can run runs (`isdb symbols` and
+/// `rx`: the receive front end; `tx --system isdbs`: the transmit pulse
+/// shaping).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OffloadArg {
-    /// The radio's FPGA when it offers a compatible front end, else the
-    /// CPU on one contiguous IQ capture.
+    /// The radio's FPGA when it offers a compatible block, else the CPU.
     Auto,
-    /// The radio's FPGA (an error when it has none).
+    /// The radio's FPGA (an error when it has no compatible block).
     Fpga,
-    /// The CPU, on one contiguous IQ capture.
+    /// The CPU.
     Cpu,
 }
 
@@ -119,7 +120,7 @@ pub struct SymbolsArgs {
     /// capture).
     #[arg(long, value_name = "S", default_value_t = 1.0)]
     pub seconds: f64,
-    /// Where the front end runs.
+    /// Where the front end runs (the CPU takes one contiguous IQ capture).
     #[arg(long, value_enum, default_value_t = OffloadArg::Auto)]
     pub offload: OffloadArg,
     /// Only report the stages the radio can run itself, then exit.

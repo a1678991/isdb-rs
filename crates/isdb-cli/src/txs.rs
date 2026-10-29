@@ -26,6 +26,14 @@
 //! `--iq` file holds them at `--backoff-db` below full scale in every
 //! format, cf32 included, because the ISDB-S receiver reads samples as a
 //! fraction of full scale (its front end's input is 12-bit).
+//!
+//! To a radio whose FPGA has the transmit block (`--offload`,
+//! [`isdb_radio::Offload::TxSymbols`]) the producer hands the symbols as
+//! codes instead ([`Modulate::codes`], `Transmitter::superframe_codes`),
+//! with the same pre-roll, lead and flush frame and no shaper: the block
+//! shapes them (`isdb_frontend::shape::fixed`, the same arithmetic in the
+//! FPGA), and its filter's tail drains on the zero symbols that end the
+//! stream.
 
 use crate::bands::Channel;
 use crate::producer::{EndReason, FrameKind};
@@ -33,12 +41,14 @@ use crate::sink::{FileSink, IqFormat};
 use crate::source::{
     Feed, Packet, PacketStream, check_feed, null_packet, path_opener, queue_depth,
 };
+use crate::symbols::OffloadArg;
 use crate::tx::{TxArgs, describe_speed, ms_per, producer_speed, ratio};
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use isdb_frontend::shape::Shaper;
+use isdb_frontend::shape::fixed::{TxDesign, TxParams};
 use isdb_iq::sigmf::{Meta, Segment};
-use isdb_radio::{C32, IqSink};
+use isdb_radio::{C32, IqSink, RadioError, SymbolSink};
 use isdbs_core::combination::Combination;
 use isdbs_core::frame::{FRAME_SYMBOLS, FRAMES};
 use isdbs_core::tmcc::TmccInfo;
@@ -140,7 +150,7 @@ pub const TX_ISDBT_ONLY: &[&str] = &[
 ];
 
 /// `isdb tx` options that only ISDB-S uses.
-pub const TX_ISDBS_ONLY: &[&str] = &["combination", "ts", "rate", "lead_superframes"];
+pub const TX_ISDBS_ONLY: &[&str] = &["combination", "ts", "rate", "lead_superframes", "offload"];
 
 /// The flag of argument id `id`.
 pub fn flag(id: &str) -> String {
@@ -572,14 +582,116 @@ impl TsInputs {
     }
 }
 
-/// One produced superframe (or the flush: a null frame and the shaper's
-/// tail).
+/// A produced superframe's signal: IQ samples or symbol codes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Payload {
+    /// IQ samples at the output rate, unit RMS (442 810 or 442 811 per
+    /// superframe at 40 Msps).
+    Samples(Vec<C32>),
+    /// One TX boundary code per symbol (`isdb_frontend::txformat`: 0 the
+    /// zero symbol, 8 + k the point e^{jkπ/4}), 319 488 per superframe.
+    Codes(Vec<u8>),
+}
+
+impl Payload {
+    /// Its air time: samples at `fs`, or symbols at the ISDB-S symbol
+    /// rate.
+    pub fn seconds(&self, fs: f64) -> f64 {
+        match self {
+            Self::Samples(x) => x.len() as f64 / fs,
+            Self::Codes(c) => c.len() as f64 / isdbs_phy::frontend::system().symbol_rate_hz,
+        }
+    }
+
+    /// The samples; an error for codes.
+    pub fn into_samples(self) -> Result<Vec<C32>> {
+        match self {
+            Self::Samples(x) => Ok(x),
+            Self::Codes(_) => bail!("the producer made symbol codes, not samples"),
+        }
+    }
+}
+
+/// What the producer makes of the transmitter's symbols, and what it has
+/// made so far for the next item.
+pub struct Modulate(Mod);
+
+enum Mod {
+    /// IQ samples, shaped on the CPU.
+    Shaped { shaper: Shaper, out: Vec<C32> },
+    /// The symbols as codes.
+    Codes { out: Vec<u8> },
+}
+
+impl Modulate {
+    /// IQ samples at the shaper's rate ([`Shaper`], BO.1408-1 Annex 1 §9).
+    pub fn shaped(shaper: Shaper) -> Self {
+        Self(Mod::Shaped {
+            shaper,
+            out: Vec::new(),
+        })
+    }
+
+    /// TX boundary codes for a radio's FPGA transmit block (no shaping
+    /// here).
+    pub fn codes() -> Self {
+        Self(Mod::Codes { out: Vec::new() })
+    }
+
+    /// Append the symbols `range` of the transmitter's next null
+    /// superframe.
+    fn null(&mut self, tx: &mut Transmitter, range: std::ops::Range<usize>) {
+        match &mut self.0 {
+            Mod::Shaped { shaper, out } => {
+                let s = tx.null_superframe();
+                shaper.push(&to_c32(&s.symbols[range]), out);
+            }
+            Mod::Codes { out } => {
+                let s = tx.null_superframe_codes();
+                out.extend_from_slice(&s.codes[range]);
+            }
+        }
+    }
+
+    /// Append the superframe of `ts`'s packets.
+    fn data(&mut self, tx: &mut Transmitter, ts: &[&[Packet]]) -> Result<()> {
+        match &mut self.0 {
+            Mod::Shaped { shaper, out } => {
+                let s = tx.superframe(ts)?;
+                shaper.push(&to_c32(&s.symbols), out);
+            }
+            Mod::Codes { out } => {
+                let s = tx.superframe_codes(ts)?;
+                out.extend_from_slice(&s.codes);
+            }
+        }
+        Ok(())
+    }
+
+    /// The end of the stream: the shaper's tail (codes need none: the
+    /// block's filter drains on the zero symbols after them).
+    fn finish(&mut self) {
+        if let Mod::Shaped { shaper, out } = &mut self.0 {
+            shaper.finish(out);
+        }
+    }
+
+    /// What was made since the last take.
+    fn take(&mut self) -> Payload {
+        match &mut self.0 {
+            Mod::Shaped { out, .. } => Payload::Samples(std::mem::take(out)),
+            Mod::Codes { out } => Payload::Codes(std::mem::take(out)),
+        }
+    }
+}
+
+/// One produced superframe (or the flush: a null frame, and the shaper's
+/// tail for samples).
 pub struct ProducedSf {
     /// Role.
     pub kind: FrameKind,
-    /// Its samples at the output rate, unit RMS (442 810 or 442 811 per
-    /// superframe at 40 Msps).
-    pub samples: Vec<C32>,
+    /// Its signal.
+    pub payload: Payload,
     /// Input packets per relative TS.
     pub real: Vec<usize>,
     /// Null padding per relative TS.
@@ -591,7 +703,7 @@ pub struct ProducedSf {
     pub input_status: String,
     /// Time spent assembling its packets from the input.
     pub input_time: Duration,
-    /// Time spent in the transmitter and the shaper.
+    /// Time spent in the transmitter (and the shaper).
     pub modulate_time: Duration,
 }
 
@@ -631,13 +743,13 @@ fn to_c32(z: &[Cplx]) -> Vec<C32> {
     v
 }
 
-/// Start the producer thread over `tx` and `shaper` (fresh, built by the
+/// Start the producer thread over `tx` and `m` (fresh, built by the
 /// caller so that their errors come before any output). Fails only when
 /// the OS refuses the thread.
 pub fn spawn(
     cfg: SatConfig,
     mut tx: Transmitter,
-    mut shaper: Shaper,
+    mut m: Modulate,
     mut input: TsInputs,
     stop: Arc<AtomicBool>,
 ) -> Result<(Receiver<ProducedSf>, JoinHandle<Result<EndReason>>)> {
@@ -675,12 +787,7 @@ pub fn spawn(
             // superframe (whose first slots, spread over its 8 frames by
             // the interleaver, would not decode). The inner coder runs on
             // from it into the next superframe, as on air.
-            let mut preroll = Vec::new();
-            let s = tx.null_superframe();
-            shaper.push(
-                &to_c32(&s.symbols[(FRAMES - 1) * FRAME_SYMBOLS..]),
-                &mut preroll,
-            );
+            m.null(&mut tx, (FRAMES - 1) * FRAME_SYMBOLS..SUPERFRAME_SYMBOLS);
             let mut index = 0u64;
             for _ in 0..cfg.lead {
                 if stop.load(Ordering::Relaxed) {
@@ -688,12 +795,10 @@ pub fn spawn(
                 }
                 pace(index);
                 let tm = Instant::now();
-                let s = tx.null_superframe();
-                let mut samples = std::mem::take(&mut preroll);
-                shaper.push(&to_c32(&s.symbols), &mut samples);
+                m.null(&mut tx, 0..SUPERFRAME_SYMBOLS);
                 let f = ProducedSf {
                     kind: FrameKind::Lead,
-                    samples,
+                    payload: m.take(),
                     real: vec![0; counts.len()],
                     nulls: vec![0; counts.len()],
                     packets: cfg
@@ -727,13 +832,12 @@ pub fn spawn(
                 let it = ti.elapsed();
                 let tm = Instant::now();
                 let refs: Vec<&[Packet]> = p.ts.iter().map(Vec::as_slice).collect();
-                let s = tx.superframe(&refs)?;
-                let mut samples = std::mem::take(&mut preroll);
-                shaper.push(&to_c32(&s.symbols), &mut samples);
+                m.data(&mut tx, &refs)?;
+                let payload = m.take();
                 let mt = tm.elapsed();
                 let f = ProducedSf {
                     kind: FrameKind::Data,
-                    samples,
+                    payload,
                     nulls: counts.iter().zip(&p.real).map(|(n, r)| n - r).collect(),
                     real: p.real,
                     packets: cfg.record.then(|| Arc::from(p.ts)),
@@ -753,13 +857,11 @@ pub fn spawn(
                 }
                 pace(index);
                 let tm = Instant::now();
-                let s = tx.null_superframe();
-                let mut samples = std::mem::take(&mut preroll);
-                shaper.push(&to_c32(&s.symbols[..FRAME_SYMBOLS]), &mut samples);
-                shaper.finish(&mut samples);
+                m.null(&mut tx, 0..FRAME_SYMBOLS);
+                m.finish();
                 let f = ProducedSf {
                     kind: FrameKind::Flush,
-                    samples,
+                    payload: m.take(),
                     real: vec![0; counts.len()],
                     nulls: vec![0; counts.len()],
                     packets: None,
@@ -777,6 +879,58 @@ pub fn spawn(
     Ok((rx, h))
 }
 
+/// Where `tx --system isdbs` sends its superframes.
+pub enum TxSink {
+    /// IQ samples: an `--iq` file or a radio.
+    Iq(Box<dyn IqSink>),
+    /// Symbol codes: a radio's FPGA transmit block.
+    Codes(Box<dyn SymbolSink>),
+}
+
+impl TxSink {
+    /// The producer's modulation for this sink: `shaper`'s samples, or the
+    /// codes.
+    pub fn modulate(&self, shaper: Shaper) -> Modulate {
+        match self {
+            Self::Iq(_) => Modulate::shaped(shaper),
+            Self::Codes(_) => Modulate::codes(),
+        }
+    }
+
+    fn write(&mut self, p: &Payload, stop: &AtomicBool) -> Result<()> {
+        match (self, p) {
+            (Self::Iq(s), Payload::Samples(x)) => s.write(x, stop)?,
+            (Self::Codes(s), Payload::Codes(c)) => s.write(c, stop)?,
+            (Self::Iq(_), Payload::Codes(_)) => bail!("symbol codes for a sink of IQ samples"),
+            (Self::Codes(_), Payload::Samples(_)) => {
+                bail!("IQ samples for a sink of symbol codes")
+            }
+        }
+        Ok(())
+    }
+
+    fn status(&mut self) -> String {
+        match self {
+            Self::Iq(s) => s.status(),
+            Self::Codes(s) => s.status(),
+        }
+    }
+
+    fn finish(&mut self, aborted: bool) -> isdb_radio::Result<String> {
+        match self {
+            Self::Iq(s) => s.finish(aborted),
+            Self::Codes(s) => s.finish(aborted),
+        }
+    }
+
+    fn realtime(&self) -> bool {
+        match self {
+            Self::Iq(s) => s.realtime(),
+            Self::Codes(s) => s.realtime(),
+        }
+    }
+}
+
 /// Outcome of an ISDB-S transmission.
 #[derive(Debug, Clone, Default)]
 pub struct SatReport {
@@ -788,8 +942,12 @@ pub struct SatReport {
     pub data: u64,
     /// Flush items (0 or 1).
     pub flush: u64,
-    /// Samples handed to the sink.
+    /// IQ samples handed to the sink.
     pub samples: u64,
+    /// Symbol codes handed to the sink.
+    pub codes: u64,
+    /// Air time handed to the sink, seconds.
+    pub on_air_s: f64,
     /// Input packets per relative TS.
     pub real: Vec<u64>,
     /// Null padding per relative TS in data superframes.
@@ -820,7 +978,7 @@ pub fn drive(
     fs: f64,
     items: Receiver<ProducedSf>,
     worker: JoinHandle<Result<EndReason>>,
-    sink: &mut dyn IqSink,
+    sink: &mut TxSink,
     status_secs: f64,
     stop: &AtomicBool,
 ) -> Result<SatReport> {
@@ -844,13 +1002,17 @@ pub fn drive(
             aborted = true;
             break;
         }
-        if let Err(e) = sink.write(&f.samples, stop) {
+        if let Err(e) = sink.write(&f.payload, stop) {
             aborted = true;
             err = Some(e);
             break;
         }
         rep.items += 1;
-        rep.samples += f.samples.len() as u64;
+        match &f.payload {
+            Payload::Samples(x) => rep.samples += x.len() as u64,
+            Payload::Codes(c) => rep.codes += c.len() as u64,
+        }
+        rep.on_air_s += f.payload.seconds(fs);
         iv_items += 1;
         iv_input += f.input_time;
         iv_mod += f.modulate_time;
@@ -873,7 +1035,7 @@ pub fn drive(
         if status_secs > 0.0 && Instant::now() >= next_status {
             next_status += Duration::from_secs_f64(status_secs);
             let speed = producer_speed(iv_items, iv_input + iv_mod, sf_s);
-            let on_air = rep.samples as f64 / fs;
+            let on_air = rep.on_air_s;
             info!(
                 target: "isdb::tx",
                 on_air_s = on_air,
@@ -895,7 +1057,7 @@ pub fn drive(
                     input_ms = ms_per(iv_input, iv_items),
                     modulation_ms = ms_per(iv_mod, iv_items),
                     superframe_ms = sf_s * 1e3,
-                    "the producer runs below real time ({:.2}×): the radio underruns. Per superframe: input {:.1} ms + modulation and shaping {:.1} ms for a {:.2} ms superframe{}",
+                    "the producer runs below real time ({:.2}×): the radio underruns. Per superframe: input {:.1} ms + modulation {:.1} ms for a {:.2} ms superframe{}",
                     speed.unwrap_or(0.0),
                     ms_per(iv_input, iv_items),
                     ms_per(iv_mod, iv_items),
@@ -925,7 +1087,7 @@ pub fn drive(
         if let Ok(s) = &fin {
             info!(target: "isdb::tx", "{s}");
         }
-        return Err(e.into());
+        return Err(e);
     }
     rep.end = Some(end?);
     rep.sink = fin?;
@@ -1028,54 +1190,48 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
         shaper.sps(),
         sys.roll_off
     );
-    if a.radio.is_some() {
-        warn!(
-            target: "isdb::tx",
-            sample_rate_hz = rate,
-            "ISDB-S needs ≥ 38.96 Msps: a Pluto over Gigabit Ethernet streams about 65 MB/s (16 Msps of cs12), so this transmission underruns (the radio counts it) and a HackRF refuses the rate; continuous ISDB-S transmission needs a modulator in the radio's FPGA"
-        );
-    }
     let bb = if given.has("bb_filter_hz") {
         a.tune.bb_filter_hz
     } else {
         DEFAULT_BB_FILTER_HZ
     };
     let stop = crate::stop::flag();
-    let mut sink = crate::tx::open_sink(
-        &a,
-        sf_s,
-        endless,
-        seconds,
-        |spec| {
-            let t = a.tune.satellite_tuning(rate)?;
-            Ok((a.tune.config(&t, bb, spec, &a.gain), t))
-        },
-        |path| {
-            // the data file first: a sidecar is never left without one
-            let stream = crate::tx::is_stream_path(path);
-            let sink = FileSink::create(path, a.iq_format, a.backoff_db)?.with_cf32_backoff();
-            if stream {
-                info!(
-                    target: "isdb::tx",
-                    "--iq {path}: a stream, no SigMF sidecar written (`isdb rx --iq` needs one to read ISDB-S from a file)"
-                );
-            } else {
-                let meta = isdb_iq::meta_path_for(std::path::Path::new(path));
-                let m = metadata(
-                    a.iq_format,
-                    rate,
-                    a.backoff_db,
-                    &layout,
-                    a.tune.channel,
-                    a.tune.freq,
-                )?;
-                std::fs::write(&meta, m.to_json())
-                    .with_context(|| format!("write {}", meta.display()))?;
-                info!(target: "isdb::tx", sidecar = %meta.display(), "SigMF metadata: {}", meta.display());
-            }
-            Ok(sink)
-        },
-    )?;
+    let mut sink = open_sink(&a, rate, bb, sf_s, endless, seconds, |path| {
+        // the data file first: a sidecar is never left without one
+        let stream = crate::tx::is_stream_path(path);
+        let sink = FileSink::create(path, a.iq_format, a.backoff_db)?.with_cf32_backoff();
+        if stream {
+            info!(
+                target: "isdb::tx",
+                "--iq {path}: a stream, no SigMF sidecar written (`isdb rx --iq` needs one to read ISDB-S from a file)"
+            );
+        } else {
+            let meta = isdb_iq::meta_path_for(std::path::Path::new(path));
+            let m = metadata(
+                a.iq_format,
+                rate,
+                a.backoff_db,
+                &layout,
+                a.tune.channel,
+                a.tune.freq,
+            )?;
+            std::fs::write(&meta, m.to_json())
+                .with_context(|| format!("write {}", meta.display()))?;
+            info!(target: "isdb::tx", sidecar = %meta.display(), "SigMF metadata: {}", meta.display());
+        }
+        Ok(sink)
+    })?;
+    let codes = matches!(sink, TxSink::Codes(_));
+    if codes {
+        let link = isdb_frontend::txformat::link_rate(sys.symbol_rate_hz);
+        info!(
+            target: "isdb::tx",
+            link_bytes_per_s = link,
+            "TX path: symbol codes to the radio's FPGA transmit block ({SUPERFRAME_SYMBOLS} per superframe, {:.2} MB/s), which shapes them at {:.3} Msps",
+            link / 1e6,
+            rate / 1e6
+        );
+    }
     let lead = a.sat.lead_superframes.unwrap_or(1);
     let cfg = SatConfig {
         lead,
@@ -1099,23 +1255,24 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
             |n| format!("{seconds} s ({n} superframes)")
         ),
         cfg.lead,
-        if cfg.flush {
-            "a null frame and the shaper's tail"
-        } else {
-            "none"
+        match (cfg.flush, codes) {
+            (false, _) => "none",
+            (true, false) => "a null frame and the shaper's tail",
+            (true, true) => "a null frame (the block's filter drains on the zero symbols after it)",
         },
         if cfg.pace { ", paced to real time" } else { "" }
     );
     let input = TsInputs::open(&layout, a.input.feed, &counts)?;
     info!(target: "isdb::tx", "input: {}", input.describe());
     let ts_ids = layout.ts_ids();
-    let (items, worker) = spawn(cfg, tx, shaper, input, stop.clone())?;
+    let modulate = sink.modulate(shaper);
+    let (items, worker) = spawn(cfg, tx, modulate, input, stop.clone())?;
     let rep = drive(
         &ts_ids,
         rate,
         items,
         worker,
-        sink.as_mut(),
+        &mut sink,
         a.status_secs,
         &stop,
     )?;
@@ -1125,18 +1282,23 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
         target: "isdb::tx",
         end = ?end,
         superframes = rep.items,
-        on_air_s = rep.samples as f64 / rate,
+        on_air_s = rep.on_air_s,
         lead_superframes = rep.lead,
         data_superframes = rep.data,
         flush = rep.flush,
         samples = rep.samples,
-        "done ({end:?}): {} superframes = {:.3} s on air ({} lead, {} data, {}), {} samples",
+        codes = rep.codes,
+        "done ({end:?}): {} superframes = {:.3} s on air ({} lead, {} data, {}), {}",
         rep.items,
-        rep.samples as f64 / rate,
+        rep.on_air_s,
         rep.lead,
         rep.data,
         if rep.flush > 0 { "flush" } else { "no flush" },
-        rep.samples
+        if codes {
+            format!("{} symbol codes", rep.codes)
+        } else {
+            format!("{} samples", rep.samples)
+        }
     );
     for (r, id) in ts_ids.iter().enumerate() {
         let (real, nulls) = (rep.real[r], rep.nulls[r]);
@@ -1152,6 +1314,167 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
     }
     info!(target: "isdb::tx", "{}", rep.sink);
     Ok(())
+}
+
+/// The warning of the IQ path to a radio: the rate limit.
+fn warn_iq_radio(rate: f64) {
+    warn!(
+        target: "isdb::tx",
+        sample_rate_hz = rate,
+        "ISDB-S needs ≥ 38.96 Msps: a Pluto over Gigabit Ethernet streams about 65 MB/s (16 Msps of cs12), so this IQ transmission underruns (the radio counts it) and a HackRF refuses the rate; continuous ISDB-S transmission needs the radio's FPGA transmit block (--offload)"
+    );
+}
+
+/// The parameters of the FPGA transmit block for ISDB-S at `rate` with
+/// the level `backoff_db` below the 12-bit full scale in its banks
+/// (`isdb_frontend::shape::fixed`: 512 phases × 24 taps).
+pub fn block_params(rate: f64, backoff_db: f32) -> Result<TxParams> {
+    let mut d = TxDesign::for_system(isdbs_phy::frontend::system(), rate);
+    d.backoff_db = f64::from(backoff_db);
+    TxParams::design(&d).with_context(|| {
+        format!("the FPGA transmit block's parameters (--rate {rate}, --backoff-db {backoff_db})")
+    })
+}
+
+/// `TX format 1, 512 × 24 taps`, the transmit blocks among `offloads`, or
+/// `none`.
+fn describe_tx_blocks(offloads: &[isdb_radio::Offload]) -> String {
+    let v: Vec<String> = offloads
+        .iter()
+        .filter_map(|o| match o {
+            isdb_radio::Offload::TxSymbols {
+                version,
+                phases,
+                taps,
+            } => Some(format!("TX format {version}, {phases} × {taps} taps")),
+            _ => None,
+        })
+        .collect();
+    if v.is_empty() {
+        "none".into()
+    } else {
+        v.join(", ")
+    }
+}
+
+/// How `tx --system isdbs` reaches a radio.
+enum Plan {
+    /// Symbol codes to the FPGA transmit block.
+    Codes,
+    /// IQ samples shaped on the CPU.
+    Iq,
+    /// Not decided: a dry run of `--offload auto`, which opens nothing.
+    Either,
+}
+
+/// The sink of `tx --system isdbs`: the `--iq` file (`file` creates it),
+/// or `--radio` through the `--rf-enable` / `--dry-run` gate, sent IQ
+/// samples or, through its FPGA transmit block (`--offload`), symbol
+/// codes. `--offload auto|fpga` with `--rf-enable` probes the radio first
+/// (read-only); a dry run never opens it, so `auto` describes both paths
+/// and `fpga` the codes'.
+fn open_sink(
+    a: &TxArgs,
+    rate: f64,
+    bb: u32,
+    sf_s: f64,
+    endless: bool,
+    seconds: f64,
+    file: impl FnOnce(&str) -> Result<FileSink>,
+) -> Result<TxSink> {
+    let radio_cfg = |spec: &isdb_radio::DeviceSpec| {
+        let t = a.tune.satellite_tuning(rate)?;
+        Ok((a.tune.config(&t, bb, spec, &a.gain), t))
+    };
+    let iq =
+        |file| crate::tx::open_sink(a, sf_s, endless, seconds, radio_cfg, file).map(TxSink::Iq);
+    let spec = match (&a.radio, a.offload) {
+        (None, OffloadArg::Fpga) => bail!(
+            "--offload fpga: the FPGA transmit block is a radio's (--radio); --iq always gets the CPU's samples (--offload cpu or auto)"
+        ),
+        (None, _) => return iq(file),
+        (Some(_), OffloadArg::Cpu) => {
+            warn_iq_radio(rate);
+            return iq(file);
+        }
+        (Some(spec), _) => spec,
+    };
+    let p = block_params(rate, a.backoff_db)?;
+    let backend = isdb_radio::backend(&spec.backend)?;
+    let (cfg, tuning) = radio_cfg(spec)?;
+    let opts = crate::tx::tx_options(a, sf_s);
+    let plan = match (a.offload, a.rf_enable && !a.dry_run) {
+        (OffloadArg::Fpga, false) => Plan::Codes,
+        (_, false) => Plan::Either,
+        (offload, true) => {
+            let offloads = backend
+                .tx_offloads(&cfg)
+                .with_context(|| format!("probe radio {spec} for an FPGA transmit block"))?;
+            match (offloads.iter().any(|o| o.runs_tx(&p)), offload) {
+                (true, _) => {
+                    info!(
+                        target: "isdb::tx",
+                        "the radio has a compatible FPGA transmit block ({})",
+                        describe_tx_blocks(&offloads)
+                    );
+                    Plan::Codes
+                }
+                (false, OffloadArg::Fpga) => bail!(
+                    "--offload fpga: the radio has no compatible FPGA transmit block (found: {}; needed: TX format {}, {} × {} taps)",
+                    describe_tx_blocks(&offloads),
+                    isdb_frontend::txformat::FORMAT_VERSION,
+                    p.phases(),
+                    p.taps()
+                ),
+                (false, _) => {
+                    info!(
+                        target: "isdb::tx",
+                        "the radio has no compatible FPGA transmit block (found: {}): IQ samples shaped on the CPU",
+                        describe_tx_blocks(&offloads)
+                    );
+                    Plan::Iq
+                }
+            }
+        }
+    };
+    match plan {
+        Plan::Iq => {
+            warn_iq_radio(rate);
+            iq(file)
+        }
+        Plan::Codes => {
+            let settings = backend.describe_tx_symbols(&cfg, &opts, &p)?;
+            crate::tx::gate(a, backend, &tuning, &settings, endless, seconds)?;
+            let (sink, info) = backend
+                .open_tx_symbols(&cfg, &opts, &p)
+                .with_context(|| format!("open radio {spec} for TX of symbol codes"))?;
+            info!(target: "isdb::tx", "opened: {info}");
+            Ok(TxSink::Codes(sink))
+        }
+        Plan::Either => match backend.describe_tx_symbols(&cfg, &opts, &p) {
+            Ok(codes) => {
+                // the IQ path's own lines (device and tuning are the same)
+                let samples: Vec<String> = backend
+                    .describe_tx(&cfg, &opts)?
+                    .lines()
+                    .filter(|l| !codes.lines().any(|c| c == *l))
+                    .map(str::to_owned)
+                    .collect();
+                let settings = format!(
+                    "{codes}\n  --offload auto: the FPGA path above if the radio reports a compatible transmit block when it is opened (a read-only probe, which a dry run does not make); otherwise IQ samples shaped on the CPU, which a Pluto cannot stream at this rate (it underruns), with\n{}",
+                    samples.join("\n")
+                );
+                crate::tx::gate(a, backend, &tuning, &settings, endless, seconds)?;
+                bail!("--offload auto decides when the radio is opened: not transmitting")
+            }
+            // the backend has no transmit block: the IQ path's dry run
+            Err(RadioError::Unsupported { .. }) => {
+                warn_iq_radio(rate);
+                iq(file)
+            }
+            Err(e) => Err(e.into()),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -1328,6 +1651,7 @@ mod tests {
             &["--ts", "0x4010"],
             &["--rate", "40M"],
             &["--lead-superframes", "2"],
+            &["--offload", "cpu"],
         ] {
             let mut v = vec!["--iq", "x", "--synthetic"];
             v.extend_from_slice(args);
@@ -1443,7 +1767,14 @@ mod tests {
             record: true,
             depth: 2,
         };
-        let (rx, h) = spawn(cfg, tx, shaper, input, Arc::new(AtomicBool::new(false))).unwrap();
+        let (rx, h) = spawn(
+            cfg,
+            tx,
+            Modulate::shaped(shaper),
+            input,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
         let items: Vec<ProducedSf> = rx.iter().collect();
         assert_eq!(h.join().unwrap().unwrap(), EndReason::Limit);
         let kinds: Vec<FrameKind> = items.iter().map(|f| f.kind).collect();
@@ -1456,26 +1787,27 @@ mod tests {
                 FrameKind::Flush
             ]
         );
+        let samples = |f: &ProducedSf| match &f.payload {
+            Payload::Samples(x) => x.clone(),
+            Payload::Codes(_) => panic!("codes from the shaped path"),
+        };
         // the samples of the pre-roll frame, 3 superframes, the flush frame
         // and the tail, exactly; the pre-roll goes out with the first item
-        let total: usize = items.iter().map(|f| f.samples.len()).sum();
+        let total: usize = items.iter().map(|f| samples(f).len()).sum();
         let symbols = 3 * SUPERFRAME_SYMBOLS + 2 * FRAME_SYMBOLS + 2 * reference.span() - 1;
         assert_eq!(total as u64, reference.samples_for(symbols as u64));
         let first = reference.samples_for((FRAME_SYMBOLS + SUPERFRAME_SYMBOLS) as u64);
-        assert_eq!(items[0].samples.len() as u64, first);
+        assert_eq!(samples(&items[0]).len() as u64, first);
         assert!(
             items[1..3]
                 .iter()
-                .all(|f| (442_810..=442_811).contains(&f.samples.len()))
+                .all(|f| (442_810..=442_811).contains(&samples(f).len()))
         );
         // unit RMS
-        let p: f64 = items[1]
-            .samples
-            .iter()
-            .map(|c| f64::from(c.norm_sqr()))
-            .sum::<f64>()
-            / items[1].samples.len() as f64;
+        let x = samples(&items[1]);
+        let p: f64 = x.iter().map(|c| f64::from(c.norm_sqr())).sum::<f64>() / x.len() as f64;
         assert!((p - 1.0).abs() < 0.01, "power {p}");
+        assert!((items[1].payload.seconds(40e6) - superframe_seconds()).abs() < 1e-7);
         assert_eq!(
             (items[2].real.clone(), items[2].nulls.clone()),
             (vec![288], vec![0])
@@ -1536,5 +1868,257 @@ mod tests {
         assert!(m.captures[0].extra.is_empty());
         let m = metadata(IqFormat::Cf32, 40e6, 10.0, &layout, None, None).unwrap();
         assert_eq!(m.captures[0].frequency, None);
+    }
+
+    /// The BS layout's producer over synthetic packets: `superframes`
+    /// lead and data superframes, the flush, packets recorded.
+    fn bs_producer(
+        m: Modulate,
+        superframes: u64,
+        depth: usize,
+    ) -> (Receiver<ProducedSf>, JoinHandle<Result<EndReason>>) {
+        let sat = parse(&["--system", "isdbs", "--iq", "x"]).unwrap().0.sat;
+        let layout = Layout::of(&sat).unwrap();
+        let tx = Transmitter::new(layout.info.clone()).unwrap();
+        let input = TsInputs::open(&layout, Feed::File, &[384]).unwrap();
+        let cfg = SatConfig {
+            lead: 1,
+            flush: true,
+            max_superframes: Some(superframes),
+            pace: false,
+            record: true,
+            depth,
+        };
+        spawn(cfg, tx, m, input, Arc::new(AtomicBool::new(false))).unwrap()
+    }
+
+    fn codes_of(f: &ProducedSf) -> &[u8] {
+        match &f.payload {
+            Payload::Codes(c) => c,
+            Payload::Samples(_) => panic!("samples from the code path"),
+        }
+    }
+
+    /// The code path carries the transmitter's symbols, in the sample
+    /// path's sequence (pre-roll frame with the lead, the data, one null
+    /// frame), as TX boundary codes, and nothing else.
+    #[test]
+    fn the_code_path_carries_the_transmitters_symbols() {
+        let (rx, h) = bs_producer(Modulate::codes(), 3, 2);
+        let items: Vec<ProducedSf> = rx.iter().collect();
+        assert_eq!(h.join().unwrap().unwrap(), EndReason::Limit);
+        let kinds: Vec<FrameKind> = items.iter().map(|f| f.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                FrameKind::Lead,
+                FrameKind::Data,
+                FrameKind::Data,
+                FrameKind::Flush
+            ]
+        );
+        let lens: Vec<usize> = items.iter().map(|f| codes_of(f).len()).collect();
+        assert_eq!(
+            lens,
+            [
+                FRAME_SYMBOLS + SUPERFRAME_SYMBOLS,
+                SUPERFRAME_SYMBOLS,
+                SUPERFRAME_SYMBOLS,
+                FRAME_SYMBOLS
+            ]
+        );
+        assert!((items[1].payload.seconds(40e6) - superframe_seconds()).abs() < 1e-12);
+        // the same superframes from a second transmitter, as points
+        let sat = parse(&["--system", "isdbs", "--iq", "x"]).unwrap().0.sat;
+        let mut tx = Transmitter::new(Layout::of(&sat).unwrap().info).unwrap();
+        let mut want: Vec<Cplx> =
+            tx.null_superframe().symbols[(FRAMES - 1) * FRAME_SYMBOLS..].to_vec();
+        want.extend(tx.null_superframe().symbols);
+        for f in &items[1..3] {
+            let p = f.packets.as_ref().unwrap();
+            let refs: Vec<&[Packet]> = p.iter().map(Vec::as_slice).collect();
+            want.extend(tx.superframe(&refs).unwrap().symbols);
+        }
+        want.extend(&tx.null_superframe().symbols[..FRAME_SYMBOLS]);
+        let got: Vec<u8> = items.iter().flat_map(|f| codes_of(f).to_vec()).collect();
+        assert_eq!(got.len(), want.len());
+        for (k, (&c, z)) in got.iter().zip(&want).enumerate() {
+            assert!(
+                isdb_frontend::txformat::angle(c).is_some(),
+                "symbol {k}: code {c} is no point"
+            );
+            let d = isdb_frontend::txformat::point(c) - z;
+            assert!(d.norm() < 1e-12, "symbol {k}: code {c} for {z}");
+        }
+    }
+
+    /// The code path into a radio's queued sink (a mock consuming DMA
+    /// samples of eight codes): what reaches the radio unpacks to the
+    /// produced codes, and the report counts codes and their air time.
+    #[test]
+    fn codes_reach_the_radio_packed() {
+        use isdb_radio::mock::MockRadio;
+        use isdb_radio::{CodeEncoder, Cs12, QueuedSink, TxOptions};
+        let (rx, h) = bs_producer(Modulate::codes(), 3, 2);
+        let produced: Vec<u8> = rx.iter().flat_map(|f| codes_of(&f).to_vec()).collect();
+        h.join().unwrap().unwrap();
+        let radio = MockRadio::<Cs12>::new(50e6);
+        let sent = radio.sent.clone();
+        let opts = TxOptions {
+            prefill_frames: 2,
+            frame_seconds: superframe_seconds(),
+            backoff_db: 10.0,
+        };
+        let mut sink = TxSink::Codes(Box::new(
+            QueuedSink::with_encoder(radio, &opts, CodeEncoder::new()).unwrap(),
+        ));
+        assert!(sink.realtime());
+        let (items, worker) = bs_producer(
+            sink.modulate(isdb_frontend::shape::Shaper::new(40e6, 28.86e6, 0.35).unwrap()),
+            3,
+            2,
+        );
+        let rep = drive(
+            &[DEFAULT_TS_ID],
+            40e6,
+            items,
+            worker,
+            &mut sink,
+            0.0,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!((rep.items, rep.lead, rep.data, rep.flush), (4, 1, 2, 1));
+        assert_eq!((rep.samples, rep.codes), (0, produced.len() as u64));
+        let rs = isdbs_phy::frontend::system().symbol_rate_hz;
+        assert!((rep.on_air_s - produced.len() as f64 / rs).abs() < 1e-9);
+        assert!(rep.sink.contains("queue drained"), "{}", rep.sink);
+        assert!(
+            rep.sink
+                .contains(&format!("{} symbol codes in", produced.len())),
+            "{}",
+            rep.sink
+        );
+        let sent = sent.lock().unwrap();
+        let words: Vec<u32> = sent
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| isdb_frontend::txformat::from_components(c))
+            .collect();
+        assert_eq!(isdb_frontend::txformat::unpack(&words), produced);
+        // a payload of the other kind is refused
+        let mut iq = TxSink::Iq(Box::new(isdb_radio::mock::MemorySink::default()));
+        let e = iq
+            .write(&Payload::Codes(vec![8]), &AtomicBool::new(false))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("symbol codes for a sink of IQ samples"), "{e}");
+    }
+
+    /// `--offload`: auto by default; `fpga` with `--iq` is refused before
+    /// anything is written; `cpu` and `auto` with `--iq` are the CPU's
+    /// samples (here the dry run's refusal); with `--radio` and
+    /// `--dry-run` the device is not opened (`fpga` describes the codes,
+    /// `auto` both paths), and the gate refuses.
+    #[test]
+    fn offload_choices() {
+        let (a, _) = parse(&["--system", "isdbs", "--iq", "x"]).unwrap();
+        assert_eq!(a.offload, OffloadArg::Auto);
+        let open = |args: &[&str]| -> Result<TxSink> {
+            let (a, _) = parse(args).unwrap();
+            open_sink(
+                &a,
+                40e6,
+                40_000_000,
+                superframe_seconds(),
+                true,
+                1.0,
+                |_| panic!("no file is created"),
+            )
+        };
+        let e = open(&["--system", "isdbs", "--iq", "x", "--offload", "fpga"])
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.starts_with("--offload fpga: the FPGA transmit block is a radio's"),
+            "{e}"
+        );
+        for offload in ["cpu", "auto"] {
+            let e = open(&[
+                "--system",
+                "isdbs",
+                "--iq",
+                "x",
+                "--offload",
+                offload,
+                "--dry-run",
+            ])
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+            assert_eq!(e, "dry run: nothing written", "{offload}");
+        }
+        if cfg!(feature = "pluto") {
+            for offload in ["fpga", "auto"] {
+                let e = open(&[
+                    "--system",
+                    "isdbs",
+                    "--radio",
+                    "pluto:uri=ip:192.0.2.1",
+                    "--channel",
+                    "BS1",
+                    "--freq-unrestricted",
+                    "--offload",
+                    offload,
+                    "--dry-run",
+                ])
+                .map(|_| ())
+                .unwrap_err()
+                .to_string();
+                assert!(e.starts_with("dry run, not transmitting"), "{offload}: {e}");
+            }
+        }
+        // the parameters of the block: the FPGA's geometry at the backoff
+        let p = block_params(40e6, 10.0).unwrap();
+        assert_eq!(p.id_word(), 0xB5D1_1918);
+        assert!(block_params(30e6, 10.0).is_err());
+    }
+
+    /// The producer's speed on both paths, release build: `cargo test
+    /// --release -p isdb-cli --bin isdb producer_speed_of_both_paths --
+    /// --ignored --nocapture`. Busy time (input and modulation per
+    /// superframe, as the status lines report it) and wall time with a
+    /// consumer that only drops the items; the BS layout, synthetic
+    /// packets.
+    #[test]
+    #[ignore = "a measurement; run in release"]
+    fn producer_speed_of_both_paths() {
+        let n = 200;
+        let sys = isdbs_phy::frontend::system();
+        for (name, m) in [
+            (
+                "IQ samples (shaper)",
+                Modulate::shaped(Shaper::new(40e6, sys.symbol_rate_hz, sys.roll_off).unwrap()),
+            ),
+            ("symbol codes", Modulate::codes()),
+        ] {
+            let t = Instant::now();
+            let (rx, h) = bs_producer(m, n, 8);
+            let (mut items, mut busy) = (0u64, Duration::ZERO);
+            for f in rx.iter().filter(|f| f.kind == FrameKind::Data) {
+                busy += f.input_time + f.modulate_time;
+                items += 1;
+            }
+            h.join().unwrap().unwrap();
+            let wall = t.elapsed().as_secs_f64();
+            let speed = producer_speed(items, busy, superframe_seconds()).unwrap();
+            println!(
+                "{name}: {items} data superframes, {:.2} ms each, {speed:.2}× real time (wall {:.2}× with the lead and flush)",
+                busy.as_secs_f64() * 1e3 / items as f64,
+                (n + 1) as f64 * superframe_seconds() / wall
+            );
+        }
     }
 }

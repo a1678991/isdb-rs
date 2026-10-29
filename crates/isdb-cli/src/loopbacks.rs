@@ -245,7 +245,13 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
         depth: 2,
     };
     let t0 = Instant::now();
-    let (items, worker) = crate::txs::spawn(cfg, tx, shaper, input, stop.clone())?;
+    let (items, worker) = crate::txs::spawn(
+        cfg,
+        tx,
+        crate::txs::Modulate::shaped(shaper),
+        input,
+        stop.clone(),
+    )?;
     let mut ch = Channel::with_cfo_hz(a.snr_db, a.cfo_hz, rate, a.sample_offset, a.seed)?;
     let mut ver = VerifierS::new(&layout);
     let (mut sent, mut sent_data) = (0u64, 0u64);
@@ -264,7 +270,7 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
             sent += 1;
             sent_data += u64::from(f.kind == FrameKind::Data);
         }
-        x.extend(ch.process(f.samples));
+        x.extend(ch.process(f.payload.into_samples()?));
     }
     drop(items);
     // a panic of the producer is re-raised, not reported as an ordinary error

@@ -76,6 +76,44 @@ STD-B44) is received to TLV streams.
   loopback at 40 Msps through the fixed-point transmit interpolator
   byte-exact; `examples/txvectors.rs` writes the FPGA's vectors with real
   codes.
+- `isdb-cli`: `isdb tx --system isdbs --offload auto|fpga|cpu`
+  (docs/plans/isdbs-fpga-tx.md step 4): to a radio whose FPGA has the
+  ISDB-S transmit block, the producer hands symbol codes
+  (`Transmitter::superframe_codes`, 14.43 MB/s) instead of shaped samples,
+  with the same pre-roll, lead and flush frame and no shaper; it runs at
+  11.1× real time (release; 1.14× with the shaper). `auto` (default)
+  takes the block when the radio reports a compatible one (a read-only
+  probe with `--rf-enable`), else today's IQ path and its underrun
+  warning; `fpga` without a block is an error, as is `fpga` with `--iq`;
+  `cpu` is the IQ path. A dry run opens nothing: `fpga` describes the
+  block's settings (modulator, link rate, buffers, `kbuffers`, the level
+  as its backoff), `auto` both paths. The gate is unchanged. Opt-in
+  hardware test `tx_symbols_loopback_on_a_pluto`
+  (`ISDB_RS_PLUTO_TX_LOOPBACK_URI`): TX into the AD9361's digital
+  loopback and RX through the FPGA front end of the same board, every TS
+  byte-exact, 0 uncorrectable, 0 host underruns, MISSED 0, 0 RX losses
+  (not yet run: it needs the image with the transmit block).
+- `isdb-radio`: the transmission of symbol codes through an FPGA transmit
+  block. `SymbolSink` (separate from `IqSink`), `Offload::TxSymbols {
+  version, phases, taps }` and `Offload::runs_tx`, `Backend::tx_offloads`
+  (probed without changing anything), `describe_tx_symbols` /
+  `open_tx_symbols(cfg, opts, &TxParams)` (`Unsupported` by default),
+  `RadioError::Modulator` / `ModulatorParams`. `QueuedSink<R, E>` is
+  generic over its converter (`Encode`: `Quantizer<F>` for samples,
+  `CodeEncoder` for codes, eight per two-channel DMA sample), so prefill,
+  back-pressure, stall detection, drain, the stop flag and the underrun
+  counters are shared and tested for both; it also converts what the
+  device takes ahead (`RadioTx::ahead`) before starting, and calls
+  `RadioTx::started` / `status` / `summary`. The `pluto` backend's mode:
+  the block's ID word probed first, the radio configured as for IQ, r1_mode
+  and the TX FIR bit refused, `Encoder::configure_tx`, STEP read back, CTRL
+  START|SELECT with STATUS "selected" required, the attenuation last; CTRL
+  RUN|SELECT once the stream's first buffer is in the board (so the block
+  misses nothing at the start) and the DAC underflow flag cleared; MISSED
+  per status line; CONSUMED, MISSED, FIRST_MISS, STATUS and the flag in
+  the summary; on stop, drop or error CTRL 0 before the attenuation and
+  LO. TX1 only, both channels, `buffer` 65 536 and `kbuffers` 16 by
+  default; `kbuffers` is now a TX argument (IQ default 4).
 - `isdb-iq`: the SigMF field `isdb:system` (extension 0.4.0).
 
 - `isdb-radio` `pluto`: without `uri`, the device is found by mDNS when
