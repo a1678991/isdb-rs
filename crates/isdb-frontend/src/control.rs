@@ -393,7 +393,14 @@ pub mod tx {
 impl Encoder {
     /// The whole transmit configuration for `p` ([`tx`]): STEP and SHIFT,
     /// then banks A and B, row by row, taps `0..S` (the stored half; one
-    /// ADDR per row). Follow it with CTRL START, then CTRL RUN | SELECT.
+    /// ADDR per row). Follow it with CTRL START | SELECT (the block owns
+    /// the DAC and the DMA, outputs zero and requests nothing), start the
+    /// TX DMA, then, once its first buffer is in, CTRL RUN | SELECT: the
+    /// block counts every word requested before the first arrives as
+    /// missed, and before SELECT the pass-through sends the DMA's words to
+    /// the DAC as samples (fpga/README.md "The transmit block"; the
+    /// `isdb-radio` Pluto backend does this). CTRL 0 makes it transparent
+    /// again.
     pub fn configure_tx(&mut self, p: &TxParams) -> Vec<u32> {
         let mut out = Vec::new();
         self.write(tx::reg::STEP, &[p.step, u32::from(p.shift)], &mut out);

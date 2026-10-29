@@ -7,10 +7,11 @@ use crate::phyargs::{PhyArgs, TuneArgs, Tuning, describe_params, parse_gain};
 use crate::producer::{self, EndReason, FrameKind, ProducedFrame, ProducerConfig};
 use crate::sink::{FileSink, IqFormat};
 use crate::source::Feed;
+use crate::symbols::OffloadArg;
 use crate::txs::{Given, SatArgs, TxSystem};
 use anyhow::{Context, Result, bail};
 use clap::Args;
-use isdb_radio::{DeviceSpec, IqSink, RadioConfig, TxOptions};
+use isdb_radio::{Backend, DeviceSpec, IqSink, RadioConfig, TxOptions};
 use isdbt_core::Params;
 use isdbt_phy::Transmitter;
 use std::sync::Arc;
@@ -39,8 +40,8 @@ pub struct TxArgs {
     /// (BS / 110° CS, ITU-R BO.1408-1; its layout and inputs are the
     /// options under "ISDB-S" below). The options of the other system are
     /// refused. ISDB-S needs ≥ 38.96 Msps: written to --iq completely; a
-    /// radio over Gigabit Ethernet (Pluto) underruns at that rate and a
-    /// HackRF refuses it.
+    /// radio over Gigabit Ethernet (Pluto) underruns at that rate unless
+    /// its FPGA shapes the symbols (--offload), and a HackRF refuses it.
     #[arg(long, value_enum, default_value_t = TxSystem::Isdbt)]
     pub system: TxSystem,
     #[command(flatten)]
@@ -142,6 +143,15 @@ pub struct TxArgs {
     pub status_secs: f64,
     #[command(flatten)]
     pub sat: SatArgs,
+    /// ISDB-S with --radio: where the pulse shaping runs. `auto` sends
+    /// symbol codes (14.43 MB/s) to the radio's FPGA transmit block when
+    /// it reports a compatible one (a read-only probe with --rf-enable;
+    /// a dry run does not open the device and describes both), else IQ
+    /// samples shaped on the CPU, which a Pluto cannot carry at ISDB-S
+    /// rates (it underruns). `fpga` fails without a block; `cpu` always
+    /// sends IQ. --iq always gets the CPU's samples (`fpga` is refused).
+    #[arg(long, value_enum, default_value_t = OffloadArg::Auto, help_heading = "ISDB-S (--system isdbs)")]
+    pub offload: OffloadArg,
 }
 
 /// Where `isdb tx` sends the baseband: `--radio` or `--iq`.
@@ -438,6 +448,54 @@ fn check_iq_bound(path: &str, endless: bool, seconds: Option<f64>) -> Result<()>
     Ok(())
 }
 
+/// The radio options of `a` for produced items of `frame_s` seconds.
+pub(crate) fn tx_options(a: &TxArgs, frame_s: f64) -> TxOptions {
+    TxOptions {
+        prefill_frames: a.prefill_frames,
+        frame_seconds: frame_s,
+        backoff_db: a.backoff_db,
+    }
+}
+
+/// The `--rf-enable` / `--dry-run` gate: print the backend's `settings`
+/// first, then refuse a dry run (an error that says so) and note an
+/// unbounded transmission.
+pub(crate) fn gate(
+    a: &TxArgs,
+    backend: &dyn Backend,
+    tuning: &Tuning,
+    settings: &str,
+    endless: bool,
+    seconds: f64,
+) -> Result<()> {
+    info!(
+        target: "isdb::tx",
+        backend = backend.name(),
+        "{} TX settings{}:\n{settings}",
+        backend.name(),
+        tuning.channel_label()
+    );
+    // clap admits --radio only with exactly one of --rf-enable and
+    // --dry-run; the gate does not rely on it.
+    if !a.rf_enable || a.dry_run {
+        bail!(
+            "dry run, not transmitting: use --rf-enable instead of --dry-run to radiate with the settings above (coax/attenuator or shielded setup only)"
+        );
+    }
+    if seconds == 0.0 {
+        info!(
+            target: "isdb::tx",
+            "note: unbounded transmission ({}); stop with Ctrl-C",
+            if endless {
+                "the input never ends"
+            } else {
+                "until the input ends"
+            }
+        );
+    }
+    Ok(())
+}
+
 /// The sink of `a`, for either system: `--radio` through the
 /// `--rf-enable` / `--dry-run` gate (the backend's settings printed
 /// first; `radio` builds its configuration), or the `--iq` file (`file`
@@ -455,37 +513,9 @@ pub(crate) fn open_sink(
         Sink::Radio(spec) => {
             let backend = isdb_radio::backend(&spec.backend)?;
             let (cfg, tuning) = radio(spec)?;
-            let opts = TxOptions {
-                prefill_frames: a.prefill_frames,
-                frame_seconds: frame_s,
-                backoff_db: a.backoff_db,
-            };
+            let opts = tx_options(a, frame_s);
             let settings = backend.describe_tx(&cfg, &opts)?;
-            info!(
-                target: "isdb::tx",
-                backend = backend.name(),
-                "{} TX settings{}:\n{settings}",
-                backend.name(),
-                tuning.channel_label()
-            );
-            // clap admits --radio only with exactly one of --rf-enable and
-            // --dry-run; the gate does not rely on it.
-            if !a.rf_enable || a.dry_run {
-                bail!(
-                    "dry run, not transmitting: use --rf-enable instead of --dry-run to radiate with the settings above (coax/attenuator or shielded setup only)"
-                );
-            }
-            if seconds == 0.0 {
-                info!(
-                    target: "isdb::tx",
-                    "note: unbounded transmission ({}); stop with Ctrl-C",
-                    if endless {
-                        "the input never ends"
-                    } else {
-                        "until the input ends"
-                    }
-                );
-            }
+            gate(a, backend, &tuning, &settings, endless, seconds)?;
             let (sink, info) = backend
                 .open_tx(&cfg, &opts)
                 .with_context(|| format!("open radio {spec} for TX"))?;

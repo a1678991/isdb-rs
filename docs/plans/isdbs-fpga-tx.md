@@ -146,7 +146,20 @@ Each step is a commit with tests and docs, as the RX path was built
    points: `qpsk_point` and `psk8_point` differ by an ulp), refuse a
    dummy combination with slots (the one case that leaves 0+0i symbols),
    `psk8_point(code) ≈ symbol` tests on every layout.
-4. **Host transport** (`isdb-radio`, `isdb-iio`): `Offload::TxSymbols`,
+4. **Host transport** (done, tested with the mock radio, a model of the
+   block's command decoder and dry runs; the on-board self-test is
+   written, `ISDB_RS_PLUTO_TX_LOOPBACK_URI`, and waits for the image.
+   Measured: the codes' producer at 11.1× real time, release, 1.0 ms per
+   superframe, against 1.14× with the shaper; the transmitter without
+   the `f64` points was cheaper than the 3.3 ms estimated. Deviations:
+   START|SELECT at open and RUN|SELECT only once the stream's first
+   buffer is in the board, since the block counts every word requested
+   before the first arrives as missed; the sink converts the device's
+   kernel queue ahead before it starts the stream, so the queue fills
+   from codes at the link's speed; `Offload::TxSymbols` carries the
+   phases too, so `auto` can tell a block of another geometry;
+   `isdb-iio` unchanged; isdb-radio README "TX symbol codes")
+   (`isdb-radio`, `isdb-iio`): `Offload::TxSymbols`,
    a TX-direction probe (`offloads` parses capture args today),
    `SymbolSink`, `QueuedSink` generic over its converter (`Quantizer` or
    the code packer; prefill, back-pressure, drain and underrun counting

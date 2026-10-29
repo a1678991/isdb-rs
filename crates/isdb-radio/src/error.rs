@@ -204,6 +204,24 @@ pub enum RadioError {
     /// ([`crate::Backend::capture_symbols`]).
     #[error(transparent)]
     FrontEndParams(#[from] isdb_frontend::params::ParamError),
+    /// The device has no FPGA transmit block, or one of another TX format
+    /// or geometry than the parameters
+    /// ([`crate::Backend::open_tx_symbols`]), as [`RadioError::FrontEnd`]
+    /// is for the receive block.
+    #[error("{}", modulator(backend, *found, *need))]
+    Modulator {
+        /// The backend.
+        backend: &'static str,
+        /// (TX format version, phases, taps) of the device's block;
+        /// `None`: it has none.
+        found: Option<(u16, usize, usize)>,
+        /// (TX format version, phases, taps) the parameters need.
+        need: (u16, usize, usize),
+    },
+    /// Transmit-interpolator parameters that do not validate
+    /// ([`crate::Backend::open_tx_symbols`]).
+    #[error(transparent)]
+    ModulatorParams(#[from] isdb_frontend::shape::fixed::TxParamError),
     /// A stream that stopped or misbehaves while running.
     #[error("{stream} stream {problem}")]
     Stream {
@@ -539,6 +557,20 @@ fn front_end(backend: &str, found: Option<(u16, usize)>, need: (u16, usize)) -> 
     }
 }
 
+fn modulator(
+    backend: &str,
+    found: Option<(u16, usize, usize)>,
+    need: (u16, usize, usize),
+) -> String {
+    match found {
+        None => format!("{backend}: this bitstream has no FPGA transmit block"),
+        Some((version, phases, taps)) => format!(
+            "{backend}: the device's transmit block is TX format {version} with {phases} phases × {taps} taps; the parameters need format {} with {} × {}",
+            need.0, need.1, need.2
+        ),
+    }
+}
+
 /// `a`, `a or b`, `a, b or c`.
 fn one_of(values: &[&str]) -> String {
     match values {
@@ -607,6 +639,29 @@ mod tests {
         let e = RadioError::io("write the capture", std::io::Error::other("full"));
         assert!(matches!(&e, RadioError::Io { op, .. } if op == "write the capture"));
         assert_eq!(e.source().unwrap().to_string(), "full");
+    }
+
+    #[test]
+    fn modulator_messages() {
+        let need = (1, 512, 24);
+        assert_eq!(
+            RadioError::Modulator {
+                backend: "pluto",
+                found: None,
+                need
+            }
+            .to_string(),
+            "pluto: this bitstream has no FPGA transmit block"
+        );
+        assert_eq!(
+            RadioError::Modulator {
+                backend: "pluto",
+                found: Some((2, 256, 32)),
+                need
+            }
+            .to_string(),
+            "pluto: the device's transmit block is TX format 2 with 256 phases × 32 taps; the parameters need format 1 with 512 × 24"
+        );
     }
 
     #[test]

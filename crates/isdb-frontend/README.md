@@ -318,6 +318,15 @@ writes, about 8.3 s at the 0.62 ms per register write measured through
 iiod (`fpga/README.md`), so the bitstream carries the default bank as its
 initial contents.
 
+**The host's sequence** (`isdb-radio`'s Pluto backend): configure, read
+STEP back, CTRL START|SELECT (the block owns the DAC and the DMA, sends
+zeros and requests nothing; STATUS must read "selected"), start the TX
+DMA, and once its first buffer is in, CTRL RUN|SELECT (STATUS 3): the
+block counts every word it requests before the first arrives as missed,
+and before SELECT the pass-through sends the DMA's words to the DAC as
+samples. CTRL 0 after the stream stops, before the attenuation and the
+LO are made safe.
+
 ## Spec scope
 
 The front end implements no broadcast specification: the symbol rates

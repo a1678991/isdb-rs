@@ -1170,6 +1170,12 @@ end with every packet delivered (`isdbs_loopback_detects_loss`).
 produces 1.1× real time at 40 Msps (9.8 ms of transmitter and shaper per
 11.07 ms superframe, the shaper on one core most of it; 0.8× in a dev
 build now that the ISDB-S crates are optimised there, 0.02× before);
+for a radio's FPGA transmit block (`--offload fpga`), which takes the
+symbols as codes and shapes them itself, the producer runs at 11.1×
+real time (1.0 ms per superframe; 1.14× with the shaper in the same
+run; dev build 10.4× and 1.10×), measured by `isdb-cli`'s ignored test
+`producer_speed_of_both_paths` (busy time per data superframe, BS
+layout, synthetic packets, 2026-10-29);
 `loopback --system isdbs` of 1.01 s of signal (90 superframes) takes
 2.9 s: production and channel 0.96 s, front end 1.56 s (survey, the
 11-candidate trim search over the first 0.15 s, the bit-exact front end

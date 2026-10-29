@@ -1,5 +1,5 @@
 //! In-memory sinks and radio for tests of code that drives an [`IqSink`]
-//! (feature `mock`).
+//! or a [`SymbolSink`](crate::SymbolSink) (feature `mock`).
 //!
 //! * [`MemorySink`]: records every sample, not real time.
 //! * [`MockRadio`]: a [`RadioTx`] that consumes its queue on a thread at a
@@ -7,7 +7,9 @@
 //!   counting transfers that found the queue empty as underruns. Wrapped
 //!   in a [`QueuedSink`](crate::QueuedSink) it is a real-time sink with
 //!   the same prefill, back-pressure, drain and stop behaviour as a radio
-//!   backend.
+//!   backend: an `IqSink` with the default quantiser, a `SymbolSink`
+//!   with a [`CodeEncoder`](crate::CodeEncoder) (a `MockRadio<Cs12>`
+//!   then consumes DMA samples of eight codes).
 
 use crate::Result;
 use crate::{C32, Cs8, IntFormat, IqSink, RadioTx, StreamCounters, TxStream};
@@ -88,6 +90,9 @@ pub struct MockRadio<F: IntFormat = Cs8> {
     pub rate: f64,
     /// Calls to [`RadioTx::start_tx`].
     pub starts: usize,
+    /// What [`RadioTx::ahead`] reports: components a device would take
+    /// ahead of real time (default 0).
+    pub ahead: usize,
     worker: Option<JoinHandle<()>>,
     format: PhantomData<F>,
 }
@@ -114,6 +119,7 @@ impl<F: IntFormat> MockRadio<F> {
             streaming: Arc::default(),
             rate,
             starts: 0,
+            ahead: 0,
             worker: None,
             format: PhantomData,
         }
@@ -197,6 +203,10 @@ impl<F: IntFormat> RadioTx for MockRadio<F> {
 
     fn is_streaming(&mut self) -> bool {
         self.streaming.load(Ordering::SeqCst)
+    }
+
+    fn ahead(&self) -> usize {
+        self.ahead
     }
 }
 

@@ -7,6 +7,8 @@
 //! * [`IqSink`] / [`IqSource`]: where a transmitter sends frames of
 //!   samples and where a receiver reads them from. `isdb-cli` implements
 //!   them for IQ files; every radio backend implements them for its device.
+//!   [`SymbolSink`]: where an ISDB-S transmitter sends symbol codes for a
+//!   radio's FPGA to shape.
 //! * [`DeviceSpec`]: a device selection `NAME[:key=value[,key=value...]]`
 //!   (e.g. `sdr` or `sdr:serial=0000abcd`).
 //! * [`RadioConfig`]: what to program into the device (frequency,
@@ -23,21 +25,26 @@
 //!   ([`CaptureGap`]): the way to record signals of other systems
 //!   (ISDB-S, ISDB-S3), in one piece when they are faster than the host
 //!   link can stream.
-//! * [`Offload`]: a receive stage a radio can run itself ([`Backend::offloads`],
-//!   probed without changing anything), so that less data crosses the
-//!   link. The first one is the single-carrier front end of
+//! * [`Offload`]: a stage a radio can run itself, so that less data
+//!   crosses the link, probed without changing anything. Receiving
+//!   ([`Backend::offloads`]): the single-carrier front end of
 //!   `isdb_frontend` (IQ to `Symbols`), whose output
-//!   [`Backend::capture_symbols`] streams; the host runs the same stage on
-//!   the CPU when the radio does not offer it.
+//!   [`Backend::capture_symbols`] streams. Transmitting
+//!   ([`Backend::tx_offloads`]): the ISDB-S transmit interpolator of
+//!   `isdb_frontend::shape::fixed` (symbol codes to IQ), which a
+//!   [`SymbolSink`] from [`Backend::open_tx_symbols`] feeds. The host runs
+//!   the same stage on the CPU when the radio does not offer it.
 //! * [`backends`] / [`backend`]: the backends compiled into this build.
 //! * [`Quantizer`]: scaling of the unit-RMS OFDM signal into integer
 //!   samples (e.g. [`Cs8`]) with a backoff below full scale and a count of
 //!   saturated components.
 //! * [`QueuedSink`]: the device-neutral transmit path of a radio fed with
-//!   buffers of integer samples ([`RadioTx`]): quantisation, prefill
-//!   before streaming, back-pressure, stall detection, drain on finish and
-//!   underrun counting. A backend implements [`RadioTx`] for its device and
-//!   returns a [`QueuedSink`] from [`Backend::open_tx`].
+//!   buffers of integer components ([`RadioTx`]): conversion ([`Encode`]:
+//!   a [`Quantizer`] of samples, or a [`CodeEncoder`] of symbol codes),
+//!   prefill before streaming, back-pressure, stall detection, drain on
+//!   finish and underrun counting. A backend implements [`RadioTx`] for
+//!   its device and returns a [`QueuedSink`] from [`Backend::open_tx`]
+//!   (an [`IqSink`]) or [`Backend::open_tx_symbols`] (a [`SymbolSink`]).
 //!
 //! # Backends
 //!
@@ -104,6 +111,7 @@
 #![warn(clippy::print_stdout, clippy::print_stderr)]
 
 mod backends;
+mod encode;
 mod error;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
@@ -112,6 +120,7 @@ mod queued;
 mod spec;
 
 pub use backends::{backend, backends};
+pub use encode::{CodeEncoder, Encode};
 pub use error::{
     Direction, Key, KeyValueProblem, RadioError, Result, Rule, SpecProblem, StreamProblem,
     Tolerance,
@@ -121,6 +130,7 @@ pub use quant::{Cs8, Cs12, IntFormat, Quantizer};
 pub use queued::{QueuedSink, RadioTx, StreamCounters, TxStream};
 pub use spec::{DeviceSpec, parse_key_value};
 
+use isdb_frontend::shape::fixed::TxParams;
 use std::ops::RangeInclusive;
 use std::sync::atomic::AtomicBool;
 
@@ -139,6 +149,30 @@ pub trait IqSink {
     }
     /// End of transmission; `aborted` = stopped by signal or error (do not
     /// wait for queued samples). Returns a summary line.
+    fn finish(&mut self, aborted: bool) -> Result<String>;
+    /// True if the sink consumes in real time (it paces the producer).
+    fn realtime(&self) -> bool;
+}
+
+/// Where an ISDB-S transmitter sends its symbols as codes instead of
+/// samples: a radio whose FPGA shapes them ([`Offload::TxSymbols`],
+/// [`Backend::open_tx_symbols`]). The codes are
+/// `isdb_frontend::txformat`'s, one per symbol (0 the zero symbol, 8 + k
+/// the point e^{jkπ/4}).
+///
+/// A separate trait from [`IqSink`], which files and the radios without
+/// such a block keep implementing as they do.
+pub trait SymbolSink {
+    /// Write the codes of one frame, blocking as long as the device needs.
+    /// A real-time sink returns early (dropping the codes) once `stop` is
+    /// set.
+    fn write(&mut self, codes: &[u8], stop: &AtomicBool) -> Result<()>;
+    /// Status fragment appended to periodic status lines.
+    fn status(&mut self) -> String {
+        String::new()
+    }
+    /// End of transmission; `aborted` = stopped by signal or error (do not
+    /// wait for queued codes). Returns a summary line.
     fn finish(&mut self, aborted: bool) -> Result<String>;
     /// True if the sink consumes in real time (it paces the producer).
     fn realtime(&self) -> bool;
@@ -358,19 +392,53 @@ pub struct Capture {
     pub time: f64,
 }
 
-/// A receive stage a radio can run itself instead of the host CPU, with
-/// the same output bit for bit (more will follow: soft bits, packets).
+/// A stage a radio can run itself instead of the host CPU, with the same
+/// output bit for bit (more will follow: soft bits, packets).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Offload {
-    /// The single-carrier front end of `isdb_frontend` (IQ to `Symbols`),
-    /// format `version`, `taps` taps per phase.
+    /// Receiving: the single-carrier front end of `isdb_frontend` (IQ to
+    /// `Symbols`), format `version`, `taps` taps per phase
+    /// ([`Backend::offloads`]).
     Symbols {
         /// Format version (`isdb_frontend::params::FORMAT_VERSION`).
         version: u16,
         /// Taps per phase of the device's filter banks.
         taps: usize,
     },
+    /// Transmitting: the ISDB-S transmit interpolator of
+    /// `isdb_frontend::shape::fixed` (symbol codes to IQ at the DAC rate),
+    /// TX format `version`, banks of `phases` rows of `taps` taps
+    /// ([`Backend::tx_offloads`], the block's ID word
+    /// `isdb_frontend::control::tx::TxIdentity`).
+    TxSymbols {
+        /// TX format version (`isdb_frontend::txformat::FORMAT_VERSION`).
+        version: u16,
+        /// Rows of the block's banks (phases).
+        phases: usize,
+        /// Taps per row.
+        taps: usize,
+    },
+}
+
+impl Offload {
+    /// Whether this is a transmit block that can run `p`: the model's TX
+    /// format version and `p`'s geometry
+    /// (`isdb_frontend::control::tx::TxIdentity::supports`).
+    pub fn runs_tx(&self, p: &TxParams) -> bool {
+        match *self {
+            Self::TxSymbols {
+                version,
+                phases,
+                taps,
+            } => {
+                version == isdb_frontend::txformat::FORMAT_VERSION
+                    && phases == p.phases()
+                    && taps == p.taps()
+            }
+            Self::Symbols { .. } => false,
+        }
+    }
 }
 
 /// One stream of `Symbols` words taken by [`Backend::capture_symbols`].
@@ -476,6 +544,48 @@ pub trait Backend: Sync {
         Err(RadioError::Unsupported {
             backend: self.name(),
             what: "has no symbol front end",
+        })
+    }
+    /// The transmit stages the device can run itself with `cfg` (a TX
+    /// configuration, as [`Backend::describe_tx`] takes), found without
+    /// changing its state (default: none).
+    fn tx_offloads(&self, cfg: &RadioConfig) -> Result<Vec<Offload>> {
+        let _ = cfg;
+        Ok(Vec::new())
+    }
+    /// As [`Backend::describe_tx`], for the transmission of symbol codes
+    /// through the device's [`Offload::TxSymbols`] block configured with
+    /// `params` ([`Backend::open_tx_symbols`]): validates without opening a
+    /// device. The level is in `params`' banks (designed at
+    /// [`TxOptions::backoff_db`]), not in a [`Quantizer`].
+    fn describe_tx_symbols(
+        &self,
+        cfg: &RadioConfig,
+        opts: &TxOptions,
+        params: &TxParams,
+    ) -> Result<String> {
+        let _ = (cfg, opts, params);
+        Err(RadioError::Unsupported {
+            backend: self.name(),
+            what: "has no FPGA transmit block",
+        })
+    }
+    /// Open and configure the device for transmission through its
+    /// [`Offload::TxSymbols`] block, configured with `params`. Returns the
+    /// sink of symbol codes (streaming starts after
+    /// [`TxOptions::prefill_frames`] frames) and a one-line device
+    /// description. Fails ([`RadioError::Modulator`]) when the device has no
+    /// such block or one that cannot run `params`.
+    fn open_tx_symbols(
+        &self,
+        cfg: &RadioConfig,
+        opts: &TxOptions,
+        params: &TxParams,
+    ) -> Result<(Box<dyn SymbolSink>, String)> {
+        let _ = (cfg, opts, params);
+        Err(RadioError::Unsupported {
+            backend: self.name(),
+            what: "has no FPGA transmit block",
         })
     }
 }

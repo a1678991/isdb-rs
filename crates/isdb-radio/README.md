@@ -22,16 +22,18 @@ MB/s) are above what a Pluto streams over Gigabit Ethernet (about
 | Item | Role |
 |------|------|
 | `IqSink` / `IqSource` | where a transmitter writes frames of samples / where a receiver reads chunks |
+| `SymbolSink` | where an ISDB-S transmitter writes symbol codes (`isdb_frontend::txformat`) for a radio's FPGA to shape: `write(codes, stop)`, `status`, `finish(aborted)`, `realtime`; separate from `IqSink`, which files and the other radios keep |
 | `DeviceSpec` | device selection `NAME[:key=value[,key=value...]]` (`FromStr`, `Display`) |
 | `RadioConfig` | programmed frequency, rational sample rate, analog bandwidth request, device arguments, named gains |
 | `TxOptions`, `RxOptions` | TX: digital backoff (0..40 dB), prefill frames and frame duration (`validate()`); RX: receive queue length in seconds of signal, which the backend converts to its buffer count |
-| `Backend` | one kind of radio: `describe_tx` / `describe_rx` / `describe_capture` validate without hardware (dry run), `open_tx` / `open_rx` open the device; TX gain defaults are the device's minimum output power. Optional: `capture_limit` (the largest capture and why, `u64::MAX` for a stream; `None` by default) and `capture` (writes the sample bytes to an `io::Write` as they arrive); `offloads` (the receive stages the device runs itself, probed without changing it; none by default) and `capture_symbols` (streams the `Symbols` words of the device's front end) |
-| `Offload`, `SymbolsCapture` | a stage a radio runs itself (`Offload::Symbols { version, taps }`: the `isdb-frontend` stage in the FPGA); what `capture_symbols` took (words, DMA overflow reports, settings read back) |
+| `Backend` | one kind of radio: `describe_tx` / `describe_rx` / `describe_capture` validate without hardware (dry run), `open_tx` / `open_rx` open the device; TX gain defaults are the device's minimum output power. Optional: `capture_limit` (the largest capture and why, `u64::MAX` for a stream; `None` by default) and `capture` (writes the sample bytes to an `io::Write` as they arrive); `offloads` (the receive stages the device runs itself, probed without changing it; none by default) and `capture_symbols` (streams the `Symbols` words of the device's front end); `tx_offloads` (the transmit stages, probed likewise with a TX configuration), `describe_tx_symbols` / `open_tx_symbols` (validate, describe and open the transmission of symbol codes through the device's FPGA transmit block, configured with `isdb_frontend::shape::fixed::TxParams`; `Unsupported` by default) |
+| `Offload`, `SymbolsCapture` | a stage a radio runs itself (`Offload::Symbols { version, taps }`: the receive front end in the FPGA; `Offload::TxSymbols { version, phases, taps }`: the transmit interpolator, `runs_tx(&TxParams)` saying whether it runs given parameters); what `capture_symbols` took (words, DMA overflow reports, settings read back) |
 | `Capture`, `CaptureFormat`, `CaptureGap` | what one capture wrote: its format (`Cs8`, or `Cs16` with a full scale of 2048 or 32768), the samples written and the losses inside it, and the rate, LO, bandwidth and gain read back from the device, its identity, the capture method and the host time |
 | `backends()`, `backend(name)` | the compiled-in backends; an unknown name reports the `isdb-radio` feature of each known backend (forwarded by `isdb-cli` under the same name) |
 | `Quantizer<F>`, `IntFormat`, `Cs8`, `Cs12` | unit-RMS signal → integer samples (cs8; cs12 left-aligned in `i16`) with backoff below full scale, saturation and clip count |
-| `QueuedSink<R>`, `RadioTx`, `TxStream`, `StreamCounters` | the shared TX path of every radio fed with integer sample buffers: quantisation into `R::Format`, start after the prefill, back-pressure, stall detection, drain on finish, stop flag, underrun counters, "device stopped streaming" check |
-| `mock` (feature `mock`) | `MemorySink` and `MockRadio` (a `RadioTx` consuming in real time; in a `QueuedSink` it behaves like a radio backend) for tests |
+| `QueuedSink<R, E>`, `RadioTx`, `TxStream`, `StreamCounters` | the shared TX path of every radio fed with integer component buffers: conversion with an `Encode`r `E`, start after the prefill (and after what the device takes ahead, `RadioTx::ahead`), back-pressure, stall detection, drain on finish, stop flag, underrun counters, "device stopped streaming" check; `RadioTx`'s optional hooks `started` (the stream runs, the prefill is queued), `status` (a status line's device fragment) and `summary` (read after the drain, before the stop). With the default `E = Quantizer<R::Format>` (`QueuedSink::new`) it is an `IqSink`, with a `CodeEncoder` (`QueuedSink::with_encoder`) a `SymbolSink`; the prefill, back-pressure, drain and underrun tests run for both |
+| `Encode`, `CodeEncoder` | what a `QueuedSink` converts: `Quantizer<F>` (unit-RMS `C32` → `F` components), `CodeEncoder` (symbol codes → two-channel DMA samples of eight codes, I word then Q word, a partial sample held and padded with zero symbols at the end) |
+| `mock` (feature `mock`) | `MemorySink` and `MockRadio` (a `RadioTx` consuming in real time; in a `QueuedSink` it behaves like a radio backend, of samples or of codes) for tests |
 
 Errors are `RadioError`, one variant per kind of failure with its facts
 as fields: a device selection that does not parse (`Spec`, `KeyValue`),
@@ -40,7 +42,9 @@ backend refuses (`UnknownKey`, `RepeatedKey`, `Argument` with the `Rule`
 it breaks, `Conflict`), an option or tuning out of range (`Backoff`,
 `Duration`, `Tuning`, `CaptureLength`), a frequency or rate the device
 did not take (`Readback`), an operation the backend or device cannot do
-(`Unsupported`, `Firmware`, `FrontEnd`), a stream that stopped
+(`Unsupported`, `Firmware`, `FrontEnd` and `Modulator` for a missing or
+incompatible FPGA block, `FrontEndParams` / `ModulatorParams` for its
+parameters), a stream that stopped
 (`Stream`, `StillStreaming`), a device reply it cannot use (`Reply`), and
 a device library or I/O failure (`Device`, `Io`). `Device` names the
 backend and the operation and keeps the library's error
@@ -61,7 +65,7 @@ requests and each stream's end.
 | Name | Feature | Device args | Gains (TX) | Gains (RX) |
 |------|---------|-------------|------------|------------|
 | `hackrf` | `hackrf` (default) | `serial` | `txvga` 0..47 dB, `amp` on/off | `lna` 0..40 dB (8 dB steps), `vga` 0..62 dB (2 dB steps), `amp` on/off |
-| `pluto` | `pluto` (default) | `uri` (default `ISDB_PLUTO_URI`, else found by mDNS), `channel` 1/2, `buffer` (samples), TX: `loopback` on/off; capture: `recorder` iio/maia/stream, `bits` 8/12/16 (`buffer` with `recorder=stream` only) | `att` 0..89.75 dB attenuation (0.25 dB steps, default 89.75) | `agc` manual/slow_attack/fast_attack/hybrid (default slow_attack), `gain` dB (manual) |
+| `pluto` | `pluto` (default) | `uri` (default `ISDB_PLUTO_URI`, else found by mDNS), `channel` 1/2, `buffer` (samples), TX: `loopback` on/off, `kbuffers` 2..64 (kernel buffers; 4 for IQ, 16 for symbol codes); capture: `recorder` iio/maia/stream, `bits` 8/12/16 (`buffer` with `recorder=stream` only), `kbuffers` (the symbol stream) | `att` 0..89.75 dB attenuation (0.25 dB steps, default 89.75) | `agc` manual/slow_attack/fast_attack/hybrid (default slow_attack), `gain` dB (manual) |
 
 The `hackrf` backend links the system libhackrf through `isdb-hackrf`,
 the `pluto` backend the system libiio (0.x) through `isdb-iio`; with
@@ -135,9 +139,68 @@ program the RX as `open_rx` does and wait 100 ms for the LO and the AGC.
   the samples asked for, counting the discarded ones, so a lossy link
   writes fewer.
 
+### TX symbol codes: the FPGA transmit block
+
+With a bitstream that has the ISDB-S transmit block (`SymbolsTx`,
+[`fpga/`](../../fpga/README.md), the bit-exact twin of
+`isdb_frontend::shape::fixed::Interpolator`), the `pluto` backend sends
+4-bit symbol codes instead of IQ samples: 14.43 MB/s for ISDB-S where IQ
+at 40 Msps would need 160 MB/s, against a measured host → board ceiling
+of 64 MB/s. The block shapes the symbols to the DAC rate on the board.
+
+- **Discovery** (`tx_offloads`): one read of `up_dac_gpio_in`
+  (0x800000B8 of `cf-ad9361-dds-core-lpc`), which shows the block's ID
+  word (0xB5D11918: TX format 1, 512 phases × 24 taps) or 0 without it.
+  Nothing is written.
+- **Settings** (`describe_tx_symbols`, `open_tx_symbols`): TX1 only
+  (`channel=2` is refused: the block drives the TX1 data path), both
+  `voltage0` and `voltage1` enabled (eight codes per two-channel DMA
+  sample; with `voltage0` alone the Q word would come from the DDS),
+  `buffer` 65 536 DMA samples (18.2 ms of ISDB-S) and `kbuffers` 16
+  (290 ms of slack in the device) by default. The level is the block's:
+  the backoff is in its banks (`TxParams` designed at
+  `TxOptions::backoff_db`), and the TX attenuation sets the power.
+- **Opening**, in this order: the block's ID word (no block, or one that
+  cannot run the parameters: `RadioError::Modulator`, before anything is
+  programmed); the radio as for IQ (maximum attenuation first, the LO
+  powered down with `loopback`, DDS off, rate, bandwidth, LO, loopback);
+  refused with the DAC core in r1_mode (0x80000048 bit 5) or with
+  `up_dac_gpio_out` bit 0 set (Tezuka's ×8 TX FIR enable);
+  `Encoder::configure_tx` (13 315 commands, ≈ 8 s through iiod), STEP read
+  back; CTRL START|SELECT, and STATUS must read "selected" (codes sent to
+  a plain DAC would go out as samples); then the attenuation.
+- **Starting** (`RadioTx::started`): the sink converts what the device
+  takes ahead (kernel buffers and the one being filled, 1.1 M DMA
+  samples, 28 superframes) before the stream starts, so the kernel queue
+  fills from codes; once the stream's first buffer is in the device the
+  block gets CTRL RUN|SELECT (STATUS must read 3) and the DAC core's
+  underflow flag (0x80000088 bit 0, which also counts the block's missed
+  words and is set whenever no DMA word is available, idle included) is
+  cleared. Started any earlier, the block would count the words it
+  requests before the first buffer as missed.
+- **Counters**: each status line adds the block's MISSED (one READ, four
+  register accesses); the summary gives CONSUMED, MISSED, FIRST_MISS
+  (CONSUMED at the first miss, `-` without one), STATUS and the underflow
+  flag, read after the queue drained, while the zero buffers that end the
+  stream still play. Host underruns (the libiio thread found no buffer
+  queued and sent zeros) are counted as for IQ.
+- **Closing** (also on error or panic): the stream stops, then CTRL 0
+  (the IQ pass-through), then the maximum attenuation, the LO down and
+  the loopback off. Opening the IQ path sends CTRL 0 when the bitstream
+  has the block (after the attenuation is at its maximum and the DDS off,
+  before the level is raised), so a block left selected by a killed
+  process never takes IQ samples for codes.
+
+The command sequence is tested against a model of the block's decoder
+(`TxBlock` in `backends/pluto.rs`: refusals, STATUS checks, CTRL 0 after a
+failed step); the on-board self-test is `isdb-cli`'s
+`tx_symbols_loopback_on_a_pluto` (`ISDB_RS_PLUTO_TX_LOOPBACK_URI`).
+
 A backend for a device with integer samples implements `RadioTx` for it
 (`type Format = Cs8`, `Cs12`, or another `IntFormat`) and
-returns `QueuedSink::new(device, opts)` from `open_tx`.
+returns `QueuedSink::new(device, opts)` from `open_tx`; a device that
+takes something else in the same components (the codes) returns
+`QueuedSink::with_encoder(device, opts, encoder)` and uses the hooks.
 
 ## Example
 
