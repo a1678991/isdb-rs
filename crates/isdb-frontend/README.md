@@ -7,7 +7,9 @@ same output bit for bit: here, on the CPU, and in the FPGA of a PlutoSky
 R2 ([`fpga/`](../../fpga/README.md)). The radio sends symbols instead
 of samples when its link cannot carry the samples. This crate is the
 reference: the fixed-point model is the specification the FPGA follows,
-and it writes the test vectors the FPGA must reproduce.
+and it writes the test vectors the FPGA must reproduce. The crate also
+holds the stage's inverse for the transmit direction, the pulse shaper
+([below](#transmit-shaper)).
 
 Per input sample (the `fixed` module documents every step; format
 version 4: version 3's words, the loop of an FPGA that takes one sample
@@ -196,12 +198,46 @@ reference. Tools: `examples/fespeed.rs`, `examples/feisa.rs` (per
 instruction set), `examples/feprof.rs` / `examples/feeach.rs` for
 `valgrind --tool=callgrind`.
 
+## Transmit shaper
+
+`shape::Shaper` turns symbols (one sample per symbol) into IQ at any
+sample rate ≥ (1 + α)·R, so the samples per symbol may be fractional
+(1.386 for ISDB-S at 40 Msps), root-raised-cosine shaped with the
+matched filter's own pulse (`tables::rrc`), so the cascade is ISI-free.
+Unit-modulus symbols give an output RMS of 1. The module documents the
+signal model and the arithmetic.
+
+- **Signal:** sample n = G·Σₖ aₖ·p(n/sps − span − k), p the RRC cut at
+  ±span symbols (default 16): symbol k peaks at sample (k + span)·sps.
+  The sample position is a 63-bit fixed-point fraction. It never drifts,
+  any chunking of `push` gives the same samples bit for bit, and
+  `samples_for(n)` = ⌈n·2⁶³ / step⌉ counts them exactly (an ISDB-S
+  superframe at 40 Msps: 442 810 or 442 811 samples). `finish` appends
+  the tail (2·span − 1 symbols' worth) and starts a new stream.
+- **Bank:** 1 024 phases of 2·span taps, nearest phase, `f32` with
+  8-lane sums in a fixed order (`f64` sums measure the same to 0.01 dB).
+- **Window: none.** A window tapers the pulse, so the pair is no longer
+  Nyquist: at α = 0.35 and span 16 the cascade's ISI bound is 58.8 dB
+  truncated, 47.9 dB under the receiver's Kaiser β = 5, which buys only
+  far sidelobes (−85 against −52 dB) a loopback or cabled bench does not
+  need (`examples/shapewin.rs`). ISDB-S3's α = 0.03 needs a span of 32
+  or 64 for 45 or 57 dB (`with_span`).
+- **Measured** (`tests/shape.rs`): through an ideal matched filter at the
+  symbol instants, MER 57.6 / 59.1 / 58.8 dB at 40 / 57.72 / 61.44 Msps;
+  RMS within 10⁻⁵ of 1; through `fast::FastFrontend` (ISDB-S at 40 Msps,
+  trim 0) 8PSK MER 36.2 dB at the 6-bit output (41.2 dB before the
+  quantiser). One core shapes 67–73 Msps, 1.2–1.7× real time at those
+  rates (`examples/shapespeed.rs`).
+
 ## Spec scope
 
 The front end implements no broadcast specification: the symbol rates
 and roll-offs come from `isdb_iq::survey::KNOWN_SYSTEMS`, which quotes
 them from the transmission standards, and the arithmetic and the
 `Symbols` format are this project's own definitions (format version 3).
+The transmit shaper's pulse is the square-root raised cosine that ITU-R
+BO.1408-1 Annex 1 §9 (MIC Ordinance No. 87 annexed table 47) prescribes,
+the same function as the matched filter's.
 [`s3sync`](src/s3sync.rs) reads ARIB STD-B44 v2.1 Fig. 3.3-1 (slot
 layout, FSync / !FSync / SSync) and §3.8 (π/2-shift BPSK) to measure
 SNR; it decodes nothing, so the crate has no SPEC-NOTES. One reading
@@ -281,6 +317,7 @@ CRC one 16-bit word per clock.
 | `metrics::{ring_stats, psk_mer, sqnr_db}` | MER without frame sync, SQNR |
 | `s3sync::{measure, measure_at, best_trim, derotated_data}` | ISDB-S3 slot sync (the search on every core, bit for bit as one thread) and sync-symbol Es/N0, or the same at a known offset; the trim search; data symbols for ring statistics |
 | `vectors::document` | the JSON test vectors for `fpga/` |
+| `shape::Shaper` (`new`, `with_span`, `push`, `finish`, `samples_for`) | the transmit pulse shaper: symbols to IQ at any rate ≥ (1 + α)·R, output RMS 1 |
 
 Diagnostics are `tracing` events, never printed; the crate installs no
 subscriber. `warn`: a loss in a `Symbols` stream (`format::Reader`:
@@ -311,6 +348,16 @@ vectors are unchanged.
   - `prop_any_loss_is_reported_and_the_rest_kept`: any cut anywhere,
     every untouched block delivered;
   - mixer and timing checks.
+- **The transmit shaper** (`tests/shape.rs`, unit tests in `shape`):
+  - `prop_chunking_is_invisible`: any cut of the stream, the same
+    samples bit for bit, tail and the next stream included;
+  - the impulse response is the delayed pulse; the gain is the inverse
+    RMS of the pulse; the bank's rows and phase rounding;
+  - ISI-free through an ideal matched filter at 1.35 to 3.47 samples
+    per symbol (≥ 40 dB; 57.6–59.1 dB measured);
+  - output RMS 1, the tail and the reset, `samples_for` against `push`,
+    refused rates, roll-offs and spans;
+  - through `fast::FastFrontend` at 40 Msps: 8PSK MER ≥ 25 dB.
 - **Opt-in recordings** (`tests/captures.rs`, `ISDB_RS_ISDBS_IQ`,
   `ISDB_RS_ISDBS3_IQ`):
   - timing locked within 5 ppm of the survey;
@@ -326,4 +373,6 @@ vectors are unchanged.
   output-width table for a recording; `examples/s3budget.rs` is the
   loss budget above, `examples/s3trim.rs` the trim end to end with the
   output-width study, `examples/tedbias.rs` the detector on synthetic
-  signals; `isdbs-phy`'s `examples/trimscan.rs` the trim on ISDB-S.
+  signals; `isdbs-phy`'s `examples/trimscan.rs` the trim on ISDB-S;
+  `examples/shapewin.rs` the transmit pulse's window study,
+  `examples/shapespeed.rs` the shaper's speed.

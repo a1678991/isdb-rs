@@ -26,7 +26,11 @@
 //! * [`metrics`]: ring MER, PSK MER and SQNR, which need no frame sync;
 //! * [`control`]: the FPGA's register map and command words (through the
 //!   AD9361 core's general purpose registers) and its discovery;
-//! * [`vectors`]: the test vectors the FPGA simulation must reproduce.
+//! * [`vectors`]: the test vectors the FPGA simulation must reproduce;
+//! * [`shape`]: the transmit direction's inverse, [`shape::Shaper`]:
+//!   symbols to IQ at any sample rate ≥ (1 + α)·R (fractional samples
+//!   per symbol), root-raised-cosine shaped with the matched filter's
+//!   pulse, output RMS 1.
 //!
 //! The front end removes a carrier offset given by the host (from
 //! `isdb_iq::survey`) but does not recover the carrier phase: its symbols
@@ -34,7 +38,9 @@
 //! boundary, where it needs the frame structure (TMCC, bursts) anyway.
 //!
 //! No broadcast specification is implemented here: the symbol rates and
-//! roll-offs come from the callers (`isdb_iq::survey::KNOWN_SYSTEMS`).
+//! roll-offs come from the callers (`isdb_iq::survey::KNOWN_SYSTEMS`);
+//! the pulse of both directions is the square-root raised cosine that
+//! ITU-R BO.1408-1 Annex 1 §9 prescribes for ISDB-S.
 //!
 //! # Example
 //!
@@ -74,6 +80,7 @@ pub mod format;
 pub mod metrics;
 pub mod params;
 pub mod s3sync;
+pub mod shape;
 pub mod simd;
 pub mod tables;
 pub mod vectors;
