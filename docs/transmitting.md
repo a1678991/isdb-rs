@@ -601,12 +601,13 @@ paths. On air come the same pre-roll frame, lead superframes, data and
 null flush frame as on the IQ path; the producer runs at about 11× real
 time without the shaper (release build). Opening configures the block
 (13 315 commands, about 8 s through iiod), selects it before any code is
-streamed and starts it once the stream's first buffer is in the board,
+streamed and starts it once the stream has filled half the board's kernel
+queue (8 buffers, 580 ms of codes),
 so a clean run misses no symbol; the status lines add the block's MISSED,
 the summary its CONSUMED, MISSED, FIRST_MISS and the DAC underflow flag.
 Closing, also on an error, stops the stream, puts the DAC back on the IQ
 pass-through, then the attenuation at its maximum and the LO down. The
-device arguments and their defaults (`buffer=65536`, `kbuffers=16`, TX1
+device arguments and their defaults (`buffer=262144`, `kbuffers=16`, TX1
 only) are in the [`isdb-radio` README](../crates/isdb-radio/README.md).
 
 ```sh

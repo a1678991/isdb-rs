@@ -18,17 +18,17 @@
 //!   * `channel`: `1` or `2` (TX1/RX1 or TX2/RX2 port, default 1); 2 needs
 //!     the firmware's `2r2t` mode.
 //!   * `buffer`: samples per IIO buffer, 1024..=4194304 in multiples of
-//!     1024 (default 262144: 32 ms at 512/63 MHz; the TX symbol codes:
-//!     65536 DMA samples of eight codes, 18.2 ms of ISDB-S); 4 such
-//!     buffers are queued in the device kernel (`kbuffers`).
+//!     1024 (default 262144: 32 ms at 512/63 MHz, or 73 ms of ISDB-S as
+//!     TX symbol codes, eight per DMA sample); 4 such buffers are queued
+//!     in the device kernel (`kbuffers`; 16 for the symbol codes).
 //!   * TX only, `loopback`: `on` routes the TX samples digitally back into
 //!     the RX path inside the AD936x (its BIST data-port loopback) and
 //!     powers the TX LO down, so nothing is radiated; an `isdb rx` on the
 //!     same device then receives the transmission. Default `off`. Closing
 //!     the TX turns the loopback off again.
 //!   * TX, `kbuffers`: kernel buffers on the device, 2..=64 (default 4 for
-//!     IQ samples; 16 for the symbol codes: 16 × 18.2 ms = 290 ms of
-//!     slack in the device while the host or the link pauses).
+//!     IQ samples; 16 for the symbol codes: 16 × 72.7 ms = 1.16 s of
+//!     slack in the device while the host, the link or iiod pauses).
 //!   * Capture only (`isdb capture`):
 //!     * `recorder`: `iio` (default) takes one libiio buffer of up to
 //!       63 MiB (the largest iiod allocated on a PlutoSky R2 with Tezuka
@@ -100,7 +100,7 @@
 //!   START|SELECT (the block owns the DAC and the DMA, outputs zero and
 //!   requests nothing), STATUS must read "selected" (codes sent to a plain
 //!   DAC would go out as samples), then the attenuation. Once the stream
-//!   runs and its first buffer is in the device, CTRL RUN|SELECT starts
+//!   runs and half its kernel queue is filled, CTRL RUN|SELECT starts
 //!   the block (STATUS must read run and selected) and the DAC core's
 //!   underflow flag (0x80000088 bit 0, set whenever no DMA word is
 //!   available) is cleared; so a clean run misses no symbol. Both
@@ -185,16 +185,20 @@ const STREAM_DEPTH: usize = 8;
 const SYMBOLS_KERNEL_BUFFERS: u32 = 16;
 /// Accepted `kbuffers`.
 const SYMBOLS_KERNEL_BUFFERS_RANGE: std::ops::RangeInclusive<u32> = 2..=64;
-/// DMA samples per IIO buffer of the TX symbol codes by default: 65 536
-/// samples of eight codes (256 KiB, 524 288 symbols, 18.2 ms of ISDB-S),
-/// 1.6 superframes, so that the host's queue of superframes always holds
-/// a buffer's worth.
-const TX_SYMBOLS_BUFFER: usize = 65_536;
-/// Kernel buffers of the TX symbol codes by default: 16 × 18.2 ms =
-/// 290 ms (4 MiB of DMA memory), the device's slack while the host or the
-/// link pauses (the RX symbol stream needed ≥ 8 to ride out a ≈ 200 ms
-/// TCP pause, plan §0.20; the code stream's 14.4 MB/s is far below the
-/// measured 64 MB/s host → board ceiling).
+/// DMA samples per IIO buffer of the TX symbol codes by default: 262 144
+/// samples of eight codes (1 MiB, 2 097 152 symbols, 72.7 ms of ISDB-S),
+/// 6.6 superframes. 65 536 (18.2 ms) was too little: a receive capture's
+/// 32 MB single buffer on the same board starves iiod's TX thread for
+/// longer than 16 × 18.2 ms and the block ran dry for ≈ 100 ms (2.8 M
+/// symbols) at every `isdb rx` acquisition (VERIFICATION.md "ISDB-S
+/// transmitter in the FPGA: on the board"); 16 × 72.7 ms = 1.16 s rides
+/// it out.
+const TX_SYMBOLS_BUFFER: usize = 262_144;
+/// Kernel buffers of the TX symbol codes by default: 16 × 72.7 ms =
+/// 1.16 s (16 MiB of DMA memory), the device's slack while the host, the
+/// link or iiod pauses (the RX symbol stream needed ≥ 8 to ride out a
+/// ≈ 200 ms TCP pause, plan §0.20; the code stream's 14.4 MB/s is far
+/// below the measured 64 MB/s host → board ceiling).
 const TX_SYMBOLS_KERNEL_BUFFERS: u32 = 16;
 /// The DAC core's interface status register (ADI `up_dac_common`
 /// `REG_STATUS`, 0x0022 × 4, through the HDL-core bit 31) and its
@@ -204,9 +208,9 @@ const TX_SYMBOLS_KERNEL_BUFFERS: u32 = 16;
 /// checks"), so it means something only cleared and read while streaming.
 const DAC_STATUS_REG: u32 = 0x8000_0088;
 const DAC_STATUS_UNDERFLOW: u32 = 0x1;
-/// How long the transmit block waits for the stream's first buffer to
-/// reach the device before it is started.
-const FIRST_BUFFER_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the transmit block waits for the stream to fill the device's
+/// kernel queue before it is started.
+const QUEUE_FILL_TIMEOUT: Duration = Duration::from_secs(10);
 /// The ADC core's interface status register (ADI `up_adc_common`
 /// `REG_STATUS`, 0x0022 × 4, through the HDL-core bit 31) and its
 /// overflow bit (sticky, write 1 to clear).
@@ -2052,7 +2056,7 @@ impl TxBlock {
         Ok(self.read_regs(r, [reg])?[0])
     }
 
-    /// Start, once the DMA holds the stream's first buffer: CTRL
+    /// Start, once the DMA queue holds the stream's first buffers: CTRL
     /// RUN|SELECT (the requests begin a few clocks later and find words),
     /// STATUS must read run and selected, then the DAC core's underflow
     /// flag is cleared, so that it reports what happens from here on.
@@ -2071,7 +2075,7 @@ impl TxBlock {
             warn!(
                 backend = NAME,
                 status = st,
-                "the FPGA transmit block missed symbols at its start: the stream's first buffer was not in the DMA when it started"
+                "the FPGA transmit block missed symbols at its start: the stream's buffers were not in the DMA when it started"
             );
         }
         r.write(DAC_STATUS_REG, DAC_STATUS_UNDERFLOW)
@@ -2130,11 +2134,21 @@ fn queue_components(kernel_buffers: u32, buffer: usize) -> usize {
     (kernel_buffers as usize + 1) * buffer * 2
 }
 
-/// Wait until the stream has handed the device its first buffer (the
-/// transmit block may then start without missing a word).
-fn wait_first_buffer(counters: &dyn StreamCounters, timeout: Duration) -> Result<()> {
+/// Wait until the stream has pushed `buffers` buffers (the device's kernel
+/// queue), so that the transmit block starts on a full queue. A push
+/// returns when iiod has taken the buffer over the network, not when the
+/// DMA holds it: started on the first push alone, the block ran for 90 ms
+/// on an empty DMA while a receiver's probe capture loaded iiod
+/// (VERIFICATION.md "ISDB-S transmitter in the FPGA: on the board").
+/// While the block is selected but not running nothing is consumed: the
+/// pushes return as iiod queues them until the kernel queue is full, then
+/// the next one blocks for good (and times out). Half the queue's depth
+/// is waited for: 8 buffers of 262 144 DMA samples are 580 ms of codes,
+/// against the 90 ms gap measured on the first push alone, and the
+/// (queue − 1)th push, which may already block, is never waited for.
+fn wait_buffers(counters: &dyn StreamCounters, buffers: u64, timeout: Duration) -> Result<()> {
     let t = Instant::now();
-    while counters.buffers() == 0 {
+    while counters.buffers() < buffers.max(1) {
         if counters.finished() {
             return Err(RadioError::Stream {
                 stream: TX_DEV,
@@ -2345,13 +2359,17 @@ impl RadioTx for PlutoTx {
         queue_components(self.kernel_buffers, self.buffer)
     }
 
-    /// Symbol codes: once the first buffer is in the device, start the
+    /// Symbol codes: once the device's kernel queue is full, start the
     /// transmit block ([`TxBlock::run`]).
     fn started(&mut self, counters: &dyn StreamCounters) -> Result<()> {
         let Some(b) = &mut self.block else {
             return Ok(());
         };
-        wait_first_buffer(counters, FIRST_BUFFER_TIMEOUT)?;
+        wait_buffers(
+            counters,
+            u64::from(self.kernel_buffers / 2),
+            QUEUE_FILL_TIMEOUT,
+        )?;
         let dac = self
             .ctx
             .device(TX_DEV)
@@ -2359,7 +2377,10 @@ impl RadioTx for PlutoTx {
         b.run(&dac)?;
         info!(
             backend = NAME,
-            "FPGA transmit block running (CTRL RUN|SELECT) on the stream's first buffer"
+            kernel_buffers = self.kernel_buffers,
+            "FPGA transmit block running (CTRL RUN|SELECT) with {} of the device's {} buffers queued",
+            self.kernel_buffers / 2,
+            self.kernel_buffers
         );
         Ok(())
     }
@@ -3114,7 +3135,7 @@ mod tests {
     #[test]
     fn tx_symbols_settings_and_description() {
         let s = tx_symbols_settings(&sat_cfg(&[])).unwrap();
-        assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (65_536, Some(16)));
+        assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (262_144, Some(16)));
         let s = tx_symbols_settings(&sat_cfg(&[("buffer", "32768"), ("kbuffers", "8")])).unwrap();
         assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (32_768, Some(8)));
         // the IQ path keeps its defaults
@@ -3140,7 +3161,7 @@ mod tests {
             "TX atten     89.75 dB (maximum)",
             "nothing radiated",
             "modulator    FPGA transmit block of cf-ad9361-dds-core-lpc (SymbolsTx, TX format 1): symbol codes shaped on the board, banks of 512 phases × 24 taps, 1.3860 samples/symbol (step 0xb8b439)",
-            "link         4-bit symbol codes, 8 per DMA sample (voltage0 + voltage1): 14.43 MB/s at 28.860 Mbaud; buffers of 65536 samples (18.2 ms), kbuffers 16 in the kernel (291 ms)",
+            "link         4-bit symbol codes, 8 per DMA sample (voltage0 + voltage1): 14.43 MB/s at 28.860 Mbaud; buffers of 262144 samples (72.7 ms), kbuffers 16 in the kernel (1163 ms)",
             "level        RMS 10.0 dB below the 12-bit DAC full scale (647.6 LSB), in the block's banks (shift 7)",
             "configure    13315 commands",
         ] {
@@ -3412,14 +3433,18 @@ mod tests {
     }
 
     #[test]
-    fn the_block_starts_on_the_first_buffer() {
+    fn the_block_starts_on_a_full_queue() {
         use crate::mock::MockCounters;
         let c = MockCounters::default();
+        c.buffers.store(16, Ordering::Relaxed);
+        wait_buffers(&c, 16, Duration::from_millis(10)).unwrap();
+        // a zero count still waits for one buffer
         c.buffers.store(1, Ordering::Relaxed);
-        wait_first_buffer(&c, Duration::from_millis(10)).unwrap();
+        wait_buffers(&c, 0, Duration::from_millis(10)).unwrap();
         let c = MockCounters::default();
+        c.buffers.store(15, Ordering::Relaxed);
         assert!(matches!(
-            wait_first_buffer(&c, Duration::from_millis(10)),
+            wait_buffers(&c, 16, Duration::from_millis(10)),
             Err(RadioError::Stream {
                 problem: StreamProblem::Stalled { .. },
                 ..
@@ -3427,7 +3452,7 @@ mod tests {
         ));
         c.finished.store(true, Ordering::SeqCst);
         assert!(matches!(
-            wait_first_buffer(&c, Duration::from_millis(10)),
+            wait_buffers(&c, 16, Duration::from_millis(10)),
             Err(RadioError::Stream {
                 problem: StreamProblem::Ended,
                 ..
@@ -3441,9 +3466,9 @@ mod tests {
     fn what_the_device_takes_ahead() {
         let s = tx_symbols_settings(&sat_cfg(&[])).unwrap();
         let ahead = queue_components(s.dev.kernel_buffers.unwrap(), s.dev.buffer);
-        assert_eq!(ahead, 17 * 65_536 * 2);
-        // 28 superframes of codes (39 936 DMA samples each) cover it
-        assert_eq!((ahead / 2).div_ceil(39_936), 28);
+        assert_eq!(ahead, 17 * 262_144 * 2);
+        // 112 superframes of codes (39 936 DMA samples each) cover it
+        assert_eq!((ahead / 2).div_ceil(39_936), 112);
         // IQ at 512/63 MHz: 5 buffers, less than the 2 frames of the prefill
         assert_eq!(queue_components(KERNEL_BUFFERS, 262_144), 5 * 262_144 * 2);
     }

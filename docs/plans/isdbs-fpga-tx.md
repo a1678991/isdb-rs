@@ -198,6 +198,11 @@ Each step is a commit with tests and docs, as the RX path was built
 
 ## 4. Verification ladder
 
+**Done 2026-10-29 through rung 3** (VERIFICATION.md "ISDB-S transmitter
+in the FPGA: the image" and "on the board"): the image builds and meets
+timing, both blocks answer on the board, and the loopback self-test
+passes byte-exact. Rung 4 (over the air into the PIX-DT295) is open.
+
 1. Model unit and property tests (step 2); the symbol-domain and
    sample-domain loopbacks of isdbs-loopback.md with the fixed model.
 2. HDL simulation bit-exact on the model's vectors (step 5).
@@ -266,5 +271,9 @@ effect of the absent-register writes are unverified.
   far below the one rate known to work.
 - The ADI HDL read for the DAC path was `c9a501d`, not the pinned
   `cf81ab15`; the cores involved change rarely, a diff would settle it.
+- The block's first request after RUN finds the unpacker empty (8–16
+  symbols missed at CONSUMED 0, in the lead-in); a prefetch of the first
+  word(s) while selected but not running would remove it (an HDL change
+  and a rebuild).
 - ISDB-S3 TX is out of scope: its 16/32APSK points are not on a 45°
   grid (per-ring ROMs or multipliers) and α = 0.03 needs a span of 32–64.

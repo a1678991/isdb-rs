@@ -1671,6 +1671,67 @@ transmitter and the ×8 TX FIR.
   `644ab085…8a473`; XSA sha256 `4b9b4038…bb86d`. **Not yet run on the
   board.**
 
+## ISDB-S transmitter in the FPGA: on the board (2026-10-29)
+
+`isdb_txrx_top.bin` (the image above) booted on the PlutoSky R2 from the
+SD card (`bitstream_image=isdb_txrx_top.bin`; this boot's RX probe
+passed). Both blocks answer: `cf-ad9361-dds-core-lpc` 0x800000B8 reads
+0xB5D11918 (SymbolsTx, TX format 1, 512 phases, 24 taps) and
+`cf-ad9361-lpc` 0x800000B8 0x15DB4020. Nothing was radiated: every run
+used `loopback=on` (the AD9361's digital data-port loopback, TX LO
+powered down, attenuation 89.75 dB); the board was left in that state.
+
+**`isdb tx --system isdbs --radio pluto:loopback=on --offload fpga`**, 5 s
+of synthetic codes: the block configured in 3.9 s (13 315 commands),
+selected and running (STATUS 0x3), 0 host underruns, MISSED 0, DAC
+underflow flag clear; 453 superframes; producer 10.4× real time.
+
+**The self-test** (`crates/isdb-cli/tests/cli.rs`
+`tx_symbols_loopback_on_a_pluto`, `ISDB_RS_PLUTO_TX_LOOPBACK_URI`): the
+transmitter sends two TS files (TS_ID 0x4010 and 0x4011, 24 slots each,
+17 280 packets each, then null packets) after 1 500 lead superframes;
+`isdb rx --system isdbs --offload fpga` receives 20 s through the FPGA
+front end in a second process. Result (PASS):
+
+| | |
+|---|---|
+| receiver | 14 511 frames, 0 slips, 1 813 superframes, TMCC ok 1 813, 0 stream losses, main MER 34.1 dB |
+| TS_ID 0x4010 / 0x4011 | 348 096 packets each, RS clean 348 096, 0 corrected, 0 uncorrectable; **byte-exact** against the input files |
+| transmitter | 987 297 792 symbol codes in 123 412 224 DMA samples, 0 host underruns, DAC underflow flag clear, STATUS 0x7, block CONSUMED 989 945 142, MISSED 8, FIRST_MISS 0 |
+
+The MER of 34.1 dB is the model's prediction for the loop (the TX's
+12-bit words through the RX front end's 6-bit output: 36.7–37.0 dB on
+random symbols; 34.1 here with the real signal's spectrum and the trim
+search), so the two blocks behave as their bit-exact models.
+
+**Two start-up problems found and fixed on the way** (commits after
+`de608a2`):
+
+1. The block was started on the stream's first `iio_buffer_push`,
+   which returns when iiod has taken the buffer over the network, not
+   when the DMA holds it: with the receiver's probe loading iiod the
+   block ran 90 ms (2 595 208 symbols) on an empty DMA. Waiting for the
+   whole kernel queue deadlocks (nothing drains before RUN, the
+   (queue − 1)th push blocks and times out); the host now waits for half
+   the queue (8 buffers).
+2. With 65 536-sample buffers (16 × 18.2 ms = 290 ms in the device) the
+   receiver's acquisition capture, a single 32 MB block through the
+   same iiod, starved the block for ≈ 100 ms (2.8 M symbols) each time:
+   measured with `isdb capture` and with a raw `iio_readdev` of 8 Mi
+   samples during a transmit (2 837 792 missed), while the AD9361
+   attribute writes of a receive configuration (bandwidth, LO, gain,
+   sampling frequency) cost nothing. The symbol path's default buffer
+   is now 262 144 samples (72.7 ms, 1.16 s in the device), and the same
+   captures cost 0.
+
+**Known and accepted:** the block's first request after CTRL RUN|SELECT
+finds the unpacker without a word, 8 or 16 symbols at CONSUMED 0 (the
+test allows a start-only miss of at most 16); a prefetch while selected
+would remove it (plan isdbs-fpga-tx.md §6). The kernel log of this boot
+shows a user-space bus fault from Tezuka's `pluto_stream` writing the
+absent DVB registers at start-up (the hazard the investigation named);
+the autorun hook kills it, and the board was unaffected.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

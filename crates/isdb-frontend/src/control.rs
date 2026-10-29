@@ -395,7 +395,7 @@ impl Encoder {
     /// then banks A and B, row by row, taps `0..S` (the stored half; one
     /// ADDR per row). Follow it with CTRL START | SELECT (the block owns
     /// the DAC and the DMA, outputs zero and requests nothing), start the
-    /// TX DMA, then, once its first buffer is in, CTRL RUN | SELECT: the
+    /// TX DMA, then, once half its queue is filled, CTRL RUN | SELECT: the
     /// block counts every word requested before the first arrives as
     /// missed, and before SELECT the pass-through sends the DMA's words to
     /// the DAC as samples (fpga/README.md "The transmit block"; the

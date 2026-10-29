@@ -321,7 +321,8 @@ initial contents.
 **The host's sequence** (`isdb-radio`'s Pluto backend): configure, read
 STEP back, CTRL START|SELECT (the block owns the DAC and the DMA, sends
 zeros and requests nothing; STATUS must read "selected"), start the TX
-DMA, and once its first buffer is in, CTRL RUN|SELECT (STATUS 3): the
+DMA, and once half the device's kernel queue is filled (8 × 73 ms), CTRL RUN|SELECT
+(STATUS 3): the
 block counts every word it requests before the first arrives as missed,
 and before SELECT the pass-through sends the DMA's words to the DAC as
 samples. CTRL 0 after the stream stops, before the attenuation and the

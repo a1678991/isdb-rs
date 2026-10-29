@@ -18,9 +18,8 @@ reads back byte-exact, with a software loopback (`isdb loopback --system
 isdbs`); its ≥ 39 Msps do not stream to a radio over Gigabit Ethernet, so
 for a radio the pulse shaping moves into the PlutoSky R2's FPGA: the host
 sends 4-bit symbol codes (14 MB/s) and the transmit block there shapes
-them (`isdb tx --system isdbs --radio pluto --offload fpga`; the block is
-bit-exact in simulation, its bitstream and the on-board test are
-pending). ISDB-S3 is received to TLV streams,
+them (`isdb tx --system isdbs --radio pluto --offload fpga`, verified on
+the board through the AD9361's digital loopback). ISDB-S3 is received to TLV streams,
 one per TLV stream id (`isdb rx --system isdbs3`), with the MMTP packets
 and MMT-SI tables they carry decoded: services, events, packages and
 assets (`isdb tlv inspect`); unscrambled assets are written as
@@ -148,9 +147,11 @@ payload is scrambled, and nothing is descrambled).
   Gigabit-Ethernet Pluto underruns at that rate and a HackRF refuses it;
   with `--offload fpga` the host sends symbol codes and the PlutoSky's
   transmit block (`fpga/`, `SymbolsTx`: 0 DSP48E1, a multiplier-free
-  root-raised-cosine interpolator) shapes them on the board. The block,
-  its bit-exact model and the host path are done and simulated; the
-  bitstream build and the on-board loopback test are the next step.
+  root-raised-cosine interpolator) shapes them on the board: verified
+  on the PlutoSky R2 through the AD9361's digital loopback into the
+  FPGA receive front end, two TSs byte-exact over 20 s with 0 losses
+  (VERIFICATION.md "ISDB-S transmitter in the FPGA: on the board").
+  Over the air into a receiver is the next step.
 - **ISDB-S3 reception** (`isdbs3-core`, `isdbs3-phy`, `isdb-tlv`, `isdb
   iq s3tmcc`, `isdb rx --system isdbs3`, `isdb tlv inspect`; ARIB
   STD-B44, B32 Part 3, B60): slot and frame sync on the π/2-BPSK sync

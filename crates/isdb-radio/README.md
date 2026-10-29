@@ -156,8 +156,11 @@ of 64 MB/s. The block shapes the symbols to the DAC rate on the board.
   (`channel=2` is refused: the block drives the TX1 data path), both
   `voltage0` and `voltage1` enabled (eight codes per two-channel DMA
   sample; with `voltage0` alone the Q word would come from the DDS),
-  `buffer` 65 536 DMA samples (18.2 ms of ISDB-S) and `kbuffers` 16
-  (290 ms of slack in the device) by default. The level is the block's:
+  `buffer` 262 144 DMA samples (72.7 ms of ISDB-S) and `kbuffers` 16
+  (1.16 s of slack in the device: an `isdb rx` acquisition's 32 MB
+  capture on the same board starves iiod's TX thread for longer than the
+  290 ms that 65 536-sample buffers gave, and the block ran dry for
+  ≈ 100 ms) by default. The level is the block's:
   the backoff is in its banks (`TxParams` designed at
   `TxOptions::backoff_db`), and the TX attenuation sets the power.
 - **Opening**, in this order: the block's ID word (no block, or one that
@@ -170,10 +173,15 @@ of 64 MB/s. The block shapes the symbols to the DAC rate on the board.
   back; CTRL START|SELECT, and STATUS must read "selected" (codes sent to
   a plain DAC would go out as samples); then the attenuation.
 - **Starting** (`RadioTx::started`): the sink converts what the device
-  takes ahead (kernel buffers and the one being filled, 1.1 M DMA
-  samples, 28 superframes) before the stream starts, so the kernel queue
-  fills from codes; once the stream's first buffer is in the device the
-  block gets CTRL RUN|SELECT (STATUS must read 3) and the DAC core's
+  takes ahead (kernel buffers and the one being filled, 4.5 M DMA
+  samples, 112 superframes, 1.2 s of codes) before the stream starts, so
+  the kernel queue
+  fills from codes; once the stream has pushed half the kernel queue (8
+  buffers, 580 ms of codes; a push returns when iiod has the buffer, not
+  the DMA: on the first push alone the block once ran 90 ms on an empty
+  DMA while a receiver's probe loaded iiod, and waiting for the whole
+  queue blocks, since nothing drains before RUN) the block gets CTRL
+  RUN|SELECT (STATUS must read 3) and the DAC core's
   underflow flag (0x80000088 bit 0, which also counts the block's missed
   words and is set whenever no DMA word is available, idle included) is
   cleared. Started any earlier, the block would count the words it
