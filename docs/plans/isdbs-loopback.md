@@ -59,7 +59,7 @@ streaming"); a HackRF stops at 20 Msps. So:
 - Symbol rate R = 28.86 Mbaud, roll-off 0.35 (BO.1408-1 §9; MIC
   Ordinance 87 annexed table 47; `isdb_iq::survey::KNOWN_SYSTEMS[0]`).
 - Frame 39 936 symbols = 1.3838 ms; superframe 8 frames = 319 488
-  symbols = 11.07 ms. At 40 Msps a superframe is 442 824.67 samples:
+  symbols = 11.07 ms. At 40 Msps a superframe is 442 810.81 samples:
   **not an integer**, so the shaper keeps its fractional phase across
   calls and the samples per superframe vary by one.
 - Unit of the transmit API: the **superframe** (the TMCC, the
