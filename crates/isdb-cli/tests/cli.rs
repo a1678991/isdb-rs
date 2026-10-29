@@ -55,6 +55,18 @@ fn s(p: &Path) -> &str {
     p.to_str().unwrap()
 }
 
+/// The ISDB-S receive tests each run the front end's trim search (11
+/// front ends on threads) and the decoder on every core; the live-feed
+/// test needs the producer at real time. They take turns, so that the
+/// one does not starve the other.
+static CPU_HEAVY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn cpu_heavy() -> std::sync::MutexGuard<'static, ()> {
+    CPU_HEAVY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn assert_same(got: &Path, want: &[u8], what: &str) {
     let g = std::fs::read(got).unwrap();
     assert_eq!(
@@ -376,6 +388,7 @@ fn mux_ts_producer_throughput() {
 
 #[test]
 fn live_feed_with_stalling_input_stays_cbr_and_lossless() {
+    let _turn = cpu_heavy();
     let d = tmp("live");
     let iq = d.join("x.cs8");
     let mut child = Command::new(ISDB)
@@ -505,6 +518,7 @@ fn loopback_with_file_inputs_and_detects_loss() {
 /// none uncorrectable.
 #[test]
 fn isdbs_tx_then_rx_reproduces_every_ts_byte_exact() {
+    let _turn = cpu_heavy();
     let d = tmp("isdbs-files");
     let a = packets(0x0111, 0..576);
     let b = packets(0x0121, 1000..1576);
@@ -583,6 +597,7 @@ fn isdbs_tx_then_rx_reproduces_every_ts_byte_exact() {
 /// packet byte-exact, every TMCC as sent.
 #[test]
 fn isdbs_loopback_passes_with_impairments() {
+    let _turn = cpu_heavy();
     for (extra, per_superframe) in [
         (&["--snr-db", "12"][..], 384),
         (&["--combination", "qpsk3/4:48", "--snr-db", "8"], 288),
@@ -624,6 +639,7 @@ fn isdbs_loopback_passes_with_impairments() {
 /// last superframe is null padding).
 #[test]
 fn isdbs_loopback_detects_loss() {
+    let _turn = cpu_heavy();
     let o = run(&[
         "loopback",
         "--system",
