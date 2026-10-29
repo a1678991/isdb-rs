@@ -25,12 +25,21 @@
 //! * [`tables`]: the cosine table and the filter banks;
 //! * [`metrics`]: ring MER, PSK MER and SQNR, which need no frame sync;
 //! * [`control`]: the FPGA's register map and command words (through the
-//!   AD9361 core's general purpose registers) and its discovery;
-//! * [`vectors`]: the test vectors the FPGA simulation must reproduce;
+//!   AD9361 core's general purpose registers) and its discovery, and
+//!   [`control::tx`], the transmit block's on the DAC core's pair;
+//! * [`vectors`]: the test vectors the FPGA simulations must reproduce,
+//!   receive and transmit;
 //! * [`shape`]: the transmit direction's inverse, [`shape::Shaper`]:
 //!   symbols to IQ at any sample rate ≥ (1 + α)·R (fractional samples
 //!   per symbol), root-raised-cosine shaped with the matched filter's
-//!   pulse, output RMS 1.
+//!   pulse, output RMS 1;
+//! * [`shape::fixed`]: the bit-exact fixed-point model of the FPGA's
+//!   transmit interpolator ([`shape::fixed::Interpolator`]), 4-bit symbol
+//!   codes to 12-bit IQ at the DAC rate (ISDB-S at 40 Msps from a 14.43
+//!   MB/s code stream), its registers ([`shape::fixed::TxParams`]) and
+//!   their design;
+//! * [`txformat`]: the TX boundary those codes cross, eight per DAC DMA
+//!   sample, and the annexed table 46 label → code map.
 //!
 //! The front end removes a carrier offset given by the host (from
 //! `isdb_iq::survey`) but does not recover the carrier phase: its symbols
@@ -83,6 +92,7 @@ pub mod s3sync;
 pub mod shape;
 pub mod simd;
 pub mod tables;
+pub mod txformat;
 pub mod vectors;
 
 pub use fixed::{Frontend, Symbol};

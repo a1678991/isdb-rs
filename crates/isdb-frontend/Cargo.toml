@@ -1,6 +1,6 @@
 [package]
 name = "isdb-frontend"
-description = "Single-carrier front end for ISDB-S and ISDB-S3, receive and transmit: IQ to symbols (a bit-exact fixed-point model of the FPGA stage, a floating-point reference and the Symbols boundary format) and symbols to IQ (a root-raised-cosine pulse shaper at any sample rate)"
+description = "Single-carrier front end for ISDB-S and ISDB-S3, receive and transmit: IQ to symbols (a bit-exact fixed-point model of the FPGA stage, a floating-point reference and the Symbols boundary format) and symbols to IQ (a root-raised-cosine pulse shaper at any sample rate, and the bit-exact model of the FPGA transmit interpolator from 4-bit symbol codes)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

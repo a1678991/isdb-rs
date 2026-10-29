@@ -50,6 +50,22 @@ STD-B44) is received to TLV streams.
   Tested as the receiver's inverse: byte-exact symbol-domain loopbacks on
   five combination mixes, and a sample-domain loopback at 40 Msps through
   the shaper and the receive front end (the trim found is 0.000 symbol).
+- `isdb-frontend`: the CPU reference of the ISDB-S transmitter in the
+  FPGA (docs/plans/isdbs-fpga-tx.md step 2). `shape::fixed`: `TxDesign`
+  → `TxParams` (Q0.24 step, shift, two symmetric 18-bit banks of 512
+  phases × 24 taps; `validate` refuses an asymmetric bank) and the
+  bit-exact `Interpolator` (4-bit symbol codes → 12-bit IQ at the DAC
+  rate, no multipliers; a DMA stall enters zero symbols counted in
+  MISSED / FIRST_MISS). `txformat`, TX format 1: code 0 the zero symbol,
+  8 + k the point e^{jkπ/4} (annexed table 46, `LabelCodes`), eight codes
+  per two-channel DAC DMA sample (14.43 MB/s at 28.86 Mbaud).
+  `control::tx`: the register map on the DAC core's GPIO pair, the ID
+  word 0xB5D1_1918, `Encoder::configure_tx`. `vectors::tx_document` and
+  `examples/txvectors.rs` write the HDL's test vectors
+  (`fpga/build/tx-*.json`). Measured: ISI MER 54.38 dB through an ideal
+  matched filter; in the digital loopback into the receive front end
+  8PSK MER 36.96 dB at its 6-bit output (the f32 shaper 36.98 dB),
+  `examples/txloop.rs`.
 - `isdb-iq`: the SigMF field `isdb:system` (extension 0.4.0).
 
 - `isdb-radio` `pluto`: without `uri`, the device is found by mDNS when

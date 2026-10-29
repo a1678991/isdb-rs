@@ -9,7 +9,11 @@ of samples when its link cannot carry the samples. This crate is the
 reference: the fixed-point model is the specification the FPGA follows,
 and it writes the test vectors the FPGA must reproduce. The crate also
 holds the stage's inverse for the transmit direction, the pulse shaper
-([below](#transmit-shaper)).
+([below](#transmit-shaper)), and the bit-exact model of the FPGA's
+transmit interpolator with its code format and registers
+([below](#transmit-interpolator-the-fpga-model)): the host sends one 4-bit
+code per symbol and the FPGA shapes them, because 40 Msps of IQ does not
+fit the board's link.
 
 Per input sample (the `fixed` module documents every step; format
 version 4: version 3's words, the loop of an FPGA that takes one sample
@@ -226,8 +230,93 @@ signal model and the arithmetic.
   symbol instants, MER 57.6 / 59.1 / 58.8 dB at 40 / 57.72 / 61.44 Msps;
   RMS within 10⁻⁵ of 1; through `fast::FastFrontend` (ISDB-S at 40 Msps,
   trim 0) 8PSK MER 36.2 dB at the 6-bit output (41.2 dB before the
-  quantiser). One core shapes 67–73 Msps, 1.2–1.7× real time at those
+  quantiser) over every output symbol, the receiver's outputs over the
+  `finish` tail included; 36.98 / 44.54 dB in the steady state
+  (`examples/txloop.rs`). One core shapes 67–73 Msps, 1.2–1.7× real time at those
   rates (`examples/shapespeed.rs`).
+
+## Transmit interpolator (the FPGA model)
+
+`shape::fixed::Interpolator` is the bit-exact model of the FPGA's
+transmit block (`SymbolsTx` in [`fpga/`](../../fpga/README.md); plan
+[`docs/plans/isdbs-fpga-tx.md`](../../docs/plans/isdbs-fpga-tx.md)): 4-bit
+symbol codes ([below](#the-tx-boundary-symbol-codes)) in, 12-bit IQ at the
+DAC rate out, one sample per clock. Its arithmetic is
+interpolator.md §4's, with the conventions pinned in the module
+documentation; the HDL reproduces it on the vectors of
+`vectors::tx_document` (`examples/txvectors.rs`).
+
+- **Signal:** the `Shaper`'s signal model one symbol later (the first code
+  enters at the first carry of the phase accumulator, not before sample
+  0), on a grid of P = 512 phases of 2S = 24 taps (span 12), rows at
+  (q + ½)/P picked by truncation, the pulse `tables::rrc` cut at ±12
+  symbols without a window and scaled by the shaper's gain and the
+  backoff: unit-power symbols give RMS |y| = D = 2048·10^(−backoff/20) LSB
+  (647.6 at the default 10 dB).
+- **No multipliers:** every ISDB-S point is e^{jkπ/4}, so a tap adds ±v
+  or 0 to each component, v from bank `a` (even k) or `b` = a/√2 (odd k),
+  both 18-bit and rounded from the same `f64`. Backoff and gain live in
+  the banks (`shift` 7 at 10 dB, max |a| = 90 825); the sums round,
+  shift and saturate to 12 bits; the DAC word is out << 4.
+- **Phase:** Q0.24, `step` = round(2²⁴·R/fs): 0xB8B439 at 40 Msps
+  (−0.028 ppm), 0x800000 at 57.72, 0x784000 at 61.44 Msps (exact).
+- **Symmetry:** `a[q][t] == a[P−1−q][2S−1−t]` exactly (the banks are
+  built from one half and mirrored); `TxParams::validate` refuses a bank
+  without it, because the FPGA stores one copy of each tap pair.
+- **Underrun:** a word request the DMA cannot serve enters eight zero
+  symbols (silence), counted in MISSED; FIRST_MISS latches CONSUMED at the
+  first, and a sticky flag is set. `Interpolator::stall(n)` injects such
+  stalls before the next word, as the vectors do.
+- **Measured** (`tests/txfixed.rs`, ISDB-S at 40 Msps, 10 dB):
+  - through an ideal `f64` matched filter at the realised symbol
+    instants, 20 000 random 8PSK: MER 54.38 dB (interpolator.md: 54.38);
+  - against the f32 `Shaper` at the same span: SNR 56.8 dB;
+  - through `fast::FastFrontend` (the receivers' design, trim 0), the
+    digital loopback: 8PSK MER 36.96 dB at the 6-bit output, 44.41 dB
+    before the quantiser, in the steady state; the f32 shaper (span 16)
+    reads 36.98 / 44.54 dB the same way (`examples/txloop.rs`). Measured
+    over every output symbol up to the stream's end, `metrics::psk_mer`
+    also counts the receiver's outputs over the zero tail (2·span − 1
+    symbols): that is the 36.74 / 43.35 dB of interpolator.md §6 and the
+    shaper's 36.19 / 41.24 dB, and it is why span 12 read 0.5 dB better
+    than span 16 there (a shorter tail), not the pulse (in the steady
+    state the model reads 36.98 / 44.45 dB at span 16);
+  - peak component 998 LSB over 200 000 symbols; the bound, the worst
+    row's Σ|a| / 2^shift, is 1 042 LSB: no clipping above 4.2 dB backoff.
+- **Same as the study:** the banks, step and samples equal
+  `examples/txinterp.rs`'s "mux floor½ P 512 span 12 Q0.24" bit for bit,
+  given its stream one leading zero symbol (`txloop study`).
+
+## The TX register map
+
+`control::tx`: the receive block's command words and `Encoder` on the
+DAC core's general purpose pair (`cf-ad9361-dds-core-lpc`, `gpio_out`
+0x800000BC, `gpio_in` 0x800000B8; bit 0 of `gpio_out`, the ×8 TX FIR's
+enable in Tezuka, kept as it was).
+
+| Address | Register |
+|---|---|
+| 0x00 | STEP (u32, Q0.24) |
+| 0x01 | SHIFT |
+| 0x02 | STATUS, read only: bit 0 run, bit 1 selected, bit 2 underrun (sticky until START) |
+| 0x03 | CONSUMED: codes entered from delivered words since START, zero codes included |
+| 0x04 | MISSED: zero symbols entered for stalled requests since START |
+| 0x05 | FIRST_MISS: CONSUMED at the first stalled request (0 before one) |
+| 0x06 | SAMPLES: outputs since START (low 32 bits) |
+| 0x4000 + q·32 + t | bank A, row q, tap t < 2S (WRITE_S) |
+| 0x8000 + q·32 + t | bank B, likewise |
+
+CTRL: 1 run, 2 START (one pulse: phase, line, counters and unpack
+register reset), 4 SELECT (the block drives the DAC data path instead of
+the DMA's IQ). **ID word** 0xB5D1_1918: magic 0xB5D1 in bits 31–16, the
+format version (1) in 15–12, log2 P (9) in 11–8, the taps (24) in 7–0;
+`TxIdentity::supports` accepts only the model's version and geometry.
+`Encoder::configure_tx` writes STEP, SHIFT, then banks A and B row by row,
+taps 0..S only (the stored half; the block gets tap t ≥ S of row q from
+tap 2S − 1 − t of row P − 1 − q): 13 315 command words, 12 290 of them
+writes, about 8.3 s at the 0.62 ms per register write measured through
+iiod (`fpga/README.md`), so the bitstream carries the default bank as its
+initial contents.
 
 ## Spec scope
 
@@ -292,6 +381,37 @@ MB/s), and the `Reader` takes a clean version-3 stream at 558 MB/s
 (version 2: 137 MB/s) (`examples/crcspeed.rs`). The FPGA updates the
 CRC one 16-bit word per clock.
 
+## The TX boundary: symbol codes
+
+What a host sends the FPGA's transmit block instead of IQ (`txformat`,
+format version 1): one 4-bit code per symbol.
+
+| Code | Symbol |
+|---|---|
+| 0 | the zero symbol (silence) |
+| 1–7 | reserved: the zero symbol |
+| 8 + k | the point e^{jkπ/4}, k the angle index of annexed table 46 |
+
+Every ISDB-S symbol is one of those eight points (header and burst BPSK,
+BPSK, QPSK and TC8PSK main signal), so the stream is lossless.
+`LabelCodes::TABLE_46` maps the sources to codes: TC8PSK label
+000 → k 0, 001 → 1, 011 → 2, 010 → 3, 100 → 4, 101 → 5, 111 → 6,
+110 → 7; BPSK bit 0 → k 0, 1 → k 4; QPSK (P1, P0) → its table-46 label
+(00 → 001, 10 → 010, 11 → 101, 01 → 110). A conjugated constellation is
+another 8-entry table (`conjugated`), nothing in the block.
+
+**DMA words:** the DAC DMA sample is two little-endian `i16` words,
+`voltage0` (I) then `voltage1` (Q), both channels enabled, and carries
+eight codes, the first in time in I bits 3..0, then I 7..4, 11..8, 15..12,
+then Q likewise: as one `u32`, `Q << 16 | I` with code j in bits
+4j + 3..4j. 28.86 Mbaud / 8 × 4 B = 14.43 MB/s, against a measured host →
+board ceiling of 64 MB/s. Zero padding (libiio's, the DMA's on underflow)
+is silence. There is no header or sequence number: the DMA is lossless
+and in order, and its only failure, an underrun, inserts zero symbols
+the block counts (MISSED, FIRST_MISS) rather than losing or reordering
+any. `CodePacker` carries a partial word across calls; an ISDB-S frame
+(39 936 symbols) is a whole number of words.
+
 ## Position in the stack
 
 - Depends on: `isdb-iq` (the known systems), `num-complex`, `serde_json`,
@@ -301,9 +421,10 @@ CRC one 16-bit word per clock.
     the Pluto's discovery and configuration through `control`;
   - `isdb-cli`: `isdb symbols`, `isdb iq symbols`; `shape::Shaper` in
     `isdb tx` / `isdb loopback --system isdbs`;
-  - `fpga/`: the test vectors;
+  - `fpga/`: the test vectors (receive and transmit);
   - `isdbs-phy` and `isdbs3-phy`, the ISDB-S / ISDB-S3 receivers,
-    through `fast::FastFrontend`.
+    through `fast::FastFrontend`; `isdbs-phy`'s transmitter makes its
+    codes with `txformat::LabelCodes`.
 
 ## Key types and entry points
 
@@ -319,6 +440,11 @@ CRC one 16-bit word per clock.
 | `s3sync::{measure, measure_at, best_trim, derotated_data}` | ISDB-S3 slot sync (the search on every core, bit for bit as one thread) and sync-symbol Es/N0, or the same at a known offset; the trim search; data symbols for ring statistics |
 | `vectors::document` | the JSON test vectors for `fpga/` |
 | `shape::Shaper` (`new`, `with_span`, `push`, `finish`, `samples_for`) | the transmit pulse shaper: symbols to IQ at any rate ≥ (1 + α)·R, output RMS 1 |
+| `shape::fixed::{TxDesign, TxParams}`, `TxParams::design`, `validate` | the transmit interpolator's design (rates, roll-off, span, phases, backoff) to its registers (step, shift, banks `a`, `b`) |
+| `shape::fixed::Interpolator` (`push_words`, `push_codes`, `stall`, `output`, `process`, counters) → `TxSample` | the bit-exact model of the FPGA's transmit block; `TxSample` carries every internal the FPGA test compares |
+| `txformat::{LabelCodes, CodePacker, word, codes, pack, unpack}` | the TX boundary: symbol codes and their DMA words |
+| `control::tx::{TxIdentity, reg, ctrl, status}`, `Encoder::configure_tx` | the transmit block's register map, ID word and configuration |
+| `vectors::tx_document` | the JSON test vectors of the transmit block |
 
 Diagnostics are `tracing` events, never printed; the crate installs no
 subscriber. `warn`: a loss in a `Symbols` stream (`format::Reader`:
@@ -359,6 +485,23 @@ vectors are unchanged.
   - output RMS 1, the tail and the reset, `samples_for` against `push`,
     refused rates, roll-offs and spans;
   - through `fast::FastFrontend` at 40 Msps: 8PSK MER ≥ 25 dB.
+- **The transmit interpolator** (`tests/txfixed.rs`, unit tests in
+  `shape::fixed`, `txformat`, `control`):
+  - equal to a plain reading of the specification on every field of
+    every sample, with stalls, every kind of code, clipping and a dry
+    queue, at three designs;
+  - the impulse response is the pulse one symbol late; ISI-free through
+    an ideal matched filter (≥ 40 dB, within 0.5 dB of 54.4: 54.38);
+    within 40 dB of the f32 shaper (56.8 dB); through
+    `fast::FastFrontend` ≥ 36.0 dB at the 6-bit output (36.96 dB);
+  - `prop_chunking_is_invisible`; a stall of n requests is exactly 8·n
+    zero symbols with CONSUMED, MISSED, FIRST_MISS and the flag right; a
+    dry queue decays to silence; START resets;
+  - the banks' symmetry, an asymmetric bank (one LSB in `a`, in `b`, in
+    the far tap of a pair) refused, coefficient and register ranges;
+  - the steps 0xB8B439 / 0x800000 / 0x784000, shift 7, the ID word
+    0xB5D1_1918, `configure_tx` decoded back by a model of the command
+    protocol; `prop_pack_unpack_round_trip`, table 46's codes.
 - **Opt-in recordings** (`tests/captures.rs`, `ISDB_RS_ISDBS_IQ`,
   `ISDB_RS_ISDBS3_IQ`):
   - timing locked within 5 ppm of the survey;
@@ -369,11 +512,18 @@ vectors are unchanged.
     more than 3 dB and above 13 dB, and 6 bits lose less than 0.15 dB
     of it.
 - **The FPGA side:** `mise run fpga:test` writes vectors with
-  `examples/vectors.rs` and simulates the HDL against them.
+  `examples/vectors.rs` and simulates the HDL against them;
+  `examples/txvectors.rs` writes the transmit block's (`fpga/build/tx-*.json`:
+  continuous, random stalls, one long stall, another bank loaded through
+  the port; `isdbs-phy`'s `examples/txvectors.rs` adds real ISDB-S
+  codes).
 - **Analysis:** `examples/analyze.rs` prints timing lock, MER and the
   output-width table for a recording; `examples/s3budget.rs` is the
   loss budget above, `examples/s3trim.rs` the trim end to end with the
   output-width study, `examples/tedbias.rs` the detector on synthetic
   signals; `isdbs-phy`'s `examples/trimscan.rs` the trim on ISDB-S;
   `examples/shapewin.rs` the transmit pulse's window study,
-  `examples/shapespeed.rs` the shaper's speed.
+  `examples/shapespeed.rs` the shaper's speed, `examples/txloop.rs` the
+  interpolator's digital loopback (steady state against the tail) and its
+  equality with the study's arithmetic, `examples/txinterp.rs` the
+  interpolator study.
