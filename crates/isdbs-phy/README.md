@@ -1,13 +1,14 @@
 # isdbs-phy
 
-ISDB-S receive chain after the symbol front end: frame and superframe
-synchronisation, carrier recovery on the known symbols, TMCC decoding, and
-the main signal of every superframe to TS packets per TS_ID. Symbols come
-from `isdb-frontend` (shared with ISDB-S3, and the same bits as the
-PlutoSky's FPGA front end); frame layout, codes, the interleaver and the
-energy dispersal from `isdbs-core`.
+ISDB-S receive and transmit chains on the symbol side of the front end.
+Receive: frame and superframe synchronisation, carrier recovery on the
+known symbols, TMCC decoding, and the main signal of every superframe to
+TS packets per TS_ID. Transmit: TS packets per TS to the symbols of a
+superframe, the exact inverse. Symbols come from `isdb-frontend` (shared
+with ISDB-S3, and the same bits as the PlutoSky's FPGA front end); frame
+layout, codes, the interleaver and the energy dispersal from `isdbs-core`.
 
-## Stages
+## Receive stages
 
 1. **Frame sync** (`sync`): each candidate start is correlated with the
    frame's 808 known BPSK symbols (the coded W1 and W2/W3 tails and the 192
@@ -46,6 +47,45 @@ energy dispersal from `isdbs-core`.
    whose own TMCC failed decodes under the previous one. Superframes are
    decoded in parallel on every core.
 
+## Transmit (`tx`)
+
+`tx::Transmitter::new(info)` takes a `TmccInfo` (built from a slot
+layout by `isdbs_core::TmccInfo::assign`, or decoded) and precomputes the
+superframe's 8 headers and the sent-slot table; `superframe(&[&[Packet]])`
+takes, per relative TS, exactly `packets_per_superframe(r)` packets (its
+sent slots per frame × 8; too few or too many is
+`TxError::PacketCount`, the caller pads with `tx::NULL_PACKET`) and
+`null_superframe()` fills every slot with null packets. The stages, in
+transmit order:
+
+1. **Slots**: frame by frame, each sent slot (dummy slots are not sent)
+   takes the next packet of the TS its relative TS ID names.
+2. **RS(204,188)** (`isdb_fec::RS_204_188`) on each packet.
+3. **Energy dispersal, depth-8 interleaver, sync bytes and dummy slots
+   dropped** (`isdbs_core::mainsig::frame_bytes`): 203 bytes per sent slot
+   per frame.
+4. **Inner code and mapping** (`demod::encode_frame_with_state`, the
+   inverse of `decode_frame`), per frame: run by run, BPSK r = 1/2,
+   punctured QPSK, TC8PSK r = 2/3, the encoder starting in the state the
+   header's W2/W3 leaves; `Mapping::default()` (the readings settled on
+   air) unless `with_mapping` says otherwise.
+5. **Frame** (`tx::frame_symbols`, annexed table 45): the 12 header bytes
+   of `isdbs_core::tmcc::headers` (W1, the frame's TMCC block with
+   RS(64,48) and dispersal, W2/W3) inner-coded to 192 BPSK symbols, X then
+   Y; the 192 bursts; the 38 976 main symbols. The inner coder runs on
+   from the previous frame's main signal into the header (only the first
+   12 header symbols depend on it; W1 flushes it).
+
+The boundary is `tx::Superframe`: `symbols`, the 319 488
+(`SUPERFRAME_SYMBOLS`) unit-modulus symbols in transmission order at one
+sample per symbol (pulse shaping is the front end's), and `placed`, the
+(frame, slot, TS_ID) of each packet in the order and with the fields of
+the `ts::Packet`s a receiver returns. Superframes are independent (the
+TMCC, the dispersal and the interleaver each span one), so the caller
+can stop and start at any superframe.
+
+## Diagnostics
+
 Diagnostics are `tracing` events, never printed; the crate installs no
 subscriber (the `isdb` binary does). `info`: the acquisition (carrier,
 trim, burst MER), frame sync acquired and lost (`start`, `metric`), the
@@ -78,6 +118,10 @@ the puncturing restarts at its start.
 the RS outcome. `isdb rx --system isdbs` writes them per TS_ID; slots whose
 relative TS ID points at an unused (FFFFh) entry belong to no TS.
 
+`tx::Superframe` (transmit side): a superframe's symbols and the
+(frame, slot, TS_ID) of every packet, in `ts::Packet` order (see
+[Transmit](#transmit-tx)).
+
 ## Constellation readings (confirmed by RS(204,188) on the lab recordings)
 
 `demod::Mapping` keeps the alternatives selectable for `examples/mapprobe`,
@@ -104,6 +148,7 @@ per block (the bit-exact model's timing loop); `isdb rx` overlaps it
 with the receiver and runs several blocks' front ends at once
 (VERIFICATION.md "Satellite receive speed"; `examples/chaintime`,
 `examples/throughput`).
+
 ## Position in the stack
 
 - Depends on: `isdb-frontend`, `isdb-iq` (survey), `isdb-fec`,
@@ -125,9 +170,28 @@ with the receiver and runs several blocks' front ends at once
   the encoder state after W2/W3, `prop_frame_round_trip` (every
   combination mix encodes with `encode_frame` and decodes back exactly),
   TC8PSK at 12 dB SNR (few byte errors, the reverse C1/C0 reading fails).
+- `tx` unit tests: `frame_symbols_follows_table_45` (the coded header,
+  the bursts and the main symbols where `frame::*_position` puts them,
+  each symbol once; the encoder left in the W2/W3 state),
+  `slot_tables` (TSs, slots and packets per superframe of the BS and CS
+  layouts), `null_superframe_decodes_to_null_packets` (received
+  noiselessly: the TMCC sent, null packets RS-clean where `placed` says),
+  `errors` (every `TxError`).
+- Symbol-domain loopback (`tests/loopback.rs`): one null superframe and
+  three of distinct packets per TS through `Transmitter`, a carrier
+  offset of 2·10⁻⁴ cycle per symbol, a phase and AWGN, after 1 111
+  noise-only symbols, then `receive` and `ts::decode_all`: every packet
+  back byte-exact per TS_ID and in order, none uncorrectable, every
+  superframe's TMCC the one sent, the receiver's (frame, slot, TS_ID) the
+  transmitter's `placed`. Layouts: the BS layout (TC8PSK 2/3 × 48, three
+  TSs) and TC8PSK 2/3 × 44 + BPSK 1/2 × 4 (two TSs) at 12 dB; the CS
+  layout (QPSK 3/4 × 48, one TS), QPSK 7/8 × 40 + QPSK 1/2 × 8 (three
+  TSs) and QPSK 5/6 × 30 + QPSK 2/3 × 18 (two TSs) at 8 dB.
 - Opt-in recordings, main signal (`ISDB_RS_ISDBS_TS_IQ`): no
   uncorrectable RS word, sync byte on every packet, continuity counters
   without a gap per TS_ID and PID.
+- `testsig::Synth` builds its frames with `tx::frame_symbols` (random
+  8PSK main symbols, the inner coder running through the headers).
 - Development tools (examples): `syncstat` (sync-metric statistics on and
   off the frame grid), `spacing` (acquisition-only frame spacing),
   `offsets` (metric at ±2 symbols and the derotated burst projection),

@@ -316,11 +316,25 @@ pub fn decode_frame(main: &[Cplx], info: &TmccInfo, first: bool, o: &DemodOption
     }
 }
 
-/// The transmit side of [`decode_frame`] (tests and the future
-/// modulator): the 38 976 main symbols of a frame from its bytes (203 per
-/// sent slot, slot order), the encoder starting in the state the header's
-/// W2/W3 left. Unused symbols at the end of the frame stay 0.
+/// The transmit side of [`decode_frame`] (MIC Ordinance No. 87 of 2011,
+/// annexed tables 46 and 49; BO.1408-1 §9, Table 2, Figs. 14–15): the
+/// 38 976 main symbols of a frame from its bytes (203 per sent slot, slot
+/// order), the encoder starting in the state the header's W2/W3 left.
+/// Unused symbols at the end of the frame stay 0.
 pub fn encode_frame(bytes: &[u8], info: &TmccInfo, first: bool, m: Mapping) -> Vec<Cplx> {
+    encode_frame_with_state(bytes, info, first, m).0
+}
+
+/// [`encode_frame`], also returning the encoder after the frame's last
+/// main-signal bit: one encoder runs through the whole frame (Fig. 14) and
+/// on into the next frame's header, whose W1 flushes it (§6.3), so
+/// [`crate::tx::Transmitter`] codes the next header with it.
+pub fn encode_frame_with_state(
+    bytes: &[u8],
+    info: &TmccInfo,
+    first: bool,
+    m: Mapping,
+) -> (Vec<Cplx>, ConvEncoder) {
     let mut enc = ConvEncoder::new();
     let start = state_after(if first { W2 } else { W3 });
     for i in 0..6 {
@@ -397,7 +411,7 @@ pub fn encode_frame(bytes: &[u8], info: &TmccInfo, first: bool, m: Mapping) -> V
             *v = v.conj();
         }
     }
-    out
+    (out, enc)
 }
 
 #[cfg(test)]

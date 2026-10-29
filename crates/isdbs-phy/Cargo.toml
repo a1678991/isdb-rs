@@ -1,6 +1,6 @@
 [package]
 name = "isdbs-phy"
-description = "ISDB-S receive chain after the symbol front end (ITU-R BO.1408-1, ARIB STD-B20 system): frame and superframe sync, burst- and TMCC-aided carrier recovery, TMCC decoding and the per-slot soft bits of the main signal"
+description = "ISDB-S receive and transmit chains on the symbol side of the front end (ITU-R BO.1408-1, ARIB STD-B20 system): frame and superframe sync, burst- and TMCC-aided carrier recovery, TMCC and main-signal decoding to TS packets, and the transmitter from TS packets to superframe symbols"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,15 +1,12 @@
 //! Synthetic ISDB-S symbols for tests: a frame header carrying a TMCC
 //! superframe (inner-coded BPSK), the bursts, and a main signal of random
 //! 8PSK points, at one sample per symbol, with an optional carrier offset,
-//! phase and noise.
+//! phase and noise. Frames are assembled by [`crate::tx::frame_symbols`].
 
 use crate::Cplx;
+use crate::tx::frame_symbols;
 use isdb_fec::ConvEncoder;
-use isdbs_core::burst::frame_bits;
-use isdbs_core::frame::{
-    BURST_SYMBOLS, BURSTS, FRAME_SYMBOLS, FRAMES, HEADER_BYTES, HEADER_SYMBOLS, MAIN_SYMBOLS,
-    burst_symbol_position, main_symbol_position,
-};
+use isdbs_core::frame::{FRAME_SYMBOLS, FRAMES, MAIN_SYMBOLS};
 use isdbs_core::tmcc::{INFO_BYTES, TmccInfo, headers};
 
 /// A deterministic generator.
@@ -75,35 +72,16 @@ impl Synth {
             *v = pt(self.next() & 7);
         }
         let hdr = headers(&self.info);
-        let burst = frame_bits();
+        // the inner coder runs on through the headers only: the main
+        // signal is random points, not coded
         let mut enc = ConvEncoder::new();
         let mut starts = Vec::new();
         for sf in 0..self.superframes {
             for (f, h) in hdr.iter().enumerate() {
                 let s = lead + (sf * FRAMES + f) * FRAME_SYMBOLS;
                 starts.push(s);
-                // header: 96 bits → 192 BPSK symbols (X then Y)
-                let mut k = 0;
-                for &byte in h.iter().take(HEADER_BYTES) {
-                    for i in (0..8).rev() {
-                        let (x, y) = enc.push((byte >> i) & 1);
-                        for b in [x, y] {
-                            z[s + k] = Cplx::new(if b == 0 { 1.0 } else { -1.0 }, 0.0);
-                            k += 1;
-                        }
-                    }
-                }
-                debug_assert_eq!(k, HEADER_SYMBOLS);
-                for b in 0..BURSTS {
-                    for j in 0..BURST_SYMBOLS {
-                        let bit = burst[b * BURST_SYMBOLS + j];
-                        z[s + burst_symbol_position(b, j)] =
-                            Cplx::new(if bit == 0 { 1.0 } else { -1.0 }, 0.0);
-                    }
-                }
-                for m in 0..MAIN_SYMBOLS {
-                    z[s + main_symbol_position(m)] = pt(self.next() & 7);
-                }
+                let main: Vec<Cplx> = (0..MAIN_SYMBOLS).map(|_| pt(self.next() & 7)).collect();
+                z[s..s + FRAME_SYMBOLS].copy_from_slice(&frame_symbols(&mut enc, h, &main));
             }
         }
         for (n, v) in z.iter_mut().enumerate() {
