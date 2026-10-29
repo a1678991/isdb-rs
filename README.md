@@ -16,7 +16,11 @@ isdbs`, from satellite IF recordings or block by block from a radio), and
 transmitted from them (`isdb tx --system isdbs`) to IQ files that `isdb rx`
 reads back byte-exact, with a software loopback (`isdb loopback --system
 isdbs`); its ≥ 39 Msps do not stream to a radio over Gigabit Ethernet, so
-transmission to a radio waits for a modulator in the FPGA. ISDB-S3 is received to TLV streams,
+for a radio the pulse shaping moves into the PlutoSky R2's FPGA: the host
+sends 4-bit symbol codes (14 MB/s) and the transmit block there shapes
+them (`isdb tx --system isdbs --radio pluto --offload fpga`; the block is
+bit-exact in simulation, its bitstream and the on-board test are
+pending). ISDB-S3 is received to TLV streams,
 one per TLV stream id (`isdb rx --system isdbs3`), with the MMTP packets
 and MMT-SI tables they carry decoded: services, events, packages and
 assets (`isdb tlv inspect`); unscrambled assets are written as
@@ -140,8 +144,13 @@ payload is scrambled, and nothing is descrambled).
   default), written with a SigMF sidecar that `isdb rx` reads back
   byte-exact; the loopback passes the BS layout (TC8PSK 2/3) from 7 dB
   SNR and the CS layout (QPSK 3/4) from 4 dB with carrier offset and a
-  mid-stream start. A radio is driven through the same gate, but a
-  Gigabit-Ethernet Pluto underruns at that rate and a HackRF refuses it.
+  mid-stream start. A radio is driven through the same gate: over IQ a
+  Gigabit-Ethernet Pluto underruns at that rate and a HackRF refuses it;
+  with `--offload fpga` the host sends symbol codes and the PlutoSky's
+  transmit block (`fpga/`, `SymbolsTx`: 0 DSP48E1, a multiplier-free
+  root-raised-cosine interpolator) shapes them on the board. The block,
+  its bit-exact model and the host path are done and simulated; the
+  bitstream build and the on-board loopback test are the next step.
 - **ISDB-S3 reception** (`isdbs3-core`, `isdbs3-phy`, `isdb-tlv`, `isdb
   iq s3tmcc`, `isdb rx --system isdbs3`, `isdb tlv inspect`; ARIB
   STD-B44, B32 Part 3, B60): slot and frame sync on the π/2-BPSK sync
@@ -405,10 +414,11 @@ end, but some parts have had less independent checking than others:
 - ISDB-S (ITU-R BO.1408 / MIC Ordinance No. 87 of 2011; ARIB STD-B20) and
   ISDB-S3 (ARIB STD-B44) reception, then transmission, reusing the TS/SI
   crates — satellite IF capture and survey done; ISDB-S received to TS
-  and transmitted to IQ files (software loopback byte-exact); ISDB-S3
-  received to TLV streams with MMT-SI identified; next an ISDB-S
-  modulator in the radio's FPGA (continuous transmission), TLV-SI
-  checked on a longer recording, and real-time LDPC (SIMD).
+  and transmitted to IQ files (software loopback byte-exact), with the
+  radio transmit block for the PlutoSky R2's FPGA designed, modelled and
+  simulated bit-exact (bitstream and on-board test next); ISDB-S3
+  received to TLV streams with MMT-SI identified; then TLV-SI checked on
+  a longer recording, and real-time LDPC (SIMD).
 
 ## Development
 

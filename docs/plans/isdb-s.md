@@ -848,6 +848,36 @@ docs. VERIFICATION.md "ISDB-S transmitter and loopback" has the figures.
   shaper on two threads would lift the producer from 1.1× towards the
   shaper's 1.7×.
 
+## 0.23 ISDB-S transmit block for the FPGA (2026-10-29, after §0.22)
+
+Plan [isdbs-fpga-tx.md](isdbs-fpga-tx.md) (three investigations, the
+board checks and steps 1–5 done; commits `af0f91f` plan, `a7c4107`
+r1_mode fix, `0422af5` board checks, `0e8f632` / `b85bcb3` model and
+codes, `83e9ac5` / `4bac1a9` / `e1ca69a` HDL, `abb2e94` / `13e1c12` /
+`9def892` host path).
+
+- **Boundary:** 4-bit symbol codes (every ISDB-S symbol is one of the
+  eight 45° points), 8 per DMA sample, 14.4 MB/s; measured TX link clean
+  at 64 MB/s, starved at 80 (VERIFICATION.md "ISDB-S transmitter in the
+  FPGA: board checks").
+- **Block:** `SymbolsTx` between the DAC unpacker and the rfifo (the
+  `txfir.tcl` placement, replacing the ×8 TX FIR), a 512-phase × 24-tap
+  root-raised-cosine interpolator with no multipliers (0 DSP48E1, 2.7k
+  LUT, 12 RAMB18), controlled through the DAC core's GPIO pair with the
+  RX block's protocol; bit-exact in simulation on the Rust model's five
+  vector sets under every strobe pattern. Image expectation 158 DSP.
+- **Host:** `Offload::TxSymbols`, `SymbolSink`, the Pluto symbols mode
+  (START|SELECT, prefill the device queue, RUN|SELECT), `isdb tx
+  --offload auto|fpga|cpu`; the code path runs at 11× real time.
+- **Found:** the DAC `r1_mode` guard read the wrong register; the DAC
+  underflow flag sets when the DMA is idle; the AD9361 digital loopback
+  is sample-exact; the "span 12 beats span 16" reading of the study was
+  its MER window counting the zero tail.
+- **Open:** build the image (Vivado, not on this host), deploy on a card
+  copy, run `tx_symbols_loopback_on_a_pluto`; skip the 8 s bank reload
+  when the BRAM default is in place; the starvation variant of the test;
+  CONSUMED wraps after 149 s.
+
 ## 1. Goals and non-goals
 
 Goals, in order:
