@@ -21,13 +21,34 @@ pub struct Channel {
 }
 
 impl Channel {
-    /// `cfo_carriers` is in carrier spacings of an `fft_size`-point symbol;
-    /// `sample_offset` > 0 samples of silence (plus noise) precede the
-    /// signal; < 0 drops that many samples (the receiver starts mid-stream).
+    /// ISDB-T: `cfo_carriers` is in carrier spacings of an `fft_size`-point
+    /// symbol at the 512/63 MHz clock ([`Channel::with_cfo_hz`] with a
+    /// spacing of (512/63 MHz) / `fft_size`).
     pub fn new(
         snr_db: Option<f32>,
         cfo_carriers: f64,
         fft_size: usize,
+        sample_offset: i64,
+        seed: u64,
+    ) -> Result<Self> {
+        let fs = isdbt_core::sample_rate_hz();
+        Self::with_cfo_hz(
+            snr_db,
+            cfo_carriers * fs / fft_size as f64,
+            fs,
+            sample_offset,
+            seed,
+        )
+    }
+
+    /// A carrier frequency offset of `cfo_hz` on samples at `fs` Hz;
+    /// `sample_offset` > 0 samples of silence (plus noise) precede the
+    /// signal; < 0 drops that many samples (the receiver starts
+    /// mid-stream); AWGN at `snr_db` below the power of the first block.
+    pub fn with_cfo_hz(
+        snr_db: Option<f32>,
+        cfo_hz: f64,
+        fs: f64,
         sample_offset: i64,
         seed: u64,
     ) -> Result<Self> {
@@ -37,7 +58,7 @@ impl Channel {
         };
         Ok(Self {
             snr_db,
-            dphi: 2.0 * std::f64::consts::PI * cfo_carriers / fft_size as f64,
+            dphi: 2.0 * std::f64::consts::PI * cfo_hz / fs,
             phase: 0.0,
             offset: samples(sample_offset.max(0).unsigned_abs())?,
             skip: samples(sample_offset.min(0).unsigned_abs())?,
@@ -125,5 +146,12 @@ mod tests {
         let mut ch = Channel::new(None, 0.0, 8, -5, 1).unwrap();
         assert!(ch.process(vec![C32::new(1.0, 0.0); 3]).is_empty());
         assert_eq!(ch.process(vec![C32::new(2.0, 0.0); 4]).len(), 2);
+        // In Hz: 10 MHz at 40 Msps is a quarter turn per sample.
+        let mut ch = Channel::with_cfo_hz(None, 10e6, 40e6, 0, 1).unwrap();
+        let out = ch.process(vec![C32::new(1.0, 0.0); 5]);
+        assert!((out[1] - C32::new(0.0, 1.0)).norm() < 1e-5);
+        assert!((out[4] - C32::new(1.0, 0.0)).norm() < 1e-5);
+        let mut ch = Channel::with_cfo_hz(None, -10e6, 40e6, 0, 1).unwrap();
+        assert!((ch.process(vec![C32::new(1.0, 0.0); 2])[1] - C32::new(0.0, -1.0)).norm() < 1e-5);
     }
 }

@@ -1,5 +1,6 @@
 //! `isdb loopback`: TX → software channel → RX in one process, verifying
-//! byte-exact delivery of every layer and of the §3.2.2 reproduced TS.
+//! byte-exact delivery of every layer and of the §3.2.2 reproduced TS;
+//! `--system isdbs` (every TS_ID of ISDB-S) is in [`crate::loopbacks`].
 
 use crate::channel::Channel;
 use crate::input::InputArgs;
@@ -7,6 +8,7 @@ use crate::phyargs::{PhyArgs, describe_params};
 use crate::producer::{self, EndReason, FrameKind, ProducerConfig};
 use crate::rx::RxStats;
 use crate::source::{Packet, is_null};
+use crate::txs::{Given, SatArgs, TxSystem};
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use isdbt_core::Params;
@@ -22,21 +24,41 @@ use tracing::info;
 /// `isdb loopback` arguments.
 #[derive(Debug, Args)]
 pub struct LoopbackArgs {
+    /// Transmission system: ISDB-T (the default) or ISDB-S (the layout,
+    /// inputs and rate under "ISDB-S" below, as for `isdb tx --system
+    /// isdbs`). The options of the other system are refused.
+    #[arg(long, value_enum, default_value_t = TxSystem::Isdbt)]
+    pub system: TxSystem,
     #[command(flatten)]
     pub phy: PhyArgs,
     /// Inputs as for `isdb tx`; synthetic packets if none is given.
     #[command(flatten)]
     pub input: InputArgs,
-    /// Data frames to send (default: until EOF for --feed file inputs,
-    /// 6 otherwise).
+    /// ISDB-T: data frames to send (default: until EOF for --feed file
+    /// inputs, 6 otherwise).
     #[arg(long)]
     pub frames: Option<u64>,
-    /// AWGN at this SNR (dB, relative to the signal power).
+    /// ISDB-S: data superframes to send (default: until EOF when a --ts
+    /// reads a file with --feed file, 6 otherwise). The whole signal is
+    /// held in memory: about 3.5 MB per superframe at 40 Msps.
+    #[arg(long, value_name = "N")]
+    pub superframes: Option<u64>,
+    /// AWGN at this SNR (dB, relative to the signal power over the sample
+    /// rate's bandwidth).
     #[arg(long, allow_negative_numbers = true)]
     pub snr_db: Option<f32>,
-    /// Carrier frequency offset in carrier spacings (may be fractional).
+    /// ISDB-T: carrier frequency offset in carrier spacings (may be
+    /// fractional).
     #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
     pub cfo_carriers: f64,
+    /// ISDB-S: carrier frequency offset in Hz.
+    #[arg(
+        long,
+        value_name = "HZ",
+        default_value_t = 0.0,
+        allow_negative_numbers = true
+    )]
+    pub cfo_hz: f64,
     /// Receiver timing offset: N > 0 samples of silence before the signal,
     /// N < 0 drops the first |N| samples (receiver starts mid-frame).
     #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
@@ -44,10 +66,11 @@ pub struct LoopbackArgs {
     /// Noise generator seed.
     #[arg(long, default_value_t = 1)]
     pub seed: u64,
-    /// Null frames before the data (default 2).
+    /// ISDB-T: null frames before the data (default 2).
     #[arg(long)]
     pub lead_frames: Option<usize>,
-    /// Omit the flush frames (the last frames are then reported lost).
+    /// Omit the flush frames (ISDB-S: the null frame and the shaper's
+    /// tail); the last frames (superframe) are then reported lost.
     #[arg(long)]
     pub no_flush: bool,
     /// Print a JSON summary on stdout.
@@ -56,6 +79,8 @@ pub struct LoopbackArgs {
     /// --relay: terrestrial channel named in the NIT (default 44, i.e. T44).
     #[arg(long, value_name = "13..62", requires = "relay")]
     pub channel: Option<u32>,
+    #[command(flatten)]
+    pub sat: SatArgs,
 }
 
 /// Per-layer verification counters.
@@ -231,8 +256,48 @@ impl Verifier {
     }
 }
 
-/// Entry point.
-pub fn run(a: LoopbackArgs) -> Result<()> {
+/// `isdb loopback` options that only ISDB-T uses (argument ids, as
+/// [`crate::txs::TX_ISDBT_ONLY`]).
+pub const LOOPBACK_ISDBT_ONLY: &[&str] = &[
+    "mode",
+    "gi",
+    "partial",
+    "layer_a",
+    "layer_b",
+    "layer_c",
+    "a_ts",
+    "b_ts",
+    "c_ts",
+    "mux_ts",
+    "a_pids",
+    "c_pids",
+    "synthetic",
+    "mux_config",
+    "relay",
+    "allow_overrate",
+    "frames",
+    "cfo_carriers",
+    "lead_frames",
+    "channel",
+];
+
+/// `isdb loopback` options that only ISDB-S uses.
+pub const LOOPBACK_ISDBS_ONLY: &[&str] = &[
+    "combination",
+    "ts",
+    "rate",
+    "lead_superframes",
+    "superframes",
+    "cfo_hz",
+];
+
+/// Entry point: `given` are the arguments given on the command line (the
+/// options of the other system are refused).
+pub fn run(a: LoopbackArgs, given: &Given) -> Result<()> {
+    crate::txs::check_system(a.system, given, LOOPBACK_ISDBT_ONLY, LOOPBACK_ISDBS_ONLY)?;
+    if a.system == TxSystem::Isdbs {
+        return crate::loopbacks::run(a);
+    }
     let params = a.phy.params()?;
     let (params, prepared) =
         match crate::relay::prepare(&a.input, params, || Ok(a.channel.unwrap_or(44)))? {

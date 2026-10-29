@@ -577,6 +577,95 @@ fn isdbs_tx_then_rx_reproduces_every_ts_byte_exact() {
     std::fs::remove_dir_all(&d).unwrap();
 }
 
+/// ISDB-S loopback: the BS layout through 12 dB SNR (over the 40 MHz of
+/// samples), a 50 kHz carrier offset and a start 12 345 samples into the
+/// signal, and the CS layout (QPSK 3/4, one TS of 36 slots) at 8 dB: every
+/// packet byte-exact, every TMCC as sent.
+#[test]
+fn isdbs_loopback_passes_with_impairments() {
+    for (extra, per_superframe) in [
+        (&["--snr-db", "12"][..], 384),
+        (&["--combination", "qpsk3/4:48", "--snr-db", "8"], 288),
+    ] {
+        let mut args = vec![
+            "loopback",
+            "--system",
+            "isdbs",
+            "--superframes",
+            "4",
+            "--cfo-hz",
+            "50000",
+            "--sample-offset",
+            "-12345",
+            "--json",
+        ];
+        args.extend_from_slice(extra);
+        let t = Instant::now();
+        let o = run(&args);
+        eprintln!("{extra:?}: {:.2} s", t.elapsed().as_secs_f64());
+        assert!(o.status.success(), "{extra:?}");
+        let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(j["result"], "PASS");
+        assert_eq!(j["system"], "ISDB-S");
+        let v = &j["verify"]["0x4010"];
+        assert_eq!(v["input_pass"], 4 * per_superframe, "{j}");
+        assert_eq!((v["fail"].as_u64(), v["lost"].as_u64()), (Some(0), Some(0)));
+        assert_eq!(j["tmcc_differs"], 0);
+        assert_eq!(j["sent_data_superframes"], 4);
+        let cfo = j["rx"]["carrier_offset_hz"].as_f64().unwrap();
+        assert!((cfo - 50e3).abs() < 2e3, "carrier {cfo}");
+    }
+}
+
+/// ISDB-S loopback verdicts on loss: without the flush the last data
+/// superframe's final symbols never leave the filters, so it is lost
+/// (FAIL, counted); a TS file shorter than the superframes asked ends the
+/// transmission at its end, its packets all delivered (the rest of the
+/// last superframe is null padding).
+#[test]
+fn isdbs_loopback_detects_loss() {
+    let o = run(&[
+        "loopback",
+        "--system",
+        "isdbs",
+        "--superframes",
+        "3",
+        "--no-flush",
+        "--json",
+    ]);
+    assert!(!o.status.success());
+    let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(j["result"], "FAIL");
+    let v = &j["verify"]["0x4010"];
+    assert_eq!(v["lost"], 384, "{j}");
+    assert_eq!(v["fail"], 0);
+    assert_eq!(v["input_pass"], 2 * 384);
+
+    let d = tmp("isdbs-lbfile");
+    let ts = d.join("a.ts");
+    std::fs::write(&ts, packets(0x0111, 0..500)).unwrap();
+    let o = run(&[
+        "loopback",
+        "--system",
+        "isdbs",
+        "--ts",
+        &format!("0x4010={}", s(&ts)),
+        "--superframes",
+        "4",
+        "--snr-db",
+        "15",
+        "--json",
+    ]);
+    assert!(o.status.success());
+    let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(j["result"], "PASS");
+    assert_eq!(j["sent_data_superframes"], 2);
+    let v = &j["verify"]["0x4010"];
+    assert_eq!(v["input_pass"], 500);
+    assert_eq!(v["pass"], 2 * 384, "input and null padding");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
 /// The ISDB-S options and the ISDB-T ones exclude each other, naming the
 /// system; the layout is checked before anything is written.
 #[test]
@@ -626,6 +715,28 @@ fn isdbs_options_are_checked() {
         ),
     ] {
         let mut args = vec!["tx", "--synthetic", "--iq", s(&iq), "--seconds", "1"];
+        args.extend_from_slice(extra);
+        fails(&args, want);
+    }
+    // loopback: --frames / --cfo-carriers / --lead-frames are ISDB-T's,
+    // --superframes / --cfo-hz ISDB-S's
+    for (extra, want) in [
+        (
+            &["--system", "isdbs", "--frames", "4"][..],
+            "--frames: ISDB-T option(s)",
+        ),
+        (
+            &["--system", "isdbs", "--cfo-carriers", "1.5"],
+            "--cfo-carriers: ISDB-T option(s)",
+        ),
+        (
+            &["--system", "isdbs", "--lead-frames", "1"],
+            "--lead-frames: ISDB-T option(s)",
+        ),
+        (&["--superframes", "4"], "--superframes: ISDB-S option(s)"),
+        (&["--cfo-hz", "1000"], "--cfo-hz: ISDB-S option(s)"),
+    ] {
+        let mut args = vec!["loopback"];
         args.extend_from_slice(extra);
         fails(&args, want);
     }

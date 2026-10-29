@@ -584,6 +584,9 @@ pub struct ProducedSf {
     pub real: Vec<usize>,
     /// Null padding per relative TS.
     pub nulls: Vec<usize>,
+    /// The packets per relative TS, when recording (for the loopback's
+    /// verifier); never for the flush, which is no whole superframe.
+    pub packets: Option<Arc<[Vec<Packet>]>>,
     /// Input counters as of this superframe.
     pub input_status: String,
     /// Time spent assembling its packets from the input.
@@ -603,6 +606,8 @@ pub struct SatConfig {
     pub max_superframes: Option<u64>,
     /// Pace production to real time.
     pub pace: bool,
+    /// Attach each superframe's packets ([`ProducedSf::packets`]).
+    pub record: bool,
     /// Superframes queued ahead of the sink.
     pub depth: usize,
 }
@@ -691,6 +696,9 @@ pub fn spawn(
                     samples,
                     real: vec![0; counts.len()],
                     nulls: vec![0; counts.len()],
+                    packets: cfg
+                        .record
+                        .then(|| counts.iter().map(|&n| vec![null_packet(); n]).collect()),
                     input_status: String::new(),
                     input_time: Duration::ZERO,
                     modulate_time: tm.elapsed(),
@@ -728,6 +736,7 @@ pub fn spawn(
                     samples,
                     nulls: counts.iter().zip(&p.real).map(|(n, r)| n - r).collect(),
                     real: p.real,
+                    packets: cfg.record.then(|| Arc::from(p.ts)),
                     input_status: input.status(),
                     input_time: it,
                     modulate_time: mt,
@@ -753,6 +762,7 @@ pub fn spawn(
                     samples,
                     real: vec![0; counts.len()],
                     nulls: vec![0; counts.len()],
+                    packets: None,
                     input_status: String::new(),
                     input_time: Duration::ZERO,
                     modulate_time: tm.elapsed(),
@@ -1069,6 +1079,7 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
         flush: !a.no_flush,
         max_superframes: (seconds > 0.0).then(|| superframes_for_seconds(seconds)),
         pace: a.realtime || crate::producer::default_pace(a.input.feed, sink.realtime()),
+        record: false,
         depth: a.queue_frames,
     };
     info!(
@@ -1426,6 +1437,7 @@ mod tests {
             flush: true,
             max_superframes: Some(3),
             pace: false,
+            record: true,
             depth: 2,
         };
         let (rx, h) = spawn(cfg, tx, shaper, input, Arc::new(AtomicBool::new(false))).unwrap();
@@ -1465,6 +1477,14 @@ mod tests {
             (items[2].real.clone(), items[2].nulls.clone()),
             (vec![288], vec![0])
         );
+        // packets recorded: nulls in the lead, the synthetic data (input
+        // superframe 1), none for the flush
+        let lead = items[0].packets.as_ref().unwrap();
+        assert!(lead.iter().flatten().all(is_null) && lead[0].len() == 288);
+        let d = items[2].packets.as_ref().unwrap();
+        // continuity counter (288 + 5) mod 16 = 5
+        assert_eq!(d[0][5], synthetic_packet(DEFAULT_TS_ID, 1, 5, 5));
+        assert!(items[3].packets.is_none());
         assert_eq!(
             (items[0].real.clone(), items[3].real.clone()),
             (vec![0], vec![0])

@@ -33,6 +33,7 @@ mod iqplay;
 mod keys;
 mod logging;
 mod loopback;
+mod loopbacks;
 #[allow(missing_docs)]
 mod mux;
 mod phyargs;
@@ -73,8 +74,9 @@ enum Command {
     Tx(Box<tx::TxArgs>),
     /// Receive: IQ file / radio → ISDB-T / ISDB-S / ISDB-S3 → TS or TLV streams, with status.
     Rx(rx::RxArgs),
-    /// Software loopback TX → channel impairments → RX, verifying delivery.
-    Loopback(loopback::LoopbackArgs),
+    /// Software loopback TX → channel impairments → RX, verifying delivery
+    /// (ISDB-T, or ISDB-S with --system isdbs).
+    Loopback(Box<loopback::LoopbackArgs>),
     /// Transport-stream tools.
     Ts(ts::TsArgs),
     /// Service multiplexer.
@@ -121,7 +123,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Loopback(a) => {
             stop::install()?;
-            loopback::run(a)
+            loopback::run(*a, &given("loopback"))
         }
         Command::Ts(a) => ts::run(a),
         Command::Mux(a) => mux::run(a),
