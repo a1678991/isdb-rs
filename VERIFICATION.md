@@ -1644,6 +1644,33 @@ capture with `isdb capture`; the analysis with
 | AD9361 variant | `ad9361-phy,model: ad9361` (TX bandwidth to 40 MHz) |
 | Boot | this boot hit "Tuning TX FAILED!" (no `cf-ad9361-lpc`), the known 2-in-3 failure; the documented unbind / rebind recovery succeeded on its 4th attempt (the tune is probabilistic; attempts at 40 and 61.44 Msps both failed before one passed) |
 
+## ISDB-S transmitter in the FPGA: the image (2026-10-29)
+
+`fpga/tezuka/build.sh WORK isdb` with Vivado 2026.1 (`/opt/Xilinx/2026.1`),
+the pinned Tezuka v0.3.24 / maia-sdr f7092ba sources: the PlutoSky R2
+image with the receive front end and `SymbolsTx`, without the DVB-S2
+transmitter and the ×8 TX FIR.
+
+| | LUT | FF | BRAM36 | DSP48E1 | WNS | WHS |
+|---|---|---|---|---|---|---|
+| whole image | 23 470 (44 %) | 29 994 (28 %) | 68 | 158 (72 %) | +0.100 ns | +0.033 ns |
+| `isdb_symbols_tx` | 2 331 | 2 672 | 12 RAMB18 | 0 | | |
+| `isdb_symbols` (RX) | 5 824 | 5 519 | 50 RAMB18 | 112 | | |
+
+- The slacks are those of the final checkpoint
+  (`system_top_postroute_physopt.dcp`, `fpga/tezuka/timing.tcl`): every
+  constraint met, 0 failing endpoints of 79 689 setup and 79 603 hold.
+  The flow's routed-stage report shows WHS −0.122 ns on ten
+  `axi_ad9361` TX DDS / IQ-correction paths before upstream's hold hook;
+  the hook's re-route fixes hold (+0.033) and costs setup (−0.168), which
+  the post-route physical optimisation brings back to +0.100 ns.
+- The transmit block costs 0 DSP48E1, as the multiplier-free design
+  intends; the DSP count fell from 178 (RX image) to 158 with the TX FIR
+  gone.
+- `isdb_txrx_top.bin` 2 773 472 bytes, sha256
+  `644ab085…8a473`; XSA sha256 `4b9b4038…bb86d`. **Not yet run on the
+  board.**
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

@@ -360,6 +360,8 @@ estimate: DSP 178 − 20 = **158** (72 %), LUT ≈ 21 694 − 564 + 2 713 ≈
 | stock, rebuilt with 2026.1 | 23 211 (44 %) | 32 304 (30 %) | 55.5 | 106 (48 %) | +0.100 ns | +0.024 ns |
 | format 4, without the DVB-S2 transmitter | 21 694 (41 %) | 28 421 (27 %) | 62 | 178 (81 %) | **+0.100 ns** | **+0.022 ns** |
 | of which `isdb_symbols` | 5 825 | 5 519 | — | 112 | — | — |
+| **both blocks** (RX front end + `SymbolsTx`, no DVB-S2 TX, no TX FIR; 2026-10-29) | 23 470 (44 %) | 29 994 (28 %) | 68 | **158 (72 %)** | **+0.100 ns** | **+0.033 ns** |
+| of which `isdb_symbols_tx` | 2 331 | 2 672 | 12 RAMB18 | 0 | — | — |
 
 Per clock, after route and physical optimisation (all met): the block's
 `clk_div_sel_0_s` (constrained at 62.5 MHz from ADI's worst-case 250 MHz
@@ -376,6 +378,20 @@ smallest margin of its boards). Reports:
 |---|---|---|
 | `plutoskyr2.xsa` | — | `12abb5eb1047290101d54ea82e8bfb73e3f978819fa14131d6839c340a8f3368` |
 | `isdb_top.bin` (from `sdbin.sh`) | 2 785 408 | `479141e02d8a151dd8475ac196b658beee7820ad9c298123191688aaa3ed1fd3` |
+| `plutoskyr2.xsa`, both blocks (2026-10-29) | 1 226 851 | `4b9b4038b7b515d6eb8169c01a233ad3e137836dbee451852fae808a586bb86d` |
+| `isdb_txrx_top.bin` (both blocks, from `sdbin.sh`) | 2 773 472 | `644ab085093fb0d7a1ce0922ea7fa490ae9a5f24f55a45ec332600030178a473` |
+
+**The image with both blocks (2026-10-29)** builds with `build.sh WORK isdb`
+in about 25 minutes on this host. The project flow's
+`*_timing_summary_routed.rpt` says "Timing constraints are not met"
+(WHS −0.122 ns on ten of Tezuka's own `axi_ad9361` TX-channel paths in
+`rx_clk`): that report is taken after `route_design`, before upstream's
+`hold_fix.tcl` hook re-routes and the post-route physical optimisation
+restores setup. The checkpoint the bitstream is written from
+(`impl_1/system_top_postroute_physopt.dcp`) meets every constraint:
+`vivado -mode batch -source fpga/tezuka/timing.tcl -tclargs
+CHECKPOINT.dcp` prints its WNS / WHS and the isdb blocks' placed
+resources (the table above). Not yet run on the board.
 
 How it got there (each step a commit): the first format-4 build put the
 block at 154 DSP48E1 (Vivado moved the adder trees and the loop's adds

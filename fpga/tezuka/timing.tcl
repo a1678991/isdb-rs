@@ -13,3 +13,9 @@ report_timing_summary -delay_type min_max -max_paths 10 -nworst 1 -report_uncons
 set wns [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
 set whs [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -hold]]
 puts "TIMING $dcp: WNS $wns WHS $whs (report $out)"
+# The isdb blocks' own placed resources (LUT, FF, BRAM, DSP), by hierarchy.
+set util "[file rootname $out]_isdb_util.rpt"
+report_utilization -hierarchical -hierarchical_depth 3 -cells [get_cells -hier -filter {NAME =~ *isdb_symbols*/inst}] -file $util
+foreach c [get_cells -hier -filter {NAME =~ *isdb_symbols*/inst}] {
+    puts "UTIL $c: LUT [llength [get_cells -hier -filter "PRIMITIVE_GROUP == LUT && NAME =~ $c/*"]] FF [llength [get_cells -hier -filter "PRIMITIVE_GROUP == FLOP_LATCH && NAME =~ $c/*"]] BRAM [llength [get_cells -hier -filter "PRIMITIVE_GROUP == BLOCKRAM && NAME =~ $c/*"]] DSP [llength [get_cells -hier -filter "PRIMITIVE_GROUP == DSP && NAME =~ $c/*"]]"
+}
