@@ -1,0 +1,169 @@
+# Plan: ISDB-S after the FPGA transmitter (hand-off, 2026-10-29)
+
+Written at the end of the session that took ISDB-S from "received only"
+to a transmitter running in the PlutoSky R2's FPGA and locked by a real
+tuner. Everything below "State" is measured or committed; everything
+under "Work" is open. Conventions: [CONTRIBUTING.md](../../CONTRIBUTING.md)
+(spec-first, SPEC-NOTES, conventional commits, no real station
+identities, nothing radiated without `--rf-enable` on a conducted bench).
+
+## State
+
+**Repository** (`main` at `082ae96`, clean, workspace clippy / tests /
+rustdoc clean, FPGA suite 24/24):
+
+- ISDB-S transmit on the CPU: `isdb tx --system isdbs` (files + SigMF
+  sidecar, `isdb rx` reads them back byte-exact), `isdb loopback
+  --system isdbs` ([isdbs-loopback.md](isdbs-loopback.md); isdb-s.md §0.22).
+- ISDB-S transmit in the FPGA ([isdbs-fpga-tx.md](isdbs-fpga-tx.md), the
+  three reports under `isdbs-fpga-tx/`; isdb-s.md §0.23): 4-bit symbol
+  codes over the DMA (14.4 MB/s), `SymbolsTx` in `fpga/isdb_fpga/tx.py`
+  (0 DSP48E1, 2 331 LUT, 12 RAMB18), bit-exact model
+  `isdb_frontend::shape::fixed`, `control::tx`, host path
+  `isdb-radio` (`Offload::TxSymbols`, `SymbolSink`, Pluto symbols mode),
+  `isdb tx --offload auto|fpga|cpu`.
+- Verified (VERIFICATION.md, the four "ISDB-S transmitter in the FPGA"
+  sections): board checks; the image (158 DSP, WNS +0.100 / WHS +0.033 ns
+  in the final checkpoint); on the board through the AD9361 digital
+  loopback (two TSs byte-exact, 0 losses, MER 34.1 dB; the opt-in test
+  `tx_symbols_loopback_on_a_pluto` under `ISDB_RS_PLUTO_TX_LOOPBACK_URI`
+  passes); conducted into the PIX-DT295 (locks at the first tune, clean
+  TS with the multiplexer's SI).
+- Tools: `tools/isdbs-bench-tx.sh` (the test broadcast),
+  `crates/isdb-radio/examples/txrate.rs` (TX link probe),
+  `tools/loopback-tone-check.py`, `fpga/tezuka/timing.tcl` (a
+  checkpoint's real slack), `fpga/tezuka/build.sh WORK isdb|isdb-tx`.
+
+**Bench** (as left):
+
+- PlutoSky R2 at `ip:10.10.0.30` (the docs' 192.0.2.30 is a placeholder),
+  booted from SD with `/boot/uEnv.txt` `bitstream_image=isdb_txrx_top.bin`
+  (both blocks; `uEnv.txt.prev-isdb` = the previous RX-only entry,
+  `isdb_top.bin` and `system_top.bin` still on the card). TX ID word
+  0xB5D11918 on `cf-ad9361-dds-core-lpc` 0x800000B8, RX 0x15DB4020 on
+  `cf-ad9361-lpc`. Vivado 2026.1 at `/opt/Xilinx/2026.1`; the build work
+  tree is `~/dev/sdr/isdb-work` (`out/isdb/plutoskyr2.xsa`,
+  `isdb_txrx_top.bin`, reports); upstream sources at `~/dev/sdr/`.
+- TX1 → 30 dB attenuator → DC block → PIX-DT295 (USB `06b8:103b`, hub
+  port `1-2.1`), driven by `~/dev/PIX-DT295` (`target/release/dt295`:
+  `init [--auto]`, `tune --isdbs bs1 --tsid 4010`, `status --isdbs
+  --watch N`, `stream --isdbs bs1 --tsid 4010 --raw-config --out F
+  --seconds N`; STATE 0xFFFF needs `tools/power-cycle.sh 1-2 1 3` then a
+  cold `init`).
+- **The test broadcast may still be on air** when the next session
+  starts: `pgrep -af "isdb tx --system isdbs"`; stop with `kill PID`
+  (the FIFO writer `pv` ends with it; the Pluto closes to attenuation
+  89.75 dB, TX LO down). Restart: `tools/isdbs-bench-tx.sh WORKDIR 45
+  ip:10.10.0.30` (WORKDIR holds `bs-bench.toml`, `bench60.ts`, `ts.fifo`).
+- Board hygiene: `tools/pluto-autorun.sh` kills Tezuka's daemons at boot
+  (their `/dev/mem` writes would flip the command protocol's toggle bit;
+  one takes a bus fault on the DVB registers the isdb image lacks). The
+  boot's "Tuning TX FAILED" (no `cf-ad9361-lpc`) happens 2 boots in 3;
+  the unbind/rebind recovery of isdb-s.md §2 works after a few attempts.
+- ssh: `sshpass -e ssh -o UserKnownHostsFile=/dev/null
+  -o StrictHostKeyChecking=no root@10.10.0.30` (`SSHPASS=analog`; the
+  user's known_hosts has a stale key for this address); `scp -O` (no
+  SFTP server on the board).
+
+## Work, in priority order
+
+1. **PCR-paced placement in the ISDB-S producer** (`crates/isdb-cli/src/
+   txs.rs`). Today a live feed's packets are placed in arrival order,
+   one superframe at a time from the reader queue: the PIX-DT295
+   recording shows PAT/PMT intervals of 0.17–0.21 s and 12–30 ms rms PCR
+   jitter against H.222.0's ±500 ns (VERIFICATION.md "into the
+   PIX-DT295"). Reuse the `Pacer` of the ISDB-T `--mux-ts` path
+   (`input.rs`): each packet goes into the slot whose on-air time (the
+   superframe's 8 × 48 slots at 52.17 Mbit/s, 11.07 ms per superframe)
+   matches its PCR schedule, nulls elsewhere; file inputs with a PCR get
+   it by default (`--feed file|loop`), stdin/FIFO too when PCRs are
+   present; handle the loop seam (`--feed loop`: shift PCR/PTS/DTS by a
+   constant as the mux's `ts-program` relay does, or re-stamp the
+   continuity counters). Acceptance: `dt295 stream` recording
+   `isdb ts validate` clean of timing findings, PCR CBR-fit residual
+   ≤ a few µs; the CPU (`--iq`) and FPGA paths identical.
+2. **Satellite-shaped SI in the multiplexer** (`isdbt-mux`, `isdb-si`):
+   `[network] kind = "bs"` (or a satellite section): NIT with the
+   satellite delivery system descriptor (B10 §6.2.6; `isdb-si`
+   `descriptor/dvb.rs` has it), BS `network_id` 0x0004 /
+   `original_network_id`, TS information descriptor as BS uses it, the
+   service list, a BS-style TS_ID (0x40xx) and service_ids; SDT/BIT
+   details per B10 Part 2 for BS; keep terrestrial behaviour unchanged.
+   Acceptance: `isdb ts validate` clean; the PIX-DT295's software (or
+   `dt295`'s SI readout) lists the bench service as a BS channel.
+3. **Media in the bench service and the tuner's decoder**: with
+   `ISDB_RS_MEDIA_DIR` (docs/test-data.md) run `tools/isdbs-bench-tx.sh`
+   with `bench.toml`'s media streams (the script uses `bench-minimal.toml`
+   with declared streams; add a media mode), record with `dt295 stream
+   --raw-config`, decode with ffmpeg; needs 1 first. Also an in-process
+   multiplexer for ISDB-S (`tx --system isdbs --mux-config`), which would
+   place packets on the superframe timeline directly, once the mux's
+   slot model is generalised from the OFDM frame.
+4. **Level margin**: a sweep of `att` (45 → 60 → …) with `dt295 tune`
+   / `status --isdbs --watch` to find the lock threshold and the C/N
+   slope (the driver reads C/N once while acquiring); record in
+   VERIFICATION.md next to the ISDB-T figures.
+5. **HDL follow-ups** (`fpga/isdb_fpga/tx.py`; each needs a rebuild,
+   ≈ 25 min, and a card update): prefetch the first DMA word(s) while
+   selected but not running (removes the 8–16-symbol start miss; then
+   the hardware test can require MISSED 0 again); a "bank loaded" sticky
+   flag or readback so the host can skip the 8 s bank reload when the
+   BRAM default is in place; 64-bit (or wrap-tolerant) CONSUMED.
+6. **Housekeeping**: `uv run --locked` in `fpga/` needs
+   `UV_DEFAULT_INDEX=https://pypi.org/simple` on this host (a private
+   index rewrites `uv.lock`; the build scripts already set it, the mise
+   tasks do not); the merged agent branches `worktree-agent-*` can be
+   deleted; `fpga/README.md` still describes the RX-only `isdb_top.bin`
+   as the deployed image in places; isdb-s.md §2's bench table (TX1
+   "directly, no attenuator") is outdated.
+
+## Pitfalls met this session
+
+- A `pkill -f PATTERN` whose pattern appears in the calling shell's own
+  command line kills that shell. Keep pids in a file.
+- zsh: `$VAR` with spaces is not word-split (use `${=VAR}`); `=word` at
+  the start of an argument is a command expansion (quote `====`).
+- The Vivado project's `*_timing_summary_routed.rpt` is taken before
+  upstream's `hold_fix.tcl` hook and the post-route physical
+  optimisation; read the final checkpoint with `fpga/tezuka/timing.tcl`.
+- libiio's `iio_buffer_push` returns when iiod has the buffer, not the
+  DMA; a receive capture's 32 MB block starves iiod's TX thread for
+  ≈ 400 ms. The symbol path buffers 1.16 s on the device for that.
+- The DAC underflow flag (0x80000088 bit 0) is set whenever the DMA is
+  idle: clear and read it while streaming.
+- A background `reboot` inside an ssh command dies with the session; run
+  `ssh … 'sync; reboot'` directly with a timeout.
+
+## Bootstrap prompt for the next session
+
+Copy from here to the end of the file into the new session's first message.
+
+```text
+Continue the isdb-rs ISDB-S work from docs/plans/isdbs-next.md (read it
+first, then docs/plans/isdbs-fpga-tx.md and the four "ISDB-S transmitter
+in the FPGA" sections of VERIFICATION.md). State: the FPGA transmitter is
+built, deployed on the PlutoSky R2 (ip:10.10.0.30, isdb_txrx_top.bin) and
+verified bit-exact in loopback and conducted into a PIX-DT295 tuner
+(driver: ~/dev/PIX-DT295, `dt295`), which locks on the bench broadcast of
+tools/isdbs-bench-tx.sh. The broadcast may still be running
+(`pgrep -af "isdb tx --system isdbs"`); stop it before changing anything
+on the board. The bench is conducted only: TX1 → 30 dB pad → DC block →
+tuner; never transmit without that, never without --rf-enable, keep the
+attenuation ≥ 45 dB unless measuring the margin.
+
+Do the "Work" list of isdbs-next.md in order, starting with 1 (PCR-paced
+placement in the ISDB-S producer: today a live feed's packets are placed
+in arrival order and the tuner's recording shows 12–30 ms rms PCR jitter
+and PAT/PMT intervals up to 0.21 s). Investigate the existing Pacer of
+the ISDB-T --mux-ts path first and design before coding; use Opus
+subagents in worktrees for implementation with one contract per piece,
+merge and verify yourself (cargo clippy --workspace --all-targets --locked
+-- -D warnings, cargo test --workspace --locked, rustdoc -D warnings; for
+fpga/ use UV_DEFAULT_INDEX=https://pypi.org/simple with uv run --locked).
+Commit at each checkpoint with conventional commits (commitlint's scope
+list) and show the diff summary. Verify every change on the bench with
+dt295 stream + isdb ts validate / inspect, record results in
+VERIFICATION.md and the plan's status, keep investigation scripts in
+tools/. Read "Pitfalls met this session" in isdbs-next.md before touching
+the board or running pkill.
+```
