@@ -7,12 +7,12 @@
 //! | [`frame`] | Table 3; annexed tables 45, 50, 51 | geometry (N = 48, M = 8, 39 936 symbols), W1/W2/W3 and their coded tails, symbol positions |
 //! | [`combination`] | Table 1, Table 2; annexed tables 48, 49 | modulation-code combinations, slot units, puncturing |
 //! | [`slots`] | §3.2, §8, Fig. 4 | where each combination's run of slots sits in the main signal |
-//! | [`tmcc`] | §6, Figs. 7–11, App. 1; annexed table 50 | the TMCC information codec, energy dispersal and RS(64,48) of a superframe |
+//! | [`tmcc`] | §6, Figs. 7–11, App. 1; annexed table 50 | the TMCC information codec and builder ([`TmccInfo::assign`]), energy dispersal and RS(64,48) of a superframe |
 //! | [`burst`] | §7; annexed table 51 | the phase-reference burst bits |
 //! | [`mainsig`] | §§2–5, §8; annexed table 48 別記 1–3 | sent slots, energy dispersal, inter-frame interleaver, TS codewords of a superframe |
 //!
 //! Interpretations are in `SPEC-NOTES.md` next to this crate. The receive
-//! chain that uses these is `isdbs-phy`.
+//! and transmit chains that use these are `isdbs-phy`.
 
 // Libraries report through `tracing` events and return values, never by
 // printing (docs/plans/errors-and-logging.md section 2.1).

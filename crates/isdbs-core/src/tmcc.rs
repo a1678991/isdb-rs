@@ -117,6 +117,40 @@ pub enum TmccError {
     /// The combinations are not in descending efficiency (§3.2).
     #[error("TMCC: combinations not in descending order of efficiency")]
     Order,
+    /// [`TmccInfo::assign`]: the TSs' slot counts do not sum to the slots
+    /// the combinations send (dummy slots excluded, BO.1408-1 §8).
+    #[error("TMCC: the TSs take {given} slots, the combinations send {sent}")]
+    TsSlots {
+        /// Sum of the TSs' slot counts.
+        given: usize,
+        /// Sent slots of the combinations ([`crate::mainsig::sent_slots`]).
+        sent: usize,
+    },
+    /// [`TmccInfo::assign`]: more TSs than the TM = 8 of Fig. 10.
+    #[error("TMCC: {0} TSs, at most {TM}")]
+    TooManyTs(usize),
+    /// [`TmccInfo::assign`]: more combinations than the CM = 4 of Fig. 8.
+    #[error("TMCC: {0} combinations, at most {CM}")]
+    TooManyCombinations(usize),
+    /// [`TmccInfo::assign`]: no TS given.
+    #[error("TMCC: no TS")]
+    NoTs,
+    /// [`TmccInfo::assign`]: a TS without a slot.
+    #[error("TMCC: relative TS {relative_ts} has no slot")]
+    EmptyTs {
+        /// Its relative TS ID.
+        relative_ts: usize,
+    },
+    /// [`TmccInfo::assign`]: a TS_ID that is the unused value FFFFh or
+    /// repeats an earlier TS's, so the receiver could not tell the TSs
+    /// apart (Fig. 10 gives each relative TS its own TS_ID).
+    #[error("TMCC: TS_ID {ts_id:#06x} of relative TS {relative_ts} is FFFFh or already used")]
+    TsId {
+        /// Its relative TS ID.
+        relative_ts: usize,
+        /// The TS_ID.
+        ts_id: u16,
+    },
 }
 
 /// Big-endian bit reader over a byte slice.
@@ -289,6 +323,113 @@ impl TmccInfo {
         let comb = self.slot_combinations();
         std::array::from_fn(|i| comb[i].map(|_| self.ts_ids[usize::from(self.relative_ts[i] & 7)]))
     }
+
+    /// Uplink information that [`assign`](Self::assign) writes: 0010, the
+    /// value observed on every BS transponder (SPEC-NOTES "tmcc-other";
+    /// BO.1408-1 App. 1 item 12 does not define it).
+    pub const OBSERVED_UPLINK: u8 = 0b0010;
+    /// Reserved bits that [`assign`](Self::assign) writes: a 0 then 61
+    /// ones, as observed on every transponder (SPEC-NOTES "tmcc-other").
+    pub const OBSERVED_RESERVED: u64 = (1 << (RESERVED_BITS - 1)) - 1;
+
+    /// The TMCC information of a slot layout (BO.1408-1 §3.2, §6.1,
+    /// Figs. 7–10).
+    ///
+    /// `combinations` are (Table 1 combination, slots including its dummy
+    /// slots), at most [`CM`], in any order: they are sorted by efficiency
+    /// ([`Combination::rank`]; §3.2, the most efficient first; equal
+    /// combinations keep their order), and the unused entries are
+    /// [`CombinationEntry::DUMMY`] (§6.1.2). `ts` are (TS_ID, sent slots per
+    /// frame) of relative TS 0, 1, … in that order, at most [`TM`]; the
+    /// sent slots ([`crate::mainsig::sent_slots`]) go to the TSs in slot
+    /// order: the first `ts[0].1` to relative TS 0, the next `ts[1].1` to
+    /// relative TS 1, and so on (Fig. 9). Unused TS_ID entries are
+    /// [`UNUSED_TS_ID`] (Fig. 10). A dummy slot, which is not sent (§8) and
+    /// whose relative TS the receiver ignores
+    /// ([`slot_ts_ids`](Self::slot_ts_ids) gives `None` there), takes the
+    /// relative TS of the sent slot before it (0 before the first).
+    ///
+    /// The other fields are the values observed on the BS transponders,
+    /// which the caller may change: order of change 0, no emergency alert,
+    /// uplink [`OBSERVED_UPLINK`](Self::OBSERVED_UPLINK), reserved
+    /// [`OBSERVED_RESERVED`](Self::OBSERVED_RESERVED). The result passes
+    /// [`validate`](Self::validate).
+    ///
+    /// # Errors
+    ///
+    /// [`TmccError::TooManyCombinations`], [`TmccError::NoTs`],
+    /// [`TmccError::TooManyTs`]; [`TmccError::TsId`] for a TS_ID that is
+    /// FFFFh or given twice, [`TmccError::EmptyTs`] for a TS without a
+    /// slot; the errors of [`validate`](Self::validate) (slot sum, whole
+    /// units); [`TmccError::TsSlots`] when the TSs' slots do not sum to the
+    /// sent slots.
+    pub fn assign(combinations: &[(Combination, u8)], ts: &[(u16, u8)]) -> Result<Self, TmccError> {
+        if combinations.len() > CM {
+            return Err(TmccError::TooManyCombinations(combinations.len()));
+        }
+        if ts.is_empty() {
+            return Err(TmccError::NoTs);
+        }
+        if ts.len() > TM {
+            return Err(TmccError::TooManyTs(ts.len()));
+        }
+        let mut sorted = combinations.to_vec();
+        sorted.sort_by_key(|&(c, _)| c.rank());
+        let mut entries = [CombinationEntry::DUMMY; CM];
+        for (e, &(c, slots)) in entries.iter_mut().zip(&sorted) {
+            *e = CombinationEntry {
+                word: CombinationWord::Assigned(c),
+                slots,
+            };
+        }
+        let mut ts_ids = [UNUSED_TS_ID; TM];
+        for (r, &(id, slots)) in ts.iter().enumerate() {
+            if id == UNUSED_TS_ID || ts_ids[..r].contains(&id) {
+                return Err(TmccError::TsId {
+                    relative_ts: r,
+                    ts_id: id,
+                });
+            }
+            if slots == 0 {
+                return Err(TmccError::EmptyTs { relative_ts: r });
+            }
+            ts_ids[r] = id;
+        }
+        let mut info = Self {
+            order_of_change: 0,
+            combinations: entries,
+            relative_ts: [0; SLOTS],
+            ts_ids,
+            emergency: false,
+            uplink: Self::OBSERVED_UPLINK,
+            reserved: Self::OBSERVED_RESERVED,
+        };
+        info.validate()?;
+        let sent = info.slot_combinations();
+        let n_sent = sent.iter().flatten().count();
+        let given: usize = ts.iter().map(|&(_, n)| usize::from(n)).sum();
+        if given != n_sent {
+            return Err(TmccError::TsSlots {
+                given,
+                sent: n_sent,
+            });
+        }
+        // relative TS r owns the next ts[r].1 sent slots
+        let mut owner = ts
+            .iter()
+            .zip(0u8..)
+            .flat_map(|(&(_, n), r)| std::iter::repeat_n(r, usize::from(n)));
+        let mut current = 0u8;
+        for (rel, c) in info.relative_ts.iter_mut().zip(&sent) {
+            if c.is_some() {
+                // given == n_sent: an owner for every sent slot
+                current = owner.next().unwrap_or(current);
+            }
+            *rel = current;
+        }
+        info.validate()?;
+        Ok(info)
+    }
 }
 
 /// The 64 TMCC bytes of a superframe (information and RS parity), the PRBS
@@ -448,6 +589,120 @@ mod tests {
         for f in 0..8 {
             assert_eq!(&d[f * 8..f * 8 + 8], &seq[12 * f..12 * f + 8]);
         }
+    }
+
+    /// `assign` of the lab's BS layout (TC8PSK 2/3 × 48, three TSs of 16
+    /// slots) is the received word but for its order of change; the CS
+    /// layout (QPSK 3/4 × 48, one TS) is the received CS word but for its
+    /// uplink information (0100 on CS, SPEC-NOTES "tmcc-other").
+    #[test]
+    fn assign_reproduces_the_live_words() {
+        let mut bs = TmccInfo::assign(
+            &[(Combination::Tc8psk2_3, 48)],
+            &[(0x4010, 16), (0x4011, 16), (0x4012, 16)],
+        )
+        .unwrap();
+        let ids = bs.slot_ts_ids();
+        for (r, id) in [0x4010, 0x4011, 0x4012].into_iter().enumerate() {
+            assert!(ids[16 * r..16 * (r + 1)].iter().all(|&t| t == Some(id)));
+        }
+        bs.order_of_change = 11;
+        assert_eq!(bs, TmccInfo::decode(&hex(BS_THREE_TS)));
+        let mut cs = TmccInfo::assign(&[(Combination::Qpsk3_4, 48)], &[(0x6020, 36)]).unwrap();
+        let ids = cs.slot_ts_ids();
+        assert_eq!(ids.iter().filter(|t| **t == Some(0x6020)).count(), 36);
+        assert_eq!(ids.iter().filter(|t| t.is_none()).count(), 12);
+        cs.uplink = 0b0100;
+        assert_eq!(cs, TmccInfo::decode(&hex(CS_ONE_TS)));
+    }
+
+    /// A mixed layout given least efficient first: sorted, the sent slots
+    /// shared out in slot order, the dummy slots of the BPSK unit on the
+    /// last TS, the unused entries dummy and FFFFh; `encode`/`decode` and
+    /// the header signal round-trip.
+    #[test]
+    fn assign_mixed_layout() {
+        let info = TmccInfo::assign(
+            &[(Combination::Bpsk1_2, 4), (Combination::Tc8psk2_3, 44)],
+            &[(0x4010, 30), (0x4011, 15)],
+        )
+        .unwrap();
+        info.validate().unwrap();
+        assert_eq!(
+            info.combinations[0].combination(),
+            Some(Combination::Tc8psk2_3)
+        );
+        assert_eq!(info.combinations[0].slots, 44);
+        assert_eq!(
+            info.combinations[1].combination(),
+            Some(Combination::Bpsk1_2)
+        );
+        assert_eq!(info.combinations[1].slots, 4);
+        assert_eq!(&info.combinations[2..], &[CombinationEntry::DUMMY; 2]);
+        assert_eq!(&info.ts_ids[2..], &[UNUSED_TS_ID; 6]);
+        let ids = info.slot_ts_ids();
+        assert!(ids[..30].iter().all(|&t| t == Some(0x4010)));
+        assert!(ids[30..45].iter().all(|&t| t == Some(0x4011)));
+        assert!(ids[45..].iter().all(Option::is_none));
+        assert_eq!(&info.relative_ts[45..], &[1; 3]);
+        assert_eq!(TmccInfo::decode(&info.encode()), info);
+        let h = headers(&info);
+        let blocks: [[u8; 8]; 8] = std::array::from_fn(|f| h[f][2..10].try_into().unwrap());
+        assert_eq!(decode_blocks(&blocks).info, Some(info));
+    }
+
+    /// Every error of `assign`.
+    #[test]
+    fn assign_errors() {
+        let tc = Combination::Tc8psk2_3;
+        let one = [(0x4010, 48)];
+        assert_eq!(
+            TmccInfo::assign(&[(tc, 12); 5], &one),
+            Err(TmccError::TooManyCombinations(5))
+        );
+        assert_eq!(TmccInfo::assign(&[(tc, 48)], &[]), Err(TmccError::NoTs));
+        let nine: Vec<(u16, u8)> = (0..9).map(|k| (0x4010 + k, 1)).collect();
+        assert_eq!(
+            TmccInfo::assign(&[(tc, 48)], &nine),
+            Err(TmccError::TooManyTs(9))
+        );
+        assert_eq!(
+            TmccInfo::assign(&[(tc, 48)], &[(0x4010, 24), (0x4010, 24)]),
+            Err(TmccError::TsId {
+                relative_ts: 1,
+                ts_id: 0x4010
+            })
+        );
+        assert_eq!(
+            TmccInfo::assign(&[(tc, 48)], &[(UNUSED_TS_ID, 48)]),
+            Err(TmccError::TsId {
+                relative_ts: 0,
+                ts_id: UNUSED_TS_ID
+            })
+        );
+        assert_eq!(
+            TmccInfo::assign(&[(tc, 48)], &[(0x4010, 48), (0x4011, 0)]),
+            Err(TmccError::EmptyTs { relative_ts: 1 })
+        );
+        assert_eq!(
+            TmccInfo::assign(&[(tc, 40)], &[(0x4010, 40)]),
+            Err(TmccError::SlotSum(40))
+        );
+        assert_eq!(
+            TmccInfo::assign(&[(tc, 42), (Combination::Qpsk3_4, 6)], &[(0x4010, 46)]),
+            Err(TmccError::Unit {
+                combination: Combination::Qpsk3_4,
+                slots: 6,
+                unit: 4
+            })
+        );
+        assert_eq!(
+            TmccInfo::assign(&[(Combination::Qpsk3_4, 48)], &[(0x4010, 48)]),
+            Err(TmccError::TsSlots {
+                given: 48,
+                sent: 36
+            })
+        );
     }
 
     /// Validation errors.
