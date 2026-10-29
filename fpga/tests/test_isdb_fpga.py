@@ -282,6 +282,24 @@ class TxUnitTest(unittest.TestCase):
         self.assertEqual(bad, [])
 
 
+class TxModelTest(unittest.TestCase):
+    """The Python model (the HDL's stand-in reference before the Rust
+    vectors existed) against every transmit vector set: the same banks,
+    samples, counters and command words."""
+
+    def test_python_model_reproduces_the_vectors(self):
+        for name, doc in tx_docs():
+            with self.subTest(vectors=name):
+                p, d = doc["params"], doc["design"]
+                samples, counters = txmodel.run(p, doc["words"], doc["stalls"], len(doc["samples"]))
+                self.assertEqual(compare_tx(doc, samples, counters), [])
+                a, b, s = txmodel.bank(p["phases"], p["span"], d["roll_off"], d["backoff_db"])
+                self.assertEqual((a, b), (p["a"], p["b"]))
+                if "preset" not in d:  # the Python stress preset lowers SHIFT on purpose
+                    self.assertEqual(s, p["shift"])
+                self.assertEqual(txmodel.Encoder(0).configure_tx(p), doc["gpio"])
+
+
 class TxVectorTest(unittest.TestCase):
     """The block against the transmit vectors, bit for bit: every sample's
     state (frac, q, the line, the carry and the code entered), its sums
@@ -329,14 +347,25 @@ class TxVectorTest(unittest.TestCase):
                 self.assertEqual(compare_tx(doc, samples, counters), [])
 
     def test_start_while_running_restarts_cleanly(self):
-        """START in the middle of a stream: frac, the line, the unpack
-        register and the counters start over, and the pipeline's content
-        from before never reaches the output."""
-        name, doc = tx_docs()[0]
-        lead = []
-        samples, counters = simulate_tx(doc, pattern="rfifo", restart_after=500, lead=lead)
-        self.assertEqual(compare_tx(doc, samples, counters), [])
-        self.assertEqual(lead, [(0, 0)] * tx.LATENCY)
+        """START in the middle of a stream: frac, the line, the counters
+        and the rest of the current word start over, the DMA words the
+        model has not requested yet (the block's prefetched ones) are
+        kept, and the pipeline's content from before never reaches the
+        output. Expected: the Python model with the same restart. On the
+        first set, twelve consecutive restart points (more than a word's
+        8 codes enter between the first and the last, so START meets the
+        unpack register at every fill, an untouched word included)."""
+        runs = [(name, doc, 500) for name, doc in tx_docs()]
+        runs += [(tx_docs()[0][0], tx_docs()[0][1], k) for k in range(501, 513)]
+        for name, doc, k in runs:
+            with self.subTest(vectors=name, restart_after=k):
+                info = {}
+                samples, counters = simulate_tx(doc, pattern="every", restart_after=k, info=info)
+                exp, exp_counters = txmodel.run(doc["params"], doc["words"], doc["stalls"],
+                                                len(doc["samples"]), restart_at=info["restart_at"])
+                want = dict(doc, samples=exp, counters=exp_counters)
+                self.assertEqual(compare_tx(want, samples, counters), [])
+                self.assertEqual(info["lead"], [(0, 0)] * tx.LATENCY)
 
     def test_one_lsb_in_bank_a_is_caught(self):
         name, doc = tx_docs()[0]

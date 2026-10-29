@@ -69,15 +69,20 @@ PIPELINE_STAGES 0, with either `fifo_rd_valid` = a word or
 `fifo_rd_underflow` = no word, its data zeroed). A word lasts at least 8
 enabled clocks (at most one symbol per sample), so the refill is always
 back before the unpack register empties: the symbol cadence never waits on
-the DMA. A missing word (underflow) is a word of 8 zero symbols: when its
-first symbol enters the line, MISSED += 8, FIRST_MISS latches CONSUMED at
-the first miss and the sticky underrun flag is set; CONSUMED counts the
-symbols entered from delivered words. Counting at entry makes the counters
-a function of the sample count alone, independent of the prefetch timing.
-Requests start ARM clocks after the block becomes active, so a response to
-a request of the pass-through (the rfifo reads the upack directly while the
-block is not selected) is never taken for the block's own; the datapath
-starts when the first word (or miss) is in the unpack register.
+the DMA. A missing word (underflow) is a word of 8 zero symbols. Each
+symbol counts as it enters the line: a missing word's in MISSED (FIRST_MISS
+latches CONSUMED at the first, and the sticky underrun flag is set), a
+delivered word's in CONSUMED; FIRST_MISS reads 0 before any miss. Counting
+at entry makes the counters a function of the sample count alone,
+independent of the prefetch timing. Requests start ARM clocks after the
+block becomes active, so a response to a request of the pass-through (the
+rfifo reads the upack directly while the block is not selected) is never
+taken for the block's own; the datapath starts when the first word (or
+miss) is in the unpack register. START drops the rest of a word whose
+codes have begun to enter and keeps the words the model has not asked for
+yet (a word none of whose codes has entered, the staging word, requests
+under way): the model's START resets its unpack register and leaves the
+DMA queue as it is.
 """
 
 import math
@@ -245,7 +250,7 @@ class SymbolTx(Elaboratable):
         m.d.comb += held.eq((ucnt != 0) + svalid + pend)
         armed = arm == ARM
         m.d.sync += arm.eq(Mux(active, Mux(armed, arm, arm + 1), 0))
-        m.d.comb += self.rd_en.eq(active & armed & (held < 2) & ~self.start)
+        m.d.comb += self.rd_en.eq(active & armed & (held < 2))
         resp = Signal()
         m.d.comb += resp.eq((self.rd_valid | self.rd_underflow) & (pend != 0))
         rword = Mux(self.rd_valid, self.rd_data, 0)
@@ -255,7 +260,7 @@ class SymbolTx(Elaboratable):
         ready = Signal()
         m.d.comb += [
             ready.eq(primed | (ucnt != 0)),
-            en.eq(self.req & active & ready),
+            en.eq(self.req & active & ready & ~self.start),  # START is not a sample
         ]
         m.d.sync += primed.eq(ready)
 
@@ -276,17 +281,18 @@ class SymbolTx(Elaboratable):
         samples_n = Signal(32, attrs=NO_DSP)
         m.d.comb += [
             consumed_n.eq(self.consumed + 1),
-            missed_n.eq(self.missed + Mux(ucnt == 0, 1, CODES_PER_WORD)),
+            missed_n.eq(self.missed + 1),
             samples_n.eq(self.samples + 1),
         ]
         missed_any = Signal()
 
         with m.If(en):
             m.d.sync += [self.frac.eq(nxt[:FRAC_BITS]), self.samples.eq(samples_n)]
-        # a missing word counts when its first symbol enters (and an empty
-        # unpack register, which the prefetch never lets happen, per symbol)
+        # one count per symbol as it enters: a missing word's zero symbols
+        # in MISSED (and those of an empty unpack register, which the
+        # prefetch never lets happen), a delivered word's in CONSUMED
         miss_now = Signal()
-        m.d.comb += miss_now.eq((ucnt == 0) | (umiss & (ucnt == CODES_PER_WORD)))
+        m.d.comb += miss_now.eq((ucnt == 0) | umiss)
         with m.If(consume):
             m.d.sync += [self.line[t].eq(self.line[t - 1]) for t in range(1, W)]
             m.d.sync += self.line[0].eq(self.code)
@@ -442,18 +448,22 @@ class SymbolTx(Elaboratable):
         with m.If(~active):
             m.d.sync += [o.eq(0) for o in outs]
 
-        # START resets the state (last: it overrides the updates above).
+        # START resets the state (last: it overrides the updates above). It
+        # drops the rest of a word whose codes have begun to enter (the
+        # model's unpack register) and keeps the DMA words that, for the
+        # model, are still queued: a word in the unpack register none of
+        # whose codes has entered, the staging word and the requests under
+        # way.
         with m.If(self.start):
             m.d.sync += [
-                self.frac.eq(0),
-                ureg.eq(0), ucnt.eq(0), umiss.eq(0),
-                stg.eq(0), svalid.eq(0), smiss.eq(0),
-                pend.eq(0), arm.eq(0), primed.eq(0),
+                self.frac.eq(0), primed.eq(0),
                 self.consumed.eq(0), self.missed.eq(0), self.first_miss.eq(0),
                 self.samples.eq(0), self.underrun.eq(0), missed_any.eq(0),
                 vld.eq(0),
             ]
             m.d.sync += [ln.eq(0) for ln in self.line]
+            with m.If((ucnt != 0) & (ucnt != CODES_PER_WORD)):
+                m.d.sync += [ureg.eq(0), ucnt.eq(0), umiss.eq(0)]
         return m
 
 

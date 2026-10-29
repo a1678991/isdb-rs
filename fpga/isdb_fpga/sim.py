@@ -298,12 +298,6 @@ class Upack:
     def request(self, clock):
         self.due.append((clock + self.latency, self.dma.request()))
 
-    def restart(self, doc):
-        """The host restarts its stream: new requests get the vectors'
-        words from the first again; responses already under way still
-        come back."""
-        self.dma = Dma(doc["words"], doc["stalls"])
-
 
 class _CorePort:
     """The bench's view of a bare `SymbolTx`."""
@@ -439,17 +433,18 @@ def tx_bank_entries(doc, load, a=None, b=None):
 
 
 def simulate_tx(doc, pattern="every", latency=1, load=None, writes=(), banks=None, seed=1,
-                restart_after=None, lead=None):
+                restart_after=None, info=None):
     """Run `SymbolTx` on `doc`: its banks as the memories' initial contents
     (`banks` = (a, b) instead of the vectors'), or with `load` = "full" or
     "half" written through the load port into empty memories; `writes`
     = (bank, q, t, value) more load-port writes after that. With
     `restart_after` = k, the block first runs k samples (and its pipeline
-    on), then gets START while running and the DMA stream starts over: the
-    samples compared are those after the restart. `lead` (a list) receives
-    the outputs of the first LATENCY enabled clocks, before sample 0 can
-    have arrived (0 after START). Returns (samples, counters) in the
-    vectors' layout."""
+    on), then gets START while running, the DMA's queue as it is: the
+    samples returned are those after the restart, and `info` (a dict)
+    receives "restart_at", the samples made before START, and "lead", the
+    outputs of the first LATENCY enabled clocks after it (before sample
+    0 can have arrived). Returns (samples, counters) in the vectors'
+    layout."""
     p = doc["params"]
     a, b = banks if banks is not None else (p["a"], p["b"])
     init = load is None
@@ -480,13 +475,14 @@ def simulate_tx(doc, pattern="every", latency=1, load=None, writes=(), banks=Non
         rng = random.Random(seed)
         if restart_after:
             await tb.stream(dict(doc, samples=doc["samples"][:restart_after]), pattern, rng)
-            tb.upack.restart(doc)
+            if info is not None:
+                info["restart_at"] = ctx.get(dut.samples)
             ctx.set(dut.start, 1)
             await tb.tick()
             ctx.set(dut.start, 0)
         res["samples"], res["counters"] = await tb.stream(doc, pattern, rng)
-        if lead is not None:
-            lead.extend(tb.lead)
+        if info is not None:
+            info["lead"] = tb.lead
 
     sim.add_testbench(bench)
     sim.run()

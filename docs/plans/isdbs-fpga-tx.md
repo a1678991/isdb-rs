@@ -161,7 +161,12 @@ Each step is a commit with tests and docs, as the RX path was built
    real time becomes an estimated ≈ 3×; measure), the gate and
    `--dry-run` unchanged (`--dry-run` does not probe), `describe_tx`
    names the FPGA modulator and the link rate.
-5. **HDL** `fpga/isdb_fpga/tx.py` (`SymbolsTx`: unpacker, accumulator,
+5. **HDL** (done: bit-exact on the model's five vector sets and two of a
+   Python twin, every clock, rfifo bursts, DMA stalls, bank through the
+   port and through `gpio_out`, START while running; Yosys 0 DSP48E1,
+   2.7k LUT, 2.9k FF, 12 RAMB18; second Tcl `isdb_symbols_tx.tcl`;
+   fpga/README.md "The transmit block")
+   `fpga/isdb_fpga/tx.py` (`SymbolsTx`: unpacker, accumulator,
    the mux datapath of the sketch, adder trees with `use_dsp = "no"`,
    rounding/saturation, counters, `Control` reuse with the TX register
    map), `top.py` gains the TX block, `sim.py` runs the TX vectors

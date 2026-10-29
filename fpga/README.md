@@ -161,13 +161,16 @@ against before the Rust vectors existed.
   at the upack's default PIPELINE_STAGES 0; tested at 1 and 3). A word
   lasts at least 8 samples, so the symbol cadence never waits on the
   DMA. An answer with `fifo_rd_underflow` instead of `fifo_rd_valid` is
-  a word of 8 zero symbols: when its first symbol enters, MISSED += 8,
-  FIRST_MISS latches CONSUMED at the first miss, the sticky underrun bit
-  is set; CONSUMED counts the symbols entered from delivered words.
-  Counting at entry makes the counters a function of the sample count,
-  independent of the prefetch. Requests start 4 clocks after the block
-  becomes active (an answer to a pass-through read is never taken for
-  its own); samples start once the first word is in. After START the
+  a word of 8 zero symbols. Each symbol counts as it enters: a missing
+  word's in MISSED (FIRST_MISS latches CONSUMED at the first, the sticky
+  underrun bit is set; FIRST_MISS reads 0 before any miss), a delivered
+  word's in CONSUMED. Counting at entry makes the counters a function of
+  the sample count, independent of the prefetch. Requests start 4 clocks
+  after the block becomes active (an answer to a pass-through read is
+  never taken for its own); samples start once the first word is in.
+  START drops the rest of a word whose codes have begun to enter and
+  keeps the words the model has not asked for yet (the prefetched ones),
+  as the model's START leaves the DMA queue as it is. After START the
   output is 0 until the first new sample arrives; while not running it
   is 0.
 
@@ -210,40 +213,53 @@ reads 0.
 | CTRL argument | bit 0 RUN, bit 1 START (one pulse: frac, the line, the counters, the unpack register), bit 2 SELECT (the block drives the rfifo and owns the upack's read) |
 
 The default bank (ISDB-S, 40 Msps, 10 dB backoff) is the memories'
-initial content (`mise run fpga:tx-verilog` takes it from a vectors
-file), so a configuration is STEP, SHIFT and CTRL; another rate or
-backoff reloads the bank (12 288 writes of the near half, 7.6 s through
-iiod). A start without lead-in misses: CTRL START|SELECT (the block owns
-the DMA, requests nothing and sends zeros), start the TX DMA (push the
-first buffers), then CTRL RUN|SELECT; with RUN at once the words the DMA
-does not have yet count as missed from FIRST_MISS 0. CTRL 0 makes the
-block transparent again.
+initial content (`mise run fpga:tx-verilog` takes it from the Rust
+model's `tx-1-continuous.json` and refuses another design), so a
+configuration is STEP, SHIFT and CTRL; another rate or backoff reloads
+the bank (`Encoder::configure_tx` writes the near half, 12 288 writes,
+7.6 s through iiod). `configure_tx` ends with CTRL START, CTRL
+RUN|SELECT. The block owns the DMA only from SELECT on (before it, the
+pass-through sends whatever the DMA holds to the DAC as samples), so with
+that sequence the host starts the TX DMA afterwards, and the requests
+made before its first buffer arrives count as missed from FIRST_MISS 0.
+CTRL START|SELECT (selected, not running: the block requests nothing and
+sends zeros), then the first buffers pushed, then CTRL RUN|SELECT starts
+without lead-in misses. CTRL 0 makes the block transparent again.
 
-Results (2026-10-29, Python-model vectors: `txvec-py-1-isdbs.json`,
-ISDB-S at 40 Msps with 5 DMA stalls of 1 to 6 requests, and
-`txvec-py-2-stress.json`, a symbol on all samples but one, SHIFT 2 below
-the bank's so that 70 % of the samples saturate, a stall at the first
-word and the DMA dry before the end; 3 000 samples each):
+Results (2026-10-29), on the Rust model's vectors (`mise run
+fpga:vectors`: `tx-1-continuous` … `tx-4-bank`, from
+`isdb-frontend`'s `txvectors`, and `tx-5-isdbs`, superframe codes from
+`isdbs-phy`'s transmitter; 2 806 to 5 578 samples, 24 stalls in
+`tx-2-stalls`, one long one in `tx-3-long-stall`, 61.44 Msps at 3 dB
+with 12 clipped samples and a bank that is not the default in
+`tx-4-bank`) and on the Python model's two (`txvec-py-1-isdbs`, ISDB-S
+with 5 stalls of 1 to 6 requests, and `txvec-py-2-stress`, a symbol on
+all samples but one, SHIFT 2 below the bank's so that 70 % of the samples
+saturate, a stall at the first word, the DMA dry before the end and the
+run ending inside a missed word):
 
-- **Simulation:** bit-exact, every sample's frac, q, line, carry and
-  entered code, its sums before rounding, its output, and the four
-  counters: with a request on every clock, with `util_rfifo`'s bursts of
-  eight (and pauses), with random strobes and a 3-clock upack; with the
-  bank loaded through the port (every tap, and the near half only) into
-  empty memories; with the whole configuration (STEP, SHIFT, both banks:
-  13 318 commands) sent on `gpio_out`, the ID word and the readback of
-  STEP, SHIFT, STATUS and the counters on `gpio_in`; with START while
-  running (the pipeline's old content never reaches the output). One LSB
-  off in a bank-a entry, in a bank-b entry, or in a far tap written
-  through the port fails the comparison, and so does one stalled request
-  more than the vectors say.
+- **Simulation:** bit-exact on all seven, every sample's frac, q, line,
+  carry and entered code, its sums before rounding, its output, and the
+  four counters: with a request on every clock, with `util_rfifo`'s
+  bursts of eight (and pauses), with random strobes and a 3-clock upack;
+  with the vectors' whole command list (STEP, SHIFT, both banks' near
+  halves: 13 317 words from `Encoder::new(0)`) sent on `gpio_out` into
+  empty memories, the ID word and the readback of STEP, SHIFT, STATUS and
+  the counters on `gpio_in`; with the bank loaded through the port (every
+  tap, and the near half only); with START while running (each set once,
+  the first at 12 consecutive restart points; against the Python model
+  with the same restart). One LSB off
+  in a bank-a entry, in a bank-b entry, or in a far tap written through
+  the port fails the comparison, and so does one stalled request more
+  than the vectors say. The Python model reproduces the Rust model's
+  banks, samples, counters and command words exactly.
 - **Estimate** of `SymbolsTx` (Yosys `synth_xilinx`, before place and
-  route): **0 DSP48E1, 2 711 LUT, 2 904 FF, 12 RAMB18E1**, 324 CARRY4,
+  route): **0 DSP48E1, 2 713 LUT, 2 904 FF, 12 RAMB18E1**, 324 CARRY4,
   no LUTRAM. The datapath alone (the throwaway sketch,
   `synth/tx_sketch.py mux 512 12`) was 1 962 LUT / 2 266 FF; the rest is
-  the run-time SHIFT (130 LUT), the control and readback, the unpacker,
-  the counters and the clock enable (`synth/tx_parts.py`). Device: 5 % of
-  the xc7z020's LUTs.
+  the run-time SHIFT's barrel shifter, the control and readback, the
+  unpacker, the counters and the clock enable (`synth/tx_parts.py`
+  splits it). Device: 5 % of the xc7z020's LUTs.
 
 ## Integration
 
@@ -332,7 +348,7 @@ Vivado 2026.1 (ADI's "Timing Constraints" check passes); `isdb_top.bin`
 is ready to deploy. Not yet run on the board.** The image with the
 transmit block (2026-10-29) is not built yet (plan step 6). Expected,
 from the table below, Tezuka's figures for the TX FIR and the Yosys
-estimate: DSP 178 − 20 = **158** (72 %), LUT ≈ 21 694 − 564 + 2 700 ≈
+estimate: DSP 178 − 20 = **158** (72 %), LUT ≈ 21 694 − 564 + 2 713 ≈
 **23.8k** (45 %), FF ≈ 28 421 − 1 297 + 2 900 ≈ 30.0k (28 %), BRAM36
 62 + 6 = **68** (49 %); the `isdb-tx` image 46 DSP. Its paths are short
 (the deepest a 25-bit add or the 5-level barrel shift) in the same

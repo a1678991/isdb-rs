@@ -1,9 +1,12 @@
 """A plain Python model of the transmit block's arithmetic and of its DMA
 side, and a writer of test vectors in the shape the Rust model
-(`isdb_frontend::shape::fixed`) writes them, so the HDL simulation runs on
-either. The HDL is checked against the Rust model's vectors when they
-exist; this model is the stand-in until then and states the same contract
-(tx.py's module documentation, docs/plans/isdbs-fpga-tx.md §2).
+(`isdb_frontend::shape::fixed`, the reference) writes them, so the HDL
+simulation runs on either. It was the HDL's stand-in reference before the
+Rust vectors existed; it reproduces them exactly (banks, samples,
+counters, command words: tests TxModelTest), writes two more sets, and
+gives the expected samples of a restart (`run(..., restart_at=)`), which
+the Rust vectors do not cover. The contract: tx.py's module
+documentation, docs/plans/isdbs-fpga-tx.md §2.
 
 python -m isdb_fpga.txmodel OUT.json [--preset isdbs|stress] [--samples N] [--seed S]
 
@@ -16,10 +19,12 @@ very first word and the DMA running dry before the end.
 Vectors JSON (format 1):
   {"format": 1, "design": {...},
    "params": {"step", "shift", "phases", "span", "a": [[2S] x P], "b", "id_word"},
-   "gpio": [command words of a full configuration, banks included],
+   "gpio": [command words of a full configuration from Encoder(0): STEP,
+            SHIFT, the banks' near halves, CTRL START, CTRL RUN|SELECT],
    "words": [u32: (q_word << 16) | i_word, ...],
-   "stalls": [[word_index, n], ...]  (before word i is delivered, n
-              requests find no word; requests after the last word find none),
+   "stalls": [[word_index, n], ...]  (sorted; before word i is delivered,
+              n requests find no word, and the next request asks for the
+              same word; requests after the last word find none),
    "samples": [{"n", "frac" (before the update), "q", "line" (2S codes,
                 newest first), "sum_i", "sum_q", "out_i", "out_q",
                 "wrap": 0/1, "code": entered code or null}, ...],
@@ -33,7 +38,7 @@ import random
 import sys
 
 from .tx import (A_BASE, B_BASE, CTRL_RUN, CTRL_SELECT, CTRL_START, FRAC_BITS, OP_ADDR,
-                 OP_CTRL, OP_HI, OP_WRITE, OP_WRITE_S, SHIFT, SI, SQ, STEP, check_bank, id_word)
+                 OP_CTRL, OP_HI, OP_WRITE, OP_WRITE_S, SI, SQ, STEP, check_bank, id_word)
 
 SHAPER_PHASES = 1024  # the f32 Shaper's rows, whose gain G the bank takes
 
@@ -113,52 +118,59 @@ class Dma:
         return w
 
 
-def run(params, words, stalls, n):
+def run(params, words, stalls, n, restart_at=None):
     """The block's output for n samples after START: (samples, counters)
-    in the vectors' layout."""
+    in the vectors' layout. With `restart_at` = r, the block first makes r
+    samples, then gets START (frac, the line, the counters and the rest of
+    the current word dropped; the DMA's queue as it is) and the n samples
+    returned are those after it."""
     step, shift = params["step"], params["shift"]
     a, b = params["a"], params["b"]
     phases, span = params["phases"], params["span"]
     pb = phases.bit_length() - 1
     w = 2 * span
     dma = Dma(words, stalls)
-    frac, line = 0, [0] * w
     codes, miss = [], False
-    consumed = missed = 0
-    first_miss = None
-    out = []
-    for i in range(n):
-        q = frac >> (FRAC_BITS - pb)
-        si = sq = 0
-        for t, c in enumerate(line):
-            if c & 8:
-                k = c & 7
-                v = b[q][t] if k & 1 else a[q][t]
-                si += SI[k] * v
-                sq += SQ[k] * v
-        rec = {
-            "n": i, "frac": frac, "q": q, "line": list(line), "sum_i": si, "sum_q": sq,
-            "out_i": max(-2048, min(2047, round_shift(si, shift))),
-            "out_q": max(-2048, min(2047, round_shift(sq, shift))),
-            "wrap": 0, "code": None,
-        }
-        frac += step
-        if frac >> FRAC_BITS:
-            frac -= 1 << FRAC_BITS
-            if not codes:
-                word = dma.request()
-                miss = word is None
-                codes = [0] * 8 if miss else [(word >> (4 * j)) & 15 for j in range(8)]
-                if miss:
-                    missed += 8
+    for part, count in ((0, restart_at), (1, n)):
+        if count is None:
+            continue
+        frac, line = 0, [0] * w
+        codes, miss = [], False
+        consumed = missed = 0
+        first_miss = None
+        out = []
+        for i in range(count):
+            q = frac >> (FRAC_BITS - pb)
+            si = sq = 0
+            for t, c in enumerate(line):
+                if c & 8:
+                    k = c & 7
+                    v = b[q][t] if k & 1 else a[q][t]
+                    si += SI[k] * v
+                    sq += SQ[k] * v
+            rec = {
+                "n": i, "frac": frac, "q": q, "line": list(line), "sum_i": si, "sum_q": sq,
+                "out_i": max(-2048, min(2047, round_shift(si, shift))),
+                "out_q": max(-2048, min(2047, round_shift(sq, shift))),
+                "wrap": 0, "code": None,
+            }
+            frac += step
+            if frac >> FRAC_BITS:
+                frac -= 1 << FRAC_BITS
+                if not codes:
+                    word = dma.request()
+                    miss = word is None
+                    codes = [0] * 8 if miss else [(word >> (4 * j)) & 15 for j in range(8)]
+                code = codes.pop(0)
+                if miss:  # one count per symbol as it enters
+                    missed += 1
                     if first_miss is None:
                         first_miss = consumed
-            code = codes.pop(0)
-            if not miss:
-                consumed += 1
-            line = [code] + line[:-1]
-            rec["wrap"], rec["code"] = 1, code
-        out.append(rec)
+                else:
+                    consumed += 1
+                line = [code] + line[:-1]
+                rec["wrap"], rec["code"] = 1, code
+            out.append(rec)
     counters = {"consumed": consumed, "missed": missed,
                 "first_miss": first_miss or 0, "samples": n}
     return out, counters
@@ -193,18 +205,16 @@ class Encoder:
         return out
 
     def configure_tx(self, params, banks=True):
-        """STEP, SHIFT, (the banks: each row's near half, t < S, which
-        loads the whole symmetric bank), then START with the DMA selected
-        and RUN: the block owns the DMA from the first command on and
-        requests nothing before RUN."""
-        out = self.write(STEP, [params["step"]])
-        out += self.write(SHIFT, [params["shift"]])
+        """`Encoder::configure_tx`'s words: STEP and SHIFT, the banks
+        (each row's near half, t < S, which is the whole symmetric bank),
+        CTRL START, CTRL RUN|SELECT."""
+        out = self.write(STEP, [params["step"], params["shift"]])
         if banks:
             span = params["span"]
             for base, bk in ((A_BASE, params["a"]), (B_BASE, params["b"])):
                 for q, row in enumerate(bk):
                     out += self.write(base + q * 32, row[:span])
-        out.append(self.word(OP_CTRL, CTRL_START | CTRL_SELECT))
+        out.append(self.word(OP_CTRL, CTRL_START))
         out.append(self.word(OP_CTRL, CTRL_RUN | CTRL_SELECT))
         return out
 
