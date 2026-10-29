@@ -498,6 +498,146 @@ fn loopback_with_file_inputs_and_detects_loss() {
     std::fs::remove_dir_all(&d).unwrap();
 }
 
+/// ISDB-S: two TS files of 3 superframes' worth each (24 sent slots per
+/// frame, so 192 packets per superframe) → `tx --system isdbs --iq` (data
+/// and SigMF sidecar) → `rx --iq` (ISDB-S found by itself from the
+/// sidecar's rate and the survey) → each TS_ID's output equals its input,
+/// none uncorrectable.
+#[test]
+fn isdbs_tx_then_rx_reproduces_every_ts_byte_exact() {
+    let d = tmp("isdbs-files");
+    let a = packets(0x0111, 0..576);
+    let b = packets(0x0121, 1000..1576);
+    std::fs::write(d.join("a.ts"), &a).unwrap();
+    std::fs::write(d.join("b.ts"), &b).unwrap();
+    let iq = d.join("t.cf32");
+    let t = Instant::now();
+    let o = run(&[
+        "tx",
+        "--system",
+        "isdbs",
+        "--ts",
+        &format!("0x4010:24={}", s(&d.join("a.ts"))),
+        "--ts",
+        &format!("0x4011:24={}", s(&d.join("b.ts"))),
+        "--iq",
+        s(&iq),
+    ]);
+    assert!(o.status.success());
+    let tx_s = t.elapsed().as_secs_f64();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("done (InputEnded)"), "{err}");
+    assert!(err.contains("(1 lead, 3 data, flush)"), "{err}");
+    assert!(
+        err.contains("TS_ID 0x4010: 576 input packets, 0 null padding"),
+        "{err}"
+    );
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(d.join("t.cf32.sigmf-meta")).unwrap()).unwrap();
+    assert_eq!(meta["global"]["isdb:system"], "ISDB-S");
+    assert_eq!(meta["global"]["core:datatype"], "cf32_le");
+    assert_eq!(meta["global"]["core:sample_rate"], 40e6);
+    // cf32 at 10 dB below full scale: RMS 0.316
+    let x = std::fs::read(&iq).unwrap();
+    let p = x
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| f64::from(f32::from_le_bytes(c)).powi(2))
+        .sum::<f64>()
+        / (x.len() / 8) as f64;
+    assert!(
+        (10.0 * p.log10() + 10.0).abs() < 0.2,
+        "{} dBFS",
+        10.0 * p.log10()
+    );
+    let t = Instant::now();
+    let o = run(&[
+        "rx",
+        "--iq",
+        s(&iq),
+        "--out",
+        s(&d.join("o-{ts_id}.ts")),
+        "--strip-nulls",
+        "--json",
+    ]);
+    assert!(o.status.success());
+    eprintln!("tx {tx_s:.2} s, rx {:.2} s", t.elapsed().as_secs_f64());
+    assert_same(&d.join("o-4010.ts"), &a, "TS_ID 0x4010");
+    assert_same(&d.join("o-4011.ts"), &b, "TS_ID 0x4011");
+    let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(j["system"], "ISDB-S");
+    let ts = j["ts"].as_array().unwrap();
+    assert_eq!(ts.len(), 2, "{j}");
+    for t in ts {
+        assert_eq!(t["rs_uncorrectable"], 0, "{t}");
+        assert_eq!(t["slots_per_frame"], 24, "{t}");
+    }
+    assert_eq!(j["written_packets"]["0x4010"], 576);
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+/// The ISDB-S options and the ISDB-T ones exclude each other, naming the
+/// system; the layout is checked before anything is written.
+#[test]
+fn isdbs_options_are_checked() {
+    let d = tmp("isdbs-args");
+    let iq = d.join("x.cf32");
+    let fails = |args: &[&str], want: &str| {
+        let o = run(args);
+        assert!(!o.status.success(), "{args:?}");
+        let e = String::from_utf8_lossy(&o.stderr);
+        assert!(e.contains(want), "{args:?}: {e}");
+    };
+    for (extra, want) in [
+        (
+            &["--mode", "1"][..],
+            "--mode: ISDB-T option(s), not used with --system isdbs",
+        ),
+        (&["--b-ts", "b.ts"], "--b-ts: ISDB-T option(s)"),
+        (&["--synthetic"], "--synthetic: ISDB-T option(s)"),
+        (&["--lead-frames", "1"], "--lead-frames: ISDB-T option(s)"),
+        // the slots must sum to the layout's sent slots
+        (
+            &["--ts", "0x4010:24", "--ts", "0x4011:16"],
+            "the TSs take 40 slots, the combinations send 48",
+        ),
+        (
+            &["--ts", "0x4010", "--ts", "0x4011:24"],
+            "give its slots per frame",
+        ),
+        (&["--combination", "qpsk3/4:44"], "sum to 44, not 48"),
+        (&["--combination", "8psk:48"], "is not one of bpsk1/2"),
+        (&["--rate", "38M"], "--rate 38000000"),
+    ] {
+        let mut args = vec!["tx", "--system", "isdbs", "--iq", s(&iq), "--seconds", "1"];
+        args.extend_from_slice(extra);
+        fails(&args, want);
+    }
+    for (extra, want) in [
+        (
+            &["--combination", "qpsk3/4:48"][..],
+            "--combination: ISDB-S option(s), used with --system isdbs only",
+        ),
+        (&["--ts", "0x4010"], "--ts: ISDB-S option(s)"),
+        (
+            &["--lead-superframes", "2"],
+            "--lead-superframes: ISDB-S option(s)",
+        ),
+    ] {
+        let mut args = vec!["tx", "--synthetic", "--iq", s(&iq), "--seconds", "1"];
+        args.extend_from_slice(extra);
+        fails(&args, want);
+    }
+    assert!(!iq.exists(), "nothing written");
+    // an endless (synthetic) ISDB-S input into a file needs --seconds too
+    fails(
+        &["tx", "--system", "isdbs", "--iq", s(&iq)],
+        "this input never ends",
+    );
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
 #[cfg(feature = "hackrf")]
 #[test]
 fn radio_tx_refuses_without_rf_enable() {
@@ -640,6 +780,67 @@ fn pluto_dry_run_validates_without_a_device() {
         assert!(!o.status.success(), "{extra:?}");
         let e = String::from_utf8_lossy(&o.stderr);
         assert!(e.contains(want), "{e}");
+    }
+}
+
+/// ISDB-S to a radio goes through the same gate: a satellite channel is
+/// tuned at its IF behind --freq-unrestricted, at --rate (40 Msps) with a
+/// 40 MHz filter by default, and the rate limit is stated; a HackRF
+/// refuses the rate. Nothing is opened.
+#[cfg(feature = "pluto")]
+#[test]
+fn isdbs_radio_dry_runs() {
+    let dry = |extra: &[&str]| {
+        let mut args = vec!["tx", "--system", "isdbs", "--dry-run"];
+        args.extend_from_slice(extra);
+        let o = run(&args);
+        assert!(!o.status.success(), "{extra:?}");
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    let e = dry(&["--radio", "pluto:uri=ip:192.0.2.1", "--channel", "BS1"]);
+    assert!(e.contains("1049.480000 MHz (BS1 IF)"), "{e}");
+    assert!(e.contains("--freq-unrestricted"), "{e}");
+    let e = dry(&[
+        "--radio",
+        "pluto:uri=ip:192.0.2.1",
+        "--channel",
+        "BS1",
+        "--freq-unrestricted",
+        "--gain",
+        "att=30",
+    ]);
+    assert!(e.contains("pluto TX settings (BS1 IF):"), "{e}");
+    assert!(e.contains("centre 1049.480000 MHz"), "{e}");
+    assert!(e.contains("40000000/1 Hz = 40.000000 MHz"), "{e}");
+    assert!(e.contains("rf bandwidth 40.00 MHz"), "{e}");
+    assert!(e.contains("underruns"), "{e}");
+    assert!(e.contains("not transmitting"), "{e}");
+    // --bb-filter-hz and --rate given: used as given
+    let e = dry(&[
+        "--radio",
+        "pluto:uri=ip:192.0.2.1",
+        "--freq",
+        "1200000000",
+        "--freq-unrestricted",
+        "--rate",
+        "61.44M",
+        "--bb-filter-hz",
+        "39000000",
+    ]);
+    assert!(e.contains("61440000/1 Hz"), "{e}");
+    assert!(e.contains("rf bandwidth 39.00 MHz"), "{e}");
+    if cfg!(feature = "hackrf") {
+        let e = dry(&[
+            "--radio",
+            "hackrf",
+            "--channel",
+            "BS1",
+            "--freq-unrestricted",
+        ]);
+        assert!(
+            e.contains("sample rate 40000000 Hz outside the HackRF range"),
+            "{e}"
+        );
     }
 }
 
@@ -1168,6 +1369,14 @@ fn completions_cover_every_subcommand() {
         assert!(bash.contains(&format!("isdb,{sub})")), "bash: {sub}");
     }
     assert!(bash.contains("--radio"), "bash: --radio");
+    // the ISDB-S options of tx and loopback, and the system's values
+    for opt in ["--system", "--combination", "--ts", "--lead-superframes"] {
+        assert!(bash.contains(opt), "bash: {opt}");
+    }
+    assert!(
+        bash.contains("compgen -W \"isdbt isdbs\""),
+        "bash: --system values of tx"
+    );
 
     let o = run(&["completions", "zsh"]);
     assert!(o.status.success());
@@ -1177,6 +1386,14 @@ fn completions_cover_every_subcommand() {
         assert!(zsh.contains(&format!("'{sub}:")), "zsh: {sub}");
     }
     assert!(zsh.contains("--radio="), "zsh: --radio");
+    for opt in [
+        "--system=",
+        "--combination=",
+        "--ts=",
+        "--lead-superframes=",
+    ] {
+        assert!(zsh.contains(opt), "zsh: {opt}");
+    }
 
     // Not a shell: a usage error.
     assert_eq!(run(&["completions", "csh"]).status.code(), Some(2));
@@ -2080,6 +2297,51 @@ fn diagnostics_are_structured_events() {
     ]);
     assert!(o.status.success());
     assert!(o.stderr.is_empty(), "info events above --log-level warn");
+
+    // ISDB-S: the same target; the summary per TS_ID carries its fields
+    let o = run(&[
+        "--log-format",
+        "json",
+        "tx",
+        "--system",
+        "isdbs",
+        "--seconds",
+        "0.03",
+        "--iq",
+        s(&d.join("s.cf32")),
+    ]);
+    assert!(o.status.success());
+    let events: Vec<serde_json::Value> = String::from_utf8_lossy(&o.stderr)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+        .collect();
+    assert!(
+        events
+            .iter()
+            .all(|j| j["level"] == "INFO" && j["target"] == "isdb::tx")
+    );
+    let done = events
+        .iter()
+        .find(|j| {
+            j["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("done ("))
+        })
+        .expect("the end-of-run event");
+    assert_eq!(done["end"], "Limit");
+    assert_eq!(
+        (
+            done["lead_superframes"].as_u64(),
+            done["data_superframes"].as_u64()
+        ),
+        (Some(1), Some(2))
+    );
+    let ts = events
+        .iter()
+        .find(|j| j["ts_id"] == 0x4010 && j.get("input_packets").is_some())
+        .expect("the TS_ID summary");
+    assert_eq!(ts["input_packets"], 2 * 384);
+    assert_eq!(ts["null_packets"], 0);
 }
 
 /// The transmit and tools side emits events too: with `--log-format json`,

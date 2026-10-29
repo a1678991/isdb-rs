@@ -17,6 +17,7 @@
 //! | Field | Where | Meaning |
 //! |---|---|---|
 //! | `isdb:full_scale` | global | component value of 1.0 for `ci16_le` (2048: 12-bit AD936x samples sign-extended by libiio; absent = 32768) |
+//! | `isdb:system` | global | the transmission system a generated recording holds (`ISDB-S`: written by `isdb tx --system isdbs`, since 0.4.0); absent in captures, whose system the survey finds |
 //! | `isdb:lo_hz` | capture | LO frequency read back from the radio (`core:frequency` is the nominal centre) |
 //! | `isdb:rf_bandwidth_hz` | capture | analog bandwidth read back from the radio |
 //! | `isdb:gain` | capture | gain mode and value as the radio reported it, e.g. `AGC slow_attack, 33 dB at the end` |
@@ -41,7 +42,7 @@ pub const SIGMF_VERSION: &str = "1.2.0";
 /// Name of this project's SigMF extension namespace.
 pub const EXTENSION: &str = "isdb";
 /// Version of the `isdb` extension written in `core:extensions`.
-pub const EXTENSION_VERSION: &str = "0.3.0";
+pub const EXTENSION_VERSION: &str = "0.4.0";
 
 /// One capture segment: contiguous samples from `sample_start`.
 #[derive(Debug, Clone, PartialEq, Default)]

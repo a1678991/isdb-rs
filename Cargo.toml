@@ -164,3 +164,14 @@ opt-level = 3
 
 [profile.dev.package.isdbt-core]
 opt-level = 3
+
+# The ISDB-S transmit chain (`tx --system isdbs`): the transmitter and the
+# pulse shaper. Unoptimised they reach 0.02× real time.
+[profile.dev.package.isdb-frontend]
+opt-level = 3
+
+[profile.dev.package.isdbs-core]
+opt-level = 3
+
+[profile.dev.package.isdbs-phy]
+opt-level = 3

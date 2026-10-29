@@ -1,8 +1,10 @@
 //! `isdb`: ISDB-T streamer (ARIB STD-B31) and TS tools.
 //!
-//! * `isdb tx` — transport streams → ISDB-T baseband → IQ file or radio
+//! * `isdb tx` — transport streams → ISDB-T (or, `--system isdbs`,
+//!   ISDB-S) baseband → IQ file or radio
 //! * `isdb rx` — IQ file or radio → demodulated TS + reception report
-//! * `isdb loopback` — software TX → impaired channel → RX, byte-exact check
+//! * `isdb loopback` — software TX → impaired channel → RX, byte-exact
+//!   check (ISDB-T, or ISDB-S with `--system isdbs`)
 //! * `isdb ts`, `isdb mux` — TS analysis / service multiplexing
 //! * `isdb capture` — radio → raw IQ file with SigMF metadata (receive
 //!   only, any system: ISDB-T, ISDB-S, ISDB-S3)
@@ -20,7 +22,7 @@
 
 use std::io::Write;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 mod bands;
 mod capture;
@@ -52,6 +54,7 @@ mod tmcc;
 #[allow(missing_docs)]
 mod ts;
 mod tx;
+mod txs;
 
 /// ISDB-T (ARIB STD-B31) streamer and TS tools.
 #[derive(Parser, Debug)]
@@ -65,8 +68,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Transmit: per-layer TS (or one TS split by PID) → ISDB-T → IQ file / radio.
-    Tx(tx::TxArgs),
+    /// Transmit: per-layer TS (or one TS split by PID) → ISDB-T, or TSs
+    /// per TS_ID → ISDB-S (--system isdbs) → IQ file / radio.
+    Tx(Box<tx::TxArgs>),
     /// Receive: IQ file / radio → ISDB-T / ISDB-S / ISDB-S3 → TS or TLV streams, with status.
     Rx(rx::RxArgs),
     /// Software loopback TX → channel impairments → RX, verifying delivery.
@@ -99,12 +103,17 @@ enum Command {
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    // `Cli::parse()`, keeping the matches: `tx` and `loopback` tell the
+    // options given on the command line from defaults.
+    let matches = Cli::command().get_matches();
+    let cli =
+        Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.format(&mut Cli::command()).exit());
+    let given = |name: &str| txs::Given::of(matches.subcommand_matches(name));
     logging::init(&cli.log);
     match cli.command {
         Command::Tx(a) => {
             stop::install()?;
-            tx::run(a)
+            tx::run(*a, &given("tx"))
         }
         Command::Rx(a) => {
             stop::install()?;
