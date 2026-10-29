@@ -18,13 +18,17 @@
 //!   * `channel`: `1` or `2` (TX1/RX1 or TX2/RX2 port, default 1); 2 needs
 //!     the firmware's `2r2t` mode.
 //!   * `buffer`: samples per IIO buffer, 1024..=4194304 in multiples of
-//!     1024 (default 262144: 32 ms at 512/63 MHz); 4 such buffers are queued
-//!     in the device kernel.
+//!     1024 (default 262144: 32 ms at 512/63 MHz; the TX symbol codes:
+//!     65536 DMA samples of eight codes, 18.2 ms of ISDB-S); 4 such
+//!     buffers are queued in the device kernel (`kbuffers`).
 //!   * TX only, `loopback`: `on` routes the TX samples digitally back into
 //!     the RX path inside the AD936x (its BIST data-port loopback) and
 //!     powers the TX LO down, so nothing is radiated; an `isdb rx` on the
 //!     same device then receives the transmission. Default `off`. Closing
 //!     the TX turns the loopback off again.
+//!   * TX, `kbuffers`: kernel buffers on the device, 2..=64 (default 4 for
+//!     IQ samples; 16 for the symbol codes: 16 × 18.2 ms = 290 ms of
+//!     slack in the device while the host or the link pauses).
 //!   * Capture only (`isdb capture`):
 //!     * `recorder`: `iio` (default) takes one libiio buffer of up to
 //!       63 MiB (the largest iiod allocated on a PlutoSky R2 with Tezuka
@@ -85,19 +89,44 @@
 //!   is programmed, the DDS tone generator is switched off, and closing the
 //!   TX (also on error or panic) stops the stream, sets the maximum
 //!   attenuation and powers the TX LO down.
+//! * TX symbol codes ([`Backend::open_tx_symbols`]): with a bitstream that
+//!   has the FPGA transmit block (`SymbolsTx`, `fpga/`), whose ID word
+//!   `isdb_frontend::control::tx` reads in `up_dac_gpio_in` (0x800000B8
+//!   of `cf-ad9361-dds-core-lpc`; 0 without the block). The device is
+//!   configured as for IQ, then the block: refused when the DAC core runs
+//!   in r1_mode (0x80000048 bit 5) or `up_dac_gpio_out` bit 0 (Tezuka's ×8
+//!   TX FIR) is set; `Encoder::configure_tx` (STEP, SHIFT, both banks:
+//!   13 315 commands, ≈ 8 s through iiod), STEP read back, CTRL
+//!   START|SELECT (the block owns the DAC and the DMA, outputs zero and
+//!   requests nothing), STATUS must read "selected" (codes sent to a plain
+//!   DAC would go out as samples), then the attenuation. Once the stream
+//!   runs and its first buffer is in the device, CTRL RUN|SELECT starts
+//!   the block (STATUS must read run and selected) and the DAC core's
+//!   underflow flag (0x80000088 bit 0, set whenever no DMA word is
+//!   available) is cleared; so a clean run misses no symbol. Both
+//!   `voltage0` and `voltage1` carry codes (eight per DMA sample). Status
+//!   lines add the block's MISSED (one READ per line); the summary its
+//!   CONSUMED, MISSED, FIRST_MISS and STATUS and the underflow flag, read
+//!   while the zero buffers that end the stream still play. Closing (also
+//!   on error or panic) stops the stream, then CTRL 0 (the IQ
+//!   pass-through), then the attenuation and the LO as above; opening for
+//!   IQ sends CTRL 0 first when the bitstream has the block.
 
 use super::{maia, mdns};
 use crate::{
-    Backend, Capture, CaptureFormat, CaptureGap, Cs12, Direction, IqSink, IqSource, Key, Offload,
-    Quantizer, QueuedSink, RadioConfig, RadioError, RadioTx, Result, Rule, RxOptions,
-    StreamCounters, StreamProblem, SymbolsCapture, Tolerance, TxOptions, TxStream,
+    Backend, Capture, CaptureFormat, CaptureGap, CodeEncoder, Cs12, Direction, IqSink, IqSource,
+    Key, Offload, Quantizer, QueuedSink, RadioConfig, RadioError, RadioTx, Result, Rule, RxOptions,
+    StreamCounters, StreamProblem, SymbolSink, SymbolsCapture, Tolerance, TxOptions, TxStream,
 };
+use isdb_frontend::control::tx::{self as txc, TxIdentity};
 use isdb_frontend::control::{self, Encoder, GPIO_IN_REG, GPIO_OUT_REG, Identity, Op, reg};
+use isdb_frontend::shape::fixed::{FULL_SCALE, TxParams};
+use isdb_frontend::txformat;
 use isdb_iio::Context;
 use isdbt_ofdm::C32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 /// The `pluto` backend.
@@ -155,6 +184,28 @@ const STREAM_DEPTH: usize = 8;
 const SYMBOLS_KERNEL_BUFFERS: u32 = 16;
 /// Accepted `kbuffers`.
 const SYMBOLS_KERNEL_BUFFERS_RANGE: std::ops::RangeInclusive<u32> = 2..=64;
+/// DMA samples per IIO buffer of the TX symbol codes by default: 65 536
+/// samples of eight codes (256 KiB, 524 288 symbols, 18.2 ms of ISDB-S),
+/// 1.6 superframes, so that the host's queue of superframes always holds
+/// a buffer's worth.
+const TX_SYMBOLS_BUFFER: usize = 65_536;
+/// Kernel buffers of the TX symbol codes by default: 16 × 18.2 ms =
+/// 290 ms (4 MiB of DMA memory), the device's slack while the host or the
+/// link pauses (the RX symbol stream needed ≥ 8 to ride out a ≈ 200 ms
+/// TCP pause, plan §0.20; the code stream's 14.4 MB/s is far below the
+/// measured 64 MB/s host → board ceiling).
+const TX_SYMBOLS_KERNEL_BUFFERS: u32 = 16;
+/// The DAC core's interface status register (ADI `up_dac_common`
+/// `REG_STATUS`, 0x0022 × 4, through the HDL-core bit 31) and its
+/// underflow bit (sticky, write 1 to clear): set whenever the DAC (or the
+/// transmit block) found no DMA word, which includes the idle state
+/// between streams (VERIFICATION.md "ISDB-S transmitter in the FPGA: board
+/// checks"), so it means something only cleared and read while streaming.
+const DAC_STATUS_REG: u32 = 0x8000_0088;
+const DAC_STATUS_UNDERFLOW: u32 = 0x1;
+/// How long the transmit block waits for the stream's first buffer to
+/// reach the device before it is started.
+const FIRST_BUFFER_TIMEOUT: Duration = Duration::from_secs(10);
 /// The ADC core's interface status register (ADI `up_adc_common`
 /// `REG_STATUS`, 0x0022 × 4, through the HDL-core bit 31) and its
 /// overflow bit (sticky, write 1 to clear).
@@ -272,8 +323,9 @@ struct DeviceArgs {
     buffer: usize,
     /// `buffer` was given.
     buffer_given: bool,
-    /// Kernel buffers of the symbol stream (`kbuffers`).
-    kernel_buffers: u32,
+    /// Kernel buffers (`kbuffers`) of the RX symbol stream or the TX;
+    /// `None`: each one's default.
+    kernel_buffers: Option<u32>,
     loopback: bool,
     recorder: Recorder,
     /// Bits per component of a capture: 8, 12 or 16.
@@ -370,13 +422,13 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
         channel: 1,
         buffer: DEFAULT_BUFFER_SAMPLES,
         buffer_given: false,
-        kernel_buffers: SYMBOLS_KERNEL_BUFFERS,
+        kernel_buffers: None,
         loopback: false,
         recorder: Recorder::Iio,
         bits: 16,
     };
     let known: &[&str] = match dir {
-        Dir::Tx => &["uri", "channel", "buffer", "loopback"],
+        Dir::Tx => &["uri", "channel", "buffer", "kbuffers", "loopback"],
         Dir::Rx => &["uri", "channel", "buffer"],
         Dir::Capture => &[
             "uri",
@@ -423,7 +475,7 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
                 a.buffer = n;
                 a.buffer_given = true;
             }
-            "kbuffers" if dir == Dir::Capture => {
+            "kbuffers" if dir != Dir::Rx => {
                 let n: u32 = v
                     .parse()
                     .map_err(|_| bad_arg(k, v, Rule::NotANumber { what: "number" }))?;
@@ -438,7 +490,7 @@ fn device_args(cfg: &RadioConfig, dir: Dir) -> Result<DeviceArgs> {
                         },
                     ));
                 }
-                a.kernel_buffers = n;
+                a.kernel_buffers = Some(n);
             }
             "loopback" if dir == Dir::Tx => a.loopback = on_off(k, v)?,
             "recorder" if dir == Dir::Capture => {
@@ -617,6 +669,82 @@ impl TxSettings {
     fn att_db(&self) -> f64 {
         f64::from(self.att_qdb) / 4.0
     }
+
+    /// `TX atten     89.75 dB (maximum)` and, with `loopback`, its line.
+    fn describe_level(&self) -> String {
+        let mut d = format!(
+            "\n  TX atten     {} dB{}",
+            self.att_db(),
+            if self.att_qdb == MAX_ATT_QDB {
+                " (maximum)"
+            } else {
+                ""
+            }
+        );
+        if self.dev.loopback {
+            d += "\n  loopback     digital TX→RX inside the AD936x, TX LO powered down (nothing radiated)";
+        }
+        d
+    }
+}
+
+/// The TX settings of the symbol codes: [`tx_settings`] on TX1 only (the
+/// transmit block drives the TX1 data path; `channel=2` is refused), with
+/// the code stream's buffer and kernel-buffer defaults.
+fn tx_symbols_settings(cfg: &RadioConfig) -> Result<TxSettings> {
+    let mut s = tx_settings(cfg)?;
+    if s.dev.channel != 1 {
+        return Err(conflict(
+            format!("channel={}", s.dev.channel),
+            "is not wired to the FPGA transmit block, which drives",
+            "TX1 (channel=1)",
+        ));
+    }
+    if !s.dev.buffer_given {
+        s.dev.buffer = TX_SYMBOLS_BUFFER;
+    }
+    s.dev.kernel_buffers = Some(s.dev.kernel_buffers.unwrap_or(TX_SYMBOLS_KERNEL_BUFFERS));
+    Ok(s)
+}
+
+/// The symbol rate a block with `p` sends at the sample rate of `cfg`.
+fn tx_symbol_rate(cfg: &RadioConfig, p: &TxParams) -> f64 {
+    cfg.sample_rate_hz() / p.sps()
+}
+
+/// The settings text of the symbol codes (what a dry run prints): the
+/// device, tuning and level as for IQ, then the block, the link and the
+/// digital level.
+fn describe_tx_symbols(
+    cfg: &RadioConfig,
+    s: &TxSettings,
+    opts: &TxOptions,
+    p: &TxParams,
+) -> String {
+    let rs = tx_symbol_rate(cfg, p);
+    let kbuffers = s.dev.kernel_buffers.unwrap_or(TX_SYMBOLS_KERNEL_BUFFERS);
+    let buffer_s = s.dev.buffer as f64 * txformat::CODES_PER_WORD as f64 / rs;
+    let commands = Encoder::new(0).configure_tx(p).len();
+    format!(
+        "{}{}\n  modulator    FPGA transmit block of {TX_DEV} (SymbolsTx, TX format {}): symbol codes shaped on the board, banks of {} phases × {} taps, {:.4} samples/symbol (step {:#x})\n  link         4-bit symbol codes, {} per DMA sample (voltage0 + voltage1): {:.2} MB/s at {:.3} Mbaud; buffers of {} samples ({:.1} ms), kbuffers {kbuffers} in the kernel ({:.0} ms)\n  level        RMS {:.1} dB below the 12-bit DAC full scale ({:.1} LSB), in the block's banks (shift {}); the TX attenuation sets the output power\n  configure    {commands} commands through gpio_out at open (≈ {:.0} s at 0.62 ms each)",
+        describe_device(&s.dev, "TX", cfg),
+        s.describe_level(),
+        txformat::FORMAT_VERSION,
+        p.phases(),
+        p.taps(),
+        p.sps(),
+        p.step,
+        txformat::CODES_PER_WORD,
+        txformat::link_rate(rs) / 1e6,
+        rs / 1e6,
+        s.dev.buffer,
+        buffer_s * 1e3,
+        f64::from(kbuffers) * buffer_s * 1e3,
+        opts.backoff_db,
+        FULL_SCALE * 10f64.powf(-f64::from(opts.backoff_db) / 20.0),
+        p.shift,
+        commands as f64 * 0.62e-3,
+    )
 }
 
 /// Validated RX settings.
@@ -746,24 +874,12 @@ impl Backend for Pluto {
     fn describe_tx(&self, cfg: &RadioConfig, opts: &TxOptions) -> Result<String> {
         let s = tx_settings(cfg)?;
         opts.validate()?;
-        let mut d = format!(
-            "{}\n  TX atten     {} dB{}",
+        Ok(format!(
+            "{}{}\n  backoff      {}",
             describe_device(&s.dev, "TX", cfg),
-            s.att_db(),
-            if s.att_qdb == MAX_ATT_QDB {
-                " (maximum)"
-            } else {
-                ""
-            }
-        );
-        if s.dev.loopback {
-            d += "\n  loopback     digital TX→RX inside the AD936x, TX LO powered down (nothing radiated)";
-        }
-        d += &format!(
-            "\n  backoff      {}",
+            s.describe_level(),
             Quantizer::<Cs12>::new(opts.backoff_db).describe_level()
-        );
-        Ok(d)
+        ))
     }
 
     fn describe_rx(&self, cfg: &RadioConfig) -> Result<String> {
@@ -785,10 +901,18 @@ impl Backend for Pluto {
             channels: s.dev.stream_channels(),
             phy_channel: s.dev.phy_channel(),
             buffer: s.dev.buffer,
+            kernel_buffers: s.dev.kernel_buffers.unwrap_or(KERNEL_BUFFERS),
             loopback: s.dev.loopback,
+            block: None,
         };
         // From here on, dropping `tx` restores the safe state.
-        tx.configure(cfg, &s, &mut info)?;
+        tx.pass_through()?;
+        tx.program(cfg, &s, &mut info)?;
+        tx.set_level(&s, &mut info)?;
+        info += &format!(
+            "; buffers of {} samples, {} in the kernel",
+            tx.buffer, tx.kernel_buffers
+        );
         let gain = format!("TX{} attenuation {} dB", s.dev.channel, s.att_db());
         info!(
             backend = NAME,
@@ -1019,6 +1143,127 @@ impl Backend for Pluto {
             })
             .into_iter()
             .collect())
+    }
+
+    fn tx_offloads(&self, cfg: &RadioConfig) -> Result<Vec<Offload>> {
+        let mut s = tx_settings(cfg)?;
+        let ctx = open(&mut s.dev)?;
+        let dac = ctx.device(TX_DEV).at("probe the FPGA transmit block")?;
+        Ok(TxBlock::probe(&dac)?
+            .map(|id| Offload::TxSymbols {
+                version: id.version,
+                phases: id.phases(),
+                taps: id.taps,
+            })
+            .into_iter()
+            .collect())
+    }
+
+    fn describe_tx_symbols(
+        &self,
+        cfg: &RadioConfig,
+        opts: &TxOptions,
+        params: &TxParams,
+    ) -> Result<String> {
+        let s = tx_symbols_settings(cfg)?;
+        opts.validate()?;
+        params.validate()?;
+        Ok(describe_tx_symbols(cfg, &s, opts, params))
+    }
+
+    fn open_tx_symbols(
+        &self,
+        cfg: &RadioConfig,
+        opts: &TxOptions,
+        params: &TxParams,
+    ) -> Result<(Box<dyn SymbolSink>, String)> {
+        let mut s = tx_symbols_settings(cfg)?;
+        opts.validate()?;
+        params.validate()?;
+        let ctx = open(&mut s.dev)?;
+        let mut info = device_info(&ctx);
+        // The block first, before anything is programmed: one read.
+        let need = TxIdentity::of(params);
+        let found = {
+            let dac = ctx.device(TX_DEV).at("probe the FPGA transmit block")?;
+            TxBlock::probe(&dac)?
+        };
+        let geometry = |id: TxIdentity| (id.version, id.phases(), id.taps);
+        match found {
+            Some(id) if id.supports(params) => {}
+            other => {
+                return Err(RadioError::Modulator {
+                    backend: NAME,
+                    found: other.map(geometry),
+                    need: geometry(need),
+                });
+            }
+        }
+        let mut tx = PlutoTx {
+            ctx,
+            // Both words of a DMA sample are codes (with voltage0 alone
+            // the Q word would come from the DDS).
+            channels: ["voltage0", "voltage1"],
+            phy_channel: s.dev.phy_channel(),
+            buffer: s.dev.buffer,
+            kernel_buffers: s.dev.kernel_buffers.unwrap_or(TX_SYMBOLS_KERNEL_BUFFERS),
+            loopback: s.dev.loopback,
+            block: None,
+        };
+        // From here on, dropping `tx` restores the safe state (CTRL 0 once
+        // the block is configured).
+        tx.program(cfg, &s, &mut info)?;
+        let commands = Encoder::new(0).configure_tx(params).len();
+        info!(
+            backend = NAME,
+            commands,
+            "configuring the FPGA transmit block: {commands} commands through {TX_DEV} gpio_out (≈ {:.0} s through iiod)",
+            commands as f64 * 0.62e-3
+        );
+        let t0 = Instant::now();
+        let block = {
+            let dac = tx
+                .ctx
+                .device(TX_DEV)
+                .at("configure the FPGA transmit block")?;
+            TxBlock::open(&dac, params)?
+        };
+        let config_s = t0.elapsed().as_secs_f64();
+        tx.block = Some(block);
+        tx.set_level(&s, &mut info)?;
+        let rs = tx_symbol_rate(cfg, params);
+        info += &format!(
+            "; FPGA transmit block TX format {}, {} phases × {} taps, configured in {config_s:.1} s ({commands} commands), selected; {:.3} Mbaud of symbol codes, {:.2} MB/s; buffers of {} DMA samples, {} in the kernel",
+            need.version,
+            need.phases(),
+            need.taps,
+            rs / 1e6,
+            txformat::link_rate(rs) / 1e6,
+            tx.buffer,
+            tx.kernel_buffers
+        );
+        let gain = format!("TX{} attenuation {} dB", s.dev.channel, s.att_db());
+        info!(
+            backend = NAME,
+            uri = s.dev.uri(),
+            rate_hz = cfg.sample_rate_hz(),
+            freq_hz = cfg.center_hz,
+            bandwidth_hz = cfg.bandwidth_hz,
+            gain,
+            loopback = s.dev.loopback,
+            config_s,
+            "Pluto {} opened for TX of symbol codes through the FPGA transmit block (configured in {config_s:.1} s): {}; {gain}{}",
+            s.dev.uri(),
+            cfg.describe_tuning(),
+            if s.dev.loopback {
+                "; digital TX→RX loopback"
+            } else {
+                ""
+            }
+        );
+        debug!(backend = NAME, "{info}");
+        let sink = QueuedSink::with_encoder(tx, opts, CodeEncoder::new())?;
+        Ok((Box::new(sink), info))
     }
 
     fn capture_symbols(
@@ -1260,7 +1505,7 @@ fn stream_words(
             RX_DEV,
             &["voltage0"],
             dev.buffer,
-            dev.kernel_buffers,
+            dev.kernel_buffers.unwrap_or(SYMBOLS_KERNEL_BUFFERS),
             STREAM_DEPTH,
         )
         .at(&port_hint(dev, "RX"))?;
@@ -1634,18 +1879,297 @@ fn configure_rx(ctx: &Context, cfg: &RadioConfig, s: &RxSettings, info: &mut Str
     Ok(())
 }
 
-/// A Pluto configured for transmission (the radio of a [`QueuedSink`]).
+/// Register access to the DAC core (`cf-ad9361-dds-core-lpc`), where the
+/// FPGA transmit block's control pair and the core's status live: libiio's
+/// register access on the device, a model of the block in the tests.
+trait Regs {
+    /// Read the register at debug address `addr`.
+    fn read(&self, addr: u32) -> Result<u32>;
+    /// Write `value` to the register at debug address `addr`.
+    fn write(&self, addr: u32, value: u32) -> Result<()>;
+}
+
+impl Regs for isdb_iio::Device<'_> {
+    fn read(&self, addr: u32) -> Result<u32> {
+        self.reg_read(addr)
+            .at("read a register of the DAC core (the FPGA transmit block)")
+    }
+    fn write(&self, addr: u32, value: u32) -> Result<()> {
+        self.reg_write(addr, value)
+            .at("write a register of the DAC core (the FPGA transmit block)")
+    }
+}
+
+/// The FPGA transmit block as the host drives it (`control::tx`): the
+/// command encoder (the toggle bit and `gpio_out` bit 0 carried on),
+/// whether it runs, and the MISSED the last status line read.
+#[derive(Debug)]
+struct TxBlock {
+    enc: Encoder,
+    running: bool,
+    missed: u32,
+}
+
+/// What [`TxBlock::counters`] reads back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TxCounters {
+    /// STATUS: bit 0 run, bit 1 selected, bit 2 underrun (sticky).
+    status: u32,
+    /// Codes entered from delivered words since START (low 32 bits).
+    consumed: u32,
+    /// Zero symbols entered for stalled requests since START.
+    missed: u32,
+    /// CONSUMED at the first stalled request (0 before one).
+    first_miss: u32,
+    /// The DAC core's underflow flag, cleared when the block started.
+    underflow: bool,
+}
+
+impl TxCounters {
+    /// `CONSUMED 319488, MISSED 0, FIRST_MISS -, STATUS 0x3; DAC underflow
+    /// flag clear`.
+    fn describe(&self) -> String {
+        format!(
+            "CONSUMED {}, MISSED {}, FIRST_MISS {}, STATUS {:#x}; DAC underflow flag {}",
+            self.consumed,
+            self.missed,
+            if self.status & txc::status::UNDERRUN != 0 {
+                self.first_miss.to_string()
+            } else {
+                "-".into()
+            },
+            self.status,
+            if self.underflow { "set" } else { "clear" }
+        )
+    }
+}
+
+impl TxBlock {
+    /// The block the bitstream reports in `up_dac_gpio_in`, if any (one
+    /// read; nothing is written).
+    fn probe(r: &dyn Regs) -> Result<Option<TxIdentity>> {
+        Ok(TxIdentity::parse(r.read(txc::GPIO_IN_REG)?))
+    }
+
+    /// The block with its encoder continuing from `gpio_out` (not
+    /// configured).
+    fn attach(r: &dyn Regs) -> Result<Self> {
+        Ok(Self {
+            enc: Encoder::new(r.read(txc::GPIO_OUT_REG)?),
+            running: false,
+            missed: 0,
+        })
+    }
+
+    /// Check the DAC core (refused in r1_mode and with `gpio_out` bit 0,
+    /// Tezuka's ×8 TX FIR, set), configure the block for `p`
+    /// ([`Encoder::configure_tx`]), read STEP back, CTRL START|SELECT, and
+    /// require STATUS "selected, not running": from here on the block owns
+    /// the DAC and the DMA, outputs zero and requests nothing, so the
+    /// stream may start. After a failed step the block is sent CTRL 0.
+    fn open(r: &dyn Regs, p: &TxParams) -> Result<Self> {
+        if r.read(DAC_R1_MODE_REG)? & DAC_R1_MODE_BIT != 0 {
+            return Err(RadioError::Unsupported {
+                backend: NAME,
+                what: "runs its AD9361 DAC core in r1_mode (one TX channel): the FPGA transmit block's bitstream is not timed for that clock case; use --offload cpu",
+            });
+        }
+        let out = r.read(txc::GPIO_OUT_REG)?;
+        if out & 1 != 0 {
+            return Err(RadioError::Unsupported {
+                backend: NAME,
+                what: "has bit 0 of the DAC core's gpio_out set (Tezuka's ×8 TX FIR enable, also written by the kernel's interpolation attribute): the FPGA transmit block takes the FIR's place, so the bit must be clear; use --offload cpu",
+            });
+        }
+        let mut b = Self {
+            enc: Encoder::new(out),
+            running: false,
+            missed: 0,
+        };
+        match b.configure(r, p) {
+            Ok(()) => Ok(b),
+            Err(e) => {
+                // best effort: back to the IQ pass-through
+                let _ = b.release(r);
+                Err(e)
+            }
+        }
+    }
+
+    fn configure(&mut self, r: &dyn Regs, p: &TxParams) -> Result<()> {
+        for w in self.enc.configure_tx(p) {
+            r.write(txc::GPIO_OUT_REG, w)?;
+        }
+        let step = self.read(r, txc::reg::STEP)?;
+        if step != p.step {
+            return Err(reply(
+                "FPGA transmit block register STEP",
+                format!("reads {step:#x} after writing {:#x}", p.step),
+            ));
+        }
+        self.ctrl(r, txc::ctrl::START | txc::ctrl::SELECT)?;
+        let st = self.read(r, txc::reg::STATUS)?;
+        let mode = txc::status::RUN | txc::status::SELECTED;
+        if st & mode != txc::status::SELECTED {
+            return Err(reply(
+                "FPGA transmit block STATUS",
+                format!(
+                    "reads {st:#x} after CTRL START|SELECT, not selected and stopped: the block did not take the DAC, and codes sent to a plain DAC would go out as samples"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Write one command word.
+    fn command(&mut self, r: &dyn Regs, op: Op, arg: u32) -> Result<()> {
+        r.write(txc::GPIO_OUT_REG, self.enc.word(op, arg))
+    }
+
+    /// CTRL with `bits` ([`txc::ctrl`]).
+    fn ctrl(&mut self, r: &dyn Regs, bits: u32) -> Result<()> {
+        self.command(r, Op::Ctrl, bits)
+    }
+
+    /// Registers `regs`, in order (ADDR, READ and the input register each),
+    /// then a NOP, so that `gpio_in` shows the ID word again.
+    fn read_regs<const N: usize>(&mut self, r: &dyn Regs, regs: [u16; N]) -> Result<[u32; N]> {
+        let mut v = [0; N];
+        for (x, &a) in v.iter_mut().zip(&regs) {
+            self.command(r, Op::Addr, u32::from(a))?;
+            self.command(r, Op::Read, 0)?;
+            *x = r.read(txc::GPIO_IN_REG)?;
+        }
+        self.command(r, Op::Nop, 0)?;
+        Ok(v)
+    }
+
+    /// One register ([`TxBlock::read_regs`]).
+    fn read(&mut self, r: &dyn Regs, reg: u16) -> Result<u32> {
+        Ok(self.read_regs(r, [reg])?[0])
+    }
+
+    /// Start, once the DMA holds the stream's first buffer: CTRL
+    /// RUN|SELECT (the requests begin a few clocks later and find words),
+    /// STATUS must read run and selected, then the DAC core's underflow
+    /// flag is cleared, so that it reports what happens from here on.
+    fn run(&mut self, r: &dyn Regs) -> Result<()> {
+        self.ctrl(r, txc::ctrl::RUN | txc::ctrl::SELECT)?;
+        self.running = true;
+        let st = self.read(r, txc::reg::STATUS)?;
+        let mode = txc::status::RUN | txc::status::SELECTED;
+        if st & mode != mode {
+            return Err(reply(
+                "FPGA transmit block STATUS",
+                format!("reads {st:#x} after CTRL RUN|SELECT, not running and selected"),
+            ));
+        }
+        if st & txc::status::UNDERRUN != 0 {
+            warn!(
+                backend = NAME,
+                status = st,
+                "the FPGA transmit block missed symbols at its start: the stream's first buffer was not in the DMA when it started"
+            );
+        }
+        r.write(DAC_STATUS_REG, DAC_STATUS_UNDERFLOW)
+    }
+
+    /// MISSED, for a status line; warns when it grew since the last one.
+    fn status(&mut self, r: &dyn Regs) -> Result<u32> {
+        let m = self.read(r, txc::reg::MISSED)?;
+        let d = m.wrapping_sub(self.missed);
+        if d > 0 {
+            warn!(
+                backend = NAME,
+                missed = m,
+                new_missed = d,
+                "the FPGA transmit block missed {d} symbol(s) since the last status ({m} since its start): the DMA ran dry and zero symbols went on air"
+            );
+        }
+        self.missed = m;
+        Ok(m)
+    }
+
+    /// The counters, STATUS and the DAC core's underflow flag.
+    fn counters(&mut self, r: &dyn Regs) -> Result<TxCounters> {
+        let [status, consumed, missed, first_miss] = self.read_regs(
+            r,
+            [
+                txc::reg::STATUS,
+                txc::reg::CONSUMED,
+                txc::reg::MISSED,
+                txc::reg::FIRST_MISS,
+            ],
+        )?;
+        let underflow = r.read(DAC_STATUS_REG)? & DAC_STATUS_UNDERFLOW != 0;
+        Ok(TxCounters {
+            status,
+            consumed,
+            missed,
+            first_miss,
+            underflow,
+        })
+    }
+
+    /// CTRL 0: the IQ pass-through again.
+    fn release(&mut self, r: &dyn Regs) -> Result<()> {
+        self.ctrl(r, 0)?;
+        self.running = false;
+        Ok(())
+    }
+}
+
+/// Components a TX stream takes ahead of real time
+/// ([`RadioTx::ahead`]): its `kernel_buffers` kernel buffers and the one
+/// being filled, of `buffer` samples, two components per sample. libiio
+/// pushes that much at the link's speed before a push waits for the DMA.
+fn queue_components(kernel_buffers: u32, buffer: usize) -> usize {
+    (kernel_buffers as usize + 1) * buffer * 2
+}
+
+/// Wait until the stream has handed the device its first buffer (the
+/// transmit block may then start without missing a word).
+fn wait_first_buffer(counters: &dyn StreamCounters, timeout: Duration) -> Result<()> {
+    let t = Instant::now();
+    while counters.buffers() == 0 {
+        if counters.finished() {
+            return Err(RadioError::Stream {
+                stream: TX_DEV,
+                problem: StreamProblem::Ended,
+            });
+        }
+        if t.elapsed() > timeout {
+            return Err(RadioError::Stream {
+                stream: TX_DEV,
+                problem: StreamProblem::Stalled {
+                    seconds: timeout.as_secs_f64(),
+                },
+            });
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+/// A Pluto configured for transmission (the radio of a [`QueuedSink`]):
+/// of IQ samples, or of symbol codes through the FPGA transmit block.
 struct PlutoTx {
     ctx: Context,
     channels: [&'static str; 2],
     phy_channel: &'static str,
     buffer: usize,
+    kernel_buffers: u32,
     loopback: bool,
+    /// The FPGA transmit block, once configured and selected (symbol
+    /// codes); `None` for IQ samples.
+    block: Option<TxBlock>,
 }
 
 impl PlutoTx {
-    /// Program the device, attenuation last (it starts at the maximum).
-    fn configure(&self, cfg: &RadioConfig, s: &TxSettings, info: &mut String) -> Result<()> {
+    /// Program the device up to its level (the attenuation starts and stays
+    /// at the maximum): LO powerdown with `loopback`, DDS off, rate,
+    /// bandwidth, LO, loopback, and check the stream channels.
+    fn program(&self, cfg: &RadioConfig, s: &TxSettings, info: &mut String) -> Result<()> {
         let op = &format!("configure Pluto {} for TX", s.dev.uri());
         let phy = self.ctx.device(PHY).at(op)?;
         let ch = phy.channel(self.phy_channel, true).at(op)?;
@@ -1678,8 +2202,19 @@ impl PlutoTx {
                 .and_then(|d| d.channel(c, true).map(|_| ()))
                 .at(&port_hint(&s.dev, "TX"))?;
         }
-        ch.write_f64("hardwaregain", -s.att_db()).at(op)?;
         *info += &describe_programmed(cfg, lo, rate, bw);
+        Ok(())
+    }
+
+    /// The attenuation, last.
+    fn set_level(&self, s: &TxSettings, info: &mut String) -> Result<()> {
+        let op = &format!("set the TX attenuation of Pluto {}", s.dev.uri());
+        let ch = self
+            .ctx
+            .device(PHY)
+            .and_then(|phy| phy.channel(self.phy_channel, true))
+            .at(op)?;
+        ch.write_f64("hardwaregain", -s.att_db()).at(op)?;
         *info += &format!(
             "; TX{} attenuation {} dB",
             s.dev.channel,
@@ -1688,11 +2223,48 @@ impl PlutoTx {
         if self.loopback {
             *info += "; digital TX→RX loopback, TX LO powered down";
         }
-        *info += &format!(
-            "; buffers of {} samples, {KERNEL_BUFFERS} in the kernel",
-            self.buffer
-        );
         Ok(())
+    }
+
+    /// With a bitstream that has the FPGA transmit block, CTRL 0 (the IQ
+    /// pass-through) before IQ samples are sent: a block left selected (by
+    /// a process that did not close) would take them as codes. Without the
+    /// block (it reads 0) nothing is written; a register access the device
+    /// refuses is logged and ignored, as the IQ path does not need it.
+    fn pass_through(&self) -> Result<()> {
+        let Ok(dac) = self.ctx.device(TX_DEV) else {
+            return Ok(());
+        };
+        match TxBlock::probe(&dac) {
+            Ok(Some(id)) => {
+                TxBlock::attach(&dac)?.release(&dac)?;
+                debug!(
+                    backend = NAME,
+                    version = id.version,
+                    "the bitstream has the FPGA transmit block (TX format {}): CTRL 0, the IQ pass-through",
+                    id.version
+                );
+            }
+            Ok(None) => {}
+            Err(e) => debug!(
+                backend = NAME,
+                "no register access to {TX_DEV} ({e}): the FPGA transmit block is not probed"
+            ),
+        }
+        Ok(())
+    }
+
+    /// CTRL 0 to the block, if it is configured (best effort; kept for a
+    /// retry when it fails).
+    fn release_block(&mut self) {
+        let Some(b) = &mut self.block else {
+            return;
+        };
+        let op = "switch the FPGA transmit block back to the IQ pass-through";
+        match self.ctx.device(TX_DEV).at(op).and_then(|d| b.release(&d)) {
+            Ok(()) => self.block = None,
+            Err(e) => warn!(backend = NAME, "could not {op}: {e}"),
+        }
     }
 
     /// Maximum attenuation, TX LO off, loopback off (best effort).
@@ -1713,9 +2285,11 @@ impl PlutoTx {
 }
 
 impl Drop for PlutoTx {
-    /// Stop streaming and leave the transmitter in its safe state.
+    /// Stop streaming, switch the transmit block back to the IQ
+    /// pass-through and leave the transmitter in its safe state.
     fn drop(&mut self) {
         let _ = self.ctx.stop();
+        self.release_block();
         self.safe_state();
     }
 }
@@ -1738,20 +2312,103 @@ impl RadioTx for PlutoTx {
     fn start_tx(&mut self, depth: usize) -> Result<TxStream<i16>> {
         let s = self
             .ctx
-            .start_tx(TX_DEV, &self.channels, self.buffer, KERNEL_BUFFERS, depth)
+            .start_tx(
+                TX_DEV,
+                &self.channels,
+                self.buffer,
+                self.kernel_buffers,
+                depth,
+            )
             .at("start the Pluto TX stream")?;
         Ok(TxStream {
             sender: s.sender,
             counters: s.counters,
         })
     }
+
+    /// Stop the stream, then (symbol codes) CTRL 0, then the safe state.
     fn stop(&mut self) -> Result<()> {
-        self.ctx.stop().at("stop the Pluto TX stream")?;
+        let stopped = self.ctx.stop().at("stop the Pluto TX stream");
+        self.release_block();
         self.safe_state();
-        Ok(())
+        stopped
     }
+
     fn is_streaming(&mut self) -> bool {
         self.ctx.is_streaming()
+    }
+
+    fn ahead(&self) -> usize {
+        queue_components(self.kernel_buffers, self.buffer)
+    }
+
+    /// Symbol codes: once the first buffer is in the device, start the
+    /// transmit block ([`TxBlock::run`]).
+    fn started(&mut self, counters: &dyn StreamCounters) -> Result<()> {
+        let Some(b) = &mut self.block else {
+            return Ok(());
+        };
+        wait_first_buffer(counters, FIRST_BUFFER_TIMEOUT)?;
+        let dac = self
+            .ctx
+            .device(TX_DEV)
+            .at("start the FPGA transmit block")?;
+        b.run(&dac)?;
+        info!(
+            backend = NAME,
+            "FPGA transmit block running (CTRL RUN|SELECT) on the stream's first buffer"
+        );
+        Ok(())
+    }
+
+    /// Symbol codes: the block's MISSED (one READ).
+    fn status(&mut self) -> String {
+        let Some(b) = self.block.as_mut().filter(|b| b.running) else {
+            return String::new();
+        };
+        match self
+            .ctx
+            .device(TX_DEV)
+            .at("read the FPGA transmit block's MISSED")
+            .and_then(|d| b.status(&d))
+        {
+            Ok(m) => format!(" | TX block MISSED {m}"),
+            Err(e) => format!(" | TX block MISSED ? ({e})"),
+        }
+    }
+
+    /// Symbol codes: CONSUMED, MISSED, FIRST_MISS, STATUS and the DAC
+    /// core's underflow flag, read while the stream's last zero buffers
+    /// still play (after the drain, before the stop).
+    fn summary(&mut self) -> String {
+        let Some(b) = &mut self.block else {
+            return String::new();
+        };
+        if !b.running {
+            return "; FPGA transmit block selected, never started".into();
+        }
+        match self
+            .ctx
+            .device(TX_DEV)
+            .at("read the FPGA transmit block's counters")
+            .and_then(|d| b.counters(&d))
+        {
+            Ok(c) => {
+                if c.missed > 0 || c.underflow {
+                    warn!(
+                        backend = NAME,
+                        missed = c.missed,
+                        first_miss = c.first_miss,
+                        underflow = c.underflow,
+                        "the FPGA transmit block missed {} symbol(s), the first at code {} since its start: zero symbols went on air",
+                        c.missed,
+                        c.first_miss
+                    );
+                }
+                format!("; FPGA TX block {}", c.describe())
+            }
+            Err(e) => format!("; FPGA TX block counters not read: {e}"),
+        }
     }
 }
 
@@ -1886,7 +2543,7 @@ mod tests {
                 channel: 1,
                 buffer: 262_144,
                 buffer_given: false,
-                kernel_buffers: SYMBOLS_KERNEL_BUFFERS,
+                kernel_buffers: None,
                 loopback: false,
                 recorder: Recorder::Iio,
                 bits: 16,
@@ -1897,6 +2554,7 @@ mod tests {
                 ("uri", "ip:192.0.2.30"),
                 ("channel", "2"),
                 ("buffer", "65536"),
+                ("kbuffers", "8"),
                 ("loopback", "on"),
             ],
             &[],
@@ -1906,6 +2564,7 @@ mod tests {
         assert_eq!(s.dev.stream_channels(), ["voltage2", "voltage3"]);
         assert_eq!(s.dev.phy_channel(), "voltage1");
         assert_eq!((s.dev.buffer, s.dev.loopback), (65_536, true));
+        assert_eq!(s.dev.kernel_buffers, Some(8));
         for bad in [
             ("uri", ""),
             ("channel", "0"),
@@ -1914,17 +2573,28 @@ mod tests {
             ("buffer", "512"),
             ("buffer", "8388608"),
             ("buffer", "x"),
+            ("kbuffers", "1"),
+            ("kbuffers", "65"),
+            ("kbuffers", "x"),
             ("loopback", "maybe"),
             ("serial", "1"),
         ] {
             assert!(tx_settings(&cfg(&[bad], &[])).is_err(), "{bad:?}");
         }
-        // Loopback is a TX argument.
+        // Loopback and kbuffers are TX (and capture) arguments.
         let e = rx_settings(&cfg(&[("loopback", "on")], &[]))
             .unwrap_err()
             .to_string();
         assert!(
             e.contains("unknown device argument \"loopback\" (known: uri, channel, buffer)"),
+            "{e}"
+        );
+        assert!(rx_settings(&cfg(&[("kbuffers", "8")], &[])).is_err());
+        let e = tx_settings(&cfg(&[("recorder", "iio")], &[]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("(known: uri, channel, buffer, kbuffers, loopback)"),
             "{e}"
         );
         // The variants, not only the messages.
@@ -1998,13 +2668,19 @@ mod tests {
         // The symbol stream: 1 Mi-word buffers, 16 in the kernel by default
         // (plan §0.18); `buffer` and `kbuffers` set them, not with maia.
         let s = rx_settings_for(&cfg(&[], &[]), Dir::Capture).unwrap();
-        assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (1_048_576, 16));
+        assert_eq!(
+            (
+                s.dev.buffer,
+                s.dev.kernel_buffers.unwrap_or(SYMBOLS_KERNEL_BUFFERS)
+            ),
+            (1_048_576, 16)
+        );
         let s = rx_settings_for(
             &cfg(&[("buffer", "262144"), ("kbuffers", "8")], &[]),
             Dir::Capture,
         )
         .unwrap();
-        assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (262_144, 8));
+        assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (262_144, Some(8)));
         for bad in ["1", "65", "x"] {
             assert!(rx_settings_for(&cfg(&[("kbuffers", bad)], &[]), Dir::Capture).is_err());
         }
@@ -2400,5 +3076,372 @@ mod tests {
             .unwrap();
         assert!(d.contains("device       Pluto ip:192.0.2.30, RX2"), "{d}");
         assert!(d.contains("RX gain      manual 40 dB"), "{d}");
+    }
+
+    /// The BS1 IF at 40 Msps with the 40 MHz filter (`isdb tx --system
+    /// isdbs`).
+    fn sat_cfg(args: &[(&str, &str)]) -> RadioConfig {
+        RadioConfig {
+            center_hz: 1_049_480_000,
+            nominal_hz: 1_049_480_000,
+            rate_num: 40_000_000,
+            rate_den: 1,
+            bandwidth_hz: 40_000_000,
+            ..cfg(args, &[])
+        }
+    }
+
+    /// The default ISDB-S block's parameters (40 Msps, 10 dB).
+    fn tx_params() -> TxParams {
+        TxParams::design(&isdb_frontend::shape::fixed::TxDesign::new(
+            40e6, 28.86e6, 0.35,
+        ))
+        .unwrap()
+    }
+
+    const SAT_OPTS: TxOptions = TxOptions {
+        prefill_frames: 2,
+        frame_seconds: 0.011_07,
+        backoff_db: 10.0,
+    };
+
+    /// TX symbol codes: TX1 only, the code stream's buffers by default,
+    /// `buffer` and `kbuffers` as given; the description names the block,
+    /// the link rate, the buffers and the level in the banks.
+    #[test]
+    fn tx_symbols_settings_and_description() {
+        let s = tx_symbols_settings(&sat_cfg(&[])).unwrap();
+        assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (65_536, Some(16)));
+        let s = tx_symbols_settings(&sat_cfg(&[("buffer", "32768"), ("kbuffers", "8")])).unwrap();
+        assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (32_768, Some(8)));
+        // the IQ path keeps its defaults
+        let s = tx_settings(&sat_cfg(&[])).unwrap();
+        assert_eq!((s.dev.buffer, s.dev.kernel_buffers), (262_144, None));
+        let e = tx_symbols_settings(&sat_cfg(&[("channel", "2")])).unwrap_err();
+        assert!(matches!(e, RadioError::Conflict { .. }), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            "pluto: channel=2 is not wired to the FPGA transmit block, which drives TX1 (channel=1)"
+        );
+        let p = tx_params();
+        let d = Pluto
+            .describe_tx_symbols(
+                &sat_cfg(&[("uri", "ip:192.0.2.30"), ("loopback", "on")]),
+                &SAT_OPTS,
+                &p,
+            )
+            .unwrap();
+        for want in [
+            "device       Pluto ip:192.0.2.30, TX1",
+            "sample rate 40000000/1 Hz = 40.000000 MHz",
+            "TX atten     89.75 dB (maximum)",
+            "nothing radiated",
+            "modulator    FPGA transmit block of cf-ad9361-dds-core-lpc (SymbolsTx, TX format 1): symbol codes shaped on the board, banks of 512 phases × 24 taps, 1.3860 samples/symbol (step 0xb8b439)",
+            "link         4-bit symbol codes, 8 per DMA sample (voltage0 + voltage1): 14.43 MB/s at 28.860 Mbaud; buffers of 65536 samples (18.2 ms), kbuffers 16 in the kernel (291 ms)",
+            "level        RMS 10.0 dB below the 12-bit DAC full scale (647.6 LSB), in the block's banks (shift 7)",
+            "configure    13315 commands",
+        ] {
+            assert!(d.contains(want), "{want:?} not in\n{d}");
+        }
+        assert!(!d.contains("cs12"), "no quantiser level:\n{d}");
+        // refused without a device: a channel the block does not drive,
+        // parameters that do not validate, options out of range
+        let stop_here = |r: Result<(Box<dyn SymbolSink>, String)>| r.map(|_| ()).unwrap_err();
+        assert!(matches!(
+            stop_here(Pluto.open_tx_symbols(&sat_cfg(&[("channel", "2")]), &SAT_OPTS, &p)),
+            RadioError::Conflict { .. }
+        ));
+        let mut bad = p.clone();
+        bad.a[0][0] += 1;
+        assert!(matches!(
+            Pluto.describe_tx_symbols(&sat_cfg(&[]), &SAT_OPTS, &bad),
+            Err(RadioError::ModulatorParams(_))
+        ));
+        assert!(matches!(
+            stop_here(Pluto.open_tx_symbols(&sat_cfg(&[]), &SAT_OPTS, &bad)),
+            RadioError::ModulatorParams(_)
+        ));
+        let o = TxOptions {
+            backoff_db: 41.0,
+            ..SAT_OPTS
+        };
+        assert!(Pluto.describe_tx_symbols(&sat_cfg(&[]), &o, &p).is_err());
+    }
+
+    /// The DAC core with the transmit block, as the HDL decodes its
+    /// commands (fpga/README.md "The transmit block"): a command executes
+    /// when bit 31 of `gpio_out` toggles, READ shows a register in
+    /// `gpio_in` and any other command the ID word; `r1_mode` (0x48) and
+    /// the status register (0x88, write 1 to clear) beside it.
+    #[derive(Default)]
+    struct Dac {
+        id: u32,
+        gpio_out: u32,
+        gpio_in: u32,
+        r1: u32,
+        status: u32,
+        addr: u16,
+        staged: u32,
+        regs: std::collections::BTreeMap<u16, u32>,
+        ctrl: Vec<u32>,
+        run: bool,
+        selected: bool,
+        /// A block that ignores SELECT.
+        deaf: bool,
+        /// What STEP reads (`None`: what was written).
+        step_reads: Option<u32>,
+        consumed: u32,
+        missed: u32,
+        first_miss: u32,
+        underrun: bool,
+        writes: usize,
+    }
+
+    struct FakeDac(std::cell::RefCell<Dac>);
+
+    impl FakeDac {
+        fn new(id: u32) -> Self {
+            Self(std::cell::RefCell::new(Dac {
+                id,
+                gpio_in: id,
+                ..Dac::default()
+            }))
+        }
+    }
+
+    impl Dac {
+        fn execute(&mut self, w: u32) {
+            let arg = (w >> 1) & 0x07FF_FFFF;
+            let lo = arg & 0xFFFF;
+            self.gpio_in = self.id;
+            match (w >> 28) & 7 {
+                0 => {}
+                1 => self.addr = u16::try_from(lo).unwrap(),
+                2 => self.staged = lo,
+                3 => {
+                    self.regs.insert(self.addr, self.staged << 16 | lo);
+                    self.addr += 1;
+                }
+                4 => {
+                    self.gpio_in = match self.addr {
+                        txc::reg::STEP => self.step_reads.unwrap_or(self.regs[&txc::reg::STEP]),
+                        txc::reg::STATUS => {
+                            u32::from(self.run)
+                                | u32::from(self.selected) << 1
+                                | u32::from(self.underrun) << 2
+                        }
+                        txc::reg::CONSUMED => self.consumed,
+                        txc::reg::MISSED => self.missed,
+                        txc::reg::FIRST_MISS => self.first_miss,
+                        a => self.regs.get(&a).copied().unwrap_or(0),
+                    }
+                }
+                5 => {
+                    self.ctrl.push(arg);
+                    if arg & txc::ctrl::START != 0 {
+                        (self.consumed, self.missed, self.first_miss) = (0, 0, 0);
+                        self.underrun = false;
+                    }
+                    self.run = arg & txc::ctrl::RUN != 0;
+                    self.selected = arg & txc::ctrl::SELECT != 0 && !self.deaf;
+                }
+                6 => {
+                    let v = ((arg << 5).cast_signed() >> 5).cast_unsigned();
+                    self.regs.insert(self.addr, v);
+                    self.addr += 1;
+                }
+                op => panic!("{w:#010x}: op {op}"),
+            }
+        }
+    }
+
+    impl Regs for FakeDac {
+        fn read(&self, addr: u32) -> Result<u32> {
+            let d = self.0.borrow();
+            Ok(match addr {
+                txc::GPIO_IN_REG => d.gpio_in,
+                txc::GPIO_OUT_REG => d.gpio_out,
+                DAC_R1_MODE_REG => d.r1,
+                DAC_STATUS_REG => d.status,
+                _ => panic!("read of {addr:#010x}"),
+            })
+        }
+        fn write(&self, addr: u32, value: u32) -> Result<()> {
+            let mut d = self.0.borrow_mut();
+            d.writes += 1;
+            match addr {
+                txc::GPIO_OUT_REG => {
+                    assert_eq!(value & 1, d.gpio_out & 1, "bit 0 of gpio_out changed");
+                    let toggled = (value ^ d.gpio_out) >> 31 != 0;
+                    d.gpio_out = value;
+                    if toggled {
+                        d.execute(value);
+                    }
+                }
+                DAC_STATUS_REG => d.status &= !value,
+                _ => panic!("write of {addr:#010x}"),
+            }
+            Ok(())
+        }
+    }
+
+    /// The host's sequence against the block's command decoding: probe,
+    /// configuration with STEP read back, CTRL START|SELECT (selected, not
+    /// running), RUN|SELECT once the stream runs with the DAC underflow
+    /// flag cleared, MISSED per status line, the counters, CTRL 0; the ID
+    /// word in `gpio_in` after every read.
+    #[test]
+    fn transmit_block_sequence() {
+        let p = tx_params();
+        let dac = FakeDac::new(p.id_word());
+        assert_eq!(
+            TxBlock::probe(&dac).unwrap(),
+            TxIdentity::parse(0xB5D1_1918)
+        );
+        assert_eq!(TxBlock::probe(&FakeDac::new(0)).unwrap(), None);
+        let mut b = TxBlock::open(&dac, &p).unwrap();
+        let both = txc::ctrl::START | txc::ctrl::SELECT;
+        {
+            let d = dac.0.borrow();
+            assert_eq!(d.ctrl, [both]);
+            assert!(d.selected && !d.run);
+            assert_eq!(d.regs[&txc::reg::STEP], 0xB8_B439);
+            assert_eq!(d.regs[&txc::reg::SHIFT], u32::from(p.shift));
+            assert_eq!(d.regs[&txc::reg::A_BASE].cast_signed(), p.a[0][0]);
+            let last_b = txc::reg::B_BASE + 511 * txc::reg::ROW_STRIDE + 11;
+            assert_eq!(d.regs[&last_b].cast_signed(), p.b[511][11]);
+            assert_eq!(d.gpio_in, p.id_word());
+            assert_eq!(
+                d.writes,
+                Encoder::new(0).configure_tx(&p).len() + 2 * 3 + 1,
+                "configuration, two reads (ADDR, READ, NOP) and CTRL"
+            );
+        }
+        // the flag the idle DAC set before the stream
+        dac.0.borrow_mut().status = DAC_STATUS_UNDERFLOW;
+        b.run(&dac).unwrap();
+        {
+            let d = dac.0.borrow();
+            assert_eq!(d.ctrl, [both, txc::ctrl::RUN | txc::ctrl::SELECT]);
+            assert!(d.run && d.selected);
+            assert_eq!(d.status, 0, "the DAC underflow flag cleared");
+        }
+        dac.0.borrow_mut().missed = 16;
+        assert_eq!(b.status(&dac).unwrap(), 16);
+        assert_eq!(b.status(&dac).unwrap(), 16);
+        {
+            let mut d = dac.0.borrow_mut();
+            (d.consumed, d.first_miss, d.underrun) = (319_488, 640, true);
+            d.status = DAC_STATUS_UNDERFLOW;
+        }
+        let c = b.counters(&dac).unwrap();
+        assert_eq!(
+            c,
+            TxCounters {
+                status: 7,
+                consumed: 319_488,
+                missed: 16,
+                first_miss: 640,
+                underflow: true
+            }
+        );
+        assert_eq!(
+            c.describe(),
+            "CONSUMED 319488, MISSED 16, FIRST_MISS 640, STATUS 0x7; DAC underflow flag set"
+        );
+        assert_eq!(dac.0.borrow().gpio_in, p.id_word());
+        b.release(&dac).unwrap();
+        let d = dac.0.borrow();
+        assert_eq!(d.ctrl.last(), Some(&0));
+        assert!(!d.selected && !d.run);
+        let clean = TxCounters {
+            status: 3,
+            consumed: 8,
+            missed: 0,
+            first_miss: 0,
+            underflow: false,
+        };
+        assert_eq!(
+            clean.describe(),
+            "CONSUMED 8, MISSED 0, FIRST_MISS -, STATUS 0x3; DAC underflow flag clear"
+        );
+    }
+
+    /// Refused before a command: r1_mode, `gpio_out` bit 0. Refused after
+    /// the configuration, with CTRL 0 sent: a block that does not take the
+    /// DAC on SELECT, a STEP that does not read back; and a block that
+    /// does not run on RUN|SELECT.
+    #[test]
+    fn transmit_block_refusals() {
+        let p = tx_params();
+        let dac = FakeDac::new(p.id_word());
+        dac.0.borrow_mut().r1 = DAC_R1_MODE_BIT;
+        let e = TxBlock::open(&dac, &p).unwrap_err().to_string();
+        assert!(e.contains("r1_mode"), "{e}");
+        assert_eq!(dac.0.borrow().writes, 0);
+        let dac = FakeDac::new(p.id_word());
+        dac.0.borrow_mut().gpio_out = 0x8000_0001;
+        let e = TxBlock::open(&dac, &p).unwrap_err().to_string();
+        assert!(e.contains("gpio_out set") && e.contains("TX FIR"), "{e}");
+        assert_eq!(dac.0.borrow().writes, 0);
+        let dac = FakeDac::new(p.id_word());
+        dac.0.borrow_mut().deaf = true;
+        let e = TxBlock::open(&dac, &p).unwrap_err().to_string();
+        assert!(
+            e.contains("reads 0x0 after CTRL START|SELECT")
+                && e.contains("codes sent to a plain DAC would go out as samples"),
+            "{e}"
+        );
+        assert_eq!(dac.0.borrow().ctrl, [6, 0]);
+        let dac = FakeDac::new(p.id_word());
+        dac.0.borrow_mut().step_reads = Some(0x80_0000);
+        let e = TxBlock::open(&dac, &p).unwrap_err().to_string();
+        assert!(
+            e.contains("STEP: reads 0x800000 after writing 0xb8b439"),
+            "{e}"
+        );
+        assert_eq!(dac.0.borrow().ctrl, [0]);
+        let dac = FakeDac::new(p.id_word());
+        let mut b = TxBlock::open(&dac, &p).unwrap();
+        dac.0.borrow_mut().deaf = true;
+        let e = b.run(&dac).unwrap_err().to_string();
+        assert!(e.contains("not running and selected"), "{e}");
+    }
+
+    #[test]
+    fn the_block_starts_on_the_first_buffer() {
+        use crate::mock::MockCounters;
+        let c = MockCounters::default();
+        c.buffers.store(1, Ordering::Relaxed);
+        wait_first_buffer(&c, Duration::from_millis(10)).unwrap();
+        let c = MockCounters::default();
+        assert!(matches!(
+            wait_first_buffer(&c, Duration::from_millis(10)),
+            Err(RadioError::Stream {
+                problem: StreamProblem::Stalled { .. },
+                ..
+            })
+        ));
+        c.finished.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            wait_first_buffer(&c, Duration::from_millis(10)),
+            Err(RadioError::Stream {
+                problem: StreamProblem::Ended,
+                ..
+            })
+        ));
+    }
+
+    /// The prefill covers the device's queue: the kernel buffers and the
+    /// one being filled, two components per sample.
+    #[test]
+    fn what_the_device_takes_ahead() {
+        let s = tx_symbols_settings(&sat_cfg(&[])).unwrap();
+        let ahead = queue_components(s.dev.kernel_buffers.unwrap(), s.dev.buffer);
+        assert_eq!(ahead, 17 * 65_536 * 2);
+        // 28 superframes of codes (39 936 DMA samples each) cover it
+        assert_eq!((ahead / 2).div_ceil(39_936), 28);
+        // IQ at 512/63 MHz: 5 buffers, less than the 2 frames of the prefill
+        assert_eq!(queue_components(KERNEL_BUFFERS, 262_144), 5 * 262_144 * 2);
     }
 }
