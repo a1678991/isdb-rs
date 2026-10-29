@@ -50,6 +50,32 @@ STD-B44) is received to TLV streams.
   Tested as the receiver's inverse: byte-exact symbol-domain loopbacks on
   five combination mixes, and a sample-domain loopback at 40 Msps through
   the shaper and the receive front end (the trim found is 0.000 symbol).
+- `isdb-frontend`: the CPU reference of the ISDB-S transmitter in the
+  FPGA (docs/plans/isdbs-fpga-tx.md step 2). `shape::fixed`: `TxDesign`
+  → `TxParams` (Q0.24 step, shift, two symmetric 18-bit banks of 512
+  phases × 24 taps; `validate` refuses an asymmetric bank) and the
+  bit-exact `Interpolator` (4-bit symbol codes → 12-bit IQ at the DAC
+  rate, no multipliers; a DMA stall enters zero symbols counted in
+  MISSED / FIRST_MISS). `txformat`, TX format 1: code 0 the zero symbol,
+  8 + k the point e^{jkπ/4} (annexed table 46, `LabelCodes`), eight codes
+  per two-channel DAC DMA sample (14.43 MB/s at 28.86 Mbaud).
+  `control::tx`: the register map on the DAC core's GPIO pair, the ID
+  word 0xB5D1_1918, `Encoder::configure_tx`. `vectors::tx_document` and
+  `examples/txvectors.rs` write the HDL's test vectors
+  (`fpga/build/tx-*.json`). Measured: ISI MER 54.38 dB through an ideal
+  matched filter; in the digital loopback into the receive front end
+  8PSK MER 36.96 dB at its 6-bit output (the f32 shaper 36.98 dB),
+  `examples/txloop.rs`.
+- `isdbs-phy`: `Transmitter::superframe_codes` / `null_superframe_codes`
+  (`tx::SuperframeCodes`), `tx::frame_codes`,
+  `demod::encode_frame_codes[_with_state]`: the transmitter's symbols as
+  `isdb_frontend::txformat` codes, made from the bits by the same encoder
+  as the `f64` points (docs/plans/isdbs-fpga-tx.md step 3). Tested: the
+  codes are the symbols on every layout and mapping, the symbol-domain
+  loopback from the codes' points byte-exact, and the sample-domain
+  loopback at 40 Msps through the fixed-point transmit interpolator
+  byte-exact; `examples/txvectors.rs` writes the FPGA's vectors with real
+  codes.
 - `isdb-iq`: the SigMF field `isdb:system` (extension 0.4.0).
 
 - `isdb-radio` `pluto`: without `uri`, the device is found by mDNS when
@@ -520,6 +546,10 @@ STD-B44) is received to TLV streams.
   English).
 
 ### Changed
+
+- `isdbs-phy`: `Transmitter::new` refuses a dummy combination entry with
+  slots (`TxError::DummySlots`; BO.1408-1 §6.1.2 requires 0), which left
+  0 + 0j symbols in the main signal; `TmccInfo::assign` never builds one.
 
 - Workspace: the dev profile builds `isdb-frontend`, `isdbs-core` and
   `isdbs-phy` with `opt-level = 3`, as the ISDB-T PHY crates (the ISDB-S

@@ -84,6 +84,23 @@ the `ts::Packet`s a receiver returns. Superframes are independent (the
 TMCC, the dispersal and the interleaver each span one), so the caller
 can stop and start at any superframe.
 
+**Codes.** `superframe_codes` / `null_superframe_codes` return the same
+superframe as `tx::SuperframeCodes`: one 4-bit TX boundary code per
+symbol (`isdb_frontend::txformat`, 8 + k for the point e^{jkπ/4} of
+annexed table 46; BPSK 0 → 8, 1 → 12), which the FPGA's transmit block or
+`isdb_frontend::shape::fixed::Interpolator` shapes. The codes come from
+the bits, not from the points: `demod::encode_frame_with_state` and
+`encode_frame_codes_with_state`, `frame_symbols` and `frame_codes` are one
+encoder each, written over a crate-private `Point` (the `f64` point or
+the code, `LabelCodes::TABLE_46`), so code n stands for symbol n by
+construction (`qpsk_point`'s 1/√2 and `psk8_point`'s cos π/4 differ by
+an ulp, so recovering codes from points would need a nearest-point
+search). A conjugated or swapped `Mapping` relabels the codes the same
+way. `Transmitter::new` refuses a dummy combination entry (1111) with
+slots (`TxError::DummySlots`, BO.1408-1 §6.1.2: the slots it would cover
+carry no symbol, 0 + 0j, which no label represents); `TmccInfo::assign`
+never builds one.
+
 ## Diagnostics
 
 Diagnostics are `tracing` events, never printed; the crate installs no
@@ -120,7 +137,8 @@ relative TS ID points at an unused (FFFFh) entry belong to no TS.
 
 `tx::Superframe` (transmit side): a superframe's symbols and the
 (frame, slot, TS_ID) of every packet, in `ts::Packet` order (see
-[Transmit](#transmit-tx)).
+[Transmit](#transmit-tx)); `tx::SuperframeCodes` the same with TX
+boundary codes.
 
 ## Constellation readings (confirmed by RS(204,188) on the lab recordings)
 
@@ -170,14 +188,19 @@ with the receiver and runs several blocks' front ends at once
 - `demod` unit tests: annexed table 46 points and set partitioning,
   the encoder state after W2/W3, `prop_frame_round_trip` (every
   combination mix encodes with `encode_frame` and decodes back exactly),
-  TC8PSK at 12 dB SNR (few byte errors, the reverse C1/C0 reading fails).
+  TC8PSK at 12 dB SNR (few byte errors, the reverse C1/C0 reading fails),
+  `codes_are_the_points` (the codes' points and `psk8_point` of their
+  labels equal the symbols within 10⁻¹² on every mix, a frame with unused
+  symbols included, under all eight mappings).
 - `tx` unit tests: `frame_symbols_follows_table_45` (the coded header,
   the bursts and the main symbols where `frame::*_position` puts them,
   each symbol once; the encoder left in the W2/W3 state),
   `slot_tables` (TSs, slots and packets per superframe of the BS and CS
   layouts), `null_superframe_decodes_to_null_packets` (received
   noiselessly: the TMCC sent, null packets RS-clean where `placed` says),
-  `errors` (every `TxError`).
+  `codes_are_the_symbols` (`superframe_codes` against `superframe` over
+  three superframes and five mappings), `errors` (every `TxError`, the
+  dummy entry with slots first or after a real one).
 - Symbol-domain loopback (`tests/loopback.rs`): one null superframe and
   three of distinct packets per TS through `Transmitter`, a carrier
   offset of 2·10⁻⁴ cycle per symbol, a phase and AWGN, after 1 111
@@ -187,7 +210,11 @@ with the receiver and runs several blocks' front ends at once
   transmitter's `placed`. Layouts: the BS layout (TC8PSK 2/3 × 48, three
   TSs) and TC8PSK 2/3 × 44 + BPSK 1/2 × 4 (two TSs) at 12 dB; the CS
   layout (QPSK 3/4 × 48, one TS), QPSK 7/8 × 40 + QPSK 1/2 × 8 (three
-  TSs) and QPSK 5/6 × 30 + QPSK 2/3 × 18 (two TSs) at 8 dB.
+  TSs) and QPSK 5/6 × 30 + QPSK 2/3 × 18 (two TSs) at 8 dB. Each layout
+  runs twice: from the symbols, and from the points of a twin
+  transmitter's `superframe_codes` (every code checked against its
+  symbol through `psk8_point` of its label first), with the same
+  outcome.
 - Sample-domain loopback (`tests/loopback.rs`
   `sample_domain_bs_layout_at_40_msps`): the BS layout, one null
   superframe, three of distinct packets and one null frame through
@@ -199,6 +226,17 @@ with the receiver and runs several blocks' front ends at once
   front end's loops settle in the first symbols of the lead superframe,
   so its first slots (17 of 384) are uncorrectable: the reason a
   transmission starts with a null superframe.
+- Sample-domain loopback through the FPGA's arithmetic
+  (`sample_domain_fixed_interpolator_bs_layout_at_40_msps`): the same
+  stream as codes (`superframe_codes`), eight to a DMA word, through
+  `isdb_frontend::shape::fixed::Interpolator` (ISDB-S at 40 Msps, 10 dB
+  backoff), its 12-bit integers into `frontend::symbols`: the data
+  superframes byte-exact per TS_ID, none uncorrectable, no stall, the trim
+  within ±0.05 (measured: 0.000, main MER 44.5 dB, the realised symbol
+  rate 28 859 999.2 Bd of the Q0.24 step).
+- `examples/txvectors.rs`: the FPGA transmit block's vectors with real
+  codes (`fpga/build/tx-5-isdbs.json`: the first 4 000 codes of a BS data
+  superframe after a null one).
 - Opt-in recordings, main signal (`ISDB_RS_ISDBS_TS_IQ`): no
   uncorrectable RS word, sync byte on every packet, continuity counters
   without a gap per TS_ID and PID.

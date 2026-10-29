@@ -110,10 +110,14 @@
 //! ([`crate::fast::FastFrontend`], ISDB-S at 40 Msps as the receivers
 //! design it, trim 0, RMS 0.3 of the 12-bit input) the 8PSK MER after
 //! the loop settles is 41.2 dB before and 36.2 dB after the 6-bit output
-//! quantiser.
+//! quantiser, counting the receiver's outputs over the `finish` tail
+//! (zero symbols, which `metrics::psk_mer` counts as errors); in the
+//! steady state 44.5 and 37.0 dB (`examples/txloop.rs`).
 
 use crate::tables::rrc;
 use num_complex::Complex32;
+
+pub mod fixed;
 
 /// Phases of the bank (rows, plus one: row [`PHASES`] is row 0 one tap
 /// later).
@@ -275,20 +279,8 @@ impl Shaper {
     /// The shaper for validated settings, at the start of a stream.
     fn build(sample_rate: f64, symbol_rate: f64, roll_off: f64, step: u64, span: usize) -> Self {
         let width = (2 * span).div_ceil(LANES) * LANES;
-        let half = span as f64;
-        let rows: Vec<Vec<f64>> = (0..=PHASES)
-            .map(|q| {
-                (0..2 * span)
-                    .map(|t| pulse(q as f64 / PHASES as f64 + t as f64 - half, roll_off, span))
-                    .collect()
-            })
-            .collect();
-        let energy = rows[..PHASES]
-            .iter()
-            .map(|r| r.iter().map(|c| c * c).sum::<f64>())
-            .sum::<f64>()
-            / PHASES as f64;
-        let gain = energy.sqrt().recip();
+        let rows = bank_rows(roll_off, span);
+        let gain = gain_of(&rows);
         let mut bank = vec![0.0f32; (PHASES + 1) * width];
         for (dst, row) in bank.chunks_exact_mut(width).zip(&rows) {
             for (d, &c) in dst.iter_mut().zip(row) {
@@ -427,6 +419,36 @@ impl Shaper {
             }
         }
     }
+}
+
+/// The unscaled bank: [`PHASES`] + 1 rows of `p(q / PHASES + t − span)`,
+/// t = 0..2·span.
+fn bank_rows(roll_off: f64, span: usize) -> Vec<Vec<f64>> {
+    let half = span as f64;
+    (0..=PHASES)
+        .map(|q| {
+            (0..2 * span)
+                .map(|t| pulse(q as f64 / PHASES as f64 + t as f64 - half, roll_off, span))
+                .collect()
+        })
+        .collect()
+}
+
+/// `G` of `rows` ([`bank_rows`]): the inverse RMS of the first
+/// [`PHASES`] rows (module documentation, "Scaling").
+fn gain_of(rows: &[Vec<f64>]) -> f64 {
+    let energy = rows[..PHASES]
+        .iter()
+        .map(|r| r.iter().map(|c| c * c).sum::<f64>())
+        .sum::<f64>()
+        / PHASES as f64;
+    energy.sqrt().recip()
+}
+
+/// [`Shaper::gain`] for `roll_off` and `span` (it depends on nothing
+/// else): the gain [`fixed::TxParams::design`] folds into its banks.
+pub(crate) fn rms_gain(roll_off: f64, span: usize) -> f64 {
+    gain_of(&bank_rows(roll_off, span))
 }
 
 /// The pulse: [`rrc`]`(t, alpha)` for |t| < `span`, else 0.

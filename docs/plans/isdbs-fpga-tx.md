@@ -72,6 +72,21 @@ re-syncs on the next frame in every variant (interpolator.md §5).
 
 ## 2. Signal and format (to freeze in the model, then the HDL)
 
+**Frozen in step 2** (`isdb_frontend::txformat`, `shape::fixed`,
+`control::tx`; crate README "The TX boundary: symbol codes", "Transmit
+interpolator (the FPGA model)", "The TX register map"). Where the list
+below differs, the model rules:
+
+- code 0 is the zero symbol, 1..7 are reserved (the zero symbol), 8 + k is
+  the point e^{jkπ/4}: bit 3 marks a *point*, so zero padding is silence;
+- the second packing: 8 codes per two-channel DMA sample, code 0 in I bits
+  3..0, codes 4..7 in the Q word;
+- no forced carry at START: the line starts with zero codes, frac = 0,
+  sample 0 is 0 and the first code enters at the first carry;
+- a stalled word request enters 8 zero symbols, each counted in MISSED;
+  FIRST_MISS latches CONSUMED at the first; the sticky flag is STATUS bit 2;
+- `Encoder::configure_tx` writes taps 0..S of each row (the stored half).
+
 - Codes: 4 bits per symbol, bits 2..0 the angle index k (point
   e^{jkπ/4}; table-46 label → k is a fixed 8-entry map on the host:
   000→0, 001→1, 011→2, 010→3, 100→4, 101→5, 111→6, 110→7), bit 3 = the
@@ -115,15 +130,18 @@ Each step is a commit with tests and docs, as the RX path was built
    it reads 0x80000044 bit 2 on both cores; on the DAC core that bit is
    `ext_sync_disarm` and `r1_mode` is 0x80000048 bit 5 (ADI
    `up_dac_common.v`, confirmed). Small, independent, do first.
-2. **Fixed-point model** `isdb_frontend::shape::fixed` (`TxDesign` →
-   `TxParams` with `validate`, the model, codes/packing, vectors):
+2. **Fixed-point model** (done; frozen as §2 says)
+   `isdb_frontend::shape::fixed` (`TxDesign` → `TxParams` with
+   `validate`, the model, codes/packing, vectors):
    bit-exact spec in interpolator.md §4; tests against the f32 `Shaper`
    (≥ 40 dB through an ideal matched filter), through `FastFrontend` at
    40 Msps (≥ 36.0 dB at the 6-bit output), chunking invisible, underrun
    gaps, symmetry enforced. `control::tx` register map, ID word,
    `Encoder::configure_tx`. The CLI's `--offload cpu` for files can use
    this model so that the file path and the FPGA path are the same bits.
-3. **Label path in `isdbs-phy`**: `Transmitter::superframe_codes`
+3. **Label path in `isdbs-phy`** (done: the codes come from one encoder
+   path with the points; loopbacks from the codes byte-exact, symbol and
+   sample domain through the fixed model): `Transmitter::superframe_codes`
    (codes produced natively from the bits, not recovered from the f64
    points: `qpsk_point` and `psk8_point` differ by an ulp), refuse a
    dummy combination with slots (the one case that leaves 0+0i symbols),
@@ -213,9 +231,14 @@ effect of the absent-register writes are unverified.
 ## 6. Risks and open questions
 
 - The interpolator's "span 12 reads 0.5–0.7 dB better than span 16
-  through the RX front end" (interpolator.md §1) is reproducible but
-  unexplained; it does not change the choice (span 8's out-of-band peak
-  is −41.5 dB, span 12's −49 dB).
+  through the RX front end" (interpolator.md §1) is a measurement
+  artifact, settled in step 2: `metrics::psk_mer` counted the receiver's
+  outputs over the zero tail after the last symbol (2·span − 1 symbols,
+  longer for span 16). In the steady state the model reads 36.96 dB at
+  the 6-bit output (44.41 dB before the quantiser) at span 12, 36.98 /
+  44.45 dB at span 16, and the f32 shaper 36.98 / 44.54 dB
+  (`isdb-frontend` `examples/txloop.rs`). Span 12 stays (span 8's
+  out-of-band peak is −41.5 dB, span 12's −49 dB).
 - Timing at 40 MHz is unverified in Vivado (the deepest stage is a
   24-bit add; the RX block's paths are longer and close with the stock
   margin +0.100 ns).

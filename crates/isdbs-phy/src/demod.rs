@@ -27,6 +27,7 @@
 
 use crate::{Cplx, soft};
 use isdb_fec::{ConvEncoder, ViterbiDecoder};
+use isdb_frontend::txformat::{self, LabelCodes};
 use isdbs_core::combination::{Combination, Modulation};
 use isdbs_core::frame::{SLOT_BYTES, W1, W2, W3};
 use isdbs_core::slots::runs;
@@ -106,6 +107,75 @@ pub fn qpsk_point(p1: u8, p0: u8) -> Cplx {
         if p1 & 1 == 0 { s } else { -s },
         if p0 & 1 == 0 { s } else { -s },
     )
+}
+
+/// What a transmitted symbol is made of (MIC Ordinance No. 87 of 2011,
+/// annexed table 46): the encoders below are written once over this and
+/// produce either the `f64` points ([`Cplx`]) or their TX boundary codes
+/// (`u8`, `isdb_frontend::txformat`) from the same bits, so the two never
+/// disagree and neither is recovered from the other.
+pub(crate) trait Point: Copy + Send + Sync {
+    /// A position no symbol was written to: 0 + 0j, the zero code.
+    const ZERO: Self;
+    /// A BPSK bit: 0 at 0°, 1 at 180°.
+    fn bpsk(bit: u8) -> Self;
+    /// The QPSK pair (P1, P0), P1 the sign of I and P0 that of Q, or the
+    /// other way round with `p1_on_q` ([`Mapping::qpsk_p1_on_q`]).
+    fn qpsk(p1: u8, p0: u8, p1_on_q: bool) -> Self;
+    /// The TC8PSK label [C2 C1 C0].
+    fn psk8(label: u8) -> Self;
+    /// The symbol mirrored, z → z̄ ([`Mapping::conjugate`]).
+    #[must_use]
+    fn mirror(self) -> Self;
+}
+
+impl Point for Cplx {
+    const ZERO: Self = Cplx::new(0.0, 0.0);
+
+    fn bpsk(bit: u8) -> Self {
+        Cplx::new(if bit & 1 == 0 { 1.0 } else { -1.0 }, 0.0)
+    }
+
+    fn qpsk(p1: u8, p0: u8, p1_on_q: bool) -> Self {
+        let q = qpsk_point(p1, p0);
+        if p1_on_q { Cplx::new(q.im, q.re) } else { q }
+    }
+
+    fn psk8(label: u8) -> Self {
+        psk8_point(label)
+    }
+
+    fn mirror(self) -> Self {
+        self.conj()
+    }
+}
+
+/// The TX boundary code of each symbol (`isdb_frontend::txformat`: 8 + k
+/// for the point e^{jkπ/4}, 0 for the zero symbol), from
+/// [`LabelCodes::TABLE_46`].
+impl Point for u8 {
+    const ZERO: Self = txformat::ZERO;
+
+    fn bpsk(bit: u8) -> Self {
+        LabelCodes::TABLE_46.bpsk(bit)
+    }
+
+    fn qpsk(p1: u8, p0: u8, p1_on_q: bool) -> Self {
+        // (I, Q) swapped is the pair read the other way round
+        if p1_on_q {
+            LabelCodes::TABLE_46.qpsk(p0, p1)
+        } else {
+            LabelCodes::TABLE_46.qpsk(p1, p0)
+        }
+    }
+
+    fn psk8(label: u8) -> Self {
+        LabelCodes::TABLE_46.label(label)
+    }
+
+    fn mirror(self) -> Self {
+        txformat::conjugate(self)
+    }
 }
 
 /// The encoder register after a 16-bit sync word (its last six bits;
@@ -335,12 +405,43 @@ pub fn encode_frame_with_state(
     first: bool,
     m: Mapping,
 ) -> (Vec<Cplx>, ConvEncoder) {
+    encode_points(bytes, info, first, m)
+}
+
+/// [`encode_frame`] as TX boundary codes (`isdb_frontend::txformat`: the
+/// point e^{jkπ/4} of annexed table 46 is code 8 + k), made from the same
+/// bits by the same encoder: code `n` stands for symbol `n` of
+/// [`encode_frame`] exactly. Unused symbols at the end of the frame are
+/// the zero code.
+pub fn encode_frame_codes(bytes: &[u8], info: &TmccInfo, first: bool, m: Mapping) -> Vec<u8> {
+    encode_frame_codes_with_state(bytes, info, first, m).0
+}
+
+/// [`encode_frame_codes`], also returning the encoder after the frame
+/// (as [`encode_frame_with_state`]).
+pub fn encode_frame_codes_with_state(
+    bytes: &[u8],
+    info: &TmccInfo,
+    first: bool,
+    m: Mapping,
+) -> (Vec<u8>, ConvEncoder) {
+    encode_points(bytes, info, first, m)
+}
+
+/// The encoder of [`encode_frame_with_state`] and
+/// [`encode_frame_codes_with_state`], over either kind of [`Point`].
+pub(crate) fn encode_points<P: Point>(
+    bytes: &[u8],
+    info: &TmccInfo,
+    first: bool,
+    m: Mapping,
+) -> (Vec<P>, ConvEncoder) {
     let mut enc = ConvEncoder::new();
     let start = state_after(if first { W2 } else { W3 });
     for i in 0..6 {
         enc.push((start >> i) & 1);
     }
-    let mut out = vec![Cplx::new(0.0, 0.0); isdbs_core::frame::MAIN_SYMBOLS];
+    let mut out = vec![P::ZERO; isdbs_core::frame::MAIN_SYMBOLS];
     let mut bits = bytes
         .iter()
         .flat_map(|&b| (0..8).rev().map(move |i| (b >> i) & 1));
@@ -353,20 +454,13 @@ pub fn encode_frame_with_state(
                 for _ in 0..info_bits {
                     let (x, y) = enc.push(bits.next().unwrap_or(0));
                     for b in [x, y] {
-                        out[k] = Cplx::new(if b == 0 { 1.0 } else { -1.0 }, 0.0);
+                        out[k] = P::bpsk(b);
                         k += 1;
                     }
                 }
             }
             Modulation::Qpsk => {
-                let put = |p1: u8, p0: u8| {
-                    let q = qpsk_point(p1, p0);
-                    if m.qpsk_p1_on_q {
-                        Cplx::new(q.im, q.re)
-                    } else {
-                        q
-                    }
-                };
+                let put = |p1: u8, p0: u8| P::qpsk(p1, p0, m.qpsk_p1_on_q);
                 match c.puncturing() {
                     None => {
                         for _ in 0..info_bits {
@@ -400,7 +494,7 @@ pub fn encode_frame_with_state(
                     let c2 = bits.next().unwrap_or(0);
                     let (x, y) = enc.push(bits.next().unwrap_or(0));
                     let (c1, c0) = if m.tc8psk_c1_is_y { (y, x) } else { (x, y) };
-                    out[k] = psk8_point((c2 << 2) | (c1 << 1) | c0);
+                    out[k] = P::psk8((c2 << 2) | (c1 << 1) | c0);
                     k += 1;
                 }
             }
@@ -408,7 +502,7 @@ pub fn encode_frame_with_state(
     }
     if m.conjugate {
         for v in &mut out {
-            *v = v.conj();
+            *v = v.mirror();
         }
     }
     (out, enc)
@@ -496,6 +590,60 @@ mod tests {
             let z = encode_frame(&bytes, &inf, first, m);
             let d = decode_frame(&z, &inf, first, &DemodOptions::default());
             prop_assert_eq!(d.bytes, bytes);
+        }
+    }
+
+    /// The codes stand for the points: `txformat::point(code)` and
+    /// `psk8_point` of the code's table-46 label equal the `f64` symbol
+    /// (within 10⁻¹²), every symbol of every combination mix, under every
+    /// mapping; the code of an unused position is the zero code, of a
+    /// symbol 8..=15.
+    #[test]
+    fn codes_are_the_points() {
+        let mixes = [
+            info(&[(Combination::Tc8psk2_3, 48)]),
+            info(&[(Combination::Qpsk3_4, 48)]),
+            info(&[(Combination::Tc8psk2_3, 44), (Combination::Bpsk1_2, 4)]),
+            info(&[(Combination::Qpsk7_8, 40), (Combination::Qpsk1_2, 8)]),
+            info(&[(Combination::Qpsk5_6, 30), (Combination::Qpsk2_3, 18)]),
+            // fewer slots than the frame: unused symbols at the end
+            info(&[(Combination::Qpsk1_2, 8)]),
+        ];
+        let label_of = |k: u8| {
+            u8::try_from(txformat::LABEL_ANGLE.iter().position(|&a| a == k).unwrap()).unwrap()
+        };
+        for (i, inf) in mixes.iter().enumerate() {
+            let n = sent_slots(inf).len() * SLOT_BYTES;
+            let bytes: Vec<u8> = (0..n)
+                .map(|j| (j * 151 + i * 7 + 3).to_le_bytes()[0])
+                .collect();
+            for bits in 0..8u8 {
+                let m = Mapping {
+                    conjugate: bits & 1 != 0,
+                    qpsk_p1_on_q: bits & 2 != 0,
+                    tc8psk_c1_is_y: bits & 4 == 0,
+                };
+                for first in [false, true] {
+                    let (z, ez) = encode_frame_with_state(&bytes, inf, first, m);
+                    let (c, ec) = encode_frame_codes_with_state(&bytes, inf, first, m);
+                    assert_eq!(ez, ec);
+                    assert_eq!(c.len(), z.len());
+                    for (j, (&code, &v)) in c.iter().zip(&z).enumerate() {
+                        let p = txformat::point(code);
+                        assert!(
+                            (p - v).norm() < 1e-12,
+                            "mix {i} mapping {bits} symbol {j}: {code} against {v}"
+                        );
+                        match txformat::angle(code) {
+                            Some(k) => {
+                                assert!((psk8_point(label_of(k)) - v).norm() < 1e-12);
+                                assert!((8..16).contains(&code));
+                            }
+                            None => assert_eq!((code, v.norm()), (0, 0.0)),
+                        }
+                    }
+                }
+            }
         }
     }
 
