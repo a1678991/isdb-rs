@@ -183,7 +183,11 @@ Each step is a commit with tests and docs, as the RX path was built
 
 ## 5. Board checks before any of the above means anything
 
-Read-only unless stated; each settles one assumption:
+**Done 2026-10-29: every row below is answered in VERIFICATION.md "ISDB-S
+transmitter in the FPGA: board checks"** (the DAC GPIO pair reads as
+derived, the underflow flag is bit 0, a single-channel TX buffer works,
+the link is clean to 64 MB/s and starved at 80, the digital loopback is
+sample-exact, the chip is an AD9361). Kept as the list of assumptions:
 
 | Check | Settles |
 |---|---|

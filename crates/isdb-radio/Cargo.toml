@@ -40,6 +40,10 @@ pluto = ["dep:isdb-iio", "dep:serde_json"]
 # an IqSink.
 mock = []
 
+[[example]]
+name = "txrate"
+required-features = ["pluto"]
+
 [package.metadata.docs.rs]
 all-features = true
 

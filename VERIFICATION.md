@@ -1613,6 +1613,31 @@ The host drops under induced load are the decoder sharing the cores with
 48 busy threads (≈ 0.9× real time then); they are reported
 discontinuities, not stalls of the capture.
 
+## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
+
+The checks of [docs/plans/isdbs-fpga-tx.md](docs/plans/isdbs-fpga-tx.md)
+§5, run on the PlutoSky R2 (Tezuka v0.3.24, the format-4 `isdb_top.bin`,
+`ip:10.10.0.30`) before the transmit block was written. Register reads
+with `iio_reg`; the transmit runs with `isdb-radio`'s `examples/txrate.rs`
+into the AD9361's digital data-port loopback with the TX LO powered down
+and the attenuation at its maximum (nothing reaches the TX port); the
+capture with `isdb capture`; the analysis with
+`tools/loopback-tone-check.py`.
+
+| Check | Result |
+|---|---|
+| `cf-ad9361-dds-core-lpc` 0x800000B8 (`up_dac_gpio_in`) | 0: unconnected in Tezuka, so the TX block's ID word can use it as the RX block uses the ADC core's |
+| 0x800000BC (`up_dac_gpio_out`) | 0: bit 0 (the ×8 TX FIR) clear |
+| DAC `r1_mode`, 0x80000048 bit 5 | 0 (and 0x44 = 0; the host's guard read that register's bit 2 on this core, which is `ext_sync_disarm`: fixed in `a7c4107`) |
+| ADC core 0x80000044 bit 2, 0x800000B8 | 0; ID word 0x15DB4020 (the format-4 front end, 32 taps) |
+| DAC underflow flag, 0x80000088 bit 0 | **bit 0**, as ADI's `up_dac_common` says (Tezuka's scripts test bit 2). It is set whenever no DMA word is available, which includes the idle state between streams: it must be cleared and read *while streaming* (`txrate` does) |
+| a TX buffer with `voltage0` alone | accepted by `cf_axi_dds` (`iio_writedev … voltage0 < /dev/zero` streamed until its timeout) |
+| TX-direction link ceiling (cs12, host → board, 15 s each, flag cleared at 2 s) | 8 and 16 Msps (32 and 64 MB/s): 0 host underruns, DAC flag 0 at the end. 20 Msps (80 MB/s): flag set. 24 Msps: only 12.5 s on air in 15 s (≈ 75 MB/s delivered). **Clean to 64 MB/s, starved at 80 MB/s**: the same class as the receive direction (63–72 MB/s), so a 3- or 4-bit symbol code stream (11.5–14.4 MB/s) has a 4–5× margin |
+| AD9361 digital loopback transparency | **sample-exact.** A 1 Mi-sample capture at 8 Msps during a `txrate` run holds exactly the 64 distinct complex values of the transmitted cs12 tone, periodic at 64 without one exception over 943 655 samples, RMS 647.3 LSB (expected 647.6 at 10 dB backoff), image 0.00 LSB. The TX block's 12-bit words will reach the RX block unchanged, so the on-board self-test can be bit-exact |
+| `S96plutostream` | present in `/etc/init.d`; `pluto_stream` / `pluto_mqtt_ctrl` not running (the autorun hook kills them); the board had been up 33 min on the isdb image, so their start-up writes to the absent DVB registers did not take it down |
+| AD9361 variant | `ad9361-phy,model: ad9361` (TX bandwidth to 40 MHz) |
+| Boot | this boot hit "Tuning TX FAILED!" (no `cf-ad9361-lpc`), the known 2-in-3 failure; the documented unbind / rebind recovery succeeded on its 4th attempt (the tune is probabilistic; attempts at 40 and 61.44 Msps both failed before one passed) |
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received
