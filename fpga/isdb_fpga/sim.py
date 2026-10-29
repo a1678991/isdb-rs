@@ -1,19 +1,32 @@
-"""Simulate the front end on test vectors from the Rust model
-(`cargo run -p isdb-frontend --example vectors -- OUT.json ...`) and compare
-every symbol's internals and the output words.
+"""Simulate the blocks on test vectors and compare them bit for bit.
+
+Receive (`SymbolsRx`): vectors from the Rust front-end model (`cargo run
+-p isdb-frontend --example vectors -- OUT.json ...`); every symbol's
+internals and the output words are compared.
+
+Transmit (`SymbolsTx`, a vectors file with "samples" and "stalls": from
+the Rust model, or `python -m isdb_fpga.txmodel`): every sample's state
+(frac, q, the line, the carry and the code that enters), its sums and its
+output, and the counters, with the DMA's stalls and the rfifo's request
+strobe as given.
 
 python -m isdb_fpga.sim VECTORS.json [--pattern every|wfifo|jitter] [--load-port] [--via-gpio]
+python -m isdb_fpga.sim TXVECTORS.json [--pattern every|rfifo|jitter] [--latency N]
+                                       [--load-port] [--via-gpio]
 """
 
+import collections
 import json
 import random
 import sys
 
 from amaranth.sim import Simulator
 
+from . import tx
 from .control import ID_MAGIC
 from .frontend import FORMAT_VERSION, SymbolFrontend
-from .top import SymbolsRx
+from .top import SymbolsRx, SymbolsTx
+from .txmodel import Dma, Encoder
 
 FIELDS = ("phase", "y", "dy", "yk", "gain", "period", "z", "dz", "zk", "q", "e", "err")
 
@@ -206,6 +219,8 @@ def compare(doc, syms, words):
 def main(argv):
     path = argv[1]
     doc = load(path)
+    if is_tx(doc):
+        return main_tx(path, doc, argv)
     if "--via-gpio" in argv:
         words, bad = simulate_top(doc)
         ew = doc["words"]
@@ -223,6 +238,357 @@ def main(argv):
     syms, words = simulate(doc, pattern=pattern, load_port="--load-port" in argv)
     bad = compare(doc, syms, words)
     print(f"{path}: {len(syms)} symbols, {len(words)} words; "
+          + ("bit-exact" if not bad else f"{len(bad)} mismatches"))
+    for b in bad:
+        print("  " + b)
+    return 1 if bad else 0
+
+
+# --- the transmit block ---------------------------------------------------
+
+TX_SAMPLE_FIELDS = ("n", "frac", "q", "line", "sum_i", "sum_q", "out_i", "out_q", "wrap", "code")
+TX_COUNTERS = ("consumed", "missed", "first_miss", "samples")
+
+
+def is_tx(doc):
+    """A transmit vectors file (`isdb_fpga.txmodel` docstring)."""
+    return "samples" in doc and "stalls" in doc
+
+
+def req_pattern(pattern, rng):
+    """The rfifo's request strobe (`din_valid_0`), one value per clock:
+    `every` = a strobe on every clock (the most the block must take, and
+    the steady state on the PlutoSky R2, where the din clock is the sample
+    rate); `rfifo` = util_rfifo's bursts of eight consecutive strobes, the
+    next burst after 0 to 2 idle clocks and now and then after a pause of
+    5 to 20; `jitter` = a strobe with probability 0.7."""
+    while True:
+        if pattern == "every":
+            yield 1
+        elif pattern == "rfifo":
+            yield from (1,) * 8
+            gap = rng.choice((0, 0, 0, 1, 2)) if rng.random() > 0.01 else rng.randrange(5, 21)
+            yield from (0,) * gap
+        elif pattern == "jitter":
+            yield 1 if rng.random() < 0.7 else 0
+        else:
+            raise ValueError(f"request pattern {pattern!r}: every, rfifo or jitter")
+
+
+class Upack:
+    """util_upack2 as the block sees it: a request (`fifo_rd_en` high on a
+    clock) is answered `latency` clocks later (1 at the IP's default
+    PIPELINE_STAGES 0: util_upack2_impl.v registers data and valid) with
+    `fifo_rd_valid` and the word, or with `fifo_rd_underflow` and zero data
+    when the DMA has none (`txmodel.Dma`: the vectors' stalls, and every
+    request after the last word)."""
+
+    def __init__(self, doc, latency=1):
+        self.dma = Dma(doc["words"], doc["stalls"])
+        self.latency = latency
+        self.due = collections.deque()  # (clock, word or None)
+
+    def response(self, clock):
+        """(valid, underflow, word) on the lines during `clock`."""
+        if self.due and self.due[0][0] == clock:
+            word = self.due.popleft()[1]
+            return (word is not None, word is None, word or 0)
+        return (False, False, 0)
+
+    def request(self, clock):
+        self.due.append((clock + self.latency, self.dma.request()))
+
+
+class _CorePort:
+    """The bench's view of a bare `SymbolTx`."""
+
+    def __init__(self, core):
+        self.core = core
+        self.req = core.req
+        self.rd_en = core.rd_en
+
+    def respond(self, ctx, valid, underflow, word):
+        ctx.set(self.core.rd_valid, valid)
+        ctx.set(self.core.rd_underflow, underflow)
+        ctx.set(self.core.rd_data, word)
+
+    def out(self, ctx):
+        return ctx.get(self.core.o_i), ctx.get(self.core.o_q), None
+
+
+class _TopPort:
+    """The bench's view of `SymbolsTx`: its ports (the core's internals
+    are read for the sample states only)."""
+
+    def __init__(self, top):
+        self.top = top
+        self.core = top.core
+        self.req = top.req
+        self.rd_en = top.rd_en
+
+    def respond(self, ctx, valid, underflow, word):
+        ctx.set(self.top.rd_valid, valid)
+        ctx.set(self.top.rd_underflow, underflow)
+        ctx.set(self.top.rd_data0, word & 0xFFFF)
+        ctx.set(self.top.rd_data1, word >> 16)
+
+    def out(self, ctx):
+        d0, d1 = ctx.get(self.top.out_data0), ctx.get(self.top.out_data1)
+        bad = None
+        if (d0 | d1) & 0xF or not ctx.get(self.top.out_valid):
+            bad = f"out_data {d0:#06x} {d1:#06x} valid {ctx.get(self.top.out_valid)}"
+
+        def s12(v):
+            v >>= 4
+            return v - 4096 if v >> 11 else v
+
+        return s12(d0), s12(d1), bad
+
+
+class _TxBench:
+    """Clock by clock: the request strobe, the upack's responses and
+    requests, and commands on `gpio_out`."""
+
+    def __init__(self, ctx, port, upack):
+        self.ctx = ctx
+        self.port = port
+        self.core = port.core
+        self.upack = upack
+        self.clock = 0
+        self.problems = []
+
+    def _pre(self, req):
+        ctx = self.ctx
+        ctx.set(self.port.req, req)
+        self.port.respond(ctx, *self.upack.response(self.clock))
+        if ctx.get(self.port.rd_en):
+            self.upack.request(self.clock)
+
+    async def tick(self, n=1, req=0):
+        for _ in range(n):
+            self._pre(req)
+            await self.ctx.tick()
+            self.clock += 1
+
+    async def command(self, gpio_out, word, gap):
+        self.ctx.set(gpio_out, word)
+        await self.tick(gap)
+
+    async def stream(self, doc, pattern, rng, after_n=None):
+        """Strobe until every sample of `doc` has left the pipeline.
+        Returns (samples, the core's counters right after the last
+        sample's update). `after_n` is awaited at that point (no strobes
+        meanwhile; the upack keeps answering)."""
+        ctx, core = self.ctx, self.core
+        n = len(doc["samples"])
+        lat = core.latency
+        states, outs, counters = [], [], None
+        gen = req_pattern(pattern, rng)
+        while len(outs) < n + lat:
+            if len(states) == n and counters is None:
+                counters = {k: ctx.get(getattr(core, k)) for k in TX_COUNTERS}
+                if after_n is not None:
+                    await after_n()
+            self._pre(next(gen))
+            en = ctx.get(core.en)
+            if en:
+                wrap = ctx.get(core.wrap)
+                frac = ctx.get(core.frac)
+                states.append({
+                    "n": len(states),
+                    "frac": frac,
+                    "q": frac >> (tx.FRAC_BITS - core.pbits),
+                    "line": [ctx.get(c) for c in core.line],
+                    "wrap": wrap,
+                    "code": ctx.get(core.code) if wrap else None,
+                })
+            await ctx.tick()
+            self.clock += 1
+            if en:
+                o_i, o_q, bad = self.port.out(ctx)
+                if bad and len(outs) >= lat and len(self.problems) < 5:
+                    self.problems.append(f"output {len(outs) - lat}: {bad}")
+                outs.append({"out_i": o_i, "out_q": o_q,
+                             "sum_i": ctx.get(core.s_sum_i), "sum_q": ctx.get(core.s_sum_q)})
+        ctx.set(self.port.req, 0)
+        self.lead = [(o["out_i"], o["out_q"]) for o in outs[:lat]]
+        samples = []
+        for k in range(n):
+            rec = dict(states[k])
+            rec.update(outs[k + lat])
+            samples.append(rec)
+        return samples, counters
+
+
+def tx_bank_entries(doc, load, a=None, b=None):
+    """(bank, q, t, value) load-port writes of the vectors' banks: every
+    tap of every row (`full`) or the near half t < S (`half`, which loads
+    the whole symmetric bank)."""
+    p = doc["params"]
+    a = p["a"] if a is None else a
+    b = p["b"] if b is None else b
+    taps = 2 * p["span"] if load == "full" else p["span"]
+    return [(bank, q, t, row[t]) for bank, rows in ((0, a), (1, b))
+            for q, row in enumerate(rows) for t in range(taps)]
+
+
+def simulate_tx(doc, pattern="every", latency=1, load=None, writes=(), banks=None, seed=1,
+                restart_after=None, info=None):
+    """Run `SymbolTx` on `doc`: its banks as the memories' initial contents
+    (`banks` = (a, b) instead of the vectors'), or with `load` = "full" or
+    "half" written through the load port into empty memories; `writes`
+    = (bank, q, t, value) more load-port writes after that. With
+    `restart_after` = k, the block first runs k samples (and its pipeline
+    on), then gets START while running, the DMA's queue as it is: the
+    samples returned are those after the restart, and `info` (a dict)
+    receives "restart_at", the samples made before START, and "lead", the
+    outputs of the first LATENCY enabled clocks after it (before sample
+    0 can have arrived). Returns (samples, counters) in the vectors'
+    layout."""
+    p = doc["params"]
+    a, b = banks if banks is not None else (p["a"], p["b"])
+    init = load is None
+    dut = tx.SymbolTx(p["phases"], p["span"], a if init else None, b if init else None)
+    sim = Simulator(dut)
+    sim.add_clock(1e-8)
+    res = {}
+
+    async def bench(ctx):
+        tb = _TxBench(ctx, _CorePort(dut), Upack(doc, latency))
+        ctx.set(dut.regs.step, p["step"])
+        ctx.set(dut.regs.shift, p["shift"])
+        entries = (tx_bank_entries(doc, load, a, b) if load else []) + list(writes)
+        for bank, q, t, v in entries:
+            ctx.set(dut.c_we, 1)
+            ctx.set(dut.c_bank, bank)
+            ctx.set(dut.c_q, q)
+            ctx.set(dut.c_t, t)
+            ctx.set(dut.c_data, v)
+            await tb.tick()
+        ctx.set(dut.c_we, 0)
+        await tb.tick(2)
+        ctx.set(dut.run, 1)
+        ctx.set(dut.selected, 1)
+        ctx.set(dut.start, 1)
+        await tb.tick()
+        ctx.set(dut.start, 0)
+        rng = random.Random(seed)
+        if restart_after:
+            await tb.stream(dict(doc, samples=doc["samples"][:restart_after]), pattern, rng)
+            if info is not None:
+                info["restart_at"] = ctx.get(dut.samples)
+            ctx.set(dut.start, 1)
+            await tb.tick()
+            ctx.set(dut.start, 0)
+        res["samples"], res["counters"] = await tb.stream(doc, pattern, rng)
+        if info is not None:
+            info["lead"] = tb.lead
+
+    sim.add_testbench(bench)
+    sim.run()
+    return res["samples"], res["counters"]
+
+
+def gpio_loads_banks(words):
+    """Whether a command list addresses the banks (ADDR >= 0x4000)."""
+    return any((w >> 28) & 7 == tx.OP_ADDR and ((w >> 1) & 0xFFFF) >= tx.A_BASE for w in words)
+
+
+def simulate_tx_top(doc, pattern="every", latency=1, gap=6, seed=1):
+    """Configure `SymbolsTx` through gpio_out with the vectors' command
+    words (`doc["gpio"]`; when they write the banks, the memories start
+    empty, so the load is what is tested), check the ID word and the
+    readback of STEP, SHIFT and STATUS, run the strobe, then read the
+    counters through gpio_in. Returns (samples, counters, problems)."""
+    p = doc["params"]
+    loads = gpio_loads_banks(doc["gpio"])
+    dut = SymbolsTx(p["phases"], p["span"], None if loads else p["a"], None if loads else p["b"])
+    sim = Simulator(dut)
+    sim.add_clock(1e-8)
+    res = {}
+
+    async def bench(ctx):
+        tb = _TxBench(ctx, _TopPort(dut), Upack(doc, latency))
+        problems = tb.problems
+        await tb.tick(4)
+        ident = ctx.get(dut.gpio_in)
+        if ident != p["id_word"]:
+            problems.append(f"ID word {ident:#010x} != {p['id_word']:#010x}")
+        last = 0
+        for w in doc["gpio"]:
+            await tb.command(dut.gpio_out, w, gap)
+            last = w
+        enc = Encoder(last)
+
+        async def read(addr):
+            await tb.command(dut.gpio_out, enc.word(tx.OP_ADDR, addr), gap)
+            await tb.command(dut.gpio_out, enc.word(tx.OP_READ, 0), gap)
+            return ctx.get(dut.gpio_in)
+
+        for addr, want, name in ((tx.STEP, p["step"] & 0xFFFFFF, "STEP"),
+                                 (tx.SHIFT, p["shift"], "SHIFT")):
+            got = await read(addr)
+            if got != want:
+                problems.append(f"READ {name} {got:#x} != {want:#x}")
+        status = await read(tx.STATUS)
+        if status & 3 != 3:
+            problems.append(f"STATUS {status:#x}: not running and selected after the commands")
+        regs = {}
+
+        async def counters():
+            for name, addr in (("consumed", tx.CONSUMED), ("missed", tx.MISSED),
+                               ("first_miss", tx.FIRST_MISS), ("samples", tx.SAMPLES)):
+                regs[name] = await read(addr)
+            st = await read(tx.STATUS)
+            if bool(st & 4) != (regs["missed"] > 0):
+                problems.append(f"STATUS {st:#x} underrun bit with MISSED {regs['missed']}")
+
+        samples, direct = await tb.stream(doc, pattern, random.Random(seed), after_n=counters)
+        if direct != regs:
+            problems.append(f"counters read through gpio_in {regs} != the core's {direct}")
+        res.update(samples=samples, counters=regs, problems=problems)
+
+    sim.add_testbench(bench)
+    sim.run()
+    return res["samples"], res["counters"], res["problems"]
+
+
+def compare_tx(doc, samples, counters):
+    """Mismatch messages (empty when bit-exact): every field of every
+    sample, then the counters (a null `first_miss` in the vectors is not
+    compared)."""
+    out = []
+    exp = doc["samples"]
+    if len(samples) != len(exp):
+        out.append(f"{len(samples)} samples, {len(exp)} expected")
+    for a, b in zip(samples, exp):
+        bad = [f for f in TX_SAMPLE_FIELDS if a[f] != b[f]]
+        if bad:
+            out.append(f"sample {b['n']}: " + ", ".join(f"{f} {a[f]} != {b[f]}" for f in bad))
+            if len(out) > 10:
+                break
+    want = doc["counters"]
+    for k in TX_COUNTERS:
+        if want.get(k) is not None and counters.get(k) != want[k]:
+            out.append(f"counter {k} {counters.get(k)} != {want[k]}")
+    return out
+
+
+def main_tx(path, doc, argv):
+    pattern = argv[argv.index("--pattern") + 1] if "--pattern" in argv else "every"
+    latency = int(argv[argv.index("--latency") + 1]) if "--latency" in argv else 1
+    if "--via-gpio" in argv:
+        samples, counters, bad = simulate_tx_top(doc, pattern, latency)
+        how = f"via gpio_out, {len(doc['gpio'])} commands"
+    else:
+        load = "full" if "--load-port" in argv else None
+        samples, counters = simulate_tx(doc, pattern, latency, load=load)
+        bad = []
+        how = "bank loaded through the port" if load else "bank as initial contents"
+    bad = bad + compare_tx(doc, samples, counters)
+    nz = sum(1 for r in samples if r["out_i"] or r["out_q"])
+    print(f"{path} ({how}, requests {pattern}, upack latency {latency}): {len(samples)} samples "
+          f"({nz} non-zero), counters {counters}; "
           + ("bit-exact" if not bad else f"{len(bad)} mismatches"))
     for b in bad:
         print("  " + b)
