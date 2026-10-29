@@ -1,10 +1,12 @@
-# isdb — ISDB-T streamer and TS tools
+# isdb — ISDB-T / ISDB-S streamer and TS tools
 
 `isdb` drives the spec crates of this workspace from the command line:
 transport streams → ARIB STD-B31 baseband → IQ file or radio, and back,
-plus the service multiplexer and TS analysis tools, and receive-only raw
-IQ capture and survey of satellite IF (ISDB-S, ISDB-S3; no demodulator
-yet).
+plus the service multiplexer and TS analysis tools; ISDB-S (ITU-R
+BO.1408-1) both ways, TSs per TS_ID → satellite IQ (`tx --system isdbs`,
+to files: the rate does not stream to a radio over Gigabit Ethernet) and
+back (`rx`), with a software loopback; ISDB-S3 received to TLV streams;
+and receive-only raw IQ capture and survey of satellite IF.
 
 ```text
 cargo build --release -p isdb-cli      # → target/release/isdb
@@ -32,8 +34,11 @@ Position in the stack: the only binary crate, on top of every library
 crate. It calls `isdb-iq` (recordings, SigMF, survey), `isdbt-phy` (`Transmitter`, `PipelinedReceiver`, `iq`),
 `isdbt-core`/`isdbt-fec`/`isdbt-ofdm` (parameters, multiplex pattern,
 demodulator configuration), `isdbt-mux` (`Multiplexer`), `isdb-analyze`
-(`isdb ts`) and `isdb-radio` (`IqSink` / `IqSource`, the backend
-registry); `isdb-ts`/`isdb-si`/`isdb-text`, `isdb-hackrf` and `isdb-iio` are reached
+(`isdb ts`), `isdb-radio` (`IqSink` / `IqSource`, the backend
+registry), and for the satellite systems `isdb-frontend` (the front end,
+`shape::Shaper`), `isdbs-core` / `isdbs-phy` (ISDB-S: `TmccInfo::assign`,
+`tx::Transmitter`, `receive`, `ts::decode_all`) and `isdbs3-core` /
+`isdbs3-phy`, `isdb-tlv`, `isdb-mmt` (ISDB-S3); `isdb-ts`/`isdb-si`/`isdb-text`, `isdb-hackrf` and `isdb-iio` are reached
 only through `isdbt-mux`/`isdb-analyze`/`isdb-radio` (not direct
 dependencies). It adds I/O, threading, pacing, the `--rf-enable` gate and
 reporting; no spec logic and no device code lives here (no SPEC-NOTES of
@@ -110,14 +115,14 @@ Sinks: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdout) or
 | flag | default | meaning |
 |---|---|---|
 | `--radio NAME[:key=value,...]` | — | radio backend and its device arguments, e.g. `hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`; an unknown name lists the compiled-in backends and their cargo features |
-| `--channel T` / `--freq HZ` | — | terrestrial channel T13..T62 (a bare number N means TN) → 473 + 6(N−13) + 1/7 MHz; the centre must lie in the 470–710 MHz TV band (T13–T52). Satellite channels (BSn, NDn): `rx` receives them as ISDB-S, `tx` refuses them (no ISDB-S transmitter) |
+| `--channel T` / `--freq HZ` | — | terrestrial channel T13..T62 (a bare number N means TN) → 473 + 6(N−13) + 1/7 MHz; the centre must lie in the 470–710 MHz TV band (T13–T52). Satellite channels (BSn, NDn): `rx` receives them as ISDB-S, `tx --system isdbs` transmits at their IF (outside the band, so with `--freq-unrestricted`); ISDB-T `tx` refuses them |
 | `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (shielded lab only); the backend's own range still applies (HackRF 1 MHz–6 GHz, Pluto TX 47 MHz–6 GHz) |
 | `--freq-corr-ppm P` | 0 | divide tuning and sample clock by 1 + P·1e-6 |
 | `--gain NAME=VALUE` | backend's | repeatable; names, ranges and defaults are the backend's (an unknown name lists them). HackRF TX: `txvga=0..47` dB (0), `amp=on\|off` (RF amplifier ≈ +11 dB, off); Pluto TX: `att=0..89.75` dB attenuation in 0.25 dB steps (89.75) |
 | `--backoff-db DB` | 10 | OFDM RMS below integer full scale (radios with integer samples, e.g. HackRF cs8, Pluto cs12, and cs8 files); clipped components counted |
 | `--rf-enable` | — | **required to radiate**. `--radio` needs `--rf-enable` or `--dry-run` (otherwise the command line is rejected); with `--dry-run` it prints the backend's settings and exits with an error ("not transmitting") before opening the device |
 | `--seconds S` | 0 | bound on air time incl. lead-in/flush; `0` = unbounded: until the input ends (`file` at EOF, `live` when the writer closes, `--relay --at-eof end`) or Ctrl-C / SIGTERM — `--synthetic`, `--mux-config`, `--relay` and `--feed loop` never end. The start-up line says `duration: unbounded (…); stop with Ctrl-C`. An endless input into an `--iq` regular file is refused without `--seconds` (the file would fill the disk; `--seconds 0` forces it); stdout, FIFOs and devices such as `/dev/null` need none |
-| `--bb-filter-hz HZ` | 6 MHz | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth (HackRF: the largest MAX2837 setting ≤ the request; Pluto: the AD936x RF bandwidth, 0.2–40 MHz TX / 56 MHz RX) |
+| `--bb-filter-hz HZ` | 6 MHz (ISDB-S 40 MHz) | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth (HackRF: the largest MAX2837 setting ≤ the request; Pluto: the AD936x RF bandwidth, 0.2–40 MHz TX / 56 MHz RX) |
 | `--queue-frames`, `--prefill-frames` | 4 / 2 | frames produced ahead of the sink; frames converted before the radio starts |
 | `--status-secs` | 5 | status line interval (0 = final summary only) |
 | `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity (otherwise refused with layouts that fit) |
@@ -163,6 +168,63 @@ a receiver locking on the first or second frame still outputs every input
 packet), the data, then `Transmitter::flush_frames` null frames (`--no-flush`
 to omit) that push the last input packets through the interleavers and the
 receiver look-ahead.
+
+### `isdb tx --system isdbs` — TSs per TS_ID → ISDB-S → IQ file
+
+`--system isdbt|isdbs` (default `isdbt`). With `isdbs` the transmitter is
+ISDB-S (ITU-R BO.1408-1, the ARIB STD-B20 system): `isdbs_core::TmccInfo::assign`
+builds the TMCC of the slot layout, `isdbs_phy::tx::Transmitter` turns each
+superframe's packets per TS into 319 488 symbols and
+`isdb_frontend::shape::Shaper` (root-raised cosine, α = 0.35) into IQ at
+`--rate`.
+
+| flag | default | meaning |
+|---|---|---|
+| `--combination WORD:N` | `tc8psk2/3:48` | slot layout, repeatable (at most 4, any order): a BO.1408-1 Table 1 combination and its slots per frame, dummy slots included, summing to 48 in whole units. WORD is `bpsk1/2`, `qpsk1/2`, `qpsk2/3`, `qpsk3/4`, `qpsk5/6`, `qpsk7/8` or `tc8psk2/3` (case and spaces free; units of 4, 2, 3, 4, 6, 8, 1 slots with 1, 1, 2, 3, 5, 7, 1 sent). The BS layout is the default; the CS layout is `qpsk3/4:48` (36 sent slots) |
+| `--ts ID[:SLOTS][=PATH]` | `0x4010`, synthetic, all sent slots | a TS, repeatable (at most 8; relative TS 0, 1, … in order): TS_ID (`0x4010`, `4010h` or decimal), its sent slots per frame (required with more than one `--ts`; they must sum to the layout's sent slots) and its TS file (`-` = stdin, FIFOs fine, `--feed` as for ISDB-T; null padding when it has no packet, counted). Without `=PATH`: synthetic packets (PID 0x0100, the TS_ID, superframe and index in the payload). With file TSs the transmission ends when every file has ended (synthetic TSs with them); with synthetic TSs only it never ends by itself |
+| `--rate SPS` | 40M | output sample rate, ≥ (1 + 0.35) × 28.86 Mbaud = 38.961 Msps; at 40 Msps a superframe is 442 810.81 samples (442 810 or 442 811 per superframe, the shaper's phase carried on) |
+| `--iq PATH`, `--iq-format cf32\|cs8` | — / cf32 | the data **and** its SigMF sidecar (`PATH.sigmf-meta`, or `NAME.sigmf-meta` for `NAME.sigmf-data`): `core:datatype`, `core:sample_rate`, `core:description` (`isdb tx ISDB-S: <layout>`), `core:recorder`, `isdb:system "ISDB-S"`, one capture segment at 0 with `core:frequency` (and the channel fields of `isdb capture`) from `--channel` / `--freq` if given. `isdb rx --iq PATH` reads it and picks ISDB-S by itself. stdout, FIFOs and devices get no sidecar |
+| `--backoff-db DB` | 10 | RMS below full scale in every format, **cf32 included** (RMS 0.316 at 10 dB): the ISDB-S receiver reads samples as a fraction of full scale (its front end's input is 12-bit), unlike the scale-free ISDB-T receiver |
+| `--lead-superframes N` | 1 | null superframes before the data |
+| `--no-flush` | — | omit the null flush frame and the shaper's tail (a receiver then loses the last superframe) |
+| `--seconds S` | 0 | bound on the lead and data superframes (the flush frame, 1.4 ms, follows); an endless input into an `--iq` regular file needs it, as for ISDB-T |
+| `--radio`, `--gain`, `--rf-enable`, `--dry-run`, `--channel`, `--freq`, `--freq-unrestricted`, `--freq-corr-ppm`, `--bb-filter-hz`, `--feed`, `--realtime`, `--queue-frames`, `--prefill-frames`, `--status-secs` | as ISDB-T | the gate and the dry run are the same; `--channel BSn` / `NDn` tunes the IF (`Channel::tune_hz`), outside the UHF band, so it needs `--freq-unrestricted`; the radio's sample rate is `--rate` (ppm-corrected), `--bb-filter-hz` defaults to 40 MHz (the Pluto's widest TX filter) and a queue frame is one superframe |
+
+ISDB-T-only options (`--mode`, `--gi`, `--partial`, `--layer-*`,
+`--a-ts/--b-ts/--c-ts`, `--mux-ts`, `--a-pids/--c-pids`, `--synthetic`,
+`--mux-config`, `--relay`, `--allow-overrate`, `--iq-in`, `--lead-frames`,
+`--seek-step`) are refused with `--system isdbs`, and the ISDB-S ones
+without it, naming the system; only options given on the command line
+count (the binary keeps clap's matches, so defaults are not "given").
+
+On-air sequence: a **pre-roll frame** (the last frame of a null
+superframe), `--lead-superframes` null superframes, the data superframes,
+then a null frame and the shaper's tail. The pre-roll is there because a
+receiver's timing and carrier loops settle during the first symbols it
+gets: without it they are the first symbols of the first superframe, and
+its first slots, spread over all 8 frames by the inter-frame interleaver,
+do not decode (17 of 384 packets in the lab measurement). The flush frame
+carries the last data superframe's final symbols through the transmit and
+receive filters. Nothing else drains: the TMCC, the energy dispersal and
+the interleaver each span one superframe.
+
+Threads as for ISDB-T: reader thread per file TS → producer thread
+(`txs.rs`: the packets of a superframe per TS, `Transmitter::superframe`,
+the shaper) → bounded queue → `IqSink`. Status lines per `--status-secs`:
+air time, superframes, null fill per TS_ID, producer speed (input and
+modulation per superframe); the summary gives per TS_ID the input packets
+and the null padding (`ts_id`, `input_packets`, `null_packets`,
+`null_fill_pct` fields). The producer runs at 1.1× real time at 40 Msps
+in a release build (9.8 ms per 11.07 ms superframe, the shaper on one core
+most of it).
+
+**The radio limit.** ISDB-S needs ≥ 38.96 Msps. To a Pluto that is
+40 Msps × 4 bytes = 160 MB/s, beyond Gigabit Ethernet (≈ 65 MB/s
+measured); a HackRF stops at 20 Msps. `--radio` therefore works through
+the gate and the dry run, and a Pluto underruns (the sink counts it, a
+warning says so at start); the HackRF backend refuses the rate. Continuous
+ISDB-S transmission needs a modulator in the radio's FPGA (the mirror of
+the symbol front end), which is future work.
 
 ### `isdb rx` — IQ / radio → TS (ISDB-T, ISDB-S)
 
@@ -212,6 +274,28 @@ transmitted frame with identical content; every later frame is compared
 packet by packet per layer and as a reproduced TS. Prints PASS/FAIL counts
 and lost input packets per layer; exits non-zero on FAIL (`--no-flush`
 makes the last frames count as lost). `--json` for a machine-readable verdict.
+
+**ISDB-S** (`--system isdbs`, `loopbacks.rs`): the layout, inputs and
+`--rate` of `tx --system isdbs`; `--superframes N` data superframes
+(default 6, or until EOF when a `--ts` reads a file with `--feed file`),
+`--lead-superframes` (1), `--cfo-hz` (carrier offset in Hz), and
+`--snr-db`, `--seed`, `--sample-offset`, `--no-flush`, `--json` as for
+ISDB-T (`--frames`, `--cfo-carriers` and `--lead-frames` are refused, and
+`--superframes` / `--cfo-hz` without `--system isdbs`). Pipeline: the
+producer → `Channel::with_cfo_hz` → the whole signal in one buffer (≈ 3.5 MB
+per superframe at 40 Msps), at 10 dB below full scale → `rxs::front`
+(survey carrier, trim search) → `isdbs_phy::receive` → `ts::decode_all` →
+the verifier. The first decoded superframe with an input packet is
+anchored to the earliest sent superframe of the same content; later ones
+are numbered by their frame start in the symbol stream (319 488 symbols
+apart) and compared per TS_ID (byte-exact, input, FAIL, lost), and every
+superframe's TMCC against the one sent. PASS iff anchored, nothing
+failed, no input packet lost and every TMCC as sent. Report lines per
+TS_ID (RS corrected / uncorrectable, main MER), the receiver's carrier,
+trim and stage times; `--json` has `verify` keyed by TS_ID (`"0x4010"`)
+and `rx`, the `rx --json` summary. `--snr-db` is the ratio over the
+sample rate's bandwidth: Es/N0 after the matched filter is 1.42 dB higher
+at 40 Msps (the main MER measures it).
 
 ### `isdb mux` — service multiplexer
 
@@ -511,6 +595,12 @@ isdb rx --radio hackrf --channel 13 --gain lna=16 --gain vga=20 --seconds 30 --o
 
 # software loopback through 22 dB SNR, 2.3 carriers CFO, mid-frame start
 isdb loopback --frames 8 --snr-db 22 --cfo-carriers 2.3 --sample-offset -700000
+
+# ISDB-S: two TSs on the BS layout into a file (+ x.cf32.sigmf-meta), and back
+isdb tx --system isdbs --ts 0x4010:24=a.ts --ts 0x4011:24=b.ts --iq x.cf32
+isdb rx --iq x.cf32 --out 'out-{ts_id}.ts' --strip-nulls
+# ISDB-S loopback: the CS layout at 6 dB, 50 kHz off, started mid-stream
+isdb loopback --system isdbs --combination qpsk3/4:48 --snr-db 6 --cfo-hz 50000 --sample-offset -12345
 ```
 
 ## End-to-end bench recipe
@@ -693,17 +783,38 @@ tx:  reader thread(s) ─packets (bounded, ~2 s)─► producer thread
        e.g. hackrf: cs8 quantiser → libhackrf TX callback;
        pluto: cs12 quantiser → isdb-iio TX thread (iio_buffer_push)
        (starts after --prefill-frames 2; back-pressure paces the producer)
+tx --system isdbs:
+     reader thread per file TS ─packets─► producer thread (txs.rs:
+       pre-roll frame, lead, data, flush frame; per superframe
+       isdbs_phy::tx::Transmitter ─symbols─► isdb_frontend::shape::Shaper)
+       ─superframes (bounded)─► main thread: dyn IqSink
+       (FileSink at --backoff-db, cf32 too, + SigMF sidecar | the radio,
+        same gate)
 rx:  dyn IqSource (file | Backend::open_rx, e.g. HackRF RX callback,
        Pluto isdb-iio RX thread)
        ─► PipelinedReceiver
        (demod thread ─► FEC-decode thread) ─► outputs + status
+     ISDB-S / ISDB-S3: rxs.rs / rxs3.rs over satpipe (blocks ─► front
+       end threads ─► receiver)
 loopback: producer ─► Channel ─► PipelinedReceiver ─► Verifier
+loopback --system isdbs: ISDB-S producer ─► Channel (CFO in Hz) ─► one
+       buffer ─► rxs::front ─► isdbs_phy::receive ─► ts::decode_all
+       ─► VerifierS (loopbacks.rs)
 ```
 
 Throughput (Mode 3, GI 1/8, default layers, file I/O, measured on a
 current 16-core desktop CPU): `tx --synthetic --iq` of 20 s of signal took 4.9 s (≈ 4×
 real time); `rx --iq` of that file took 14.0 s (≈ 1.4× real time; the
 demodulator is the bottleneck).
+
+ISDB-S (release build, a 32-thread host): `tx --system isdbs --iq` runs
+at 1.1× real time at 40 Msps (9.8 ms of transmitter and shaper per
+11.07 ms superframe; the dev build, with the ISDB-S crates optimised as
+below, at 0.8×). `loopback --system isdbs --superframes 90` (1.01 s of
+signal) took 2.9 s: production and channel 0.96 s, front end 1.56 s
+(survey, the 11-candidate trim search and the bit-exact front end over
+the whole buffer), receiver and decoding 0.31 s; the default 6
+superframes take about 0.6 s.
 
 **Build profile matters for the radio.** On the same machine,
 `tx --mux-ts <a 19.1 Mbit/s recording> --iq /dev/null` runs at 4.1× real
@@ -714,7 +825,8 @@ unoptimised build underran 73 % of the USB buffers ("2.8 s on air, 12
 frames (10 data)"), the same with `--mux-config` (so not an input
 problem), and the release build had 0 underruns. The workspace `Cargo.toml` therefore builds the
 signal-processing crates (`isdbt-core`, `isdbt-fec`, `isdbt-ofdm`,
-`isdbt-phy`) and all dependencies with
+`isdbt-phy`; for ISDB-S `isdb-frontend`, `isdbs-core`, `isdbs-phy`,
+which unoptimised transmit at 0.02× real time) and all dependencies with
 `opt-level = 3` in the dev profile too: `cargo run -p isdb-cli -- tx …`
 now runs at 3.2× real time (0 underruns in the same simulation). Prefer
 `cargo build --release -p isdb-cli` for transmissions anyway. The
@@ -732,7 +844,21 @@ transmit with, over the in-memory `mock::MockRadio`):
 | `src/rx.rs` `system_selection` | `--system auto` picks ISDB-S for BSn, ISDB-T for Tn and for files without SigMF metadata; an explicit system wins; ISDB-S options on ISDB-T and layer outputs on ISDB-S are refused |
 | `src/rxs.rs` `ts_id_forms`, `output_template_rules`, `outputs_split_by_ts_id` | ISDB-S output: TS_ID syntaxes; `--out` without `{ts_id}` needs exactly one `--ts-id`; one file per selected TS_ID, null packets stripped on request |
 | `src/rx.rs` `sigmf_recordings_must_be_isdbt_rate` | `rx --system isdbt --iq` with SigMF metadata: a 40 Msps recording is refused with the pointer to `--system isdbs` and `iq tmcc`; a 512/63 MHz cs8 recording gives its data file and format; a conflicting `--iq-format` and cs16 are refused; without metadata the path and cf32 are used |
-| `src/phyargs.rs` `freq_restricted_to_the_uhf_tv_band` | `--channel BS1` is refused by `rx` / `tx` (satellite channel) |
+| `src/phyargs.rs` `freq_restricted_to_the_uhf_tv_band` | `--channel BS1` is refused by ISDB-T `rx` / `tx` (satellite channel), the message pointing at `tx --system isdbs` |
+| `src/phyargs.rs` `satellite_tuning_is_the_if_at_the_given_rate` | ISDB-S `tx --radio`: BS1 tuned at its 1049.48 MHz IF only with `--freq-unrestricted`, the sample rate `--rate` over 1, both ppm-corrected; `--freq` as the IF |
+| `src/txs.rs` `combination_and_ts_syntax`, `layouts_and_their_errors` | `--combination` spellings (every `Combination::ALL` name, case and spaces free) and their refusals; `--ts ID[:SLOTS][=PATH]` forms; the default BS layout (one synthetic TS of 48 slots), the CS layout's 36 sent slots, a mixed layout; slots required with two TSs and summing to the sent slots, whole units, slot sum 48, distinct TS_IDs, one stdin |
+| `src/txs.rs` `options_of_the_other_system_are_refused`, `bb_filter_default_is_the_given_value_or_40_mhz` | ISDB-T options with `--system isdbs` and ISDB-S options without are refused, naming the system; defaults do not count as given, an explicit ISDB-T default does; every listed id is an argument whose flag the message spells; `--bb-filter-hz` given or not |
+| `src/txs.rs` `synthetic_packets_are_distinct_and_say_where_they_were_sent`, `inputs_pad_with_nulls_and_end_with_the_files` | synthetic packets carry TS_ID, superframe and index; file TSs padded with nulls, synthetic TSs alongside, the end when every file has ended, stop |
+| `src/txs.rs` `producer_sequence_and_sample_counts` | the ISDB-S producer: lead, data, flush; the samples of the pre-roll frame, the superframes, the flush frame and the shaper's tail, exactly; 442 810–442 811 per superframe at 40 Msps; unit RMS; the packets recorded for the verifier |
+| `src/txs.rs` `sidecar_names_the_system_and_the_channel` | the SigMF sidecar: datatype, rate, `isdb:system`, description, recorder, the segment's IF and channel fields |
+| `src/loopbacks.rs` `verifier_counts_and_anchors_by_content` | the ISDB-S verifier: the lead skipped before the anchor, the anchor by content at any symbol offset, numbering by frame start (rounded), a corrupt packet failed, a TMCC that differs counted, a superframe never received lost, unknown and foreign superframes / packets, no anchor ⇒ everything lost |
+| `src/channel.rs` `snr_offset_and_cfo` | AWGN level, offsets across blocks, CFO in carrier spacings and in Hz (`with_cfo_hz`) |
+| `src/sink.rs` `cs8_file_bytes` | cs8 bytes as the radio quantiser; cf32 as given, or at the backoff (ISDB-S) |
+| `tests/cli.rs` `isdbs_tx_then_rx_reproduces_every_ts_byte_exact` | two TS files on the BS layout (24 + 24 slots, 3 superframes each) → `tx --system isdbs --iq` (sidecar `isdb:system`, cf32 at −10 dBFS) → `rx --iq` (ISDB-S found by itself) returns each TS_ID's packets byte-exact, 0 uncorrectable |
+| `tests/cli.rs` `isdbs_loopback_passes_with_impairments` | `loopback --system isdbs --superframes 4 --cfo-hz 50000 --sample-offset -12345`: the BS layout at 12 dB and the CS layout at 8 dB PASS, every input packet exact, the carrier found within 2 kHz |
+| `tests/cli.rs` `isdbs_loopback_detects_loss` | `--no-flush`: FAIL with the last superframe (384 packets) lost; a TS file of 500 packets ends the transmission after 2 superframes, all 500 exact |
+| `tests/cli.rs` `isdbs_options_are_checked` | ISDB-T options with `--system isdbs` and ISDB-S options without (tx and loopback) refused, naming the system; slot sums, missing slots, partial units, unknown combinations, a rate below (1 + α)·R and an endless file without `--seconds` refused before anything is written |
+| `tests/cli.rs` `isdbs_radio_dry_runs` | `tx --system isdbs --radio pluto … --dry-run`: BS1 needs `--freq-unrestricted`, then 1049.48 MHz at 40 Msps with a 40 MHz filter and the underrun warning; `--rate` / `--bb-filter-hz` as given; a HackRF refuses 40 Msps |
 | `tests/cli.rs` `tx_then_rx_reproduces_every_layer_byte_exact` | `isdb tx --iq` → `isdb rx --iq` returns every input packet of every layer byte-exact |
 | `tests/cli.rs` `mux_ts_is_split_by_pid` | `--mux-ts` routing by `--a-pids`, order preserved |
 | `tests/cli.rs` `mux_ts_file_is_paced_by_its_pcr` | an 8 Mbit/s PCR-timed file into the 16.85 Mbit/s layer B: ≈ 50 % null fill, `tx` → `rx` returns every data packet in order |
@@ -752,7 +878,8 @@ transmit with, over the in-memory `mock::MockRadio`):
 | `tests/cli.rs` `tezuka_captures` | opt-in hardware, receive only, Tezuka firmware (`ISDB_RS_TEZUKA_URI`, optionally `ISDB_RS_PLUTO_CAPTURE_FREQ`): an 8-bit libiio buffer (1 Mi samples at 40 Msps), a 1 s 8-bit stream at 10 Msps, maia-sdr recordings in 8 and 12 bits (4 Mi samples at 40 Msps); for each the SigMF datatype and full scale, the capture method and the file size against the samples written (a stream's discarded samples subtracted). Prints `SKIP` without the variable |
 | `tests/cli.rs` `radio_without_backends_names_the_feature` | `--no-default-features` build: `tx`/`rx --radio hackrf` and `--radio pluto` name their features |
 | `tests/cli.rs` `scrambled_input_is_refused` | a TS with one scrambled packet (transport_scrambling_control ≠ '00') is refused: `isdb` neither descrambles nor transmits scrambled content |
-| `tests/cli.rs` `completions_cover_every_subcommand` | `completions bash` defines `_isdb` and dispatches every subcommand; `completions zsh` starts with `#compdef isdb` and lists every subcommand; both complete `--radio`; an unknown shell is a usage error |
+| `tests/cli.rs` `completions_cover_every_subcommand` | `completions bash` defines `_isdb` and dispatches every subcommand; `completions zsh` starts with `#compdef isdb` and lists every subcommand; both complete `--radio` and the ISDB-S options (`--system` with its `isdbt isdbs` values, `--combination`, `--ts`, `--lead-superframes`); an unknown shell is a usage error |
+| `tests/cli.rs` `diagnostics_are_structured_events` | `--log-format json`: every `tx` event (ISDB-T and ISDB-S) is an `isdb::tx` INFO event, the end-of-run event carries its counts (`lead_superframes`, `data_superframes` for ISDB-S) and the ISDB-S per-TS_ID summary its `input_packets` / `null_packets`; `--log-level warn` silences them |
 | `tests/cli.rs` `endless_input_into_iq_file_is_refused_without_seconds` | `tx --synthetic --iq FILE` without `--seconds` is refused before the file is created; with `--seconds` it runs |
 | `tests/cli.rs` `mux_config_and_ts_tools_smoke`, `loopback_with_in_process_multiplexer` | `isdb mux` / `ts inspect` and `loopback --mux-config` on `bench.toml` with media streams replaced by `declared` streams; the media variant runs only when `ISDB_RS_MEDIA_DIR` names a directory with `video.m2v` and `audio.m2a` (prints `SKIP` otherwise; [docs/test-data.md](https://github.com/a1678991/isdb-rs/blob/main/docs/test-data.md#making-a-media-directory) shows how to make one) |
 | `tests/cli.rs` `media_aac_gate_matches_b32_part2_report` | `isdb mux` on `bench.toml` with your own `audio.m2a`, expectations taken from its ADTS headers: the default `conform` succeeds exactly when no error-severity B32 Part 2 rule is violated (refusal says "crc_check cannot be inserted" for protection_absent '1'); with `--adts-compliance warn` `isdb ts validate` reports each violated per-frame rule as an `aac.*` error and the quality_indicator Table 1 derives from the file's rate (opt-in: `ISDB_RS_MEDIA_DIR` with `video.m2v` and `audio.m2a`; prints `SKIP` otherwise) |

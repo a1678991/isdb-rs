@@ -1,6 +1,6 @@
 [package]
 name = "isdb-cli"
-description = "isdb: ISDB-T streamer (TX/RX) and TS tools built on the spec crates"
+description = "isdb: ISDB-T and ISDB-S streamer (TX/RX, software loopback), ISDB-S3 receiver and TS tools built on the spec crates"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

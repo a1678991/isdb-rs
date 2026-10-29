@@ -299,7 +299,8 @@ CRC one 16-bit word per clock.
 - Used by:
   - `isdb-radio`: `Offload::Symbols`, `Backend::capture_symbols`, and
     the Pluto's discovery and configuration through `control`;
-  - `isdb-cli`: `isdb symbols`, `isdb iq symbols`;
+  - `isdb-cli`: `isdb symbols`, `isdb iq symbols`; `shape::Shaper` in
+    `isdb tx` / `isdb loopback --system isdbs`;
   - `fpga/`: the test vectors;
   - `isdbs-phy` and `isdbs3-phy`, the ISDB-S / ISDB-S3 receivers,
     through `fast::FastFrontend`.

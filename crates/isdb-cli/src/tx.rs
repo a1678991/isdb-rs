@@ -1,14 +1,16 @@
-//! `isdb tx`: transport streams → ISDB-T baseband → IQ file or radio.
+//! `isdb tx`: transport streams → ISDB-T baseband → IQ file or radio;
+//! `--system isdbs` (ISDB-S) is in [`crate::txs`].
 
 use crate::input::{FrameInput, InputArgs};
 use crate::keys::{Command, Keys};
-use crate::phyargs::{PhyArgs, TuneArgs, describe_params, parse_gain};
+use crate::phyargs::{PhyArgs, TuneArgs, Tuning, describe_params, parse_gain};
 use crate::producer::{self, EndReason, FrameKind, ProducedFrame, ProducerConfig};
 use crate::sink::{FileSink, IqFormat};
 use crate::source::Feed;
+use crate::txs::{Given, SatArgs, TxSystem};
 use anyhow::{Context, Result, bail};
 use clap::Args;
-use isdb_radio::{DeviceSpec, IqSink, TxOptions};
+use isdb_radio::{DeviceSpec, IqSink, RadioConfig, TxOptions};
 use isdbt_core::Params;
 use isdbt_phy::Transmitter;
 use std::sync::Arc;
@@ -33,6 +35,14 @@ LEGAL / SAFETY NOTICE
 #[command(group(clap::ArgGroup::new("sink").args(["iq", "radio"])))]
 #[command(after_help = LEGAL_NOTICE)]
 pub struct TxArgs {
+    /// Transmission system: ISDB-T (terrestrial, the default) or ISDB-S
+    /// (BS / 110° CS, ITU-R BO.1408-1; its layout and inputs are the
+    /// options under "ISDB-S" below). The options of the other system are
+    /// refused. ISDB-S needs ≥ 38.96 Msps: written to --iq completely; a
+    /// radio over Gigabit Ethernet (Pluto) underruns at that rate and a
+    /// HackRF refuses it.
+    #[arg(long, value_enum, default_value_t = TxSystem::Isdbt)]
+    pub system: TxSystem,
     #[command(flatten)]
     pub phy: PhyArgs,
     #[command(flatten)]
@@ -56,9 +66,12 @@ pub struct TxArgs {
     #[arg(long)]
     pub no_keys: bool,
     /// Write baseband to this file ("-" = stdout) instead of a radio.
+    /// ISDB-S also writes its SigMF metadata next to it (PATH.sigmf-meta,
+    /// or NAME.sigmf-meta for NAME.sigmf-data), which `isdb rx --iq` reads.
     #[arg(long, value_name = "PATH", required_unless_present_any = ["radio", "print_config"])]
     pub iq: Option<String>,
-    /// IQ file format (cs8 uses --backoff-db scaling like an 8-bit radio).
+    /// IQ file format (cs8 uses --backoff-db scaling like an 8-bit radio;
+    /// ISDB-S cf32 too).
     #[arg(long, value_enum, default_value_t = IqFormat::Cf32)]
     pub iq_format: IqFormat,
     /// Transmit with a radio: BACKEND[:key=value,...], the backend name and
@@ -79,8 +92,10 @@ pub struct TxArgs {
         conflicts_with = "iq"
     )]
     pub gain: Vec<(String, String)>,
-    /// OFDM RMS level below integer full scale in dB (radios with integer
-    /// samples and cs8 files); clipped components are counted.
+    /// RMS level below integer full scale in dB (radios with integer
+    /// samples and cs8 files; ISDB-S cf32 files below 1.0, since the
+    /// ISDB-S receiver reads a fraction of full scale); clipped components
+    /// are counted.
     #[arg(long, default_value_t = 10.0)]
     pub backoff_db: f32,
     /// Actually radiate (licensed or shielded/conducted lab use only; see
@@ -100,25 +115,33 @@ pub struct TxArgs {
     /// explicit --seconds.
     #[arg(long, value_name = "S")]
     pub seconds: Option<f64>,
-    /// Null frames before the data (default: Transmitter::lead_frames = 2).
+    /// ISDB-T: null frames before the data (default:
+    /// Transmitter::lead_frames = 2).
     #[arg(long)]
     pub lead_frames: Option<usize>,
-    /// Do not append the null frames that flush the interleavers at the end.
+    /// Do not append the null frames that flush the interleavers at the
+    /// end (ISDB-S: the null frame and the pulse shaper's tail that carry
+    /// the last superframe's final symbols through the filters; a receiver
+    /// then loses that superframe).
     #[arg(long)]
     pub no_flush: bool,
     /// Pace frame production to real time even into a file (default: on
     /// for --feed live with --iq).
     #[arg(long)]
     pub realtime: bool,
-    /// Frames produced ahead of the sink (bounded queue).
+    /// Frames (ISDB-S: superframes) produced ahead of the sink (bounded
+    /// queue).
     #[arg(long, default_value_t = 4)]
     pub queue_frames: usize,
-    /// Frames converted before the radio starts streaming.
+    /// Frames (ISDB-S: superframes) converted before the radio starts
+    /// streaming.
     #[arg(long, default_value_t = 2)]
     pub prefill_frames: usize,
     /// Status line interval in seconds (0 = only the final summary).
     #[arg(long, default_value_t = 5.0)]
     pub status_secs: f64,
+    #[command(flatten)]
+    pub sat: SatArgs,
 }
 
 /// Where `isdb tx` sends the baseband: `--radio` or `--iq`.
@@ -182,7 +205,8 @@ pub struct TxReport {
     pub sink: String,
 }
 
-fn ratio(n: u64, d: u64) -> f64 {
+/// `n` as a percentage of `d` (0 for `d` = 0).
+pub(crate) fn ratio(n: u64, d: u64) -> f64 {
     if d == 0 {
         0.0
     } else {
@@ -204,7 +228,8 @@ fn null_fill(real: &[u64; 3], nulls: &[u64; 3], params: &Params) -> String {
         .join(" ")
 }
 
-fn ms_per(d: Duration, frames: u64) -> f64 {
+/// Milliseconds of `d` per frame.
+pub(crate) fn ms_per(d: Duration, frames: u64) -> f64 {
     if frames == 0 {
         0.0
     } else {
@@ -219,10 +244,18 @@ pub fn producer_speed(frames: u64, busy: Duration, frame_s: f64) -> Option<f64> 
     (frames > 0 && !busy.is_zero()).then(|| frames as f64 * frame_s / busy.as_secs_f64())
 }
 
-fn describe_speed(speed: Option<f64>, frames: u64, input: Duration, modulate: Duration) -> String {
+/// `producer 4.1× real time (input 0.3 + modulate 54.0 ms/frame)`, per
+/// `unit` (`frame`, `superframe`).
+pub(crate) fn describe_speed(
+    speed: Option<f64>,
+    frames: u64,
+    input: Duration,
+    modulate: Duration,
+    unit: &str,
+) -> String {
     match speed {
         Some(x) => format!(
-            "producer {x:.1}× real time (input {:.1} + modulate {:.1} ms/frame)",
+            "producer {x:.1}× real time (input {:.1} + modulate {:.1} ms/{unit})",
             ms_per(input, frames),
             ms_per(modulate, frames)
         ),
@@ -330,7 +363,7 @@ fn drive(
                 rep.data,
                 null_fill(&iv_real, &iv_nulls, params),
                 null_fill(&rep.real, &rep.nulls, params),
-                describe_speed(speed, iv_frames, iv_input, iv_mod),
+                describe_speed(speed, iv_frames, iv_input, iv_mod, "frame"),
                 sink.status()
             );
             if realtime_sink && speed.is_some_and(|x| x < 1.0) {
@@ -390,7 +423,7 @@ pub(crate) fn resolve_seconds(seconds: Option<f64>) -> Result<f64> {
 /// True if writing to `path` cannot fill a disk: stdout ("-") or an
 /// existing non-regular file (FIFO, pipe, character device such as
 /// /dev/null).
-fn is_stream_path(path: &str) -> bool {
+pub(crate) fn is_stream_path(path: &str) -> bool {
     path == "-" || std::fs::metadata(path).is_ok_and(|m| !m.is_file())
 }
 
@@ -405,8 +438,82 @@ fn check_iq_bound(path: &str, endless: bool, seconds: Option<f64>) -> Result<()>
     Ok(())
 }
 
-/// Entry point.
-pub fn run(a: TxArgs) -> Result<()> {
+/// The sink of `a`, for either system: `--radio` through the
+/// `--rf-enable` / `--dry-run` gate (the backend's settings printed
+/// first; `radio` builds its configuration), or the `--iq` file (`file`
+/// creates it after the dry-run and size checks). `frame_s` is the
+/// duration of one produced item (an OFDM frame, an ISDB-S superframe).
+pub(crate) fn open_sink(
+    a: &TxArgs,
+    frame_s: f64,
+    endless: bool,
+    seconds: f64,
+    radio: impl FnOnce(&DeviceSpec) -> Result<(RadioConfig, Tuning)>,
+    file: impl FnOnce(&str) -> Result<FileSink>,
+) -> Result<Box<dyn IqSink>> {
+    match a.sink()? {
+        Sink::Radio(spec) => {
+            let backend = isdb_radio::backend(&spec.backend)?;
+            let (cfg, tuning) = radio(spec)?;
+            let opts = TxOptions {
+                prefill_frames: a.prefill_frames,
+                frame_seconds: frame_s,
+                backoff_db: a.backoff_db,
+            };
+            let settings = backend.describe_tx(&cfg, &opts)?;
+            info!(
+                target: "isdb::tx",
+                backend = backend.name(),
+                "{} TX settings{}:\n{settings}",
+                backend.name(),
+                tuning.channel_label()
+            );
+            // clap admits --radio only with exactly one of --rf-enable and
+            // --dry-run; the gate does not rely on it.
+            if !a.rf_enable || a.dry_run {
+                bail!(
+                    "dry run, not transmitting: use --rf-enable instead of --dry-run to radiate with the settings above (coax/attenuator or shielded setup only)"
+                );
+            }
+            if seconds == 0.0 {
+                info!(
+                    target: "isdb::tx",
+                    "note: unbounded transmission ({}); stop with Ctrl-C",
+                    if endless {
+                        "the input never ends"
+                    } else {
+                        "until the input ends"
+                    }
+                );
+            }
+            let (sink, info) = backend
+                .open_tx(&cfg, &opts)
+                .with_context(|| format!("open radio {spec} for TX"))?;
+            info!(target: "isdb::tx", "opened: {info}");
+            Ok(sink)
+        }
+        Sink::Iq(path) => {
+            if a.dry_run {
+                bail!("dry run: nothing written");
+            }
+            check_iq_bound(path, endless, a.seconds)?;
+            Ok(Box::new(file(path)?))
+        }
+    }
+}
+
+/// Entry point: `given` are the arguments given on the command line (the
+/// options of the other system are refused).
+pub fn run(a: TxArgs, given: &Given) -> Result<()> {
+    crate::txs::check_system(
+        a.system,
+        given,
+        crate::txs::TX_ISDBT_ONLY,
+        crate::txs::TX_ISDBS_ONLY,
+    )?;
+    if a.system == TxSystem::Isdbs {
+        return crate::txs::run(a, given);
+    }
     if !(a.seek_step > 0.0 && a.seek_step.is_finite()) {
         bail!("--seek-step must be a positive number of seconds");
     }
@@ -467,53 +574,14 @@ pub fn run(a: TxArgs) -> Result<()> {
         params.samples_per_frame()
     );
     let stop = crate::stop::flag();
-    let mut sink: Box<dyn IqSink> = match a.sink()? {
-        Sink::Radio(spec) => {
-            let backend = isdb_radio::backend(&spec.backend)?;
-            let (cfg, tuning) = a.tune.radio_config(spec, &a.gain)?;
-            let opts = TxOptions {
-                prefill_frames: a.prefill_frames,
-                frame_seconds: frame_s,
-                backoff_db: a.backoff_db,
-            };
-            let settings = backend.describe_tx(&cfg, &opts)?;
-            info!(
-                backend = backend.name(),
-                "{} TX settings{}:\n{settings}",
-                backend.name(),
-                tuning.channel_label()
-            );
-            // clap admits --radio only with exactly one of --rf-enable and
-            // --dry-run; the gate does not rely on it.
-            if !a.rf_enable || a.dry_run {
-                bail!(
-                    "dry run, not transmitting: use --rf-enable instead of --dry-run to radiate with the settings above (coax/attenuator or shielded setup only)"
-                );
-            }
-            if seconds == 0.0 {
-                info!(
-                    "note: unbounded transmission ({}); stop with Ctrl-C",
-                    if endless {
-                        "the input never ends"
-                    } else {
-                        "until the input ends"
-                    }
-                );
-            }
-            let (sink, info) = backend
-                .open_tx(&cfg, &opts)
-                .with_context(|| format!("open radio {spec} for TX"))?;
-            info!("opened: {info}");
-            sink
-        }
-        Sink::Iq(path) => {
-            if a.dry_run {
-                bail!("dry run: nothing written");
-            }
-            check_iq_bound(path, endless, a.seconds)?;
-            Box::new(FileSink::create(path, a.iq_format, a.backoff_db)?)
-        }
-    };
+    let mut sink = open_sink(
+        &a,
+        frame_s,
+        endless,
+        seconds,
+        |spec| a.tune.radio_config(spec, &a.gain),
+        |path| FileSink::create(path, a.iq_format, a.backoff_db),
+    )?;
     let opts = TxOpts {
         // a replayed file carries its own lead-in and flush
         lead_frames: if iq.is_some() {

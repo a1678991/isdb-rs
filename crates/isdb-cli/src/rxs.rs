@@ -174,7 +174,9 @@ pub struct Stats {
 }
 
 impl Stats {
-    fn add(&mut self, d: &DecodedSuperframe) {
+    /// Account one decoded superframe (its packets per TS_ID, its MER and
+    /// TMCC).
+    pub fn add(&mut self, d: &DecodedSuperframe) {
         self.decoded += 1;
         self.mer_sum += d.mer_db;
         self.mer_n += 1;

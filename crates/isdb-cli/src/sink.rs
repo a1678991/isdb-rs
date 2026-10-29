@@ -10,7 +10,8 @@ use std::sync::atomic::AtomicBool;
 /// IQ sample file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum IqFormat {
-    /// Interleaved little-endian f32 I/Q (GNU Radio complex).
+    /// Interleaved little-endian f32 I/Q (GNU Radio complex): ISDB-T at
+    /// unit RMS, ISDB-S at --backoff-db below full scale (1.0).
     Cf32,
     /// Interleaved signed 8-bit I/Q (tx writes it with --backoff-db scaling).
     Cs8,
@@ -27,6 +28,9 @@ pub struct FileSink {
     bytes: Vec<u8>,
     samples: u64,
     path: String,
+    backoff_db: f32,
+    /// Scale of cf32 samples (1 = as given; [`FileSink::with_cf32_backoff`]).
+    cf32_scale: f32,
 }
 
 impl FileSink {
@@ -45,7 +49,19 @@ impl FileSink {
             bytes: Vec::new(),
             samples: 0,
             path: path.into(),
+            backoff_db,
+            cf32_scale: 1.0,
         })
+    }
+
+    /// Write cf32 samples at the backoff too: scaled by 10^(−backoff/20),
+    /// so unit-RMS input lands at that RMS below a full scale of 1.0. The
+    /// ISDB-S receiver reads samples as a fraction of full scale (its
+    /// front end's input is 12-bit), unlike the scale-free ISDB-T one.
+    #[must_use]
+    pub fn with_cf32_backoff(mut self) -> Self {
+        self.cf32_scale = 10f32.powf(-self.backoff_db / 20.0);
+        self
     }
 }
 
@@ -55,9 +71,10 @@ impl IqSink for FileSink {
         self.bytes.clear();
         match self.format {
             IqFormat::Cf32 => {
+                let k = self.cf32_scale;
                 for c in s {
-                    self.bytes.extend_from_slice(&c.re.to_le_bytes());
-                    self.bytes.extend_from_slice(&c.im.to_le_bytes());
+                    self.bytes.extend_from_slice(&(c.re * k).to_le_bytes());
+                    self.bytes.extend_from_slice(&(c.im * k).to_le_bytes());
                 }
             }
             IqFormat::Cs8 => {
@@ -83,10 +100,12 @@ impl IqSink for FileSink {
         self.w
             .flush()
             .map_err(|e| RadioError::io(format!("write {}", self.path), e))?;
-        let extra = if self.format == IqFormat::Cs8 {
-            format!("; {}", self.quantizer.describe())
-        } else {
-            String::new()
+        let extra = match self.format {
+            IqFormat::Cs8 => format!("; {}", self.quantizer.describe()),
+            IqFormat::Cf32 if self.cf32_scale != 1.0 => {
+                format!("; RMS {:.1} dB below full scale", self.backoff_db)
+            }
+            IqFormat::Cf32 => String::new(),
         };
         Ok(format!(
             "wrote {} samples ({:?}) to {}{extra}",
@@ -133,6 +152,18 @@ mod tests {
         let mut want = isdbt_phy::iq::cf32_to_bytes(&x);
         want.extend(isdbt_phy::iq::cf32_to_bytes(&x[..1]));
         assert_eq!(std::fs::read(&p).unwrap(), want);
+        // cf32 at the backoff (ISDB-S): scaled by 10^(−20/20) = 0.1.
+        let p = dir.join("y.cf32");
+        let mut s = FileSink::create(p.to_str().unwrap(), IqFormat::Cf32, 20.0)
+            .unwrap()
+            .with_cf32_backoff();
+        s.write(&x, &AtomicBool::new(false)).unwrap();
+        let fin = s.finish(false).unwrap();
+        assert!(fin.contains("RMS 20.0 dB below full scale"), "{fin}");
+        drop(s);
+        let got = isdbt_phy::iq::cf32_from_bytes(&std::fs::read(&p).unwrap());
+        assert_eq!(got.len(), x.len());
+        assert!(got.iter().zip(&x).all(|(a, b)| (a - b * 0.1).norm() < 1e-6));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

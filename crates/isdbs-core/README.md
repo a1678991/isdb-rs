@@ -31,7 +31,8 @@ meaning of the "other information" values (pending).
 
 - Depends on: `isdb-fec`, `thiserror`.
 - Used by: `isdbs-phy` (receiver and transmitter), `isdb-cli` (`isdb iq
-  tmcc`, `isdb rx`).
+  tmcc`, `isdb rx`; `TmccInfo::assign` for `isdb tx` / `isdb loopback
+  --system isdbs`).
 
 ## Key types and entry points
 

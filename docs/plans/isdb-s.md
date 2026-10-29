@@ -796,6 +796,58 @@ tlv inspect / extract / validate`, fixes, tests), plus docs.
   decoded (CA / application, out of scope); MPU timestamps are decoded
   but not yet attached to access units in the extracted streams.
 
+## 0.22 Phase 4 status: ISDB-S modulator and loopback (done 2026-10-29)
+
+Design: [isdbs-loopback.md](isdbs-loopback.md). Commits `e42b4ee` (the
+plan), `5780645` (`isdbs-core` `TmccInfo::assign`), `70a44e9`
+(`isdbs-phy` `tx::Transmitter`, `frame_symbols` promoted from
+`testsig`, the symbol-domain loopbacks), `b816702` (`isdb-frontend`
+`shape::Shaper`), `5380474` (the sample-domain loopback test), `e7bd592`
+(`isdb tx --system isdbs`, the SigMF sidecar, the radio path through the
+gate), `e7405b9` (`isdb loopback --system isdbs`, `VerifierS`),
+`7e87638` (the ISDB-S receive tests and the timing-sensitive live-feed
+test take turns), `caa380e` (`tools/isdbs-loopback-sweep.sh`), then the
+docs. VERIFICATION.md "ISDB-S transmitter and loopback" has the figures.
+
+- **Acceptance met** (plan §7): symbol-domain loopback byte-exact on five
+  combination mixes; sample domain byte-exact at 40 Msps; `tx --system
+  isdbs --iq` → `rx --iq` (ISDB-S found by itself) reproduces every TS
+  byte-exact, 0 uncorrectable; `loopback --system isdbs` PASS at 12 dB
+  (TC8PSK 2/3) and 8 dB (QPSK 3/4) with a 50 kHz CFO and a mid-stream
+  start, FAIL with the loss counted without the flush.
+- **Thresholds** (6 superframes, three seeds): TC8PSK 2/3 passes from
+  7 dB SNR (6 dB in 2 of 3), QPSK 7/8 from 6 dB, QPSK 3/4 from 4 dB,
+  QPSK 1/2 from 1 dB. The SNR is over the 40 MHz of samples; Es/N0 is
+  1.42 dB higher (the main MER shows it).
+- **Found: a pre-roll frame is needed.** The receive front end's loops
+  settle in the first symbols they get; when those are the start of the
+  first superframe, its first slots (17 of 384 packets) do not decode,
+  because the depth-8 interleaver spreads frame 1's start over the first
+  slots of every frame. `isdb tx` sends the last frame of a null
+  superframe first (the inner coder runs on from it, as on air); every
+  superframe then decodes clean. The plan had a null superframe only.
+- **Found: the trim is 0 on a clean pulse.** The sample-domain test
+  measures 0.000 symbol (±0.002 under noise and CFO in the loopback), so
+  the −0.05…−0.10 symbol the lab's IF needs is the IF chain's, not the
+  timing detector's.
+- **Level**: ISDB-S samples are written at `--backoff-db` below full scale
+  in every format, cf32 included (the receiver reads a fraction of a
+  12-bit full scale); 0 components clip in cs8 at 10 dB.
+- **Speed** (release): the producer 1.1× real time at 40 Msps (the
+  shaper on one core takes most of the 9.8 ms per superframe); the dev
+  profile now optimises `isdb-frontend`, `isdbs-core`, `isdbs-phy`
+  (0.02× → 0.8×). A loopback of 1 s of signal takes 2.9 s.
+- **Noted**: the channel's seed is used `| 1`, so seeds 2k and 2k + 1 give
+  the same noise (as for ISDB-T); the sweep uses odd seeds.
+- **Left**: continuous transmission to a radio needs a modulator in the
+  PlutoSky R2's FPGA (the mirror of the symbol front end): ≥ 38.96 Msps
+  is 160 MB/s of cs12, beyond Gigabit Ethernet, and a HackRF stops at
+  20 Msps, so `tx --system isdbs --radio` works through the gate and the
+  dry run but underruns. The conducted test into the PIX-DT295 (Phase 4,
+  §2's prerequisites) waits for it. Running the transmitter and the
+  shaper on two threads would lift the producer from 1.1× towards the
+  shaper's 1.7×.
+
 ## 1. Goals and non-goals
 
 Goals, in order:

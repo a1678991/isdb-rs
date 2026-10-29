@@ -12,9 +12,45 @@ Initial feature set, implemented from the published specifications
 (ITU-T H.222.0 | ISO/IEC 13818-1, ARIB STD-B10, STD-B24, STD-B31,
 STD-B32; editions in `SPECS.md`). ISDB-T is implemented end to end;
 ISDB-S (ITU-R BO.1408-1, MIC Ordinance No. 87 of 2011) is received to
-transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
+transport streams and transmitted from them to IQ files; ISDB-S3 (ARIB
+STD-B44) is received to TLV streams.
 
 ### Added
+
+- `isdb-cli`: `isdb tx --system isdbs` transmits ISDB-S: `--combination
+  WORD:N` (the slot layout, `tc8psk2/3:48` by default; `bpsk1/2` …
+  `tc8psk2/3`), `--ts ID[:SLOTS][=PATH]` (up to eight TSs, each a TS
+  file with `--feed` or synthetic packets), `--rate` (40M),
+  `--lead-superframes`, `--no-flush`. A producer thread runs
+  `isdbs_phy::tx::Transmitter` and `isdb_frontend::shape::Shaper` per
+  superframe (a pre-roll frame, the lead, the data, a flush frame);
+  status and summary lines per TS_ID. `--iq` writes the samples at
+  `--backoff-db` below full scale in every format, cf32 included, and a
+  SigMF sidecar (`isdb:system "ISDB-S"`, the layout, the channel's IF)
+  from which `isdb rx --iq` picks ISDB-S by itself and decodes every TS
+  byte-exact. `--radio` goes through the same gate: a BSn / NDn channel
+  is tuned at its IF behind `--freq-unrestricted`, at `--rate`, with a
+  40 MHz filter by default; a Gigabit-Ethernet Pluto underruns at ISDB-S
+  rates and a HackRF refuses them, which `tx` says. ISDB-T-only options
+  with `--system isdbs`, and ISDB-S-only ones without, are refused
+  naming the system.
+- `isdb-cli`: `isdb loopback --system isdbs` (`--superframes`,
+  `--cfo-hz`, the layout and inputs of `tx --system isdbs`): the ISDB-S
+  transmitter through AWGN, a carrier offset in Hz and a sample offset
+  into the ISDB-S receiver, every TS_ID verified byte-exact and every
+  TMCC against the one sent, `--json` per TS_ID; PASS from 7 dB SNR on
+  the BS layout and 4 dB on the CS layout (VERIFICATION.md "ISDB-S
+  transmitter and loopback"). `tools/isdbs-loopback-sweep.sh` sweeps it.
+- The ISDB-S transmitter libraries: `isdbs-core` `TmccInfo::assign` (the
+  TMCC information of a slot layout, validated), `isdbs-phy` `tx`
+  (`Transmitter`: TS packets per TS → the 319 488 symbols of a
+  superframe and where each packet went; `frame_symbols`), and
+  `isdb-frontend` `shape::Shaper` (symbols → root-raised-cosine IQ at any
+  rate ≥ (1 + α)·R, fractional samples per symbol, chunking-invariant).
+  Tested as the receiver's inverse: byte-exact symbol-domain loopbacks on
+  five combination mixes, and a sample-domain loopback at 40 Msps through
+  the shaper and the receive front end (the trim found is 0.000 symbol).
+- `isdb-iq`: the SigMF field `isdb:system` (extension 0.4.0).
 
 - `isdb-radio` `pluto`: without `uri`, the device is found by mDNS when
   it is opened (one legacy unicast query for libiio's DNS-SD service
@@ -485,6 +521,16 @@ transport streams; ISDB-S3 (ARIB STD-B44) to TLV streams.
 
 ### Changed
 
+- Workspace: the dev profile builds `isdb-frontend`, `isdbs-core` and
+  `isdbs-phy` with `opt-level = 3`, as the ISDB-T PHY crates (the ISDB-S
+  transmit chain ran at 0.02× real time unoptimised, now 0.8×).
+- `isdb-cli`: `tx` and `loopback` take `--system` (default `isdbt`, so
+  ISDB-T command lines are unchanged); `isdb tx --channel BSn` without
+  `--system isdbs` is refused pointing at it, no longer saying that
+  there is no satellite transmitter; `isdb loopback --snr-db` is
+  documented as the ratio over the sample rate's bandwidth;
+  `Channel::new` is `Channel::with_cfo_hz` with a carrier spacing of
+  (512/63 MHz) / FFT size.
 - `isdbt-ofdm`, `isdbt-phy`, `isdbt-fec`, `isdbt-core`: typed errors and
   panic triage (errors-and-logging plan, group W4).
   `isdbt_ofdm::Error::Tmcc(String)` is `Tmcc { field: TmccField, code }`

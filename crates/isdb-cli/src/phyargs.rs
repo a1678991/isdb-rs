@@ -188,19 +188,53 @@ pub struct Tuning {
     /// Channel if given.
     pub channel: Option<Channel>,
     /// Sample-rate request as a rational number `rate_num / rate_den` Hz
-    /// (ppm-corrected): the ISDB-T 512/63 MHz clock.
+    /// (ppm-corrected): the ISDB-T 512/63 MHz clock, or the `--rate` of
+    /// ISDB-S ([`TuneArgs::satellite_tuning`]).
     pub rate_num: u32,
     /// Denominator of the sample-rate request.
     pub rate_den: u32,
 }
 
 impl TuneArgs {
-    /// Resolve channel/frequency and the ppm correction.
+    /// Resolve channel/frequency and the ppm correction for ISDB-T: a
+    /// terrestrial channel and the 512/63 MHz clock.
     pub fn tuning(&self) -> Result<Tuning> {
+        if let Some(c) = self.channel.filter(Channel::is_satellite) {
+            bail!(
+                "--channel {c}: a satellite channel; `isdb rx` receives it as ISDB-S (--system auto or isdbs) and `isdb tx --system isdbs` transmits ISDB-S at its IF"
+            );
+        }
+        let (nominal_hz, k) = self.centre()?;
+        Ok(Tuning {
+            nominal_hz,
+            set_hz: whole_u64(nominal_hz as f64 / k, "the ppm-corrected frequency")?,
+            channel: self.channel,
+            rate_num: whole_u32(SAMPLE_RATE_NUM as f64 / k, "the ppm-corrected sample rate")?,
+            rate_den: u32::try_from(SAMPLE_RATE_DEN).context("the sample-rate denominator")?,
+        })
+    }
+
+    /// Resolve channel/frequency and the ppm correction for ISDB-S
+    /// transmission at `rate_hz` samples per second: a satellite channel
+    /// (BSn, NDn) is tuned at its IF ([`Channel::tune_hz`]), which lies
+    /// outside the UHF TV band and so needs `--freq-unrestricted` like any
+    /// other frequency there; the sample clock is `rate_hz`, divided by
+    /// 1 + ppm·1e-6 as the frequency is.
+    pub fn satellite_tuning(&self, rate_hz: f64) -> Result<Tuning> {
+        let (nominal_hz, k) = self.centre()?;
+        Ok(Tuning {
+            nominal_hz,
+            set_hz: whole_u64(nominal_hz as f64 / k, "the ppm-corrected frequency")?,
+            channel: self.channel,
+            rate_num: whole_u32(rate_hz / k, "the ppm-corrected sample rate")?,
+            rate_den: 1,
+        })
+    }
+
+    /// The nominal centre (checked against the UHF TV band unless
+    /// `--freq-unrestricted`) and the clock factor 1 + ppm·1e-6.
+    fn centre(&self) -> Result<(u64, f64)> {
         let nominal_hz = match (self.channel, self.freq) {
-            (Some(c), None) if c.is_satellite() => bail!(
-                "--channel {c}: a satellite channel; ISDB-S / ISDB-S3 reception is not implemented in this command yet (see `isdb capture`, `isdb symbols` and `isdb iq tmcc`), and there is no satellite transmitter"
-            ),
             (Some(c), None) => c.tune_hz()?,
             (None, Some(f)) => f,
             (None, None) => bail!("give --channel N or --freq HZ"),
@@ -216,36 +250,38 @@ impl TuneArgs {
         if !(-200.0..=200.0).contains(&self.freq_corr_ppm) {
             bail!("--freq-corr-ppm {} out of range ±200", self.freq_corr_ppm);
         }
-        let k = 1.0 + self.freq_corr_ppm * 1e-6;
-        Ok(Tuning {
-            nominal_hz,
-            set_hz: whole_u64(nominal_hz as f64 / k, "the ppm-corrected frequency")?,
-            channel: self.channel,
-            rate_num: whole_u32(SAMPLE_RATE_NUM as f64 / k, "the ppm-corrected sample rate")?,
-            rate_den: u32::try_from(SAMPLE_RATE_DEN).context("the sample-rate denominator")?,
-        })
+        Ok((nominal_hz, 1.0 + self.freq_corr_ppm * 1e-6))
     }
 
     /// The radio configuration for `spec` with `gains` (passed through
-    /// unparsed).
+    /// unparsed), ISDB-T.
     pub fn radio_config(
         &self,
         spec: &DeviceSpec,
         gains: &[(String, String)],
     ) -> Result<(RadioConfig, Tuning)> {
         let t = self.tuning()?;
-        Ok((
-            RadioConfig {
-                center_hz: t.set_hz,
-                nominal_hz: t.nominal_hz,
-                rate_num: t.rate_num,
-                rate_den: t.rate_den,
-                bandwidth_hz: self.bb_filter_hz,
-                args: spec.args.clone(),
-                gains: gains.to_vec(),
-            },
-            t,
-        ))
+        Ok((self.config(&t, self.bb_filter_hz, spec, gains), t))
+    }
+
+    /// The radio configuration of tuning `t` with an analog bandwidth of
+    /// `bandwidth_hz`, for `spec` with `gains`.
+    pub fn config(
+        &self,
+        t: &Tuning,
+        bandwidth_hz: u32,
+        spec: &DeviceSpec,
+        gains: &[(String, String)],
+    ) -> RadioConfig {
+        RadioConfig {
+            center_hz: t.set_hz,
+            nominal_hz: t.nominal_hz,
+            rate_num: t.rate_num,
+            rate_den: t.rate_den,
+            bandwidth_hz,
+            args: spec.args.clone(),
+            gains: gains.to_vec(),
+        }
     }
 }
 
@@ -471,6 +507,42 @@ mod tests {
         };
         let e = sat.tuning().unwrap_err().to_string();
         assert!(e.contains("--channel BS1: a satellite channel"), "{e}");
+        assert!(e.contains("isdb tx --system isdbs"), "{e}");
+    }
+
+    #[test]
+    fn satellite_tuning_is_the_if_at_the_given_rate() {
+        let mut t = TuneArgs {
+            channel: Some(Channel::Bs(1)),
+            freq: None,
+            freq_unrestricted: false,
+            freq_corr_ppm: 0.0,
+            bb_filter_hz: 40_000_000,
+        };
+        // the IF lies outside the UHF band: the gate of every frequency
+        let e = t.satellite_tuning(40e6).unwrap_err().to_string();
+        assert!(e.contains("1049.480000 MHz (BS1 IF)"), "{e}");
+        assert!(e.contains("--freq-unrestricted"), "{e}");
+        t.freq_unrestricted = true;
+        let s = t.satellite_tuning(40e6).unwrap();
+        assert_eq!((s.nominal_hz, s.set_hz), (1_049_480_000, 1_049_480_000));
+        assert_eq!((s.rate_num, s.rate_den), (40_000_000, 1));
+        assert_eq!(s.channel_label(), " (BS1 IF)");
+        // the ppm correction divides the frequency and the rate alike
+        t.freq_corr_ppm = 10.0;
+        let s = t.satellite_tuning(40e6).unwrap();
+        assert_eq!((s.set_hz, s.rate_num), (1_049_469_505, 39_999_600));
+        let spec: DeviceSpec = "x".parse().unwrap();
+        let c = t.config(&s, 40_000_000, &spec, &[]);
+        assert_eq!(
+            (c.center_hz, c.rate_num, c.rate_den),
+            (1_049_469_505, 39_999_600, 1)
+        );
+        assert_eq!(c.bandwidth_hz, 40_000_000);
+        // --freq is the IF too
+        t.channel = None;
+        t.freq = Some(1_200_000_000);
+        assert_eq!(t.satellite_tuning(61.44e6).unwrap().rate_num, 61_439_386);
     }
 
     #[test]

@@ -4,7 +4,8 @@
 IQ file or a radio (`--radio`; the backends are HackRF One, `hackrf`,
 and the ADALM-Pluto family, `pluto`, see [below](#adalm-pluto-and-plutosky-r2)). This page covers the conducted bench set-up, the
 levels and channel plan, the `isdb tx` inputs and options, relaying a
-recorded program, and what real receivers turned out to need.
+recorded program, ISDB-S (`--system isdbs`, to IQ files; [below](#isdb-s-bs-and-110-cs)),
+and what real receivers turned out to need.
 
 ## Safety and legal requirements
 
@@ -496,6 +497,88 @@ flush is added. Pause sends null frames modulated with the file's
 parameters, so the receiver stays locked. Pause and seek splice frames,
 which breaks time interleaving: the receiver loses about one frame's
 packets at each splice (≈ 2800 on a 12-segment layer).
+
+## ISDB-S (BS and 110° CS)
+
+`isdb tx --system isdbs` transmits ISDB-S (ITU-R BO.1408-1, the ARIB
+STD-B20 system; MIC Ordinance No. 87 of 2011 annexed tables 45–51): TS
+packets per TS_ID → TMCC and slot assignment, RS(204,188), energy
+dispersal, the depth-8 inter-frame interleaver, the inner code and
+mapping (BPSK, punctured QPSK, TC8PSK), header and bursts → superframes
+of 8 frames × 39 936 symbols at 28.86 Mbaud (11.07 ms) → root-raised-cosine
+pulse shaping (roll-off 0.35, BO.1408-1 Annex 1 §9) at `--rate`, 40 Msps
+by default. The libraries are `isdbs_core::TmccInfo::assign`,
+`isdbs_phy::tx::Transmitter` and `isdb_frontend::shape::Shaper`.
+
+```sh
+# the BS layout (TC8PSK 2/3 × 48 slots), two TSs of 24 slots, to a file
+isdb tx --system isdbs --ts 0x4010:24=a.ts --ts 0x4011:24=b.ts --iq bs.cf32
+# … read back: rx finds ISDB-S from the sidecar's rate and the survey
+isdb rx --iq bs.cf32 --out 'bs-{ts_id}.ts' --strip-nulls
+# the CS layout (QPSK 3/4 × 48, 36 sent slots), one synthetic TS, 1 s
+isdb tx --system isdbs --combination qpsk3/4:48 --seconds 1 --iq cs.cs8 --iq-format cs8
+# a mixed layout: TC8PSK 2/3 × 44 and BPSK 1/2 × 4 (45 sent slots)
+isdb tx --system isdbs --combination tc8psk2/3:44 --combination bpsk1/2:4 \
+    --ts 0x4010:30=a.ts --ts 0x4011:15=b.ts --iq mix.cf32
+```
+
+**Layout.** `--combination WORD:N` (repeatable, at most four) gives each
+modulation-code combination of BO.1408-1 Table 1 and its slots per frame,
+dummy slots included; the slots sum to 48 in whole units of each
+combination (`bpsk1/2` 4 slots with 1 sent, `qpsk1/2` 2/1, `qpsk2/3` 3/2,
+`qpsk3/4` 4/3, `qpsk5/6` 6/5, `qpsk7/8` 8/7, `tc8psk2/3` 1/1). `--ts
+ID[:SLOTS][=PATH]` (repeatable, at most eight) gives each TS its TS_ID,
+its sent slots per frame (they must sum to the layout's sent slots; a
+single `--ts` gets them all) and its packets: a TS file (`-` = stdin,
+FIFOs, `--feed file|loop|live`) or synthetic packets. The sent slots go to
+the TSs in slot order, relative TS 0 first (BO.1408-1 Fig. 9); unused TS_ID
+entries are FFFFh and the other TMCC fields take the values observed on
+the BS transponders (`isdbs-core` README). A file TS that has no packet
+when its slot comes is padded with a null packet (counted in the status
+lines).
+
+**On air** come a pre-roll frame (the last frame of a null superframe:
+a receiver's loops settle during its first symbols), `--lead-superframes`
+null superframes (1), the data superframes, and a null frame with the
+pulse shaper's tail (`--no-flush` omits them, and a receiver then loses
+the last superframe).
+
+**Level.** The samples are written at `--backoff-db` below full scale in
+every format, cf32 included: at the default 10 dB the RMS is 0.316 in cf32
+and 40 of 127 in cs8. Unlike the ISDB-T receiver, which normalises its
+input, the ISDB-S receiver (and the FPGA front end it models) reads the
+samples as a fraction of a 12-bit full scale, so a cf32 file at unit RMS
+would clip. A single-carrier PSK signal has a low crest factor after the
+pulse shaping; nothing clips at 10 dB.
+
+**The SigMF sidecar.** `--iq NAME.cf32` also writes `NAME.cf32.sigmf-meta`
+(`NAME.sigmf-meta` for `NAME.sigmf-data`) with the sample format and rate,
+`core:description` (the layout), `core:recorder` and `isdb:system
+"ISDB-S"`, and a capture segment whose `core:frequency` is the IF of
+`--channel BSn` / `NDn` (with the channel fields `isdb capture` writes) or
+`--freq`, when given. `isdb rx --iq NAME.cf32` needs it: an ISDB-S
+recording's rate and format come from its metadata. stdout, FIFOs and
+devices get no sidecar.
+
+**To a radio — the limit.** ISDB-S occupies (1 + 0.35) × 28.86 = 38.96 MHz
+and needs at least that many samples per second. To a Pluto that is
+40 Msps × 4 bytes (cs12 in 16 bits) = 160 MB/s, beyond Gigabit Ethernet
+(about 65 MB/s measured, VERIFICATION.md "8-bit captures and
+streaming"); a HackRF stops at 20 Msps. `--radio` is wired through the
+same `--rf-enable` / `--dry-run` gate and backends: `--channel BS1` is
+tuned at its IF (1049.48 MHz; outside the UHF band, so with
+`--freq-unrestricted`), the sample rate is `--rate` (ppm-corrected) and
+`--bb-filter-hz` defaults to 40 MHz, the Pluto's widest TX filter. A Pluto
+then underruns (counted in the status lines; `isdb tx` warns at start),
+and the HackRF backend refuses 40 Msps. Continuous ISDB-S transmission
+needs a modulator in the radio's FPGA, the mirror of the symbol front
+end; that is future work. Test the chain with files and `isdb loopback
+--system isdbs` ([receiving.md](receiving.md#software-loopback)).
+
+```sh
+# check the settings, nothing opened
+isdb tx --system isdbs --radio pluto --channel BS1 --freq-unrestricted --gain att=60 --dry-run
+```
 
 ## Receiver compatibility notes
 

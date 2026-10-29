@@ -24,16 +24,17 @@ The SigMF fields used are those of the SigMF 1.2 core namespace
 `core:description`, `core:recorder`, `core:hw`; per capture segment
 `core:sample_start`, `core:frequency`, `core:datetime`). This project's
 own fields form the optional `isdb` extension, listed in the `sigmf`
-module documentation (`isdb:full_scale`, `isdb:lo_hz`,
+module documentation (`isdb:full_scale`, `isdb:system`, `isdb:lo_hz`,
 `isdb:rf_bandwidth_hz`, `isdb:gain`, `isdb:channel`,
 `isdb:channel_rf_hz`, `isdb:lnb_lo_hz`, `isdb:polarisation`,
-`isdb:capture_method`, `isdb:gap_before`).
+`isdb:capture_method`, `isdb:gap_before`); extension version 0.4.0
+added `isdb:system`, which `isdb tx --system isdbs` writes.
 
 ## Position in the stack
 
 - Depends on: `num-complex`, `rustfft`, `serde_json`, `thiserror`.
-- Used by: `isdb-cli` (`isdb capture` writes its metadata, `isdb iq
-  survey` runs the survey). The planned ISDB-S / ISDB-S3 front ends will
+- Used by: `isdb-cli` (`isdb capture` and `isdb tx --system isdbs`
+  write its metadata, `isdb iq survey` runs the survey). The planned ISDB-S / ISDB-S3 front ends will
   read their input through `Recording`.
 
 ## Key types and entry points
