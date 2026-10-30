@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Offline end-to-end check of PCR-paced ISDB-S placement
 # (docs/plans/isdbs-next/pcr-pacing.md §7.6, §7.8, §8), no radio: the
-# media-free bench service of isdbt-mux (as tools/isdbs-bench-tx.sh builds
-# it, TS_ID 0x4010) multiplexed to a CBR TS of SECONDS → `isdb tx --system
-# isdbs --iq` (cs8, BS layout) with --placed-ts → `isdb rx --iq` →
-# tools/isdbs-bench-check.sh on the received TS against the placed one
-# (inspect, validate --expect-rate 52170000:PPM, byte-exact comparison).
+# media-free BS bench service of isdbt-mux (as tools/isdbs-bench-tx.sh
+# sends it: crates/isdbt-mux/examples/bs-bench.toml, BS-shaped SI with
+# network_id 0x0004 and the 0x43 of BS1, TS_ID 0x4017;
+# docs/plans/isdbs-next/bs-si.md) multiplexed to a CBR TS of SECONDS →
+# `isdb tx --system isdbs --channel BS1 --iq` (cs8, BS layout) with
+# --placed-ts → `isdb rx --iq` → tools/isdbs-bench-check.sh on the
+# received TS against the placed one (inspect, validate --expect-rate
+# 52170000:PPM with the BS SI expectations, byte-exact comparison).
 #
 # Usage: tools/isdbs-pacing-e2e.sh WORKDIR [SECONDS] [PPM]
 #   WORKDIR  scratch directory (the IQ file is 80 MB per second of air)
@@ -26,11 +29,13 @@
 #   lag, restamped; the run then expects deadline misses; default 0),
 #   MEDIA (1: give the service video and audio made by ffmpeg, so that
 #   the TS carries PES with PTS/DTS; default 0, declared streams only).
+#   The bench's own TOML is copied to WORKDIR/bs-bench.toml (MEDIA=1: its
+#   two declared streams made media streams of these files).
 # Exit status: 0 PASS, 1 FAIL (isdbs-bench-check.sh, a seam check, or
 #   FEED=live with a deadline miss, STALL without one), 2 error.
 set -euo pipefail
 die() { echo "isdbs-pacing-e2e: $*" >&2; exit 2; }
-[ $# -ge 1 ] && [ $# -le 3 ] || { sed -n '10,30s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# -ge 1 ] && [ $# -le 3 ] || { sed -n '/^# Usage:/,/^# Exit status:/s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 ISDB=${ISDB:-$HERE/target/release/isdb}
 [ -x "$ISDB" ] || die "$ISDB: build it with cargo build --release -p isdb-cli"
@@ -74,28 +79,28 @@ if [ "$MEDIA" = 1 ]; then
     ffmpeg -loglevel error -y -f lavfi -i sine=frequency=1000:sample_rate=48000 -ac 2 \
         -t "$SECONDS_TS" -c:a aac -b:a 192k -f adts audio.m2a
 fi
-python3 -I - "$HERE/crates/isdbt-mux/examples/bench-minimal.toml" bs-bench.toml "$MEDIA" "$PWD" <<'PY'
-import sys
+# The TS_ID of bs-bench.toml (= the TMCC's) and the channel of its 0x43.
+TSID=4017
+python3 -I - "$HERE/crates/isdbt-mux/examples/bs-bench.toml" bs-bench.toml "$MEDIA" "$PWD" <<'PY'
+import re, sys
 src, dst, media, here = sys.argv[1:5]
-out = []
-for l in open(src).read().splitlines():
-    t = l.strip()
-    if media == "1":
+s = open(src).read()
+assert re.search(r'^transport_stream_id = 0x4017\b', s, re.M), "TS_ID of bs-bench.toml"
+assert re.search(r'^\s*channel = "BS1"', s, re.M), "channel of bs-bench.toml"
+if media == "1":
+    for pid, st, kind, extra in (
+        ("0x0111", "0x02", "mpeg2-video", f'source = "{here}/video.m2v"'),
         # ffmpeg's ADTS has no crc_check: accepted with a warning
-        l = l.replace('source = "media/audio.m2a"', f'source = "{here}/audio.m2a"\n  adts_compliance = "warn"')
-        l = l.replace('source = "media/video.m2v"', f'source = "{here}/video.m2v"')
-    else:
-        if t.startswith("source =") or t.startswith("frames_per_pes"):
-            continue
-        l = l.replace('kind = "mpeg2-video"', 'kind = "declared"\n  stream_type = 0x02')
-        l = l.replace('kind = "aac-adts"', 'kind = "declared"\n  stream_type = 0x0F')
-    out.append(l)
-s = "\n".join(out) + "\n"
-s = s.replace("transport_stream_id = 0x79EE", "transport_stream_id = 0x4010", 1)
+        ("0x0112", "0x0F", "aac-adts", f'source = "{here}/audio.m2a"\n  adts_compliance = "warn"'),
+    ):
+        s, n = re.subn(
+            rf'kind = "declared"\n(\s*pid = {pid}\n)\s*stream_type = {st}\b[^\n]*\n',
+            rf'kind = "{kind}"\n\g<1>  {extra}\n', s)
+        assert n == 1, f"declared stream {pid} of bs-bench.toml"
 open(dst, "w").write(s)
 PY
 "$ISDB" mux -c bs-bench.toml --seconds "$SECONDS_TS" --out-ts bench.ts
-INPUT=(--ts "0x4010=$PWD/bench.ts")
+INPUT=(--ts "0x$TSID=$PWD/bench.ts")
 STATUS=(--status-secs 0)
 if [ "$FEED" = loop ]; then
     # air time for PASSES passes and a bit of the next (lead-in included)
@@ -117,10 +122,10 @@ elif [ "$FEED" = live ]; then
         (sleep 4; kill -STOP "$W"; sleep "$STALL"; kill -CONT "$W") 2> /dev/null &
         echo $! > stall.pid
     fi
-    INPUT=(--ts "0x4010=$PWD/ts.fifo" --feed live)
+    INPUT=(--ts "0x$TSID=$PWD/ts.fifo" --feed live)
     STATUS=(--status-secs 2)
 fi
-"$ISDB" tx --system isdbs "${INPUT[@]}" --ts-pacing "$PACING" \
+"$ISDB" tx --system isdbs --channel BS1 "${INPUT[@]}" --ts-pacing "$PACING" \
     --iq tx.cs8 --iq-format cs8 --placed-ts 'placed-{ts_id}.ts' "${STATUS[@]}" 2>&1 | tee tx.log
 LIVE_MISSES=0
 if [ "$FEED" = live ]; then
@@ -134,15 +139,15 @@ if [ "$FEED" = live ]; then
 fi
 "$ISDB" rx --iq tx.cs8 --out 'rx-{ts_id}.ts' --json > rx.json
 echo "== placed TS"
-"$ISDB" ts inspect placed-4010.ts | grep -E "rate|CBR-fit|PCR" || true
-RX=rx-4010.ts
+"$ISDB" ts inspect "placed-$TSID.ts" | grep -E "packet rate|CBR-fit|PCR" || true
+RX=rx-$TSID.ts
 if [ "$FEED" = live ]; then
     # Live pacing starts the TS L (0.3 s) of nulls after the lead-in: a
     # receiver tuned then sees no PAT for 0.3 s, which validate counts as
     # a capture-edge gap. Check the recording from its first TS packet, as
     # a receiver tuned once the TS is on air would have it.
-    RX=rx-4010.live.ts
-    python3 -I - rx-4010.ts "$RX" <<'PY'
+    RX=rx-$TSID.live.ts
+    python3 -I - "rx-$TSID.ts" "$RX" <<'PY'
 import sys
 src, dst = sys.argv[1:3]
 b = open(src, "rb").read()
@@ -156,7 +161,7 @@ fi
 echo "== received TS against the placed one"
 VERDICT=0
 "$HERE/tools/isdbs-bench-check.sh" --rate "52170000:$PPM" --fit-max-ns 100 \
-    --placed placed-4010.ts "$RX" | tee check.log || VERDICT=$?
+    --placed "placed-$TSID.ts" "$RX" | tee check.log || VERDICT=$?
 [ "$VERDICT" -le 1 ] || exit "$VERDICT"
 if [ "$STALL" != 0 ] && [ "$FEED" = live ]; then
     # The stall is a hole in the TS (the writer sent nothing): PCR
@@ -177,7 +182,7 @@ if [ "$STALL" != 0 ] && [ "$FEED" = live ]; then
 fi
 if [ "$FEED" = loop ]; then
     echo "== loop seams of the received TS (tools/ts-loop-seam.py)"
-    python3 -I "$HERE/tools/ts-loop-seam.py" bench.ts rx-4010.ts || VERDICT=1
+    python3 -I "$HERE/tools/ts-loop-seam.py" bench.ts "rx-$TSID.ts" || VERDICT=1
 fi
 if [ "$FEED" = live ] && [ "$STALL" = 0 ]; then
     if [ "$LIVE_MISSES" = 0 ]; then

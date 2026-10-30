@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # ISDB-S test broadcast into a conducted receiver (docs/plans/isdbs-fpga-tx.md
 # §4 rung 4; VERIFICATION.md "ISDB-S transmitter in the FPGA: into the
-# PIX-DT295"): a media-free bench service of isdbt-mux (its declared
-# streams, TS_ID 0x4010) multiplexed to a CBR TS and transmitted as the one
-# TS of a BS layout (TC8PSK 2/3 × 48) through the PlutoSky R2's FPGA
-# transmit block on the BS1 IF.
+# PIX-DT295"): the media-free BS bench service of isdbt-mux
+# (crates/isdbt-mux/examples/bs-bench.toml, docs/plans/isdbs-next/bs-si.md:
+# BS-shaped SI, NIT network_id 0x0004 with the satellite delivery system
+# descriptor of BS1, TS_ID 0x4017, service 0x03E7, broadcaster 0xEE; its
+# declared streams) multiplexed to a CBR TS and transmitted as the one TS
+# of a BS layout (TC8PSK 2/3 × 48) through the PlutoSky R2's FPGA transmit
+# block on the BS1 IF. The TMCC announces the TOML's transport_stream_id
+# (--ts 0x4017=…). Receive it with
+#   dt295 tune --isdbs bs1 --tsid 4017
+#   tools/isdbs-bench-check.sh --record 20 WORKDIR/bs.ts   (BS SI, TS_ID 4017)
 #
 # Usage: tools/isdbs-bench-tx.sh [OPTIONS] WORKDIR [ATT_DB] [PLUTO_URI]
 #   WORKDIR   scratch directory for the TOML, the TS and the FIFO
@@ -13,22 +19,29 @@
 #             below 45 is refused without --margin
 #   PLUTO_URI libiio URI (default: ISDB_PLUTO_URI or mDNS)
 # Options:
-#   --feed fifo  (default) bench60.ts looped by `cat`, paced at its own rate
+#   --feed fifo  (default) the TS looped by `cat`, paced at its own rate
 #                by `pv` into a FIFO, `isdb tx --feed live` on the FIFO
-#   --feed loop  bench60.ts given to `isdb tx --feed loop` directly (no pv,
+#   --feed loop  the TS given to `isdb tx --feed loop` directly (no pv,
 #                no FIFO); the mode for PCR-paced placement
 #                (docs/plans/isdbs-next/pcr-pacing.md §8, bench acceptance)
+#   --terrestrial-si  the bench service as sent before BS SI (bench-minimal
+#                with declared streams: terrestrial NIT, TS_ID 0x4010 =
+#                BS-1 TS 0 on air), for comparison; receive with --tsid 4010
 #   --margin     allow ATT_DB below 45 (an explicit level-margin or overload
 #                measurement only)
 #   --dry-run    pass --dry-run instead of --rf-enable: print the radio
 #                settings and exit, nothing radiates
 #   --placed T   pass --placed-ts T to isdb tx: the TS as placed in the
-#                slots ({ts_id} -> 4010), for tools/isdbs-bench-check.sh
+#                slots ({ts_id} -> 4017), for tools/isdbs-bench-check.sh
 #                --placed (a relative T is under WORKDIR)
 #
-# Conducted bench only: a fixed attenuator (30-60 dB) and a DC block (or the
-# receiver's LNB supply off) between the TX port and the receiver, as
-# docs/plans/isdb-s.md §2 requires. Stop with Ctrl-C or SIGTERM: the signal
+# WORKDIR keeps the TOML sent (bs-bench.toml, or terrestrial-bench.toml)
+# and 60 s of its TS (bs60.ts, or bench60.ts), made again when the TOML
+# is newer. Conducted bench only: a fixed attenuator (30-60 dB) and a DC
+# block (or the receiver's LNB supply off) between the TX port and the
+# receiver, as docs/plans/isdb-s.md §2 requires; a receiver that has
+# scanned real BS may replace its stored BS network table with this
+# one-TS NIT (bs-si.md §7 item 3). Stop with Ctrl-C or SIGTERM: the signal
 # is passed on to `isdb tx` (which stops the radio first), the FIFO's
 # writer is killed on every exit path, and the script exits with isdb's
 # status. In loop mode `isdb tx` places the TS by its PCR (--ts-pacing
@@ -41,16 +54,18 @@
 # back, counted as a pcr-discontinuity; only --feed loop tags the passes).
 set -euo pipefail
 die() { echo "isdbs-bench-tx: $*" >&2; exit 2; }
-usage() { sed -n '9,27s/^# \{0,1\}//p' "$0"; }
+usage() { sed -n '/^# Usage:/,/^#$/s/^# \{0,1\}//p' "$0"; }
 
 FEED=fifo
 MARGIN=0
 GATE=--rf-enable
 PLACED=()
+SI=bs
 while [ $# -gt 0 ]; do
     case $1 in
         --feed) [ $# -ge 2 ] || die "--feed needs fifo or loop"; FEED=$2; shift 2 ;;
         --feed=*) FEED=${1#--feed=}; shift ;;
+        --terrestrial-si) SI=terrestrial; shift ;;
         --margin) MARGIN=1; shift ;;
         --dry-run) GATE=--dry-run; shift ;;
         --placed) [ $# -ge 2 ] || die "--placed needs a path template"; PLACED=(--placed-ts "$2"); shift 2 ;;
@@ -109,9 +124,23 @@ trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap 'on_signal 129' HUP
 
-# The bench service without media (as isdb-cli's tests declare it), TS_ID
-# 0x4010: the TS_ID the transmitter announces in the TMCC.
-python3 -I - "$HERE/crates/isdbt-mux/examples/bench-minimal.toml" bs-bench.toml <<'PY'
+# The TOML sent, copied into WORKDIR (or, --terrestrial-si, written there),
+# and its TS. The TS file is named after the SI, so that a TS of the other
+# kind left in WORKDIR is never sent by mistake.
+if [ "$SI" = bs ]; then
+    TOML=bs-bench.toml
+    TS=bs60.ts
+    SRC=$HERE/crates/isdbt-mux/examples/bs-bench.toml
+    cmp -s "$SRC" "$TOML" || cp "$SRC" "$TOML"
+    # 0x43 names the channel; `isdb tx --channel` below must be the same.
+    grep -Eq '^[[:space:]]*channel = "BS1"' "$TOML" ||
+        die "$SRC: [network.satellite] channel is not \"BS1\", the channel transmitted"
+else
+    TOML=terrestrial-bench.toml
+    TS=bench60.ts
+    # bench-minimal.toml without media (as isdb-cli's tests declare it),
+    # TS_ID 0x4010.
+    python3 -I - "$HERE/crates/isdbt-mux/examples/bench-minimal.toml" "$TOML.new" <<'PY'
 import sys
 src, dst = sys.argv[1:3]
 out = []
@@ -126,20 +155,26 @@ s = "\n".join(out) + "\n"
 s = s.replace("transport_stream_id = 0x79EE", "transport_stream_id = 0x4010", 1)
 open(dst, "w").write(s)
 PY
-if [ ! -s bench60.ts ]; then
-    "$ISDB" mux -c bs-bench.toml --seconds 60 --out-ts bench60.ts
+    if cmp -s "$TOML.new" "$TOML"; then rm -f "$TOML.new"; else mv "$TOML.new" "$TOML"; fi
 fi
+# The TS_ID announced in the TMCC: the TS's own (its PAT's), from the TOML.
+TSID=$(sed -n 's/^transport_stream_id = \(0x[0-9A-Fa-f]\{1,4\}\).*/\1/p' "$TOML" | head -1)
+[ -n "$TSID" ] || die "$TOML: no transport_stream_id = 0x… line"
+if [ ! -s "$TS" ] || [ "$TOML" -nt "$TS" ]; then
+    "$ISDB" mux -c "$TOML" --seconds 60 --out-ts "$TS"
+fi
+echo "isdbs-bench-tx: $SI SI, TS_ID $TSID <- $WORK/$TS" >&2
 
 if [ "$FEED" = fifo ]; then
     # 260 OFDM frames of 231.336 ms (mode 3, GI 1/8): the TS's own byte rate.
-    RATE=$(python3 -c "import os; print(int(os.path.getsize('bench60.ts') / (260 * 0.231336)))")
+    RATE=$(python3 -c "import os, sys; print(int(os.path.getsize(sys.argv[1]) / (260 * 0.231336)))" "$TS")
     rm -f ts.fifo
     mkfifo ts.fifo
     # `while cat` ends once pv is gone (cat dies of SIGPIPE); `while :` would
     # restart cat for ever.
-    # shellcheck disable=SC2016 # $1 is expanded by the inner bash
-    setsid bash -c 'while cat bench60.ts; do :; done | pv -q -B 7520 -L "$1" > ts.fifo' \
-        pacer "$RATE" &
+    # shellcheck disable=SC2016 # $1, $2 are expanded by the inner bash
+    setsid bash -c 'while cat "$2"; do :; done | pv -q -B 7520 -L "$1" > ts.fifo' \
+        pacer "$RATE" "$TS" &
     PACER=$!
     # Until setsid() has run the pacer is in this shell's process group and
     # the group kill in cleanup would miss it: wait for it to lead its own.
@@ -150,9 +185,9 @@ if [ "$FEED" = fifo ]; then
         sleep 0.01
     done
     leads || die "the FIFO pacer has no process group of its own"
-    INPUT=(--ts "0x4010=$WORK/ts.fifo" --feed live)
+    INPUT=(--ts "$TSID=$WORK/ts.fifo" --feed live)
 else
-    INPUT=(--ts "0x4010=$WORK/bench60.ts" --feed loop)
+    INPUT=(--ts "$TSID=$WORK/$TS" --feed loop)
 fi
 
 RADIO="pluto${URI:+:uri=$URI}"

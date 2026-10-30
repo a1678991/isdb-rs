@@ -3,7 +3,10 @@
 # shellcheck disable=SC2016,SC2034
 # Self-test of tools/isdbs-bench-tx.sh with a dummy `isdb` in place of the
 # real one (ISDB=…): no radio is opened, nothing is built or transmitted.
-# Checks the argument gate (attenuation ≥ 45 unless --margin), the command
+# Checks the argument gate (attenuation ≥ 45 unless --margin), the TS sent
+# (bs-bench.toml copied into WORKDIR, TS_ID 0x4017 from it, `isdb mux` only
+# when its TS is missing or older; --terrestrial-si: TS_ID 0x4010 from
+# bench-minimal.toml; a TS of the other SI never reused), the command
 # line of each feed mode, that isdb's exit status is propagated, that
 # INT/TERM reach isdb, and that no `cat`/`pv` of the FIFO pacer survives
 # any exit path (the `while :; do cat …` loop and `exec` that dropped the
@@ -17,17 +20,29 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 WORK=$T/work
 mkdir -p "$WORK"
-# A small stand-in for bench60.ts (the script then skips `isdb mux`).
-head -c $((188 * 4000)) /dev/zero > "$WORK/bench60.ts"
+# The TOML as the script copies it, and a small stand-in for its TS,
+# newer (the script then skips `isdb mux`).
+BS_TOML=$HERE/crates/isdbt-mux/examples/bs-bench.toml
+cp "$BS_TOML" "$WORK/bs-bench.toml"
+touch -d '1 minute ago' "$WORK/bs-bench.toml"
+head -c $((188 * 4000)) /dev/zero > "$WORK/bs60.ts"
 
-# The dummy: logs its arguments; DUMMY=exit:N exits N at once,
-# DUMMY=read:N reads 4 KiB of its --ts input then exits N, DUMMY=wait runs
-# until a TERM/INT and exits 7.
+# The dummy: logs its arguments; `isdb mux` writes a small --out-ts and
+# exits 0; otherwise DUMMY=exit:N exits N at once, DUMMY=read:N reads
+# 4 KiB of its --ts input then exits N, DUMMY=wait runs until a TERM/INT
+# and exits 7.
 cat > "$T/isdb" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DUMMY_LOG"
+if [ "$1" = mux ]; then
+    while [ $# -gt 0 ]; do
+        [ "$1" = --out-ts ] && head -c $((188 * 4000)) /dev/zero > "$2"
+        shift
+    done
+    exit 0
+fi
 input=
-for a in "$@"; do case $a in 0x4010=*) input=${a#0x4010=} ;; esac; done
+for a in "$@"; do case $a in 0x*=*) input=${a#*=} ;; esac; done
 case $DUMMY in
     exit:*) exit "${DUMMY#exit:}" ;;
     read:*) head -c 4096 "$input" > /dev/null; exit "${DUMMY#read:}" ;;
@@ -64,9 +79,37 @@ check "--margin allows ATT 40" '[ $RC = 0 ] && grep -q "att=40" "$DUMMY_LOG"'
 
 DUMMY=exit:3 run --feed loop "$WORK" 45 ip:192.0.2.1
 check "loop: isdb's status 3 propagated" '[ $RC = 3 ]'
-check "loop: --feed loop on bench60.ts, --rf-enable, att, uri" \
-    'grep -q -- "--rf-enable --gain att=45 --ts 0x4010=$WORK/bench60.ts --feed loop" "$DUMMY_LOG" && grep -q "pluto:uri=ip:192.0.2.1" "$DUMMY_LOG"'
+check "loop: --feed loop on bs60.ts as TS_ID 0x4017, --rf-enable, att, uri" \
+    'grep -q -- "--rf-enable --gain att=45 --ts 0x4017=$WORK/bs60.ts --feed loop" "$DUMMY_LOG" && grep -q "pluto:uri=ip:192.0.2.1" "$DUMMY_LOG"'
+check "loop: BS1 with the FPGA block" 'grep -q -- "tx --system isdbs --radio pluto:uri=ip:192.0.2.1 --channel BS1 --freq-unrestricted --offload fpga" "$DUMMY_LOG"'
 check "loop: no FIFO" '[ ! -e "$WORK/ts.fifo" ]'
+check "an up-to-date TS is not multiplexed again" '! grep -q "^mux " "$DUMMY_LOG"'
+
+# A fresh WORKDIR holding a TS of the other SI (the terrestrial bench60.ts
+# of the runs before BS SI): the BS TS is made, the old one left alone.
+W2=$T/work2
+mkdir -p "$W2"
+head -c 188 /dev/zero > "$W2/bench60.ts"
+DUMMY=exit:0 run --feed loop "$W2"
+check "fresh: bs-bench.toml copied, muxed for 60 s into bs60.ts" \
+    '[ $RC = 0 ] && cmp -s "$BS_TOML" "$W2/bs-bench.toml" && grep -qx "mux -c bs-bench.toml --seconds 60 --out-ts bs60.ts" "$DUMMY_LOG"'
+check "fresh: TS_ID 0x4017 on bs60.ts, not the old bench60.ts" \
+    'grep -q -- "--ts 0x4017=$W2/bs60.ts --feed loop" "$DUMMY_LOG" && ! grep -q "bench60" "$DUMMY_LOG"'
+check "fresh: the run names its SI and TS_ID" 'grep -q "bs SI, TS_ID 0x4017" "$T/out"'
+touch -d '2 minutes ago' "$W2/bs60.ts"
+touch "$W2/bs-bench.toml"
+DUMMY=exit:0 run --feed loop "$W2"
+check "a TOML newer than its TS is multiplexed again" 'grep -q "^mux -c bs-bench.toml" "$DUMMY_LOG"'
+
+DUMMY=exit:0 run --terrestrial-si --feed loop "$W2"
+check "--terrestrial-si: bench-minimal without media, TS_ID 0x4010" \
+    '[ $RC = 0 ] && grep -q "^transport_stream_id = 0x4010" "$W2/terrestrial-bench.toml" && ! grep -q "^ *source =" "$W2/terrestrial-bench.toml" && grep -q "kind = \"declared\"" "$W2/terrestrial-bench.toml" && ! grep -q "kind = \"bs\"" "$W2/terrestrial-bench.toml"'
+check "--terrestrial-si: sends bench60.ts as TS_ID 0x4010 (made again: older than its TOML)" \
+    'grep -qx "mux -c terrestrial-bench.toml --seconds 60 --out-ts bench60.ts" "$DUMMY_LOG" && grep -q -- "--ts 0x4010=$W2/bench60.ts --feed loop" "$DUMMY_LOG"'
+DUMMY=exit:0 run --terrestrial-si --feed loop "$W2"
+check "--terrestrial-si: an unchanged TOML is not rewritten, its TS kept" '! grep -q "^mux " "$DUMMY_LOG"'
+DUMMY=exit:0 run --help
+check "--help prints the usage" '[ $RC = 0 ] && grep -q "^Usage: tools/isdbs-bench-tx.sh" "$T/out" && grep -q -- "--terrestrial-si" "$T/out" && ! grep -q "^set -euo" "$T/out"'
 
 DUMMY=exit:0 run --dry-run "$WORK"
 check "--dry-run replaces --rf-enable" 'grep -q -- "--dry-run" "$DUMMY_LOG" && ! grep -q -- "--rf-enable" "$DUMMY_LOG"'
@@ -75,7 +118,7 @@ DUMMY=exit:0 run --feed loop --placed 'placed-{ts_id}.ts' "$WORK"
 check "--placed passes --placed-ts" 'grep -q -- "--feed loop --placed-ts placed-{ts_id}.ts --status-secs" "$DUMMY_LOG"'
 
 DUMMY=read:0 run "$WORK"
-check "fifo: isdb read the FIFO and exited 0" '[ $RC = 0 ] && grep -q -- "--feed live" "$DUMMY_LOG"'
+check "fifo: isdb read the FIFO and exited 0" '[ $RC = 0 ] && grep -q -- "--ts 0x4017=$WORK/ts.fifo --feed live" "$DUMMY_LOG"'
 sleep 0.3
 check "fifo: no pacer left after a normal exit" '[ "$(leftovers)" = 0 ]'
 
