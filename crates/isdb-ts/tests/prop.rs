@@ -11,12 +11,13 @@ use isdb_ts::packet::{
     Ltw, Packet, PiecewiseRate, TransportScramblingControl,
 };
 use isdb_ts::packetize::{Packing, packetize_sections};
-use isdb_ts::pcr::{Pcr, Timestamp};
+use isdb_ts::pcr::{BASE_MODULUS, PCR_MODULUS, Pcr, Timestamp};
 use isdb_ts::pes::{
     AdditionalCopyInfo, EsRate, Escr, PStdBuffer, PesAssembler, PesBody, PesExtension,
     PesExtension2, PesHeader, PesOutput, PesPacket, ProgramPacketSequenceCounter, PtsDts,
 };
 use isdb_ts::psi::{Cat, Pat, PatEntry, Pmt, PmtStream};
+use isdb_ts::retime::{PesShift, add_to_pcr, pcr_field, shift_pes_timestamps};
 use isdb_ts::section::{Long, LongBody, LongHeader, build_long};
 use proptest::collection::vec;
 use proptest::option::of;
@@ -529,6 +530,97 @@ proptest! {
         match &got[0] {
             PesOutput::Pes(x) => prop_assert_eq!(&x.data, &pes),
             e => prop_assert!(false, "{:?}", e),
+        }
+    }
+
+    /// retime (H.222.0 eq. 2-1..2-3, Table 2-6): adding `d` to a PCR and
+    /// then `2^33·300 − d` restores the packet byte for byte; in between the
+    /// PCR is `(PCR + d) mod 2^33·300` with the reserved bits and the OPCR
+    /// unchanged.
+    #[test]
+    fn prop_add_then_subtract_is_identity(
+        base in 0u64..1 << 33,
+        reserved in 0u8..64,
+        extension in 0u16..300,
+        opcr in of(pcr()),
+        payload in vec(any::<u8>(), 0..170),
+        d in any::<u64>(),
+    ) {
+        let pcr = Pcr { base, reserved, extension };
+        let fields = AdaptationFields { pcr: Some(pcr), opcr, ..Default::default() };
+        let p = Packet::with_adaptation(Pid::new(0x100).unwrap(), false, ContinuityCounter::ZERO, Some(fields), &payload)
+            .unwrap()
+            .encode()
+            .unwrap();
+        prop_assert_eq!(pcr_field(&p), Some(6));
+        let mut q = p;
+        prop_assert!(add_to_pcr(&mut q, d));
+        let mid = Packet::decode(&q).unwrap();
+        let f = mid.adaptation_field.as_ref().unwrap().fields().unwrap();
+        let got = f.pcr.unwrap();
+        prop_assert_eq!(got.ticks(), (pcr.ticks() + d % PCR_MODULUS) % PCR_MODULUS);
+        prop_assert!(got.extension < 300);
+        prop_assert_eq!(got.reserved, reserved);
+        prop_assert_eq!(f.opcr, opcr);
+        prop_assert_eq!(&q[12..], &p[12..]);
+        prop_assert!(add_to_pcr(&mut q, PCR_MODULUS - d % PCR_MODULUS));
+        prop_assert_eq!(q, p);
+    }
+
+    /// retime (Table 2-21): shifting the PTS/DTS of a PES packet's first TS
+    /// packet by `d90` and then by `2^33 − d90` restores it byte for byte;
+    /// the other packets of the PES packet are never touched.
+    #[test]
+    fn prop_pes_shift_then_unshift_is_identity(
+        sid in prop_oneof![Just(0xBDu8), 0xC0u8..=0xDF, 0xE0u8..=0xEF],
+        pts in timestamp(),
+        dts in of(timestamp()),
+        data in vec(any::<u8>(), 0..600),
+        d90 in any::<u64>(),
+    ) {
+        let pts_dts = match dts {
+            Some(d) => PtsDts::PtsDts(pts, d),
+            None => PtsDts::Pts(pts),
+        };
+        let h = PesHeader { pts_dts, ..Default::default() };
+        let pes = PesPacket::new(sid, h, data).encode().unwrap();
+        let pkts = isdb_ts::pes::packetize(Pid::new(0x40).unwrap(), &pes, None, &mut Counter::default()).unwrap();
+        for (i, p) in pkts.iter().enumerate() {
+            let mut q = *p;
+            let r = shift_pes_timestamps(&mut q, d90);
+            if i > 0 {
+                prop_assert_eq!(r, PesShift::NoHeader);
+                prop_assert_eq!(q, *p);
+                continue;
+            }
+            prop_assert_eq!(r, PesShift::Shifted);
+            let payload = isdb_ts::packet::View::parse(&q).unwrap().payload.unwrap();
+            let (got, _) = PesHeader::decode(&payload[6..]).unwrap();
+            let moved = |t: Timestamp| Timestamp { value: (t.value + d90 % BASE_MODULUS) % BASE_MODULUS, ..t };
+            let want = match pts_dts {
+                PtsDts::PtsDts(a, b) => PtsDts::PtsDts(moved(a), moved(b)),
+                PtsDts::Pts(a) => PtsDts::Pts(moved(a)),
+                o => o,
+            };
+            prop_assert_eq!(got.pts_dts, want);
+            prop_assert_eq!(shift_pes_timestamps(&mut q, BASE_MODULUS - d90 % BASE_MODULUS), PesShift::Shifted);
+            prop_assert_eq!(q, *p);
+        }
+    }
+
+    /// retime on arbitrary bytes: no panic, and a packet the functions
+    /// decline (`false`, `NoHeader`, `Truncated`) is left as it was.
+    #[test]
+    fn prop_retime_declined_packets_are_unchanged(bytes in vec(any::<u8>(), 188), d in any::<u64>()) {
+        let mut p = [0u8; 188];
+        p.copy_from_slice(&bytes);
+        let mut q = p;
+        if !add_to_pcr(&mut q, d) {
+            prop_assert_eq!(q, p);
+        }
+        let mut q = p;
+        if shift_pes_timestamps(&mut q, d) != PesShift::Shifted {
+            prop_assert_eq!(q, p);
         }
     }
 }

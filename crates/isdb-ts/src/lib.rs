@@ -15,6 +15,9 @@
 //!   [`section::LongBody`] / [`section::ShortBody`] traits that `isdb-si`
 //!   implements; [`psi`] — PAT, CAT, PMT; [`descriptor`] — raw loops.
 //! * [`pes`] — PES packets, packetiser and reassembler.
+//! * [`retime`] — in-place PCR correction (Annex D.0.4), PTS/DTS shift and
+//!   continuity_counter rewrite of a single packet, for re-multiplexing and
+//!   looping.
 //! * [`demux`] / [`packetize`] — sections ⇄ packets (pointer_field,
 //!   stuffing); [`reader`] — sync acquisition (188/192/204-byte units);
 //!   [`stats`] — per-PID counters.
@@ -82,6 +85,7 @@ pub mod pes;
 pub mod pid;
 pub mod psi;
 pub mod reader;
+pub mod retime;
 pub mod section;
 pub mod stats;
 pub mod validate;

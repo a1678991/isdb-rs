@@ -22,6 +22,7 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
 | `pcr` | §2.4.2.2 eq. 2-1..2-3 PCR/OPCR, Table 2-21 33-bit PTS/DTS coding, wrap arithmetic |
 | `cc` | §2.4.3.3 `ContinuityCounter`: the 4-bit value type (`new` checks the range once, `next()` wraps 15 → 0, `is_next_of`), the transmit `Counter`, the checker and its duplicate rules, §2.4.3.5 discontinuity_indicator |
 | `pes` | §2.4.3.6–2.4.3.7 Table 2-21 PES, Table 2-22 stream_id, Table 2-24 trick mode; packetiser and reassembler |
+| `retime` | in-place edits of one packet for re-multiplexing and looping: PCR + Δ modulo 2^33·300 (Table 2-6, Annex D.0.4), PTS/DTS + Δ modulo 2^33 with prefixes and markers kept (Table 2-21), continuity_counter get/set (§2.4.3.3) |
 | `section` | long/short section envelope (Tables 2-30/2-32/2-33/2-40; ARIB STD-B10 §5.1 Fig. 5-1) |
 | `psi` | PAT Table 2-30, CAT Table 2-32, PMT Table 2-33 and their `check_*` |
 | `descriptor` | §2.6 raw descriptor loop, Table 2-45 tag classes |
@@ -59,6 +60,8 @@ descriptor tags = Table 2-45, see SPEC-NOTES).
   `pes::packetize`.
 - `demux::SectionDemux` / `SectionAssembler` → `Assembled::{Section, Event}`;
   `packetize::packetize_sections`; `cc::{Counter, CcChecker, Tracker}`.
+- `retime::{pcr_field, add_to_pcr, shift_pes_timestamps, continuity_counter,
+  set_continuity_counter}`: in-place retiming of a `[u8; 188]` packet.
 - `reader::{SliceReader, StreamReader}` → packets with index, byte offset
   and framing; `stats::Stats`.
 - `Error` (`Truncated`, `Invalid`, `Range`, `Reserved`, `Mismatch`,
@@ -138,9 +141,9 @@ assert_eq!(back.encode().unwrap(), bytes); // encode(decode(x)) == x
 
 | Test | What it proves | Data |
 |---|---|---|
-| `tests/prop.rs` | `prop_*`: packet, PES, PAT/CAT/PMT `decode(encode(x)) == x` for generated structures; arbitrary packet / PES / PSI body bytes re-encode byte-identically; sections packetised (packed or one-per-packet, any start CC) reassemble to the same sections; PES packetised (with/without PCR) reassembles | synthetic (proptest; regressions in `prop.proptest-regressions`) |
+| `tests/prop.rs` | `prop_*`: packet, PES, PAT/CAT/PMT `decode(encode(x)) == x` for generated structures; arbitrary packet / PES / PSI body bytes re-encode byte-identically; sections packetised (packed or one-per-packet, any start CC) reassemble to the same sections; PES packetised (with/without PCR) reassembles; a `retime` PCR or PTS/DTS shift undone by the opposite shift gives the input bytes back, and packets it declines are unchanged | synthetic (proptest; regressions in `prop.proptest-regressions`) |
 | `tests/capture.rs` | opt-in, over an ISDB-T capture: every packet decodes and re-encodes byte-identically; no sync loss or skipped bytes; every long section on PIDs 0x0000, 0x0001, 0x0010–0x0014, 0x0024 and the PMT PIDs has CRC_32 residue 0; PAT/CAT/PMT round-trip byte-identically (these checks treat payloads as opaque); every PES on the PMT's elementary PIDs that are unscrambled (transport_scrambling_control '00', e.g. a one-seg service, which is sent in the clear) round-trips byte-identically, scrambled PIDs are skipped; spec violations are printed, not asserted | the file named by the environment variable `ISDB_RS_CAPTURE_TS` (no capture is committed); prints `SKIP` and passes when the variable is unset or the file is missing |
-| in-crate `#[cfg(test)]` (`crc`, `cc`, `demux`, `packet`, `pes`, `pcr`, `psi`, `reader`, `section`, `packetize`, `bits`, `descriptor`, `stats`) | spec vectors named after the table/clause (`spec_table2_2_header_layout`, `spec_table2_30_pat_layout`, `spec_2_4_3_3_*` continuity rules incl. duplicates and the PCR exception, `spec_table2_21_*` PES fields); CRC check value, zero residue and table vs bitwise; section header split across packets, TEI / pointer_field discards; reader format autodetection behind garbage, resync after corruption; packetiser layouts at boundary lengths; PCR/90 kHz wrap helpers | synthetic |
+| in-crate `#[cfg(test)]` (`crc`, `cc`, `demux`, `packet`, `pes`, `pcr`, `psi`, `reader`, `retime`, `section`, `packetize`, `bits`, `descriptor`, `stats`) | spec vectors named after the table/clause (`spec_table2_2_header_layout`, `spec_table2_30_pat_layout`, `spec_2_4_3_3_*` continuity rules incl. duplicates and the PCR exception, `spec_table2_21_*` PES fields, `spec_table_2_6_pcr_add_wraps`, `spec_table_2_21_*_markers_kept`); retimed sections, non-PUSI packets and truncated PES headers left unchanged; CRC check value, zero residue and table vs bitwise; section header split across packets, TEI / pointer_field discards; reader format autodetection behind garbage, resync after corruption; packetiser layouts at boundary lengths; PCR/90 kHz wrap helpers | synthetic |
 
 Run: `cargo test -p isdb-ts`; the real-data test with
 `ISDB_RS_CAPTURE_TS=/path/to/capture.ts cargo test -p isdb-ts --test capture -- --nocapture`

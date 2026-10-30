@@ -242,3 +242,53 @@ and equation numbers are those of the 05/2006 edition
   header even when the adaptation field is malformed.
 - Confirmation: the live terrestrial capture has 5 TEI packets (3 of them
   structurally undecodable), all on otherwise unused PIDs (status: confirmed).
+
+## isdb-ts: retiming a packet in place (PCR, PTS/DTS, continuity_counter)
+- Spec: §2.4.2.2 eq. 2-1..2-3, §2.4.3.3, §2.4.3.4 Table 2-6, §2.4.3.5,
+  §2.4.3.6 Table 2-21, §2.4.3.7 eq. 2-11/2-12, Annex D.0.4.
+- Text: Annex D.0.4 "correction of PCRs is necessary in a re-multiplex
+  operation, creating a new Transport Stream from one or more Transport
+  Streams. This correction is accomplished by adding a correction term to
+  the PCR"; eq. 2-2 "PCR_base(i) = ((system_clock_frequency × t(i)) DIV
+  300) % 2^33", eq. 2-3 "PCR_ext(i) = ((system_clock_frequency × t(i)) DIV
+  1) % 300"; §2.4.3.3 "a '1' indicates that the payload of this Transport
+  Stream packet will commence with the first byte of a PES packet";
+  §2.4.3.7 "marker_bit – A marker_bit is a 1-bit field that has the value
+  '1'."
+- Interpretation (`retime`):
+  - `add_to_pcr` adds the correction modulo 2^33·300, the period of
+    `PCR_base × 300 + PCR_ext` implied by eq. 2-2/2-3, and writes the sum
+    back split by those equations, so the extension is always 0..300. An
+    input extension in 300..=511 (out of range, see "PCR extension range")
+    is read by eq. 2-1 as `base × 300 + ext` and comes out normalised; that
+    is the one case where adding and then subtracting does not give the
+    input bytes back. The six reserved bits are kept as received, not set
+    to '1': the function rewrites a field, it does not re-encode the
+    packet. The OPCR is not corrected: it is "the original program
+    reference", the clock of the source the packet was copied from.
+  - `shift_pes_timestamps` moves PTS and DTS modulo 2^33 and changes only
+    the 33 value bits; the 4-bit prefixes ('0010', '0011', '0001') and the
+    marker bits are kept as received, even when they are not the spec
+    values. ESCR and DTS_next_AU are not moved.
+  - The function does not know whether the PID carries PES or sections. A
+    PUSI packet is taken as a PES header if its payload starts with
+    0x000001 and a stream_id of Table 2-22 (≥ 0xBC) whose PES packets have
+    the optional header. A section payload cannot match: it starts with the
+    pointer_field and then the table_id. Only the PAT has table_id 0x00,
+    and pointer_field 0x00 followed by table_id 0x00 is followed by a byte
+    whose top bit is section_syntax_indicator, '1' for the PAT, so never
+    0x01. Packets with transport_scrambling_control ≠ '00' are not read,
+    since their payload is scrambled. A header whose PES_header_data_length
+    is shorter than its PTS_DTS_flags need is malformed and is left alone
+    (`NoHeader`, the same as `PesHeader::decode` failing on it).
+  - `Truncated` means that every byte present is consistent with a PES
+    header that has PTS/DTS but the packet ends before the last byte of
+    those fields. With PUSI set, §2.4.3.3 puts the start of the PES packet
+    in this TS packet, so its PTS/DTS can only be lost by such a short
+    payload. The caller counts the case; the function does not reach into
+    the next packet.
+- Confirmation: unit tests against the `Pcr` / `Timestamp` / `PesHeader`
+  codecs and property tests (`prop_add_then_subtract_is_identity`,
+  `prop_pes_shift_then_unshift_is_identity`) (status: confirmed by the
+  syntax; the effect on a receiver is pending the ISDB-S loop bench,
+  docs/plans/isdbs-next/pcr-pacing.md §8).
