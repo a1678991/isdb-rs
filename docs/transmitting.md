@@ -212,7 +212,9 @@ Exactly one input:
 | `--iq-in PATH [--iq-in-format cf32\|cs8]` | replay a baseband file instead of modulating TS (e.g. one written by `isdb tx --iq`); its parameters come from its TMCC ([below](#playback-keys)) |
 
 `--feed` sets how file and pipe inputs are consumed: `file` (default; read
-ahead, end at EOF), `loop` (rewind at EOF; continuity counters jump), or
+ahead, end at EOF), `loop` (rewind at EOF; continuity counters and time
+stamps jump back, except in a TS paced by its PCR in `tx --system isdbs`,
+which is joined seamlessly), or
 `live` (never block the modulator: what has arrived is sent, the rest of
 the frame is null packets, the null-fill ratio is reported; ends when the
 writer closes).
@@ -565,12 +567,17 @@ changes.
 `--ts-pacing pcr` refuses an input without PCR (and `--feed live`);
 `--ts-pacing arrival` keeps the old rule for every file: each packet,
 nulls included and unmodified, in the next slot as it comes (a byte-exact
-relay). With `--feed loop` the seams are not corrected yet: at each rewind
-the PCRs (restamped), PTS/DTS and continuity counters jump back with the
-file, as before. The plan is printed before anything is opened, so
+relay). With `--feed loop` the seams are joined: each pass n ≥ 1 of the
+file has its PCR, PTS and DTS moved on by a constant O_n (the loop period
+the pacer measured, a multiple of 300 ticks of 27 MHz) and its continuity
+counters renumbered per PID (H.222.0 §2.4.3.3), so the received TS runs on
+across the seam with no PCR discontinuity and no continuity error; pass 0,
+and `--feed file`, change no field but the PCR. SI times (TOT/TDT, EIT)
+still restart with each pass. The plan is printed before anything is opened, so
 `--dry-run` shows it; the status lines add, per paced TS, `PCR lag` (and
 its maximum), the input rate against the capacity, `nulls-dropped`,
-`restamped`, `slot-busy` and `pcr-discontinuities`. `isdb loopback
+`restamped`, `slot-busy` and `pcr-discontinuities`, and with a loop
+`passes`, `cc-fixed` (counters renumbered at a seam) and `pes-shifted`. `isdb loopback
 --system isdbs` places its files the same way.
 
 **`--placed-ts TEMPLATE`** writes each TS's packets as placed in its slots,

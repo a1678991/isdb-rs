@@ -35,7 +35,19 @@ STD-B44) is received to TLV streams.
   before anything is opened (also by `--dry-run`); the status lines and
   the summary carry each pacer's PCR lag, input rate against capacity,
   dropped nulls and restamped PCRs. `isdb loopback --system isdbs` paces
-  its files the same way. Loop seams are not corrected yet.
+  its files the same way.
+- `isdb-cli`: `isdb tx --system isdbs --feed loop` joins a paced TS's
+  loop seams: the reader thread tags each packet with its loop pass, and
+  each pass after the first has its PCR, PTS and DTS moved on by the loop
+  period (a multiple of 300 ticks, measured by the pacer's clock across
+  the seam) and its continuity counters renumbered per PID (H.222.0
+  §2.4.3.3, adaptation-only packets included), so a receiver sees one
+  continuous TS: no PCR discontinuity, no continuity error
+  (`tools/isdbs-pacing-e2e.sh` with `FEED=loop`; the bench TS had a CC
+  error on 9 of 11 PIDs at every seam). Pass 0 and `--feed file` change no
+  field but the PCR. The status lines add `passes`, `cc-fixed` and
+  `pes-shifted`. `tools/ts-loop-seam.py IN.ts PLAYED.ts` checks a looped
+  TS (continuity, PCR fit, PES time stamps, bytes changed).
   `tools/isdbs-pacing-e2e.sh` runs the bench TS through `tx --iq` and
   `rx` offline and checks the received TS against the placed one;
   `tools/isdbs-bench-tx.sh --placed TEMPLATE` passes `--placed-ts`.

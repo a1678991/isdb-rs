@@ -1,6 +1,12 @@
 //! Packet sources: a reader thread turns a byte stream (file, FIFO, stdin)
 //! into 188-byte TS packets (H.222.0 §2.4.3.2, sync byte 0x47) on a bounded
 //! queue; [`PacketStream`] takes them according to the feed policy.
+//!
+//! Each queued packet carries its loop pass: the number of times the input
+//! had been reopened when it was read (0 without `--feed loop`).
+//! [`PacketStream::next`] drops it; [`PacketStream::next_tagged`] (and the
+//! [`TaggedSource`] implementation the ISDB-S pacer uses for the loop seam,
+//! docs/plans/isdbs-next/pcr-pacing.md §7.6) keeps it.
 
 use anyhow::{Context, Result, bail};
 use std::io::Read;
@@ -11,6 +17,8 @@ use std::time::Duration;
 use tracing::{error, warn};
 
 use isdb_ts::packet::{Header, TransportScramblingControl};
+
+use crate::pace::TaggedSource;
 
 /// 188-byte packet.
 pub type Packet = [u8; 188];
@@ -54,7 +62,8 @@ pub fn check_not_scrambled() -> Result<()> {
 pub enum Feed {
     /// Read ahead (blocking); end the transmission at EOF.
     File,
-    /// Rewind at EOF and play again (continuity counters will jump).
+    /// Rewind at EOF and play again (continuity counters jump; a TS
+    /// paced by its PCR in `tx --system isdbs` is joined seamlessly).
     Loop,
     /// Live pipe/FIFO: never block the modulator; pad with null packets
     /// whenever the input lags, end when the writer closes.
@@ -90,9 +99,35 @@ pub struct ReaderStats {
     pub rewinds: AtomicU64,
 }
 
+/// The queue of a [`PacketStream`]: packets with their loop pass.
+enum Rx {
+    Tagged(Receiver<(Packet, u32)>),
+    /// Untagged in-memory packets (tests): pass 0.
+    #[cfg(test)]
+    Plain(Receiver<Packet>),
+}
+
+impl Rx {
+    fn try_recv(&self) -> Result<(Packet, u32), TryRecvError> {
+        match self {
+            Self::Tagged(rx) => rx.try_recv(),
+            #[cfg(test)]
+            Self::Plain(rx) => rx.try_recv().map(|p| (p, 0)),
+        }
+    }
+
+    fn recv_timeout(&self, d: Duration) -> Result<(Packet, u32), RecvTimeoutError> {
+        match self {
+            Self::Tagged(rx) => rx.recv_timeout(d),
+            #[cfg(test)]
+            Self::Plain(rx) => rx.recv_timeout(d).map(|p| (p, 0)),
+        }
+    }
+}
+
 /// Packet queue fed by a reader thread.
 pub struct PacketStream {
-    rx: Receiver<Packet>,
+    rx: Rx,
     feed: Feed,
     ended: bool,
     /// Reader counters.
@@ -126,10 +161,12 @@ pub fn split_packets(
 }
 
 impl PacketStream {
-    /// Start a reader thread on `opener`; up to `depth` packets are queued.
+    /// Start a reader thread on `opener`; up to `depth` packets are queued,
+    /// each with its loop pass (the reopenings so far, see
+    /// [`Self::next_tagged`]).
     pub fn spawn(name: &str, mut opener: Opener, feed: Feed, depth: usize) -> Result<Self> {
         let mut r = opener().with_context(|| format!("open {name}"))?;
-        let (tx, rx) = sync_channel::<Packet>(depth.max(1));
+        let (tx, rx) = sync_channel::<(Packet, u32)>(depth.max(1));
         let stats = Arc::new(ReaderStats::default());
         let st = stats.clone();
         let tname = name.to_string();
@@ -139,6 +176,8 @@ impl PacketStream {
                 let mut buf = Vec::<u8>::with_capacity(1 << 20);
                 let mut chunk = vec![0u8; 1 << 16];
                 let mut got_any = false;
+                // Loop pass of the packets being read: reopenings so far.
+                let mut pass = 0u32;
                 loop {
                     let n = match r.read(&mut chunk) {
                         Ok(0) => 0,
@@ -156,6 +195,7 @@ impl PacketStream {
                                     r = nr;
                                     buf.clear();
                                     st.rewinds.fetch_add(1, Ordering::Relaxed);
+                                    pass = pass.saturating_add(1);
                                     continue;
                                 }
                                 Err(e) => {
@@ -182,7 +222,7 @@ impl PacketStream {
                             return false;
                         }
                         got_any = true;
-                        tx.send(p).is_ok()
+                        tx.send((p, pass)).is_ok()
                     });
                     st.skipped_bytes.fetch_add(skipped, Ordering::Relaxed);
                     if !alive {
@@ -192,7 +232,7 @@ impl PacketStream {
                 }
             })?;
         Ok(Self {
-            rx,
+            rx: Rx::Tagged(rx),
             feed,
             ended: false,
             stats,
@@ -200,11 +240,11 @@ impl PacketStream {
         })
     }
 
-    /// Stream over in-memory packets (tests).
+    /// Stream over in-memory packets (tests), all of pass 0.
     #[cfg(test)]
     pub fn from_receiver(name: &str, rx: Receiver<Packet>, feed: Feed) -> Self {
         Self {
-            rx,
+            rx: Rx::Plain(rx),
             feed,
             ended: false,
             stats: Arc::default(),
@@ -226,6 +266,13 @@ impl PacketStream {
     /// a packet arrives (polling `stop`), `Live` never blocks.  `None` means
     /// no packet now (live lag) or end of input ([`Self::ended`]) or stop.
     pub fn next(&mut self, stop: &AtomicBool) -> Option<Packet> {
+        self.next_tagged(stop).map(|(p, _)| p)
+    }
+
+    /// [`Self::next`] with the packet's loop pass: how many times the
+    /// input had been reopened when the packet was read (`--feed loop`;
+    /// always 0 for the other feeds).
+    pub fn next_tagged(&mut self, stop: &AtomicBool) -> Option<(Packet, u32)> {
         if self.ended {
             return None;
         }
@@ -250,6 +297,16 @@ impl PacketStream {
                 }
             },
         }
+    }
+}
+
+impl TaggedSource for PacketStream {
+    fn next(&mut self, stop: &AtomicBool) -> Option<(Packet, u32)> {
+        self.next_tagged(stop)
+    }
+
+    fn ended(&self) -> bool {
+        PacketStream::ended(self)
     }
 }
 
@@ -332,6 +389,27 @@ pub(crate) mod tests {
         }
         assert!(s.stats.rewinds.load(Ordering::Relaxed) >= 3);
         assert!(!s.ended());
+    }
+
+    #[test]
+    fn loop_feed_tags_each_pass() {
+        let pk: Vec<_> = (0..3).map(|n| pkt(0x100, n)).collect();
+        let mut s = PacketStream::spawn("t", opener_of(bytes(&pk)), Feed::Loop, 4).unwrap();
+        let stop = AtomicBool::new(false);
+        let got: Vec<_> = (0..10u32).map(|_| s.next_tagged(&stop).unwrap()).collect();
+        for (i, (p, pass)) in (0u32..).zip(&got) {
+            assert_eq!(*p, pk[(i % 3) as usize]);
+            assert_eq!(*pass, i / 3, "packet {i}");
+        }
+        // a file feed is all pass 0, through the trait as well
+        let mut s = PacketStream::spawn("t", opener_of(bytes(&pk)), Feed::File, 4).unwrap();
+        let mut n = 0;
+        while let Some((p, pass)) = TaggedSource::next(&mut s, &stop) {
+            assert_eq!((p, pass), (pk[n], 0));
+            n += 1;
+        }
+        assert!(TaggedSource::ended(&s));
+        assert_eq!(n, 3);
     }
 
     #[test]

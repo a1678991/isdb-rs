@@ -38,10 +38,12 @@
 //! by its first PCR ([`Placement::FirstPcr`]). Without a PCR, with
 //! `--ts-pacing arrival` and (for now, piece P5 of the plan) with
 //! `--feed live`, the packets go into the slots in arrival order, nulls
-//! included, unmodified ([`Placement::Arrival`]). Loop seams are not
-//! corrected yet (piece P3): at each rewind the PCR, PTS/DTS and continuity
-//! counters jump back with the file, as before, apart from the PCRs being
-//! restamped. Placement happens in [`TsInputs::take`], before
+//! included, unmodified ([`Placement::Arrival`]). With `--feed loop` a
+//! paced file is joined seamlessly at each rewind: the reader thread tags
+//! every packet with its loop pass ([`PacketStream::next_tagged`]) and the
+//! pacer moves each pass's PCR, PTS and DTS on by the loop period and
+//! renumbers its continuity counters (`pace.rs`, "Loop seams"; an arrival
+//! order TS keeps its seams). Placement happens in [`TsInputs::take`], before
 //! [`Modulate`], so the IQ and code paths carry the same packets;
 //! `--placed-ts` writes them ([`PlacedTs`]).
 //!
@@ -63,7 +65,7 @@ use crate::input::{
     InputRates, PROBE_BYTES, PROBE_SECONDS, RateShare, RateTarget, check_rates, is_regular_file,
     probe_rates,
 };
-use crate::pace::{SlotClock, SlotPacer, TaggedSource, Untagged, WaitMode};
+use crate::pace::{SlotClock, SlotPacer, TaggedSource, WaitMode};
 use crate::producer::{EndReason, FrameKind};
 use crate::sink::{FileSink, IqFormat};
 use crate::source::{
@@ -651,7 +653,7 @@ pub fn plan_inputs(
                         "  TS_ID {id:#06x} ({path}): paced by PCR{}: each packet in the first free slot at or after its PCR time, input nulls dropped, PCRs corrected by the time their packet moved{}",
                         r.pcr_pid.map_or(String::new(), |p| format!(" (PID {p:#06x})")),
                         if feed == Feed::Loop {
-                            "; at each rewind the PCR, PTS/DTS and continuity counters jump back with the file (not corrected yet)"
+                            "; looped seamlessly: each pass's PCR, PTS/DTS moved on by the loop period and its continuity counters renumbered"
                         } else {
                             ""
                         }
@@ -689,9 +691,9 @@ pub fn plan_inputs(
 }
 
 /// A TS file's packets: those read ahead to find its first PCR, then its
-/// stream.
+/// stream; each with its loop pass ([`PacketStream::next_tagged`]).
 struct Feeder {
-    head: VecDeque<Packet>,
+    head: VecDeque<(Packet, u32)>,
     stream: PacketStream,
 }
 
@@ -705,7 +707,10 @@ impl Feeder {
 
     /// The next packet, as [`PacketStream::next`].
     fn next_packet(&mut self, stop: &AtomicBool) -> Option<Packet> {
-        self.head.pop_front().or_else(|| self.stream.next(stop))
+        self.head
+            .pop_front()
+            .map(|(p, _)| p)
+            .or_else(|| self.stream.next(stop))
     }
 
     fn ended(&self) -> bool {
@@ -715,10 +720,9 @@ impl Feeder {
 
 impl TaggedSource for Feeder {
     fn next(&mut self, stop: &AtomicBool) -> Option<(Packet, u32)> {
-        match self.head.pop_front() {
-            Some(p) => Some((p, 0)),
-            None => Untagged(&mut self.stream).next(stop),
-        }
+        self.head
+            .pop_front()
+            .or_else(|| self.stream.next_tagged(stop))
     }
 
     fn ended(&self) -> bool {
@@ -770,11 +774,11 @@ impl Source {
         };
         let mut pcr = None;
         while pcr.is_none() && stream.head.len() < SNIFF_PACKETS {
-            let Some(p) = stream.stream.next(stop) else {
+            let Some((p, pass)) = stream.stream.next_tagged(stop) else {
                 break; // ended or stopped
             };
             pcr = packet_pcr(&p).map(|_| packet_pid(&p));
-            stream.head.push_back(p);
+            stream.head.push_back((p, pass));
         }
         let n = stream.head.len();
         let Self::FirstPcr { stream, slots } = std::mem::replace(self, Self::Synthetic) else {

@@ -35,20 +35,53 @@
 //! before the first PCR are due at 0 and take slots 0, 1, …; their PCRs (if
 //! any) and the first PCR are late by that count, which the restamp covers.
 //!
+//! **Loop seams** (§7.6). A looped file comes back with its PCR, PTS/DTS
+//! and continuity counters where they started. [`TaggedSource`] tags every
+//! packet with its loop pass n (the reopenings before it was read), and
+//! each pass n ≥ 1 is joined to the one before:
+//!
+//! - the clock is fed the raw packets: it bridges the backward PCR step at
+//!   the seam at the rate of the previous PCR interval, as it does any
+//!   discontinuity (§2.4.3.5), so the due times run on across the seam
+//!   (such a bridge is not counted as a discontinuity);
+//! - when the first PCR of the reference PID in pass n is pushed, its
+//!   bridged time t and raw value R fix the pass offset
+//!   O_n = round₃₀₀(C + t − R) mod 2^33·300, C being the time base the
+//!   output had so far (PCR_out − S(j): the first PCR's raw value unless
+//!   the file itself has a discontinuity). O_n is a multiple of 300 so that
+//!   the PTS/DTS move by exactly O_n/300; its rounding e_n (|e_n| ≤ 150
+//!   ticks) moves the pass's due times instead, due = t + e_n, which keeps
+//!   every PCR on the slot grid. The packets of pass n are still pending in
+//!   the clock when that PCR is pushed, so O_n is known before any of them
+//!   is placed;
+//! - every placed packet of pass n: PCR_out = PCR_in + O_n + Δ (every PCR
+//!   PID); the PTS and DTS of a PES header that starts in the packet moved
+//!   by O_n/300 modulo 2^33 (H.222.0 §2.4.3.7; a header cut by the packet
+//!   end is counted, not moved); the continuity_counter renumbered per PID
+//!   by a constant c, set at the PID's first packet in the pass so that the
+//!   counter follows the last one sent as §2.4.3.3 requires (one more than
+//!   the last payload packet's for a packet with payload, equal to it for an
+//!   adaptation-only one). A constant c keeps every relation the file has
+//!   inside a pass, duplicates included.
+//!
+//! Pass 0 (and every packet of `--feed file`) has O_0 = 0, e_0 = 0 and
+//! c = 0: no field but the PCR is ever modified. A PCR discontinuity inside
+//! a pass, indicator set, passes with Δ (and the pass's O_n), as in pass 0.
+//!
 //! This module knows no transmission system: the ISDB-S producer
-//! (`txs.rs`) builds a [`SlotClock::isdbs`] per relative TS. The loop seam
-//! (per-pass offsets, PTS/DTS, continuity counters; §7.6) and live inputs
-//! (§7.7) come later: the pass tag of [`TaggedSource`] is carried but not
-//! used yet, and [`WaitMode`] has only [`WaitMode::Block`].
+//! (`txs.rs`) builds a [`SlotClock::isdbs`] per relative TS. Live inputs
+//! (§7.7) come later: [`WaitMode`] has only [`WaitMode::Block`].
 
+use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroU64;
 use std::sync::atomic::AtomicBool;
 
-use isdb_ts::Pid;
-use isdb_ts::retime::add_to_pcr;
-use isdbt_mux::pcrclock::{HZ, PcrClock};
+use isdb_ts::pcr::PCR_MODULUS;
+use isdb_ts::retime::{PesShift, add_to_pcr, set_continuity_counter, shift_pes_timestamps};
+use isdb_ts::{ContinuityCounter, Pid};
+use isdbt_mux::pcrclock::{HZ, PcrClock, packet_pcr, packet_pid};
 
-use crate::source::{Packet, PacketStream, is_null, null_packet};
+use crate::source::{Packet, is_null, null_packet, pid};
 
 /// Bits of one 188-byte TS packet (H.222.0 §2.4.3.2).
 const PACKET_BITS: u128 = 188 * 8;
@@ -141,21 +174,6 @@ pub trait TaggedSource {
     fn ended(&self) -> bool;
 }
 
-/// A [`PacketStream`] as a [`TaggedSource`]: every packet is pass 0 (the
-/// stream's own [`PacketStream::next`], unchanged; the reader thread does
-/// not tag rewinds yet).
-pub struct Untagged<'a>(pub &'a mut PacketStream);
-
-impl TaggedSource for Untagged<'_> {
-    fn next(&mut self, stop: &AtomicBool) -> Option<(Packet, u32)> {
-        self.0.next(stop).map(|p| (p, 0))
-    }
-
-    fn ended(&self) -> bool {
-        self.0.ended()
-    }
-}
-
 /// How [`SlotPacer::fill`] waits for input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitMode {
@@ -185,8 +203,170 @@ pub struct PacerStats {
     /// the late strategy).
     pub max_delta: u64,
     /// PCR discontinuities of the reference PID bridged by the clock
-    /// (indicator or out-of-range step, §2.4.3.5).
+    /// (indicator or out-of-range step, §2.4.3.5), loop seams excluded.
     pub discontinuities: u64,
+    /// Loop passes placed so far: 1 + the highest pass of a placed packet
+    /// (0 before the first).
+    pub passes: u64,
+    /// Continuity counters renumbered at a loop seam: one per PID and pass
+    /// whose counter would otherwise have jumped (§2.4.3.3).
+    pub cc_fixed: u64,
+    /// PES headers whose PTS/DTS were moved by a pass offset (§2.4.3.7).
+    pub pes_shifted: u64,
+    /// PES headers of a pass n ≥ 1 cut by the packet end before their
+    /// PTS/DTS: left as they were.
+    pub pes_truncated: u64,
+}
+
+/// The corrections of one loop pass (module documentation, "Loop seams").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PassOffset {
+    pass: u32,
+    /// O_n: 27 MHz ticks added to every PCR (mod 2^33·300), a multiple of
+    /// 300; the PTS/DTS get O_n / 300.
+    pcr: u64,
+    /// e_n: O_n's rounding to a multiple of 300, added to the due times.
+    due: i64,
+}
+
+impl PassOffset {
+    const ZERO: Self = Self {
+        pass: 0,
+        pcr: 0,
+        due: 0,
+    };
+}
+
+/// Per-PID continuity_counter renumbering (§2.4.3.3).
+#[derive(Debug, Clone, Copy, Default)]
+struct CcState {
+    /// Pass the offset was set for.
+    pass: u32,
+    /// Added to the input counter (mod 16).
+    offset: u8,
+    /// Counter of the last packet sent with a payload.
+    last_payload: Option<u8>,
+    /// Counter of the last packet sent.
+    last: Option<u8>,
+}
+
+/// The loop-seam state of a [`SlotPacer`].
+#[derive(Debug)]
+struct Seams {
+    /// Offsets of the passes not yet placed in full, ascending; never
+    /// empty.
+    offsets: VecDeque<PassOffset>,
+    /// Pass of the last reference PCR pushed into the clock.
+    ref_pass: u32,
+    /// C: the time base of the output, PCR_out − S(j) mod 2^33·300, as the
+    /// last reference PCR pushed gives it.
+    line: Option<u64>,
+    /// Seams the clock bridged as a discontinuity.
+    bridged: u64,
+    cc: HashMap<u16, CcState>,
+}
+
+impl Seams {
+    fn new() -> Self {
+        Self {
+            offsets: VecDeque::from([PassOffset::ZERO]),
+            ref_pass: 0,
+            line: None,
+            bridged: 0,
+            cc: HashMap::new(),
+        }
+    }
+
+    /// The offsets of `pass`: those of the last pass at or before it that
+    /// has them (a pass without a reference PCR keeps the previous one's).
+    fn offset(&self, pass: u32) -> PassOffset {
+        self.offsets
+            .iter()
+            .rev()
+            .find(|o| o.pass <= pass)
+            .or(self.offsets.front())
+            .copied()
+            .unwrap_or(PassOffset::ZERO)
+    }
+
+    /// [`Self::offset`] for a packet being placed: the passes before it are
+    /// done (packets are placed in input order).
+    fn placing(&mut self, pass: u32) -> PassOffset {
+        while self.offsets.get(1).is_some_and(|o| o.pass <= pass) {
+            self.offsets.pop_front();
+        }
+        self.offset(pass)
+    }
+
+    /// A reference PCR of raw value `raw` in `pass` was pushed and timed at
+    /// `t`. The first one of a later pass fixes that pass's offsets so that
+    /// the output time base C runs on (true then); every one updates C.
+    fn reference_pcr(&mut self, pass: u32, raw: u64, t: u64) -> bool {
+        let new_pass = pass > self.ref_pass;
+        if new_pass {
+            self.ref_pass = pass;
+            let (pcr, due) = self.line.map_or((0, 0), |c| pass_offset(c, raw, t));
+            self.offsets.push_back(PassOffset { pass, pcr, due });
+        }
+        let o = self.offset(pass);
+        self.line = Some(mod_sub((raw + o.pcr) % PCR_MODULUS, mod_signed(t, o.due)));
+        new_pass
+    }
+
+    /// Renumber the continuity_counter of a packet of `pass` (its PID's
+    /// offset is fixed at its first packet in the pass); true if that
+    /// offset was just set to a non-zero value.
+    fn renumber(&mut self, p: &mut Packet, pass: u32) -> bool {
+        let has_payload = p[3] & 0x10 != 0; // adaptation_field_control '01'/'11'
+        let cc_in = p[3] & 0x0F;
+        let st = self.cc.entry(pid(p)).or_default();
+        let mut fixed = false;
+        if pass > st.pass {
+            st.pass = pass;
+            // §2.4.3.3: a payload packet follows the last payload packet by
+            // one; an adaptation-only packet repeats that counter.
+            let expected = if has_payload {
+                st.last_payload.map(|c| (c + 1) & 0x0F)
+            } else {
+                st.last_payload.or(st.last)
+            };
+            st.offset = expected.map_or(0, |e| (e + 16 - cc_in) & 0x0F);
+            fixed = st.offset != 0;
+        }
+        let out = (cc_in + st.offset) & 0x0F;
+        if out != cc_in {
+            set_continuity_counter(p, ContinuityCounter::from_wire(out));
+        }
+        st.last = Some(out);
+        if has_payload {
+            st.last_payload = Some(out);
+        }
+        fixed
+    }
+}
+
+/// O_n and e_n of a pass whose first reference PCR, raw value `raw`, was
+/// timed at `t`, the output time base being `c`: X = c + t − raw
+/// (mod 2^33·300), O_n = X rounded to a multiple of 300 (2^33·300 is one,
+/// so the rounding commutes with the modulus), e_n = O_n − X.
+fn pass_offset(c: u64, raw: u64, t: u64) -> (u64, i64) {
+    let x = mod_sub((c + t % PCR_MODULUS) % PCR_MODULUS, raw);
+    let o = (x + 150) / 300 * 300;
+    // x and o are below 2^33·300 + 300, far within i64
+    let e = i64::try_from(o).unwrap_or(0) - i64::try_from(x).unwrap_or(0);
+    (o % PCR_MODULUS, e)
+}
+
+/// a − b modulo 2^33·300, for a below it.
+fn mod_sub(a: u64, b: u64) -> u64 {
+    (a + PCR_MODULUS - b % PCR_MODULUS) % PCR_MODULUS
+}
+
+/// t + e modulo 2^33·300.
+fn mod_signed(t: u64, e: i64) -> u64 {
+    let m = i128::from(PCR_MODULUS);
+    // in 0..2^33·300, which fits a u64
+    u64::try_from((i128::from(t) + i128::from(e)).rem_euclid(m)).unwrap_or(0)
 }
 
 /// Places a TS on a [`SlotClock`] by its PCR and restamps its PCRs; see
@@ -208,6 +388,7 @@ pub struct SlotPacer {
     /// Due times of the first and last placed packets (input rate).
     first_t: Option<u64>,
     last_t: u64,
+    seams: Seams,
 }
 
 impl SlotPacer {
@@ -226,6 +407,7 @@ impl SlotPacer {
             stats: PacerStats::default(),
             first_t: None,
             last_t: 0,
+            seams: Seams::new(),
         }
     }
 
@@ -279,7 +461,7 @@ impl SlotPacer {
                 WaitMode::Block => {
                     while self.clock.ready() == 0 && !self.ended {
                         match src.next(stop) {
-                            Some((p, pass)) => self.clock.push(&p, (p, pass)),
+                            Some((p, pass)) => self.push(p, pass),
                             None if src.ended() => {
                                 self.clock.finish();
                                 self.ended = true;
@@ -290,29 +472,59 @@ impl SlotPacer {
                 }
             }
             let x = self.clock.pop()?;
-            // The pass tag is for the loop seam (§7.6), not used yet.
-            let (mut p, _pass) = x.item;
+            let (mut p, pass) = x.item;
             if is_null(&p) {
                 self.stats.dropped_nulls += 1;
                 continue;
             }
-            let own = self.slots.first_at_or_after(x.t);
+            let off = self.seams.placing(pass);
+            let due = x.t.saturating_add_signed(off.due);
+            let own = self.slots.first_at_or_after(due);
             let j = own.max(self.next_free);
             self.next_free = j.saturating_add(1);
-            // time(j) ≥ t because j ≥ ⌈t·den/num⌉ and t is an integer.
-            let delta = self.slots.time(j).saturating_sub(x.t);
-            if add_to_pcr(&mut p, delta) {
+            // time(j) ≥ due because j ≥ ⌈due·den/num⌉ and due is an integer.
+            let delta = self.slots.time(j).saturating_sub(due);
+            if add_to_pcr(&mut p, off.pcr + delta % PCR_MODULUS) {
                 self.stats.pcr_restamped += 1;
                 self.stats.max_delta = self.stats.max_delta.max(delta);
+            }
+            if off.pcr != 0 {
+                match shift_pes_timestamps(&mut p, off.pcr / 300) {
+                    PesShift::Shifted => self.stats.pes_shifted += 1,
+                    PesShift::Truncated => self.stats.pes_truncated += 1,
+                    PesShift::NoHeader => {}
+                }
+            }
+            if self.seams.renumber(&mut p, pass) {
+                self.stats.cc_fixed += 1;
             }
             let st = &mut self.stats;
             st.saturated += u64::from(j > own);
             st.placed += 1;
             st.lag = delta;
             st.max_lag = st.max_lag.max(delta);
-            self.first_t.get_or_insert(x.t);
-            self.last_t = x.t;
+            st.passes = st.passes.max(u64::from(pass) + 1);
+            self.first_t.get_or_insert(due);
+            self.last_t = due;
             return Some((j, p));
+        }
+    }
+
+    /// Push a packet of `pass` into the clock (raw, as read); a reference
+    /// PCR also feeds the loop-seam state (module documentation, "Loop
+    /// seams"), and the clock's bridge of a seam is not counted as a
+    /// discontinuity.
+    fn push(&mut self, p: Packet, pass: u32) {
+        let pcr = packet_pcr(&p)
+            .filter(|_| self.clock.pcr_pid().is_none_or(|x| x == packet_pid(&p)))
+            .map(|(v, _)| v);
+        let disc = self.clock.stats().discontinuities;
+        self.clock.push(&p, (p, pass));
+        if let (Some(raw), Some(a)) = (pcr, self.clock.anchor())
+            && self.seams.reference_pcr(pass, raw, a.t)
+            && self.clock.stats().discontinuities > disc
+        {
+            self.seams.bridged += 1;
         }
     }
 
@@ -325,7 +537,11 @@ impl SlotPacer {
     /// Counters so far.
     pub fn stats(&self) -> PacerStats {
         PacerStats {
-            discontinuities: self.clock.stats().discontinuities,
+            discontinuities: self
+                .clock
+                .stats()
+                .discontinuities
+                .saturating_sub(self.seams.bridged),
             ..self.stats
         }
     }
@@ -334,7 +550,9 @@ impl SlotPacer {
     /// ` | PCR lag 0.00 s (max 0.00) in 0.11 Mbit/s (cap 52.17) nulls-dropped N restamped N`,
     /// the input rate (non-null packets over their due-time span) once it
     /// spans half a second, `OVER CAPACITY` when it exceeds the slots'
-    /// rate, and `slot-busy` / `pcr-discontinuities` counts when non-zero.
+    /// rate, `passes` (with `cc-fixed` and `pes-shifted`) once a looped
+    /// input is in its second pass, and `pes-truncated` / `slot-busy` /
+    /// `pcr-discontinuities` counts when non-zero.
     pub fn status(&self) -> String {
         let st = self.stats();
         let secs = |t: u64| t as f64 / HZ as f64;
@@ -359,6 +577,15 @@ impl SlotPacer {
             " nulls-dropped {} restamped {}",
             st.dropped_nulls, st.pcr_restamped
         );
+        if st.passes > 1 {
+            s += &format!(
+                " passes {} cc-fixed {} pes-shifted {}",
+                st.passes, st.cc_fixed, st.pes_shifted
+            );
+        }
+        if st.pes_truncated > 0 {
+            s += &format!(" pes-truncated {}", st.pes_truncated);
+        }
         if st.saturated > 0 {
             s += &format!(" slot-busy {}", st.saturated);
         }
@@ -372,8 +599,8 @@ impl SlotPacer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::Feed;
     use crate::source::tests::pkt;
+    use crate::source::{Feed, PacketStream};
     use isdb_ts::pcr::{PCR_MODULUS, pcr_wrap_add, pcr_wrap_diff};
     use isdb_ts::retime::pcr_field;
     use proptest::prelude::*;
@@ -406,12 +633,19 @@ mod tests {
         null_packet()
     }
 
-    /// In-memory [`TaggedSource`], pass 0.
-    struct VecSource(std::collections::VecDeque<Packet>, bool);
+    /// In-memory [`TaggedSource`].
+    struct VecSource(std::collections::VecDeque<(Packet, u32)>, bool);
 
     impl VecSource {
+        /// `v`, all of pass 0.
         fn new(v: &[Packet]) -> Self {
-            Self(v.iter().copied().collect(), false)
+            Self(v.iter().map(|p| (*p, 0)).collect(), false)
+        }
+
+        /// `v` played `passes` times, tagged as a looped file is.
+        fn looped(v: &[Packet], passes: u32) -> Self {
+            let all = (0..passes).flat_map(|n| v.iter().map(move |p| (*p, n)));
+            Self(all.collect(), false)
         }
     }
 
@@ -419,7 +653,7 @@ mod tests {
         fn next(&mut self, _stop: &AtomicBool) -> Option<(Packet, u32)> {
             let p = self.0.pop_front();
             self.1 |= p.is_none();
-            p.map(|p| (p, 0))
+            p
         }
         fn ended(&self) -> bool {
             self.1
@@ -916,7 +1150,7 @@ mod tests {
     }
 
     #[test]
-    fn untagged_stream_and_status_line() {
+    fn packet_stream_and_status_line() {
         let c = SlotClock::isdbs(48).unwrap();
         // 0.1 Mbit/s for 0.6 s: PCR every 4 packets
         let input = cbr(41, 406_080, 4, 0);
@@ -930,7 +1164,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         let mut n = 0;
         while !pacer.drained() {
-            let (v, real) = pacer.fill(384, &mut Untagged(&mut s), &stop);
+            let (v, real) = pacer.fill(384, &mut s, &stop);
             assert_eq!(v.len(), 384);
             n += real;
         }
@@ -951,7 +1185,7 @@ mod tests {
         let stop = AtomicBool::new(true);
         let mut pacer = SlotPacer::new(c, None, WaitMode::Block);
         // nothing queued and stop raised: all nulls, not drained
-        let (v, real) = pacer.fill(10, &mut Untagged(&mut s), &stop);
+        let (v, real) = pacer.fill(10, &mut s, &stop);
         assert_eq!((v.len(), real), (10, 0));
         assert!(!pacer.drained());
         // packets due at slot 0 arriving after slots 0..10 went out
@@ -959,10 +1193,452 @@ mod tests {
         tx.send(pkt(0x0111, 1)).unwrap();
         drop(tx);
         stop.store(false, std::sync::atomic::Ordering::Relaxed);
-        let (v, real) = pacer.fill(10, &mut Untagged(&mut s), &stop);
+        let (v, real) = pacer.fill(10, &mut s, &stop);
         assert_eq!(real, 2);
         assert_eq!(pcr_of(&v[0]), Some(c.time(10)), "restamped by the lag");
         assert!(pacer.drained());
         assert_eq!(pacer.stats().saturated, 2);
+    }
+
+    /// A 5-byte PTS/DTS field (H.222.0 Table 2-21) with `prefix`.
+    fn ts_field(prefix: u8, v: u64) -> [u8; 5] {
+        let b = |x: u64| u8::try_from(x & 0xFF).unwrap();
+        [
+            prefix << 4 | b((v >> 30) & 7) << 1 | 1,
+            b(v >> 22),
+            b((v >> 15) & 0x7F) << 1 | 1,
+            b(v >> 7),
+            b(v & 0x7F) << 1 | 1,
+        ]
+    }
+
+    fn read_ts(f: &[u8]) -> u64 {
+        u64::from((f[0] >> 1) & 7) << 30
+            | u64::from(f[1]) << 22
+            | u64::from(f[2] >> 1) << 15
+            | u64::from(f[3]) << 7
+            | u64::from(f[4] >> 1)
+    }
+
+    /// A packet of `pid` with counter `cc`: with a PCR in its adaptation
+    /// field if given, and starting a PES packet (stream_id 0xE0, PTS `pts`
+    /// and a DTS 3 000 earlier) if `pts` is given; payload bytes 0xAA.
+    fn es_pkt(pid: u16, cc: u8, pcr: Option<u64>, pts: Option<u64>) -> Packet {
+        let mut p = [0xAAu8; 188];
+        let [hi, lo] = pid.to_be_bytes();
+        let pusi = if pts.is_some() { 0x40 } else { 0 };
+        p[..3].copy_from_slice(&[0x47, pusi | hi, lo]);
+        p[3] = if pcr.is_some() { 0x30 } else { 0x10 } | cc;
+        let mut at = 4;
+        if let Some(v) = pcr {
+            p[4..6].copy_from_slice(&[7, 0x10]);
+            put(&mut p[6..12], v);
+            at = 12;
+        }
+        if let Some(v) = pts {
+            p[at..at + 9].copy_from_slice(&[0, 0, 1, 0xE0, 0, 0, 0x80, 0xC0, 10]);
+            p[at + 9..at + 14].copy_from_slice(&ts_field(0b0011, v));
+            let dts = (v + (1 << 33) - 3000) % (1 << 33);
+            p[at + 14..at + 19].copy_from_slice(&ts_field(0b0001, dts));
+        }
+        p
+    }
+
+    /// PTS and DTS of a packet of PID 0x0111 built by [`es_pkt`] that
+    /// starts a PES.
+    fn pts_dts(p: &Packet) -> Option<(u64, u64)> {
+        if p[1] & 0x40 == 0 || crate::source::pid(p) != 0x0111 {
+            return None;
+        }
+        let at = if p[3] & 0x20 != 0 {
+            5 + usize::from(p[4])
+        } else {
+            4
+        };
+        Some((read_ts(&p[at + 9..at + 14]), read_ts(&p[at + 14..at + 19])))
+    }
+
+    /// The looped test file: `n` packets at `tpp` ticks of 27 MHz each,
+    /// packet i at `pcr0` + i·tpp. Video-like PID 0x0111 (program 1,
+    /// PCR_PID): a PCR and a PES start (PTS = arrival + 0.5 s, DTS 3 000
+    /// earlier) every 100 packets, payload in its other packets; an AF-only
+    /// PCR PID 0x01FE (program 2, its own time base `pcr0b`) at i ≡ 50
+    /// (mod 100); PAT and both PMTs every 250 packets; one packet of PID
+    /// 0x0030 per file; a null at i ≡ 3 (mod 5).
+    fn seam_file(n: u64, tpp: u64, pcr0: u64, pcr0b: u64) -> Vec<Packet> {
+        use isdb_ts::cc::Counter;
+        use isdb_ts::packetize::{Packing, packetize_sections};
+        use isdb_ts::psi::{Pat, PatEntry, Pmt, PmtStream};
+        let pid = |v| Pid::new(v).unwrap();
+        let pat = Pat::section(
+            0x4010,
+            0,
+            vec![PatEntry::new(1, pid(0x01F0)), PatEntry::new(2, pid(0x01F1))],
+        )
+        .encode()
+        .unwrap();
+        let pmt1 = Pmt::section(
+            1,
+            0,
+            Pmt::new(
+                pid(0x0111),
+                vec![],
+                vec![PmtStream::new(0x02, pid(0x0111), vec![])],
+            ),
+        )
+        .encode()
+        .unwrap();
+        let pmt2 = Pmt::section(2, 0, Pmt::new(pid(0x01FE), vec![], vec![]))
+            .encode()
+            .unwrap();
+        let mut cs = [Counter::default(); 3];
+        let mut one = |p: u16, sec: &Vec<u8>, k: usize| {
+            let v = packetize_sections(
+                pid(p),
+                std::slice::from_ref(sec),
+                Packing::OnePerPacket,
+                &mut cs[k],
+            )
+            .unwrap();
+            v[0]
+        };
+        let mut c_es = 0u8;
+        let mut es = |pcr, pts| {
+            let p = es_pkt(0x0111, c_es, pcr, pts);
+            c_es = (c_es + 1) & 15;
+            p
+        };
+        let at = |i: u64| pcr_wrap_add(pcr0, i * tpp);
+        (0..n)
+            .map(|i| match i {
+                i if i % 100 == 0 => es(Some(at(i)), Some((at(i) / 300 + 45_000) % (1 << 33))),
+                i if i % 100 == 50 => pcr_pkt(0x01FE, pcr_wrap_add(pcr0b, i * tpp), false, None),
+                i if i % 250 == 7 => one(0, &pat, 0),
+                i if i % 250 == 8 => one(0x01F0, &pmt1, 1),
+                i if i % 250 == 9 => one(0x01F1, &pmt2, 2),
+                1500 => pkt(0x0030, 5),
+                i if i % 5 == 3 => null(),
+                _ => es(None, None),
+            })
+            .collect()
+    }
+
+    /// `file` read as `--feed loop` reads a file.
+    fn loop_stream(file: &[Packet]) -> PacketStream {
+        let bytes: Vec<u8> = file.concat();
+        let opener: crate::source::Opener = Box::new(move || {
+            Ok(Box::new(std::io::Cursor::new(bytes.clone())) as Box<dyn std::io::Read + Send>)
+        });
+        PacketStream::spawn("seam.ts", opener, Feed::Loop, 1024).unwrap()
+    }
+
+    /// pcr-pacing.md §8, loop: a small CBR file with a PCR PID that also
+    /// carries PES (PTS/DTS), an AF-only PCR PID of a second program,
+    /// section PIDs and a PID with one packet per file, looped 3× through
+    /// `PacketStream::spawn` with `Feed::Loop`. Across both seams: no PCR
+    /// goes back, every PCR is on the slot grid (the CBR fit holds), PTS and
+    /// DTS run on, every PID's continuity counter is continuous
+    /// (`isdb_ts::cc`, and `isdb_analyze` on the concatenated output: no
+    /// `transport.*` / `pes.*` / `pcr.*` finding above info, 0 PCR
+    /// discontinuities, 0 CC events); pass 0 is the input, byte for byte,
+    /// apart from the PCRs.
+    #[test]
+    fn loop_seam_is_seamless() {
+        use isdb_analyze::validate::{Severity, validate};
+        use isdb_ts::cc::CcChecker;
+        use isdb_ts::pcr::{ts90k_signed_diff, ts90k_wrap_add};
+        let c = SlotClock::isdbs(48).unwrap();
+        // 3001 packets at 4 061 ticks (10 Mbit/s): a pass is 12 187 061
+        // ticks, not a multiple of 300, so O_n is rounded. The first time
+        // base wraps 0.6 s in, during pass 1.
+        let (n, tpp) = (3001u64, 4061u64);
+        let pcr0 = PCR_MODULUS - 16_200_000;
+        let pcr0b = 123_456_789;
+        let file = seam_file(n, tpp, pcr0, pcr0b);
+        // the non-null packets and their index in the file
+        let real: Vec<(u64, Packet)> = (0u64..)
+            .zip(&file)
+            .filter(|(_, p)| !is_null(p))
+            .map(|(i, p)| (i, *p))
+            .collect();
+        let m = real.len();
+        let mut s = loop_stream(&file);
+        let mut pacer = SlotPacer::new(c, None, WaitMode::Block);
+        let stop = AtomicBool::new(false);
+        let mut out = vec![];
+        while pacer.stats().passes <= 3 {
+            out.extend(pacer.fill(384, &mut s, &stop).0);
+        }
+        // cut the output after the 3 passes' packets
+        let mut k = 0;
+        let end = out
+            .iter()
+            .position(|p| {
+                k += usize::from(!is_null(p));
+                k > 3 * m
+            })
+            .unwrap();
+        out.truncate(end);
+        let st = pacer.stats();
+        assert_eq!(st.passes, 4, "{st:?}");
+        assert_eq!(st.discontinuities, 0, "seams are not discontinuities");
+        assert_eq!(st.saturated, 0);
+        assert!(st.pes_shifted >= 2 * 31, "{st:?}");
+        assert_eq!(st.pes_truncated, 0);
+        // 0x0111, PAT, both PMTs and 0x0030 jump at each seam; the
+        // AF-only 0x01FE does not
+        assert!(st.cc_fixed >= 2 * 5, "{st:?}");
+
+        let placed = placed(&out);
+        assert_eq!(placed.len(), 3 * m);
+        // pass 0: the input apart from the PCR fields
+        for ((_, p), (_, q)) in placed.iter().zip(&real) {
+            let mut p = *p;
+            if let Some(at) = pcr_field(q) {
+                p[at..at + 6].copy_from_slice(&q[at..at + 6]);
+            }
+            assert_eq!(p, *q);
+        }
+        // every PCR on the slot grid of its own time base: none goes back
+        for (j, p) in &placed {
+            let Some(v) = pcr_of(p) else { continue };
+            let base = if crate::source::pid(p) == 0x0111 {
+                pcr0
+            } else {
+                pcr0b
+            };
+            assert_eq!(v, pcr_wrap_add(base, c.time(*j)), "slot {j}");
+        }
+        // PTS/DTS: packet g = pass·n + i of the endless file is at
+        // pcr0 + g·tpp; its PTS stays 0.5 s after that, to the 90 kHz tick
+        let mut pes = 0;
+        for (k, (_, p)) in placed.iter().enumerate() {
+            let Some((pts, dts)) = pts_dts(p) else {
+                continue;
+            };
+            let g = (k / m) as u64 * n + real[k % m].0;
+            let ideal = (pcr_wrap_add(pcr0, g * tpp) / 300 + 45_000) % (1 << 33);
+            assert!(
+                ts90k_signed_diff(pts, ideal).abs() <= 1,
+                "PES {k}: {pts} vs {ideal}"
+            );
+            assert_eq!(ts90k_wrap_add(dts, 3000), pts, "DTS moved with the PTS");
+            pes += 1;
+        }
+        assert_eq!(pes, 3 * 31);
+        // continuity of every PID (H.222.0 §2.4.3.3)
+        let mut cc = CcChecker::new();
+        for (i, (_, p)) in (0u64..).zip(&placed) {
+            assert_eq!(cc.push(i, p), None, "packet {i}");
+        }
+        assert!(
+            placed
+                .iter()
+                .filter(|(_, p)| crate::source::pid(p) == 0x01FE)
+                .all(|(_, p)| p[3] & 0x0F == 0),
+            "AF-only counters left alone"
+        );
+        // `isdb ts validate --expect-rate 52170000:1` and `inspect`
+        let cap = isdb_analyze::scan_packets(&out, &Default::default());
+        let opts = isdb_analyze::validate::ValidateOptions {
+            expect: isdb_analyze::validate::Expectations {
+                rate: Some(isdb_analyze::validate::RateExpectation {
+                    bps: 52_170_000.0,
+                    ppm: 1.0,
+                }),
+                ..Default::default()
+            },
+            nominal_bps: None,
+        };
+        let rep = validate(&cap, &opts);
+        for f in &rep.findings {
+            let timing = ["pcr.", "transport.", "pes."]
+                .iter()
+                .any(|c| f.check.starts_with(c));
+            assert!(!(timing && f.severity > Severity::Info), "{f:?}");
+        }
+        let ins = isdb_analyze::inspect::inspect(&cap, &Default::default());
+        assert_eq!(ins.pcr.len(), 2);
+        for r in &ins.pcr {
+            assert_eq!(r.discontinuities, 0, "{r:?}");
+            assert!(r.fit_max_ns.unwrap() < 40.0, "{r:?}");
+            assert!(
+                (r.rate_bps.unwrap() / 52_170_000.0 - 1.0).abs() < 1e-6,
+                "{r:?}"
+            );
+        }
+        assert!(ins.pids.iter().all(|r| r.cc_events == 0), "{:?}", ins.pids);
+        let s = pacer.status();
+        assert!(s.contains(" passes 4 cc-fixed "), "{s}");
+        assert!(!s.contains("pcr-discontinuities"), "{s}");
+    }
+
+    /// A file with a PCR discontinuity of its own (indicator set) halfway:
+    /// it passes with Δ in every pass, and the seam continues the time base
+    /// in force after it, not the file's first one.
+    #[test]
+    fn loop_seam_continues_the_time_base_after_a_discontinuity() {
+        let c = SlotClock::isdbs(48).unwrap();
+        let tpp = 2000;
+        let file: Vec<Packet> = (0..200u64)
+            .map(|i| match (i % 10, i) {
+                (0, ..100) => pcr_pkt(0x01FF, 5_000_000 + i * tpp, false, None),
+                (0, 100) => pcr_pkt(0x01FF, 900, true, None),
+                (0, _) => pcr_pkt(0x01FF, 900 + (i - 100) * tpp, false, None),
+                _ => pkt(0x0111, u32::try_from(i).unwrap()),
+            })
+            .collect();
+        let mut src = VecSource::looped(&file, 3);
+        let mut pacer = SlotPacer::new(c, None, WaitMode::Block);
+        let stop = AtomicBool::new(false);
+        let mut got = vec![];
+        while !pacer.drained() {
+            got.extend(pacer.fill(384, &mut src, &stop).0);
+        }
+        let st = pacer.stats();
+        assert_eq!(st.discontinuities, 3, "the file's own, once per pass");
+        assert_eq!(st.passes, 3);
+        let pcrs: Vec<(u64, Packet)> = placed(&got)
+            .into_iter()
+            .filter(|(_, p)| pcr_of(p).is_some())
+            .collect();
+        assert_eq!(pcrs.len(), 60);
+        for (k, w) in pcrs.windows(2).enumerate() {
+            let ((j0, p0), (j1, p1)) = (w[0], w[1]);
+            let step = pcr_wrap_diff(pcr_of(&p1).unwrap(), pcr_of(&p0).unwrap());
+            if p1[5] & 0x80 != 0 {
+                assert_ne!(step, c.time(j1) - c.time(j0), "the file's jump, kept");
+            } else {
+                assert_eq!(step, c.time(j1) - c.time(j0), "PCR {k}: on the grid");
+            }
+        }
+    }
+
+    /// The pass offset: O_n a multiple of 300 within 150 ticks of
+    /// X = C + t − R (mod 2^33·300), e_n = O_n − X.
+    #[test]
+    fn pass_offset_is_a_multiple_of_300() {
+        for (c, raw, t) in [
+            (1_000_000, 1_000_000, 12_187_061),
+            (1_000_000, 1_000_000, 12_187_200),
+            (PCR_MODULUS - 10, 5, 1_000),
+            (7, PCR_MODULUS - 1, 3 * PCR_MODULUS + 449),
+        ] {
+            let (o, e) = pass_offset(c, raw, t);
+            assert_eq!(o % 300, 0);
+            assert!(o < PCR_MODULUS && e.abs() <= 150, "{o} {e}");
+            let x = mod_sub((c + t % PCR_MODULUS) % PCR_MODULUS, raw);
+            assert_eq!(mod_signed(o, -e), x);
+        }
+        assert_eq!(
+            pass_offset(1_000_000, 1_000_000, 12_187_061),
+            (12_187_200, 139)
+        );
+        assert_eq!(pass_offset(0, 0, 449), (300, -149));
+        assert_eq!(pass_offset(0, 0, 450), (600, 150));
+        assert_eq!(pass_offset(0, 1, PCR_MODULUS), (0, 1), "wraps to 0");
+    }
+
+    /// A packet of `pid` with counter `cc`, a payload or adaptation only.
+    fn cc_pkt(pid: u16, cc: u8, payload: bool) -> Packet {
+        let mut p = if payload {
+            pkt(pid, 0)
+        } else {
+            pcr_pkt(pid, 0, false, None)
+        };
+        p[3] = (p[3] & 0xF0) | cc;
+        p
+    }
+
+    /// `v` renumbered as `passes` passes of a looped file: the output, the
+    /// CC events `isdb_ts::cc` (H.222.0 §2.4.3.3) finds in it, and how many
+    /// counters were fixed.
+    fn renumbered(v: &[Packet], passes: u32) -> (Vec<Packet>, Vec<isdb_ts::cc::CcEventKind>, u64) {
+        let mut seams = Seams::new();
+        let mut cc = isdb_ts::cc::CcChecker::new();
+        let (mut out, mut events, mut fixed) = (vec![], vec![], 0);
+        for pass in 0..passes {
+            for p in v {
+                let mut q = *p;
+                fixed += u64::from(seams.renumber(&mut q, pass));
+                if pass == 0 {
+                    assert_eq!(q, *p, "pass 0 untouched");
+                }
+                events.extend(cc.push(out.len() as u64, &q).map(|e| e.kind));
+                out.push(q);
+            }
+        }
+        (out, events, fixed)
+    }
+
+    fn counters(v: &[Packet], pid: u16) -> Vec<u8> {
+        v.iter()
+            .filter(|p| crate::source::pid(p) == pid)
+            .map(|p| p[3] & 15)
+            .collect()
+    }
+
+    #[test]
+    fn spec_2_4_3_3_counters_run_on_across_seams() {
+        // 0x100: AF-only 2, payload 3, 4, 5, then AF-only 5 (not
+        // incremented). Its next pass starts with the AF-only packet: it
+        // repeats the last payload counter (5), it does not follow it.
+        // 0x101: payload 9, 10; the next pass starts with payload 9 → 11.
+        // 0x102: adaptation only, counter 7 throughout: left alone.
+        let v = [
+            cc_pkt(0x100, 2, false),
+            cc_pkt(0x101, 9, true),
+            cc_pkt(0x100, 3, true),
+            cc_pkt(0x102, 7, false),
+            cc_pkt(0x100, 4, true),
+            cc_pkt(0x101, 10, true),
+            cc_pkt(0x100, 5, true),
+            cc_pkt(0x100, 5, false),
+        ];
+        // played twice as it is, the file breaks its counters at the seam
+        let mut plain = isdb_ts::cc::CcChecker::new();
+        let raw = (0u64..)
+            .zip(v.iter().chain(&v))
+            .filter_map(|(i, p)| plain.push(i, p))
+            .count();
+        assert_eq!(raw, 3, "0x100 (AF-only 2 after 5, then 3 after 5), 0x101");
+        let (out, events, fixed) = renumbered(&v, 3);
+        assert_eq!(events, [], "no CC event");
+        assert_eq!(
+            counters(&out, 0x100),
+            [2, 3, 4, 5, 5, 5, 6, 7, 8, 8, 8, 9, 10, 11, 11]
+        );
+        assert_eq!(counters(&out, 0x101), [9, 10, 11, 12, 13, 14]);
+        assert_eq!(counters(&out, 0x102), [7, 7, 7]);
+        assert_eq!(fixed, 4, "0x100 and 0x101 in passes 1 and 2");
+    }
+
+    /// A PID with a single payload packet per file would repeat its
+    /// counter at every seam: a receiver takes the repeat as a duplicate and
+    /// drops its payload (§2.4.3.3). Renumbered, every pass's packet is
+    /// new; a duplicate pair inside the file stays exactly one duplicate.
+    #[test]
+    fn renumbering_makes_no_duplicates() {
+        use isdb_ts::cc::CcEventKind;
+        let one = [cc_pkt(0x30, 5, true)];
+        let (out, events, fixed) = renumbered(&one, 4);
+        assert_eq!(events, []);
+        assert_eq!(counters(&out, 0x30), [5, 6, 7, 8]);
+        assert_eq!(fixed, 3);
+        // in the file: 0, 1, 1 (a duplicate), 2
+        let dup = [
+            cc_pkt(0x31, 0, true),
+            cc_pkt(0x31, 1, true),
+            cc_pkt(0x31, 1, true),
+            cc_pkt(0x31, 2, true),
+        ];
+        let (out, events, _) = renumbered(&dup, 3);
+        assert_eq!(counters(&out, 0x31), [0, 1, 1, 2, 3, 4, 4, 5, 6, 7, 7, 8]);
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert!(
+            events
+                .iter()
+                .all(|e| matches!(e, CcEventKind::Duplicate { identical: true }))
+        );
     }
 }

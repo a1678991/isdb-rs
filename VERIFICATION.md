@@ -1789,8 +1789,41 @@ The validate findings left are the file's own four `pid.missing` warnings
 --system isdbs --superframes 20` (paced): PASS, 25 input packets
 byte-exact. The bench acceptance on the PIX-DT295 (`--feed loop`,
 `tools/isdbs-bench-tx.sh --feed loop --placed`, `isdbs-bench-check.sh
---record`) is still to be run; loop seams are not corrected yet (piece
-P3).
+--record`) is still to be run.
+
+## ISDB-S loop seams, offline (2026-10-30)
+
+`--feed loop` of a paced TS joins each pass to the one before
+(docs/plans/isdbs-next/pcr-pacing.md §7.6, crates/isdb-cli/SPEC-NOTES.md
+"loop seams"): PCR, PTS and DTS moved on by the loop period O_n, continuity
+counters renumbered per PID. `FEED=loop tools/isdbs-pacing-e2e.sh WORKDIR 4`
+(no radio): the bench service muxed for 4 s (4.164 s of PCR time, PCR on
+0x01FF and 0x01FE every 58 ms) → `isdb tx --system isdbs --feed loop
+--seconds 13 --iq` (cs8, BS layout, `--placed-ts`) → `isdb rx --iq` →
+`isdbs-bench-check.sh --rate 52170000:1 --fit-max-ns 100 --placed` and
+`tools/ts-loop-seam.py bench.ts rx-4010.ts`. `MEDIA=1` gives the service
+ffmpeg video (12 Mbit/s MPEG-2) and audio (AAC), so that PES with PTS/DTS
+cross the seams.
+
+| | declared streams | `MEDIA=1` |
+|---|---|---|
+| data on air | 1174 superframes, 3.14 passes, 3 seams | the same |
+| file played as it is (`ts-loop-seam.py bench.ts`) | CC error at each seam on 9 of 11 PIDs (all but the AF-only PCR PIDs) | — |
+| pacer (`tx` summary) | `passes 4 cc-fixed 27` (9 PIDs × 3 seams), 0 PCR discontinuities | `passes 4 cc-fixed 32 pes-shifted 596`, 0 PCR discontinuities |
+| received TS vs `--placed-ts` | identical, 450 816 packets | identical, 450 816 packets |
+| `pcr.rate` | 52.170000 Mbit/s (±0.0 ppm) | the same |
+| CBR fit, 0x01FF / 0x01FE | max 19 / 18 ns, rms 11 ns; at the seams 13 ns | max 19 / 18 ns, rms 11 ns; at the seams 13 / 17 ns |
+| CC errors, PCR discontinuities | **0, 0** | **0, 0** |
+| PES time stamps going back | — | **0** (video 373 PES, audio 512) |
+| PTS/DTS step across a seam | — | video 132 ms (median 33.4 ms), audio 601 ms (median 21.3 ms): the frames the 4 s file had not sent by its end |
+| bytes changed outside PCR / PTS / DTS / CC | 0 (pass 0: outside the PCR) | 0 |
+
+`isdb ts validate` finds nothing new: the declared run keeps the file's
+four `pid.missing` warnings; the media run has ffmpeg's ADTS errors
+(variable-rate buffer fullness, MPEG-4 ID, no CRC: accepted with
+`adts_compliance = "warn"`) and an `aac.sync` warning for the three audio
+frames cut by the file's end, one per seam. SI times (TOT, EIT) restart at
+each pass (not corrected).
 
 ## Open questions
 
