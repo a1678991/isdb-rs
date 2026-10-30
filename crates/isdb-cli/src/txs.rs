@@ -129,7 +129,11 @@ pub const DEFAULT_RATE: f64 = 40e6;
 /// (1 + α)·R = 38.96 MHz.
 pub const DEFAULT_BB_FILTER_HZ: u32 = 40_000_000;
 
-/// The TS_ID of the default `--ts` (a placeholder, not a station's).
+/// The TS_ID of the default `--ts`. Not a placeholder: 0x4010 is BS-1
+/// TS 0 on air (VERIFICATION.md "ISDB-S frame sync and TMCC": BS1 carries
+/// 4010, 4011 and 4012). It stays the default for the synthetic loopback
+/// and `--iq` runs; a bench broadcast names its own TS_ID
+/// (`tools/isdbs-bench-tx.sh`: 0x4017, not on air).
 pub const DEFAULT_TS_ID: u16 = 0x4010;
 
 /// Seconds of one superframe: 319 488 symbols at 28.86 Mbaud (BO.1408-1
@@ -922,6 +926,41 @@ impl Source {
     }
 }
 
+/// The transport_stream_id of the PAT section that starts in `p` (PID
+/// 0x0000, payload_unit_start_indicator '1', table_id 0x00 after the
+/// pointer_field; H.222.0 §2.4.4.2, §2.4.4.3, Table 2-30), else `None`.
+fn pat_ts_id(p: &Packet) -> Option<u16> {
+    let v = isdb_ts::packet::View::parse(p).ok()?;
+    if v.header.pid != Pid::PAT || !v.header.payload_unit_start_indicator {
+        return None;
+    }
+    let data = v.payload?;
+    match data.get(1 + usize::from(*data.first()?)..)? {
+        [0x00, _, _, hi, lo, ..] => Some(u16::from_be_bytes([*hi, *lo])),
+        _ => None,
+    }
+}
+
+/// Compare the first PAT among `packets` (the input of the TS `ts_id`,
+/// read from `name`) with the TS_ID and warn when they differ: a receiver
+/// selects the TS by the TMCC's TS_ID and then reads the PAT's, which on
+/// air are equal (VERIFICATION.md "ISDB-S main signal to TS"). True once
+/// a PAT has been seen, so that the caller warns at most once per TS.
+fn check_pat(ts_id: u16, name: &str, packets: &[Packet]) -> bool {
+    let Some(pat) = packets.iter().find_map(pat_ts_id) else {
+        return false;
+    };
+    if pat != ts_id {
+        warn!(
+            target: "isdb::tx",
+            ts_id,
+            pat_ts_id = pat,
+            "TS_ID {ts_id:#06x} <- {name}: its PAT says transport_stream_id {pat:#06x}, the TMCC {ts_id:#06x}; a receiver tuned to {ts_id:#06x} finds a TS that names another (give --ts {pat:#06x}=…, or multiplex it with transport_stream_id = {ts_id:#06x})"
+        );
+    }
+    true
+}
+
 /// One superframe's packets: exactly the count of each relative TS.
 #[derive(Debug, Clone)]
 pub struct SfPackets {
@@ -941,6 +980,9 @@ pub struct TsInputs {
     superframe: u64,
     /// Packets per TS so far (the synthetic continuity counters).
     sent: Vec<u64>,
+    /// Per TS: its first PAT has been compared with its TS_ID
+    /// ([`check_pat`]).
+    pat_checked: Vec<bool>,
 }
 
 impl TsInputs {
@@ -988,6 +1030,7 @@ impl TsInputs {
         Ok(Self {
             ts_ids: layout.ts_ids(),
             sent: vec![0; sources.len()],
+            pat_checked: vec![false; sources.len()],
             sources,
             names,
             feed,
@@ -1032,6 +1075,7 @@ impl TsInputs {
         Self {
             ts_ids,
             sent: vec![0; sources.len()],
+            pat_checked: vec![false; sources.len()],
             sources,
             names,
             feed,
@@ -1097,6 +1141,9 @@ impl TsInputs {
                     (v, k)
                 }
             };
+            if !self.pat_checked[r] && k > 0 {
+                self.pat_checked[r] = check_pat(self.ts_ids[r], &self.names[r], &v);
+            }
             real.push(k);
             ts.push(v);
         }
@@ -2466,6 +2513,66 @@ mod tests {
                 _ => null_packet(),
             })
             .collect()
+    }
+
+    /// The PAT's transport_stream_id is found after a pointer_field and
+    /// an adaptation field, only in a PID 0 packet that starts a section
+    /// with table_id 0x00; `check_pat` is done once a PAT has been seen
+    /// (matching or not) and waits for one otherwise.
+    #[test]
+    fn the_first_pat_names_its_transport_stream_id() {
+        let ts = cbr_ts(400, 300, 0);
+        assert_eq!(ts.iter().find_map(pat_ts_id), Some(0x4010));
+        let pat = ts[1];
+        assert_eq!(pat_ts_id(&pat), Some(0x4010));
+        // pointer_field 2, then the section
+        let mut p = pat;
+        p[4] = 2;
+        p[7..].copy_from_slice(&pat[5..186]);
+        assert_eq!(pat_ts_id(&p), Some(0x4010));
+        // an adaptation field of 3 bytes before the payload
+        let mut p = pat;
+        p[3] = 0x30 | (pat[3] & 15);
+        p[4..8].copy_from_slice(&[2, 0, 0xFF, 0]);
+        p[8..].copy_from_slice(&pat[5..185]);
+        assert_eq!(pat_ts_id(&p), Some(0x4010));
+        // not a PAT: another PID, no section start, another table_id
+        let mut p = pat;
+        p[2] = 0x01;
+        assert_eq!(pat_ts_id(&p), None);
+        let mut p = pat;
+        p[1] &= !0x40;
+        assert_eq!(pat_ts_id(&p), None);
+        let mut p = pat;
+        p[5] = 0x02;
+        assert_eq!(pat_ts_id(&p), None);
+        assert!(check_pat(0x4010, "a.ts", &ts));
+        assert!(check_pat(0x4017, "a.ts", &ts), "a mismatch is checked too");
+        assert!(!check_pat(0x4010, "a.ts", &ts[2..300]), "no PAT yet");
+    }
+
+    /// A paced TS spreads its packets over the superframe's slots: the
+    /// first PAT is found among them all (here after the first `real`
+    /// slots: 1 Mbit/s in 26 Mbit/s of slots), in the superframe that
+    /// carries it, and the TS is not checked again; a synthetic TS is
+    /// never checked.
+    #[test]
+    fn the_pat_of_a_paced_input_is_checked_once() {
+        let d = scratch("pat");
+        let path = d.join("cbr.ts");
+        std::fs::write(&path, cbr_ts(665, 40_610, 5_000).concat()).unwrap();
+        let layout = layout_of(&[format!("0x4017:24={}", path.display()), "0x4011:24".into()]);
+        let plan = plan_inputs(&layout, Feed::File, TsPacing::Auto, false).unwrap();
+        assert!(matches!(plan[0], Placement::Pcr(_)), "{plan:?}");
+        let mut inp = TsInputs::open(&layout, Feed::File, &[192, 192], &plan).unwrap();
+        let stop = AtomicBool::new(false);
+        let sf = inp.take(&[192, 192], &stop).unwrap();
+        let at = sf.ts[0].iter().position(|p| pat_ts_id(p).is_some());
+        assert!(at.is_some_and(|i| i >= sf.real[0]), "{at:?} {:?}", sf.real);
+        assert_eq!(inp.pat_checked, [true, false]);
+        inp.take(&[192, 192], &stop).unwrap();
+        assert_eq!(inp.pat_checked, [true, false]);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     /// A fresh directory under the system's temporary directory.
