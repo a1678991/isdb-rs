@@ -195,23 +195,53 @@ interpretations it adopts.  Texts: `specs/ITU-T-H.222.0-2006.txt`,
   Status: interpretation.
 
 ## isdb-analyze: cross-table identities
-- Spec: B10 Part 2 §5.2.4, §5.2.6, §5.2.7, §6.1 Table 6-1; Appendix §1.1 c), §1.3.
+- Spec: B10 Part 2 §5.2.4, §5.2.6, §5.2.7, §6.1 Table 6-1, §6.2.21
+  Table 6-36; Annex N Table N-1 (informative); Appendix §1.1 b), c), §1.3.
 - Text: §5.2.4: "In the event that the NIT is transmitted on the network
   on which the TS was originated, the network_id and the
   original_network_id shall take the same value."  Appendix §1.3: "the SI
   bit stream shall list in the SDT of a particular TS at least all the
   services of that TS."  Table 6-1: terrestrial_delivery_system_descriptor
-  "Mandatory for digital terrestrial broadcasting"; system_control
-  (system_management) descriptor "Mandatory either in PMT or NIT".
+  "Mandatory for digital terrestrial broadcasting and multimedia
+  broadcasting"; satellite_delivery_system_descriptor "Mandatory in digital
+  satellite broadcasting"; system_control (system_management) descriptor
+  "Mandatory either in PMT or NIT".  Appendix §1.1 b) (guideline): "the
+  NIT describing the actual delivery system is valid if and only if it
+  contains applicable delivery system descriptors for the actual delivery
+  system".  Table 6-36 names each broadcasting_identifier's system
+  ('000011' digital terrestrial television, '000010' wide band satellite
+  11.7–12.2 GHz, …); Annex N "(Informative)" lists the network_ids
+  ("BS digital broadcasting 0x0004", "Terrestrial digital television
+  broadcasting 0x7880 – 0x7FE8").
 - Interpretation: SDT/EIT actual transport_stream_id ≠ PAT
   transport_stream_id → **error**; original_network_id disagreeing across
   SDT, EIT actual, NIT TS loop and BIT → **error**; network_id ≠ own TS
   original_network_id → **warning** (conditional on origination); PAT
-  programs absent from SDT actual / NIT service_list → **warning**; missing
-  terrestrial delivery / system management descriptor → **warning** (the
-  analysed TS may not be terrestrial).  SDT EIT flags vs EIT presence:
-  §5.2.6 "should not be present" → **warning**; schedule flag 1 without
-  schedule in a short capture → **info**.  Status: interpretation.
+  programs absent from SDT actual / NIT service_list → **warning**; no
+  delivery system descriptor for the actual TS, of either kind (0xFA or
+  0x43) → **warning** (`cross.nit`; Table 6-1 makes each mandatory only for
+  its medium and the medium is not known, so either one satisfies
+  Appendix §1.1 b)); missing system management descriptor → **warning**.
+  SDT EIT flags vs EIT presence: §5.2.6 "should not be present" →
+  **warning**; schedule flag 1 without schedule in a short capture →
+  **info**.
+- `cross.delivery` (**warning**): three values of the NIT actual each name
+  a medium, and they must agree: the own TS's delivery descriptor (0xFA
+  terrestrial, 0x43 satellite, by the Table 6-1 rows); the
+  broadcasting_identifier of every system_management_descriptor (NIT
+  network loop, own TS loop, PMTs), classed by `isdb-si`'s
+  `BroadcastingIdentifier::is_terrestrial` ('000011', '000101', and the
+  segment-connection multimedia codes '001010'/'001011', which Table 6-1's
+  0xFA row covers as "multimedia broadcasting") and `is_satellite`
+  ('000001', '000010', '000100', '000111'–'001001'); and the network_id
+  by Annex N: 0x0001–0x000C satellite (CS, BS, 110° CS, advanced BS/CS),
+  0x7880–0x7FE8 terrestrial television.  Undefined identifiers and other
+  network_ids (multimedia 0x0200, V-Low 0x8100–, IP broadcasting
+  0x7780–, the out-of-use sound ranges) give no opinion, so the check
+  never fires on them alone.  A warning, not an error: Annex N is
+  informative, and B10 states no "shall" tying the three together; the
+  mismatch means a receiver of one medium will misclassify the NIT.  One
+  finding per NIT, listing every opinion.  Status: interpretation.
 
 ## isdb-analyze: `si.copy_control` (receiver evidence, not a B10 rule)
 - Spec: B10 Part 2 §6.2.23 (digital_copy_control_descriptor,

@@ -70,6 +70,7 @@
 
 pub mod aac;
 pub mod decode;
+mod delivery;
 pub mod diff;
 pub mod edit;
 pub mod inspect;

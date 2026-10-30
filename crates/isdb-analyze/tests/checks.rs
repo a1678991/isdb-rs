@@ -41,6 +41,7 @@ fn baseline_stream_has_no_errors() {
             .guard_interval_name,
         "1/8"
     );
+    assert_eq!(rep.si.networks[0].transport_streams[0].satellite, None);
 }
 
 #[test]
@@ -413,6 +414,8 @@ fn expectations() {
         network_id: Some(ONID),
         service_ids: Some(vec![SID]),
         frequency_mhz: Some(557.142857),
+        orbital_position: None,
+        polarization: None,
         guard_interval: Some(2),
         transmission_mode: Some(2),
         area_code: Some(0x5A5),
@@ -687,4 +690,255 @@ fn absent_tables_in_short_capture_are_info() {
         "{}",
         r.to_text(Info)
     );
+}
+
+// ---------------------------------------------------------------------------
+// satellite (BS) SI: bs-si.md §6.4 item 6
+// ---------------------------------------------------------------------------
+
+/// The BS NIT section printed by `tools/bs-nit-section.py 1b6f597341`
+/// (bs-si.md §6.2): network_id 0x0004, 0x40 "ベンチ", 0xFE 0x0201, TS
+/// 0x4017/0x0004 with 0x41 [0x03E7/0x01] then the BS-1 0x43.
+const BS_NIT_HEX: &str = "40f0300004c10000f00b40051b6f597341fe020201f01840170004f012410303e701430b011727481100e8028860083f9c8672";
+
+fn hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+fn bs_stream(nit: Vec<u8>) -> Vec<Pkt> {
+    build(&spec_with(12, BS, nit))
+}
+
+fn validate_expect(
+    p: &[Pkt],
+    expect: isdb_analyze::validate::Expectations,
+) -> isdb_analyze::validate::ValidationReport {
+    isdb_analyze::validate::validate(
+        &scan(p),
+        &isdb_analyze::validate::ValidateOptions {
+            expect,
+            nominal_bps: None,
+        },
+    )
+}
+
+#[test]
+fn bs_nit_builder_is_the_golden_section() {
+    assert_eq!(nit_bs(0x0201, vec![bs1_delivery()]), hex(BS_NIT_HEX));
+}
+
+/// A BS-shaped stream (the golden NIT, BS identities everywhere) validates
+/// with no finding at warning or above: no `cross.nit`, no `cross.delivery`.
+/// `inspect` decodes its 0x43.
+#[test]
+fn bs_stream_has_no_delivery_warnings() {
+    let p = bs_stream(hex(BS_NIT_HEX));
+    let r = validate(&p);
+    assert!(
+        !r.findings.iter().any(|f| f.severity >= Warning),
+        "{}",
+        r.to_text(Warning)
+    );
+    let rep = isdb_analyze::inspect::inspect(&scan(&p), &Default::default());
+    let ts = &rep.si.networks[0].transport_streams[0];
+    assert_eq!(ts.delivery, None);
+    let s = ts.satellite.as_ref().unwrap();
+    assert_eq!(s.frequency_mhz, Some(11727.48));
+    assert_eq!(s.orbital_position, Some(110.0));
+    assert!(s.east);
+    assert_eq!((s.polarization, s.polarization_name), (3, "circular-right"));
+    assert_eq!((s.modulation, s.modulation_name), (0x08, "isdb-s"));
+    assert_eq!(s.symbol_rate_msps, Some(28.86));
+    assert_eq!((s.fec_inner, s.fec_inner_name), (0x8, "isdb-s"));
+    let text = rep.to_text();
+    assert!(
+        text.contains(
+            "satellite delivery: 11727.48 MHz orbital 110.0°E polarization circular-right (3) modulation isdb-s (0x08) symbol rate 28.8600 Msym/s FEC isdb-s (0x8)"
+        ),
+        "{text}"
+    );
+    let json = serde_json::to_value(&rep).unwrap();
+    let sat = &json["si"]["networks"][0]["transport_streams"][0]["satellite"];
+    assert_eq!(sat["frequency_mhz"], 11727.48, "{sat}");
+    assert_eq!(sat["polarization_name"], "circular-right", "{sat}");
+}
+
+/// A terrestrial NIT without 0xFA keeps its `cross.nit` warning (new
+/// wording) and gets no `cross.delivery`: identifier '000011' and
+/// network_id 0x79EE agree.
+#[test]
+fn nit_without_delivery_descriptor() {
+    let mut s = default_spec(3);
+    s.items.retain(|i| i.pid != Pid::new(0x0010).unwrap());
+    s.items
+        .push(item(0x0010, 1000, 11, nit_terrestrial(1, 0x0301, vec![])));
+    let r = validate(&build(&s));
+    let f = r.findings.iter().find(|f| f.check == "cross.nit").unwrap();
+    assert_eq!(f.severity, Warning);
+    assert_eq!(
+        f.message,
+        "no delivery system descriptor (0xFA or 0x43) for the actual TS"
+    );
+    assert!(f.clause.contains("Appendix §1.1 b)"), "{}", f.clause);
+    assert!(
+        !r.findings.iter().any(|f| f.check == "cross.delivery"),
+        "{}",
+        r.to_text(Info)
+    );
+}
+
+/// 0x43 on a NIT whose broadcasting_identifier is '000011' (terrestrial
+/// TV): one `cross.delivery` warning naming all three; nothing else.
+#[test]
+fn satellite_delivery_with_terrestrial_identifier() {
+    let r = validate(&bs_stream(nit_bs(0x0301, vec![bs1_delivery()])));
+    let f: Vec<_> = r
+        .findings
+        .iter()
+        .filter(|f| f.severity >= Warning)
+        .collect();
+    assert_eq!(f.len(), 1, "{}", r.to_text(Warning));
+    assert_eq!((f[0].severity, f[0].check), (Warning, "cross.delivery"));
+    assert!(f[0].clause.contains("Table 6-36"), "{}", f[0].clause);
+    assert!(f[0].clause.contains("Annex N"), "{}", f[0].clause);
+    let m = &f[0].message;
+    assert!(
+        m.contains("satellite_delivery_system_descriptor (0x43) → satellite"),
+        "{m}"
+    );
+    assert!(m.contains("'000011'"), "{m}");
+    assert!(m.contains("in NIT → terrestrial"), "{m}");
+    assert!(m.contains("network_id 0x0004 → satellite"), "{m}");
+}
+
+/// 0xFA under a BS broadcasting_identifier ('000010') on a terrestrial
+/// network_id: `cross.delivery`.
+#[test]
+fn terrestrial_delivery_with_satellite_identifier() {
+    let mut s = default_spec(3);
+    s.items.retain(|i| i.pid != Pid::new(0x0010).unwrap());
+    s.items.push(item(
+        0x0010,
+        1000,
+        11,
+        nit_terrestrial(1, 0x0201, vec![tds(2)]),
+    ));
+    let r = validate(&build(&s));
+    let f = r
+        .findings
+        .iter()
+        .find(|f| f.check == "cross.delivery")
+        .unwrap();
+    assert_eq!(f.severity, Warning);
+    assert!(f.message.contains("'000010'"), "{}", f.message);
+    assert!(
+        f.message.contains("network_id 0x79ee → terrestrial"),
+        "{}",
+        f.message
+    );
+}
+
+/// `--expect-freq-mhz` matches a 0x43 frequency (10 kHz units);
+/// `--expect-orbital` / `--expect-polarization` read 0x43; terrestrial-only
+/// expectations on a satellite NIT (and the other way round) say which
+/// descriptor is missing.
+#[test]
+fn expectations_on_a_satellite_nit() {
+    use isdb_analyze::validate::{Expectations, Polarization, parse_polarization};
+    let p = bs_stream(hex(BS_NIT_HEX));
+    let ok = Expectations {
+        transport_stream_id: Some(BS.tsid),
+        original_network_id: Some(BS.onid),
+        network_id: Some(BS.onid),
+        service_ids: Some(vec![BS.sid]),
+        frequency_mhz: Some(11727.48),
+        orbital_position: Some("110.0E".parse().unwrap()),
+        polarization: Some(Polarization::CircularRight),
+        ..Default::default()
+    };
+    let r = validate_expect(&p, ok.clone());
+    assert!(
+        !r.findings.iter().any(|f| f.check == "expect"),
+        "{}",
+        r.to_text(Info)
+    );
+    let bad = Expectations {
+        frequency_mhz: Some(11746.66),
+        orbital_position: Some("110.0W".parse().unwrap()),
+        polarization: Some(parse_polarization("circular-left").unwrap()),
+        guard_interval: Some(2),
+        ..ok
+    };
+    let r = validate_expect(&p, bad);
+    let e: Vec<&str> = r
+        .findings
+        .iter()
+        .filter(|f| f.check == "expect" && f.severity == Error)
+        .map(|f| f.message.as_str())
+        .collect();
+    assert_eq!(e.len(), 4, "{e:?}");
+    for want in [
+        "frequency 11727.48 MHz, expected 11746.66 MHz",
+        "orbital position 110.0E, expected 110.0W",
+        "polarization 3 (circular-right), expected 2 (circular-left)",
+        "no terrestrial_delivery_system_descriptor for the actual TS",
+    ] {
+        assert!(e.contains(&want), "{want}: {e:?}");
+    }
+    // a terrestrial NIT: the 0xFA frequency still matches, 0x43 is missing
+    let r = validate_expect(
+        &build(&default_spec(2)),
+        Expectations {
+            frequency_mhz: Some(557.142857),
+            polarization: Some(Polarization::CircularRight),
+            ..Default::default()
+        },
+    );
+    let e: Vec<&str> = r
+        .findings
+        .iter()
+        .filter(|f| f.check == "expect")
+        .map(|f| f.message.as_str())
+        .collect();
+    assert_eq!(
+        e,
+        ["no satellite_delivery_system_descriptor for the actual TS"]
+    );
+    // no delivery descriptor at all
+    let r = validate_expect(
+        &bs_stream(nit_bs(0x0201, vec![])),
+        Expectations {
+            frequency_mhz: Some(11727.48),
+            ..Default::default()
+        },
+    );
+    assert!(
+        r.findings.iter().any(|f| f.check == "expect"
+            && f.message == "no delivery system descriptor (0xFA or 0x43) for the actual TS"),
+        "{}",
+        r.to_text(Info)
+    );
+}
+
+#[test]
+fn orbital_position_and_polarization_parse() {
+    use isdb_analyze::validate::{OrbitalPosition, Polarization, parse_polarization};
+    let o: OrbitalPosition = "110.0E".parse().unwrap();
+    assert_eq!((o.tenths, o.east), (1100, true));
+    assert_eq!(o.to_string(), "110.0E");
+    let o: OrbitalPosition = "144w".parse().unwrap();
+    assert_eq!((o.tenths, o.east), (1440, false));
+    for bad in ["110.0", "110.05E", "1100E", "E", ".5E", "11a.0E"] {
+        assert!(bad.parse::<OrbitalPosition>().is_err(), "{bad}");
+    }
+    assert_eq!(
+        parse_polarization("linear-vertical"),
+        Ok(Polarization::LinearVertical)
+    );
+    assert_eq!(parse_polarization("3"), Ok(Polarization::CircularRight));
+    assert!(parse_polarization("4").is_err());
+    assert!(parse_polarization("right").is_err());
 }

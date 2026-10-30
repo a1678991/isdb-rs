@@ -14,7 +14,10 @@
 use anyhow::{Context, Result, anyhow, bail};
 use isdb_analyze::edit::{self, EditOp, EditOptions, NullSlots, Selector};
 use isdb_analyze::mutate::Expr;
-use isdb_analyze::validate::{Expectations, RateExpectation, Severity, ValidateOptions};
+use isdb_analyze::validate::{
+    Expectations, OrbitalPosition, Polarization, RateExpectation, Severity, ValidateOptions,
+    parse_polarization,
+};
 use isdb_analyze::{ScanOptions, inspect, scan_path};
 use isdb_ts::Pid;
 use std::path::PathBuf;
@@ -137,9 +140,20 @@ pub struct ValidateArgs {
     /// Expected service ids (PAT programs and SDT services), comma separated.
     #[arg(long, value_parser = parse_u16, value_delimiter = ',', num_args = 1..)]
     pub expect_services: Option<Vec<u16>>,
-    /// Frequency (MHz) the NIT terrestrial delivery descriptor must list.
+    /// Frequency (MHz) the NIT delivery descriptor of the actual TS must
+    /// list: terrestrial 0xFA (1/7 MHz steps, e.g. 557.142857) or
+    /// satellite 0x43 (10 kHz steps, e.g. 11727.48 for BS-1).
     #[arg(long)]
     pub expect_freq_mhz: Option<f64>,
+    /// Expected orbital position of the NIT satellite delivery descriptor
+    /// (0x43), DDD[.D]E or DDD[.D]W (e.g. 110.0E; B10 §6.2.6).
+    #[arg(long, value_name = "DDD.DE|DDD.DW")]
+    pub expect_orbital: Option<OrbitalPosition>,
+    /// Expected polarization of the NIT satellite delivery descriptor
+    /// (0x43): linear-horizontal, linear-vertical, circular-left,
+    /// circular-right, or the code 0..3 (B10 Table 6-9).
+    #[arg(long, value_name = "NAME|0..3", value_parser = parse_polarization)]
+    pub expect_polarization: Option<Polarization>,
     /// Expected guard_interval code (0=1/32, 1=1/16, 2=1/8, 3=1/4; B10 Table 6-62).
     #[arg(long, value_parser = parse_u8)]
     pub expect_guard: Option<u8>,
@@ -353,6 +367,8 @@ pub fn run(args: TsArgs) -> Result<()> {
                 network_id: a.expect_nid,
                 service_ids: a.expect_services,
                 frequency_mhz: a.expect_freq_mhz,
+                orbital_position: a.expect_orbital,
+                polarization: a.expect_polarization,
                 guard_interval: a.expect_guard,
                 transmission_mode: a.expect_mode,
                 area_code: a.expect_area,

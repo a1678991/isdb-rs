@@ -25,6 +25,9 @@ use crate::timebase::Timebase;
 use isdb_si::AnyTable;
 use isdb_si::conformance::{self, Kind};
 use isdb_si::descriptor::Descriptor;
+use isdb_si::values::CodedValue;
+/// B10 Table 6-9 polarization of [`Expectations::polarization`] (from `isdb-si`).
+pub use isdb_si::values::Polarization;
 use isdb_ts::Pid;
 use isdb_ts::cc::CcEventKind;
 use isdb_ts::pcr::{pcr_signed_diff, ts90k_signed_diff};
@@ -106,9 +109,19 @@ pub struct Expectations {
     pub network_id: Option<u16>,
     /// Exact set of PAT program numbers / SDT service ids.
     pub service_ids: Option<Vec<u16>>,
-    /// Frequency in MHz that NIT terrestrial_delivery_system_descriptor
-    /// must list (tolerance ±1/14 MHz, half a 1/7 MHz step).
+    /// Frequency in MHz that the NIT delivery descriptor of the actual TS
+    /// must list: a terrestrial_delivery_system_descriptor frequency
+    /// (tolerance ±1/14 MHz, half a 1/7 MHz step) or the
+    /// satellite_delivery_system_descriptor frequency (tolerance ±5 kHz,
+    /// half its 10 kHz step; e.g. 11727.48 for BS-1).
     pub frequency_mhz: Option<f64>,
+    /// orbital_position and west_east_flag of the
+    /// satellite_delivery_system_descriptor (B10 §6.2.6).
+    pub orbital_position: Option<OrbitalPosition>,
+    /// polarization of the satellite_delivery_system_descriptor (B10
+    /// Table 6-9; [`parse_polarization`]); serialized as its name.
+    #[serde(serialize_with = "ser_coded_name")]
+    pub polarization: Option<Polarization>,
     /// guard_interval code (B10 Table 6-62).
     pub guard_interval: Option<u8>,
     /// transmission_mode code (B10 Table 6-63).
@@ -124,6 +137,86 @@ pub struct Expectations {
     /// PCR-implied transport rate of every program's PCR_PID (check
     /// `pcr.rate`; `SPEC-NOTES.md` "PCR-implied rate").
     pub rate: Option<RateExpectation>,
+}
+
+/// An orbital position as B10 §6.2.6 codes it: 0.1° units (4 BCD
+/// characters, point after the third) and the west_east_flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct OrbitalPosition {
+    /// Degrees × 10 (0..=9999).
+    pub tenths: u16,
+    /// west_east_flag: true = east.
+    pub east: bool,
+}
+
+impl std::fmt::Display for OrbitalPosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}.{}{}",
+            self.tenths / 10,
+            self.tenths % 10,
+            if self.east { 'E' } else { 'W' }
+        )
+    }
+}
+
+impl std::str::FromStr for OrbitalPosition {
+    type Err = String;
+    /// `DDD[.D]E` or `DDD[.D]W` (e.g. `110.0E`, `144W`): at most one
+    /// decimal, below 1000°.
+    fn from_str(s: &str) -> Result<Self, String> {
+        let bad = || format!("orbital position {s:?}: expected DDD[.D]E or DDD[.D]W (e.g. 110.0E)");
+        let t = s.trim();
+        let (num, east) = if let Some(n) = t.strip_suffix(['E', 'e']) {
+            (n, true)
+        } else if let Some(n) = t.strip_suffix(['W', 'w']) {
+            (n, false)
+        } else {
+            return Err(bad());
+        };
+        let (int, frac) = num.split_once('.').unwrap_or((num, "0"));
+        let digits = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
+        if !digits(int) || !digits(frac) || int.len() > 3 || frac.len() != 1 {
+            return Err(bad());
+        }
+        let deg: u16 = int.parse().map_err(|_| bad())?;
+        let tenth: u16 = frac.parse().map_err(|_| bad())?;
+        Ok(OrbitalPosition {
+            tenths: deg * 10 + tenth,
+            east,
+        })
+    }
+}
+
+/// A polarization of B10 Table 6-9 by name (`linear-horizontal`,
+/// `linear-vertical`, `circular-left`, `circular-right`) or code (0..=3).
+pub fn parse_polarization(s: &str) -> Result<Polarization, String> {
+    if let Some(p) = Polarization::from_name(s) {
+        return Ok(p);
+    }
+    match s.parse::<u8>() {
+        Ok(c) if c <= Polarization::MASK => Ok(Polarization::from_code(c)),
+        _ => Err(format!(
+            "polarization {s:?}: expected {} or 0..3 (B10 Table 6-9)",
+            Polarization::NAMED
+                .iter()
+                .map(|p| p.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Serialize an optional coded value as its name.
+fn ser_coded_name<T: CodedValue, S: serde::Serializer>(
+    v: &Option<T>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(x) => s.serialize_some(x.name()),
+        None => s.serialize_none(),
+    }
 }
 
 /// Expected PCR-implied transport rate: the least-squares slope of PCR
@@ -1217,6 +1310,105 @@ fn window_4kb(cap: &Capture, tb: &Timebase, o: &mut Out) {
 // cross-table rules
 // ---------------------------------------------------------------------------
 
+/// `cross.delivery`: the delivery system that the NIT actual's own-TS
+/// delivery descriptor (B10 Table 6-1: 0xFA terrestrial, 0x43 satellite),
+/// the broadcasting_identifier of every system_management_descriptor (NIT
+/// network loop, own TS loop, PMTs; Table 6-36) and the network_id (Annex
+/// N Table N-1, informative) point at must be one and the same.  Values
+/// without a class (undefined identifiers, network_ids outside the
+/// terrestrial TV and satellite ranges) give no opinion.
+fn delivery_consistency(
+    cap: &Capture,
+    n: &isdb_si::tables::Nit,
+    own: Option<&isdb_si::tables::TransportStreamEntry>,
+    o: &mut Out,
+) {
+    use crate::delivery::{DeliveryClass, identifier_class, network_id_class};
+    use isdb_si::descriptor::{DescriptorBody, SystemManagement};
+    let nid = n.header.table_id_extension;
+    let mut opinions: Vec<(String, DeliveryClass)> = Vec::new();
+    let mut add = |what: String, c: DeliveryClass| {
+        if !opinions.iter().any(|(w, _)| *w == what) {
+            opinions.push((what, c));
+        }
+    };
+    for d in own.iter().flat_map(|t| t.descriptors.iter()) {
+        match d {
+            Descriptor::TerrestrialDeliverySystem(_) => add(
+                "terrestrial_delivery_system_descriptor (0xFA)".into(),
+                DeliveryClass::Terrestrial,
+            ),
+            Descriptor::SatelliteDeliverySystem(_) => add(
+                "satellite_delivery_system_descriptor (0x43)".into(),
+                DeliveryClass::Satellite,
+            ),
+            _ => {}
+        }
+    }
+    let nit_sm = n
+        .body
+        .0
+        .descriptors
+        .iter()
+        .map(|d| ("NIT", d))
+        .chain(
+            own.iter()
+                .flat_map(|t| t.descriptors.iter().map(|d| ("NIT TS loop", d))),
+        )
+        .filter_map(|(w, d)| match d {
+            Descriptor::SystemManagement(x) => {
+                Some((w.to_string(), x.broadcasting_identifier_typed()))
+            }
+            _ => None,
+        });
+    let pmt_sm = cap.pmts().into_iter().flat_map(|(prog, (_, p))| {
+        p.body
+            .program_info
+            .iter()
+            .filter(|d| d.tag == SystemManagement::TAG)
+            .filter_map(|d| SystemManagement::decode(&d.data).ok())
+            .map(|x| {
+                (
+                    format!("PMT {prog:#06x}"),
+                    x.broadcasting_identifier_typed(),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    for (w, id) in nit_sm.chain(pmt_sm) {
+        if let Some(c) = identifier_class(id) {
+            add(
+                format!(
+                    "broadcasting_identifier '{:06b}' ({}) in {w}",
+                    id.code(),
+                    id.name()
+                ),
+                c,
+            );
+        }
+    }
+    if let Some(c) = network_id_class(nid) {
+        add(format!("network_id {nid:#06x}"), c);
+    }
+    let classes: BTreeSet<DeliveryClass> = opinions.iter().map(|x| x.1).collect();
+    if classes.len() > 1 {
+        o.push(
+            Severity::Warning,
+            "cross.delivery",
+            "B10 Part 2 Table 6-1 (terrestrial_delivery_system_descriptor \"Mandatory for digital terrestrial broadcasting and multimedia broadcasting\"; satellite_delivery_system_descriptor \"Mandatory in digital satellite broadcasting\") / §6.2.21 Table 6-36 (broadcasting_identifier) / Annex N Table N-1 (informative: network_id allocation)",
+            format!("NIT network_id {nid:#06x}"),
+            format!(
+                "delivery system disagrees: {}",
+                opinions
+                    .iter()
+                    .map(|(w, c)| format!("{w} → {}", c.name()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
+}
+
 fn cross_checks(cap: &Capture, si: &SiView, o: &mut Out) {
     use Severity::*;
     let pat = cap.pat();
@@ -1321,9 +1513,15 @@ fn cross_checks(cap: &Capture, si: &SiView, o: &mut Out) {
                 if t.original_network_id != nid {
                     o.push(Warning, "cross.nit", "B10 Part 2 §5.2.4 (network_id and original_network_id shall take the same value on the originating network)", format!("NIT network_id {nid:#06x}"), format!("own TS original_network_id {:#06x} ≠ network_id", t.original_network_id));
                 }
-                let has_delivery = t.descriptors.iter().any(|d| matches!(d, Descriptor::TerrestrialDeliverySystem(_)));
+                let has_delivery = t.descriptors.iter().any(|d| {
+                    matches!(
+                        d,
+                        Descriptor::TerrestrialDeliverySystem(_)
+                            | Descriptor::SatelliteDeliverySystem(_)
+                    )
+                });
                 if !has_delivery {
-                    o.push(Warning, "cross.nit", "B10 Part 2 Table 6-1 (terrestrial_delivery_system_descriptor: \"Mandatory for digital terrestrial broadcasting\")", format!("NIT TS {:#06x}", t.transport_stream_id), "no terrestrial_delivery_system_descriptor for the actual TS");
+                    o.push(Warning, "cross.nit", "B10 Appendix §1.1 b) (guideline: the NIT of the actual delivery system \"is valid if and only if it contains applicable delivery system descriptors\") / Part 2 Table 6-1 (terrestrial_delivery_system_descriptor \"Mandatory for digital terrestrial broadcasting\"; satellite_delivery_system_descriptor \"Mandatory in digital satellite broadcasting\")", format!("NIT TS {:#06x}", t.transport_stream_id), "no delivery system descriptor (0xFA or 0x43) for the actual TS");
                 }
                 for d in &t.descriptors {
                     match d {
@@ -1369,6 +1567,7 @@ fn cross_checks(cap: &Capture, si: &SiView, o: &mut Out) {
         {
             o.push(Warning, "cross.nit", "B10 Part 2 Table 6-1 (system_management_descriptor: \"Mandatory either in PMT or NIT\")", format!("NIT network_id {nid:#06x}"), "system_management_descriptor in neither NIT nor PMT");
         }
+        delivery_consistency(cap, n, own, o);
     }
     // onid agreement
     let vals: BTreeSet<u16> = onids.iter().map(|x| x.1).collect();
@@ -2230,15 +2429,87 @@ fn expectations(cap: &Capture, si: &SiView, e: &Expectations, o: &mut Out) {
             }
         })
         .collect();
-    let need_delivery = e.frequency_mhz.is_some()
-        || e.guard_interval.is_some()
-        || e.transmission_mode.is_some()
-        || e.area_code.is_some();
-    if need_delivery && deliveries.is_empty() {
+    let satellites: Vec<isdb_si::descriptor::SatelliteDeliverySystem> = nits
+        .iter()
+        .flat_map(own_ts)
+        .flat_map(|t| t.descriptors.into_iter())
+        .filter_map(|d| {
+            if let Descriptor::SatelliteDeliverySystem(x) = d {
+                Some(x)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if e.frequency_mhz.is_some() && deliveries.is_empty() && satellites.is_empty() {
+        bad(
+            "NIT",
+            "no delivery system descriptor (0xFA or 0x43) for the actual TS".into(),
+        );
+    }
+    let need_terrestrial =
+        e.guard_interval.is_some() || e.transmission_mode.is_some() || e.area_code.is_some();
+    if need_terrestrial && deliveries.is_empty() {
         bad(
             "NIT",
             "no terrestrial_delivery_system_descriptor for the actual TS".into(),
         );
+    }
+    let need_satellite = e.orbital_position.is_some() || e.polarization.is_some();
+    if need_satellite && satellites.is_empty() {
+        bad(
+            "NIT",
+            "no satellite_delivery_system_descriptor for the actual TS".into(),
+        );
+    }
+    for d in &satellites {
+        if let Some(f) = e.frequency_mhz {
+            let got = d.frequency_10khz().map(|x| f64::from(x) / 100.0);
+            if got.is_none_or(|g| (g - f).abs() > 0.005) {
+                bad(
+                    "NIT satellite delivery",
+                    format!(
+                        "frequency {}, expected {f} MHz",
+                        got.map_or_else(
+                            || format!("{:#010x} (not BCD)", d.frequency),
+                            |g| format!("{g:.2} MHz")
+                        )
+                    ),
+                );
+            }
+        }
+        if let Some(want) = e.orbital_position {
+            let got = d.orbital_position_tenths().map(|tenths| OrbitalPosition {
+                tenths,
+                east: d.west_east_flag,
+            });
+            if got != Some(want) {
+                bad(
+                    "NIT satellite delivery",
+                    format!(
+                        "orbital position {}, expected {want}",
+                        got.map_or_else(
+                            || format!("{:#06x} (not BCD)", d.orbital_position),
+                            |g| g.to_string()
+                        )
+                    ),
+                );
+            }
+        }
+        if let Some(p) = e.polarization
+            && d.polarization() != p
+        {
+            bad(
+                "NIT satellite delivery",
+                format!(
+                    "polarization {} ({}), expected {} ({})",
+                    d.polarization,
+                    d.polarization().name(),
+                    p.code(),
+                    p.name()
+                ),
+            );
+        }
     }
     for d in &deliveries {
         if let Some(f) = e.frequency_mhz

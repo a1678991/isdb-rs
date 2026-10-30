@@ -854,6 +854,25 @@ impl InspectReport {
                             .collect::<Vec<_>>()
                     );
                 }
+                if let Some(d) = &t.satellite {
+                    let bcd = |v: Option<f64>, prec: usize| {
+                        v.map_or("non-BCD".into(), |x| format!("{x:.prec$}"))
+                    };
+                    let _ = writeln!(
+                        o,
+                        "    satellite delivery: {} MHz orbital {}°{} polarization {} ({}) modulation {} ({:#04x}) symbol rate {} Msym/s FEC {} ({:#x})",
+                        bcd(d.frequency_mhz, 2),
+                        bcd(d.orbital_position, 1),
+                        if d.east { "E" } else { "W" },
+                        d.polarization_name,
+                        d.polarization,
+                        d.modulation_name,
+                        d.modulation,
+                        bcd(d.symbol_rate_msps, 4),
+                        d.fec_inner_name,
+                        d.fec_inner,
+                    );
+                }
                 if let Some(i) = &t.ts_info {
                     let _ = writeln!(
                         o,

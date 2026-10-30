@@ -51,6 +51,20 @@ STD-B44) is received to TLV streams.
   reports a non-BCD 0x43 field as `Range` and a reserved modulation or
   FEC_inner code as `ReservedValue`. The codec bytes are unchanged; a
   spec vector checks the BS-1 parameters.
+- `isdb-analyze`, `isdb-cli`: `isdb ts validate` and `inspect` understand
+  satellite (BS) SI. The `cross.nit` warning now accepts either delivery
+  descriptor ("no delivery system descriptor (0xFA or 0x43) for the actual
+  TS", B10 Appendix §1.1 b)), so a BS NIT no longer warns. A new warning
+  `cross.delivery` reports a NIT whose own-TS delivery descriptor (0xFA
+  terrestrial, 0x43 satellite), broadcasting_identifier (Table 6-36, NIT
+  or PMT) and network_id (Annex N: 0x7880–0x7FE8 terrestrial, 0x0001–0x000C
+  satellite) disagree, e.g. a 0x43 under identifier '000011'.
+  `--expect-freq-mhz` also matches a 0x43 frequency (10 kHz steps, e.g.
+  `11727.48` for BS-1); new `--expect-orbital DDD.DE|W` and
+  `--expect-polarization NAME|CODE` check the 0x43's orbital position and
+  polarization. `inspect` prints a `satellite delivery:` line (frequency,
+  orbital position, polarization, modulation, symbol rate, FEC) and its
+  JSON gains `satellite` in each NIT TS entry (`delivery` is unchanged).
 - `isdb-cli`: `isdb tx --system isdbs` places a TS file in its slots by its
   PCR: each packet in the first free slot at or after the time its PCRs
   give it, input null packets dropped, nulls in the slots left over, and

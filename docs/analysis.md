@@ -53,8 +53,10 @@ The report has these parts:
   stream_id and PTS span, with its ES descriptors.
 - **SI** — a decoded summary: PAT, NIT (network name, area code, guard
   interval and mode, frequencies, remote-control key, TS name, service
-  list), SDT (provider and service names, running status), BIT, EIT
-  events with JST start, duration and title, TOT/TDT time.
+  list; for a satellite TS the 0x43 frequency, orbital position,
+  polarization, modulation, symbol rate and FEC), SDT (provider and
+  service names, running status), BIT, EIT events with JST start, duration
+  and title, TOT/TDT time.
 - **Sections** — every (PID, table_id, table_id_extension,
   section_number) with count, length, min/mean/max repetition interval and
   version history.
@@ -71,6 +73,21 @@ SDT tid 0x42 ts 0x79ee onid 0x79ee service 0x0400 type 0x01 "テスト" / "テ�
 EIT 0x4e service 0x0400 sec 0 event 0x0001 2026-01-01 11:50:00 JST +01:00:00 running "試験放送"
 TOT 2026-01-01 12:00:00 JST TDT -
 ```
+
+A BS-shaped NIT (satellite delivery system descriptor, B10 §6.2.6) reads:
+
+```text
+NIT tid 0x40 network_id 0x0004 v0 name "ベンチ" system_management_id 0x0201
+  TS 0x4017 onid 0x0004
+    satellite delivery: 11727.48 MHz orbital 110.0°E polarization circular-right (3) modulation isdb-s (0x08) symbol rate 28.8600 Msym/s FEC isdb-s (0x8)
+    service list: 0x03e7/0x01
+```
+
+In `--json` the NIT TS entry carries it as `satellite` (`frequency_mhz`,
+`orbital_position`, `east`, `polarization`/`polarization_name`,
+`modulation`/`modulation_name`, `symbol_rate_msps`,
+`fec_inner`/`fec_inner_name`; a non-BCD field is `null`), next to the
+terrestrial `delivery`.
 
 `--decode` prints every field of every table and descriptor as the
 decoders see it — strings decoded from ARIB 8-unit code, MJD times in JST,
@@ -114,7 +131,7 @@ The checks, by identifier prefix:
 | `section.*` | assembly, CRC_32, table_id allowed on its PID, sub_table completeness, version coherence |
 | `si.*` | SI decoding, B10 value conformance (reserved bits, code points, mandatory descriptors), the 4 KB per 32 ms rate per SI PID, copy control type '00' (`si.copy_control`, a receiver-compatibility warning) |
 | `tables.*` | tables B10 makes mandatory, and their repetition against B10 Table 5-2 |
-| `cross.*` | identities between tables: transport_stream_id, original_network_id, services in PAT vs SDT, NIT, EIT flags |
+| `cross.*` | identities between tables: transport_stream_id, original_network_id, services in PAT vs SDT, NIT (`cross.nit`: own TS listed, a delivery system descriptor 0xFA or 0x43, system management), the medium the NIT names (`cross.delivery`: the own TS's delivery descriptor, the 0xFE broadcasting_identifier (B10 Table 6-36) and the network_id (Annex N: 0x7880–0x7FE8 terrestrial, 0x0001–0x000C satellite) must agree), EIT flags |
 | `eit.*` | EIT present/following and schedule rules (B10 §5.2.7 and Appendix §1.4) |
 | `pcr.*` | PCR missing, interval ≤ 0.1 s, discontinuities, accuracy estimate (constant-rate fit max and rms), unreferenced PCR PIDs, and with `--expect-rate` the PCR-implied rate (`pcr.rate`) |
 | `pes.*` | PES headers, stream_id classes, PTS spacing ≤ 0.7 s, T-STD delay estimate, order |
@@ -135,7 +152,8 @@ transmitted, `--expect-*` options turn mismatches into errors (check
 | `--expect-onid N` | original_network_id (SDT, NIT TS loop, EIT, BIT) |
 | `--expect-nid N` | NIT network_id |
 | `--expect-services LIST` | service ids in the PAT and SDT, comma separated |
-| `--expect-freq-mhz F` | a frequency the NIT terrestrial delivery descriptor must list |
+| `--expect-freq-mhz F` | a frequency the NIT delivery descriptor of the actual TS must list: terrestrial 0xFA (1/7 MHz steps, ±1/14 MHz) or satellite 0x43 (10 kHz steps, ±5 kHz; BS-1 is 11727.48) |
+| `--expect-orbital P` / `--expect-polarization P` | the 0x43 orbital position `DDD[.D]E` or `DDD[.D]W` (e.g. `110.0E`) / polarization (`linear-horizontal`, `linear-vertical`, `circular-left`, `circular-right` or 0–3, B10 Table 6-9) |
 | `--expect-guard C` / `--expect-mode C` | guard_interval code (0 = 1/32 … 3 = 1/4) / transmission_mode code (0–2 = Mode 1–3), B10 Tables 6-62/6-63 |
 | `--expect-area C` | area_code |
 | `--expect-remote-key K` | remote_control_key_id |
@@ -157,7 +175,16 @@ isdb ts validate bs1.ts --expect-tsid 0x4010 --expect-rate 52170000:100
 
 ```sh
 isdb ts validate rx.ts --expect-tsid 0x79ee --expect-freq-mhz 557.142857 --expect-remote-key 9
+isdb ts validate bs.ts --expect-nid 0x0004 --expect-tsid 0x4017 --expect-freq-mhz 11727.48 \
+    --expect-orbital 110.0E --expect-polarization circular-right
 ```
+
+The expectations that read one kind of delivery descriptor say so when the
+NIT carries the other: `--expect-guard`, `--expect-mode` and
+`--expect-area` on a satellite NIT report "no
+terrestrial_delivery_system_descriptor", `--expect-orbital` and
+`--expect-polarization` on a terrestrial one "no
+satellite_delivery_system_descriptor".
 
 How each check reads the spec text (and why some are warnings, not
 errors) is recorded in

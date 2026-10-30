@@ -24,7 +24,8 @@ library behind `isdb ts inspect|validate|diff|edit|extract`.
   transmission level and repetition criteria (Part 2 §5.1.3 Table 5-2),
   4 KB per 32 ms per SI PID (§5.1.4), sub_table/version rules (§5.1.1),
   EIT p/f and schedule rules (§5.2.7, Appendix §1.4), cross-table identities
-  (§5.2.4, §5.2.6, Appendix §1.1/§1.3, Table 6-1), plus all value checks of
+  (§5.2.4, §5.2.6, Appendix §1.1/§1.3, Table 6-1; the delivery system of
+  the NIT against Table 6-36 and Annex N), plus all value checks of
   `isdb_si::conformance`.
 - ARIB STD-B32 v3.11 Part 2: §5.2.1–5.2.2 MPEG-2 AAC ADTS header
   restrictions on every stream_type 0x0F PID (frames reassembled from the
@@ -125,6 +126,7 @@ assert_eq!(changes[0].path, "header.version_number");
 |---|---|---|
 | `tests/checks.rs` | one test per check: a synthetic stream (built with the `isdb-ts`/`isdb-si` encoders in `tests/common/mod.rs`) violating exactly one rule yields that finding, severity and clause; the baseline stream has no errors; bench `Expectations`; `pcr.rate` (a TS at its PCR rate passes, the same TS 1.74× fast and 150 ppm off fail, no PCR fails); `pcr.accuracy` rms; `si.copy_control` warning | none |
 | `tests/checks.rs` `aac_adts_rules`, `aac_quality_indicator_consistency` | a stream_type 0x0F PID carrying conforming silent ADTS has no `aac.*` finding above info; one header field changed per case (protection_absent, adts_buffer_fullness 0x7FF, profile, sampling_frequency_index, ID, raw data blocks, channel_configuration 7) gives its error and clause; EIT quality_indicator '01' at 75 kbit/s → warning, '11' → info | none |
+| `tests/checks.rs` `bs_*`, `*_delivery_*`, `expectations_on_a_satellite_nit` | a BS-shaped stream (the NIT of `tools/bs-nit-section.py`, byte-equal to the typed builder; network_id/onid 0x0004, placeholder TS_ID 0x4017 and service 0x03E7) has no finding at warning or above and `inspect` decodes its 0x43 (11727.48 MHz, 110.0°E, circular-right, isdb-s, 28.86 Msym/s; text and JSON); a terrestrial NIT without 0xFA keeps `cross.nit` with no `cross.delivery`; 0x43 under identifier '000011' and 0xFA under '000010' give `cross.delivery`; `--expect-freq-mhz` on 0x43, `--expect-orbital`, `--expect-polarization`, and the missing-descriptor errors | none |
 | `tests/edit.rs` | identity rewrite is byte-exact; null PID keeps positions; a NIT mutation diffs as exactly that field; larger replacements use null slots; remove/insert; `pat.add`; `extract` round-trips through the hex loader; every output CRC/CC clean per the validator | none |
 | `tests/real_data.rs` | opt-in, on a terrestrial capture (the PSI/SI checks treat payloads as opaque; the `aac.*` checks need unscrambled audio, transport_scrambling_control '00', e.g. a one-seg service, which is sent in the clear): inspect decodes every section (no section error, every SI section and descriptor typed except B10-external tags 0xC9/0xCB/0xCC; NIT network name, TS information, terrestrial delivery system, SDT service names, EIT p/f titles and TOT present); validation reports no section/CC error and no `aac.*` finding above info (other operational findings such as PCR intervals are printed); identity rewrite keeps the PSI/SI section sequence of every SI PID and every PMT PID of the PAT; null-PID (first ES of the first PMT) and NIT-mutation (guard_interval) edits stay clean and diff as exactly that field; with a second stream written by this project's multiplexer: NIT transplant is CRC/CC clean and an ours-vs-capture report is printed | the files named by `ISDB_RS_CAPTURE_TS` (live capture) and `ISDB_RS_OUR_TS` (own multiplex) |
 | unit tests (`src/mutate.rs`, `src/tree.rs`, `src/diff.rs`, `src/timebase.rs`) | mutation grammar examples parse and re-encode; `Debug` tree parsing/normalisation and JST rendering; descriptor-list matching in diffs; PCR interpolation and its inverse, the constant-rate fit (`cbr_fit`) | none |
@@ -153,8 +155,10 @@ ISDB_RS_CAPTURE_TS=/path/to/capture.ts ISDB_RS_OUR_TS=/path/to/ours.ts \
 - The T-STD delay check uses the first byte of each PES only and is a
   warning.
 - EIT p/f "one event" rule does not distinguish NVOD reference services.
-- Conditional Table 6-1 descriptors (terrestrial delivery, system
-  management) are warnings because the TS may not be terrestrial.
+- Conditional Table 6-1 descriptors (terrestrial or satellite delivery, system
+  management) are warnings because the medium of the TS is not known;
+  `cross.delivery` (delivery descriptor vs broadcasting_identifier vs
+  network_id) is a warning because Annex N is informative.
 - `si.copy_control` (copy_control_type '00' in the Annex F user_defined
   layout) is a receiver-compatibility warning from an observation (one Sony
   BDZ-series recorder refused it), not a B10 "shall"; the Annex F layout is

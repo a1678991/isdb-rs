@@ -1,5 +1,5 @@
 //! Human-readable summary of the decoded SI of a capture: network and TS
-//! names, delivery parameters, services, broadcaster information, EIT
+//! names, delivery parameters (terrestrial and satellite), services, broadcaster information, EIT
 //! present/following events and time (ARIB STD-B10 Part 2 §5.2, §6.2).
 //! Every string is decoded with `isdb-text`.
 
@@ -53,6 +53,35 @@ pub struct Delivery {
     pub frequencies_mhz: Vec<f64>,
 }
 
+/// satellite_delivery_system_descriptor (B10 §6.2.6, Tables 6-8 to 6-11).
+/// The BCD fields are given in their units; a field with a non-BCD
+/// character is `None`.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SatelliteDelivery {
+    /// frequency in MHz (8 BCD characters in GHz, point after the third:
+    /// 10 kHz resolution, e.g. 11727.48 for BS-1).
+    pub frequency_mhz: Option<f64>,
+    /// orbital_position in degrees (4 BCD characters, point after the third).
+    pub orbital_position: Option<f64>,
+    /// west_east_flag: true = eastern position.
+    pub east: bool,
+    /// polarization code (Table 6-9).
+    pub polarization: u8,
+    /// Polarization name (`linear-horizontal`, `linear-vertical`,
+    /// `circular-left`, `circular-right`).
+    pub polarization_name: &'static str,
+    /// modulation code (Table 6-10).
+    pub modulation: u8,
+    /// Modulation name (`isdb-s` = "refer to TMCC signal", …; `reserved`).
+    pub modulation_name: &'static str,
+    /// symbol_rate in Msymbol/s (7 BCD characters, point after the third).
+    pub symbol_rate_msps: Option<f64>,
+    /// FEC_inner code (Table 6-11).
+    pub fec_inner: u8,
+    /// FEC_inner name (`isdb-s` = "refer to TMCC signal", `1/2` …; `reserved`).
+    pub fec_inner_name: &'static str,
+}
+
 /// TS_information_descriptor (B10 §6.2.42).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TsInfo {
@@ -71,8 +100,10 @@ pub struct NitTs {
     pub transport_stream_id: u16,
     /// original_network_id.
     pub original_network_id: u16,
-    /// Delivery descriptor.
+    /// Terrestrial delivery descriptor (0xFA).
     pub delivery: Option<Delivery>,
+    /// Satellite delivery descriptor (0x43).
+    pub satellite: Option<SatelliteDelivery>,
     /// TS information.
     pub ts_info: Option<TsInfo>,
     /// partial_reception_descriptor service_ids (B10 §6.2.32).
@@ -251,6 +282,22 @@ fn delivery(d: &isdb_si::descriptor::TerrestrialDeliverySystem) -> Delivery {
     }
 }
 
+fn satellite(d: &isdb_si::descriptor::SatelliteDeliverySystem) -> SatelliteDelivery {
+    use isdb_si::values::CodedValue;
+    SatelliteDelivery {
+        frequency_mhz: d.frequency_10khz().map(|f| f64::from(f) / 100.0),
+        orbital_position: d.orbital_position_tenths().map(|o| f64::from(o) / 10.0),
+        east: d.west_east_flag,
+        polarization: d.polarization,
+        polarization_name: d.polarization().name(),
+        modulation: d.modulation,
+        modulation_name: d.modulation_type().name(),
+        symbol_rate_msps: d.symbol_rate_100sps().map(|r| f64::from(r) / 10_000.0),
+        fec_inner: d.fec_inner,
+        fec_inner_name: d.fec().name(),
+    }
+}
+
 fn si_param(ts: &[isdb_si::descriptor::TableDescription]) -> Vec<(u8, String)> {
     ts.iter()
         .map(|t| (t.table_id, crate::tree::hex(&t.description)))
@@ -311,6 +358,7 @@ pub fn summarize(cap: &Capture) -> SiSummary {
                         transport_stream_id: ts.transport_stream_id,
                         original_network_id: ts.original_network_id,
                         delivery: None,
+                        satellite: None,
                         ts_info: None,
                         partial_reception: None,
                         service_list: None,
@@ -320,6 +368,9 @@ pub fn summarize(cap: &Capture) -> SiSummary {
                         match d {
                             Descriptor::TerrestrialDeliverySystem(x) => {
                                 e.delivery = Some(delivery(x))
+                            }
+                            Descriptor::SatelliteDeliverySystem(x) => {
+                                e.satellite = Some(satellite(x))
                             }
                             Descriptor::TsInformation(x) => {
                                 e.ts_info = Some(TsInfo {

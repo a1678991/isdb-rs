@@ -56,13 +56,41 @@ pub fn si_header(tid: u8, ext: u16, version: u8) -> LongHeader {
     }
 }
 
+/// Identities of a synthetic stream.
+#[derive(Debug, Clone, Copy)]
+pub struct Ids {
+    pub tsid: u16,
+    pub onid: u16,
+    pub sid: u16,
+}
+
+/// The terrestrial identities of [`default_spec`].
+pub const TERRESTRIAL: Ids = Ids {
+    tsid: TSID,
+    onid: ONID,
+    sid: SID,
+};
+
+/// BS-shaped identities (bs-si.md §6.1): network_id/onid 0x0004 is the BS
+/// network's (B10 Annex N); TS_ID 0x4017 and service_id 0x03E7 are
+/// placeholders that no BS broadcaster uses.
+pub const BS: Ids = Ids {
+    tsid: 0x4017,
+    onid: 0x0004,
+    sid: 0x03E7,
+};
+
 pub fn pat() -> Vec<u8> {
+    pat_ids(TERRESTRIAL)
+}
+
+pub fn pat_ids(ids: Ids) -> Vec<u8> {
     Pat::section(
-        TSID,
+        ids.tsid,
         1,
         vec![
             PatEntry::new(0, Pid::new(0x0010).unwrap()),
-            PatEntry::new(SID, PMT_PID),
+            PatEntry::new(ids.sid, PMT_PID),
         ],
     )
     .encode()
@@ -70,8 +98,12 @@ pub fn pat() -> Vec<u8> {
 }
 
 pub fn pmt() -> Vec<u8> {
+    pmt_sid(SID)
+}
+
+pub fn pmt_sid(sid: u16) -> Vec<u8> {
     Pmt::section(
-        SID,
+        sid,
         1,
         Pmt::new(
             PCR_PID,
@@ -101,6 +133,29 @@ pub fn tds(gi: u8) -> Descriptor {
 }
 
 pub fn nit_with(version: u8, gi: u8) -> Vec<u8> {
+    nit_terrestrial(version, 0x0301, vec![tds(gi)])
+}
+
+/// A terrestrial NIT (network_id = onid = ONID, TS TSID) with
+/// system_management_id `sm_id` and `delivery` between the service list
+/// and the TS information descriptor.
+pub fn nit_terrestrial(version: u8, sm_id: u16, delivery: Vec<Descriptor>) -> Vec<u8> {
+    let mut ts_descriptors = vec![Descriptor::ServiceList(d::ServiceList {
+        services: vec![d::ServiceListEntry {
+            service_id: SID,
+            service_type: 0x01,
+        }],
+    })];
+    ts_descriptors.extend(delivery);
+    ts_descriptors.push(Descriptor::TsInformation(d::TsInformation {
+        remote_control_key_id: 9,
+        ts_name: AribString::encode("テスト").unwrap(),
+        transmission_types: vec![d::TransmissionType {
+            transmission_type_info: 0x0F,
+            service_ids: vec![SID],
+        }],
+        reserved_future_use: vec![],
+    }));
     Nit {
         header: si_header(0x40, ONID, version),
         body: NitBody(NetworkLoops {
@@ -110,7 +165,7 @@ pub fn nit_with(version: u8, gi: u8) -> Vec<u8> {
                     name: AribString::encode("テスト").unwrap(),
                 }),
                 Descriptor::SystemManagement(d::SystemManagement {
-                    system_management_id: 0x0301,
+                    system_management_id: sm_id,
                     additional_identification_info: vec![],
                 }),
             ],
@@ -119,24 +174,61 @@ pub fn nit_with(version: u8, gi: u8) -> Vec<u8> {
                 transport_stream_id: TSID,
                 original_network_id: ONID,
                 reserved_future_use: 0xF,
-                descriptors: vec![
-                    Descriptor::ServiceList(d::ServiceList {
-                        services: vec![d::ServiceListEntry {
-                            service_id: SID,
-                            service_type: 0x01,
-                        }],
-                    }),
-                    tds(gi),
-                    Descriptor::TsInformation(d::TsInformation {
-                        remote_control_key_id: 9,
-                        ts_name: AribString::encode("テスト").unwrap(),
-                        transmission_types: vec![d::TransmissionType {
-                            transmission_type_info: 0x0F,
-                            service_ids: vec![SID],
-                        }],
-                        reserved_future_use: vec![],
-                    }),
-                ],
+                descriptors: ts_descriptors,
+            }],
+        }),
+    }
+    .encode()
+    .unwrap()
+}
+
+/// satellite_delivery_system_descriptor of BS-1 laid out per B10 Table
+/// 6-8 (bs-si.md §6.2): frequency 011.72748 GHz (8 BCD), orbital 110.0
+/// (4 BCD), east, circular right ('11', Table 6-9), modulation '01000'
+/// (Table 6-10), symbol rate 028.8600 Msym/s (7 BCD), FEC '1000' (Table
+/// 6-11).
+pub fn bs1_delivery() -> Descriptor {
+    Descriptor::SatelliteDeliverySystem(d::SatelliteDeliverySystem {
+        frequency: 0x0117_2748,
+        orbital_position: 0x1100,
+        west_east_flag: true,
+        polarization: 0b11,
+        modulation: 0b0_1000,
+        symbol_rate: 0x028_8600,
+        fec_inner: 0b1000,
+    })
+}
+
+/// A BS-shaped NIT actual (bs-si.md §6.2): network_id 0x0004, network
+/// loop 0x40 "ベンチ" + 0xFE `sm_id`, one TS with the [`BS`] identities
+/// and 0x41 then `delivery`.
+pub fn nit_bs(sm_id: u16, delivery: Vec<Descriptor>) -> Vec<u8> {
+    let mut ts_descriptors = vec![Descriptor::ServiceList(d::ServiceList {
+        services: vec![d::ServiceListEntry {
+            service_id: BS.sid,
+            service_type: 0x01,
+        }],
+    })];
+    ts_descriptors.extend(delivery);
+    Nit {
+        header: si_header(0x40, BS.onid, 0),
+        body: NitBody(NetworkLoops {
+            reserved_future_use_1: 0xF,
+            descriptors: vec![
+                Descriptor::NetworkName(d::NetworkName {
+                    name: AribString::encode("ベンチ").unwrap(),
+                }),
+                Descriptor::SystemManagement(d::SystemManagement {
+                    system_management_id: sm_id,
+                    additional_identification_info: vec![],
+                }),
+            ],
+            reserved_future_use_2: 0xF,
+            transport_streams: vec![TransportStreamEntry {
+                transport_stream_id: BS.tsid,
+                original_network_id: BS.onid,
+                reserved_future_use: 0xF,
+                descriptors: ts_descriptors,
             }],
         }),
     }
@@ -211,15 +303,19 @@ pub fn event(id: u16, h: u8) -> EitEvent {
 }
 
 pub fn eit_pf(sn: u8, events: Vec<EitEvent>) -> Vec<u8> {
+    eit_pf_ids(TERRESTRIAL, sn, events)
+}
+
+pub fn eit_pf_ids(ids: Ids, sn: u8, events: Vec<EitEvent>) -> Vec<u8> {
     Eit {
         header: LongHeader {
             section_number: sn,
             last_section_number: 1,
-            ..si_header(0x4E, SID, 1)
+            ..si_header(0x4E, ids.sid, 1)
         },
         body: EitBody {
-            transport_stream_id: TSID,
-            original_network_id: ONID,
+            transport_stream_id: ids.tsid,
+            original_network_id: ids.onid,
             segment_last_section_number: 1,
             last_table_id: 0x4E,
             events,
@@ -305,21 +401,30 @@ pub fn item(pid: impl Into<PidArg>, period_ms: u64, phase_ms: u64, s: Vec<u8>) -
 /// The default valid stream: PAT/PMT 100 ms (well inside), CAT 500 ms,
 /// NIT 1 s, SDT 1 s, EIT p/f 1 s, TOT 5 s, PCR 40 ms, audio 64 ms.
 pub fn default_spec(seconds: u64) -> Spec {
+    spec_with(seconds, TERRESTRIAL, nit())
+}
+
+/// [`default_spec`] with the identities `ids` in PAT, PMT, SDT and EIT and
+/// `nit` as the NIT section.
+pub fn spec_with(seconds: u64, ids: Ids, nit: Vec<u8>) -> Spec {
     Spec {
         seconds,
         pcr_period_ms: 40,
         items: vec![
-            item(0x0000, 80, 0, pat()),
-            item(PMT_PID, 80, 5, pmt()),
+            item(0x0000, 80, 0, pat_ids(ids)),
+            item(PMT_PID, 80, 5, pmt_sid(ids.sid)),
             item(0x0001, 500, 7, cat()),
-            item(0x0010, 1000, 11, nit()),
-            item(0x0011, 1000, 13, sdt()),
+            item(0x0010, 1000, 11, nit),
+            item(0x0011, 1000, 13, sdt_with(ids.tsid, ids.onid, &[ids.sid])),
             Item {
                 pid: Pid::new(0x0012).unwrap(),
                 period_ms: 1000,
                 phase_ms: 17,
-                make: Box::new(|_| {
-                    vec![eit_pf(0, vec![event(1, 12)]), eit_pf(1, vec![event(2, 13)])]
+                make: Box::new(move |_| {
+                    vec![
+                        eit_pf_ids(ids, 0, vec![event(1, 12)]),
+                        eit_pf_ids(ids, 1, vec![event(2, 13)]),
+                    ]
                 }),
             },
             Item {
