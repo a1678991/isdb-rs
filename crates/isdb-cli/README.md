@@ -125,7 +125,7 @@ Sinks: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdout) or
 | `--bb-filter-hz HZ` | 6 MHz (ISDB-S 40 MHz) | analog (baseband filter) bandwidth request; the backend picks a supported bandwidth (HackRF: the largest MAX2837 setting ≤ the request; Pluto: the AD936x RF bandwidth, 0.2–40 MHz TX / 56 MHz RX) |
 | `--queue-frames`, `--prefill-frames` | 4 / 2 | frames produced ahead of the sink; frames converted before the radio starts |
 | `--status-secs` | 5 | status line interval (0 = final summary only) |
-| `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity (otherwise refused with layouts that fit) |
+| `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity (otherwise refused with layouts that fit); ISDB-S: a PCR-paced `--ts` file above its slots' capacity (otherwise refused with the slots it needs) |
 | `--iq-in PATH`, `--iq-in-format cf32\|cs8` | — / cf32 | replay a baseband file instead of modulating TS input: parameters and frame start found by the receiver from its TMCC, scaled to unit RMS, no lead-in or flush added; `--feed loop` repeats it |
 | `--seek-step S` | 10 | seconds per ←/→ playback key |
 | `--no-keys` | off | do not read playback keys from the terminal |
@@ -186,6 +186,8 @@ superframe's packets per TS into 319 488 symbols and
 | `--iq PATH`, `--iq-format cf32\|cs8` | — / cf32 | the data **and** its SigMF sidecar (`PATH.sigmf-meta`, or `NAME.sigmf-meta` for `NAME.sigmf-data`): `core:datatype`, `core:sample_rate`, `core:description` (`isdb tx ISDB-S: <layout>`), `core:recorder`, `isdb:system "ISDB-S"`, one capture segment at 0 with `core:frequency` (and the channel fields of `isdb capture`) from `--channel` / `--freq` if given. `isdb rx --iq PATH` reads it and picks ISDB-S by itself. stdout, FIFOs and devices get no sidecar |
 | `--backoff-db DB` | 10 | RMS below full scale in every format, **cf32 included** (RMS 0.316 at 10 dB): the ISDB-S receiver reads samples as a fraction of full scale (its front end's input is 12-bit), unlike the scale-free ISDB-T receiver |
 | `--lead-superframes N` | 1 | null superframes before the data |
+| `--ts-pacing auto\|pcr\|arrival` | auto | how a TS file's packets are placed in its slots (`txs.rs` `plan_inputs`, `pace.rs` `SlotPacer`). `auto`: a file with a PCR is paced by it, each packet in the first free slot at or after its PCR time (eq. 2-4), input nulls dropped, nulls in the slots left over, every PCR corrected by the time its packet moved (H.222.0 Annex D.0.4; [SPEC-NOTES](SPEC-NOTES.md)). A regular file (`--feed file`/`loop`) is probed first (30 s / 128 MB): a mean rate above its slots' capacity (N × 1.086875 Mbit/s) is refused unless `--allow-overrate`, a 1-s peak above it warns; a FIFO or stdin is paced from its first PCR (within 65 536 packets); `--feed live` and files without PCR stay in arrival order. `pcr`: an input without PCR, or `--feed live`, is refused. `arrival`: every packet, nulls included and unmodified, in the next slot (the old rule; a byte-exact relay). Loop seams are not corrected yet (the PCR, PTS/DTS and continuity counters jump back at each rewind). The status lines add, per paced TS, `PCR lag`, the input rate vs the capacity, `nulls-dropped`, `restamped` |
+| `--placed-ts TEMPLATE` | — | also write each TS's packets as placed in its slots, nulls included, for every data superframe: the TS a receiver outputs for that TS_ID, the same for `--iq` and `--offload fpga`. `{ts_id}` → 4 hex digits (needed with more than one TS) |
 | `--no-flush` | — | omit the null flush frame and the shaper's tail (a receiver then loses the last superframe) |
 | `--seconds S` | 0 | bound on the lead and data superframes (the flush frame, 1.4 ms, follows); an endless input into an `--iq` regular file needs it, as for ISDB-T |
 | `--radio`, `--gain`, `--rf-enable`, `--dry-run`, `--channel`, `--freq`, `--freq-unrestricted`, `--freq-corr-ppm`, `--bb-filter-hz`, `--feed`, `--realtime`, `--queue-frames`, `--prefill-frames`, `--status-secs` | as ISDB-T | the gate and the dry run are the same; `--channel BSn` / `NDn` tunes the IF (`Channel::tune_hz`), outside the UHF band, so it needs `--freq-unrestricted`; the radio's sample rate is `--rate` (ppm-corrected), `--bb-filter-hz` defaults to 40 MHz (the Pluto's widest TX filter) and a queue frame is one superframe |
@@ -193,7 +195,7 @@ superframe's packets per TS into 319 488 symbols and
 
 ISDB-T-only options (`--mode`, `--gi`, `--partial`, `--layer-*`,
 `--a-ts/--b-ts/--c-ts`, `--mux-ts`, `--a-pids/--c-pids`, `--synthetic`,
-`--mux-config`, `--relay`, `--allow-overrate`, `--iq-in`, `--lead-frames`,
+`--mux-config`, `--relay`, `--iq-in`, `--lead-frames`,
 `--seek-step`) are refused with `--system isdbs`, and the ISDB-S ones
 without it, naming the system; only options given on the command line
 count (the binary keeps clap's matches, so defaults are not "given").
@@ -210,7 +212,8 @@ receive filters. Nothing else drains: the TMCC, the energy dispersal and
 the interleaver each span one superframe.
 
 Threads as for ISDB-T: reader thread per file TS → producer thread
-(`txs.rs`: the packets of a superframe per TS, `Transmitter::superframe`,
+(`txs.rs`: the packets of a superframe per TS, placed by PCR or in arrival
+order (`TsInputs::take`, `--ts-pacing`), `Transmitter::superframe`,
 the shaper; or `Transmitter::superframe_codes` and no shaper) → bounded
 queue → `IqSink` (a file, a radio) or `SymbolSink` (a radio's FPGA
 transmit block). Status lines per `--status-secs`: air time, superframes,
@@ -290,7 +293,8 @@ and lost input packets per layer; exits non-zero on FAIL (`--no-flush`
 makes the last frames count as lost). `--json` for a machine-readable verdict.
 
 **ISDB-S** (`--system isdbs`, `loopbacks.rs`): the layout, inputs and
-`--rate` of `tx --system isdbs`; `--superframes N` data superframes
+`--rate` of `tx --system isdbs` (`--ts-pacing` too: a file with a PCR is
+paced as by `tx`); `--superframes N` data superframes
 (default 6, or until EOF when a `--ts` reads a file with `--feed file`),
 `--lead-superframes` (1), `--cfo-hz` (carrier offset in Hz), and
 `--snr-db`, `--seed`, `--sample-offset`, `--no-flush`, `--json` as for
@@ -870,6 +874,10 @@ transmit with, over the in-memory `mock::MockRadio`):
 | `src/txs.rs` `combination_and_ts_syntax`, `layouts_and_their_errors` | `--combination` spellings (every `Combination::ALL` name, case and spaces free) and their refusals; `--ts ID[:SLOTS][=PATH]` forms; the default BS layout (one synthetic TS of 48 slots), the CS layout's 36 sent slots, a mixed layout; slots required with two TSs and summing to the sent slots, whole units, slot sum 48, distinct TS_IDs, one stdin |
 | `src/txs.rs` `options_of_the_other_system_are_refused`, `bb_filter_default_is_the_given_value_or_40_mhz` | ISDB-T options with `--system isdbs` and ISDB-S options without are refused, naming the system; defaults do not count as given, an explicit ISDB-T default does; every listed id is an argument whose flag the message spells; `--bb-filter-hz` given or not |
 | `src/txs.rs` `synthetic_packets_are_distinct_and_say_where_they_were_sent`, `inputs_pad_with_nulls_and_end_with_the_files` | synthetic packets carry TS_ID, superframe and index; file TSs padded with nulls, synthetic TSs alongside, the end when every file has ended, stop |
+| `src/txs.rs` `plan_paces_files_with_a_pcr_and_checks_their_rate`, `arrival_reproduces_the_input_bytes`, `a_pipe_is_paced_from_its_first_pcr` | the placement plan per feed (a file with a PCR paced, without one arrival order or refused by `--ts-pacing pcr`, stdin from its first PCR, `--feed live` arrival); a TS over its slots' capacity refused with the slots it needs unless `--allow-overrate`; `--ts-pacing arrival` gives the input bytes in order, nulls kept, then null padding; a pipe's read-ahead packets are kept, paced or not |
+| `src/txs.rs` `placed_ts_of_a_cbr_file_validates`, `placed_ts_template` | a 3 s CBR TS (PCR, PAT/PMT) through `TsInputs` and `--placed-ts`: every non-null packet once, in order, only PCRs changed; `isdb_analyze` validate with `--expect-rate 52170000:1`: no `pcr.*` above info, no `tables.frequency`; inspect 52.17 Mbit/s within 1 ppm, CBR-fit max < 40 ns; `{ts_id}` needed with two TSs |
+| `src/txs.rs` `paced_inputs_feed_both_paths_the_same_packets` | a paced TS file gives the IQ path (`Modulate::shaped`) and the code path (`Modulate::codes`) the same packets per superframe |
+| `src/pace.rs` (13 tests) | `SlotClock::isdbs` (spec values), placement late by less than a slot, restamped PCRs on the slot grid (properties), two PCR PIDs, wrap, discontinuity, OPCR, over capacity, the Python model `tools/isdbs-pacing-sim.py` |
 | `src/txs.rs` `producer_sequence_and_sample_counts` | the ISDB-S producer: lead, data, flush; the samples of the pre-roll frame, the superframes, the flush frame and the shaper's tail, exactly; 442 810–442 811 per superframe at 40 Msps; unit RMS; the packets recorded for the verifier |
 | `src/txs.rs` `sidecar_names_the_system_and_the_channel` | the SigMF sidecar: datatype, rate, `isdb:system`, description, recorder, the segment's IF and channel fields |
 | `src/loopbacks.rs` `verifier_counts_and_anchors_by_content` | the ISDB-S verifier: the lead skipped before the anchor, the anchor by content at any symbol offset, numbering by frame start (rounded), a corrupt packet failed, a TMCC that differs counted, a superframe never received lost, unknown and foreign superframes / packets, no anchor ⇒ everything lost |

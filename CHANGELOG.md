@@ -17,6 +17,34 @@ STD-B44) is received to TLV streams.
 
 ### Added
 
+- `isdb-cli`: `isdb tx --system isdbs` places a TS file in its slots by its
+  PCR: each packet in the first free slot at or after the time its PCRs
+  give it, input null packets dropped, nulls in the slots left over, and
+  every PCR corrected by the time its packet moved (H.222.0 Annex D.0.4),
+  so the TS keeps its own rate (the bench TS no longer plays 1.74× fast)
+  and a receiver's output has PCRs on the slot grid (a 3 s CBR file:
+  52.17 Mbit/s within 1 ppm, CBR-fit residual below 40 ns). A regular
+  file (`--feed file`/`loop`) is probed first and refused when its mean
+  rate exceeds its slots' capacity, naming the slots it needs
+  (`--allow-overrate` now applies to ISDB-S too); a pipe or stdin is
+  paced from its first PCR; `--feed live` and files without PCR stay in
+  arrival order. `--ts-pacing auto|pcr|arrival` (default `auto`;
+  `arrival` is the previous byte-exact rule). `--placed-ts TEMPLATE`
+  writes each TS's placed packets, nulls included, as handed to the
+  modulator (the same for `--iq` and `--offload fpga`). The plan is shown
+  before anything is opened (also by `--dry-run`); the status lines and
+  the summary carry each pacer's PCR lag, input rate against capacity,
+  dropped nulls and restamped PCRs. `isdb loopback --system isdbs` paces
+  its files the same way. Loop seams are not corrected yet.
+  `tools/isdbs-pacing-e2e.sh` runs the bench TS through `tx --iq` and
+  `rx` offline and checks the received TS against the placed one;
+  `tools/isdbs-bench-tx.sh --placed TEMPLATE` passes `--placed-ts`.
+- `isdb-cli`: `SlotClock` / `SlotPacer` (`src/pace.rs`), PCR-paced
+  placement of one TS on an exact slot grid with PCR restamping, the
+  core of the above; `isdb-ts`: `retime` (`pcr_field`, `add_to_pcr`
+  modulo 2^33·300, `shift_pes_timestamps` with prefixes and markers
+  kept, `set_continuity_counter`), the in-place packet corrections it
+  uses.
 - `isdb-analyze`, `isdb-cli`: `isdb ts validate --expect-rate BPS[:PPM]`
   compares the PCR-implied rate (least-squares slope of PCR time against
   byte position, `Timebase::cbr_fit`) of every PCR_PID with the rate the

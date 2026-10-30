@@ -250,7 +250,7 @@ a program of *another* network (e.g. a satellite recording), use
 | `--prefill-frames N` | 2 | frames converted before the radio starts streaming |
 | `--status-secs S` | 5 | status line interval (0 = final summary only) |
 | `--log-level L`, `--log-format F` | `info`, `text` | global options, before the subcommand: the diagnostics on stderr (every `[tx] …` line here is one) are `tracing` events; `--log-level trace|debug|info|warn|error|off` or `RUST_LOG=<directive>` filters them, `--log-format json` prints one JSON object per line with the event's fields (`frames`, `null_fill_pct`, …) for log collectors and scripts |
-| `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity |
+| `--allow-overrate` | off | send a `--mux-ts` file whose PCR rate exceeds a layer's capacity (ISDB-S: a PCR-paced `--ts` file above its slots' capacity) |
 | `--seek-step S` | 10 | seconds per ←/→ key ([playback keys](#playback-keys)) |
 | `--no-keys` | off | do not read playback keys from the terminal |
 
@@ -540,6 +540,53 @@ entries are FFFFh and the other TMCC fields take the values observed on
 the BS transponders (`isdbs-core` README). A file TS that has no packet
 when its slot comes is padded with a null packet (counted in the status
 lines).
+
+**Placement by PCR (`--ts-pacing auto|pcr|arrival`).** A TS with N sent
+slots per frame goes out at a constant rate, N × 1.086875 Mbit/s (52.17
+Mbit/s for 48 slots), one packet per slot. A TS file usually runs slower
+(the bench TS: 29.96 Mbit/s), so filling every slot with its packets as
+they come plays it 1.74× too fast, and its PCRs no longer match the time
+a receiver outputs them. By default (`auto`) a TS file that carries a PCR
+is placed by it instead: each packet goes into the first free slot at or
+after the time its PCRs give it (H.222.0 eq. 2-4), its input null packets
+are dropped, the slots left over carry nulls, and every PCR is corrected
+by the time its packet moved (at most one slot, 28.8 µs at 48 slots;
+H.222.0 Annex D.0.4), so the receiver's output TS has the file's own
+timing with PCRs accurate to the 27 MHz tick. Nothing else in the packets
+changes.
+
+| input | `auto` |
+|---|---|
+| regular file, `--feed file` or `loop` | probed (its first 30 s / 128 MB): paced when it has a PCR. A mean rate above its slots' capacity is refused with the slots it needs (`--allow-overrate` sends it anyway; it then lags its PCRs, shown as `PCR lag` in the status lines); a 1-s peak above it warns |
+| FIFO or stdin, `--feed file` | paced from its first PCR (looked for in its first 65 536 packets) |
+| `--feed live` | arrival order (PCR pacing of live inputs is not implemented yet) |
+| no PCR | arrival order, as before, said once at start |
+
+`--ts-pacing pcr` refuses an input without PCR (and `--feed live`);
+`--ts-pacing arrival` keeps the old rule for every file: each packet,
+nulls included and unmodified, in the next slot as it comes (a byte-exact
+relay). With `--feed loop` the seams are not corrected yet: at each rewind
+the PCRs (restamped), PTS/DTS and continuity counters jump back with the
+file, as before. The plan is printed before anything is opened, so
+`--dry-run` shows it; the status lines add, per paced TS, `PCR lag` (and
+its maximum), the input rate against the capacity, `nulls-dropped`,
+`restamped`, `slot-busy` and `pcr-discontinuities`. `isdb loopback
+--system isdbs` places its files the same way.
+
+**`--placed-ts TEMPLATE`** writes each TS's packets as placed in its slots,
+null packets included, for every data superframe (`{ts_id}` is replaced
+by the TS_ID in 4 hex digits, as in `isdb rx --out`; needed with more than
+one TS). They are the packets handed to the modulator, the same for
+`--iq` and `--offload fpga`, so the file is the TS a receiver outputs for
+that TS_ID: a recording can be compared with it byte for byte after
+aligning the start (the lead superframes' nulls are not in it), and
+`isdb ts validate --expect-rate 52170000:1` checks its PCRs offline.
+
+```sh
+# a 29.96 Mbit/s TS on the BS layout, paced by its PCR, and its placed TS
+isdb tx --system isdbs --ts 0x4010=bench.ts --iq bs.cf32 --placed-ts 'placed-{ts_id}.ts'
+isdb ts validate placed-4010.ts --expect-rate 52170000:1
+```
 
 **On air** come a pre-roll frame (the last frame of a null superframe:
 a receiver's loops settle during its first symbols), `--lead-superframes`

@@ -1765,6 +1765,33 @@ satellite-shaped NIT (satellite delivery system descriptor, BS
 network_id) in the multiplexer. The 60 s file's loop seam adds one PCR
 discontinuity and 3 continuity errors per minute.
 
+## ISDB-S PCR-paced placement, offline (2026-10-30)
+
+`tx --system isdbs` now places a TS file by its PCR (`--ts-pacing auto`,
+docs/plans/isdbs-next/pcr-pacing.md §7). `tools/isdbs-pacing-e2e.sh WORKDIR
+6` (no radio): the bench service above multiplexed for 6 s (29.96 Mbit/s
+CBR, PCR on 0x01FF and 0x01FE every 58 ms) → `isdb tx --system isdbs --iq`
+(cs8, BS layout, `--feed file`, `--placed-ts`) → `isdb rx --iq` →
+`tools/isdbs-bench-check.sh --rate 52170000:1 --fit-max-ns 100 --placed`.
+
+| | `auto` (paced) | `arrival` (the old rule) |
+|---|---|---|
+| data superframes | 540 (5.98 s; 435 input packets, 119 373 input nulls dropped, 208 PCRs restamped, lag 0) | 312 (3.45 s: every slot from the file) |
+| received TS, PCR-implied rate | **52.170000 Mbit/s** (±0.0 ppm), `pcr.rate` info | 29.958294 Mbit/s (−425 756 ppm), `pcr.rate` error |
+| CBR-fit residual, both PCR PIDs | **max 19 ns, rms 10–11 ns** | 0 ns (the file's own PCRs, played 1.74× fast) |
+| PCR interval | 0.058 s | 0.058 s by PCR (0.033 s of air) |
+| PAT / PMT 0x01F0 / PMT 0x1FC8 interval | 0.091–0.097 / 0.090 / 0.091–0.097 s, no `tables.frequency` | the same by PCR |
+| received TS vs `--placed-ts` | **identical**, 207 360 packets after the lead superframe's 384 nulls | identical, 119 808 packets |
+| RS | 207 744 packets clean, 0 corrected | — |
+
+The validate findings left are the file's own four `pid.missing` warnings
+(declared streams without packets). The same file through `isdb loopback
+--system isdbs --superframes 20` (paced): PASS, 25 input packets
+byte-exact. The bench acceptance on the PIX-DT295 (`--feed loop`,
+`tools/isdbs-bench-tx.sh --feed loop --placed`, `isdbs-bench-check.sh
+--record`) is still to be run; loop seams are not corrected yet (piece
+P3).
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

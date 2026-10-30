@@ -23,10 +23,11 @@ every entry with its status.
 | `isdb-mmt` | [crates/isdb-mmt/SPEC-NOTES.md](crates/isdb-mmt/SPEC-NOTES.md) | MMT-SI / TLV-SI contents and media (B60): descriptor length widths, UTF-8 text in MMT-SI and TLV-SI, what is in the clear in a scrambled MPU payload, NTP among the MMTP flows, divided-MFU reassembly, HEVC Annex B and LOAS framing (from knowledge) |
 | `isdbt-fec` | [crates/isdbt-fec/SPEC-NOTES.md](crates/isdbt-fec/SPEC-NOTES.md) | remux model receiver, PRBS bit order and frame alignment, delay adjustment, byte-interleave alignment, convolutional taps / puncturing reset, one-frame latency contract |
 | `isdbt-ofdm` | [crates/isdbt-ofdm/SPEC-NOTES.md](crates/isdbt-ofdm/SPEC-NOTES.md) | mapping bit order and delays, DQPSK reference, time/frequency interleave indexing and carrier rotation, pilots, TMCC/AC, difference-set code bit order, frame alignment (`latency`), gr-isdbt deviations |
+| `isdb-cli` | [crates/isdb-cli/SPEC-NOTES.md](crates/isdb-cli/SPEC-NOTES.md) | `tx --system isdbs` timing of a TS file: the ISDB-S uniform per-TS slot grid, PCR restamping (H.222.0 Annex D.0.4) when a file is placed by its PCR, loop seams (planned) |
 | `isdbt-phy` | [crates/isdbt-phy/SPEC-NOTES.md](crates/isdbt-phy/SPEC-NOTES.md) | broadcasting TS (B31 Part 2 §5.5): the IIP's slot and PID, the Table 5-7 layer_indicator typo, which frame the IIP describes, IIP_packet_pointer, the optional (204,196) parity, stuffing / reserved conventions, CRC_32 ranges, what is not implemented (sub-IIP, AC data, SFN delay control) |
 
 `isdbt-core`, `isdb-radio`, `isdb-hackrf`, `isdb-iio`, `isdb-iq`,
-`isdb-frontend`, `isdbs3-phy` and `isdb-cli` have no notes of their own: they take
+`isdb-frontend` and `isdbs3-phy` have no notes of their own: they take
 parameters from the spec tables, connect the baseband to a radio, record
 and survey IQ or turn it into symbols with this project's own format
 (`isdb-frontend` defines format version 1 itself; `isdb-iq`

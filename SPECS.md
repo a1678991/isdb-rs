@@ -672,6 +672,9 @@ have no external confirmation, because none is possible from the local texts.
 | isdbt-mux | [Remote control key (0xCD)](crates/isdbt-mux/SPEC-NOTES.md#remote-control-key-0xcd-remote_control_key_id) | **[TR-B14 practice, from knowledge]**; receiver evidence of collisions |
 | isdbt-mux | [Raw vs typed descriptors](crates/isdbt-mux/SPEC-NOTES.md#raw-descriptors-versus-typed-ones) | implementation choice |
 | isdbt-mux | [Operational choices 1–39](crates/isdbt-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers) | **pending** TR-B14 / receiver tests (see §4) |
+| isdb-cli | [ISDB-S TS timing model](crates/isdb-cli/SPEC-NOTES.md#isdb-cli-isdb-s-ts-timing-model-uniform-per-ts-slot-grid) | confirmed for BS (live data); **pending** for CS |
+| isdb-cli | [PCR restamping](crates/isdb-cli/SPEC-NOTES.md#isdb-cli-pcr-restamping-when-a-ts-file-is-placed-in-slots) | confirmed offline; **pending** a receiver on the bench |
+| isdb-cli | [Loop seams](crates/isdb-cli/SPEC-NOTES.md#isdb-cli-loop-seams-of-a-looped-ts-file---feed-loop) | **pending** (planned, not implemented) |
 | isdbs-core | [frame-layout](crates/isdbs-core/SPEC-NOTES.md#frame-layout-where-the-tmcc-and-the-bursts-sit-in-a-frame) | confirmed (live data) |
 | isdbs-core | [burst-data](crates/isdbs-core/SPEC-NOTES.md#burst-data-the-data-the-burst-prbs-is-added-to) | confirmed (live data) |
 | isdbs-core | [coded-tails](crates/isdbs-core/SPEC-NOTES.md#coded-tails-the-transmitted-order-of-the-inner-codes-two-outputs) | confirmed (spec vector, live data) |
