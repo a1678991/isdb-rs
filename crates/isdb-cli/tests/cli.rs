@@ -1830,6 +1830,12 @@ fn bench_toml() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../isdbt-mux/examples/bench.toml")
 }
 
+/// The media-free BS bench example (`[network] kind = "bs"`, BS1, TS_ID
+/// 0x4017).
+fn bs_bench_toml() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../isdbt-mux/examples/bs-bench.toml")
+}
+
 /// The bench multiplex with its media streams turned into `declared`
 /// streams (PSI/SI/PCR only), so it runs without the media files.
 fn declared_only_config(dir: &Path) -> PathBuf {
@@ -2650,6 +2656,101 @@ fn ts_validate_expect_rate() {
     );
     let o = run(&["ts", "validate", s(&full), "--expect-rate", "52170000:x"]);
     assert_eq!(o.status.code(), Some(2));
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+/// The BS bench example through the CLI (docs/plans/isdbs-next/bs-si.md
+/// §6.4 test 5): `isdb mux` makes 12 s of it, and `ts validate` with the
+/// bench's expectations (BS network_id 0x0004, TS_ID 0x4017, the 0x43
+/// frequency of BS1, 11 727.48 MHz) exits 0 with no `cross.*` or
+/// `expect` finding at any severity; another channel's frequency is an
+/// `expect` error.
+#[test]
+fn bs_bench_mux_validates_with_the_bench_expectations() {
+    let d = tmp("bs-bench");
+    let ts = d.join("bs.ts");
+    let o = run(&[
+        "mux",
+        "-c",
+        s(&bs_bench_toml()),
+        "--seconds",
+        "12",
+        "--out-ts",
+        s(&ts),
+    ]);
+    assert!(o.status.success());
+    let expect = [
+        "--expect-nid",
+        "0x0004",
+        "--expect-onid",
+        "0x0004",
+        "--expect-tsid",
+        "0x4017",
+        "--expect-freq-mhz",
+        "11727.48",
+    ];
+    let mut args = vec!["ts", "validate", s(&ts)];
+    args.extend(expect);
+    let o = run(&args);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out}");
+    args.extend(["--json", "--show", "info"]);
+    let o = run(&args);
+    let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(j["errors"], 0, "{j}");
+    let checks: Vec<&str> = j["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["check"].as_str().unwrap())
+        .collect();
+    assert!(
+        !checks
+            .iter()
+            .any(|c| c.starts_with("cross.") || *c == "expect"),
+        "{checks:?}"
+    );
+    let o = run(&["ts", "validate", s(&ts), "--expect-freq-mhz", "11746.66"]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("[expect]") && out.contains("expected 11746.66 MHz"),
+        "{out}"
+    );
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+/// A `[network] kind = "bs"` configuration describes a satellite network:
+/// the ISDB-T `tx` and `loopback` refuse it as `--mux-config` and name
+/// the ISDB-S way instead (bs-si.md §6.5).
+#[test]
+fn isdbt_mux_config_refuses_a_bs_network() {
+    let d = tmp("bs-isdbt");
+    let iq = d.join("t.cf32");
+    let cfg = bs_bench_toml();
+    for args in [
+        vec![
+            "tx",
+            "--mux-config",
+            s(&cfg),
+            "--iq",
+            s(&iq),
+            "--seconds",
+            "1",
+        ],
+        vec!["loopback", "--mux-config", s(&cfg), "--frames", "2"],
+    ] {
+        let o = run(&args);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            err.contains("kind = \"bs\"")
+                && err.contains("ISDB-T")
+                && err.contains("--system isdbs --channel BS1 --ts 0x4017="),
+            "{err}"
+        );
+    }
+    assert!(!iq.exists(), "nothing written");
     std::fs::remove_dir_all(&d).unwrap();
 }
 

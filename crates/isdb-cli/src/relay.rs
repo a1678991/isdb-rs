@@ -18,7 +18,7 @@ use isdbt_mux::{Config, Multiplexer, MuxError};
 use tracing::{info, warn};
 
 use crate::bands::{Channel, uhf_hz};
-use crate::input::{FrameInput, InputArgs, MuxConfigInput, copy_control_note};
+use crate::input::{FrameInput, InputArgs, MuxConfigInput, copy_control_note, isdbt_mux_config};
 use crate::phyargs::{describe_params, phy_options};
 
 /// `--relay` and its options (shared by `tx`, `loopback` and `mux`).
@@ -375,10 +375,7 @@ pub fn prepare(
         ));
     }
     if let Some(path) = &input.mux_config {
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let cfg =
-            Config::from_toml(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let cfg = isdbt_mux_config(path)?;
         let base = path.parent().map(PathBuf::from).unwrap_or_default();
         let (mux, params) = build_mux(&cfg, &base, params, r.auto_layout)?;
         let name = path.display().to_string();

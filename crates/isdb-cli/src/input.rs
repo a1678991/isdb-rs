@@ -568,6 +568,33 @@ pub struct MuxConfigInput {
     endless: bool,
 }
 
+/// Read and parse the `--mux-config` of an ISDB-T transmission (`isdb tx`
+/// / `isdb loopback`, `--system isdbt`). A `[network] kind = "bs"`
+/// configuration is refused: its NIT describes a BS network (satellite
+/// delivery system descriptor 0x43, broadcasting_identifier '000010'; B10
+/// Table 6-1, Table 6-36), which an ISDB-T signal contradicts. Such a TS
+/// is multiplexed with `isdb mux` and sent by `isdb tx --system isdbs`.
+pub fn isdbt_mux_config(path: &std::path::Path) -> Result<isdbt_mux::Config> {
+    use anyhow::Context;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let cfg = isdbt_mux::Config::from_toml(&text)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    if !cfg.network.kind.is_terrestrial() {
+        let channel = cfg
+            .network
+            .satellite
+            .as_ref()
+            .map_or("BSn", |s| s.channel.as_str());
+        bail!(
+            "{}: [network] kind = \"bs\" describes a BS satellite network (NIT 0x43), which an ISDB-T signal cannot carry; multiplex it with `isdb mux -c {0} --out-ts FILE` and send that with `isdb tx --system isdbs --channel {channel} --ts {:#06x}=FILE`",
+            path.display(),
+            cfg.transport.transport_stream_id
+        );
+    }
+    Ok(cfg)
+}
+
 /// True if a multiplexer built from `cfg` ends by itself: it relays at
 /// least one `ts-program` and every one of them has `at_eof = "end"`
 /// ([`isdbt_mux::Multiplexer::relays_finished`]); otherwise it runs forever.
@@ -597,10 +624,7 @@ impl MuxConfigInput {
     /// resolved against the file's directory).
     pub fn open(path: &std::path::Path, params: &Params) -> Result<Self> {
         use anyhow::Context;
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let cfg = isdbt_mux::Config::from_toml(&text)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let cfg = isdbt_mux_config(path)?;
         let base = path
             .parent()
             .map(std::path::PathBuf::from)
