@@ -70,6 +70,9 @@ check "loop: no FIFO" '[ ! -e "$WORK/ts.fifo" ]'
 
 DUMMY=exit:0 run --dry-run "$WORK"
 check "--dry-run replaces --rf-enable" 'grep -q -- "--dry-run" "$DUMMY_LOG" && ! grep -q -- "--rf-enable" "$DUMMY_LOG"'
+check "no --placed-ts unless asked" '! grep -q -- "--placed-ts" "$DUMMY_LOG"'
+DUMMY=exit:0 run --feed loop --placed 'placed-{ts_id}.ts' "$WORK"
+check "--placed passes --placed-ts" 'grep -q -- "--feed loop --placed-ts placed-{ts_id}.ts --status-secs" "$DUMMY_LOG"'
 
 DUMMY=read:0 run "$WORK"
 check "fifo: isdb read the FIFO and exited 0" '[ $RC = 0 ] && grep -q -- "--feed live" "$DUMMY_LOG"'

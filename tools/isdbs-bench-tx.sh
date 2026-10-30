@@ -22,29 +22,34 @@
 #                measurement only)
 #   --dry-run    pass --dry-run instead of --rf-enable: print the radio
 #                settings and exit, nothing radiates
+#   --placed T   pass --placed-ts T to isdb tx: the TS as placed in the
+#                slots ({ts_id} -> 4010), for tools/isdbs-bench-check.sh
+#                --placed (a relative T is under WORKDIR)
 #
 # Conducted bench only: a fixed attenuator (30-60 dB) and a DC block (or the
 # receiver's LNB supply off) between the TX port and the receiver, as
 # docs/plans/isdb-s.md §2 requires. Stop with Ctrl-C or SIGTERM: the signal
 # is passed on to `isdb tx` (which stops the radio first), the FIFO's
 # writer is killed on every exit path, and the script exits with isdb's
-# status. Without PCR-paced placement the TS is re-timed by arrival order
-# on the ISDB-S side: in fifo mode 12 ms rms PCR jitter, PAT/PMT intervals
-# up to 0.17 s; in loop mode the 29.96 Mbit/s TS fills every slot, so it
-# plays 1.74x fast (pcr-pacing.md §6 "arrival").
+# status. In loop mode `isdb tx` places the TS by its PCR (--ts-pacing
+# auto; loop seams are not corrected yet); in fifo mode (--feed live) it is
+# re-timed by arrival order on the ISDB-S side: 12 ms rms PCR jitter,
+# PAT/PMT intervals up to 0.17 s (pcr-pacing.md §6 "arrival").
 set -euo pipefail
 die() { echo "isdbs-bench-tx: $*" >&2; exit 2; }
-usage() { sed -n '9,24s/^# \{0,1\}//p' "$0"; }
+usage() { sed -n '9,27s/^# \{0,1\}//p' "$0"; }
 
 FEED=fifo
 MARGIN=0
 GATE=--rf-enable
+PLACED=()
 while [ $# -gt 0 ]; do
     case $1 in
         --feed) [ $# -ge 2 ] || die "--feed needs fifo or loop"; FEED=$2; shift 2 ;;
         --feed=*) FEED=${1#--feed=}; shift ;;
         --margin) MARGIN=1; shift ;;
         --dry-run) GATE=--dry-run; shift ;;
+        --placed) [ $# -ge 2 ] || die "--placed needs a path template"; PLACED=(--placed-ts "$2"); shift 2 ;;
         -h|--help) usage; exit 0 ;;
         --) shift; break ;;
         -*) die "unknown option $1 (see --help)" ;;
@@ -148,7 +153,7 @@ fi
 
 RADIO="pluto${URI:+:uri=$URI}"
 "$ISDB" tx --system isdbs --radio "$RADIO" --channel BS1 --freq-unrestricted \
-    --offload fpga "$GATE" --gain "att=$ATT" "${INPUT[@]}" --status-secs 5 &
+    --offload fpga "$GATE" --gain "att=$ATT" "${INPUT[@]}" "${PLACED[@]}" --status-secs 5 &
 TX=$!
 # `wait` returns early when a trapped signal arrives; wait again until
 # isdb tx has really exited, then take its status (bash keeps it).
