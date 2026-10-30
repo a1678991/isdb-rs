@@ -152,6 +152,17 @@ pub struct TxArgs {
     /// sends IQ. --iq always gets the CPU's samples (`fpga` is refused).
     #[arg(long, value_enum, default_value_t = OffloadArg::Auto, help_heading = "ISDB-S (--system isdbs)")]
     pub offload: OffloadArg,
+    /// ISDB-S: also write each TS's packets as placed in its slots, null
+    /// packets included, to TEMPLATE with `{ts_id}` replaced by the TS_ID
+    /// (4 hex digits; needed with more than one TS): the TS a receiver
+    /// outputs for that TS_ID (`isdb rx --out`), the data superframes
+    /// only, the same for --iq and --offload fpga.
+    #[arg(
+        long,
+        value_name = "TEMPLATE",
+        help_heading = "ISDB-S (--system isdbs)"
+    )]
+    pub placed_ts: Option<String>,
 }
 
 /// Where `isdb tx` sends the baseband: `--radio` or `--iq`.

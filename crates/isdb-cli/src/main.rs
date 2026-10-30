@@ -36,10 +36,6 @@ mod loopback;
 mod loopbacks;
 #[allow(missing_docs)]
 mod mux;
-// Not wired into `tx --system isdbs` yet: piece P4 of
-// docs/plans/isdbs-next/pcr-pacing.md connects it to `TsInputs`; the unit
-// tests exercise all of it.
-#[cfg_attr(not(test), allow(dead_code))]
 mod pace;
 mod phyargs;
 mod producer;

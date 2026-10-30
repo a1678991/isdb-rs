@@ -208,7 +208,13 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
     let lead = a.sat.lead_superframes.unwrap_or(1);
     let file_feed = a.input.feed == Feed::File && !layout.synthetic_only();
     let data = a.superframes.or((!file_feed).then_some(6));
-    let input = TsInputs::open(&layout, a.input.feed, &counts)?;
+    let plan = crate::txs::plan_inputs(
+        &layout,
+        a.input.feed,
+        a.sat.ts_pacing,
+        a.input.allow_overrate,
+    )?;
+    let input = TsInputs::open(&layout, a.input.feed, &counts, &plan)?;
     info!(
         target: "isdb::loopback",
         system = "ISDB-S",
@@ -243,6 +249,7 @@ pub fn run(a: LoopbackArgs) -> Result<()> {
         pace: crate::producer::default_pace(a.input.feed, false),
         record: true,
         depth: 2,
+        placed: None,
     };
     let t0 = Instant::now();
     let (items, worker) = crate::txs::spawn(

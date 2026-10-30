@@ -716,36 +716,104 @@ impl FrameInput for MuxConfigInput {
     }
 }
 
-/// PCR time measured by the start-up rate probe of a `--mux-ts` file.
+/// PCR time measured by the start-up rate probe of a `--mux-ts` file (and
+/// of an ISDB-S `--ts` file).
 pub const PROBE_SECONDS: u64 = 30;
 /// Byte limit of the probe (≈ 30 s at 34 Mbit/s).
 pub const PROBE_BYTES: usize = 128 << 20;
 
-fn is_regular_file(path: &str) -> bool {
+/// True for a path that names a regular file (not `-`, a FIFO or a
+/// device): only those can be probed before they are read.
+pub fn is_regular_file(path: &str) -> bool {
     path != "-" && std::fs::metadata(path).is_ok_and(|m| m.is_file())
 }
 
-/// Report the probed rates against the layer capacities.  Returns whether
-/// to pace by PCR (false when the input has no PCR); refuses (error with
-/// layouts that fit) a mean rate above a layer's capacity unless
-/// `allow_overrate`.
-pub fn check_input_rates(r: &InputRates, params: &Params, allow_overrate: bool) -> Result<bool> {
+/// One share of an input's rate, [`InputRates::mean`]`[index]`, and the
+/// capacity that carries it (an ISDB-T layer, an ISDB-S relative TS).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RateShare {
+    /// Index into [`InputRates::mean`] / [`InputRates::peak_1s`].
+    pub index: usize,
+    /// Capacity, bit/s of 188-byte packets.
+    pub cap_bps: f64,
+}
+
+/// What [`check_rates`] measures an input against, and how its lines are
+/// worded: the transmission system's side of the capacity check.
+pub trait RateTarget {
+    /// The shares to check, in report order.
+    fn shares(&self) -> Vec<RateShare>;
+    /// The input has no PCR (it is not paced).
+    fn no_pcr(&self);
+    /// The rate of share `s` against its capacity (`r.mean[s.index]` > 0).
+    fn report(&self, s: RateShare, pcr: isdb_ts::Pid, r: &InputRates);
+    /// Share `s`'s 1-s peak exceeds its capacity (its mean does not).
+    fn peak_over(&self, s: RateShare, r: &InputRates);
+    /// Why share `s`'s mean rate does not fit.
+    fn over(&self, s: RateShare, r: &InputRates) -> String;
+    /// The advice after the over-capacity messages when the input is
+    /// refused.
+    fn refusal(&self) -> String;
+}
+
+/// The capacity check of a probed input, whatever the transmission
+/// system: `false` (not paced) when the input has no PCR; otherwise every
+/// share's rate is reported, a mean above its capacity is refused (an
+/// error of [`RateTarget::over`] and [`RateTarget::refusal`]) unless
+/// `allow_overrate` (then a warning), and a 1-s peak above it warns.
+pub fn check_rates(r: &InputRates, target: &dyn RateTarget, allow_overrate: bool) -> Result<bool> {
     let Some(pcr) = r.pcr_pid else {
+        target.no_pcr();
+        return Ok(false);
+    };
+    let mut over = Vec::new();
+    for s in target.shares() {
+        if r.mean[s.index] == 0.0 {
+            continue;
+        }
+        target.report(s, pcr, r);
+        if r.mean[s.index] > s.cap_bps {
+            over.push(target.over(s, r));
+        } else if r.peak_1s[s.index] > s.cap_bps {
+            target.peak_over(s, r);
+        }
+    }
+    if !over.is_empty() {
+        let msg = over.join("\n");
+        if !allow_overrate {
+            bail!("{msg}\n  {}", target.refusal());
+        }
+        warn!(target: "isdb::tx", "(--allow-overrate): {msg}");
+    }
+    Ok(true)
+}
+
+/// The ISDB-T layers of a [`Params`] as a [`RateTarget`] (share index =
+/// layer index).
+struct Layers<'a>(&'a Params);
+
+impl RateTarget for Layers<'_> {
+    fn shares(&self) -> Vec<RateShare> {
+        self.0
+            .active_layers()
+            .map(|(id, _)| RateShare {
+                index: id.index(),
+                cap_bps: capacity::layer_bps(self.0, id),
+            })
+            .collect()
+    }
+
+    fn no_pcr(&self) {
         info!(
             target: "isdb::tx",
             probe_mb = PROBE_BYTES >> 20,
             "  input rate: no PCR found in the first {} MB — not paced (packets go out as fast as the layers take them)",
             PROBE_BYTES >> 20
         );
-        return Ok(false);
-    };
-    let mut over = Vec::new();
-    for (id, _) in params.active_layers() {
-        let l = id.index();
-        let cap = capacity::layer_bps(params, id);
-        if r.mean[l] == 0.0 {
-            continue;
-        }
+    }
+
+    fn report(&self, s: RateShare, pcr: isdb_ts::Pid, r: &InputRates) {
+        let (id, l, cap) = (Layer::ALL[s.index], s.index, s.cap_bps);
         info!(
             target: "isdb::tx",
             layer = %id,
@@ -760,34 +828,41 @@ pub fn check_input_rates(r: &InputRates, params: &Params, allow_overrate: bool) 
             r.peak_1s[l] / 1e6,
             cap / 1e6
         );
-        if r.mean[l] > cap {
-            over.push(capacity::over_capacity_message(
-                params,
-                id,
-                r.mean[l],
-                &format!("the input's layer {id} share (mean over {:.1} s)", r.span_s),
-            ));
-        } else if r.peak_1s[l] > cap {
-            warn!(
-                target: "isdb::tx",
-                layer = %id,
-                peak_1s_bps = r.peak_1s[l],
-                capacity_bps = cap,
-                "  layer {id}: 1-s peaks ({:.2} Mbit/s) exceed the capacity; the stream falls behind its PCR schedule during peaks (lag shown in the status lines)",
-                r.peak_1s[l] / 1e6
-            );
-        }
     }
-    if !over.is_empty() {
-        let msg = over.join("\n");
-        if !allow_overrate {
-            bail!(
-                "{msg}\n  the file would go on air slower than real time; choose a layout above, or pass --allow-overrate to send it anyway"
-            );
-        }
-        warn!(target: "isdb::tx", "(--allow-overrate): {msg}");
+
+    fn peak_over(&self, s: RateShare, r: &InputRates) {
+        let (id, l, cap) = (Layer::ALL[s.index], s.index, s.cap_bps);
+        warn!(
+            target: "isdb::tx",
+            layer = %id,
+            peak_1s_bps = r.peak_1s[l],
+            capacity_bps = cap,
+            "  layer {id}: 1-s peaks ({:.2} Mbit/s) exceed the capacity; the stream falls behind its PCR schedule during peaks (lag shown in the status lines)",
+            r.peak_1s[l] / 1e6
+        );
     }
-    Ok(true)
+
+    fn over(&self, s: RateShare, r: &InputRates) -> String {
+        let id = Layer::ALL[s.index];
+        capacity::over_capacity_message(
+            self.0,
+            id,
+            r.mean[s.index],
+            &format!("the input's layer {id} share (mean over {:.1} s)", r.span_s),
+        )
+    }
+
+    fn refusal(&self) -> String {
+        "the file would go on air slower than real time; choose a layout above, or pass --allow-overrate to send it anyway".into()
+    }
+}
+
+/// Report the probed rates against the layer capacities.  Returns whether
+/// to pace by PCR (false when the input has no PCR); refuses (error with
+/// layouts that fit) a mean rate above a layer's capacity unless
+/// `allow_overrate`. The ISDB-T side of [`check_rates`].
+pub fn check_input_rates(r: &InputRates, params: &Params, allow_overrate: bool) -> Result<bool> {
+    check_rates(r, &Layers(params), allow_overrate)
 }
 
 /// Input selection shared by `tx` and `loopback`.
@@ -827,10 +902,11 @@ pub struct InputArgs {
     /// `--relay FILE` and its options (rebroadcast a recording without a TOML).
     #[command(flatten)]
     pub relay: crate::relay::RelayArgs,
-    /// Transmit a --mux-ts file even though its rate (measured from its
-    /// PCR) exceeds a layer's capacity: it then falls behind its own
-    /// schedule (slow motion; the lag is reported).  Without this flag such
-    /// an input is refused with layer layouts that fit.
+    /// Transmit a --mux-ts file (ISDB-S: a PCR-paced --ts file) even
+    /// though its rate (measured from its PCR) exceeds a layer's (a TS's
+    /// slots') capacity: it then falls behind its own schedule (slow
+    /// motion; the lag is reported).  Without this flag such an input is
+    /// refused with layer layouts that fit (ISDB-S: the slots it needs).
     #[arg(long)]
     pub allow_overrate: bool,
 }

@@ -36,6 +36,11 @@
 //! stream.
 
 use crate::bands::Channel;
+use crate::input::{
+    InputRates, PROBE_BYTES, PROBE_SECONDS, RateShare, RateTarget, check_rates, is_regular_file,
+    probe_rates,
+};
+use crate::pace::{SlotClock, SlotPacer, TaggedSource, Untagged, WaitMode};
 use crate::producer::{EndReason, FrameKind};
 use crate::sink::{FileSink, IqFormat};
 use crate::source::{
@@ -49,12 +54,15 @@ use isdb_frontend::shape::Shaper;
 use isdb_frontend::shape::fixed::{TxDesign, TxParams};
 use isdb_iq::sigmf::{Meta, Segment};
 use isdb_radio::{C32, IqSink, RadioError, SymbolSink};
+use isdb_ts::Pid;
 use isdbs_core::combination::Combination;
 use isdbs_core::frame::{FRAME_SYMBOLS, FRAMES};
 use isdbs_core::tmcc::TmccInfo;
 use isdbs_phy::Cplx;
 use isdbs_phy::tx::{SUPERFRAME_SYMBOLS, Transmitter};
+use isdbt_mux::pcrclock::{packet_pcr, packet_pid};
 use serde_json::json;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -142,7 +150,6 @@ pub const TX_ISDBT_ONLY: &[&str] = &[
     "synthetic",
     "mux_config",
     "relay",
-    "allow_overrate",
     "iq_in",
     "iq_in_format",
     "lead_frames",
@@ -150,7 +157,15 @@ pub const TX_ISDBT_ONLY: &[&str] = &[
 ];
 
 /// `isdb tx` options that only ISDB-S uses.
-pub const TX_ISDBS_ONLY: &[&str] = &["combination", "ts", "rate", "lead_superframes", "offload"];
+pub const TX_ISDBS_ONLY: &[&str] = &[
+    "combination",
+    "ts",
+    "rate",
+    "lead_superframes",
+    "ts_pacing",
+    "offload",
+    "placed_ts",
+];
 
 /// The flag of argument id `id`.
 pub fn flag(id: &str) -> String {
@@ -229,6 +244,31 @@ pub struct SatArgs {
     /// gets every data superframe.
     #[arg(long, value_name = "N")]
     pub lead_superframes: Option<usize>,
+    /// How a TS file's packets are placed in its slots. `auto`: by its PCR
+    /// when it carries one (a regular file is probed first, a pipe or
+    /// stdin is decided by its first PCR; --feed live is not paced yet),
+    /// else `arrival`. `pcr`: by its PCR, an input without one refused.
+    /// Paced, each packet takes the first free slot at or after the time
+    /// its PCRs give it, input null packets are dropped, the slots left
+    /// over carry nulls and every PCR is corrected by the time its packet
+    /// moved (H.222.0 Annex D.0.4), so the TS keeps its own rate and a
+    /// receiver's output has accurate PCRs. `arrival`: every packet, nulls
+    /// included, in the next slot as it comes, unmodified (a byte-exact
+    /// relay; a TS slower than its slots then plays fast).
+    #[arg(long, value_enum, default_value_t = TsPacing::Auto)]
+    pub ts_pacing: TsPacing,
+}
+
+/// `--ts-pacing`: how the packets of a TS file are placed in its slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TsPacing {
+    /// By PCR when the input carries one, else in arrival order.
+    Auto,
+    /// By PCR; an input without one is refused.
+    Pcr,
+    /// In arrival order, byte-exact (the slots are filled as the packets
+    /// come, input nulls included).
+    Arrival,
 }
 
 /// The spelling of `c` for `--combination`: its name in lower case
@@ -418,12 +458,329 @@ pub fn synthetic_packet(ts_id: u16, superframe: u64, index: u32, cc: u8) -> Pack
     p
 }
 
+/// How the packets of one relative TS are placed in its slots, decided
+/// before the transmission starts ([`plan_inputs`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Synthetic packets, or a TS file in arrival order: every packet,
+    /// nulls included, in the next slot, unmodified.
+    Arrival,
+    /// By PCR ([`SlotPacer`]) on the PCRs of this PID, or of the first PID
+    /// carrying one when `None`.
+    Pcr(Option<Pid>),
+    /// A pipe or stdin: by PCR if a PCR comes in its first
+    /// [`SNIFF_PACKETS`] packets (on that PCR's PID), else in arrival
+    /// order.
+    FirstPcr,
+}
+
+/// Packets of a pipe read to find its first PCR ([`Placement::FirstPcr`]):
+/// 12 MB, more than 0.1 s (the longest PCR interval, H.222.0 §2.7.2) of
+/// any TS up to 985 Mbit/s.
+pub const SNIFF_PACKETS: usize = 65_536;
+
+/// A TS's slots as the [`RateTarget`] of the capacity check.
+struct TsShare<'a> {
+    ts_id: u16,
+    path: &'a str,
+    slots: usize,
+    clock: SlotClock,
+}
+
+impl RateTarget for TsShare<'_> {
+    fn shares(&self) -> Vec<RateShare> {
+        vec![RateShare {
+            index: 0,
+            cap_bps: self.clock.bps(),
+        }]
+    }
+
+    fn no_pcr(&self) {
+        info!(
+            target: "isdb::tx",
+            ts_id = self.ts_id,
+            probe_mb = PROBE_BYTES >> 20,
+            "  TS_ID {:#06x} ({}): no PCR in the first {} MB — arrival order (every packet, nulls included, in the next slot)",
+            self.ts_id,
+            self.path,
+            PROBE_BYTES >> 20
+        );
+    }
+
+    fn report(&self, s: RateShare, pcr: Pid, r: &InputRates) {
+        info!(
+            target: "isdb::tx",
+            ts_id = self.ts_id,
+            pcr_pid = format_args!("{pcr:#06x}"),
+            span_s = r.span_s,
+            mean_bps = r.mean[s.index],
+            peak_1s_bps = r.peak_1s[s.index],
+            capacity_bps = s.cap_bps,
+            "  TS_ID {:#06x} ({}): input rate (PCR 0x{pcr:04x}, first {:.1} s) mean {:.2} Mbit/s, peak {:.2} Mbit/s (1 s) — capacity {:.2} Mbit/s ({} slots/frame)",
+            self.ts_id,
+            self.path,
+            r.span_s,
+            r.mean[s.index] / 1e6,
+            r.peak_1s[s.index] / 1e6,
+            s.cap_bps / 1e6,
+            self.slots
+        );
+    }
+
+    fn peak_over(&self, s: RateShare, r: &InputRates) {
+        warn!(
+            target: "isdb::tx",
+            ts_id = self.ts_id,
+            peak_1s_bps = r.peak_1s[s.index],
+            capacity_bps = s.cap_bps,
+            "  TS_ID {:#06x}: 1-s peaks ({:.2} Mbit/s) exceed the capacity of its slots; the TS falls behind its PCR schedule during peaks (lag shown in the status lines)",
+            self.ts_id,
+            r.peak_1s[s.index] / 1e6
+        );
+    }
+
+    fn over(&self, s: RateShare, r: &InputRates) -> String {
+        // every sent slot carries one packet per frame, whatever its
+        // modulation: the TS's rate per slot
+        let per_slot = s.cap_bps / self.slots as f64;
+        let need = (r.mean[s.index] / per_slot).ceil();
+        format!(
+            "TS_ID {:#06x} ({}): the input needs {:.2} Mbit/s (mean over {:.1} s) but its {} slots per frame carry {:.2} Mbit/s; it needs {need} sent slots per frame ({:.3} Mbit/s each)",
+            self.ts_id,
+            self.path,
+            r.mean[s.index] / 1e6,
+            r.span_s,
+            self.slots,
+            s.cap_bps / 1e6,
+            per_slot / 1e6
+        )
+    }
+
+    fn refusal(&self) -> String {
+        "the file would go on air slower than real time; give the TS more slots (--ts ID:SLOTS), or pass --allow-overrate to send it anyway (it then lags its PCR schedule)".into()
+    }
+}
+
+/// The slot clock of relative TS `t` (its sent slots per frame).
+fn slot_clock(t: &TsArg) -> Result<SlotClock> {
+    let n = usize::from(t.slots.unwrap_or(0));
+    SlotClock::isdbs(n).with_context(|| format!("TS_ID {:#06x}: {n} slots per frame", t.ts_id))
+}
+
+/// Decide how each TS of `layout` is placed (pcr-pacing.md §7.3), and say
+/// so: a regular file read with `--feed file` or `loop` is probed
+/// ([`probe_rates`], its first [`PROBE_SECONDS`] s or [`PROBE_BYTES`]):
+/// with a PCR it is paced, its mean rate above its slots' capacity refused
+/// unless `allow_overrate` and a 1-s peak above it warned about; a pipe or
+/// stdin with those feeds is decided by its first PCR. `--feed live`
+/// stays in arrival order (PCR pacing of live inputs is piece P5 of the
+/// plan). `TsPacing::Pcr` refuses a file without PCR and `--feed live`;
+/// `TsPacing::Arrival` places every TS in arrival order.
+pub fn plan_inputs(
+    layout: &Layout,
+    feed: Feed,
+    pacing: TsPacing,
+    allow_overrate: bool,
+) -> Result<Vec<Placement>> {
+    let mut plan = Vec::with_capacity(layout.ts.len());
+    for t in &layout.ts {
+        let Some(path) = t.path.as_deref() else {
+            plan.push(Placement::Arrival);
+            continue;
+        };
+        let id = t.ts_id;
+        let p = match (pacing, feed) {
+            (TsPacing::Arrival, _) => {
+                info!(
+                    target: "isdb::tx",
+                    ts_id = id,
+                    "  TS_ID {id:#06x} ({path}): arrival order (--ts-pacing arrival: every packet, nulls included, in the next slot, unmodified)"
+                );
+                Placement::Arrival
+            }
+            // TODO(P5, pcr-pacing.md §7.7): pace live inputs with a
+            // deadline-bounded WaitMode::Live.
+            (TsPacing::Pcr, Feed::Live) => bail!(
+                "--ts-pacing pcr: TS_ID {id:#06x} ({path}) is read with --feed live, which is not paced by PCR yet; use --feed file for a pipe"
+            ),
+            (TsPacing::Auto, Feed::Live) => {
+                info!(
+                    target: "isdb::tx",
+                    ts_id = id,
+                    "  TS_ID {id:#06x} ({path}): --feed live, arrival order (packets as they come, nulls padding when none is queued; live inputs are not paced by PCR yet)"
+                );
+                Placement::Arrival
+            }
+            (_, Feed::File | Feed::Loop) if is_regular_file(path) => {
+                let clock = slot_clock(t)?;
+                let r = probe_rates(path, &|_| 0, PROBE_SECONDS, PROBE_BYTES)
+                    .with_context(|| format!("probe the rate of {path}"))?;
+                let share = TsShare {
+                    ts_id: id,
+                    path,
+                    slots: usize::from(t.slots.unwrap_or(0)),
+                    clock,
+                };
+                if check_rates(&r, &share, allow_overrate)? {
+                    info!(
+                        target: "isdb::tx",
+                        ts_id = id,
+                        "  TS_ID {id:#06x} ({path}): paced by PCR{}: each packet in the first free slot at or after its PCR time, input nulls dropped, PCRs corrected by the time their packet moved{}",
+                        r.pcr_pid.map_or(String::new(), |p| format!(" (PID {p:#06x})")),
+                        if feed == Feed::Loop {
+                            "; at each rewind the PCR, PTS/DTS and continuity counters jump back with the file (not corrected yet)"
+                        } else {
+                            ""
+                        }
+                    );
+                    Placement::Pcr(r.pcr_pid)
+                } else if pacing == TsPacing::Pcr {
+                    bail!(
+                        "--ts-pacing pcr: TS_ID {id:#06x} ({path}) has no PCR in its first {} MB",
+                        PROBE_BYTES >> 20
+                    );
+                } else {
+                    Placement::Arrival
+                }
+            }
+            (TsPacing::Pcr, Feed::File | Feed::Loop) => {
+                info!(
+                    target: "isdb::tx",
+                    ts_id = id,
+                    "  TS_ID {id:#06x} ({path}): a pipe, paced by PCR (--ts-pacing pcr; no rate probe)"
+                );
+                Placement::Pcr(None)
+            }
+            (TsPacing::Auto, Feed::File | Feed::Loop) => {
+                info!(
+                    target: "isdb::tx",
+                    ts_id = id,
+                    "  TS_ID {id:#06x} ({path}): a pipe (no rate probe): paced by PCR if one comes in its first {SNIFF_PACKETS} packets, else arrival order"
+                );
+                Placement::FirstPcr
+            }
+        };
+        plan.push(p);
+    }
+    Ok(plan)
+}
+
+/// A TS file's packets: those read ahead to find its first PCR, then its
+/// stream.
+struct Feeder {
+    head: VecDeque<Packet>,
+    stream: PacketStream,
+}
+
+impl Feeder {
+    fn new(stream: PacketStream) -> Self {
+        Self {
+            head: VecDeque::new(),
+            stream,
+        }
+    }
+
+    /// The next packet, as [`PacketStream::next`].
+    fn next_packet(&mut self, stop: &AtomicBool) -> Option<Packet> {
+        self.head.pop_front().or_else(|| self.stream.next(stop))
+    }
+
+    fn ended(&self) -> bool {
+        self.head.is_empty() && self.stream.ended()
+    }
+}
+
+impl TaggedSource for Feeder {
+    fn next(&mut self, stop: &AtomicBool) -> Option<(Packet, u32)> {
+        match self.head.pop_front() {
+            Some(p) => Some((p, 0)),
+            None => Untagged(&mut self.stream).next(stop),
+        }
+    }
+
+    fn ended(&self) -> bool {
+        Feeder::ended(self)
+    }
+}
+
 /// Where a TS's packets come from.
 enum Source {
     /// [`synthetic_packet`]s.
     Synthetic,
-    /// A TS file (or FIFO, stdin) read by its own thread.
-    File(PacketStream),
+    /// A TS file (or FIFO, stdin) read by its own thread, in arrival order.
+    File(Feeder),
+    /// A TS file placed by its PCR.
+    Paced {
+        stream: Feeder,
+        pacer: Box<SlotPacer>,
+    },
+    /// A pipe whose first PCR decides between `Paced` and `File` at the
+    /// first [`TsInputs::take`].
+    FirstPcr { stream: Feeder, slots: SlotClock },
+}
+
+impl Source {
+    fn feeder(&self) -> Option<&Feeder> {
+        match self {
+            Self::Synthetic => None,
+            Self::File(f) | Self::Paced { stream: f, .. } | Self::FirstPcr { stream: f, .. } => {
+                Some(f)
+            }
+        }
+    }
+
+    /// Every input packet handed out (`None` for synthetic packets).
+    fn ended(&self) -> Option<bool> {
+        match self {
+            Self::Synthetic => None,
+            Self::File(f) | Self::FirstPcr { stream: f, .. } => Some(f.ended()),
+            Self::Paced { pacer, .. } => Some(pacer.drained()),
+        }
+    }
+
+    /// Resolve a `FirstPcr`: read up to [`SNIFF_PACKETS`] packets (kept
+    /// for the TS) until one carries a PCR, then pace on its PID, or keep
+    /// the arrival order without one.
+    fn resolve(&mut self, ts_id: u16, stop: &AtomicBool) {
+        let Self::FirstPcr { stream, .. } = self else {
+            return;
+        };
+        let mut pcr = None;
+        while pcr.is_none() && stream.head.len() < SNIFF_PACKETS {
+            let Some(p) = stream.stream.next(stop) else {
+                break; // ended or stopped
+            };
+            pcr = packet_pcr(&p).map(|_| packet_pid(&p));
+            stream.head.push_back(p);
+        }
+        let n = stream.head.len();
+        let Self::FirstPcr { stream, slots } = std::mem::replace(self, Self::Synthetic) else {
+            unreachable!("matched above");
+        };
+        *self = match pcr {
+            Some(pid) => {
+                info!(
+                    target: "isdb::tx",
+                    ts_id,
+                    "  TS_ID {ts_id:#06x}: first PCR (PID {pid:#06x}) in packet {n}: paced by PCR"
+                );
+                Self::Paced {
+                    stream,
+                    pacer: Box::new(SlotPacer::new(slots, Some(pid), WaitMode::Block)),
+                }
+            }
+            None => {
+                if !stop.load(Ordering::Relaxed) {
+                    info!(
+                        target: "isdb::tx",
+                        ts_id,
+                        "  TS_ID {ts_id:#06x}: no PCR in the first {n} packets: arrival order"
+                    );
+                }
+                Self::File(stream)
+            }
+        };
+    }
 }
 
 /// One superframe's packets: exactly the count of each relative TS.
@@ -448,21 +805,38 @@ pub struct TsInputs {
 }
 
 impl TsInputs {
-    /// Open the inputs of `layout` with `feed` (`per_superframe` packets of
-    /// each relative TS size the read-ahead queues).
-    pub fn open(layout: &Layout, feed: Feed, per_superframe: &[usize]) -> Result<Self> {
+    /// Open the inputs of `layout` with `feed`, placed as `plan` says (one
+    /// entry per TS, [`plan_inputs`]); `per_superframe` packets of each
+    /// relative TS size the read-ahead queues.
+    pub fn open(
+        layout: &Layout,
+        feed: Feed,
+        per_superframe: &[usize],
+        plan: &[Placement],
+    ) -> Result<Self> {
         let mut sources = Vec::new();
         let mut names = Vec::new();
-        for (t, &n) in layout.ts.iter().zip(per_superframe) {
+        for ((t, &n), &place) in layout.ts.iter().zip(per_superframe).zip(plan) {
             match &t.path {
                 Some(p) => {
                     check_feed(p, feed)?;
-                    sources.push(Source::File(PacketStream::spawn(
+                    let stream = Feeder::new(PacketStream::spawn(
                         p,
                         path_opener(p),
                         feed,
                         queue_depth(n, superframe_seconds()),
-                    )?));
+                    )?);
+                    sources.push(match place {
+                        Placement::Arrival => Source::File(stream),
+                        Placement::Pcr(pid) => Source::Paced {
+                            stream,
+                            pacer: Box::new(SlotPacer::new(slot_clock(t)?, pid, WaitMode::Block)),
+                        },
+                        Placement::FirstPcr => Source::FirstPcr {
+                            stream,
+                            slots: slot_clock(t)?,
+                        },
+                    });
                     names.push(p.clone());
                 }
                 None => {
@@ -481,16 +855,35 @@ impl TsInputs {
         })
     }
 
-    /// In-memory streams for the TSs (tests): `None` = synthetic.
+    /// In-memory streams for the TSs (tests): `None` = synthetic; paced
+    /// streams on 48 slots per frame.
     #[cfg(test)]
-    fn from_streams(ts_ids: Vec<u16>, streams: Vec<Option<PacketStream>>, feed: Feed) -> Self {
+    fn from_streams(
+        ts_ids: Vec<u16>,
+        streams: Vec<Option<(PacketStream, Placement)>>,
+        feed: Feed,
+    ) -> Self {
         let names = streams
             .iter()
-            .map(|s| s.as_ref().map_or("synthetic".into(), |s| s.name.clone()))
+            .map(|s| s.as_ref().map_or("synthetic".into(), |s| s.0.name.clone()))
             .collect();
+        let slots = SlotClock::isdbs(48).expect("48 slots");
         let sources: Vec<Source> = streams
             .into_iter()
-            .map(|s| s.map_or(Source::Synthetic, Source::File))
+            .map(|s| match s {
+                None => Source::Synthetic,
+                Some((s, place)) => {
+                    let stream = Feeder::new(s);
+                    match place {
+                        Placement::Arrival => Source::File(stream),
+                        Placement::Pcr(pid) => Source::Paced {
+                            stream,
+                            pacer: Box::new(SlotPacer::new(slots, pid, WaitMode::Block)),
+                        },
+                        Placement::FirstPcr => Source::FirstPcr { stream, slots },
+                    }
+                }
+            })
             .collect();
         Self {
             ts_ids,
@@ -502,10 +895,13 @@ impl TsInputs {
         }
     }
 
-    /// Packets for one superframe, `counts[r]` of relative TS r (file TSs
-    /// padded with null packets). `None` when stopped, or once every file
-    /// TS has ended and none gave a packet (synthetic TSs then end with
-    /// them; with synthetic TSs only, never).
+    /// Packets for one superframe, `counts[r]` of relative TS r: synthetic
+    /// packets; a file TS's next packets in arrival order, padded with
+    /// null packets; or a paced TS's next `counts[r]` slots
+    /// ([`SlotPacer::fill`]). `None` when stopped, or once every file TS
+    /// has ended (a paced one: every packet handed out) and none gave a
+    /// packet (synthetic TSs then end with them; with synthetic TSs only,
+    /// never).
     pub fn take(&mut self, counts: &[usize], stop: &AtomicBool) -> Option<SfPackets> {
         let sf = self.superframe;
         let mut ts = Vec::with_capacity(counts.len());
@@ -513,9 +909,10 @@ impl TsInputs {
         let mut file_real = 0;
         for (r, src) in self.sources.iter_mut().enumerate() {
             let n = counts[r];
-            let mut v = Vec::with_capacity(n);
-            match src {
+            src.resolve(self.ts_ids[r], stop);
+            let (v, k) = match src {
                 Source::Synthetic => {
+                    let mut v = Vec::with_capacity(n);
                     for i in 0..n {
                         // a TS takes at most 48 × 8 packets per superframe
                         let index = u32::try_from(i).unwrap_or(u32::MAX);
@@ -523,53 +920,67 @@ impl TsInputs {
                         v.push(synthetic_packet(self.ts_ids[r], sf, index, cc));
                         self.sent[r] += 1;
                     }
+                    (v, n)
                 }
-                Source::File(s) => {
+                // `resolve` leaves no FirstPcr
+                Source::File(s) | Source::FirstPcr { stream: s, .. } => {
+                    let mut v = Vec::with_capacity(n);
                     while v.len() < n {
-                        match s.next(stop) {
+                        match s.next_packet(stop) {
                             Some(p) => v.push(p),
                             None => break,
                         }
                     }
-                    file_real += v.len();
+                    let k = v.len();
+                    file_real += k;
+                    v.resize(n, null_packet());
+                    (v, k)
                 }
-            }
-            real.push(v.len());
-            v.resize(n, null_packet());
+                Source::Paced { stream, pacer } => {
+                    let (v, k) = pacer.fill(n, stream, stop);
+                    file_real += k;
+                    (v, k)
+                }
+            };
+            real.push(k);
             ts.push(v);
         }
-        let mut files = self.sources.iter().filter_map(|s| match s {
-            Source::File(f) => Some(f),
-            Source::Synthetic => None,
-        });
-        let any_file = files.clone().next().is_some();
-        let all_ended = files.all(PacketStream::ended);
-        if (any_file && all_ended && file_real == 0) || stop.load(Ordering::Relaxed) {
+        let ended: Vec<bool> = self.sources.iter().filter_map(Source::ended).collect();
+        let all_ended = !ended.is_empty() && ended.iter().all(|&e| e);
+        if (all_ended && file_real == 0) || stop.load(Ordering::Relaxed) {
             return None;
         }
         self.superframe += 1;
         Some(SfPackets { ts, real })
     }
 
-    /// `TS_ID 0x4010 <- a.ts, TS_ID 0x4011 <- synthetic (feed File)`.
+    /// `TS_ID 0x4010 <- a.ts (paced by PCR), TS_ID 0x4011 <- synthetic
+    /// (feed File)`.
     pub fn describe(&self) -> String {
         let v: Vec<String> = self
             .ts_ids
             .iter()
             .zip(&self.names)
-            .map(|(id, n)| format!("TS_ID {id:#06x} <- {n}"))
+            .zip(&self.sources)
+            .map(|((id, n), s)| {
+                let how = match s {
+                    Source::Synthetic | Source::File(_) => "",
+                    Source::Paced { .. } => " (paced by PCR)",
+                    Source::FirstPcr { .. } => " (paced by PCR if one comes)",
+                };
+                format!("TS_ID {id:#06x} <- {n}{how}")
+            })
             .collect();
         format!("{} (feed {:?})", v.join(", "), self.feed)
     }
 
-    /// Reader counters for the status lines (may be empty).
+    /// Reader counters and the pacers' status for the status lines (may
+    /// be empty).
     pub fn status(&self) -> String {
         let (mut skipped, mut rewinds) = (0, 0);
-        for s in &self.sources {
-            if let Source::File(f) = s {
-                skipped += f.stats.skipped_bytes.load(Ordering::Relaxed);
-                rewinds += f.stats.rewinds.load(Ordering::Relaxed);
-            }
+        for f in self.sources.iter().filter_map(Source::feeder) {
+            skipped += f.stream.stats.skipped_bytes.load(Ordering::Relaxed);
+            rewinds += f.stream.stats.rewinds.load(Ordering::Relaxed);
         }
         let mut s = String::new();
         if skipped > 0 {
@@ -577,6 +988,11 @@ impl TsInputs {
         }
         if rewinds > 0 {
             s += &format!(" rewinds {rewinds}");
+        }
+        for (id, src) in self.ts_ids.iter().zip(&self.sources) {
+            if let Source::Paced { pacer, .. } = src {
+                s += &pacer.status().replacen(" | ", &format!(" | {id:#06x} "), 1);
+            }
         }
         s
     }
@@ -707,8 +1123,63 @@ pub struct ProducedSf {
     pub modulate_time: Duration,
 }
 
+/// `--placed-ts TEMPLATE`: one file per relative TS that receives the
+/// packets of every data superframe as they were placed in the TS's slots
+/// (null packets included) and handed to the transmitter: the TS a
+/// receiver outputs for that TS_ID.
+#[derive(Debug)]
+pub struct PlacedTs {
+    files: Vec<(String, std::io::BufWriter<std::fs::File>)>,
+}
+
+impl PlacedTs {
+    /// Create the files of `template` for `ts_ids`: `{ts_id}` is replaced
+    /// by the TS_ID in 4 hex digits (as `isdb rx --out` does); a template
+    /// without it names one file and takes only one TS.
+    pub fn create(template: &str, ts_ids: &[u16]) -> Result<Self> {
+        if ts_ids.len() > 1 && !template.contains("{ts_id}") {
+            bail!(
+                "--placed-ts {template:?} names one file for {} TSs: put {{ts_id}} in the path",
+                ts_ids.len()
+            );
+        }
+        let mut files = Vec::with_capacity(ts_ids.len());
+        for id in ts_ids {
+            let path = template.replace("{ts_id}", &format!("{id:04x}"));
+            let f = std::fs::File::create(&path).with_context(|| format!("create {path}"))?;
+            files.push((path, std::io::BufWriter::new(f)));
+        }
+        Ok(Self { files })
+    }
+
+    /// The paths written.
+    pub fn paths(&self) -> Vec<String> {
+        self.files.iter().map(|(p, _)| p.clone()).collect()
+    }
+
+    /// Append one superframe's packets, per relative TS.
+    fn write(&mut self, ts: &[Vec<Packet>]) -> Result<()> {
+        use std::io::Write;
+        for ((path, f), packets) in self.files.iter_mut().zip(ts) {
+            for p in packets {
+                f.write_all(p).with_context(|| format!("write {path}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Flush the files.
+    fn finish(&mut self) -> Result<()> {
+        use std::io::Write;
+        for (path, f) in &mut self.files {
+            f.flush().with_context(|| format!("write {path}"))?;
+        }
+        Ok(())
+    }
+}
+
 /// Producer settings.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SatConfig {
     /// Null superframes before the data.
     pub lead: usize,
@@ -722,6 +1193,8 @@ pub struct SatConfig {
     pub record: bool,
     /// Superframes queued ahead of the sink.
     pub depth: usize,
+    /// Write each data superframe's packets here (`--placed-ts`).
+    pub placed: Option<PlacedTs>,
 }
 
 /// Superframes covering `seconds` of air time (rounded up, at least 1).
@@ -747,7 +1220,7 @@ fn to_c32(z: &[Cplx]) -> Vec<C32> {
 /// caller so that their errors come before any output). Fails only when
 /// the OS refuses the thread.
 pub fn spawn(
-    cfg: SatConfig,
+    mut cfg: SatConfig,
     mut tx: Transmitter,
     mut m: Modulate,
     mut input: TsInputs,
@@ -833,6 +1306,9 @@ pub fn spawn(
                 let tm = Instant::now();
                 let refs: Vec<&[Packet]> = p.ts.iter().map(Vec::as_slice).collect();
                 m.data(&mut tx, &refs)?;
+                if let Some(w) = cfg.placed.as_mut() {
+                    w.write(&p.ts)?;
+                }
                 let payload = m.take();
                 let mt = tm.elapsed();
                 let f = ProducedSf {
@@ -851,6 +1327,9 @@ pub fn spawn(
                 index += 1;
                 data += 1;
             };
+            if let Some(w) = cfg.placed.as_mut() {
+                w.finish()?;
+            }
             if cfg.flush {
                 if stop.load(Ordering::Relaxed) {
                     return Ok(EndReason::Stopped);
@@ -956,6 +1435,9 @@ pub struct SatReport {
     pub end: Option<EndReason>,
     /// Sink summary.
     pub sink: String,
+    /// The input's last status ([`TsInputs::status`]: reader counters,
+    /// the pacers' lag and counters).
+    pub input: String,
 }
 
 /// `0x4010 0.0% 0x4011 12.5%`, or `-` before any data.
@@ -1091,6 +1573,7 @@ pub fn drive(
     }
     rep.end = Some(end?);
     rep.sink = fin?;
+    rep.input = input_status;
     Ok(rep)
 }
 
@@ -1190,6 +1673,14 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
         shaper.sps(),
         sys.roll_off
     );
+    // the placement of each TS file, before anything is opened or written
+    // (a dry run shows it; an input over its slots' capacity is refused)
+    let plan = plan_inputs(
+        &layout,
+        a.input.feed,
+        a.sat.ts_pacing,
+        a.input.allow_overrate,
+    )?;
     let bb = if given.has("bb_filter_hz") {
         a.tune.bb_filter_hz
     } else {
@@ -1233,6 +1724,18 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
         );
     }
     let lead = a.sat.lead_superframes.unwrap_or(1);
+    let placed = match &a.placed_ts {
+        Some(t) => {
+            let w = PlacedTs::create(t, &layout.ts_ids())?;
+            info!(
+                target: "isdb::tx",
+                "--placed-ts: the packets of each data superframe as placed in the slots -> {}",
+                w.paths().join(", ")
+            );
+            Some(w)
+        }
+        None => None,
+    };
     let cfg = SatConfig {
         lead,
         flush: !a.no_flush,
@@ -1240,6 +1743,7 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
         pace: a.realtime || crate::producer::default_pace(a.input.feed, sink.realtime()),
         record: false,
         depth: a.queue_frames,
+        placed,
     };
     info!(
         target: "isdb::tx",
@@ -1262,7 +1766,7 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
         },
         if cfg.pace { ", paced to real time" } else { "" }
     );
-    let input = TsInputs::open(&layout, a.input.feed, &counts)?;
+    let input = TsInputs::open(&layout, a.input.feed, &counts, &plan)?;
     info!(target: "isdb::tx", "input: {}", input.describe());
     let ts_ids = layout.ts_ids();
     let modulate = sink.modulate(shaper);
@@ -1311,6 +1815,9 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
             "  TS_ID {id:#06x}: {real} input packets, {nulls} null padding ({:.1}% null fill)",
             ratio(nulls, real + nulls)
         );
+    }
+    if !rep.input.is_empty() {
+        info!(target: "isdb::tx", "  input at the end:{}", rep.input);
     }
     info!(target: "isdb::tx", "{}", rep.sink);
     Ok(())
@@ -1710,7 +2217,11 @@ mod tests {
     fn inputs_pad_with_nulls_and_end_with_the_files() {
         let (tx, rx) = sync_channel(64);
         let s = PacketStream::from_receiver("a.ts", rx, Feed::File);
-        let mut inp = TsInputs::from_streams(vec![0x4010, 0x4011], vec![Some(s), None], Feed::File);
+        let mut inp = TsInputs::from_streams(
+            vec![0x4010, 0x4011],
+            vec![Some((s, Placement::Arrival)), None],
+            Feed::File,
+        );
         let stop = AtomicBool::new(false);
         for n in 0..5 {
             tx.send(pkt(0x0111, n)).unwrap();
@@ -1740,6 +2251,384 @@ mod tests {
         assert!(syn.take(&[2], &stop).is_none());
     }
 
+    /// AF-only PCR packet (H.222.0 Table 2-6) on `pid`.
+    fn pcr_only(pid: u16, ticks: u64) -> Packet {
+        let mut p = [0xFFu8; 188];
+        let [hi, lo] = pid.to_be_bytes();
+        p[..6].copy_from_slice(&[0x47, hi, lo, 0x20, 183, 0x10]);
+        p[6..12].copy_from_slice(&isdb_ts::pcr::Pcr::from_ticks(ticks).encode().unwrap());
+        p
+    }
+
+    /// A CBR TS of `n` packets at `tpp` ticks of 27 MHz each (packet i at
+    /// `pcr0` + i·tpp, H.222.0 §2.4.2.2): an AF-only PCR (PID 0x01FF)
+    /// every 199 packets (≤ 30 ms at ≥ 9.98 Mbit/s) from packet 0, PAT and
+    /// PMT (program 1, PCR_PID 0x01FF, a private stream on 0x0111) every
+    /// 332 packets, data on 0x0111 in every third packet, nulls elsewhere.
+    fn cbr_ts(n: u64, tpp: u64, pcr0: u64) -> Vec<Packet> {
+        use isdb_ts::cc::Counter;
+        use isdb_ts::packetize::{Packing, packetize_sections};
+        use isdb_ts::psi::{Pat, PatEntry, Pmt, PmtStream};
+        let pmt_pid = Pid::new(0x01F0).unwrap();
+        let es = Pid::new(0x0111).unwrap();
+        let pat = Pat::section(0x4010, 0, vec![PatEntry::new(1, pmt_pid)])
+            .encode()
+            .unwrap();
+        let pmt = Pmt::section(
+            1,
+            0,
+            Pmt::new(
+                Pid::new(0x01FF).unwrap(),
+                vec![],
+                vec![PmtStream::new(0x06, es, vec![])],
+            ),
+        )
+        .encode()
+        .unwrap();
+        let (mut c_pat, mut c_pmt, mut c_es) = (Counter::default(), Counter::default(), 0u8);
+        let one = |pid, sec: &Vec<u8>, c: &mut Counter| {
+            let v = packetize_sections(pid, std::slice::from_ref(sec), Packing::OnePerPacket, c)
+                .unwrap();
+            assert_eq!(v.len(), 1);
+            v[0]
+        };
+        (0..n)
+            .map(|i| match i {
+                i if i % 199 == 0 => pcr_only(0x01FF, pcr0 + i * tpp),
+                i if i % 332 == 1 => one(Pid::PAT, &pat, &mut c_pat),
+                i if i % 332 == 2 => one(pmt_pid, &pmt, &mut c_pmt),
+                i if i % 3 == 0 => {
+                    let mut p = pkt(0x0111, u32::try_from(i).unwrap());
+                    p[3] = 0x10 | c_es;
+                    c_es = (c_es + 1) & 15;
+                    p
+                }
+                _ => null_packet(),
+            })
+            .collect()
+    }
+
+    /// A fresh directory under the system's temporary directory.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("isdb-txs-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// The layout of `ts` (`--ts` arguments), the BS combination.
+    fn layout_of(ts: &[String]) -> Layout {
+        let mut v = vec!["--system", "isdbs", "--iq", "x"];
+        for t in ts {
+            v.extend(["--ts", t.as_str()]);
+        }
+        Layout::of(&parse(&v).unwrap().0.sat).unwrap()
+    }
+
+    /// Every superframe of `inp` until it ends: the packets per relative
+    /// TS, concatenated, and the superframes taken.
+    fn drain(inp: &mut TsInputs, counts: &[usize]) -> (Vec<Vec<Packet>>, usize) {
+        let stop = AtomicBool::new(false);
+        let mut out = vec![Vec::new(); counts.len()];
+        let mut n = 0;
+        while let Some(p) = inp.take(counts, &stop) {
+            for (o, v) in out.iter_mut().zip(p.ts) {
+                o.extend(v);
+            }
+            n += 1;
+        }
+        (out, n)
+    }
+
+    #[test]
+    fn plan_paces_files_with_a_pcr_and_checks_their_rate() {
+        let d = scratch("plan");
+        let write = |name: &str, p: &[Packet]| {
+            let path = d.join(name);
+            std::fs::write(&path, p.concat()).unwrap();
+            path.display().to_string()
+        };
+        // 1 s at 9.999 Mbit/s: 3.4 Mbit/s without the nulls
+        let cbr = write("cbr.ts", &cbr_ts(6649, 4061, 0));
+        let plain = write(
+            "plain.ts",
+            &(0..500).map(|i| pkt(0x0111, i)).collect::<Vec<_>>(),
+        );
+        let one = |path: &str| layout_of(&[format!("0x4010={path}")]);
+        let plan = |l: &Layout, feed, pacing, allow| plan_inputs(l, feed, pacing, allow);
+        let pcr = Pid::new(0x01FF);
+        assert_eq!(
+            plan(&one(&cbr), Feed::File, TsPacing::Auto, false).unwrap(),
+            [Placement::Pcr(pcr)]
+        );
+        assert_eq!(
+            plan(&one(&cbr), Feed::Loop, TsPacing::Pcr, false).unwrap(),
+            [Placement::Pcr(pcr)]
+        );
+        assert_eq!(
+            plan(&one(&cbr), Feed::File, TsPacing::Arrival, false).unwrap(),
+            [Placement::Arrival]
+        );
+        // no PCR: arrival order, or refused with `pcr`
+        assert_eq!(
+            plan(&one(&plain), Feed::File, TsPacing::Auto, false).unwrap(),
+            [Placement::Arrival]
+        );
+        let e = plan(&one(&plain), Feed::File, TsPacing::Pcr, false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("has no PCR in its first 128 MB"), "{e}");
+        // a pipe (stdin): decided by its first PCR, or paced with `pcr`
+        assert_eq!(
+            plan(&one("-"), Feed::File, TsPacing::Auto, false).unwrap(),
+            [Placement::FirstPcr]
+        );
+        assert_eq!(
+            plan(&one("-"), Feed::File, TsPacing::Pcr, false).unwrap(),
+            [Placement::Pcr(None)]
+        );
+        // --feed live is not paced (P5)
+        assert_eq!(
+            plan(&one(&cbr), Feed::Live, TsPacing::Auto, false).unwrap(),
+            [Placement::Arrival]
+        );
+        assert!(plan(&one(&cbr), Feed::Live, TsPacing::Pcr, false).is_err());
+        // 3.4 Mbit/s into 2 slots (2.17 Mbit/s): refused, naming the slots
+        // it needs, unless --allow-overrate; synthetic TSs are not planned
+        let two = layout_of(&[format!("0x4010:2={cbr}"), "0x4011:46".into()]);
+        let e = plan(&two, Feed::File, TsPacing::Auto, false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("TS_ID 0x4010") && e.contains("its 2 slots per frame carry 2.17 Mbit/s"),
+            "{e}"
+        );
+        assert!(
+            e.contains("it needs 4 sent slots per frame") && e.contains("--allow-overrate"),
+            "{e}"
+        );
+        assert_eq!(
+            plan(&two, Feed::File, TsPacing::Auto, true).unwrap(),
+            [Placement::Pcr(pcr), Placement::Arrival]
+        );
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// `--ts-pacing arrival` (and a file without PCR under `auto`) is the
+    /// old rule: every input packet, nulls included and PCRs untouched, in
+    /// the next slot, then null padding.
+    #[test]
+    fn arrival_reproduces_the_input_bytes() {
+        let d = scratch("arrival");
+        let input = cbr_ts(1000, 4061, 77);
+        let path = d.join("cbr.ts");
+        std::fs::write(&path, input.concat()).unwrap();
+        let layout = layout_of(&[format!("0x4010={}", path.display())]);
+        let plan = plan_inputs(&layout, Feed::File, TsPacing::Arrival, false).unwrap();
+        let mut inp = TsInputs::open(&layout, Feed::File, &[384], &plan).unwrap();
+        assert!(!inp.describe().contains("paced"));
+        let (out, n) = drain(&mut inp, &[384]);
+        assert_eq!(n, 3, "1000 packets in 384-packet superframes");
+        assert_eq!(out[0][..1000], input[..]);
+        assert!(out[0][1000..].iter().all(|p| *p == null_packet()));
+        assert!(!inp.status().contains("PCR lag"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A pipe is decided by its first PCR: the packets read ahead to find
+    /// it are kept (before the first PCR they take the first slots); a
+    /// pipe without PCR keeps today's arrival order.
+    #[test]
+    fn a_pipe_is_paced_from_its_first_pcr() {
+        let stop = AtomicBool::new(false);
+        let (tx, rx) = sync_channel(4096);
+        let mut input: Vec<Packet> = (0..5).map(|i| pkt(0x0111, i)).collect();
+        input.extend(cbr_ts(2000, 4061, 0));
+        for p in &input {
+            tx.send(*p).unwrap();
+        }
+        drop(tx);
+        let s = PacketStream::from_receiver("-", rx, Feed::File);
+        let mut inp = TsInputs::from_streams(
+            vec![0x4010],
+            vec![Some((s, Placement::FirstPcr))],
+            Feed::File,
+        );
+        assert!(inp.describe().contains("<- - (paced by PCR if one comes)"));
+        let (out, _) = drain(&mut inp, &[384]);
+        assert!(inp.describe().contains("<- - (paced by PCR)"));
+        let placed: Vec<Packet> = out[0].iter().filter(|p| !is_null(p)).copied().collect();
+        let want = input.iter().filter(|p| !is_null(p)).count();
+        assert_eq!(placed.len(), want);
+        assert_eq!(placed[..5], input[..5], "read ahead, placed first");
+        assert_eq!(out[0][..5], input[..5]);
+        // 2000 packets at 4061 ticks: 0.3 s of slots, not 2005 slots
+        assert!(
+            out[0].len() >= 2000 * 4061 * 37 / 28_800,
+            "{}",
+            out[0].len()
+        );
+        assert!(
+            inp.status().contains(" | 0x4010 PCR lag 0.00 s"),
+            "{}",
+            inp.status()
+        );
+        // no PCR: arrival order, the packets read ahead first
+        let (tx, rx) = sync_channel(64);
+        let plain: Vec<Packet> = (0..50).map(|i| pkt(0x0111, i)).collect();
+        for p in &plain {
+            tx.send(*p).unwrap();
+        }
+        drop(tx);
+        let s = PacketStream::from_receiver("-", rx, Feed::File);
+        let mut inp = TsInputs::from_streams(
+            vec![0x4010],
+            vec![Some((s, Placement::FirstPcr))],
+            Feed::File,
+        );
+        let p = inp.take(&[40], &stop).unwrap();
+        assert_eq!((p.ts[0].as_slice(), p.real[0]), (&plain[..40], 40));
+        let p = inp.take(&[40], &stop).unwrap();
+        assert_eq!(p.ts[0][..10], plain[40..]);
+        assert_eq!(p.real, [10]);
+        assert!(inp.take(&[40], &stop).is_none());
+        assert!(!inp.describe().contains("paced"));
+    }
+
+    /// The paced TS of a CBR file, as `--placed-ts` writes it, is the
+    /// constant-rate TS of its slots: `isdb ts validate` finds no PCR
+    /// fault and no repetition fault, and `inspect` measures the slots'
+    /// 52.17 Mbit/s within 1 ppm from the restamped PCRs.
+    #[test]
+    fn placed_ts_of_a_cbr_file_validates() {
+        use isdb_analyze::validate::{Severity, validate};
+        let d = scratch("placed");
+        // 3 s at 9.999 Mbit/s (4 061 ticks per packet), PCRs from 1 000 000
+        let n = 3 * 27_000_000 / 4061;
+        let input = cbr_ts(n, 4061, 1_000_000);
+        let path = d.join("cbr.ts");
+        std::fs::write(&path, input.concat()).unwrap();
+        let layout = layout_of(&[format!("0x4010={}", path.display())]);
+        let plan = plan_inputs(&layout, Feed::File, TsPacing::Auto, false).unwrap();
+        assert_eq!(plan, [Placement::Pcr(Pid::new(0x01FF))]);
+        let mut inp = TsInputs::open(&layout, Feed::File, &[384], &plan).unwrap();
+        assert!(
+            inp.describe().contains("(paced by PCR)"),
+            "{}",
+            inp.describe()
+        );
+        let template = d.join("placed-{ts_id}.ts").display().to_string();
+        let mut w = PlacedTs::create(&template, &[0x4010]).unwrap();
+        assert!(w.paths()[0].ends_with("placed-4010.ts"));
+        let stop = AtomicBool::new(false);
+        let mut sfs = 0;
+        while let Some(p) = inp.take(&[384], &stop) {
+            w.write(&p.ts).unwrap();
+            sfs += 1;
+        }
+        w.finish().unwrap();
+        // 3 s of PCR time in 11.07 ms superframes
+        assert!((271..=272).contains(&sfs), "{sfs} superframes");
+        let st = inp.status();
+        assert!(st.contains(" | 0x4010 PCR lag 0.00 s (max 0.00)"), "{st}");
+        assert!(st.contains("(cap 52.17)") && !st.contains("OVER"), "{st}");
+        let bytes = std::fs::read(d.join("placed-4010.ts")).unwrap();
+        let packets: Vec<Packet> = bytes.as_chunks::<188>().0.to_vec();
+        assert_eq!(packets.len(), sfs * 384);
+        // every non-null input packet once, in order; only PCRs changed
+        let got: Vec<&Packet> = packets.iter().filter(|p| !is_null(p)).collect();
+        let want: Vec<&Packet> = input.iter().filter(|p| !is_null(p)).collect();
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(&want) {
+            if crate::source::pid(w) != 0x01FF {
+                assert_eq!(g, w);
+            }
+        }
+        let cap = isdb_analyze::scan_packets(&packets, &Default::default());
+        let rep = validate(&cap, &Default::default());
+        for f in &rep.findings {
+            assert!(
+                !(f.check.starts_with("pcr.") && f.severity > Severity::Info),
+                "{f:?}"
+            );
+            assert_ne!(f.check, "tables.frequency", "{f:?}");
+        }
+        let ins = isdb_analyze::inspect::inspect(&cap, &Default::default());
+        let rate = ins.rate_bps.unwrap();
+        assert!((rate / 52_170_000.0 - 1.0).abs() < 1e-6, "{rate} bit/s");
+        let pcr = &ins.pcr[0];
+        assert!(pcr.fit_max_ns.unwrap() < 40.0, "{pcr:?}");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// `--placed-ts` needs `{ts_id}` with more than one TS.
+    #[test]
+    fn placed_ts_template() {
+        let e = PlacedTs::create("/nonexistent/p.ts", &[1, 2])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("put {ts_id} in the path"), "{e}");
+        let d = scratch("template");
+        let one = d.join("p.ts").display().to_string();
+        assert_eq!(PlacedTs::create(&one, &[0x4010]).unwrap().paths(), [one]);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A paced TS file gives the CPU path (IQ samples) and the FPGA path
+    /// (symbol codes) the same packets: placement happens before
+    /// `Modulate`.
+    #[test]
+    fn paced_inputs_feed_both_paths_the_same_packets() {
+        let d = scratch("paths");
+        let path = d.join("cbr.ts");
+        // 0.1 s of a 9.999 Mbit/s TS: 9 superframes of slots
+        std::fs::write(&path, cbr_ts(665, 4061, 5_000).concat()).unwrap();
+        let layout = layout_of(&[format!("0x4010={}", path.display())]);
+        let plan = plan_inputs(&layout, Feed::File, TsPacing::Auto, false).unwrap();
+        let sys = isdbs_phy::frontend::system();
+        type Item = (Vec<Vec<Packet>>, Vec<usize>, bool);
+        let run = |m: Modulate| {
+            let cfg = SatConfig {
+                lead: 1,
+                flush: true,
+                max_superframes: Some(5),
+                pace: false,
+                record: true,
+                depth: 2,
+                placed: None,
+            };
+            let input = TsInputs::open(&layout, Feed::File, &[384], &plan).unwrap();
+            let tx = Transmitter::new(layout.info.clone()).unwrap();
+            let (rx, h) = spawn(cfg, tx, m, input, Arc::new(AtomicBool::new(false))).unwrap();
+            let items: Vec<Item> = rx
+                .iter()
+                .filter(|f| f.kind == FrameKind::Data)
+                .map(|f| {
+                    let codes = matches!(f.payload, Payload::Codes(_));
+                    (f.packets.as_ref().unwrap().to_vec(), f.real.clone(), codes)
+                })
+                .collect();
+            assert_eq!(h.join().unwrap().unwrap(), EndReason::Limit);
+            items
+        };
+        let cpu = run(Modulate::shaped(
+            Shaper::new(40e6, sys.symbol_rate_hz, sys.roll_off).unwrap(),
+        ));
+        let fpga = run(Modulate::codes());
+        assert_eq!(cpu.len(), 4);
+        assert!(cpu.iter().all(|x| !x.2) && fpga.iter().all(|x| x.2));
+        let packets = |v: &[Item]| {
+            v.iter()
+                .map(|x| (x.0.clone(), x.1.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(packets(&cpu), packets(&fpga));
+        // paced: about 3.4 / 52.17 of each superframe is input
+        for (_, real, _) in &cpu {
+            assert!((15..=35).contains(&real[0]), "{real:?}");
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     #[test]
     fn producer_sequence_and_sample_counts() {
         let sat = parse(&[
@@ -1758,7 +2647,7 @@ mod tests {
         let sys = isdbs_phy::frontend::system();
         let shaper = Shaper::new(40e6, sys.symbol_rate_hz, sys.roll_off).unwrap();
         let reference = shaper.clone();
-        let input = TsInputs::open(&layout, Feed::File, &[288]).unwrap();
+        let input = TsInputs::open(&layout, Feed::File, &[288], &[Placement::Arrival]).unwrap();
         let cfg = SatConfig {
             lead: 1,
             flush: true,
@@ -1766,6 +2655,7 @@ mod tests {
             pace: false,
             record: true,
             depth: 2,
+            placed: None,
         };
         let (rx, h) = spawn(
             cfg,
@@ -1880,7 +2770,7 @@ mod tests {
         let sat = parse(&["--system", "isdbs", "--iq", "x"]).unwrap().0.sat;
         let layout = Layout::of(&sat).unwrap();
         let tx = Transmitter::new(layout.info.clone()).unwrap();
-        let input = TsInputs::open(&layout, Feed::File, &[384]).unwrap();
+        let input = TsInputs::open(&layout, Feed::File, &[384], &[Placement::Arrival]).unwrap();
         let cfg = SatConfig {
             lead: 1,
             flush: true,
@@ -1888,6 +2778,7 @@ mod tests {
             pace: false,
             record: true,
             depth,
+            placed: None,
         };
         spawn(cfg, tx, m, input, Arc::new(AtomicBool::new(false))).unwrap()
     }

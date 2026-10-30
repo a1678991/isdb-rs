@@ -274,7 +274,6 @@ pub const LOOPBACK_ISDBT_ONLY: &[&str] = &[
     "synthetic",
     "mux_config",
     "relay",
-    "allow_overrate",
     "frames",
     "cfo_carriers",
     "lead_frames",
@@ -287,6 +286,7 @@ pub const LOOPBACK_ISDBS_ONLY: &[&str] = &[
     "ts",
     "rate",
     "lead_superframes",
+    "ts_pacing",
     "superframes",
     "cfo_hz",
 ];
