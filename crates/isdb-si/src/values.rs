@@ -580,6 +580,158 @@ coded_enum! {
     Reserved => "Reserved";
 }
 
+coded_enum! {
+    /// polarization (2 bits) of the satellite delivery system descriptor —
+    /// ARIB STD-B10 Part 2 §6.2.6, Table 6-9 "Polarization".  "The first
+    /// bit defines whether the polarization is linear or circular".
+    pub enum Polarization: "polarization", "B10 §6.2.6 Table 6-9", 2 bits {
+        /// '00' "linear - horizontal".
+        LinearHorizontal = 0b00 => "linear-horizontal", "linear - horizontal";
+        /// '01' "linear - vertical".
+        LinearVertical = 0b01 => "linear-vertical", "linear - vertical";
+        /// '10' "circular - left".
+        CircularLeft = 0b10 => "circular-left", "circular - left";
+        /// '11' "circular - right".
+        CircularRight = 0b11 => "circular-right", "circular - right";
+    }
+}
+
+coded_enum! {
+    /// modulation (5 bits) of the satellite delivery system descriptor —
+    /// ARIB STD-B10 Part 2 §6.2.6, Table 6-10 "Modulation scheme for
+    /// satellite".  The table prints "Not defined" for two codes; they are
+    /// named values (not reserved), told apart by their bits.
+    pub enum SatelliteModulation: "modulation", "B10 §6.2.6 Table 6-10", 5 bits {
+        /// '00000' "Not defined".
+        NotDefined00000 = 0b00000 => "not-defined-00000", "Not defined";
+        /// '00001' "QPSK".
+        Qpsk = 0b00001 => "qpsk", "QPSK";
+        /// '01000' "Wide broad-band satellite digital broadcasting system
+        /// (refer to TMCC signal)": ISDB-S (ITU-R BO.1408-1).
+        IsdbS = 0b01000 => "isdb-s", "Wide broad-band satellite digital broadcasting system (refer to TMCC signal)";
+        /// '01001' "Not defined".
+        NotDefined01001 = 0b01001 => "not-defined-01001", "Not defined";
+        /// '01010' "Advanced narrow-band CS digital broadcasting system
+        /// (refer to PLHEADER and BBHEADER)".
+        AdvancedNarrowBandCs = 0b01010 => "advanced-narrow-band-cs", "Advanced narrow-band CS digital broadcasting system (refer to PLHEADER and BBHEADER)";
+        /// '01011' "Advanced wide band satellite digital broadcasting
+        /// (refer to TMCC signal)": ISDB-S3 (ARIB STD-B44).
+        IsdbS3 = 0b01011 => "isdb-s3", "Advanced wide band satellite digital broadcasting (refer to TMCC signal)";
+    }
+    reserved
+    /// '00010'–'00111' and '01100'–'11111' "Reserved for future use".
+    Reserved => "Reserved for future use";
+}
+
+coded_enum! {
+    /// FEC_inner (4 bits) of the satellite delivery system descriptor —
+    /// ARIB STD-B10 Part 2 §6.2.6, Table 6-11 "Inner FEC scheme".  The
+    /// table prints "Not defined" for two codes; they are named values (not
+    /// reserved), told apart by their bits.
+    pub enum FecInner: "FEC_inner", "B10 §6.2.6 Table 6-11", 4 bits {
+        /// '0000' "Not defined".
+        NotDefined0000 = 0b0000 => "not-defined-0000", "Not defined";
+        /// '0001' "1/2 conv. code rate".
+        Conv1_2 = 0b0001 => "1/2", "1/2 conv. code rate";
+        /// '0010' "2/3 conv. code rate".
+        Conv2_3 = 0b0010 => "2/3", "2/3 conv. code rate";
+        /// '0011' "3/4 conv. code rate".
+        Conv3_4 = 0b0011 => "3/4", "3/4 conv. code rate";
+        /// '0100' "5/6 conv. code rate".
+        Conv5_6 = 0b0100 => "5/6", "5/6 conv. code rate";
+        /// '0101' "7/8 conv. code rate".
+        Conv7_8 = 0b0101 => "7/8", "7/8 conv. code rate";
+        /// '1000' "wide band satellite digital broadcasting system (refer
+        /// to TMCC signal)": ISDB-S, whose code rates the TMCC signals.
+        IsdbS = 0b1000 => "isdb-s", "wide band satellite digital broadcasting system (refer to TMCC signal)";
+        /// '1001' "Not defined".
+        NotDefined1001 = 0b1001 => "not-defined-1001", "Not defined";
+        /// '1010' "Advanced narrow-band CS digital broadcasting system
+        /// (refer to PLHEADER)".
+        AdvancedNarrowBandCs = 0b1010 => "advanced-narrow-band-cs", "Advanced narrow-band CS digital broadcasting system (refer to PLHEADER)";
+        /// '1011' "Advanced wide broad-band satellite digital broadcasting
+        /// (refer to TMCC signal)": ISDB-S3.
+        IsdbS3 = 0b1011 => "isdb-s3", "Advanced wide broad-band satellite digital broadcasting (refer to TMCC signal)";
+        /// '1111' "No conv. coding".
+        NoConvCoding = 0b1111 => "none", "No conv. coding";
+    }
+    reserved
+    /// '0110'–'0111' and '1100'–'1110' "Reserved for future use".
+    Reserved => "Reserved for future use";
+}
+
+coded_enum! {
+    /// broadcasting_identifier (6 bits) of system_management_id — ARIB
+    /// STD-B10 Part 2 §6.2.21, Table 6-36 "Types of standard broadcasting
+    /// system".  The table prints "Undefined" for '000000', '000110' and
+    /// '001100'–'111111'; all of them decode to
+    /// [`BroadcastingIdentifier::Reserved`].
+    pub enum BroadcastingIdentifier: "broadcasting_identifier", "B10 §6.2.21 Table 6-36", 6 bits {
+        /// '000001' narrow-band digital satellite broadcasting, 27 MHz
+        /// bandwidth, 12.2–12.75 GHz.
+        NarrowBandSatellite = 0b000001 => "narrow-band-satellite", "Standard system specified as narrow-band digital satellite broadcasting using 27 MHz bandwidth in 12.2 to 12.75 GHz frequency band";
+        /// '000010' wide band digital satellite broadcasting, 34.5 MHz
+        /// bandwidth, 11.7–12.2 GHz (the BS band).
+        WideBandSatellite11_7 = 0b000010 => "wide-band-satellite-11.7-12.2ghz", "Standard system specified as wide band digital satellite broadcasting using 34.5 MHz bandwidth in 11.7 to 12.2 GHz frequency band";
+        /// '000011' digital terrestrial television broadcasting.
+        TerrestrialTelevision = 0b000011 => "terrestrial-television", "Standard system specified as digital terrestrial television broadcasting.";
+        /// '000100' wide band digital satellite broadcasting, 34.5 MHz
+        /// bandwidth, 12.2–12.75 GHz.
+        WideBandSatellite12_2 = 0b000100 => "wide-band-satellite-12.2-12.75ghz", "Standard system specified as wide band digital satellite broadcasting using 34.5 MHz bandwidth in 12.2 to 12.75 GHz frequency band";
+        /// '000101' digital terrestrial sound broadcasting.
+        TerrestrialSound = 0b000101 => "terrestrial-sound", "Standard system specified as digital terrestrial sound broadcasting.";
+        /// '000111' digital satellite broadcasting based on the advanced
+        /// narrow-band transmission system, 27 MHz bandwidth, 12.2–12.75 GHz.
+        AdvancedNarrowBandSatellite = 0b000111 => "advanced-narrow-band-satellite", "Standard system specified as digital satellite broadcasting based on advanced narrow-band transmission system using 27 MHz bandwidth in 12.2 to 12.75 GHz frequency band";
+        /// '001000' advanced wide broad-band digital satellite broadcasting,
+        /// 34.5 MHz bandwidth, 11.7–12.2 GHz.
+        AdvancedWideBandSatellite11_7 = 0b001000 => "advanced-wide-band-satellite-11.7-12.2ghz", "Standard system specified as advanced wide broad-band digital satellite broadcasting using 34.5 MHz bandwidth in 11.7 to 12.2 GHz frequency band";
+        /// '001001' advanced wide band digital satellite broadcasting,
+        /// 34.5 MHz bandwidth, 12.2–12.75 GHz.
+        AdvancedWideBandSatellite12_2 = 0b001001 => "advanced-wide-band-satellite-12.2-12.75ghz", "Standard system specified as advanced wide band digital satellite broadcasting using 34.5 MHz bandwidth in 12.2 to 12.75 GHz frequency band";
+        /// '001010' television and multimedia broadcasting with the segment
+        /// connection transmission method, 207.5–222 MHz.
+        SegmentConnection207_5 = 0b001010 => "segment-connection-207.5-222mhz", "Standard system specified as television broadcasting and multimedia broadcasting using segment connection transmission method in 207.5 to 222 MHz frequency band.";
+        /// '001011' multimedia broadcasting with the segment connection
+        /// transmission method, 99–108 MHz.
+        SegmentConnection99 = 0b001011 => "segment-connection-99-108mhz", "Standard system specified as multimedia broadcasting using segment connection transmission method in 99 to 108 MHz frequency band.";
+    }
+    reserved
+    /// '000000', '000110' and '001100'–'111111' "Undefined".
+    Reserved => "Undefined";
+}
+
+impl BroadcastingIdentifier {
+    /// A satellite system of Table 6-36 (codes '000001', '000010',
+    /// '000100', '000111', '001000', '001001'): the systems whose NIT
+    /// carries the satellite delivery system descriptor (B10 Part 2 Table
+    /// 6-1, 0x43 "Mandatory in digital satellite broadcasting").
+    pub fn is_satellite(self) -> bool {
+        matches!(
+            self,
+            Self::NarrowBandSatellite
+                | Self::WideBandSatellite11_7
+                | Self::WideBandSatellite12_2
+                | Self::AdvancedNarrowBandSatellite
+                | Self::AdvancedWideBandSatellite11_7
+                | Self::AdvancedWideBandSatellite12_2
+        )
+    }
+    /// A terrestrial system of Table 6-36 (codes '000011', '000101',
+    /// '001010', '001011'): the systems whose NIT carries the terrestrial
+    /// delivery system descriptor (B10 Part 2 Table 6-1, 0xFA "Mandatory
+    /// for digital terrestrial broadcasting and multimedia").
+    pub fn is_terrestrial(self) -> bool {
+        matches!(
+            self,
+            Self::TerrestrialTelevision
+                | Self::TerrestrialSound
+                | Self::SegmentConnection207_5
+                | Self::SegmentConnection99
+        )
+    }
+}
+
 /// maximum_bitrate of the digital copy control descriptor — ARIB STD-B10
 /// Part 2 §6.2.23: "transmission rate of TS packet of each event or
 /// elementary stream by rolling up in each 1/4Mbps".  The raw value counts
@@ -622,6 +774,7 @@ mod tests {
         complete::<DigitalRecordingControl>();
         complete::<CopyControlType>();
         complete::<ApsControlData>();
+        complete::<Polarization>();
     }
 
     #[test]
@@ -649,6 +802,10 @@ mod tests {
         check::<SamplingRate>();
         check::<DocumentResolution>();
         check::<ApplicationVisibility>();
+        check::<Polarization>();
+        check::<SatelliteModulation>();
+        check::<FecInner>();
+        check::<BroadcastingIdentifier>();
         for c in 0..=255u8 {
             assert_eq!(ApplicationControlCode::from_code(c).code(), c);
         }

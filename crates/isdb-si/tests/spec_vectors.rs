@@ -1152,6 +1152,279 @@ fn spec_descriptor_emergency() {
     );
 }
 
+/// The fields of a satellite_delivery_system_descriptor body, Table 6-8.
+fn satellite_delivery_body(
+    frequency: u64,
+    orbital_position: u64,
+    west_east_flag: u64,
+    polarization: u64,
+    modulation: u64,
+    symbol_rate: u64,
+    fec_inner: u64,
+) -> Vec<u8> {
+    fields(&[
+        ("frequency", 32, frequency),
+        ("orbital_position", 16, orbital_position),
+        ("west_east_flag", 1, west_east_flag),
+        ("polarization", 2, polarization),
+        ("modulation", 5, modulation),
+        ("symbol_rate", 28, symbol_rate),
+        ("FEC_inner", 4, fec_inner),
+    ])
+}
+
+/// satellite_delivery_system_descriptor, §6.2.6 Tables 6-8…6-11, with the
+/// delivery parameters of BS-1: 011.72748 GHz (BCD `01172748`; the BS
+/// channel plan's 11 727.48 MHz, SPECS.md §1.2), 110.0° east, circular
+/// right (Table 6-9 '11'), modulation '01000' (Table 6-10, ISDB-S),
+/// symbol rate 028.8600 Msymbol/s (BO.1408-1 Table 3: 28.86 Mbaud) and
+/// FEC_inner '1000' (Table 6-11).  The body equals the one carried on air
+/// for BS-1 (docs/plans/isdbs-next/bs-si.md §3.3).
+#[test]
+fn spec_table_6_8_satellite_delivery() {
+    use isdb_si::values::{FecInner, Polarization, SatelliteModulation};
+    let body = satellite_delivery_body(0x0117_2748, 0x1100, 1, 0b11, 0b01000, 0x028_8600, 0b1000);
+    assert_eq!(
+        body,
+        [
+            0x01, 0x17, 0x27, 0x48, 0x11, 0x00, 0xE8, 0x02, 0x88, 0x60, 0x08
+        ]
+    );
+    let d = SatelliteDeliverySystem::decode(&body).unwrap();
+    assert_eq!(
+        (
+            d.frequency,
+            d.orbital_position,
+            d.west_east_flag,
+            d.polarization,
+            d.modulation,
+            d.symbol_rate,
+            d.fec_inner
+        ),
+        (0x0117_2748, 0x1100, true, 0b11, 0b01000, 0x028_8600, 0b1000)
+    );
+    // Units from "decimal point after the third character".
+    assert_eq!(d.frequency_10khz(), Some(1_172_748));
+    assert_eq!(d.orbital_position_tenths(), Some(1100));
+    assert_eq!(d.symbol_rate_100sps(), Some(288_600));
+    assert_eq!(d.polarization(), Polarization::CircularRight);
+    assert_eq!(d.modulation_type(), SatelliteModulation::IsdbS);
+    assert_eq!(d.fec(), FecInner::IsdbS);
+    let mut out = Vec::new();
+    d.encode(&mut out).unwrap();
+    assert_eq!(out, body);
+
+    // The checked constructor codes the same bytes.
+    let built = SatelliteDeliverySystem::from_values(
+        1_172_748,
+        1100,
+        true,
+        Polarization::CircularRight,
+        SatelliteModulation::IsdbS,
+        288_600,
+        FecInner::IsdbS,
+    )
+    .unwrap();
+    assert_eq!(built, d);
+    let any = Descriptor::SatelliteDeliverySystem(built);
+    let mut wire = Vec::new();
+    any.encode(&mut wire).unwrap();
+    assert_eq!(wire, desc(0x43, &body));
+    assert!(
+        isdb_si::conformance::check_descriptors("NIT ts_loop", &[any]).is_empty(),
+        "BS-1 parameters conform"
+    );
+
+    // Even BS channels are circular left (Table 6-9 '10'): BS-2 at
+    // 11 746.66 MHz.
+    let bs2 = SatelliteDeliverySystem::from_values(
+        1_174_666,
+        1100,
+        true,
+        Polarization::CircularLeft,
+        SatelliteModulation::IsdbS,
+        288_600,
+        FecInner::IsdbS,
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    bs2.encode(&mut out).unwrap();
+    assert_eq!(
+        out,
+        [
+            0x01, 0x17, 0x46, 0x66, 0x11, 0x00, 0xC8, 0x02, 0x88, 0x60, 0x08
+        ]
+    );
+    // The B10 semantics examples: "012.73300GHz", "144.0 degrees" (west),
+    // "027.4500" Msymbol/s.
+    let ex = SatelliteDeliverySystem::from_values(
+        1_273_300,
+        1440,
+        false,
+        Polarization::LinearHorizontal,
+        SatelliteModulation::Qpsk,
+        274_500,
+        FecInner::Conv3_4,
+    )
+    .unwrap();
+    assert_eq!(
+        (ex.frequency, ex.orbital_position, ex.symbol_rate),
+        (0x0127_3300, 0x1440, 0x027_4500)
+    );
+    assert!(!ex.west_east_flag);
+}
+
+/// satellite_delivery_system_descriptor field limits: the BCD characters
+/// of Table 6-8 bound what `from_values` accepts, and the widest values
+/// round-trip.
+#[test]
+fn spec_table_6_8_satellite_delivery_limits() {
+    use isdb_si::values::{FecInner, Polarization, SatelliteModulation};
+    let make = |f: u32, o: u16, s: u32| {
+        SatelliteDeliverySystem::from_values(
+            f,
+            o,
+            true,
+            Polarization::CircularRight,
+            SatelliteModulation::IsdbS,
+            s,
+            FecInner::IsdbS,
+        )
+    };
+    let max = make(99_999_999, 9_999, 9_999_999).unwrap();
+    assert_eq!(
+        (max.frequency, max.orbital_position, max.symbol_rate),
+        (0x9999_9999, 0x9999, 0x999_9999)
+    );
+    assert_eq!(max.frequency_10khz(), Some(99_999_999));
+    assert_eq!(max.orbital_position_tenths(), Some(9_999));
+    assert_eq!(max.symbol_rate_100sps(), Some(9_999_999));
+    let zero = make(0, 0, 0).unwrap();
+    assert_eq!(
+        (zero.frequency, zero.orbital_position, zero.symbol_rate),
+        (0, 0, 0)
+    );
+    for (r, what, value, limit) in [
+        (
+            make(100_000_000, 0, 0),
+            "frequency",
+            100_000_000u64,
+            99_999_999u64,
+        ),
+        (make(0, 10_000, 0), "orbital_position", 10_000, 9_999),
+        (make(0, 0, 10_000_000), "symbol_rate", 10_000_000, 9_999_999),
+    ] {
+        match r {
+            Err(isdb_ts::Error::Range {
+                what: w,
+                value: v,
+                min: 0,
+                max: m,
+            }) => assert_eq!((w, v, m), (what, value, limit)),
+            other => panic!("{what}: expected Range, got {other:?}"),
+        }
+    }
+    // Non-BCD characters have no value.
+    let mut d = max;
+    d.frequency = 0x0117_27A8;
+    d.orbital_position = 0x110F;
+    d.symbol_rate = 0xF28_8600;
+    assert_eq!(
+        (
+            d.frequency_10khz(),
+            d.orbital_position_tenths(),
+            d.symbol_rate_100sps()
+        ),
+        (None, None, None)
+    );
+}
+
+/// The conformance checker on satellite_delivery_system_descriptor
+/// (§6.2.6): non-BCD characters are out of range, reserved modulation
+/// (Table 6-10) and FEC_inner (Table 6-11) codes are reserved values, and
+/// the codes the tables print as "Not defined" are not reported.
+#[test]
+fn spec_conformance_satellite_delivery() {
+    use isdb_si::conformance::{Kind, check_descriptors};
+    let kinds = |body: Vec<u8>| -> Vec<(Kind, &'static str)> {
+        let d = SatelliteDeliverySystem::decode(&body).unwrap();
+        check_descriptors("NIT", &[Descriptor::SatelliteDeliverySystem(d)])
+            .into_iter()
+            .map(|x| (x.kind, x.clause))
+            .collect()
+    };
+    const T68: &str = "B10 Part 2 §6.2.6 Table 6-8";
+    assert_eq!(
+        kinds(satellite_delivery_body(
+            0x0117_274A,
+            0x1100,
+            1,
+            3,
+            0b01000,
+            0x028_8600,
+            0b1000
+        )),
+        [(Kind::Range, T68)]
+    );
+    assert_eq!(
+        kinds(satellite_delivery_body(
+            0x0117_2748,
+            0xA100,
+            1,
+            3,
+            0b01000,
+            0x028_860F,
+            0b1000
+        )),
+        [(Kind::Range, T68), (Kind::Range, T68)]
+    );
+    for m in (0b00010..=0b00111).chain(0b01100..=0b11111) {
+        assert_eq!(
+            kinds(satellite_delivery_body(
+                0x0117_2748,
+                0x1100,
+                1,
+                3,
+                m,
+                0x028_8600,
+                0b1000
+            )),
+            [(Kind::ReservedValue, "B10 Part 2 §6.2.6 Table 6-10")],
+            "modulation {m:05b}"
+        );
+    }
+    for f in [0b0110, 0b0111, 0b1100, 0b1101, 0b1110] {
+        assert_eq!(
+            kinds(satellite_delivery_body(
+                0x0117_2748,
+                0x1100,
+                1,
+                3,
+                0b01000,
+                0x028_8600,
+                f
+            )),
+            [(Kind::ReservedValue, "B10 Part 2 §6.2.6 Table 6-11")],
+            "FEC_inner {f:04b}"
+        );
+    }
+    for (m, f) in [(0b00000, 0b0000), (0b01001, 0b1001), (0b00001, 0b1111)] {
+        assert!(
+            kinds(satellite_delivery_body(
+                0x0117_2748,
+                0x1100,
+                0,
+                0,
+                m,
+                0x028_8600,
+                f
+            ))
+            .is_empty(),
+            "modulation {m:05b} FEC_inner {f:04b}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // error behaviour
 // ---------------------------------------------------------------------------

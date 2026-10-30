@@ -152,8 +152,8 @@ Format as in the workspace `SPEC-NOTES.md`.
   are not BCD; polarity carries the sign.
 
 ## isdb-si: typed field values (`values` module)
-- Spec: B10 Part 2 Tables 6-5, 6-39, 6-43, 6-45, 6-60, 6-60-1; Annex F
-  Tables F-2/F-4.
+- Spec: B10 Part 2 Tables 6-5, 6-9, 6-10, 6-11, 6-36, 6-39, 6-43, 6-45,
+  6-60, 6-60-1; Annex F Tables F-2/F-4.
 - Interpretation: each enum maps a variant to exactly the printed code;
   codes a table reserves decode to a `Reserved`/`Extension` variant carrying
   the value, so the typed view never fails and never loses bits.  Short
@@ -172,6 +172,45 @@ Format as in the workspace `SPEC-NOTES.md`.
   the printed text with "[sic]".  Status: interpretation (typo).
 - Table 6-45 '000' "Reserved for future use" and '100' "Reserved" both map
   to `SamplingRate::Reserved`.
+
+## isdb-si: satellite delivery units
+- Spec: B10 Part 2 §6.2.6 Tables 6-8…6-11.
+- Text: "the frequency is coded in GHz, where the decimal point occurs
+  after the third character (e.g. 012.73300GHz)"; orbital_position "4
+  characters … in degrees where the decimal point occurs after the third
+  character (e.g. 144.0 degrees)"; symbol_rate "7 characters … in
+  Msymbol/s where the decimal point occurs after the third character
+  (e.g. 027.4500)".
+- Interpretation: the BCD characters read as one integer in the unit of
+  the last character: frequency in 10 kHz (5 decimals of GHz), orbital
+  position in 0.1°, symbol rate in 100 symbol/s (4 decimals of Msymbol/s).
+  `frequency_10khz()`, `orbital_position_tenths()` and
+  `symbol_rate_100sps()` return these integers, `None` when a nibble is
+  over 9; `SatelliteDeliverySystem::from_values` codes them back and
+  refuses (`Error::Range`) only values with more digits than the field
+  has characters. B10 gives no other bound (not even 180.0° for the
+  orbital position, which west_east_flag would make sufficient), so none
+  is applied.
+- Conformance: a non-BCD character is `Kind::Range` (Table 6-8); a
+  modulation or FEC_inner code in a "Reserved for future use" row of Table
+  6-10 / 6-11 is `Kind::ReservedValue`. Table 6-10 '00000' / '01001' and
+  Table 6-11 '0000' / '1001' are printed "Not defined", a row of their
+  own and not "Reserved for future use", so they are named values
+  (`not-defined-<bits>`) and not reported.
+- Table 6-36 (broadcasting_identifier) prints "Undefined" for '000000',
+  '000110' and '001100'–'111111'; all decode to
+  `BroadcastingIdentifier::Reserved`. `is_satellite()` / `is_terrestrial()`
+  split the named systems by Table 6-1's delivery descriptor rows (0x43
+  "Mandatory in digital satellite broadcasting", 0xFA "Mandatory for
+  digital terrestrial broadcasting and multimedia"; the segment connection
+  systems '001010' / '001011' are terrestrial multimedia broadcasting).
+- Confirmation: the BS-1 entry of a live BS NIT (2023 recording; on-air
+  structure re-checked 2026-10-31) is `0117 2748 1100 E8 0288 6008`, which
+  decodes to 1 172 748 × 10 kHz = 11 727.48 MHz (the BS-1 frequency of the
+  channel plan, SPECS.md §1.2), 110.0° east, circular right, modulation
+  '01000', 288 600 × 100 symbol/s = 28.86 Msymbol/s (BO.1408-1 Table 3)
+  and FEC_inner '1000' (`spec_table_6_8_satellite_delivery`). Status:
+  confirmed (live NIT).
 
 ## isdb-si: DSM-CC compatibilityDescriptor length and DDB section numbers
 - Spec: ARIB STD-B24 Vol. 3 §6.2.1 (Table 6-1 semantics), §6.5 Table 6-24.

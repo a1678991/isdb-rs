@@ -20,8 +20,8 @@ descriptor.
 | PID / table_id dispatch | Part 2 §5.1.3, Tables 5-1, 5-2 | `any` |
 | Descriptors (44 B10 tags + 0x09 CA) | Part 2 §6.2, Table 6-1; tags Part 1 Table 5-3; CA from H.222.0 §2.6.16 Table 2-58 | `descriptor` |
 | Time | Part 2 §5.2.7–§5.2.9, §6.2.25, Annex C; JST = UTC+9 (§3.1) | `time` |
-| Typed field values | Part 2 Tables 6-5, 6-39, 6-43, 6-45, 6-60, 6-60-1; Annex F Tables F-2/F-4; §6.2.23 maximum_bitrate unit | `values` |
-| Value conformance | Part 2 §3.1 reserved bits, §5.1.1 / per-table length limits, Table 5-1 placement, Table 6-1 unconditional mandatory descriptors | `conformance` |
+| Typed field values | Part 2 Tables 6-5, 6-9, 6-10, 6-11, 6-36, 6-39, 6-43, 6-45, 6-60, 6-60-1; Annex F Tables F-2/F-4; §6.2.23 maximum_bitrate unit; §6.2.6 satellite delivery BCD units | `values`, `SatelliteDeliverySystem` accessors |
+| Value conformance | Part 2 §3.1 reserved bits, §5.1.1 / per-table length limits, Table 5-1 placement, Table 6-1 unconditional mandatory descriptors, §6.2.6 satellite delivery BCD and reserved codes | `conformance` |
 | Data carousel (ARIB STD-B24 Vol. 3 Ch. 6) | DII / DDB messages and the DSM-CC section mapping (Tables 6-1, 6-3, 6-21, 6-22, 6-24), module information / private descriptors (§6.2.3; Vol. 2 §9.3.4) | `dsmcc` |
 | AIT (ARIB STD-B24 Vol. 4 Ch. 5; B10 Part 1 Table 5-5 tags) | application_information_section, application / transport protocol / simple application location / boundary and permission / autostart priority descriptors | `ait` |
 | BML signalling (B24 Vol. 2 §9.3, Vol. 3 Annex C, Vol. 4 Table 7-1) | additional_arib_bxml_info (PMT 0xFD), arib_bxml_info (EIT 0xC7 selector), ait_identifier_info, Control descriptor data | `bxml` |
@@ -66,7 +66,15 @@ Typed descriptor tags are listed in `descriptor::TYPED_TAGS`.
   content descriptors keep raw.
 - `values::*` — enums with the exact printed codes; reserved codes decode to
   a `Reserved`/`Extension` variant carrying the value, so the typed view
-  never fails.
+  never fails. Satellite delivery: `Polarization`, `SatelliteModulation`,
+  `FecInner` (Tables 6-9…6-11), read with
+  `SatelliteDeliverySystem::{polarization, modulation_type, fec}`; the BCD
+  fields in their units with `frequency_10khz()`,
+  `orbital_position_tenths()`, `symbol_rate_100sps()` (`None` on a non-BCD
+  character), and `SatelliteDeliverySystem::from_values(…)` codes them
+  (`Error::Range` when a value has too many digits).
+  `BroadcastingIdentifier` (Table 6-36) via
+  `SystemManagement::broadcasting_identifier_typed()`.
 
 ```rust
 use isdb_si::{AnyTable, conformance};
@@ -119,8 +127,8 @@ assert!(dev.iter().any(|d| d.kind == conformance::Kind::ReservedBits));
 
 | Test | What it proves | Data |
 |---|---|---|
-| `tests/spec_vectors.rs` | `spec_*`: Annex C worked example, §5.2.7 JST example, BCD durations, exhaustive day-by-day calendar continuity over the Annex C range; every table (NIT … LDT) and several descriptors built field by field from the syntax tables, decoded, checked and re-encoded; descriptors rejecting unaccounted bytes; dispatch errors; reserved-bit conformance | none |
-| `tests/spec_values.rs` | every `values` variant maps to exactly the code printed in its B10 table (6-5, 6-39, 6-43, 6-45, 6-60, 6-60-1, Annex F); maximum_bitrate unit; the copy control / component / audio component descriptors of the synthetic multiplex (values as live terrestrial broadcasters send them) decode to the expected variants | `tests/synthetic` (built in code) |
+| `tests/spec_vectors.rs` | `spec_*`: Annex C worked example, §5.2.7 JST example, BCD durations, exhaustive day-by-day calendar continuity over the Annex C range; every table (NIT … LDT) and several descriptors built field by field from the syntax tables, decoded, checked and re-encoded; the satellite delivery descriptor with the BS-1 parameters (decode, units, typed values, `from_values` encode and its range refusals, conformance of non-BCD and reserved codes); descriptors rejecting unaccounted bytes; dispatch errors; reserved-bit conformance | none |
+| `tests/spec_values.rs` | every `values` variant maps to exactly the code printed in its B10 table (6-5, 6-9, 6-10, 6-11, 6-36, 6-39, 6-43, 6-45, 6-60, 6-60-1, Annex F); maximum_bitrate unit; system_management_id 0x0201; the copy control / component / audio component descriptors of the synthetic multiplex (values as live terrestrial broadcasters send them) decode to the expected variants | `tests/synthetic` (built in code) |
 | `tests/prop_roundtrip.rs` | proptest: round trip of every typed descriptor (a test asserts the strategies cover `TYPED_TAGS`) and every table body; decode-side fuzzing (any bytes a decoder accepts re-encode identically) | none |
 | `tests/synthetic_si.rs` | every section of a synthetic terrestrial multiplex (NIT, SDT, BIT, EIT p/f, L-EIT, EIT schedule basic 0x50/0x51 and extended 0x58/0x59, TOT, TDT; 21 descriptor tags incl. terrestrial delivery with several frequencies, TS information with two transmission types, partial reception, logo transmission schemes 1/2/simple, event group, extended event items spanning several descriptors, SI parameter, extended broadcaster, emergency information): CRC_32 valid, typed decode with no `Unknown` table or descriptor, byte-identical re-encode, coverage of every table_id / tag listed, and no conformance deviation except the short event descriptor missing from event-group-only and extended-only events (as on live data, see SPEC-NOTES) | `tests/synthetic` (built in code) |
 | `src/values.rs` (unit) | Annex F user_defined bijection and code helpers | none |

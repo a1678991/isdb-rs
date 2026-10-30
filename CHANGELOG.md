@@ -17,6 +17,19 @@ STD-B44) is received to TLV streams.
 
 ### Added
 
+- `isdb-si`: typed view of the satellite delivery system descriptor
+  (0x43, ARIB STD-B10 §6.2.6): `values::{Polarization,
+  SatelliteModulation, FecInner}` (Tables 6-9…6-11);
+  `SatelliteDeliverySystem::{polarization, modulation_type, fec}`; the BCD
+  fields in their units, `frequency_10khz()`, `orbital_position_tenths()`
+  and `symbol_rate_100sps()` (`None` on a non-BCD character); and
+  `SatelliteDeliverySystem::from_values`, which codes them and refuses
+  values with too many digits. `values::BroadcastingIdentifier` (Table
+  6-36, with `is_satellite()` / `is_terrestrial()`) via
+  `SystemManagement::broadcasting_identifier_typed()`. `conformance`
+  reports a non-BCD 0x43 field as `Range` and a reserved modulation or
+  FEC_inner code as `ReservedValue`. The codec bytes are unchanged; a
+  spec vector checks the BS-1 parameters.
 - `isdb-cli`: `isdb tx --system isdbs` places a TS file in its slots by its
   PCR: each packet in the first free slot at or after the time its PCRs
   give it, input null packets dropped, nulls in the slots left over, and

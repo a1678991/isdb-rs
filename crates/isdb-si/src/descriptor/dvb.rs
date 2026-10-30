@@ -3,6 +3,7 @@
 
 use super::{Code3, DescriptorBody, code3, finish, len8_string, multiple_of, put_len8, string};
 use crate::time::{BcdOffset, MjdTime};
+use crate::values::{CodedValue, FecInner, Polarization, SatelliteModulation};
 use isdb_text::AribString;
 use isdb_ts::bits::{BitReader, BitWriter};
 use isdb_ts::{Pid, Result};
@@ -187,6 +188,113 @@ impl DescriptorBody for SatelliteDeliverySystem {
         w.write("FEC_inner", 4, u64::from(self.fec_inner))?;
         finish(w, out);
         Ok(())
+    }
+}
+
+/// The value of the `digits` 4-bit BCD characters in the low bits of
+/// `raw`, most significant character first; `None` if a nibble is over 9.
+fn bcd_value(raw: u32, digits: u32) -> Option<u32> {
+    (0..digits).rev().try_fold(0u32, |acc, i| {
+        let nibble = (raw >> (4 * i)) & 0xF;
+        (nibble <= 9).then(|| acc * 10 + nibble)
+    })
+}
+
+/// `value` as `digits` 4-bit BCD characters ([`isdb_ts::Error::Range`] if
+/// it has more than `digits` decimal digits).
+fn bcd_code(what: &'static str, value: u32, digits: u32) -> Result<u32> {
+    let max = 10u32.pow(digits) - 1;
+    if value > max {
+        return Err(isdb_ts::Error::Range {
+            what,
+            value: value.into(),
+            min: 0,
+            max: max.into(),
+        });
+    }
+    Ok((0..digits).fold(0u32, |acc, i| {
+        acc | (((value / 10u32.pow(i)) % 10) << (4 * i))
+    }))
+}
+
+/// Typed and unit views of the raw fields — ARIB STD-B10 Part 2 §6.2.6,
+/// Tables 6-8…6-11.  The units follow from the semantics' "decimal point
+/// occurs after the third character" (SPEC-NOTES "satellite delivery
+/// units"): frequency in 10 kHz (8 characters, GHz `ddd.ddddd`),
+/// orbital_position in 0.1° (4 characters, `ddd.d`), symbol_rate in
+/// 100 symbol/s (7 characters, Msymbol/s `ddd.dddd`).
+impl SatelliteDeliverySystem {
+    /// Characters of the frequency field (Table 6-8, 32 bits).
+    const FREQUENCY_DIGITS: u32 = 8;
+    /// Characters of the orbital_position field (Table 6-8, 16 bits).
+    const ORBITAL_DIGITS: u32 = 4;
+    /// Characters of the symbol_rate field (Table 6-8, 28 bits).
+    const SYMBOL_RATE_DIGITS: u32 = 7;
+
+    /// polarization as B10 Table 6-9.
+    pub fn polarization(&self) -> Polarization {
+        Polarization::from_code(self.polarization)
+    }
+    /// modulation as B10 Table 6-10.
+    pub fn modulation_type(&self) -> SatelliteModulation {
+        SatelliteModulation::from_code(self.modulation)
+    }
+    /// FEC_inner as B10 Table 6-11.
+    pub fn fec(&self) -> FecInner {
+        FecInner::from_code(self.fec_inner)
+    }
+    /// frequency in units of 10 kHz (B10 §6.2.6: 8 BCD characters, GHz,
+    /// point after the third: `011.72748` GHz → 1 172 748); `None` if a
+    /// character is not a decimal digit.
+    pub fn frequency_10khz(&self) -> Option<u32> {
+        bcd_value(self.frequency, Self::FREQUENCY_DIGITS)
+    }
+    /// orbital_position in units of 0.1° (B10 §6.2.6: 4 BCD characters,
+    /// degrees, point after the third: `110.0` → 1100); `None` if a
+    /// character is not a decimal digit.  East or west is
+    /// [`Self::west_east_flag`].
+    pub fn orbital_position_tenths(&self) -> Option<u16> {
+        bcd_value(self.orbital_position.into(), Self::ORBITAL_DIGITS)
+            .and_then(|v| u16::try_from(v).ok())
+    }
+    /// symbol_rate in units of 100 symbol/s (B10 §6.2.6: 7 BCD characters,
+    /// Msymbol/s, point after the third: `028.8600` → 288 600); `None` if
+    /// a character is not a decimal digit.
+    pub fn symbol_rate_100sps(&self) -> Option<u32> {
+        bcd_value(self.symbol_rate, Self::SYMBOL_RATE_DIGITS)
+    }
+    /// The descriptor for these values, BCD-coded per B10 §6.2.6 Table 6-8
+    /// (units as the accessors: 10 kHz, 0.1°, 100 symbol/s; `east` is the
+    /// west_east_flag).  [`isdb_ts::Error::Range`] if a value has more
+    /// decimal digits than its field has characters (frequency > 99 999 999,
+    /// orbital position > 9 999, symbol rate > 9 999 999).  Reserved
+    /// modulation / FEC codes are encoded as given;
+    /// [`crate::conformance`] reports them.
+    pub fn from_values(
+        frequency_10khz: u32,
+        orbital_tenths: u16,
+        east: bool,
+        polarization: Polarization,
+        modulation: SatelliteModulation,
+        symbol_rate_100sps: u32,
+        fec: FecInner,
+    ) -> Result<Self> {
+        // Four BCD characters occupy the low 16 bits.
+        let [_, _, o_hi, o_lo] = bcd_code(
+            "orbital_position",
+            orbital_tenths.into(),
+            Self::ORBITAL_DIGITS,
+        )?
+        .to_be_bytes();
+        Ok(Self {
+            frequency: bcd_code("frequency", frequency_10khz, Self::FREQUENCY_DIGITS)?,
+            orbital_position: u16::from_be_bytes([o_hi, o_lo]),
+            west_east_flag: east,
+            polarization: polarization.code(),
+            modulation: modulation.code(),
+            symbol_rate: bcd_code("symbol_rate", symbol_rate_100sps, Self::SYMBOL_RATE_DIGITS)?,
+            fec_inner: fec.code(),
+        })
     }
 }
 

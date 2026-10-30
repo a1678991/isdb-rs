@@ -1650,6 +1650,11 @@ impl SystemManagement {
     pub fn broadcasting_identifier(&self) -> u8 {
         ((self.system_management_id >> 8) & 0x3F) as u8
     }
+    /// broadcasting_identifier as B10 §6.2.21 Table 6-36.
+    pub fn broadcasting_identifier_typed(&self) -> crate::values::BroadcastingIdentifier {
+        use crate::values::CodedValue;
+        crate::values::BroadcastingIdentifier::from_code(self.broadcasting_identifier())
+    }
     /// additional_broadcasting_identification (low 8 bits).
     pub fn additional_broadcasting_identification(&self) -> u8 {
         self.system_management_id.to_be_bytes()[1]

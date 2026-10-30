@@ -195,6 +195,137 @@ fn spec_table_6_45_sampling_rate() {
 }
 
 #[test]
+fn spec_table_6_9_polarization() {
+    use Polarization::*;
+    assert_table(&[
+        (LinearHorizontal, 0b00, "linear-horizontal"),
+        (LinearVertical, 0b01, "linear-vertical"),
+        (CircularLeft, 0b10, "circular-left"),
+        (CircularRight, 0b11, "circular-right"),
+    ]);
+}
+
+#[test]
+fn spec_table_6_10_satellite_modulation() {
+    use SatelliteModulation::*;
+    assert_table(&[
+        (NotDefined00000, 0b00000, "not-defined-00000"),
+        (Qpsk, 0b00001, "qpsk"),
+        (IsdbS, 0b01000, "isdb-s"),
+        (NotDefined01001, 0b01001, "not-defined-01001"),
+        (AdvancedNarrowBandCs, 0b01010, "advanced-narrow-band-cs"),
+        (IsdbS3, 0b01011, "isdb-s3"),
+    ]);
+    // "0 0010 – 0 0111, 0 1100 – 1 1111 Reserved for future use".
+    for c in (0b00010..=0b00111).chain(0b01100..=0b11111) {
+        assert_eq!(SatelliteModulation::from_code(c), Reserved(c));
+    }
+}
+
+#[test]
+fn spec_table_6_11_fec_inner() {
+    use FecInner::*;
+    assert_table(&[
+        (NotDefined0000, 0b0000, "not-defined-0000"),
+        (Conv1_2, 0b0001, "1/2"),
+        (Conv2_3, 0b0010, "2/3"),
+        (Conv3_4, 0b0011, "3/4"),
+        (Conv5_6, 0b0100, "5/6"),
+        (Conv7_8, 0b0101, "7/8"),
+        (IsdbS, 0b1000, "isdb-s"),
+        (NotDefined1001, 0b1001, "not-defined-1001"),
+        (AdvancedNarrowBandCs, 0b1010, "advanced-narrow-band-cs"),
+        (IsdbS3, 0b1011, "isdb-s3"),
+        (NoConvCoding, 0b1111, "none"),
+    ]);
+    // "0110 – 0111, 1100 – 1110 Reserved for future use".
+    for c in [0b0110, 0b0111, 0b1100, 0b1101, 0b1110] {
+        assert_eq!(FecInner::from_code(c), Reserved(c));
+    }
+}
+
+#[test]
+fn spec_table_6_36_broadcasting_identifier() {
+    use BroadcastingIdentifier::*;
+    assert_table(&[
+        (NarrowBandSatellite, 0b000001, "narrow-band-satellite"),
+        (
+            WideBandSatellite11_7,
+            0b000010,
+            "wide-band-satellite-11.7-12.2ghz",
+        ),
+        (TerrestrialTelevision, 0b000011, "terrestrial-television"),
+        (
+            WideBandSatellite12_2,
+            0b000100,
+            "wide-band-satellite-12.2-12.75ghz",
+        ),
+        (TerrestrialSound, 0b000101, "terrestrial-sound"),
+        (
+            AdvancedNarrowBandSatellite,
+            0b000111,
+            "advanced-narrow-band-satellite",
+        ),
+        (
+            AdvancedWideBandSatellite11_7,
+            0b001000,
+            "advanced-wide-band-satellite-11.7-12.2ghz",
+        ),
+        (
+            AdvancedWideBandSatellite12_2,
+            0b001001,
+            "advanced-wide-band-satellite-12.2-12.75ghz",
+        ),
+        (
+            SegmentConnection207_5,
+            0b001010,
+            "segment-connection-207.5-222mhz",
+        ),
+        (
+            SegmentConnection99,
+            0b001011,
+            "segment-connection-99-108mhz",
+        ),
+    ]);
+    // "000000", "000110", "001100 – 111111": Undefined.
+    for c in std::iter::once(0b000000)
+        .chain(std::iter::once(0b000110))
+        .chain(0b001100..=0b111111)
+    {
+        let v = BroadcastingIdentifier::from_code(c);
+        assert_eq!(v, Reserved(c));
+        assert!(!v.is_satellite() && !v.is_terrestrial());
+    }
+    // Every named system is either satellite or terrestrial.
+    for v in BroadcastingIdentifier::NAMED {
+        assert!(v.is_satellite() != v.is_terrestrial(), "{v:?}");
+    }
+    assert!(WideBandSatellite11_7.is_satellite());
+    assert!(TerrestrialTelevision.is_terrestrial());
+}
+
+/// system_management_id 0x0201 (as a BS NIT carries, bs-si.md §3.3):
+/// broadcasting_flag '00' (Table 6-35 "Broadcasting"), identifier '000010'
+/// (Table 6-36, wide band satellite 11.7–12.2 GHz), additional 0x01.
+/// 0x0301 is the terrestrial television counterpart.
+#[test]
+fn spec_6_2_21_system_management_typed() {
+    use isdb_si::descriptor::SystemManagement;
+    let sm = SystemManagement::decode(&[0x02, 0x01]).unwrap();
+    assert_eq!(sm.broadcasting_flag(), 0);
+    assert_eq!(
+        sm.broadcasting_identifier_typed(),
+        BroadcastingIdentifier::WideBandSatellite11_7
+    );
+    assert_eq!(sm.additional_broadcasting_identification(), 0x01);
+    let t = SystemManagement::decode(&[0x03, 0x01]).unwrap();
+    assert_eq!(
+        t.broadcasting_identifier_typed(),
+        BroadcastingIdentifier::TerrestrialTelevision
+    );
+}
+
+#[test]
 fn spec_6_2_23_maximum_bitrate_unit() {
     // "rolling up in each 1/4Mbps"
     assert_eq!(MaximumBitrate(66).bps(), 16_500_000);

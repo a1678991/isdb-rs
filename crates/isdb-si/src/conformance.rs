@@ -5,8 +5,9 @@
 //! reserved_future_use bits not all '1' (Part 2 §3.1: "Unless otherwise
 //! specified … all 'reserved' bits shall be set to '1'" and the same for
 //! "reserved_future_use"), lengths over the stated maxima, reserved code
-//! points, invalid MJD/BCD times, missing descriptors that Table 6-1 marks
-//! mandatory unconditionally, and table_id/PID pairs not in Table 5-1.
+//! points, invalid MJD/BCD times and BCD-coded fields, missing descriptors
+//! that Table 6-1 marks mandatory unconditionally, and table_id/PID pairs
+//! not in Table 5-1.
 //! Only rules stated in the B10 text are checked; operational guidelines
 //! are not.
 
@@ -893,6 +894,52 @@ fn descriptor(o: &mut Out<'_>, d: &Descriptor) {
                     "B10 Part 2 §6.2.45 Table 6-87",
                     Kind::ReservedBits,
                     "trailing reserved_future_use bytes not all 0xFF",
+                );
+            }
+        }
+        Descriptor::SatelliteDeliverySystem(x) => {
+            use crate::values::{FecInner, SatelliteModulation};
+            const CLAUSE: &str = "B10 Part 2 §6.2.6 Table 6-8";
+            for (field, ok, raw, width) in [
+                (
+                    "frequency",
+                    x.frequency_10khz().is_some(),
+                    x.frequency,
+                    8usize,
+                ),
+                (
+                    "orbital_position",
+                    x.orbital_position_tenths().is_some(),
+                    x.orbital_position.into(),
+                    4,
+                ),
+                (
+                    "symbol_rate",
+                    x.symbol_rate_100sps().is_some(),
+                    x.symbol_rate,
+                    7,
+                ),
+            ] {
+                if !ok {
+                    o.push(
+                        CLAUSE,
+                        Kind::Range,
+                        format!("{field} {raw:0width$x} is not {width} BCD characters"),
+                    );
+                }
+            }
+            if let SatelliteModulation::Reserved(c) = x.modulation_type() {
+                o.push(
+                    "B10 Part 2 §6.2.6 Table 6-10",
+                    Kind::ReservedValue,
+                    format!("modulation {c:05b} reserved for future use"),
+                );
+            }
+            if let FecInner::Reserved(c) = x.fec() {
+                o.push(
+                    "B10 Part 2 §6.2.6 Table 6-11",
+                    Kind::ReservedValue,
+                    format!("FEC_inner {c:04b} reserved for future use"),
                 );
             }
         }
