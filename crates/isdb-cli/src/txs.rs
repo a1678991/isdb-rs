@@ -22,6 +22,29 @@
 //! TMCC, the energy dispersal and the interleaver each span one
 //! superframe.
 //!
+//! **Placement of a TS file in its slots** ([`plan_inputs`], `--ts-pacing`,
+//! docs/plans/isdbs-next/pcr-pacing.md §7). A relative TS with N_r sent
+//! slots per frame goes out at a constant packet rate, one packet every
+//! 1 382 400 / (37·N_r) ticks of 27 MHz ([`SlotClock::isdbs`]; the uniform
+//! per-TS grid a receiver outputs, `SPEC-NOTES.md` "ISDB-S TS timing
+//! model"). A TS file that carries a PCR is placed by it
+//! ([`crate::pace::SlotPacer`], [`Placement::Pcr`]): each packet in the
+//! first free slot at or after the time its PCRs give it (H.222.0 §2.4.2.2
+//! eq. 2-4), input null packets dropped, nulls in the slots left over, and
+//! every PCR corrected by the time its packet moved (H.222.0 Annex D.0.4),
+//! so the TS keeps its own rate. A regular file read with `--feed file` or
+//! `loop` is probed first and refused when its mean rate exceeds its
+//! slots' capacity (unless `--allow-overrate`); a pipe or stdin is decided
+//! by its first PCR ([`Placement::FirstPcr`]). Without a PCR, with
+//! `--ts-pacing arrival` and (for now, piece P5 of the plan) with
+//! `--feed live`, the packets go into the slots in arrival order, nulls
+//! included, unmodified ([`Placement::Arrival`]). Loop seams are not
+//! corrected yet (piece P3): at each rewind the PCR, PTS/DTS and continuity
+//! counters jump back with the file, as before, apart from the PCRs being
+//! restamped. Placement happens in [`TsInputs::take`], before
+//! [`Modulate`], so the IQ and code paths carry the same packets;
+//! `--placed-ts` writes them ([`PlacedTs`]).
+//!
 //! The samples are unit RMS (radios quantise them at `--backoff-db`); an
 //! `--iq` file holds them at `--backoff-db` below full scale in every
 //! format, cf32 included, because the ISDB-S receiver reads samples as a
@@ -1817,7 +1840,11 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
         );
     }
     if !rep.input.is_empty() {
-        info!(target: "isdb::tx", "  input at the end:{}", rep.input);
+        info!(
+            target: "isdb::tx",
+            "  input at the end: {}",
+            rep.input.trim_start().trim_start_matches("| ")
+        );
     }
     info!(target: "isdb::tx", "{}", rep.sink);
     Ok(())
@@ -2544,7 +2571,25 @@ mod tests {
             }
         }
         let cap = isdb_analyze::scan_packets(&packets, &Default::default());
-        let rep = validate(&cap, &Default::default());
+        // `isdb ts validate --expect-rate 52170000:1`
+        let opts = isdb_analyze::validate::ValidateOptions {
+            expect: isdb_analyze::validate::Expectations {
+                rate: Some(isdb_analyze::validate::RateExpectation {
+                    bps: 52_170_000.0,
+                    ppm: 1.0,
+                }),
+                ..Default::default()
+            },
+            nominal_bps: None,
+        };
+        let rep = validate(&cap, &opts);
+        assert!(
+            rep.findings
+                .iter()
+                .any(|f| f.check == "pcr.rate" && f.severity == Severity::Info),
+            "{:?}",
+            rep.findings
+        );
         for f in &rep.findings {
             assert!(
                 !(f.check.starts_with("pcr.") && f.severity > Severity::Info),
