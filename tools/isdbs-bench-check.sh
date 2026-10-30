@@ -22,7 +22,8 @@
 #   --record SECONDS   record RECORDING.ts first: dt295 stream --isdbs
 #                      TRANSPONDER --tsid HEX --raw-config (tunes the
 #                      receiver; it does not transmit). Refuses to
-#                      overwrite an existing file.
+#                      overwrite an existing file. dt295's transfer logs go
+#                      to captures/ beside RECORDING.ts, not the cwd.
 #   --transponder TP   for --record (default bs1)
 #   --dt295 PATH       dt295 binary (default $DT295, else
 #                      ~/dev/PIX-DT295/target/release/dt295)
@@ -73,7 +74,7 @@ if [ -n "$RECORD" ]; then
     [ -x "$DT295" ] || die "dt295 not found at $DT295 (--dt295 or DT295)"
     echo "== dt295 stream --isdbs $TP --tsid $TSID --raw-config --seconds $RECORD"
     "$DT295" stream --isdbs "$TP" --tsid "$TSID" --raw-config --out "$REC" --seconds "$RECORD" \
-        || die "dt295 stream failed"
+        --log-dir "$(dirname "$REC")/captures" || die "dt295 stream failed"
 fi
 [ -s "$REC" ] || die "$REC: missing or empty"
 

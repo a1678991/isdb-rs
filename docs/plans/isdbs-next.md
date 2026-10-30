@@ -44,6 +44,10 @@ rustdoc clean, FPGA suite 24/24):
   `cf-ad9361-lpc`. Vivado 2026.1 at `/opt/Xilinx/2026.1`; the build work
   tree is `~/dev/sdr/isdb-work` (`out/isdb/plutoskyr2.xsa`,
   `isdb_txrx_top.bin`, reports); upstream sources at `~/dev/sdr/`.
+- **2026-10-31: TX1 is not connected to the PIX-DT295** (the user's
+  word); reconnect TX1 → 30 dB → DC block → tuner before the bench
+  acceptance of item 1. Unconnected, `dt295 tune` reads 0xC3 = 50,
+  `Searching`.
 - TX1 → 30 dB attenuator → DC block → PIX-DT295 (USB `06b8:103b`, hub
   port `1-2.1`), driven by `~/dev/PIX-DT295` (`target/release/dt295`:
   `init [--auto]`, `tune --isdbs bs1 --tsid 4010`, `status --isdbs
@@ -94,7 +98,12 @@ rustdoc clean, FPGA suite 24/24):
    continuity counters). Acceptance: `dt295 stream` recording
    `isdb ts validate` clean of timing findings, PCR CBR-fit residual
    ≤ a few µs; the CPU (`--iq`) and FPGA paths identical.
-2. **Satellite-shaped SI in the multiplexer** (`isdbt-mux`, `isdb-si`):
+2. **Satellite-shaped SI in the multiplexer** (`isdbt-mux`, `isdb-si`).
+   Live check 2026-10-31 (BS1 on RX1, 10 s): NIT actual network_id
+   0x0004, system_management_id 0x0201, 26 TSs, each TS loop 0x41 then
+   0x43 and no 0xCD; BS1's 0x43 `011727481100e802886008` is what
+   `tools/bs-nit-section.py` writes; the placeholders 0x4017 / service
+   0x03E7 are not on air. Design: [bs-si.md](isdbs-next/bs-si.md).
    `[network] kind = "bs"` (or a satellite section): NIT with the
    satellite delivery system descriptor (B10 §6.2.6; `isdb-si`
    `descriptor/dvb.rs` has it), BS `network_id` 0x0004 /
@@ -170,6 +179,14 @@ Read-only investigation of the Work list, one report per cluster under
   are listed. FPGA suite 24/24 (`mise run fpga:test`).
 
 ## Pitfalls met this session
+
+- 2026-10-31: the session scratchpad (`/tmp/claude-…`) is tmpfs: TS, IQ
+  and placed-TS files cost RAM there. Bench work trees go on disk
+  (`~/dev/sdr/isdbs-bench`: `bench60.ts`, `bs-bench.toml`, recordings).
+- 2026-10-31: the board booted without `cf-ad9361-lpc`; the §2 rebind
+  recovery bound it on the third bind (the first two: "Tuning TX
+  FAILED", probe error −5); afterwards `tx_symbols_loopback_on_a_pluto`
+  passed as on 10-29 (MER 34.1 dB, byte-exact, 0 uncorrectable).
 
 - A `pkill -f PATTERN` whose pattern appears in the calling shell's own
   command line kills that shell. Keep pids in a file.
