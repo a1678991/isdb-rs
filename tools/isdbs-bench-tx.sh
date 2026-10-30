@@ -32,7 +32,7 @@
 # is passed on to `isdb tx` (which stops the radio first), the FIFO's
 # writer is killed on every exit path, and the script exits with isdb's
 # status. In loop mode `isdb tx` places the TS by its PCR (--ts-pacing
-# auto; loop seams are not corrected yet); in fifo mode (--feed live) it is
+# auto; each loop seam joined: PCR/PTS/DTS run on, counters renumbered); in fifo mode (--feed live) it is
 # re-timed by arrival order on the ISDB-S side: 12 ms rms PCR jitter,
 # PAT/PMT intervals up to 0.17 s (pcr-pacing.md §6 "arrival").
 set -euo pipefail
