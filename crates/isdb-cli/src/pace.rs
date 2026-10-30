@@ -68,18 +68,64 @@
 //! c = 0: no field but the PCR is ever modified. A PCR discontinuity inside
 //! a pass, indicator set, passes with Δ (and the pass's O_n), as in pass 0.
 //!
+//! **Live inputs** (§7.7, [`WaitMode::Live`]). A file or a looped file
+//! is read as fast as the slots need it ([`WaitMode::Block`]): the
+//! producer is bounded only by its sink (a radio keeps about 1.2 s queued)
+//! and blocks for input. A live writer (a FIFO fed at the TS's own rate)
+//! can be neither waited for without bound — a stalled writer would stall
+//! the transmitter — nor read ahead. Live pacing waits for input up to a
+//! deadline on a wall clock (injected, so that tests run on a simulated
+//! one):
+//!
+//! - **anchor**: when the first packet is timed (the first PCR) while the
+//!   fill of slots [s, s + n) is being built, due time 0 goes to slot
+//!   j_a = s + ⌈L / (n slots)⌉·n, the start of the first fill at least the
+//!   latency L later, and w_a, the wall time the PCR arrived
+//!   ([`TaggedSource::arrival`]: when the reader thread read it, else
+//!   now), is recorded: due time d is on the writer's schedule at w_a + d.
+//!   The slots before j_a go out as nulls at once. L covers the wait for
+//!   the next PCR (packets are timed between two PCRs, at most 0.1 s
+//!   apart, H.222.0 §2.7.2) and the writer's jitter;
+//! - **deadline**: a fill of slots [s, e) reads input until a packet is
+//!   timed at or beyond e (it waits for the next fill), the input ends, or
+//!   the wall clock passes w_a + S(e − j_a) + L + G: when the slots' last
+//!   packet is due on the writer's schedule, plus L and a grace G. The
+//!   fill then goes out as it is, counted as a deadline miss; a packet
+//!   that comes later takes the first free slot of a later fill,
+//!   restamped by its lag like any late packet (rule 4). The lag is kept
+//!   (the output PCRs stay on the slot grid; re-anchoring would break
+//!   their continuity) and shrinks again when the writer delivers its
+//!   backlog faster than real time;
+//! - **PCRs that stop**: at a deadline miss with packets waiting for a PCR
+//!   and no reference PCR arrived for [`MAX_PCR_GAP`] of wall time, the
+//!   waiting packets are timed by extrapolation at the last PCR rate
+//!   ([`PcrClock::finish`]) instead of after the clock's 200 000-packet
+//!   bound (§7.5);
+//! - **input lag**: for every reference PCR, the wall time it arrived
+//!   minus its place on the writer's schedule, w_a + its due time
+//!   ([`PacerStats::input_lag_ns`]): the writer's lag, whenever the
+//!   producer reads it (a producer paced to real time reads each packet
+//!   about L after it came). Negative (a lead) when the writer is ahead;
+//!   it grows while the writer runs slower than real time (its clock
+//!   against the transmitter's), and deadline misses start once it exceeds
+//!   about L + G.
+//!
+//! G ([`LIVE_GRACE`], 0.2 s) has to stay below what the sink holds queued
+//! (1.2 s on the FPGA path), so that a fill sent at its deadline still
+//! reaches the air in time; L is [`LIVE_LATENCY`], 0.3 s.
+//!
 //! This module knows no transmission system: the ISDB-S producer
-//! (`txs.rs`) builds a [`SlotClock::isdbs`] per relative TS. Live inputs
-//! (§7.7) come later: [`WaitMode`] has only [`WaitMode::Block`].
+//! (`txs.rs`) builds a [`SlotClock::isdbs`] per relative TS.
 
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroU64;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use isdb_ts::pcr::PCR_MODULUS;
 use isdb_ts::retime::{PesShift, add_to_pcr, set_continuity_counter, shift_pes_timestamps};
 use isdb_ts::{ContinuityCounter, Pid};
-use isdbt_mux::pcrclock::{HZ, PcrClock, packet_pcr, packet_pid};
+use isdbt_mux::pcrclock::{HZ, MAX_PCR_GAP, PcrClock, packet_pcr, packet_pid};
 
 use crate::source::{Packet, is_null, null_packet, pid};
 
@@ -172,15 +218,85 @@ pub trait TaggedSource {
     fn next(&mut self, stop: &AtomicBool) -> Option<(Packet, u32)>;
     /// True once the input has ended and is drained.
     fn ended(&self) -> bool;
+    /// The next packet, waiting at most `timeout` for one (a live input,
+    /// [`WaitMode::Live`]); a zero `timeout` takes only what is queued.
+    /// `None`: none came in time, the input ended ([`Self::ended`]), or
+    /// `stop` was raised. The default is [`Self::next`], for sources that
+    /// never block.
+    fn next_within(&mut self, stop: &AtomicBool, timeout: Duration) -> Option<(Packet, u32)> {
+        let _ = timeout;
+        self.next(stop)
+    }
+    /// When the packet last returned arrived (a live pipe: when its writer
+    /// delivered it, on the clock of [`WaitMode::Live`]), if the source
+    /// knows; [`WaitMode::Live`] then takes the time it is read.
+    fn arrival(&self) -> Option<Instant> {
+        None
+    }
 }
 
+/// Live latency L (pcr-pacing.md §7.7; module documentation, "Live
+/// inputs"): due time 0 goes to the first fill that starts at least this
+/// long after the first PCR was read. It covers the wait for the next PCR
+/// (at most 0.1 s, H.222.0 §2.7.2) and the writer's jitter.
+pub const LIVE_LATENCY: Duration = Duration::from_millis(300);
+
+/// Live grace G (pcr-pacing.md §7.7): a fill waits for its input until
+/// L + G after its last slot's place on the writer's schedule. It stays
+/// below the 1.2 s the FPGA sink holds queued, so that a fill sent at its
+/// deadline still reaches the air in time.
+pub const LIVE_GRACE: Duration = Duration::from_millis(200);
+
+/// The wall clock of [`WaitMode::Live`].
+pub type WallClock = Box<dyn Fn() -> Instant + Send>;
+
 /// How [`SlotPacer::fill`] waits for input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitMode {
     /// Block until the source has given every packet due in the requested
-    /// slots, or has ended (file and loop feeds). A deadline-bounded `Live`
-    /// mode for FIFOs and pipes is planned (pcr-pacing.md §7.7, piece P5).
+    /// slots, or has ended (file and loop feeds).
     Block,
+    /// A live input (pcr-pacing.md §7.7; module documentation, "Live
+    /// inputs"): wait for input up to a deadline on the wall clock `now`,
+    /// `latency` (L) plus `grace` (G) after the slots' place on the
+    /// writer's schedule, then send what came.
+    Live {
+        /// L: from the first PCR to the anchor slot.
+        latency: Duration,
+        /// G: how much longer than L a fill waits for its input.
+        grace: Duration,
+        /// The wall clock (`Instant::now`; a simulated one in tests).
+        now: WallClock,
+    },
+}
+
+impl WaitMode {
+    /// [`Self::Live`] on the system clock with [`LIVE_LATENCY`] and
+    /// [`LIVE_GRACE`].
+    pub fn live() -> Self {
+        Self::Live {
+            latency: LIVE_LATENCY,
+            grace: LIVE_GRACE,
+            now: Box::new(Instant::now),
+        }
+    }
+
+    /// True for [`Self::Live`].
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Live { .. })
+    }
+}
+
+impl std::fmt::Debug for WaitMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Block => f.write_str("Block"),
+            Self::Live { latency, grace, .. } => f
+                .debug_struct("Live")
+                .field("latency", latency)
+                .field("grace", grace)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 /// Counters of a [`SlotPacer`].
@@ -216,6 +332,17 @@ pub struct PacerStats {
     /// PES headers of a pass n ≥ 1 cut by the packet end before their
     /// PTS/DTS: left as they were.
     pub pes_truncated: u64,
+    /// [`WaitMode::Live`]: fills that reached their deadline before the
+    /// input had a packet timed beyond them (the packets still missing
+    /// come later, with lag).
+    pub deadline_misses: u64,
+    /// [`WaitMode::Live`]: the input lag of the last reference PCR in
+    /// nanoseconds, the wall time it arrived minus its place on the
+    /// writer's schedule (w_a + its due time); negative: a lead. `None`
+    /// before the anchor.
+    pub input_lag_ns: Option<i64>,
+    /// The largest `input_lag_ns` so far.
+    pub max_input_lag_ns: Option<i64>,
 }
 
 /// The corrections of one loop pass (module documentation, "Loop seams").
@@ -369,6 +496,46 @@ fn mod_signed(t: u64, e: i64) -> u64 {
     u64::try_from((i128::from(t) + i128::from(e)).rem_euclid(m)).unwrap_or(0)
 }
 
+/// The wall-clock state of a [`WaitMode::Live`] pacer.
+#[derive(Debug, Default)]
+struct LiveState {
+    /// w_a: the wall time due 0 was anchored at slot `SlotPacer::base`
+    /// (`None` before the first packet is timed).
+    anchor: Option<Instant>,
+    /// When the current fill began (its deadline before the anchor).
+    fill_began: Option<Instant>,
+    /// When the last reference PCR arrived.
+    last_pcr: Option<Instant>,
+    /// The current fill was counted as a deadline miss.
+    missed: bool,
+}
+
+/// `t` ticks of 27 MHz as a duration (1 tick = 1000/27 ns, rounded down).
+fn ticks_duration(t: u64) -> Duration {
+    Duration::from_nanos(sat(u128::from(t) * 1000 / 27))
+}
+
+/// `t` + `d`, or `t` if that is beyond what an [`Instant`] holds.
+fn after(t: Instant, d: Duration) -> Instant {
+    t.checked_add(d).unwrap_or(t)
+}
+
+/// `a` − `b` in nanoseconds, signed and saturating.
+fn signed_ns(a: Instant, b: Instant) -> i64 {
+    let ns = |d: Duration| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX);
+    if a >= b { ns(a - b) } else { -ns(b - a) }
+}
+
+/// `lag 0.012 s`, or `lead 0.300 s` for a negative lag.
+fn lead_lag(ns: i64) -> String {
+    let s = ns.unsigned_abs() as f64 / 1e9;
+    if ns >= 0 {
+        format!("lag {s:.3} s")
+    } else {
+        format!("lead {s:.3} s")
+    }
+}
+
 /// Places a TS on a [`SlotClock`] by its PCR and restamps its PCRs; see
 /// the module documentation for the rule.
 #[derive(Debug)]
@@ -376,8 +543,13 @@ pub struct SlotPacer {
     clock: PcrClock<(Packet, u32)>,
     slots: SlotClock,
     mode: WaitMode,
+    /// The slot of due time 0: 0 for [`WaitMode::Block`], j_a for
+    /// [`WaitMode::Live`] once anchored.
+    base: u64,
     /// Global index of the first slot of the next [`Self::fill`].
     next_out: u64,
+    /// The slots [start, end) of the current [`Self::fill`].
+    filling: (u64, u64),
     /// Slot after the last placed packet.
     next_free: u64,
     /// A placed packet beyond the slots handed out so far: (slot, packet).
@@ -389,6 +561,7 @@ pub struct SlotPacer {
     first_t: Option<u64>,
     last_t: u64,
     seams: Seams,
+    live: LiveState,
 }
 
 impl SlotPacer {
@@ -400,7 +573,9 @@ impl SlotPacer {
             clock: PcrClock::new(pcr_pid),
             slots,
             mode,
+            base: 0,
             next_out: 0,
+            filling: (0, 0),
             next_free: 0,
             carry: None,
             ended: false,
@@ -408,14 +583,21 @@ impl SlotPacer {
             first_t: None,
             last_t: 0,
             seams: Seams::new(),
+            live: LiveState::default(),
         }
+    }
+
+    /// True for a [`WaitMode::Live`] pacer.
+    pub fn is_live(&self) -> bool {
+        self.mode.is_live()
     }
 
     /// The next `n` slots: exactly `n` packets, the placed input packets at
     /// their slots and null packets (H.222.0 §2.4.3.3) elsewhere, and how
     /// many came from the input. Reads `src` until a packet falls beyond
-    /// these slots (it waits for the next call), the input ends, or `stop`
-    /// is raised (the slots not filled by then are nulls).
+    /// these slots (it waits for the next call), the input ends, `stop` is
+    /// raised or, [`WaitMode::Live`], the slots' deadline passes (the slots
+    /// not filled by then are nulls).
     pub fn fill(
         &mut self,
         n: usize,
@@ -425,8 +607,13 @@ impl SlotPacer {
         let start = self.next_out;
         let end = start.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
         self.next_out = end;
-        // Slots before `start` are gone: a packet read late (after a stop)
-        // takes the first slot still free.
+        self.filling = (start, end);
+        self.live.missed = false;
+        if self.live.anchor.is_none() {
+            self.live.fill_began = self.now();
+        }
+        // Slots before `start` are gone: a packet read late (after a stop,
+        // or after a live deadline) takes the first slot still free.
         self.next_free = self.next_free.max(start);
         let mut out = vec![null_packet(); n];
         let mut real = 0;
@@ -450,24 +637,26 @@ impl SlotPacer {
     }
 
     /// The next input packet with its slot, restamped; `None` at the end of
-    /// the input or when stopped.
+    /// the input, when stopped, or at a live deadline.
     fn next_placed(
         &mut self,
         src: &mut dyn TaggedSource,
         stop: &AtomicBool,
     ) -> Option<(u64, Packet)> {
         loop {
-            match self.mode {
-                WaitMode::Block => {
-                    while self.clock.ready() == 0 && !self.ended {
-                        match src.next(stop) {
-                            Some((p, pass)) => self.push(p, pass),
-                            None if src.ended() => {
-                                self.clock.finish();
-                                self.ended = true;
-                            }
-                            None => return None, // stopped
+            if self.mode.is_live() {
+                if !self.wait_live(src, stop) {
+                    return None;
+                }
+            } else {
+                while self.clock.ready() == 0 && !self.ended {
+                    match src.next(stop) {
+                        Some((p, pass)) => self.push(p, pass, None),
+                        None if src.ended() => {
+                            self.clock.finish();
+                            self.ended = true;
                         }
+                        None => return None, // stopped
                     }
                 }
             }
@@ -479,11 +668,12 @@ impl SlotPacer {
             }
             let off = self.seams.placing(pass);
             let due = x.t.saturating_add_signed(off.due);
-            let own = self.slots.first_at_or_after(due);
+            let own = self.base.saturating_add(self.slots.first_at_or_after(due));
             let j = own.max(self.next_free);
             self.next_free = j.saturating_add(1);
-            // time(j) ≥ due because j ≥ ⌈due·den/num⌉ and due is an integer.
-            let delta = self.slots.time(j).saturating_sub(due);
+            // time(j − base) ≥ due because j − base ≥ ⌈due·den/num⌉ and due
+            // is an integer.
+            let delta = self.slots.time(j - self.base).saturating_sub(due);
             if add_to_pcr(&mut p, off.pcr + delta % PCR_MODULUS) {
                 self.stats.pcr_restamped += 1;
                 self.stats.max_delta = self.stats.max_delta.max(delta);
@@ -510,11 +700,104 @@ impl SlotPacer {
         }
     }
 
+    /// The wall clock of a [`WaitMode::Live`] pacer.
+    fn now(&self) -> Option<Instant> {
+        match &self.mode {
+            WaitMode::Live { now, .. } => Some(now()),
+            WaitMode::Block => None,
+        }
+    }
+
+    /// The deadline of the current fill ([`WaitMode::Live`]): w_a +
+    /// S(end − j_a) + L + G once anchored; before that (no schedule yet:
+    /// nulls at the slots' pace) the fill's start plus its slots' duration.
+    fn deadline(&self) -> Option<Instant> {
+        let WaitMode::Live { latency, grace, .. } = &self.mode else {
+            return None;
+        };
+        let (start, end) = self.filling;
+        match self.live.anchor {
+            Some(w_a) => {
+                let sched = ticks_duration(self.slots.time(end.saturating_sub(self.base)));
+                Some(after(after(w_a, sched), *latency + *grace))
+            }
+            None => {
+                let d = ticks_duration(self.slots.time(end - start));
+                self.live.fill_began.map(|t| after(t, d))
+            }
+        }
+    }
+
+    /// [`WaitMode::Live`]: read `src` until the clock has timed a packet,
+    /// the input ends, or the fill's deadline passes with nothing queued.
+    /// False if nothing was timed: stopped, or the deadline passed (counted
+    /// as a miss once anchored; the fill goes out as it is).
+    fn wait_live(&mut self, src: &mut dyn TaggedSource, stop: &AtomicBool) -> bool {
+        while self.clock.ready() == 0 && !self.ended {
+            let (Some(now), Some(deadline)) = (self.now(), self.deadline()) else {
+                return false; // not live
+            };
+            match src.next_within(stop, deadline.saturating_duration_since(now)) {
+                Some((p, pass)) => self.push(p, pass, src.arrival()),
+                None if src.ended() => {
+                    self.clock.finish();
+                    self.ended = true;
+                }
+                None if stop.load(Ordering::Relaxed) => return false,
+                None => {
+                    let now = self.now().unwrap_or(deadline);
+                    if now < deadline {
+                        continue; // the source woke early
+                    }
+                    if self.live.anchor.is_some() && !self.live.missed {
+                        self.live.missed = true;
+                        self.stats.deadline_misses += 1;
+                    }
+                    // PCRs stopped (§7.5): time the packets waiting for one
+                    // by extrapolation rather than hold them for 200 000
+                    let gap = ticks_duration(MAX_PCR_GAP);
+                    let stalled = self
+                        .live
+                        .last_pcr
+                        .is_some_and(|w| now.saturating_duration_since(w) > gap);
+                    if stalled && self.clock.pending() > 0 {
+                        self.clock.finish();
+                        continue;
+                    }
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// [`WaitMode::Live`]: put due time 0 at the start of the first fill
+    /// at least L after the current one's start (module documentation,
+    /// "Live inputs") and record `now`, the arrival of the first timed
+    /// packet, as w_a.
+    fn anchor_live(&mut self, now: Instant) {
+        let WaitMode::Live { latency, .. } = &self.mode else {
+            return;
+        };
+        let (start, end) = self.filling;
+        let n = end - start;
+        let fill_ticks = u128::from(self.slots.time(n));
+        let l = latency.as_nanos() * 27 / 1000;
+        let fills = if fill_ticks == 0 {
+            0
+        } else {
+            sat(l.div_ceil(fill_ticks))
+        };
+        self.base = start.saturating_add(fills.saturating_mul(n));
+        self.live.anchor = Some(now);
+    }
+
     /// Push a packet of `pass` into the clock (raw, as read); a reference
     /// PCR also feeds the loop-seam state (module documentation, "Loop
     /// seams"), and the clock's bridge of a seam is not counted as a
-    /// discontinuity.
-    fn push(&mut self, p: Packet, pass: u32) {
+    /// discontinuity. A live pacer is anchored by the first packet timed
+    /// and measures the input lag of every reference PCR.
+    fn push(&mut self, p: Packet, pass: u32, arrival: Option<Instant>) {
         let pcr = packet_pcr(&p)
             .filter(|_| self.clock.pcr_pid().is_none_or(|x| x == packet_pid(&p)))
             .map(|(v, _)| v);
@@ -525,6 +808,23 @@ impl SlotPacer {
             && self.clock.stats().discontinuities > disc
         {
             self.seams.bridged += 1;
+        }
+        let first = self.live.anchor.is_none() && self.clock.ready() > 0;
+        if !(first || pcr.is_some()) {
+            return;
+        }
+        let Some(now) = self.now().map(|now| arrival.unwrap_or(now)) else {
+            return; // not live
+        };
+        if first {
+            self.anchor_live(now);
+        }
+        if let (Some(_), Some(a), Some(w_a)) = (pcr, self.clock.anchor(), self.live.anchor) {
+            self.live.last_pcr = Some(now);
+            let lag = signed_ns(now, after(w_a, ticks_duration(a.t)));
+            let st = &mut self.stats;
+            st.input_lag_ns = Some(lag);
+            st.max_input_lag_ns = Some(st.max_input_lag_ns.map_or(lag, |m| m.max(lag)));
         }
     }
 
@@ -551,8 +851,10 @@ impl SlotPacer {
     /// the input rate (non-null packets over their due-time span) once it
     /// spans half a second, `OVER CAPACITY` when it exceeds the slots'
     /// rate, `passes` (with `cc-fixed` and `pes-shifted`) once a looped
-    /// input is in its second pass, and `pes-truncated` / `slot-busy` /
-    /// `pcr-discontinuities` counts when non-zero.
+    /// input is in its second pass, `pes-truncated` / `slot-busy` /
+    /// `pcr-discontinuities` counts when non-zero, and for a live pacer
+    /// `live-input lag 0.012 s (worst lag 0.020 s) deadline-misses N` (the
+    /// input lag of the last reference PCR, or its lead, and the largest).
     pub fn status(&self) -> String {
         let st = self.stats();
         let secs = |t: u64| t as f64 / HZ as f64;
@@ -591,6 +893,12 @@ impl SlotPacer {
         }
         if st.discontinuities > 0 {
             s += &format!(" pcr-discontinuities {}", st.discontinuities);
+        }
+        if self.is_live() {
+            if let (Some(l), Some(m)) = (st.input_lag_ns, st.max_input_lag_ns) {
+                s += &format!(" live-input {} (worst {})", lead_lag(l), lead_lag(m));
+            }
+            s += &format!(" deadline-misses {}", st.deadline_misses);
         }
         s
     }
@@ -1639,6 +1947,456 @@ mod tests {
             events
                 .iter()
                 .all(|e| matches!(e, CcEventKind::Duplicate { identical: true }))
+        );
+    }
+
+    // Live inputs (pcr-pacing.md §7.7): a simulated wall clock and a
+    // simulated writer, so that nothing depends on the machine's timing.
+
+    /// A simulated wall clock: a fixed base plus an offset that only the
+    /// simulated writer moves.
+    #[derive(Clone)]
+    struct MockClock {
+        base: Instant,
+        ns: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl MockClock {
+        fn new() -> Self {
+            Self {
+                base: Instant::now(),
+                ns: std::sync::Arc::default(),
+            }
+        }
+
+        /// Simulated time since the base.
+        fn elapsed(&self) -> Duration {
+            Duration::from_nanos(self.ns.load(Ordering::SeqCst))
+        }
+
+        /// Move on to `d` after the base (never back).
+        fn advance_to(&self, d: Duration) {
+            let ns = u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+            self.ns.fetch_max(ns, Ordering::SeqCst);
+        }
+
+        /// A live mode with the default L and G on this clock.
+        fn live(&self) -> WaitMode {
+            let c = self.clone();
+            WaitMode::Live {
+                latency: LIVE_LATENCY,
+                grace: LIVE_GRACE,
+                now: Box::new(move || c.base + c.elapsed()),
+            }
+        }
+    }
+
+    /// A writer in simulated time: each packet is queued at its arrival
+    /// time (after the clock's base), and waiting for one moves the clock
+    /// on. It closes after its last packet.
+    struct Writer {
+        clock: MockClock,
+        queue: VecDeque<(Duration, Packet)>,
+        ended: bool,
+        /// Arrival of the packet last taken.
+        arrived: Option<Duration>,
+    }
+
+    impl Writer {
+        /// `input`, packet i queued at `arrival(i)` (non-decreasing).
+        fn new(clock: &MockClock, input: &[Packet], arrival: impl Fn(usize) -> Duration) -> Self {
+            let queue = input
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (arrival(i), *p))
+                .collect();
+            Self {
+                clock: clock.clone(),
+                queue,
+                ended: false,
+                arrived: None,
+            }
+        }
+    }
+
+    impl TaggedSource for Writer {
+        fn next(&mut self, stop: &AtomicBool) -> Option<(Packet, u32)> {
+            self.next_within(stop, Duration::MAX)
+        }
+
+        fn ended(&self) -> bool {
+            self.ended
+        }
+
+        fn next_within(&mut self, _stop: &AtomicBool, timeout: Duration) -> Option<(Packet, u32)> {
+            let until = self.clock.elapsed().saturating_add(timeout);
+            match self.queue.front() {
+                None => {
+                    self.ended = true;
+                    None
+                }
+                Some(&(at, p)) if at <= until => {
+                    self.queue.pop_front();
+                    self.clock.advance_to(at);
+                    self.arrived = Some(at);
+                    Some((p, 0))
+                }
+                Some(_) => {
+                    self.clock.advance_to(until);
+                    None
+                }
+            }
+        }
+
+        fn arrival(&self) -> Option<Instant> {
+            self.arrived.map(|d| self.clock.base + d)
+        }
+    }
+
+    /// One [`SlotPacer::fill`] of a live run.
+    struct Fill {
+        /// Its first slot.
+        start: u64,
+        out: Vec<Packet>,
+        real: usize,
+        /// Simulated time it returned.
+        at: Duration,
+    }
+
+    /// Fill `n` slots at a time, as fast as the pacer lets (no sink
+    /// bounds it), until it is drained and a fill holds no input packet.
+    fn run_live(pacer: &mut SlotPacer, src: &mut Writer, n: usize) -> Vec<Fill> {
+        let stop = AtomicBool::new(false);
+        let mut fills = vec![];
+        let mut start = 0;
+        loop {
+            let (out, real) = pacer.fill(n, src, &stop);
+            assert_eq!(out.len(), n);
+            assert_eq!(real, out.iter().filter(|p| !is_null(p)).count());
+            if pacer.drained() && real == 0 {
+                return fills;
+            }
+            let at = src.clock.elapsed();
+            fills.push(Fill {
+                start,
+                out,
+                real,
+                at,
+            });
+            start += n as u64;
+            assert!(fills.len() < 100_000, "the run does not end");
+        }
+    }
+
+    /// (slot, packet) of every input packet of a run.
+    fn placed_live(fills: &[Fill]) -> Vec<(u64, Packet)> {
+        fills
+            .iter()
+            .flat_map(|f| placed_from(f.start, &f.out))
+            .collect()
+    }
+
+    /// Simulated time of `ticks` of 27 MHz.
+    fn sim(ticks: u64) -> Duration {
+        ticks_duration(ticks)
+    }
+
+    /// Checks shared by the live runs of a [`cbr`] input (packet i due at
+    /// i·tpp, the first PCR `pcr0`): every input packet placed once and in
+    /// order, the first at the anchor `base`, none early, and every output
+    /// PCR on the slot grid from it (PCR_out = pcr0 + S(j − base), late
+    /// packets included). Returns the (due, lag) of each placed packet.
+    fn check_live_placement(
+        c: SlotClock,
+        input: &[Packet],
+        tpp: u64,
+        pcr0: u64,
+        base: u64,
+        got: &[(u64, Packet)],
+    ) -> Vec<(u64, u64)> {
+        let want: Vec<(u64, Packet)> = (0u64..)
+            .zip(input)
+            .filter(|(_, p)| !is_null(p))
+            .map(|(i, p)| (i * tpp, *p))
+            .collect();
+        assert_eq!(got.len(), want.len(), "every packet once");
+        assert_eq!(got[0].0, base, "the first PCR at the anchor slot");
+        let mut lags = vec![];
+        for ((j, p), (due, q)) in got.iter().zip(&want) {
+            let s = c.time(j - base);
+            assert!(s >= *due, "slot {j} before its due time {due}");
+            lags.push((*due, s - due));
+            match pcr_of(q) {
+                Some(_) => assert_eq!(pcr_of(p), Some(pcr0 + s), "PCR at slot {j}"),
+                None => assert_eq!(p, q, "order and content kept"),
+            }
+        }
+        lags
+    }
+
+    /// One slot of [`SlotClock::isdbs`]`(48)`, rounded up: 28 800/37 ticks.
+    const SLOT: u64 = 779;
+
+    /// A real-time writer with a 0.7 s stall: the anchor goes L after the
+    /// first PCR, at a fill boundary; the fills wait for the input only as
+    /// long as it takes to come; during the stall the fills go out at
+    /// their deadline as nulls, counted; the late packets follow at the
+    /// first free slots, restamped by their lag (the PCRs stay on the
+    /// grid), and the lag returns under one slot once the backlog is sent.
+    #[test]
+    fn live_paced_with_mock_clock() {
+        let c = SlotClock::isdbs(48).unwrap();
+        let (tpp, pcr0) = (4061, 1_000_000); // 10 Mbit/s, a PCR every 30 ms
+        let input = cbr(13_300, tpp, 199, pcr0); // 2 s
+        let start = Duration::from_millis(5); // first packet (a PCR)
+        let (stall, resume) = (21_600_000, 40_500_000); // due 0.8 s .. 1.5 s
+        let clock = MockClock::new();
+        let mut w = Writer::new(&clock, &input, |i| {
+            let due = i as u64 * tpp;
+            let late = (stall..resume).contains(&due);
+            start + sim(if late { resume } else { due })
+        });
+        let mut pacer = SlotPacer::new(c, None, clock.live());
+        let fills = run_live(&mut pacer, &mut w, 384);
+        // anchor: ⌈0.3 s / 11.07 ms⌉ = 28 fills after the one being built
+        // when the first PCR came (fill 0), all nulls before it
+        let base = 28 * 384;
+        assert!(fills[..28].iter().all(|f| f.real == 0));
+        assert!(fills[28].real > 0);
+        let lags = check_live_placement(c, &input, tpp, pcr0, base, &placed_live(&fills));
+        // the schedule: fill k's last slot is due at w_a + S(end − base),
+        // w_a = 5 ms; its deadline is L + G later
+        let sched = |f: &Fill| start + sim(c.time(f.start + 384 - base));
+        let deadline = |f: &Fill| sched(f) + LIVE_LATENCY + LIVE_GRACE;
+        let mut missed = 0;
+        for f in &fills[28..] {
+            assert!(
+                f.at <= deadline(f),
+                "fill at {}: after its deadline",
+                f.start
+            );
+            if f.at == deadline(f) {
+                missed += 1;
+            } else {
+                // waited only for the PCR after its last slot (30 ms
+                // apart), or the backlog after the stall
+                assert!(
+                    f.at <= sched(f) + Duration::from_millis(31) || f.at >= start + sim(resume),
+                    "fill at {} returned at {:?}, scheduled {:?}",
+                    f.start,
+                    f.at,
+                    sched(f)
+                );
+            }
+        }
+        let st = pacer.stats();
+        assert_eq!(st.deadline_misses, missed);
+        // the fills with their last slot due between 0.77 s and 1.0 s
+        // (deadline before the writer resumes at 1.505 s) miss: ~20
+        assert!((15..=22).contains(&missed), "{missed} misses");
+        let empty = fills[28..].iter().filter(|f| f.real == 0).count();
+        assert!(empty >= 15, "{empty} fills of nulls");
+        // nothing late before the last PCR ahead of the stall (the packets
+        // after it wait for the next PCR, which is stalled); those and the
+        // stalled ones placed from the fill being built when they came
+        // (S ≈ 0.99 s): the first ~0.19 s + one PCR interval late
+        let pcr_interval = 199 * tpp;
+        let last_pcr = stall / pcr_interval * pcr_interval;
+        for &(due, lag) in &lags {
+            if due <= last_pcr {
+                assert!(lag < SLOT, "due {due}: lag {lag}");
+            } else if due < stall {
+                assert!(lag > 4_000_000, "due {due}: lag {lag}");
+            }
+        }
+        let max = lags.iter().map(|l| l.1).max().unwrap();
+        assert!(
+            (5_000_000..5_900_000).contains(&max),
+            "the first packet after the last PCR is {max} ticks late"
+        );
+        assert_eq!(st.max_lag, max);
+        // recovery: the backlog goes out at 5.2× its rate, then every
+        // packet is at its own slot again
+        for &(due, lag) in &lags {
+            if due > 30_000_000 {
+                assert!(lag < SLOT, "due {due}: lag {lag} after the recovery");
+            }
+        }
+        assert!(st.lag < SLOT);
+        // the input lag: 0.7 s at the first PCR after the stall, 0 for a
+        // real-time writer
+        let max = st.max_input_lag_ns.unwrap();
+        assert!((650_000_000..=705_000_000).contains(&max), "{max}");
+        assert!(st.input_lag_ns.unwrap().abs() < 1_000, "{st:?}");
+        let s = pacer.status();
+        assert!(
+            s.contains(&format!(
+                " live-input lag 0.000 s (worst lag 0.{}",
+                max / 100_000_000
+            )) && s.ends_with(&format!(" deadline-misses {missed}")),
+            "{s}"
+        );
+    }
+
+    /// A writer 5 % slower than real time (its clock against the slots'):
+    /// the input lag grows by 0.05 s per second; once it exceeds L + G
+    /// (≈ 9.5 s in), the fills go out at their deadlines and the packets'
+    /// lag accumulates, reaching 0.05·16 − 0.5 ≈ 0.3 s at 16 s. Kept and
+    /// reported, never re-anchored: the PCRs stay on the grid.
+    #[test]
+    fn live_writer_slower_than_real_time_accumulates_lag() {
+        let c = SlotClock::isdbs(48).unwrap();
+        let (tpp, pcr0) = (40_608, 0); // 1 Mbit/s, a PCR every 30 ms
+        let input = cbr(10_640, tpp, 20, pcr0); // 16 s
+        let start = Duration::from_millis(5);
+        let clock = MockClock::new();
+        let mut w = Writer::new(&clock, &input, |i| start + sim(i as u64 * tpp * 105 / 100));
+        let mut pacer = SlotPacer::new(c, None, clock.live());
+        let fills = run_live(&mut pacer, &mut w, 384);
+        let base = 28 * 384;
+        let lags = check_live_placement(c, &input, tpp, pcr0, base, &placed_live(&fills));
+        let st = pacer.stats();
+        assert!(st.deadline_misses > 50, "{st:?}");
+        // the first miss: no fill ending before 9 s missed
+        let first_miss = fills[28..]
+            .iter()
+            .find(|f| f.at == start + sim(c.time(f.start + 384 - base)) + LIVE_LATENCY + LIVE_GRACE)
+            .expect("a miss");
+        assert!(c.time(first_miss.start - base) > 9 * 27_000_000);
+        for &(due, lag) in &lags {
+            if due < 9 * 27_000_000 {
+                assert!(lag < SLOT, "due {due}: lag {lag}");
+            }
+        }
+        // accumulating: 0.1 s by 12 s, 0.3 s by 16 s
+        let lag_at = |t: u64| lags.iter().rfind(|(d, _)| *d <= t).unwrap().1;
+        let (l12, l16) = (lag_at(12 * 27_000_000), lag_at(16 * 27_000_000));
+        assert!((1_500_000..4_000_000).contains(&l12), "lag {l12} at 12 s");
+        assert!((6_500_000..9_200_000).contains(&l16), "lag {l16} at 16 s");
+        assert_eq!(st.lag, lags.last().unwrap().1);
+        assert!(st.max_lag >= l16);
+        // the input lag: 0.05 × 16 s
+        let il = st.input_lag_ns.unwrap();
+        assert!((780_000_000..=800_000_000).contains(&il), "{il}");
+        assert_eq!(st.max_input_lag_ns, Some(il));
+    }
+
+    /// The input lag is the writer's, measured at each PCR's arrival, not
+    /// the reader's: a producer paced to real time (an `--iq` file) builds
+    /// each fill only at its time on air, L after the writer delivered
+    /// it, and finds the packets queued. Real-time writer: lag 0, no miss.
+    #[test]
+    fn live_input_lag_is_the_writers() {
+        let c = SlotClock::isdbs(48).unwrap();
+        let (tpp, pcr0) = (4061, 0);
+        let input = cbr(6650, tpp, 199, pcr0); // 1 s
+        let start = Duration::from_millis(5);
+        let clock = MockClock::new();
+        let mut w = Writer::new(&clock, &input, |i| start + sim(i as u64 * tpp));
+        let mut pacer = SlotPacer::new(c, None, clock.live());
+        let stop = AtomicBool::new(false);
+        let base = 28 * 384;
+        let mut got = vec![];
+        for k in 0u64.. {
+            let first = k * 384;
+            if first >= base {
+                // the producer's pace: this fill goes on air L + one fill
+                // after the writer's schedule for its first slot
+                clock.advance_to(start + sim(c.time(first + 384 - base)) + LIVE_LATENCY);
+            }
+            let (v, real) = pacer.fill(384, &mut w, &stop);
+            got.extend(placed_from(first, &v));
+            if pacer.drained() && real == 0 {
+                break;
+            }
+        }
+        let lags = check_live_placement(c, &input, tpp, pcr0, base, &got);
+        assert!(lags.iter().all(|&(_, l)| l < SLOT));
+        let st = pacer.stats();
+        assert_eq!(st.deadline_misses, 0);
+        assert!(st.input_lag_ns.unwrap().abs() < 1_000, "{st:?}");
+        assert!(st.max_input_lag_ns.unwrap().abs() < 1_000, "{st:?}");
+    }
+
+    /// A live FIFO whose writer closes: the pacer reads what is queued,
+    /// times the packets after the last PCR by extrapolation and hands out
+    /// every one at its own slot, then is drained. A clock that never
+    /// moves: no deadline passes, nothing waits.
+    #[test]
+    fn live_fifo_end_drains() {
+        let c = SlotClock::isdbs(48).unwrap();
+        let (tpp, pcr0) = (4061, 0);
+        let input = cbr(3000, tpp, 50, pcr0); // the last PCR is packet 2950
+        let (tx, rx) = sync_channel(4096);
+        for p in &input {
+            tx.send(*p).unwrap();
+        }
+        drop(tx);
+        let mut s = PacketStream::from_receiver("fifo", rx, Feed::Live);
+        let clock = MockClock::new();
+        let mut pacer = SlotPacer::new(c, None, clock.live());
+        let stop = AtomicBool::new(false);
+        let mut got = vec![];
+        let mut start = 0;
+        while !pacer.drained() {
+            let (v, _) = pacer.fill(384, &mut s, &stop);
+            got.extend(placed_from(start, &v));
+            start += 384;
+            assert!(start < 384 * 1000, "not drained");
+        }
+        assert!(s.ended());
+        let lags = check_live_placement(c, &input, tpp, pcr0, 28 * 384, &got);
+        assert!(lags.iter().all(|&(_, l)| l < SLOT));
+        let st = pacer.stats();
+        assert_eq!(st.deadline_misses, 0);
+        assert_eq!(clock.elapsed(), Duration::ZERO);
+        assert!(pacer.status().ends_with(" deadline-misses 0"));
+    }
+
+    /// A live input whose PCRs stop at 0.5 s while its packets go on: at a
+    /// deadline miss with no PCR read for 0.7 s, the waiting packets are
+    /// timed by extrapolation and sent (late by ~0.2 s at first, then at
+    /// their own slots), instead of being held until the writer closes.
+    #[test]
+    fn live_pcrs_that_stop_are_extrapolated() {
+        let c = SlotClock::isdbs(48).unwrap();
+        let tpp = 4061;
+        let mut input = cbr(13_300, tpp, 199, 0); // 2 s
+        for (i, p) in input.iter_mut().enumerate().skip(3400) {
+            if pcr_of(p).is_some() {
+                *p = pkt(0x0111, u32::try_from(i).unwrap());
+            }
+        }
+        let start = Duration::from_millis(5);
+        let clock = MockClock::new();
+        let mut w = Writer::new(&clock, &input, |i| start + sim(i as u64 * tpp));
+        let mut pacer = SlotPacer::new(c, None, clock.live());
+        let fills = run_live(&mut pacer, &mut w, 384);
+        let got = placed_live(&fills);
+        let n = input.iter().filter(|p| !is_null(p)).count();
+        assert_eq!(got.len(), n);
+        let base = 28 * 384;
+        assert_eq!(got[0].0, base);
+        // in order, and none later than ~0.2 s (held to the end: ~1 s)
+        let st = pacer.stats();
+        assert!(st.max_lag < 6_000_000, "{st:?}");
+        assert!(st.deadline_misses > 0);
+        // the last packets were placed before the writer closed
+        let last_fill = fills.iter().rfind(|f| f.real > 0).unwrap();
+        assert!(
+            last_fill.at < start + sim(13_300 * tpp),
+            "{:?}",
+            last_fill.at
+        );
+        let data = |v: &mut dyn Iterator<Item = &Packet>| -> Vec<Packet> {
+            v.filter(|p| !is_null(p) && pcr_of(p).is_none())
+                .copied()
+                .collect()
+        };
+        assert_eq!(
+            data(&mut got.iter().map(|(_, p)| p)),
+            data(&mut input.iter()),
+            "every packet once, in order"
         );
     }
 }

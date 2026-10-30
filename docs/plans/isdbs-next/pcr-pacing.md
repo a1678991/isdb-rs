@@ -550,9 +550,21 @@ Merge order: P1 → P2 → P4 (bench acceptance possible with `--feed file`) →
 4. **Lag and over-capacity policy:** keep the lag (PTS margin shrinks) or re-anchor with
    `discontinuity_indicator` once the lag exceeds a bound? Proposed: keep it, report it, and
    refuse at the probe. Decide for live inputs (P5).
+   *Decided in P5:* live inputs keep the lag too (late packets restamped, output PCRs on the
+   grid, no re-anchor and no indicator); it shrinks when the writer sends its backlog, and
+   `live-input lag` / `deadline-misses` report it (`isdb-cli/SPEC-NOTES.md`).
 5. **Live:** default latency L and grace G; whether `--feed live` should pace by default when
    PCRs are present (the plan says yes); interaction with `pace` for `--iq` (both wait;
    harmless). Writer/DAC clock drift over multi-hour runs.
+   *Decided in P5:* L = 0.3 s and G = 0.2 s, constants (`pace::LIVE_LATENCY`,
+   `LIVE_GRACE`), no CLI flag; `--feed live` paces by default when a PCR comes within 1 s /
+   65 536 packets (`--ts-pacing pcr` paces from whenever it comes). w_a is the first PCR's
+   *arrival* (the reader thread's read time), and the input lag is measured at each PCR's
+   arrival, so a producer paced to real time (`--iq`), which reads each packet L after it
+   came, does not show the writer as late; drift shows as a growing lag (a 5 % slow writer in
+   the tests: first miss after 9.5 s). With `pace` for `--iq` both wait, as expected:
+   `tools/isdbs-pacing-e2e.sh` `FEED=live` (10 s, `pv -L` at the TS's rate) had no miss and
+   an input lag within ±0.08 s.
 6. **Reference PCR PID:** first PCR seen versus the PAT's first program PCR_PID. They are the
    same for the bench. For a multi-program TS with independent clocks, packet due times
    follow one program; Δ is still right per packet. Is a PMT sniff worth it?

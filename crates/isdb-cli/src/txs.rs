@@ -35,10 +35,24 @@
 //! so the TS keeps its own rate. A regular file read with `--feed file` or
 //! `loop` is probed first and refused when its mean rate exceeds its
 //! slots' capacity (unless `--allow-overrate`); a pipe or stdin is decided
-//! by its first PCR ([`Placement::FirstPcr`]). Without a PCR, with
-//! `--ts-pacing arrival` and (for now, piece P5 of the plan) with
-//! `--feed live`, the packets go into the slots in arrival order, nulls
-//! included, unmodified ([`Placement::Arrival`]). With `--feed loop` a
+//! by its first PCR ([`Placement::FirstPcr`]), and so is every input read
+//! with `--feed live`, within [`LIVE_SNIFF`] of wall time. Without a PCR
+//! and with `--ts-pacing arrival`, the packets go into the slots in
+//! arrival order, nulls included, unmodified ([`Placement::Arrival`]).
+//!
+//! The two waits: a file, a looped file and a pipe read with `--feed file`
+//! are read as the slots need them, blocking for input
+//! ([`WaitMode::Block`]); the producer runs ahead of air, bounded by its
+//! sink (the FPGA path keeps about 1.2 s of codes queued, the Pluto's
+//! kernel buffers), so a pipe whose writer stalls stalls the transmission.
+//! A paced `--feed live` input waits for its packets only up to a deadline
+//! on the wall clock ([`WaitMode::Live`], `pace.rs` "Live inputs"): due
+//! time 0 (its first PCR) goes [`crate::pace::LIVE_LATENCY`] after it
+//! arrived, a superframe waits for its packets until
+//! [`crate::pace::LIVE_GRACE`] after that schedule, and then goes out as
+//! it is, the packets that come later placed late, restamped by their lag
+//! and counted (`deadline-misses`, `live-input lag` in the status lines).
+//! With `--feed loop` a
 //! paced file is joined seamlessly at each rewind: the reader thread tags
 //! every packet with its loop pass ([`PacketStream::next_tagged`]) and the
 //! pacer moves each pass's PCR, PTS and DTS on by the loop period and
@@ -271,8 +285,11 @@ pub struct SatArgs {
     pub lead_superframes: Option<usize>,
     /// How a TS file's packets are placed in its slots. `auto`: by its PCR
     /// when it carries one (a regular file is probed first, a pipe or
-    /// stdin is decided by its first PCR; --feed live is not paced yet),
-    /// else `arrival`. `pcr`: by its PCR, an input without one refused.
+    /// stdin is decided by its first PCR, --feed live by a PCR within its
+    /// first second), else `arrival`. `pcr`: by its PCR, an input without
+    /// one refused (--feed live: paced from its first PCR, nulls until it
+    /// comes). With --feed live a paced TS waits for its packets until
+    /// 0.5 s after the time its PCRs give them, then sends what came.
     /// Paced, each packet takes the first free slot at or after the time
     /// its PCRs give it, input null packets are dropped, the slots left
     /// over carry nulls and every PCR is corrected by the time its packet
@@ -493,9 +510,9 @@ pub enum Placement {
     /// By PCR ([`SlotPacer`]) on the PCRs of this PID, or of the first PID
     /// carrying one when `None`.
     Pcr(Option<Pid>),
-    /// A pipe or stdin: by PCR if a PCR comes in its first
-    /// [`SNIFF_PACKETS`] packets (on that PCR's PID), else in arrival
-    /// order.
+    /// A pipe or stdin, or any `--feed live` input: by PCR if a PCR comes
+    /// in its first [`SNIFF_PACKETS`] packets (on that PCR's PID; a live
+    /// input: and within [`LIVE_SNIFF`]), else in arrival order.
     FirstPcr,
 }
 
@@ -503,6 +520,21 @@ pub enum Placement {
 /// 12 MB, more than 0.1 s (the longest PCR interval, H.222.0 §2.7.2) of
 /// any TS up to 985 Mbit/s.
 pub const SNIFF_PACKETS: usize = 65_536;
+
+/// Wall time a `--feed live` input is given to show a PCR
+/// ([`Placement::FirstPcr`]): ten times the longest PCR interval
+/// (H.222.0 §2.7.2), for a writer that starts late.
+pub const LIVE_SNIFF: Duration = Duration::from_secs(1);
+
+/// How a paced TS read with `feed` waits for its input: up to a deadline
+/// for `--feed live` ([`WaitMode::live`]), else blocking.
+fn wait_mode(feed: Feed) -> WaitMode {
+    if feed == Feed::Live {
+        WaitMode::live()
+    } else {
+        WaitMode::Block
+    }
+}
 
 /// A TS's slots as the [`RateTarget`] of the capacity check.
 struct TsShare<'a> {
@@ -597,9 +629,10 @@ fn slot_clock(t: &TsArg) -> Result<SlotClock> {
 /// ([`probe_rates`], its first [`PROBE_SECONDS`] s or [`PROBE_BYTES`]):
 /// with a PCR it is paced, its mean rate above its slots' capacity refused
 /// unless `allow_overrate` and a 1-s peak above it warned about; a pipe or
-/// stdin with those feeds is decided by its first PCR. `--feed live`
-/// stays in arrival order (PCR pacing of live inputs is piece P5 of the
-/// plan). `TsPacing::Pcr` refuses a file without PCR and `--feed live`;
+/// stdin with those feeds is decided by its first PCR, and so is any input
+/// read with `--feed live` (within [`LIVE_SNIFF`]; it is then paced with a
+/// deadline, [`WaitMode::Live`]). `TsPacing::Pcr` refuses a file without
+/// PCR and paces a live input from its first PCR, whenever it comes;
 /// `TsPacing::Arrival` places every TS in arrival order.
 pub fn plan_inputs(
     layout: &Layout,
@@ -607,6 +640,11 @@ pub fn plan_inputs(
     pacing: TsPacing,
     allow_overrate: bool,
 ) -> Result<Vec<Placement>> {
+    let live_wait = format!(
+        "each superframe waits for its packets until {:.1} s after the time their PCRs give them, the first PCR on air {:.1} s after it arrived; later packets are placed late",
+        (crate::pace::LIVE_LATENCY + crate::pace::LIVE_GRACE).as_secs_f64(),
+        crate::pace::LIVE_LATENCY.as_secs_f64()
+    );
     let mut plan = Vec::with_capacity(layout.ts.len());
     for t in &layout.ts {
         let Some(path) = t.path.as_deref() else {
@@ -623,18 +661,22 @@ pub fn plan_inputs(
                 );
                 Placement::Arrival
             }
-            // TODO(P5, pcr-pacing.md §7.7): pace live inputs with a
-            // deadline-bounded WaitMode::Live.
-            (TsPacing::Pcr, Feed::Live) => bail!(
-                "--ts-pacing pcr: TS_ID {id:#06x} ({path}) is read with --feed live, which is not paced by PCR yet; use --feed file for a pipe"
-            ),
+            (TsPacing::Pcr, Feed::Live) => {
+                info!(
+                    target: "isdb::tx",
+                    ts_id = id,
+                    "  TS_ID {id:#06x} ({path}): --feed live, paced by PCR (--ts-pacing pcr; nulls until its first PCR): {live_wait}"
+                );
+                Placement::Pcr(None)
+            }
             (TsPacing::Auto, Feed::Live) => {
                 info!(
                     target: "isdb::tx",
                     ts_id = id,
-                    "  TS_ID {id:#06x} ({path}): --feed live, arrival order (packets as they come, nulls padding when none is queued; live inputs are not paced by PCR yet)"
+                    "  TS_ID {id:#06x} ({path}): --feed live: paced by PCR if one comes within {} s and its first {SNIFF_PACKETS} packets ({live_wait}), else arrival order (packets as they come, nulls padding when none is queued)",
+                    LIVE_SNIFF.as_secs_f64()
                 );
-                Placement::Arrival
+                Placement::FirstPcr
             }
             (_, Feed::File | Feed::Loop) if is_regular_file(path) => {
                 let clock = slot_clock(t)?;
@@ -691,10 +733,13 @@ pub fn plan_inputs(
 }
 
 /// A TS file's packets: those read ahead to find its first PCR, then its
-/// stream; each with its loop pass ([`PacketStream::next_tagged`]).
+/// stream; each with its loop pass ([`PacketStream::next_tagged`]) and
+/// arrival ([`PacketStream::arrival`]).
 struct Feeder {
-    head: VecDeque<(Packet, u32)>,
+    head: VecDeque<(Packet, u32, Option<Instant>)>,
     stream: PacketStream,
+    /// Arrival of the packet last taken.
+    arrived: Option<Instant>,
 }
 
 impl Feeder {
@@ -702,15 +747,42 @@ impl Feeder {
         Self {
             head: VecDeque::new(),
             stream,
+            arrived: None,
         }
+    }
+
+    /// Read one packet ahead into the head (the first-PCR sniff); a live
+    /// input waits at most `timeout`.
+    fn read_ahead(&mut self, stop: &AtomicBool, timeout: Option<Duration>) -> Option<Packet> {
+        let (p, pass) = match timeout {
+            Some(t) => self.stream.next_tagged_timeout(stop, t),
+            None => self.stream.next_tagged(stop),
+        }?;
+        self.head.push_back((p, pass, self.stream.arrival()));
+        Some(p)
+    }
+
+    /// The first packet of the head.
+    fn take_head(&mut self) -> Option<(Packet, u32)> {
+        let (p, pass, at) = self.head.pop_front()?;
+        self.arrived = at;
+        Some((p, pass))
+    }
+
+    /// A packet taken from the stream (its arrival noted).
+    fn note_stream(&mut self, q: Option<(Packet, u32)>) -> Option<(Packet, u32)> {
+        if q.is_some() {
+            self.arrived = self.stream.arrival();
+        }
+        q
     }
 
     /// The next packet, as [`PacketStream::next`].
     fn next_packet(&mut self, stop: &AtomicBool) -> Option<Packet> {
-        self.head
-            .pop_front()
-            .map(|(p, _)| p)
-            .or_else(|| self.stream.next(stop))
+        match self.take_head() {
+            Some((p, _)) => Some(p),
+            None => self.stream.next(stop),
+        }
     }
 
     fn ended(&self) -> bool {
@@ -720,13 +792,31 @@ impl Feeder {
 
 impl TaggedSource for Feeder {
     fn next(&mut self, stop: &AtomicBool) -> Option<(Packet, u32)> {
-        self.head
-            .pop_front()
-            .or_else(|| self.stream.next_tagged(stop))
+        match self.take_head() {
+            Some(q) => Some(q),
+            None => {
+                let q = self.stream.next_tagged(stop);
+                self.note_stream(q)
+            }
+        }
     }
 
     fn ended(&self) -> bool {
         Feeder::ended(self)
+    }
+
+    fn next_within(&mut self, stop: &AtomicBool, timeout: Duration) -> Option<(Packet, u32)> {
+        match self.take_head() {
+            Some(q) => Some(q),
+            None => {
+                let q = self.stream.next_tagged_timeout(stop, timeout);
+                self.note_stream(q)
+            }
+        }
+    }
+
+    fn arrival(&self) -> Option<Instant> {
+        self.arrived
     }
 }
 
@@ -742,8 +832,14 @@ enum Source {
         pacer: Box<SlotPacer>,
     },
     /// A pipe whose first PCR decides between `Paced` and `File` at the
-    /// first [`TsInputs::take`].
-    FirstPcr { stream: Feeder, slots: SlotClock },
+    /// first [`TsInputs::take`]. `live`: a `--feed live` input, given this
+    /// much wall time to show its PCR ([`LIVE_SNIFF`]) and paced with
+    /// [`WaitMode::Live`].
+    FirstPcr {
+        stream: Feeder,
+        slots: SlotClock,
+        live: Option<Duration>,
+    },
 }
 
 impl Source {
@@ -766,42 +862,58 @@ impl Source {
     }
 
     /// Resolve a `FirstPcr`: read up to [`SNIFF_PACKETS`] packets (kept
-    /// for the TS) until one carries a PCR, then pace on its PID, or keep
-    /// the arrival order without one.
+    /// for the TS; a live input: for at most its wall time) until one
+    /// carries a PCR, then pace on its PID, or keep the arrival order
+    /// without one.
     fn resolve(&mut self, ts_id: u16, stop: &AtomicBool) {
-        let Self::FirstPcr { stream, .. } = self else {
+        let Self::FirstPcr { stream, live, .. } = self else {
             return;
         };
+        let until = live.and_then(|d| Instant::now().checked_add(d));
         let mut pcr = None;
         while pcr.is_none() && stream.head.len() < SNIFF_PACKETS {
-            let Some((p, pass)) = stream.stream.next_tagged(stop) else {
-                break; // ended or stopped
+            let left = until.map(|u| u.saturating_duration_since(Instant::now()));
+            let Some(p) = stream.read_ahead(stop, left) else {
+                break; // ended, stopped or out of time
             };
             pcr = packet_pcr(&p).map(|_| packet_pid(&p));
-            stream.head.push_back((p, pass));
         }
         let n = stream.head.len();
-        let Self::FirstPcr { stream, slots } = std::mem::replace(self, Self::Synthetic) else {
+        let Self::FirstPcr {
+            stream,
+            slots,
+            live,
+        } = std::mem::replace(self, Self::Synthetic)
+        else {
             unreachable!("matched above");
         };
         *self = match pcr {
             Some(pid) => {
+                let mode = if live.is_some() {
+                    WaitMode::live()
+                } else {
+                    WaitMode::Block
+                };
                 info!(
                     target: "isdb::tx",
                     ts_id,
-                    "  TS_ID {ts_id:#06x}: first PCR (PID {pid:#06x}) in packet {n}: paced by PCR"
+                    "  TS_ID {ts_id:#06x}: first PCR (PID {pid:#06x}) in packet {n}: paced by PCR{}",
+                    if live.is_some() { " (live)" } else { "" }
                 );
                 Self::Paced {
                     stream,
-                    pacer: Box::new(SlotPacer::new(slots, Some(pid), WaitMode::Block)),
+                    pacer: Box::new(SlotPacer::new(slots, Some(pid), mode)),
                 }
             }
             None => {
                 if !stop.load(Ordering::Relaxed) {
+                    let within = live.map_or(String::new(), |d| {
+                        format!(" (read within {} s)", d.as_secs_f64())
+                    });
                     info!(
                         target: "isdb::tx",
                         ts_id,
-                        "  TS_ID {ts_id:#06x}: no PCR in the first {n} packets: arrival order"
+                        "  TS_ID {ts_id:#06x}: no PCR in the first {n} packets{within}: arrival order"
                     );
                 }
                 Self::File(stream)
@@ -857,11 +969,12 @@ impl TsInputs {
                         Placement::Arrival => Source::File(stream),
                         Placement::Pcr(pid) => Source::Paced {
                             stream,
-                            pacer: Box::new(SlotPacer::new(slot_clock(t)?, pid, WaitMode::Block)),
+                            pacer: Box::new(SlotPacer::new(slot_clock(t)?, pid, wait_mode(feed))),
                         },
                         Placement::FirstPcr => Source::FirstPcr {
                             stream,
                             slots: slot_clock(t)?,
+                            live: (feed == Feed::Live).then_some(LIVE_SNIFF),
                         },
                     });
                     names.push(p.clone());
@@ -905,9 +1018,13 @@ impl TsInputs {
                         Placement::Arrival => Source::File(stream),
                         Placement::Pcr(pid) => Source::Paced {
                             stream,
-                            pacer: Box::new(SlotPacer::new(slots, pid, WaitMode::Block)),
+                            pacer: Box::new(SlotPacer::new(slots, pid, wait_mode(feed))),
                         },
-                        Placement::FirstPcr => Source::FirstPcr { stream, slots },
+                        Placement::FirstPcr => Source::FirstPcr {
+                            stream,
+                            slots,
+                            live: (feed == Feed::Live).then_some(LIVE_SNIFF),
+                        },
                     }
                 }
             })
@@ -919,6 +1036,17 @@ impl TsInputs {
             names,
             feed,
             superframe: 0,
+        }
+    }
+
+    /// Give the live inputs still looking for their first PCR `d` of wall
+    /// time instead of [`LIVE_SNIFF`] (tests).
+    #[cfg(test)]
+    fn set_live_sniff(&mut self, d: Duration) {
+        for s in &mut self.sources {
+            if let Source::FirstPcr { live: Some(l), .. } = s {
+                *l = d;
+            }
         }
     }
 
@@ -982,7 +1110,7 @@ impl TsInputs {
     }
 
     /// `TS_ID 0x4010 <- a.ts (paced by PCR), TS_ID 0x4011 <- synthetic
-    /// (feed File)`.
+    /// (feed File)`; a live pacer is `(paced by PCR, live)`.
     pub fn describe(&self) -> String {
         let v: Vec<String> = self
             .ts_ids
@@ -992,6 +1120,7 @@ impl TsInputs {
             .map(|((id, n), s)| {
                 let how = match s {
                     Source::Synthetic | Source::File(_) => "",
+                    Source::Paced { pacer, .. } if pacer.is_live() => " (paced by PCR, live)",
                     Source::Paced { .. } => " (paced by PCR)",
                     Source::FirstPcr { .. } => " (paced by PCR if one comes)",
                 };
@@ -2417,12 +2546,22 @@ mod tests {
             plan(&one("-"), Feed::File, TsPacing::Pcr, false).unwrap(),
             [Placement::Pcr(None)]
         );
-        // --feed live is not paced (P5)
-        assert_eq!(
-            plan(&one(&cbr), Feed::Live, TsPacing::Auto, false).unwrap(),
-            [Placement::Arrival]
-        );
-        assert!(plan(&one(&cbr), Feed::Live, TsPacing::Pcr, false).is_err());
+        // --feed live: decided by its first PCR (no probe), or paced from
+        // whenever it comes with `pcr`; `arrival` stays arrival
+        for path in [&cbr, &plain, "-"] {
+            assert_eq!(
+                plan(&one(path), Feed::Live, TsPacing::Auto, false).unwrap(),
+                [Placement::FirstPcr]
+            );
+            assert_eq!(
+                plan(&one(path), Feed::Live, TsPacing::Pcr, false).unwrap(),
+                [Placement::Pcr(None)]
+            );
+            assert_eq!(
+                plan(&one(path), Feed::Live, TsPacing::Arrival, false).unwrap(),
+                [Placement::Arrival]
+            );
+        }
         // 3.4 Mbit/s into 2 slots (2.17 Mbit/s): refused, naming the slots
         // it needs, unless --allow-overrate; synthetic TSs are not planned
         let two = layout_of(&[format!("0x4010:2={cbr}"), "0x4011:46".into()]);
@@ -2523,6 +2662,91 @@ mod tests {
         assert_eq!(p.real, [10]);
         assert!(inp.take(&[40], &stop).is_none());
         assert!(!inp.describe().contains("paced"));
+    }
+
+    /// `--feed live` with a PCR: paced live (the anchor `LIVE_LATENCY`
+    /// after the first PCR, so the first superframes are nulls); at the
+    /// writer's end every packet has gone out at its own slot and the
+    /// status reports the live input. Everything is queued and the sender
+    /// closed, so nothing waits on the wall clock.
+    #[test]
+    fn a_live_input_is_paced_from_its_first_pcr() {
+        let input = cbr_ts(3000, 4061, 0);
+        for place in [Placement::FirstPcr, Placement::Pcr(None)] {
+            let (tx, rx) = sync_channel(4096);
+            for p in &input {
+                tx.send(*p).unwrap();
+            }
+            drop(tx);
+            let s = PacketStream::from_receiver("fifo", rx, Feed::Live);
+            let mut inp = TsInputs::from_streams(vec![0x4010], vec![Some((s, place))], Feed::Live);
+            let (out, _) = drain(&mut inp, &[384]);
+            assert!(
+                inp.describe()
+                    .contains("<- fifo (paced by PCR, live) (feed Live)"),
+                "{}",
+                inp.describe()
+            );
+            // ⌈0.3 s / one superframe⌉ = 28 superframes of nulls first
+            assert!(out[0][..28 * 384].iter().all(is_null));
+            assert_eq!(out[0][28 * 384], input[0], "the first PCR, Δ = 0");
+            let placed = out[0].iter().filter(|p| !is_null(p)).count();
+            assert_eq!(placed, input.iter().filter(|p| !is_null(p)).count());
+            let st = inp.status();
+            assert!(
+                st.contains(" | 0x4010 PCR lag 0.00 s (max 0.00)")
+                    && st.ends_with(" deadline-misses 0"),
+                "{st}"
+            );
+        }
+    }
+
+    /// `--feed live` without a PCR in its first second (here: in the
+    /// sniff's wall time, shortened) or before the writer closes: today's
+    /// arrival order, the packets read while looking kept in front.
+    #[test]
+    fn live_without_pcr_falls_back() {
+        let stop = AtomicBool::new(false);
+        let plain: Vec<Packet> = (0..50).map(|i| pkt(0x0111, i)).collect();
+        // the writer closes: the end of input decides
+        let (tx, rx) = sync_channel(64);
+        for p in &plain {
+            tx.send(*p).unwrap();
+        }
+        drop(tx);
+        let s = PacketStream::from_receiver("fifo", rx, Feed::Live);
+        let mut inp = TsInputs::from_streams(
+            vec![0x4010],
+            vec![Some((s, Placement::FirstPcr))],
+            Feed::Live,
+        );
+        let p = inp.take(&[40], &stop).unwrap();
+        assert_eq!((p.ts[0].as_slice(), p.real[0]), (&plain[..40], 40));
+        assert!(!inp.describe().contains("paced"));
+        // the writer stays open: the sniff's time runs out (shortened from
+        // LIVE_SNIFF); then the live feed pads with nulls, never blocks
+        let (tx, rx) = sync_channel(64);
+        for p in &plain {
+            tx.send(*p).unwrap();
+        }
+        let s = PacketStream::from_receiver("fifo", rx, Feed::Live);
+        let mut inp = TsInputs::from_streams(
+            vec![0x4010],
+            vec![Some((s, Placement::FirstPcr))],
+            Feed::Live,
+        );
+        inp.set_live_sniff(Duration::from_millis(20));
+        let p = inp.take(&[40], &stop).unwrap();
+        assert_eq!(p.ts[0], plain[..40]);
+        let p = inp.take(&[40], &stop).unwrap();
+        assert_eq!((&p.ts[0][..10], p.real[0]), (&plain[40..], 10));
+        assert!(p.ts[0][10..].iter().all(is_null));
+        assert!(!inp.describe().contains("paced"));
+        tx.send(pkt(0x0111, 99)).unwrap();
+        let p = inp.take(&[40], &stop).unwrap();
+        assert_eq!((p.ts[0][0], p.real[0]), (pkt(0x0111, 99), 1));
+        drop(tx);
+        assert!(inp.take(&[40], &stop).is_none());
     }
 
     /// The paced TS of a CBR file, as `--placed-ts` writes it, is the

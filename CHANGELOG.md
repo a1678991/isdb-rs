@@ -27,8 +27,8 @@ STD-B44) is received to TLV streams.
   file (`--feed file`/`loop`) is probed first and refused when its mean
   rate exceeds its slots' capacity, naming the slots it needs
   (`--allow-overrate` now applies to ISDB-S too); a pipe or stdin is
-  paced from its first PCR; `--feed live` and files without PCR stay in
-  arrival order. `--ts-pacing auto|pcr|arrival` (default `auto`;
+  paced from its first PCR; files without PCR stay in arrival order.
+  `--ts-pacing auto|pcr|arrival` (default `auto`;
   `arrival` is the previous byte-exact rule). `--placed-ts TEMPLATE`
   writes each TS's placed packets, nulls included, as handed to the
   modulator (the same for `--iq` and `--offload fpga`). The plan is shown
@@ -36,6 +36,22 @@ STD-B44) is received to TLV streams.
   the summary carry each pacer's PCR lag, input rate against capacity,
   dropped nulls and restamped PCRs. `isdb loopback --system isdbs` paces
   its files the same way.
+- `isdb-cli`: `isdb tx --system isdbs --feed live` paces a live input
+  (a FIFO fed in real time) by its PCR too, with a deadline instead of
+  blocking (`WaitMode::Live`, pcr-pacing.md §7.7): a PCR within the first
+  second / 65 536 packets selects it (else arrival order, as before), the
+  first PCR goes on air 0.3 s after it arrived, and each superframe waits
+  for its packets until 0.2 s after that schedule, then goes out as it
+  is; later packets take later slots with their PCRs restamped by the lag
+  (kept, never re-anchored). `--ts-pacing pcr` now paces a live input
+  instead of refusing it. The status lines add `live-input lag`/`lead`
+  (each PCR's arrival against the writer's schedule: drift of a writer
+  slower than real time shows here first) and `deadline-misses`; PCRs that
+  stop are extrapolated after 0.7 s. `tools/isdbs-bench-tx.sh`'s fifo mode
+  is therefore paced by PCR; `tools/isdbs-pacing-e2e.sh` with `FEED=live`
+  (and `STALL=SECONDS`) checks a `pv`-paced FIFO end to end (10 s of the
+  bench TS: no deadline miss, input lag within ±0.08 s, CBR-fit max 19 ns,
+  received TS identical to the placed one).
 - `isdb-cli`: `isdb tx --system isdbs --feed loop` joins a paced TS's
   loop seams: the reader thread tags each packet with its loop pass, and
   each pass after the first has its PCR, PTS and DTS moved on by the loop

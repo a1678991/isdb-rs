@@ -217,7 +217,8 @@ stamps jump back, except in a TS paced by its PCR in `tx --system isdbs`,
 which is joined seamlessly), or
 `live` (never block the modulator: what has arrived is sent, the rest of
 the frame is null packets, the null-fill ratio is reported; ends when the
-writer closes).
+writer closes; in `tx --system isdbs` a TS with PCRs is paced by them and
+waits for its packets up to a deadline, [ISDB-S](#isdb-s-bs-and-110-cs)).
 
 With `--mux-ts` and `--feed file|loop`, the input is **paced by its own
 PCR** (H.222.0 §2.4.2.2): each OFDM frame carries the packets due before
@@ -560,11 +561,12 @@ changes.
 | input | `auto` |
 |---|---|
 | regular file, `--feed file` or `loop` | probed (its first 30 s / 128 MB): paced when it has a PCR. A mean rate above its slots' capacity is refused with the slots it needs (`--allow-overrate` sends it anyway; it then lags its PCRs, shown as `PCR lag` in the status lines); a 1-s peak above it warns |
-| FIFO or stdin, `--feed file` | paced from its first PCR (looked for in its first 65 536 packets) |
-| `--feed live` | arrival order (PCR pacing of live inputs is not implemented yet) |
+| FIFO or stdin, `--feed file` | paced from its first PCR (looked for in its first 65 536 packets); waits for its writer without bound |
+| any input, `--feed live` | paced from its first PCR if one comes within 1 s and its first 65 536 packets, with a deadline (below); else arrival order |
 | no PCR | arrival order, as before, said once at start |
 
-`--ts-pacing pcr` refuses an input without PCR (and `--feed live`);
+`--ts-pacing pcr` refuses a file without PCR, and paces a `--feed live`
+input from its first PCR whenever it comes (nulls until then);
 `--ts-pacing arrival` keeps the old rule for every file: each packet,
 nulls included and unmodified, in the next slot as it comes (a byte-exact
 relay). With `--feed loop` the seams are joined: each pass n ≥ 1 of the
@@ -579,6 +581,32 @@ its maximum), the input rate against the capacity, `nulls-dropped`,
 `restamped`, `slot-busy` and `pcr-discontinuities`, and with a loop
 `passes`, `cc-fixed` (counters renumbered at a seam) and `pes-shifted`. `isdb loopback
 --system isdbs` places its files the same way.
+
+**A FIFO fed in real time: `--feed live` or `--feed file`.** Both pace a
+FIFO by its PCR; they differ in how long the transmitter waits for the
+writer. With `--feed file` it blocks until the packets a superframe needs
+have come: the producer runs ahead of the air by what the sink holds (about
+1.2 s of codes on the `--offload fpga` path), so a writer that stalls for
+longer stalls the transmission and the radio underruns. With `--feed live`
+it waits only up to a deadline on the wall clock (`pace.rs`, "Live
+inputs"): the first PCR goes on air 0.3 s (L) after it arrived, the null
+superframes before it go out at once, and each superframe waits for its
+packets until 0.2 s (G) after L past their place on the writer's schedule
+(the time of the first PCR plus their PCR time). Then it goes out as it is:
+packets that come later take the first free slots of a later superframe,
+their PCRs restamped by the lag, so the output PCRs stay on the slot grid,
+and the superframe counts as a deadline miss. The lag is kept, not
+re-anchored (that would break the PCRs' continuity), and returns to zero
+when the writer catches up with its backlog. A writer that stalls leaves a
+hole in the TS but the transmission keeps its timing; for a real-time
+writer into a radio, use `--feed live` (`tools/isdbs-bench-tx.sh` does in
+its fifo mode). Paced live, the status lines add `live-input lag` (or
+`lead`): when each PCR arrived against its place on the writer's
+schedule, and the worst so far, and `deadline-misses`. A writer slower
+than real time against the transmitter's clock shows a growing lag;
+superframes start to miss once it exceeds L + G (0.5 s), and the PCR lag
+grows from there. `tools/isdbs-pacing-e2e.sh` with `FEED=live` checks a
+`pv`-paced FIFO end to end, `STALL=1` with a 1 s stall of the writer.
 
 **`--placed-ts TEMPLATE`** writes each TS's packets as placed in its slots,
 null packets included, for every data superframe (`{ts_id}` is replaced

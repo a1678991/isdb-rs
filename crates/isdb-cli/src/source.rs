@@ -13,7 +13,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, sync_channel};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{error, warn};
 
 use isdb_ts::packet::{Header, TransportScramblingControl};
@@ -66,7 +66,9 @@ pub enum Feed {
     /// paced by its PCR in `tx --system isdbs` is joined seamlessly).
     Loop,
     /// Live pipe/FIFO: never block the modulator; pad with null packets
-    /// whenever the input lags, end when the writer closes.
+    /// whenever the input lags, end when the writer closes (a TS paced
+    /// by its PCR in `tx --system isdbs` waits for its packets up to a
+    /// deadline instead).
     Live,
 }
 
@@ -99,28 +101,36 @@ pub struct ReaderStats {
     pub rewinds: AtomicU64,
 }
 
-/// The queue of a [`PacketStream`]: packets with their loop pass.
+/// A packet as the reader thread queues it: its loop pass and the time
+/// the read that brought it returned (its arrival).
+type Queued = (Packet, u32, Instant);
+
+/// The queue of a [`PacketStream`]: packets with their loop pass and, from
+/// a reader thread, their arrival.
 enum Rx {
-    Tagged(Receiver<(Packet, u32)>),
-    /// Untagged in-memory packets (tests): pass 0.
+    Tagged(Receiver<Queued>),
+    /// Untagged in-memory packets (tests): pass 0, arrival unknown.
     #[cfg(test)]
     Plain(Receiver<Packet>),
 }
 
 impl Rx {
-    fn try_recv(&self) -> Result<(Packet, u32), TryRecvError> {
+    fn try_recv(&self) -> Result<(Packet, u32, Option<Instant>), TryRecvError> {
         match self {
-            Self::Tagged(rx) => rx.try_recv(),
+            Self::Tagged(rx) => rx.try_recv().map(|(p, n, t)| (p, n, Some(t))),
             #[cfg(test)]
-            Self::Plain(rx) => rx.try_recv().map(|p| (p, 0)),
+            Self::Plain(rx) => rx.try_recv().map(|p| (p, 0, None)),
         }
     }
 
-    fn recv_timeout(&self, d: Duration) -> Result<(Packet, u32), RecvTimeoutError> {
+    fn recv_timeout(
+        &self,
+        d: Duration,
+    ) -> Result<(Packet, u32, Option<Instant>), RecvTimeoutError> {
         match self {
-            Self::Tagged(rx) => rx.recv_timeout(d),
+            Self::Tagged(rx) => rx.recv_timeout(d).map(|(p, n, t)| (p, n, Some(t))),
             #[cfg(test)]
-            Self::Plain(rx) => rx.recv_timeout(d).map(|p| (p, 0)),
+            Self::Plain(rx) => rx.recv_timeout(d).map(|p| (p, 0, None)),
         }
     }
 }
@@ -130,6 +140,8 @@ pub struct PacketStream {
     rx: Rx,
     feed: Feed,
     ended: bool,
+    /// Arrival of the packet last taken ([`Self::arrival`]).
+    arrived: Option<Instant>,
     /// Reader counters.
     pub stats: Arc<ReaderStats>,
     /// Name for messages.
@@ -166,7 +178,7 @@ impl PacketStream {
     /// [`Self::next_tagged`]).
     pub fn spawn(name: &str, mut opener: Opener, feed: Feed, depth: usize) -> Result<Self> {
         let mut r = opener().with_context(|| format!("open {name}"))?;
-        let (tx, rx) = sync_channel::<(Packet, u32)>(depth.max(1));
+        let (tx, rx) = sync_channel::<Queued>(depth.max(1));
         let stats = Arc::new(ReaderStats::default());
         let st = stats.clone();
         let tname = name.to_string();
@@ -205,6 +217,7 @@ impl PacketStream {
                         }
                         return; // dropping `tx` signals the end
                     }
+                    let arrived = Instant::now();
                     buf.extend_from_slice(&chunk[..n]);
                     let mut skipped = 0;
                     let (used, alive) = split_packets(&buf, &mut skipped, |p| {
@@ -222,7 +235,7 @@ impl PacketStream {
                             return false;
                         }
                         got_any = true;
-                        tx.send((p, pass)).is_ok()
+                        tx.send((p, pass, arrived)).is_ok()
                     });
                     st.skipped_bytes.fetch_add(skipped, Ordering::Relaxed);
                     if !alive {
@@ -235,6 +248,7 @@ impl PacketStream {
             rx: Rx::Tagged(rx),
             feed,
             ended: false,
+            arrived: None,
             stats,
             name: name.to_string(),
         })
@@ -247,6 +261,7 @@ impl PacketStream {
             rx: Rx::Plain(rx),
             feed,
             ended: false,
+            arrived: None,
             stats: Arc::default(),
             name: name.into(),
         }
@@ -260,6 +275,20 @@ impl PacketStream {
     /// True once the input has ended (EOF / writer closed) and is drained.
     pub fn ended(&self) -> bool {
         self.ended
+    }
+
+    /// When the packet last taken arrived: the time the reader thread's
+    /// read that brought it returned (`None` before the first, or for
+    /// in-memory test streams). For a live pipe, the time its writer
+    /// delivered it, however long it then waited in the queue.
+    pub fn arrival(&self) -> Option<Instant> {
+        self.arrived
+    }
+
+    /// Take a queued packet: note its arrival, drop it from the item.
+    fn took(&mut self, (p, pass, at): (Packet, u32, Option<Instant>)) -> (Packet, u32) {
+        self.arrived = at;
+        (p, pass)
     }
 
     /// Next packet according to the feed policy: `File`/`Loop` block until
@@ -278,7 +307,7 @@ impl PacketStream {
         }
         match self.feed {
             Feed::Live => match self.rx.try_recv() {
-                Ok(p) => Some(p),
+                Ok(q) => Some(self.took(q)),
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => {
                     self.ended = true;
@@ -287,7 +316,7 @@ impl PacketStream {
             },
             Feed::File | Feed::Loop => loop {
                 match self.rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(p) => return Some(p),
+                    Ok(q) => return Some(self.took(q)),
                     Err(RecvTimeoutError::Timeout) if !stop.load(Ordering::Relaxed) => continue,
                     Err(RecvTimeoutError::Timeout) => return None,
                     Err(RecvTimeoutError::Disconnected) => {
@@ -296,6 +325,37 @@ impl PacketStream {
                     }
                 }
             },
+        }
+    }
+
+    /// [`Self::next_tagged`] waiting at most `timeout` for a packet, whatever
+    /// the feed (the deadline of a live input paced by its PCR, pcr-pacing.md
+    /// §7.7); a zero `timeout` takes only what is queued. `None`: nothing
+    /// came in time, the input ended ([`Self::ended`]), or `stop` was raised
+    /// (polled every 50 ms).
+    pub fn next_tagged_timeout(
+        &mut self,
+        stop: &AtomicBool,
+        timeout: Duration,
+    ) -> Option<(Packet, u32)> {
+        if self.ended {
+            return None;
+        }
+        let until = Instant::now().checked_add(timeout);
+        loop {
+            let left = until.map_or(timeout, |u| u.saturating_duration_since(Instant::now()));
+            match self.rx.recv_timeout(left.min(Duration::from_millis(50))) {
+                Ok(q) => return Some(self.took(q)),
+                Err(RecvTimeoutError::Timeout) => {
+                    if left.is_zero() || stop.load(Ordering::Relaxed) {
+                        return None;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.ended = true;
+                    return None;
+                }
+            }
         }
     }
 }
@@ -307,6 +367,14 @@ impl TaggedSource for PacketStream {
 
     fn ended(&self) -> bool {
         PacketStream::ended(self)
+    }
+
+    fn next_within(&mut self, stop: &AtomicBool, timeout: Duration) -> Option<(Packet, u32)> {
+        self.next_tagged_timeout(stop, timeout)
+    }
+
+    fn arrival(&self) -> Option<Instant> {
+        PacketStream::arrival(self)
     }
 }
 
@@ -433,6 +501,35 @@ pub(crate) mod tests {
         assert_eq!(s.next(&stop), None);
         assert!(s.ended());
         assert!(t.elapsed() < Duration::from_millis(50));
+    }
+
+    /// The bounded wait of a live input paced by its PCR: a zero timeout
+    /// takes what is queued, a stop or the writer's end ends a long one.
+    #[test]
+    fn next_tagged_timeout_is_bounded() {
+        let (tx, rx) = sync_channel(8);
+        let mut s = PacketStream::from_receiver("t", rx, Feed::Live);
+        let stop = AtomicBool::new(false);
+        assert_eq!(s.next_tagged_timeout(&stop, Duration::ZERO), None);
+        assert!(!s.ended());
+        tx.send(pkt(0x100, 1)).unwrap();
+        assert_eq!(
+            s.next_tagged_timeout(&stop, Duration::ZERO),
+            Some((pkt(0x100, 1), 0))
+        );
+        stop.store(true, Ordering::SeqCst);
+        assert_eq!(
+            s.next_tagged_timeout(&stop, Duration::from_secs(3600)),
+            None
+        );
+        assert!(!s.ended());
+        stop.store(false, Ordering::SeqCst);
+        drop(tx);
+        assert_eq!(
+            s.next_tagged_timeout(&stop, Duration::from_secs(3600)),
+            None
+        );
+        assert!(s.ended());
     }
 
     #[test]

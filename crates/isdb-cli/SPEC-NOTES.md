@@ -123,3 +123,31 @@ numbers of H.222.0 are those of the 05/2006 edition.
   (13–17 ns at the seams), no PES time stamp going back, no byte changed
   outside PCR/PTS/DTS/CC (VERIFICATION.md "ISDB-S loop seams, offline").
   (status: confirmed offline; pending a real receiver on the bench.)
+
+## isdb-cli: late packets of a live input (`--feed live`)
+- Spec: H.222.0 Annex D.0.4; §2.4.3.5 (discontinuity_indicator); §2.7.2
+  (PCR interval).
+- Text: Annex D.0.4 as in "PCR restamping" above; §2.4.3.5: a system time
+  base discontinuity is signalled by the discontinuity_indicator in the
+  packet carrying the new PCR.
+- Interpretation: a live input is placed on the same grid, but a superframe
+  waits for its packets only until a deadline (L + G = 0.5 s after their
+  place on the writer's schedule, anchored on the first PCR's arrival;
+  `pace.rs` "Live inputs"). Packets that come later are late re-multiplexed
+  packets: they take the first free slot and every PCR gets Δ = the time it
+  moved, as in Annex D.0.4 with del_const = 0, so the output PCRs stay on
+  the slot grid and the output time base stays continuous. The lag is kept
+  rather than re-anchored: re-anchoring would step the output time base
+  against the slots, a discontinuity the receiver would have to be told of
+  with the indicator (§2.4.3.5), which a re-multiplexer only sets when the
+  source does. The lag shrinks when the writer delivers its backlog faster
+  than real time. Its cost is the PTS–PCR margin (H.222.0 T-STD): it shrinks
+  by the lag, so a writer slower than real time for long enough underflows
+  the decoder; the status lines show the lag as it grows.
+- Confirmation: `pace.rs` tests on a simulated clock (a 0.7 s stall: late
+  packets restamped on the grid, the lag back under a slot after the
+  backlog; a writer 5 % slow: a growing lag, PCRs on the grid);
+  `tools/isdbs-pacing-e2e.sh` `FEED=live STALL=1` (`tx --iq` → `rx`): CBR-fit
+  max 19 ns, the received TS identical to the placed one, the stall a hole in
+  the TS (PCR interval and PAT/PMT gaps beyond 0.1 s there). (status:
+  confirmed offline; pending a real receiver on the bench.)
