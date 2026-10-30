@@ -53,6 +53,7 @@ nix.workspace = true
 [dev-dependencies]
 # In-memory sink and radio for the tx stream tests (no device, no libhackrf).
 isdb-radio = { workspace = true, features = ["mock"] }
+proptest.workspace = true
 
 [features]
 default = ["hackrf", "pluto"]

@@ -331,6 +331,7 @@ dependencies = [
  "isdbt-ofdm",
  "isdbt-phy",
  "nix",
+ "proptest",
  "serde",
  "serde_json",
  "toml",
