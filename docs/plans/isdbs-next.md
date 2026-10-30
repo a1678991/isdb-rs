@@ -68,7 +68,19 @@ rustdoc clean, FPGA suite 24/24):
 ## Work, in priority order
 
 1. **PCR-paced placement in the ISDB-S producer** (`crates/isdb-cli/src/
-   txs.rs`). Today a live feed's packets are placed in arrival order,
+   txs.rs`). **Status 2026-10-30: implemented and verified offline,
+   bench acceptance pending.** P1–P6 of
+   [pcr-pacing.md](isdbs-next/pcr-pacing.md) §9 are on `main`
+   (`fad5559..4d105ea`): `--ts-pacing auto|pcr|arrival`, `--placed-ts`,
+   loop seams joined (PCR/PTS/DTS shift, CC renumbering), live inputs
+   paced with a deadline, `isdb ts validate --expect-rate`. Through
+   `--iq` → `isdb rx` (`tools/isdbs-pacing-e2e.sh`, FEED=file|loop|live):
+   52.170000 Mbit/s, CBR-fit max 19 ns / rms 11 ns, 0 CC errors and 0 PCR
+   discontinuities across loop seams, received TS byte-exact with
+   `--placed-ts`, no live deadline miss. Left: `tools/isdbs-bench-tx.sh
+   --feed loop --placed …` into the PIX-DT295, then
+   `tools/isdbs-bench-check.sh --record 20 --placed …`, into
+   VERIFICATION.md. Original problem: a live feed's packets are placed in arrival order,
    one superframe at a time from the reader queue: the PIX-DT295
    recording shows PAT/PMT intervals of 0.17–0.21 s and 12–30 ms rms PCR
    jitter against H.222.0's ±500 ns (VERIFICATION.md "into the
