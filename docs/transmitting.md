@@ -204,7 +204,7 @@ Exactly one input:
 
 | Input | Use |
 |---|---|
-| `--mux-config FILE.toml` | the multiplexer runs in-process ([mux-config.md](mux-config.md)); never ends by itself (unless every relay has `at_eof = "end"`) |
+| `--mux-config FILE.toml` | the multiplexer runs in-process ([mux-config.md](mux-config.md)); never ends by itself (unless every relay has `at_eof = "end"`); a `[network] kind = "bs"` file is refused (satellite SI: `isdb mux` it and send the TS with `--system isdbs --ts`) |
 | `--relay FILE` | rebroadcast a recorded program as a terrestrial service, no TOML needed ([below](#relaying-a-recording)) |
 | `--a-ts/--b-ts/--c-ts PATH` | per-layer transport streams (`-` = stdin, FIFOs fine), e.g. from `isdb mux --out-a/--out-b`; a layer without input carries null packets |
 | `--mux-ts PATH --a-pids … [--c-pids …]` | one TS split into layers by PID: the listed PIDs go to A / C, every other PID to B, input null packets are dropped |
@@ -542,7 +542,9 @@ the TSs in slot order, relative TS 0 first (BO.1408-1 Fig. 9); unused TS_ID
 entries are FFFFh and the other TMCC fields take the values observed on
 the BS transponders (`isdbs-core` README). A file TS that has no packet
 when its slot comes is padded with a null packet (counted in the status
-lines).
+lines). A receiver selects the TS by the TMCC's TS_ID and then reads the
+TS's PAT: a file TS whose first PAT names another transport_stream_id
+than its `--ts` TS_ID is warned about once (on air the two are equal).
 
 **Placement by PCR (`--ts-pacing auto|pcr|arrival`).** A TS with N sent
 slots per frame goes out at a constant rate, N × 1.086875 Mbit/s (52.17

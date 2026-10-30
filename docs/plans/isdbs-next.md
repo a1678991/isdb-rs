@@ -50,15 +50,19 @@ rustdoc clean, FPGA suite 24/24):
   `Searching`.
 - TX1 → 30 dB attenuator → DC block → PIX-DT295 (USB `06b8:103b`, hub
   port `1-2.1`), driven by `~/dev/PIX-DT295` (`target/release/dt295`:
-  `init [--auto]`, `tune --isdbs bs1 --tsid 4010`, `status --isdbs
-  --watch N`, `stream --isdbs bs1 --tsid 4010 --raw-config --out F
+  `init [--auto]`, `tune --isdbs bs1 --tsid 4017`, `status --isdbs
+  --watch N`, `stream --isdbs bs1 --tsid 4017 --raw-config --out F
   --seconds N`; STATE 0xFFFF needs `tools/power-cycle.sh 1-2 1 3` then a
-  cold `init`).
+  cold `init`). TS_ID 4017 is the BS bench TS of `isdbs-bench-tx.sh`
+  since bs-si.md piece D; its `--terrestrial-si` run (the 2026-10-29
+  broadcast) is TS_ID 4010.
 - **The test broadcast may still be on air** when the next session
   starts: `pgrep -af "isdb tx --system isdbs"`; stop with `kill PID`
   (the FIFO writer `pv` ends with it; the Pluto closes to attenuation
   89.75 dB, TX LO down). Restart: `tools/isdbs-bench-tx.sh WORKDIR 45
-  ip:10.10.0.30` (WORKDIR holds `bs-bench.toml`, `bench60.ts`, `ts.fifo`).
+  ip:10.10.0.30` (WORKDIR holds `bs-bench.toml`, `bs60.ts`, `ts.fifo`;
+  a WORKDIR of an earlier run also has the terrestrial `bench60.ts`,
+  which the script now sends only with `--terrestrial-si`).
 - Board hygiene: `tools/pluto-autorun.sh` kills Tezuka's daemons at boot
   (their `/dev/mem` writes would flip the command protocol's toggle bit;
   one takes a bus fault on the DVB registers the isdb image lacks). The
@@ -112,6 +116,11 @@ rustdoc clean, FPGA suite 24/24):
    details per B10 Part 2 for BS; keep terrestrial behaviour unchanged.
    Acceptance: `isdb ts validate` clean; the PIX-DT295's software (or
    `dt295`'s SI readout) lists the bench service as a BS channel.
+   Status: pieces A–D merged; offline end to end clean (VERIFICATION.md
+   "ISDB-S BS-shaped SI, offline"). The bench acceptance (bs-si.md §6.4
+   item 7: `tools/isdbs-bench-tx.sh --feed loop`, `dt295 tune --isdbs bs1
+   --tsid 4017`, `tools/isdbs-bench-check.sh --record 20`, then mirakc)
+   waits for TX1 to be reconnected.
 3. **Media in the bench service and the tuner's decoder**: with
    `ISDB_RS_MEDIA_DIR` (docs/test-data.md) run `tools/isdbs-bench-tx.sh`
    with `bench.toml`'s media streams (the script uses `bench-minimal.toml`
@@ -157,7 +166,8 @@ Read-only investigation of the Work list, one report per cluster under
 - [bs-si.md](isdbs-next/bs-si.md) (item 2). `isdb-si` has every descriptor
   BS uses; the work is a `kind = "bs"` branch in `isdbt-mux` (NIT, BIT,
   config checks) and `isdb-analyze` accepting 0x43. 0x4010 is a real
-  on-air TS_ID (the `txs.rs:85` "placeholder" comment is wrong); the
+  on-air TS_ID (the `txs.rs:85` "placeholder" comment was wrong, fixed
+  in D); the
   report proposes 0x4017 / service 999. `dt295` has no SI readout.
   `tools/bs-nit-section.py` gives BS SI via `[nit] replace_sections`
   today. Split A–D.

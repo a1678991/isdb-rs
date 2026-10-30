@@ -187,6 +187,10 @@ name = "ベンチ"
 
 The complete example is
 [`examples/bs-bench.toml`](../crates/isdbt-mux/examples/bs-bench.toml).
+Such a TS is made with `isdb mux -c … --out-ts FILE` and sent with `isdb
+tx --system isdbs --channel BS1 --ts <transport_stream_id>=FILE`
+(`tools/isdbs-bench-tx.sh` does both); the ISDB-T `isdb tx --mux-config` and
+`isdb loopback --mux-config` refuse a `kind = "bs"` file.
 
 ## `[transport]`
 

@@ -1856,6 +1856,61 @@ For comparison, the same TS through `--feed file` (a regular file, no
 FIFO): CBR fit max 19 ns, identical to its placed TS; the producer there
 runs ahead of air and the TS starts after the lead superframe, not L later.
 
+## ISDB-S BS-shaped SI, offline (2026-10-31)
+
+The bench TS now carries the SI of a BS network
+(docs/plans/isdbs-next/bs-si.md, pieces A–D):
+`crates/isdbt-mux/examples/bs-bench.toml` (`[network] kind = "bs"`, BS1,
+TS_ID 0x4017, service 0x03E7, broadcaster 0xEE; declared streams).
+`tools/isdbs-pacing-e2e.sh` and `tools/isdbs-bench-tx.sh` both send it;
+the sections above ran the terrestrial-SI service (TS_ID 0x4010), which
+`isdbs-bench-tx.sh --terrestrial-si` still sends. No radio: the same chain
+as above (`isdb mux` → `isdb tx --system isdbs --channel BS1 --iq` cs8
+with `--placed-ts` → `isdb rx --iq` → `tools/isdbs-bench-check.sh --rate
+52170000:1 --fit-max-ns 100 --placed`); the check now validates with
+`--expect-tsid 0x4017 --expect-nid 0x0004 --expect-onid 0x0004
+--expect-freq-mhz 11727.48` and fails on any `cross.*` finding.
+
+`isdb ts inspect` of the received TS:
+
+```text
+PAT: transport_stream_id 0x4017 network_PID 0x0010 programs 0x03e7→0x01f0
+NIT tid 0x40 network_id 0x0004 v0 name "ベンチ" system_management_id 0x0201
+  TS 0x4017 onid 0x0004
+    satellite delivery: 11727.48 MHz orbital 110.0°E polarization circular-right (3) modulation isdb-s (0x08) symbol rate 28.8600 Msym/s FEC isdb-s (0x8)
+    service list: 0x03e7/0x01
+SDT tid 0x42 ts 0x4017 onid 0x0004 service 0x03e7 type 0x01 "ベンチ" / "ベンチHD" …
+BIT onid 0x0004 v0 broadcast_view_propriety true first:
+  broadcaster 0xee "ベンチ"  service_list_descriptor (0x41)
+```
+
+| | `FEED=file`, 6 s | `FEED=loop`, 4 s × 3.14 passes | `FEED=loop MEDIA=1`, 4 s |
+|---|---|---|---|
+| on air | 541 superframes, 5.981 s (539 data); 119 550 input nulls dropped, 104 PCRs restamped, lag 0 | 1176 superframes, 13.010 s; `passes 4 cc-fixed 24` (8 PIDs × 3 seams), 0 PCR discontinuities | `passes 4 cc-fixed 29 pes-shifted 596` |
+| RS | 207 360 packets clean, 0 corrected | 0 uncorrectable | 0 uncorrectable |
+| received TS vs `--placed-ts` | identical, 206 976 packets | identical, 450 816 packets | identical, 450 816 packets |
+| validate errors / warnings | 0 / 2 (`pid.missing`: the two declared streams) | the same | ffmpeg's ADTS (`aac.*` errors, an `aac.sync` warning per seam), as before |
+| `cross.*`, `expect` | **none** | **none** | **none** |
+| `pcr.rate` | 52.170000 Mbit/s (−0.0 ppm) | 52.170000 Mbit/s | 52.170000 Mbit/s |
+| CBR fit, 0x01FF | max 19 ns, rms 11 ns | max 19 ns, rms 11 ns; 13 ns at the seams | max 19 ns, rms 11 ns |
+| PAT / PMT / SDT, EIT p/f interval | 0.094 / 0.090 / 1.80 s, no `tables.frequency` | no `tables.frequency` | no `tables.frequency` |
+| loop seams (`ts-loop-seam.py`) | — | 0 CC errors, 0 bytes changed outside PCR/PTS/DTS/CC | the same; 0 PES going back, seam steps video 132 ms, audio 601 ms |
+
+`MEDIA=1` with `FEED=file` (4 s) has one `tables.frequency` warning, the
+PAT's gap to the capture's edge (0.100 s; largest interval 0.094 s): the
+terrestrial service through the script before this change gives the same
+(0.097 / 0.100 s), so it is the 4 s file's edge, not BS SI.
+
+Also checked without a radio: `tools/isdbs-bench-tx.sh --dry-run --feed
+loop WORK 45 ip:10.10.0.30` multiplexes `bs60.ts` and prints the Pluto's
+settings for `--ts 0x4017=…` (`--dry-run` opens no device); `isdb tx
+--system isdbs --ts 0x4010=<the 0x4017 TS>` warns once that the PAT's
+transport_stream_id 0x4017 is not the TMCC's 0x4010; `isdb tx
+--mux-config bs-bench.toml` (ISDB-T) is refused. The bench acceptance
+(bs-si.md §6.4 item 7: the PIX-DT295 tuned with `--tsid 4017`, then
+mirakc) is still to be run: TX1 is not connected to the tuner
+(docs/plans/isdbs-next.md, bench notes).
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

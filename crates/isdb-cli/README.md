@@ -91,7 +91,9 @@ Inputs (one of):
   (`Multiplexer::next_frame()` straight into the modulator, same
   `--mode/--gi/--partial/--layer-*` parameters), so a synthetic service goes
   on air without files or pipes. Never ends by itself (unless every
-  `ts-program` relay has `at_eof = "end"`).
+  `ts-program` relay has `at_eof = "end"`). A `[network] kind = "bs"`
+  file (satellite SI) is refused: `isdb mux` it and send the TS with
+  `tx --system isdbs --ts`.
 * `--relay FILE [--program N | --service-name S] …` a recorded program
   rebroadcast as a terrestrial service, the multiplexer configuration
   built in memory (see "Rebroadcast a recording"); `--auto-layout` adapts
@@ -183,7 +185,7 @@ superframe's packets per TS into 319 488 symbols and
 | flag | default | meaning |
 |---|---|---|
 | `--combination WORD:N` | `tc8psk2/3:48` | slot layout, repeatable (at most 4, any order): a BO.1408-1 Table 1 combination and its slots per frame, dummy slots included, summing to 48 in whole units. WORD is `bpsk1/2`, `qpsk1/2`, `qpsk2/3`, `qpsk3/4`, `qpsk5/6`, `qpsk7/8` or `tc8psk2/3` (case and spaces free; units of 4, 2, 3, 4, 6, 8, 1 slots with 1, 1, 2, 3, 5, 7, 1 sent). The BS layout is the default; the CS layout is `qpsk3/4:48` (36 sent slots) |
-| `--ts ID[:SLOTS][=PATH]` | `0x4010`, synthetic, all sent slots | a TS, repeatable (at most 8; relative TS 0, 1, … in order): TS_ID (`0x4010`, `4010h` or decimal), its sent slots per frame (required with more than one `--ts`; they must sum to the layout's sent slots) and its TS file (`-` = stdin, FIFOs fine, `--feed` as for ISDB-T; null padding when it has no packet, counted). Without `=PATH`: synthetic packets (PID 0x0100, the TS_ID, superframe and index in the payload). With file TSs the transmission ends when every file has ended (synthetic TSs with them); with synthetic TSs only it never ends by itself |
+| `--ts ID[:SLOTS][=PATH]` | `0x4010`, synthetic, all sent slots | a TS, repeatable (at most 8; relative TS 0, 1, … in order): TS_ID (`0x4010`, `4010h` or decimal), its sent slots per frame (required with more than one `--ts`; they must sum to the layout's sent slots) and its TS file (`-` = stdin, FIFOs fine, `--feed` as for ISDB-T; null padding when it has no packet, counted). Without `=PATH`: synthetic packets (PID 0x0100, the TS_ID, superframe and index in the payload). With file TSs the transmission ends when every file has ended (synthetic TSs with them); with synthetic TSs only it never ends by itself. A file TS whose first PAT names another transport_stream_id than its TS_ID is warned about once (the receiver selects by the TMCC's TS_ID). The default 0x4010 is BS-1 TS 0 on air; a bench broadcast gives its own (`tools/isdbs-bench-tx.sh`: 0x4017) |
 | `--rate SPS` | 40M | output sample rate, ≥ (1 + 0.35) × 28.86 Mbaud = 38.961 Msps; at 40 Msps a superframe is 442 810.81 samples (442 810 or 442 811 per superframe, the shaper's phase carried on) |
 | `--iq PATH`, `--iq-format cf32\|cs8` | — / cf32 | the data **and** its SigMF sidecar (`PATH.sigmf-meta`, or `NAME.sigmf-meta` for `NAME.sigmf-data`): `core:datatype`, `core:sample_rate`, `core:description` (`isdb tx ISDB-S: <layout>`), `core:recorder`, `isdb:system "ISDB-S"`, one capture segment at 0 with `core:frequency` (and the channel fields of `isdb capture`) from `--channel` / `--freq` if given. `isdb rx --iq PATH` reads it and picks ISDB-S by itself. stdout, FIFOs and devices get no sidecar |
 | `--backoff-db DB` | 10 | RMS below full scale in every format, **cf32 included** (RMS 0.316 at 10 dB): the ISDB-S receiver reads samples as a fraction of full scale (its front end's input is 12-bit), unlike the scale-free ISDB-T receiver |

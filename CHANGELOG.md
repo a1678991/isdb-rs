@@ -65,6 +65,23 @@ STD-B44) is received to TLV streams.
   polarization. `inspect` prints a `satellite delivery:` line (frequency,
   orbital position, polarization, modulation, symbol rate, FEC) and its
   JSON gains `satellite` in each NIT TS entry (`delivery` is unchanged).
+- `isdb-cli`: `isdb tx --system isdbs` (and its loopback) warns once per
+  TS when the input's first PAT names another transport_stream_id than
+  its `--ts` TS_ID, which the TMCC announces: a receiver tuned by TS_ID
+  would find a TS that names another (on air they are equal).
+- Tools: `tools/isdbs-bench-tx.sh` sends the BS bench service of
+  `examples/bs-bench.toml` (BS SI, TS_ID 0x4017, `--ts 0x4017=…`; receive
+  with `dt295 tune --isdbs bs1 --tsid 4017`) instead of the terrestrial-SI
+  rewrite of `bench-minimal.toml` with TS_ID 0x4010, which
+  `--terrestrial-si` still sends; WORKDIR keeps the TOML sent and its TS
+  (`bs60.ts`, or `bench60.ts`), made again when the TOML is newer.
+  `tools/isdbs-bench-check.sh` expects TS_ID 4017 and the BS NIT
+  (`--expect-nid 0x0004 --expect-onid 0x0004 --expect-freq-mhz` of the
+  `--transponder`, 11727.48 for bs1; `--terrestrial-si`: TS_ID 4010, no
+  network expectations), prints the NIT and SDT, and fails on any
+  `cross.*` finding. `tools/isdbs-pacing-e2e.sh` runs `bs-bench.toml`
+  (TS_ID 0x4017, `--channel BS1`; `MEDIA=1` turns its declared streams
+  into media streams).
 - `isdb-cli`: `isdb tx --system isdbs` places a TS file in its slots by its
   PCR: each packet in the first free slot at or after the time its PCRs
   give it, input null packets dropped, nulls in the slots left over, and
@@ -696,6 +713,10 @@ STD-B44) is received to TLV streams.
 
 ### Changed
 
+- `isdb-cli`: the ISDB-T `isdb tx --mux-config` and `isdb loopback
+  --mux-config` refuse a `[network] kind = "bs"` configuration (a
+  satellite NIT on an ISDB-T signal), naming `isdb mux` and `isdb tx
+  --system isdbs --channel … --ts <its TS_ID>=…` instead.
 - `isdbs-phy`: `Transmitter::new` refuses a dummy combination entry with
   slots (`TxError::DummySlots`; BO.1408-1 §6.1.2 requires 0), which left
   0 + 0j symbols in the main signal; `TmccInfo::assign` never builds one.

@@ -7,6 +7,13 @@ Marks: **[spec]** a clause of a local spec; **[live]** seen in a BS recording
 (see §3.3); **[knowledge]** neither (from tables of other projects or memory);
 **[confirm]** still to be settled on the bench.
 
+**Status (2026-10-31):** pieces A (`82da6c5`), B (`a82008d`), C (`b9cc79e`)
+and D (bench and CLI glue, §6.3) are merged and verified offline
+(VERIFICATION.md "ISDB-S BS-shaped SI, offline"). The bench acceptance
+(§6.4 item 7) is pending until TX1 is reconnected to the PIX-DT295
+(isdbs-next.md, bench notes of 2026-10-31). As implemented,
+`satellite.channel` takes the odd channels BS1…BS23 only (§6.1).
+
 ## 0. Summary
 
 - Today's multiplexer (`isdbt-mux`) makes terrestrial SI only. The terrestrial
@@ -296,7 +303,7 @@ for the missing 0xFA, and it does not tie network_id to the delivery system.
 | `remote_control_key_id` | required (0xCD always) | optional; 0xCD only when given (Table 6-1 "Optional"; absent on BS [live]) |
 | `transmission_types` | as today | only together with `remote_control_key_id` |
 | `[network.satellite]` | refused | **required** |
-| `satellite.channel` | — | `"BS1"`…`"BS24"` → frequency and polarization |
+| `satellite.channel` | — | the odd channels `"BS1"`, `"BS3"`…`"BS23"` → frequency and polarization (as implemented: the even channels carry the advanced BS (ISDB-S3) network; `crates/isdbt-mux/SPEC-NOTES.md`, "NIT of kind bs") |
 | `satellite.orbital_position` | — | default `"110.0E"` ([live]); `ddd.dE`/`ddd.dW` |
 
 `[[bit.broadcasters]]` gains `services = [u16…]`: a 0x41 in the broadcaster
@@ -524,7 +531,7 @@ Golden section for the example (network name "ベンチ" = `1b6f597341` as
    - every `examples/*.toml` loads.
 4. **Config errors** (`tests/config_errors.rs`, typed):
    - bs + `area_code`, bs + `channels`, bs without `[network.satellite]`;
-   - `channel = "BS25"` and `"ND2"`;
+   - `channel = "BS25"` and `"ND2"` (and, as implemented, the even `"BS2"`);
    - a bad `orbital_position`;
    - bs + `terrestrial` broadcaster;
    - `services` naming an unknown sid;
@@ -563,7 +570,9 @@ Golden section for the example (network name "ベンチ" = `1b6f597341` as
 - `isdb tx --mux-config` and `isdb loopback --mux-config` (ISDB-T,
   `isdb-cli/src/input.rs:600-633`, `relay.rs:377-383`) should refuse `kind =
   "bs"`, because a satellite NIT on an ISDB-T signal is a contradiction.
-  Alternatively they can warn; the lead decides.
+  Alternatively they can warn; the lead decides. Implemented (piece D):
+  refused, with the `isdb mux` / `isdb tx --system isdbs` commands to use
+  instead.
 
 ### 6.6 Implementation split (worktree agents)
 
