@@ -86,7 +86,41 @@ interpretations it adopts.  Texts: `specs/ITU-T-H.222.0-2006.txt`,
 - Interpretation: only estimable when packet positions are constant-rate
   time; the deviation of PCRs from a least-squares constant-rate fit is
   reported only when null packets are present (CBR); > 500 ns is a
-  **warning** (the mux could be VBR).  Status: estimate.
+  **warning** (the mux could be VBR).  The message gives the largest
+  |residual| and the rms of the residuals.  Status: estimate.
+
+## isdb-analyze: PCR-implied rate (`pcr.rate`, `--expect-rate`)
+- Spec: H.222.0 (05/2006) §2.4.2.2 eq. 2-4 and 2-5.
+- Text: "the transport rate is determined as the number of bytes in the
+  Transport Stream between the bytes containing the last bit of two
+  successive program_clock_reference_base fields of the same program
+  divided by the difference between the time values encoded in these same
+  two PCR fields" (eq. 2-5); eq. 2-4 times every other byte from the
+  preceding PCR at that rate.
+- Interpretation: the **PCR-implied rate** of a PCR_PID is the
+  least-squares slope of eq. 2-4 PCR time (27 MHz, wrap-aware,
+  discontinuities bridged as for the time base) against byte position in
+  the capture, 188 × 8 bit per packet position: rate = 1504 / b for
+  `t = a + b·idx`. Eq. 2-5 is the rate between two successive PCRs; the fit
+  is its average over the capture that one late or early PCR barely moves
+  (`inspect`'s `rate` is first-to-last PCR, the same for a CBR stream). It
+  is the rate the PCRs say the TS is played at, so it is only meaningful
+  when the capture's packet positions are the transmitted ones (null
+  packets kept; the message says so when the capture has none). PCRs alone
+  cannot tell a TS played too fast or too slow: every other timing check
+  (interval, accuracy, section repetition) is measured on the PCR time base
+  and passes. The check therefore needs the rate the bench plays the TS at:
+  `--expect-rate BPS[:PPM]` compares every program's PCR_PID (else the PID
+  with most PCRs) against BPS, and |rate − BPS| / BPS > PPM (default 100 ppm,
+  room for a receiver's own clock in a recording; an offline placed TS
+  should match within 1 ppm) is an **error** (a bench expectation, like
+  `expect`); within it, info with the value. No PCR, or fewer than two, is
+  an error: the rate is not measurable. Example: a 29.958 Mbit/s ISDB-T
+  multiplex-frame TS relayed in the 52.17 Mbit/s of an ISDB-S TC8PSK 2/3 ×
+  48 TS by arrival order validates clean apart from this check (‑425 756
+  ppm).  Status: interpretation; confirmed offline on synthetic CBR streams
+  and `isdb mux` output (`tests/checks.rs` `pcr_rate_*`, `isdb-cli`
+  `ts_validate_expect_rate`).
 
 ## isdb-analyze: section repetition time base
 - Spec: H.222.0 §2.4.2.2 eq. 2-4 (byte arrival time interpolated between PCRs).

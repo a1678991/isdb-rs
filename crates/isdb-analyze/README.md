@@ -13,6 +13,8 @@ library behind `isdb ts inspect|validate|diff|edit|extract`.
 - ITU-T H.222.0 (05/2006): packet rules (`isdb_ts::packet::check`),
   continuity (§2.4.3.3), PCR interval ≤ 0.1 s (§2.7.2) and ±500 ns
   accuracy estimate (§2.4.2.2), PCR-interpolated time base (eq. 2-4),
+  PCR-implied rate (least-squares slope, eq. 2-4/2-5) against an expected
+  rate (`pcr.rate`),
   PSI (§2.4.4: PAT/PMT/CAT, table_id exclusivity on 0x0000/0x0001, version
   coherence), PID allocation (Table 2-3), PES timing (§2.7.4 0.7 s PTS
   interval, §2.4.2.6 T-STD delay estimate, Table 2-22 stream_id classes),
@@ -121,11 +123,11 @@ assert_eq!(changes[0].path, "header.version_number");
 
 | Test | What it proves | Data |
 |---|---|---|
-| `tests/checks.rs` | one test per check: a synthetic stream (built with the `isdb-ts`/`isdb-si` encoders in `tests/common/mod.rs`) violating exactly one rule yields that finding, severity and clause; the baseline stream has no errors; bench `Expectations`; `si.copy_control` warning | none |
+| `tests/checks.rs` | one test per check: a synthetic stream (built with the `isdb-ts`/`isdb-si` encoders in `tests/common/mod.rs`) violating exactly one rule yields that finding, severity and clause; the baseline stream has no errors; bench `Expectations`; `pcr.rate` (a TS at its PCR rate passes, the same TS 1.74× fast and 150 ppm off fail, no PCR fails); `pcr.accuracy` rms; `si.copy_control` warning | none |
 | `tests/checks.rs` `aac_adts_rules`, `aac_quality_indicator_consistency` | a stream_type 0x0F PID carrying conforming silent ADTS has no `aac.*` finding above info; one header field changed per case (protection_absent, adts_buffer_fullness 0x7FF, profile, sampling_frequency_index, ID, raw data blocks, channel_configuration 7) gives its error and clause; EIT quality_indicator '01' at 75 kbit/s → warning, '11' → info | none |
 | `tests/edit.rs` | identity rewrite is byte-exact; null PID keeps positions; a NIT mutation diffs as exactly that field; larger replacements use null slots; remove/insert; `pat.add`; `extract` round-trips through the hex loader; every output CRC/CC clean per the validator | none |
 | `tests/real_data.rs` | opt-in, on a terrestrial capture (the PSI/SI checks treat payloads as opaque; the `aac.*` checks need unscrambled audio, transport_scrambling_control '00', e.g. a one-seg service, which is sent in the clear): inspect decodes every section (no section error, every SI section and descriptor typed except B10-external tags 0xC9/0xCB/0xCC; NIT network name, TS information, terrestrial delivery system, SDT service names, EIT p/f titles and TOT present); validation reports no section/CC error and no `aac.*` finding above info (other operational findings such as PCR intervals are printed); identity rewrite keeps the PSI/SI section sequence of every SI PID and every PMT PID of the PAT; null-PID (first ES of the first PMT) and NIT-mutation (guard_interval) edits stay clean and diff as exactly that field; with a second stream written by this project's multiplexer: NIT transplant is CRC/CC clean and an ours-vs-capture report is printed | the files named by `ISDB_RS_CAPTURE_TS` (live capture) and `ISDB_RS_OUR_TS` (own multiplex) |
-| unit tests (`src/mutate.rs`, `src/tree.rs`, `src/diff.rs`, `src/timebase.rs`) | mutation grammar examples parse and re-encode; `Debug` tree parsing/normalisation and JST rendering; descriptor-list matching in diffs; PCR interpolation and its inverse | none |
+| unit tests (`src/mutate.rs`, `src/tree.rs`, `src/diff.rs`, `src/timebase.rs`) | mutation grammar examples parse and re-encode; `Debug` tree parsing/normalisation and JST rendering; descriptor-list matching in diffs; PCR interpolation and its inverse, the constant-rate fit (`cbr_fit`) | none |
 
 No capture is committed. Each `real_data.rs` test prints a `SKIP` line and
 returns (passes) when its environment variable is unset or names a missing

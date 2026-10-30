@@ -14,7 +14,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use isdb_analyze::edit::{self, EditOp, EditOptions, NullSlots, Selector};
 use isdb_analyze::mutate::Expr;
-use isdb_analyze::validate::{Expectations, Severity, ValidateOptions};
+use isdb_analyze::validate::{Expectations, RateExpectation, Severity, ValidateOptions};
 use isdb_analyze::{ScanOptions, inspect, scan_path};
 use isdb_ts::Pid;
 use std::path::PathBuf;
@@ -158,6 +158,44 @@ pub struct ValidateArgs {
     /// Expected network name (NIT network_name_descriptor).
     #[arg(long)]
     pub expect_network_name: Option<String>,
+    /// Expected PCR-implied transport rate in bit/s, with an optional
+    /// tolerance in ppm after a colon (default 100): the least-squares
+    /// slope of PCR time against byte position on every PCR_PID; outside
+    /// the tolerance is a `pcr.rate` error (e.g. 52170000:100 for an
+    /// ISDB-S TS of TC8PSK 2/3 × 48 slots).
+    #[arg(long, value_name = "BPS[:PPM]", value_parser = parse_rate)]
+    pub expect_rate: Option<RateExpectation>,
+}
+
+/// `BPS[:PPM]` of `--expect-rate`: a positive rate in bit/s (`52170000`,
+/// `52.17e6`) and an optional tolerance in ppm (default
+/// [`RateExpectation::DEFAULT_PPM`]).
+fn parse_rate(s: &str) -> Result<RateExpectation, String> {
+    let (bps, ppm) = match s.split_once(':') {
+        Some((b, p)) => (b, Some(p)),
+        None => (s, None),
+    };
+    let bps: f64 = bps
+        .trim()
+        .parse()
+        .map_err(|e| format!("rate {bps:?}: {e}"))?;
+    if !(bps.is_finite() && bps > 0.0) {
+        return Err(format!("rate {bps} is not a positive bit rate"));
+    }
+    let ppm = match ppm {
+        Some(p) => {
+            let v: f64 = p
+                .trim()
+                .parse()
+                .map_err(|e| format!("tolerance {p:?}: {e}"))?;
+            if !(v.is_finite() && v >= 0.0) {
+                return Err(format!("tolerance {v} ppm is not ≥ 0"));
+            }
+            v
+        }
+        None => RateExpectation::DEFAULT_PPM,
+    };
+    Ok(RateExpectation { bps, ppm })
 }
 
 /// `isdb ts diff`.
@@ -321,6 +359,7 @@ pub fn run(args: TsArgs) -> Result<()> {
                 remote_control_key_id: a.expect_remote_key,
                 ts_name: a.expect_ts_name,
                 network_name: a.expect_network_name,
+                rate: a.expect_rate,
             };
             let r = isdb_analyze::validate::validate(
                 &cap,
@@ -503,6 +542,31 @@ pub fn run(args: TsArgs) -> Result<()> {
                     Ok(())
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expect_rate_parses_rate_and_tolerance() {
+        let r = parse_rate("52170000").unwrap();
+        assert_eq!((r.bps, r.ppm), (52_170_000.0, RateExpectation::DEFAULT_PPM));
+        let r = parse_rate("52.17e6:1").unwrap();
+        assert_eq!((r.bps, r.ppm), (52_170_000.0, 1.0));
+        for bad in [
+            "",
+            "0",
+            "-1",
+            "inf",
+            "x",
+            "52170000:",
+            "52170000:-5",
+            "1:nan",
+        ] {
+            assert!(parse_rate(bad).is_err(), "{bad:?}");
         }
     }
 }

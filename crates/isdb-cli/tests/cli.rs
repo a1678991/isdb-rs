@@ -2616,6 +2616,43 @@ fn ts_validate_expect_services() {
     std::fs::remove_dir_all(&d).unwrap();
 }
 
+/// `ts validate --expect-rate`: the multiplexer's 13-segment TS (Mode 3,
+/// GI 1/8: 4 608 × 188 B per 231.336 ms = 29.958294 Mbit/s) passes at its
+/// own rate within 1 ppm and is a `pcr.rate` error at the 52.17 Mbit/s of
+/// an ISDB-S TC8PSK 2/3 × 48 TS (the bench's `--feed file` case,
+/// pcr-pacing.md §6 "arrival").
+#[test]
+fn ts_validate_expect_rate() {
+    let d = tmp("expect-rate");
+    let cfg = declared_only_config(&d);
+    let full = d.join("full.ts");
+    let o = run(&["mux", "-c", s(&cfg), "--frames", "8", "--out-ts", s(&full)]);
+    assert!(o.status.success());
+    let o = run(&[
+        "ts",
+        "validate",
+        s(&full),
+        "--show",
+        "info",
+        "--expect-rate",
+        "29958294:1",
+    ]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out}");
+    assert!(out.contains("INFO    [pcr.rate]"), "{out}");
+    assert!(!out.contains("ERROR   [pcr.rate]"), "{out}");
+    let o = run(&["ts", "validate", s(&full), "--expect-rate", "52170000"]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("ERROR   [pcr.rate]") && out.contains("± 100 ppm"),
+        "{out}"
+    );
+    let o = run(&["ts", "validate", s(&full), "--expect-rate", "52170000:x"]);
+    assert_eq!(o.status.code(), Some(2));
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
 /// Opt-in: `ISDB_RS_ISDBS3_SYMBOLS` names an ISDB-S3 `Symbols` words file
 /// recorded from the FPGA front end over tens of seconds (the front end
 /// has no carrier loop: the reference recording drifts −97 Hz → −830 Hz in

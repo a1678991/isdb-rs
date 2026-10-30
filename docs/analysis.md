@@ -116,7 +116,7 @@ The checks, by identifier prefix:
 | `tables.*` | tables B10 makes mandatory, and their repetition against B10 Table 5-2 |
 | `cross.*` | identities between tables: transport_stream_id, original_network_id, services in PAT vs SDT, NIT, EIT flags |
 | `eit.*` | EIT present/following and schedule rules (B10 §5.2.7 and Appendix §1.4) |
-| `pcr.*` | PCR missing, interval ≤ 0.1 s, discontinuities, accuracy estimate, unreferenced PCR PIDs |
+| `pcr.*` | PCR missing, interval ≤ 0.1 s, discontinuities, accuracy estimate (constant-rate fit max and rms), unreferenced PCR PIDs, and with `--expect-rate` the PCR-implied rate (`pcr.rate`) |
 | `pes.*` | PES headers, stream_id classes, PTS spacing ≤ 0.7 s, T-STD delay estimate, order |
 | `aac.*` | ADTS headers of every stream_type 0x0F PID against ARIB STD-B32 Part 2 §5.2 (protection_absent, profile, sampling frequency, channel configuration, adts_buffer_fullness, raw data blocks, ID), quality_indicator vs the measured rate, a per-PID summary. Header level only: crc_check presence is counted, its value is not verified |
 
@@ -140,6 +140,20 @@ transmitted, `--expect-*` options turn mismatches into errors (check
 | `--expect-area C` | area_code |
 | `--expect-remote-key K` | remote_control_key_id |
 | `--expect-ts-name S` / `--expect-network-name S` | TS name / network name |
+| `--expect-rate BPS[:PPM]` | the PCR-implied transport rate in bit/s, within PPM (default 100); check `pcr.rate` |
+
+`--expect-rate` catches a TS played at the wrong speed, which every other
+timing check passes because they measure time on the PCRs themselves. The
+PCR-implied rate is the least-squares slope of PCR time (H.222.0 eq. 2-4)
+against byte position on every program's PCR_PID, so the capture must keep
+its null packets. A recording through a receiver carries the receiver's
+clock error, hence the 100 ppm default; a TS written offline should match
+within 1 ppm. For an ISDB-S TS on TC8PSK 2/3 × 48 slots the rate is
+52 170 000 bit/s:
+
+```sh
+isdb ts validate bs1.ts --expect-tsid 0x4010 --expect-rate 52170000:100
+```
 
 ```sh
 isdb ts validate rx.ts --expect-tsid 0x79ee --expect-freq-mhz 557.142857 --expect-remote-key 9

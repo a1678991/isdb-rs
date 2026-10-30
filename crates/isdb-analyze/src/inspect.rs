@@ -309,23 +309,7 @@ fn pcr_report(cap: &Capture, pid: Pid) -> PcrReport {
     let d: Vec<f64> = samples.windows(2).map(|w| w[1].1 - w[0].1).collect();
     let over = d.iter().filter(|&&x| x > 0.1).count();
     // Least-squares fit t = a + b·idx; residuals in ns.
-    let (fit_max, fit_rms) = if samples.len() >= 3 {
-        let n = samples.len() as f64;
-        let mx = samples.iter().map(|s| s.0 as f64).sum::<f64>() / n;
-        let my = samples.iter().map(|s| s.1).sum::<f64>() / n;
-        let sxx: f64 = samples.iter().map(|s| (s.0 as f64 - mx).powi(2)).sum();
-        let sxy: f64 = samples.iter().map(|s| (s.0 as f64 - mx) * (s.1 - my)).sum();
-        let b = if sxx > 0.0 { sxy / sxx } else { 0.0 };
-        let r: Vec<f64> = samples
-            .iter()
-            .map(|s| (s.1 - (my + b * (s.0 as f64 - mx))) * 1e9)
-            .collect();
-        let max = r.iter().fold(0f64, |m, &x| m.max(x.abs()));
-        let rms = (r.iter().map(|x| x * x).sum::<f64>() / n).sqrt();
-        (Some(max), Some(rms))
-    } else {
-        (None, None)
-    };
+    let fit = (samples.len() >= 3).then(|| tb.cbr_fit()).flatten();
     PcrReport {
         pid,
         count: pcrs.len(),
@@ -333,8 +317,8 @@ fn pcr_report(cap: &Capture, pid: Pid) -> PcrReport {
         over_100ms: over,
         discontinuities: tb.discontinuities,
         rate_bps: tb.rate_bps(),
-        fit_max_ns: fit_max,
-        fit_rms_ns: fit_rms,
+        fit_max_ns: fit.map(|f| f.max_ns),
+        fit_rms_ns: fit.map(|f| f.rms_ns),
     }
 }
 

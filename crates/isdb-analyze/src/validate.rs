@@ -121,6 +121,27 @@ pub struct Expectations {
     pub ts_name: Option<String>,
     /// network_name_descriptor of NIT actual.
     pub network_name: Option<String>,
+    /// PCR-implied transport rate of every program's PCR_PID (check
+    /// `pcr.rate`; `SPEC-NOTES.md` "PCR-implied rate").
+    pub rate: Option<RateExpectation>,
+}
+
+/// Expected PCR-implied transport rate: the least-squares slope of PCR
+/// time (H.222.0 §2.4.2.2 eq. 2-4) against byte position, compared with
+/// the rate a bench plays the TS at (e.g. 52.17 Mbit/s for an ISDB-S TS of
+/// TC8PSK 2/3 × 48 slots).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct RateExpectation {
+    /// Rate (bit/s).
+    pub bps: f64,
+    /// Tolerance in parts per million of `bps`.
+    pub ppm: f64,
+}
+
+impl RateExpectation {
+    /// Tolerance when none is given: 100 ppm, room for a receiver's own
+    /// clock in a recording.
+    pub const DEFAULT_PPM: f64 = 100.0;
 }
 
 /// Options.
@@ -291,6 +312,9 @@ pub fn validate(cap: &Capture, opts: &ValidateOptions) -> ValidationReport {
     copy_control_checks(cap, &mut o);
     aac_checks(cap, &si, &pmts, &mut o);
     expectations(cap, &si, &opts.expect, &mut o);
+    if let Some(r) = opts.expect.rate {
+        rate_expectation(cap, r, &mut o);
+    }
     let mut findings = o.v;
     findings.sort_by(|a, b| {
         b.severity
@@ -485,25 +509,18 @@ fn transport(cap: &Capture, tb: &Timebase, o: &mut Out) {
         }
         // Accuracy is only measurable when packet positions are CBR time.
         let nulls = cap.stats.pids.get(&Pid::NULL).map_or(0, |s| s.packets);
-        if s.len() >= 3 && nulls > 0 {
-            let n = s.len() as f64;
-            let mx = s.iter().map(|x| x.0 as f64).sum::<f64>() / n;
-            let my = s.iter().map(|x| x.1).sum::<f64>() / n;
-            let sxx: f64 = s.iter().map(|x| (x.0 as f64 - mx).powi(2)).sum();
-            let b = if sxx > 0.0 {
-                s.iter()
-                    .map(|x| (x.0 as f64 - mx) * (x.1 - my))
-                    .sum::<f64>()
-                    / sxx
-            } else {
-                0.0
-            };
-            let worst = s
-                .iter()
-                .map(|x| ((x.1 - (my + b * (x.0 as f64 - mx))) * 1e9).abs())
-                .fold(0.0, f64::max);
-            let sev = if worst > 500.0 { Warning } else { Info };
-            o.push(sev, "pcr.accuracy", "H.222.0 §2.4.2.2 (PCR tolerance ±500 ns)", pid_loc(pid), format!("max deviation from a constant-rate fit {worst:.0} ns (estimate assuming CBR packet timing)"));
+        if let Some(fit) = ptb.cbr_fit().filter(|_| s.len() >= 3 && nulls > 0) {
+            let sev = if fit.max_ns > 500.0 { Warning } else { Info };
+            o.push(
+                sev,
+                "pcr.accuracy",
+                "H.222.0 §2.4.2.2 (PCR tolerance ±500 ns)",
+                pid_loc(pid),
+                format!(
+                    "max deviation from a constant-rate fit {:.0} ns, rms {:.0} ns (estimate assuming CBR packet timing)",
+                    fit.max_ns, fit.rms_ns
+                ),
+            );
         }
     }
     for (&pid, s) in &cap.stats.pids {
@@ -2001,6 +2018,66 @@ fn decode_times(t: &crate::scan::PesTrack) -> Vec<(u64, u64)> {
 // ---------------------------------------------------------------------------
 // expectations
 // ---------------------------------------------------------------------------
+
+/// `pcr.rate`: the PCR-implied rate ([`Timebase::cbr_fit`]) of every
+/// program's PCR_PID (else of the PID with most PCRs) against the bench's
+/// expected rate.
+fn rate_expectation(cap: &Capture, e: RateExpectation, o: &mut Out) {
+    use Severity::{Error, Info};
+    let c = "H.222.0 §2.4.2.2 eq. 2-4 (bench expectation)";
+    let mut pids: BTreeSet<Pid> = cap
+        .pmts()
+        .values()
+        .map(|(_, p)| p.body.pcr_pid)
+        .filter(|&p| p != Pid::NULL)
+        .collect();
+    if pids.is_empty() {
+        pids.extend(Timebase::from_stats(&cap.stats, None, None).pcr_pid);
+    }
+    let want = format!("expected {:.6} Mbit/s ± {} ppm", e.bps * 1e-6, e.ppm);
+    if pids.is_empty() {
+        o.push(
+            Error,
+            "pcr.rate",
+            c,
+            "transport",
+            format!("no PCR to measure the rate; {want}"),
+        );
+        return;
+    }
+    let nulls = cap.stats.pids.get(&Pid::NULL).map_or(0, |s| s.packets);
+    let note = if nulls == 0 {
+        " (no null packets: positions may not be constant-rate time)"
+    } else {
+        ""
+    };
+    for pid in pids {
+        let tb = Timebase::from_stats(&cap.stats, Some(pid), None);
+        // from_stats falls back to another PID when this one has < 2 PCRs.
+        let Some(fit) = tb.cbr_fit().filter(|_| tb.pcr_pid == Some(pid)) else {
+            o.push(
+                Error,
+                "pcr.rate",
+                c,
+                pid_loc(pid),
+                format!("fewer than two PCRs: rate not measurable; {want}"),
+            );
+            continue;
+        };
+        let off = (fit.rate_bps - e.bps) / e.bps * 1e6;
+        let sev = if off.abs() > e.ppm { Error } else { Info };
+        o.push(
+            sev,
+            "pcr.rate",
+            c,
+            pid_loc(pid),
+            format!(
+                "PCR-implied rate {:.6} Mbit/s ({off:+.1} ppm), {want}{note}",
+                fit.rate_bps * 1e-6
+            ),
+        );
+    }
+}
 
 fn expectations(cap: &Capture, si: &SiView, e: &Expectations, o: &mut Out) {
     use Severity::Error;

@@ -169,6 +169,57 @@ impl Timebase {
         };
         (b.1 > a.1).then(|| (b.0 - a.0) as f64 * 188.0 * 8.0 / (b.1 - a.1))
     }
+
+    /// Least-squares constant-rate fit of the PCR samples: PCR time
+    /// (H.222.0 §2.4.2.2 eq. 2-4) against packet position, `t = a + b·idx`.
+    /// The slope gives the PCR-implied transport rate (188 × 8 / b bit/s);
+    /// the residuals estimate the PCR placement error of a CBR stream
+    /// (`SPEC-NOTES.md`, "PCR-implied rate" and "PCR accuracy").
+    ///
+    /// `None` with fewer than two samples or a non-increasing time.
+    pub fn cbr_fit(&self) -> Option<CbrFit> {
+        let s = &self.samples;
+        if s.len() < 2 {
+            return None;
+        }
+        let n = s.len() as f64;
+        let mx = s.iter().map(|x| x.0 as f64).sum::<f64>() / n;
+        let my = s.iter().map(|x| x.1).sum::<f64>() / n;
+        let sxx: f64 = s.iter().map(|x| (x.0 as f64 - mx).powi(2)).sum();
+        let sxy: f64 = s.iter().map(|x| (x.0 as f64 - mx) * (x.1 - my)).sum();
+        if sxx <= 0.0 {
+            return None;
+        }
+        let b = sxy / sxx;
+        if b <= 0.0 {
+            return None;
+        }
+        let r: Vec<f64> = s
+            .iter()
+            .map(|x| (x.1 - (my + b * (x.0 as f64 - mx))) * 1e9)
+            .collect();
+        Some(CbrFit {
+            rate_bps: 188.0 * 8.0 / b,
+            max_ns: r.iter().fold(0f64, |m, &x| m.max(x.abs())),
+            rms_ns: (r.iter().map(|x| x * x).sum::<f64>() / n).sqrt(),
+            samples: s.len(),
+        })
+    }
+}
+
+/// Least-squares constant-rate fit of PCR time against packet position
+/// ([`Timebase::cbr_fit`]; H.222.0 §2.4.2.2 eq. 2-4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CbrFit {
+    /// PCR-implied transport rate (bit/s): 188 × 8 over the fitted seconds
+    /// per packet.
+    pub rate_bps: f64,
+    /// Largest |residual| (ns).
+    pub max_ns: f64,
+    /// Root mean square of the residuals (ns).
+    pub rms_ns: f64,
+    /// PCR samples fitted.
+    pub samples: usize,
 }
 
 /// The first packet index at or after the fractional index `x`.
@@ -213,5 +264,38 @@ mod tests {
         assert!((tb.time(95).unwrap() - 0.0095).abs() < 1e-9); // extrapolated
         assert_eq!(tb.index_at(0.0055), Some(55));
         assert!((tb.rate_bps().unwrap() - 90.0 * 1504.0 / 0.009).abs() < 1.0);
+        let f = tb.cbr_fit().unwrap();
+        assert_eq!(f.samples, 10);
+        assert!((f.rate_bps - 10.0 * 1504.0 / 0.001).abs() < 1e-3, "{f:?}");
+        assert!(f.max_ns < 1e-3 && f.rms_ns < 1e-3, "{f:?}");
+    }
+
+    /// One PCR placed 1 µs late among exact ones: the fit's slope is the
+    /// CBR rate within a few ppm and the residuals show the step.
+    #[test]
+    fn cbr_fit_reports_the_displaced_pcr() {
+        let mut st = Stats::new();
+        for i in 0..1000u64 {
+            let p = if i % 10 == 0 {
+                let late = if i == 500 { 27 } else { 0 };
+                Packet::pcr_only(
+                    Pid::new(0x100).unwrap(),
+                    ContinuityCounter::ZERO,
+                    Pcr::from_ticks(i / 10 * 27_000 + late),
+                )
+                .encode()
+                .unwrap()
+            } else {
+                Packet::null().encode().unwrap()
+            };
+            st.push(i, &p);
+        }
+        let f = Timebase::from_stats(&st, None, None).cbr_fit().unwrap();
+        assert!(
+            ((f.rate_bps - 15_040_000.0) / 15_040_000.0).abs() < 5e-6,
+            "{f:?}"
+        );
+        assert!((f.max_ns - 1000.0).abs() < 20.0, "{f:?}");
+        assert!(f.rms_ns > 50.0 && f.rms_ns < 150.0, "{f:?}");
     }
 }

@@ -17,6 +17,13 @@ STD-B44) is received to TLV streams.
 
 ### Added
 
+- `isdb-analyze`, `isdb-cli`: `isdb ts validate --expect-rate BPS[:PPM]`
+  compares the PCR-implied rate (least-squares slope of PCR time against
+  byte position, `Timebase::cbr_fit`) of every PCR_PID with the rate the
+  TS is played at: a `pcr.rate` error outside the tolerance (100 ppm by
+  default). A TS relayed too fast or too slow, which every other timing
+  check passes, is caught. `pcr.accuracy` gives the fit's rms next to its
+  max.
 - `isdb-cli`: `isdb tx --system isdbs` transmits ISDB-S: `--combination
   WORD:N` (the slot layout, `tc8psk2/3:48` by default; `bpsk1/2` …
   `tc8psk2/3`), `--ts ID[:SLOTS][=PATH]` (up to eight TSs, each a TS

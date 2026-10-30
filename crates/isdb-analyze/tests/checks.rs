@@ -55,6 +55,73 @@ fn pcr_interval_over_100ms() {
     );
 }
 
+fn validate_rate(p: &[Pkt], bps: f64, ppm: f64) -> isdb_analyze::validate::ValidationReport {
+    isdb_analyze::validate::validate(
+        &scan(p),
+        &isdb_analyze::validate::ValidateOptions {
+            expect: isdb_analyze::validate::Expectations {
+                rate: Some(isdb_analyze::validate::RateExpectation { bps, ppm }),
+                ..Default::default()
+            },
+            nominal_bps: None,
+        },
+    )
+}
+
+/// `--expect-rate`: a TS whose PCRs advance at the rate it is played at
+/// passes; the same TS played 1.74× fast (pcr-pacing.md §6 "arrival": the
+/// 29.958 Mbit/s bench TS in 52.17 Mbit/s of ISDB-S slots) is a `pcr.rate`
+/// error, although every other timing check passes.
+#[test]
+fn pcr_rate_against_the_expected_rate() {
+    let p = build(&default_spec(3));
+    let actual = PPS as f64 * 1504.0;
+    let r = validate_rate(&p, actual, 100.0);
+    assert!(has(&r, Info, "pcr.rate", "eq. 2-4"), "{}", r.to_text(Info));
+    assert!(!r.has_errors(), "{}", r.to_text(Warning));
+    let fast = actual * 52.17 / 29.958_294;
+    let r = validate_rate(&p, fast, 100.0);
+    assert!(has(&r, Error, "pcr.rate", "eq. 2-4"), "{}", r.to_text(Info));
+    let f = r.findings.iter().find(|f| f.check == "pcr.rate").unwrap();
+    assert!(f.message.contains("3.008000 Mbit/s"), "{}", f.message);
+    // the other timing checks do not see it
+    assert!(
+        !r.findings
+            .iter()
+            .any(|f| f.severity >= Warning && f.check != "pcr.rate"),
+        "{}",
+        r.to_text(Warning)
+    );
+    // the tolerance: 150 ppm off fails at the default 100 ppm, passes at 200
+    let off = actual * (1.0 + 150e-6);
+    assert!(has(&validate_rate(&p, off, 100.0), Error, "pcr.rate", ""));
+    assert!(has(&validate_rate(&p, off, 200.0), Info, "pcr.rate", ""));
+}
+
+/// Without a PCR the rate is not measurable: an error, not a pass.
+#[test]
+fn pcr_rate_without_pcr_is_an_error() {
+    let mut s = default_spec(2);
+    s.pcr_period_ms = 0;
+    let r = validate_rate(&build(&s), 3_008_000.0, 100.0);
+    let f = r.findings.iter().find(|f| f.check == "pcr.rate").unwrap();
+    assert_eq!(f.severity, Error, "{f:?}");
+    assert!(f.message.contains("rate not measurable"), "{f:?}");
+}
+
+/// `pcr.accuracy` reports the rms of the fit next to its max.
+#[test]
+fn pcr_accuracy_reports_rms() {
+    let r = validate(&build(&default_spec(2)));
+    let f = r
+        .findings
+        .iter()
+        .find(|f| f.check == "pcr.accuracy")
+        .unwrap();
+    assert_eq!(f.severity, Info);
+    assert!(f.message.contains(" ns, rms "), "{}", f.message);
+}
+
 #[test]
 fn continuity_break() {
     let mut p = build(&default_spec(3));
@@ -352,6 +419,7 @@ fn expectations() {
         remote_control_key_id: Some(9),
         ts_name: Some("テスト".into()),
         network_name: Some("テスト".into()),
+        rate: None,
     };
     let r = isdb_analyze::validate::validate(
         &cap,

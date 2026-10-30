@@ -388,7 +388,10 @@ the stream has no PCR). Input packets may be 188/192/204 bytes (autodetected).
 * `validate FILE` — spec conformance findings with clause citations
   (`--show`, `--fail-on` = `info|warning|error|never`; default exits non-zero
   on errors). Bench expectations: `--expect-tsid/-onid/-nid/-services/
-  -freq-mhz/-guard/-mode/-area/-remote-key/-ts-name/-network-name`. Also
+  -freq-mhz/-guard/-mode/-area/-remote-key/-ts-name/-network-name`, and
+  `--expect-rate BPS[:PPM]` (`pcr.rate`: the PCR-implied rate, the
+  least-squares slope of PCR time against byte position, within PPM of
+  BPS, default 100 ppm). Also
   warns (`si.copy_control`) on a digital copy control descriptor with
   copy_control_type '00', which a Sony BDZ-series recorder refuses. AAC PIDs
   (stream_type 0x0F): the ADTS frames are reassembled from the PES and
