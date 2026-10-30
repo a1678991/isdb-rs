@@ -645,7 +645,7 @@ fn relay_example_parses() {
     assert_eq!(st.program, None);
     assert!(st.pid_map.is_auto() && st.pids.is_none());
     assert_eq!(cfg.network.channels, vec![44]);
-    assert_eq!(cfg.network.remote_control_key_id.get(), 9);
+    assert_eq!(cfg.network.remote_control_key_id.map(|k| k.get()), Some(9));
 }
 
 /// `recording_control = "source"` (the `--relay` default) keeps the source

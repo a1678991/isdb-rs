@@ -17,6 +17,27 @@ STD-B44) is received to TLV streams.
 
 ### Added
 
+- `isdbt-mux`: `[network] kind = "bs"` makes the SI of a BS digital
+  broadcasting network (ARIB STD-B10 Table 6-1, §6.2.6, Annex N): the NIT
+  TS loop carries the service list and a satellite delivery system
+  descriptor 0x43 derived from `[network.satellite] channel = "BS1"`…
+  `"BS23"` (odd) and `orbital_position` (default `"110.0E"`): frequency
+  11 727.48 + 19.18·(n − 1) MHz, circular right, ISDB-S modulation /
+  FEC "refer to TMCC", 028.8600 Msym/s; 0xFE carries broadcasting_identifier
+  '000010'; 0xCD only when `remote_control_key_id` is given. The
+  terrestrial keys (`area_code`, `channels`, `frequencies`,
+  `partial_reception_descriptor`) and a BIT broadcaster's `terrestrial`
+  are refused with it, and a network_id other than 0x0004 is warned about.
+  The loop order and values match the BS NIT on air (checked 2026-10-31).
+  `[[bit.broadcasters]] services = [service_id, …]` adds a service list
+  descriptor 0x41 to the broadcaster loop (either kind). New
+  `examples/bs-bench.toml` (placeholder TS_ID 0x4017, service_id 0x03E7,
+  broadcaster_id 0xEE). `kind` defaults to `"terrestrial"`, whose output is
+  byte-identical to before (pinned by a fixture test). API: `Network`'s
+  `area_code`, `remote_control_key_id` and `partial_reception_descriptor`
+  are now `Option`s; a terrestrial configuration without `area_code` or
+  `remote_control_key_id` is now `MuxError::Missing` instead of a TOML
+  "missing field".
 - `isdb-si`: typed view of the satellite delivery system descriptor
   (0x43, ARIB STD-B10 §6.2.6): `values::{Polarization,
   SatelliteModulation, FecInner}` (Tables 6-9…6-11);

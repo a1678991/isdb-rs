@@ -34,7 +34,7 @@ use isdbt_fec::MultiplexPattern;
 use tracing::{debug, info, trace, warn};
 
 use crate::audio::AdtsEs;
-use crate::config::{ClockSource, Config, StreamKind};
+use crate::config::{ClockSource, Config, NetworkKind, StreamKind};
 use crate::error::{MuxError, Result, key};
 use crate::float;
 use crate::jst::{self, JstSeconds};
@@ -236,18 +236,27 @@ impl Multiplexer {
                 "clock.start",
             )?,
         };
-        if !(0x7880..=0x7FE8).contains(&cfg.network.network_id) {
-            warn!(
-                network_id = cfg.network.network_id,
-                "network_id {:#06x} is outside the terrestrial TV range 0x7880–0x7FE8 (B10 Annex N)",
-                cfg.network.network_id
-            );
-            warnings.push(format!(
-                "network_id {:#06x} is outside the terrestrial TV range 0x7880–0x7FE8 (B10 Annex N)",
-                cfg.network.network_id
-            ));
+        let nid = cfg.network.network_id;
+        let nid_warning = match cfg.network.kind {
+            NetworkKind::Terrestrial => (!(0x7880..=0x7FE8).contains(&nid)).then(|| {
+                format!(
+                    "network_id {nid:#06x} is outside the terrestrial TV range 0x7880–0x7FE8 (B10 Annex N)"
+                )
+            }),
+            NetworkKind::Bs => (nid != 0x0004).then(|| {
+                format!(
+                    "network_id {nid:#06x} is not the BS digital broadcasting network_id 0x0004 (B10 Annex N)"
+                )
+            }),
+        };
+        if let Some(w) = nid_warning {
+            warn!(network_id = nid, "{w}");
+            warnings.push(w);
         }
-        if cfg.network.channels.is_empty() && cfg.network.frequencies.is_empty() {
+        if cfg.network.kind.is_terrestrial()
+            && cfg.network.channels.is_empty()
+            && cfg.network.frequencies.is_empty()
+        {
             return Err(MuxError::config(
                 "network.channels",
                 "give at least one channel (or network.frequencies)",

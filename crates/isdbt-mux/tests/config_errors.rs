@@ -272,3 +272,174 @@ fn playback_control_after_the_first_frame() {
     let e = m.enable_playback_control().unwrap_err();
     assert!(matches!(e, MuxError::CallOrder { .. }), "{e}");
 }
+
+/// The base configuration as `kind = "bs"` (BS1), with `network` lines
+/// added to `[network]` and `tail` at the end.
+fn bs(network: &str, tail: &str) -> String {
+    let t = text("", "", tail).replace(
+        "network_id = 0x79EE\nname = \"ベンチ\"\narea_code = 0x5A5\nremote_control_key_id = 9\nchannels = [27]\n",
+        &format!(
+            "kind = \"bs\"\nnetwork_id = 0x0004\nname = \"ベンチ\"\n{network}\n\n  [network.satellite]\n  channel = \"BS1\"\n"
+        ),
+    );
+    assert!(t.contains("kind = \"bs\""));
+    t
+}
+
+#[test]
+fn bs_base_configuration_builds() {
+    let cfg = Config::from_toml(&bs("", "")).unwrap();
+    Multiplexer::new(&cfg, &bench_params(), Path::new(".")).unwrap();
+}
+
+#[test]
+fn bs_refuses_terrestrial_keys() {
+    for (line, key) in [
+        ("area_code = 0x5A5", "network.area_code"),
+        ("channels = [27]", "network.channels"),
+        ("frequencies = [3900]", "network.frequencies"),
+        (
+            "partial_reception_descriptor = false",
+            "network.partial_reception_descriptor",
+        ),
+    ] {
+        let e = error(&bs(line, ""));
+        assert!(
+            matches!(&e, MuxError::NotApplicable { key: k, applies_to } if k == key && applies_to.contains("terrestrial")),
+            "{line}: {e}"
+        );
+    }
+}
+
+#[test]
+fn bs_needs_the_satellite_table() {
+    let t = bs("", "").replace("\n  [network.satellite]\n  channel = \"BS1\"\n", "\n");
+    let e = error(&t);
+    assert!(
+        matches!(&e, MuxError::Missing { key, .. } if key == "network.satellite"),
+        "{e}"
+    );
+    // and terrestrial refuses it
+    let t = text("", "", "").replace(
+        "channels = [27]\n",
+        "channels = [27]\n\n  [network.satellite]\n  channel = \"BS1\"\n",
+    );
+    let e = error(&t);
+    assert!(
+        matches!(&e, MuxError::NotApplicable { key, .. } if key == "network.satellite"),
+        "{e}"
+    );
+}
+
+#[test]
+fn bs_channel_and_orbital_position_are_checked() {
+    let with_channel =
+        |c: &str| bs("", "").replace("channel = \"BS1\"", &format!("channel = \"{c}\""));
+    let e = error(&with_channel("BS25"));
+    assert!(
+        matches!(&e, MuxError::Range { key, value: 25, min: 1, max: 23, .. } if key == "network.satellite.channel"),
+        "{e}"
+    );
+    for c in ["ND2", "BS", "BS1a", "T27"] {
+        let e = error(&with_channel(c));
+        assert!(
+            matches!(&e, MuxError::Format { key, .. } if key == "network.satellite.channel"),
+            "{c}: {e}"
+        );
+    }
+    let e = error(&with_channel("BS2"));
+    assert!(
+        matches!(&e, MuxError::Config { key, problem } if key == "network.satellite.channel" && problem.contains("left-hand")),
+        "{e}"
+    );
+    let with_orbital = |o: &str| {
+        bs("", "").replace(
+            "channel = \"BS1\"\n",
+            &format!("channel = \"BS1\"\n  orbital_position = \"{o}\"\n"),
+        )
+    };
+    for o in ["110E", "110.0", "110.00E", "1100.0E", "East"] {
+        let e = error(&with_orbital(o));
+        assert!(
+            matches!(&e, MuxError::Format { key, .. } if key == "network.satellite.orbital_position"),
+            "{o}: {e}"
+        );
+    }
+    let e = error(&with_orbital("180.1W"));
+    assert!(
+        matches!(&e, MuxError::Range { key, value: 1801, .. } if key == "network.satellite.orbital_position"),
+        "{e}"
+    );
+    Config::from_toml(&with_orbital("124.0e")).unwrap();
+}
+
+#[test]
+fn bs_ts_information_keys_need_the_remote_key() {
+    for line in [
+        "ts_name = \"ベンチ\"",
+        "transmission_types = [ { info = 0x0F, layer = \"B\" } ]",
+    ] {
+        let e = error(&bs(line, ""));
+        assert!(
+            matches!(&e, MuxError::Missing { key, needed_by } if key == "network.remote_control_key_id" && needed_by.contains("0xCD")),
+            "{line}: {e}"
+        );
+    }
+    Config::from_toml(&bs("remote_control_key_id = 9\nts_name = \"ベンチ\"", "")).unwrap();
+}
+
+#[test]
+fn bs_refuses_the_terrestrial_broadcaster_type() {
+    let e = error(&bs(
+        "",
+        "[bit]\nbroadcasters = [ { broadcaster_id = 0xEE, terrestrial = { terrestrial_broadcaster_id = 1 } } ]",
+    ));
+    assert!(
+        matches!(&e, MuxError::NotApplicable { key, applies_to } if key == "bit.broadcasters[0].terrestrial" && applies_to.contains("Table 6-84")),
+        "{e}"
+    );
+}
+
+#[test]
+fn bit_services_must_be_services_of_the_ts() {
+    for t in [bs("", ""), text("", "", "")] {
+        let bit =
+            |b: &str| format!("{t}\n[bit]\nbroadcasters = [ {{ broadcaster_id = 0xEE, {b} }} ]");
+        let e = error(&bit("services = [0x0400, 0x0401]"));
+        assert!(
+            matches!(&e, MuxError::Config { key, .. } if key == "bit.broadcasters[0].services[1]"),
+            "{e}"
+        );
+        let e = error(&bit("services = [0x0400, 0x0400]"));
+        assert!(
+            matches!(&e, MuxError::Duplicate { key, .. } if key == "bit.broadcasters[0].services"),
+            "{e}"
+        );
+        // a raw 0x41 next to `services` collides with the typed one
+        let e = error(&bit(
+            "services = [0x0400], descriptors = [ { tag = 0x41, hex = \"040001\" } ]",
+        ));
+        assert!(
+            matches!(&e, MuxError::Config { key, .. } if key == "bit.broadcasters[0].descriptors[0]"),
+            "{e}"
+        );
+        Config::from_toml(&bit("services = [0x0400]")).unwrap();
+    }
+}
+
+#[test]
+fn terrestrial_without_area_code_or_remote_key_is_missing() {
+    for (line, key) in [
+        ("area_code = 0x5A5\n", "network.area_code"),
+        (
+            "remote_control_key_id = 9\n",
+            "network.remote_control_key_id",
+        ),
+    ] {
+        let e = error(&text("", "", "").replace(line, ""));
+        assert!(
+            matches!(&e, MuxError::Missing { key: k, needed_by } if k == key && needed_by.contains("terrestrial")),
+            "{e}"
+        );
+    }
+}

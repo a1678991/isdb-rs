@@ -1,0 +1,96 @@
+# isdbt-mux example: a media-free bench transport stream with the SI of a
+# BS digital broadcasting network (B10 Annex N, Table 6-1, §6.2.6), for the
+# ISDB-S transmitter:
+#
+#   isdb mux -c crates/isdbt-mux/examples/bs-bench.toml --seconds 60 --out-ts bs.ts
+#   isdb tx --system isdbs --channel BS1 --ts 0x4017=bs.ts …
+#
+# network_id 0x0004 is the BS network's (B10 Annex N), shared by every BS
+# broadcaster. The transport_stream_id, service_id and broadcaster_id are
+# placeholders that no BS broadcaster uses (checked against the BS NIT on
+# air on 2026-10-31). Transmit it only on a conducted bench: a receiver that
+# has scanned real BS may replace its stored BS network table with this
+# one-TS NIT.
+#
+# The services still sit in the ISDB-T slot model (`layer`), as the
+# transmission parameters come from the same --mode/--gi/--partial/--layer-*
+# options as `isdb tx` (default Mode 3, GI 1/8, partial reception, A = 1 seg
+# QPSK 2/3, B = 12 seg 64QAM 3/4); it only places the packets.
+#
+# The streams are `declared` (PSI/SI/PCR only); replace them with
+# `mpeg2-video` / `aac-adts` streams and a `source` to send media.
+
+[network]
+kind = "bs"                      # SI of a BS network: 0x43, no 0xFA/0xFB
+network_id = 0x0004              # BS digital broadcasting (B10 Annex N)
+name = "ベンチ"                   # network_name_descriptor (0x40), ARIB 8-unit coded
+additional_broadcasting_identification = 0x01  # 0xFE low byte (operational choice, see SPEC-NOTES)
+# remote_control_key_id = 9      # BS sends no 0xCD; given, a 0xCD follows the 0x43
+# area_code, channels, frequencies, partial_reception_descriptor: terrestrial only
+
+  [network.satellite]
+  # → 0x43: frequency 011.72748 GHz, circular right. MUST equal the channel
+  # `isdb tx --system isdbs --channel` transmits on.
+  channel = "BS1"
+  orbital_position = "110.0E"
+
+[transport]
+transport_stream_id = 0x4017     # BS1 TS number 7: not on air; = the TMCC's TS_ID (--ts 0x4017=…)
+# original_network_id defaults to network_id (B10 §5.2.4)
+
+[clock]
+source = "system"                # TOT/EIT clock: "system" (now) or "fixed" (start below)
+# start = "2026-01-01T12:00:00"  # JST; with source = "fixed" (or to pin the system start)
+
+# ---------------------------------------------------------------- services
+
+[[service]]
+service_id = 0x03E7              # 999: unused on BS
+service_type = 0x01              # digital TV service (B10 Table 6-25)
+provider = "ベンチ"
+name = "ベンチHD"
+layer = "B"                      # slot model only (ISDB-T layout)
+pmt_pid = 0x01F0
+pcr_pid = 0x01FF
+copy_control = { recording_control = "copy-free" }
+
+  [[service.stream]]
+  kind = "declared"
+  pid = 0x0111
+  stream_type = 0x02             # MPEG-2 video (H.222.0 Table 2-34)
+  component_tag = 0x00
+
+  [[service.stream]]
+  kind = "declared"
+  pid = 0x0112
+  stream_type = 0x0F             # AAC ADTS
+  component_tag = 0x10
+
+  [[service.event]]
+  event_id = 0x0001
+  start_offset_s = -600          # started 10 minutes before the stream clock start
+  duration = "01:00:00"
+  name = "ベンチ試験放送"
+
+  [[service.event]]
+  event_id = 0x0002
+  duration = "01:00:00"
+  name = "ベンチ試験放送２"
+
+# ---------------------------------------------------------------- tables
+
+[eit]
+present_running_status = 4       # running (B10 Part 2 Annex Table 1-1)
+following_running_status = 1     # not running
+
+[tot]
+enabled = true
+
+[bit]
+enabled = true
+broadcast_view_propriety = true
+# first_descriptors = [ { tag = 0xD7, hex = "..." } ]   # SI_parameter_descriptor (TR-B15, not available)
+broadcasters = [
+  # 0xD8 name and a 0x41 service list of the broadcaster's services
+  { broadcaster_id = 0xEE, name = "ベンチ", services = [0x03E7] },
+]

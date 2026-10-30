@@ -1,6 +1,7 @@
 //! ARIB ISDB-T service multiplexer.
 //!
-//! * [`config`] — declarative TOML description of a terrestrial TS
+//! * [`config`] — declarative TOML description of a terrestrial TS (or,
+//!   with `[network] kind = "bs"`, one with the SI of a BS network)
 //!   (network, services, events, broadcasters, timing) with first-class
 //!   experiment overrides per table.
 //! * [`si`] — PSI/SI generation (PAT, PMT, CAT, NIT, SDT, EIT p/f and

@@ -1,11 +1,14 @@
-//! Declarative description of one terrestrial transport stream (TOML via
-//! serde).
+//! Declarative description of one transport stream (TOML via serde): a
+//! terrestrial one, or (`[network] kind = "bs"`) one with the SI of a BS
+//! digital broadcasting network.
 //!
 //! Values that ARIB derives from the transmission parameters are *not*
 //! configured here: the terrestrial delivery system descriptor's
 //! guard_interval / transmission_mode (B10 Tables 6-62/6-63) come from
 //! [`isdbt_core::Params`], the frequency codes from the UHF channel list,
-//! the partial reception descriptor from the services placed on layer A.
+//! the partial reception descriptor from the services placed on layer A;
+//! the satellite delivery system descriptor's frequency and polarization
+//! from the BS channel ([`SatelliteCfg`]).
 //! Every generated table can be modified for receiver experiments with the
 //! common [`TableOpts`] fields (raw descriptors, header fields, byte
 //! patches, whole transplanted sections).
@@ -97,28 +100,69 @@ pub struct Config {
     pub raw_tables: Vec<RawTableCfg>,
 }
 
-/// NIT network data (B10 §5.2.4, terrestrial descriptors §6.2.31/6.2.32/6.2.42).
+/// Which delivery system the NIT describes (`[network] kind`).
+///
+/// It decides the delivery system descriptor of the NIT TS loop (B10
+/// Table 6-1: 0xFA "Mandatory for digital terrestrial broadcasting", 0x43
+/// "Mandatory in digital satellite broadcasting"), the
+/// broadcasting_identifier of the system management descriptor (Table
+/// 6-36) and which `[network]` keys apply. The slot model (ISDB-T layers)
+/// is the same for both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum NetworkKind {
+    /// Digital terrestrial television (the default): 0xFA, 0xCD, 0xFB;
+    /// broadcasting_identifier '000011'.
+    #[default]
+    Terrestrial,
+    /// BS digital broadcasting: 0x43 from `[network.satellite]`, 0xCD only
+    /// with `remote_control_key_id`; broadcasting_identifier '000010'
+    /// ("wide band digital satellite broadcasting using 34.5 MHz bandwidth
+    /// in 11.7 to 12.2 GHz").
+    Bs,
+}
+
+impl NetworkKind {
+    /// `kind = "terrestrial"`.
+    pub fn is_terrestrial(&self) -> bool {
+        *self == Self::Terrestrial
+    }
+}
+
+/// NIT network data (B10 §5.2.4): the terrestrial descriptors
+/// §6.2.31/6.2.32/6.2.42, or with `kind = "bs"` the satellite delivery
+/// system descriptor §6.2.6 (and §6.2.42 when a remote key is given).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Network {
-    /// network_id (B10 Annex N: terrestrial TV 0x7880–0x7FE8).
+    /// The delivery system the NIT describes (default terrestrial).
+    #[serde(default, skip_serializing_if = "NetworkKind::is_terrestrial")]
+    pub kind: NetworkKind,
+    /// network_id (B10 Annex N, informative: terrestrial TV 0x7880–0x7FE8,
+    /// BS digital broadcasting 0x0004).
     pub network_id: u16,
     /// network_name_descriptor text.
     pub name: String,
     /// area_code of the terrestrial delivery system descriptor (12 bits).
-    pub area_code: u16,
+    /// Required with `kind = "terrestrial"`, refused with `"bs"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area_code: Option<u16>,
     /// remote_control_key_id of the TS information descriptor (B10
-    /// §6.2.42), validated 1..=12 ([`RemoteControlKeyId`]).
-    pub remote_control_key_id: RemoteControlKeyId,
+    /// §6.2.42), validated 1..=12 ([`RemoteControlKeyId`]). Required with
+    /// `kind = "terrestrial"`. Optional with `"bs"`: the descriptor (B10
+    /// Table 6-1 "Optional" in the NIT) is sent only when it is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_control_key_id: Option<RemoteControlKeyId>,
     /// ts_name of the TS information descriptor (defaults to `name`).
     #[serde(default)]
     pub ts_name: Option<String>,
     /// UHF channels (13..62) of the network; each gives one frequency code
-    /// (centre frequency in 1/7 MHz, B10 §6.2.31).
-    #[serde(default)]
+    /// (centre frequency in 1/7 MHz, B10 §6.2.31). Terrestrial only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<u32>,
-    /// Additional raw frequency codes (1/7 MHz units).
-    #[serde(default)]
+    /// Additional raw frequency codes (1/7 MHz units). Terrestrial only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub frequencies: Vec<u16>,
     /// additional_broadcasting_identification of the system management
     /// descriptor (B10 Table 6-34: "specified by the operation standard of
@@ -135,9 +179,130 @@ pub struct Network {
     #[serde(default)]
     pub transmission_types: Vec<TransmissionTypeCfg>,
     /// Emit the partial reception descriptor (services on layer A) when the
-    /// transmission uses partial reception.
-    #[serde(default = "yes")]
-    pub partial_reception_descriptor: bool,
+    /// transmission uses partial reception (default true). Terrestrial
+    /// only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_reception_descriptor: Option<bool>,
+    /// The BS channel and orbital position of the satellite delivery
+    /// system descriptor. Required with `kind = "bs"`, refused otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub satellite: Option<SatelliteCfg>,
+}
+
+impl Network {
+    /// `partial_reception_descriptor` (default true).
+    pub fn partial_reception(&self) -> bool {
+        self.partial_reception_descriptor.unwrap_or(true)
+    }
+}
+
+/// `[network.satellite]`: what the satellite delivery system descriptor
+/// (B10 §6.2.6, Table 6-8) is derived from with `kind = "bs"`. Its other
+/// fields are fixed: modulation '01000' and FEC_inner '1000' ("refer to
+/// TMCC signal", Tables 6-10/6-11), symbol rate 028.8600 Msym/s (MIC
+/// Ordinance No. 87 of 2011 Art. 52(3)); experiments patch the NIT bytes
+/// (`[nit] byte_patches`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SatelliteCfg {
+    /// The BS channel transmitted, `"BS1"`, `"BS3"` … `"BS23"` (the odd,
+    /// right-hand circular channels; case-insensitive): it gives the
+    /// frequency, 11 727.48 + 19.18·(n − 1) MHz, and polarization '11'
+    /// (circular right, Table 6-9). It must equal the channel `isdb tx
+    /// --system isdbs` transmits on.
+    pub channel: String,
+    /// Orbital position, `ddd.dE` or `ddd.dW` (degrees, at most 180.0;
+    /// default `"110.0E"`, the BS satellites').
+    #[serde(default = "default_orbital_position")]
+    pub orbital_position: String,
+}
+
+fn default_orbital_position() -> String {
+    "110.0E".to_string()
+}
+
+impl SatelliteCfg {
+    /// The BS channel number n of `channel` (`BS<n>`, n odd in 1..=23).
+    ///
+    /// # Errors
+    ///
+    /// [`MuxError::Format`] when `channel` is not `BS<n>`;
+    /// [`MuxError::Range`] for n outside 1..=23; [`MuxError::Config`] for
+    /// an even (left-hand circular) channel.
+    pub fn channel_number(&self) -> Result<u8> {
+        const KEY: &str = "network.satellite.channel";
+        let c = self.channel.trim();
+        let n = c
+            .get(..2)
+            .filter(|p| p.eq_ignore_ascii_case("BS"))
+            .and_then(|_| c.get(2..))
+            .filter(|d| !d.is_empty() && d.len() <= 3 && d.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|d| d.parse::<u8>().ok())
+            .ok_or_else(|| MuxError::Format {
+                key: KEY.to_string(),
+                value: self.channel.clone(),
+                want: "a BS channel: BS1, BS3 … BS23",
+            })?;
+        if !(1..=23).contains(&n) {
+            return Err(MuxError::Range {
+                key: KEY.to_string(),
+                value: i64::from(n),
+                min: 1,
+                max: 23,
+                note: " (the BS channels of the BS digital network: BS1, BS3 … BS23)",
+            });
+        }
+        if n % 2 == 0 {
+            return Err(MuxError::config(
+                KEY,
+                format!(
+                    "BS{n} is a left-hand circular channel; the BS digital network \
+                     (network_id 0x0004) is on the odd, right-hand circular channels \
+                     BS1, BS3 … BS23"
+                ),
+            ));
+        }
+        Ok(n)
+    }
+
+    /// `orbital_position` as (tenths of a degree, east).
+    ///
+    /// # Errors
+    ///
+    /// [`MuxError::Format`] when it is not `ddd.dE` / `ddd.dW`;
+    /// [`MuxError::Range`] above 180.0 degrees.
+    pub fn orbital(&self) -> Result<(u16, bool)> {
+        const KEY: &str = "network.satellite.orbital_position";
+        let s = self.orbital_position.trim();
+        let bad = || MuxError::Format {
+            key: KEY.to_string(),
+            value: self.orbital_position.clone(),
+            want: "degrees with one decimal and E or W, e.g. \"110.0E\"",
+        };
+        let (num, east) = match s.as_bytes().last() {
+            Some(b'E' | b'e') => (&s[..s.len() - 1], true),
+            Some(b'W' | b'w') => (&s[..s.len() - 1], false),
+            _ => return Err(bad()),
+        };
+        let (int, frac) = num.split_once('.').ok_or_else(bad)?;
+        let digits = |d: &str, max: usize| {
+            !d.is_empty() && d.len() <= max && d.bytes().all(|b| b.is_ascii_digit())
+        };
+        if !digits(int, 3) || !digits(frac, 1) {
+            return Err(bad());
+        }
+        let tenths = num.replace('.', "").parse::<u16>().map_err(|_| bad())?;
+        if tenths > 1800 {
+            return Err(MuxError::Range {
+                key: KEY.to_string(),
+                value: i64::from(tenths),
+                min: 0,
+                max: 1800,
+                note: " (tenths of a degree east or west)",
+            });
+        }
+        Ok((tenths, east))
+    }
 }
 
 /// One transmission_type loop of the TS information descriptor.
@@ -513,8 +678,15 @@ pub struct BroadcasterCfg {
     #[serde(default)]
     pub name: Option<String>,
     /// extended_broadcaster_descriptor (0xCE), broadcaster_type 0x1.
+    /// Terrestrial only (B10 Table 6-84 defines no satellite type).
     #[serde(default)]
     pub terrestrial: Option<TerrestrialBroadcasterCfg>,
+    /// service_ids of the broadcaster: a service_list_descriptor (0x41,
+    /// B10 §6.2.14; Table 6-1 "Optional in BIT") in its loop, in this
+    /// order, with the service_types of the `[[service]]` entries. Each
+    /// must be a service of this TS. Empty (the default): no 0x41.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<u16>,
     /// Raw descriptors.
     #[serde(default)]
     pub descriptors: Vec<RawDescriptor>,

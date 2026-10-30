@@ -13,16 +13,18 @@ use isdb_si::descriptor::{
     AudioComponent, BroadcasterName, Component, Content, ContentAvailability, ContentItem,
     DataComponent, DataContent, ExtendedBroadcaster, ExtendedBroadcasterBody,
     HierarchicalTransmission, LocalTimeOffset, LocalTimeOffsetEntry, NetworkBroadcaster,
-    NetworkName, PartialReception, Service as ServiceDescriptor, ServiceList, ServiceListEntry,
-    ShortEvent, StreamIdentifier, SystemManagement, TerrestrialBroadcaster,
-    TerrestrialDeliverySystem, TransmissionType, TsInformation,
+    NetworkName, PartialReception, SatelliteDeliverySystem, Service as ServiceDescriptor,
+    ServiceList, ServiceListEntry, ShortEvent, StreamIdentifier, SystemManagement,
+    TerrestrialBroadcaster, TerrestrialDeliverySystem, TransmissionType, TsInformation,
 };
 use isdb_si::tables::{
     BitBody, BitBroadcaster, EitBody, EitEvent, NetworkLoops, NitBody, SdtBody, SdtService,
     TdtBody, TotBody, TransportStreamEntry,
 };
 use isdb_si::time::BcdOffset;
-use isdb_si::values::{AudioMode, CodedValue};
+use isdb_si::values::{
+    AudioMode, BroadcastingIdentifier, CodedValue, FecInner, Polarization, SatelliteModulation,
+};
 use isdb_ts::Pid;
 
 use crate::adts::b32::QualityMode;
@@ -34,8 +36,8 @@ use isdb_ts::section::{Long, LongBody, LongHeader, Short, ShortBody, ShortHeader
 use isdbt_core::{CodeRate, GuardInterval, Mode, Modulation, Params};
 
 use crate::config::{
-    AddDescriptor, AitCarriage, BmlCfg, Config, LayerName, RawDescriptor, StreamCfg, StreamKind,
-    TableOpts, parse_hex,
+    AddDescriptor, AitCarriage, BmlCfg, Config, LayerName, NetworkKind, RawDescriptor, StreamCfg,
+    StreamKind, TableOpts, parse_hex,
 };
 use crate::error::key;
 use crate::error::{MuxError, Result};
@@ -65,8 +67,59 @@ pub mod pid {
 
 /// broadcasting_flag '00' = broadcasting (B10 Table 6-35).
 const BROADCASTING_FLAG: u16 = 0b00;
-/// broadcasting_identifier '000011' = digital terrestrial television (B10 Table 6-36).
-const BROADCASTING_IDENTIFIER: u16 = 0b000011;
+/// broadcasting_identifier of the system management descriptor (B10 Table
+/// 6-36): '000011' digital terrestrial television; '000010' "wide band
+/// digital satellite broadcasting using 34.5 MHz bandwidth in 11.7 to
+/// 12.2 GHz" (BS).
+fn broadcasting_identifier(kind: NetworkKind) -> BroadcastingIdentifier {
+    match kind {
+        NetworkKind::Terrestrial => BroadcastingIdentifier::TerrestrialTelevision,
+        NetworkKind::Bs => BroadcastingIdentifier::WideBandSatellite11_7,
+    }
+}
+
+/// Frequency of BS channel `n` (1..=24) in the 10 kHz unit of the satellite
+/// delivery system descriptor (B10 §6.2.6: 8 BCD characters in GHz, the
+/// decimal point after the third, so the last one is 10 kHz): the channel
+/// centre 11 727.48 + 19.18·(n − 1) MHz (ITU-R Radio Regulations Appendix
+/// 30 BSS plan, as `isdb-cli` `bands::bs_rf_hz`; SPECS.md §1.2, **[not in
+/// the local specs]**).
+pub fn bs_frequency_10khz(n: u8) -> u32 {
+    1_172_748 + 1_918 * u32::from(n.saturating_sub(1))
+}
+
+/// polarization (B10 Table 6-9) of BS channel `n`: odd channels circular
+/// right, even ones circular left (SPECS.md §1.2: MIC Ordinance No. 95 of
+/// 2011 Art. 19 item 4).
+pub fn bs_polarization(n: u8) -> Polarization {
+    if n % 2 == 1 {
+        Polarization::CircularRight
+    } else {
+        Polarization::CircularLeft
+    }
+}
+
+/// The ISDB-S symbol rate, 28.860 Mbaud (MIC Ordinance No. 87 of 2011 Art.
+/// 52(3); ITU-R BO.1408-1 Table 3), in the 100 symbol/s unit of the
+/// descriptor (7 BCD characters in Msymbol/s, point after the third:
+/// 028.8600).
+const ISDB_S_SYMBOL_RATE_100SPS: u32 = 288_600;
+
+/// The satellite delivery system descriptor (B10 §6.2.6, Table 6-8) of BS
+/// channel `n` at orbital position `orbital_tenths` (0.1 degree, `east`):
+/// modulation '01000' and FEC_inner '1000' "refer to TMCC signal" (Tables
+/// 6-10/6-11) and the ISDB-S symbol rate.
+fn bs_delivery(n: u8, orbital_tenths: u16, east: bool) -> Result<SatelliteDeliverySystem> {
+    Ok(SatelliteDeliverySystem::from_values(
+        bs_frequency_10khz(n),
+        orbital_tenths,
+        east,
+        bs_polarization(n),
+        SatelliteModulation::IsdbS,
+        ISDB_S_SYMBOL_RATE_100SPS,
+        FecInner::IsdbS,
+    )?)
+}
 
 /// Which table a section stream carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1065,32 +1118,17 @@ impl SiBuilder {
         })];
         if n.system_management {
             // B10 Table 6-34/6-35/6-36: broadcasting_flag '00' (broadcasting),
-            // broadcasting_identifier '000011' (digital terrestrial TV).
+            // broadcasting_identifier '000011' (digital terrestrial TV) or
+            // '000010' (BS).
             net.push(Descriptor::SystemManagement(SystemManagement {
                 system_management_id: (BROADCASTING_FLAG << 14)
-                    | (BROADCASTING_IDENTIFIER << 8)
+                    | (u16::from(broadcasting_identifier(n.kind).code()) << 8)
                     | u16::from(n.additional_broadcasting_identification),
                 additional_identification_info: Vec::new(),
             }));
         }
         add_into(&mut net, &o.add_descriptors, tk, |t| *t == Target::Network)?;
 
-        let mut freqs = Vec::new();
-        for (j, &ch) in n.channels.iter().enumerate() {
-            freqs.push(channel_frequency_code(
-                ch,
-                &format!("network.channels[{j}]"),
-            )?);
-        }
-        freqs.extend_from_slice(&n.frequencies);
-        let mut ts = vec![Descriptor::TerrestrialDeliverySystem(
-            TerrestrialDeliverySystem {
-                area_code: n.area_code & 0x0FFF,
-                guard_interval: guard_interval_code(self.params.guard()),
-                transmission_mode: transmission_mode_code(self.params.mode()),
-                frequencies: freqs,
-            },
-        )];
         let services_on = |layer: LayerName| {
             let mut v: Vec<u16> = c
                 .services
@@ -1101,22 +1139,24 @@ impl SiBuilder {
             v.sort();
             v
         };
-        ts.push(Descriptor::TsInformation(TsInformation {
-            remote_control_key_id: n.remote_control_key_id.get(),
-            ts_name: match n.ts_name.as_deref() {
-                Some(t) => text(t, "network.ts_name")?,
-                None => text(&n.name, "network.name")?,
-            },
-            transmission_types: n
-                .transmission_types
-                .iter()
-                .map(|t| TransmissionType {
-                    transmission_type_info: t.info,
-                    service_ids: services_on(t.layer),
-                })
-                .collect(),
-            reserved_future_use: Vec::new(),
-        }));
+        let ts_information = |key: crate::signalling::RemoteControlKeyId| -> Result<Descriptor> {
+            Ok(Descriptor::TsInformation(TsInformation {
+                remote_control_key_id: key.get(),
+                ts_name: match n.ts_name.as_deref() {
+                    Some(t) => text(t, "network.ts_name")?,
+                    None => text(&n.name, "network.name")?,
+                },
+                transmission_types: n
+                    .transmission_types
+                    .iter()
+                    .map(|t| TransmissionType {
+                        transmission_type_info: t.info,
+                        service_ids: services_on(t.layer),
+                    })
+                    .collect(),
+                reserved_future_use: Vec::new(),
+            }))
+        };
         let mut list: Vec<ServiceListEntry> = c
             .services
             .iter()
@@ -1126,14 +1166,64 @@ impl SiBuilder {
             })
             .collect();
         list.sort_by_key(|e| e.service_id);
-        ts.push(Descriptor::ServiceList(ServiceList { services: list }));
-        let partial = services_on(LayerName::A);
-        if self.params.partial_reception() && n.partial_reception_descriptor && !partial.is_empty()
-        {
-            ts.push(Descriptor::PartialReception(PartialReception {
-                service_ids: partial,
-            }));
-        }
+        let service_list = Descriptor::ServiceList(ServiceList { services: list });
+        // Config::validate has checked the keys of the kind; a missing one
+        // here is a bug, not a configuration error.
+        let mut ts = match n.kind {
+            NetworkKind::Terrestrial => {
+                let (Some(area_code), Some(key)) = (n.area_code, n.remote_control_key_id) else {
+                    return Err(MuxError::Internal {
+                        what: "a terrestrial NIT without area_code or remote_control_key_id",
+                    });
+                };
+                let mut freqs = Vec::new();
+                for (j, &ch) in n.channels.iter().enumerate() {
+                    freqs.push(channel_frequency_code(
+                        ch,
+                        &format!("network.channels[{j}]"),
+                    )?);
+                }
+                freqs.extend_from_slice(&n.frequencies);
+                let mut ts = vec![
+                    Descriptor::TerrestrialDeliverySystem(TerrestrialDeliverySystem {
+                        area_code: area_code & 0x0FFF,
+                        guard_interval: guard_interval_code(self.params.guard()),
+                        transmission_mode: transmission_mode_code(self.params.mode()),
+                        frequencies: freqs,
+                    }),
+                    ts_information(key)?,
+                    service_list,
+                ];
+                let partial = services_on(LayerName::A);
+                if self.params.partial_reception() && n.partial_reception() && !partial.is_empty() {
+                    ts.push(Descriptor::PartialReception(PartialReception {
+                        service_ids: partial,
+                    }));
+                }
+                ts
+            }
+            // B10 Table 6-1: 0x43 "Mandatory in digital satellite
+            // broadcasting", 0xCD "Optional"; the order 0x41, 0x43 is the
+            // BS network's [live] (SPEC-NOTES "NIT of kind = bs").
+            NetworkKind::Bs => {
+                let sat = n.satellite.as_ref().ok_or(MuxError::Internal {
+                    what: "a BS NIT without [network.satellite]",
+                })?;
+                let (orbital, east) = sat.orbital()?;
+                let mut ts = vec![
+                    service_list,
+                    Descriptor::SatelliteDeliverySystem(bs_delivery(
+                        sat.channel_number()?,
+                        orbital,
+                        east,
+                    )?),
+                ];
+                if let Some(key) = n.remote_control_key_id {
+                    ts.push(ts_information(key)?);
+                }
+                ts
+            }
+        };
         add_into(&mut ts, &o.add_descriptors, tk, |t| *t == Target::Ts)?;
         let body = NitBody(NetworkLoops {
             reserved_future_use_1: 0xF,
@@ -1622,6 +1712,29 @@ impl SiBuilder {
                         private_data: Vec::new(),
                     }),
                 }));
+            }
+            if !bc.services.is_empty() {
+                // B10 Table 6-1: 0x41 "Optional in BIT"; the service_types
+                // of the configured services (Config::validate has checked
+                // that each service_id is one of them).
+                let services = bc
+                    .services
+                    .iter()
+                    .map(|&sid| {
+                        self.cfg
+                            .services
+                            .iter()
+                            .find(|s| s.service_id == sid)
+                            .map(|s| ServiceListEntry {
+                                service_id: sid,
+                                service_type: s.service_type,
+                            })
+                            .ok_or(MuxError::Internal {
+                                what: "a BIT service_id that is not a configured service",
+                            })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                ds.push(Descriptor::ServiceList(ServiceList { services }));
             }
             ds.extend(raw_list(&bc.descriptors, &format!("{bk}.descriptors"))?);
             let id = bc.broadcaster_id;

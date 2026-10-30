@@ -204,8 +204,8 @@ mod tests {
         assert!(text.starts_with("# hello\n"), "{text}");
         let c = o.config().unwrap();
         assert_eq!(c.network.channels, vec![27]);
-        assert_eq!(c.network.remote_control_key_id.get(), 3);
-        assert_eq!(c.network.area_code, 0x5A5);
+        assert_eq!(c.network.remote_control_key_id.map(|k| k.get()), Some(3));
+        assert_eq!(c.network.area_code, Some(0x5A5));
         assert_eq!(c.network.name, "名前\"x\"");
         let s = &c.services[0];
         assert_eq!(
@@ -233,7 +233,7 @@ mod tests {
         // the default keeps the source's copy restriction and CA signalling
         let d = RelayOptions::new("x.ts").config().unwrap();
         assert_eq!(d.services[0].streams[0].ca, CaMode::Keep);
-        assert_eq!(d.network.area_code, 0x5A5);
+        assert_eq!(d.network.area_code, Some(0x5A5));
         assert_eq!(
             d.services[0]
                 .copy_control

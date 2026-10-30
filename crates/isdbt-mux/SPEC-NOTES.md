@@ -3,7 +3,8 @@
 Ground truth: the local texts in `specs/` (H.222.0 05/2006, ARIB STD-B10
 v5.13, B31 v2.2, B32 v3.11 Parts 1–3, B21 v5.12, B24). Not available
 locally: ITU-T H.262 (MPEG-2 video), ISO/IEC 13818-7 (AAC/ADTS), ARIB
-TR-B14 (terrestrial operational guidelines). Everything taken from the
+TR-B14 (terrestrial operational guidelines), ARIB TR-B15 (BS / wide-band
+CS operational guidelines). Everything taken from the
 unavailable documents is marked **[from knowledge]**; everything that is a
 free choice is listed under **Operational choices** at the end so it can be
 tested on real receivers. The receivers tested so far are a MyGica S270 USB
@@ -162,13 +163,88 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
   network_name, system_management; TS loop = terrestrial_delivery_system,
   TS_information, service_list, partial_reception.
 - network_id outside 0x7880–0x7FE8 (Annex N, terrestrial TV) gives a warning.
+- The terrestrial NIT/SDT/EIT/BIT bytes of `bench-minimal.toml` and
+  `bench.toml` are pinned by `tests/si_fixtures.rs`
+  (`tests/fixtures/terrestrial_si.txt`, recorded before `kind = "bs"`).
+
+## NIT of `kind = "bs"` (BS digital broadcasting)
+- Spec: B10 Part 2 Table 6-1 (0x43 "Mandatory in digital satellite
+  broadcasting"; 0xFA "Mandatory for digital terrestrial broadcasting and
+  multimedia"; 0xCD "Optional" in the NIT; 0x41 "Mandatory in NIT (actual
+  network) … Optional in BIT"; 0xCE "Optional" in the BIT); §6.2.6 Tables
+  6-8…6-11; §6.2.21 Table 6-36; §6.2.43 Table 6-84; Annex N Table N-1
+  (informative); Part 1 Table 7-1.
+- Text (§6.2.6): frequency "8 characters … coded in GHz, where the decimal
+  point occurs after the third character (e.g. 012.73300GHz)";
+  orbital_position "4 characters … in degrees where the decimal point
+  occurs after the third character"; symbol_rate "7 characters … in
+  Msymbol/s where the decimal point occurs after the third character".
+  Table 6-36: '000010' "wide band digital satellite broadcasting using 34.5
+  MHz bandwidth in 11.7 to 12.2 GHz". Annex N: "BS digital broadcasting
+  0x0004". Table 6-84 defines broadcaster_type 0x1 and 0x2 only (both
+  terrestrial).
+- Interpretation:
+  - B10 has no BS-specific table set (Table 5-2 is the same for every
+    medium); the kind changes only the delivery descriptor, the
+    broadcasting_identifier and which `[network]` keys apply. SDT, EIT,
+    TOT, PAT, PMT and the ISDB-T slot placement are those of the
+    terrestrial kind.
+  - 0x43 is derived: frequency from the BS channel, 1 172 748 + 1 918·(n −
+    1) in 10 kHz units (11 727.48 + 19.18·(n − 1) MHz; ITU-R RR Appendix 30
+    via SPECS.md §1.2 **[not in the local specs]**, same formula as
+    `isdb-cli` `bands::bs_rf_hz`); polarization '11' circular right (Table
+    6-9; odd BS channels are right-hand, MIC Ordinance No. 95 of 2011 Art.
+    19 item 4); modulation '01000' and FEC_inner '1000' "refer to TMCC
+    signal" (Tables 6-10/6-11, the ISDB-S rows); symbol_rate 028.8600
+    (28.860 Mbaud, MIC Ordinance No. 87 of 2011 Art. 52(3)). Coded with
+    `isdb_si` `SatelliteDeliverySystem::from_values`. For BS1 at 110.0E:
+    `43 0b 01172748 1100 e8 02886008`.
+  - network loop as terrestrial (0x40, 0xFE) with identifier '000010'
+    (system_management_id 0x0201 with the default 0x01).
+  - 0xCE is refused with `kind = "bs"`: Table 6-84 has no satellite type.
+  - network_id ≠ 0x0004 gives a warning (Annex N is informative), as the
+    terrestrial range does for the terrestrial kind.
+- Operational choices, each **[live]** = as the BS NIT/BIT on air
+  (a 2023 BS recording, structure only, docs/plans/isdbs-next/bs-si.md
+  §3.3; re-checked on the live BS feed on 2026-10-31: NIT network_id
+  0x0004, system_management_id 0x0201, network name present, TS loops 0x41
+  then 0x43, no 0xCD; BS1's 0x43 body `011727481100e802886008`) — ARIB
+  TR-B15, the BS operational guideline, is not available locally:
+  - TS-loop order 0x41 then 0x43 **[live]**; 0xCD after them only when
+    `remote_control_key_id` is given (none on air **[live]**).
+  - orbital_position default 110.0E **[live]**.
+  - only the odd (right-hand circular) channels BS1…BS23 are accepted:
+    every TS of the BS NIT is on one of them with polarization '11'
+    **[live]**; the even channels carry the advanced BS (ISDB-S3) network,
+    not this one.
+  - additional_broadcasting_identification 0x01 **[live]**.
+  - BIT broadcaster loop: 0xD8 name, then 0x41 from `services` (every BS
+    broadcaster has one **[live]**), then raw descriptors; the first loop's
+    SI_parameter_descriptor 0xD7 (TR-B15 contents) stays raw.
+- Identities (CONTRIBUTING "no real station identities"): network_id
+  0x0004 is not a station's identity but the BS network's, shared by every
+  BS broadcaster (Annex N); it is what makes a receiver classify the
+  service as BS. Using it was approved by the user, who had it checked on
+  the live BS feed on 2026-10-31. The TS_ID 0x4017 (BS1 TS number 7),
+  service_id 0x03E7 (999) and broadcaster_id 0xEE of
+  `examples/bs-bench.toml` are placeholders: none of them was on air in
+  that check (B10 Part 1 Table 7-1: TS_ID "unique within original
+  network", service_id "unique within Japan for the same broadcasting
+  medium"). A receiver that has scanned real BS may replace its stored
+  network table with this one-TS NIT: conducted bench only.
+- Confirmation: the golden section of `tests/bs.rs`
+  (`spec_table_6_8_bs_bench_nit_is_golden`, written field by field, equal
+  to the independent `tools/bs-nit-section.py`) and the 0x43 bytes of BS1
+  on air (status: confirmed for the NIT layout against the live feed;
+  pending a receiver (PIX-DT295 / mirakc) reading the bench TS).
 
 ## SDT, BIT, TOT, CAT
 - SDT (§5.2.6): one section, services in service_id order, service
   descriptor mandatory (Table 6-1, checked by `isdb_si::conformance`).
 - BIT (§5.2.13): broadcaster loop from config (broadcaster_name 0xD8,
-  extended_broadcaster 0xCE type 0x1); first loop raw (SI_parameter_descriptor
-  content is TR-B14 territory).
+  extended_broadcaster 0xCE type 0x1, service_list 0x41 from `services`);
+  first loop raw (SI_parameter_descriptor content is TR-B14 / TR-B15
+  territory).
 - TOT (§5.2.9): JST_time = clock start + elapsed stream time at the
   transmission start, truncated to the second; optional local time offset
   descriptor. TDT optional (Table 5-2 *2: "Transmitting either TDT or TOT is
@@ -1193,7 +1269,8 @@ showed to matter.
 5. additional_broadcasting_identification = 0x01 (system management descriptor).
 6. transmission_type_info values of the TS information descriptor (bench:
    0x0F for layer B, 0xAF for layer A **[live]**); none by default.
-7. NIT descriptor order (network loop: 0x40, 0xFE; TS loop: 0xFA, 0xCD, 0x41, 0xFB).
+7. NIT descriptor order (network loop: 0x40, 0xFE; TS loop: 0xFA, 0xCD, 0x41, 0xFB;
+   with `kind = "bs"` 0x41, 0x43 **[live]**, then 0xCD if a key is given).
 8. SDT running_status 0, EIT_user_defined_flags '111', free_CA_mode 0.
 9. EIT p/f running_status 4/1; ISO_639 "jpn" in short event / component
    descriptors; content descriptor user nibbles 0xF.
@@ -1330,3 +1407,10 @@ showed to matter.
     check, `startAITControlledApp(org, app, uri)`, ASCII only). The
     dedicated-PID carriage: stream_type 0x05, 1 s repetition, the service's
     layer.
+40. `kind = "bs"` (see "NIT of `kind = "bs"`"): TS loop 0x41, 0x43
+    **[live]**, no 0xCD unless `remote_control_key_id` is given **[live]**;
+    orbital position 110.0E **[live]**; odd channels BS1…BS23 only
+    **[live]**; symbol rate, modulation and FEC fixed at the ISDB-S values;
+    BIT 0x41 from `services` after 0xD8 **[live]**; `examples/bs-bench.toml`
+    placeholders TS_ID 0x4017, service_id 0x03E7, broadcaster_id 0xEE (not
+    on air, checked 2026-10-31) with the shared BS network_id 0x0004.

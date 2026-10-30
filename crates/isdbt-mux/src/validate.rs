@@ -1,9 +1,10 @@
-//! Load-time configuration checks: typed signalling options, and raw
-//! descriptors that would duplicate a typed one in the same loop.
+//! Load-time configuration checks: the `[network]` keys of its kind, typed
+//! signalling options, and raw descriptors that would duplicate a typed one
+//! in the same loop.
 
 use crate::config::{
-    AddDescriptor, AdtsCompliance, AtEof, AudioQualityIndicator, Config, MediaClass, PidMap,
-    RateCheck, RawDescriptor, StreamCfg, StreamKind, parse_hex,
+    AddDescriptor, AdtsCompliance, AtEof, AudioQualityIndicator, Config, MediaClass, NetworkKind,
+    PidMap, RateCheck, RawDescriptor, StreamCfg, StreamKind, parse_hex,
 };
 use crate::error::{MuxError, Result, key};
 use crate::si::{Target, parse_target};
@@ -246,6 +247,84 @@ fn check_ts_program_keys(st: &StreamCfg, stk: &str) -> Result<()> {
 }
 
 impl Config {
+    /// The `[network]` keys against `kind` (docs/mux-config.md
+    /// `[network]`): terrestrial needs area_code and remote_control_key_id
+    /// and takes no `[network.satellite]`; bs needs `[network.satellite]`
+    /// and refuses the keys of the terrestrial descriptors (0xFA, 0xFB),
+    /// and the 0xCD keys need remote_control_key_id.
+    fn check_network(&self) -> Result<()> {
+        let n = &self.network;
+        match n.kind {
+            NetworkKind::Terrestrial => {
+                if n.area_code.is_none() {
+                    return Err(MuxError::Missing {
+                        key: "network.area_code".to_string(),
+                        needed_by: "network.kind = \"terrestrial\" (0xFA area_code)".to_string(),
+                    });
+                }
+                if n.remote_control_key_id.is_none() {
+                    return Err(MuxError::Missing {
+                        key: "network.remote_control_key_id".to_string(),
+                        needed_by:
+                            "network.kind = \"terrestrial\" (0xCD TS_information_descriptor)"
+                                .to_string(),
+                    });
+                }
+                if n.satellite.is_some() {
+                    return Err(MuxError::NotApplicable {
+                        key: "network.satellite".to_string(),
+                        applies_to: "network.kind = \"bs\"".to_string(),
+                    });
+                }
+            }
+            NetworkKind::Bs => {
+                let terrestrial_only = |key: &str, given: bool, what: &str| {
+                    if given {
+                        Err(MuxError::NotApplicable {
+                            key: format!("network.{key}"),
+                            applies_to: format!("network.kind = \"terrestrial\" ({what})"),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                };
+                terrestrial_only("area_code", n.area_code.is_some(), "0xFA")?;
+                terrestrial_only("channels", !n.channels.is_empty(), "0xFA")?;
+                terrestrial_only("frequencies", !n.frequencies.is_empty(), "0xFA")?;
+                terrestrial_only(
+                    "partial_reception_descriptor",
+                    n.partial_reception_descriptor.is_some(),
+                    "0xFB",
+                )?;
+                let sat = n.satellite.as_ref().ok_or_else(|| MuxError::Missing {
+                    key: "network.satellite".to_string(),
+                    needed_by: "network.kind = \"bs\" (0x43 satellite_delivery_system_descriptor, \
+                                B10 Table 6-1)"
+                        .to_string(),
+                })?;
+                sat.channel_number()?;
+                sat.orbital()?;
+                if n.remote_control_key_id.is_none() {
+                    for (key, given) in [
+                        ("network.ts_name", n.ts_name.is_some()),
+                        (
+                            "network.transmission_types",
+                            !n.transmission_types.is_empty(),
+                        ),
+                    ] {
+                        if given {
+                            return Err(MuxError::Missing {
+                                key: "network.remote_control_key_id".to_string(),
+                                needed_by: format!("{key} (0xCD TS_information_descriptor)"),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Check the typed signalling options and reject raw descriptors that
     /// duplicate an active typed descriptor in the same loop (same tag; for
     /// component descriptors also the same component_tag).  Called by
@@ -257,6 +336,7 @@ impl Config {
     /// naming the TOML key.
     pub fn validate(&self) -> Result<()> {
         // ---- NIT
+        self.check_network()?;
         let n = &self.network;
         let mut net = vec![typed(
             0x40,
@@ -276,16 +356,33 @@ impl Config {
             &adds(&self.nit.add_descriptors, "nit", |t| *t == Target::Network)?,
         )?;
         let always = "it is always generated; use [nit] byte_patches/replace_sections";
-        let mut ts = vec![
-            typed(0xFA, "terrestrial_delivery_system_descriptor", always),
-            typed(
-                0xCD,
-                "TS_information_descriptor (remote_control_key_id)",
-                always,
-            ),
-            typed(0x41, "service_list_descriptor", always),
-        ];
-        if n.partial_reception_descriptor
+        let mut ts = match n.kind {
+            NetworkKind::Terrestrial => vec![
+                typed(0xFA, "terrestrial_delivery_system_descriptor", always),
+                typed(
+                    0xCD,
+                    "TS_information_descriptor (remote_control_key_id)",
+                    always,
+                ),
+                typed(0x41, "service_list_descriptor", always),
+            ],
+            NetworkKind::Bs => {
+                let mut v = vec![
+                    typed(0x41, "service_list_descriptor", always),
+                    typed(0x43, "satellite_delivery_system_descriptor", always),
+                ];
+                if n.remote_control_key_id.is_some() {
+                    v.push(typed(
+                        0xCD,
+                        "TS_information_descriptor (remote_control_key_id)",
+                        "remove network.remote_control_key_id",
+                    ));
+                }
+                v
+            }
+        };
+        if n.kind.is_terrestrial()
+            && n.partial_reception()
             && self
                 .services
                 .iter()
@@ -731,10 +828,43 @@ impl Config {
                 ));
             }
             if bc.terrestrial.is_some() {
+                if !self.network.kind.is_terrestrial() {
+                    return Err(MuxError::NotApplicable {
+                        key: format!("{bk}.terrestrial"),
+                        applies_to: "network.kind = \"terrestrial\" (0xCE broadcaster_type \
+                                     0x1; B10 Table 6-84 defines no satellite type)"
+                            .to_string(),
+                    });
+                }
                 t.push(typed(
                     0xCE,
                     "extended_broadcaster_descriptor (terrestrial)",
                     "remove terrestrial",
+                ));
+            }
+            if !bc.services.is_empty() {
+                for (j, &sid) in bc.services.iter().enumerate() {
+                    let sk = format!("{bk}.services[{j}]");
+                    if bc.services[..j].contains(&sid) {
+                        return Err(MuxError::Duplicate {
+                            key: format!("{bk}.services"),
+                            value: format!("service_id {sid:#06x}"),
+                        });
+                    }
+                    if !self.services.iter().any(|s| s.service_id == sid) {
+                        return Err(MuxError::config(
+                            sk,
+                            format!(
+                                "service_id {sid:#06x} is not a [[service]] of this TS (its \
+                                 service_type comes from there)"
+                            ),
+                        ));
+                    }
+                }
+                t.push(typed(
+                    0x41,
+                    "service_list_descriptor (services)",
+                    "remove services",
                 ));
             }
             let id = bc.broadcaster_id;

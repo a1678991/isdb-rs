@@ -63,6 +63,7 @@ Ready-made configurations:
 |---|---|
 | `isdb mux --print-config-example` | the annotated example, identical to [`crates/isdbt-mux/examples/bench.toml`](../crates/isdbt-mux/examples/bench.toml): a full-segment HD service with MPEG-2 video and AAC from files, plus a declared one-seg service, with the values live terrestrial broadcasters send |
 | [`examples/bench-minimal.toml`](../crates/isdbt-mux/examples/bench-minimal.toml) | the same with every receiver-facing value derived from the media and copy-free |
+| [`examples/bs-bench.toml`](../crates/isdbt-mux/examples/bs-bench.toml) | a media-free service with the SI of a BS digital network (`[network] kind = "bs"`, BS1) for the ISDB-S transmitter, with placeholder identities: TS_ID 0x4017, service_id 0x03E7, broadcaster_id 0xEE |
 | [`examples/relay-ts.toml`](../crates/isdbt-mux/examples/relay-ts.toml) | rebroadcast one program of a recorded TS (`kind = "ts-program"`) |
 | [`examples/bml-data.toml`](../crates/isdbt-mux/examples/bml-data.toml) | BML data broadcasting: the files of [`examples/bml/`](../crates/isdbt-mux/examples/bml/) as a data carousel (`kind = "bml-carousel"`): a menu page (`startup.bml`, picture in the upper-right quarter, menu column, text strip, up/down + Enter and the four colour keys) and an information page (`info.bml`, four tabs, Back / colour keys), written in UTF-8 and transcoded (`source_encoding = "utf-8"`); the pages use the idioms of live stations (a focused `div` with `onkeydown`, `document.currentEvent.keyCode` 1/2/18/19/21–24, `normalStyle`, `firstChild.data`, `browser.Ureg`, `browser.launchDocument(uri, "cut")`) |
 | [`examples/hybridcast.toml`](../crates/isdbt-mux/examples/hybridcast.toml) | start a Hybridcast HTML5 application from a URL (`[service.hybridcast]`, AIT in the carousel with a generated launcher) |
@@ -132,26 +133,60 @@ outside that range is refused when the file is loaded.
 
 ## `[network]`
 
-The NIT actual network (B10 Part 2 §5.2.4) and its terrestrial descriptors.
-Required.
+The NIT actual network (B10 Part 2 §5.2.4) and its delivery system
+descriptors: terrestrial ones by default, those of a BS digital network with
+`kind = "bs"`. Required.
 
 | Key | Type | Default | Spec | Notes |
 |---|---|---|---|---|
-| `network_id` | u16 | required | B10 §5.2.4; Annex N | Terrestrial TV range 0x7880–0x7FE8 (outside it the multiplexer warns); the allocation inside the range (ARIB TR-B14) belongs to real broadcasters, so choose an ID not used where your receiver is. The examples use the placeholder 0x79EE. Also the default `original_network_id`. |
+| `kind` | `"terrestrial"` \| `"bs"` | `"terrestrial"` | B10 Table 6-1 (delivery descriptor per medium); Table 6-36 | Which delivery system the NIT describes. `"bs"`: satellite delivery system descriptor 0x43 instead of 0xFA/0xFB, broadcasting_identifier '000010' in 0xFE, and the keys marked *terrestrial only* are refused. The services are still placed by the ISDB-T slot model (`layer`); the kind changes only the SI. |
+| `network_id` | u16 | required | B10 §5.2.4; Annex N | Terrestrial: TV range 0x7880–0x7FE8 (outside it the multiplexer warns); the allocation inside the range (ARIB TR-B14) belongs to real broadcasters, so choose an ID not used where your receiver is. The terrestrial examples use the placeholder 0x79EE. BS: 0x0004, the network_id the whole BS digital network shares (Annex N; any other value is warned about). Also the default `original_network_id`. |
 | `name` | string | required | network_name_descriptor 0x40, §6.2.11 | ARIB 8-unit coded by `isdb-text`. |
-| `area_code` | u16 (12 bits) | required | terrestrial_delivery_system_descriptor 0xFA, §6.2.31; Annex D Table D-2 | A code from Annex D Table D-2 (e.g. 0x5A5); set the area your receiver expects. |
-| `remote_control_key_id` | integer 1..=12 | required | TS_information_descriptor 0xCD, §6.2.42 Table 6-82 | B10 gives no range; isdbt-mux accepts the 12 one-touch keys. Receivers number the services key·10 + index (key 9 → 091, 092 …). See [receiver-relevant settings](#receiver-relevant-settings). |
-| `ts_name` | string | `name` | 0xCD ts_name | |
-| `channels` | array of u32 (13..62) | `[]` | 0xFA frequency, §6.2.31 | Japanese UHF channel numbers; each gives one frequency code, the centre 473 + 6·(ch − 13) + 1/7 MHz in units of 1/7 MHz (ch 27 → 3900). **Must equal the channel you transmit on.** |
-| `frequencies` | array of u16 | `[]` | 0xFA frequency | Extra raw frequency codes (1/7 MHz units), appended after `channels`. |
-| `additional_broadcasting_identification` | u8 | `0x01` | system_management_descriptor 0xFE, §6.2.21 Table 6-34 | "specified by the operation standard of service providers": an operational choice. |
+| `area_code` | u16 (12 bits) | required (terrestrial); refused (bs) | terrestrial_delivery_system_descriptor 0xFA, §6.2.31; Annex D Table D-2 | A code from Annex D Table D-2 (e.g. 0x5A5); set the area your receiver expects. *Terrestrial only.* |
+| `remote_control_key_id` | integer 1..=12 | required (terrestrial); none (bs) | TS_information_descriptor 0xCD, §6.2.42 Table 6-82 | B10 gives no range; isdbt-mux accepts the 12 one-touch keys. Receivers number the services key·10 + index (key 9 → 091, 092 …). See [receiver-relevant settings](#receiver-relevant-settings). With `kind = "bs"` 0xCD (Table 6-1 "Optional" in the NIT; not sent on BS) follows the 0x43 only when this key is given. |
+| `ts_name` | string | `name` | 0xCD ts_name | With `kind = "bs"` only together with `remote_control_key_id`. |
+| `channels` | array of u32 (13..62) | `[]` | 0xFA frequency, §6.2.31 | Japanese UHF channel numbers; each gives one frequency code, the centre 473 + 6·(ch − 13) + 1/7 MHz in units of 1/7 MHz (ch 27 → 3900). **Must equal the channel you transmit on.** Terrestrial: this or `frequencies` must be non-empty. *Terrestrial only.* |
+| `frequencies` | array of u16 | `[]` | 0xFA frequency | Extra raw frequency codes (1/7 MHz units), appended after `channels`. *Terrestrial only.* |
+| `additional_broadcasting_identification` | u8 | `0x01` | system_management_descriptor 0xFE, §6.2.21 Table 6-34 | "specified by the operation standard of service providers": an operational choice (the BS network sends 0x01 too). |
 | `system_management` | bool | `true` | 0xFE in the NIT network loop | |
-| `transmission_types` | array of `{ info = u8, layer = "A"\|"B"\|"C" }` | `[]` | 0xCD transmission_type loops, §6.2.42 | transmission_type_info is "defined by the operational guidelines of service providers". The service_id list of each loop is derived from the services on that layer. Live broadcasters send `{ info = 0x0F, layer = "B" }, { info = 0xAF, layer = "A" }`. |
-| `partial_reception_descriptor` | bool | `true` | partial_reception_descriptor 0xFB, §6.2.32 | Sent only with partial reception and at least one service on layer A; lists those services. |
+| `transmission_types` | array of `{ info = u8, layer = "A"\|"B"\|"C" }` | `[]` | 0xCD transmission_type loops, §6.2.42 | transmission_type_info is "defined by the operational guidelines of service providers". The service_id list of each loop is derived from the services on that layer. Live broadcasters send `{ info = 0x0F, layer = "B" }, { info = 0xAF, layer = "A" }`. With `kind = "bs"` only together with `remote_control_key_id`. |
+| `partial_reception_descriptor` | bool | `true` | partial_reception_descriptor 0xFB, §6.2.32 | Sent only with partial reception and at least one service on layer A; lists those services. *Terrestrial only.* |
 
-Generated in the NIT TS loop: 0xFA (area, guard interval and mode codes
-derived from the transmission parameters, frequencies), 0xCD, 0x41
-service_list_descriptor (every service with its service_type) and 0xFB.
+Generated in the NIT TS loop, terrestrial: 0xFA (area, guard interval and
+mode codes derived from the transmission parameters, frequencies), 0xCD,
+0x41 service_list_descriptor (every service with its service_type, by
+service_id) and 0xFB. BS: 0x41, then 0x43, then 0xCD if
+`remote_control_key_id` is given (the order the BS network sends).
+
+### `[network.satellite]`
+
+Required with `kind = "bs"`, refused otherwise. The satellite delivery
+system descriptor 0x43 (B10 §6.2.6, Tables 6-8…6-11) is derived from it:
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `channel` | string `"BS1"`, `"BS3"` … `"BS23"` | required | The BS channel n (odd: the right-hand circular channels of the BS digital network; case-insensitive). Gives frequency 11 727.48 + 19.18·(n − 1) MHz (8 BCD characters in GHz, BS1 → 011.72748) and polarization '11' circular right (Table 6-9). **Must equal `isdb tx --system isdbs --channel`.** |
+| `orbital_position` | string `ddd.dE` / `ddd.dW` | `"110.0E"` | 4 BCD characters and west_east_flag; at most 180.0. |
+
+The other fields are fixed: modulation '01000' and FEC_inner '1000' (both
+"refer to TMCC signal", Tables 6-10 and 6-11), symbol_rate 028.8600 Msym/s
+(the ISDB-S 28.860 Mbaud). For BS1 at 110.0E the descriptor is
+`43 0b 01172748 1100 e8 02886008`. An experiment with other values patches
+the NIT (`[nit] byte_patches`).
+
+```toml
+[network]
+kind = "bs"
+network_id = 0x0004
+name = "ベンチ"
+
+  [network.satellite]
+  channel = "BS1"
+  orbital_position = "110.0E"
+```
+
+The complete example is
+[`examples/bs-bench.toml`](../crates/isdbt-mux/examples/bs-bench.toml).
 
 ## `[transport]`
 
@@ -696,7 +731,7 @@ Defaults per table:
 | `[eit_schedule]` | 0x0012 | 10 s | control layer | `reference = "today"` (default; segments counted from today 00:00 JST, Annex 1.4.2 method 1) or `"month"` (from the first of the month, method 2); any other value is a configuration error. Tables 0x50 + 4-day blocks, 32 segments of 3 h, 8 sections each. |
 | `[tot]` | 0x0014 | 30 s | control layer | `local_time_offset = [ { country_code = "JPN", country_region_id = 0, polarity = false, offset = "HH:MM", time_of_change = "<JST time>", next_offset = "HH:MM" } ]`: local_time_offset_descriptor 0x58 (§6.2.25); default none |
 | `[tdt]` | 0x0014 | 30 s | control layer | — |
-| `[bit]` | 0x0024 | 20 s | control layer | `broadcast_view_propriety` (bool, default `true`); `first_descriptors = [ { tag, hex } ]` (raw first-loop descriptors, e.g. SI_parameter_descriptor 0xD7); `broadcasters = [ { broadcaster_id = u8, name = "…", terrestrial = { terrestrial_broadcaster_id = u16, affiliation_ids = [u8], broadcasters = [[onid, broadcaster_id]] }, descriptors = [ { tag, hex } ] } ]`: `name` → broadcaster_name_descriptor 0xD8, `terrestrial` → extended_broadcaster_descriptor 0xCE (broadcaster_type 0x1) |
+| `[bit]` | 0x0024 | 20 s | control layer | `broadcast_view_propriety` (bool, default `true`); `first_descriptors = [ { tag, hex } ]` (raw first-loop descriptors, e.g. SI_parameter_descriptor 0xD7); `broadcasters = [ { broadcaster_id = u8, name = "…", terrestrial = { terrestrial_broadcaster_id = u16, affiliation_ids = [u8], broadcasters = [[onid, broadcaster_id]] }, services = [u16], descriptors = [ { tag, hex } ] } ]`: `name` → broadcaster_name_descriptor 0xD8, `terrestrial` → extended_broadcaster_descriptor 0xCE (broadcaster_type 0x1; refused with `[network] kind = "bs"`, B10 Table 6-84 has no satellite type), `services` → service_list_descriptor 0x41 (Table 6-1 "Optional in BIT"; each a configured service_id, in the order given, with its service_type; every BS broadcaster sends one), then the raw `descriptors` |
 
 The **control layer** is the partial-reception layer (A) when partial
 reception is on, otherwise the most robust active layer (B31 Part 2 §3.2.1
@@ -761,6 +796,18 @@ entries of the file from 0: `config: service[0].stream[1].bml.block_size:
 - a key is unknown, or a named value is given as a number or an unknown
   name (the message lists the valid names and codes);
 - `remote_control_key_id` is outside 1..=12;
+- `[network]` does not fit its `kind`: terrestrial without `area_code` or
+  `remote_control_key_id` (`config: network.area_code is missing …`), with
+  neither `channels` nor `frequencies`, or with `[network.satellite]`; bs
+  with `area_code`, `channels`, `frequencies` or
+  `partial_reception_descriptor` (`… applies only to network.kind =
+  "terrestrial"`), without `[network.satellite]`, with `ts_name` or
+  `transmission_types` but no `remote_control_key_id`, or with a BIT
+  broadcaster's `terrestrial`; `satellite.channel` is not `BS<n>` with n
+  odd in 1..=23, or `orbital_position` is not `ddd.dE` / `ddd.dW` up to
+  180.0;
+- a BIT broadcaster's `services` names a service_id that is not a
+  `[[service]]`, or names one twice;
 - a raw descriptor (`descriptors`, `program_descriptors`, `sdt_descriptors`,
   event `descriptors`, broadcaster `descriptors`,
   `add_descriptors`) has the tag of a typed descriptor the same loop already
@@ -769,8 +816,9 @@ entries of the file from 0: `config: service[0].stream[1].bml.block_size:
   `set eit_component = false on stream 0x0111`). Component (0x50) and audio
   component (0xC4) descriptors collide only on the same component_tag.
   Descriptors that are always generated (0x40 network name, 0x48 service,
-  0x4D short event, 0xFA terrestrial delivery system, 0xCD TS information,
-  0x41 service list; 0x52 and 0xFD of a `bml-carousel`) can only be changed
+  0x4D short event, 0xFA terrestrial delivery system, 0x43 satellite
+  delivery system, 0xCD TS information, 0x41 service list; 0x52 and 0xFD of
+  a `bml-carousel`) can only be changed
   with `byte_patches` / `replace_sections`;
 - a `bml-carousel` has no `source` and no `modules` (and no Hybridcast
   launcher), `startup.bml` is missing from module 0x0000 with
