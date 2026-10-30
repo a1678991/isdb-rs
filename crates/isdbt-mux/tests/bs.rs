@@ -160,9 +160,6 @@ fn bs_bench_validates_clean() {
         .findings
         .iter()
         .filter(|f| matches!(f.check, "cross.nit" | "cross.delivery" | "cross.onid"))
-        // isdb-analyze before bs-si.md piece C names only 0xFA; drop this
-        // exception once its cross.nit accepts a 0x43
-        .filter(|f| !f.message.contains("no terrestrial_delivery_system_descriptor"))
         .collect();
     assert!(si.is_empty(), "{si:?}");
 }
