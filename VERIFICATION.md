@@ -1825,6 +1825,37 @@ four `pid.missing` warnings; the media run has ffmpeg's ADTS errors
 frames cut by the file's end, one per seam. SI times (TOT, EIT) restart at
 each pass (not corrected).
 
+## ISDB-S live pacing, offline (2026-10-30)
+
+`--feed live` of a TS with PCRs is paced with a deadline
+(docs/plans/isdbs-next/pcr-pacing.md §7.7, `pace.rs` "Live inputs",
+crates/isdb-cli/SPEC-NOTES.md "late packets of a live input"). `FEED=live
+tools/isdbs-pacing-e2e.sh WORKDIR 10` (no radio): the bench service muxed
+for 10 s (10.179 s of PCR time, 29.958294 Mbit/s with its nulls) written
+into a FIFO by `pv -q -B 7520 -L 3744787` (its own byte rate) → `isdb tx
+--system isdbs --feed live --iq` (cs8, BS layout, `--placed-ts`; the
+producer paced to real time, as `--feed live` with `--iq` defaults to; 1.1–
+1.2× real time) → `isdb rx --iq` → `isdbs-bench-check.sh --rate
+52170000:1 --fit-max-ns 100 --placed` on the recording without its leading
+nulls (0.321 s: the lead superframe and L). `STALL=1` stops `pv`
+(SIGSTOP) 4 s in for 1 s.
+
+| | real-time writer | 1 s stall |
+|---|---|---|
+| plan | paced by PCR (live), first PCR in packet 1 | the same |
+| end (`InputEnded`, the writer closed) | 946 superframes, 10.464 s | the same |
+| `deadline-misses` | **0** | 53 (0.59 s of superframes: about the 1.04 s stall less L + G) |
+| `live-input` lag, worst | ±0.05 s, worst lag 0.078 s (pv's and the 64 KiB reads' jitter) | worst lag 1.039 s, back to a lead of 0.004 s |
+| `PCR lag` max / at the end | 0.00 / 0.00 s | 0.53 / 0.00 s (`slot-busy 41`: the backlog) |
+| received TS vs `--placed-ts` | identical, 351 744 packets | identical, 351 744 packets |
+| `pcr.rate` | 52.170000 Mbit/s (±0.0 ppm) | the same |
+| CBR fit, 0x01FF / 0x01FE | max 19 ns, rms 11 ns | the same (late packets restamped onto the grid) |
+| `pcr.interval`, `tables.frequency` | none | PCR interval up to 0.50 s, PAT/PMT gaps 0.51–0.56 s: the stall's hole in the TS |
+
+For comparison, the same TS through `--feed file` (a regular file, no
+FIFO): CBR fit max 19 ns, identical to its placed TS; the producer there
+runs ahead of air and the TS starts after the lead superframe, not L later.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received
