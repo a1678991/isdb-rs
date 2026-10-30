@@ -117,6 +117,46 @@ rustdoc clean, FPGA suite 24/24):
    as the deployed image in places; isdb-s.md §2's bench table (TX1
    "directly, no attenuator") is outdated.
 
+## Investigation (2026-10-30)
+
+Read-only investigation of the Work list, one report per cluster under
+[isdbs-next/](isdbs-next/); nothing built, transmitted or deleted.
+
+- [pcr-pacing.md](isdbs-next/pcr-pacing.md) (item 1). The ISDB-T `Pacer`
+  paces per frame only (`input.rs:255-312`: packets due in frame k fill
+  its first slots, nulls after, PCRs untouched); per superframe it would
+  still leave 5.5 ms max PCR error. Slot placement alone leaves 14.3 µs
+  max / 8.3 µs rms (one slot is 28.83 µs); slot placement plus PCR
+  re-stamping (H.222.0 D.0.4) gives 18 ns max on the bench TS in the
+  offline model (`tools/isdbs-pacing-sim.py`). Reuse `PcrClock`, not
+  `Pacer`. `bench60.ts` breaks the continuity counters of 9 of 11 PIDs at
+  the loop seam (`tools/ts-loop-seam.py`). Today's `--feed file` plays a
+  29.96 Mbit/s TS 1.74× too fast and validates clean: `validate` needs a
+  rate check. Split P1–P6 in §9.
+- [bs-si.md](isdbs-next/bs-si.md) (item 2). `isdb-si` has every descriptor
+  BS uses; the work is a `kind = "bs"` branch in `isdbt-mux` (NIT, BIT,
+  config checks) and `isdb-analyze` accepting 0x43. 0x4010 is a real
+  on-air TS_ID (the `txs.rs:85` "placeholder" comment is wrong); the
+  report proposes 0x4017 / service 999. `dt295` has no SI readout.
+  `tools/bs-nit-section.py` gives BS SI via `[nit] replace_sections`
+  today. Split A–D.
+- [media-and-margin.md](isdbs-next/media-and-margin.md) (items 3, 4). Media
+  is in `crates/isdbt-mux/examples/media/` (git-ignored); the AAC needs
+  `--adts-compliance warn`. **`tools/isdbs-bench-tx.sh` bug**: `exec`
+  drops the EXIT trap, and `while :; do cat …; done | pv` spins for ever
+  once `pv` exits; use `while cat …; do :; done`. The driver reads C/N on
+  every poll; at att 45 the raw value is below the borrowed TC90522
+  formula's floor, so no dB is printed. Attenuation is set once at open
+  (`pluto.rs:2227-2242`). Splits A–K.
+- [hdl-and-housekeeping.md](isdbs-next/hdl-and-housekeeping.md) (items 5,
+  6). The start miss comes from requests gated on RUN (`tx.py:252-253`);
+  the design polls from SELECT and adds a FEATURES register (0x07) instead
+  of an ID bump. The bank reload measured 3.9 s, not 8 s; a BANK_TAG
+  (CRC-32C) register lets the host skip it. The deployed image is
+  `build.sh WORK isdb`, not `isdb-tx`. All 7 `worktree-agent-*` branches
+  are merged; exact edits for mise.toml, fpga/README.md and isdb-s.md §2
+  are listed. FPGA suite 24/24 (`mise run fpga:test`).
+
 ## Pitfalls met this session
 
 - A `pkill -f PATTERN` whose pattern appears in the calling shell's own
