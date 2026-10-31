@@ -17,6 +17,38 @@ STD-B44) is received to TLV streams.
 
 ### Added
 
+- `isdb tx --system isdbs --mux-config FILE.toml` (and `isdb loopback
+  --system isdbs`): the in-process ISDB-S multiplexer (piece J of
+  docs/plans/isdbs-next/media-and-margin.md §3). Repeatable, one TS per
+  file: a `kind = "bs"` configuration (a terrestrial one is refused, naming
+  the fix) with its services, streams and tables on layer "A" (B/C refused,
+  naming the fix); its `[transport] transport_stream_id` is the TS_ID,
+  taking every sent slot alone, or the slots and place of the `--ts
+  ID:SLOTS` of that TS_ID next to other TSs. Each superframe takes the
+  multiplexer's `next_period()` (its PCR, PTS/DTS and SI made for those
+  slots; its nulls counted as padding), the same packets on the IQ and the
+  FPGA code paths. New `--mux-pcr-grid uniform|slot` (default `uniform`:
+  `isdbt_mux::Schedule::satellite_uniform`, packet q of N sent slots at
+  ⌊q · 1 382 400/(37·N) + ½⌋ ticks, the constant-rate TS a receiver
+  outputs and the pacer's `SlotClock::isdbs` grid, to which BS
+  transponders stamp their PCRs; `slot`: the true slot times of
+  `Schedule::satellite`, whose frame-periodic deviation from that rate
+  reaches 2.2 µs in a CBR fit with three PCRs per superframe at 48 slots
+  and 231 µs for a 16-slot TS; isdb-cli SPEC-NOTES). `--dry-run`, the
+  input line and the status lines name the multiplexer (`TS_ID 0x4017 <-
+  in-process multiplexer FILE (PCR grid uniform)`, `0x4017 mux late PES 0
+  errors 0`); a `--channel` other than the NIT's warns. `isdb mux --system
+  isdbs [--combination …] [--mux-pcr-grid …] --out-ts` writes the same TS
+  without modulation (equal to `tx --placed-ts`), `--report` on its
+  schedule. Offline: through `tx --iq` → `rx` the received TS equals the
+  placed one, validates with `--expect-rate 52170000:1` and the BS
+  expectations, CBR fit 18 ns, every PCR exactly on the grid
+  (VERIFICATION.md "In-process ISDB-S multiplexer, offline").
+  `tools/isdbs-pacing-e2e.sh` takes `MUX=1` (and `GRID=uniform|slot`).
+- `isdbt-mux`: `Schedule::satellite_uniform(&tmcc_info, relative_ts)`, the
+  ISDB-S TS on its uniform per-TS grid: the TS's own 8 · n_r slots, packet
+  q at ⌊q · 1 382 400/(37 · n_r) + ½⌋ ticks, its PCR at that time; rates,
+  PCR default and SI system as `Schedule::satellite`.
 - Tools: `tools/isdbs-bench-tx.sh --media[=DIR]` sends the BS bench
   service with real video and audio (`video.m2v`, `audio.m2a` of DIR, else
   of `ISDB_RS_MEDIA_DIR`, else of the git-ignored
@@ -835,8 +867,11 @@ STD-B44) is received to TLV streams.
 
 - `isdb-cli`: the ISDB-T `isdb tx --mux-config` and `isdb loopback
   --mux-config` refuse a `[network] kind = "bs"` configuration (a
-  satellite NIT on an ISDB-T signal), naming `isdb mux` and `isdb tx
-  --system isdbs --channel … --ts <its TS_ID>=…` instead.
+  satellite NIT on an ISDB-T signal), naming `isdb tx --system isdbs
+  --channel … --mux-config` and `isdb mux` + `isdb tx --system isdbs
+  --channel … --ts <its TS_ID>=…` instead. `--mux-config` is repeatable
+  (ISDB-S, one TS each); the ISDB-T commands refuse it given twice.
+  `--auto-layout` is refused with `--system isdbs` (ISDB-T only).
 - `isdbs-phy`: `Transmitter::new` refuses a dummy combination entry with
   slots (`TxError::DummySlots`; BO.1408-1 §6.1.2 requires 0), which left
   0 + 0j symbols in the main signal; `TmccInfo::assign` never builds one.

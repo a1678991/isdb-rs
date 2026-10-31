@@ -204,7 +204,7 @@ Exactly one input:
 
 | Input | Use |
 |---|---|
-| `--mux-config FILE.toml` | the multiplexer runs in-process ([mux-config.md](mux-config.md)); never ends by itself (unless every relay has `at_eof = "end"`); a `[network] kind = "bs"` file is refused (satellite SI: `isdb mux` it and send the TS with `--system isdbs --ts`) |
+| `--mux-config FILE.toml` | the multiplexer runs in-process ([mux-config.md](mux-config.md)); never ends by itself (unless every relay has `at_eof = "end"`); a `[network] kind = "bs"` file is refused (satellite SI: send it with `--system isdbs --mux-config`, [ISDB-S](#isdb-s-bs-and-110-cs)); one TS only (repeatable with `--system isdbs`) |
 | `--relay FILE` | rebroadcast a recorded program as a terrestrial service, no TOML needed ([below](#relaying-a-recording)) |
 | `--a-ts/--b-ts/--c-ts PATH` | per-layer transport streams (`-` = stdin, FIFOs fine), e.g. from `isdb mux --out-a/--out-b`; a layer without input carries null packets |
 | `--mux-ts PATH --a-pids … [--c-pids …]` | one TS split into layers by PID: the listed PIDs go to A / C, every other PID to B, input null packets are dropped |
@@ -632,6 +632,57 @@ aligning the start (the lead superframes' nulls are not in it), and
 isdb tx --system isdbs --ts 0x4010=bench.ts --iq bs.cf32 --placed-ts 'placed-{ts_id}.ts'
 isdb ts validate placed-4010.ts --expect-rate 52170000:1
 ```
+
+**In-process multiplexer (`--mux-config FILE.toml`, `--mux-pcr-grid`).**
+Instead of a TS file, a TS can be multiplexed in-process from an isdbt-mux
+TOML ([mux-config.md](mux-config.md), "ISDB-S"), superframe by superframe:
+the multiplexer fills exactly the TS's slots, null packets where nothing
+is due, and makes its PCRs, PTS/DTS and SI for the time each packet goes
+out, so nothing is paced or restamped. `--mux-config` is repeatable, one
+TS each. The file must describe a satellite network (`[network] kind =
+"bs"`, a `[network.satellite] channel`; a terrestrial one is refused) and
+puts its services, streams and tables on layer `"A"`, the TS's one lane
+(`examples/bs-bench.toml` has its service on layer B for the ISDB-T slot
+model of `isdb mux`: change it to `"A"`). Its `[transport]
+transport_stream_id` is the TS_ID: with one TS it takes every sent slot;
+with more, its slots come from the `--ts ID:SLOTS` of that TS_ID (given
+without `=PATH`, which also fixes its place among the TSs), and a
+configuration without one is a TS after the `--ts` ones. A `--channel`
+other than the NIT's `[network.satellite] channel` is warned about.
+`[timing] pcr_per_frame` counts PCRs per superframe (default 1, every
+11.07 ms). Like `--synthetic`, it never ends by itself (unless every
+`ts-program` relay has `at_eof = "end"`), so an `--iq` file needs
+`--seconds`. `--dry-run`, the input line and the status lines name it
+(`TS_ID 0x4017 <- in-process multiplexer FILE (PCR grid uniform)`;
+`0x4017 mux late PES 0 errors 0`).
+
+`--mux-pcr-grid` chooses the time line: `uniform` (default) puts packet q
+of a TS with N sent slots per frame at q / (8 N) of a superframe, the
+constant-rate TS a receiver outputs for that TS_ID (and the grid a paced
+`--ts` file is placed on), so its PCRs fit a constant rate to the 27 MHz
+tick (≤ 18.5 ns) as the BS transponders' do; `slot` uses the true symbol
+time of each slot (before the interleaver), whose frame headers and, for
+a TS sharing the frame, the other TSs' slots put a frame-periodic
+deviation on the PCRs against that rate (up to 6.6 µs at 48 slots, ±0.45
+ms for 16 contiguous slots per frame) unless every PCR sits at the same
+place in the frame (`isdb-cli/SPEC-NOTES.md`).
+
+```sh
+# the BS bench service, multiplexed in-process (its service on layer "A")
+sed 's/^layer = "B"/layer = "A"/' crates/isdbt-mux/examples/bs-bench.toml > bs.toml
+isdb tx --system isdbs --channel BS1 --mux-config bs.toml --iq bs.cs8 --iq-format cs8 \
+    --seconds 6 --placed-ts 'placed-{ts_id}.ts'
+isdb rx --iq bs.cs8 --out 'rx-{ts_id}.ts'
+isdb ts validate rx-4017.ts --expect-rate 52170000:1 --expect-tsid 0x4017
+# next to a TS file: 32 + 16 sent slots
+isdb tx --system isdbs --ts 0x4010:32=a.ts --ts 0x4017:16 --mux-config bs.toml --iq two.cf32 --seconds 2
+# the same TS to a file, timed for its superframes (no modulation)
+isdb mux --system isdbs -c bs.toml --seconds 10 --out-ts bs-4017.ts
+```
+
+`isdb loopback --system isdbs --mux-config` checks the same through the
+software channel, and `tools/isdbs-pacing-e2e.sh` with `MUX=1` (`GRID`,
+`MEDIA`) end to end through `tx --iq` and `rx`.
 
 **On air** come a pre-roll frame (the last frame of a null superframe:
 a receiver's loops settle during its first symbols), `--lead-superframes`

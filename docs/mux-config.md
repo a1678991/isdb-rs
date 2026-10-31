@@ -187,10 +187,40 @@ name = "ベンチ"
 
 The complete example is
 [`examples/bs-bench.toml`](../crates/isdbt-mux/examples/bs-bench.toml).
-Such a TS is made with `isdb mux -c … --out-ts FILE` and sent with `isdb
-tx --system isdbs --channel BS1 --ts <transport_stream_id>=FILE`
-(`tools/isdbs-bench-tx.sh` does both); the ISDB-T `isdb tx --mux-config` and
-`isdb loopback --mux-config` refuse a `kind = "bs"` file.
+Such a TS is sent in-process with `isdb tx --system isdbs --channel BS1
+--mux-config FILE` (below, [ISDB-S](#isdb-s-in-process---system-isdbs)), or
+made with `isdb mux -c … --out-ts FILE` and sent with `isdb tx --system
+isdbs --channel BS1 --ts <transport_stream_id>=FILE`
+(`tools/isdbs-bench-tx.sh` does that); the ISDB-T `isdb tx --mux-config`
+and `isdb loopback --mux-config` refuse a `kind = "bs"` file.
+
+### ISDB-S, in-process (`--system isdbs`)
+
+`isdb tx --system isdbs --mux-config FILE` (and `isdb loopback --system
+isdbs`, `isdb mux --system isdbs`) multiplexes one ISDB-S TS per file,
+superframe by superframe (11.07 ms; docs/transmitting.md "In-process
+multiplexer"). What differs from ISDB-T:
+
+- `[network] kind = "bs"` is required: a `"terrestrial"` file (the
+  default) is refused, its NIT describing an ISDB-T network.
+- A TS is one lane, layer `"A"`: every `layer` key (services, streams,
+  tables, `[[raw_table]]`) must be `"A"` (or left to its default); `"B"`
+  and `"C"` are refused as inactive layers. `examples/bs-bench.toml` puts
+  its service on `"B"` for the ISDB-T slot model of `isdb mux`; change it
+  to `"A"`. Partial reception and the layer-derived keys do not apply
+  (they are terrestrial only anyway).
+- `[transport] transport_stream_id` is the TS_ID of the TMCC: the TS takes
+  every sent slot, or with more than one TS the slots of `isdb tx --ts
+  ID:SLOTS`.
+- `[timing] pcr_per_frame` counts PCRs per **superframe** (default 1, one
+  every 11.07 ms; at most 100 ms apart, so ≥ 1 is always enough) and must
+  divide the TS's packets per superframe (8 × its sent slots per frame:
+  384 for 48 slots).
+- The capacity a `ts-program` relay is checked against is the TS's rate,
+  8 × slots × 1 504 bits per superframe (52.17 Mbit/s for 48 TC8PSK
+  slots); refusals name no ISDB-T layouts.
+- Packet times, and so PCR/PTS/DTS, follow `isdb tx --mux-pcr-grid`
+  (default `uniform`: the TS's constant packet rate).
 
 ## `[transport]`
 
@@ -217,7 +247,7 @@ PCR, PES and section scheduling. Optional.
 |---|---|---|---|---|
 | `av_delay_ms` | u32 | `700` | — | From the first multiplex slot to the first DTS. |
 | `max_std_delay_ms` | u32 | `1000` | H.222.0 §2.4.2.6 ("less than or equal to one second") | Upper bound on the delay of any byte through the T-STD model. |
-| `pcr_per_frame` | u32 | 1 / 2 / 4 in Mode 1 / 2 / 3 | B31 Part 2 §3.2.4 Table 3-5; H.222.0 §2.7.2 | PCR packets per OFDM frame per service, at fixed, equally spaced slots. Must divide the layer's TSPs per frame and keep the interval ≤ 100 ms. |
+| `pcr_per_frame` | u32 | 1 / 2 / 4 in Mode 1 / 2 / 3; ISDB-S 1 | B31 Part 2 §3.2.4 Table 3-5; H.222.0 §2.7.2 | PCR packets per OFDM frame per service, at fixed, equally spaced slots. Must divide the layer's TSPs per frame and keep the interval ≤ 100 ms. ISDB-S (`--system isdbs`): per superframe (11.07 ms), dividing the TS's packets per superframe. |
 | `interval_margin` | f64 | `0.9` | — | Sections are scheduled at `interval_ms × margin`, so the measured interval stays inside the maximum. |
 | `si_max_bytes` | u32 | `4096` | B10 §5.1.4 ("4KB in 32 ms") | Maximum bytes of 188-byte packets of one section PID in any `si_window_ms` window. |
 | `si_window_ms` | u32 | `32` | B10 §5.1.4 | |
@@ -232,7 +262,7 @@ One service (program). Repeat the table for each service.
 | `service_type` | u8 | `0x01` | service_descriptor 0x48, Table 6-25 | 0x01 digital TV; one-seg services conventionally use 0xC0 (data service). |
 | `provider` | string | `""` | 0x48 service_provider_name | |
 | `name` | string | required | 0x48 service_name | |
-| `layer` | `"A"` \| `"B"` \| `"C"` | required | — | Layer of the service's elementary streams; must be active. |
+| `layer` | `"A"` \| `"B"` \| `"C"` | required | — | Layer of the service's elementary streams; must be active. ISDB-S (`--system isdbs`): `"A"`, the TS's one lane. |
 | `pmt_pid` | PID | required | H.222.0 §2.4.4.8 | One-seg services conventionally use 0x1FC8–0x1FCF. |
 | `pcr_pid` | PID | `0x1FFF` (no PCR) | H.222.0 §2.4.4.9 | May equal an elementary PID (PCR in the video packets) except for a `ts-program` stream, whose packets keep their payload; a dedicated PID (e.g. 0x01FF) then carries adaptation-field-only PCR packets. |
 | `running_status` | u8 | `0` | SDT running_status, Table 5-6 | 0 "undefined" is what the live terrestrial stations observed during development send; 4 = running. |

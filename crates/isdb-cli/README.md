@@ -92,8 +92,8 @@ Inputs (one of):
   `--mode/--gi/--partial/--layer-*` parameters), so a synthetic service goes
   on air without files or pipes. Never ends by itself (unless every
   `ts-program` relay has `at_eof = "end"`). A `[network] kind = "bs"`
-  file (satellite SI) is refused: `isdb mux` it and send the TS with
-  `tx --system isdbs --ts`.
+  file (satellite SI) is refused: send it with `tx --system isdbs
+  --mux-config` (below). One file only; ISDB-S takes one per TS.
 * `--relay FILE [--program N | --service-name S] …` a recorded program
   rebroadcast as a terrestrial service, the multiplexer configuration
   built in memory (see "Rebroadcast a recording"); `--auto-layout` adapts
@@ -191,6 +191,8 @@ superframe's packets per TS into 319 488 symbols and
 | `--backoff-db DB` | 10 | RMS below full scale in every format, **cf32 included** (RMS 0.316 at 10 dB): the ISDB-S receiver reads samples as a fraction of full scale (its front end's input is 12-bit), unlike the scale-free ISDB-T receiver |
 | `--lead-superframes N` | 1 | null superframes before the data |
 | `--ts-pacing auto\|pcr\|arrival` | auto | how a TS file's packets are placed in its slots (`txs.rs` `plan_inputs`, `pace.rs` `SlotPacer`). `auto`: a file with a PCR is paced by it, each packet in the first free slot at or after its PCR time (eq. 2-4), input nulls dropped, nulls in the slots left over, every PCR corrected by the time its packet moved (H.222.0 Annex D.0.4; [SPEC-NOTES](SPEC-NOTES.md)). A regular file (`--feed file`/`loop`) is probed first (30 s / 128 MB): a mean rate above its slots' capacity (N × 1.086875 Mbit/s) is refused unless `--allow-overrate`, a 1-s peak above it warns; a FIFO or stdin is paced from its first PCR (within 65 536 packets); a `--feed live` input from a PCR within 1 s / 65 536 packets, with a deadline on the wall clock instead of blocking (the first PCR on air 0.3 s after it arrived, each superframe sent at the latest 0.2 s after that schedule, later packets placed late and restamped, `deadline-misses` and `live-input lag` in the status lines; `pace.rs` "Live inputs", [transmitting.md](../../docs/transmitting.md#isdb-s-bs-and-110-cs)); files without PCR stay in arrival order. `pcr`: a file without PCR is refused, a live input is paced from its first PCR whenever it comes. `arrival`: every packet, nulls included and unmodified, in the next slot (the old rule; a byte-exact relay). With `--feed loop` each pass n ≥ 1 is joined to the one before: the PCR, PTS and DTS move on by a constant O_n (the loop period, a multiple of 300 ticks) and the continuity counters are renumbered per PID (H.222.0 §2.4.3.3), so the seam is invisible to a receiver; pass 0 and `--feed file` change no field but the PCR ([SPEC-NOTES](SPEC-NOTES.md#isdb-cli-loop-seams-of-a-looped-ts-file---feed-loop)). The status lines add, per paced TS, `PCR lag`, the input rate vs the capacity, `nulls-dropped`, `restamped`, and with a loop `passes`, `cc-fixed`, `pes-shifted` |
+| `--mux-config FILE.toml` | — | a TS multiplexed in-process by isdbt-mux (`Multiplexer::with_schedule` on `Schedule::satellite_uniform` / `satellite`, `next_period()` per superframe into the transmitter: exactly the TS's slots, its own nulls counted as padding), repeatable, one TS each. `[network] kind = "bs"` (a terrestrial file is refused, naming the fix); its services, streams and tables on layer `"A"` (B/C are refused with that fix); its `[transport] transport_stream_id` is the TS_ID: alone it takes every sent slot, with other TSs the slots (and place) of the `--ts ID:SLOTS` of that TS_ID (no `=PATH`), else it follows the `--ts` ones. `[timing] pcr_per_frame` counts per superframe (default 1). A `--channel` other than its NIT's is warned about. Never ends by itself (unless every relay has `at_eof = "end"`). The start-up line (also in `--dry-run`), the input line and the status lines name it: `TS_ID 0x4017 <- in-process multiplexer FILE (PCR grid uniform)`, `0x4017 mux late PES 0 errors 0` |
+| `--mux-pcr-grid uniform\|slot` | uniform | with `--mux-config`: the time line its packets, PCRs and PTS/DTS are made for. `uniform`: packet q of a TS with N sent slots at ⌊q·1 382 400/(37·N) + ½⌋ ticks, the constant-rate TS a receiver outputs and the grid `--ts-pacing` places files on (`SlotClock::isdbs`), so the PCRs fit a constant rate to the tick, as the BS transponders' do; `slot`: each slot's true (pre-interleave) symbol time, with its frame-periodic deviation from that rate (6.6 µs at 48 slots, ±0.45 ms for 16 contiguous slots) ([SPEC-NOTES](SPEC-NOTES.md#isdb-cli-pcrs-of-the-in-process-isdb-s-multiplexer---mux-pcr-grid)) |
 | `--placed-ts TEMPLATE` | — | also write each TS's packets as placed in its slots, nulls included, for every data superframe: the TS a receiver outputs for that TS_ID, the same for `--iq` and `--offload fpga`. `{ts_id}` → 4 hex digits (needed with more than one TS) |
 | `--no-flush` | — | omit the null flush frame and the shaper's tail (a receiver then loses the last superframe) |
 | `--seconds S` | 0 | bound on the lead and data superframes (the flush frame, 1.4 ms, follows); an endless input into an `--iq` regular file needs it, as for ISDB-T |
@@ -199,7 +201,7 @@ superframe's packets per TS into 319 488 symbols and
 
 ISDB-T-only options (`--mode`, `--gi`, `--partial`, `--layer-*`,
 `--a-ts/--b-ts/--c-ts`, `--mux-ts`, `--a-pids/--c-pids`, `--synthetic`,
-`--mux-config`, `--relay`, `--iq-in`, `--lead-frames`,
+`--relay`, `--auto-layout`, `--iq-in`, `--lead-frames`,
 `--seek-step`) are refused with `--system isdbs`, and the ISDB-S ones
 without it, naming the system; only options given on the command line
 count (the binary keeps clap's matches, so defaults are not "given").
@@ -298,7 +300,8 @@ makes the last frames count as lost). `--json` for a machine-readable verdict.
 
 **ISDB-S** (`--system isdbs`, `loopbacks.rs`): the layout, inputs and
 `--rate` of `tx --system isdbs` (`--ts-pacing` too: a file with a PCR is
-paced as by `tx`); `--superframes N` data superframes
+paced as by `tx`; `--mux-config` and `--mux-pcr-grid` as by `tx`, the
+verifier comparing the multiplexer's packets as sent); `--superframes N` data superframes
 (default 6, or until EOF when a `--ts` reads a file with `--feed file`),
 `--lead-superframes` (1), `--cfo-hz` (carrier offset in Hz), and
 `--snr-db`, `--seed`, `--sample-offset`, `--no-flush`, `--json` as for
@@ -385,6 +388,14 @@ isdb mux -c bench.toml --seconds 20 --out-ts raw.ts --adts-compliance warn  # fi
 reproduces (nulls in the slots of no layer); `--report` measures section
 intervals, PCR, timestamps and the T-STD. For transmission, prefer
 `isdb tx --mux-config` (no intermediate files).
+
+`--system isdbs` (with `--combination WORD:N`, `--mux-pcr-grid`; the
+ISDB-T options are refused) times the configuration's TS (`kind = "bs"`,
+layer `"A"`) for every sent slot of the layout, superframe by superframe,
+as `isdb tx --system isdbs --mux-config` sends it: `--out-ts` is the TS a
+receiver outputs for its TS_ID, nulls included, equal to `tx --placed-ts`
+for the same superframes; `--frames` counts superframes, `--report`
+measures it on its schedule's times.
 
 ### `isdb ts` — TS analysis (`isdb-analyze`)
 
@@ -881,6 +892,9 @@ transmit with, over the in-memory `mock::MockRadio`):
 | `src/txs.rs` `plan_paces_files_with_a_pcr_and_checks_their_rate`, `arrival_reproduces_the_input_bytes`, `a_pipe_is_paced_from_its_first_pcr` | the placement plan per feed (a file with a PCR paced, without one arrival order or refused by `--ts-pacing pcr`, stdin from its first PCR, `--feed live` from its first PCR within 1 s, or arrival order without one: `live_without_pcr_falls_back`, `a_live_input_is_paced_from_its_first_pcr`); a TS over its slots' capacity refused with the slots it needs unless `--allow-overrate`; `--ts-pacing arrival` gives the input bytes in order, nulls kept, then null padding; a pipe's read-ahead packets are kept, paced or not |
 | `src/txs.rs` `placed_ts_of_a_cbr_file_validates`, `placed_ts_template` | a 3 s CBR TS (PCR, PAT/PMT) through `TsInputs` and `--placed-ts`: every non-null packet once, in order, only PCRs changed; `isdb_analyze` validate with `--expect-rate 52170000:1`: no `pcr.*` above info, no `tables.frequency`; inspect 52.17 Mbit/s within 1 ppm, CBR-fit max < 40 ns; `{ts_id}` needed with two TSs |
 | `src/txs.rs` `paced_inputs_feed_both_paths_the_same_packets` | a paced TS file gives the IQ path (`Modulate::shaped`) and the code path (`Modulate::codes`) the same packets per superframe |
+| `src/txs.rs` `mux_inputs_feed_both_paths_the_same_packets` | an in-process multiplexer (`--mux-config`, the BS bench service) gives both paths the same packets, 384 per superframe with a PCR first, its PSI/SI counted as input; the input and status lines name it |
+| `src/txs.rs` `uniform_mux_grid_is_the_pacers_slot_clock` | `--mux-pcr-grid uniform` = `SlotClock::isdbs(N).time` for every packet of every TS of three layouts (N = 48, 16, 14, 10), over 2^24 superframes |
+| `src/txs.rs` `mux_config_layouts` | a `--mux-config` TS: its TS_ID, all slots alone or those of its `--ts ID:SLOTS`, after the `--ts` ones otherwise; refused: a terrestrial file, a file and a configuration for one TS, two configurations of one TS_ID, a second TS without slots, `--mux-pcr-grid` alone |
 | `src/pace.rs` (13 tests) | `SlotClock::isdbs` (spec values), placement late by less than a slot, restamped PCRs on the slot grid (properties), two PCR PIDs, wrap, discontinuity, OPCR, over capacity, the Python model `tools/isdbs-pacing-sim.py` |
 | `src/pace.rs` `live_paced_with_mock_clock`, `live_writer_slower_than_real_time_accumulates_lag`, `live_input_lag_is_the_writers`, `live_fifo_end_drains`, `live_pcrs_that_stop_are_extrapolated` | `WaitMode::Live` on a simulated clock and writer (no wall-clock timing): the anchor L after the first PCR at a fill boundary; fills wait only until the input is timed; a 0.7 s stall: fills at their deadlines as nulls, counted, late packets restamped on the grid, the lag back under a slot after the backlog; a writer 5 % slow: no miss for 9 s, then a growing lag (0.1 s at 12 s, 0.3 s at 16 s); the input lag measured at arrival, not when a paced producer reads; a closed FIFO drains; PCRs that stop are extrapolated after 0.7 s |
 | `src/txs.rs` `producer_sequence_and_sample_counts` | the ISDB-S producer: lead, data, flush; the samples of the pre-roll frame, the superframes, the flush frame and the shaper's tail, exactly; 442 810–442 811 per superframe at 40 Msps; unit RMS; the packets recorded for the verifier |
@@ -891,6 +905,9 @@ transmit with, over the in-memory `mock::MockRadio`):
 | `tests/cli.rs` `isdbs_tx_then_rx_reproduces_every_ts_byte_exact` | two TS files on the BS layout (24 + 24 slots, 3 superframes each) → `tx --system isdbs --iq` (sidecar `isdb:system`, cf32 at −10 dBFS) → `rx --iq` (ISDB-S found by itself) returns each TS_ID's packets byte-exact, 0 uncorrectable |
 | `tests/cli.rs` `isdbs_loopback_passes_with_impairments` | `loopback --system isdbs --superframes 4 --cfo-hz 50000 --sample-offset -12345`: the BS layout at 12 dB and the CS layout at 8 dB PASS, every input packet exact, the carrier found within 2 kHz |
 | `tests/cli.rs` `isdbs_loopback_detects_loss` | `--no-flush`: FAIL with the last superframe (384 packets) lost; a TS file of 500 packets ends the transmission after 2 superframes, all 500 exact |
+| `tests/cli.rs` `isdbs_mux_config_through_tx_and_rx_validates` | `tx --system isdbs --channel BS1 --mux-config` (the BS bench service on layer A, 1.2 s, cs8) → `rx --iq`: the received TS is the lead superframe's nulls then the `--placed-ts` TS byte for byte (and `isdb mux --system isdbs` writes the same); `ts validate --expect-rate 52170000:1` with the BS expectations: no error, no `pcr.*`/`expect` above info, no `tables.frequency`, no `cross.*`; CBR fit ≤ 100 ns; every PCR exactly at ⌊i · 28 800/37 + ½⌋ ticks; with three PCRs per superframe the `slot` grid's fit exceeds 1 µs, the `uniform` one's does not |
+| `tests/cli.rs` `isdbs_loopback_with_in_process_multiplexer` | `loopback --system isdbs --mux-config` PASS alone (48 slots) and as a 16-slot TS next to a synthetic one at 15 dB; the example's layer-B service refused naming layer "A"; a terrestrial file refused; a `--channel` other than the NIT's warned about |
+| `tests/cli.rs` `isdbs_mux_config_with_media_decodes` | opt-in (`ISDB_RS_MEDIA_DIR`): the bench service with MPEG-2 video and AAC, 3 s `tx --iq` → `rx`: the placed TS received, no error but the file's own `aac.*`, no `pcr.*` above info, no `tables.frequency`, video and audio PES present, ffmpeg errors only at the cut end |
 | `tests/cli.rs` `isdbs_options_are_checked` | ISDB-T options with `--system isdbs` and ISDB-S options without (tx and loopback) refused, naming the system; slot sums, missing slots, partial units, unknown combinations, a rate below (1 + α)·R and an endless file without `--seconds` refused before anything is written |
 | `tests/cli.rs` `isdbs_radio_dry_runs` | `tx --system isdbs --radio pluto … --dry-run`: BS1 needs `--freq-unrestricted`, then 1049.48 MHz at 40 Msps with a 40 MHz filter and the underrun warning; `--rate` / `--bb-filter-hz` as given; a HackRF refuses 40 Msps |
 | `tests/cli.rs` `tx_then_rx_reproduces_every_layer_byte_exact` | `isdb tx --iq` → `isdb rx --iq` returns every input packet of every layer byte-exact |

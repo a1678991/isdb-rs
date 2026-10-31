@@ -272,8 +272,8 @@ pub const LOOPBACK_ISDBT_ONLY: &[&str] = &[
     "a_pids",
     "c_pids",
     "synthetic",
-    "mux_config",
     "relay",
+    "auto_layout",
     "frames",
     "cfo_carriers",
     "lead_frames",
@@ -287,6 +287,7 @@ pub const LOOPBACK_ISDBS_ONLY: &[&str] = &[
     "rate",
     "lead_superframes",
     "ts_pacing",
+    "mux_pcr_grid",
     "superframes",
     "cfo_hz",
 ];

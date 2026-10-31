@@ -61,6 +61,16 @@
 //! [`Modulate`], so the IQ and code paths carry the same packets;
 //! `--placed-ts` writes them ([`PlacedTs`]).
 //!
+//! **In-process multiplexer** (`--mux-config`, [`Layout::of_inputs`],
+//! [`open_muxes`]): a TS can instead be an isdbt-mux [`Multiplexer`] of a
+//! `kind = "bs"` configuration on one lane, built on the TS's
+//! [`Schedule`] ([`MuxPcrGrid`]: by default `satellite_uniform`, the
+//! uniform grid above, else `satellite`, the true slot times) and asked
+//! for one superframe of packets at a time (`next_period()`, exactly the
+//! TS's slots, its own nulls counted as padding). Its PCR, PTS/DTS and SI
+//! are made for the times the packets go out, so it is neither paced nor
+//! restamped.
+//!
 //! The samples are unit RMS (radios quantise them at `--backoff-db`); an
 //! `--iq` file holds them at `--backoff-db` below full scale in every
 //! format, cf32 included, because the ISDB-S receiver reads samples as a
@@ -77,13 +87,13 @@
 use crate::bands::Channel;
 use crate::input::{
     InputRates, PROBE_BYTES, PROBE_SECONDS, RateShare, RateTarget, check_rates, is_regular_file,
-    probe_rates,
+    isdbs_mux_config, log_mux_notes, mux_config_ends, probe_rates,
 };
 use crate::pace::{SlotClock, SlotPacer, TaggedSource, WaitMode};
 use crate::producer::{EndReason, FrameKind};
 use crate::sink::{FileSink, IqFormat};
 use crate::source::{
-    Feed, Packet, PacketStream, check_feed, null_packet, path_opener, queue_depth,
+    Feed, Packet, PacketStream, check_feed, is_null, null_packet, path_opener, queue_depth,
 };
 use crate::symbols::OffloadArg;
 use crate::tx::{TxArgs, describe_speed, ms_per, producer_speed, ratio};
@@ -100,6 +110,7 @@ use isdbs_core::tmcc::TmccInfo;
 use isdbs_phy::Cplx;
 use isdbs_phy::tx::{SUPERFRAME_SYMBOLS, Transmitter};
 use isdbt_mux::pcrclock::{packet_pcr, packet_pid};
+use isdbt_mux::{Multiplexer, MuxError, Schedule};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -191,8 +202,8 @@ pub const TX_ISDBT_ONLY: &[&str] = &[
     "a_pids",
     "c_pids",
     "synthetic",
-    "mux_config",
     "relay",
+    "auto_layout",
     "iq_in",
     "iq_in_format",
     "lead_frames",
@@ -206,6 +217,7 @@ pub const TX_ISDBS_ONLY: &[&str] = &[
     "rate",
     "lead_superframes",
     "ts_pacing",
+    "mux_pcr_grid",
     "offload",
     "placed_ts",
 ];
@@ -238,7 +250,7 @@ pub fn check_system(
     let list = bad.join(", ");
     match system {
         TxSystem::Isdbs => bail!(
-            "{list}: ISDB-T option(s), not used with --system isdbs (ISDB-S is laid out by --combination WORD:N and --ts ID[:SLOTS][=PATH])"
+            "{list}: ISDB-T option(s), not used with --system isdbs (ISDB-S is laid out by --combination WORD:N, --ts ID[:SLOTS][=PATH] and --mux-config TOML)"
         ),
         TxSystem::Isdbt => bail!(
             "{list}: ISDB-S option(s), used with --system isdbs only (the default system is ISDB-T)"
@@ -303,6 +315,58 @@ pub struct SatArgs {
     /// relay; a TS slower than its slots then plays fast).
     #[arg(long, value_enum, default_value_t = TsPacing::Auto)]
     pub ts_pacing: TsPacing,
+    /// The PCR timing of a --mux-config TS. `uniform`: each PCR is its
+    /// packet's time on the TS's uniform grid, one packet every 1/(8·N)
+    /// superframe for N sent slots per frame: the constant-rate TS a
+    /// receiver outputs, to which BS transponders stamp theirs (a CBR fit
+    /// leaves tens of ns, as `isdb ts validate` measures it), and the grid
+    /// a --ts file is paced on. `slot`: the true (pre-interleave) time of
+    /// its slot, whose frame headers put a frame-periodic sawtooth on the
+    /// PCRs against that grid (6.6 µs for 48 slots, about ±0.45 ms for a
+    /// TS of 16 contiguous slots per frame). Default uniform.
+    #[arg(long, value_enum, value_name = "GRID")]
+    pub mux_pcr_grid: Option<MuxPcrGrid>,
+}
+
+/// `--mux-pcr-grid`: the time line an in-process multiplexer times its
+/// packets and stamps its PCRs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum MuxPcrGrid {
+    /// The TS's uniform grid ([`Schedule::satellite_uniform`], the times
+    /// of [`SlotClock::isdbs`]).
+    Uniform,
+    /// The true slot times ([`Schedule::satellite`]).
+    Slot,
+}
+
+impl MuxPcrGrid {
+    /// `uniform` / `slot`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Uniform => "uniform",
+            Self::Slot => "slot",
+        }
+    }
+
+    /// The schedule of relative TS `r` of `info` on this grid.
+    pub fn schedule(self, info: &TmccInfo, r: usize) -> isdbt_mux::Result<Schedule> {
+        match self {
+            Self::Uniform => Schedule::satellite_uniform(info, r),
+            Self::Slot => Schedule::satellite(info, r),
+        }
+    }
+}
+
+/// A relative TS multiplexed in-process from a `--mux-config` TOML.
+#[derive(Debug, Clone)]
+pub struct MuxTs {
+    /// The TOML file (relative media paths are resolved against its
+    /// directory).
+    pub path: std::path::PathBuf,
+    /// Its configuration (`[network] kind = "bs"`).
+    pub config: isdbt_mux::Config,
+    /// `--mux-pcr-grid`.
+    pub grid: MuxPcrGrid,
 }
 
 /// `--ts-pacing`: how the packets of a TS file are placed in its slots.
@@ -393,17 +457,30 @@ pub struct Layout {
     pub info: TmccInfo,
     /// The TSs, relative TS 0, 1, …, slots filled.
     pub ts: Vec<TsArg>,
+    /// Per relative TS: its in-process multiplexer, if it has one.
+    pub mux: Vec<Option<MuxTs>>,
 }
 
 impl Layout {
-    /// The layout `sat` describes.
+    /// The layout `sat` describes (no `--mux-config`; tests).
+    #[cfg(test)]
     pub fn of(sat: &SatArgs) -> Result<Self> {
+        Self::of_inputs(sat, &[])
+    }
+
+    /// The layout of `sat` and the `--mux-config` files `mux_configs`
+    /// ([`isdbs_mux_config`]: `kind = "bs"` only). Each configuration is
+    /// one TS whose TS_ID is its `[transport] transport_stream_id`: the
+    /// `--ts` of that TS_ID (given without `=PATH`, for its `:SLOTS`) or,
+    /// without one, a TS after the `--ts` ones. Without `--ts` and
+    /// `--mux-config`, one synthetic TS [`DEFAULT_TS_ID`].
+    pub fn of_inputs(sat: &SatArgs, mux_configs: &[std::path::PathBuf]) -> Result<Self> {
         let combos = if sat.combination.is_empty() {
             vec![(Combination::Tc8psk2_3, 48)]
         } else {
             sat.combination.clone()
         };
-        let mut ts = if sat.ts.is_empty() {
+        let mut ts = if sat.ts.is_empty() && mux_configs.is_empty() {
             vec![TsArg {
                 ts_id: DEFAULT_TS_ID,
                 slots: None,
@@ -412,6 +489,54 @@ impl Layout {
         } else {
             sat.ts.clone()
         };
+        if mux_configs.is_empty()
+            && let Some(g) = sat.mux_pcr_grid
+        {
+            bail!(
+                "--mux-pcr-grid {}: it times a --mux-config TS, and none is given",
+                g.name()
+            );
+        }
+        let mut mux: Vec<Option<MuxTs>> = vec![None; ts.len()];
+        for path in mux_configs {
+            let config = isdbs_mux_config(path)?;
+            let id = config.transport.transport_stream_id;
+            if let Some(other) = mux
+                .iter()
+                .flatten()
+                .find(|m| m.config.transport.transport_stream_id == id)
+            {
+                bail!(
+                    "--mux-config {} and {}: both are TS_ID {id:#06x} ([transport] transport_stream_id); each TS needs its own",
+                    other.path.display(),
+                    path.display()
+                );
+            }
+            let m = MuxTs {
+                path: path.clone(),
+                config,
+                grid: sat.mux_pcr_grid.unwrap_or(MuxPcrGrid::Uniform),
+            };
+            match ts.iter().position(|t| t.ts_id == id) {
+                Some(r) => {
+                    if let Some(file) = &ts[r].path {
+                        bail!(
+                            "--ts {id:#06x}={file} and --mux-config {} (transport_stream_id {id:#06x}): two inputs for one TS; give that --ts without =PATH, for the multiplexer's slots",
+                            path.display()
+                        );
+                    }
+                    mux[r] = Some(m);
+                }
+                None => {
+                    ts.push(TsArg {
+                        ts_id: id,
+                        slots: None,
+                        path: None,
+                    });
+                    mux.push(Some(m));
+                }
+            }
+        }
         // sent slots of whole units (a partial unit is refused below)
         let sent: usize = combos
             .iter()
@@ -425,11 +550,19 @@ impl Layout {
         {
             only.slots = Some(u8::try_from(sent).context("sent slots")?);
         }
-        if let Some(t) = ts.iter().find(|t| t.slots.is_none()) {
-            bail!(
-                "--ts {:#06x}: give its slots per frame (--ts ID:SLOTS) when there is more than one --ts; the layout sends {sent} slots per frame",
-                t.ts_id
-            );
+        if let Some((t, m)) = ts.iter().zip(&mux).find(|(t, _)| t.slots.is_none()) {
+            match m {
+                Some(m) => bail!(
+                    "--mux-config {} (TS_ID {:#06x}): give its slots per frame with --ts {:#06x}:SLOTS when there is more than one TS; the layout sends {sent} slots per frame",
+                    m.path.display(),
+                    t.ts_id,
+                    t.ts_id
+                ),
+                None => bail!(
+                    "--ts {:#06x}: give its slots per frame (--ts ID:SLOTS) when there is more than one --ts; the layout sends {sent} slots per frame",
+                    t.ts_id
+                ),
+            }
         }
         if ts.iter().filter(|t| t.path.as_deref() == Some("-")).count() > 1 {
             bail!("only one --ts can read stdin");
@@ -450,7 +583,7 @@ impl Layout {
                     .join(", ")
             )
         })?;
-        Ok(Self { info, ts })
+        Ok(Self { info, ts, mux })
     }
 
     /// TS_ID of each relative TS.
@@ -458,9 +591,22 @@ impl Layout {
         self.ts.iter().map(|t| t.ts_id).collect()
     }
 
-    /// True if no TS reads a file (the transmission never ends by itself).
+    /// True if no TS reads a file: every TS is synthetic or multiplexed
+    /// in-process.
     pub fn synthetic_only(&self) -> bool {
         self.ts.iter().all(|t| t.path.is_none())
+    }
+
+    /// True if the transmission never ends by itself: no TS reads a file
+    /// and no multiplexer ends (one ends when it relays `ts-program`s
+    /// that all have `at_eof = "end"`, [`mux_config_ends`]).
+    pub fn endless(&self) -> bool {
+        self.synthetic_only()
+            && self
+                .mux
+                .iter()
+                .flatten()
+                .all(|m| !mux_config_ends(&m.config))
     }
 
     /// `TC8PSK 2/3 ×48; TS_ID 0x4010 16 slots, …`.
@@ -844,24 +990,103 @@ enum Source {
         slots: SlotClock,
         live: Option<Duration>,
     },
+    /// An in-process multiplexer (`--mux-config`).
+    Mux(MuxSource),
+}
+
+/// An in-process multiplexer of one relative TS, built by [`open_muxes`].
+pub struct MuxSource {
+    mux: Box<Multiplexer>,
+    /// Its configuration relays `ts-program`s that all end
+    /// ([`mux_config_ends`]): it ends when they have.
+    ends: bool,
+    grid: MuxPcrGrid,
+}
+
+impl MuxSource {
+    /// The multiplexer.
+    pub fn into_mux(self) -> Box<Multiplexer> {
+        self.mux
+    }
+}
+
+/// Build the multiplexer of every relative TS of `layout` that has a
+/// `--mux-config` (`None` for the others), on the schedule of its
+/// `--mux-pcr-grid` ([`MuxPcrGrid::schedule`]), and log its start-up notes
+/// and warnings. A configuration error names its file and TS_ID; a
+/// service, stream or table on layer B or C is refused with the fix
+/// (ISDB-S multiplexes each TS on one lane, "A").
+pub fn open_muxes(layout: &Layout) -> Result<Vec<Option<MuxSource>>> {
+    let mut v = Vec::with_capacity(layout.ts.len());
+    for (r, (t, m)) in layout.ts.iter().zip(&layout.mux).enumerate() {
+        let Some(m) = m else {
+            v.push(None);
+            continue;
+        };
+        let what = || {
+            format!(
+                "the multiplexer of --mux-config {} (TS_ID {:#06x})",
+                m.path.display(),
+                t.ts_id
+            )
+        };
+        let schedule = m.grid.schedule(&layout.info, r).with_context(what)?;
+        let base = m
+            .path
+            .parent()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let mux = Multiplexer::with_schedule(&m.config, schedule, &base).map_err(|e| {
+            let fix = if matches!(e, MuxError::InactiveLayer { .. }) {
+                " (ISDB-S multiplexes each TS on one lane: put its services, streams and tables on layer \"A\")"
+            } else {
+                ""
+            };
+            anyhow::Error::new(e).context(format!("{}{fix}", what()))
+        })?;
+        info!(
+            target: "isdb::tx",
+            ts_id = t.ts_id,
+            pcr_grid = m.grid.name(),
+            "  TS_ID {:#06x} <- in-process multiplexer from {}: {} TSP per superframe, PCRs on the {} grid ({})",
+            t.ts_id,
+            m.path.display(),
+            mux.schedule().lane_slots(0),
+            m.grid.name(),
+            match m.grid {
+                MuxPcrGrid::Uniform => "one packet every 1/(8·N) superframe, the constant-rate TS a receiver outputs",
+                MuxPcrGrid::Slot => "each packet at its slot's on-air time",
+            }
+        );
+        log_mux_notes(&mux);
+        v.push(Some(MuxSource {
+            mux: Box::new(mux),
+            ends: mux_config_ends(&m.config),
+            grid: m.grid,
+        }));
+    }
+    Ok(v)
 }
 
 impl Source {
     fn feeder(&self) -> Option<&Feeder> {
         match self {
-            Self::Synthetic => None,
+            Self::Synthetic | Self::Mux(_) => None,
             Self::File(f) | Self::Paced { stream: f, .. } | Self::FirstPcr { stream: f, .. } => {
                 Some(f)
             }
         }
     }
 
-    /// Every input packet handed out (`None` for synthetic packets).
+    /// Every input packet handed out (`None` for synthetic packets and a
+    /// multiplexer that never ends; a multiplexer that ends: its relays
+    /// have).
     fn ended(&self) -> Option<bool> {
         match self {
             Self::Synthetic => None,
             Self::File(f) | Self::FirstPcr { stream: f, .. } => Some(f.ended()),
             Self::Paced { pacer, .. } => Some(pacer.drained()),
+            Self::Mux(m) => m.ends.then(|| m.mux.relays_finished()),
         }
     }
 
@@ -988,16 +1213,39 @@ pub struct TsInputs {
 impl TsInputs {
     /// Open the inputs of `layout` with `feed`, placed as `plan` says (one
     /// entry per TS, [`plan_inputs`]); `per_superframe` packets of each
-    /// relative TS size the read-ahead queues.
+    /// relative TS size the read-ahead queues. The multiplexers are built
+    /// here ([`open_muxes`]); [`open_with`](Self::open_with) takes them
+    /// built.
     pub fn open(
         layout: &Layout,
         feed: Feed,
         per_superframe: &[usize],
         plan: &[Placement],
     ) -> Result<Self> {
+        Self::open_with(layout, feed, per_superframe, plan, open_muxes(layout)?)
+    }
+
+    /// [`open`](Self::open) with the multiplexers of [`open_muxes`]
+    /// (`muxes[r]` for relative TS r).
+    pub fn open_with(
+        layout: &Layout,
+        feed: Feed,
+        per_superframe: &[usize],
+        plan: &[Placement],
+        muxes: Vec<Option<MuxSource>>,
+    ) -> Result<Self> {
         let mut sources = Vec::new();
         let mut names = Vec::new();
+        let mut muxes = muxes.into_iter();
         for ((t, &n), &place) in layout.ts.iter().zip(per_superframe).zip(plan) {
+            if let Some(m) = muxes.next().flatten() {
+                let path = layout.mux[sources.len()]
+                    .as_ref()
+                    .map_or_else(String::new, |m| m.path.display().to_string());
+                sources.push(Source::Mux(m));
+                names.push(path);
+                continue;
+            }
             match &t.path {
                 Some(p) => {
                     check_feed(p, feed)?;
@@ -1140,6 +1388,22 @@ impl TsInputs {
                     file_real += k;
                     (v, k)
                 }
+                // the multiplexer's packets of a superframe: exactly the
+                // TS's slots (its schedule's lane), its own nulls included
+                Source::Mux(m) => {
+                    let v = m.mux.next_period();
+                    for w in m.mux.take_alerts() {
+                        warn!(
+                            target: "isdb::tx",
+                            ts_id = self.ts_ids[r],
+                            "TS_ID {:#06x}: mux warning: {w}",
+                            self.ts_ids[r]
+                        );
+                    }
+                    debug_assert_eq!(v.len(), n, "multiplexer superframe size");
+                    let k = v.iter().filter(|p| !is_null(p)).count();
+                    (v, k)
+                }
             };
             if !self.pat_checked[r] && k > 0 {
                 self.pat_checked[r] = check_pat(self.ts_ids[r], &self.names[r], &v);
@@ -1157,7 +1421,9 @@ impl TsInputs {
     }
 
     /// `TS_ID 0x4010 <- a.ts (paced by PCR), TS_ID 0x4011 <- synthetic
-    /// (feed File)`; a live pacer is `(paced by PCR, live)`.
+    /// (feed File)`; a live pacer is `(paced by PCR, live)`, a
+    /// multiplexer `TS_ID 0x4017 <- in-process multiplexer bs.toml (PCR
+    /// grid uniform)`.
     pub fn describe(&self) -> String {
         let v: Vec<String> = self
             .ts_ids
@@ -1170,11 +1436,21 @@ impl TsInputs {
                     Source::Paced { pacer, .. } if pacer.is_live() => " (paced by PCR, live)",
                     Source::Paced { .. } => " (paced by PCR)",
                     Source::FirstPcr { .. } => " (paced by PCR if one comes)",
+                    Source::Mux(m) => {
+                        return format!(
+                            "TS_ID {id:#06x} <- in-process multiplexer {n} (PCR grid {})",
+                            m.grid.name()
+                        );
+                    }
                 };
                 format!("TS_ID {id:#06x} <- {n}{how}")
             })
             .collect();
-        format!("{} (feed {:?})", v.join(", "), self.feed)
+        if self.sources.iter().any(|s| s.feeder().is_some()) {
+            format!("{} (feed {:?})", v.join(", "), self.feed)
+        } else {
+            v.join(", ")
+        }
     }
 
     /// Reader counters and the pacers' status for the status lines (may
@@ -1193,8 +1469,22 @@ impl TsInputs {
             s += &format!(" rewinds {rewinds}");
         }
         for (id, src) in self.ts_ids.iter().zip(&self.sources) {
-            if let Source::Paced { pacer, .. } = src {
-                s += &pacer.status().replacen(" | ", &format!(" | {id:#06x} "), 1);
+            match src {
+                Source::Paced { pacer, .. } => {
+                    s += &pacer.status().replacen(" | ", &format!(" | {id:#06x} "), 1);
+                }
+                Source::Mux(m) => {
+                    let st = m.mux.stats();
+                    s += &format!(
+                        " | {id:#06x} mux late PES {} errors {}",
+                        st.late_pes,
+                        st.errors.len()
+                    );
+                    for r in m.mux.relay_status() {
+                        s += &format!(" | {id:#06x} {r}");
+                    }
+                }
+                _ => {}
             }
         }
         s
@@ -1832,7 +2122,7 @@ pub fn metadata(
 
 /// `isdb tx --system isdbs`.
 pub fn run(a: TxArgs, given: &Given) -> Result<()> {
-    let layout = Layout::of(&a.sat)?;
+    let layout = Layout::of_inputs(&a.sat, &a.input.mux_config)?;
     let rate = a.sat.rate.unwrap_or(DEFAULT_RATE);
     let sys = isdbs_phy::frontend::system();
     let shaper = Shaper::new(rate, sys.symbol_rate_hz, sys.roll_off)
@@ -1840,7 +2130,7 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
     let tx = Transmitter::new(layout.info.clone())?;
     let sf_s = superframe_seconds();
     let seconds = crate::tx::resolve_seconds(a.seconds)?;
-    let endless = layout.synthetic_only() || a.input.feed == Feed::Loop;
+    let endless = layout.endless() || a.input.feed == Feed::Loop;
     let counts: Vec<usize> = (0..tx.ts_count())
         .map(|r| tx.packets_per_superframe(r))
         .collect();
@@ -1884,6 +2174,10 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
         a.sat.ts_pacing,
         a.input.allow_overrate,
     )?;
+    // the multiplexers too (a dry run shows them; a configuration error
+    // stops before anything is written)
+    let muxes = open_muxes(&layout)?;
+    check_mux_channel(&layout, a.tune.channel);
     let bb = if given.has("bb_filter_hz") {
         a.tune.bb_filter_hz
     } else {
@@ -1969,7 +2263,7 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
         },
         if cfg.pace { ", paced to real time" } else { "" }
     );
-    let input = TsInputs::open(&layout, a.input.feed, &counts, &plan)?;
+    let input = TsInputs::open_with(&layout, a.input.feed, &counts, &plan, muxes)?;
     info!(target: "isdb::tx", "input: {}", input.describe());
     let ts_ids = layout.ts_ids();
     let modulate = sink.modulate(shaper);
@@ -2028,6 +2322,30 @@ pub fn run(a: TxArgs, given: &Given) -> Result<()> {
     }
     info!(target: "isdb::tx", "{}", rep.sink);
     Ok(())
+}
+
+/// Warn when a `--mux-config` names another channel in its NIT
+/// (`[network.satellite] channel`, the 0x43's frequency) than `--channel`
+/// transmits on: a receiver that reads the NIT then looks for the TS
+/// elsewhere.
+fn check_mux_channel(layout: &Layout, channel: Option<Channel>) {
+    let Some(channel) = channel else {
+        return;
+    };
+    for (t, m) in layout.ts.iter().zip(&layout.mux) {
+        let Some(sat) = m.as_ref().and_then(|m| m.config.network.satellite.as_ref()) else {
+            continue;
+        };
+        if sat.channel.parse::<Channel>().ok() != Some(channel) {
+            warn!(
+                target: "isdb::tx",
+                ts_id = t.ts_id,
+                "TS_ID {:#06x}: its NIT ([network.satellite] channel = {:?}) names another channel than --channel {channel}; a receiver that follows the NIT looks for the TS there",
+                t.ts_id,
+                sat.channel
+            );
+        }
+    }
 }
 
 /// The warning of the IQ path to a radio: the rate limit.
@@ -3006,6 +3324,205 @@ mod tests {
         for (_, real, _) in &cpu {
             assert!((15..=35).contains(&real[0]), "{real:?}");
         }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// `bs-bench.toml` for one ISDB-S lane (its service on layer A), with
+    /// a fixed clock and `extra` appended, written into `dir`.
+    fn bs_mux_config(dir: &std::path::Path, name: &str, extra: &str) -> std::path::PathBuf {
+        let text = include_str!("../../isdbt-mux/examples/bs-bench.toml")
+            .replace(
+                "source = \"system\"",
+                "source = \"fixed\"\nstart = \"2026-10-31T12:00:00\"",
+            )
+            .replace("layer = \"B\"", "layer = \"A\"");
+        let p = dir.join(name);
+        std::fs::write(&p, format!("{text}\n{extra}")).unwrap();
+        p
+    }
+
+    /// The layout of `args` (after `tx --system isdbs --iq x`) with its
+    /// `--mux-config`s.
+    fn mux_layout(args: &[&str]) -> Result<Layout> {
+        let mut v = vec!["--system", "isdbs", "--iq", "x"];
+        v.extend_from_slice(args);
+        let a = parse(&v).unwrap().0;
+        Layout::of_inputs(&a.sat, &a.input.mux_config)
+    }
+
+    /// A `--mux-config` is one TS: its TS_ID from `[transport]`, every
+    /// sent slot alone, the slots of its `--ts ID:SLOTS` (at that
+    /// position) or a TS after the `--ts` ones; refused: a terrestrial
+    /// configuration, two inputs for one TS, two configurations of one
+    /// TS_ID, a second TS without its slots, `--mux-pcr-grid` without a
+    /// configuration.
+    #[test]
+    fn mux_config_layouts() {
+        let d = scratch("muxlayout");
+        let bs = bs_mux_config(&d, "bs.toml", "");
+        let bs = bs.to_str().unwrap();
+        let l = mux_layout(&["--mux-config", bs]).unwrap();
+        assert_eq!(l.ts_ids(), [0x4017]);
+        assert_eq!(l.ts[0].slots, Some(48));
+        assert!(l.ts[0].path.is_none() && l.synthetic_only() && l.endless());
+        let m = l.mux[0].as_ref().unwrap();
+        assert_eq!(m.grid, MuxPcrGrid::Uniform);
+        let l = mux_layout(&["--mux-config", bs, "--mux-pcr-grid", "slot"]).unwrap();
+        assert_eq!(l.mux[0].as_ref().unwrap().grid, MuxPcrGrid::Slot);
+        // at its --ts, with that --ts's slots
+        let l =
+            mux_layout(&["--ts", "0x4010:16", "--ts", "0x4017:32", "--mux-config", bs]).unwrap();
+        assert_eq!(l.ts_ids(), [0x4010, 0x4017]);
+        assert_eq!((l.ts[1].slots, l.mux[0].is_none()), (Some(32), true));
+        assert!(l.mux[1].is_some());
+        // after the --ts ones: needs its slots
+        let e = mux_layout(&["--ts", "0x4010:16", "--mux-config", bs])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("TS_ID 0x4017): give its slots per frame with --ts 0x4017:SLOTS"),
+            "{e}"
+        );
+        let e = mux_layout(&["--ts", "0x4017=a.ts", "--mux-config", bs])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("two inputs for one TS"), "{e}");
+        let e = mux_layout(&["--mux-config", bs, "--mux-config", bs])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("both are TS_ID 0x4017"), "{e}");
+        // a terrestrial network (the default): refused with the fix
+        let t = d.join("t.toml");
+        std::fs::write(&t, include_str!("../../isdbt-mux/examples/bench.toml")).unwrap();
+        let e = mux_layout(&["--mux-config", t.to_str().unwrap()])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("kind = \"terrestrial\"") && e.contains("give it kind = \"bs\""),
+            "{e}"
+        );
+        // --mux-pcr-grid needs a --mux-config
+        let e = mux_layout(&["--mux-pcr-grid", "slot"])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("none is given"), "{e}");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// `--mux-pcr-grid uniform` times the multiplexer's packets on the
+    /// pacer's slot clock: packet q of superframe k at
+    /// `SlotClock::isdbs(N).time(8·N·k + q)`, for every TS of three
+    /// layouts (N = 48, 16, 14, 10).
+    #[test]
+    fn uniform_mux_grid_is_the_pacers_slot_clock() {
+        let layouts = [
+            (vec![(Combination::Tc8psk2_3, 48)], vec![(0x4017u16, 48u8)]),
+            (
+                vec![(Combination::Tc8psk2_3, 48)],
+                vec![(0x4010, 16), (0x4011, 16), (0x4012, 16)],
+            ),
+            (
+                vec![
+                    (Combination::Tc8psk2_3, 20),
+                    (Combination::Qpsk7_8, 8),
+                    (Combination::Qpsk3_4, 12),
+                    (Combination::Bpsk1_2, 8),
+                ],
+                vec![(0x4010, 10), (0x4011, 14), (0x4012, 14)],
+            ),
+        ];
+        for (combos, ts) in layouts {
+            let info = TmccInfo::assign(&combos, &ts).unwrap();
+            for (r, &(_, n)) in ts.iter().enumerate() {
+                let n = usize::from(n);
+                let s = MuxPcrGrid::Uniform.schedule(&info, r).unwrap();
+                let clock = SlotClock::isdbs(n).unwrap();
+                let per_sf = 8 * n as u64;
+                for k in [0u64, 1, 2, 36, 37, 1000, 1 << 24] {
+                    for q in 0..8 * n {
+                        let g = k * per_sf + q as u64;
+                        assert_eq!(s.slot_time(k, q), clock.time(g), "N {n} k {k} q {q}");
+                        assert_eq!(s.pcr_time(k, q), clock.time(g));
+                    }
+                }
+                assert!((s.lane_bps[0] - clock.bps()).abs() < 1e-6);
+                assert_eq!(
+                    MuxPcrGrid::Slot.schedule(&info, r).unwrap().lane_slots(0),
+                    8 * n
+                );
+            }
+        }
+    }
+
+    /// An in-process multiplexer gives the CPU path (IQ samples) and the
+    /// FPGA path (symbol codes) the same packets, its own PSI/SI/PCR
+    /// counted as input and its nulls as padding; the input says so.
+    #[test]
+    fn mux_inputs_feed_both_paths_the_same_packets() {
+        let d = scratch("muxpaths");
+        let bs = bs_mux_config(&d, "bs.toml", "");
+        let layout = mux_layout(&["--mux-config", bs.to_str().unwrap()]).unwrap();
+        let plan = plan_inputs(&layout, Feed::File, TsPacing::Auto, false).unwrap();
+        assert_eq!(plan, [Placement::Arrival]);
+        let sys = isdbs_phy::frontend::system();
+        type Item = (Vec<Vec<Packet>>, Vec<usize>, bool);
+        let run = |m: Modulate| {
+            let cfg = SatConfig {
+                lead: 1,
+                flush: true,
+                max_superframes: Some(13),
+                pace: false,
+                record: true,
+                depth: 2,
+                placed: None,
+            };
+            let input = TsInputs::open(&layout, Feed::File, &[384], &plan).unwrap();
+            assert_eq!(
+                input.describe(),
+                format!(
+                    "TS_ID 0x4017 <- in-process multiplexer {} (PCR grid uniform)",
+                    bs.display()
+                )
+            );
+            let tx = Transmitter::new(layout.info.clone()).unwrap();
+            let (rx, h) = spawn(cfg, tx, m, input, Arc::new(AtomicBool::new(false))).unwrap();
+            let mut status = String::new();
+            let items: Vec<Item> = rx
+                .iter()
+                .filter(|f| f.kind == FrameKind::Data)
+                .map(|f| {
+                    status.clone_from(&f.input_status);
+                    let codes = matches!(f.payload, Payload::Codes(_));
+                    (f.packets.as_ref().unwrap().to_vec(), f.real.clone(), codes)
+                })
+                .collect();
+            assert_eq!(h.join().unwrap().unwrap(), EndReason::Limit);
+            assert_eq!(status, " | 0x4017 mux late PES 0 errors 0");
+            items
+        };
+        let cpu = run(Modulate::shaped(
+            Shaper::new(40e6, sys.symbol_rate_hz, sys.roll_off).unwrap(),
+        ));
+        let fpga = run(Modulate::codes());
+        assert_eq!(cpu.len(), 12);
+        assert!(cpu.iter().all(|x| !x.2) && fpga.iter().all(|x| x.2));
+        let packets = |v: &[Item]| {
+            v.iter()
+                .map(|x| (x.0.clone(), x.1.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(packets(&cpu), packets(&fpga));
+        for (p, real, _) in &cpu {
+            assert_eq!(p[0].len(), 384);
+            assert_eq!(real[0], p[0].iter().filter(|p| !is_null(p)).count());
+            // one PCR per superframe, its first packet
+            assert_eq!(crate::source::pid(&p[0][0]), 0x01FF, "PCR first");
+        }
+        // the PAT names the TS_ID; PAT and PMT about every 100 ms
+        let all: Vec<Packet> = cpu.iter().flat_map(|x| x.0[0].clone()).collect();
+        assert_eq!(all.iter().find_map(pat_ts_id), Some(0x4017));
+        let pats = all.iter().filter(|p| crate::source::pid(p) == 0).count();
+        assert!((1..=2).contains(&pats), "{pats} PAT packets in 133 ms");
         std::fs::remove_dir_all(&d).unwrap();
     }
 

@@ -573,13 +573,9 @@ pub struct MuxConfigInput {
 /// configuration is refused: its NIT describes a BS network (satellite
 /// delivery system descriptor 0x43, broadcasting_identifier '000010'; B10
 /// Table 6-1, Table 6-36), which an ISDB-T signal contradicts. Such a TS
-/// is multiplexed with `isdb mux` and sent by `isdb tx --system isdbs`.
+/// is sent by `isdb tx --system isdbs --mux-config` ([`isdbs_mux_config`]).
 pub fn isdbt_mux_config(path: &std::path::Path) -> Result<isdbt_mux::Config> {
-    use anyhow::Context;
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let cfg = isdbt_mux::Config::from_toml(&text)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let cfg = read_mux_config(path)?;
     if !cfg.network.kind.is_terrestrial() {
         let channel = cfg
             .network
@@ -587,12 +583,38 @@ pub fn isdbt_mux_config(path: &std::path::Path) -> Result<isdbt_mux::Config> {
             .as_ref()
             .map_or("BSn", |s| s.channel.as_str());
         bail!(
-            "{}: [network] kind = \"bs\" describes a BS satellite network (NIT 0x43), which an ISDB-T signal cannot carry; multiplex it with `isdb mux -c {0} --out-ts FILE` and send that with `isdb tx --system isdbs --channel {channel} --ts {:#06x}=FILE`",
+            "{}: [network] kind = \"bs\" describes a BS satellite network (NIT 0x43), which an ISDB-T signal cannot carry; send it with `isdb tx --system isdbs --channel {channel} --mux-config {0}` (its services on layer \"A\"), or multiplex it with `isdb mux -c {0} --out-ts FILE` and send that with `isdb tx --system isdbs --channel {channel} --ts {:#06x}=FILE`",
             path.display(),
             cfg.transport.transport_stream_id
         );
     }
     Ok(cfg)
+}
+
+/// Read and parse the `--mux-config` of an ISDB-S transmission (`isdb tx`
+/// / `isdb loopback`, `--system isdbs`), the mirror of
+/// [`isdbt_mux_config`]: a `[network] kind = "terrestrial"` configuration
+/// (the default) is refused, its NIT describing an ISDB-T network
+/// (terrestrial delivery system descriptor 0xFA, broadcasting_identifier
+/// '000011'; B10 Table 6-1, Table 6-36), which an ISDB-S signal
+/// contradicts.
+pub fn isdbs_mux_config(path: &std::path::Path) -> Result<isdbt_mux::Config> {
+    let cfg = read_mux_config(path)?;
+    if cfg.network.kind.is_terrestrial() {
+        bail!(
+            "{}: [network] kind = \"terrestrial\" (the default) describes an ISDB-T network (NIT 0xFA), which an ISDB-S signal cannot carry; give it kind = \"bs\" and a [network.satellite] channel (crates/isdbt-mux/examples/bs-bench.toml, docs/mux-config.md), or send it as ISDB-T with `isdb tx --mux-config {0}` (no --system isdbs)",
+            path.display()
+        );
+    }
+    Ok(cfg)
+}
+
+/// Read and parse a multiplexer TOML file.
+fn read_mux_config(path: &std::path::Path) -> Result<isdbt_mux::Config> {
+    use anyhow::Context;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    isdbt_mux::Config::from_toml(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
 /// True if a multiplexer built from `cfg` ends by itself: it relays at
@@ -639,23 +661,30 @@ impl MuxConfigInput {
     /// rates, layer usage) and warnings.  `cfg` is the configuration it was
     /// built from (for [`FrameInput::endless`]).
     pub fn from_mux(mux: isdbt_mux::Multiplexer, name: String, cfg: &isdbt_mux::Config) -> Self {
-        for n in mux.notes() {
-            let text = n.replace('\n', "\n  ");
-            match copy_control_note(n) {
-                Some((source, output)) => {
-                    info!(target: "isdb::tx", source, output, "  {text}");
-                }
-                None => info!(target: "isdb::tx", "  {text}"),
-            }
-        }
-        for w in mux.warnings() {
-            warn!(target: "isdb::tx", "mux warning: {w}");
-        }
+        log_mux_notes(&mux);
         Self {
             mux,
             name,
             endless: !mux_config_ends(cfg),
         }
+    }
+}
+
+/// Log a built multiplexer's start-up notes (ts-program probe reports:
+/// program, PID → role → output PID, dropped PIDs, rates, layer usage;
+/// the copy-control note with its fields) and warnings.
+pub fn log_mux_notes(mux: &isdbt_mux::Multiplexer) {
+    for n in mux.notes() {
+        let text = n.replace('\n', "\n  ");
+        match copy_control_note(n) {
+            Some((source, output)) => {
+                info!(target: "isdb::tx", source, output, "  {text}");
+            }
+            None => info!(target: "isdb::tx", "  {text}"),
+        }
+    }
+    for w in mux.warnings() {
+        warn!(target: "isdb::tx", "mux warning: {w}");
     }
 }
 
@@ -920,9 +949,13 @@ pub struct InputArgs {
     pub synthetic: bool,
     /// Generate the TS in-process with the isdbt-mux service multiplexer
     /// from this TOML description (see `isdb mux --print-config-example`);
-    /// the multiplexer uses the same transmission parameters.
+    /// the multiplexer uses the same transmission parameters. ISDB-S
+    /// (--system isdbs): repeatable, one TS each (`[network] kind = "bs"`,
+    /// its services on layer "A"); its `[transport] transport_stream_id` is
+    /// the TS_ID, sent in every sent slot or, with more than one TS, in
+    /// the slots of --ts ID:SLOTS; --mux-pcr-grid sets its PCR timing.
     #[arg(long, value_name = "TOML", conflicts_with_all = ["a_ts", "b_ts", "c_ts", "mux_ts", "synthetic", "relay"])]
-    pub mux_config: Option<std::path::PathBuf>,
+    pub mux_config: Vec<std::path::PathBuf>,
     /// `--relay FILE` and its options (rebroadcast a recording without a TOML).
     #[command(flatten)]
     pub relay: crate::relay::RelayArgs,
@@ -943,7 +976,7 @@ impl InputArgs {
             && self.c_ts.is_none()
             && self.mux_ts.is_none()
             && !self.synthetic
-            && self.mux_config.is_none()
+            && self.mux_config.is_empty()
             && self.relay.relay.is_none()
     }
 
@@ -951,7 +984,20 @@ impl InputArgs {
     /// relay); they never end by themselves unless every relay has
     /// `at_eof = "end"`.
     pub fn is_generated(&self) -> bool {
-        self.synthetic || self.mux_config.is_some() || self.relay.relay.is_some()
+        self.synthetic || !self.mux_config.is_empty() || self.relay.relay.is_some()
+    }
+
+    /// The one `--mux-config` of an ISDB-T transmission, if given; more
+    /// than one is refused (ISDB-T multiplexes one TS).
+    pub fn isdbt_mux_config(&self) -> Result<Option<&std::path::Path>> {
+        match self.mux_config.as_slice() {
+            [] => Ok(None),
+            [one] => Ok(Some(one)),
+            more => bail!(
+                "--mux-config given {} times: ISDB-T multiplexes one TS (repeat it with --system isdbs, one TS each)",
+                more.len()
+            ),
+        }
     }
 
     /// Open the inputs for `params`.
@@ -966,7 +1012,7 @@ impl InputArgs {
         if self.relay.relay.is_some() {
             bail!("--relay is resolved by relay::prepare before the inputs are opened");
         }
-        if let Some(path) = &self.mux_config {
+        if let Some(path) = self.isdbt_mux_config()? {
             return Ok(Box::new(MuxConfigInput::open(path, params)?));
         }
         if let Some(path) = &self.mux_ts {

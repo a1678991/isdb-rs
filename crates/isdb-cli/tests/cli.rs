@@ -2755,11 +2755,465 @@ fn isdbt_mux_config_refuses_a_bs_network() {
         assert!(
             err.contains("kind = \"bs\"")
                 && err.contains("ISDB-T")
+                && err.contains("--system isdbs --channel BS1 --mux-config")
                 && err.contains("--system isdbs --channel BS1 --ts 0x4017="),
             "{err}"
         );
     }
+    // ISDB-T multiplexes one TS
+    let o = run(&[
+        "tx",
+        "--mux-config",
+        s(&bench_toml()),
+        "--mux-config",
+        s(&bench_toml()),
+        "--iq",
+        s(&iq),
+        "--seconds",
+        "1",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("--mux-config given 2 times"), "{err}");
     assert!(!iq.exists(), "nothing written");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+/// `bs-bench.toml` for one ISDB-S lane: its service on layer A (the
+/// example's layer B is ISDB-T's slot model), a fixed clock, and `extra`
+/// appended; written into `dir`.
+fn bs_lane_toml(dir: &Path, name: &str, extra: &str) -> PathBuf {
+    let text = std::fs::read_to_string(bs_bench_toml())
+        .unwrap()
+        .replace(
+            "source = \"system\"",
+            "source = \"fixed\"\nstart = \"2026-10-31T12:00:00\"",
+        )
+        .replace("layer = \"B\"", "layer = \"A\"");
+    let p = dir.join(name);
+    std::fs::write(&p, format!("{text}\n{extra}")).unwrap();
+    p
+}
+
+/// (packet index, PCR in 27 MHz ticks) of every PCR of `pid` in `ts`
+/// (H.222.0 Table 2-6: 33-bit base × 300 + 9-bit extension).
+fn pcrs_of(ts: &[u8], pid: u16) -> Vec<(usize, u64)> {
+    ts.as_chunks::<188>()
+        .0
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let pp = (u16::from(p[1] & 0x1F) << 8) | u16::from(p[2]);
+            if pp != pid || p[3] & 0x20 == 0 || p[4] == 0 || p[5] & 0x10 == 0 {
+                return None;
+            }
+            let b = &p[6..12];
+            let base = (u64::from(b[0]) << 25)
+                | (u64::from(b[1]) << 17)
+                | (u64::from(b[2]) << 9)
+                | (u64::from(b[3]) << 1)
+                | u64::from(b[4] >> 7);
+            let ext = (u64::from(b[4] & 1) << 8) | u64::from(b[5]);
+            Some((i, base * 300 + ext))
+        })
+        .collect()
+}
+
+/// `isdb ts validate --json --show info` of `ts` with the BS bench
+/// expectations and `--expect-rate 52170000:1`: (errors, findings as
+/// (check, severity, message)).
+fn validate_bs(ts: &Path) -> (u64, Vec<(String, String, String)>) {
+    let o = run(&[
+        "ts",
+        "validate",
+        s(ts),
+        "--expect-rate",
+        "52170000:1",
+        "--expect-nid",
+        "0x0004",
+        "--expect-onid",
+        "0x0004",
+        "--expect-tsid",
+        "0x4017",
+        "--expect-freq-mhz",
+        "11727.48",
+        "--json",
+        "--show",
+        "info",
+    ]);
+    let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let f = j["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            let s = |k: &str| f[k].as_str().unwrap_or_default().to_owned();
+            (s("check"), s("severity"), s("message"))
+        })
+        .collect();
+    (j["errors"].as_u64().unwrap(), f)
+}
+
+/// The in-process ISDB-S multiplexer end to end, no radio (media-and-
+/// margin.md §3; pcr-pacing.md §3.3): `tx --system isdbs --channel BS1
+/// --mux-config` (the BS bench service on one lane, PCRs on the uniform
+/// grid) → cs8 `--iq` → `rx --iq`. The received TS is the placed one
+/// after the lead superframe, byte for byte; it validates with the bench
+/// expectations and `--expect-rate 52170000:1`: no error, no `pcr.*`
+/// finding above info, no `tables.frequency`, no `cross.*`, `expect` or
+/// `pcr.rate` beyond info; its CBR fit is within 100 ns (the rounding to
+/// whole ticks, ≤ 18.5 ns) and every PCR is exactly on the grid, packet
+/// i of the data at ⌊i · 28 800/37 + ½⌋ ticks. With `--mux-pcr-grid slot`
+/// and three PCRs per superframe the frame headers' sawtooth shows: a CBR
+/// fit above 1 µs.
+#[test]
+fn isdbs_mux_config_through_tx_and_rx_validates() {
+    let _turn = cpu_heavy();
+    let d = tmp("isdbs-mux");
+    let cfg = bs_lane_toml(&d, "bs.toml", "");
+    let iq = d.join("t.cs8");
+    let t = Instant::now();
+    let o = run(&[
+        "tx",
+        "--system",
+        "isdbs",
+        "--channel",
+        "BS1",
+        "--mux-config",
+        s(&cfg),
+        "--iq",
+        s(&iq),
+        "--iq-format",
+        "cs8",
+        "--seconds",
+        "1.2",
+        "--placed-ts",
+        s(&d.join("placed-{ts_id}.ts")),
+    ]);
+    let tx_s = t.elapsed().as_secs_f64();
+    assert!(o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("TS_ID 0x4017 <- in-process multiplexer from")
+            && err.contains("PCRs on the uniform grid"),
+        "{err}"
+    );
+    assert!(
+        err.contains("input: TS_ID 0x4017 <- in-process multiplexer")
+            && err.contains("(PCR grid uniform)"),
+        "{err}"
+    );
+    assert!(
+        err.contains("input at the end: 0x4017 mux late PES 0 errors 0"),
+        "{err}"
+    );
+    assert!(!err.contains("NIT ([network.satellite] channel"), "{err}");
+    let t = Instant::now();
+    let o = run(&[
+        "rx",
+        "--iq",
+        s(&iq),
+        "--out",
+        s(&d.join("rx-{ts_id}.ts")),
+        "--json",
+    ]);
+    assert!(o.status.success());
+    eprintln!("tx {tx_s:.2} s, rx {:.2} s", t.elapsed().as_secs_f64());
+    std::fs::remove_file(&iq).unwrap();
+    let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(j["ts"][0]["rs_uncorrectable"], 0, "{j}");
+    let rx = std::fs::read(d.join("rx-4017.ts")).unwrap();
+    let placed = std::fs::read(d.join("placed-4017.ts")).unwrap();
+    // the lead superframe's 384 nulls, then the placed TS
+    assert_eq!(rx.len(), placed.len() + 384 * 188);
+    assert!(
+        rx[..384 * 188]
+            .chunks(188)
+            .all(|p| p[1] == 0x1F && p[2] == 0xFF)
+    );
+    assert!(
+        rx[384 * 188..] == placed[..],
+        "the received TS is the placed one"
+    );
+    let (errors, findings) = validate_bs(&d.join("rx-4017.ts"));
+    assert_eq!(errors, 0, "{findings:?}");
+    for (check, severity, _) in &findings {
+        assert!(
+            !((check.starts_with("pcr.") || check == "expect") && severity != "info"),
+            "{findings:?}"
+        );
+        assert_ne!(check, "tables.frequency", "{findings:?}");
+        assert!(!check.starts_with("cross."), "{findings:?}");
+    }
+    assert!(
+        findings
+            .iter()
+            .any(|(c, s, _)| c == "pcr.rate" && s == "info"),
+        "{findings:?}"
+    );
+    let o = run(&["ts", "inspect", "--json", s(&d.join("rx-4017.ts"))]);
+    let ins: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let fit = ins["pcr"][0]["fit_max_ns"].as_f64().unwrap();
+    assert!(fit <= 100.0, "CBR fit max {fit} ns");
+    // `isdb mux --system isdbs` writes the same TS, superframe for
+    // superframe
+    let frames = (placed.len() / 188 / 384).to_string();
+    let out = d.join("mux.ts");
+    let o = run(&[
+        "mux",
+        "--system",
+        "isdbs",
+        "-c",
+        s(&cfg),
+        "--frames",
+        &frames,
+        "--out-ts",
+        s(&out),
+    ]);
+    assert!(o.status.success());
+    assert!(
+        std::fs::read(&out).unwrap() == placed,
+        "isdb mux --system isdbs = the placed TS"
+    );
+    // every PCR on the grid: the data's packet i at ⌊i·28 800/37 + ½⌋
+    let pcrs = pcrs_of(&rx, 0x01FF);
+    assert_eq!(pcrs[0].0, 384, "the first data packet is a PCR");
+    assert!(pcrs.len() >= 100, "{} PCRs", pcrs.len());
+    for &(i, pcr) in &pcrs {
+        let x = (i - 384) as u64;
+        assert_eq!(pcr, (2 * x * 28_800 + 37) / 74, "PCR of packet {i}");
+    }
+    // the true slot times: the sawtooth shows with PCRs at three
+    // positions of the frame
+    let cfg3 = bs_lane_toml(&d, "bs3.toml", "[timing]\npcr_per_frame = 3\n");
+    let fit_of = |grid: &str| {
+        let ts = d.join(format!("{grid}.ts"));
+        let o = run(&[
+            "tx",
+            "--system",
+            "isdbs",
+            "--mux-config",
+            s(&cfg3),
+            "--mux-pcr-grid",
+            grid,
+            "--iq",
+            "/dev/null",
+            "--seconds",
+            "1",
+            "--placed-ts",
+            s(&ts),
+        ]);
+        assert!(o.status.success());
+        let o = run(&["ts", "inspect", "--json", s(&ts)]);
+        let ins: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        ins["pcr"][0]["fit_max_ns"].as_f64().unwrap()
+    };
+    let (uniform, slot) = (fit_of("uniform"), fit_of("slot"));
+    eprintln!("3 PCRs per superframe: CBR fit max {uniform:.0} ns uniform, {slot:.0} ns slot");
+    assert!(uniform <= 100.0 && slot > 1000.0, "{uniform} {slot}");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+/// `isdb loopback --system isdbs --mux-config`: the multiplexer's
+/// superframes through the software channel, every packet byte-exact
+/// (the verifier compares what was sent); a TS of 16 slots per frame
+/// next to a synthetic one; refusals that name the fix.
+#[test]
+fn isdbs_loopback_with_in_process_multiplexer() {
+    let _turn = cpu_heavy();
+    let d = tmp("isdbs-muxlb");
+    let cfg = bs_lane_toml(&d, "bs.toml", "");
+    for extra in [
+        &[][..],
+        &["--ts", "0x4010:32", "--ts", "0x4017:16", "--snr-db", "15"],
+    ] {
+        let mut args = vec![
+            "loopback",
+            "--system",
+            "isdbs",
+            "--mux-config",
+            s(&cfg),
+            "--superframes",
+            "4",
+            "--json",
+        ];
+        args.extend_from_slice(extra);
+        let o = run(&args);
+        assert!(o.status.success(), "{extra:?}");
+        let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(j["result"], "PASS", "{j}");
+        let v = &j["verify"]["0x4017"];
+        let per_sf = if extra.is_empty() { 384 } else { 128 };
+        assert!(v["input_pass"].as_u64().unwrap() > 0, "PSI/SI/PCR: {j}");
+        assert_eq!((v["fail"].as_u64(), v["lost"].as_u64()), (Some(0), Some(0)));
+        assert!(v["pass"].as_u64().unwrap() >= 4 * per_sf, "{j}");
+    }
+    // the example as it is: its service on layer B
+    let o = run(&[
+        "loopback",
+        "--system",
+        "isdbs",
+        "--mux-config",
+        s(&bs_bench_toml()),
+        "--superframes",
+        "1",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("put its services, streams and tables on layer \"A\"")
+            && err.contains("service[0].layer: layer B is not active"),
+        "{err}"
+    );
+    // a terrestrial network
+    let o = run(&[
+        "tx",
+        "--system",
+        "isdbs",
+        "--mux-config",
+        s(&bench_toml()),
+        "--iq",
+        "/dev/null",
+        "--seconds",
+        "1",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("kind = \"terrestrial\" (the default) describes an ISDB-T network"),
+        "{err}"
+    );
+    // another channel than the NIT's: a warning
+    let o = run(&[
+        "tx",
+        "--system",
+        "isdbs",
+        "--channel",
+        "BS3",
+        "--mux-config",
+        s(&cfg),
+        "--iq",
+        "/dev/null",
+        "--seconds",
+        "0.1",
+    ]);
+    assert!(o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("names another channel than --channel BS3"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+/// With your own media (opt-in: `ISDB_RS_MEDIA_DIR`): the BS bench
+/// service with MPEG-2 video and AAC from the in-process ISDB-S
+/// multiplexer, through `tx --iq` and `rx --iq`: the received TS is the
+/// placed one, validates without error and with the rate of the slots,
+/// carries the video and audio PES, and ffmpeg decodes it with no error
+/// but the picture and AAC frame cut at its end (when installed).
+#[test]
+fn isdbs_mux_config_with_media_decodes() {
+    let Some(media) = media_dir("isdbs_mux_config_with_media_decodes") else {
+        return;
+    };
+    let _turn = cpu_heavy();
+    let d = tmp("isdbs-muxmedia");
+    let cfg = bs_lane_toml(&d, "bs.toml", "");
+    let path = |f: &str| toml_string(media.join(f).to_str().unwrap());
+    let text = std::fs::read_to_string(&cfg)
+        .unwrap()
+        .replace(
+            "kind = \"declared\"\n  pid = 0x0111\n  stream_type = 0x02             # MPEG-2 video (H.222.0 Table 2-34)",
+            &format!("kind = \"mpeg2-video\"\n  pid = 0x0111\n  source = {}", path("video.m2v")),
+        )
+        .replace(
+            "kind = \"declared\"\n  pid = 0x0112\n  stream_type = 0x0F             # AAC ADTS",
+            &format!(
+                "kind = \"aac-adts\"\n  pid = 0x0112\n  source = {}\n  adts_compliance = \"warn\"",
+                path("audio.m2a")
+            ),
+        );
+    assert!(!text.contains("kind = \"declared\""), "{text}");
+    std::fs::write(&cfg, text).unwrap();
+    let iq = d.join("t.cs8");
+    let o = run(&[
+        "tx",
+        "--system",
+        "isdbs",
+        "--channel",
+        "BS1",
+        "--mux-config",
+        s(&cfg),
+        "--iq",
+        s(&iq),
+        "--iq-format",
+        "cs8",
+        "--seconds",
+        "3",
+        "--placed-ts",
+        s(&d.join("placed-{ts_id}.ts")),
+    ]);
+    assert!(o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("mux late PES 0 errors 0"), "{err}");
+    let o = run(&["rx", "--iq", s(&iq), "--out", s(&d.join("rx-{ts_id}.ts"))]);
+    assert!(o.status.success());
+    std::fs::remove_file(&iq).unwrap();
+    let rx = std::fs::read(d.join("rx-4017.ts")).unwrap();
+    let placed = std::fs::read(d.join("placed-4017.ts")).unwrap();
+    assert!(
+        rx[384 * 188..] == placed[..],
+        "the received TS is the placed one"
+    );
+    // the ADTS headers' own `aac.*` errors are the file's (encoders write
+    // no crc_check; `adts_compliance = "warn"` sends them unchanged)
+    let (_, findings) = validate_bs(&d.join("rx-4017.ts"));
+    for (check, severity, _) in &findings {
+        assert!(
+            check.starts_with("aac.") || severity != "error",
+            "{findings:?}"
+        );
+        assert!(
+            !(check.starts_with("pcr.") && severity != "info"),
+            "{findings:?}"
+        );
+        assert_ne!(check, "tables.frequency", "{findings:?}");
+    }
+    let es = |pid: u16| {
+        rx.as_chunks::<188>()
+            .0
+            .iter()
+            .filter(|p| (u16::from(p[1] & 0x1F) << 8 | u16::from(p[2])) == pid)
+            .count()
+    };
+    assert!(
+        es(0x0111) > 1000 && es(0x0112) > 50,
+        "video {} audio {}",
+        es(0x0111),
+        es(0x0112)
+    );
+    if have("ffmpeg") {
+        let o = Command::new("ffmpeg")
+            .args(["-hide_banner", "-nostdin", "-v", "error", "-i"])
+            .arg(d.join("rx-4017.ts"))
+            .args(["-f", "null", "-"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&o.stderr);
+        eprintln!("ffmpeg:\n{log}");
+        assert!(o.status.success());
+        // the transmission stops mid access unit: the last picture and
+        // AAC frame are cut (two lines each, as for `isdb mux --seconds`
+        // of the same media on ISDB-T)
+        let video = log.lines().filter(|l| l.contains("mpeg2video")).count();
+        assert!(
+            video <= 2 && log.lines().count() <= 4,
+            "decode errors beyond the cut at the end:\n{log}"
+        );
+    } else {
+        eprintln!("ffmpeg absent: decode check skipped");
+    }
     std::fs::remove_dir_all(&d).unwrap();
 }
 

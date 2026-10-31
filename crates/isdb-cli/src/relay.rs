@@ -374,7 +374,7 @@ pub fn prepare(
             Some(Box::new(MuxConfigInput::from_mux(mux, name, &cfg))),
         ));
     }
-    if let Some(path) = &input.mux_config {
+    if let Some(path) = input.isdbt_mux_config()? {
         let cfg = isdbt_mux_config(path)?;
         let base = path.parent().map(PathBuf::from).unwrap_or_default();
         let (mux, params) = build_mux(&cfg, &base, params, r.auto_layout)?;

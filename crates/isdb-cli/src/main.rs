@@ -127,7 +127,7 @@ fn main() -> anyhow::Result<()> {
             loopback::run(*a, &given("loopback"))
         }
         Command::Ts(a) => ts::run(a),
-        Command::Mux(a) => mux::run(a),
+        Command::Mux(a) => mux::run(a, &given("mux")),
         Command::Capture(a) => {
             stop::install()?;
             capture::run(&a)

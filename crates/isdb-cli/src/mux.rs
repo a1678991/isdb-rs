@@ -5,16 +5,21 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use isdbs_core::combination::Combination;
 use isdbt_mux::analysis::analyze;
 use isdbt_mux::audio::AdtsCompliance;
 use isdbt_mux::config::StreamKind;
 use isdbt_mux::mux::{HZ, clocks_to_ticks};
-use isdbt_mux::{Config, TsWriter};
+use isdbt_mux::{Config, Multiplexer, Packet, TsWriter};
 use tracing::{error, info, warn};
 
 use crate::input::copy_control_note;
 use crate::phyargs::{PhyArgs, describe_params};
 use crate::relay::{RelayArgs, build_mux, log_summary, print_config};
+use crate::txs::{
+    Given, Layout, MuxPcrGrid, MuxSource, SatArgs, TsPacing, TxSystem, open_muxes,
+    superframe_seconds, superframes_for_seconds,
+};
 
 /// `isdb mux` arguments.
 #[derive(clap::Args, Debug)]
@@ -74,6 +79,22 @@ pub struct MuxArgs {
     /// warn: send unchanged and report; pass-through: send unchanged).
     #[arg(long, value_enum, value_name = "POLICY")]
     pub adts_compliance: Option<AdtsPolicy>,
+    /// Transmission system the TS is timed for: ISDB-T (OFDM frames, the
+    /// default) or ISDB-S: the configuration's TS (`[network] kind = "bs"`,
+    /// its services on layer "A"), timed for every sent slot of
+    /// --combination, superframe by superframe, as `isdb tx --system isdbs
+    /// --mux-config` sends it: the TS a receiver outputs for its TS_ID,
+    /// nulls included (--out-ts only; --frames counts superframes).
+    #[arg(long, value_enum, default_value_t = TxSystem::Isdbt)]
+    pub system: TxSystem,
+    /// ISDB-S slot layout, as `isdb tx --combination` (repeatable; default
+    /// tc8psk2/3:48).
+    #[arg(long, value_name = "WORD:N", value_parser = crate::txs::parse_combination, help_heading = "ISDB-S (--system isdbs)")]
+    pub combination: Vec<(Combination, u8)>,
+    /// ISDB-S PCR timing, as `isdb tx --mux-pcr-grid`: `uniform` (the
+    /// TS's constant-rate grid, default) or `slot` (the true slot times).
+    #[arg(long, value_enum, default_value_t = MuxPcrGrid::Uniform, help_heading = "ISDB-S (--system isdbs)")]
+    pub mux_pcr_grid: MuxPcrGrid,
 }
 
 /// `--adts-compliance` values (= `isdbt_mux::audio::AdtsCompliance`).
@@ -97,11 +118,36 @@ impl From<AdtsPolicy> for AdtsCompliance {
     }
 }
 
-/// Run `isdb mux`.
-pub fn run(args: MuxArgs) -> Result<()> {
+/// Run `isdb mux`; `given` are the arguments given on the command line
+/// (the options of the other system are refused).
+pub fn run(args: MuxArgs, given: &Given) -> Result<()> {
     if args.print_config_example {
         print!("{}", isdbt_mux::config::EXAMPLE_TOML);
         return Ok(());
+    }
+    let wrong = match args.system {
+        TxSystem::Isdbt => MUX_ISDBS_ONLY,
+        TxSystem::Isdbs => MUX_ISDBT_ONLY,
+    };
+    let bad: Vec<String> = wrong
+        .iter()
+        .filter(|id| given.has(id))
+        .map(|id| crate::txs::flag(id))
+        .collect();
+    if !bad.is_empty() {
+        match args.system {
+            TxSystem::Isdbs => bail!(
+                "{}: ISDB-T option(s), not used with --system isdbs (the TS takes every sent slot of --combination and goes to --out-ts)",
+                bad.join(", ")
+            ),
+            TxSystem::Isdbt => bail!(
+                "{}: ISDB-S option(s), used with --system isdbs only (the default system is ISDB-T)",
+                bad.join(", ")
+            ),
+        }
+    }
+    if args.system == TxSystem::Isdbs {
+        return run_isdbs(&args);
     }
     let params = args.phy.params()?;
     let (mut cfg, base) = if args.relay.relay.is_some() {
@@ -214,6 +260,20 @@ pub fn run(args: MuxArgs) -> Result<()> {
             );
         }
     }
+    summarize(
+        &mux,
+        args.report
+            .then(|| (&full_all[..], &times[..], clocks_to_ticks(408))),
+        "multiplex-frame TS",
+    );
+    Ok(())
+}
+
+/// The statistics every run ends with (PES, T-STD, relays, errors) and,
+/// with `report` = (packets, their arrival times, ticks per packet), the
+/// `--report` measurements of the `what` output.
+fn summarize(mux: &Multiplexer, report: Option<(&[Packet], &[u64], u64)>, what: &str) {
+    let st = mux.stats();
     info!(
         pes = st.pes,
         late_pes = st.late_pes,
@@ -247,11 +307,11 @@ pub fn run(args: MuxArgs) -> Result<()> {
         error!("{e}");
     }
 
-    if args.report {
-        let r = analyze(&full_all, &times, clocks_to_ticks(408));
+    if let Some((full_all, times, packet_ticks)) = report {
+        let r = analyze(full_all, times, packet_ticks);
         info!(
             packets = full_all.len(),
-            "--- report (multiplex-frame TS, {} packets)",
+            "--- report ({what}, {} packets)",
             full_all.len()
         );
         for ((pid, tid, ext, sn), (gap, n)) in r.section_intervals() {
@@ -301,5 +361,118 @@ pub fn run(args: MuxArgs) -> Result<()> {
             warn!("problem: {p}");
         }
     }
+}
+
+/// `isdb mux` options that only ISDB-T uses (argument ids).
+pub const MUX_ISDBT_ONLY: &[&str] = &[
+    "mode",
+    "gi",
+    "partial",
+    "layer_a",
+    "layer_b",
+    "layer_c",
+    "out_a",
+    "out_b",
+    "out_c",
+    "relay",
+    "auto_layout",
+    "channel",
+];
+
+/// `isdb mux` options that only ISDB-S uses.
+pub const MUX_ISDBS_ONLY: &[&str] = &["combination", "mux_pcr_grid"];
+
+/// `isdb mux --system isdbs`: the configuration's TS (`[network] kind =
+/// "bs"`, TS_ID from `[transport]`) in every sent slot of the
+/// `--combination` layout, `--frames` superframes (or `--seconds`), timed
+/// for them on the `--mux-pcr-grid` as `isdb tx --system isdbs
+/// --mux-config` sends it: the TS a receiver outputs for that TS_ID,
+/// nulls included, to `--out-ts`.
+fn run_isdbs(args: &MuxArgs) -> Result<()> {
+    let path = args.config.as_ref().context("--config is required")?;
+    if args.out_ts.is_none() && !args.report {
+        bail!("nothing to do: give --out-ts and/or --report");
+    }
+    let sat = SatArgs {
+        combination: args.combination.clone(),
+        ts: Vec::new(),
+        rate: None,
+        lead_superframes: None,
+        ts_pacing: TsPacing::Auto,
+        mux_pcr_grid: Some(args.mux_pcr_grid),
+    };
+    let mut layout = Layout::of_inputs(&sat, std::slice::from_ref(path))?;
+    if let (Some(p), Some(m)) = (args.adts_compliance, layout.mux[0].as_mut()) {
+        for st in m
+            .config
+            .services
+            .iter_mut()
+            .flat_map(|s| s.streams.iter_mut())
+        {
+            if st.kind == StreamKind::AacAdts {
+                st.adts_compliance = p.into();
+            }
+        }
+    }
+    info!("ISDB-S (ITU-R BO.1408-1): {}", layout.describe());
+    let mut mux = open_muxes(&layout)?
+        .pop()
+        .flatten()
+        .map(MuxSource::into_mux)
+        .context("the multiplexer of --config")?;
+    let sf_s = superframe_seconds();
+    let frames = match (args.frames, args.seconds) {
+        (Some(f), _) => f,
+        (None, s) => superframes_for_seconds(s.unwrap_or(10.0)),
+    };
+    info!(
+        superframes = frames,
+        seconds = frames as f64 * sf_s,
+        clock_start = %isdbt_mux::jst::format(mux.clock_start()),
+        "{frames} superframes ({:.2} s), clock start {} JST",
+        frames as f64 * sf_s,
+        isdbt_mux::jst::format(mux.clock_start())
+    );
+    let mut writer = TsWriter::new([None, None, None], args.out_ts.as_deref())?;
+    let none: [Vec<Packet>; 3] = Default::default();
+    let (mut full_all, mut times) = (Vec::new(), Vec::new());
+    for k in 0..frames {
+        if mux.relays_finished() {
+            info!(
+                superframes = k,
+                "every ts-program source ended after {k} superframes"
+            );
+            break;
+        }
+        let p = mux.next_period();
+        for w in mux.take_alerts() {
+            warn!("{w}");
+        }
+        writer.write_frame(&p, &none)?;
+        if args.report {
+            times.extend((0..p.len()).map(|q| mux.slot_time(k, q)));
+            full_all.extend(p);
+        }
+    }
+    writer.flush()?;
+    let st = mux.stats();
+    let ts_id = layout.ts[0].ts_id;
+    info!(
+        ts_id,
+        packets = st.layer_packets[0],
+        null_packets = st.layer_nulls[0],
+        "TS_ID {ts_id:#06x}: {} packets per superframe, {} packets, {} null ({:.1} %)",
+        mux.schedule().lane_slots(0),
+        st.layer_packets[0],
+        st.layer_nulls[0],
+        100.0 * st.layer_nulls[0] as f64 / st.layer_packets[0].max(1) as f64
+    );
+    let packet_ticks = mux.schedule().period_ticks() / mux.schedule().lane_slots(0) as u64;
+    summarize(
+        &mux,
+        args.report
+            .then(|| (&full_all[..], &times[..], packet_ticks)),
+        "superframe-timed TS",
+    );
     Ok(())
 }

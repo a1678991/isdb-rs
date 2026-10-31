@@ -151,3 +151,46 @@ numbers of H.222.0 are those of the 05/2006 edition.
   max 19 ns, the received TS identical to the placed one, the stall a hole in
   the TS (PCR interval and PAT/PMT gaps beyond 0.1 s there). (status:
   confirmed offline; pending a real receiver on the bench.)
+
+## isdb-cli: PCRs of the in-process ISDB-S multiplexer (`--mux-pcr-grid`)
+- Spec: H.222.0 §2.4.2.2 (PCR = time of the byte holding the last bit
+  of program_clock_reference_base; eq. 2-4), §2.4.2.1 (PCR accuracy
+  ±500 ns); ITU-R BO.1408-1 Fig. 9 (slots of a frame), Table 3.
+- Text: "The value encoded in the PCR field indicates the time t(i),
+  where i is the index of the byte containing the last bit of the
+  program_clock_reference_base field." BO.1408-1 has no model receiver
+  for the time at which the bytes of a TS_ID leave the receiver (ISDB-T
+  has B31 §3.2.2).
+- Interpretation: `isdb tx --system isdbs --mux-config` times each TS's
+  packets, and stamps its PCRs, on the timing model of the first entry
+  above: packet q of the TS's 8·N_r per superframe at q · 1 382 400 /
+  (37 · N_r) ticks, rounded to the nearest tick
+  (`isdbt_mux::Schedule::satellite_uniform`, equal to
+  `SlotClock::isdbs(N_r).time` by test), and a PCR equal to its packet's
+  time (`--mux-pcr-grid uniform`, the default). That is the TS a receiver
+  outputs (one packet per 1/(8·N_r) superframe, as `isdb ts validate`
+  measures it by packet index), the grid a paced `--ts` file is restamped
+  to, and the one BS broadcasters stamp to. The PCR is the packet's
+  start, not its byte 10: the 10/188 of a packet between them is a
+  constant, which leaves PCR, PTS and DTS consistent, and the pacer stamps
+  the same. `--mux-pcr-grid slot` keeps the true (pre-interleave) slot
+  times of `Schedule::satellite` (isdbt-mux SPEC-NOTES "ISDB-S timing
+  model"): consistent too, but a receiver's index-timed output then
+  carries their frame-periodic structure.
+- Confirmation: the BS transponders' TSs fit a constant rate within
+  21–68 ns (first entry). Offline, against the uniform grid
+  (`isdbt-mux/tests/satellite.rs`): the true slot times of a 48-slot TS
+  run 3…180 ticks (6.6 µs) off it, those of a TS of 16 contiguous slots
+  per frame −10 835…+12 574 ticks (±0.45 ms). Measured on the placed TS
+  (`isdb ts inspect`, 3 s, BS bench service): uniform grid, CBR-fit max
+  18 ns rms 11 ns (the rounding to whole ticks) for any PCR count; slot
+  grid, 18 ns with one PCR per superframe or per frame (always the same
+  place in the frame) but 2 241 ns (rms 1 811 ns, above the ±500 ns of
+  §2.4.2.1) with three per superframe, and 231 µs for the 16-slot TS with
+  16 per superframe. Through `tx --iq` → `rx` the received TS equals the
+  placed one, every PCR exactly on the grid and `validate --expect-rate
+  52170000:1` clean (`tests/cli.rs`
+  `isdbs_mux_config_through_tx_and_rx_validates`; VERIFICATION.md
+  "In-process ISDB-S multiplexer, offline"). (status: chosen on the BS
+  evidence; pending a real receiver on the bench and the CS question of
+  the first entry.)

@@ -17,6 +17,11 @@
 # options as `isdb tx` (default Mode 3, GI 1/8, partial reception, A = 1 seg
 # QPSK 2/3, B = 12 seg 64QAM 3/4); it only places the packets.
 #
+# Multiplexed in-process instead, superframe by superframe (no TS file),
+# an ISDB-S TS is one lane, "A": set the service's `layer = "A"`, then
+#
+#   isdb tx --system isdbs --channel BS1 --mux-config bs.toml …
+#
 # The streams are `declared` (PSI/SI/PCR only); replace them with
 # `mpeg2-video` / `aac-adts` streams and a `source` to send media.
 

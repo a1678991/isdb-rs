@@ -196,7 +196,7 @@ impl VerifierS {
 
 /// `isdb loopback --system isdbs`.
 pub fn run(a: LoopbackArgs) -> Result<()> {
-    let layout = Layout::of(&a.sat)?;
+    let layout = Layout::of_inputs(&a.sat, &a.input.mux_config)?;
     let rate = a.sat.rate.unwrap_or(DEFAULT_RATE);
     let sys = isdbs_phy::frontend::system();
     let shaper = Shaper::new(rate, sys.symbol_rate_hz, sys.roll_off)
