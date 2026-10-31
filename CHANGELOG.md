@@ -108,6 +108,24 @@ STD-B44) is received to TLV streams.
   `cross.*` finding. `tools/isdbs-pacing-e2e.sh` runs `bs-bench.toml`
   (TS_ID 0x4017, `--channel BS1`; `MEDIA=1` turns its declared streams
   into media streams).
+- Tools: `tools/isdbs-level-sweep.sh` sweeps the PlutoSky R2's TX
+  attenuation under the bench broadcast into the PIX-DT295 (level margin,
+  docs/plans/isdbs-next/media-and-margin.md §6): refuses to run without
+  `--conducted`, never below 45 dB without `--margin`, writes each level
+  live with `iio_attr` (`ad9361-phy` output `voltage0` hardwaregain) and
+  reads it back (a write that does not take effect stops the sweep, or with
+  `--restart` restarts the broadcast per level), polls `dt295 status
+  --isdbs --watch N --json` without a retune (hold), makes a fresh `dt295
+  tune` (acquisition) and a `dt295 stream` recording checked with `isdb ts
+  inspect` per level, steps 5 → 1 → 0.25 dB towards the loss point, walks
+  back down for the hysteresis, and writes `sweep.csv` and the
+  VERIFICATION.md table with a raw-C/N fit (`tools/isdbs-level-sweep.py`).
+  The broadcast is the operator's (`--tx-pid`, left on air at 89.75 dB on
+  exit) or the sweep's own (`--start-tx`: `tools/isdbs-bench-tx.sh`, which
+  keeps the `--rf-enable` gate, stopped on every exit path).
+  `tools/isdbs-level-sweep-test.sh` checks it with stub `dt295`,
+  `iio_attr`, `isdb` and bench script. Needs the PIX-DT295 driver's
+  `status --json` (its commit `d4ad6dc`).
 - `isdb-cli`: `isdb tx --system isdbs` places a TS file in its slots by its
   PCR: each packet in the first free slot at or after the time its PCRs
   give it, input null packets dropped, nulls in the slots left over, and

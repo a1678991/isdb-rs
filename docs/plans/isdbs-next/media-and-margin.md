@@ -511,6 +511,12 @@ the same chain (`isdb tx --mux-config` UHF into the DT295 terrestrial side, `dt2
 | J | `tx/loopback --system isdbs --mux-config`, docs | I | isdb-cli, docs |
 | K | optional: run-time attenuation in `isdb tx` | — | isdb-radio, isdb-cli |
 
+Status 2026-10-31: D done (PIX-DT295 `d4ad6dc`: `status --json`, raw C/N
+in the summary, `ber()`; no poll inside `stream`), E done
+(`tools/isdbs-level-sweep.sh`, `.py`, `-test.sh`; it parses the driver's
+JSON lines, not the human format); F waits for TX1 to be reconnected
+([isdbs-next.md](../isdbs-next.md) item 4).
+
 ## 8. Open questions
 
 - Absolute TX1 level at 1049.48 MHz for this waveform (PA on the PlutoSky R2 or not); needs a

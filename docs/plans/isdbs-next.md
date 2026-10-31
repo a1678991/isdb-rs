@@ -143,6 +143,31 @@ rustdoc clean, FPGA suite 24/24):
    / `status --isdbs --watch` to find the lock threshold and the C/N
    slope (the driver reads C/N once while acquiring); record in
    VERIFICATION.md next to the ISDB-T figures.
+   **Status 2026-10-31: tooling done (pieces D, E of
+   [media-and-margin.md](isdbs-next/media-and-margin.md) §7), the run
+   (piece F) waits for TX1 to be reconnected.** The driver reads C/N
+   and the error counters in every locked round (it did already; at
+   att 45 the raw 0xBC, 0x0B66–0x0B7A, is below the tc90522 formula's
+   3000, so no dB). PIX-DT295 `d4ad6dc`: `status --json` (a JSON line
+   per round: time, lock, raw C/N, dB where the formula covers it, error
+   and packet counts, BER per layer, INFERRED from tc90522), the summary
+   says "below the formula's range" instead of "not read"; rebuild
+   `target/release/dt295`. isdb-rs: `tools/isdbs-level-sweep.sh` (+ `.py`
+   for the CSV and the §6.3 table, `-test.sh` with stubs). Bench run:
+   `tools/isdbs-bench-tx.sh WORK 45 ip:10.10.0.30` in its own terminal
+   (its pid into a file), then `tools/isdbs-level-sweep.sh --conducted
+   --tx-pid FILE --uri ip:10.10.0.30 ~/dev/sdr/isdbs-bench/sweep-1`
+   (or `--start-tx WORK` to let the sweep start and stop it); the first
+   step is also the unverified check that an `iio_attr` hardwaregain
+   write while `isdb tx` streams takes effect without an underrun or
+   MISSED (§5.2 **[confirm]**: the sweep stops on a read-back mismatch;
+   `--restart` with `--start-tx` falls back to one broadcast per level).
+   If the hold reaches att 80 still locked, a second pass with +20 dB of
+   pad (`--pad 20`). Deviations from §6.2: `--margin` (as the bench
+   script) instead of `--allow-below-45`; exit attenuation 89.75 dB
+   (`--exit-att`) rather than the start level; a fresh tune and a
+   `--stream-secs 5` recording at every level instead of every 5 dB; no
+   quality poll inside `dt295 stream` (optional §4 item 4, not done).
 5. **HDL follow-ups** (`fpga/isdb_fpga/tx.py`; each needs a rebuild,
    ≈ 25 min, and a card update): prefetch the first DMA word(s) while
    selected but not running (removes the 8–16-symbol start miss; then
