@@ -99,10 +99,11 @@ fn symbol_json(s: &Symbol) -> Value {
 /// ```text
 /// {"format": 1,
 ///  "design": {sample_rate, symbol_rate, roll_off, span, phases, backoff_db},
-///  "params": {step, shift, phases, span, a: [[2S] × P], b, id_word},
+///  "params": {step, shift, phases, span, a: [[2S] × P], b, id_word, bank_tag},
 ///  "gpio": [configure_tx, CTRL START, CTRL RUN|SELECT from Encoder::new(0)],
 ///  "words": [u32 Q << 16 | I, as sent],
 ///  "stalls": [[word_index, n], ...],
+///  "prefetch": 0,
 ///  "samples": [{n, frac, q, line, sum_i, sum_q, out_i, out_q, wrap, code}, ...],
 ///  "counters": {consumed, missed, first_miss, samples}}
 /// ```
@@ -111,7 +112,7 @@ fn symbol_json(s: &Symbol) -> Value {
 /// newest first) as used, the sums before rounding, the 12-bit outputs,
 /// `wrap` 1 when the update carried and `code` the code that entered then
 /// (null without a carry; 0 for a missed symbol). The counters are the
-/// registers' 32-bit values (`first_miss` 0 without a miss).
+/// registers' low 32 bits (`first_miss` 0 without a miss).
 ///
 /// # Errors
 ///
@@ -120,6 +121,25 @@ pub fn tx_document(
     design: &TxDesign,
     words: &[u32],
     stalls: &[(u64, u32)],
+) -> Result<Value, TxParamError> {
+    tx_document_prefetched(design, words, stalls, 0)
+}
+
+/// [`tx_document`] for a block that was selected before RUN and held the
+/// first `prefetch` words (0 or 2) when RUN came
+/// ([`Interpolator::prefetched`]: the stalls on them are not seen). The
+/// document's `"prefetch"` is `prefetch`, and with a prefetch its `gpio`
+/// ends with CTRL START|SELECT, CTRL RUN|SELECT (the host's sequence: the
+/// simulation waits for STATUS PRIMED between them).
+///
+/// # Errors
+///
+/// The [`TxParamError`] of the design.
+pub fn tx_document_prefetched(
+    design: &TxDesign,
+    words: &[u32],
+    stalls: &[(u64, u32)],
+    prefetch: usize,
 ) -> Result<Value, TxParamError> {
     let params = TxParams::design(design)?;
     let mut m = Interpolator::new(params.clone())?;
@@ -137,13 +157,15 @@ pub fn tx_document(
     for &(_, n) in next {
         m.stall(n);
     }
+    m.prefetched(prefetch);
     let mut samples = Vec::new();
     while !(m.input_done() && m.next_requests()) {
         samples.push(tx_sample_json(&m.output()));
     }
     let mut enc = Encoder::new(0);
     let mut gpio = enc.configure_tx(&params);
-    gpio.push(enc.word(Op::Ctrl, tx::ctrl::START));
+    let select = if prefetch > 0 { tx::ctrl::SELECT } else { 0 };
+    gpio.push(enc.word(Op::Ctrl, tx::ctrl::START | select));
     gpio.push(enc.word(Op::Ctrl, tx::ctrl::RUN | tx::ctrl::SELECT));
     Ok(json!({
         "format": txformat::FORMAT_VERSION,
@@ -159,6 +181,7 @@ pub fn tx_document(
         "gpio": gpio,
         "words": words,
         "stalls": stalls_sorted.iter().map(|&(i, n)| [i, u64::from(n)]).collect::<Vec<_>>(),
+        "prefetch": prefetch,
         "samples": samples,
         "counters": {
             "consumed": low32(m.consumed()),
@@ -179,6 +202,7 @@ pub fn tx_params_json(p: &TxParams) -> Value {
         "a": p.a,
         "b": p.b,
         "id_word": p.id_word(),
+        "bank_tag": tx::bank_tag(p),
     })
 }
 

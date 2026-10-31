@@ -255,17 +255,30 @@ impl Encoder {
 /// |---|---|
 /// | 0x00 | STEP: `TxParams::step`, Q0.24 (u32) |
 /// | 0x01 | SHIFT: `TxParams::shift` |
-/// | 0x02 | STATUS, read only: bit 0 run, bit 1 selected, bit 2 underrun (sticky until START) |
-/// | 0x03 | CONSUMED, read only: codes entered from delivered words since START (low 32 bits) |
-/// | 0x04 | MISSED, read only: zero symbols entered for stalled requests since START (low 32 bits) |
-/// | 0x05 | FIRST_MISS, read only: CONSUMED at the first stalled request since START (0 before one) |
-/// | 0x06 | SAMPLES, read only: outputs since START (low 32 bits) |
+/// | 0x02 | STATUS, read only: bit 0 run, bit 1 selected, bit 2 underrun (sticky until START), bit 3 primed (a delivered word held; with the prefetch) |
+/// | 0x03 | CONSUMED, read only: codes entered from delivered words since START (low 32 bits; the high 32 in HI with COUNTERS64) |
+/// | 0x04 | MISSED, read only: zero symbols entered for stalled requests since START (32 bits) |
+/// | 0x05 | FIRST_MISS, read only: CONSUMED at the first stalled request since START (0 before one; low 32 bits, HI as CONSUMED) |
+/// | 0x06 | SAMPLES, read only: outputs since START (low 32 bits, HI as CONSUMED) |
+/// | 0x07 | FEATURES, read only: [`tx::features`] bits; 0 on an image before them (an unknown address reads 0) |
+/// | 0x08 | BANK_TAG (with the feature): [`tx::bank_tag`] of the banks held; the bitstream's value is the default bank's, any bank write sets it to 0, the host writes it after a complete load; no reset |
+/// | 0x09 | HI, read only (COUNTERS64): the high 32 bits latched by the last READ of CONSUMED, FIRST_MISS or SAMPLES |
+/// | 0x0A | PRE_UNF, read only (PREFETCH): underflow answers dropped before RUN since START (32 bits, wraps) |
 /// | 0x4000 + q·32 + t | bank A, row q, tap t (t < 2S), WRITE_S (sign-extended 27 bits; the block keeps 18) |
 /// | 0x8000 + q·32 + t | bank B, likewise |
 ///
 /// CTRL bits ([`tx::ctrl`]): run, START (one pulse: `frac`, the line, the
 /// counters and the unpack register reset), SELECT (the block drives the
-/// DAC data path instead of the DMA's IQ pass-through).
+/// DAC data path instead of the DMA's IQ pass-through; with the prefetch
+/// it requests DMA words from SELECT on and holds up to two, dropping the
+/// requests that find none until RUN; CTRL 0 drops the held words).
+///
+/// The FEATURES register lets one host drive every image of TX format 1
+/// (the ID word is unchanged: the arithmetic is the same):
+/// [`tx::features::PREFETCH`] (wait for STATUS PRIMED before RUN),
+/// [`tx::features::BANK_TAG`] (skip the bank load when the tag matches),
+/// [`tx::features::COUNTERS64`] (read HI after CONSUMED, FIRST_MISS,
+/// SAMPLES).
 ///
 /// The block stores one copy of each tap pair (the banks' symmetry,
 /// [`TxParams::validate`]), so [`Encoder::configure_tx`] writes taps
@@ -306,6 +319,17 @@ pub mod tx {
         pub const FIRST_MISS: u16 = 0x05;
         /// Read only: output samples since START.
         pub const SAMPLES: u16 = 0x06;
+        /// Read only: [`super::features`] bits (0 on an image before them).
+        pub const FEATURES: u16 = 0x07;
+        /// [`super::bank_tag`] of the banks held, 0 after any bank write
+        /// until the host writes it ([`super::features::BANK_TAG`]).
+        pub const BANK_TAG: u16 = 0x08;
+        /// Read only: the high 32 bits latched by the last READ of
+        /// CONSUMED, FIRST_MISS or SAMPLES ([`super::features::COUNTERS64`]).
+        pub const HI: u16 = 0x09;
+        /// Read only: underflow answers dropped before RUN since START
+        /// ([`super::features::PREFETCH`]; 32 bits, wraps).
+        pub const PRE_UNF: u16 = 0x0A;
         /// Bank A (even k): `A_BASE + q·ROW_STRIDE + t`.
         pub const A_BASE: u16 = 0x4000;
         /// Bank B (odd k): `B_BASE + q·ROW_STRIDE + t`.
@@ -333,6 +357,40 @@ pub mod tx {
         pub const SELECTED: u32 = 2;
         /// A word request has stalled since START (sticky).
         pub const UNDERRUN: u32 = 4;
+        /// The block holds a delivered DMA word
+        /// ([`super::features::PREFETCH`]): RUN now starts without a
+        /// lead-in miss.
+        pub const PRIMED: u32 = 8;
+    }
+
+    /// FEATURES bits (register [`reg::FEATURES`]).
+    pub mod features {
+        /// The block requests DMA words from SELECT on, drops the requests
+        /// that find none until RUN and holds up to two words; STATUS
+        /// [`super::status::PRIMED`] and [`super::reg::PRE_UNF`].
+        pub const PREFETCH: u32 = 1;
+        /// [`super::reg::BANK_TAG`].
+        pub const BANK_TAG: u32 = 2;
+        /// CONSUMED, FIRST_MISS and SAMPLES are 64 bits, the high halves in
+        /// [`super::reg::HI`].
+        pub const COUNTERS64: u32 = 4;
+        /// Every bit this host knows.
+        pub const ALL: u32 = PREFETCH | BANK_TAG | COUNTERS64;
+    }
+
+    /// The BANK_TAG of `p`'s banks: the CRC-32C
+    /// ([`crate::format::crc32c_bytes`]) of the coefficients as
+    /// [`super::Encoder::configure_tx`] writes them, bank A then B, row by
+    /// row, taps `0..S`, each a 32-bit little-endian two's-complement
+    /// value; a CRC of 0 is taken as 1 (the register's 0 means "unknown").
+    pub fn bank_tag(p: &TxParams) -> u32 {
+        let span = p.span();
+        let bytes: Vec<u8> = [&p.a, &p.b]
+            .into_iter()
+            .flat_map(|bank| bank.iter().flat_map(|row| &row[..span]))
+            .flat_map(|c| c.to_le_bytes())
+            .collect();
+        crate::format::crc32c_bytes(&bytes).max(1)
     }
 
     /// The transmit block a bitstream reports in its ID word.
@@ -394,16 +452,20 @@ impl Encoder {
     /// The whole transmit configuration for `p` ([`tx`]): STEP and SHIFT,
     /// then banks A and B, row by row, taps `0..S` (the stored half; one
     /// ADDR per row). Follow it with CTRL START | SELECT (the block owns
-    /// the DAC and the DMA, outputs zero and requests nothing), start the
-    /// TX DMA, then, once half its queue is filled, CTRL RUN | SELECT: the
-    /// block counts every word requested before the first arrives as
+    /// the DAC and the DMA and outputs zero; an image with the prefetch
+    /// requests DMA words and holds two, an older one requests nothing),
+    /// start the TX DMA, then, once STATUS reads PRIMED (an older image:
+    /// once half the DMA queue is filled), CTRL RUN | SELECT: the block
+    /// counts every word it requests while running and does not get as
     /// missed, and before SELECT the pass-through sends the DMA's words to
     /// the DAC as samples (fpga/README.md "The transmit block"; the
-    /// `isdb-radio` Pluto backend does this). CTRL 0 makes it transparent
-    /// again.
+    /// `isdb-radio` Pluto backend does this). With
+    /// [`tx::features::BANK_TAG`], write [`tx::bank_tag`] to
+    /// [`tx::reg::BANK_TAG`] after it, and skip the banks
+    /// ([`Encoder::configure_tx_registers`]) when the register already
+    /// reads `p`'s tag. CTRL 0 makes it transparent again.
     pub fn configure_tx(&mut self, p: &TxParams) -> Vec<u32> {
-        let mut out = Vec::new();
-        self.write(tx::reg::STEP, &[p.step, u32::from(p.shift)], &mut out);
+        let mut out = self.configure_tx_registers(p);
         let span = p.span();
         for (base, bank) in [(tx::reg::A_BASE, &p.a), (tx::reg::B_BASE, &p.b)] {
             for (q, row) in (0u16..).zip(bank.iter()) {
@@ -411,6 +473,15 @@ impl Encoder {
                 self.write(base + q * tx::reg::ROW_STRIDE, &vals, &mut out);
             }
         }
+        out
+    }
+
+    /// STEP and SHIFT of `p` alone: the configuration when the block
+    /// already holds `p`'s banks ([`tx::reg::BANK_TAG`] reads
+    /// [`tx::bank_tag`]`(p)`).
+    pub fn configure_tx_registers(&mut self, p: &TxParams) -> Vec<u32> {
+        let mut out = Vec::new();
+        self.write(tx::reg::STEP, &[p.step, u32::from(p.shift)], &mut out);
         out
     }
 }
@@ -462,6 +533,55 @@ mod tests {
             }
             .supports(&p)
         );
+    }
+
+    /// BANK_TAG: the CRC-32C of the near halves as written (a then b,
+    /// i32 LE), never 0, and one coefficient changes it; the full
+    /// configuration is the registers' words, then the banks.
+    #[test]
+    fn tx_bank_tag_and_registers() {
+        use crate::shape::fixed::{TxDesign, TxParams};
+        let p = TxParams::design(&TxDesign::new(40e6, 28.86e6, 0.35)).unwrap();
+        let span = p.span();
+        let mut bytes = Vec::new();
+        for bank in [&p.a, &p.b] {
+            for row in bank {
+                for c in &row[..span] {
+                    bytes.extend_from_slice(&c.to_le_bytes());
+                }
+            }
+        }
+        assert_eq!(bytes.len(), 2 * 512 * 12 * 4);
+        let tag = tx::bank_tag(&p);
+        assert_eq!(tag, crate::format::crc32c_bytes(&bytes));
+        assert_ne!(tag, 0);
+        let mut q = p.clone();
+        q.b[100][3] += 1;
+        assert_ne!(tx::bank_tag(&q), tag);
+        // the far half is not part of it (the block stores the near half)
+        let mut q = p.clone();
+        q.a[7][20] += 1;
+        assert_eq!(tx::bank_tag(&q), tag);
+        let regs = Encoder::new(0).configure_tx_registers(&p);
+        let all = Encoder::new(0).configure_tx(&p);
+        assert_eq!(regs.len(), 3, "ADDR, STEP and SHIFT as WRITE_S");
+        assert_eq!(all[..3], regs[..]);
+        assert_eq!(all.len(), 13_315);
+        assert_eq!(
+            tx::features::ALL,
+            tx::features::PREFETCH | tx::features::BANK_TAG | tx::features::COUNTERS64
+        );
+        assert_eq!(tx::features::ALL, 7);
+        assert_eq!(
+            [
+                tx::reg::FEATURES,
+                tx::reg::BANK_TAG,
+                tx::reg::HI,
+                tx::reg::PRE_UNF
+            ],
+            [7, 8, 9, 10]
+        );
+        assert_eq!(tx::status::PRIMED, 8);
     }
 
     #[test]

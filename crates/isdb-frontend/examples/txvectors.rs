@@ -12,6 +12,7 @@
 //! | `tx-2-stalls.json` | 40 Msps, 10 dB: 2 000 codes of every kind (points, zero, reserved 1..7), a stall of 1–4 requests before about one word in ten |
 //! | `tx-3-long-stall.json` | 40 Msps, 10 dB: 2 000 point codes, one stall of 64 requests (512 symbols) before word 100 |
 //! | `tx-4-bank.json` | 61.44 Msps, 3 dB: another step, shift (6) and bank, which the simulation must load through the port (the `gpio` words); the output clips |
+//! | `tx-6-prefetch.json` | 40 Msps, 10 dB: 1 000 point codes, stalls before words 0 (5), 1 (3) and 60 (2), `"prefetch": 2` (the block selected before RUN: the stalls on words 0 and 1 are met then and not seen; MISSED only from word 60) |
 //!
 //! The vectors with real ISDB-S codes come from `isdbs-phy`'s
 //! `examples/txvectors.rs` (`tx-5-isdbs.json`; `isdb-frontend` cannot
@@ -19,11 +20,12 @@
 
 use isdb_frontend::shape::fixed::TxDesign;
 use isdb_frontend::txformat;
-use isdb_frontend::vectors::tx_document;
+use isdb_frontend::vectors::tx_document_prefetched;
 use std::path::PathBuf;
 
-/// One vectors file: name, design, words, stalls `(word_index, n)`.
-type Set<'a> = (&'a str, &'a TxDesign, &'a [u32], Vec<(u64, u32)>);
+/// One vectors file: name, design, words, stalls `(word_index, n)`, the
+/// words prefetched before RUN.
+type Set<'a> = (&'a str, &'a TxDesign, &'a [u32], Vec<(u64, u32)>, usize);
 
 /// xorshift64.
 struct Rng(u64);
@@ -86,14 +88,22 @@ fn main() {
         ..TxDesign::new(61.44e6, 28.86e6, 0.35)
     };
     let bank_words = words(&points(2000, &mut r));
-    let sets: [Set; 4] = [
-        ("tx-1-continuous.json", &isdbs, &continuous, vec![]),
-        ("tx-2-stalls.json", &isdbs, &stalled, stalls),
-        ("tx-3-long-stall.json", &isdbs, &long, vec![(100, 64)]),
-        ("tx-4-bank.json", &bank, &bank_words, vec![]),
+    let prefetch_words = words(&points(1000, &mut r));
+    let sets: [Set; 5] = [
+        ("tx-1-continuous.json", &isdbs, &continuous, vec![], 0),
+        ("tx-2-stalls.json", &isdbs, &stalled, stalls, 0),
+        ("tx-3-long-stall.json", &isdbs, &long, vec![(100, 64)], 0),
+        ("tx-4-bank.json", &bank, &bank_words, vec![], 0),
+        (
+            "tx-6-prefetch.json",
+            &isdbs,
+            &prefetch_words,
+            vec![(0, 5), (1, 3), (60, 2)],
+            2,
+        ),
     ];
-    for (name, design, w, st) in sets {
-        let doc = tx_document(design, w, &st).unwrap();
+    for (name, design, w, st, prefetch) in sets {
+        let doc = tx_document_prefetched(design, w, &st, prefetch).unwrap();
         let path = dir.join(name);
         let bytes = serde_json::to_vec(&doc).unwrap();
         std::fs::write(&path, &bytes).unwrap();

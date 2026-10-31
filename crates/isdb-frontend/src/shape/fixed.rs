@@ -83,6 +83,13 @@
 //! word pushed find no word: the vectors' stall `(word_index, n)`. A
 //! request that finds the queue empty is a stall too, as in the hardware.
 //!
+//! Selected and not running, a block with the prefetch (FEATURES bit
+//! [`PREFETCH`](crate::control::tx::features::PREFETCH)) already requests
+//! words, drops the requests that find none (they count nothing) and holds
+//! up to two words when RUN comes; the counters start at RUN. So the
+//! stalls on the words it holds were met before RUN and are not seen:
+//! [`Interpolator::prefetched`]`(k)` drops them for the k words held.
+//!
 //! # Measured (`tests/txfixed.rs`, `examples/txloop.rs`)
 //!
 //! ISDB-S at 40 Msps, 10 dB backoff, P 512, span 12: random 8PSK through
@@ -659,6 +666,17 @@ impl Interpolator {
             Some((i, m)) if *i == self.pushed => *m += n,
             _ => self.stalls.push_back((self.pushed, n)),
         }
+    }
+
+    /// The block's prefetch (module documentation, "Input"): it held the
+    /// next `k` words (at most 2, the unpack register and the staging
+    /// word; a larger `k` is taken as 2) when it started running, so the
+    /// stalls queued for them were met before RUN and are dropped. Call it
+    /// after [`Interpolator::start`] and the stalls, before the first
+    /// sample. The vectors' `"prefetch"`.
+    pub fn prefetched(&mut self, k: usize) {
+        let end = self.delivered + k.min(2) as u64;
+        self.stalls.retain(|&(i, _)| i >= end);
     }
 
     /// Words queued and not yet requested.

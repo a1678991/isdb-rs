@@ -501,6 +501,46 @@ fn stalls_insert_exactly_their_zero_symbols() {
     }
 }
 
+/// The prefetch (`Interpolator::prefetched`): stalls on the words the
+/// block held at RUN are not seen, later ones are; with k = 0 nothing
+/// changes, and k above 2 is 2. The samples equal a model fed the same
+/// words with the remaining stalls only.
+#[test]
+fn prefetched_words_hide_their_stalls() {
+    let p = isdbs();
+    let words = txformat::pack(&psk8_codes(800, 4));
+    let stalls = [(0u64, 5u32), (1, 3), (2, 1), (60, 2)];
+    let make = |k: usize, given: &[(u64, u32)]| {
+        let mut m = Interpolator::new(p.clone()).unwrap();
+        for (i, &w) in (0u64..).zip(&words) {
+            for &(at, n) in given {
+                if at == i {
+                    m.stall(n);
+                }
+            }
+            m.push_words(&[w]);
+        }
+        m.prefetched(k);
+        m
+    };
+    let n = samples_for(&p, 8 * (words.len() as u64 + 11));
+    for (k, keep) in [
+        (0usize, &stalls[..]),
+        (1, &stalls[1..]),
+        (2, &stalls[2..]),
+        (3, &stalls[2..]),
+    ] {
+        let (mut a, mut b) = (make(k, &stalls), make(0, keep));
+        for i in 0..n {
+            assert_eq!(a.output(), b.output(), "k {k} sample {i}");
+        }
+        let seen: u64 = keep.iter().map(|&(_, n)| u64::from(n)).sum();
+        assert_eq!(a.missed(), b.missed(), "k {k}");
+        assert!(a.missed() >= 8 * seen, "k {k}");
+        assert_eq!(a.first_miss(), Some(8 * keep[0].0), "k {k}");
+    }
+}
+
 /// A dry queue is a stall: after the last word every request enters
 /// eight zero symbols, the output decays to exactly 0 within 2·span
 /// symbols, and START clears the counters and the state but keeps the
