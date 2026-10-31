@@ -25,7 +25,7 @@
 # the TC90532 re-acquires by itself). After a failed fresh tune the tuner is
 # re-locked at the last level where a tune locked before the next step.
 # Unverified on the bench (media-and-margin.md §5.2 [confirm]): that an
-# iio_attr write of hardwaregain while `isdb tx` streams takes effect without
+# (libiio 0.26: no -q, it silences the value). iio_attr write of hardwaregain while `isdb tx` streams takes effect without
 # an underrun or MISSED, and the exact iio_attr argument order; the read-back
 # after every write and the TX block MISSED column are the check.
 #
@@ -282,7 +282,7 @@ stop_tx() {
 # The attenuation now (hardwaregain is its negative), 2 decimals.
 att_read() {
     local v
-    v=$("$IIO_ATTR" -u "$URI" -q -o -c ad9361-phy "$CHAN" hardwaregain 2>/dev/null) || return 1
+    v=$("$IIO_ATTR" -u "$URI" -o -c ad9361-phy "$CHAN" hardwaregain 2>/dev/null) || return 1
     awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^-?[0-9]+(\.[0-9]+)?$/) { printf "%.2f", -$i; found = 1; exit } }
          END { exit !found }' <<< "$v"
 }
@@ -299,7 +299,7 @@ att_write() {
 # not stop half-way).
 att_write_raw() {
     # `--` ends the options, so getopt does not read -55 as one.
-    "$IIO_ATTR" -u "$URI" -q -o -c -- ad9361-phy "$CHAN" hardwaregain "-$1" > /dev/null 2>&1 || return 1
+    "$IIO_ATTR" -u "$URI" -o -c -- ad9361-phy "$CHAN" hardwaregain "-$1" > /dev/null 2>&1 || return 1
 }
 # Write and read back; ATT_READ is what the radio reports.
 ATT_READ=
