@@ -1,0 +1,19 @@
+[package]
+name = "isdb-mkv"
+description = "A Matroska writer for the decoded ISDB-S3 media: HEVC, AAC, text subtitles, attachments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-mkv"
+readme = "README.md"
+keywords = ["matroska", "mkv", "hevc", "aac", "isdb"]
+categories = ["multimedia::encoding"]
+include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -96,6 +96,173 @@ pub fn loas_frame(element: &[u8], out: &mut Vec<u8>) -> bool {
     true
 }
 
+/// One AudioMuxElement (ISO/IEC 14496-3 §1.7.3, `muxConfigPresent` = 1,
+/// the form of an MMT audio MFU) taken apart: its `AudioSpecificConfig`
+/// (when the element carries a `StreamMuxConfig`) and the raw AAC frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LatmFrame<'a> {
+    /// The `AudioSpecificConfig` bytes, realigned to a byte boundary
+    /// (`None` when `useSameStreamMux` reuses the previous one).
+    pub config: Option<Vec<u8>>,
+    /// The `payload` of the one subframe: a raw AAC frame (what Matroska's
+    /// `A_AAC` and MP4 store per sample).
+    pub payload: std::borrow::Cow<'a, [u8]>,
+}
+
+/// Take one AudioMuxElement apart. The profile on air (BS4K/8K: version
+/// 0, all streams on the same time framing, one subframe, one program,
+/// one layer, frame length type 0 — a variable-length AAC frame) is the
+/// one read; anything else is `None`.
+pub fn latm_frame(element: &[u8]) -> Option<LatmFrame<'_>> {
+    let mut r = Bits::new(element);
+    let config = if r.bit()? {
+        None
+    } else {
+        // StreamMuxConfig (Table 1.42).
+        if r.bit()? {
+            return None; // audioMuxVersion 1
+        }
+        let all_same = r.bit()?;
+        let sub_frames = r.read(6)?;
+        let programs = r.read(4)?;
+        let layers = r.read(3)?;
+        if !all_same || sub_frames != 0 || programs != 0 || layers != 0 {
+            return None;
+        }
+        let start = r.pos;
+        asc_length(&mut r)?;
+        let config = r.bytes_from(start)?;
+        if r.read(3)? != 0 {
+            return None; // frameLengthType
+        }
+        r.read(8)?; // latmBufferFullness
+        if r.bit()? {
+            // otherDataPresent: otherDataLenBits (escaped).
+            loop {
+                let more = r.bit()?;
+                r.read(8)?;
+                if !more {
+                    break;
+                }
+            }
+        }
+        if r.bit()? {
+            r.read(8)?; // crcCheckSum
+        }
+        Some(config)
+    };
+    // PayloadLengthInfo: 8-bit chunks, 255 continuing.
+    let mut len = 0usize;
+    loop {
+        let b = r.read(8)? as usize;
+        len += b;
+        if b != 255 {
+            break;
+        }
+    }
+    let payload = r.take(len)?;
+    Some(LatmFrame { config, payload })
+}
+
+/// Walk an `AudioSpecificConfig` (§1.6.2.1) as far as an AAC object
+/// carries it: object type, frequency, channels, `GASpecificConfig`
+/// (§4.4.1), and an SBR/PS explicit extension's object type and
+/// frequency.
+fn asc_length(r: &mut Bits<'_>) -> Option<()> {
+    let mut object = r.read(5)?;
+    if object == 31 {
+        object = 32 + r.read(6)?;
+    }
+    if r.read(4)? == 0xf {
+        r.read(24)?;
+    }
+    let channels = r.read(4)?;
+    if matches!(object, 5 | 29) {
+        // Explicit SBR / PS: the extension frequency and the core object.
+        if r.read(4)? == 0xf {
+            r.read(24)?;
+        }
+        object = r.read(5)?;
+    }
+    if !matches!(object, 1 | 2 | 3 | 4 | 6 | 7) {
+        return None;
+    }
+    r.bit()?; // frameLengthFlag
+    if r.bit()? {
+        r.read(14)?; // coreCoderDelay
+    }
+    let extension = r.bit()?;
+    if channels == 0 {
+        return None; // a program_config_element: not on air
+    }
+    if matches!(object, 6 | 20) {
+        r.read(3)?;
+    }
+    if extension {
+        return None; // the ER objects' extension fields
+    }
+    Some(())
+}
+
+/// A big-endian bit reader.
+struct Bits<'a> {
+    b: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Bits<'a> {
+    fn new(b: &'a [u8]) -> Self {
+        Self { b, pos: 0 }
+    }
+
+    fn bit(&mut self) -> Option<bool> {
+        let byte = *self.b.get(self.pos / 8)?;
+        let v = byte >> (7 - self.pos % 8) & 1;
+        self.pos += 1;
+        Some(v == 1)
+    }
+
+    fn read(&mut self, n: u32) -> Option<u32> {
+        let mut v = 0u32;
+        for _ in 0..n {
+            v = v << 1 | u32::from(self.bit()?);
+        }
+        Some(v)
+    }
+
+    /// The bits from `start` to here, left-aligned into bytes (the last
+    /// zero-padded).
+    fn bytes_from(&self, start: usize) -> Option<Vec<u8>> {
+        let mut r = Bits {
+            b: self.b,
+            pos: start,
+        };
+        let n = self.pos - start;
+        let mut out = vec![0u8; n.div_ceil(8)];
+        for i in 0..n {
+            if r.bit()? {
+                out[i / 8] |= 0x80 >> (i % 8);
+            }
+        }
+        Some(out)
+    }
+
+    /// `n` bytes from here: borrowed when byte-aligned, shifted when not.
+    fn take(&mut self, n: usize) -> Option<std::borrow::Cow<'a, [u8]>> {
+        if self.pos.is_multiple_of(8) {
+            let s = self.b.get(self.pos / 8..self.pos / 8 + n)?;
+            self.pos += n * 8;
+            return Some(std::borrow::Cow::Borrowed(s));
+        }
+        let start = self.pos;
+        self.pos += n * 8;
+        if self.pos > self.b.len() * 8 {
+            return None;
+        }
+        self.bytes_from(start).map(std::borrow::Cow::Owned)
+    }
+}
+
 /// A caption / superimposition MFU (Table 9-1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subtitle<'a> {
@@ -162,6 +329,64 @@ impl<'a> Subtitle<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An AudioMuxElement as BS17 sends it: StreamMuxConfig (AAC-LC 48 kHz
+    /// stereo, CRC present), payload length 255+255+160 = 670, the payload
+    /// shifted by 5 bits, 3 bits of padding.
+    fn element(payload: &[u8]) -> Vec<u8> {
+        // 0 0 1 000000 0000 000 | ASC 00010 0011 0010 | 0 0 0 | 000 |
+        // fullness 8 | 0 | 1 | crc 8 | lengths | payload | pad
+        let mut bits = String::from("0010000000000000"); // header, 16 bits
+        bits += "0001000110010"; // ASC: AAC-LC, 48 kHz, 2 channels
+        bits += "000000"; // GASpecificConfig 0 0 0, frameLengthType 0
+        bits += "01101010"; // latmBufferFullness
+        bits += "01"; // otherDataPresent 0, crcCheckPresent 1
+        bits += "00000001"; // crcCheckSum
+        let mut n = payload.len();
+        while n >= 255 {
+            bits += "11111111";
+            n -= 255;
+        }
+        bits += &format!("{n:08b}");
+        for b in payload {
+            bits += &format!("{b:08b}");
+        }
+        while bits.len() % 8 != 0 {
+            bits.push('0');
+        }
+        (0..bits.len())
+            .step_by(8)
+            .map(|i| u8::from_str_radix(&bits[i..i + 8], 2).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn latm_element_taken_apart() {
+        let payload: Vec<u8> = (0..670u32).map(|i| (i * 7 + 3).to_be_bytes()[3]).collect();
+        let e = element(&payload);
+        // The real element's first bytes: 20 00 11 90 0d 48 0f ff fd ...
+        assert_eq!(
+            &e[..9],
+            &[0x20, 0x00, 0x11, 0x90, 0x0d, 0x48, 0x0f, 0xff, 0xfd]
+        );
+        let f = latm_frame(&e).unwrap();
+        assert_eq!(
+            f.config.as_deref(),
+            Some(&[0x11, 0x90][..]),
+            "AAC-LC 48 kHz 2ch"
+        );
+        assert_eq!(f.payload.as_ref(), payload.as_slice());
+        // useSameStreamMux: no config, the lengths right after the bit:
+        // 1 | 00000011 | 01010101 01100110 01110111 | 0000000.
+        let same = [0x81, 0xaa, 0xb3, 0x3b, 0x80];
+        let f = latm_frame(&same).unwrap();
+        assert_eq!(f.config, None);
+        assert_eq!(f.payload.as_ref(), &[0x55, 0x66, 0x77]);
+        // A 5.1 config (channel configuration 6) reads too; version 1 and
+        // two subframes do not.
+        assert!(latm_frame(&[0x40, 0, 0]).is_none());
+        assert!(latm_frame(&[0x20, 0x04, 0x11]).is_none());
+    }
 
     #[test]
     fn annex_b_from_length_prefixed_nals() {

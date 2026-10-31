@@ -4,9 +4,9 @@
 `isdb-remux --ts` carries each untimed asset of the service (data
 broadcasting `aapp`, ...) as a private-data pid (stream type 06h): one
 `private_stream_2` PES per MFU (one item of the asset's package), its data
-starting with the 4-byte MPU sequence number and the 4-byte item id
-(big-endian; the top bit set on the continuation of an item split over
-PESs).
+starting with the 4-byte MPU sequence number, the 4-byte item id
+(big-endian) and a flags byte (01h on the continuation of an item split
+over PESs).
 
 Usage:
   tools/remux-ts-data.py FILE.ts                 # per pid: items, bytes, packages
@@ -75,18 +75,18 @@ def items(path):
 def flush_items(buf, open_item, pid):
     """Close the PES buffered on `pid`; yield the item it completes."""
     b = buf[pid]
-    if len(b) >= 14 and b[:4] == b"\x00\x00\x01\xbf":
+    if len(b) >= 15 and b[:4] == b"\x00\x00\x01\xbf":
         n = b[4] << 8 | b[5]
         body = bytes(b[6:6 + n])
         mpu = int.from_bytes(body[:4], "big")
         item = int.from_bytes(body[4:8], "big")
-        if item & 0x8000_0000 and pid in open_item:
-            open_item[pid][3].extend(body[8:])
+        if body[8] & 1 and pid in open_item:
+            open_item[pid][3].extend(body[9:])
         else:
             if pid in open_item:
                 pid_, m, i, data = open_item.pop(pid)
                 yield pid_, m, i, bytes(data)
-            open_item[pid] = [pid, mpu, item, bytearray(body[8:])]
+            open_item[pid] = [pid, mpu, item, bytearray(body[9:])]
     b.clear()
 
 
