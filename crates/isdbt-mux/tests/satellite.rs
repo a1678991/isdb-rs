@@ -226,3 +226,80 @@ fn params_of_a_satellite_multiplexer_panics() {
     .unwrap();
     let _ = mux.params();
 }
+
+/// ⌊x·a/b + ½⌋ in u128: packet `x` of a TS with `n` slots per frame on
+/// the uniform grid, 1 382 400/(37·n) ticks per packet.
+fn grid(x: u64, n: u64) -> u64 {
+    let (a, b) = (1_382_400u128, 37 * u128::from(n));
+    u64::try_from((2 * u128::from(x) * a + b) / (2 * b)).unwrap()
+}
+
+#[test]
+fn satellite_uniform_schedule_is_the_per_ts_grid() {
+    for (info, r) in layouts() {
+        let s = Schedule::satellite_uniform(&info, r).unwrap();
+        s.validate().unwrap();
+        let sat = Schedule::satellite(&info, r).unwrap();
+        let n = ts_slots(&info, r);
+        assert_eq!(s.slots, vec![Some(0); 8 * n], "only the TS's own slots");
+        assert_eq!(s.lane_slots(0), 8 * n);
+        assert_eq!(s.start, s.pcr_byte);
+        assert_eq!(s.period_ticks(), 11_059_200 / 37);
+        assert!((s.period_seconds() - sat.period_seconds()).abs() < 1e-15);
+        assert_eq!(s.lane_bps, sat.lane_bps);
+        assert_eq!(s.system, sat.system);
+        assert_eq!(
+            (s.default_pcr_per_period, s.control_lane),
+            (sat.default_pcr_per_period, sat.control_lane)
+        );
+        let per_sf = 8 * n as u64;
+        for k in [0u64, 1, 36, 37, 1 << 20] {
+            for q in [0, 1, 2, n / 2, n, 4 * n, 8 * n - 1] {
+                let g = k * per_sf + q as u64;
+                assert_eq!(s.slot_time(k, q), grid(g, n as u64), "k {k} q {q}");
+                assert_eq!(s.pcr_time(k, q), grid(g, n as u64));
+            }
+        }
+        // against the true slot times of the same packets: the
+        // frame-periodic sawtooth, at most a few slots
+        let carried: Vec<usize> = (0..sat.slots.len())
+            .filter(|&j| sat.slots[j].is_some())
+            .collect();
+        let dev: Vec<i64> = carried
+            .iter()
+            .enumerate()
+            .map(|(q, &j)| sat.slot_time(0, j) as i64 - s.slot_time(0, q) as i64)
+            .collect();
+        let (lo, hi) = (dev.iter().min().unwrap(), dev.iter().max().unwrap());
+        eprintln!("relative TS {r} ({n} slots): slot time − grid in [{lo}, {hi}] ticks");
+        assert!(hi > lo);
+    }
+    let s = Schedule::satellite_uniform(&bench_info(), 0).unwrap();
+    // 48 slots: 28 800/37 ticks per packet, units of 1/74 tick
+    assert_eq!((s.num, s.den), (1, 74));
+    assert_eq!(&s.start[..3], &[37, 57_637, 115_237]);
+}
+
+#[test]
+fn bs_bench_on_the_uniform_grid_stamps_its_pcrs_on_it() {
+    let schedule = Schedule::satellite_uniform(&bench_info(), 0).unwrap();
+    let mut mux =
+        Multiplexer::with_schedule(&bs_bench_config(), schedule, &tmpdir("sat_uniform")).unwrap();
+    let periods = 200u64;
+    let (mut full, mut times) = (Vec::new(), Vec::new());
+    for k in 0..periods {
+        let p = mux.next_period();
+        assert_eq!(p.len(), 384);
+        times.extend((0..384).map(|q| mux.slot_time(k, q)));
+        full.extend(p);
+    }
+    let r = analyze(&full, &times, 778);
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+    assert!(r.cc_events.is_empty(), "{:?}", r.cc_events);
+    let pcrs = &r.pcrs[&Pid::new(0x01FF).unwrap()];
+    assert_eq!(pcrs.len() as u64, periods);
+    for &(idx, arrival, pcr) in pcrs {
+        assert_eq!(pcr, arrival);
+        assert_eq!(pcr, grid(idx, 48), "PCR of packet {idx}");
+    }
+}

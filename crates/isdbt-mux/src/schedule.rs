@@ -18,6 +18,9 @@
 //!   of the TMCC information; one multiplexer per TS), the slot times from
 //!   `isdbs_core::slots::slot_byte_symbol` (the position before the
 //!   inter-frame interleaver), and units convert × 450/481 (28.860 Mbaud).
+//!   [`Schedule::satellite_uniform`] puts the TS's packets on the uniform
+//!   per-TS grid instead (packet q of the superframe at q · 1 382 400/(37·n_r)
+//!   ticks), the constant-rate TS a receiver outputs.
 //!
 //! Time of slot j of period k: `start_pcr + ⌊(k·period + start[j]) ·
 //! num/den⌋` ticks ([`Schedule::slot_time`]).
@@ -195,6 +198,56 @@ impl Schedule {
         })
     }
 
+    /// The schedule of relative TS `relative_ts` of `info` on the uniform
+    /// per-TS grid instead of the slot times: packet q of the TS's 8·n_r
+    /// per superframe (n_r sent slots per frame) at q · 1 382 400/(37·n_r)
+    /// ticks, rounded to the nearest tick (⌊x + ½⌋), and its PCR equal to
+    /// that time. This is the constant-rate TS a receiver outputs for the
+    /// TS_ID, to which real BS transponders stamp their PCRs (a CBR fit
+    /// of their TSs leaves 21–68 ns; docs/plans/isdbs-next/pcr-pacing.md
+    /// §3.3), and the grid on which isdb-cli's PCR pacer (`SlotClock::isdbs`)
+    /// places a TS file. [`satellite`](Self::satellite) has the true slot
+    /// times instead, whose frame-periodic steps (192 + 4 more symbols
+    /// across each frame header) put a sawtooth of up to 6.7 µs on the
+    /// PCRs against this grid (SPEC-NOTES "ISDB-S timing model").
+    ///
+    /// The slots are the TS's own only (8·n_r, all lane 0: the other TSs'
+    /// slots have no time on this grid, and the multiplexer counts packets
+    /// per lane); the unit is 1/(2·b) tick with the grid's ticks per packet
+    /// a/b in lowest terms (28 800/37 for 48 slots), packet q starting at
+    /// 2·q·a + b units, so that the schedule's ⌊units · 1/(2·b)⌋ is
+    /// ⌊q·a/b + ½⌋ exactly. A PCR's value is its packet's start: the
+    /// 10/188 of a packet to the PCR byte is a constant offset, which
+    /// leaves PCR/PTS/DTS consistent, and isdb-cli's pacer stamps the
+    /// same. Rates, PCR default and lanes are those of
+    /// [`satellite`](Self::satellite).
+    ///
+    /// # Errors
+    ///
+    /// As [`satellite`](Self::satellite).
+    pub fn satellite_uniform(info: &TmccInfo, relative_ts: usize) -> Result<Self> {
+        let sat = Self::satellite(info, relative_ts)?;
+        let n = ts_slots(info, relative_ts) as u64;
+        // ticks per packet: one frame (39 936 symbols × 450/481) over n
+        let (a, b) = (
+            FRAME_SYMBOLS as u64 * TICKS_PER_SYMBOL_NUM,
+            TICKS_PER_SYMBOL_DEN * n,
+        );
+        let g = gcd(a, b);
+        let (a, b) = (a / g, b / g);
+        let per_sf = FRAMES as u64 * n;
+        let start: Vec<u64> = (0..per_sf).map(|q| 2 * q * a + b).collect();
+        Ok(Self {
+            slots: vec![Some(0); start.len()],
+            pcr_byte: start.clone(),
+            start,
+            period: 2 * per_sf * a,
+            num: 1,
+            den: 2 * b,
+            ..sat
+        })
+    }
+
     /// The rules the multiplexer relies on: as many `start` and `pcr_byte`
     /// entries as slots, at least one slot, starts non-decreasing and
     /// inside the period, lanes (and the control lane) below 3 with a
@@ -328,4 +381,12 @@ impl Schedule {
     pub(crate) fn layer(lane: usize) -> Layer {
         Layer::ALL[lane.min(2)]
     }
+}
+
+/// Greatest common divisor (Euclid).
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }

@@ -75,8 +75,22 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
   sawtooth (≤ 6.7 µs) on top of the uniform 832-symbol grid a CBR fit
   of the receiver's output would show (docs/plans/isdbs-next/pcr-pacing.md
   §3.3: real BS TSs fit that grid within tens of ns).
-- Confirmation: pending (B20/B21 receiver model; a tuner's TS output
-  checked with `isdb ts validate`).
+- Uniform grid (`Schedule::satellite_uniform`): the TS's own 8·n_r slots
+  only, packet q at ⌊q · 1 382 400/(37·n_r) + ½⌋ ticks (units of 1/(2b)
+  tick, 28 800/37 = a/b ticks per packet for 48 slots, start 2qa + b),
+  its PCR equal to that time. This is the constant-rate TS a receiver
+  outputs, and what isdb-cli uses by default (`isdb tx --system isdbs
+  --mux-config`, `--mux-pcr-grid uniform`; the choice, its evidence and
+  measurements are in isdb-cli SPEC-NOTES "PCRs of the in-process ISDB-S
+  multiplexer"). Against it the true slot times of `satellite` run 3…180
+  ticks off for a 48-slot TS and −10 835…+12 574 ticks for a TS of 16
+  contiguous slots per frame (`tests/satellite.rs`).
+- Confirmation: internal (`tests/satellite.rs`: the slot times equal
+  `packet_symbol`; the uniform times equal the rounded grid, the PCRs of
+  `bs-bench.toml` on it exactly); offline through `isdb tx --iq` → `isdb
+  rx` → `isdb ts validate --expect-rate 52170000:1` (isdb-cli). Pending:
+  B20/B21's receiver model, and a tuner's TS output checked with
+  `isdb ts validate` on the bench.
 
 ## PCR packets per frame at fixed positions
 - Spec: B31 Part 2 §3.2.4, Table 3-5; H.222.0 §2.7.2.
