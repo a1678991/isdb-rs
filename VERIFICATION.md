@@ -2020,7 +2020,12 @@ as an edge (up to a GOP of foreign pictures, the first audio frames), in
 loop mode one order jump per pass boundary in the 30 s (3), in live mode
 none. Open (media-and-margin.md §2.3, §8): whether the DT295 passes the
 ISDB-S ES PIDs with `--raw-config` as it does for ISDB-T. Then mirakc / a
-player for the picture itself.
+player for the picture itself. The DT295 drops the CAT without a null and
+rewrites the CC of adaptation-only packets (section "ISDB-S PCR-paced
+placement and BS SI into the PIX-DT295" below): bench-check's
+`--receiver dt295` accounts for it with `--placed`; the live run has no
+placed TS, so its index-based CBR fit shows the one-packet sawtooth
+(±14.4 µs) and FAILs on that line alone.
 
 ## ISDB-S transmitter in the FPGA: image 2, prefetch / BANK_TAG / 64-bit counters (2026-10-31)
 
@@ -2131,7 +2136,132 @@ kill "$(cat "$W/tx.pid")"
 Expected: bench-check PASS (rate within 100 ppm, CBR fit ≤ 100 ns as
 offline, the recording identical to the placed TS), and with media
 (`tools/bench-media.py` on `bs.toml`) `media-decode-check.py --max-jumps
-0`.
+0`. The DT295's own changes to the TS (next section) are accounted for by
+bench-check's default `--receiver dt295`.
+
+## ISDB-S PCR-paced placement and BS SI into the PIX-DT295 (2026-10-31)
+
+The bench acceptance of docs/plans/isdbs-next.md items 1 (PCR-paced
+placement) and 2 (BS-shaped SI). TX1 of the PlutoSky R2 → 30 dB fixed
+attenuator → DC block → PIX-DT295 satellite input; FPGA image 2
+(prefetch, BANK_TAG: the bank was already loaded, 3 commands at open),
+Tezuka v0.3.24, TX attenuation 45 dB, BS1 IF 1049.48 MHz.
+
+```sh
+D=~/dev/sdr/isdbs-bench
+tools/isdbs-bench-tx.sh --feed loop --placed 'placed-{ts_id}.ts' "$D" 45 ip:10.10.0.30 &
+tools/isdbs-bench-check.sh --record 20 --placed "$D/placed-4017.ts" "$D/rec-bs-paced.ts"
+```
+
+`bs-bench.toml` multiplexed for 60 s (`bs60.ts`, declared streams, PCR
+on 0x01FF) sent as TS_ID 0x4017, paced by its PCR and looped seamlessly
+(`--feed loop`), with the slots' packets kept in `placed-4017.ts`. The
+recording began 10.3 s into the broadcast (placed packet 358 635).
+
+| | |
+|---|---|
+| transmitter | 0 underruns, TX block `MISSED 0` over the whole run (still on air past 300 s), PCR lag 0.00 s, null fill 99.9 % |
+| tuner | **locked at the first tune**: `Locked` after 121 ms (TC90532 0xC3 = 00), bc 0x0b75, error counters 000000/000000 |
+| `dt295 stream --raw-config` 20 s | 130 234 368 bytes at 52.03 Mbit/s, 692 736 packets, 0 sync losses, 0 TEI, 0 CC errors, every packet `scrambling_control 00`, 216 PAT sections CRC-good; PIDs 0x1FFF, 0x01FF (344), 0x01F0 (221), 0x0000 (216), 0x0012, 0x0011, 0x0010, 0x0014, 0x0024 — **no 0x0001** |
+| SI as received | `NIT network_id 0x0004 "ベンチ": TS 0x4017 onid 0x0004, satellite 11727.48 MHz 110.0°E circular-right`; `SDT TS 0x4017 service 0x03e7 type 0x01 "ベンチHD"`; `expect` and `cross.*`: none |
+
+The raw `isdb ts validate` of the recording (as bench-check printed it
+before this change, which judged it FAIL):
+
+```text
+ERROR   [tables.mandatory] table_id 0x01: mandatory CAT not transmitted
+WARNING [pcr.accuracy] pid 0x01ff: max deviation from a constant-rate fit 14537 ns, rms 8311 ns
+WARNING [pid.missing] program 0x03e7: elementary PID 0x0111 / 0x0112 listed in PMT has no packets  (declared streams)
+WARNING [tables.frequency] pid=0x01f0 tid=0x02 ext=0x03e7 sn=0: PMT: measured max interval 0.090 s, max gap incl. capture edges 0.119 s
+INFO    [pcr.rate] pid 0x01ff: PCR-implied rate 52.168331 Mbit/s (-32.0 ppm)
+```
+
+and the old byte compare aligned on an SDT packet (which repeats
+unchanged from loop pass to loop pass) and found 1600 of 692 736
+packets displaced.
+
+**What the receiver does.** Against the placed TS, aligned on PCR values
+(`tools/ts-align-compare.py`), every finding is the PIX-DT295's raw
+output, not the air:
+
+- **All 344 PCR values of the recording are in the placed TS**, each
+  once and in order, and the packets between them are the placed TS's,
+  nulls included, but for the packets below.
+- **The CAT is dropped without a null in its place**: all 22 CAT packets
+  (PID 0x0001, one every 31 229–31 469 packets, ≈ 0.90 s) of the placed
+  TS are missing and the recording is that much shorter. The DT295's PID
+  filter passes the SI PIDs 0x10, 0x11, 0x12, 0x14, 0x23, 0x24, 0x25,
+  0x28, 0x29 and 0x1FFF in fixed slots and the PMT/PCR/ES PIDs by
+  AUTO_PID_MODE (PIX-DT295 docs/stream-investigation.md, "The other
+  lists"); the CAT is in neither.
+- **PMT and PCR packets are dropped until the filter has learnt their
+  PIDs**: the PMT at recording position 985 (before the first PAT, at
+  1048) and the two PCRs before the first PMT (4116) are missing, again
+  without nulls. Hence the PMT's 0.119 s gap at the capture's start:
+  every PMT interval of the recording is 0.090 s.
+- **The continuity_counter of adaptation-only packets is rewritten**:
+  byte 3 of every PCR packet is 0x20 in the recording, 0x2F in the
+  placed TS (H.222.0 §2.4.3.3: the CC does not increment in a packet
+  without payload; the multiplexer leaves 0xF). Nothing else differs.
+- Each dropped packet shortens the recording by one packet time
+  (1504 bits at 52.17 Mbit/s = 28.83 µs), so a fit of the PCRs against
+  the recording's own packet index sees a sawtooth of one packet peak
+  to peak (±14.4 µs) with the CAT's period, which is `pcr.accuracy`'s
+  14 537 / 8 311 ns, and a rate 22 packets in 692 736 low, which is
+  `pcr.rate`'s −32 ppm.
+
+`tools/isdbs-bench-check.sh --placed` (default `--receiver dt295`:
+`--receiver-drops 0x0001 --receiver-learns --ignore-af-only-cc`) on the
+same pair, `--rate 52170000:1 --fit-max-ns 100`:
+
+```text
+aligned on 344 PCR values (pid 0x01ff): recording packet 4473 = reference packet 363108; 692736 of 692736 recording packets compared
+packets: 692392 identical, 344 identical but for the CC of an adaptation-only packet, 0 mismatches; dropped by the receiver (no null in their place): pid 0x0001 x22; before it had learnt the PID: pid 0x01f0 x1, pid 0x01ff x2
+PASS: 692736 packets identical modulo receiver drops and CC rewrites
+PASS: 344 of 344 PCR values of the recording found in the reference (0 absent, 0 more than once, 0 out of order)
+  recording, index-based:       344 PCRs, ticks/packet 778.403278 (rate 52.168331 Mbit/s), residual rms 8311 ns max 14537 ns, lag-1 autocorrelation +0.64; dominant period 31290 packets (21.99 cycles, 61% of the residual power)
+  receiver drops 22 packets, one every 31229..31468 (mean 31295) recording packets; one packet time 28830 ns
+  recording, drops re-inserted: 344 PCRs, ticks/packet 778.378378 (rate 52.170000 Mbit/s), residual rms 11 ns max 19 ns, lag-1 autocorrelation +0.69; dominant period 28132 packets (24.46 cycles, 35% of the residual power)
+  reference, same span:         344 PCRs, ticks/packet 778.378378 (rate 52.170000 Mbit/s), residual rms 11 ns max 19 ns, lag-1 autocorrelation +0.69; dominant period 28132 packets (24.46 cycles, 35% of the residual power)
+== verdict
+PASS  no pcr.* finding above info (rate, interval, accuracy, discontinuity) but the index-based pcr.accuracy and pcr.rate, explained below
+PASS  PCR-implied rate measured
+EXPLAINED [pcr.accuracy] pid 0x01ff: index-based CBR-fit max 14537 ns rms 8311 ns: explained by the receiver, which dropped 25 packets without a null (pid 0x0001 x22, pid 0x01f0 x1 before it had learnt the PID, pid 0x01ff x2 before it had learnt the PID), one every 31295 packets; the residual's period 31290 packets
+EXPLAINED [pcr.rate] pid 0x01ff: PCR-implied rate 52.168331 Mbit/s (-32.0 ppm), expected 52.170000 Mbit/s ± 1 ppm: the index-based rate, explained by the receiver's 25 dropped packets; with them re-inserted 52.170000 Mbit/s (-0.0 ppm, within 1)
+EXPLAINED [tables.mandatory] CAT not received: explained by the receiver, which dropped all 22 CAT packets of the placed TS in the capture
+EDGE  [tables.frequency] PMT pid=0x01f0 tid=0x02 ext=0x03e7 sn=0: every interval within 0.1 s (max 0.090 s, 220 intervals); only the gap at the capture's edge, 0.119 s, exceeds it; the receiver dropped 1 packet(s) of pid 0x01f0 before it had learnt the PID
+PASS  no tables.frequency finding beyond the capture's edges
+PASS  TS_ID and network as expected
+PASS  no cross.* finding (SI identities, delivery system)
+EXPLAINED CBR-fit max 14537 ns rms 8311 ns (index-based, pid 0x01ff) > 100 ns: explained by the receiver's dropped packets (corrected fit below)
+PASS  PCR values all present in the placed TS (344 of 344)
+PASS  corrected CBR-fit max 19 ns rms 11 ns ≤ 100 ns (receiver-dropped packets re-inserted)
+PASS  content identical to the placed TS modulo receiver drops (pid 0x0001 x22, pid 0x01f0 x1 before it had learnt the PID, pid 0x01ff x2 before it had learnt the PID) and 344 CC rewrites (692736 packets)
+PASS
+```
+
+So the TS on air is the placed TS byte for byte: **PCR-implied rate
+52.170000 Mbit/s, CBR fit max 19 ns / rms 11 ns** over the recording's
+span (the placed TS's own, its first 11 056 PCRs, ≈ 640 s as the file stood: max
+18 ns, rms 11 ns, `tools/ts-pcr-residuals.py`), within H.222.0's ±500 ns
+and the 100 ns target, PAT every 0.090–0.094 s, PMT every 0.090 s, SDT
+and EIT p/f every 1.80 s, NIT 9.0 s. Items 1 and 2 are accepted on the
+bench, with the caveat that the PIX-DT295's raw output is not the TS on
+air (CAT filtered out, PMT/PCR until learnt, CC of adaptation-only
+packets rewritten): a check of its recordings needs the placed TS, or
+it reads the drops as timing errors. Still open from bs-si.md §6.4 item
+7: the tuner software's / mirakc's channel list.
+
+Tools: `tools/ts-align-compare.py` (PCR-value alignment, `--receiver-drops
+PIDS`, `--receiver-learns`, `--ignore-af-only-cc`, the three fits),
+`tools/ts-pcr-residuals.py` (its period estimate redone: a periodogram
+over the actual packet indices, at least two cycles, refined to 0.01
+cycle, with the fundamental's share of the residual power),
+`tools/isdbs-bench-check.sh --receiver dt295|exact --receiver-drops PIDS`
+(EXPLAINED / EDGE verdicts), self-tested by `tools/isdbs-bench-check-test.sh`
+(a placed-like TS from `isdb mux` and recordings cut from it the DT295's
+way: PASS with `dt295`, FAIL with `exact`, FAIL for a missing null, a
+changed PCR, a changed payload byte, or a CAT replaced by a null).
 
 ## Open questions
 

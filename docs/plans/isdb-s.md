@@ -911,8 +911,23 @@ Connections reported by the user on 2026-10-20:
 |---|---|
 | RX1 | cable (CATV) feed: terrestrial ISDB-T recast on its UHF channels, and the satellite IF (BS / CS) |
 | RX2 | 510 mm 144 / 430 MHz antenna |
-| TX1 | PIX-DT295 (ISDB-T/S USB tuner, `06b8:103b`) through a **30 dB fixed attenuator and a DC block** (since 2026-10-29; VERIFICATION.md "ISDB-S transmitter in the FPGA: into the PIX-DT295"); transmit at attenuation ≥ 45 dB unless measuring the margin. Disconnected on 2026-10-31 (isdbs-next.md "Bench") |
+| TX1 | PIX-DT295 (ISDB-T/S USB tuner, `06b8:103b`) through a **30 dB fixed attenuator and a DC block** (since 2026-10-29; VERIFICATION.md "ISDB-S transmitter in the FPGA: into the PIX-DT295"); transmit at attenuation ≥ 45 dB unless measuring the margin. Disconnected and reconnected on 2026-10-31 (isdbs-next.md "Bench") |
 | TX2 | open, no load |
+
+**The PIX-DT295's raw output is not the TS on air** (`dt295 stream
+--raw-config`; VERIFICATION.md "ISDB-S PCR-paced placement and BS SI
+into the PIX-DT295 (2026-10-31)"). Its PID filter passes the SI PIDs
+0x10, 0x11, 0x12, 0x14, 0x23, 0x24, 0x25, 0x28, 0x29 and 0x1FFF in fixed
+slots and the PMT/PCR/ES PIDs by AUTO_PID_MODE (PIX-DT295
+docs/stream-investigation.md, "The other lists"); everything else,
+the CAT (0x0001) included, is dropped **without a null in its place**,
+as are the PMT and PCR packets before the filter has learnt their PIDs
+from the PAT/PMT. It also rewrites the continuity_counter of
+adaptation-only packets (0xF → 0x0). Each dropped packet shortens the
+recording by one packet time (28.8 µs at 52.17 Mbit/s), so a CBR fit
+against the recording's packet index sees a ±14.4 µs sawtooth with the
+CAT's period; `tools/isdbs-bench-check.sh --placed` (`--receiver dt295`,
+the default) re-inserts the drops against the transmitter's placed TS.
 
 **Before any TX test on TX1** (all three are required; 1 and 2 were in
 place on the bench from 2026-10-29 — check them again after any

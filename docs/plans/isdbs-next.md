@@ -46,10 +46,15 @@ rustdoc clean, FPGA suite 24/24):
   `cf-ad9361-lpc`. Vivado 2026.1 at `/opt/Xilinx/2026.1`; the build work
   tree is `~/dev/sdr/isdb-work` (`out/isdb/plutoskyr2.xsa`,
   `isdb_txrx_top.bin`, reports); upstream sources at `~/dev/sdr/`.
-- **2026-10-31: TX1 is not connected to the PIX-DT295** (the user's
-  word); reconnect TX1 → 30 dB → DC block → tuner before the bench
-  acceptance of item 1. Unconnected, `dt295 tune` reads 0xC3 = 50,
-  `Searching`.
+- **2026-10-31: TX1 was disconnected from the PIX-DT295** (the user's
+  word) and reconnected the same day for the bench acceptance of items 1
+  and 2 (VERIFICATION.md "ISDB-S PCR-paced placement and BS SI into the
+  PIX-DT295"). Unconnected, `dt295 tune` reads 0xC3 = 50, `Searching`.
+- The DT295's raw output (`stream --raw-config`) is not the TS on air: its
+  PID filter drops the CAT (0x0001) without a null, and the PMT/PCR PIDs
+  until it has learnt them from the PAT/PMT, and it rewrites the CC of
+  adaptation-only packets. `tools/isdbs-bench-check.sh --placed` accounts
+  for it (`--receiver dt295`, the default).
 - TX1 → 30 dB attenuator → DC block → PIX-DT295 (USB `06b8:103b`, hub
   port `1-2.1`), driven by `~/dev/PIX-DT295` (`target/release/dt295`:
   `init [--auto]`, `tune --isdbs bs1 --tsid 4017`, `status --isdbs
@@ -79,7 +84,7 @@ rustdoc clean, FPGA suite 24/24):
 
 1. **PCR-paced placement in the ISDB-S producer** (`crates/isdb-cli/src/
    txs.rs`). **Status 2026-10-30: implemented and verified offline,
-   bench acceptance pending.** P1–P6 of
+   bench acceptance 2026-10-31 (below).** P1–P6 of
    [pcr-pacing.md](isdbs-next/pcr-pacing.md) §9 are on `main`
    (`fad5559..4d105ea`): `--ts-pacing auto|pcr|arrival`, `--placed-ts`,
    loop seams joined (PCR/PTS/DTS shift, CC renumbering), live inputs
@@ -87,10 +92,18 @@ rustdoc clean, FPGA suite 24/24):
    `--iq` → `isdb rx` (`tools/isdbs-pacing-e2e.sh`, FEED=file|loop|live):
    52.170000 Mbit/s, CBR-fit max 19 ns / rms 11 ns, 0 CC errors and 0 PCR
    discontinuities across loop seams, received TS byte-exact with
-   `--placed-ts`, no live deadline miss. Left: `tools/isdbs-bench-tx.sh
-   --feed loop --placed …` into the PIX-DT295, then
-   `tools/isdbs-bench-check.sh --record 20 --placed …`, into
-   VERIFICATION.md. Original problem: a live feed's packets are placed in arrival order,
+   `--placed-ts`, no live deadline miss. **Bench acceptance done
+   2026-10-31** (VERIFICATION.md "ISDB-S PCR-paced placement and BS SI
+   into the PIX-DT295"): `tools/isdbs-bench-tx.sh --feed loop --placed …`
+   at 45 dB into the PIX-DT295, locked at the first tune; all 344 PCR
+   values of a 20 s recording are in the placed TS, which the recording
+   equals byte for byte; PCR rate 52.170000 Mbit/s, CBR fit max 19 ns /
+   rms 11 ns with the receiver's drops re-inserted. Caveat: the DT295's
+   raw output drops the CAT (and PMT/PCR until it has learnt their PIDs)
+   without a null and rewrites the CC of adaptation-only packets, so its
+   index-based fit reads ±14.4 µs and validate a missing CAT;
+   `tools/isdbs-bench-check.sh --placed` (default `--receiver dt295`)
+   accounts for that. Original problem: a live feed's packets are placed in arrival order,
    one superframe at a time from the reader queue: the PIX-DT295
    recording shows PAT/PMT intervals of 0.17–0.21 s and 12–30 ms rms PCR
    jitter against H.222.0's ±500 ns (VERIFICATION.md "into the
@@ -119,10 +132,15 @@ rustdoc clean, FPGA suite 24/24):
    Acceptance: `isdb ts validate` clean; the PIX-DT295's software (or
    `dt295`'s SI readout) lists the bench service as a BS channel.
    Status: pieces A–D merged; offline end to end clean (VERIFICATION.md
-   "ISDB-S BS-shaped SI, offline"). The bench acceptance (bs-si.md §6.4
-   item 7: `tools/isdbs-bench-tx.sh --feed loop`, `dt295 tune --isdbs bs1
-   --tsid 4017`, `tools/isdbs-bench-check.sh --record 20`, then mirakc)
-   waits for TX1 to be reconnected.
+   "ISDB-S BS-shaped SI, offline"). **Bench acceptance done 2026-10-31**
+   (bs-si.md §6.4 item 7, with item 1's run): the PIX-DT295 tuned with
+   `--tsid 4017` locked at the first tune and received NIT network_id
+   0x0004 "ベンチ" with TS 0x4017 / onid 0x0004 / satellite 11727.48 MHz
+   110.0°E circular-right, SDT service 0x03E7 "ベンチHD", no `expect` or
+   `cross.*` finding (VERIFICATION.md "ISDB-S PCR-paced placement and BS
+   SI into the PIX-DT295"). The CAT is sent but the DT295's raw output
+   filters it out (same caveat as item 1). Left: mirakc / the tuner
+   software's channel list.
 3. **Media in the bench service and the tuner's decoder**: with
    `ISDB_RS_MEDIA_DIR` (docs/test-data.md) run `tools/isdbs-bench-tx.sh`
    with `bench.toml`'s media streams (the script uses `bench-minimal.toml`
