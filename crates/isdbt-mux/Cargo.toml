@@ -21,6 +21,8 @@ isdb-si.workspace = true
 isdb-text.workspace = true
 isdbt-core.workspace = true
 isdbt-fec.workspace = true
+# ISDB-S slot times for `Schedule::satellite` (isdbs-core needs only isdb-fec and thiserror)
+isdbs-core.workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true

@@ -43,6 +43,21 @@ STD-B44) is received to TLV streams.
   TS one media loop long; `FEED=live` then writes `isdb mux --out-ts -`
   into the FIFO) and runs the decode check on the received TS whenever it
   carries media.
+- `isdbt-mux`: `Schedule::satellite(&tmcc_info, relative_ts)`, the ISDB-S
+  superframe of one TS (piece I of docs/plans/isdbs-next/media-and-margin.md
+  §3.4): the sent slots of the 8 frames in transmission order, lane 0 for
+  the TS's own and `None` for the other TSs', each slot at the symbol of
+  its first on-air byte and its PCR byte (on-air byte 9) from
+  `isdbs_core::slots`, 319 488 symbols × 450/481 to ticks, 8 · n_r · 1 504
+  bit per superframe (52.17 Mbit/s for 48 TC8PSK slots), one PCR per
+  superframe by default (`timing.pcr_per_frame` counts per superframe),
+  PAT/NIT/CAT on the lane. `System::Satellite { info, relative_ts }`;
+  `Multiplexer::with_schedule` on it refuses a terrestrial network
+  (`network.kind`) and a service or table on layer B/C (`InactiveLayer`),
+  `next_period()` returns the TS's packets of a superframe; `params()` and
+  `pattern()` panic there (`schedule()` instead). isdbt-mux now depends on
+  `isdbs-core`. SPEC-NOTES "ISDB-S timing model" (pre-interleave slot
+  time; pending B20/B21).
 - `isdbt-mux`: the multiplexer runs on a `Schedule` (new `schedule`
   module): one period of slots (`Some(lane)` carried, `None` not), the
   start and PCR-byte time of each in units, the period, units → 27 MHz

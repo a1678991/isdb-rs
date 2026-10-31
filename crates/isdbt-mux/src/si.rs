@@ -798,17 +798,19 @@ impl SiBuilder {
         }
     }
 
-    /// The ISDB-T parameters of [`system`](Self::system).
-    fn params(&self) -> &Params {
+    /// The ISDB-T parameters of [`system`](Self::system), `None` on
+    /// ISDB-S.
+    fn params(&self) -> Option<&Params> {
         match &self.system {
-            System::Terrestrial(p) => p,
+            System::Terrestrial(p) => Some(p),
+            System::Satellite { .. } => None,
         }
     }
 
     /// Partial reception (ISDB-T B31 §3.15: layer A is the 1-segment
-    /// partial-reception layer).
+    /// partial-reception layer); none on ISDB-S.
     fn partial_reception(&self) -> bool {
-        self.params().partial_reception()
+        self.params().is_some_and(Params::partial_reception)
     }
 
     /// Default maximum repetition interval (ms) of B10 Table 5-2.
@@ -1090,8 +1092,13 @@ impl SiBuilder {
     }
 
     fn layer_rank(&self, layer: usize) -> u32 {
-        self.params().layers()[layer]
-            .map_or(u32::MAX, |l| robustness_rank(l.modulation, l.code_rate))
+        match self.params() {
+            Some(p) => {
+                p.layers()[layer].map_or(u32::MAX, |l| robustness_rank(l.modulation, l.code_rate))
+            }
+            // one lane (the TS) on ISDB-S
+            None => u32::from(layer != 0) * u32::MAX,
+        }
     }
 
     /// quality_level: explicit, or '1' for the stream on the less robust
@@ -1196,6 +1203,13 @@ impl SiBuilder {
                         what: "a terrestrial NIT without area_code or remote_control_key_id",
                     });
                 };
+                // Multiplexer::with_schedule refuses kind = "terrestrial"
+                // on another system
+                let Some(params) = self.params() else {
+                    return Err(MuxError::Internal {
+                        what: "a terrestrial NIT on an ISDB-S schedule",
+                    });
+                };
                 let mut freqs = Vec::new();
                 for (j, &ch) in n.channels.iter().enumerate() {
                     freqs.push(channel_frequency_code(
@@ -1207,8 +1221,8 @@ impl SiBuilder {
                 let mut ts = vec![
                     Descriptor::TerrestrialDeliverySystem(TerrestrialDeliverySystem {
                         area_code: area_code & 0x0FFF,
-                        guard_interval: guard_interval_code(self.params().guard()),
-                        transmission_mode: transmission_mode_code(self.params().mode()),
+                        guard_interval: guard_interval_code(params.guard()),
+                        transmission_mode: transmission_mode_code(params.mode()),
                         frequencies: freqs,
                     }),
                     ts_information(key)?,

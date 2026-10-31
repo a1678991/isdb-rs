@@ -52,9 +52,31 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
   Table 3-5), the lane rates of the relay check and the PAT/NIT/CAT lane
   (Table 3-1) all come from it. The output of `isdb mux` is byte-identical
   to the frame-based code it replaced (`isdb-cli/tests/mux_fixture.rs`
-  pins its SHA-256). The ISDB-S superframe schedule (one lane per relative
-  TS, slot times from `isdbs_core::slots::packet_symbol`, × 450/481) is
-  docs/plans/isdbs-next/media-and-margin.md §3.4, piece I.
+  pins its SHA-256). `Schedule::satellite` is the ISDB-S superframe
+  (next entry).
+
+## ISDB-S timing model: packet arrival = pre-interleave slot time [confirm against B20/B21]
+- Spec: BO.1408-1 §5 and Fig. 6 (inter-frame interleaver, depth 8), §8,
+  Fig. 9, Appendix 1 Table 3; MIC Ordinance No. 87 of 2011 Art. 52 ¶3
+  (28.860 Mbaud); H.222.0 §2.4.2.2 (PCR = time of the byte holding the
+  last bit of program_clock_reference_base).
+- Text: BO.1408-1 gives no model receiver for the TS timing (ISDB-T has
+  B31 §3.2.2); ARIB STD-B20 / B21 are not available locally.
+- Interpretation: one multiplexer per relative TS (`Schedule::satellite`,
+  one lane). Packet k of the TS in superframe s arrives at the symbol at
+  which its slot would start without the interleaver,
+  `s·319 488 + isdbs_core::slots::packet_symbol(info, r, k)`, × 450/481
+  to 27 MHz ticks; the PCR byte is on-air byte 9 of the slot. The
+  deinterleaver of a receiver delays every byte by the same amount (one
+  superframe for a depth-8 block deinterleaver), so arrival = this time +
+  a constant, which leaves PCR/PTS/DTS consistent. The slot times are not
+  uniform (TC8PSK 48 slots: 828-symbol steps inside a frame, 192 + 4 more
+  across the header), so the PCR intervals carry that frame-periodic
+  sawtooth (≤ 6.7 µs) on top of the uniform 832-symbol grid a CBR fit
+  of the receiver's output would show (docs/plans/isdbs-next/pcr-pacing.md
+  §3.3: real BS TSs fit that grid within tens of ns).
+- Confirmation: pending (B20/B21 receiver model; a tuner's TS output
+  checked with `isdb ts validate`).
 
 ## PCR packets per frame at fixed positions
 - Spec: B31 Part 2 §3.2.4, Table 3-5; H.222.0 §2.7.2.

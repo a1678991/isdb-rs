@@ -373,6 +373,9 @@ pub struct Timing {
     /// PCR packets per OFDM frame per service. Default: 1/2/4 for Mode
     /// 1/2/3 (B31 Part 2 §3.2.4 Table 3-5); must divide the layer's
     /// TSPs per frame and keep the interval ≤ 100 ms (H.222.0 §2.7.2).
+    /// On an ISDB-S schedule ([`crate::Schedule::satellite`]) the count is
+    /// per superframe (default 1, ≈ 11.07 ms) and must divide the TS's
+    /// packets per superframe.
     pub pcr_per_frame: Option<u32>,
     /// Section repetition is scheduled at `interval × margin` so that the
     /// measured interval stays within the configured maximum.

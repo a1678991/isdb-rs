@@ -534,6 +534,7 @@ dependencies = [
  "isdb-si",
  "isdb-text",
  "isdb-ts",
+ "isdbs-core",
  "isdbt-core",
  "isdbt-fec",
  "isdbt-phy",

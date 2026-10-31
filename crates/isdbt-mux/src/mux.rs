@@ -239,6 +239,7 @@ impl Multiplexer {
         schedule.validate()?;
         let pattern = match &schedule.system {
             System::Terrestrial(p) => Some(MultiplexPattern::new(p)),
+            System::Satellite { .. } => None,
         };
         Self::build(cfg, schedule, pattern, base_dir)
     }
@@ -284,6 +285,15 @@ impl Multiplexer {
         if let Some(w) = nid_warning {
             warn!(network_id = nid, "{w}");
             warnings.push(w);
+        }
+        if cfg.network.kind.is_terrestrial() && schedule.params().is_none() {
+            return Err(MuxError::config(
+                "network.kind",
+                format!(
+                    "\"terrestrial\" (the default) describes an ISDB-T network, but the schedule is {} (use kind = \"bs\")",
+                    schedule.lane_name(0)
+                ),
+            ));
         }
         if cfg.network.kind.is_terrestrial()
             && cfg.network.channels.is_empty()
@@ -881,7 +891,10 @@ impl Multiplexer {
             if per_frame == 0 || !n.is_multiple_of(per_frame) {
                 return Err(MuxError::config(
                     "timing.pcr_per_frame",
-                    format!("{per_frame} does not divide the {n} TSPs per frame of {id}"),
+                    format!(
+                        "{per_frame} does not divide the {n} TSPs per {} of {id}",
+                        schedule.period_name()
+                    ),
                 ));
             }
             if frame_ticks / per_frame as u64 > HZ / 10 {
@@ -948,20 +961,26 @@ impl Multiplexer {
             let rate = &probe.rate;
             let need = rate.required_bps + overhead;
             if need > cap {
-                let System::Terrestrial(params) = &schedule.system;
-                let msg = crate::capacity::over_capacity_message(
-                    params,
-                    id,
-                    need,
-                    &format!(
-                        "ts-program {} ({:.2} Mbit/s to deliver every packet by its decoding time over the whole file ({:.1} s, mean {:.2} Mbit/s) + {:.2} Mbit/s PCR/PSI/SI on layer {id})",
-                        probe.path.display(),
-                        rate.required_bps / 1e6,
-                        rate.span_s,
-                        rate.mean_bps / 1e6,
-                        overhead / 1e6
-                    ),
+                let lane = schedule.lane_name(*layer);
+                let what = format!(
+                    "ts-program {} ({:.2} Mbit/s to deliver every packet by its decoding time over the whole file ({:.1} s, mean {:.2} Mbit/s) + {:.2} Mbit/s PCR/PSI/SI on {lane})",
+                    probe.path.display(),
+                    rate.required_bps / 1e6,
+                    rate.span_s,
+                    rate.mean_bps / 1e6,
+                    overhead / 1e6
                 );
+                let msg = match &schedule.system {
+                    System::Terrestrial(params) => {
+                        crate::capacity::over_capacity_message(params, id, need, &what)
+                    }
+                    // TODO(piece J): suggest a slot count for the TS
+                    System::Satellite { .. } => format!(
+                        "{what} needs {:.2} Mbit/s; {lane} carries {:.2} Mbit/s: give it more slots",
+                        need / 1e6,
+                        cap / 1e6
+                    ),
+                };
                 match st.rate_check {
                     crate::config::RateCheck::Error => {
                         return Err(MuxError::OverCapacity {
@@ -1246,19 +1265,27 @@ impl Multiplexer {
     }
 
     /// Transmission parameters (the [`System::Terrestrial`] of the
-    /// schedule).
+    /// schedule; [`Schedule::params`] for any schedule).
+    ///
+    /// # Panics
+    ///
+    /// On a multiplexer of a [`System::Satellite`] schedule.
     pub fn params(&self) -> &Params {
-        match &self.schedule.system {
-            System::Terrestrial(p) => p,
+        match self.schedule.params() {
+            Some(p) => p,
+            None => panic!("Multiplexer::params of an ISDB-S schedule (use schedule())"),
         }
     }
 
     /// The multiplex-frame slot pattern of [`params`](Self::params).
+    ///
+    /// # Panics
+    ///
+    /// On a multiplexer of a [`System::Satellite`] schedule.
     pub fn pattern(&self) -> &MultiplexPattern {
         match &self.pattern {
             Some(p) => p,
-            // `build` always has one for a terrestrial schedule
-            None => unreachable!("a terrestrial schedule without its pattern"),
+            None => panic!("Multiplexer::pattern of an ISDB-S schedule (use schedule())"),
         }
     }
 
