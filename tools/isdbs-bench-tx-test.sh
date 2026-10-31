@@ -10,7 +10,12 @@
 # line of each feed mode, that isdb's exit status is propagated, that
 # INT/TERM reach isdb, and that no `cat`/`pv` of the FIFO pacer survives
 # any exit path (the `while :; do cat …` loop and `exec` that dropped the
-# EXIT trap, docs/plans/isdbs-next/media-and-margin.md §1).
+# EXIT trap, docs/plans/isdbs-next/media-and-margin.md §1). --media runs on
+# stub media files (a sequence header and 30 picture start codes, 47 empty
+# ADTS frames; no real media needed): the media directory's resolution and
+# refusals, the media TOML, the TS length from the media length, the TS
+# made again when a media file is newer, and fifo mode's live `isdb mux`
+# writer, which no exit path may leave behind either.
 #
 # Usage: tools/isdbs-bench-tx-test.sh     (needs pv and setsid; exits 0 on PASS)
 set -euo pipefail
@@ -28,7 +33,7 @@ touch -d '1 minute ago' "$WORK/bs-bench.toml"
 head -c $((188 * 4000)) /dev/zero > "$WORK/bs60.ts"
 
 # The dummy: logs its arguments; `isdb mux` writes a small --out-ts and
-# exits 0; otherwise DUMMY=exit:N exits N at once, DUMMY=read:N reads
+# exits 0 (--out-ts -: zeros to stdout until the reader is gone); otherwise DUMMY=exit:N exits N at once, DUMMY=read:N reads
 # 4 KiB of its --ts input then exits N, DUMMY=wait runs until a TERM/INT
 # and exits 7.
 cat > "$T/isdb" <<'SH'
@@ -36,7 +41,10 @@ cat > "$T/isdb" <<'SH'
 printf '%s\n' "$*" >> "$DUMMY_LOG"
 if [ "$1" = mux ]; then
     while [ $# -gt 0 ]; do
-        [ "$1" = --out-ts ] && head -c $((188 * 4000)) /dev/zero > "$2"
+        if [ "$1" = --out-ts ]; then
+            [ "$2" != - ] || exec cat /dev/zero
+            head -c $((188 * 4000)) /dev/zero > "$2"
+        fi
         shift
     done
     exit 0
@@ -58,11 +66,12 @@ export ISDB=$T/isdb DUMMY_LOG=$T/log
 
 FAIL=0
 check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; FAIL=1; fi; }
-# Processes still running in WORK (the pacer's cat/pv/bash, the dummy).
+# Processes still running in WORK, or the directory given (the pacer's
+# cat/pv/bash, the dummy and its live mux).
 leftovers() {
-    local n=0 p
+    local n=0 p d=${1:-$WORK}
     for p in /proc/[0-9]*; do
-        [ "$(readlink "$p/cwd" 2>/dev/null)" = "$WORK" ] && n=$((n + 1))
+        [ "$(readlink "$p/cwd" 2>/dev/null)" = "$d" ] && n=$((n + 1))
     done
     echo "$n"
 }
@@ -117,6 +126,74 @@ check "no --placed-ts unless asked" '! grep -q -- "--placed-ts" "$DUMMY_LOG"'
 DUMMY=exit:0 run --feed loop --placed 'placed-{ts_id}.ts' "$WORK"
 check "--placed passes --placed-ts" 'grep -q -- "--feed loop --placed-ts placed-{ts_id}.ts --status-secs" "$DUMMY_LOG"'
 
+# --media on stub media: 30 pictures at 29.97 Hz (1.001 s) and 47 ADTS
+# frames of 1024 samples at 48 kHz (1.003 s, the longer): the TS is the
+# 4 OFDM frames (0.925 s) nearest to the media loop.
+M=$T/media
+mkdir -p "$M"
+python3 -I - "$M" <<'PY'
+import sys
+d = sys.argv[1]
+with open(f"{d}/video.m2v", "wb") as f:
+    f.write(b"\x00\x00\x01\xb3\x5a\x04\x38\x34\xff\xff\xe0\x18")  # 1440x1080, 29.97 Hz
+    f.write(b"\x00\x00\x01\x00\x00\x0f" * 30)
+with open(f"{d}/audio.m2a", "wb") as f:
+    f.write(bytes.fromhex("fff14c8000fffc") * 47)  # ADTS LC 48 kHz 2 ch, 7 bytes each
+PY
+W3=$T/work3
+mkdir -p "$W3"
+DUMMY=exit:0 run --media="$M" "$W3"
+check "--media=DIR: bs-bench-media.toml with the media streams, warn, TS_ID 0x4017" \
+    '[ $RC = 0 ] && grep -q "^transport_stream_id = 0x4017" "$W3/bs-bench-media.toml" && grep -qx "  source = \"$M/video.m2v\"" "$W3/bs-bench-media.toml" && grep -qx "  source = \"$M/audio.m2a\"" "$W3/bs-bench-media.toml" && grep -q "kind = \"mpeg2-video\"" "$W3/bs-bench-media.toml" && grep -q "kind = \"aac-adts\"" "$W3/bs-bench-media.toml" && grep -qx "  adts_compliance = \"warn\"" "$W3/bs-bench-media.toml" && ! grep -q "kind = \"declared\"" "$W3/bs-bench-media.toml"'
+check "--media: the TS is one media loop, 4 OFDM frames, into bs-media.ts" \
+    'grep -qx "mux -c bs-bench-media.toml --frames 4 --out-ts bs-media.ts" "$DUMMY_LOG" && grep -q "media loop 1.003 s -> TS of 4 OFDM frames = 0.925 s" "$T/out"'
+check "--media: --feed loop by default, bs-media.ts as TS_ID 0x4017, --rf-enable" \
+    'grep -q -- "--rf-enable --gain att=45 --ts 0x4017=$W3/bs-media.ts --feed loop" "$DUMMY_LOG" && [ ! -e "$W3/ts.fifo" ] && grep -q "bs SI with media, TS_ID 0x4017" "$T/out"'
+DUMMY=exit:0 ISDB_RS_MEDIA_DIR=$M run --media "$W3"
+check "--media: ISDB_RS_MEDIA_DIR, an up-to-date TS not multiplexed again" \
+    '[ $RC = 0 ] && grep -q "media from $M:" "$T/out" && ! grep -q "^mux " "$DUMMY_LOG"'
+touch -d '1 minute ago' "$W3/bs-media.ts"
+touch "$M/audio.m2a"
+DUMMY=exit:0 run --media="$M" "$W3"
+check "--media: a media file newer than the TS is multiplexed again" 'grep -q "^mux -c bs-bench-media.toml" "$DUMMY_LOG"'
+DUMMY=exit:0 run --media="$M" --dry-run "$W3"
+check "--media --dry-run replaces --rf-enable" '[ $RC = 0 ] && grep -q -- "--dry-run" "$DUMMY_LOG" && ! grep -q -- "--rf-enable" "$DUMMY_LOG"'
+DUMMY=exit:0 run --media="$M" "$W3" 44
+check "--media: ATT 44 refused without --margin" '[ $RC = 2 ] && [ ! -s "$DUMMY_LOG" ]'
+
+mkdir -p "$T/noaudio"
+cp "$M/video.m2v" "$T/noaudio/"
+DUMMY=exit:0 run --media="$T/noaudio" "$W3"
+check "--media: a directory without audio.m2a refused" '[ $RC = 2 ] && grep -q "noaudio/audio.m2a is missing" "$T/out" && [ ! -s "$DUMMY_LOG" ]'
+DUMMY=exit:0 run --media="$T/absent" "$W3"
+check "--media: a missing directory refused" '[ $RC = 2 ] && grep -q "is not a directory" "$T/out" && [ ! -s "$DUMMY_LOG" ]'
+mkdir -p "$T/badaudio"
+cp "$M/video.m2v" "$T/badaudio/"
+head -c 100 /dev/zero > "$T/badaudio/audio.m2a"
+DUMMY=exit:0 run --media="$T/badaudio" "$W3"
+check "--media: audio without ADTS sync refused" '[ $RC = 2 ] && grep -q "no ADTS sync" "$T/out" && [ ! -s "$DUMMY_LOG" ]'
+DUMMY=exit:0 run --media="$M" --terrestrial-si "$W3"
+check "--media with --terrestrial-si refused" '[ $RC = 2 ] && [ ! -s "$DUMMY_LOG" ]'
+if [ -d "$HERE/crates/isdbt-mux/examples/media" ]; then
+    echo "skip --media without any media directory (crates/isdbt-mux/examples/media exists)"
+else
+    DUMMY=exit:0 ISDB_RS_MEDIA_DIR='' run --media "$W3"
+    check "--media without any media directory refused" '[ $RC = 2 ] && grep -q "no media directory" "$T/out" && [ ! -s "$DUMMY_LOG" ]'
+fi
+
+# fifo mode with media: a live `isdb mux --out-ts -` (the dummy writes
+# zeros until its reader is gone) paced by pv; no TS file.
+rm -f "$W3/bs-media.ts"
+DUMMY=read:0 run --media="$M" --feed fifo "$W3"
+check "--media --feed fifo: live isdb mux into the FIFO, --feed live, no TS file" \
+    '[ $RC = 0 ] && grep -qx "mux -c bs-bench-media.toml --seconds 86400 --out-ts -" "$DUMMY_LOG" && grep -q -- "--ts 0x4017=$W3/ts.fifo --feed live" "$DUMMY_LOG" && [ ! -e "$W3/bs-media.ts" ]'
+sleep 0.3
+check "--media --feed fifo: no writer left after a normal exit" '[ "$(leftovers "$W3")" = 0 ]'
+DUMMY=exit:5 run --media="$M" --feed fifo "$W3"
+check "--media --feed fifo: isdb's status 5 propagated" '[ $RC = 5 ]'
+sleep 0.3
+check "--media --feed fifo: no writer left when isdb never opened the FIFO" '[ "$(leftovers "$W3")" = 0 ]'
+
 DUMMY=read:0 run "$WORK"
 check "fifo: isdb read the FIFO and exited 0" '[ $RC = 0 ] && grep -q -- "--ts 0x4017=$WORK/ts.fifo --feed live" "$DUMMY_LOG"'
 sleep 0.3
@@ -138,23 +215,28 @@ sigdfl() {
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 os.execvp(sys.argv[1], sys.argv[1:])' "$@"
 }
-for sig in TERM INT; do
+# The last case: --media --feed fifo, whose writer is a live isdb mux.
+for case in TERM INT "TERM --media"; do
+    sig=${case%% *}
+    D=$WORK
+    ARGS=()
+    if [ "$case" != "$sig" ]; then D=$W3; ARGS=(--media="$M" --feed fifo); fi
     : > "$DUMMY_LOG"
-    DUMMY="wait" sigdfl "$SCRIPT" "$WORK" > "$T/out" 2>&1 &
+    DUMMY="wait" sigdfl "$SCRIPT" "${ARGS[@]}" "$D" > "$T/out" 2>&1 &
     S=$!
-    for _ in $(seq 100); do grep -q tx "$DUMMY_LOG" 2>/dev/null && break; sleep 0.05; done
+    for _ in $(seq 100); do grep -q '^tx ' "$DUMMY_LOG" 2>/dev/null && break; sleep 0.05; done
     sleep 0.3
     kill -s "$sig" "$S"
     for _ in $(seq 200); do kill -0 "$S" 2>/dev/null || break; sleep 0.05; done
     if kill -0 "$S" 2>/dev/null; then
-        echo "FAIL fifo: the script did not end within 10 s of $sig"
+        echo "FAIL fifo: the script did not end within 10 s of $case"
         kill -KILL "$S"
         FAIL=1
     fi
     set +e; wait "$S"; RC=$?; set -e
-    check "fifo: $sig reaches isdb, its status 7 propagated" '[ $RC = 7 ] && grep -q "got TERM" "$DUMMY_LOG"'
+    check "fifo: $case reaches isdb, its status 7 propagated" '[ $RC = 7 ] && grep -q "got TERM" "$DUMMY_LOG"'
     sleep 0.3
-    check "fifo: no pacer left after $sig" '[ "$(leftovers)" = 0 ]'
+    check "fifo: no pacer left after $case" '[ "$(leftovers "$D")" = 0 ]'
 done
 
 if [ "$FAIL" = 0 ]; then echo PASS; else echo FAIL; exit 1; fi
