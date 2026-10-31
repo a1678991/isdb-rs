@@ -91,7 +91,9 @@ impl Outputs {
                 let w: Box<dyn Write> = if path == "-" {
                     Box::new(std::io::stdout().lock())
                 } else {
-                    Box::new(std::io::BufWriter::new(
+                    // written on its own thread: a slow disk must not
+                    // hold up the decoder of a live stream
+                    Box::new(crate::bgwrite::BackgroundFile::new(
                         std::fs::File::create(&path).with_context(|| format!("create {path}"))?,
                     ))
                 };
@@ -547,14 +549,16 @@ pub fn run_stream(
                     losses = w.losses,
                     blocks_lost = w.blocks_lost,
                     mer_db = st.mer_db().unwrap_or(f64::NAN),
-                    "{secs:.2} s of signal after {:.2} s: {} superframes, TMCC ok {}, decoded {}; losses {} ({} blocks); MER {}",
+                    queued_s = w.queued_symbols as f64 / symbol_rate_hz,
+                    "{secs:.2} s of signal after {:.2} s: {} superframes, TMCC ok {}, decoded {}; losses {} ({} blocks); MER {}; {:.1} s queued",
                     st.wall_s,
                     st.superframes,
                     st.tmcc_ok,
                     st.decoded,
                     w.losses,
                     w.blocks_lost,
-                    st.mer_db().map_or("-".into(), |m| format!("{m:.1} dB"))
+                    st.mer_db().map_or("-".into(), |m| format!("{m:.1} dB")),
+                    w.queued_symbols as f64 / symbol_rate_hz
                 );
             }
         },

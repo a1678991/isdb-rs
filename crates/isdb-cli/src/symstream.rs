@@ -44,6 +44,46 @@ pub const MAX_KEPT_CHUNKS: usize = 3;
 /// that. A [`Source::File`] parser waits instead.
 pub const MAX_QUEUED_CHUNKS: usize = 4;
 
+/// Once a [`Source::Live`] parser has started dropping, chunks the queue
+/// must drain to before blocks are taken again. Without this margin the
+/// parser dropped and took alternate blocks while the decoder freed the
+/// queue one block at a time: a live BS17 run that fell behind after
+/// 1 975 s cut its stream into dozens of stretches of one or a few
+/// blocks, each a loss, each restarting the receiver with a slot search
+/// slower than real time, and never caught up (2026-11-01). Draining to
+/// one chunk makes a fall-behind one loss, after which the decoder starts
+/// again near the live edge.
+pub const RESUME_QUEUED_CHUNKS: usize = 1;
+
+/// Whether a [`Source::Live`] parser takes a block: the drop decision with
+/// hysteresis between [`MAX_QUEUED_CHUNKS`] (start dropping) and
+/// [`RESUME_QUEUED_CHUNKS`] (take blocks again).
+#[derive(Debug, Clone, Copy)]
+struct Admission {
+    max: u64,
+    resume: u64,
+    dropping: bool,
+}
+
+impl Admission {
+    fn new(chunk_symbols: usize) -> Self {
+        Self {
+            max: (MAX_QUEUED_CHUNKS * chunk_symbols) as u64,
+            resume: (RESUME_QUEUED_CHUNKS * chunk_symbols) as u64,
+            dropping: false,
+        }
+    }
+    /// With `queued` symbols waiting: `true` takes the next block.
+    fn take(&mut self, queued: u64) -> bool {
+        if self.dropping {
+            self.dropping = queued > self.resume;
+        } else {
+            self.dropping = queued >= self.max;
+        }
+        !self.dropping
+    }
+}
+
 /// Where the words come from, which decides what happens when the decoder
 /// falls [`MAX_QUEUED_CHUNKS`] behind the parser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +268,9 @@ pub fn run(
     let parser = std::thread::spawn(move || {
         let mut reader = Reader::new();
         let mut events = Vec::new();
+        // a live parser's drop decision (only this thread adds to the
+        // queue, so the level it reads can only fall before the reserve)
+        let admission = std::cell::Cell::new(Admission::new(chunk_symbols));
         // blocks dropped since the last block sent, and a loss the reader
         // reported meanwhile (merged into one loss item)
         let dropped = std::cell::Cell::new(0u64);
@@ -248,6 +291,19 @@ pub fn run(
         let send = |e: Event| -> bool {
             let item = match e {
                 Event::Block { symbols, .. } => {
+                    let take = source == Source::File || {
+                        let mut a = admission.get();
+                        let t = a.take(q.len());
+                        admission.set(a);
+                        t
+                    };
+                    if !take {
+                        if q.closed.load(std::sync::atomic::Ordering::Relaxed) {
+                            return false;
+                        }
+                        dropped.set(dropped.get() + 1);
+                        return true;
+                    }
                     if !q.reserve(symbols.len() as u64, max_queued, source) {
                         if q.closed.load(std::sync::atomic::Ordering::Relaxed) {
                             return false;
@@ -767,6 +823,84 @@ mod tests {
             "queue grew to {}",
             st.max_queued_symbols
         );
+    }
+
+    /// Once dropping, a live parser keeps dropping until the queue has
+    /// drained to RESUME_QUEUED_CHUNKS, then takes blocks again until it
+    /// is full: alternating levels never make it flap.
+    #[test]
+    fn admission_has_hysteresis() {
+        let c = 10_000u64;
+        let mut a = Admission::new(10_000);
+        assert!(a.take(0));
+        assert!(a.take(4 * c - 1));
+        assert!(!a.take(4 * c));
+        // draining, but still above the resume level: keep dropping
+        assert!(!a.take(3 * c));
+        assert!(!a.take(c + 1));
+        assert!(a.take(c));
+        // and taking again until the bound
+        assert!(a.take(3 * c));
+        assert!(!a.take(4 * c));
+    }
+
+    /// A receiver slower than real time for a while (the host busy with
+    /// other work) loses blocks in a few long runs, not one short run
+    /// after another. With the parser taking a block whenever one was
+    /// freed, a full queue alternated drops and takes: every taken block
+    /// came after a loss, each loss restarted the receiver (a slot search
+    /// on a stretch too short to sync on), and a live BS17 run logged
+    /// dozens of losses of a few blocks each and never caught up
+    /// (2026-11-01).
+    #[test]
+    fn a_slow_spell_costs_few_losses() {
+        // one block of 4 096 symbols every PERIOD; a chunk is 4 blocks, so
+        // the queue holds 16 blocks and drains to 4 after a drop
+        const PERIOD_US: u64 = 1_000;
+        let chunk = 4 * 4096;
+        let blocks = 600;
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let b = words(blocks);
+        let (tx, rx) = sync_channel(1024);
+        let t0 = std::time::Instant::now();
+        std::thread::spawn(move || {
+            for (i, c) in b.chunks(b.len() / blocks).enumerate() {
+                let due = std::time::Duration::from_micros(PERIOD_US * i as u64);
+                if let Some(w) = due.checked_sub(t0.elapsed()) {
+                    std::thread::sleep(w);
+                }
+                if tx.send(c.to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let st = run(
+            rx,
+            Source::Live,
+            chunk,
+            &stop,
+            |z, cut| {
+                // 0.6× real time from 50 ms to 350 ms, 3× otherwise
+                let t = t0.elapsed().as_millis();
+                let speed = if (50..350).contains(&t) { 0.6 } else { 3.0 };
+                let us = z.len() as f64 / 4096.0 * PERIOD_US as f64 / speed;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                std::thread::sleep(std::time::Duration::from_micros(us as u64));
+                // a call keeps its last frame (here 1/16 of a chunk)
+                Ok(if cut == Cut::End {
+                    z.len()
+                } else {
+                    z.len().saturating_sub(chunk / 16)
+                })
+            },
+            |_| Ok(()),
+            |_| {},
+        )
+        .unwrap();
+        assert!(st.blocks_dropped > 0, "nothing dropped");
+        assert_eq!(st.blocks + st.blocks_dropped, blocks as u64);
+        // ≈ 120 blocks short over the spell, 12 dropped per loss
+        assert!(st.losses <= 15, "{} losses: {st:?}", st.losses);
     }
 
     /// A loss in the words is reported and ends the contiguous stretch.

@@ -456,18 +456,32 @@ pub fn receive(z: &[Cplx], opt: &RxOptions) -> Rx {
 
 /// `z` with a carrier offset of `hz` removed: symbol `n` multiplied by
 /// e^{−j2π·hz·n/Rs}. The phasor is recomputed every 4 096 symbols from the
-/// index, so rounding does not accumulate over long blocks.
+/// index, so rounding does not accumulate over long blocks. Those 4 096-
+/// symbol runs are independent, so they are shared out between all cores
+/// (the output is the same on any number of threads): on a streamed
+/// 24-frame call this pass alone took 0.13 s of 0.8 s on one core.
 pub fn derotate(z: &[Cplx], hz: f64) -> Vec<Cplx> {
+    const RUN: usize = 4096;
     let w = -std::f64::consts::TAU * hz / isdbs3_core::params::SYMBOL_RATE;
     let step = Cplx::from_polar(1.0, w);
-    let mut out = Vec::with_capacity(z.len());
-    for (k, c) in z.chunks(4096).enumerate() {
-        let mut p = Cplx::from_polar(1.0, w * (k * 4096) as f64);
-        for &v in c {
-            out.push(v * p);
-            p *= step;
+    let mut out = vec![Cplx::new(0.0, 0.0); z.len()];
+    let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    // whole runs per thread, at least 16 of them
+    let per = z.len().div_ceil(workers).div_ceil(RUN).max(16) * RUN;
+    std::thread::scope(|sc| {
+        for (t, (o, i)) in out.chunks_mut(per).zip(z.chunks(per)).enumerate() {
+            sc.spawn(move || {
+                for (j, (oc, c)) in o.chunks_mut(RUN).zip(i.chunks(RUN)).enumerate() {
+                    let k = t * (per / RUN) + j;
+                    let mut p = Cplx::from_polar(1.0, w * (k * RUN) as f64);
+                    for (y, &v) in oc.iter_mut().zip(c) {
+                        *y = v * p;
+                        p *= step;
+                    }
+                }
+            });
         }
-    }
+    });
     out
 }
 
@@ -560,4 +574,40 @@ pub fn noise_of(
         }
     }
     e / n.max(1) as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The parallel [`derotate`] gives exactly what one pass over the
+    /// 4 096-symbol runs in order gives, whatever the length.
+    #[test]
+    fn derotate_matches_a_sequential_pass_bit_for_bit() {
+        for len in [0, 1, 4095, 4096, 70_001, 1_000_000] {
+            let z: Vec<Cplx> = (0..len)
+                .map(|n| Cplx::new((n % 7) as f64 - 3.0, (n % 5) as f64 - 2.0))
+                .collect();
+            let hz = -767.25;
+            let w = -std::f64::consts::TAU * hz / isdbs3_core::params::SYMBOL_RATE;
+            let step = Cplx::from_polar(1.0, w);
+            let mut want = Vec::with_capacity(len);
+            for (k, c) in z.chunks(4096).enumerate() {
+                let mut p = Cplx::from_polar(1.0, w * (k * 4096) as f64);
+                for &v in c {
+                    want.push(v * p);
+                    p *= step;
+                }
+            }
+            let got = derotate(&z, hz);
+            assert_eq!(got.len(), len);
+            assert!(
+                got.iter()
+                    .zip(&want)
+                    .all(|(a, b)| a.re.to_bits() == b.re.to_bits()
+                        && a.im.to_bits() == b.im.to_bits()),
+                "length {len}"
+            );
+        }
+    }
 }

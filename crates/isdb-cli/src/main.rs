@@ -25,6 +25,7 @@ use std::io::Write;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 mod bands;
+mod bgwrite;
 mod capture;
 mod channel;
 mod input;

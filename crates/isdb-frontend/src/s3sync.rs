@@ -125,7 +125,14 @@ fn measure_with(x: &[C], known: Option<usize>) -> Option<SyncReport> {
         return None;
     }
     let rms = (x.iter().map(C::norm_sqr).sum::<f64>() / x.len() as f64).sqrt();
-    let x: Vec<C> = x.iter().map(|v| v / rms.max(1e-30)).collect();
+    let scale = rms.max(1e-30);
+    // The statistics are on `x` scaled to unit RMS. Only the sync windows
+    // are read after the search, so they are scaled where they are read
+    // (`v / scale`, the same operation a scaled copy would hold) instead
+    // of copying the whole input: on a streamed 24-frame call that copy
+    // was most of the time of a known-offset measure, on one core.
+    let win = |at: usize| -> [C; SYNC_LEN] { std::array::from_fn(|t| x[at + t] / scale) };
+    let corr = |at: usize, r: &[C; SYNC_LEN]| -> C { corr(&win(at), 0, r) };
     let fs = sync_symbols(FSYNC);
     let ss = sync_symbols(SSYNC);
     let slots = (x.len() - SYNC_LEN) / SLOT;
@@ -133,12 +140,12 @@ fn measure_with(x: &[C], known: Option<usize>) -> Option<SyncReport> {
     // for a search, computed once for every position it visits; with the
     // offset known, only at the 33 offsets used below
     let m = match known {
-        None => position_mags(&x, slots * SLOT, &fs, &ss),
+        None => position_mags(x, scale, slots * SLOT, &fs, &ss),
         Some(_) => Vec::new(),
     };
     let at_pos = |n: usize| -> f64 {
         if m.is_empty() {
-            corr(&x, n, &fs).norm().max(corr(&x, n, &ss).norm()) / SYNC_LEN as f64
+            corr(n, &fs).norm().max(corr(n, &ss).norm()) / SYNC_LEN as f64
         } else {
             m[n]
         }
@@ -158,16 +165,16 @@ fn measure_with(x: &[C], known: Option<usize>) -> Option<SyncReport> {
     let parity = usize::from(
         (1..slots)
             .step_by(2)
-            .map(|k| corr(&x, at(k), &ss).norm())
+            .map(|k| corr(at(k), &ss).norm())
             .sum::<f64>()
             > (0..slots)
                 .step_by(2)
-                .map(|k| corr(&x, at(k), &ss).norm())
+                .map(|k| corr(at(k), &ss).norm())
                 .sum::<f64>(),
     );
     let (mut sig, mut err) = (0.0, 0.0);
     let mut add = |at: usize, r: &[C; SYNC_LEN], ph: C, amp: f64| {
-        for (a, b) in r.iter().zip(&x[at..at + SYNC_LEN]) {
+        for (a, b) in r.iter().zip(&win(at)) {
             let ideal = a * ph * amp;
             sig += ideal.norm_sqr();
             err += (b - ideal).norm_sqr();
@@ -175,7 +182,7 @@ fn measure_with(x: &[C], known: Option<usize>) -> Option<SyncReport> {
     };
     let mut ssync_phase = Vec::new();
     for k in (parity..slots).step_by(2) {
-        let r = corr(&x, at(k), &ss);
+        let r = corr(at(k), &ss);
         let (ph, amp) = (r / r.norm().max(1e-30), r.norm() / SYNC_LEN as f64);
         ssync_phase.push((k, ph, amp));
         add(at(k), &ss, ph, amp);
@@ -190,7 +197,7 @@ fn measure_with(x: &[C], known: Option<usize>) -> Option<SyncReport> {
         if nb.norm() == 0.0 {
             continue;
         }
-        let r = corr(&x, at(k), &fs);
+        let r = corr(at(k), &fs);
         if (r * nb.conj()).re < 0.0 {
             nfsync += 1;
         } else {
@@ -243,15 +250,22 @@ fn measure_with(x: &[C], known: Option<usize>) -> Option<SyncReport> {
     })
 }
 
-/// `max(|corr(x, n, fs)|, |corr(x, n, ss)|) / 24` for every position
-/// `n < len`, bit for bit as [`corr`] and `Complex::norm` compute it (the
+/// `max(|corr(x', n, fs)|, |corr(x', n, ss)|) / 24` for every position
+/// `n < len`, `x'` being `x / scale`, bit for bit as [`corr`] and `Complex::norm` compute it (the
 /// same operations in the same order per position), across positions in
 /// structure-of-arrays form so the correlation loops vectorise, on all
 /// cores.
-fn position_mags(x: &[C], len: usize, fs: &[C; SYNC_LEN], ss: &[C; SYNC_LEN]) -> Vec<f64> {
+fn position_mags(
+    x: &[C],
+    scale: f64,
+    len: usize,
+    fs: &[C; SYNC_LEN],
+    ss: &[C; SYNC_LEN],
+) -> Vec<f64> {
     const B: usize = 256;
-    let re: Vec<f64> = x.iter().map(|v| v.re).collect();
-    let im: Vec<f64> = x.iter().map(|v| v.im).collect();
+    // `x / scale` component-wise, as `Complex / f64` divides
+    let re: Vec<f64> = x.iter().map(|v| v.re / scale).collect();
+    let im: Vec<f64> = x.iter().map(|v| v.im / scale).collect();
     let workers = std::thread::available_parallelism()
         .map_or(4, std::num::NonZero::get)
         .clamp(1, 32);
@@ -492,7 +506,7 @@ mod tests {
         let x = stream(5, 9.0, 3e-5);
         let (fs, ss) = (sync_symbols(FSYNC), sync_symbols(SSYNC));
         let len = x.len() - SYNC_LEN;
-        let m = position_mags(&x, len, &fs, &ss);
+        let m = position_mags(&x, 1.0, len, &fs, &ss);
         for (n, v) in m.iter().enumerate() {
             let r = corr(&x, n, &fs).norm().max(corr(&x, n, &ss).norm()) / SYNC_LEN as f64;
             assert_eq!(v.to_bits(), r.to_bits(), "position {n}");

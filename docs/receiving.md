@@ -160,9 +160,19 @@ superframes, 0 continuity errors); 60 s of BS7 decoded every frame
   decoder does; once four chunks wait (≈ 3.2 s of ISDB-S3, ≈ 1.1 s of
   ISDB-S) whole blocks are dropped and reported (`… dropped here: the
   receiver fell behind`, `blocks_dropped` in `--json`), so the capture
-  never stalls and memory stays bounded. On a shared host give the
+  never stalls and memory stays bounded. Dropping goes on until only one
+  chunk waits, so falling behind costs one loss (one discontinuity, one
+  re-synchronisation) rather than many: a drop of a block or two at a
+  time cut a live BS17 stream into dozens of short stretches, each
+  restarting the receiver with a slot search slower than real time, and
+  it never caught up. The status line ends with the seconds of symbols
+  queued behind the receiver: near zero while it keeps up, growing
+  towards the bound when it does not. On a shared host give the
   receiver a few free cores: with 48 busy threads on this 32-core host
-  both systems dropped 5–8 s of a minute.
+  both systems dropped 5–8 s of a minute. The output files are written
+  on their own threads (up to 128 MiB per file waiting for the disk), so
+  a slow or nearly full disk, or a network filesystem, does not hold up
+  the decoder.
 
 **Blocks of IQ (CPU front end).** Without that front end, or with
 `--offload cpu`, `isdb rx` takes one contiguous capture after another and
