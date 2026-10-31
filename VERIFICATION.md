@@ -2053,6 +2053,86 @@ test now requiring MISSED 0 with the prefetch), PASS:
 | transmitter | 987 297 792 symbol codes, 0 host underruns, DAC underflow flag clear, **CONSUMED 989 947 581 (64-bit), MISSED 0, FIRST_MISS −**, STATUS 0xb (run, selected, primed) |
 | receiver | 14 511 frames, 0 slips, 1 813 superframes, TMCC ok 1 813, 0 losses, main MER 34.1 dB; TS_ID 0x4010 / 0x4011 348 096 packets each, RS clean, 0 uncorrectable, byte-exact |
 
+## In-process ISDB-S multiplexer, offline (2026-10-31)
+
+`isdb tx --system isdbs --mux-config` (docs/plans/isdbs-next/media-and-
+margin.md §3, pieces I and J): the BS bench service (`bs-bench.toml` with
+its service on layer "A") multiplexed superframe by superframe on the
+TS's schedule, no TS file, no pacing. No radio: `MUX=1
+tools/isdbs-pacing-e2e.sh DIR 6` → `isdb tx --system isdbs --channel BS1
+--mux-config --iq` (cs8, `--placed-ts`, 6 s of air) → `isdb rx --iq` →
+`isdbs-bench-check.sh --rate 52170000:1 --fit-max-ns 100 --placed`, and
+with media `media-decode-check.py --source DIR --max-jumps 0`. Media: an
+MPEG-2 1440×1080i pair of 599 pictures at 29.97 Hz (19.99 s) and 939 AAC
+frames at 48 kHz from FFmpeg (`adts_compliance = "warn"`). The IQ files
+were deleted afterwards.
+
+| | declared streams, `--mux-pcr-grid uniform` | with media, `uniform` | declared, `--mux-pcr-grid slot` |
+|---|---|---|---|
+| on air | 543 superframes, 6.003 s (1 lead, 541 data, flush); 697 input packets, 99.7 % null fill | the same; 32 131 input packets (video 7.68 Mbit/s, audio 0.20 Mbit/s), 84.5 % null fill | as declared |
+| multiplexer | late PES 0, errors 0 | late PES 0, errors 0 (ADTS warnings of the file) | late PES 0, errors 0 |
+| RS, MER | 0 uncorrectable of 208 128, main MER 39.6 dB | the same | the same |
+| received TS vs `--placed-ts` | identical, 207 744 packets after the lead superframe's 384 nulls | identical, 207 744 | identical, 207 744 |
+| `pcr.rate`, CBR fit | 52.170000 Mbit/s (−0.0 ppm); max 18 ns, rms 11 ns (541 PCRs) | the same | the same (one PCR per superframe: always the same place in the frame) |
+| PAT / PMT | every 0.090 s (67 each) | the same | the same |
+| validate (BS expectations) | 0 errors; 2 `pid.missing` warnings (the declared streams); no `pcr.*` above info, no `tables.frequency`, `expect`, `cross.*` | only FFmpeg's ADTS (`aac.*`, 3 errors) | as declared |
+| media | — | video: 166 of 167 decoded pictures in the source (the last, cut), DTS step 3003 throughout, 0 jumps; audio: 253 of 253, PTS step 1920 throughout; 2 + 2 ffmpeg error lines, at the cut end | — |
+| verdict | PASS | PASS | PASS |
+
+The PCR grid (`--mux-pcr-grid`, isdb-cli SPEC-NOTES "PCRs of the in-process
+ISDB-S multiplexer"), measured on the placed TS of 3 s (`isdb tx --iq
+/dev/null --placed-ts`, `isdb ts inspect`):
+
+| TS | PCRs per superframe | `uniform` CBR fit max / rms | `slot` CBR fit max / rms |
+|---|---|---|---|
+| 48 slots (BS bench) | 1 | 18 / 11 ns | 18 / 11 ns |
+| 48 slots | 3 (every 128 packets: three places in the frame) | 18 / 11 ns | **2 241 / 1 811 ns** (PCR rate 52.170039 Mbit/s) |
+| 48 slots | 8 (one per frame) | 18 / 11 ns | 18 / 11 ns |
+| 16 of 48 slots, relative TS 1 of 3 | 16 | 18 / 11 ns | **231 360 / 231 185 ns** |
+
+The true slot times run 3…180 ticks (6.6 µs) off the uniform grid for a
+48-slot TS and −10 835…+12 574 ticks (±0.45 ms) for a TS of 16 contiguous
+slots per frame (`isdbt-mux/tests/satellite.rs`). A receiver hands out a
+TS_ID's packets at a constant rate (the BS transponders fit one within
+21–68 ns, "ISDB-S main signal to TS"), so `uniform` is the default; `slot`
+is consistent only while every PCR sits at the same place in the frame.
+
+Also: `cargo test -p isdb-cli` `isdbs_mux_config_through_tx_and_rx_validates`
+(1.2 s through `tx --iq` → `rx`; every PCR exactly at ⌊i · 28 800/37 + ½⌋
+ticks; `isdb mux --system isdbs` writes the placed TS byte for byte),
+`isdbs_loopback_with_in_process_multiplexer` (48 slots, and 16 slots next
+to a synthetic TS at 15 dB: PASS), `isdbs_mux_config_with_media_decodes`
+(`ISDB_RS_MEDIA_DIR`, the media above: PASS), `txs.rs`
+`mux_inputs_feed_both_paths_the_same_packets` (IQ and code paths: the
+same packets), `uniform_mux_grid_is_the_pacers_slot_clock`.
+
+### Pending: the bench run
+
+Waits for TX1 → 30 dB → DC block → PIX-DT295 to be reconnected, as the
+media run above. Recordings in `~/dev/sdr/isdbs-bench/mux-bench/`.
+
+```sh
+cd ~/dev/isdb-rs
+W=~/dev/sdr/isdbs-bench/mux-bench; mkdir -p "$W"
+sed 's/^layer = "B"/layer = "A"/' crates/isdbt-mux/examples/bs-bench.toml > "$W/bs.toml"
+pgrep -af "isdb tx --system isdbs"                       # nothing else on air
+target/release/isdb tx --system isdbs --channel BS1 --freq-unrestricted --mux-config "$W/bs.toml" \
+    --radio pluto:uri=ip:10.10.0.30 --offload fpga --gain att=45 --dry-run
+target/release/isdb tx --system isdbs --channel BS1 --freq-unrestricted --mux-config "$W/bs.toml" \
+    --radio pluto:uri=ip:10.10.0.30 --offload fpga --gain att=45 --rf-enable \
+    --placed-ts "$W/placed-{ts_id}.ts" &
+echo $! > "$W/tx.pid"
+D=~/dev/PIX-DT295/target/release/dt295
+$D tune --isdbs bs1 --tsid 4017
+tools/isdbs-bench-check.sh --record 20 --placed "$W/placed-4017.ts" "$W/rec-mux.ts"
+kill "$(cat "$W/tx.pid")"
+```
+
+Expected: bench-check PASS (rate within 100 ppm, CBR fit ≤ 100 ns as
+offline, the recording identical to the placed TS), and with media
+(`tools/bench-media.py` on `bs.toml`) `media-decode-check.py --max-jumps
+0`.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

@@ -141,6 +141,21 @@ rustdoc clean, FPGA suite 24/24):
    video 137.6 ms, audio 603 ms); the live multiplexer is. Piece C, the
    bench run, waits for TX1 to be reconnected; its commands are in that
    VERIFICATION.md section ("Pending: the bench run").
+   In-process multiplexer (pieces G–J of media-and-margin.md §7): done
+   offline. `isdb tx --system isdbs --mux-config FILE` (repeatable, one
+   TS each, `kind = "bs"`, services on layer "A"), `isdb loopback
+   --system isdbs --mux-config`, `isdb mux --system isdbs --out-ts`, and
+   `--mux-pcr-grid uniform|slot` (default `uniform`, the receiver's
+   constant-rate grid, as BS stamps; `slot` deviates by up to 6.6 µs at
+   48 slots and ±0.45 ms for a 16-slot TS). Offline (VERIFICATION.md
+   "In-process ISDB-S multiplexer, offline"): `tx --iq` → `rx` gives the
+   placed TS byte for byte, 52.170000 Mbit/s, CBR fit 18 ns, PAT/PMT
+   0.090 s, `validate --expect-rate 52170000:1` clean with the BS
+   expectations, the media decoded (`MUX=1 MEDIA=DIR
+   tools/isdbs-pacing-e2e.sh`). Bench run pending TX1: `isdb tx --system
+   isdbs --channel BS1 --mux-config bs.toml --radio pluto … --offload fpga
+   --rf-enable` (bs.toml = `bs-bench.toml` with `layer = "A"`), then
+   `tools/isdbs-bench-check.sh --record 20` and the media check.
 4. **Level margin**: a sweep of `att` (45 → 60 → …) with `dt295 tune`
    / `status --isdbs --watch` to find the lock threshold and the C/N
    slope (the driver reads C/N once while acquiring); record in
