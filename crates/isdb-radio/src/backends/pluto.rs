@@ -95,23 +95,34 @@
 //!   of `cf-ad9361-dds-core-lpc`; 0 without the block). The device is
 //!   configured as for IQ, then the block: refused when the DAC core runs
 //!   in r1_mode (0x80000048 bit 5) or `up_dac_gpio_out` bit 0 (Tezuka's ×8
-//!   TX FIR) is set; `Encoder::configure_tx` (STEP, SHIFT, both banks:
-//!   13 315 commands, ≈ 8 s through iiod), STEP read back, CTRL
-//!   START|SELECT (the block owns the DAC and the DMA, outputs zero and
-//!   requests nothing), STATUS must read "selected" (codes sent to a plain
-//!   DAC would go out as samples), then the attenuation. Once the stream
-//!   runs and half its kernel queue is filled, CTRL RUN|SELECT starts
-//!   the block (STATUS must read run and selected) and the DAC core's
-//!   underflow flag (0x80000088 bit 0, set whenever no DMA word is
-//!   available) is cleared; so a clean run misses no symbol. Both
-//!   `voltage0` and `voltage1` carry codes (eight per DMA sample). Status
-//!   lines add the block's MISSED (one READ per line); the summary its
-//!   CONSUMED, MISSED, FIRST_MISS and STATUS and the underflow flag, read
-//!   while the zero buffers that end the stream still play. Closing (also
-//!   on error or panic) stops the stream, then CTRL 0 (the IQ
-//!   pass-through), then the attenuation and the LO as above; opening for
-//!   IQ sends CTRL 0 when the bitstream has the block, before the level is
-//!   raised.
+//!   TX FIR) is set; CTRL 0, FEATURES and BANK_TAG read (an image before
+//!   FEATURES reads 0 there: no features); `Encoder::configure_tx` (STEP,
+//!   SHIFT, both banks: 13 315 commands, 4–8 s through iiod) and, with the
+//!   bank-tag feature, BANK_TAG written after it — or STEP and SHIFT alone
+//!   when BANK_TAG already reads the bank's tag (`control::tx::bank_tag`;
+//!   the bitstream's own bank does at power-up); STEP read back, CTRL
+//!   START|SELECT (the block owns the DAC and the DMA and outputs zero; an
+//!   image with the prefetch polls the DMA and holds up to two words, an
+//!   older one requests nothing), STATUS must read "selected" (codes sent
+//!   to a plain DAC would go out as samples), then the attenuation. Once
+//!   the stream runs and half its kernel queue is filled (and, with the
+//!   prefetch, STATUS reads PRIMED: up to 1 s, then it starts anyway),
+//!   CTRL RUN|SELECT starts the block (STATUS must read run and selected)
+//!   and the DAC core's underflow flag (0x80000088 bit 0, set whenever no
+//!   DMA word is available) is cleared. With the prefetch a clean run
+//!   misses no symbol; without it the block's first one or two requests
+//!   may find no word (8–16 zero symbols in the lead-in, FIRST_MISS 0).
+//!   Both `voltage0` and `voltage1` carry codes (eight per DMA sample).
+//!   Status lines add the block's MISSED (one READ per line); the summary
+//!   its CONSUMED, MISSED, FIRST_MISS and STATUS and the underflow flag,
+//!   read while the zero buffers that end the stream still play, CONSUMED
+//!   and FIRST_MISS as 64 bits (the block's HI with the 64-bit-counter
+//!   feature, else extended by the host from the time between reads at
+//!   the symbol rate: the 32-bit registers wrap every 148.8 s), and the
+//!   features in use. Closing (also on error or panic) stops the stream,
+//!   then CTRL 0 (the IQ pass-through), then the attenuation and the LO as
+//!   above; opening for IQ sends CTRL 0 when the bitstream has the block,
+//!   before the level is raised.
 
 use super::{maia, mdns};
 use crate::{
@@ -121,7 +132,7 @@ use crate::{
 };
 use isdb_frontend::control::tx::{self as txc, TxIdentity};
 use isdb_frontend::control::{self, Encoder, GPIO_IN_REG, GPIO_OUT_REG, Identity, Op, reg};
-use isdb_frontend::shape::fixed::{FULL_SCALE, TxParams};
+use isdb_frontend::shape::fixed::{FULL_SCALE, TxDesign, TxParams};
 use isdb_frontend::txformat;
 use isdb_iio::Context;
 use isdbt_ofdm::C32;
@@ -211,6 +222,14 @@ const DAC_STATUS_UNDERFLOW: u32 = 0x1;
 /// How long the transmit block waits for the stream to fill the device's
 /// kernel queue before it is started.
 const QUEUE_FILL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a transmit block with the prefetch is given to report STATUS
+/// PRIMED once half the queue is filled (it polls the DMA from SELECT on,
+/// so the first words are in it within microseconds of the DMA's start).
+const PRIME_TIMEOUT: Duration = Duration::from_secs(1);
+/// Seconds per `gpio_out` command through iiod: 0.29 ms measured for a
+/// lone transmitter (VERIFICATION.md, 13 315 commands in 3.9 s) to the
+/// 0.62 ms of the receive front end's figure.
+const COMMAND_SECONDS: [f64; 2] = [0.29e-3, 0.62e-3];
 /// The ADC core's interface status register (ADI `up_adc_common`
 /// `REG_STATUS`, 0x0022 × 4, through the HDL-core bit 31) and its
 /// overflow bit (sticky, write 1 to clear).
@@ -730,8 +749,9 @@ fn describe_tx_symbols(
     let kbuffers = s.dev.kernel_buffers.unwrap_or(TX_SYMBOLS_KERNEL_BUFFERS);
     let buffer_s = s.dev.buffer as f64 * txformat::CODES_PER_WORD as f64 / rs;
     let commands = Encoder::new(0).configure_tx(p).len();
+    let registers = Encoder::new(0).configure_tx_registers(p).len();
     format!(
-        "{}{}\n  modulator    FPGA transmit block of {TX_DEV} (SymbolsTx, TX format {}): symbol codes shaped on the board, banks of {} phases × {} taps, {:.4} samples/symbol (step {:#x})\n  link         4-bit symbol codes, {} per DMA sample (voltage0 + voltage1): {:.2} MB/s at {:.3} Mbaud; buffers of {} samples ({:.1} ms), kbuffers {kbuffers} in the kernel ({:.0} ms)\n  level        RMS {:.1} dB below the 12-bit DAC full scale ({:.1} LSB), in the block's banks (shift {}); the TX attenuation sets the output power\n  configure    {commands} commands through gpio_out at open (≈ {:.0} s at 0.62 ms each)",
+        "{}{}\n  modulator    FPGA transmit block of {TX_DEV} (SymbolsTx, TX format {}): symbol codes shaped on the board, banks of {} phases × {} taps, {:.4} samples/symbol (step {:#x})\n  link         4-bit symbol codes, {} per DMA sample (voltage0 + voltage1): {:.2} MB/s at {:.3} Mbaud; buffers of {} samples ({:.1} ms), kbuffers {kbuffers} in the kernel ({:.0} ms)\n  level        RMS {:.1} dB below the 12-bit DAC full scale ({:.1} LSB), in the block's banks (shift {}); the TX attenuation sets the output power\n  configure    {commands} commands through gpio_out at open ({:.0}–{:.0} s through iiod), or {registers} when the block's BANK_TAG names this bank already",
         describe_device(&s.dev, "TX", cfg),
         s.describe_level(),
         txformat::FORMAT_VERSION,
@@ -748,7 +768,8 @@ fn describe_tx_symbols(
         opts.backoff_db,
         FULL_SCALE * 10f64.powf(-f64::from(opts.backoff_db) / 20.0),
         p.shift,
-        commands as f64 * 0.62e-3,
+        commands as f64 * COMMAND_SECONDS[0],
+        commands as f64 * COMMAND_SECONDS[1],
     )
 }
 
@@ -1220,27 +1241,25 @@ impl Backend for Pluto {
         // From here on, dropping `tx` restores the safe state (CTRL 0 once
         // the block is configured).
         tx.program(cfg, &s, &mut info)?;
-        let commands = Encoder::new(0).configure_tx(params).len();
-        info!(
-            backend = NAME,
-            commands,
-            "configuring the FPGA transmit block: {commands} commands through {TX_DEV} gpio_out (≈ {:.0} s through iiod)",
-            commands as f64 * 0.62e-3
-        );
+        let rs = tx_symbol_rate(cfg, params);
         let t0 = Instant::now();
         let block = {
             let dac = tx
                 .ctx
                 .device(TX_DEV)
                 .at("configure the FPGA transmit block")?;
-            TxBlock::open(&dac, params)?
+            TxBlock::open(&dac, params, rs)?
         };
         let config_s = t0.elapsed().as_secs_f64();
+        let configured = format!(
+            "configured in {config_s:.1} s ({}), selected; block features: {}",
+            block.bank.describe(),
+            describe_features(block.features)
+        );
         tx.block = Some(block);
         tx.set_level(&s, &mut info)?;
-        let rs = tx_symbol_rate(cfg, params);
         info += &format!(
-            "; FPGA transmit block TX format {}, {} phases × {} taps, configured in {config_s:.1} s ({commands} commands), selected; {:.3} Mbaud of symbol codes, {:.2} MB/s; buffers of {} DMA samples, {} in the kernel",
+            "; FPGA transmit block TX format {}, {} phases × {} taps, {configured}; {:.3} Mbaud of symbol codes, {:.2} MB/s; buffers of {} DMA samples, {} in the kernel",
             need.version,
             need.phases(),
             need.taps,
@@ -1909,25 +1928,132 @@ impl Regs for isdb_iio::Device<'_> {
 
 /// The FPGA transmit block as the host drives it (`control::tx`): the
 /// command encoder (the toggle bit and `gpio_out` bit 0 carried on),
-/// whether it runs, and the MISSED the last status line read.
+/// whether it runs, the MISSED the last status line read, the image's
+/// FEATURES and what the open did with the bank, and the state that
+/// extends 32-bit counters on an image without
+/// [`txc::features::COUNTERS64`].
 #[derive(Debug)]
 struct TxBlock {
     enc: Encoder,
     running: bool,
     missed: u32,
+    /// FEATURES ([`txc::features`]; 0 on an image before the register).
+    features: u32,
+    /// What [`TxBlock::open`] did with the coefficient banks.
+    bank: BankLoad,
+    /// Codes entering per second while running (the symbol rate): how far
+    /// CONSUMED + MISSED advance between two reads.
+    rate: f64,
+    /// The last 64-bit CONSUMED known, when it was read and the MISSED
+    /// read with it (set at RUN): the host-side extension.
+    wide: Option<Wide>,
+    /// FIRST_MISS as 64 bits, once a status line saw the first miss.
+    first_miss: Option<u64>,
+    /// PRE_UNF read at RUN ([`txc::features::PREFETCH`]): the block's DMA
+    /// requests that found no word between SELECT and RUN.
+    pre_unf: Option<u32>,
+}
+
+/// What [`TxBlock::open`] did with the coefficient banks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BankLoad {
+    /// Written: `commands` in all (STEP and SHIFT included); `tagged`:
+    /// BANK_TAG written after it.
+    Loaded { commands: usize, tagged: bool },
+    /// Kept: BANK_TAG named the bank already, so only STEP and SHIFT were
+    /// written and `skipped` commands saved; `default`: the bitstream's
+    /// own bank (ISDB-S, 40 Msps, 10 dB).
+    Kept { skipped: usize, default: bool },
+}
+
+impl BankLoad {
+    /// `bank: default (tag match), skipped 13312 commands`, `13315
+    /// commands, bank tag written`.
+    fn describe(&self) -> String {
+        match *self {
+            Self::Loaded { commands, tagged } => format!(
+                "{commands} commands{}",
+                if tagged { ", bank tag written" } else { "" }
+            ),
+            Self::Kept { skipped, default } => format!(
+                "bank: {} (tag match), skipped {skipped} commands",
+                if default {
+                    "default"
+                } else {
+                    "loaded by an earlier open"
+                }
+            ),
+        }
+    }
+}
+
+/// The FEATURES an image reports, for the open and summary lines:
+/// `prefetch, bank tag, 64-bit counters`, or `none (…)` on an image before
+/// the register.
+fn describe_features(f: u32) -> String {
+    if f == 0 {
+        return "none (an image before them: the bank loaded at every open, started on a half-filled queue, 32-bit counters extended by the host)".into();
+    }
+    let mut v: Vec<String> = [
+        (txc::features::PREFETCH, "prefetch"),
+        (txc::features::BANK_TAG, "bank tag"),
+        (txc::features::COUNTERS64, "64-bit counters"),
+    ]
+    .iter()
+    .filter(|&&(bit, _)| f & bit != 0)
+    .map(|&(_, name)| name.to_owned())
+    .collect();
+    v.extend(
+        (0..32)
+            .filter(|b| f >> b & 1 != 0 && txc::features::ALL >> b & 1 == 0)
+            .map(|b| format!("bit {b} (unknown to this host)")),
+    );
+    v.join(", ")
+}
+
+/// A 64-bit CONSUMED with the time it was read.
+#[derive(Debug, Clone, Copy)]
+struct Wide {
+    at: Instant,
+    consumed: u64,
+    missed: u32,
+}
+
+/// The 64-bit value of a counter whose low 32 bits read `now`, last known
+/// as `prev` and expected to have advanced by about `expected` since: of
+/// the values ≡ `now` (mod 2³²) and ≥ `prev`, the one nearest
+/// `prev + expected`. Exact while the expectation is right to within
+/// 2³¹ counts (74 s of codes at 28.86 Mbaud), however long ago `prev` was.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn extend32(prev: u64, now: u32, expected: f64) -> u64 {
+    const WRAP: u64 = 1 << 32;
+    let now64 = u64::from(now);
+    let min = prev.saturating_sub(now64).div_ceil(WRAP);
+    // wraps nearest the expectation (f64 holds these counts exactly
+    // enough: < 2⁵³)
+    let target = prev as f64 + expected.max(0.0) - f64::from(now);
+    let k = (target / WRAP as f64).round().max(0.0) as u64;
+    k.max(min) * WRAP + now64
 }
 
 /// What [`TxBlock::counters`] reads back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TxCounters {
-    /// STATUS: bit 0 run, bit 1 selected, bit 2 underrun (sticky).
+    /// STATUS: bit 0 run, bit 1 selected, bit 2 underrun (sticky), bit 3
+    /// primed.
     status: u32,
-    /// Codes entered from delivered words since START (low 32 bits).
-    consumed: u32,
+    /// Codes entered from delivered words since START (64 bits: the
+    /// block's own with [`txc::features::COUNTERS64`], else extended by
+    /// the host).
+    consumed: u64,
     /// Zero symbols entered for stalled requests since START.
     missed: u32,
     /// CONSUMED at the first stalled request (0 before one).
-    first_miss: u32,
+    first_miss: u64,
     /// The DAC core's underflow flag, cleared when the block started.
     underflow: bool,
 }
@@ -1958,23 +2084,40 @@ impl TxBlock {
         Ok(TxIdentity::parse(r.read(txc::GPIO_IN_REG)?))
     }
 
+    /// A block driven from `gpio_out` as it is, for codes at `rate` per
+    /// second (not configured).
+    fn with_encoder(out: u32, rate: f64) -> Self {
+        Self {
+            enc: Encoder::new(out),
+            running: false,
+            missed: 0,
+            features: 0,
+            bank: BankLoad::Loaded {
+                commands: 0,
+                tagged: false,
+            },
+            rate,
+            wide: None,
+            first_miss: None,
+            pre_unf: None,
+        }
+    }
+
     /// The block with its encoder continuing from `gpio_out` (not
     /// configured).
     fn attach(r: &dyn Regs) -> Result<Self> {
-        Ok(Self {
-            enc: Encoder::new(r.read(txc::GPIO_OUT_REG)?),
-            running: false,
-            missed: 0,
-        })
+        Ok(Self::with_encoder(r.read(txc::GPIO_OUT_REG)?, 0.0))
     }
 
     /// Check the DAC core (refused in r1_mode and with `gpio_out` bit 0,
     /// Tezuka's ×8 TX FIR, set), configure the block for `p`
-    /// ([`Encoder::configure_tx`]), read STEP back, CTRL START|SELECT, and
+    /// ([`TxBlock::configure`]), read STEP back, CTRL START|SELECT, and
     /// require STATUS "selected, not running": from here on the block owns
-    /// the DAC and the DMA, outputs zero and requests nothing, so the
-    /// stream may start. After a failed step the block is sent CTRL 0.
-    fn open(r: &dyn Regs, p: &TxParams) -> Result<Self> {
+    /// the DAC and the DMA and outputs zero (an image with the prefetch
+    /// polls the DMA, one without requests nothing), so the stream may
+    /// start. `rate`: the codes per second it will take (the symbol
+    /// rate). After a failed step the block is sent CTRL 0.
+    fn open(r: &dyn Regs, p: &TxParams, rate: f64) -> Result<Self> {
         if r.read(DAC_R1_MODE_REG)? & DAC_R1_MODE_BIT != 0 {
             return Err(RadioError::Unsupported {
                 backend: NAME,
@@ -1988,11 +2131,7 @@ impl TxBlock {
                 what: "has bit 0 of the DAC core's gpio_out set (Tezuka's ×8 TX FIR enable, also written by the kernel's interpolation attribute): the FPGA transmit block takes the FIR's place, so the bit must be clear; use --offload cpu",
             });
         }
-        let mut b = Self {
-            enc: Encoder::new(out),
-            running: false,
-            missed: 0,
-        };
+        let mut b = Self::with_encoder(out, rate);
         match b.configure(r, p) {
             Ok(()) => Ok(b),
             Err(e) => {
@@ -2003,9 +2142,65 @@ impl TxBlock {
         }
     }
 
+    /// CTRL 0 (a block left selected by a process that did not close drops
+    /// the words it holds), FEATURES and BANK_TAG read; the banks unless
+    /// BANK_TAG already reads `p`'s [`txc::bank_tag`] (then STEP and SHIFT
+    /// alone), the tag written after a load; STEP read back; CTRL
+    /// START|SELECT and STATUS "selected, not running".
     fn configure(&mut self, r: &dyn Regs, p: &TxParams) -> Result<()> {
-        for w in self.enc.configure_tx(p) {
-            r.write(txc::GPIO_OUT_REG, w)?;
+        self.ctrl(r, 0)?;
+        let [features, tag] = self.read_regs(r, [txc::reg::FEATURES, txc::reg::BANK_TAG])?;
+        self.features = features;
+        let tagged = features & txc::features::BANK_TAG != 0;
+        let want = txc::bank_tag(p);
+        let commands = Encoder::new(0).configure_tx(p).len();
+        if tagged && tag == want {
+            let words = self.enc.configure_tx_registers(p);
+            let skipped = commands - words.len();
+            for w in words {
+                r.write(txc::GPIO_OUT_REG, w)?;
+            }
+            self.bank = BankLoad::Kept {
+                skipped,
+                default: want == default_bank_tag(),
+            };
+            info!(
+                backend = NAME,
+                tag,
+                "FPGA transmit block {}",
+                self.bank.describe()
+            );
+        } else {
+            info!(
+                backend = NAME,
+                commands,
+                "configuring the FPGA transmit block: {commands} commands through {TX_DEV} gpio_out ({:.0}–{:.0} s through iiod){}",
+                commands as f64 * COMMAND_SECONDS[0],
+                commands as f64 * COMMAND_SECONDS[1],
+                if tagged {
+                    format!("; its BANK_TAG {tag:#010x} is not this bank's {want:#010x}")
+                } else {
+                    String::new()
+                }
+            );
+            for w in self.enc.configure_tx(p) {
+                r.write(txc::GPIO_OUT_REG, w)?;
+            }
+            if tagged {
+                let mut words = Vec::new();
+                self.enc.write(txc::reg::BANK_TAG, &[want], &mut words);
+                for w in words {
+                    r.write(txc::GPIO_OUT_REG, w)?;
+                }
+                let got = self.read(r, txc::reg::BANK_TAG)?;
+                if got != want {
+                    warn!(
+                        backend = NAME,
+                        "the FPGA transmit block's BANK_TAG reads {got:#010x} after writing {want:#010x}: the next open reloads the bank"
+                    );
+                }
+            }
+            self.bank = BankLoad::Loaded { commands, tagged };
         }
         let step = self.read(r, txc::reg::STEP)?;
         if step != p.step {
@@ -2056,13 +2251,43 @@ impl TxBlock {
         Ok(self.read_regs(r, [reg])?[0])
     }
 
-    /// Start, once the DMA queue holds the stream's first buffers: CTRL
-    /// RUN|SELECT (the requests begin a few clocks later and find words),
-    /// STATUS must read run and selected, then the DAC core's underflow
-    /// flag is cleared, so that it reports what happens from here on.
-    fn run(&mut self, r: &dyn Regs) -> Result<()> {
+    /// Start, once the DMA queue holds the stream's first buffers: with
+    /// the prefetch, STATUS PRIMED awaited (up to `prime_timeout`; past it
+    /// the block starts anyway and counts what it does not get) and
+    /// PRE_UNF read; CTRL RUN|SELECT (without the prefetch the requests
+    /// begin a few clocks later), STATUS must read run and selected, then
+    /// the DAC core's underflow flag is cleared, so that it reports what
+    /// happens from here on.
+    fn run(&mut self, r: &dyn Regs, prime_timeout: Duration) -> Result<()> {
+        if self.features & txc::features::PREFETCH != 0 {
+            let t = Instant::now();
+            let primed = loop {
+                if self.read(r, txc::reg::STATUS)? & txc::status::PRIMED != 0 {
+                    break true;
+                }
+                if t.elapsed() >= prime_timeout {
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            let pre = self.read(r, txc::reg::PRE_UNF)?;
+            self.pre_unf = Some(pre);
+            if !primed {
+                warn!(
+                    backend = NAME,
+                    pre_unf = pre,
+                    "the FPGA transmit block did not report PRIMED within {:.1} s (its {pre} DMA requests since SELECT found no word): starting it anyway; the words it does not get count in MISSED",
+                    prime_timeout.as_secs_f64()
+                );
+            }
+        }
         self.ctrl(r, txc::ctrl::RUN | txc::ctrl::SELECT)?;
         self.running = true;
+        self.wide = Some(Wide {
+            at: Instant::now(),
+            consumed: 0,
+            missed: 0,
+        });
         let st = self.read(r, txc::reg::STATUS)?;
         let mode = txc::status::RUN | txc::status::SELECTED;
         if st & mode != mode {
@@ -2082,6 +2307,9 @@ impl TxBlock {
     }
 
     /// MISSED, for a status line; warns when it grew since the last one.
+    /// The first time it is not 0, FIRST_MISS is read too and kept as 64
+    /// bits (with CONSUMED to extend it on an image without
+    /// [`txc::features::COUNTERS64`]).
     fn status(&mut self, r: &dyn Regs) -> Result<u32> {
         let m = self.read(r, txc::reg::MISSED)?;
         let d = m.wrapping_sub(self.missed);
@@ -2092,28 +2320,99 @@ impl TxBlock {
                 new_missed = d,
                 "the FPGA transmit block missed {d} symbol(s) since the last status ({m} since its start): the DMA ran dry and zero symbols went on air"
             );
+            if self.first_miss.is_none() {
+                self.first_miss = Some(self.read_first_miss(r, Instant::now())?);
+            }
         }
         self.missed = m;
         Ok(m)
     }
 
+    /// FIRST_MISS as 64 bits: its HI with
+    /// [`txc::features::COUNTERS64`], else CONSUMED − ((CONSUMED −
+    /// FIRST_MISS) mod 2³²) with CONSUMED extended ([`extend32`]), right
+    /// while the first miss is less than 2³² codes back.
+    fn read_first_miss(&mut self, r: &dyn Regs, now: Instant) -> Result<u64> {
+        if self.features & txc::features::COUNTERS64 != 0 {
+            let [lo, hi] = self.read_regs(r, [txc::reg::FIRST_MISS, txc::reg::HI])?;
+            return Ok(u64::from(hi) << 32 | u64::from(lo));
+        }
+        let [c32, m, f32] = self.read_regs(
+            r,
+            [txc::reg::CONSUMED, txc::reg::MISSED, txc::reg::FIRST_MISS],
+        )?;
+        let c = self.extend_consumed(c32, m, now);
+        Ok(c.saturating_sub(u64::from(c32.wrapping_sub(f32))))
+    }
+
+    /// CONSUMED's low 32 bits `c32`, read at `now` with MISSED `missed`,
+    /// as 64 bits ([`extend32`]: CONSUMED + MISSED advance at the symbol
+    /// rate while the block runs).
+    fn extend_consumed(&mut self, c32: u32, missed: u32, now: Instant) -> u64 {
+        let Some(w) = self.wide else {
+            return u64::from(c32);
+        };
+        let dt = now.saturating_duration_since(w.at).as_secs_f64();
+        let expected = dt * self.rate - f64::from(missed.wrapping_sub(w.missed));
+        let consumed = extend32(w.consumed, c32, expected);
+        self.wide = Some(Wide {
+            at: now,
+            consumed,
+            missed,
+        });
+        consumed
+    }
+
     /// The counters, STATUS and the DAC core's underflow flag.
     fn counters(&mut self, r: &dyn Regs) -> Result<TxCounters> {
-        let [status, consumed, missed, first_miss] = self.read_regs(
-            r,
-            [
-                txc::reg::STATUS,
-                txc::reg::CONSUMED,
-                txc::reg::MISSED,
-                txc::reg::FIRST_MISS,
-            ],
-        )?;
+        self.counters_at(r, Instant::now())
+    }
+
+    /// [`TxBlock::counters`] read at `now`: CONSUMED and FIRST_MISS as 64
+    /// bits, from the block's HI with [`txc::features::COUNTERS64`], else
+    /// extended by the host.
+    fn counters_at(&mut self, r: &dyn Regs, now: Instant) -> Result<TxCounters> {
+        let (status, consumed, missed, first_miss) =
+            if self.features & txc::features::COUNTERS64 != 0 {
+                let [status, c_lo, c_hi, missed, f_lo, f_hi] = self.read_regs(
+                    r,
+                    [
+                        txc::reg::STATUS,
+                        txc::reg::CONSUMED,
+                        txc::reg::HI,
+                        txc::reg::MISSED,
+                        txc::reg::FIRST_MISS,
+                        txc::reg::HI,
+                    ],
+                )?;
+                let wide = |lo: u32, hi: u32| u64::from(hi) << 32 | u64::from(lo);
+                (status, wide(c_lo, c_hi), missed, wide(f_lo, f_hi))
+            } else {
+                let [status, c32, missed, f32] = self.read_regs(
+                    r,
+                    [
+                        txc::reg::STATUS,
+                        txc::reg::CONSUMED,
+                        txc::reg::MISSED,
+                        txc::reg::FIRST_MISS,
+                    ],
+                )?;
+                let consumed = self.extend_consumed(c32, missed, now);
+                let first = self
+                    .first_miss
+                    .unwrap_or_else(|| consumed.saturating_sub(u64::from(c32.wrapping_sub(f32))));
+                (status, consumed, missed, first)
+            };
         let underflow = r.read(DAC_STATUS_REG)? & DAC_STATUS_UNDERFLOW != 0;
         Ok(TxCounters {
             status,
             consumed,
             missed,
-            first_miss,
+            first_miss: if status & txc::status::UNDERRUN != 0 {
+                first_miss
+            } else {
+                0
+            },
             underflow,
         })
     }
@@ -2124,6 +2423,13 @@ impl TxBlock {
         self.running = false;
         Ok(())
     }
+}
+
+/// The BANK_TAG of the bitstream's own bank (the Rust model's default
+/// design: ISDB-S, 40 Msps, 10 dB backoff, P 512, span 12; `mise run
+/// fpga:tx-verilog`).
+fn default_bank_tag() -> u32 {
+    TxParams::design(&TxDesign::new(40e6, 28.86e6, 0.35)).map_or(0, |p| txc::bank_tag(&p))
 }
 
 /// Components a TX stream takes ahead of real time
@@ -2359,8 +2665,9 @@ impl RadioTx for PlutoTx {
         queue_components(self.kernel_buffers, self.buffer)
     }
 
-    /// Symbol codes: once the device's kernel queue is full, start the
-    /// transmit block ([`TxBlock::run`]).
+    /// Symbol codes: once half the device's kernel queue is filled (and,
+    /// with the prefetch, the block reports PRIMED), start the transmit
+    /// block ([`TxBlock::run`]).
     fn started(&mut self, counters: &dyn StreamCounters) -> Result<()> {
         let Some(b) = &mut self.block else {
             return Ok(());
@@ -2374,13 +2681,16 @@ impl RadioTx for PlutoTx {
             .ctx
             .device(TX_DEV)
             .at("start the FPGA transmit block")?;
-        b.run(&dac)?;
+        b.run(&dac, PRIME_TIMEOUT)?;
         info!(
             backend = NAME,
             kernel_buffers = self.kernel_buffers,
-            "FPGA transmit block running (CTRL RUN|SELECT) with {} of the device's {} buffers queued",
+            "FPGA transmit block running (CTRL RUN|SELECT) with {} of the device's {} buffers queued{}",
             self.kernel_buffers / 2,
-            self.kernel_buffers
+            self.kernel_buffers,
+            b.pre_unf.map_or(String::new(), |n| format!(
+                ", started primed (PRE_UNF {n}: its DMA requests between SELECT and the first word)"
+            ))
         );
         Ok(())
     }
@@ -2403,7 +2713,8 @@ impl RadioTx for PlutoTx {
 
     /// Symbol codes: CONSUMED, MISSED, FIRST_MISS, STATUS and the DAC
     /// core's underflow flag, read while the stream's last zero buffers
-    /// still play (after the drain, before the stop).
+    /// still play (after the drain, before the stop), and the block's
+    /// features.
     fn summary(&mut self) -> String {
         let Some(b) = &mut self.block else {
             return String::new();
@@ -2429,7 +2740,11 @@ impl RadioTx for PlutoTx {
                         c.first_miss
                     );
                 }
-                format!("; FPGA TX block {}", c.describe())
+                format!(
+                    "; FPGA TX block {}; block features: {}",
+                    c.describe(),
+                    describe_features(b.features)
+                )
             }
             Err(e) => format!("; FPGA TX block counters not read: {e}"),
         }
@@ -3196,7 +3511,9 @@ mod tests {
     /// commands (fpga/README.md "The transmit block"): a command executes
     /// when bit 31 of `gpio_out` toggles, READ shows a register in
     /// `gpio_in` and any other command the ID word; `r1_mode` (0x48) and
-    /// the status register (0x88, write 1 to clear) beside it.
+    /// the status register (0x88, write 1 to clear) beside it. `features`
+    /// 0 is an image before FEATURES (its unknown addresses read 0);
+    /// otherwise BANK_TAG, PRIMED, PRE_UNF and HI behave as `tx.py`'s.
     #[derive(Default)]
     struct Dac {
         id: u32,
@@ -3214,9 +3531,21 @@ mod tests {
         deaf: bool,
         /// What STEP reads (`None`: what was written).
         step_reads: Option<u32>,
-        consumed: u32,
+        /// FEATURES.
+        features: u32,
+        /// BANK_TAG (with the feature).
+        bank_tag: u32,
+        /// Bank coefficients written.
+        bank_writes: usize,
+        /// STATUS reads after START|SELECT that do not show PRIMED yet
+        /// (`None`: it never does).
+        primed_after: Option<u32>,
+        status_reads: u32,
+        pre_unf: u32,
+        hi: u32,
+        consumed: u64,
         missed: u32,
-        first_miss: u32,
+        first_miss: u64,
         underrun: bool,
         writes: usize,
     }
@@ -3231,9 +3560,47 @@ mod tests {
                 ..Dac::default()
             }))
         }
+
+        /// An image with every feature this host knows, holding the
+        /// bitstream's own bank.
+        fn with_features(id: u32) -> Self {
+            let d = Self::new(id);
+            {
+                let mut b = d.0.borrow_mut();
+                b.features = txc::features::ALL;
+                b.bank_tag = default_bank_tag();
+                b.primed_after = Some(2);
+                b.pre_unf = 41;
+            }
+            d
+        }
     }
 
     impl Dac {
+        fn has(&self, feature: u32) -> bool {
+            self.features & feature != 0
+        }
+
+        /// A counter's READ: the low half, the high half latched in HI.
+        fn read64(&mut self, v: u64) -> u32 {
+            let [lo, hi] = [v & 0xFFFF_FFFF, v >> 32].map(|x| u32::try_from(x).unwrap());
+            if self.has(txc::features::COUNTERS64) {
+                self.hi = hi;
+            }
+            lo
+        }
+
+        fn store(&mut self, v: u32) {
+            self.regs.insert(self.addr, v);
+            if self.addr >= txc::reg::A_BASE {
+                self.bank_writes += 1;
+                self.bank_tag = 0;
+            } else if self.addr == txc::reg::BANK_TAG && self.has(txc::features::BANK_TAG) {
+                self.bank_tag = v;
+            }
+            self.addr += 1;
+        }
+
         fn execute(&mut self, w: u32) {
             let arg = (w >> 1) & 0x07FF_FFFF;
             let lo = arg & 0xFFFF;
@@ -3242,21 +3609,27 @@ mod tests {
                 0 => {}
                 1 => self.addr = u16::try_from(lo).unwrap(),
                 2 => self.staged = lo,
-                3 => {
-                    self.regs.insert(self.addr, self.staged << 16 | lo);
-                    self.addr += 1;
-                }
+                3 => self.store(self.staged << 16 | lo),
                 4 => {
                     self.gpio_in = match self.addr {
                         txc::reg::STEP => self.step_reads.unwrap_or(self.regs[&txc::reg::STEP]),
                         txc::reg::STATUS => {
+                            self.status_reads += 1;
+                            let primed = self.has(txc::features::PREFETCH)
+                                && self.selected
+                                && self.primed_after.is_some_and(|n| self.status_reads > n);
                             u32::from(self.run)
                                 | u32::from(self.selected) << 1
                                 | u32::from(self.underrun) << 2
+                                | u32::from(primed) << 3
                         }
-                        txc::reg::CONSUMED => self.consumed,
+                        txc::reg::CONSUMED => self.read64(self.consumed),
                         txc::reg::MISSED => self.missed,
-                        txc::reg::FIRST_MISS => self.first_miss,
+                        txc::reg::FIRST_MISS => self.read64(self.first_miss),
+                        txc::reg::FEATURES => self.features,
+                        txc::reg::BANK_TAG if self.has(txc::features::BANK_TAG) => self.bank_tag,
+                        txc::reg::HI if self.has(txc::features::COUNTERS64) => self.hi,
+                        txc::reg::PRE_UNF if self.has(txc::features::PREFETCH) => self.pre_unf,
                         a => self.regs.get(&a).copied().unwrap_or(0),
                     }
                 }
@@ -3265,15 +3638,12 @@ mod tests {
                     if arg & txc::ctrl::START != 0 {
                         (self.consumed, self.missed, self.first_miss) = (0, 0, 0);
                         self.underrun = false;
+                        self.status_reads = 0;
                     }
                     self.run = arg & txc::ctrl::RUN != 0;
                     self.selected = arg & txc::ctrl::SELECT != 0 && !self.deaf;
                 }
-                6 => {
-                    let v = ((arg << 5).cast_signed() >> 5).cast_unsigned();
-                    self.regs.insert(self.addr, v);
-                    self.addr += 1;
-                }
+                6 => self.store(((arg << 5).cast_signed() >> 5).cast_unsigned()),
                 op => panic!("{w:#010x}: op {op}"),
             }
         }
@@ -3309,10 +3679,15 @@ mod tests {
         }
     }
 
-    /// The host's sequence against the block's command decoding: probe,
-    /// configuration with STEP read back, CTRL START|SELECT (selected, not
-    /// running), RUN|SELECT once the stream runs with the DAC underflow
-    /// flag cleared, MISSED per status line, the counters, CTRL 0; the ID
+    /// The symbol rate of [`tx_params`] at 40 Msps.
+    const RATE: f64 = 28.86e6;
+
+    /// The host's sequence on an image before FEATURES (it reads 0 there)
+    /// against the block's command decoding: probe, CTRL 0, FEATURES,
+    /// the whole configuration with STEP read back, CTRL START|SELECT
+    /// (selected, not running), RUN|SELECT once the stream runs (no PRIMED
+    /// awaited) with the DAC underflow flag cleared, MISSED per status
+    /// line, the counters extended to 64 bits by the host, CTRL 0; the ID
     /// word in `gpio_in` after every read.
     #[test]
     fn transmit_block_sequence() {
@@ -3323,32 +3698,50 @@ mod tests {
             TxIdentity::parse(0xB5D1_1918)
         );
         assert_eq!(TxBlock::probe(&FakeDac::new(0)).unwrap(), None);
-        let mut b = TxBlock::open(&dac, &p).unwrap();
+        let mut b = TxBlock::open(&dac, &p, RATE).unwrap();
         let both = txc::ctrl::START | txc::ctrl::SELECT;
+        let commands = Encoder::new(0).configure_tx(&p).len();
+        assert_eq!(b.features, 0);
+        assert_eq!(
+            b.bank,
+            BankLoad::Loaded {
+                commands,
+                tagged: false
+            }
+        );
+        assert_eq!(b.bank.describe(), "13315 commands");
         {
             let d = dac.0.borrow();
-            assert_eq!(d.ctrl, [both]);
+            assert_eq!(d.ctrl, [0, both]);
             assert!(d.selected && !d.run);
             assert_eq!(d.regs[&txc::reg::STEP], 0xB8_B439);
             assert_eq!(d.regs[&txc::reg::SHIFT], u32::from(p.shift));
             assert_eq!(d.regs[&txc::reg::A_BASE].cast_signed(), p.a[0][0]);
             let last_b = txc::reg::B_BASE + 511 * txc::reg::ROW_STRIDE + 11;
             assert_eq!(d.regs[&last_b].cast_signed(), p.b[511][11]);
+            assert!(!d.regs.contains_key(&txc::reg::BANK_TAG), "no tag written");
             assert_eq!(d.gpio_in, p.id_word());
             assert_eq!(
                 d.writes,
-                Encoder::new(0).configure_tx(&p).len() + 2 * 3 + 1,
-                "configuration, two reads (ADDR, READ, NOP) and CTRL"
+                commands + 1 + 5 + 2 * 3 + 1,
+                "CTRL 0, FEATURES and BANK_TAG (2 × ADDR, READ, then NOP), the configuration, two reads (ADDR, READ, NOP) and CTRL"
             );
         }
         // the flag the idle DAC set before the stream
         dac.0.borrow_mut().status = DAC_STATUS_UNDERFLOW;
-        b.run(&dac).unwrap();
+        let writes = dac.0.borrow().writes;
+        b.run(&dac, Duration::from_millis(5)).unwrap();
         {
             let d = dac.0.borrow();
-            assert_eq!(d.ctrl, [both, txc::ctrl::RUN | txc::ctrl::SELECT]);
+            assert_eq!(d.ctrl, [0, both, txc::ctrl::RUN | txc::ctrl::SELECT]);
             assert!(d.run && d.selected);
             assert_eq!(d.status, 0, "the DAC underflow flag cleared");
+            assert_eq!(
+                d.writes - writes,
+                1 + 3 + 1,
+                "CTRL, STATUS, the flag: no PRIMED poll"
+            );
+            assert_eq!(b.pre_unf, None);
         }
         dac.0.borrow_mut().missed = 16;
         assert_eq!(b.status(&dac).unwrap(), 16);
@@ -3358,7 +3751,10 @@ mod tests {
             (d.consumed, d.first_miss, d.underrun) = (319_488, 640, true);
             d.status = DAC_STATUS_UNDERFLOW;
         }
-        let c = b.counters(&dac).unwrap();
+        // the first status line with a miss kept FIRST_MISS (0 then)
+        b.first_miss = None;
+        let at = b.wide.unwrap().at + Duration::from_millis(12);
+        let c = b.counters_at(&dac, at).unwrap();
         assert_eq!(
             c,
             TxCounters {
@@ -3391,6 +3787,195 @@ mod tests {
         );
     }
 
+    /// An image before COUNTERS64: CONSUMED and FIRST_MISS past 2³²
+    /// (148.8 s of codes) come out right from their low halves, the
+    /// expected advance being the time since the last read at the symbol
+    /// rate; a status line that sees the first miss keeps FIRST_MISS.
+    #[test]
+    fn counters_extended_by_the_host() {
+        let p = tx_params();
+        let dac = FakeDac::new(p.id_word());
+        let mut b = TxBlock::open(&dac, &p, RATE).unwrap();
+        b.run(&dac, Duration::ZERO).unwrap();
+        let t0 = b.wide.unwrap().at;
+        let secs = |codes: u64| Duration::from_secs_f64(codes as f64 / RATE);
+        // 2.3 wraps of CONSUMED, read once at the end
+        let c = 9_900_000_000;
+        {
+            let mut d = dac.0.borrow_mut();
+            (d.consumed, d.missed) = (c, 0);
+        }
+        let got = b.counters_at(&dac, t0 + secs(c)).unwrap();
+        assert_eq!(got.consumed, c);
+        assert_eq!(got.first_miss, 0);
+        // a second read 30 s later, the clock 1 % off
+        let c2 = c + 865_800_000;
+        dac.0.borrow_mut().consumed = c2;
+        let got = b
+            .counters_at(&dac, t0 + secs(c) + secs(874_458_000))
+            .unwrap();
+        assert_eq!(got.consumed, c2);
+        // the first miss, seen by a status line at once
+        {
+            let mut d = dac.0.borrow_mut();
+            (d.consumed, d.missed, d.first_miss, d.underrun) = (c2 + 1_000, 8, c2 + 900, true);
+        }
+        assert_eq!(b.status(&dac).unwrap(), 8);
+        assert_eq!(b.first_miss, Some(c2 + 900));
+        // read 200 s later (more than a wrap): FIRST_MISS as kept
+        let c3 = c2 + 5_772_000_000;
+        dac.0.borrow_mut().consumed = c3;
+        let at = b.wide.unwrap().at + secs(5_772_000_000 + 8);
+        let got = b.counters_at(&dac, at).unwrap();
+        assert_eq!((got.consumed, got.first_miss), (c3, c2 + 900));
+    }
+
+    #[test]
+    fn extend32_picks_the_wrap_nearest_the_expectation() {
+        const W: u64 = 1 << 32;
+        assert_eq!(extend32(0, 1000, 1000.0), 1000);
+        assert_eq!(extend32(W - 10, 5, 15.0), W + 5);
+        assert_eq!(extend32(5, 3, 0.0), W + 3, "never below the last value");
+        assert_eq!(extend32(100, 50, 3.9e9 * 2.0), 2 * W + 50);
+        // half a wrap off still picks the right one
+        assert_eq!(extend32(0, 7, (3 * W) as f64 + 0.4 * W as f64), 3 * W + 7);
+        assert_eq!(extend32(W, 7, -1e9), W + 7);
+    }
+
+    /// An image with the features: the bitstream's own bank kept (STEP
+    /// and SHIFT alone), PRIMED awaited before RUN and PRE_UNF read, the
+    /// counters' high halves through HI.
+    #[test]
+    fn transmit_block_with_the_features() {
+        let p = tx_params();
+        let dac = FakeDac::with_features(p.id_word());
+        let mut b = TxBlock::open(&dac, &p, RATE).unwrap();
+        let both = txc::ctrl::START | txc::ctrl::SELECT;
+        let commands = Encoder::new(0).configure_tx(&p).len();
+        assert_eq!(b.features, 7);
+        assert_eq!(
+            b.bank,
+            BankLoad::Kept {
+                skipped: commands - 3,
+                default: true
+            }
+        );
+        assert_eq!(
+            b.bank.describe(),
+            "bank: default (tag match), skipped 13312 commands"
+        );
+        {
+            let d = dac.0.borrow();
+            assert_eq!(d.bank_writes, 0);
+            assert_eq!(d.regs[&txc::reg::STEP], 0xB8_B439);
+            assert_eq!(d.regs[&txc::reg::SHIFT], u32::from(p.shift));
+            assert_eq!(d.ctrl, [0, both]);
+            assert_eq!(
+                d.writes,
+                1 + 5 + 3 + 3 + 1 + 3,
+                "CTRL 0, FEATURES and BANK_TAG, STEP and SHIFT, STEP read, CTRL, STATUS"
+            );
+        }
+        dac.0.borrow_mut().status = DAC_STATUS_UNDERFLOW;
+        b.run(&dac, Duration::from_secs(1)).unwrap();
+        {
+            let d = dac.0.borrow();
+            assert_eq!(d.ctrl, [0, both, txc::ctrl::RUN | txc::ctrl::SELECT]);
+            assert_eq!(
+                d.status_reads,
+                1 + 2 + 1,
+                "the open's, two polls, the run's"
+            );
+            assert_eq!(d.status, 0);
+        }
+        assert_eq!(b.pre_unf, Some(41));
+        {
+            let mut d = dac.0.borrow_mut();
+            (d.consumed, d.missed, d.first_miss, d.underrun) =
+                (0x1_0000_0010, 8, 0x1_0000_0001, true);
+        }
+        let c = b.counters(&dac).unwrap();
+        assert_eq!(
+            (c.status, c.consumed, c.missed, c.first_miss),
+            (0xF, 0x1_0000_0010, 8, 0x1_0000_0001)
+        );
+        assert_eq!(dac.0.borrow().gpio_in, p.id_word());
+        assert_eq!(
+            describe_features(b.features),
+            "prefetch, bank tag, 64-bit counters"
+        );
+    }
+
+    /// BANK_TAG 0 (a load that did not finish, or another bank): the
+    /// whole configuration, then the tag; the next open keeps it. Another
+    /// design's bank is "loaded by an earlier open" when the tag matches.
+    #[test]
+    fn the_bank_is_loaded_once() {
+        let p = tx_params();
+        let dac = FakeDac::with_features(p.id_word());
+        dac.0.borrow_mut().bank_tag = 0;
+        let b = TxBlock::open(&dac, &p, RATE).unwrap();
+        let commands = Encoder::new(0).configure_tx(&p).len();
+        assert_eq!(
+            b.bank,
+            BankLoad::Loaded {
+                commands,
+                tagged: true
+            }
+        );
+        assert_eq!(b.bank.describe(), "13315 commands, bank tag written");
+        {
+            let d = dac.0.borrow();
+            assert_eq!(d.bank_writes, 2 * 512 * 12);
+            assert_eq!(d.bank_tag, txc::bank_tag(&p));
+        }
+        let b = TxBlock::open(&dac, &p, RATE).unwrap();
+        assert!(matches!(b.bank, BankLoad::Kept { default: true, .. }));
+        assert_eq!(dac.0.borrow().bank_writes, 2 * 512 * 12);
+        // another rate: reloaded, then kept as not the default
+        let q = TxParams::design(&TxDesign {
+            backoff_db: 3.0,
+            ..TxDesign::new(61.44e6, 28.86e6, 0.35)
+        })
+        .unwrap();
+        let dac = FakeDac::with_features(q.id_word());
+        assert!(matches!(
+            TxBlock::open(&dac, &q, RATE).unwrap().bank,
+            BankLoad::Loaded { tagged: true, .. }
+        ));
+        let b = TxBlock::open(&dac, &q, RATE).unwrap();
+        assert_eq!(
+            b.bank.describe(),
+            "bank: loaded by an earlier open (tag match), skipped 13312 commands"
+        );
+    }
+
+    /// A block that never reports PRIMED is started anyway after the
+    /// timeout (what it does not get counts in MISSED).
+    #[test]
+    fn a_block_that_does_not_prime_is_started_anyway() {
+        let p = tx_params();
+        let dac = FakeDac::with_features(p.id_word());
+        dac.0.borrow_mut().primed_after = None;
+        let mut b = TxBlock::open(&dac, &p, RATE).unwrap();
+        b.run(&dac, Duration::from_millis(5)).unwrap();
+        let d = dac.0.borrow();
+        assert!(d.run && d.selected);
+        assert!(d.status_reads > 2, "polled");
+        assert_eq!(b.pre_unf, Some(41));
+    }
+
+    #[test]
+    fn feature_names() {
+        assert!(describe_features(0).starts_with("none (an image before them"));
+        assert!(!describe_features(0).contains("prefetch"));
+        assert_eq!(describe_features(1), "prefetch");
+        assert_eq!(
+            describe_features(4 | 16),
+            "64-bit counters, bit 4 (unknown to this host)"
+        );
+    }
+
     /// Refused before a command: r1_mode, `gpio_out` bit 0. Refused after
     /// the configuration, with CTRL 0 sent: a block that does not take the
     /// DAC on SELECT, a STEP that does not read back; and a block that
@@ -3400,35 +3985,35 @@ mod tests {
         let p = tx_params();
         let dac = FakeDac::new(p.id_word());
         dac.0.borrow_mut().r1 = DAC_R1_MODE_BIT;
-        let e = TxBlock::open(&dac, &p).unwrap_err().to_string();
+        let e = TxBlock::open(&dac, &p, RATE).unwrap_err().to_string();
         assert!(e.contains("r1_mode"), "{e}");
         assert_eq!(dac.0.borrow().writes, 0);
         let dac = FakeDac::new(p.id_word());
         dac.0.borrow_mut().gpio_out = 0x8000_0001;
-        let e = TxBlock::open(&dac, &p).unwrap_err().to_string();
+        let e = TxBlock::open(&dac, &p, RATE).unwrap_err().to_string();
         assert!(e.contains("gpio_out set") && e.contains("TX FIR"), "{e}");
         assert_eq!(dac.0.borrow().writes, 0);
         let dac = FakeDac::new(p.id_word());
         dac.0.borrow_mut().deaf = true;
-        let e = TxBlock::open(&dac, &p).unwrap_err().to_string();
+        let e = TxBlock::open(&dac, &p, RATE).unwrap_err().to_string();
         assert!(
             e.contains("reads 0x0 after CTRL START|SELECT")
                 && e.contains("codes sent to a plain DAC would go out as samples"),
             "{e}"
         );
-        assert_eq!(dac.0.borrow().ctrl, [6, 0]);
+        assert_eq!(dac.0.borrow().ctrl, [0, 6, 0]);
         let dac = FakeDac::new(p.id_word());
         dac.0.borrow_mut().step_reads = Some(0x80_0000);
-        let e = TxBlock::open(&dac, &p).unwrap_err().to_string();
+        let e = TxBlock::open(&dac, &p, RATE).unwrap_err().to_string();
         assert!(
             e.contains("STEP: reads 0x800000 after writing 0xb8b439"),
             "{e}"
         );
-        assert_eq!(dac.0.borrow().ctrl, [0]);
+        assert_eq!(dac.0.borrow().ctrl, [0, 0]);
         let dac = FakeDac::new(p.id_word());
-        let mut b = TxBlock::open(&dac, &p).unwrap();
+        let mut b = TxBlock::open(&dac, &p, RATE).unwrap();
         dac.0.borrow_mut().deaf = true;
-        let e = b.run(&dac).unwrap_err().to_string();
+        let e = b.run(&dac, Duration::ZERO).unwrap_err().to_string();
         assert!(e.contains("not running and selected"), "{e}");
     }
 
