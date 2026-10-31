@@ -38,6 +38,14 @@
 #   per loop seam with FEED=loop, none otherwise).
 #   The bench's own TOML is copied to WORKDIR/bs-bench.toml (with MEDIA:
 #   its two declared streams made media streams of these files).
+#   MUX (1: no TS file; `isdb tx --system isdbs --mux-config` multiplexes
+#   the service in-process, superframe by superframe, for SECONDS of air
+#   time, lead-in included; the TOML's service is put on layer "A", the
+#   one lane of an ISDB-S TS. FEED, PASSES, STALL and TS_PACING do not
+#   apply; MEDIA does, the multiplexer looping the media itself, so no
+#   order jump is expected; default 0),
+#   GRID (MUX=1: --mux-pcr-grid, uniform or slot; default uniform; slot
+#   relaxes the CBR-fit bound from 100 ns to 10 µs).
 # Exit status: 0 PASS, 1 FAIL (isdbs-bench-check.sh, a seam check,
 #   media-decode-check.py, or FEED=live with a deadline miss, STALL
 #   without one), 2 error.
@@ -54,8 +62,17 @@ FEED=${FEED:-file}
 PASSES=${PASSES:-3}
 MEDIA=${MEDIA:-0}
 STALL=${STALL:-0}
+MUX=${MUX:-0}
+GRID=${GRID:-uniform}
 [[ $SECONDS_TS =~ ^[1-9][0-9]*$ ]] || die "SECONDS $SECONDS_TS: expected whole seconds"
 case $FEED in file|loop|live) ;; *) die "FEED=$FEED: file, loop or live" ;; esac
+case $MUX in 0|1) ;; *) die "MUX=$MUX: 0 or 1" ;; esac
+case $GRID in uniform|slot) ;; *) die "GRID=$GRID: uniform or slot" ;; esac
+if [ "$MUX" = 1 ]; then
+    # the TS comes from the in-process multiplexer: no file to feed
+    FEED="file"
+    STALL=0
+fi
 [[ $PASSES =~ ^[1-9][0-9]*$ ]] || die "PASSES=$PASSES: expected a count"
 [[ $STALL =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "STALL=$STALL: expected seconds"
 if [ "$FEED" = live ]; then command -v pv > /dev/null || die "FEED=live needs pv"; fi
@@ -98,12 +115,16 @@ if [ "$MEDIA" = 1 ]; then
 fi
 # The TS_ID of bs-bench.toml (= the TMCC's) and the channel of its 0x43.
 TSID=4017
-python3 -I - "$HERE/crates/isdbt-mux/examples/bs-bench.toml" bs-bench.toml "$MEDIA" "$PWD" <<'PY'
+python3 -I - "$HERE/crates/isdbt-mux/examples/bs-bench.toml" bs-bench.toml "$MEDIA" "$PWD" "$MUX" <<'PY'
 import re, sys
-src, dst, media, here = sys.argv[1:5]
+src, dst, media, here, mux = sys.argv[1:6]
 s = open(src).read()
 assert re.search(r'^transport_stream_id = 0x4017\b', s, re.M), "TS_ID of bs-bench.toml"
 assert re.search(r'^\s*channel = "BS1"', s, re.M), "channel of bs-bench.toml"
+if mux == "1":
+    # an ISDB-S TS is one lane of the multiplexer, "A"
+    s, n = re.subn(r'^layer = "B"', 'layer = "A"', s, flags=re.M)
+    assert n == 1, "the service layer of bs-bench.toml"
 if media == "1":
     for pid, st, kind, extra in (
         ("0x0111", "0x02", "mpeg2-video", f'source = "{here}/video.m2v"'),
@@ -125,12 +146,22 @@ if [ -n "$MEDIA_DIR" ] && [ "$MEDIA" != 1 ]; then
     read -r FRAMES NOTE <<< "$LINE"
     echo "== media from $MEDIA_DIR: $NOTE"
     LENGTH=(--frames "$FRAMES")
-    # whole seconds of TS, for the air time of FEED=loop
-    SECONDS_TS=$(awk -v n="$FRAMES" 'BEGIN { s = n * 0.231336; printf "%d", (s == int(s)) ? s : int(s) + 1 }')
+    # whole seconds of TS, for the air time of FEED=loop (MUX=1 keeps
+    # SECONDS: the multiplexer loops the media wherever it ends)
+    if [ "$MUX" != 1 ]; then
+        SECONDS_TS=$(awk -v n="$FRAMES" 'BEGIN { s = n * 0.231336; printf "%d", (s == int(s)) ? s : int(s) + 1 }')
+    fi
 fi
-"$ISDB" mux -c bs-bench.toml "${LENGTH[@]}" --out-ts bench.ts
-INPUT=(--ts "0x$TSID=$PWD/bench.ts")
 STATUS=(--status-secs 0)
+FIT_MAX=100
+if [ "$MUX" = 1 ]; then
+    echo "== in-process multiplexer: bs-bench.toml, PCR grid $GRID, $SECONDS_TS s of air time"
+    INPUT=(--mux-config "$PWD/bs-bench.toml" --mux-pcr-grid "$GRID" --seconds "$SECONDS_TS")
+    [ "$GRID" = uniform ] || FIT_MAX=10000
+else
+    "$ISDB" mux -c bs-bench.toml "${LENGTH[@]}" --out-ts bench.ts
+    INPUT=(--ts "0x$TSID=$PWD/bench.ts" --ts-pacing "$PACING")
+fi
 if [ "$FEED" = loop ]; then
     # air time for PASSES passes and a bit of the next (lead-in included)
     INPUT+=(--feed loop --seconds "$((SECONDS_TS * PASSES + 1))")
@@ -160,10 +191,10 @@ elif [ "$FEED" = live ]; then
         (sleep 4; kill -STOP "$W"; sleep "$STALL"; kill -CONT "$W") 2> /dev/null &
         echo $! > stall.pid
     fi
-    INPUT=(--ts "0x$TSID=$PWD/ts.fifo" --feed live)
+    INPUT=(--ts "0x$TSID=$PWD/ts.fifo" --feed live --ts-pacing "$PACING")
     STATUS=(--status-secs 2)
 fi
-"$ISDB" tx --system isdbs --channel BS1 "${INPUT[@]}" --ts-pacing "$PACING" \
+"$ISDB" tx --system isdbs --channel BS1 "${INPUT[@]}" \
     --iq tx.cs8 --iq-format cs8 --placed-ts 'placed-{ts_id}.ts' "${STATUS[@]}" 2>&1 | tee tx.log
 LIVE_MISSES=0
 if [ "$FEED" = live ]; then
@@ -198,7 +229,7 @@ PY
 fi
 echo "== received TS against the placed one"
 VERDICT=0
-"$HERE/tools/isdbs-bench-check.sh" --rate "52170000:$PPM" --fit-max-ns 100 \
+"$HERE/tools/isdbs-bench-check.sh" --rate "52170000:$PPM" --fit-max-ns "$FIT_MAX" \
     --placed "placed-$TSID.ts" "$RX" | tee check.log || VERDICT=$?
 [ "$VERDICT" -le 1 ] || exit "$VERDICT"
 if [ "$STALL" != 0 ] && [ "$FEED" = live ]; then
