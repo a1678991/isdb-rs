@@ -15,16 +15,23 @@
 //! * [`video`], [`audio`] — MPEG-2 video and AAC ADTS elementary-stream
 //!   parsing (access units, PTS/DTS).
 //! * [`tstd`] — H.222.0 T-STD buffer model used for pacing.
-//! * [`mux`] — the OFDM-frame-paced CBR multiplexer: exactly
-//!   `tsp_per_frame` packets per active layer per frame, timed on the
-//!   ARIB STD-B31 §3.2 multiplex-frame clock.
+//! * [`mux`] — the CBR multiplexer: exactly one packet per carried slot of
+//!   its [`schedule`], by default the OFDM frame (`tsp_per_frame` packets
+//!   per active layer per frame, timed on the ARIB STD-B31 §3.2
+//!   multiplex-frame clock).
+//! * [`schedule`] — the period/slot model the multiplexer fills: slots and
+//!   their lanes, slot and PCR-byte times, units → 27 MHz ticks, lane
+//!   rates, PCR and control-lane defaults ([`Schedule::ofdm`]).
 //! * [`output`] — per-layer / multiplex TS writers.
 //! * [`analysis`] — measurement of produced streams.
 //!
 //! Timing model: packet *j* of OFDM frame *k* arrives at clock
 //! `k·samples_per_frame + 408·j` of 512/63 MHz (the TS a 13-segment
 //! receiver reproduces, B31 §3.2.2), so PCR and PTS/DTS are consistent
-//! with the transmitted rate by construction. Typed signalling and raw
+//! with the transmitted rate by construction. The multiplexer reads this
+//! from a [`Schedule`] (`slot_time(k, j) = ⌊(k·period + start[j]) ·
+//! num/den⌋`), so another timeline (the ISDB-S superframe) can be given to
+//! [`Multiplexer::with_schedule`]. Typed signalling and raw
 //! descriptors that would duplicate them are checked when the
 //! configuration is loaded ([`Config::validate`]).
 //!
@@ -116,6 +123,7 @@ pub mod playback;
 pub mod relay;
 pub mod relay_rate;
 pub mod relay_template;
+pub mod schedule;
 pub mod si;
 pub mod signalling;
 pub mod tstd;
@@ -126,6 +134,7 @@ pub use config::Config;
 pub use error::{MuxError, Result};
 pub use mux::{Multiplexer, MuxStats, Packet, layer_slices, null_packet};
 pub use output::TsWriter;
+pub use schedule::{Schedule, System};
 
 // Compile the README's code blocks as doctests.
 #[cfg(doctest)]

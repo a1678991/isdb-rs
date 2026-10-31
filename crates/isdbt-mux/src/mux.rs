@@ -1,19 +1,23 @@
-//! The CBR, OFDM-frame-paced multiplexer.
+//! The CBR multiplexer, paced by a [`Schedule`] (by default the OFDM
+//! frame).
 //!
-//! Timing model: the TS a 13-segment receiver reproduces (ARIB STD-B31
-//! §3.2.2, Fig. 3-4) reads one 204-byte transmission TSP every 408
-//! clocks of the 512/63 MHz sample clock, in the slot order of the
-//! multiplex frame ([`MultiplexPattern`]). Slot *j* of OFDM frame *k*
-//! therefore starts at clock `k·samples_per_frame + 408·j`; converted to
-//! the 27 MHz system clock (× 27·63/512 = × 1701/512) this is the arrival
-//! time of the packet at the T-STD (H.222.0 §2.4.2.2), so PCR values and
+//! Timing model: the multiplexer fills the carried slots of one period of
+//! its [`Schedule`] after the other, and the time of a slot is the arrival
+//! time of its packet at the T-STD (H.222.0 §2.4.2.2), so PCR values and
 //! the PTS/DTS schedule are consistent with the transmitted rate by
-//! construction. PCR = time of the byte holding the last bit of
+//! construction. On ISDB-T ([`Schedule::ofdm`]) the TS a 13-segment
+//! receiver reproduces (ARIB STD-B31 §3.2.2, Fig. 3-4) reads one 204-byte
+//! transmission TSP every 408 clocks of the 512/63 MHz sample clock, in
+//! the slot order of the multiplex frame ([`MultiplexPattern`]). Slot *j*
+//! of OFDM frame *k* therefore starts at clock `k·samples_per_frame +
+//! 408·j`, converted to the 27 MHz system clock × 27·63/512 = × 1701/512.
+//! PCR = time of the byte holding the last bit of
 //! program_clock_reference_base (byte 10 of the packet, i.e. 20 clocks
 //! after the slot start at 2 clocks per byte).
 //!
-//! Per slot of a layer the scheduler emits, in priority order: the PCR
-//! packet of a service whose PCR position this is (B31 Part 2 §3.2.4: a
+//! Per slot of a layer (a lane of the schedule) the scheduler emits, in
+//! priority order: the PCR packet of a service whose PCR position this is
+//! (B31 Part 2 §3.2.4: a
 //! fixed number of PCR packets per frame at equal intervals), a pending
 //! section packet (earliest deadline first, B10 §5.1.4 rate limit), a
 //! PES packet whose T-STD buffers can take it (earliest DTS first), or a
@@ -40,6 +44,7 @@ use crate::float;
 use crate::jst::{self, JstSeconds};
 use crate::playback::PlaybackStatus;
 use crate::relay::{self, Relay, RelayStats};
+use crate::schedule::{Schedule, System};
 use crate::si::{self, SiBuilder, StreamInfo, TableKind};
 use crate::signalling::RecordingControlCfg;
 use crate::tstd::{Tstd, TstdParams, TstdViolations};
@@ -50,10 +55,6 @@ pub type Packet = [u8; 188];
 
 /// System clock ticks per second.
 pub const HZ: u64 = 27_000_000;
-/// Model-receiver clocks per TSP period (B31 §3.2.2.2).
-const SLOT_CLOCKS: u64 = 408;
-/// Byte holding the last bit of PCR base in a PCR-carrying packet × 2 clocks/byte.
-const PCR_BYTE_CLOCKS: u64 = 20;
 
 /// H.222.0 §2.4.3.2 null packet.
 pub fn null_packet() -> Packet {
@@ -62,7 +63,8 @@ pub fn null_packet() -> Packet {
     p
 }
 
-/// Convert model-receiver clocks (512/63 MHz) to 27 MHz ticks.
+/// Convert model-receiver clocks (512/63 MHz) to 27 MHz ticks (the units
+/// of [`Schedule::ofdm`]; [`Schedule::units_to_ticks`] in general).
 pub fn clocks_to_ticks(c: u64) -> u64 {
     // floor(c * 1701 / 512) split so it stays in u64: the quotient and the
     // remainder of c by 512 scale separately and the parts add exactly.
@@ -162,8 +164,9 @@ pub struct MuxStats {
 
 /// The multiplexer.
 pub struct Multiplexer {
-    params: Params,
-    pattern: MultiplexPattern,
+    schedule: Schedule,
+    /// The multiplex-frame pattern of an ISDB-T schedule ([`Self::pattern`]).
+    pattern: Option<MultiplexPattern>,
     si: SiBuilder,
     sections: Vec<SectionStream>,
     es: Vec<EsStream>,
@@ -213,12 +216,41 @@ fn to90k(t: u64) -> u64 {
 }
 
 impl Multiplexer {
-    /// Build a multiplexer. Relative `source` paths are resolved against
-    /// `base_dir` (normally the config file's directory).
+    /// Build an ISDB-T multiplexer paced by the OFDM frame of `params`:
+    /// [`with_schedule`](Self::with_schedule) with [`Schedule::ofdm`].
+    /// Relative `source` paths are resolved against `base_dir` (normally
+    /// the config file's directory).
     pub fn new(cfg: &Config, params: &Params, base_dir: &Path) -> Result<Self> {
+        let pattern = MultiplexPattern::new(params);
+        let schedule = Schedule::from_pattern(params, &pattern);
+        Self::build(cfg, schedule, Some(pattern), base_dir)
+    }
+
+    /// Build a multiplexer that fills the slots of `schedule`, one period
+    /// after the other ([`next_period`](Self::next_period)). Relative
+    /// `source` paths are resolved against `base_dir`.
+    ///
+    /// # Errors
+    ///
+    /// [`MuxError::Schedule`] when the schedule breaks a rule of
+    /// [`Schedule::validate`]; the configuration errors of
+    /// [`new`](Self::new).
+    pub fn with_schedule(cfg: &Config, schedule: Schedule, base_dir: &Path) -> Result<Self> {
+        schedule.validate()?;
+        let pattern = match &schedule.system {
+            System::Terrestrial(p) => Some(MultiplexPattern::new(p)),
+        };
+        Self::build(cfg, schedule, pattern, base_dir)
+    }
+
+    fn build(
+        cfg: &Config,
+        schedule: Schedule,
+        pattern: Option<MultiplexPattern>,
+        base_dir: &Path,
+    ) -> Result<Self> {
         cfg.validate()?;
         let mut warnings = Vec::new();
-        let pattern = MultiplexPattern::new(params);
         let start_pcr = cfg.clock.start_pcr;
         let clock_start = match cfg.clock.source {
             ClockSource::System => match &cfg.clock.start {
@@ -263,10 +295,10 @@ impl Multiplexer {
             ));
         }
         for (i, s) in cfg.services.iter().enumerate() {
-            if params.layers()[s.layer.index()].is_none() {
+            if !schedule.lane_active(s.layer.index()) {
                 return Err(MuxError::InactiveLayer {
                     key: format!("{}.layer", key::service(i)),
-                    layer: isdbt_core::Layer::ALL[s.layer.index()],
+                    layer: Schedule::layer(s.layer.index()),
                 });
             }
         }
@@ -485,14 +517,14 @@ impl Multiplexer {
             for (k, st) in s.streams.iter().enumerate() {
                 let stk = key::stream(si_idx, s, k);
                 let layer = st.layer.unwrap_or(s.layer).index();
-                if params.layers()[layer].is_none() {
+                if !schedule.lane_active(layer) {
                     return Err(MuxError::InactiveLayer {
                         key: if st.layer.is_some() {
                             format!("{stk}.layer")
                         } else {
                             format!("{}.layer", key::service(si_idx))
                         },
-                        layer: isdbt_core::Layer::ALL[layer],
+                        layer: Schedule::layer(layer),
                     });
                 }
                 if !st.pid.is_assignable() {
@@ -687,7 +719,8 @@ impl Multiplexer {
         let events = si::resolve_events(cfg, clock_start)?;
         let si = SiBuilder {
             cfg: cfg.clone(),
-            params: params.clone(),
+            system: schedule.system.clone(),
+            control_lane: schedule.control_lane,
             media: media_info,
             events,
         };
@@ -742,7 +775,7 @@ impl Multiplexer {
         let si_window_ticks = ms(cfg.timing.si_window_ms);
         let si_max_packets = (cfg.timing.si_max_bytes as usize / 188).max(1);
         let margin = cfg.timing.interval_margin.clamp(0.1, 1.0);
-        let frame_ticks = params.frame_ticks_27mhz();
+        let frame_ticks = schedule.period_ticks();
         let mut sections = Vec::new();
         let mut per_layer_sections = [0u64; 3];
         // Estimated section rate per layer (bit/s) for the relay capacity check.
@@ -759,10 +792,10 @@ impl Multiplexer {
                 .layer
                 .map(|l| l.index())
                 .unwrap_or_else(|| si.default_layer(kind));
-            if params.layers()[layer].is_none() {
+            if !schedule.lane_active(layer) {
                 return Err(MuxError::InactiveLayer {
                     key: format!("{tk}.layer"),
-                    layer: isdbt_core::Layer::ALL[layer],
+                    layer: Schedule::layer(layer),
                 });
             }
             // EIT p/f and schedule (and TOT/TDT) may share a PID: one CC sequence.
@@ -799,8 +832,7 @@ impl Multiplexer {
                 _ => rate,
             };
             // Stagger the first transmissions two layer slots apart.
-            let layer_slot =
-                frame_ticks / pattern.count(isdbt_core::Layer::ALL[layer]).max(1) as u64;
+            let layer_slot = frame_ticks / schedule.lane_slots(layer).max(1) as u64;
             let n = per_layer_sections[layer];
             per_layer_sections[layer] += 1;
             sections.push(SectionStream {
@@ -821,8 +853,10 @@ impl Multiplexer {
         }
 
         // ---- PCR
-        let scale = params.mode().scale();
-        let per_frame = cfg.timing.pcr_per_frame.map_or(scale, |n| n as usize);
+        let per_frame = cfg
+            .timing
+            .pcr_per_frame
+            .map_or(schedule.default_pcr_per_period, |n| n as usize);
         let mut pcr = Vec::new();
         let mut per_layer_count = [0usize; 3];
         for (i, s) in cfg.services.iter().enumerate() {
@@ -842,12 +876,12 @@ impl Multiplexer {
                     .unwrap_or(s.layer)
                     .index(),
             };
-            let id = isdbt_core::Layer::ALL[layer];
-            let n = pattern.count(id);
+            let id = schedule.lane_name(layer);
+            let n = schedule.lane_slots(layer);
             if per_frame == 0 || !n.is_multiple_of(per_frame) {
                 return Err(MuxError::config(
                     "timing.pcr_per_frame",
-                    format!("{per_frame} does not divide the {n} TSPs per frame of layer {id}"),
+                    format!("{per_frame} does not divide the {n} TSPs per frame of {id}"),
                 ));
             }
             if frame_ticks / per_frame as u64 > HZ / 10 {
@@ -865,9 +899,7 @@ impl Multiplexer {
             if offset >= step {
                 return Err(MuxError::config(
                     format!("{}.pcr_pid", key::service(i)),
-                    format!(
-                        "too many PCR services on layer {id} ({step} PCR positions per period)"
-                    ),
+                    format!("too many PCR services on {id} ({step} PCR positions per period)"),
                 ));
             }
             let positions = (0..per_frame).map(|q| offset + q * step).collect();
@@ -899,15 +931,15 @@ impl Multiplexer {
         }
 
         // ---- relays: capacity check (B31 Table 3-3 rates, isdbt-core) and start
-        let frame_s = params.frame_seconds();
+        let frame_s = schedule.period_seconds();
         let mut relays = Vec::new();
         for (probe, layer, st) in &plans {
-            let id = isdbt_core::Layer::ALL[*layer];
+            let id = Schedule::layer(*layer);
             let pcr_bps: f64 =
                 pcr.iter().filter(|p| p.layer == *layer).count() as f64 * per_frame as f64 * 1504.0
                     / frame_s;
             let overhead = pcr_bps + section_bps[*layer];
-            let cap = crate::capacity::layer_bps(params, id);
+            let cap = schedule.lane_bps[*layer];
             // the rate that delivers every relayed packet by its decoding
             // time over the whole file (crate::relay_rate), not the mean of
             // the probed start: the relay keeps the source's pace, so a
@@ -916,6 +948,7 @@ impl Multiplexer {
             let rate = &probe.rate;
             let need = rate.required_bps + overhead;
             if need > cap {
+                let System::Terrestrial(params) = &schedule.system;
                 let msg = crate::capacity::over_capacity_message(
                     params,
                     id,
@@ -990,12 +1023,8 @@ impl Multiplexer {
         // ---- rough capacity check
         for e in &es {
             if let Media::Video { es: v, .. } = &e.media {
-                let cap = params.layers()[e.layer]
-                    .map(|l| l.tsp_per_frame(params.mode()))
-                    .unwrap_or(0) as f64
-                    * 184.0
-                    * 8.0
-                    / params.frame_seconds();
+                let cap =
+                    schedule.lane_slots(e.layer) as f64 * 184.0 * 8.0 / schedule.period_seconds();
                 if v.seq.bit_rate as f64 > 0.95 * cap {
                     warn!(
                         pid = %e.pid,
@@ -1015,7 +1044,7 @@ impl Multiplexer {
         }
 
         Ok(Self {
-            params: params.clone(),
+            schedule,
             pattern,
             si,
             sections,
@@ -1216,14 +1245,26 @@ impl Multiplexer {
         self.relays.iter().map(|r| r.stats).collect()
     }
 
-    /// Transmission parameters.
+    /// Transmission parameters (the [`System::Terrestrial`] of the
+    /// schedule).
     pub fn params(&self) -> &Params {
-        &self.params
+        match &self.schedule.system {
+            System::Terrestrial(p) => p,
+        }
     }
 
-    /// The multiplex-frame slot pattern.
+    /// The multiplex-frame slot pattern of [`params`](Self::params).
     pub fn pattern(&self) -> &MultiplexPattern {
-        &self.pattern
+        match &self.pattern {
+            Some(p) => p,
+            // `build` always has one for a terrestrial schedule
+            None => unreachable!("a terrestrial schedule without its pattern"),
+        }
+    }
+
+    /// The schedule the multiplexer fills.
+    pub fn schedule(&self) -> &Schedule {
+        &self.schedule
     }
 
     /// Non-fatal configuration findings.
@@ -1268,10 +1309,10 @@ impl Multiplexer {
         self.frame
     }
 
-    /// 27 MHz time of slot `j` of frame `k` (arrival of its first byte).
+    /// 27 MHz time of slot `j` of period (OFDM frame) `k`: arrival of its
+    /// first byte, `clock.start_pcr` + [`Schedule::slot_time`].
     pub fn slot_time(&self, k: u64, j: usize) -> u64 {
-        self.start_pcr
-            + clocks_to_ticks(k * self.params.samples_per_frame() as u64 + j as u64 * SLOT_CLOCKS)
+        self.start_pcr + self.schedule.slot_time(k, j)
     }
 
     fn jst_at(&self, t: u64) -> JstSeconds {
@@ -1306,18 +1347,26 @@ impl Multiplexer {
         (full, out)
     }
 
+    /// Next period of the schedule: the packets of its carried slots
+    /// (`Some` lane) in slot order, every lane interleaved, nulls included
+    /// where nothing was due. One lane of an ISDB-S schedule gives that
+    /// TS's packets of a superframe; on ISDB-T,
+    /// [`next_frame_full`](Self::next_frame_full) also gives the null TSPs
+    /// of the multiplex frame.
+    pub fn next_period(&mut self) -> Vec<Packet> {
+        self.step()
+            .into_iter()
+            .filter_map(|(l, p)| l.map(|_| p))
+            .collect()
+    }
+
     fn step(&mut self) -> Vec<(Option<usize>, Packet)> {
         let k = self.frame;
-        let n = self.pattern.len();
+        let n = self.schedule.slots.len();
         let mut idx = [0usize; 3];
         let mut out = Vec::with_capacity(n);
-        let slots: Vec<Option<usize>> = self
-            .pattern
-            .slots()
-            .iter()
-            .map(|s| s.map(|l| l.index()))
-            .collect();
-        for (j, slot) in slots.into_iter().enumerate() {
+        for j in 0..n {
+            let slot = self.schedule.slots[j];
             match slot {
                 None => out.push((None, null_packet())),
                 Some(l) => {
@@ -1375,7 +1424,7 @@ impl Multiplexer {
     /// access units — audio first, its arrival→decode lead being the
     /// shortest.
     fn check_relay_lateness(&mut self) {
-        let now = self.frame as f64 * self.params.frame_seconds();
+        let now = self.frame as f64 * self.schedule.period_seconds();
         for (r, (seen, last)) in self.relays.iter().zip(&mut self.late_alerts) {
             let late = r.stats.late_pes;
             if late == *seen || last.is_some_and(|l| now - l < LATE_ALERT_INTERVAL_S) {
@@ -1418,12 +1467,7 @@ impl Multiplexer {
             .iter()
             .position(|p| p.layer == layer && p.positions.contains(&li))
         {
-            let pcr_val = self.start_pcr
-                + clocks_to_ticks(
-                    k * self.params.samples_per_frame() as u64
-                        + j as u64 * SLOT_CLOCKS
-                        + PCR_BYTE_CLOCKS,
-                );
+            let pcr_val = self.start_pcr + self.schedule.pcr_time(k, j);
             return self.emit_pcr(pi, t, pcr_val).map(Some);
         }
         // 2. sections
@@ -1444,8 +1488,7 @@ impl Multiplexer {
     /// `max_early_ms` before it when its stream's T-STD model accepts it.
     fn emit_relay(&mut self, layer: usize, t: u64) -> Result<Option<Packet>> {
         let mut best: Option<(u64, usize, usize)> = None;
-        let layer_bps =
-            crate::capacity::layer_bps(&self.params, isdbt_core::Layer::ALL[layer]).max(1.0);
+        let layer_bps = self.schedule.lane_bps[layer].max(1.0);
         for ri in 0..self.relays.len() {
             let r = &mut self.relays[ri];
             if !r.es.iter().any(|e| e.layer == layer) {

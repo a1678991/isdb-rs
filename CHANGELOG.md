@@ -43,6 +43,22 @@ STD-B44) is received to TLV streams.
   TS one media loop long; `FEED=live` then writes `isdb mux --out-ts -`
   into the FIFO) and runs the decode check on the received TS whenever it
   carries media.
+- `isdbt-mux`: the multiplexer runs on a `Schedule` (new `schedule`
+  module): one period of slots (`Some(lane)` carried, `None` not), the
+  start and PCR-byte time of each in units, the period, units → 27 MHz
+  ticks as `num`/`den`, lane rates, the default PCRs per period and the
+  control lane, and the `System` (`Terrestrial(Params)`).
+  `Schedule::ofdm(&params)` is the OFDM frame model it used before
+  (multiplex frame of B31 §3.2.1, 408 clocks per slot, PCR byte at +20,
+  × 1701/512); `Multiplexer::with_schedule(cfg, schedule, base)` takes
+  any schedule (`Schedule::validate`, `MuxError::Schedule`), `new` is
+  `with_schedule` with `Schedule::ofdm`, `next_period()` returns the
+  packets of one period's carried slots and `schedule()` the schedule;
+  `next_frame*`, `params()`, `pattern()` and `slot_time` are unchanged.
+  ISDB-T output is byte-identical (the SHA-256 of `isdb mux` for
+  `bench.toml` and `bench-minimal.toml` is pinned by
+  `isdb-cli/tests/mux_fixture.rs`). API: `si::SiBuilder`'s `params` field
+  is replaced by `system: schedule::System` and `control_lane`.
 - `isdbs-core`: the on-air position of a TS packet, shared by the ISDB-S
   pacer and the in-process multiplexer. `slots::packet_symbol(info, r, k)`
   is the symbol of the superframe at which packet k of relative TS r

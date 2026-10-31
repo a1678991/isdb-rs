@@ -183,6 +183,15 @@ pub enum MuxError {
         /// The rule.
         what: &'static str,
     },
+    /// A [`Schedule`](crate::schedule::Schedule) given to
+    /// [`Multiplexer::with_schedule`](crate::Multiplexer::with_schedule)
+    /// breaks one of the rules of
+    /// [`Schedule::validate`](crate::schedule::Schedule::validate).
+    #[error("schedule: {what}")]
+    Schedule {
+        /// The rule broken.
+        what: String,
+    },
     /// An invariant the multiplexer establishes itself does not hold: a
     /// bug in isdbt-mux, reported instead of a panic.
     #[error("internal error in isdbt-mux: {what}")]

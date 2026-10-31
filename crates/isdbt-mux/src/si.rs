@@ -29,6 +29,7 @@ use isdb_ts::Pid;
 
 use crate::adts::b32::QualityMode;
 use crate::carousel::{self, Carousel};
+use crate::schedule::System;
 use isdb_text::AribString;
 use isdb_ts::descriptor::Descriptor as RawDesc;
 use isdb_ts::psi::{Cat, Pat, PatEntry, Pmt, PmtStream};
@@ -680,8 +681,13 @@ fn si_header(table_id: u8, ext: u16, version: u8) -> LongHeader {
 pub struct SiBuilder {
     /// Configuration.
     pub cfg: Config,
-    /// Transmission parameters.
-    pub params: Params,
+    /// The transmission system ([`crate::schedule::Schedule::system`]):
+    /// the ISDB-T parameters the terrestrial NIT and the layer defaults
+    /// derive from.
+    pub system: System,
+    /// Lane (layer index on ISDB-T) of PAT, NIT and CAT and the default of
+    /// the other SI ([`crate::schedule::Schedule::control_lane`]).
+    pub control_lane: usize,
     /// Per service, per stream media facts.
     pub media: Vec<Vec<StreamInfo>>,
     /// Per service, resolved events.
@@ -776,7 +782,7 @@ impl SiBuilder {
                 // carrying the service's elementary streams (condition 2
                 // requires it, condition 3 allows it).
                 let s = &self.cfg.services[i];
-                if s.layer == LayerName::A && self.params.partial_reception() {
+                if s.layer == LayerName::A && self.partial_reception() {
                     0
                 } else {
                     (0..s.streams.len())
@@ -788,8 +794,21 @@ impl SiBuilder {
             TableKind::Raw(i) => self.cfg.raw_tables[i].layer.index(),
             TableKind::Carousel(i, k) => self.stream_layer(i, k),
             TableKind::Ait(i) => self.cfg.services[i].layer.index(),
-            _ => control_layer(&self.params),
+            _ => self.control_lane,
         }
+    }
+
+    /// The ISDB-T parameters of [`system`](Self::system).
+    fn params(&self) -> &Params {
+        match &self.system {
+            System::Terrestrial(p) => p,
+        }
+    }
+
+    /// Partial reception (ISDB-T B31 §3.15: layer A is the 1-segment
+    /// partial-reception layer).
+    fn partial_reception(&self) -> bool {
+        self.params().partial_reception()
     }
 
     /// Default maximum repetition interval (ms) of B10 Table 5-2.
@@ -1071,7 +1090,8 @@ impl SiBuilder {
     }
 
     fn layer_rank(&self, layer: usize) -> u32 {
-        self.params.layers()[layer].map_or(u32::MAX, |l| robustness_rank(l.modulation, l.code_rate))
+        self.params().layers()[layer]
+            .map_or(u32::MAX, |l| robustness_rank(l.modulation, l.code_rate))
     }
 
     /// quality_level: explicit, or '1' for the stream on the less robust
@@ -1187,15 +1207,15 @@ impl SiBuilder {
                 let mut ts = vec![
                     Descriptor::TerrestrialDeliverySystem(TerrestrialDeliverySystem {
                         area_code: area_code & 0x0FFF,
-                        guard_interval: guard_interval_code(self.params.guard()),
-                        transmission_mode: transmission_mode_code(self.params.mode()),
+                        guard_interval: guard_interval_code(self.params().guard()),
+                        transmission_mode: transmission_mode_code(self.params().mode()),
                         frequencies: freqs,
                     }),
                     ts_information(key)?,
                     service_list,
                 ];
                 let partial = services_on(LayerName::A);
-                if self.params.partial_reception() && n.partial_reception() && !partial.is_empty() {
+                if self.partial_reception() && n.partial_reception() && !partial.is_empty() {
                     ts.push(Descriptor::PartialReception(PartialReception {
                         service_ids: partial,
                     }));

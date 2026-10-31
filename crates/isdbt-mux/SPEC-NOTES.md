@@ -40,6 +40,21 @@ Format per entry: spec + clause, quoted text, interpretation, confirmation.
 - Confirmation: test `pcr_and_timestamps` checks every PCR difference against
   the slot distance × 408 clocks (±1 tick), independently of the generator's
   formula. Status: confirmed (internal); pending real-receiver check.
+- Implementation: the model is the `Schedule` the multiplexer fills
+  (`src/schedule.rs`): one period of slots, `Some(lane)` for a slot it
+  carries and `None` for one it does not, the slot start and the PCR byte
+  of each in units from the period start, the period in units and the
+  ratio units → 27 MHz ticks; slot j of period k is at `start_pcr +
+  ⌊(k·period + start[j]) · num/den⌋`. `Schedule::ofdm` is the model above
+  (lanes = layers A/B/C, units = 512/63 MHz clocks, period
+  `samples_per_frame`, start 408·j, PCR byte 408·j + 20, 1701/512); the
+  section stagger, the PCR positions (`pcr_per_frame` per period, default
+  Table 3-5), the lane rates of the relay check and the PAT/NIT/CAT lane
+  (Table 3-1) all come from it. The output of `isdb mux` is byte-identical
+  to the frame-based code it replaced (`isdb-cli/tests/mux_fixture.rs`
+  pins its SHA-256). The ISDB-S superframe schedule (one lane per relative
+  TS, slot times from `isdbs_core::slots::packet_symbol`, × 450/481) is
+  docs/plans/isdbs-next/media-and-margin.md §3.4, piece I.
 
 ## PCR packets per frame at fixed positions
 - Spec: B31 Part 2 §3.2.4, Table 3-5; H.222.0 §2.7.2.
