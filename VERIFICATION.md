@@ -2263,6 +2263,105 @@ cycle, with the fundamental's share of the residual power),
 way: PASS with `dt295`, FAIL with `exact`, FAIL for a missing null, a
 changed PCR, a changed payload byte, or a CAT replaced by a null).
 
+## ISDB-S level margin into the PIX-DT295 (2026-10-31)
+
+Plan item 4 (docs/plans/isdbs-next.md; design
+docs/plans/isdbs-next/media-and-margin.md §6). Image 2 on the PlutoSky R2,
+the PCR-paced BS bench broadcast (`tools/isdbs-bench-tx.sh --feed loop`,
+TS_ID 0x4017) on air, TX1 → 30 dB fixed attenuator (no extra pad) → DC
+block → PIX-DT295 (driver `d4ad6dc`, `status --json`).
+`tools/isdbs-level-sweep.sh --conducted --tx-pid … --uri ip:10.10.0.30`
+(`3f42d0e`: the read-back needs `iio_attr` without `-q` on libiio 0.26):
+the attenuation written live with `iio_attr … hardwaregain` while `isdb tx`
+streams, read back within 0.125 dB at every step, **0 host underruns and
+MISSED 0 throughout**; at each level a 10 s hold (`status --watch`, 86
+rounds), a fresh `dt295 tune`, and a 5 s `stream` checked with `isdb ts
+inspect`. Results (`~/dev/sdr/isdbs-bench/sweep-1/sweep.{csv,md}`):
+
+| TX att | vs. att 45 | Hold (locked rounds) | Fresh tune | 0xBC raw mean | C/N (tc90522 formula) | Errors 0xEB | TS 5 s sync / TEI / CC |
+|---|---|---|---|---|---|---|---|
+| 45 | 0 dB | 86/86 | 121 ms | 2910 | above range | 0 | 0 / 0 / 0 |
+| 50 | −5 | 86/86 | 121 ms | 3679 | 34.1 dB | 0 | 0 / 0 / 0 |
+| 55 | −10 | 86/86 | 121 ms | 3590 | 35.2 dB | 0 | 0 / 0 / 0 |
+| 60 | −15 | 86/86 | 121 ms | 5463 | 24.2 dB | 0 | 0 / 0 / 0 |
+| 65 | −20 | 86/86 | 121 ms | 9251 | 17.9 dB | 0 | 0 / 0 / 0 |
+| 70 | −25 | 86/86 | 121 ms | 15518 | 12.9 dB | 0 | 0 / 0 / 0 |
+| 72 | −27 | 86/86 | 121 ms | 19010 | 10.9 dB | 1 | 0 / 0 / 0 |
+| 74 | −29 | 86/86 | 121 ms | 23133 | 8.9 dB | 34 | 0 / 0 / 0 |
+| 75 | −30 | 86/86 | 121 ms | 25378 | 7.8 dB | 466 | 0 / 0 / 0 |
+| 76 | −31 | 86/86 | 121 ms | 27380 | 6.9 dB | 15 719 | 0 / 0 / 10 |
+| 77 | −32 | 86/86 | 121 ms | 29558 | 5.8 dB | 48 768 (saturated) | no TS |
+| 80 | −35 | 86/86 | 121 ms | 34856 | 2.7 dB | 48 768 | no TS |
+| 84 | −39 | 86/86 | 234 ms | 39170 | −0.9 dB | 48 768 | no TS |
+| 84.25 | −39.25 | **85/86, lost** | 121 ms | 39357 | −1.1 dB | 48 768 | no TS |
+| 85 | −40 | 69/86, lost | 573 ms | 39775 | −1.5 dB | 48 768 | no TS |
+
+(1 dB steps from 50 dB on; the full table with every level is in
+`sweep.md`.) Hysteresis after the loss, no retune: re-locked by itself at
+83.75 dB (0.5 dB below the loss).
+
+- **Error-counter onset att 72 (−27 dB), TS-error onset att 76 (−31 dB),
+  hold lost at 84.25 (−39.25 dB), fresh acquisition still at 85.** The
+  tc90522-formula C/N falls 1.10 dB per dB of attenuation (r² 0.944, 31
+  steps); raw 0xBC rises 1 048 per dB (r² 0.879). The raw value steps
+  back at att 54 (4 793 → 3 345) with 0xBA 67 → 68: a gain step of the
+  tuner's AGC.
+- Caveats: the absolute level at the tuner is an estimate (−68 … −78 dBm
+  at att 45 after the 30 dB pad); the Pluto's output is not linear above
+  att 80 (TX1 leakage), so the 84 dB figure is a lower bound on the margin
+  and a second pass with +20 dB of pad (`--pad 20`) would pin it; the C/N
+  scale is the TC90522 Linux driver's formula applied to the TC90532's
+  register, labelled as such; 0xEB/0xF0 and BER are INFERRED.
+- The tuner went to STATE 0xFFFF after every `dt295 stream` stop today
+  (three times; `tools/power-cycle.sh 1-2 1 3` and a cold `init` recover
+  it): the stop sequence of the driver is worth a look in the PIX-DT295
+  repository.
+
+## ISDB-S bench service with media into the PIX-DT295 (2026-10-31)
+
+Plan item 3 piece C (docs/plans/isdbs-next/media-and-margin.md §7). Same
+bench; `tools/isdbs-bench-tx.sh --media --placed 'placed-{ts_id}.ts'
+~/dev/sdr/isdbs-bench/media-bench 45 ip:10.10.0.30` (the media of
+`crates/isdbt-mux/examples/media/`: MPEG-2 1440×1080i 300 pictures, AAC
+470 frames, 10.027 s loop → a 9.947 s TS, looped by `isdb tx --feed loop`,
+13 passes, cc-fixed 109, pes-shifted 8 561, 0 underruns, MISSED 0), then
+`tools/isdbs-bench-check.sh --record 30 --placed …` and
+`tools/media-decode-check.py --source … --max-jumps 3`:
+
+| | |
+|---|---|
+| tuner | locked at the first tune; NIT 0x0004 / TS 0x4017 / 0x43 BS1 / SDT 0x03E7 as sent, no `cross.*` finding |
+| content vs the placed TS (`--receiver dt295`) | **1 039 360 packets identical** modulo the receiver's drops (CAT ×36; before its filter had learnt the PID: video ×665, audio ×7, PCR ×1) and 517 CC rewrites of adaptation-only packets; 0 mismatches |
+| PCR | 517 of 517 values found in the placed TS; **corrected CBR fit max 18 ns rms 11 ns** (index-based 28 386 / 11 993 ns, explained by the drops) |
+| video (ffmpeg) | DTS strictly increasing, PTS ≥ DTS, 0 continuity / transport errors; every decoded frame in the source but at the edges and the 3 loop seams (order jumps 3 = the seams) |
+| audio | 1 304 of 1 314 decoded frames in the source (the rest at the start and the seams), 0 continuity errors, order jumps 3 |
+
+So the DT295's raw configuration passes the ISDB-S video and audio PIDs
+(the open question of media-and-margin.md §2.3) and a decoder behind it
+plays the bench service; the per-pass media gap of a looped file (video
+137.6 ms, audio 603 ms, measured offline) is the remaining artefact, which
+`--media --feed fifo` (the live multiplexer) avoids.
+
+## In-process ISDB-S multiplexer into the PIX-DT295 (2026-10-31)
+
+Plan item 3 piece J bench run. Same bench; `isdb tx --system isdbs --radio
+pluto:uri=ip:10.10.0.30 --channel BS1 --freq-unrestricted --offload fpga
+--rf-enable --gain att=45 --mux-config bs.toml --placed-ts …` (bs.toml =
+`bs-bench.toml` with `layer = "A"`; PCR grid uniform; 0 underruns, MISSED
+0, 0 late PES), then `tools/isdbs-bench-check.sh --record 20 --rate
+52170000:1 --fit-max-ns 100 --placed …`, PASS:
+
+| | |
+|---|---|
+| tuner | locked at the first tune; SI as sent, no `cross.*` finding |
+| content | **693 760 packets identical** modulo the receiver's drops (CAT ×22, PCR ×5 before its filter had learnt the PID) and 1 802 CC rewrites; 0 mismatches |
+| PCR | 1 802 of 1 802 values found in the placed TS; **corrected fit 52.170000 Mbit/s, max 18 ns rms 11 ns** (index-based 52.168327 Mbit/s −32 ppm, 14 657 / 8 291 ns: the 27 dropped packets) |
+
+The uniform per-TS grid the multiplexer stamps is what the tuner outputs,
+packet for packet, once its own drops are put back: the on-air TS of the
+in-process multiplexer meets H.222.0's ±500 ns with 18 ns to spare, with
+no PCR restamping involved.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

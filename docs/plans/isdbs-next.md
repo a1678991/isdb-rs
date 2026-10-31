@@ -156,9 +156,12 @@ rustdoc clean, FPGA suite 24/24):
    TS one media loop long; `--feed fifo` a live `isdb mux --out-ts -`),
    `tools/media-decode-check.py`, `MEDIA=DIR tools/isdbs-pacing-e2e.sh`.
    A looped media TS is not seamless in its media (a gap every pass:
-   video 137.6 ms, audio 603 ms); the live multiplexer is. Piece C, the
-   bench run, waits for TX1 to be reconnected; its commands are in that
-   VERIFICATION.md section ("Pending: the bench run").
+   video 137.6 ms, audio 603 ms); the live multiplexer is. **Piece C
+   done 2026-10-31** (VERIFICATION.md "bench service with media into the
+   PIX-DT295"): the tuner locks, passes the video and audio PIDs, the
+   recording is identical to the placed TS modulo the tuner's drops
+   (corrected PCR fit 18 ns), and ffmpeg decodes every frame of the
+   source (3 order jumps = the loop seams).
    In-process multiplexer (pieces G–J of media-and-margin.md §7): done
    offline. `isdb tx --system isdbs --mux-config FILE` (repeatable, one
    TS each, `kind = "bs"`, services on layer "A"), `isdb loopback
@@ -170,17 +173,22 @@ rustdoc clean, FPGA suite 24/24):
    placed TS byte for byte, 52.170000 Mbit/s, CBR fit 18 ns, PAT/PMT
    0.090 s, `validate --expect-rate 52170000:1` clean with the BS
    expectations, the media decoded (`MUX=1 MEDIA=DIR
-   tools/isdbs-pacing-e2e.sh`). Bench run pending TX1: `isdb tx --system
-   isdbs --channel BS1 --mux-config bs.toml --radio pluto … --offload fpga
-   --rf-enable` (bs.toml = `bs-bench.toml` with `layer = "A"`), then
-   `tools/isdbs-bench-check.sh --record 20` and the media check.
+   tools/isdbs-pacing-e2e.sh`). **Bench run done 2026-10-31**
+   (VERIFICATION.md "In-process ISDB-S multiplexer into the PIX-DT295"):
+   693 760 packets identical modulo the tuner's drops, 1 802 of 1 802 PCRs
+   found, corrected fit 52.170000 Mbit/s max 18 ns rms 11 ns.
 4. **Level margin**: a sweep of `att` (45 → 60 → …) with `dt295 tune`
    / `status --isdbs --watch` to find the lock threshold and the C/N
    slope (the driver reads C/N once while acquiring); record in
    VERIFICATION.md next to the ISDB-T figures.
-   **Status 2026-10-31: tooling done (pieces D, E of
-   [media-and-margin.md](isdbs-next/media-and-margin.md) §7), the run
-   (piece F) waits for TX1 to be reconnected.** The driver reads C/N
+   **Status 2026-10-31: done.** Tooling (pieces D, E of
+   [media-and-margin.md](isdbs-next/media-and-margin.md) §7) and the run
+   (piece F, VERIFICATION.md "level margin into the PIX-DT295"): live
+   `iio_attr` writes work with MISSED 0; error onset att 72, TS errors
+   from 76, hold lost at 84.25, acquisition to 85, hysteresis 0.5 dB; C/N
+   (tc90522 formula) −1.10 dB per dB. Open: a pass with +20 dB of pad to
+   pin the threshold (the Pluto is not linear above att 80), and the
+   tuner's STATE 0xFFFF after every `stream` stop. The driver reads C/N
    and the error counters in every locked round (it did already; at
    att 45 the raw 0xBC, 0x0B66–0x0B7A, is below the tc90522 formula's
    3000, so no dB). PIX-DT295 `d4ad6dc`: `status --json` (a JSON line
