@@ -2022,6 +2022,37 @@ none. Open (media-and-margin.md §2.3, §8): whether the DT295 passes the
 ISDB-S ES PIDs with `--raw-config` as it does for ISDB-T. Then mirakc / a
 player for the picture itself.
 
+## ISDB-S transmitter in the FPGA: image 2, prefetch / BANK_TAG / 64-bit counters (2026-10-31)
+
+Plan item 5 (docs/plans/isdbs-next.md; design
+docs/plans/isdbs-next/hdl-and-housekeeping.md §5): `fpga/isdb_fpga/tx.py`
+at `cc7142a` (prefetch from SELECT, BANK_TAG 0x08, FEATURES 0x07 = 7,
+64-bit CONSUMED / FIRST_MISS / SAMPLES with HI 0x09, PRE_UNF 0x0A; ID word
+0xB5D11918 unchanged), FPGA suite 33/33, built with `build.sh WORK isdb`
+(Vivado 2026.1, 35 min), `sdbin.sh` → `isdb_txrx2_top.bin` (2 816 192 B,
+sha256 `2ed4c1c691bf3840e2da22928fdfba0266c0ec15f6acb6f63440912026b8b86a`;
+`plutoskyr2.xsa` `52939814d36e907760bb9512501266fa67c590145e7d6df6a6d0351aa50e61d0`).
+
+| | image 1 (2026-10-29) | image 2 |
+|---|---|---|
+| Slice LUTs / DSPs | 23 470 (44.1 %) / 158 | 23 557 (44.3 %) / 158 |
+| final checkpoint WNS / WHS (`timing.tcl`) | +0.100 / +0.033 ns | +0.100 / +0.022 ns |
+| `clk_div_sel_0_s` (the block's domain, 16 ns) setup / hold | +2.325 / +0.051 ns | +2.274 / +0.022 ns |
+
+Deployed: `/boot/isdb_txrx2_top.bin` beside `isdb_txrx_top.bin`,
+`uEnv.txt` `bitstream_image=isdb_txrx2_top.bin` (`uEnv.txt.prev-txrx` =
+the image-1 entry for rollback); first boot came up with both IIO devices.
+
+`tx_symbols_loopback_on_a_pluto` (`ISDB_RS_PLUTO_TX_LOOPBACK_URI`, the
+test now requiring MISSED 0 with the prefetch), PASS:
+
+| | |
+|---|---|
+| open | "block features: prefetch, bank tag, 64-bit counters"; **bank: default (tag match), skipped 13312 commands, configured in 0.0 s** (image 1: 3.9 s) |
+| start | "started primed"; **PRE_UNF 7 545 871**: the DMA was dry between SELECT and the first word (the host queues after SELECT), which is the root cause of image 1's 8–16-symbol start miss (§5a's open question) |
+| transmitter | 987 297 792 symbol codes, 0 host underruns, DAC underflow flag clear, **CONSUMED 989 947 581 (64-bit), MISSED 0, FIRST_MISS −**, STATUS 0xb (run, selected, primed) |
+| receiver | 14 511 frames, 0 slips, 1 813 superframes, TMCC ok 1 813, 0 losses, main MER 34.1 dB; TS_ID 0x4010 / 0x4011 348 096 packets each, RS clean, 0 uncorrectable, byte-exact |
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

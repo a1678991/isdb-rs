@@ -37,8 +37,10 @@ rustdoc clean, FPGA suite 24/24):
 **Bench** (as left):
 
 - PlutoSky R2 at `ip:10.10.0.30` (the docs' 192.0.2.30 is a placeholder),
-  booted from SD with `/boot/uEnv.txt` `bitstream_image=isdb_txrx_top.bin`
-  (both blocks; `uEnv.txt.prev-isdb` = the previous RX-only entry,
+  booted from SD with `/boot/uEnv.txt` `bitstream_image=isdb_txrx2_top.bin`
+  (since 2026-10-31: both blocks plus the transmit block's prefetch /
+  BANK_TAG / 64-bit counters; `uEnv.txt.prev-txrx` = the `isdb_txrx_top.bin`
+  entry, `uEnv.txt.prev-isdb` = the RX-only entry; `isdb_txrx_top.bin`,
   `isdb_top.bin` and `system_top.bin` still on the card). TX ID word
   0xB5D11918 on `cf-ad9361-dds-core-lpc` 0x800000B8, RX 0x15DB4020 on
   `cf-ad9361-lpc`. Vivado 2026.1 at `/opt/Xilinx/2026.1`; the build work
@@ -187,8 +189,12 @@ rustdoc clean, FPGA suite 24/24):
    with them it skips a tagged bank, waits for PRIMED and reads HI;
    at 0 (the deployed image) it behaves as before and extends the
    32-bit counters itself. `tx_symbols_loopback_on_a_pluto` requires
-   MISSED 0 once the open line names the prefetch. Left: `build.sh WORK
-   isdb`, a new card file (`isdb_txrx2_top.bin`), the hardware test.
+   MISSED 0 once the open line names the prefetch. **Built, deployed and
+   verified 2026-10-31** (VERIFICATION.md "image 2"): 23 557 LUT / 158
+   DSP, WNS +0.100 / WHS +0.022 ns, `isdb_txrx2_top.bin` on the card;
+   loopback PASS with MISSED 0, the bank skipped on a tag match
+   (configured in 0.0 s), 64-bit CONSUMED; PRE_UNF 7 545 871 shows the
+   start miss was the DMA still empty between SELECT and the first word.
 6. **Housekeeping**: `uv run --locked` in `fpga/` needs
    `UV_DEFAULT_INDEX=https://pypi.org/simple` on this host (a private
    index rewrites `uv.lock`; the build scripts already set it, the mise

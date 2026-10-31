@@ -394,11 +394,13 @@ oss-cad-suite); the XSA target built directly (the Makefile's
 in an install to the upstream author's path); dvb_fpga's own submodules
 fetched recursively.
 
-**Status (2026-10-29): the image with both blocks, `isdb_txrx_top.bin`,
+**Status (2026-10-31): the image with both blocks and the transmit
+block's prefetch / BANK_TAG / 64-bit counters, `isdb_txrx2_top.bin`,
 is built, meets timing and runs on the bench board**
-(`/boot/uEnv.txt` `bitstream_image=isdb_txrx_top.bin`; VERIFICATION.md
-"ISDB-S transmitter in the FPGA": the image, on the board, into the
-PIX-DT295). The receive-only format-4 image `isdb_top.bin` (2026-10-26)
+(`/boot/uEnv.txt` `bitstream_image=isdb_txrx2_top.bin`, `uEnv.txt.prev-txrx`
+and `isdb_txrx_top.bin` kept for rollback; VERIFICATION.md "ISDB-S
+transmitter in the FPGA": the image, on the board, into the PIX-DT295,
+image 2). The receive-only format-4 image `isdb_top.bin` (2026-10-26)
 ran on the board before it (isdb-s.md §0.16) and stays on the card.
 Expected before the build, from Tezuka's TX FIR figures and the Yosys
 estimate: 158 DSP, ≈ 23.8k LUT, ≈ 30.0k FF, 68 BRAM36; measured: 158,
@@ -434,6 +436,8 @@ the RGMII input (`RGMII_rxc`), the same path class as the stock build
 | `isdb_top.bin` (from `sdbin.sh`) | 2 785 408 | `479141e02d8a151dd8475ac196b658beee7820ad9c298123191688aaa3ed1fd3` |
 | `plutoskyr2.xsa`, both blocks (2026-10-29) | 1 226 851 | `4b9b4038b7b515d6eb8169c01a233ad3e137836dbee451852fae808a586bb86d` |
 | `isdb_txrx_top.bin` (both blocks, from `sdbin.sh`) | 2 773 472 | `644ab085093fb0d7a1ce0922ea7fa490ae9a5f24f55a45ec332600030178a473` |
+| `plutoskyr2.xsa`, both blocks, transmit block with prefetch / BANK_TAG / 64-bit counters (2026-10-31) | — | `52939814d36e907760bb9512501266fa67c590145e7d6df6a6d0351aa50e61d0` |
+| `isdb_txrx2_top.bin` (the deployed image, from `sdbin.sh`) | 2 816 192 | `2ed4c1c691bf3840e2da22928fdfba0266c0ec15f6acb6f63440912026b8b86a` |
 
 **The image with both blocks (2026-10-29)** builds with `build.sh WORK isdb`
 in about 25 minutes on this host. The project flow's

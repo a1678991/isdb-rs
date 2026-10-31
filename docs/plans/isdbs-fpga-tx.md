@@ -199,7 +199,8 @@ Each step is a commit with tests and docs, as the RX path was built
    the `txfir` flag, `README.md`.
 6. **Image** (done 2026-10-29: 158 DSP, 23 470 LUT, 68 BRAM36, timing
    met; deployed as `isdb_txrx_top.bin`; the rebuild with the step-5
-   follow-ups is pending): build (Vivado, outside the repo as
+   follow-ups, `isdb_txrx2_top.bin`, deployed and verified 2026-10-31,
+   VERIFICATION.md "image 2"): build (Vivado, outside the repo as
    `fpga/tezuka/build.sh` does), timing, utilisation (expected 178 DSP,
    ≈ 23.7k LUT, +6 BRAM36), deploy on a card copy, the on-board checks
    of §4.
