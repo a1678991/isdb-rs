@@ -27,12 +27,20 @@
 #   STALL (FEED=live: stop the writer 4 s in for STALL seconds, e.g. 1:
 #   the fills go out at their deadlines, the late packets follow with
 #   lag, restamped; the run then expects deadline misses; default 0),
-#   MEDIA (1: give the service video and audio made by ffmpeg, so that
-#   the TS carries PES with PTS/DTS; default 0, declared streams only).
-#   The bench's own TOML is copied to WORKDIR/bs-bench.toml (MEDIA=1: its
-#   two declared streams made media streams of these files).
-# Exit status: 0 PASS, 1 FAIL (isdbs-bench-check.sh, a seam check, or
-#   FEED=live with a deadline miss, STALL without one), 2 error.
+#   MEDIA (1: give the service video and audio made by ffmpeg, SECONDS
+#   long, so that the TS carries PES with PTS/DTS; a directory: its
+#   video.m2v and audio.m2a, as tools/isdbs-bench-tx.sh --media sends them,
+#   the TS then one media loop long (tools/bench-media.py) instead of
+#   SECONDS, and FEED=live writes `isdb mux --out-ts -` of PASSES media
+#   loops into the FIFO, as isdbs-bench-tx.sh --media --feed fifo does;
+#   default 0, declared streams only). With media the received TS is also
+#   checked by tools/media-decode-check.py against them (order jumps: one
+#   per loop seam with FEED=loop, none otherwise).
+#   The bench's own TOML is copied to WORKDIR/bs-bench.toml (with MEDIA:
+#   its two declared streams made media streams of these files).
+# Exit status: 0 PASS, 1 FAIL (isdbs-bench-check.sh, a seam check,
+#   media-decode-check.py, or FEED=live with a deadline miss, STALL
+#   without one), 2 error.
 set -euo pipefail
 die() { echo "isdbs-pacing-e2e: $*" >&2; exit 2; }
 [ $# -ge 1 ] && [ $# -le 3 ] || { sed -n '/^# Usage:/,/^# Exit status:/s/^# \{0,1\}//p' "$0" >&2; exit 2; }
@@ -51,6 +59,12 @@ case $FEED in file|loop|live) ;; *) die "FEED=$FEED: file, loop or live" ;; esac
 [[ $PASSES =~ ^[1-9][0-9]*$ ]] || die "PASSES=$PASSES: expected a count"
 [[ $STALL =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "STALL=$STALL: expected seconds"
 if [ "$FEED" = live ]; then command -v pv > /dev/null || die "FEED=live needs pv"; fi
+MEDIA_DIR=
+if [ "$MEDIA" != 0 ] && [ "$MEDIA" != 1 ]; then
+    [ -f "$MEDIA/video.m2v" ] && [ -f "$MEDIA/audio.m2a" ] ||
+        die "MEDIA=$MEDIA: expected 0, 1 or a directory with video.m2v and audio.m2a"
+    MEDIA_DIR=$(cd "$MEDIA" && pwd)
+fi
 mkdir -p "$1"
 cd "$1"
 # FEED=live: the FIFO's writer and the STALL timer, killed by their pids
@@ -70,8 +84,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if [ "$MEDIA" != 0 ]; then
+    command -v ffmpeg > /dev/null || die "MEDIA=$MEDIA needs ffmpeg (and ffprobe)"
+fi
 if [ "$MEDIA" = 1 ]; then
-    command -v ffmpeg > /dev/null || die "MEDIA=1 needs ffmpeg"
+    MEDIA_DIR=$PWD
     # docs/test-data.md's recipe, SECONDS long
     ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=1440x1080:rate=30000/1001 \
         -t "$SECONDS_TS" -vf setfield=tff -c:v mpeg2video -b:v 12M -maxrate 12M -bufsize 7M \
@@ -99,7 +116,19 @@ if media == "1":
         assert n == 1, f"declared stream {pid} of bs-bench.toml"
 open(dst, "w").write(s)
 PY
-"$ISDB" mux -c bs-bench.toml --seconds "$SECONDS_TS" --out-ts bench.ts
+LENGTH=(--seconds "$SECONDS_TS")
+if [ -n "$MEDIA_DIR" ] && [ "$MEDIA" != 1 ]; then
+    # the declared streams made media streams of MEDIA's files; the TS one
+    # media loop long, as isdbs-bench-tx.sh --media makes it
+    LINE=$(python3 -I "$HERE/tools/bench-media.py" bs-bench.toml bs-bench.toml "$MEDIA_DIR") ||
+        die "MEDIA=$MEDIA: the media could not be read"
+    read -r FRAMES NOTE <<< "$LINE"
+    echo "== media from $MEDIA_DIR: $NOTE"
+    LENGTH=(--frames "$FRAMES")
+    # whole seconds of TS, for the air time of FEED=loop
+    SECONDS_TS=$(awk -v n="$FRAMES" 'BEGIN { s = n * 0.231336; printf "%d", (s == int(s)) ? s : int(s) + 1 }')
+fi
+"$ISDB" mux -c bs-bench.toml "${LENGTH[@]}" --out-ts bench.ts
 INPUT=(--ts "0x$TSID=$PWD/bench.ts")
 STATUS=(--status-secs 0)
 if [ "$FEED" = loop ]; then
@@ -111,10 +140,19 @@ elif [ "$FEED" = live ]; then
         sed -n 's/.*packet rate \([0-9.]*\) Mbit\/s.*/\1/p' | head -1)
     [ -n "$RATE" ] || die "no packet rate in isdb ts inspect bench.ts"
     BPS=$(awk -v r="$RATE" 'BEGIN { printf "%d", r * 1e6 / 8 + 0.5 }')
-    echo "== live: bench.ts written into ts.fifo at $RATE Mbit/s ($BPS B/s) by pv"
     rm -f ts.fifo
     mkfifo ts.fifo
-    pv -q -B 7520 -L "$BPS" bench.ts > ts.fifo &
+    if [ -n "$MEDIA_DIR" ] && [ "$MEDIA" != 1 ]; then
+        # as isdbs-bench-tx.sh --media --feed fifo: isdb mux writing live
+        # (the media looped inside the multiplexer, no file seam), PASSES
+        # media loops of it
+        echo "== live: isdb mux --out-ts - ($((FRAMES * PASSES)) frames) into ts.fifo at $RATE Mbit/s ($BPS B/s) by pv"
+        "$ISDB" mux -c bs-bench.toml --frames "$((FRAMES * PASSES))" --out-ts - --log-level warn 2> mux-live.log |
+            pv -q -B 7520 -L "$BPS" > ts.fifo &
+    else
+        echo "== live: bench.ts written into ts.fifo at $RATE Mbit/s ($BPS B/s) by pv"
+        pv -q -B 7520 -L "$BPS" bench.ts > ts.fifo &
+    fi
     echo $! > writer.pid
     if [ "$STALL" != 0 ]; then
         echo "== live: the writer stalls for $STALL s, 4 s in"
@@ -183,6 +221,14 @@ fi
 if [ "$FEED" = loop ]; then
     echo "== loop seams of the received TS (tools/ts-loop-seam.py)"
     python3 -I "$HERE/tools/ts-loop-seam.py" bench.ts "rx-$TSID.ts" || VERDICT=1
+fi
+if [ -n "$MEDIA_DIR" ]; then
+    echo "== media of the received TS against $MEDIA_DIR (tools/media-decode-check.py)"
+    # one order jump per loop seam of FEED=loop, none otherwise
+    JUMPS=0
+    [ "$FEED" != loop ] || JUMPS=$PASSES
+    python3 -I "$HERE/tools/media-decode-check.py" --isdb "$ISDB" --source "$MEDIA_DIR" \
+        --max-jumps "$JUMPS" --keep media-check --json media-check.json "$RX" || VERDICT=1
 fi
 if [ "$FEED" = live ] && [ "$STALL" = 0 ]; then
     if [ "$LIVE_MISSES" = 0 ]; then
