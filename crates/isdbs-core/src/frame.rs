@@ -42,6 +42,31 @@ pub const HEADER_BYTES: usize = 12;
 pub const TMCC_BYTES_PER_FRAME: usize = 8;
 /// Highest spectrum efficiency, bits per symbol (Table 3 item 7).
 pub const E_MAX: usize = 2;
+/// Symbols of a superframe: M = 8 frames of 39 936 (Table 3 items 2 and
+/// 5) = 319 488.
+pub const SUPERFRAME_SYMBOLS: usize = FRAMES * FRAME_SYMBOLS;
+
+/// Symbol rate in baud: MIC Ordinance No. 87 of 2011, Article 52 ¶3
+/// ("搬送波を変調する信号の通信速度は、毎秒二八・八六〇メガボーとする"),
+/// 28.860 Mbaud. BO.1408-1 leaves it to the system (its satellite delivery
+/// system descriptor value 028.8600 Msym/s, ARIB STD-B10 §6.2.6, agrees).
+pub const SYMBOL_RATE: u64 = 28_860_000;
+/// 27 MHz system clock ticks (ITU-T H.222.0 §2.4.2.1) per symbol, as the
+/// exact fraction [`TICKS_PER_SYMBOL_NUM`] / [`TICKS_PER_SYMBOL_DEN`] =
+/// 27 000 000 / 28 860 000 = 450 / 481 (481 = 13 · 37).
+pub const TICKS_PER_SYMBOL_NUM: u64 = 450;
+/// See [`TICKS_PER_SYMBOL_NUM`].
+pub const TICKS_PER_SYMBOL_DEN: u64 = 481;
+
+/// 27 MHz ticks from the start of a symbol count `n` symbols earlier,
+/// rounded down: ⌊n · 450 / 481⌋, split so that it cannot overflow. A
+/// superframe is 319 488 · 450/481 = 11 059 200/37 ticks (≈ 11.07 ms), not
+/// a whole number: convert symbol counts from a fixed origin, not
+/// superframe by superframe, to keep the result exact.
+pub const fn symbols_to_ticks(n: u64) -> u64 {
+    (n / TICKS_PER_SYMBOL_DEN) * TICKS_PER_SYMBOL_NUM
+        + (n % TICKS_PER_SYMBOL_DEN) * TICKS_PER_SYMBOL_NUM / TICKS_PER_SYMBOL_DEN
+}
 
 /// W1 = 1B95h, at the start of every header (BO.1408-1 §6.3).
 pub const W1: u16 = 0x1B95;
@@ -113,6 +138,46 @@ mod tests {
         assert_eq!(main_symbol_position(203), 192 + 207);
         assert_eq!(burst_symbol_position(0, 0), 395);
         assert_eq!(burst_symbol_position(191, 3), FRAME_SYMBOLS - 1);
+    }
+
+    /// The superframe in symbols and in 27 MHz ticks (MIC Ordinance No. 87
+    /// Art. 52 ¶3: 28.860 Mbaud): 319 488 symbols = 11 059 200/37 ticks,
+    /// and one TC8PSK slot of the 48 a frame (39 936/48 = 832 symbols on
+    /// the uniform grid) is 28 800/37 ticks.
+    #[test]
+    fn spec_superframe_time() {
+        assert_eq!(SUPERFRAME_SYMBOLS, 319_488);
+        assert_eq!(
+            TICKS_PER_SYMBOL_NUM * SYMBOL_RATE,
+            TICKS_PER_SYMBOL_DEN * 27_000_000
+        );
+        // 450/481 is in lowest terms
+        let gcd = |mut a: u64, mut b: u64| {
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a
+        };
+        assert_eq!(gcd(TICKS_PER_SYMBOL_NUM, TICKS_PER_SYMBOL_DEN), 1);
+        let sf = SUPERFRAME_SYMBOLS as u64;
+        assert_eq!(
+            sf * TICKS_PER_SYMBOL_NUM * 37,
+            11_059_200 * TICKS_PER_SYMBOL_DEN
+        );
+        // 37 superframes are a whole number of ticks
+        assert_eq!(symbols_to_ticks(37 * sf), 11_059_200);
+        assert_eq!(symbols_to_ticks(sf), 11_059_200 / 37);
+        assert_eq!(symbols_to_ticks(481), 450);
+        assert_eq!(symbols_to_ticks(480), 449);
+        // the split stays exact where n · 450 would overflow u64
+        let n = u64::MAX / 100;
+        assert_eq!(u128::from(symbols_to_ticks(n)), u128::from(n) * 450 / 481);
+        // 832-symbol uniform slot (48 per frame)
+        assert_eq!(FRAME_SYMBOLS / SLOTS, 832);
+        assert_eq!(
+            832 * TICKS_PER_SYMBOL_NUM * 37,
+            28_800 * TICKS_PER_SYMBOL_DEN
+        );
     }
 
     /// BO.1408-1 §6.3 (W3 = ¬W2) and annexed table 45 note 1: the inner

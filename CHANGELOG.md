@@ -43,6 +43,21 @@ STD-B44) is received to TLV streams.
   TS one media loop long; `FEED=live` then writes `isdb mux --out-ts -`
   into the FIFO) and runs the decode check on the received TS whenever it
   carries media.
+- `isdbs-core`: the on-air position of a TS packet, shared by the ISDB-S
+  pacer and the in-process multiplexer. `slots::packet_symbol(info, r, k)`
+  is the symbol of the superframe at which packet k of relative TS r
+  starts (its frame ⌊k / n_r⌋ and its own sent slot, the slot's run, the
+  first symbol carrying the slot's first bit, past the header and bursts;
+  before the inter-frame interleaver), `packet_byte_symbol` the same for
+  any on-air byte (byte 9 holds a PCR's last base bit), with
+  `packet_slot`, `ts_slots`, `slot_byte_symbol` and `bit_symbol` (the
+  punctured codes place a slot at the first pair holding its first bit:
+  QPSK 3/4 slot 1 of a run at symbol 1 083). `frame::SUPERFRAME_SYMBOLS`
+  (319 488), `SYMBOL_RATE` (28.860 Mbaud) and `TICKS_PER_SYMBOL_NUM` /
+  `_DEN` = 450/481 with `symbols_to_ticks` (exact, overflow-free). On the
+  bench layout packet 48 f + s starts at 39 936 f + 192 + 828 s.
+  Checked against the transmitter's output for ten layouts covering all
+  seven combinations (`isdbs-phy/tests/slot_time.rs`).
 - `isdbt-mux`: `[network] kind = "bs"` makes the SI of a BS digital
   broadcasting network (ARIB STD-B10 Table 6-1, §6.2.6, Annex N): the NIT
   TS loop carries the service list and a satellite delivery system

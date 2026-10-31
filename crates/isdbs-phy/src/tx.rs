@@ -42,8 +42,8 @@ use isdbs_core::tmcc::{CombinationWord, TM, TmccError, TmccInfo, headers};
 pub type Packet = [u8; 188];
 
 /// Symbols of a superframe: M = 8 frames of 39 936 (BO.1408-1 Appendix 1
-/// Table 3).
-pub const SUPERFRAME_SYMBOLS: usize = FRAMES * FRAME_SYMBOLS;
+/// Table 3); [`isdbs_core::frame::SUPERFRAME_SYMBOLS`].
+pub const SUPERFRAME_SYMBOLS: usize = isdbs_core::frame::SUPERFRAME_SYMBOLS;
 
 /// The MPEG-2 null packet (ITU-T H.222.0 §2.4.3.2–3: PID 0x1FFF, payload
 /// only, payload bytes 0xFF), as `isdbt_phy::null_packet`.

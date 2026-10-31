@@ -201,6 +201,11 @@ with the receiver and runs several blocks' front ends at once
   `codes_are_the_symbols` (`superframe_codes` against `superframe` over
   three superframes and five mappings), `errors` (every `TxError`, the
   dummy entry with slots first or after a real one).
+- Packet slot time (`tests/slot_time.rs`): `isdbs_core::slots` against
+  the transmitter for ten layouts (all seven combinations, dummy slots,
+  one to three TSs): every packet in the (frame, slot) `packet_slot`
+  names, and flipping the first bit of a slot's byte changes the codes
+  first at the symbol `slot_byte_symbol` gives.
 - Symbol-domain loopback (`tests/loopback.rs`): one null superframe and
   three of distinct packets per TS through `Transmitter`, a carrier
   offset of 2·10⁻⁴ cycle per symbol, a phase and AWGN, after 1 111

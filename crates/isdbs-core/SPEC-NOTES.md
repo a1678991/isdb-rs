@@ -237,3 +237,35 @@ frame sync and TMCC").
   0x1FFF) and decode RS-clean.
 - Interpretation: such slots belong to no TS; `isdb rx` counts them and
   writes no file for them. Status: observation (operational).
+
+## packet-time: the on-air position of a TS packet
+- Spec: BO.1408-1 §3.2 (equation (1), E_k bits per symbol), §5 and Fig. 6
+  (inter-frame interleaver), §8 (dummy slots not sent), Fig. 9 (each slot
+  carries a packet of the TS its relative TS ID names); Table 2 and
+  annexed table 49 notes 1 and 4 (puncturing, restarted at each run);
+  MIC Ordinance No. 87 Art. 52 ¶3 (28.860 Mbaud).
+- Text: the specs define where the bytes of a slot go, not "the time of a
+  packet": a slot's 203 bytes are spread over the 8 frames of the
+  superframe by the interleaver, so a receiver has all bytes of any packet
+  only after frame 8.
+- Interpretation: `slots::packet_symbol` gives the symbol at which a
+  packet's slot would start without the interleaver: the symbol that
+  carries the first coded bit of its first on-air byte (the byte after the
+  sync byte). The valid slots of a run are coded back to back, so valid
+  slot v of a run starts at the run's information bit 1 624 v; with an
+  unpunctured code that is symbol ⌊1 624 v · d/n⌋ (E = n/d); with a
+  punctured code the first (P1, P0) pair holding X_i or Y_i of that bit
+  (QPSK 3/4: slot 1 of a run at symbol 1 083, not ⌊1 082⅔⌋ = 1 082, since
+  1 624 bits = 541 periods + 1 and X2 is not sent). Main-signal symbol m
+  is then at `main_symbol_position(m)` of its frame. A deinterleaving
+  receiver gives every byte back one constant delay after this position
+  (depth-8 block), which is what makes it usable as the arrival time of
+  the packet's bytes (the multiplexer's PCR model, isdbt-mux SPEC-NOTES).
+  Ticks: 27 000 000 / 28 860 000 = 450/481 exactly (481 = 13 · 37); a
+  superframe is 11 059 200/37 ticks.
+- Confirmation: `isdbs-phy/tests/slot_time.rs` measures the position on
+  the transmitter's output (first changed symbol when the first bit of a
+  byte flips) for ten layouts covering all seven combinations; the
+  transmitter itself is confirmed on air (VERIFICATION.md). The arrival
+  model is not in BO.1408-1 (status: interpretation; B20/B21 receiver
+  model not available).
