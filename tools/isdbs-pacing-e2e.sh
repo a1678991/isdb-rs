@@ -8,7 +8,8 @@
 # `isdb tx --system isdbs --channel BS1 --iq` (cs8, BS layout) with
 # --placed-ts → `isdb rx --iq` → tools/isdbs-bench-check.sh on the
 # received TS against the placed one (inspect, validate --expect-rate
-# 52170000:PPM with the BS SI expectations, byte-exact comparison).
+# 52170000:PPM with the BS SI expectations, byte-exact comparison;
+# --receiver exact: isdb rx drops nothing and rewrites no CC).
 #
 # Usage: tools/isdbs-pacing-e2e.sh WORKDIR [SECONDS] [PPM]
 #   WORKDIR  scratch directory (the IQ file is 80 MB per second of air)
@@ -229,7 +230,7 @@ PY
 fi
 echo "== received TS against the placed one"
 VERDICT=0
-"$HERE/tools/isdbs-bench-check.sh" --rate "52170000:$PPM" --fit-max-ns "$FIT_MAX" \
+"$HERE/tools/isdbs-bench-check.sh" --receiver exact --rate "52170000:$PPM" --fit-max-ns "$FIT_MAX" \
     --placed "placed-$TSID.ts" "$RX" | tee check.log || VERDICT=$?
 [ "$VERDICT" -le 1 ] || exit "$VERDICT"
 if [ "$STALL" != 0 ] && [ "$FEED" = live ]; then

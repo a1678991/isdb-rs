@@ -17,6 +17,33 @@ STD-B44) is received to TLV streams.
 
 ### Added
 
+- Tools: `tools/isdbs-bench-check.sh --receiver dt295|exact` (default
+  `dt295`) and `--receiver-drops PIDS` (the profile's `0x0001`; `""` for
+  none): the PIX-DT295's raw output drops the CAT without a null (its PID
+  filter, PIX-DT295 docs/stream-investigation.md), drops PMT/PCR packets
+  until it has learnt their PIDs, and rewrites the CC of adaptation-only
+  packets. With `--placed` the verdict adds "PCR values all present in the
+  placed TS", "corrected CBR-fit max ≤ --fit-max-ns" (the dropped packets
+  re-inserted) and "content identical modulo receiver drops / CC
+  rewrites"; the missing CAT (`tables.mandatory`, now judged) and the
+  index-based `pcr.accuracy`, `pcr.rate` and CBR fit are EXPLAINED when
+  the drops account for them, and a `tables.frequency` row whose every
+  interval is within the criterion and only the capture-edge gap exceeds
+  it is EDGE, not FAIL. Exit codes unchanged. `tools/isdbs-pacing-e2e.sh`
+  passes `--receiver exact`. Self-test: `tools/isdbs-bench-check-test.sh`
+  (an `isdb mux` TS as the placed TS, recordings cut from it the DT295's
+  way and four that must FAIL).
+- Tools: `tools/ts-align-compare.py --receiver-drops PIDS`,
+  `--receiver-learns`, `--ignore-af-only-cc`, `--fit-max-ns`, `--json`:
+  packets the receiver dropped without a null are skipped and counted per
+  PID, CC rewrites of adaptation-only packets counted apart from real
+  mismatches; every recording PCR is looked up in the placed TS (absent,
+  ambiguous, out of order counted), and the recording's CBR fit is
+  printed index-based, with the dropped packets re-inserted, and for the
+  placed TS over the same span.
+- `tools/ts-pcr-residuals.py`: the PCR residual shape of a TS (rms, max,
+  lag-1 autocorrelation, dominant period); also a module for
+  `ts-align-compare.py`.
 - `isdb tx --system isdbs --mux-config FILE.toml` (and `isdb loopback
   --system isdbs`): the in-process ISDB-S multiplexer (piece J of
   docs/plans/isdbs-next/media-and-margin.md §3). Repeatable, one TS per
@@ -1410,6 +1437,21 @@ STD-B44) is received to TLV streams.
 
 ### Fixed
 
+- `tools/ts-align-compare.py` aligned on the first recording packet whose
+  bytes occur once in the reference, which with a looped placed TS could
+  be a section packet of another pass (sections repeat unchanged, and a
+  CC-rewritten PCR packet never matches): on the 2026-10-31 DT295
+  recording it paired an SDT packet and reported 1600 packets displaced.
+  It now aligns on PCR values (restamped every pass, so unique), with or
+  without `--ignore-nulls`, and checks the stretch between every two
+  PCRs. `tools/ts-pcr-residuals.py`: the dominant period came from a DFT
+  over the PCR number (as if PCRs were evenly spaced in packets), from
+  one cycle per span (a trend, not a period) at whole-cycle resolution,
+  and the docstring said 2..m/2 cycles; now a periodogram over the actual
+  packet indices from two cycles, refined to 0.01 cycle, with the
+  fundamental's share of the residual power. A backward PCR step is
+  unwrapped only when it is the 2^33 wrap, and the PCR PID is found by a
+  header search (a multi-GB placed TS in seconds).
 - `isdb rx --symbols-file` replayed a recording through the live-capture
   queue, which drops blocks when the decoder falls four chunks behind the
   parser: a decoder slower than the disk lost blocks silently (reported
