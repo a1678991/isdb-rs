@@ -1,7 +1,8 @@
 //! What a Matroska / MP4 HEVC track needs from the bitstream: the
 //! `HEVCDecoderConfigurationRecord` (ISO/IEC 14496-15 §8.3.3.1, `hvcC`)
 //! built from the parameter sets, and the picture size from the SPS
-//! (H.265 §7.3.2.2).
+//! (H.265 §7.3.2.2); the picture order count of a slice (§7.3.6.1), for
+//! placing pictures after a loss.
 
 /// The fields of a sequence parameter set the record and the track
 /// header need.
@@ -26,6 +27,23 @@ pub struct Sps {
     pub width: u32,
     /// See `width`.
     pub height: u32,
+    /// `separate_colour_plane_flag`.
+    pub separate_colour_plane: bool,
+    /// `log2_max_pic_order_cnt_lsb_minus4` + 4: the width of a slice's
+    /// `slice_pic_order_cnt_lsb`.
+    pub log2_max_poc_lsb: u8,
+}
+
+/// The fields of a picture parameter set (H.265 §7.3.2.3.1) a slice
+/// header's parse needs up to its picture order count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pps {
+    /// `dependent_slice_segments_enabled_flag`.
+    pub dependent_slice_segments: bool,
+    /// `output_flag_present_flag`.
+    pub output_flag_present: bool,
+    /// `num_extra_slice_header_bits`.
+    pub extra_slice_header_bits: u8,
 }
 
 /// RBSP reader over a NAL unit's payload: emulation prevention bytes
@@ -115,9 +133,7 @@ pub fn parse_sps(nal: &[u8]) -> Option<Sps> {
     }
     r.ue()?; // sps_seq_parameter_set_id
     let chroma_format = r.ue()?;
-    if chroma_format == 3 {
-        r.bit()?; // separate_colour_plane_flag
-    }
+    let separate_colour_plane = chroma_format == 3 && r.bit()? == 1;
     let mut width = r.ue()?;
     let mut height = r.ue()?;
     if r.bit()? == 1 {
@@ -133,6 +149,10 @@ pub fn parse_sps(nal: &[u8]) -> Option<Sps> {
     }
     let bit_depth_luma = r.ue()? + 8;
     let bit_depth_chroma = r.ue()? + 8;
+    let log2_max_poc_lsb = r.ue()? + 4;
+    if log2_max_poc_lsb > 16 {
+        return None;
+    }
     Some(Sps {
         general_ptl,
         sub_layers: u8::try_from(max_sub_layers_minus1 + 1).ok()?,
@@ -142,7 +162,62 @@ pub fn parse_sps(nal: &[u8]) -> Option<Sps> {
         bit_depth_chroma: u8::try_from(bit_depth_chroma).ok()?,
         width,
         height,
+        separate_colour_plane,
+        log2_max_poc_lsb: u8::try_from(log2_max_poc_lsb).ok()?,
     })
+}
+
+/// Parse a PPS NAL unit (with its 2-byte NAL header).
+#[must_use]
+pub fn parse_pps(nal: &[u8]) -> Option<Pps> {
+    if (nal.first()? >> 1) & 0x3f != 34 {
+        return None;
+    }
+    let mut r = Rbsp::new(nal.get(2..)?);
+    r.ue()?; // pps_pic_parameter_set_id
+    r.ue()?; // pps_seq_parameter_set_id
+    let dependent_slice_segments = r.bit()? == 1;
+    let output_flag_present = r.bit()? == 1;
+    let extra_slice_header_bits = u8::try_from(r.read(3)?).ok()?;
+    Some(Pps {
+        dependent_slice_segments,
+        output_flag_present,
+        extra_slice_header_bits,
+    })
+}
+
+/// The `slice_pic_order_cnt_lsb` of the first slice segment of a picture
+/// (a VCL NAL unit with its 2-byte header and
+/// `first_slice_segment_in_pic_flag` set; H.265 §7.3.6.1), under its
+/// SPS and PPS: 0 for an IDR picture, `None` for any other slice (or a
+/// header cut short). Only the slice header's head is read, so a slice
+/// whose data was cut after it still gives it.
+#[must_use]
+pub fn first_slice_poc_lsb(nal: &[u8], sps: &Sps, pps: &Pps) -> Option<u32> {
+    let ty = (nal.first()? >> 1) & 0x3f;
+    if ty >= 32 {
+        return None;
+    }
+    let mut r = Rbsp::new(nal.get(2..)?);
+    if r.bit()? != 1 {
+        return None; // not the picture's first slice segment
+    }
+    if (16..=23).contains(&ty) {
+        r.bit()?; // no_output_of_prior_pics_flag
+    }
+    r.ue()?; // slice_pic_parameter_set_id
+    r.skip(usize::from(pps.extra_slice_header_bits)); // slice_reserved_flag
+    r.ue()?; // slice_type
+    if pps.output_flag_present {
+        r.bit()?; // pic_output_flag
+    }
+    if sps.separate_colour_plane {
+        r.read(2)?; // colour_plane_id
+    }
+    if matches!(ty, 19 | 20) {
+        return Some(0); // IDR_W_RADL, IDR_N_LP
+    }
+    r.read(u32::from(sps.log2_max_poc_lsb))
 }
 
 /// The `HEVCDecoderConfigurationRecord` of one VPS / SPS / PPS set (NAL
@@ -256,6 +331,36 @@ mod tests {
         assert_eq!(s.sub_layers, 4);
         assert!(!s.temporal_id_nested);
         assert_eq!(s.general_ptl.to_vec(), hex("0220000000b0000000000099"));
+        assert_eq!(s.log2_max_poc_lsb, 16);
+        assert!(!s.separate_colour_plane);
+    }
+
+    /// BS17's PPS and the heads of the first slices of a CRA and the
+    /// RASL_R, RASL_R, RASL_N after it from the recording (ffmpeg's
+    /// `trace_headers`: `slice_pic_order_cnt_lsb` 40856, 40852, 40850,
+    /// 40849).
+    #[test]
+    fn slice_poc_of_bs17() {
+        let sps = parse_sps(&hex(SPS)).unwrap();
+        let pps = parse_pps(&hex("4401c076")).unwrap();
+        assert_eq!(
+            pps,
+            Pps {
+                dependent_slice_segments: false,
+                output_flag_present: false,
+                extra_slice_header_bits: 0,
+            }
+        );
+        let poc = |h: &str| first_slice_poc_lsb(&hex(h), &sps, &pps);
+        assert_eq!(poc("2a01ae7e60488219"), Some(40856));
+        assert_eq!(poc("1202f3f286894272"), Some(40852));
+        assert_eq!(poc("1203f3f246d5148c"), Some(40850));
+        assert_eq!(poc("1004f3f2244f4232"), Some(40849));
+        // Cut short; not a picture's first slice; not a slice; an IDR.
+        assert_eq!(poc("1202f3"), None);
+        assert_eq!(poc("12027ff286894272"), None);
+        assert_eq!(poc("4401c076"), None);
+        assert_eq!(poc("2601ac"), Some(0));
     }
 
     #[test]
