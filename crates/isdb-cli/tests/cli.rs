@@ -1126,7 +1126,9 @@ fn isdbs_offload_dry_runs() {
 /// digital loopback (`loopback=on`: the TX LO powered down, the
 /// attenuation at its maximum) while `isdb rx --system isdbs --offload
 /// fpga` receives them through the same board: every TS byte-exact, 0
-/// uncorrectable RS words, 0 host underruns, MISSED 0, 0 RX losses.
+/// uncorrectable RS words, 0 host underruns, 0 RX losses, and MISSED 0
+/// when the open line reports the block's prefetch (an image without it
+/// may miss its first one or two words: MISSED ≤ 16 at FIRST_MISS 0).
 ///
 /// Timeline from the moment the transmit block runs (the receiver starts
 /// then, and streams after its acquisition and its front end's
@@ -1247,18 +1249,25 @@ fn tx_symbols_loopback_on_a_pluto() {
     assert!(st.success(), "tx failed:\n{tx_log}");
     assert!(tx_log.contains("done (InputEnded)"), "{tx_log}");
     assert!(tx_log.contains("underruns 0;"), "host underruns:\n{tx_log}");
-    // The block's first one or two requests after CTRL RUN|SELECT find the
-    // unpacker without a word (8 or 16 symbols at CONSUMED 0, inside the
-    // lead-in; the HDL could prefetch while selected, plan
-    // isdbs-fpga-tx.md §6); anything later is a real starvation.
+    // An image with the prefetch (FEATURES bit 0, named in the open line)
+    // holds two words when RUN comes: nothing may be missed. On an image
+    // without it, the first one or two requests after CTRL RUN|SELECT may
+    // find the unpacker without a word (8 or 16 symbols at CONSUMED 0,
+    // inside the lead-in; plan isdbs-next/hdl-and-housekeeping.md §5a);
+    // anything later is a real starvation.
+    let prefetch = tx_log.contains("block features: prefetch");
     let missed: u64 = tx_log
         .rsplit_once("MISSED ")
         .and_then(|(_, r)| r.split(',').next())
         .and_then(|n| n.trim().parse().ok())
         .expect("the block's MISSED in the summary");
     assert!(
-        missed <= 16 && (missed == 0 || tx_log.contains("FIRST_MISS 0,")),
-        "the block missed symbols after its start:\n{tx_log}"
+        if prefetch {
+            missed == 0
+        } else {
+            missed <= 16 && (missed == 0 || tx_log.contains("FIRST_MISS 0,"))
+        },
+        "the block missed symbols (prefetch: {prefetch}):\n{tx_log}"
     );
     let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(j["system"], "ISDB-S");
