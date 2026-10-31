@@ -420,8 +420,9 @@ end, but some parts have had less independent checking than others:
   ISDB-S3 (ARIB STD-B44) reception, then transmission, reusing the TS/SI
   crates — satellite IF capture and survey done; ISDB-S received to TS
   and transmitted to IQ files (software loopback byte-exact), with the
-  radio transmit block for the PlutoSky R2's FPGA designed, modelled and
-  simulated bit-exact (bitstream and on-board test next); ISDB-S3
+  radio transmit block for the PlutoSky R2's FPGA built into the bitstream
+  and verified on the board (digital loopback byte-exact, conducted into
+  a PIX-DT295 tuner); ISDB-S3
   received to TLV streams with MMT-SI identified; then TLV-SI checked on
   a longer recording, and real-time LDPC (SIMD).
 

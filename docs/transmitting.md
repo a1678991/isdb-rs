@@ -743,10 +743,13 @@ buffers and `kbuffers`, the level as the block's backoff), `auto` both
 paths. On air come the same pre-roll frame, lead superframes, data and
 null flush frame as on the IQ path; the producer runs at about 11× real
 time without the shaper (release build). Opening configures the block
-(13 315 commands, about 8 s through iiod), selects it before any code is
-streamed and starts it once the stream has filled half the board's kernel
-queue (8 buffers, 580 ms of codes),
-so a clean run misses no symbol; the status lines add the block's MISSED,
+(13 315 commands, about 4 s through iiod, skipped when the block's
+BANK_TAG says the default bank is already in place), selects it before
+any code is streamed and starts it once the stream has filled half the
+board's kernel queue (8 buffers, 580 ms of codes) and the block reports
+itself primed, so a clean run misses no symbol (MISSED 0 on
+`isdb_txrx2_top.bin`; 8–16 zero symbols in the lead-in on the older image
+without the prefetch); the status lines add the block's MISSED,
 the summary its CONSUMED, MISSED, FIRST_MISS and the DAC underflow flag.
 Closing, also on an error, stops the stream, puts the DAC back on the IQ
 pass-through, then the attenuation at its maximum and the LO down. The
@@ -778,8 +781,9 @@ isdb rx --system isdbs --radio pluto:uri=ip:192.0.2.30 --channel BS1 \
 ```
 
 Acceptance: every output TS byte-exact against its input, 0 uncorrectable
-RS words, 0 host underruns and MISSED 0 in the transmitter's summary, 0
-losses in the receiver's `stream`. `isdb-cli`'s opt-in test
+RS words, 0 host underruns and MISSED 0 in the transmitter's summary
+(≤ 16 at FIRST_MISS 0 on an image without the prefetch), 0 losses in the
+receiver's `stream`. `isdb-cli`'s opt-in test
 `tx_symbols_loopback_on_a_pluto` runs exactly this
 (`ISDB_RS_PLUTO_TX_LOOPBACK_URI`, [test-data.md](test-data.md)); the
 receiver must end before the transmitter closes the loopback, so the

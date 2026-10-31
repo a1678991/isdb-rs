@@ -862,10 +862,11 @@ codes, `83e9ac5` / `4bac1a9` / `e1ca69a` HDL, `abb2e94` / `13e1c12` /
   FPGA: board checks").
 - **Block:** `SymbolsTx` between the DAC unpacker and the rfifo (the
   `txfir.tcl` placement, replacing the ×8 TX FIR), a 512-phase × 24-tap
-  root-raised-cosine interpolator with no multipliers (0 DSP48E1, 2.7k
-  LUT, 12 RAMB18), controlled through the DAC core's GPIO pair with the
-  RX block's protocol; bit-exact in simulation on the Rust model's five
-  vector sets under every strobe pattern. Image expectation 158 DSP.
+  root-raised-cosine interpolator with no multipliers (0 DSP48E1, 2 331
+  LUT placed, 12 RAMB18), controlled through the DAC core's GPIO pair
+  with the RX block's protocol; bit-exact in simulation on the Rust
+  model's vector sets under every strobe pattern. Image: 158 DSP, timing
+  met (VERIFICATION.md "the image").
 - **Host:** `Offload::TxSymbols`, `SymbolSink`, the Pluto symbols mode
   (START|SELECT, prefill the device queue, RUN|SELECT), `isdb tx
   --offload auto|fpga|cpu`; the code path runs at 11× real time.
@@ -873,10 +874,13 @@ codes, `83e9ac5` / `4bac1a9` / `e1ca69a` HDL, `abb2e94` / `13e1c12` /
   underflow flag sets when the DMA is idle; the AD9361 digital loopback
   is sample-exact; the "span 12 beats span 16" reading of the study was
   its MER window counting the zero tail.
-- **Open:** build the image (Vivado, not on this host), deploy on a card
-  copy, run `tx_symbols_loopback_on_a_pluto`; skip the 8 s bank reload
-  when the BRAM default is in place; the starvation variant of the test;
-  CONSUMED wraps after 149 s.
+- **Done 2026-10-29:** image built (158 DSP, WNS +0.100 / WHS +0.033 ns),
+  deployed (`isdb_txrx_top.bin`), the loopback self-test byte-exact
+  (MISSED 8 at FIRST_MISS 0), the PIX-DT295 locks on the conducted bench
+  broadcast. **Done 2026-10-31** (isdbs-next.md item 5, VERIFICATION.md
+  "image 2"): `isdb_txrx2_top.bin` with the prefetch (MISSED 0), BANK_TAG
+  (the bank load skipped on a tag match) and 64-bit counters.
+  **Open:** the starvation variant of the test.
 
 ## 1. Goals and non-goals
 
@@ -907,10 +911,12 @@ Connections reported by the user on 2026-10-20:
 |---|---|
 | RX1 | cable (CATV) feed: terrestrial ISDB-T recast on its UHF channels, and the satellite IF (BS / CS) |
 | RX2 | 510 mm 144 / 430 MHz antenna |
-| TX1 | **PIX-DT295 (ISDB-T/S USB tuner), directly, no attenuator** |
+| TX1 | PIX-DT295 (ISDB-T/S USB tuner, `06b8:103b`) through a **30 dB fixed attenuator and a DC block** (since 2026-10-29; VERIFICATION.md "ISDB-S transmitter in the FPGA: into the PIX-DT295"); transmit at attenuation ≥ 45 dB unless measuring the margin. Disconnected on 2026-10-31 (isdbs-next.md "Bench") |
 | TX2 | open, no load |
 
-**Before any TX test on TX1** (all three are required):
+**Before any TX test on TX1** (all three are required; 1 and 2 were in
+place on the bench from 2026-10-29 — check them again after any
+re-cabling):
 
 1. Insert 30–60 dB of fixed attenuation. A Pluto at low attenuation can
    exceed what a tuner input tolerates (TV tuners overload around

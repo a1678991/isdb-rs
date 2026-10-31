@@ -216,7 +216,11 @@ rustdoc clean, FPGA suite 24/24):
    tasks do not); the merged agent branches `worktree-agent-*` can be
    deleted; `fpga/README.md` still describes the RX-only `isdb_top.bin`
    as the deployed image in places; isdb-s.md §2's bench table (TX1
-   "directly, no attenuator") is outdated.
+   "directly, no attenuator") is outdated. **Done 2026-10-31**: the mise
+   uv tasks default `UV_DEFAULT_INDEX` (`2741d4e`), the 7 branches are
+   deleted, fpga/README.md names `isdb_txrx2_top.bin`, isdb-s.md §2 and
+   §0.23, README.md, receiving.md, transmitting.md and test-data.md are
+   current (hdl-and-housekeeping.md §6h–§6j).
 
 ## Investigation (2026-10-30)
 

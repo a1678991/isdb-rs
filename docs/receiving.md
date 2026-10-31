@@ -112,8 +112,8 @@ isdb rx --symbols bs3.sym --out 'bs3-{ts_id}.ts'             # an FPGA words fil
 | `--json` | — | summary with per-TS counters (packets, RS clean / corrected / uncorrectable) and the stage times |
 
 **Continuous reception (FPGA front end).** When the radio offers the
-symbol front end in its FPGA (a PlutoSky R2 with the `isdb_top.bin`
-bitstream, `fpga/README.md`), `isdb rx` acquires on a 0.2 s IQ probe
+symbol front end in its FPGA (a PlutoSky R2 with the `isdb_top.bin` or
+`isdb_txrx2_top.bin` bitstream, `fpga/README.md`), `isdb rx` acquires on a 0.2 s IQ probe
 (the carrier tried from every survey candidate, the trim measured;
 another probe if the lock is weak), configures the front end, and then
 decodes the symbols it streams: 43–51 MB/s over Gigabit Ethernet, within
