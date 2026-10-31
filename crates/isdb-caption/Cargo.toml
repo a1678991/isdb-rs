@@ -1,0 +1,20 @@
+[package]
+name = "isdb-caption"
+description = "ARIB STD-B62 / B60 TTML captions of ISDB-S3 to SRT and WebVTT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-caption"
+readme = "README.md"
+keywords = ["arib", "isdb", "ttml", "subtitles", "webvtt"]
+categories = ["parser-implementations", "multimedia"]
+include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+tracing.workspace = true
+
+[lints]
+workspace = true
