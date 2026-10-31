@@ -129,6 +129,16 @@ rustdoc clean, FPGA suite 24/24):
    multiplexer for ISDB-S (`tx --system isdbs --mux-config`), which would
    place packets on the superframe timeline directly, once the mux's
    slot model is generalised from the OFDM frame.
+   Status 2026-10-31: pieces A and B of
+   [media-and-margin.md](isdbs-next/media-and-margin.md) §7 done and
+   verified offline (VERIFICATION.md "ISDB-S bench service with media,
+   offline"): `tools/isdbs-bench-tx.sh --media[=DIR]` (loop by default, a
+   TS one media loop long; `--feed fifo` a live `isdb mux --out-ts -`),
+   `tools/media-decode-check.py`, `MEDIA=DIR tools/isdbs-pacing-e2e.sh`.
+   A looped media TS is not seamless in its media (a gap every pass:
+   video 137.6 ms, audio 603 ms); the live multiplexer is. Piece C, the
+   bench run, waits for TX1 to be reconnected; its commands are in that
+   VERIFICATION.md section ("Pending: the bench run").
 4. **Level margin**: a sweep of `att` (45 → 60 → …) with `dt295 tune`
    / `status --isdbs --watch` to find the lock threshold and the C/N
    slope (the driver reads C/N once while acquiring); record in

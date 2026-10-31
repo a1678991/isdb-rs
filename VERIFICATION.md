@@ -1911,6 +1911,117 @@ transport_stream_id 0x4017 is not the TMCC's 0x4010; `isdb tx
 mirakc) is still to be run: TX1 is not connected to the tuner
 (docs/plans/isdbs-next.md, bench notes).
 
+## ISDB-S bench service with media, offline (2026-10-31)
+
+The BS bench service with real video and audio
+(docs/plans/isdbs-next/media-and-margin.md §2, §7 pieces A and B):
+`tools/isdbs-bench-tx.sh --media[=DIR]` makes `bs-bench.toml`'s declared
+streams media streams (`tools/bench-media.py`; `adts_compliance = "warn"`)
+and sends, by default, a TS one media loop long with `--feed loop`;
+`--media --feed fifo` paces a live `isdb mux --out-ts -` into the FIFO.
+`tools/media-decode-check.py` checks the media of a TS: ffmpeg decode
+errors, DTS/PTS monotonic and their steps, continuity errors (`isdb ts
+inspect --json`), and with `--source` every decoded picture and audio frame
+(ffmpeg framemd5) against the source's and their cyclic order. Media: the
+10 s pair of docs/test-data.md (video 300 pictures at 29.97 Hz = 10.010 s,
+MPEG-2 1440×1080i 12 Mbit/s; audio 470 AAC frames at 48 kHz = 10.027 s);
+the multiplexer loops them every 10.027 s, so the TS is 43 OFDM frames =
+9.947 s (79 ms of media short of a loop). No radio: `MEDIA=DIR
+tools/isdbs-pacing-e2e.sh` → `isdb mux` → `isdb tx --system isdbs
+--channel BS1 --iq` (cs8, `--placed-ts`) → `isdb rx --iq` →
+`isdbs-bench-check.sh --rate 52170000:1 --fit-max-ns 100 --placed`,
+`ts-loop-seam.py` (loop) and `media-decode-check.py --source DIR
+--max-jumps` (3 with `FEED=loop`, 0 with `FEED=live`). The IQ files were
+deleted afterwards.
+
+| | `FEED=loop` (the file, 3.11 passes) | `FEED=live` (live `isdb mux` → `pv` → FIFO) |
+|---|---|---|
+| on air | 2802 superframes, 31.011 s; `passes 4 cc-fixed 30 pes-shifted 1527`, PCR lag 0 | 2726 superframes, 30.169 s; `deadline-misses 0`, worst live-input lag 0.078 s |
+| RS, MER | 0 uncorrectable, main MER 39.6 dB | the same |
+| received TS vs `--placed-ts` | identical, 1 075 200 packets | identical, 1 035 264 packets (without the 0.321 s of leading nulls) |
+| `pcr.rate`, CBR fit | 52.170000 Mbit/s (−0.0 ppm); max 18 ns, rms 11 ns | the same |
+| validate | only ffmpeg's ADTS (`aac.*` errors, accepted with warn) | the same |
+| CC errors, PCR discontinuities, sync losses | 0, 0, 0 | 0, 0, 0 |
+| video: decode error lines | 8 (2 per seam and at the end: the cut last picture) | 2 (the end) |
+| video: DTS | strictly increasing; step 3003 ×912, **12 388 (137.6 ms) at each of the 3 seams** | strictly increasing; 3003, one 4503 per media loop (2) |
+| video: decoded pictures in the source | 912 of 916; 3 order jumps (294 → 0, pictures 295–299 skipped), one foreign picture before each (the pass's cut last picture), one at the end | 889 of 890 (the last, cut); 2 loop points, 0 jumps |
+| audio: decode error lines | 11 | 2 |
+| audio: PTS | strictly increasing; step 1920 ×1341, **54 310 (603 ms) at each seam** | strictly increasing; 1920 throughout |
+| audio: decoded frames in the source | 1329 of 1338; 3 jumps (437 → 4, frames 438–469 skipped), 3 foreign after each (AAC overlap) | 1363 of 1371; 4 foreign after each of the 2 loop points (AAC overlap), 0 jumps |
+| verdict (`isdbs-pacing-e2e.sh`) | PASS | PASS |
+
+So the transmitter joins the passes of a looped file as intended (no CC
+error, no time stamp going back, PCRs on the grid), but a looped media TS
+is not seamless in its media: the file ends with what the multiplexer had
+sent by then, and each stream's lead over the PCR is larger at the file's
+start than at its end, so each pass leaves a gap in the time stamps
+(video 137.6 ms, audio 603 ms) and skips the media still unsent. A receiver
+freezes the picture and mutes once per pass. The live multiplexer has no
+file seam; its only irregularities are the multiplexer's own media loop
+(a 4503 video DTS step for the 10.010 s video in a 10.027 s loop, four
+audio frames that decode differently after the loop point).
+
+`tools/media-decode-check.py` on the multiplexer's output: `bs-media.ts`
+(9.947 s) 294 of 295 pictures and 438 of 438 audio frames in the source;
+13.9 s (one media loop point) 412 of 413 and 619 of 623 (the 4 after the
+loop point). `tools/media-decode-check-test.sh` (4 s ffmpeg media): PASS
+as multiplexed with and without `--source`; FAIL for 6 video packets
+overwritten in the middle (a 5-picture run of foreign pictures inside a
+continuous stretch) and for 1 s cut out (continuity errors, an order
+jump, a 16-picture foreign run). The audio of these media is periodic
+(33 distinct decoded frames in 470): its order is followed from the first
+unique frame on, and a jump by a whole period would not be seen.
+
+Also: `tools/isdbs-bench-tx-test.sh` (dummy `isdb`, stub media) PASS,
+including `--media` (directory resolution and refusals, the media TOML,
+`--frames` from the media length, the TS made again when a media file is
+newer, `--feed fifo`'s live multiplexer gone after a normal exit, an
+early exit and TERM); `tools/isdbs-bench-tx.sh --media=DIR --dry-run WORK
+45 ip:192.0.2.1` multiplexes `bs-media.ts` (T-STD ok, 0 late PES) and
+prints the Pluto's settings without opening a device.
+
+### Pending: the bench run (piece C)
+
+Waits for TX1 → 30 dB → DC block → PIX-DT295 to be reconnected
+(docs/plans/isdbs-next.md, bench notes). Media from `$M`
+(`crates/isdbt-mux/examples/media` of the main checkout); recordings in
+`~/dev/sdr/isdbs-bench/media-bench/`, never /tmp.
+
+```sh
+cd ~/dev/isdb-rs
+M=$PWD/crates/isdbt-mux/examples/media
+W=~/dev/sdr/isdbs-bench/media-bench
+pgrep -af "isdb tx --system isdbs"                       # nothing else on air
+tools/isdbs-bench-tx.sh --media="$M" --dry-run "$W" 45 ip:10.10.0.30   # settings only
+# 1. the looped file (the default), placed TS kept for the comparison
+tools/isdbs-bench-tx.sh --media="$M" --placed 'placed-{ts_id}.ts' "$W" 45 ip:10.10.0.30 &
+echo $! > "$W/tx.pid"
+D=~/dev/PIX-DT295/target/release/dt295
+$D status --isdbs                                        # STATE 0x0011
+$D tune --isdbs bs1 --tsid 4017
+tools/isdbs-bench-check.sh --record 30 --placed "$W/placed-4017.ts" "$W/rec-media-loop.ts"
+python3 -I tools/media-decode-check.py --source "$M" --max-jumps 3 \
+    --keep "$W/check-loop" --json "$W/check-loop.json" "$W/rec-media-loop.ts"
+kill "$(cat "$W/tx.pid")"                                # the script stops isdb tx and its writer
+# 2. the live multiplexer (no file seam)
+tools/isdbs-bench-tx.sh --media="$M" --feed fifo "$W" 45 ip:10.10.0.30 &
+echo $! > "$W/tx.pid"
+$D tune --isdbs bs1 --tsid 4017
+tools/isdbs-bench-check.sh --record 30 "$W/rec-media-live.ts"
+python3 -I tools/media-decode-check.py --source "$M" --max-jumps 0 \
+    --keep "$W/check-live" --json "$W/check-live.json" "$W/rec-media-live.ts"
+kill "$(cat "$W/tx.pid")"
+```
+
+Expected from the offline run: `dt295` 0 sync/TEI/CC; bench-check PASS
+(rate 52.17 Mbit/s within 100 ppm, CBR fit ≤ 1 µs, the loop recording
+identical to the placed TS); decode check PASS with the recording's start
+as an edge (up to a GOP of foreign pictures, the first audio frames), in
+loop mode one order jump per pass boundary in the 30 s (3), in live mode
+none. Open (media-and-margin.md §2.3, §8): whether the DT295 passes the
+ISDB-S ES PIDs with `--raw-config` as it does for ISDB-T. Then mirakc / a
+player for the picture itself.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

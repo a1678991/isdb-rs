@@ -577,7 +577,15 @@ the pacer measured, a multiple of 300 ticks of 27 MHz) and its continuity
 counters renumbered per PID (H.222.0 §2.4.3.3), so the received TS runs on
 across the seam with no PCR discontinuity and no continuity error; pass 0,
 and `--feed file`, change no field but the PCR. SI times (TOT/TDT, EIT)
-still restart with each pass. The plan is printed before anything is opened, so
+still restart with each pass. The media of a looped file are not seamless:
+the file ends with what the multiplexer had sent by then, so each pass
+leaves a gap in the time stamps and skips the media still unsent (the
+bench service with the 10 s media of docs/test-data.md, a TS of one media
+loop: video 137.6 ms, audio 603 ms per pass); a live `isdb mux --out-ts -`
+into a FIFO has no such seam (`tools/isdbs-bench-tx.sh --media` sends the
+loop by default, `--media --feed fifo` the live multiplexer;
+`tools/media-decode-check.py` checks the decoded media of a recording
+against the source). The plan is printed before anything is opened, so
 `--dry-run` shows it; the status lines add, per paced TS, `PCR lag` (and
 its maximum), the input rate against the capacity, `nulls-dropped`,
 `restamped`, `slot-busy` and `pcr-discontinuities`, and with a loop

@@ -17,6 +17,32 @@ STD-B44) is received to TLV streams.
 
 ### Added
 
+- Tools: `tools/isdbs-bench-tx.sh --media[=DIR]` sends the BS bench
+  service with real video and audio (`video.m2v`, `audio.m2a` of DIR, else
+  of `ISDB_RS_MEDIA_DIR`, else of the git-ignored
+  `crates/isdbt-mux/examples/media/`; refused when none has both):
+  `bs-bench.toml`'s declared streams become `mpeg2-video` / `aac-adts`
+  streams (`adts_compliance = "warn"`, which FFmpeg's ADTS needs), written
+  by the new `tools/bench-media.py`. The default feed is then `loop`, on a
+  TS one media loop long (the whole number of OFDM frames nearest to the
+  multiplexer's media loop: 43 frames, 9.947 s, for the 10 s media of
+  docs/test-data.md); each pass leaves a gap in the media (offline: video
+  137.6 ms, audio 603 ms). `--feed fifo` with `--media` paces a live
+  `isdb mux --out-ts -` into the FIFO instead, with no file seam. The
+  self-test covers `--media` on stub media. New
+  `tools/media-decode-check.py` (run with `python3 -I`; ffmpeg, ffprobe):
+  per video / audio stream of a TS, ffmpeg's decode errors, DTS/PTS
+  monotonic with step statistics, continuity errors (`isdb ts inspect
+  --json`), and with `--source DIR` every decoded picture and audio frame
+  checked against the source's (framemd5) and its cyclic order, frames
+  not in the source allowed only in short runs at the edges, at order
+  jumps (loop seams) and at the source's loop point; PASS/FAIL as the exit
+  status. `tools/media-decode-check-test.sh` checks it on a TS as
+  multiplexed (PASS), with corrupted video payload and with 1 s cut out
+  (FAIL). `tools/isdbs-pacing-e2e.sh` takes `MEDIA=DIR` (those media, the
+  TS one media loop long; `FEED=live` then writes `isdb mux --out-ts -`
+  into the FIFO) and runs the decode check on the received TS whenever it
+  carries media.
 - `isdbt-mux`: `[network] kind = "bs"` makes the SI of a BS digital
   broadcasting network (ARIB STD-B10 Table 6-1, §6.2.6, Annex N): the NIT
   TS loop carries the service list and a satellite delivery system

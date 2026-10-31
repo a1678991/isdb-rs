@@ -88,6 +88,11 @@ ISDB_RS_MEDIA_DIR=$PWD/media cargo test --release -p isdb-cli --test cli media
 (Checked with FFmpeg 9.0: all media tests pass. FFmpeg's ADTS has no
 crc_check, so the tests exercise the refusal path.)
 
+The same directory feeds the ISDB-S bench service with media
+(`tools/isdbs-bench-tx.sh --media`, `MEDIA=DIR tools/isdbs-pacing-e2e.sh`)
+and is the reference of `tools/media-decode-check.py --source DIR`, which
+compares the decoded frames of a TS with the source's.
+
 ## Capturing your own data
 
 Receiving broadcasts is generally lawful, but what you may do with a
