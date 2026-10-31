@@ -263,8 +263,9 @@ STD-B44) is received to TLV streams.
   hardware test `tx_symbols_loopback_on_a_pluto`
   (`ISDB_RS_PLUTO_TX_LOOPBACK_URI`): TX into the AD9361's digital
   loopback and RX through the FPGA front end of the same board, every TS
-  byte-exact, 0 uncorrectable, 0 host underruns, MISSED 0, 0 RX losses
-  (not yet run: it needs the image with the transmit block).
+  byte-exact, 0 uncorrectable, 0 host underruns, 0 RX losses, MISSED 0
+  with the block's prefetch (≤ 16 at FIRST_MISS 0 on the image without
+  it); passes on the PlutoSky R2 (VERIFICATION.md).
 - `isdb-radio`: the transmission of symbol codes through an FPGA transmit
   block. `SymbolSink` (separate from `IqSink`), `Offload::TxSymbols {
   version, phases, taps }` and `Offload::runs_tx`, `Backend::tx_offloads`
@@ -286,6 +287,35 @@ STD-B44) is received to TLV streams.
   the summary; on stop, drop or error CTRL 0 before the attenuation and
   LO. TX1 only, both channels, `buffer` 65 536 and `kbuffers` 16 by
   default; `kbuffers` is now a TX argument (IQ default 4).
+- `fpga`: the transmit block's follow-ups (docs/plans/isdbs-next.md item
+  5; not yet in a built image). Prefetch while selected: the block polls
+  the DMA from SELECT, drops the underflow answers before RUN and holds
+  up to two words, so CTRL RUN|SELECT starts without the 8–16-symbol
+  start miss (the deployed host's own sequence gets it too); STATUS bit 3
+  PRIMED; CTRL 0 drops the held words; PRE_UNF (0x0A) counts the dropped
+  polls. BANK_TAG (0x08): the bitstream's value is the default bank's
+  CRC-32C, any bank write clears it, the host writes it after a load; no
+  reset. CONSUMED, FIRST_MISS and SAMPLES are 64-bit, the high halves in
+  HI (0x09), latched by the low half's READ. FEATURES (0x07) = 7; the ID
+  word stays 0xB5D11918 (an older image reads FEATURES 0). Yosys: +80
+  LUT, +206 FF (2 793 / 3 110), 0 DSP, 0 BRAM. Nine more simulation tests
+  (33). `mise.toml`'s uv tasks default `UV_DEFAULT_INDEX` to PyPI.
+- `isdb-frontend`: `Interpolator::prefetched(k)` (the stalls on the k
+  words a prefetching block holds at RUN are not seen),
+  `vectors::tx_document_prefetched` and the vectors' `"prefetch"` and
+  `params.bank_tag`, `examples/txvectors.rs` writes `tx-6-prefetch.json`;
+  `control::tx::{bank_tag, features}`, `reg::{FEATURES, BANK_TAG, HI,
+  PRE_UNF}`, `status::PRIMED`, `Encoder::configure_tx_registers` (STEP
+  and SHIFT alone).
+- `isdb-radio` `pluto`: the symbol path reads FEATURES at open and keeps
+  the old behaviour at 0. With BANK_TAG a matching tag skips the bank
+  ("bank: default (tag match), skipped 13312 commands"), else the bank is
+  loaded and tagged; with the prefetch, RUN waits for STATUS PRIMED (up to
+  1 s) and PRE_UNF is logged; with 64-bit counters CONSUMED and
+  FIRST_MISS are read with their HI words, without them the host extends
+  the 32-bit registers (which wrap every 148.8 s) from the time between
+  reads at the symbol rate. CTRL 0 before the configuration. The open
+  line and the summary name the features in use.
 - `isdb-iq`: the SigMF field `isdb:system` (extension 0.4.0).
 
 - `isdb-radio` `pluto`: without `uri`, the device is found by mDNS when

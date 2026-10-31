@@ -80,8 +80,8 @@ mise run fpga:tx-verilog   # fpga/build/isdb_symbols_tx.v (the default bank as B
 
 (`fpga:tx-vectors`, which `fpga:test` runs, writes the Python model's
 two TX sets; the Rust model's TX vectors, in the same directory, are
-simulated too. On a host where `uv run --locked` asks for a relock, run
-the steps with `uv run --frozen`.)
+simulated too. The tasks set `UV_DEFAULT_INDEX` to PyPI, the index
+`uv.lock` records, unless it is already set.)
 
 Results (format 4, 2026-10-26):
 
@@ -160,19 +160,30 @@ against before the Rust vectors existed.
   word) and takes the answers in order at any fixed latency (one clock
   at the upack's default PIPELINE_STAGES 0; tested at 1 and 3). A word
   lasts at least 8 samples, so the symbol cadence never waits on the
-  DMA. An answer with `fifo_rd_underflow` instead of `fifo_rd_valid` is
-  a word of 8 zero symbols. Each symbol counts as it enters: a missing
-  word's in MISSED (FIRST_MISS latches CONSUMED at the first, the sticky
-  underrun bit is set; FIRST_MISS reads 0 before any miss), a delivered
-  word's in CONSUMED. Counting at entry makes the counters a function of
-  the sample count, independent of the prefetch. Requests start 4 clocks
-  after the block becomes active (an answer to a pass-through read is
-  never taken for its own); samples start once the first word is in.
-  START drops the rest of a word whose codes have begun to enter and
-  keeps the words the model has not asked for yet (the prefetched ones),
-  as the model's START leaves the DMA queue as it is. After START the
-  output is 0 until the first new sample arrives; while not running it
-  is 0.
+  DMA. While running, an answer with `fifo_rd_underflow` instead of
+  `fifo_rd_valid` is a word of 8 zero symbols. Each symbol counts as it
+  enters: a missing word's in MISSED (FIRST_MISS latches CONSUMED at the
+  first, the sticky underrun bit is set; FIRST_MISS reads 0 before any
+  miss), a delivered word's in CONSUMED. Counting at entry makes the
+  counters a function of the sample count, independent of the prefetch.
+  CONSUMED, FIRST_MISS and SAMPLES are 64 bits (MISSED 32).
+- **Prefetch while selected.** Requests start 4 clocks after SELECT
+  (an answer to a pass-through read is never taken for the block's
+  own), not after RUN: selected and not running, the block polls the DMA,
+  drops the underflow answers (they store and count nothing but PRE_UNF)
+  and keeps up to two words. STATUS bit 3 PRIMED says a delivered word is
+  held; CTRL RUN|SELECT then starts the datapath on words in hand, so the
+  start misses nothing. A DMA that has no word yet when RUN comes is
+  still counted (the answers after RUN are missing words, as before).
+  CTRL 0 (deselect) drops the held words and ignores the answers to
+  requests under way, so a new stream never plays the last one's words.
+  Samples start once the first word (or, running, a miss) is in. START
+  drops the rest of a word whose codes have begun to enter and keeps the
+  words the model has not asked for yet (the prefetched ones), as the
+  model's START leaves the DMA queue as it is. After START the output is
+  0 until the first new sample arrives; while not running it is 0. The
+  model sees the prefetch as `Interpolator::prefetched(k)`: the stalls on
+  the k words held at RUN were met before it.
 
 | Port | Connects to |
 |---|---|
@@ -206,39 +217,64 @@ reads 0.
 |---|---|
 | 0x00 | STEP (24 bits kept) |
 | 0x01 | SHIFT (5 bits) |
-| 0x02 | STATUS, read only: bit 0 run, bit 1 selected, bit 2 underrun (sticky until START) |
-| 0x03 / 0x04 / 0x05 / 0x06 | CONSUMED / MISSED / FIRST_MISS / SAMPLES (outputs since START, low 32 bits), read only |
+| 0x02 | STATUS, read only: bit 0 run, bit 1 selected, bit 2 underrun (sticky until START), bit 3 primed (a delivered DMA word held) |
+| 0x03 / 0x05 / 0x06 | CONSUMED / FIRST_MISS / SAMPLES (outputs since START), read only, 64 bits: a READ shows the low 32 and latches the high 32 in HI |
+| 0x04 | MISSED, read only, 32 bits |
+| 0x07 | FEATURES, read only: 7 = bit 0 prefetch (PRIMED, PRE_UNF), bit 1 BANK_TAG, bit 2 64-bit counters (HI); the image before them reads 0 here |
+| 0x08 | BANK_TAG: the bitstream's value is the default bank's tag (`tx.bank_tag`: CRC-32C of the near halves as `Encoder::configure_tx` writes them, a then b, i32 LE; 0 ↦ 1); any bank write sets 0; WRITE sets it; no reset (the memories have none either) |
+| 0x09 | HI, read only: the high 32 bits latched by the last READ of CONSUMED, FIRST_MISS or SAMPLES (LO then HI is one snapshot) |
+| 0x0A | PRE_UNF, read only: underflow answers dropped before RUN since START (32 bits, wraps; a diagnostic of the start) |
 | 0x4000 + q·32 + t | bank a, row q, tap t < 2S (a far tap t ≥ S writes its mirror, so either half loads the bank) |
 | 0x8000 + q·32 + t | bank b, likewise |
-| CTRL argument | bit 0 RUN, bit 1 START (one pulse: frac, the line, the counters, the unpack register), bit 2 SELECT (the block drives the rfifo and owns the upack's read) |
+| CTRL argument | bit 0 RUN, bit 1 START (one pulse: frac, the line, the counters, the unpack register), bit 2 SELECT (the block drives the rfifo and owns the upack's read; it polls the DMA from here on) |
+
+Other addresses read 0. The ID word stays 0xB5D11918 (the arithmetic and
+the code format are unchanged); a host tells the images apart by
+FEATURES.
 
 The default bank (ISDB-S, 40 Msps, 10 dB backoff) is the memories'
 initial content (`mise run fpga:tx-verilog` takes it from the Rust
-model's `tx-1-continuous.json` and refuses another design), so a
-configuration is STEP, SHIFT and CTRL; another rate or backoff reloads
-the bank (`Encoder::configure_tx` writes the near half, 12 288 writes,
-7.6 s through iiod). `configure_tx` ends with CTRL START, CTRL
-RUN|SELECT. The block owns the DMA only from SELECT on (before it, the
-pass-through sends whatever the DMA holds to the DAC as samples), so with
-that sequence the host starts the TX DMA afterwards, and the requests
-made before its first buffer arrives count as missed from FIRST_MISS 0.
-CTRL START|SELECT (selected, not running: the block requests nothing and
-sends zeros), then the first buffers pushed, then CTRL RUN|SELECT starts
-without lead-in misses. CTRL 0 makes the block transparent again.
+model's `tx-1-continuous.json` and refuses another design). The deployed
+image (2026-10-29) has none of the features above: the host writes both
+banks on every open (`Encoder::configure_tx`: STEP, SHIFT, the near half
+of each row, 13 315 commands, 3.9 s through iiod on the bench), since
+the memories keep the last bank loaded until the FPGA is reconfigured.
+The Python model's encoder (`txmodel.py`) ends its list with CTRL START,
+CTRL RUN|SELECT; the host instead sends CTRL START|SELECT (selected, not
+running: that image requests nothing and sends zeros), pushes half its
+kernel queue, then CTRL RUN|SELECT. That image's first two requests go
+out 4 clocks after RUN; on the board one or both find no word (8–16
+symbols in MISSED at FIRST_MISS 0, in the lead-in; VERIFICATION.md "on
+the board"). CTRL 0 makes the block transparent again.
 
-Results (2026-10-29), on the Rust model's vectors (`mise run
-fpga:vectors`: `tx-1-continuous` … `tx-4-bank`, from
-`isdb-frontend`'s `txvectors`, and `tx-5-isdbs`, superframe codes from
-`isdbs-phy`'s transmitter; 2 806 to 5 578 samples, 24 stalls in
-`tx-2-stalls`, one long one in `tx-3-long-stall`, 61.44 Msps at 3 dB
-with 12 clipped samples and a bank that is not the default in
-`tx-4-bank`) and on the Python model's two (`txvec-py-1-isdbs`, ISDB-S
-with 5 stalls of 1 to 6 requests, and `txvec-py-2-stress`, a symbol on
-all samples but one, SHIFT 2 below the bank's so that 70 % of the samples
-saturate, a stall at the first word, the DMA dry before the end and the
-run ending inside a missed word):
+The image with the features (built from this source; FEATURES 7): the
+host reads FEATURES and BANK_TAG at open and writes STEP and SHIFT alone
+when BANK_TAG already reads the bank's tag (the default bank at
+power-up, or the bank an earlier open loaded and tagged), else the whole
+configuration and then the tag (an interrupted load leaves 0, so the
+next open reloads); after CTRL START|SELECT the block polls the DMA, and
+the host sends CTRL RUN|SELECT once half its queue is pushed and STATUS
+reads PRIMED: MISSED 0 at the start. The old host's sequence (no PRIMED
+read, a fixed wait) gets the same: the words are in the block before
+RUN. CONSUMED and FIRST_MISS come with their HI words; on the old image
+the host extends the 32-bit values itself (they wrap every 148.8 s at
+28.86 Mbaud, SAMPLES every 107.4 s at 40 Msps).
 
-- **Simulation:** bit-exact on all seven, every sample's frac, q, line,
+Results (2026-10-29; the features 2026-10-31), on the Rust model's
+vectors (`mise run fpga:vectors`: `tx-1-continuous` … `tx-4-bank` and
+`tx-6-prefetch`, from `isdb-frontend`'s `txvectors`, and `tx-5-isdbs`,
+superframe codes from `isdbs-phy`'s transmitter; 1 442 to 5 578
+samples, 24 stalls in `tx-2-stalls`, one long one in `tx-3-long-stall`,
+61.44 Msps at 3 dB with 12 clipped samples and a bank that is not the
+default in `tx-4-bank`, stalls on words 0, 1 and 60 with `"prefetch":
+2` in `tx-6-prefetch`, where only the last is seen) and on the Python
+model's two (`txvec-py-1-isdbs`, ISDB-S with 5 stalls of 1 to 6
+requests, and `txvec-py-2-stress`, a symbol on all samples but one,
+SHIFT 2 below the bank's so that 70 % of the samples saturate, a stall
+at the first word, the DMA dry before the end and the run ending inside
+a missed word):
+
+- **Simulation:** bit-exact on all eight, every sample's frac, q, line,
   carry and entered code, its sums before rounding, its output, and the
   four counters: with a request on every clock, with `util_rfifo`'s
   bursts of eight (and pauses), with random strobes and a 3-clock upack;
@@ -252,10 +288,26 @@ run ending inside a missed word):
   in a bank-a entry, in a bank-b entry, or in a far tap written through
   the port fails the comparison, and so does one stalled request more
   than the vectors say. The Python model reproduces the Rust model's
-  banks, samples, counters and command words exactly.
+  banks, samples, counters, command words and bank tags exactly.
+- **The features** (`TxPrefetchTest`, `TxRegisterTest`): PRIMED within
+  ARM + latency + 2 clocks of SELECT; 300 clocks of a dry DMA before RUN
+  drop their polls and miss nothing; a DMA later than RUN is counted as
+  the model with that many stalls before word 0; CTRL 0 mid-stream then
+  START|SELECT plays the DMA's next words, none of the held ones; the
+  deployed host's sequence (START|SELECT, a fixed wait, RUN|SELECT) with
+  the DMA silent for 12 clocks right after RUN (where the old image's
+  first requests fall) misses nothing and PRE_UNF counts the dropped
+  polls; FEATURES 7; BANK_TAG initial value (= the Rust model's tag),
+  cleared by a bank write, set by a WRITE, no reset; CONSUMED and
+  SAMPLES carried past 2³² and HI latched by the counter's READ, kept
+  over other reads. `mise run fpga:test`: 33 tests (24 before) in
+  ≈ 4 min.
 - **Estimate** of `SymbolsTx` (Yosys `synth_xilinx`, before place and
-  route): **0 DSP48E1, 2 713 LUT, 2 904 FF, 12 RAMB18E1**, 324 CARRY4,
-  no LUTRAM. The datapath alone (the throwaway sketch,
+  route): **0 DSP48E1, 2 793 LUT, 3 110 FF, 12 RAMB18E1**, 349 CARRY4,
+  no LUTRAM, with the features (without them, the deployed image's
+  source: 2 713 LUT, 2 904 FF, 324 CARRY4; so +80 LUT, +206 FF: the
+  64-bit counters, HI, BANK_TAG, PRE_UNF and the prefetch's control).
+  The datapath alone (the throwaway sketch,
   `synth/tx_sketch.py mux 512 12`) was 1 962 LUT / 2 266 FF; the rest is
   the run-time SHIFT's barrel shifter, the control and readback, the
   unpacker, the counters and the clock enable (`synth/tx_parts.py`
@@ -306,7 +358,7 @@ node and a driver. The GPIO route needs neither.
 fpga/tezuka/build.sh WORK stock     # the unmodified design
 fpga/tezuka/build.sh WORK isdb      # with SymbolsRx and SymbolsTx
 fpga/tezuka/build.sh WORK isdb-tx   # with SymbolsTx alone
-fpga/tezuka/sdbin.sh WORK/out/isdb/plutoskyr2.xsa isdb_top.bin
+fpga/tezuka/sdbin.sh WORK/out/isdb/plutoskyr2.xsa isdb_txrx_top.bin   # both blocks (the deployed image)
 ```
 
 `build.sh` clones the pinned upstream revisions into WORKDIR (outside
@@ -342,17 +394,17 @@ oss-cad-suite); the XSA target built directly (the Makefile's
 in an install to the upstream author's path); dvb_fpga's own submodules
 fetched recursively.
 
-**Status (2026-10-26): the format-4 image (the front end alone: the
-`isdb` mode before the transmit block) builds and closes timing with
-Vivado 2026.1 (ADI's "Timing Constraints" check passes); `isdb_top.bin`
-is ready to deploy. Not yet run on the board.** The image with the
-transmit block (2026-10-29) is not built yet (plan step 6). Expected,
-from the table below, Tezuka's figures for the TX FIR and the Yosys
-estimate: DSP 178 − 20 = **158** (72 %), LUT ≈ 21 694 − 564 + 2 713 ≈
-**23.8k** (45 %), FF ≈ 28 421 − 1 297 + 2 900 ≈ 30.0k (28 %), BRAM36
-62 + 6 = **68** (49 %); the `isdb-tx` image 46 DSP. Its paths are short
-(the deepest a 25-bit add or the 5-level barrel shift) in the same
-62.5 MHz constraint as the front end's.
+**Status (2026-10-29): the image with both blocks, `isdb_txrx_top.bin`,
+is built, meets timing and runs on the bench board**
+(`/boot/uEnv.txt` `bitstream_image=isdb_txrx_top.bin`; VERIFICATION.md
+"ISDB-S transmitter in the FPGA": the image, on the board, into the
+PIX-DT295). The receive-only format-4 image `isdb_top.bin` (2026-10-26)
+ran on the board before it (isdb-s.md §0.16) and stays on the card.
+Expected before the build, from Tezuka's TX FIR figures and the Yosys
+estimate: 158 DSP, ≈ 23.8k LUT, ≈ 30.0k FF, 68 BRAM36; measured: 158,
+23 470, 29 994, 68. The transmit block's features (prefetch, BANK_TAG,
+64-bit counters; 2026-10-31) are in this source but not yet in a built
+image: the deployed one reads FEATURES 0.
 
 | xc7z020clg484-2 | LUT | FF | BRAM36 | DSP | WNS | WHS |
 |---|---|---|---|---|---|---|
@@ -363,16 +415,18 @@ estimate: DSP 178 − 20 = **158** (72 %), LUT ≈ 21 694 − 564 + 2 713 ≈
 | **both blocks** (RX front end + `SymbolsTx`, no DVB-S2 TX, no TX FIR; 2026-10-29) | 23 470 (44 %) | 29 994 (28 %) | 68 | **158 (72 %)** | **+0.100 ns** | **+0.033 ns** |
 | of which `isdb_symbols_tx` | 2 331 | 2 672 | 12 RAMB18 | 0 | — | — |
 
-Per clock, after route and physical optimisation (all met): the block's
-`clk_div_sel_0_s` (constrained at 62.5 MHz from ADI's worst-case 250 MHz
-`rx_clk`; it runs at 40 MHz) +1.523 ns; `clk_div_sel_1_s` (125 MHz, the
-r1_mode case: Tezuka's own logic only, the block's paths there are false)
-+0.652 ns; `clk_fpga_0` +0.548 ns; maia-sdr's `clk_out3` (187.5 MHz)
-+0.675 ns; `rx_clk` +0.445 ns. The design's overall worst slack, +0.100 ns,
-is the same path class as the stock build's (Tezuka's PlutoSky R2 has the
-smallest margin of its boards). Reports:
-`WORK/out/isdb/v4b_timing_summary.rpt`,
-`v4b_utilization*.rpt`.
+Per clock in the final checkpoint of the image with both blocks (all
+met): `clk_div_sel_0_s` (the blocks' clock, constrained at 62.5 MHz from
+ADI's worst-case 250 MHz `rx_clk`; it runs at 40 MHz) +2.325 ns (an
+RX-block path); `clk_div_sel_1_s` (125 MHz, r1_mode only; the blocks'
+paths there are false) +0.821 ns; `clk_fpga_0` +0.970 ns; maia-sdr's
+`clk_out3` +0.779 ns; `rx_clk` +0.542 ns. The overall WNS +0.100 ns is
+the RGMII input (`RGMII_rxc`), the same path class as the stock build
+(Tezuka's PlutoSky R2 has the smallest margin of its boards). Reports:
+`WORK/out/isdb/final_timing.rpt`, `final_timing_isdb_util.rpt` (from
+`timing.tcl`). The RX-only build's figures were `clk_div_sel_0_s`
++1.523 ns, `clk_div_sel_1_s` +0.652, `clk_fpga_0` +0.548, `clk_out3`
++0.675, `rx_clk` +0.445 (`v4b_*.rpt`, no longer in `out/`).
 
 | Artefact (`WORK/out/isdb/`) | Bytes | sha256 |
 |---|---|---|
@@ -391,7 +445,8 @@ restores setup. The checkpoint the bitstream is written from
 (`impl_1/system_top_postroute_physopt.dcp`) meets every constraint:
 `vivado -mode batch -source fpga/tezuka/timing.tcl -tclargs
 CHECKPOINT.dcp` prints its WNS / WHS and the isdb blocks' placed
-resources (the table above). Not yet run on the board.
+resources (the table above). Deployed on the bench board 2026-10-29
+(VERIFICATION.md "on the board").
 
 How it got there (each step a commit): the first format-4 build put the
 block at 154 DSP48E1 (Vivado moved the adder trees and the loop's adds
@@ -426,17 +481,22 @@ partition already holds several bitstreams (`system_top.bin`,
 which `uEnv.txt` sets (`bitstream_image=system_top.bin` in v0.3.24).
 On a **copy** of the card (keep the original as the rollback):
 
-1. copy `isdb_top.bin` (from `sdbin.sh`) to the FAT partition, next to
-   `system_top.bin`;
-2. in that partition's `uEnv.txt`, set `bitstream_image=isdb_top.bin`;
+1. copy `isdb_txrx_top.bin` (both blocks; or `isdb_top.bin`, receive
+   only) from `sdbin.sh` to the FAT partition, next to `system_top.bin`
+   (a rebuilt image under a new name, e.g. `isdb_txrx2_top.bin`, beside
+   the one it replaces);
+2. in that partition's `uEnv.txt`, set
+   `bitstream_image=isdb_txrx_top.bin` (keep the previous `uEnv.txt` as
+   `uEnv.txt.prev-*`);
 3. boot from SD as today (DIP switches unchanged: both at 3.3 V).
 
-Rollback: `bitstream_image=system_top.bin`, or the original card.
+Rollback: `bitstream_image=isdb_top.bin` (receive only) or
+`system_top.bin` (stock), or the original card.
 `sdbin.sh` was checked against the board: on the XSA v0.3.24 ships it
 reproduces the card's `system_top.bin` byte for byte (sha256
 `4e9ea3825f2c9fd08906f0398fff2a652736a843503f21407793fc300c045c76`).
 
-**Verifying after deployment** (receive only):
+**Verifying the receive block after deployment** (either image):
 
 1. `isdb symbols --radio pluto --freq BS7 --probe`
    reads the ID word 0x15DB4020 (magic, format 4, 32 taps); the stock
@@ -450,19 +510,27 @@ reproduces the card's `system_top.bin` byte for byte (sha256
 4. Rest of the chain: `isdb iq s3sync --read fpga.sym` (Es/N0 as from
    the CPU front end) and `isdb rx --system isdbs3` on the symbols.
 
-**Verifying the transmit block** (plan §4.3; nothing radiated: the
-AD9361's data-port loopback, TX LO down, which the board checks found
-sample-exact; the host side is plan step 4):
+**Verifying the transmit block** (plan §4.3, done 2026-10-29,
+VERIFICATION.md "on the board"; nothing radiated: the AD9361's
+data-port loopback, TX LO down, which the board checks found
+sample-exact):
 
 1. `cf-ad9361-dds-core-lpc` register 0x800000B8 reads the ID word
-   0xB5D11918 (the stock and the receive-only bitstreams read 0); after
-   CTRL RUN|SELECT, STATUS (0x02) reads 3.
+   0xB5D11918 (the stock bitstream and `isdb_top.bin` read 0); after
+   CTRL RUN|SELECT, STATUS (0x02) reads 3 (0xB with the prefetch: bit 3
+   PRIMED while a word is held); FEATURES (0x07) reads 7 on an image
+   with the features, 0 on the 2026-10-29 one, and the open line of
+   `isdb tx` names them ("block features: …").
 2. `isdb tx --system isdbs --radio pluto:loopback=on --offload fpga
    --rf-enable` in one process and `isdb rx --system isdbs --radio pluto
    --offload fpga` in another (two libiio contexts, both at 40 Msps):
    every TS byte-exact against its input, 0 uncorrectable, 0 host
-   underruns, MISSED = 0, 0 RX losses, 8PSK MER ≥ 36.0 dB at the 6-bit
-   output, the measured trim within ±0.05 T of 0.
+   underruns, MISSED ≤ 16 at FIRST_MISS 0 (the start-only miss; 0 once
+   the prefetch is in the image: `tx_symbols_loopback_on_a_pluto`
+   requires 0 when the open line names it), 0 RX losses, 8PSK MER
+   ≥ 36.0 dB at the 6-bit output, the measured trim within ±0.05 T of 0.
+   With BANK_TAG, a second open logs "bank: default (tag match), skipped
+   13312 commands" and configures in milliseconds.
 3. Bit-exactness on the board: a buffered 12-bit IQ capture in loopback
    equals the model's samples for the same codes after an offset search
    (the TX vectors are the bench version of this).

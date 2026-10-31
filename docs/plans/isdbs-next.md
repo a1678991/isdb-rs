@@ -174,6 +174,21 @@ rustdoc clean, FPGA suite 24/24):
    the hardware test can require MISSED 0 again); a "bank loaded" sticky
    flag or readback so the host can skip the 8 s bank reload when the
    BRAM default is in place; 64-bit (or wrap-tolerant) CONSUMED.
+   **Status 2026-10-31: HDL, model, tests and host done; build and
+   deploy pending.** As designed in
+   [hdl-and-housekeeping.md](isdbs-next/hdl-and-housekeeping.md) §5:
+   the block polls the DMA from SELECT (drops underflow answers before
+   RUN, holds ≤ 2 words, drops them on deselect), STATUS bit 3 PRIMED,
+   PRE_UNF 0x0A; BANK_TAG 0x08 (CRC-32C of the bank as written,
+   bitstream init = the default bank's, any bank write → 0, no reset);
+   64-bit CONSUMED / FIRST_MISS / SAMPLES with HI 0x09; FEATURES 0x07 = 7;
+   ID word 0xB5D11918 unchanged. Model `Interpolator::prefetched`,
+   vectors `tx-6-prefetch`; FPGA suite 33/33. The host reads FEATURES:
+   with them it skips a tagged bank, waits for PRIMED and reads HI;
+   at 0 (the deployed image) it behaves as before and extends the
+   32-bit counters itself. `tx_symbols_loopback_on_a_pluto` requires
+   MISSED 0 once the open line names the prefetch. Left: `build.sh WORK
+   isdb`, a new card file (`isdb_txrx2_top.bin`), the hardware test.
 6. **Housekeeping**: `uv run --locked` in `fpga/` needs
    `UV_DEFAULT_INDEX=https://pypi.org/simple` on this host (a private
    index rewrites `uv.lock`; the build scripts already set it, the mise

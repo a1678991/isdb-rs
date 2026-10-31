@@ -152,6 +152,12 @@ of 64 MB/s. The block shapes the symbols to the DAC rate on the board.
   (0x800000B8 of `cf-ad9361-dds-core-lpc`), which shows the block's ID
   word (0xB5D11918: TX format 1, 512 phases × 24 taps) or 0 without it.
   Nothing is written.
+- **Features** (FEATURES, register 0x07, read at open; the image of
+  2026-10-29 reads 0 there, as at any unknown address): bit 0 prefetch
+  (the block polls the DMA from SELECT and holds up to two words; STATUS
+  bit 3 PRIMED; PRE_UNF 0x0A), bit 1 BANK_TAG (0x08), bit 2 64-bit
+  counters (HI 0x09). The open line and the summary name them ("block
+  features: prefetch, bank tag, 64-bit counters", or "none (…)").
 - **Settings** (`describe_tx_symbols`, `open_tx_symbols`): TX1 only
   (`channel=2` is refused: the block drives the TX1 data path), both
   `voltage0` and `voltage1` enabled (eight codes per two-channel DMA
@@ -168,10 +174,16 @@ of 64 MB/s. The block shapes the symbols to the DAC rate on the board.
   programmed); the radio as for IQ (maximum attenuation first, the LO
   powered down with `loopback`, DDS off, rate, bandwidth, LO, loopback);
   refused with the DAC core in r1_mode (0x80000048 bit 5) or with
-  `up_dac_gpio_out` bit 0 set (Tezuka's ×8 TX FIR enable);
-  `Encoder::configure_tx` (13 315 commands, ≈ 8 s through iiod), STEP read
-  back; CTRL START|SELECT, and STATUS must read "selected" (codes sent to
-  a plain DAC would go out as samples); then the attenuation.
+  `up_dac_gpio_out` bit 0 set (Tezuka's ×8 TX FIR enable); CTRL 0 (a
+  block left selected drops the words it holds), FEATURES and BANK_TAG
+  read; `Encoder::configure_tx` (13 315 commands, 4–8 s through iiod)
+  and, with BANK_TAG, the tag (`control::tx::bank_tag`, CRC-32C of the
+  bank as written) after it — or STEP and SHIFT alone when BANK_TAG
+  already reads the bank's tag ("bank: default (tag match), skipped
+  13312 commands": the bitstream's own bank at power-up, or one an
+  earlier open loaded); STEP read back; CTRL START|SELECT, and STATUS
+  must read "selected" (codes sent to a plain DAC would go out as
+  samples); then the attenuation.
 - **Starting** (`RadioTx::started`): the sink converts what the device
   takes ahead (kernel buffers and the one being filled, 4.5 M DMA
   samples, 112 superframes, 1.2 s of codes) before the stream starts, so
@@ -180,18 +192,27 @@ of 64 MB/s. The block shapes the symbols to the DAC rate on the board.
   buffers, 580 ms of codes; a push returns when iiod has the buffer, not
   the DMA: on the first push alone the block once ran 90 ms on an empty
   DMA while a receiver's probe loaded iiod, and waiting for the whole
-  queue blocks, since nothing drains before RUN) the block gets CTRL
-  RUN|SELECT (STATUS must read 3) and the DAC core's
-  underflow flag (0x80000088 bit 0, which also counts the block's missed
-  words and is set whenever no DMA word is available, idle included) is
-  cleared. Started any earlier, the block would count the words it
-  requests before the first buffer as missed.
+  queue blocks, since nothing drains before RUN) and, with the
+  prefetch, once STATUS reads PRIMED (polled up to 1 s; past it the block
+  is started anyway and counts what it does not get; PRE_UNF is logged)
+  the block gets CTRL RUN|SELECT (STATUS must read run and selected) and
+  the DAC core's underflow flag (0x80000088 bit 0, which also counts the
+  block's missed words and is set whenever no DMA word is available,
+  idle included) is cleared. Without the prefetch the block's first one
+  or two requests may still find no word (8–16 zero symbols in the
+  lead-in, FIRST_MISS 0); with it the start misses nothing.
 - **Counters**: each status line adds the block's MISSED (one READ, four
-  register accesses); the summary gives CONSUMED, MISSED, FIRST_MISS
-  (CONSUMED at the first miss, `-` without one), STATUS and the underflow
-  flag, read after the queue drained, while the zero buffers that end the
-  stream still play. Host underruns (the libiio thread found no buffer
-  queued and sent zeros) are counted as for IQ.
+  register accesses; the first line with a miss reads FIRST_MISS too);
+  the summary gives CONSUMED, MISSED, FIRST_MISS (CONSUMED at the first
+  miss, `-` without one), STATUS and the underflow flag, read after the
+  queue drained, while the zero buffers that end the stream still play.
+  CONSUMED and FIRST_MISS are 64-bit: the block's HI words with the
+  64-bit-counter feature, else extended by the host from the 32-bit
+  registers (which wrap every 148.8 s of codes): the value ≡ the
+  register mod 2³² nearest to the last one plus the time since at the
+  symbol rate (right while that guess is within 74 s). Host underruns
+  (the libiio thread found no buffer queued and sent zeros) are counted
+  as for IQ.
 - **Closing** (also on error or panic): the stream stops, then CTRL 0
   (the IQ pass-through), then the maximum attenuation, the LO down and
   the loopback off. Opening the IQ path sends CTRL 0 when the bitstream
@@ -201,8 +222,12 @@ of 64 MB/s. The block shapes the symbols to the DAC rate on the board.
 
 The command sequence is tested against a model of the block's decoder
 (`TxBlock` in `backends/pluto.rs`: refusals, STATUS checks, CTRL 0 after a
-failed step); the on-board self-test is `isdb-cli`'s
-`tx_symbols_loopback_on_a_pluto` (`ISDB_RS_PLUTO_TX_LOOPBACK_URI`).
+failed step; an image without FEATURES and one with them: the bank kept
+or loaded and tagged, the PRIMED wait and its timeout, HI, the host's
+counter extension past 2³²); the on-board self-test is `isdb-cli`'s
+`tx_symbols_loopback_on_a_pluto` (`ISDB_RS_PLUTO_TX_LOOPBACK_URI`;
+MISSED 0 required when the open line names the prefetch, ≤ 16 at
+FIRST_MISS 0 otherwise).
 
 A backend for a device with integer samples implements `RadioTx` for it
 (`type Format = Cs8`, `Cs12`, or another `IntFormat`) and

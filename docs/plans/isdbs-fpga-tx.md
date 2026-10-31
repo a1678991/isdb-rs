@@ -147,8 +147,8 @@ Each step is a commit with tests and docs, as the RX path was built
    dummy combination with slots (the one case that leaves 0+0i symbols),
    `psk8_point(code) ≈ symbol` tests on every layout.
 4. **Host transport** (done, tested with the mock radio, a model of the
-   block's command decoder and dry runs; the on-board self-test is
-   written, `ISDB_RS_PLUTO_TX_LOOPBACK_URI`, and waits for the image.
+   block's command decoder and dry runs; the on-board self-test,
+   `ISDB_RS_PLUTO_TX_LOOPBACK_URI`, passes on the board (§4).
    Measured: the codes' producer at 11.1× real time, release, 1.0 ms per
    superframe, against 1.14× with the shaper; the transmitter without
    the `f64` points was cheaper than the 3.3 ms estimated. Deviations:
@@ -178,7 +178,15 @@ Each step is a commit with tests and docs, as the RX path was built
    Python twin, every clock, rfifo bursts, DMA stalls, bank through the
    port and through `gpio_out`, START while running; Yosys 0 DSP48E1,
    2.7k LUT, 2.9k FF, 12 RAMB18; second Tcl `isdb_symbols_tx.tcl`;
-   fpga/README.md "The transmit block")
+   fpga/README.md "The transmit block". Follow-ups 2026-10-31,
+   [isdbs-next.md](isdbs-next.md) item 5,
+   [hdl-and-housekeeping.md](isdbs-next/hdl-and-housekeeping.md) §5: the
+   prefetch while selected (STATUS bit 3 PRIMED, PRE_UNF 0x0A), BANK_TAG
+   0x08, 64-bit CONSUMED / FIRST_MISS / SAMPLES with HI 0x09, FEATURES
+   0x07 = 7, the ID word unchanged; the model's
+   `Interpolator::prefetched`, vectors `tx-6-prefetch`; 33 FPGA tests;
+   Yosys 2.8k LUT, 3.1k FF; the host reads FEATURES and keeps the old
+   image's behaviour at 0. Not yet in a built image)
    `fpga/isdb_fpga/tx.py` (`SymbolsTx`: unpacker, accumulator,
    the mux datapath of the sketch, adder trees with `use_dsp = "no"`,
    rounding/saturation, counters, `Control` reuse with the TX register
@@ -189,9 +197,12 @@ Each step is a commit with tests and docs, as the RX path was built
    rewiring in place of `txfir.tcl`, the XDC (DAC `gpio_out` false path,
    `gpio_in` datapath-only, the r1 clock case false), `apply.sh` drops
    the `txfir` flag, `README.md`.
-6. **Image**: build (Vivado, outside the repo as `fpga/tezuka/build.sh`
-   does), timing, utilisation (expect 178 DSP, ≈ 23.7k LUT, +6 BRAM36),
-   deploy on a card copy, the on-board checks of §4.
+6. **Image** (done 2026-10-29: 158 DSP, 23 470 LUT, 68 BRAM36, timing
+   met; deployed as `isdb_txrx_top.bin`; the rebuild with the step-5
+   follow-ups is pending): build (Vivado, outside the repo as
+   `fpga/tezuka/build.sh` does), timing, utilisation (expected 178 DSP,
+   ≈ 23.7k LUT, +6 BRAM36), deploy on a card copy, the on-board checks
+   of §4.
 7. **Docs and verification**: VERIFICATION.md rung "ISDB-S transmitter
    in the FPGA", README feature list, transmitting.md, CHANGELOG,
    isdb-s.md status.
@@ -267,18 +278,16 @@ effect of the absent-register writes are unverified.
   44.45 dB at span 16, and the f32 shaper 36.98 / 44.54 dB
   (`isdb-frontend` `examples/txloop.rs`). Span 12 stays (span 8's
   out-of-band peak is −41.5 dB, span 12's −49 dB).
-- Timing at 40 MHz is unverified in Vivado (the deepest stage is a
-  24-bit add; the RX block's paths are longer and close with the stock
-  margin +0.100 ns).
-- The AD9361 digital loopback's transparency decides whether the
-  on-board test can be bit-exact or only MER- and TS-level.
-- The TX-direction link ceiling has not been measured; both packings sit
-  far below the one rate known to work.
+- Settled (VERIFICATION.md board checks, the image of 2026-10-29):
+  timing at 40 MHz (the blocks' clock meets 62.5 MHz with +2.325 ns, an
+  RX-block path); the AD9361 digital loopback is sample-exact; the
+  TX-direction link is clean to 64 MB/s.
 - The ADI HDL read for the DAC path was `c9a501d`, not the pinned
   `cf81ab15`; the cores involved change rarely, a diff would settle it.
 - The block's first request after RUN finds the unpacker empty (8–16
-  symbols missed at CONSUMED 0, in the lead-in); a prefetch of the first
-  word(s) while selected but not running would remove it (an HDL change
-  and a rebuild).
+  symbols missed at CONSUMED 0, in the lead-in): the prefetch while
+  selected removes it (HDL and host done 2026-10-31, the rebuild
+  pending); the root cause of the DMA's missing first words is open
+  (PRE_UNF on the new image will tell).
 - ISDB-S3 TX is out of scope: its 16/32APSK points are not on a 45°
   grid (per-ring ROMs or multipliers) and α = 0.03 needs a span of 32–64.
