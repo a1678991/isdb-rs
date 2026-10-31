@@ -281,22 +281,36 @@ class Upack:
     PIPELINE_STAGES 0: util_upack2_impl.v registers data and valid) with
     `fifo_rd_valid` and the word, or with `fifo_rd_underflow` and zero data
     when the DMA has none (`txmodel.Dma`: the vectors' stalls, and every
-    request after the last word)."""
+    request after the last word). Requests before clock `dry_until`, and
+    in any window [start, end) of clocks in `dry`, find no word either (a
+    DMA not started yet, or not answering for a while: outside the
+    vectors' stalls, which they do not use up). `answers` lists (clock,
+    word or None) of every answer given."""
 
-    def __init__(self, doc, latency=1):
+    def __init__(self, doc, latency=1, dry_until=0):
         self.dma = Dma(doc["words"], doc["stalls"])
         self.latency = latency
+        self.dry = [(0, dry_until)]
         self.due = collections.deque()  # (clock, word or None)
+        self.answers = []
 
     def response(self, clock):
         """(valid, underflow, word) on the lines during `clock`."""
         if self.due and self.due[0][0] == clock:
             word = self.due.popleft()[1]
+            self.answers.append((clock, word))
             return (word is not None, word is None, word or 0)
         return (False, False, 0)
 
     def request(self, clock):
-        self.due.append((clock + self.latency, self.dma.request()))
+        dry = any(a <= clock < b for a, b in self.dry)
+        word = None if dry else self.dma.request()
+        self.due.append((clock + self.latency, word))
+
+    def stalls_left(self):
+        """(next word index, the stalls not yet met, renumbered from it)."""
+        j = self.dma.next
+        return j, [[i - j, n] for i, n in sorted(self.dma.left.items()) if i >= j and n > 0]
 
 
 class _CorePort:
@@ -432,8 +446,12 @@ def tx_bank_entries(doc, load, a=None, b=None):
             for q, row in enumerate(rows) for t in range(taps)]
 
 
+PRIME_LIMIT = 10_000  # clocks the bench waits for the prefetch
+
+
 def simulate_tx(doc, pattern="every", latency=1, load=None, writes=(), banks=None, seed=1,
-                restart_after=None, info=None):
+                restart_after=None, info=None, prefetch=None, dry_until=0, run_at=None,
+                reselect_after=None):
     """Run `SymbolTx` on `doc`: its banks as the memories' initial contents
     (`banks` = (a, b) instead of the vectors'), or with `load` = "full" or
     "half" written through the load port into empty memories; `writes`
@@ -444,17 +462,57 @@ def simulate_tx(doc, pattern="every", latency=1, load=None, writes=(), banks=Non
     receives "restart_at", the samples made before START, and "lead", the
     outputs of the first LATENCY enabled clocks after it (before sample
     0 can have arrived). Returns (samples, counters) in the vectors'
-    layout."""
+    layout.
+
+    The start: RUN, SELECT and START on one clock, or with a `prefetch`
+    (default: the vectors' "prefetch") START|SELECT first and RUN once the
+    block holds two words and has no request under way (the host's
+    sequence; "primed_at" in `info`: the clocks from SELECT to PRIMED).
+    `dry_until`: the DMA has no word for requests before that clock
+    (`Upack`). `run_at` = c: RUN c clocks after START|SELECT whether
+    primed or not; "late_misses" in `info`: the underflow answers taken
+    after RUN before the first word. `reselect_after` = k: after k samples
+    CTRL 0 (run and selected cleared) for a few clocks, then START|SELECT,
+    the prefetch and RUN again; the samples returned are those after it,
+    and "resume" in `info` is `Upack.stalls_left()` at the new START (the
+    words and stalls the DMA still has)."""
     p = doc["params"]
     a, b = banks if banks is not None else (p["a"], p["b"])
     init = load is None
+    prefetch = doc.get("prefetch", 0) if prefetch is None else prefetch
+    if prefetch not in (0, 2):
+        raise ValueError(f"prefetch {prefetch}: the bench runs 0 or 2")
     dut = tx.SymbolTx(p["phases"], p["span"], a if init else None, b if init else None)
     sim = Simulator(dut)
     sim.add_clock(1e-8)
     res = {}
+    info = {} if info is None else info
 
     async def bench(ctx):
-        tb = _TxBench(ctx, _CorePort(dut), Upack(doc, latency))
+        upack = Upack(doc, latency, dry_until)
+        tb = _TxBench(ctx, _CorePort(dut), upack)
+
+        async def select_then_run():
+            """START|SELECT, the prefetch, then RUN."""
+            ctx.set(dut.selected, 1)
+            ctx.set(dut.start, 1)
+            await tb.tick()
+            ctx.set(dut.start, 0)
+            t0 = tb.clock
+            while True:
+                if "primed_at" not in info and ctx.get(dut.primed):
+                    info["primed_at"] = tb.clock - t0
+                if run_at is not None:
+                    if tb.clock - t0 >= run_at:
+                        break
+                elif ctx.get(dut.held_words) == 2 and ctx.get(dut.pend) == 0:
+                    break
+                if tb.clock - t0 > PRIME_LIMIT:
+                    raise AssertionError(f"not primed {PRIME_LIMIT} clocks after SELECT")
+                await tb.tick()
+            info["run_clock"] = tb.clock
+            ctx.set(dut.run, 1)
+
         ctx.set(dut.regs.step, p["step"])
         ctx.set(dut.regs.shift, p["shift"])
         entries = (tx_bank_entries(doc, load, a, b) if load else []) + list(writes)
@@ -467,25 +525,40 @@ def simulate_tx(doc, pattern="every", latency=1, load=None, writes=(), banks=Non
             await tb.tick()
         ctx.set(dut.c_we, 0)
         await tb.tick(2)
-        ctx.set(dut.run, 1)
-        ctx.set(dut.selected, 1)
-        ctx.set(dut.start, 1)
-        await tb.tick()
-        ctx.set(dut.start, 0)
-        rng = random.Random(seed)
-        if restart_after:
-            await tb.stream(dict(doc, samples=doc["samples"][:restart_after]), pattern, rng)
-            if info is not None:
-                info["restart_at"] = ctx.get(dut.samples)
+        if prefetch or run_at is not None:
+            await select_then_run()
+        else:
+            ctx.set(dut.run, 1)
+            ctx.set(dut.selected, 1)
             ctx.set(dut.start, 1)
             await tb.tick()
             ctx.set(dut.start, 0)
+            info["run_clock"] = tb.clock - 1
+        rng = random.Random(seed)
+        if restart_after:
+            await tb.stream(dict(doc, samples=doc["samples"][:restart_after]), pattern, rng)
+            info["restart_at"] = ctx.get(dut.samples)
+            ctx.set(dut.start, 1)
+            await tb.tick()
+            ctx.set(dut.start, 0)
+        if reselect_after:
+            await tb.stream(dict(doc, samples=doc["samples"][:reselect_after]), pattern, rng)
+            ctx.set(dut.run, 0)
+            ctx.set(dut.selected, 0)
+            await tb.tick(12)
+            info["resume"] = upack.stalls_left()
+            info.pop("primed_at", None)
+            await select_then_run()
         res["samples"], res["counters"] = await tb.stream(doc, pattern, rng)
-        if info is not None:
-            info["lead"] = tb.lead
+        info["lead"] = tb.lead
+        info["answers"] = upack.answers
 
     sim.add_testbench(bench)
     sim.run()
+    if run_at is not None:
+        rc = info["run_clock"]
+        first = next(c for c, w in info["answers"] if w is not None)
+        info["late_misses"] = sum(1 for c, w in info["answers"] if w is None and rc <= c < first)
     return res["samples"], res["counters"]
 
 
@@ -498,10 +571,13 @@ def simulate_tx_top(doc, pattern="every", latency=1, gap=6, seed=1):
     """Configure `SymbolsTx` through gpio_out with the vectors' command
     words (`doc["gpio"]`; when they write the banks, the memories start
     empty, so the load is what is tested), check the ID word and the
-    readback of STEP, SHIFT and STATUS, run the strobe, then read the
-    counters through gpio_in. Returns (samples, counters, problems)."""
+    readback of STEP, SHIFT, STATUS, FEATURES and BANK_TAG, run the strobe,
+    then read the counters (and HI) through gpio_in. With a prefetch in
+    the vectors, the last command (CTRL RUN|SELECT) waits for STATUS
+    PRIMED and the second word. Returns (samples, counters, problems)."""
     p = doc["params"]
     loads = gpio_loads_banks(doc["gpio"])
+    prefetch = doc.get("prefetch", 0)
     dut = SymbolsTx(p["phases"], p["span"], None if loads else p["a"], None if loads else p["b"])
     sim = Simulator(dut)
     sim.add_clock(1e-8)
@@ -510,12 +586,14 @@ def simulate_tx_top(doc, pattern="every", latency=1, gap=6, seed=1):
     async def bench(ctx):
         tb = _TxBench(ctx, _TopPort(dut), Upack(doc, latency))
         problems = tb.problems
+        core = dut.core
         await tb.tick(4)
         ident = ctx.get(dut.gpio_in)
         if ident != p["id_word"]:
             problems.append(f"ID word {ident:#010x} != {p['id_word']:#010x}")
+        cmds = doc["gpio"]
         last = 0
-        for w in doc["gpio"]:
+        for w in cmds[:-1] if prefetch else cmds:
             await tb.command(dut.gpio_out, w, gap)
             last = w
         enc = Encoder(last)
@@ -525,8 +603,22 @@ def simulate_tx_top(doc, pattern="every", latency=1, gap=6, seed=1):
             await tb.command(dut.gpio_out, enc.word(tx.OP_READ, 0), gap)
             return ctx.get(dut.gpio_in)
 
+        if prefetch:
+            for _ in range(100):
+                if await read(tx.STATUS) & tx.STATUS_PRIMED:
+                    break
+            else:
+                problems.append("STATUS never PRIMED after CTRL START|SELECT")
+            for _ in range(tx.ARM + 10 * latency + 100):
+                if ctx.get(core.held_words) == 2 and ctx.get(core.pend) == 0:
+                    break
+                await tb.tick()
+            await tb.command(dut.gpio_out, enc.word(tx.OP_CTRL, (cmds[-1] >> 1) & 0x07FFFFFF), gap)
+        tag = 0 if loads else tx.bank_tag(p["a"], p["b"], p["span"])
         for addr, want, name in ((tx.STEP, p["step"] & 0xFFFFFF, "STEP"),
-                                 (tx.SHIFT, p["shift"], "SHIFT")):
+                                 (tx.SHIFT, p["shift"], "SHIFT"),
+                                 (tx.FEATURES, tx.FEATURES_VALUE, "FEATURES"),
+                                 (tx.BANK_TAG, tag, "BANK_TAG")):
             got = await read(addr)
             if got != want:
                 problems.append(f"READ {name} {got:#x} != {want:#x}")
@@ -536,12 +628,17 @@ def simulate_tx_top(doc, pattern="every", latency=1, gap=6, seed=1):
         regs = {}
 
         async def counters():
+            his = {}
             for name, addr in (("consumed", tx.CONSUMED), ("missed", tx.MISSED),
                                ("first_miss", tx.FIRST_MISS), ("samples", tx.SAMPLES)):
                 regs[name] = await read(addr)
+                if name != "missed":
+                    his[name] = await read(tx.HI)
             st = await read(tx.STATUS)
             if bool(st & 4) != (regs["missed"] > 0):
                 problems.append(f"STATUS {st:#x} underrun bit with MISSED {regs['missed']}")
+            if any(his.values()):
+                problems.append(f"HI words {his} on counters below 2**32")
 
         samples, direct = await tb.stream(doc, pattern, random.Random(seed), after_n=counters)
         if direct != regs:
@@ -551,6 +648,69 @@ def simulate_tx_top(doc, pattern="every", latency=1, gap=6, seed=1):
     sim.add_testbench(bench)
     sim.run()
     return res["samples"], res["counters"], res["problems"]
+
+
+class TopHarness:
+    """A host's view of `SymbolsTx` for a test script (`run_tx_top`):
+    command words on gpio_out (`enc` keeps the toggle), register reads,
+    clocks and the strobe, with the upack answering throughout."""
+
+    def __init__(self, ctx, dut, upack, gap=6):
+        self.ctx = ctx
+        self.dut = dut
+        self.core = dut.core
+        self.control = dut.control
+        self.upack = upack
+        self.tb = _TxBench(ctx, _TopPort(dut), upack)
+        self.enc = Encoder(0)
+        self.gap = gap
+
+    async def send(self, words):
+        """Command words made with `enc`."""
+        for w in words:
+            await self.tb.command(self.dut.gpio_out, w, self.gap)
+
+    async def cmd(self, op, arg=0):
+        await self.send([self.enc.word(op, arg)])
+
+    async def read(self, addr):
+        """ADDR, READ: the register on gpio_in."""
+        await self.cmd(tx.OP_ADDR, addr)
+        await self.cmd(tx.OP_READ)
+        return self.ctx.get(self.dut.gpio_in)
+
+    async def read64(self, addr):
+        """A 64-bit counter: its READ, then HI."""
+        lo = await self.read(addr)
+        return (await self.read(tx.HI)) << 32 | lo
+
+    async def tick(self, n=1):
+        await self.tb.tick(n)
+
+    async def stream(self, doc, pattern="every", seed=1, after_n=None):
+        """`_TxBench.stream`: (samples, the core's counters); `after_n`
+        is awaited right after the last sample's update."""
+        return await self.tb.stream(doc, pattern, random.Random(seed), after_n)
+
+
+def run_tx_top(doc, script, latency=1, dry_until=0, banks=True):
+    """Run `script(harness)` (an async function) on a `SymbolsTx` with the
+    vectors' banks as initial contents (or empty memories) and the
+    vectors' DMA (`Upack`, dry before `dry_until`); returns its result."""
+    p = doc["params"]
+    dut = SymbolsTx(p["phases"], p["span"], p["a"] if banks else None, p["b"] if banks else None)
+    sim = Simulator(dut)
+    sim.add_clock(1e-8)
+    out = {}
+
+    async def bench(ctx):
+        h = TopHarness(ctx, dut, Upack(doc, latency, dry_until))
+        await h.tick(4)
+        out["result"] = await script(h)
+
+    sim.add_testbench(bench)
+    sim.run()
+    return out["result"]
 
 
 def compare_tx(doc, samples, counters):

@@ -31,7 +31,7 @@ from amaranth.sim import Simulator  # noqa: E402
 from isdb_fpga import tx, txmodel  # noqa: E402
 from isdb_fpga.frontend import crc32c_word, crc32c_word_terms  # noqa: E402
 from isdb_fpga.sim import compare, load, simulate, simulate_top  # noqa: E402
-from isdb_fpga.sim import compare_tx, is_tx, simulate_tx, simulate_tx_top  # noqa: E402
+from isdb_fpga.sim import compare_tx, is_tx, run_tx_top, simulate_tx, simulate_tx_top  # noqa: E402
 from isdb_fpga.top import SymbolsTx  # noqa: E402
 
 VECTORS = os.environ.get(
@@ -291,13 +291,16 @@ class TxModelTest(unittest.TestCase):
         for name, doc in tx_docs():
             with self.subTest(vectors=name):
                 p, d = doc["params"], doc["design"]
-                samples, counters = txmodel.run(p, doc["words"], doc["stalls"], len(doc["samples"]))
+                pre = doc.get("prefetch", 0)
+                samples, counters = txmodel.run(p, doc["words"], doc["stalls"], len(doc["samples"]),
+                                                prefetch=pre)
                 self.assertEqual(compare_tx(doc, samples, counters), [])
+                self.assertEqual(p["bank_tag"], tx.bank_tag(p["a"], p["b"], p["span"]))
                 a, b, s = txmodel.bank(p["phases"], p["span"], d["roll_off"], d["backoff_db"])
                 self.assertEqual((a, b), (p["a"], p["b"]))
                 if "preset" not in d:  # the Python stress preset lowers SHIFT on purpose
                     self.assertEqual(s, p["shift"])
-                self.assertEqual(txmodel.Encoder(0).configure_tx(p), doc["gpio"])
+                self.assertEqual(txmodel.Encoder(0).configure_tx(p, prefetch=pre), doc["gpio"])
 
 
 class TxVectorTest(unittest.TestCase):
@@ -362,7 +365,8 @@ class TxVectorTest(unittest.TestCase):
                 info = {}
                 samples, counters = simulate_tx(doc, pattern="every", restart_after=k, info=info)
                 exp, exp_counters = txmodel.run(doc["params"], doc["words"], doc["stalls"],
-                                                len(doc["samples"]), restart_at=info["restart_at"])
+                                                len(doc["samples"]), restart_at=info["restart_at"],
+                                                prefetch=doc.get("prefetch", 0))
                 want = dict(doc, samples=exp, counters=exp_counters)
                 self.assertEqual(compare_tx(want, samples, counters), [])
                 self.assertEqual(info["lead"], [(0, 0)] * tx.LATENCY)
@@ -403,6 +407,241 @@ class TxVectorTest(unittest.TestCase):
         samples, counters = simulate_tx(changed)
         bad = compare_tx(doc, samples, counters)
         self.assertTrue(any(m.startswith("counter missed") for m in bad), bad)
+
+
+def first_doc():
+    """The first transmit set without stalls (`tx-1-continuous` with the
+    Rust vectors; else the first set made stall-free by the Python
+    model)."""
+    for _, doc in tx_docs():
+        if not doc["stalls"] and not doc.get("prefetch"):
+            return doc
+    doc = tx_docs()[0][1]
+    samples, counters = txmodel.run(doc["params"], doc["words"], [], len(doc["samples"]))
+    return dict(doc, stalls=[], samples=samples, counters=counters)
+
+
+def stalled_doc():
+    """The first transmit set with stalls and no prefetch."""
+    return next(doc for _, doc in tx_docs() if doc["stalls"] and not doc.get("prefetch"))
+
+
+class TxPrefetchTest(unittest.TestCase):
+    """The prefetch while selected (FEATURES bit 0): the block polls the
+    DMA from SELECT on, drops the answers without a word until RUN and
+    holds up to two words, so RUN starts without a lead-in miss; a DMA
+    later than RUN is still counted; deselecting drops the held words."""
+
+    def test_primes_soon_after_select(self):
+        """With the DMA's words there at SELECT, PRIMED within ARM +
+        latency + 2 clocks; RUN on two held words: bit-exact, MISSED 0."""
+        doc = first_doc()
+        for latency in (1, 3):
+            with self.subTest(latency=latency):
+                info = {}
+                samples, counters = simulate_tx(doc, prefetch=2, latency=latency, info=info)
+                self.assertLessEqual(info["primed_at"], tx.ARM + latency + 2)
+                self.assertEqual(compare_tx(doc, samples, counters), [])
+
+    def test_dry_dma_before_run_is_not_a_miss(self):
+        """START|SELECT, the DMA dry for 300 clocks (300 polls answered
+        with an underflow), RUN once two words are held: the vectors'
+        samples bit for bit, MISSED 0."""
+        doc = first_doc()
+        info = {}
+        samples, counters = simulate_tx(doc, prefetch=2, dry_until=300, pattern="rfifo",
+                                        info=info)
+        self.assertGreaterEqual(info["primed_at"], 290)
+        dropped = sum(1 for c, w in info["answers"] if w is None and c < info["run_clock"])
+        self.assertGreater(dropped, 250)
+        self.assertEqual(compare_tx(doc, samples, counters), [])
+        self.assertEqual(counters["missed"], 0)
+
+    def test_dma_later_than_run_is_counted(self):
+        """RUN one clock after START|SELECT, the DMA dry for 200 clocks:
+        the underflow answers after RUN are missing words, as the model
+        with that many stalls before word 0 has them."""
+        doc = first_doc()
+        info = {}
+        samples, counters = simulate_tx(doc, run_at=1, dry_until=200, info=info)
+        n = info["late_misses"]
+        self.assertGreater(n, 5)
+        exp, exp_counters = txmodel.run(doc["params"], doc["words"], [[0, n]] + doc["stalls"],
+                                        len(doc["samples"]))
+        want = dict(doc, samples=exp, counters=exp_counters)
+        self.assertEqual(compare_tx(want, samples, counters), [])
+        self.assertEqual(counters["missed"], 8 * n)
+        self.assertEqual(counters["first_miss"], 0)
+
+    def test_deselect_drops_the_held_words(self):
+        """CTRL 0 in the middle of a stream (with stalls), then
+        START|SELECT, the prefetch and RUN: the samples are the model's
+        on the DMA's words not yet requested, none of the words the block
+        held or had requested when it was deselected."""
+        doc = stalled_doc()
+        for k in (500, 503):
+            with self.subTest(reselect_after=k):
+                info = {}
+                samples, counters = simulate_tx(doc, reselect_after=k, info=info)
+                j, stalls = info["resume"]
+                exp, exp_counters = txmodel.run(doc["params"], doc["words"][j:], stalls,
+                                                len(doc["samples"]), prefetch=2)
+                want = dict(doc, samples=exp, counters=exp_counters)
+                self.assertEqual(compare_tx(want, samples, counters), [])
+
+    def test_vectors_with_prefetch_exist(self):
+        """The vectors cover the prefetch when they are the Rust model's
+        (`tx-6-prefetch`: stalls on words 0 and 1 not seen)."""
+        names = [name for name, _ in tx_docs()]
+        if not any(n.startswith("tx-") for n in names):
+            self.skipTest("no Rust TX vectors (mise run fpga:vectors)")
+        pre = [doc for _, doc in tx_docs() if doc.get("prefetch")]
+        self.assertTrue(pre, names)
+        for doc in pre:
+            seen = txmodel.run(doc["params"], doc["words"], doc["stalls"], len(doc["samples"]))[1]
+            self.assertGreater(seen["missed"], doc["counters"]["missed"])
+
+    def test_old_host_sequence_misses_nothing(self):
+        """The deployed host's sequence through gpio_out: STEP, SHIFT,
+        CTRL START|SELECT, then (its buffers pushed, the DMA dry for its
+        first 400 clocks) CTRL RUN|SELECT after a fixed wait, without
+        reading PRIMED; and the DMA not answering for the 12 clocks from
+        that command's write on (the first requests of an image without
+        the prefetch, RUN + 4 and + 5, fall in them: the start miss the
+        board showed). Bit-exact, MISSED 0 and STATUS without underrun;
+        PRE_UNF counts the polls dropped before RUN."""
+        doc = first_doc()
+        p = doc["params"]
+
+        async def script(h):
+            await h.send(h.enc.write(tx.STEP, [p["step"], p["shift"]]))
+            await h.cmd(tx.OP_CTRL, tx.CTRL_START | tx.CTRL_SELECT)
+            await h.tick(600)
+            window = (h.tb.clock, h.tb.clock + 12)
+            h.upack.dry.append(window)
+            await h.cmd(tx.OP_CTRL, tx.CTRL_RUN | tx.CTRL_SELECT)
+            regs = {}
+
+            async def read_regs():
+                for name, addr in (("missed", tx.MISSED), ("status", tx.STATUS),
+                                   ("pre_unf", tx.PRE_UNF)):
+                    regs[name] = await h.read(addr)
+
+            samples, counters = await h.stream(doc, after_n=read_regs)
+            return samples, counters, regs, list(h.upack.answers), window
+
+        samples, counters, regs, answers, window = run_tx_top(doc, script, dry_until=400)
+        self.assertEqual(compare_tx(doc, samples, counters), [])
+        self.assertEqual(regs["missed"], 0)
+        self.assertEqual(regs["status"] & (tx.STATUS_UNDERRUN | 3), 3)
+        first = next(c for c, w in answers if w is not None)
+        self.assertEqual(regs["pre_unf"], sum(1 for c, w in answers if w is None and c < first))
+        w0, w1 = window
+        self.assertEqual([c for c, w in answers if w0 < c <= w1], [],
+                         "a request in the window after RUN")
+        self.assertGreater(regs["pre_unf"], 300)
+
+
+class TxRegisterTest(unittest.TestCase):
+    """FEATURES, STATUS PRIMED, BANK_TAG and the 64-bit counters with
+    HI, through gpio_out / gpio_in."""
+
+    def test_features_and_primed(self):
+        """FEATURES reads its three bits; STATUS PRIMED after
+        START|SELECT with words in the DMA, not before, and cleared (the
+        held words dropped) by CTRL 0."""
+        doc = first_doc()
+
+        async def script(h):
+            out = {"features": await h.read(tx.FEATURES), "idle": await h.read(tx.STATUS)}
+            await h.cmd(tx.OP_CTRL, tx.CTRL_START | tx.CTRL_SELECT)
+            out["selected"] = await h.read(tx.STATUS)
+            out["held"] = h.ctx.get(h.core.held_words)
+            await h.cmd(tx.OP_CTRL, 0)
+            out["released"] = await h.read(tx.STATUS)
+            out["held_after"] = h.ctx.get(h.core.held_words)
+            return out
+
+        out = run_tx_top(doc, script)
+        self.assertEqual(out["features"], 7)
+        self.assertEqual(out["features"], tx.FEATURES_VALUE)
+        self.assertEqual(out["idle"], 0)
+        self.assertEqual(out["selected"], tx.STATUS_SELECTED | tx.STATUS_PRIMED)
+        self.assertEqual(out["held"], 2)
+        self.assertEqual(out["released"], 0)
+        self.assertEqual(out["held_after"], 0)
+
+    def test_bank_tag(self):
+        """The bitstream's value is the initial banks' tag (the Rust
+        model's, when the vectors carry it); a bank write clears it; a
+        WRITE sets it (HI/WRITE and WRITE_S); another bank write clears it
+        again; empty memories start at 0. The register has no reset."""
+        doc = first_doc()
+        p = doc["params"]
+        tag = tx.bank_tag(p["a"], p["b"], p["span"])
+        self.assertEqual(p.get("bank_tag", tag), tag)
+
+        async def script(h):
+            out = [await h.read(tx.BANK_TAG)]
+            await h.send(h.enc.write(tx.A_BASE + 3 * 32 + 1, [p["a"][3][1]]))
+            out.append(await h.read(tx.BANK_TAG))
+            await h.send(h.enc.write(tx.BANK_TAG, [0xDEADBEEF]))
+            out.append(await h.read(tx.BANK_TAG))
+            await h.send(h.enc.write(tx.BANK_TAG, [0x123]))
+            out.append(await h.read(tx.BANK_TAG))
+            await h.send(h.enc.write(tx.B_BASE + 511 * 32 + 23, [p["b"][511][23]]))
+            out.append(await h.read(tx.BANK_TAG))
+            out.append(h.control.bank_tag.reset_less)
+            return out
+
+        self.assertEqual(run_tx_top(doc, script), [tag, 0, 0xDEADBEEF, 0x123, 0, True])
+
+        async def empty(h):
+            return await h.read(tx.BANK_TAG)
+
+        self.assertEqual(run_tx_top(doc, empty, banks=False), 0)
+
+    def test_64_bit_counters_and_hi(self):
+        """CONSUMED and SAMPLES set just below 2**32 before RUN carry into
+        bit 32 (LO then HI equals the core's 64-bit value); HI is latched
+        by the READ of CONSUMED, FIRST_MISS or SAMPLES and kept over other
+        reads and over the counter's later changes; MISSED does not touch
+        it."""
+        doc = first_doc()
+        p = doc["params"]
+
+        async def script(h):
+            core, ctx = h.core, h.ctx
+            await h.send(h.enc.write(tx.STEP, [p["step"], p["shift"]]))
+            await h.cmd(tx.OP_CTRL, tx.CTRL_START | tx.CTRL_SELECT)
+            await h.tick(2)  # START is over
+            ctx.set(core.consumed, (1 << 32) - 3)
+            ctx.set(core.samples, (1 << 32) - 5)
+            await h.cmd(tx.OP_CTRL, tx.CTRL_RUN | tx.CTRL_SELECT)
+            await h.stream(dict(doc, samples=doc["samples"][:60]))
+            out = {"direct": (ctx.get(core.consumed), ctx.get(core.samples)),
+                   "read": (await h.read64(tx.CONSUMED), await h.read64(tx.SAMPLES))}
+            # no strobes from here on: the counters change only when set
+            ctx.set(core.consumed, 0x1_FFFF_FFFF)
+            lo = await h.read(tx.CONSUMED)
+            ctx.set(core.consumed, 0x2_0000_0000)
+            await h.read(tx.MISSED)
+            await h.read(tx.STATUS)
+            out["latched"] = (lo, await h.read(tx.HI), await h.read(tx.HI))
+            ctx.set(core.first_miss, 0x3_0000_0005)
+            out["first_miss"] = await h.read64(tx.FIRST_MISS)
+            ctx.set(core.samples, 0x4_0000_0007)
+            out["samples"] = await h.read64(tx.SAMPLES)
+            return out
+
+        out = run_tx_top(doc, script)
+        consumed, samples = out["direct"]
+        self.assertGreaterEqual(consumed, 1 << 32)
+        self.assertGreaterEqual(samples, 1 << 32)
+        self.assertEqual(out["read"], out["direct"])
+        self.assertEqual(out["latched"], (0xFFFF_FFFF, 1, 1))
+        self.assertEqual(out["first_miss"], 0x3_0000_0005)
+        self.assertEqual(out["samples"], 0x4_0000_0007)
 
 
 if __name__ == "__main__":

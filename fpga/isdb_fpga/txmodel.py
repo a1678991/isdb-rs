@@ -18,13 +18,18 @@ very first word and the DMA running dry before the end.
 
 Vectors JSON (format 1):
   {"format": 1, "design": {...},
-   "params": {"step", "shift", "phases", "span", "a": [[2S] x P], "b", "id_word"},
+   "params": {"step", "shift", "phases", "span", "a": [[2S] x P], "b", "id_word",
+              "bank_tag" (tx.bank_tag)},
    "gpio": [command words of a full configuration from Encoder(0): STEP,
-            SHIFT, the banks' near halves, CTRL START, CTRL RUN|SELECT],
+            SHIFT, the banks' near halves, CTRL START (CTRL START|SELECT
+            with a prefetch), CTRL RUN|SELECT],
    "words": [u32: (q_word << 16) | i_word, ...],
    "stalls": [[word_index, n], ...]  (sorted; before word i is delivered,
               n requests find no word, and the next request asks for the
               same word; requests after the last word find none),
+   "prefetch": k (0, or 2: the block was selected before RUN and held the
+               first k words when RUN came, so the stalls on them were met
+               before it and are not seen; optional, 0 when absent),
    "samples": [{"n", "frac" (before the update), "q", "line" (2S codes,
                 newest first), "sum_i", "sum_q", "out_i", "out_q",
                 "wrap": 0/1, "code": entered code or null}, ...],
@@ -38,7 +43,8 @@ import random
 import sys
 
 from .tx import (A_BASE, B_BASE, CTRL_RUN, CTRL_SELECT, CTRL_START, FRAC_BITS, OP_ADDR,
-                 OP_CTRL, OP_HI, OP_WRITE, OP_WRITE_S, SI, SQ, STEP, check_bank, id_word)
+                 OP_CTRL, OP_HI, OP_WRITE, OP_WRITE_S, SI, SQ, STEP, bank_tag, check_bank,
+                 id_word)
 
 SHAPER_PHASES = 1024  # the f32 Shaper's rows, whose gain G the bank takes
 
@@ -118,18 +124,21 @@ class Dma:
         return w
 
 
-def run(params, words, stalls, n, restart_at=None):
+def run(params, words, stalls, n, restart_at=None, prefetch=0):
     """The block's output for n samples after START: (samples, counters)
     in the vectors' layout. With `restart_at` = r, the block first makes r
     samples, then gets START (frac, the line, the counters and the rest of
     the current word dropped; the DMA's queue as it is) and the n samples
-    returned are those after it."""
+    returned are those after it. `prefetch` = k: the block held the first
+    k words when it started running, so the stalls before word k were met
+    while it was selected and not running, where they count nothing
+    (`Interpolator::prefetched`)."""
     step, shift = params["step"], params["shift"]
     a, b = params["a"], params["b"]
     phases, span = params["phases"], params["span"]
     pb = phases.bit_length() - 1
     w = 2 * span
-    dma = Dma(words, stalls)
+    dma = Dma(words, [s for s in stalls if s[0] >= prefetch])
     codes, miss = [], False
     for part, count in ((0, restart_at), (1, n)):
         if count is None:
@@ -204,17 +213,19 @@ class Encoder:
             out.append(self.word(OP_WRITE, v & 0xFFFF))
         return out
 
-    def configure_tx(self, params, banks=True):
+    def configure_tx(self, params, banks=True, prefetch=0):
         """`Encoder::configure_tx`'s words: STEP and SHIFT, the banks
         (each row's near half, t < S, which is the whole symmetric bank),
-        CTRL START, CTRL RUN|SELECT."""
+        then the vectors' CTRL words: START, RUN|SELECT, or with a
+        `prefetch` START|SELECT, RUN|SELECT (the host's sequence, PRIMED
+        awaited between them)."""
         out = self.write(STEP, [params["step"], params["shift"]])
         if banks:
             span = params["span"]
             for base, bk in ((A_BASE, params["a"]), (B_BASE, params["b"])):
                 for q, row in enumerate(bk):
                     out += self.write(base + q * 32, row[:span])
-        out.append(self.word(OP_CTRL, CTRL_START))
+        out.append(self.word(OP_CTRL, CTRL_START | (CTRL_SELECT if prefetch else 0)))
         out.append(self.word(OP_CTRL, CTRL_RUN | CTRL_SELECT))
         return out
 
@@ -258,7 +269,8 @@ def vectors(preset="isdbs", n=3000, seed=1, phases=512, span=12, roll_off=0.35, 
     design.update(roll_off=roll_off, span=span, phases=phases, backoff_db=backoff_db,
                   model="fpga/isdb_fpga/txmodel.py")
     params = {"step": step, "shift": s + cfg["shift_delta"], "phases": phases, "span": span,
-              "a": a, "b": b, "id_word": id_word(phases, span)}
+              "a": a, "b": b, "id_word": id_word(phases, span),
+              "bank_tag": bank_tag(a, b, span)}
     check_bank("a", a, phases, span)
     check_bank("b", b, phases, span)
     words = pack(random_codes(rng, 8 * cfg["words"]))
@@ -266,7 +278,7 @@ def vectors(preset="isdbs", n=3000, seed=1, phases=512, span=12, roll_off=0.35, 
     samples, counters = run(params, words, stalls, n)
     return {"format": 1, "design": design, "params": params,
             "gpio": Encoder(0).configure_tx(params), "words": words, "stalls": stalls,
-            "samples": samples, "counters": counters}
+            "prefetch": 0, "samples": samples, "counters": counters}
 
 
 def main(argv):

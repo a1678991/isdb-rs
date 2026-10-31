@@ -74,18 +74,33 @@ symbol counts as it enters the line: a missing word's in MISSED (FIRST_MISS
 latches CONSUMED at the first, and the sticky underrun flag is set), a
 delivered word's in CONSUMED; FIRST_MISS reads 0 before any miss. Counting
 at entry makes the counters a function of the sample count alone,
-independent of the prefetch timing. Requests start ARM clocks after the
-block becomes active, so a response to a request of the pass-through (the
-rfifo reads the upack directly while the block is not selected) is never
-taken for the block's own; the datapath starts when the first word (or
-miss) is in the unpack register. START drops the rest of a word whose
-codes have begun to enter and keeps the words the model has not asked for
-yet (a word none of whose codes has entered, the staging word, requests
-under way): the model's START resets its unpack register and leaves the
-DMA queue as it is.
+independent of the prefetch timing. CONSUMED, FIRST_MISS and SAMPLES are
+64 bits (MISSED 32).
+
+The prefetch. Requests start ARM clocks after the block is selected (not
+when it runs), so a response to a request of the pass-through (the rfifo
+reads the upack directly while the block is not selected) is never taken
+for the block's own. Selected and not running, the block polls: an
+underflow answer is dropped (it stores nothing and counts nothing, only
+PRE_UNF), a word is kept, up to the two words it holds (the unpack
+register and the staging word). So CTRL START|SELECT, the DMA started,
+then CTRL RUN|SELECT starts on words in hand: no lead-in miss. While
+running, an underflow answer is a missing word as before, so a DMA that
+starts after RUN is still counted. PRIMED (STATUS bit 3) = the unpack
+register holds a delivered word. Deselecting drops the held words and the
+requests under way (their answers are ignored), so a new stream never
+plays the last one's words. The datapath starts when the first word (or,
+running, a miss) is in the unpack register and RUN is set. START drops
+the rest of a word whose codes have begun to enter and keeps the words
+the model has not asked for yet (a word none of whose codes has entered,
+the staging word, requests under way): the model's START resets its
+unpack register and leaves the DMA queue as it is. The model sees the
+prefetch as `Interpolator::prefetched(k)`: the stalls on the k words held
+at RUN were met before it and are not seen.
 """
 
 import math
+import struct
 
 from amaranth.hdl import Cat, Const, Elaboratable, Module, Mux, Signal, signed
 from amaranth.lib.memory import Memory
@@ -100,7 +115,8 @@ SUM_BITS = 24
 SHIFT_BITS = 5
 TERM_BITS = COEF_BITS  # v or ~v: ~v of an 18-bit value is an 18-bit value
 CODES_PER_WORD = 8
-ARM = 4  # clocks between becoming active and the first DMA request
+ARM = 4  # clocks between SELECT and the first DMA request
+COUNTER_BITS = 64  # CONSUMED, FIRST_MISS, SAMPLES (MISSED: 32)
 SI = (1, 1, 0, -1, -1, -1, 0, 1)
 SQ = (0, 1, 1, 1, 0, -1, -1, -1)
 # Vivado synthesis attribute: map an adder to fabric, not a DSP48E1.
@@ -144,6 +160,37 @@ def check_bank(name, bank, phases, span):
                 )
 
 
+def _crc32c_table():
+    t = []
+    for i in range(256):
+        c = i
+        for _ in range(8):
+            c = (c >> 1) ^ (0x82F63B78 if c & 1 else 0)
+        t.append(c)
+    return t
+
+
+_CRC32C = _crc32c_table()
+
+
+def crc32c(data):
+    """CRC-32C (CRC-32/ISCSI) of `data` (`isdb_frontend::format::
+    crc32c_bytes`)."""
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc = (crc >> 8) ^ _CRC32C[(crc ^ byte) & 0xFF]
+    return crc ^ 0xFFFFFFFF
+
+
+def bank_tag(a, b, span):
+    """BANK_TAG of banks a and b (`isdb_frontend::control::tx::bank_tag`):
+    the CRC-32C of the coefficients as `Encoder::configure_tx` writes them,
+    bank a then b, row by row, taps 0..S, each a 32-bit little-endian
+    two's-complement value; a CRC of 0 is taken as 1 (0 = unknown)."""
+    data = b"".join(struct.pack(f"<{span}i", *row[:span]) for bk in (a, b) for row in bk)
+    return crc32c(data) or 1
+
+
 class TxRegisters:
     """The run-time parameters (`TxParams`: step and shift) as signals; the
     banks are written through the core's load port."""
@@ -162,8 +209,9 @@ class SymbolTx(Elaboratable):
     Ports:
       start                  one-cycle pulse: reset frac, the line, the
                              unpack register and the counters;
-      run, selected          from the control (the datapath and the DMA
-                             requests are active while both are set);
+      run, selected          from the control (the datapath is active
+                             while both are set; the DMA requests while
+                             selected, keeping only words before RUN);
       req                    one output sample per strobe;
       rd_en                  DMA word request (util_upack2 fifo_rd_en);
       rd_data, rd_valid, rd_underflow
@@ -176,12 +224,20 @@ class SymbolTx(Elaboratable):
                              a, 1 = b; any tap t < 2S, a far tap t >= S is
                              stored as its mirror [P-1-q][2S-1-t]);
       consumed, missed, first_miss, samples, underrun
-                             the counters and the sticky flag;
-      en, frac, line, wrap, code, s_sum_i, s_sum_q
+                             the counters (64 bits but MISSED) and the
+                             sticky flag;
+      primed                 the unpack register holds a delivered word
+                             (STATUS bit 3);
+      pre_unf                underflow answers dropped before RUN since
+                             START (32 bits, wraps);
+      bank_tag               the BANK_TAG of the initial banks (a
+                             constant: 0 without them);
+      en, frac, line, wrap, code, s_sum_i, s_sum_q, held_words, pend
                              verification: the clock enable, sample n's
                              state in D0 (`wrap`, `code`: the carry of its
-                             update and the code that enters), and its
-                             pre-round sums aligned with o_i, o_q.
+                             update and the code that enters), its
+                             pre-round sums aligned with o_i, o_q, the
+                             words held and the requests under way.
     """
 
     def __init__(self, phases, span, a=None, b=None):
@@ -199,6 +255,7 @@ class SymbolTx(Elaboratable):
             check_bank("b", b, phases, span)
         self.a = a
         self.b = b
+        self.bank_tag = bank_tag(a, b, span) if a is not None else 0
         self.regs = TxRegisters()
         self.start = Signal()
         self.run = Signal()
@@ -215,11 +272,15 @@ class SymbolTx(Elaboratable):
         self.c_q = Signal(self.pbits)
         self.c_t = Signal(5)
         self.c_data = Signal(signed(COEF_BITS))
-        self.consumed = Signal(32)
+        self.consumed = Signal(COUNTER_BITS)
         self.missed = Signal(32)
-        self.first_miss = Signal(32)
-        self.samples = Signal(32)
+        self.first_miss = Signal(COUNTER_BITS)
+        self.samples = Signal(COUNTER_BITS)
         self.underrun = Signal()
+        self.primed = Signal()
+        self.pre_unf = Signal(32)
+        self.held_words = Signal(2)
+        self.pend = Signal(2)
         self.en = Signal()
         self.frac = Signal(FRAC_BITS)
         self.line = [Signal(4, name=f"line{t}") for t in range(self.taps)]
@@ -243,26 +304,40 @@ class SymbolTx(Elaboratable):
         stg = Signal(32)
         svalid = Signal()
         smiss = Signal()
-        pend = Signal(2)  # requests sent, response not yet seen
+        pend = self.pend  # requests sent, response not yet seen
         arm = Signal(range(ARM + 1))
-        primed = Signal()
+        started = Signal()  # the datapath has started since START
         held = Signal(3)
         m.d.comb += held.eq((ucnt != 0) + svalid + pend)
         armed = arm == ARM
-        m.d.sync += arm.eq(Mux(active, Mux(armed, arm, arm + 1), 0))
-        m.d.comb += self.rd_en.eq(active & armed & (held < 2))
+        sel = self.selected
+        # requests while selected (the prefetch), ARM clocks after SELECT
+        m.d.sync += arm.eq(Mux(sel, Mux(armed, arm, arm + 1), 0))
+        m.d.comb += self.rd_en.eq(sel & armed & (held < 2))
         resp = Signal()
-        m.d.comb += resp.eq((self.rd_valid | self.rd_underflow) & (pend != 0))
+        drop = Signal()  # an underflow answer before RUN: no word yet
+        keep = Signal()
+        m.d.comb += [
+            resp.eq((self.rd_valid | self.rd_underflow) & (pend != 0) & sel),
+            drop.eq(resp & ~self.rd_valid & ~self.run),
+            keep.eq(resp & ~drop),
+        ]
         rword = Mux(self.rd_valid, self.rd_data, 0)
         rmiss = ~self.rd_valid
         m.d.sync += pend.eq(pend + self.rd_en - resp)
+        with m.If(drop):
+            m.d.sync += self.pre_unf.eq(self.pre_unf + 1)
+        m.d.comb += [
+            self.primed.eq((ucnt != 0) & ~umiss),
+            self.held_words.eq((ucnt != 0) + svalid),
+        ]
 
         ready = Signal()
         m.d.comb += [
-            ready.eq(primed | (ucnt != 0)),
+            ready.eq(started | (ucnt != 0)),
             en.eq(self.req & active & ready & ~self.start),  # START is not a sample
         ]
-        m.d.sync += primed.eq(ready)
+        m.d.sync += started.eq(ready)
 
         # --- D0: phase accumulator, line, counters ------------------------
         nxt = Signal(FRAC_BITS + 1, attrs=NO_DSP)
@@ -276,9 +351,9 @@ class SymbolTx(Elaboratable):
         take = Signal()  # the unpack register is empty after this clock
         m.d.comb += take.eq((ucnt == 0) | (consume & (ucnt == 1)))
 
-        consumed_n = Signal(32, attrs=NO_DSP)
+        consumed_n = Signal(COUNTER_BITS, attrs=NO_DSP)
         missed_n = Signal(32, attrs=NO_DSP)
-        samples_n = Signal(32, attrs=NO_DSP)
+        samples_n = Signal(COUNTER_BITS, attrs=NO_DSP)
         m.d.comb += [
             consumed_n.eq(self.consumed + 1),
             missed_n.eq(self.missed + 1),
@@ -307,9 +382,9 @@ class SymbolTx(Elaboratable):
         with m.If(take):
             with m.If(svalid):
                 m.d.sync += [ureg.eq(stg), ucnt.eq(CODES_PER_WORD), umiss.eq(smiss), svalid.eq(0)]
-            with m.Elif(resp):
+            with m.Elif(keep):
                 m.d.sync += [ureg.eq(rword), ucnt.eq(CODES_PER_WORD), umiss.eq(rmiss)]
-        with m.If(resp & ~(take & ~svalid)):
+        with m.If(keep & ~(take & ~svalid)):
             m.d.sync += [stg.eq(rword), smiss.eq(rmiss), svalid.eq(1)]
 
         # D0 -> D1: sample n's phase row and codes
@@ -448,6 +523,11 @@ class SymbolTx(Elaboratable):
         with m.If(~active):
             m.d.sync += [o.eq(0) for o in outs]
 
+        # Not selected: no word held, no request under way (the answers of
+        # those sent are ignored), so a new stream starts on its own words.
+        with m.If(~sel):
+            m.d.sync += [ucnt.eq(0), umiss.eq(0), svalid.eq(0), pend.eq(0), started.eq(0)]
+
         # START resets the state (last: it overrides the updates above). It
         # drops the rest of a word whose codes have begun to enter (the
         # model's unpack register) and keeps the DMA words that, for the
@@ -456,10 +536,10 @@ class SymbolTx(Elaboratable):
         # way.
         with m.If(self.start):
             m.d.sync += [
-                self.frac.eq(0), primed.eq(0),
+                self.frac.eq(0), started.eq(0),
                 self.consumed.eq(0), self.missed.eq(0), self.first_miss.eq(0),
                 self.samples.eq(0), self.underrun.eq(0), missed_any.eq(0),
-                vld.eq(0),
+                vld.eq(0), self.pre_unf.eq(0),
             ]
             m.d.sync += [ln.eq(0) for ln in self.line]
             with m.If((ucnt != 0) & (ucnt != CODES_PER_WORD)):
@@ -477,11 +557,21 @@ CONSUMED = 0x03
 MISSED = 0x04
 FIRST_MISS = 0x05
 SAMPLES = 0x06
+FEATURES = 0x07
+BANK_TAG = 0x08
+HI = 0x09
+PRE_UNF = 0x0A
 A_BASE = 0x4000
 B_BASE = 0x8000
 
 OP_NOP, OP_ADDR, OP_HI, OP_WRITE, OP_READ, OP_CTRL, OP_WRITE_S = range(7)
 CTRL_RUN, CTRL_START, CTRL_SELECT = 1, 2, 4
+STATUS_RUN, STATUS_SELECTED, STATUS_UNDERRUN, STATUS_PRIMED = 1, 2, 4, 8
+# FEATURES bits (an image before them reads 0 at 0x07)
+FEAT_PREFETCH = 1  # prefetch while selected, STATUS PRIMED, PRE_UNF
+FEAT_BANK_TAG = 2  # BANK_TAG
+FEAT_COUNTERS64 = 4  # 64-bit CONSUMED, FIRST_MISS, SAMPLES and HI
+FEATURES_VALUE = FEAT_PREFETCH | FEAT_BANK_TAG | FEAT_COUNTERS64
 
 
 class TxControl(Elaboratable):
@@ -499,18 +589,26 @@ class TxControl(Elaboratable):
     0x8000 + q*32 + t (t < 2S, by WRITE_S or HI/WRITE); a far tap
     (t >= S) writes its mirror, so writing either half, or both, loads the
     bank. STEP keeps 24 bits, SHIFT 5. STATUS: bit 0 run, 1 selected, 2
-    underrun (sticky until START). CONSUMED, MISSED, FIRST_MISS, SAMPLES:
-    the core's counters (read only). CTRL: bit 0 RUN, bit 1 START (one
-    pulse), bit 2 SELECT (the block drives the rfifo and owns the upack's
-    read).
+    underrun (sticky until START), 3 primed (a delivered word held).
+    CONSUMED, MISSED, FIRST_MISS, SAMPLES: the core's counters (read only;
+    a READ of CONSUMED, FIRST_MISS or SAMPLES shows the low 32 bits and
+    latches the high 32 in HI, so LO then HI is one snapshot). FEATURES
+    (read only): FEATURES_VALUE. BANK_TAG: the bitstream's initial value is
+    the tag of the initial banks (`bank_tag`), any bank write sets it to 0,
+    a WRITE sets it (the host, after a complete load), READ returns it; it
+    has no reset (the memories have none either). PRE_UNF (read only): the
+    underflow answers dropped before RUN since START. An unknown address
+    reads 0 (so an image before FEATURES reads 0 there). CTRL: bit 0 RUN,
+    bit 1 START (one pulse), bit 2 SELECT (the block drives the rfifo and
+    owns the upack's read).
 
     A start without lead-in misses: STEP, SHIFT (and banks other than the
-    default), CTRL START|SELECT (the block owns the DMA, requests nothing
-    and sends zeros), then the TX DMA started (its first buffers pushed),
-    then CTRL RUN|SELECT: the first request finds a word. With RUN at once
-    the block requests from the start and counts the words the DMA does
-    not have yet as missed (FIRST_MISS 0). Stop: CTRL 0 (transparent
-    again).
+    ones BANK_TAG names), CTRL START|SELECT (the block owns the DMA and
+    sends zeros; it polls the DMA and holds up to two words), then the TX
+    DMA started (its first buffers pushed), STATUS PRIMED, then CTRL
+    RUN|SELECT: the datapath starts on words in hand. With RUN at once the
+    block counts the words the DMA does not have yet as missed (FIRST_MISS
+    0). Stop: CTRL 0 (transparent again; the held words are dropped).
     """
 
     def __init__(self, core):
@@ -519,6 +617,9 @@ class TxControl(Elaboratable):
         self.gpio_in = Signal(32)
         self.run = Signal()
         self.selected = Signal()
+        # no reset: like the memories, only the bitstream sets it
+        self.bank_tag = Signal(32, init=core.bank_tag, reset_less=True)
+        self.hi = Signal(32)
 
     def elaborate(self, platform):
         m = Module()
@@ -571,7 +672,11 @@ class TxControl(Elaboratable):
                         with m.If(addr == a):
                             sig = regs[name]
                             m.d.sync += sig.eq(value[: len(sig)])
+                    with m.If(addr == BANK_TAG):
+                        m.d.sync += self.bank_tag.eq(value)
                     m.d.comb += core.c_we.eq(bank_addr)
+                    with m.If(bank_addr):  # the banks no longer what the tag names
+                        m.d.sync += self.bank_tag.eq(0)
                 with m.Case(OP_READ):
                     m.d.sync += show_read.eq(1)
                     with m.Switch(addr):
@@ -579,15 +684,22 @@ class TxControl(Elaboratable):
                             with m.Case(a):
                                 m.d.sync += readback.eq(regs[name])
                         with m.Case(STATUS):
-                            m.d.sync += readback.eq(Cat(self.run, self.selected, core.underrun))
-                        with m.Case(CONSUMED):
-                            m.d.sync += readback.eq(core.consumed)
+                            m.d.sync += readback.eq(
+                                Cat(self.run, self.selected, core.underrun, core.primed))
+                        for a, c in ((CONSUMED, core.consumed), (FIRST_MISS, core.first_miss),
+                                     (SAMPLES, core.samples)):
+                            with m.Case(a):  # low half shown, high half latched
+                                m.d.sync += [readback.eq(c[:32]), self.hi.eq(c[32:])]
                         with m.Case(MISSED):
                             m.d.sync += readback.eq(core.missed)
-                        with m.Case(FIRST_MISS):
-                            m.d.sync += readback.eq(core.first_miss)
-                        with m.Case(SAMPLES):
-                            m.d.sync += readback.eq(core.samples)
+                        with m.Case(FEATURES):
+                            m.d.sync += readback.eq(FEATURES_VALUE)
+                        with m.Case(BANK_TAG):
+                            m.d.sync += readback.eq(self.bank_tag)
+                        with m.Case(HI):
+                            m.d.sync += readback.eq(self.hi)
+                        with m.Case(PRE_UNF):
+                            m.d.sync += readback.eq(core.pre_unf)
                         with m.Default():
                             m.d.sync += readback.eq(0)
                 with m.Case(OP_CTRL):
