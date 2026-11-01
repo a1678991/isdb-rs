@@ -257,6 +257,7 @@ pub mod frame;
 pub mod fx;
 pub mod input;
 pub mod ldpc;
+pub mod out;
 pub mod phase;
 pub mod sync;
 pub mod synth;

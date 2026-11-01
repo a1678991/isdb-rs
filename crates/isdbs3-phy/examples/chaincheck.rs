@@ -20,7 +20,14 @@
 //! signal (the reference runs on every core and is timed by wall clock).
 //! With `MAX_SECONDS` only the start of the file.
 //!
-//! cargo run --release -p isdbs3-phy --example chaincheck -- WORDS_FILE [MAX_SECONDS [LAYOUT_LAG [REPORT]]]
+//! The chain's slots are compared as they arrive through the `Slots`
+//! format: each frame's blocks (`chain::out::blocks`) are written with
+//! `isdb_frontend::slots::Writer`, read back with its `Reader`, and the
+//! slot bytes compared are the read-back ones (the in-memory ones are
+//! checked equal to them); with `SLOTS_OUT` the words are also written
+//! to that file (little-endian, as a radio would send them).
+//!
+//! cargo run --release -p isdbs3-phy --example chaincheck -- WORDS_FILE [MAX_SECONDS [LAYOUT_LAG [REPORT [SLOTS_OUT]]]]
 
 use isdbs3_core::params::{FRAME_SYMBOLS, SYMBOL_RATE};
 use isdbs3_phy::Cplx;
@@ -103,6 +110,12 @@ fn main() {
         .get(3)
         .map_or(isdbs3_phy::chain::LAYOUT_LAG, |s| s.parse().unwrap());
     let report: f64 = a.get(4).map_or(5.0, |s| s.parse().unwrap());
+    let mut slots_out = a
+        .get(5)
+        .map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("create SLOTS_OUT")));
+    let mut sw = isdb_frontend::slots::Writer::new();
+    let mut sr = isdb_frontend::slots::Reader::new();
+    let (mut slots_words, mut slots_blocks, mut slots_losses) = (0u64, 0u64, 0u64);
     let f = std::fs::File::open(&a[1]).expect("open words");
     // the LDPC through a wrapper that times it, so the model's own cost
     // (stages 1–6 and 8, one thread) is the push time minus the LDPC's
@@ -171,15 +184,52 @@ fn main() {
                     if fr.tmcc.bch_corrected.is_none() {
                         tmcc_failed += 1;
                     }
+                    // through the Slots words and back
+                    let mut words = Vec::new();
+                    for b in isdbs3_phy::chain::out::blocks(&fr, lag) {
+                        sw.write(&b, &mut words);
+                    }
+                    slots_words += words.len() as u64;
+                    if let Some(w) = slots_out.as_mut() {
+                        use std::io::Write;
+                        let bytes: Vec<u8> = words.iter().flat_map(|x| x.to_le_bytes()).collect();
+                        w.write_all(&bytes).expect("write SLOTS_OUT");
+                    }
+                    let mut ev = Vec::new();
+                    sr.feed(&words, &mut ev);
+                    let mut back: BTreeMap<u8, Option<Vec<u8>>> = BTreeMap::new();
+                    for e in ev {
+                        match e {
+                            isdb_frontend::slots::Event::Block {
+                                block: isdb_frontend::slots::Block::Slot(b),
+                                ..
+                            } => {
+                                slots_blocks += 1;
+                                if let Some((s, _, d)) = isdbs3_phy::chain::out::slot_data(&b) {
+                                    back.insert(s, d);
+                                }
+                            }
+                            isdb_frontend::slots::Event::Block { .. } => slots_blocks += 1,
+                            _ => slots_losses += 1,
+                        }
+                    }
                     let slots = (!fr.slots.is_empty()).then(|| {
                         fr.slots
                             .iter()
                             .filter(|s| !s.dummy)
                             .map(|s| {
+                                let d = back.remove(&s.slot).flatten();
+                                assert_eq!(
+                                    d.as_ref(),
+                                    s.bch_corrected.map(|_| &s.data),
+                                    "Slots round trip of frame {} slot {}",
+                                    fr.frame,
+                                    s.slot
+                                );
                                 (
                                     s.slot,
                                     (
-                                        s.bch_corrected.map(|_| s.data.clone()),
+                                        d,
                                         s.converged.then_some(s.ldpc_iterations),
                                         s.bch_corrected.is_some(),
                                     ),
@@ -300,6 +350,10 @@ fn main() {
         "chain: LDPC failed {c_ldpc}, BCH failed {c_bch}, mean {:.3} iterations; reference: LDPC failed {r_ldpc}, BCH failed {r_bch}, mean {:.3} iterations",
         c_it as f64 / c_n.max(1) as f64,
         r_it as f64 / r_n.max(1) as f64
+    );
+    println!(
+        "Slots: {slots_blocks} blocks, {slots_words} words ({:.2} MB/s of signal), losses {slots_losses}; slot bytes compared after the round trip",
+        slots_words as f64 * 2.0 / secs / 1e6
     );
     println!(
         "carrier: chain register at the end {:+.1} Hz; reference tracked {:+.1} … {:+.1} Hz",
