@@ -13,7 +13,7 @@
 # directory); every task is self-contained, so the order does not matter.
 [tools]
 node = "24"
-pnpm = "12.10.0"
+pnpm = "12.16.1"
 lefthook = "2.2.2"
 actionlint = "1.7.12"
 shellcheck = "0.11.0"  # used by actionlint for run: scripts
