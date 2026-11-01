@@ -115,6 +115,35 @@ Results (format 4, 2026-10-26):
   (`apply.sh`), which reception does not use: 66 + 112 = 178 of 220
   (158 with the transmit block in the TX FIR's place, below).
 
+## Chain vectors
+
+The ISDB-S3 chain after the front end (docs/plans/isdbs3-fpga-rx.md,
+stages 1–6 and 8; not built in HDL yet) has its model in
+`isdbs3_phy::chain`, whose module documentation is the specification
+(every word width, rounding, threshold and lag rule), and its vectors
+from `cargo run --release -p isdbs3-phy --example chainvectors --
+fpga/build` (part of `mise run fpga:vectors`): one JSON file per stage,
+`chain-1-sync` (NCO, slot sync, carrier loop: the input symbols, the
+NCO output of every symbol, the correlations and accumulator of the
+first 30 000 positions, every period's statistics, every head record,
+every carrier update), `chain-2-phase` (slot phase and amplitude: two
+slots between three heads, φ, gain and y per symbol), `chain-3-eq`
+(the FIR's input and output over a frame with non-identity taps, the
+training references, the 48-bit sums and the host's taps for them),
+`chain-4-tmcc` (the TMCC symbols, soft bits, word positions, the decoded
+bits and the layout), `chain-5-demap` (points, scale, symbols, LLRs in
+label and codeword order, the permutation, the learned points and n0
+for the next frame) and `chain-6-chain` (the whole chain's input symbols
+and the expected `Slots` words, `isdb_frontend::slots`). Complex
+sequences are flat `[re, im, …]` arrays; each file carries the chain's
+constants (`"chain"`: shifts, gains, thresholds, the CORDIC table, the
+sync words, the pilot signs, the cosine table) and its `"source"`. The
+synthetic sets are 5 B44 frames (16APSK 93/120, −400 Hz drifting
+−22 Hz/s, Es/N0 14 dB, 6-bit input); with a `Symbols` file as second
+argument (and seconds as third, default 0.2) the same sets come from a
+recording as `chain-rec-*.json` (opt-in, as the front end's). The
+example's documentation gives every field. Sizes: 1–33 MB per file.
+
 ## The transmit block (`SymbolsTx`)
 
 The last stage of the ISDB-S transmitter (plan

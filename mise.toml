@@ -167,7 +167,7 @@ run = "cargo clippy --manifest-path oracle/rust_tx3/Cargo.toml --target-dir targ
 # run; set here so CI and machines without that uv.toml setting match.
 
 [tasks."fpga:vectors"]
-description = "write the FPGA test vectors from the Rust models (receive front end, transmit interpolator, LDPC decoder) into fpga/build"
+description = "write the FPGA test vectors from the Rust models (receive front end, transmit interpolator, LDPC decoder, the ISDB-S3 chain after the front end) into fpga/build"
 run = [
   "mkdir -p fpga/build",
   "cargo run -q --release --locked -p isdb-frontend --example vectors -- fpga/build/vec-1-s-t16.json - s 16 3000 5 8",
@@ -179,6 +179,8 @@ run = [
   # the LDPC decoder's sets and the address tables (ldpc-*.json); with
   # ISDB_RS_ISDBS3_TLV_IQ set, also the two from its first recording
   "cargo run -q --release --locked -p isdbs3-phy --example ldpcvectors -- fpga/build",
+  # the chain's stage and whole-chain sets (chain-*.json)
+  "cargo run -q --release --locked -p isdbs3-phy --example chainvectors -- fpga/build",
 ]
 
 [tasks."fpga:tx-vectors"]
