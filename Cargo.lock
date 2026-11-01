@@ -426,6 +426,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "isdb-remux"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "isdb-caption",
+ "isdb-mkv",
+ "isdb-mmt",
+ "isdb-tlv",
+ "isdb-ts",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "isdb-si"
 version = "0.1.0"
 dependencies = [

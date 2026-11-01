@@ -1,0 +1,32 @@
+[package]
+name = "isdb-remux"
+description = "Timed MPEG-TS and Matroska from a clear ISDB-S3 TLV stream: every track of a service with the MPT's clock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/isdb-remux"
+readme = "README.md"
+keywords = ["isdb", "mmt", "mpeg-ts", "matroska", "remux"]
+categories = ["multimedia", "command-line-utilities"]
+include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
+
+[[bin]]
+name = "isdb-remux"
+path = "src/main.rs"
+
+[dependencies]
+isdb-tlv.workspace = true
+isdb-mmt.workspace = true
+isdb-ts.workspace = true
+isdb-caption.workspace = true
+isdb-mkv.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

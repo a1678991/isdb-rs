@@ -15,6 +15,7 @@ isdb-ts = { version = "0.1.0", path = "crates/isdb-ts" }
 isdb-text = { version = "0.1.0", path = "crates/isdb-text" }
 isdb-caption = { version = "0.1.0", path = "crates/isdb-caption" }
 isdb-mkv = { version = "0.1.0", path = "crates/isdb-mkv" }
+isdb-remux = { version = "0.1.0", path = "crates/isdb-remux" }
 isdb-si = { version = "0.1.0", path = "crates/isdb-si" }
 isdbt-core = { version = "0.1.0", path = "crates/isdbt-core" }
 isdb-fec = { version = "0.1.0", path = "crates/isdb-fec" }
