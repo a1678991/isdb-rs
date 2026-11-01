@@ -145,6 +145,9 @@ run = "cargo clippy --manifest-path oracle/rust_tx3/Cargo.toml --target-dir targ
 # uv tasks resolve against PyPI, which fpga/uv.lock records, unless
 # UV_DEFAULT_INDEX is set (a user-level default index would otherwise make
 # `uv run --locked` ask for a relock); fpga/tezuka/*.sh do the same.
+# UV_EXCLUDE_NEWER: fpga/uv.lock was resolved with a 7-day release cooldown
+# (exclude-newer-span = "P7D"), which uv then requires of every `--locked`
+# run; set here so CI and machines without that uv.toml setting match.
 
 [tasks."fpga:vectors"]
 description = "write the FPGA test vectors from the Rust models (receive front end, transmit interpolator) into fpga/build"
@@ -161,7 +164,7 @@ run = [
 [tasks."fpga:tx-vectors"]
 description = "write the transmit block's second vector sets, from its Python model (fpga/isdb_fpga/txmodel.py), into fpga/build"
 dir = "fpga"
-env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}" }
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
 run = [
   "uv run --locked python -m isdb_fpga.txmodel build/txvec-py-1-isdbs.json --preset isdbs",
   "uv run --locked python -m isdb_fpga.txmodel build/txvec-py-2-stress.json --preset stress",
@@ -171,33 +174,33 @@ run = [
 description = "simulate the FPGA front end and transmit block against their models, bit for bit"
 depends = ["fpga:vectors", "fpga:tx-vectors"]
 dir = "fpga"
-env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}" }
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
 run = "uv run --locked python -m unittest discover -s tests -v"
 
 [tasks."fpga:verilog"]
 description = "Verilog of the 32-tap front end block for a vendor flow (fpga/build/isdb_symbols_rx.v)"
 depends = ["fpga:vectors"]
 dir = "fpga"
-env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}" }
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
 run = "uv run --locked python synth/verilog.py build/vec-2-s3-t32.json 32 build/isdb_symbols_rx.v"
 
 [tasks."fpga:tx-verilog"]
 description = "Verilog of the transmit block, the Rust model's default bank (ISDB-S, 40 Msps, 10 dB) as BRAM init (fpga/build/isdb_symbols_tx.v)"
 depends = ["fpga:vectors"]
 dir = "fpga"
-env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}" }
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
 run = "uv run --locked python synth/verilog.py build/tx-1-continuous.json build/isdb_symbols_tx.v"
 
 [tasks."fpga:tx-estimate"]
 description = "Yosys synth_xilinx resource estimate of the transmit block"
 depends = ["fpga:vectors"]
 dir = "fpga"
-env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}" }
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
 run = "uv run --locked python synth/estimate.py build/tx-1-continuous.json"
 
 [tasks."fpga:estimate"]
 description = "Yosys synth_xilinx resource estimate of the 32-tap front end"
 depends = ["fpga:vectors"]
 dir = "fpga"
-env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}" }
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
 run = "uv run --locked python synth/estimate.py build/vec-2-s3-t32.json 32"
