@@ -20,14 +20,17 @@
 //! | 2 | HI | staged high half ← argument bits 15–0 (kept until changed) |
 //! | 3 | WRITE | register\[address\] ← staged << 16 \| argument bits 15–0; address += 1 |
 //! | 4 | READ | `gpio_in` ← register\[address\] (until the next command) |
-//! | 5 | CTRL | argument bit 0: run; bit 1: start (reset the state, one pulse); bit 2: symbols to the DMA instead of IQ |
+//! | 5 | CTRL | argument bit 0: run; bit 1: start (reset the state, one pulse); bit 2: symbols to the DMA instead of IQ; bit 3 (with bit 2): the ISDB-S3 chain's `Slots` instead of the symbols ([`chain`], placeholder) |
 //! | 6 | WRITE_S | register\[address\] ← the argument sign-extended from 27 bits; address += 1 |
 //!
 //! **ID word** (`gpio_in` after any command but READ, and after reset):
 //! bits 31–16 [`ID_MAGIC`], bits 15–12 the format version, bits 7–0 the
 //! taps per phase. A bitstream without the front end reads 0 there
 //! (Tezuka v0.3.24 leaves the input unconnected), so discovery is one
-//! register read and changes nothing.
+//! register read and changes nothing. Bits 11–8 are 0 on every front end
+//! so far; an image with the ISDB-S3 receive chain after the front end
+//! puts the chain's `Slots` format version there ([`chain`], a
+//! placeholder until the chain's HDL is final).
 
 use crate::params::{FORMAT_VERSION, MIN_ARITH_VERSION, PHASES, Params};
 use crate::shape::fixed::TxParams;
@@ -114,7 +117,13 @@ pub mod ctrl {
     pub const START: u32 = 2;
     /// Send symbols to the DMA instead of IQ samples.
     pub const SYMBOLS: u32 = 4;
+    /// With [`SYMBOLS`]: send the ISDB-S3 receive chain's `Slots` words
+    /// instead of the symbols (an image whose ID word announces the chain,
+    /// [`super::chain`]). **Placeholder** until the chain's HDL is final.
+    pub const SLOTS: u32 = 8;
 }
+
+pub mod chain;
 
 /// The front end a bitstream reports in its ID word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

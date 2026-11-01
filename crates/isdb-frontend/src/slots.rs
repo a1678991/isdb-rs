@@ -625,12 +625,34 @@ pub struct Reader {
     pos: usize,
     expect_seq: Option<u32>,
     skipped: u64,
+    odd_byte: Option<u8>,
 }
 
 impl Reader {
     /// A reader at the start of a stream.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Feed bytes (16-bit little-endian words, as a radio's DMA or a words
+    /// file holds them); an odd byte at the end waits for the next call.
+    pub fn feed_bytes(&mut self, bytes: &[u8], out: &mut Vec<Event>) {
+        let mut b = bytes;
+        let mut words = Vec::with_capacity(b.len() / 2 + 1);
+        if let Some(lo) = self.odd_byte.take() {
+            if let Some((&hi, rest)) = b.split_first() {
+                words.push(u16::from_le_bytes([lo, hi]));
+                b = rest;
+            } else {
+                self.odd_byte = Some(lo);
+            }
+        }
+        let (pairs, rest) = b.as_chunks::<2>();
+        words.extend(pairs.iter().map(|&p| u16::from_le_bytes(p)));
+        if let [last] = rest {
+            self.odd_byte = Some(*last);
+        }
+        self.feed(&words, out);
     }
 
     /// Feed words.
@@ -703,7 +725,10 @@ impl Reader {
 
     /// End of the stream: what is left is not a whole block.
     pub fn finish(&mut self, out: &mut Vec<Event>) {
-        let left = (self.buf.len() - self.pos) as u64 + self.skipped;
+        // an odd byte left over counts as a word's worth of tail
+        let left =
+            (self.buf.len() - self.pos) as u64 + self.skipped + u64::from(self.odd_byte.is_some());
+        self.odd_byte = None;
         if left > 0 {
             out.push(Event::Truncated { words: left });
         }
@@ -856,8 +881,16 @@ mod tests {
             }
             let mut r = Reader::new();
             let mut ev = Vec::new();
-            for c in words.chunks(split) {
-                r.feed(c, &mut ev);
+            if split % 2 == 0 {
+                for c in words.chunks(split) {
+                    r.feed(c, &mut ev);
+                }
+            } else {
+                // as bytes, cut anywhere (odd sizes too)
+                let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+                for c in bytes.chunks(split) {
+                    r.feed_bytes(c, &mut ev);
+                }
             }
             r.finish(&mut ev);
             let got: Vec<&Block> = ev.iter().filter_map(|e| match e {
