@@ -340,6 +340,7 @@ variable with edges e₁ … e_m in a step: sat(t₁ + r₁,new + Σᵢ₌₂
   iteration, `trace_hex`, to locate a mismatch), `ldpc-9-93-iter0`
   (`max_iter` 0); with `ISDB_RS_ISDBS3_TLV_IQ` set, also
   `ldpc-10-93-rec-layered68` and `ldpc-11-tmcc-rec-layered68` (real
+| `ldpc-12-93-layered17`, `ldpc-13-tmcc-layered17` | 93/120 and the TMCC code, layered step 17 (374 = 2 · 11 · 17), limit 12, with traces: small steps for the Python simulation |
   demapped codewords of its first recording). 4 to 8 codewords per file,
   0.5–1.3 MB each.
 

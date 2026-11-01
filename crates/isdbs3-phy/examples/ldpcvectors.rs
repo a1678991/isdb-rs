@@ -26,6 +26,8 @@
 //! | `ldpc-9-93-iter0-layered68.json` | 93/120 | layered, step 68 | 0 | 4 |
 //! | `ldpc-10-93-rec-layered68.json` | 93/120, real codewords | layered, step 68 | 12 | 8 (opt-in) |
 //! | `ldpc-11-tmcc-rec-layered68.json` | TMCC, real codewords | layered, step 68 | 12 | 4 (opt-in): 2 as received, 2 with 3 % of the values made weak and wrong |
+//! | `ldpc-12-93-layered17.json` | 93/120 | layered, step 17 | 12 | 4, with `trace_hex` (a small step for the HDL simulation) |
+//! | `ldpc-13-tmcc-layered17.json` | 61/120 shortened (TMCC) | layered, step 17 | 12 | 4, with `trace_hex` |
 //!
 //! The synthetic codewords are `Code::encode` of random information (a
 //! fixed seed per set) sent as BPSK through Gaussian noise at a given
@@ -512,6 +514,26 @@ fn main() {
                 v.extend(synthetic(r93, &[3.0, 1.5], 9_009));
                 v
             },
+        },
+        // Small steps for the HDL's Python simulation (its step count is
+        // 374 / step per layer; 17 divides 374 = 2 · 11 · 17), with traces.
+        Set {
+            name: "ldpc-12-93-layered17",
+            rate: r93,
+            shortened: false,
+            schedule: layered(17),
+            max_iter: 12,
+            trace: true,
+            llrs: synthetic(r93, &[3.0, 2.2, 1.8, 0.5], 12_012),
+        },
+        Set {
+            name: "ldpc-13-tmcc-layered17",
+            rate: CodeRate::TMCC,
+            shortened: true,
+            schedule: layered(17),
+            max_iter: 12,
+            trace: true,
+            llrs: tmcc_words(&[2.0, -1.0, -2.0, -4.0], 13_013),
         },
     ];
     if let Some(rec) = rec {
