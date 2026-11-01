@@ -3,7 +3,12 @@
 # MSRV) and the FPGA simulation. Every Rust/FPGA step calls a mise task, so
 # `mise run check` locally runs the same commands. Toolchains come from rust-toolchain.toml
 # (dev) and `rust-version` in Cargo.toml (MSRV); harness tools (cargo-deny,
-# cargo-hack, uv) from mise.toml, locked in mise.lock.
+# cargo-hack, uv, sccache) from mise.toml, locked in mise.lock.
+#
+# Caches: Swatinem/rust-cache (dependencies in target/) everywhere, plus
+# sccache (.github/actions/sccache: the workspace crates) in the jobs that
+# compile and link (test, feature combinations, FPGA). Both are saved from
+# main only and restored on PRs.
 #
 # Required check: `CI OK` (the `ci-ok` job) is the only status the main
 # branch ruleset requires. It passes when every job it needs passed or was
@@ -184,16 +189,23 @@ jobs:
         run: rustup toolchain install
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          install_args: github:taiki-e/cargo-hack
+          install_args: github:taiki-e/cargo-hack sccache
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/sccache
+        with:
+          key: features
+          save: ${{ github.ref == 'refs/heads/main' }}
       - name: clippy, every feature combination (-D warnings)
         run: mise run features-clippy
       - name: test without default features, and per non-backend feature
         run: mise run features-test
+      - name: sccache statistics
+        if: always()
+        run: '"$RUSTC_WRAPPER" --show-stats'
 
   test:
     name: test
@@ -211,16 +223,24 @@ jobs:
         run: rustup toolchain install
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          install: false
-          cache: false
+          install_args: sccache
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/sccache
+        with:
+          key: test
+          save: ${{ github.ref == 'refs/heads/main' }}
       # [profile.test] is opt-level 2, the PHY crates opt-level 3;
       # #[ignore]d stress/throughput tests are not run in CI. The one
       # wall-clock-paced end-to-end test is its own test binary
       # (crates/isdb-cli/tests/live_feed.rs), so nothing else runs beside it.
       - run: mise run test
+      - name: sccache statistics
+        if: always()
+        run: '"$RUSTC_WRAPPER" --show-stats'
 
   doc:
     name: rustdoc
@@ -312,7 +332,7 @@ jobs:
         run: rustup toolchain install
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          install_args: uv
+          install_args: uv sccache
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -320,10 +340,17 @@ jobs:
           workspaces: ". -> target"
           key: fpga
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/sccache
+        with:
+          key: fpga
+          save: ${{ github.ref == 'refs/heads/main' }}
       # Writes the vectors from the Rust models (release examples) and the
       # Python model, then simulates both FPGA blocks against them, bit for
       # bit (deterministic: fixed seeds, no wall clock).
       - run: mise run fpga:test
+      - name: sccache statistics
+        if: always()
+        run: '"$RUSTC_WRAPPER" --show-stats'
 
   ci-ok:
     name: CI OK

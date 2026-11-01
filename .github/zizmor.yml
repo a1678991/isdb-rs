@@ -1,0 +1,7 @@
+# zizmor configuration (https://docs.zizmor.sh/configuration/).
+rules:
+  # `uses: ./.github/actions/...` instead of GitHub's newer `$/...` syntax:
+  # actionlint (1.7.12) does not accept `$/` yet, and the checkout is the
+  # workflow's own commit either way.
+  self-repository:
+    disable: true

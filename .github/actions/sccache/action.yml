@@ -1,0 +1,64 @@
+# sccache as the rustc wrapper, its cache a local directory saved and
+# restored as one Actions cache entry per job.
+#
+# Why not sccache's own `gha` backend: it makes one Actions cache API call
+# per crate, which GitHub rate-limits; a throttled backend stalls or fails
+# compiles. Here sccache only reads and writes a local disk cache; the
+# directory travels as one entry, and a missing or stale entry just means a
+# cold build.
+#
+# What it adds over Swatinem/rust-cache (which restores dependencies): the
+# workspace's own library crates, which rust-cache leaves out. sccache does
+# not cache bins, test harnesses, proc-macros, build scripts or check-only
+# (clippy, rustdoc, MSRV `cargo check`) builds, so only jobs that compile
+# and link use this. Measured on 4 CPUs: `cargo test --workspace --no-run`
+# with dependencies prebuilt, 133 s without, 105 s with a warm cache.
+#
+# Prerequisites: mise-action has installed `sccache` (mise.toml). The job
+# ends with `"$RUSTC_WRAPPER" --show-stats` to log hits and misses.
+# CARGO_INCREMENTAL=0 is set workflow-wide (sccache cannot cache
+# incremental builds).
+name: sccache
+description: rustc through sccache, its disk cache restored and saved with actions/cache
+inputs:
+  key:
+    description: cache key prefix (one per job and toolchain/profile combination)
+    required: true
+  save:
+    description: save the cache after the job ("true" on main only, so PRs do not evict main's entries)
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Configure sccache
+      shell: bash
+      env:
+        KEY: ${{ inputs.key }}
+      run: |
+        {
+          echo "SCCACHE_DIR=$RUNNER_TEMP/sccache"
+          echo "SCCACHE_CACHE_SIZE=1G"
+          echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+          echo "RUSTC_WRAPPER=$(mise which sccache)"
+          echo "SCCACHE_KEY=sccache-v1-$KEY-$(rustc -V | cut -d' ' -f2)"
+        } >> "$GITHUB_ENV"
+    # Restore-only on PRs; on main, actions/cache saves at the end of the job
+    # (its post step). The run id makes each save a new entry; restore picks
+    # the newest by prefix.
+    - name: Restore the sccache cache
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.SCCACHE_DIR }}
+        key: ${{ env.SCCACHE_KEY }}-${{ github.run_id }}
+        restore-keys: ${{ env.SCCACHE_KEY }}-
+    - name: Restore and save the sccache cache
+      if: inputs.save == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.SCCACHE_DIR }}
+        key: ${{ env.SCCACHE_KEY }}-${{ github.run_id }}
+        restore-keys: ${{ env.SCCACHE_KEY }}-
+    - name: Start the sccache server
+      shell: bash
+      run: '"$RUSTC_WRAPPER" --start-server'
