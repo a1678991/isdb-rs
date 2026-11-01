@@ -264,6 +264,12 @@ impl Back {
         }
     }
 
+    /// Put taps written by the host in use now (not solved from a frame:
+    /// `taps_from` stays `None`).
+    pub fn set_taps(&mut self, taps: [[i16; 2]; TAPS]) {
+        self.eq.taps = taps;
+    }
+
     /// Record the stage boundaries' values of every frame
     /// ([`FrameOut::trace`]).
     pub fn set_trace(&mut self, on: bool) {

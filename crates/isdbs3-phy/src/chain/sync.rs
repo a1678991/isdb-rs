@@ -92,6 +92,9 @@ pub struct SyncStats {
 pub enum SyncEvent {
     /// A slot head (in order).
     Head(Head),
+    /// A period ended (its statistics as [`SlotSync::stats`] has them
+    /// after the lock rule was applied).
+    Period(SyncStats),
     /// The slot or frame sync was lost: the chain restarts.
     Lost,
 }
@@ -311,6 +314,7 @@ impl SlotSync {
             missed_markers: self.stats.missed_markers,
             ..p
         };
+        out.push(SyncEvent::Period(self.stats));
     }
 
     fn head_at(&mut self, at: u64, cf: [i32; 2], cs: [i32; 2], out: &mut Vec<SyncEvent>) {

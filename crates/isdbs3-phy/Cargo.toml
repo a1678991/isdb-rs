@@ -25,6 +25,7 @@ tracing.workspace = true
 [dev-dependencies]
 isdb-tlv.workspace = true
 proptest.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

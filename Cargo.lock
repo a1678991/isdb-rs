@@ -572,6 +572,7 @@ dependencies = [
  "isdbs3-core",
  "num-complex",
  "proptest",
+ "serde_json",
  "thiserror",
  "tracing",
 ]

@@ -147,7 +147,9 @@
 //! the first output of frame N + [`EQ_APPLY_FRAMES`] (= 2: one frame to
 //! read 66 + 11 complex sums and write 11 taps). The model solves the
 //! first frame with a layout and then every [`ChainOptions::eq_every`]
-//! frames.
+//! frames. The host may also write taps at open
+//! ([`ChainOptions::initial_taps`], e.g. the last ones of a previous run),
+//! in use from the first symbol.
 //!
 //! # Stage 5, TMCC (§3.11, §3.5, §3.6 (2), §3.4 (1))
 //!
@@ -284,6 +286,9 @@ pub struct ChainOptions {
     /// Solve the equaliser every this many frames (0: never, identity
     /// taps).
     pub eq_every: u32,
+    /// Taps written by the host at open (Q2.14; `None`: identity), in
+    /// use from the first symbol, reported as solved from no frame.
+    pub initial_taps: Option<[[i16; 2]; crate::eq::TAPS]>,
     /// The layout decoded from frame N's TMCC is used for frame N + lag
     /// (1 or 2; [`LAYOUT_LAG`]).
     pub layout_lag: u32,
@@ -299,6 +304,7 @@ impl Default for ChainOptions {
         Self {
             carrier: 0,
             eq_every: 30,
+            initial_taps: None,
             layout_lag: LAYOUT_LAG,
             trace: false,
         }
@@ -364,6 +370,9 @@ impl Chain {
             back: {
                 let mut b = Back::new(opt.layout_lag, opt.eq_every, ldpc);
                 b.set_trace(opt.trace);
+                if let Some(t) = opt.initial_taps {
+                    b.set_taps(t);
+                }
                 b
             },
             delay: std::collections::VecDeque::with_capacity(isdbs3_core::params::SYNC_SYMBOLS + 1),
@@ -474,6 +483,7 @@ impl Chain {
                     // the detector has restarted itself at the right index
                     self.restart_after_sync(true, out);
                 }
+                SyncEvent::Period(_) => {}
             }
         }
     }
