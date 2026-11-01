@@ -33,14 +33,21 @@
 //!     within a layer), each layer cut into steps of `step` consecutive
 //!     checks (the last step of a layer shorter when `step` does not
 //!     divide 374). Within a step every check reads `L` and its messages
-//!     as they were at the step's start and computes its `t_e` and new
-//!     `r_e`; then the step's `L_v = sat(t_e + r_e)` are written check by
-//!     check in check order, so a variable two checks of one step share
-//!     (two entries of one address-table row congruent mod q, a
-//!     "conflicting pair", `tools/ldpc-layer-conflicts.py`) ends with the
-//!     later check's value, computed from the stale `L`. The next step
-//!     reads those writes. With `step` 1 this is a sequential decoder in
-//!     layer order. Why layers: the 374 bits of a group hit the checks of
+//!     as they were at the step's start and computes its `t_e =
+//!     sat(L_v − r_e,old)` and new `r_e,new` as above; `r` is written per
+//!     edge. At the step's end, for each variable v with edges e₁ … e_m in
+//!     the step (in check order): `L_v = sat(t_e₁ + r_e₁,new + Σ_{i=2..m}
+//!     (r_eᵢ,new − r_eᵢ,old))`, the sum in a wide integer (i16) saturated
+//!     to i8 once (**delta write-back**). m ≥ 2 only for a variable two
+//!     checks of one step share (two entries of one address-table row
+//!     congruent mod q, a "conflicting pair",
+//!     `tools/ldpc-layer-conflicts.py`); with m = 1 it is `sat(t_e +
+//!     r_e,new)`, the sequential update. The next step reads those writes.
+//!     With `step` 1 this is a sequential decoder in layer order. (The
+//!     first contract, the later check's `sat(t + r)` overwriting, loses
+//!     the other check's update and gave an error floor at steps of 187
+//!     and 374: docs/plans/isdbs3-fpga-rx.md "Results".) Why layers: the
+//!     374 bits of a group hit the checks of
 //!     a layer once each (a cyclic shift, §3.4 (2)), so a layer's checks
 //!     touch disjoint variables bar the conflicting pairs, and `step`
 //!     check-node units can run a step in parallel.
@@ -65,8 +72,9 @@ pub enum Schedule {
     Sequential,
     /// Layer by layer (layer l: the checks c ≡ l mod q, §3.4 (2)), each
     /// layer in steps of `step` checks that all read the values of the
-    /// step's start, the step's writes landing in check order: the FPGA
-    /// decoder's schedule (`step` check-node units).
+    /// step's start; a variable with several edges in a step adds every
+    /// one's message change (delta write-back). The FPGA decoder's
+    /// schedule (`step` check-node units).
     Layered {
         /// Checks per step, at least 1 (1: sequential in layer order;
         /// 374 or more: a whole layer per step).
@@ -113,12 +121,75 @@ pub type LaneResult = Result<Decoded, NotConverged>;
 /// The per-iteration callback of [`Decoder::decode_all_traced`].
 type Trace<'a> = Option<&'a mut dyn FnMut(usize, &[u8])>;
 
+/// A variable with two or more edges in one step of the layered schedule
+/// (a conflicting pair, or more): its delta write-back.
+#[derive(Debug, Clone)]
+struct Conflict {
+    /// The variable.
+    v: u32,
+    /// Index of its first edge's `t` in the step's `t` scratch.
+    t1: u32,
+    /// Its edges in check order (global edge indices into `r`).
+    edges: Vec<u32>,
+}
+
+/// The conflicts of every step of `Layered { step }` for one code, in
+/// step order (layer by layer): `steps[s]` is step s's.
+#[derive(Debug, Clone)]
+struct Conflicts {
+    steps: Vec<Vec<Conflict>>,
+}
+
+impl Conflicts {
+    fn new(code: &Code, step: usize) -> Self {
+        let q = code.q();
+        let mut steps = Vec::new();
+        // per variable of the current step: (t index of its first edge,
+        // its edges in check order)
+        let mut seen: std::collections::HashMap<u32, (u32, Vec<u32>)> =
+            std::collections::HashMap::new();
+        for layer in 0..q {
+            let mut i0 = 0;
+            while i0 < GROUP {
+                let i1 = (i0 + step).min(GROUP);
+                seen.clear();
+                let mut at = 0u32;
+                for i in i0..i1 {
+                    let c = layer + i * q;
+                    let s = code.row_start[c];
+                    for (e, &v) in code.check(c).iter().enumerate() {
+                        // a check's degree (≤ 34) and an edge index
+                        // (< 2³²: Code::new) are inside u32
+                        #[allow(clippy::cast_possible_truncation)]
+                        let ge = s + e as u32;
+                        seen.entry(v).or_insert_with(|| (at, Vec::new())).1.push(ge);
+                        at += 1;
+                    }
+                }
+                let mut cs: Vec<Conflict> = seen
+                    .drain()
+                    .filter(|(_, (_, edges))| edges.len() > 1)
+                    .map(|(v, (t1, edges))| Conflict { v, t1, edges })
+                    .collect();
+                // a fixed order (the writes are independent; for
+                // reproducible scratch use)
+                cs.sort_unstable_by_key(|c| c.t1);
+                steps.push(cs);
+                i0 = i1;
+            }
+        }
+        Self { steps }
+    }
+}
+
 /// Work buffers for one code and lane width, reused across calls.
 #[derive(Debug, Clone)]
 pub struct Decoder<const W: usize> {
     l: Vec<Lane<W>>,
     r: Vec<Lane<W>>,
     t: Vec<Lane<W>>,
+    /// The old messages of a layered step's conflicting edges.
+    r_old: Vec<Lane<W>>,
 }
 
 impl<const W: usize> Default for Decoder<W> {
@@ -127,6 +198,7 @@ impl<const W: usize> Default for Decoder<W> {
             l: Vec::new(),
             r: Vec::new(),
             t: Vec::new(),
+            r_old: Vec::new(),
         }
     }
 }
@@ -185,6 +257,9 @@ impl<const W: usize> Decoder<W> {
             assert!(step >= 1, "layered schedule with step 0");
         }
         let mut hard = Vec::new();
+        // the layered schedule's conflicts, built at its first iteration
+        // (one pass over the edges; per call, as `code` may differ)
+        let mut conflicts: Option<Conflicts> = None;
         let mut out: Vec<Option<(LaneResult, Vec<u8>)>> = vec![None; words.len()];
         self.l.clear();
         self.l.resize(n, Lane::splat(0));
@@ -230,7 +305,17 @@ impl<const W: usize> Decoder<W> {
                     iteration(code, &mut self.l, &mut self.r, &mut self.t, p.offset)
                 }
                 Schedule::Layered { step } => {
-                    layered_iteration(code, &mut self.l, &mut self.r, &mut self.t, p.offset, step)
+                    let conflicts = conflicts.get_or_insert_with(|| Conflicts::new(code, step));
+                    layered_iteration(
+                        code,
+                        &mut self.l,
+                        &mut self.r,
+                        &mut self.t,
+                        &mut self.r_old,
+                        conflicts,
+                        p.offset,
+                        step,
+                    )
                 }
             };
             for i in 0..W {
@@ -345,25 +430,36 @@ fn iteration<const W: usize>(
 }
 
 /// One iteration of [`Schedule::Layered`] `{ step }`, then the syndrome:
-/// per layer, per step, every check's `t` and new messages from the
-/// step's starting `L` (the step's `t`, check after check, kept in `t`),
-/// then the step's `L` writes in check order.
+/// per layer, per step, the old messages of the step's conflicting edges
+/// kept; every check's `t` and new messages from the step's starting `L`
+/// (the step's `t`, check after check, kept in `t`); `L_v = sat(t + r)`
+/// for every edge; then each conflicting variable rewritten by the delta
+/// rule (module docs) from its first edge's `t` and its edges' messages.
 #[inline(never)]
+#[allow(clippy::too_many_arguments)] // the decoder's buffers, passed apart for the borrows
 fn layered_iteration<const W: usize>(
     code: &Code,
     l: &mut [Lane<W>],
     r: &mut [Lane<W>],
     t: &mut Vec<Lane<W>>,
+    r_old: &mut Vec<Lane<W>>,
+    conflicts: &Conflicts,
     offset: i8,
     step: usize,
 ) -> ([bool; W], [usize; W]) {
     let q = code.q();
     let edges = |c: usize| (code.row_start[c] as usize, code.row_start[c + 1] as usize);
+    let mut steps = conflicts.steps.iter();
     // P = 374 q (Code::new): every layer has exactly 374 checks, l + i·q
     for layer in 0..q {
         let mut i0 = 0;
         while i0 < GROUP {
             let i1 = (i0 + step).min(GROUP);
+            let cs = steps.next().expect("one conflict list per step");
+            r_old.clear();
+            for c in cs {
+                r_old.extend(c.edges[1..].iter().map(|&e| r[e as usize]));
+            }
             t.clear();
             for i in i0..i1 {
                 let (s, e) = edges(layer + i * q);
@@ -375,6 +471,17 @@ fn layered_iteration<const W: usize>(
                 let d = e - s;
                 simd::apply_messages(&code.rows[s..e], &t[at..at + d], &r[s..e], l);
                 at += d;
+            }
+            let mut o = 0;
+            for c in cs {
+                let m = c.edges.len() - 1;
+                l[c.v as usize] = simd::delta_writeback(
+                    &t[c.t1 as usize],
+                    &r[c.edges[0] as usize],
+                    c.edges[1..].iter().map(|&e| &r[e as usize]),
+                    &r_old[o..o + m],
+                );
+                o += m;
             }
             i0 = i1;
         }

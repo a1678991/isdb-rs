@@ -3,8 +3,9 @@
 //! layered schedule gives each codeword the same result in any lane as
 //! alone; `Layered { step }` equals an independent scalar reading of the
 //! contract (which itself reproduces the sequential decoder when given
-//! the checks in order); and a conflicting pair inside a step takes the
-//! later check's value computed from the step's starting values.
+//! the checks in order); and a conflicting pair inside a step adds both
+//! checks' updates (delta write-back), which neither overwriting rule nor
+//! a missing step barrier reproduces.
 
 use isdb_fec::ldpc::fixed::{Decoder, LaneResult, Params, Schedule};
 use isdb_fec::ldpc::{Code, Decoded, GROUP, NotConverged};
@@ -68,13 +69,17 @@ fn sequential_steps(code: &Code) -> Vec<Vec<usize>> {
     (0..code.checks()).map(|c| vec![c]).collect()
 }
 
-/// How the writes of a step are applied: the contract's rule and two
+/// How the writes of a step are applied: the contract's rule and three
 /// wrong ones, to show the conflict test tells them apart.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Writes {
-    /// The contract: every check reads the step's starting values, the
-    /// writes land in check order (the later check wins).
+    /// The contract: every check reads the step's starting values; a
+    /// variable with edges e₁ … e_m in the step gets sat(t₁ + r₁,new +
+    /// Σᵢ₌₂ (rᵢ,new − rᵢ,old)) in a wide integer (delta write-back).
     Contract,
+    /// Stale reads, each edge's sat(t + r) written in check order (the
+    /// later check wins: the first contract).
+    LaterWins,
     /// Stale reads, writes in reverse order (the earlier check wins).
     EarlierWins,
     /// Each check reads the previous check's writes (no step barrier).
@@ -158,9 +163,38 @@ fn reference(
                 .map(|&c| (c, check(c, &l, &r)))
                 .map(|(c, (t, n))| (c, t, n))
                 .collect();
+            if writes == Writes::Contract {
+                // per variable, its edges in check order: (t, r_old, r_new)
+                type Edges = Vec<(i8, i8, i8)>;
+                let mut per: Vec<(u32, Edges)> = Vec::new();
+                for (c, t, new) in &out {
+                    for (e, &v) in code.check(*c).iter().enumerate() {
+                        let x = (t[e], r[*c][e], new[e]);
+                        match per.iter_mut().find(|p| p.0 == v) {
+                            Some(p) => p.1.push(x),
+                            None => per.push((v, vec![x])),
+                        }
+                    }
+                }
+                for (v, es) in per {
+                    let (t1, _, r1) = es[0];
+                    let sum = i16::from(t1)
+                        + i16::from(r1)
+                        + es[1..]
+                            .iter()
+                            .map(|&(_, o, n)| i16::from(n) - i16::from(o))
+                            .sum::<i16>();
+                    l[v as usize] = i8::try_from(sum.clamp(-128, 127)).unwrap();
+                }
+                for (c, _, new) in out {
+                    r[c] = new;
+                }
+                continue;
+            }
             if writes == Writes::EarlierWins {
                 out.reverse();
             }
+            // LaterWins / EarlierWins: each edge's sat(t + r) overwrites
             for (c, t, new) in out {
                 for ((&v, &te), &re) in code.check(c).iter().zip(&t).zip(&new) {
                     l[v as usize] = te.saturating_add(re);
@@ -320,29 +354,35 @@ fn layered_step_1_is_sequential_in_layer_order() {
 /// (position 0) and 7 (position 1), and nowhere else. Row 1 ([0, 1, 2])
 /// puts group 1 in layers 0–2 only.
 ///
-/// Input: every bit +100 except bit 0 = +5 (weak 0), bit 373 = −40 (with
-/// bit 0 the other information bit of check 3) and bit 1 = +10 (the other
-/// of check 7). In iteration 1 (messages 0) check 3 sends bit 0
-/// −(40 − offset) (its other edges: −40 and the strong parity bits) and
-/// check 7 sends +(10 − offset):
+/// Input: every bit +100 except bit 0 = +30, bit 373 = −21 (with bit 0
+/// the other information bit of check 3), bit 1 = −21 (the other of
+/// check 7) and bit 2 = −5 (with bit 1 in check 11, the next check of
+/// the layer). In iteration 1 (messages 0, the parity bits stay strong)
+/// checks 3 and 7 both send bit 0 −(21 − offset), from the step's
+/// starting values:
 ///
-/// - contract (both in one step, stale reads, later wins): L₀ = 5 + 10 −
-///   offset > 0, a zero;
-/// - checks one after the other (step 1, sequential, or no barrier): L₀ =
-///   5 − 40 + 10 (± offsets) < 0, a one;
-/// - stale reads with the earlier check winning: L₀ = 5 − 40 + offset < 0.
+/// - contract (delta write-back): L₀ = 30 − 2·(21 − offset) < 0, a one;
+///   bit 1 gets +(30 − offset) from check 7 and −(5 − offset) from check
+///   11: L₁ = −21 + 30 − 5 (+ 0 or 0) = 4, a zero;
+/// - the later (or the earlier) check overwriting: L₀ = 30 − (21 −
+///   offset) > 0, a zero;
+/// - no step barrier (each check reads the previous one's writes): L₀ =
+///   9 + offset when check 7 runs, so check 7 sends bit 1 only +9, and
+///   L₁ = −21 + 9 − (5 − offset) < 0, a one.
 #[test]
-fn conflicting_pair_in_one_step_takes_the_later_check_from_stale_values() {
+fn conflicting_pair_in_one_step_adds_both_updates() {
     let code = Code::new(374 * 6, &[&[3, 7], &[0, 1, 2]]);
     assert_eq!((code.checks(), code.q()), (1496, 4));
     assert_eq!(code.check(3), &[0, 373, 374 * 2 + 2, 374 * 2 + 3]);
     assert_eq!(code.check(7), &[0, 1, 374 * 2 + 6, 374 * 2 + 7]);
+    assert_eq!(code.check(11), &[1, 2, 374 * 2 + 10, 374 * 2 + 11]);
     let mut w = vec![100i8; code.n()];
-    w[0] = 5;
-    w[373] = -40;
-    w[1] = 10;
+    w[0] = 30;
+    w[373] = -21;
+    w[1] = -21;
+    w[2] = -5;
     for offset in [0, 1] {
-        let bit0 = |schedule: Schedule| {
+        let bits01 = |schedule: Schedule| {
             let p = Params {
                 max_iter: 1,
                 offset,
@@ -351,19 +391,24 @@ fn conflicting_pair_in_one_step_takes_the_later_check_from_stale_values() {
             let (_, bits) = alone(&code, &w, p);
             // every lane width agrees
             check_lanes::<16>(&code, &[w.clone(), w.clone()], p);
-            bits[0]
+            (bits[0], bits[1])
         };
         for step in [2, 3, 34, 68, 187, 374] {
-            assert_eq!(bit0(Schedule::Layered { step }), 0, "step {step}");
+            assert_eq!(bits01(Schedule::Layered { step }), (1, 0), "step {step}");
         }
-        assert_eq!(bit0(Schedule::Layered { step: 1 }), 1);
-        assert_eq!(bit0(Schedule::Sequential), 1);
-        // the reference agrees, and the two wrong rules give a one
+        // one check at a time: no barrier
+        assert_eq!(bits01(Schedule::Layered { step: 1 }), (1, 1));
+        assert_eq!(bits01(Schedule::Sequential), (1, 1));
+        // the reference agrees, and each wrong rule differs
         let st = layered_steps(&code, 68);
-        let rule = |wr| reference(&code, &w, 1, offset, &st, wr).1[0];
-        assert_eq!(rule(Writes::Contract), 0);
-        assert_eq!(rule(Writes::EarlierWins), 1);
-        assert_eq!(rule(Writes::Fresh), 1);
+        let rule = |wr| {
+            let b = reference(&code, &w, 1, offset, &st, wr).1;
+            (b[0], b[1])
+        };
+        assert_eq!(rule(Writes::Contract), (1, 0));
+        assert_eq!(rule(Writes::LaterWins).0, 0);
+        assert_eq!(rule(Writes::EarlierWins).0, 0);
+        assert_eq!(rule(Writes::Fresh), (1, 1));
     }
     // whole decodes of noisy codewords through the pairs (every check of
     // layer 3 has one), each step against the reference

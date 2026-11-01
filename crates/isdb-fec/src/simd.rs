@@ -316,3 +316,27 @@ mod imp {
 }
 
 pub use imp::{apply_messages, check_messages, check_node, sign_parity};
+
+/// The layered schedule's delta write-back for one variable with edges
+/// e₁ … e_m in a step (`ldpc::fixed`): `sat(t₁ + r₁ + Σ (rᵢ − rᵢ,old))`
+/// for i = 2 … m, summed in `i16` and saturated to `i8` once. `t1` is
+/// the first edge's t, `r1` its new message, `rest` the later edges' new
+/// messages and `old` their messages before the step. One implementation
+/// for both back ends (it runs only for the few conflicting variables).
+#[inline]
+pub fn delta_writeback<'a, const W: usize>(
+    t1: &Lane<W>,
+    r1: &Lane<W>,
+    rest: impl Iterator<Item = &'a Lane<W>>,
+    old: &[Lane<W>],
+) -> Lane<W> {
+    let mut s: [i16; W] = std::array::from_fn(|i| i16::from(t1.0[i]) + i16::from(r1.0[i]));
+    for (rn, ro) in rest.zip(old) {
+        for (si, (&a, &b)) in s.iter_mut().zip(rn.0.iter().zip(&ro.0)) {
+            *si += i16::from(a) - i16::from(b);
+        }
+    }
+    // clamped to the i8 range, so the cast is exact
+    #[allow(clippy::cast_possible_truncation)]
+    Lane(s.map(|x| x.clamp(-128, 127) as i8))
+}

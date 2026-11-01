@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 0e8b4ffdf38d0a7a5af5a9c87e90c1060302525f44ff8dd8c15933ac3b52d72c # shrinks to seed = 0, amp = 9, noise = 30, flips = 66, offset = 0, max_iter = 4, step = 374
+cc 78cbf1d36ae4026789f012156118499edf3e680ebb97e273aa7023eecd5197c6 # shrinks to seeds = [0], amp = 4, noise = 4, flips = 0, offset = 0, max_iter = 1, step = 187
+cc 564ddc2a89cf952fb0903ffa7244695942ebb64c4462e3e407e7831ebb09417e # shrinks to seeds = [501], amp = 16, noise = 25, flips = 50, max_iter = 9, step = 374

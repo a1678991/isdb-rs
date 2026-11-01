@@ -47,13 +47,18 @@ module docs give the full rule):
 | Schedule | Order | Reads | Purpose |
 |---|---|---|---|
 | `Sequential` (default) | checks 0 … P − 1, one at a time | each check sees the previous one's writes | the CPU decoder, unchanged |
-| `Layered { step }` | layer by layer (layer l = the 374 checks c ≡ l mod q, increasing c), each layer in steps of `step` checks (the last one shorter) | every check of a step reads L and r as they were at the step's start; the step's L writes land in check order, so a variable two checks of a step share (a "conflicting pair", two entries of one table row congruent mod q) keeps the later check's value | the FPGA decoder's schedule (`step` check-node units in parallel), which the HDL reproduces bit for bit ([plan](../../docs/plans/isdbs3-fpga-rx.md), "The LDPC schedule contract") |
+| `Layered { step }` | layer by layer (layer l = the 374 checks c ≡ l mod q, increasing c), each layer in steps of `step` checks (the last one shorter) | every check of a step reads L and r as they were at the step's start; at the step's end a variable with edges e₁ … e_m in the step gets sat(t₁ + r₁,new + Σᵢ₌₂ (rᵢ,new − rᵢ,old)), summed in i16 (delta write-back; m ≥ 2 only for a "conflicting pair", two entries of one table row congruent mod q; m = 1 is the sequential update) | the FPGA decoder's schedule (`step` check-node units in parallel), which the HDL reproduces bit for bit ([plan](../../docs/plans/isdbs3-fpga-rx.md), "The LDPC schedule contract") |
 
 The layers exist because the 374 bits of a group hit the checks of a
 layer once each (a cyclic shift by q, B44 §3.4 (2)), so a layer's checks
 touch disjoint variables bar the conflicting pairs
-(`tools/ldpc-layer-conflicts.py`: 4–26 per code). `Layered { step: 1 }` is a
-sequential decoder in layer order. Both schedules have the lane
+(`tools/ldpc-layer-conflicts.py`: 4–39 per code). `Layered { step: 1 }` is a
+sequential decoder in layer order. The delta write-back adds both
+checks' updates to a shared variable; the first contract's rule (the
+later check's value overwriting) lost one and gave an error floor at
+steps of 187 and 374 (plan "Results"). The decoder lists each step's
+shared variables once per call (one pass over the edges) and rewrites
+only those after the step's ordinary writes. Both schedules have the lane
 equivalence below, and the stopping rule is the same.
 `decode_all_traced` also reports each codeword's hard decisions after
 every iteration (for the FPGA vectors, `isdbs3-phy`
@@ -150,9 +155,10 @@ and fails, offset 2 slows convergence (`examples/ldpcfixed`).
   schedules against an independent scalar reading of the contract
   (`Layered { step: 1 }` = the checks one by one in layer order); a code
   with a conflicting pair in every check of a layer where the rule
-  decides a bit (later check from stale values: 0; earlier check, or no
-  step barrier: 1); the trace ends at the result. Both wrong rules,
-  injected into the decoder, fail it. `isdbs3-phy`
+  decides two bits (delta write-back: 1, 0; the later or the earlier
+  check overwriting: bit 0 is 0; no step barrier: bit 1 is 1); the trace
+  ends at the result. The three wrong rules, injected into the decoder,
+  each fail it. `isdbs3-phy`
   `shortened_tmcc_code_decodes_with_both_schedules` runs the shortened
   61/120 TMCC word (known zeros at +127) through both.
 - The `isdbt-fec` suite (RS, Table 3-8 puncturing, Viterbi over AWGN,
