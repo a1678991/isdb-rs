@@ -97,8 +97,13 @@ class Layout:
         first_layer = {}
         self.layers = []
         for layer in range(q):
+            # groups the previous layer also has last (their words were just
+            # written: reading them late shortens the hazard gaps), a
+            # group's entries consecutive
+            prev_groups = {g for g, _ in per_layer[layer - 1]} if layer else set()
             ents = [{"g": g, "s": s, "kind": 0, "absent": False}
-                    for g, s in sorted(per_layer[layer])]
+                    for g, s in sorted(per_layer[layer],
+                                       key=lambda e: (e[0] in prev_groups, e[0], e[1]))]
             pc1 = (self.G + layer - 1, 0) if layer else (self.G + q - 1, 1)
             ents.append({"g": pc1[0], "s": pc1[1], "kind": 1, "absent": layer == 0})
             ents.append({"g": self.G + layer, "s": 0, "kind": 2, "absent": False})

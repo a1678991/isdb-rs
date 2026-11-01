@@ -63,6 +63,11 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `synth/estimate.py` | Yosys `synth_xilinx` resource estimate (of `SymbolsTx` for a TX vectors file) |
 | `synth/verilog.py` | Verilog of `SymbolsRx` or `SymbolsTx` (through the venv's Yosys) |
 | `synth/tx_parts.py` | the transmit block's estimate split: the whole block, the core, the core with a constant SHIFT |
+| `isdb_fpga/ldpc.py` | `LdpcDecoder`: the ISDB-S3 LDPC decoder ([below](#the-ldpc-decoder-ldpcdecoder)); its schedule, memory layout and pipeline in the docstring |
+| `isdb_fpga/ldpcsched.py` | the decoder's static schedule computed at elaboration (layer address generation and its derivation, chain thresholds, hazard gaps) and `lane_decode`, the design's own scheme in Python |
+| `isdb_fpga/ldpcmodel.py` | a Python model of the LDPC contract, the IRA encoder and the vectors writer (`python -m isdb_fpga.ldpcmodel --all build`; `--check VECTORS…`) |
+| `isdb_fpga/simldpc.py` | the decoder against LDPC vectors files (`python -m isdb_fpga.simldpc VECTORS… [--max N] [--fill-known] [--all-rates]`) |
+| `synth/ldpc_estimate.py`, `synth/ldpc_cycles.py`, `synth/ldpc_memories.py` | the decoder's Yosys estimate per S, its cycles per iteration per rate and S, and how Yosys maps each memory shape |
 
 ## Running
 
@@ -382,6 +387,128 @@ built from the tables file alone, that reproduces every set (2026-11-01:
 all eleven, 68 codewords, traces included) — a starting point for the
 HDL's Python stand-in model. The front end's vector test skips
 `ldpc-*.json`.
+
+## The LDPC decoder (`LdpcDecoder`)
+
+The ISDB-S3 inner decoder of the receive chain
+([plan](../docs/plans/isdbs3-fpga-rx.md) §7 and "The LDPC schedule
+contract"): layered offset min-sum in i8, `Schedule::Layered { step: S }`
+with the delta write-back, S check-node units, early stop and a fixed
+limit, for all eleven B44 rates (the address tables as ROM, built at
+elaboration from `ldpc-tables.json` or `ldpc_tables.rs`) and the
+shortened TMCC code. `isdb_fpga/ldpcmodel.py` states the contract in
+Python (and reproduces every Rust set, traces included);
+`ldpcsched.lane_decode` is this design's own scheme in Python, checked
+against the contract; `ldpc.py`'s docstring has the pipeline cycle by
+cycle.
+
+- **S must divide 374** (11, 17, 22, 34, 187): bit j of a 374-bit group
+  is in lane j mod S, word j div S, so a step's reads of one table entry
+  are every lane once, at one of two words, rotated by the entry's shift
+  mod S. 187 is the largest the chain handling allows (a pair at shift
+  difference E shares a bit in one step in one direction only when S ≤
+  187).
+- **Layer address generation** (derivation in `ldpcsched`'s docstring,
+  verified edge for edge against the code's checks for every rate and
+  S = 11, 17, 34, 187): check i of layer l (c = l + i·q) has, for each
+  table entry x of row g with x ≡ l (mod q), bit j = (i − x div q) mod 374
+  of group g (since c = (x + j q) mod P ⇔ i = (x div q + j) mod 374), plus
+  p_c and p_{c−1}. The parity bits are stored permuted: p_{l + i q} is
+  bit i of parity group G + l, which makes the staircase quasi-cyclic
+  (p_c: group G + l at shift 0; p_{c−1}: group G + l − 1 at shift 0, or
+  in layer 0 group G + q − 1 at shift 1, check 0 having none). The output
+  stream follows the storage (the information bits in order, then the
+  parity group by group); `simldpc` un-permutes it to the vectors' order.
+- **Edge order** inside a check is free (min1/min2 and the parity depend
+  on the multiset of t; a tie gives every edge the same magnitude), so a
+  layer's entries are ordered by group, the groups the previous layer
+  wrote last (fewer hazard stalls), and a group's entries consecutive.
+- **Delta write-back**: each lane keeps the unsaturated sums it wrote
+  for the last two entries of the step; an edge whose bit an earlier
+  check of the step shares contributes r_new − r_old, else t + r_new,
+  and adds onto the partner's sum when it shares the bit; the memory
+  gets sat8 of the sum. Per-entry thresholds on the unit index from a
+  small chain ROM (428 chain entries over the eleven rates) select the
+  modes. Chains of three (81, 89, 105/120) are covered; their check-order
+  precedence can be cyclic (93/120 at S = 187), which is why the lane
+  sums in write order.
+- **Syndrome**: every stored bit also keeps H, the hard decision of the
+  previous iteration (written with each write: the sign of L at the bit's
+  first read in the pass, else H). Pass p's check-node XOR of the old
+  decisions is the syndrome of iteration p − 1, so a codeword converging
+  after i iterations runs i + 1 passes and its result is H.
+- **Shortened (TMCC)**: with `st_short`, the decoder writes +127 into the
+  13 200 known-zero positions itself (S per cycle, 1 320 cycles at S = 17)
+  and only the 31 680 sent LLRs are loaded; the tests check the file's
+  values there are +127 and run both ways.
+- **Memory**: two banks (double buffer: one loads or streams out while
+  the other decodes) of S lanes, each 120 × Wp words of 9 bits (L and H,
+  Wp = W rounded up to a power of two); the check records (m1, m2 after
+  the offset, the min1 index: 19 bits) one word of 19 S bits per step; the
+  edge signs one word of S bits per (step, entry); a 64-deep FIFO between
+  the read and write phases (LUTRAM); the ROMs (entries, chains, gaps).
+- **Clock**: designed for 200 MHz (each stage at most one carry chain
+  plus a few LUT levels; the rotators log2 S levels of 2:1 muxes). Not
+  yet timed by Vivado.
+
+**Cycles per iteration** (`synth/ldpc_cycles.py`: the static schedule's
+steady state, the hazard gaps included; the read and write phases of
+consecutive steps overlap, a step taking d cycles, d the layer degree)
+and the iterations per codeword the frame allows: 33.05 ms per frame,
+121 codewords (120 slots + the TMCC) at the limit in the worst case,
+one pass more than the iterations (the syndrome of the last one):
+
+| S | rate | d | cycles per pass | iterations per codeword, 100 MHz | 200 MHz |
+|---|---|---|---|---|---|
+| 17 | 41/120 | 5 | 8 702 | 2.1 | 5.3 |
+| 17 | 93/120 | 16 | 10 199 | 1.7 | 4.4 |
+| 17 | 109/120 | 32 | 8 438 | 2.2 | 5.5 |
+| 22 | 41/120 | 5 | 6 727 | 3.1 | 7.1 |
+| 22 | 93/120 | 16 | 8 007 | 2.4 | 5.8 |
+| 34 | 41/120 | 5 | 4 357 | 5.3 | 11.5 |
+| 34 | 61/120 (TMCC) | 7 | 4 842 | 4.6 | 10.3 |
+| 34 | 93/120 | 16 | 5 420 | 4.0 | **9.1** |
+| 34 | 109/120 | 32 | 4 315 | 5.3 | 11.7 |
+| 187 | 41/120 | 5 | 1 291 | 20.2 | 41.3 |
+| 187 | 93/120 | 16 | 1 150 | 22.8 | 46.5 |
+
+(The plan's estimate, P/S steps × (d + 6), counted the pipeline per
+step; here only the hazard gaps add to d per step: 84 of 297 steps at
+93/120, S = 34, wait, 668 cycles in all.)
+
+**Estimate** (`mise run fpga:ldpc-estimate`, Yosys `synth_xilinx`, all
+eleven rates, before place and route), against the plan's budget of
+14 000 LUT, 50 BRAM36, 0 DSP:
+
+| S | LUT | FF | BRAM36 (RAMB36E1 + RAMB18E1/2) | LUTRAM cells | DSP48E1 | CARRY4 |
+|---|---|---|---|---|---|---|
+| 11 | 5 280 | 3 724 | 70 (64 + 12/2) | 90 | 0 | 462 |
+| 17 | 7 036 | 5 006 | 59.5 (59 + 1/2) | 131 | 0 | 632 |
+| 22 | 8 899 | 6 103 | 70 (64 + 12/2) | 166 | 0 | 776 |
+| 34 | 12 976 | 8 663 | 59.5 (25 + 69/2) | 250 | 0 | 1 108 |
+| 187 | 72 250 | 44 288 | 58 (3 + 110/2) | 5 806 | 0 | 5 401 |
+
+S = 34 at 200 MHz meets the LUT budget (93 % of it) and allows 9.1
+iterations per codeword at 93/120 in the worst case (all 121 codewords
+at the limit), 10.3 for the TMCC code, 11.5 for 41/120; it is 9.5 BRAM36
+over the 50 budgeted. S = 187 would be 5× the LUT budget (the units and
+the 187-lane rotators), so it is out.
+
+Block RAM by memory at S = 34 (`synth/ldpc_memories.py`): the L/H
+banks 2 × 34 RAMB18 = 34, the check records (646 × 869) 18, the edge
+signs (34 × 4 785) 5, the ROMs 2.5. The data needs 15.2 + 4.4 + 2 × 4.4
+BRAM36 for records, signs and L; the records' and signs' depth is set by
+41/120 (869 steps, 4 785 edges per unit) while every other rate needs at
+most 4 114 / 374 × 11 = 649 steps.
+
+**Status (2026-11-02)**: bit-exact in simulation on every toy set
+(steps 11, 17, 22, 34, 187: pairs, triples, chains wrapping round the
+group, the shortened code with the known zeros filled by the decoder,
+stress inputs, the limit) and on the Rust sets' 93/120 and TMCC codewords
+at step 17; ≈ 70 s of simulation per 93/120 codeword at 4 iterations
+(≈ 14 s per pass at S = 17), so the default `fpga:test` set is two
+93/120 codewords and one TMCC codeword; `FPGA_LDPC_ALL=1` runs every
+codeword of every layered set.
 
 ## Integration
 

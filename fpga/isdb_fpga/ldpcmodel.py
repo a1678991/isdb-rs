@@ -71,7 +71,8 @@ def load_tables(path=None):
     exists, else parsed from the .rs source (the tests check they agree)."""
     path = path or TABLES_JSON
     if os.path.exists(path):
-        doc = json.load(open(path))
+        with open(path) as f:
+            doc = json.load(f)
         assert doc["format"] == "isdb-rs ldpc tables" and doc["version"] == 1
         assert doc["n"] == N and doc["group"] == GROUP
         return {t["rate"]: t["rows"] for t in doc["tables"]}
@@ -430,7 +431,8 @@ def main(argv):
         for path in argv[argv.index("--check") + 1:]:
             if path.startswith("--"):
                 break
-            doc = json.load(open(path))
+            with open(path) as f:
+                doc = json.load(f)
             print(f"{path}: rate {doc['rate']}, {doc['schedule']}, limit {doc['max_iter']}",
                   flush=True)
             msgs = check_doc(doc, tables, limit, log=lambda s: print(s, flush=True))

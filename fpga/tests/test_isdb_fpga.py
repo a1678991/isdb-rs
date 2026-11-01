@@ -28,7 +28,7 @@ from amaranth.hdl import Elaboratable, Module, Signal  # noqa: E402
 from amaranth.hdl import UnusedElaboratable  # noqa: E402
 from amaranth.sim import Simulator  # noqa: E402
 
-from isdb_fpga import tx, txmodel  # noqa: E402
+from isdb_fpga import ldpcmodel, ldpcsched, simldpc, tx, txmodel  # noqa: E402
 from isdb_fpga.frontend import crc32c_word, crc32c_word_terms  # noqa: E402
 from isdb_fpga.sim import compare, load, simulate, simulate_top  # noqa: E402
 from isdb_fpga.sim import compare_tx, is_tx, run_tx_top, simulate_tx, simulate_tx_top  # noqa: E402
@@ -113,6 +113,8 @@ class CrcTest(unittest.TestCase):
 
 @functools.lru_cache(maxsize=None)
 def _is_tx(path):
+    if os.path.basename(path).startswith(("ldpc-", "ldpcvec-")):
+        return False
     return is_tx(load(path))
 
 
@@ -122,7 +124,7 @@ def vector_files():
     return [
         p
         for p in sorted(glob.glob(os.path.join(VECTORS, "*.json")))
-        if not os.path.basename(p).startswith("ldpc-") and not _is_tx(p)
+        if not os.path.basename(p).startswith(("ldpc-", "ldpcvec-")) and not _is_tx(p)
     ]
 
 
@@ -647,6 +649,134 @@ class TxRegisterTest(unittest.TestCase):
         self.assertEqual(out["latched"], (0xFFFF_FFFF, 1, 1))
         self.assertEqual(out["first_miss"], 0x3_0000_0005)
         self.assertEqual(out["samples"], 0x4_0000_0007)
+
+
+# --- the LDPC decoder ----------------------------------------------------------
+#
+# Vectors: the Rust model's ldpc-*.json (`mise run fpga:vectors`) and the
+# Python model's ldpcvec-py-*.json (`mise run fpga:ldpc-vectors`), in the
+# same directory; without them the vector tests are skipped (the unit
+# tests below run on the toy codes, made in process). The HDL simulation of
+# a 44 880-bit codeword is slow (README, "The LDPC decoder"): by default
+# it runs on every toy set and on the first codewords of the 93/120 and
+# TMCC sets at step 17; FPGA_LDPC_ALL=1 runs every codeword of every
+# layered set (several hours).
+
+LDPC_ALL = os.environ.get("FPGA_LDPC_ALL") == "1"
+LDPC_DEFAULT = {"ldpc-12-93-layered17.json": 2, "ldpc-13-tmcc-layered17.json": 1}
+
+
+def ldpc_files():
+    pats = ("ldpc-[0-9]*.json", "ldpcvec-py-*.json")
+    return sorted(p for pat in pats for p in glob.glob(os.path.join(VECTORS, pat)))
+
+
+@functools.lru_cache(maxsize=None)
+def ldpc_tables():
+    return ldpcmodel.load_tables(os.path.join(VECTORS, "ldpc-tables.json"))
+
+
+class LdpcModelTest(unittest.TestCase):
+    """The Python model of the contract: the tables, the schedules' self-
+    check, the layer address generation and the HDL's own scheme in Python
+    (`ldpcsched.lane_decode`), and every vectors file reproduced."""
+
+    def test_tables_json_matches_the_source(self):
+        path = os.path.join(VECTORS, "ldpc-tables.json")
+        if not os.path.exists(path):
+            self.skipTest("no ldpc-tables.json")
+        self.assertEqual(ldpcmodel.load_tables(path), ldpcmodel.parse_tables_rs())
+
+    def test_sequential_and_step_1_are_the_in_place_decoder(self):
+        for name, rows in ldpcmodel.TOYS.items():
+            code = ldpcmodel.Code(6 * ldpcmodel.GROUP, rows)
+            rng = ldpcmodel.Rng(11)
+            for es in (0.0, -2.5):
+                with self.subTest(code=name, esn0=es):
+                    llr = ldpcmodel.noisy(code, (es,), rng)[0]
+                    self.assertEqual(ldpcmodel.self_check(code, llr), [])
+
+    def test_layer_addresses_are_the_codes_checks(self):
+        codes = [(name, rows, 6) for name, rows in ldpcmodel.TOYS.items()]
+        codes += [(r, rows, 120) for r, rows in ldpc_tables().items()]
+        for name, rows, ng in codes:
+            code = ldpcmodel.Code(ng * ldpcmodel.GROUP, rows)
+            for s in (11, 17, 34, 187):
+                with self.subTest(code=name, S=s):
+                    lay = ldpcsched.Layout(rows, ng, s)
+                    self.assertEqual(ldpcsched.check_layout(lay, code.checks, code.k),
+                                     len([v for c in code.checks for v in c]))
+
+    def test_lane_scheme_equals_the_contract(self):
+        for name, rows in ldpcmodel.TOYS.items():
+            code = ldpcmodel.Code(6 * ldpcmodel.GROUP, rows)
+            rng = ldpcmodel.Rng(5)
+            for s in (11, 17, 22, 34, 187):
+                lay = ldpcsched.Layout(rows, 6, s)
+                for es in (1.0, -2.0, -3.5):
+                    with self.subTest(code=name, S=s, esn0=es):
+                        llr = ldpcmodel.noisy(code, (es,), rng)[0]
+                        w = ldpcmodel.decode(code, llr, {"kind": "layered", "step": s}, 10, 1)
+                        self.assertEqual(ldpcsched.lane_decode(lay, llr, 10, 1),
+                                         (w["bits"], w["iterations"], w["converged"],
+                                          w["unsatisfied"]))
+
+    def test_model_reproduces_every_vectors_file(self):
+        files = ldpc_files()
+        if not files:
+            self.skipTest(f"no LDPC vectors in {VECTORS}")
+        for path in files:
+            with self.subTest(vectors=os.path.basename(path)):
+                doc = load(path)
+                self.assertEqual(ldpcmodel.check_doc(doc, ldpc_tables()), [])
+
+
+class LdpcVectorTest(unittest.TestCase):
+    """The HDL against the vectors, bit for bit: every codeword's n hard
+    decisions, iterations, convergence and unsatisfied count."""
+
+    def check(self, doc, limit=None, **kw):
+        results = simldpc.simulate(doc, limit, **kw)
+        self.assertEqual(len(results), len(doc["codewords"][:limit]))
+        self.assertEqual(simldpc.compare(doc, results), [])
+        return results
+
+    def test_toy_codes(self):
+        files = [p for p in ldpc_files() if "-toy-" in os.path.basename(p)]
+        docs = [(os.path.basename(p), load(p)) for p in files] or [
+            (f"ldpcmodel {name}", ldpcmodel.vectors(name))
+            for name in ("toy-a", "toy-a-short", "toy-b-34")]
+        for name, doc in docs:
+            with self.subTest(vectors=name):
+                self.check(doc)
+
+    def test_known_zeros_filled_by_the_decoder(self):
+        doc = ldpcmodel.vectors("toy-a-short")
+        self.check(doc, fill_known=True)
+
+    def test_a_wrong_offset_is_caught(self):
+        doc = ldpcmodel.vectors("toy-a")
+        bad = dict(doc, codewords=[c for c in doc["codewords"] if c["iterations"] > 1][:1])
+        results = simldpc.simulate(dict(bad, offset=2))
+        self.assertNotEqual(simldpc.compare(bad, results), [])
+
+    def test_b44_vectors(self):
+        files = [p for p in ldpc_files() if "-toy-" not in os.path.basename(p)]
+        runs = []
+        for p in files:
+            doc = load(p)
+            if doc["schedule"]["kind"] != "layered":
+                continue
+            base = os.path.basename(p)
+            if LDPC_ALL:
+                runs.append((base, doc, None))
+            elif base in LDPC_DEFAULT:
+                runs.append((base, doc, LDPC_DEFAULT[base]))
+        if not runs:
+            self.skipTest("no B44 LDPC vectors (mise run fpga:vectors), or none of the default set")
+        for base, doc, limit in runs:
+            with self.subTest(vectors=base):
+                self.check(doc, limit, fill_known=bool(doc.get("shortened")))
 
 
 if __name__ == "__main__":
