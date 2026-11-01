@@ -125,10 +125,12 @@
 //!   before the level is raised.
 
 use super::{maia, mdns};
+use crate::chain::{self, ChainControl};
 use crate::{
     Backend, Capture, CaptureFormat, CaptureGap, CodeEncoder, Cs12, Direction, IqSink, IqSource,
     Key, Offload, Quantizer, QueuedSink, RadioConfig, RadioError, RadioTx, Result, Rule, RxOptions,
-    StreamCounters, StreamProblem, SymbolSink, SymbolsCapture, Tolerance, TxOptions, TxStream,
+    SlotsCapture, StreamCounters, StreamProblem, SymbolSink, SymbolsCapture, Tolerance, TxOptions,
+    TxStream,
 };
 use isdb_frontend::control::tx::{self as txc, TxIdentity};
 use isdb_frontend::control::{self, Encoder, GPIO_IN_REG, GPIO_OUT_REG, Identity, Op, reg};
@@ -136,6 +138,7 @@ use isdb_frontend::shape::fixed::{FULL_SCALE, TxDesign, TxParams};
 use isdb_frontend::txformat;
 use isdb_iio::Context;
 use isdbt_ofdm::C32;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
@@ -1164,13 +1167,7 @@ impl Backend for Pluto {
     fn offloads(&self, cfg: &RadioConfig) -> Result<Vec<Offload>> {
         let mut s = rx_settings_for(cfg, Dir::Capture)?;
         let ctx = open(&mut s.dev)?;
-        Ok(probe_front_end(&ctx)?
-            .map(|id| Offload::Symbols {
-                version: id.version,
-                taps: id.taps,
-            })
-            .into_iter()
-            .collect())
+        Ok(Offload::from_rx_id(probe_rx_id(&ctx)?))
     }
 
     fn tx_offloads(&self, cfg: &RadioConfig) -> Result<Vec<Offload>> {
@@ -1421,6 +1418,153 @@ impl Backend for Pluto {
         })
     }
 
+    fn capture_slots(
+        &self,
+        cfg: &RadioConfig,
+        params: &isdb_frontend::Params,
+        init: &isdb_frontend::control::chain::ChainInit,
+        slow: Option<chain::SlowLoopOptions>,
+        words: u64,
+        out: &mut dyn std::io::Write,
+        stop: &AtomicBool,
+    ) -> Result<SlotsCapture> {
+        params.validate()?;
+        let mut s = rx_settings_for(cfg, Dir::Capture)?;
+        let mut ctx = open(&mut s.dev)?;
+        let device = device_info(&ctx);
+        let word = probe_rx_id(&ctx)?;
+        let need = (isdb_frontend::params::FORMAT_VERSION, params.taps());
+        match Identity::parse(word) {
+            Some(id) if id.supports(params) => {}
+            other => {
+                return Err(RadioError::FrontEnd {
+                    backend: NAME,
+                    found: other.map(|id| (id.version, id.taps)),
+                    need,
+                });
+            }
+        }
+        let slots_version = isdb_frontend::control::chain::slots_version(word);
+        if slots_version != Some(isdb_frontend::slots::SLOTS_VERSION) {
+            return Err(RadioError::Chain {
+                backend: NAME,
+                found: slots_version,
+                need: isdb_frontend::slots::SLOTS_VERSION,
+            });
+        }
+        let mut info = String::new();
+        configure_rx(&ctx, cfg, &s, &mut info)?;
+        std::thread::sleep(CAPTURE_SETTLE);
+        let rate = rx_rate(&ctx)?;
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64());
+        let t0 = std::time::Instant::now();
+        let open_report = {
+            let rx = ctx.device(RX_DEV).at("configure the FPGA receive chain")?;
+            ChainControl::attach(NAME, &rx)?.open(&rx, params, init)?
+        };
+        let config_s = t0.elapsed().as_secs_f64();
+        let gain = describe_rx_gain(&s);
+        info!(
+            backend = NAME,
+            uri = s.dev.uri(),
+            rate_hz = rate,
+            freq_hz = cfg.center_hz,
+            words,
+            config_s,
+            commands = open_report.commands,
+            "Pluto {} opened for a Slots capture of {words} words: {}; RX{} gain {gain}; FPGA receive chain: {}; configured in {config_s:.1} s",
+            s.dev.uri(),
+            cfg.describe_tuning(),
+            s.dev.channel,
+            open_report.describe()
+        );
+        debug!(backend = NAME, "{device}{info}");
+        // the slow loop on a context of its own; while it runs, the
+        // capture's context sends no command
+        let loop_stop = Arc::new(AtomicBool::new(false));
+        let slow_loop = match slow {
+            Some(o)
+                if open_report.features & isdb_frontend::control::chain::features::SUMS != 0 =>
+            {
+                let port = ChainPort(
+                    Context::open(s.dev.uri())
+                        .at("open a second context for the chain's slow loop")?,
+                );
+                Some(
+                    chain::spawn_slow_loop(NAME, Box::new(port), o, Arc::clone(&loop_stop))
+                        .map_err(|e| RadioError::io("start the chain's slow loop", e))?,
+                )
+            }
+            Some(_) => {
+                warn!(
+                    backend = NAME,
+                    features = open_report.features,
+                    "the FPGA receive chain does not expose its training sums (FEATURES {:#x}): no slow loop, the taps stay as started",
+                    open_report.features
+                );
+                None
+            }
+            None => None,
+        };
+        let streamed = stream_words(&mut ctx, &s.dev, words, out, stop);
+        loop_stop.store(true, Ordering::SeqCst);
+        let slow_report =
+            slow_loop.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)));
+        // the counters, then back to IQ samples, whatever happened (the
+        // encoder continues from gpio_out, after the slow loop's commands)
+        let (counters, restored) = {
+            let op = "switch the RX back to IQ samples";
+            match ctx.device(RX_DEV).at(op) {
+                Ok(rx) => match ChainControl::attach(NAME, &rx) {
+                    Ok(mut c) => {
+                        let counters = streamed.is_ok().then(|| c.counters(&rx).ok()).flatten();
+                        (counters, c.release(&rx))
+                    }
+                    Err(e) => (None, Err(e)),
+                },
+                Err(e) => (None, Err(e)),
+            }
+        };
+        let (written, overflows) = streamed?;
+        restored?;
+        if overflows > 0 {
+            warn!(
+                backend = NAME,
+                overflows,
+                words = written,
+                "Slots capture: the ADC core reported {overflows} overflow(s) in {written} words (blocks lost; the Slots sequence numbers count them)"
+            );
+        }
+        let read_back = "read back the RX settings";
+        let phy = ctx.device(PHY).at(read_back)?;
+        let ch = phy.channel(s.dev.phy_channel(), false).at(read_back)?;
+        let gain_db = ch.read_f64("hardwaregain").at(read_back)?;
+        Ok(SlotsCapture {
+            stream: SymbolsCapture {
+                words: written,
+                overflows,
+                sample_rate_hz: rate,
+                lo_hz: read_lo(&phy.channel(RX_LO, true).at(read_back)?, read_back)?,
+                rf_bandwidth_hz: u64::try_from(ch.read_i64("rf_bandwidth").at(read_back)?).ok(),
+                gain: match s.agc {
+                    "manual" => format!("manual {gain_db} dB"),
+                    m => format!("AGC {m}, {gain_db} dB at the end"),
+                },
+                device,
+                method: format!(
+                    "FPGA receive chain (Slots format {}), configured in {config_s:.1} s; libiio stream of 16-bit words",
+                    open_report.version
+                ),
+                time,
+            },
+            open: open_report,
+            slow_loop: slow_report,
+            counters,
+        })
+    }
+
     fn open_rx(&self, cfg: &RadioConfig, opts: &RxOptions) -> Result<(Box<dyn IqSource>, String)> {
         let mut s = rx_settings(cfg)?;
         opts.validate()?;
@@ -1468,11 +1612,42 @@ impl Backend for Pluto {
 /// The symbol front end the bitstream reports in `up_adc_gpio_in`, if any
 /// (one register read; nothing is written).
 fn probe_front_end(ctx: &Context) -> Result<Option<Identity>> {
-    let word = ctx
-        .device(RX_DEV)
+    Ok(Identity::parse(probe_rx_id(ctx)?))
+}
+
+/// The ID word in `up_adc_gpio_in` (one register read; nothing is
+/// written): the front end and, in bits 11–8, the ISDB-S3 chain
+/// (`Offload::from_rx_id`).
+fn probe_rx_id(ctx: &Context) -> Result<u32> {
+    ctx.device(RX_DEV)
         .and_then(|d| d.reg_read(GPIO_IN_REG))
-        .at("probe the symbol front end")?;
-    Ok(Identity::parse(word))
+        .at("probe the symbol front end")
+}
+
+impl chain::RegisterAccess for isdb_iio::Device<'_> {
+    fn read(&self, addr: u32) -> Result<u32> {
+        self.reg_read(addr)
+            .at("read a register of the ADC core (the FPGA receive chain)")
+    }
+    fn write(&self, addr: u32, value: u32) -> Result<()> {
+        self.reg_write(addr, value)
+            .at("write a register of the ADC core (the FPGA receive chain)")
+    }
+}
+
+/// A libiio context of its own for the chain's slow loop (a context is
+/// used by one thread at a time; the stream's runs on the capture's).
+struct ChainPort(Context);
+
+impl chain::RegisterAccess for ChainPort {
+    fn read(&self, addr: u32) -> Result<u32> {
+        let op = "read a register of the ADC core (the chain's slow loop)";
+        self.0.device(RX_DEV).at(op)?.reg_read(addr).at(op)
+    }
+    fn write(&self, addr: u32, value: u32) -> Result<()> {
+        let op = "write a register of the ADC core (the chain's slow loop)";
+        self.0.device(RX_DEV).at(op)?.reg_write(addr, value).at(op)
+    }
 }
 
 /// The RX sample rate the AD936x runs at (`rx_path_rates`).

@@ -200,6 +200,18 @@ pub enum RadioError {
         /// (format version, taps) the parameters need.
         need: (u16, usize),
     },
+    /// The device has no ISDB-S3 receive chain after its front end, or one
+    /// writing another `Slots` format ([`crate::Backend::capture_slots`]).
+    #[error("{}", chain(backend, *found, *need))]
+    Chain {
+        /// The backend.
+        backend: &'static str,
+        /// The `Slots` format version of the device's chain; `None`: it
+        /// has none.
+        found: Option<u16>,
+        /// The `Slots` format version this host reads.
+        need: u16,
+    },
     /// Front-end parameters that do not validate
     /// ([`crate::Backend::capture_symbols`]).
     #[error(transparent)]
@@ -553,6 +565,15 @@ fn front_end(backend: &str, found: Option<(u16, usize)>, need: (u16, usize)) -> 
         Some((version, taps)) => format!(
             "{backend}: the device's front end is format {version} with {taps} taps; the parameters need format {} with {} taps",
             need.0, need.1
+        ),
+    }
+}
+
+fn chain(backend: &str, found: Option<u16>, need: u16) -> String {
+    match found {
+        None => format!("{backend}: this bitstream has no ISDB-S3 receive chain (Slots)"),
+        Some(v) => format!(
+            "{backend}: the device's ISDB-S3 receive chain writes Slots format {v}; this host reads format {need}"
         ),
     }
 }

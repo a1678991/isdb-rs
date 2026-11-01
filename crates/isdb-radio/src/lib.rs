@@ -111,6 +111,7 @@
 #![warn(clippy::print_stdout, clippy::print_stderr)]
 
 mod backends;
+pub mod chain;
 mod encode;
 mod error;
 #[cfg(any(test, feature = "mock"))]
@@ -406,6 +407,21 @@ pub enum Offload {
         /// Taps per phase of the device's filter banks.
         taps: usize,
     },
+    /// Receiving ISDB-S3: the front end followed by the whole receive
+    /// chain (`isdbs3_phy::chain`: sync, carrier loop, equaliser, TMCC,
+    /// demapper, LDPC, BCH), IQ to `Slots` (`isdb_frontend::slots`), whose
+    /// output [`Backend::capture_slots`] streams. Announced in the front
+    /// end's ID word (`isdb_frontend::control::chain::slots_version`); a
+    /// device offering it offers [`Offload::Symbols`] too.
+    RxSlots {
+        /// The front end's format version.
+        version: u16,
+        /// The front end's taps per phase.
+        taps: usize,
+        /// The chain's `Slots` format version
+        /// (`isdb_frontend::slots::SLOTS_VERSION`).
+        slots_version: u16,
+    },
     /// Transmitting: the ISDB-S transmit interpolator of
     /// `isdb_frontend::shape::fixed` (symbol codes to IQ at the DAC rate),
     /// TX format `version`, banks of `phases` rows of `taps` taps
@@ -436,9 +452,46 @@ impl Offload {
                     && phases == p.phases()
                     && taps == p.taps()
             }
-            Self::Symbols { .. } => false,
+            Self::Symbols { .. } | Self::RxSlots { .. } => false,
         }
     }
+
+    /// The offloads a receive front end's ID word `word` announces: none
+    /// without the front end's magic; [`Offload::Symbols`]; and, when bits
+    /// 11–8 carry a `Slots` format version, [`Offload::RxSlots`] after it
+    /// (`isdb_frontend::control::chain`).
+    pub fn from_rx_id(word: u32) -> Vec<Self> {
+        let Some(id) = isdb_frontend::control::Identity::parse(word) else {
+            return Vec::new();
+        };
+        let mut v = vec![Self::Symbols {
+            version: id.version,
+            taps: id.taps,
+        }];
+        if let Some(s) = isdb_frontend::control::chain::slots_version(word) {
+            v.push(Self::RxSlots {
+                version: id.version,
+                taps: id.taps,
+                slots_version: s,
+            });
+        }
+        v
+    }
+}
+
+/// One stream of `Slots` words taken by [`Backend::capture_slots`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotsCapture {
+    /// The stream's words, overflows and the settings read back (as for
+    /// symbols).
+    pub stream: SymbolsCapture,
+    /// What the chain's open sequence found and loaded.
+    pub open: chain::OpenReport,
+    /// The equaliser's slow loop, when it ran.
+    pub slow_loop: Option<chain::SlowLoopReport>,
+    /// The chain's counters read at the end (`None`: not read, the
+    /// stream ended on an error).
+    pub counters: Option<isdb_frontend::control::chain::Counters>,
 }
 
 /// One stream of `Symbols` words taken by [`Backend::capture_symbols`].
@@ -546,6 +599,32 @@ pub trait Backend: Sync {
             what: "has no symbol front end",
         })
     }
+    /// Run the device's [`Offload::RxSlots`] stage: configure the front
+    /// end with `params` and the chain with `init`
+    /// ([`chain::ChainControl::open`]), run the equaliser's slow loop with
+    /// `slow` on a timer thread (`None`: the chain keeps the taps it
+    /// starts with), and write `words` 16-bit `Slots` words
+    /// (little-endian) to `out` as they arrive, or until `stop`; then back
+    /// to IQ samples. The same DMA path as [`Backend::capture_symbols`].
+    /// Fails when the device does not offer the stage with `params`'
+    /// format and taps and this host's `Slots` format.
+    #[allow(clippy::too_many_arguments)]
+    fn capture_slots(
+        &self,
+        cfg: &RadioConfig,
+        params: &isdb_frontend::Params,
+        init: &isdb_frontend::control::chain::ChainInit,
+        slow: Option<chain::SlowLoopOptions>,
+        words: u64,
+        out: &mut dyn std::io::Write,
+        stop: &AtomicBool,
+    ) -> Result<SlotsCapture> {
+        let _ = (cfg, params, init, slow, words, out, stop);
+        Err(RadioError::Unsupported {
+            backend: self.name(),
+            what: "has no ISDB-S3 receive chain",
+        })
+    }
     /// The transmit stages the device can run itself with `cfg` (a TX
     /// configuration, as [`Backend::describe_tx`] takes), found without
     /// changing its state (default: none).
@@ -602,3 +681,37 @@ impl std::fmt::Debug for dyn Backend {
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use isdb_frontend::control::Identity;
+
+    /// The front end's ID word gives the symbol offload; with a `Slots`
+    /// version in bits 11–8 the chain too; nothing without the magic.
+    #[test]
+    fn offloads_from_the_rx_id_word() {
+        let fe = Identity {
+            version: 4,
+            taps: 32,
+        };
+        let sym = Offload::Symbols {
+            version: 4,
+            taps: 32,
+        };
+        assert_eq!(Offload::from_rx_id(fe.word()), [sym]);
+        let w = isdb_frontend::control::chain::id_word(&fe, 1);
+        assert_eq!(
+            Offload::from_rx_id(w),
+            [
+                sym,
+                Offload::RxSlots {
+                    version: 4,
+                    taps: 32,
+                    slots_version: 1
+                }
+            ]
+        );
+        assert!(Offload::from_rx_id(0).is_empty());
+    }
+}
