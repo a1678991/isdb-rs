@@ -11,13 +11,9 @@
 //! one at the given input scale and offset; `SWEEP=1` sweeps scale and
 //! offset instead.
 
+mod common;
+
 use isdb_fec::ldpc::fixed::{Decoder, Params, quantise};
-use isdb_iq::Recording;
-use isdbs3_core::slots::layout;
-use isdbs3_phy::frontend::{Trim, symbols};
-use isdbs3_phy::main_signal::{codeword_llrs, learned_points, main_symbols, pilots};
-use isdbs3_phy::sync::synchronise;
-use isdbs3_phy::tmcc::{decode, llrs};
 use std::time::Instant;
 
 struct Word {
@@ -26,53 +22,12 @@ struct Word {
 }
 
 fn words_of(path: &str, max_frames: usize) -> Vec<Word> {
-    let mut rec = Recording::open(std::path::Path::new(path), None, None).expect("open");
-    let fs = rec.sample_rate;
     let mut out = Vec::new();
-    for seg in rec.segments().clone() {
-        let x = rec
-            .read(
-                seg.start,
-                usize::try_from(seg.end - seg.start).expect("segment length"),
-            )
-            .expect("read");
-        let s = symbols(&x, fs, None, Trim::Auto).expect("front end");
-        let Some(sy0) = synchronise(&s.z) else {
-            continue;
-        };
-        // equalise as `rx::receive` does: taps from the first frame whose
-        // TMCC decodes
-        let es0 = 10f64.powf(sy0.sync_snr_db / 10.0);
-        let w = sy0.frames.iter().find_map(|&f| {
-            let l = llrs(&s.z, &sy0.slots, f, 1.0 / (2.0 * es0))?;
-            let lay = layout(&decode(&l, 50).ok()?.info)?;
-            isdbs3_phy::eq::train(&s.z, &sy0.slots, f, &lay)
-        });
-        let z = w.map_or(s.z.clone(), |w| isdbs3_phy::eq::apply(&s.z, &w));
-        let Some(sy) = synchronise(&z) else { continue };
-        let es = 10f64.powf(sy.sync_snr_db / 10.0);
-        for &f in sy.frames.iter().take(max_frames) {
-            let Some(l) = llrs(&z, &sy.slots, f, 1.0 / (2.0 * es)) else {
-                continue;
-            };
-            let Ok(t) = decode(&l, 50) else { continue };
-            let Some(lay) = layout(&t.info) else { continue };
-            let (Some(ms), Some(pil)) = (main_symbols(&z, &sy.slots, f), pilots(&z, &sy.slots, f))
-            else {
-                continue;
-            };
-            let Some(pts) = learned_points(&pil, &lay, lay[0].modulation) else {
-                continue;
-            };
-            let n0 = isdbs3_phy::rx::noise_of(&ms, &lay, &|_, _| pts.clone());
-            for sl in lay.iter().filter(|s| !s.dummy) {
-                out.push(Word {
-                    rate: sl.rate,
-                    llr: codeword_llrs(&ms, sl, &pts, n0),
-                });
-            }
+    common::for_each_word(path, max_frames, 0.0, |w| {
+        if let common::Word::Main(rate, llr, _) = w {
+            out.push(Word { rate, llr });
         }
-    }
+    });
     out
 }
 

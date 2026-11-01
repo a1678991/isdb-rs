@@ -375,7 +375,8 @@ RGMII input whatever we add; the blocks' own clocks had > 0.8 ns.
    offset, input LLRs, and per codeword the expected bits, iterations,
    convergence, and the hard decisions after every iteration (for
    debugging a mismatch), in `fpga/build/ldpc-*.json`; `mise run
-   fpga:vectors` writes them. **Status: in progress (2026-11-01).**
+   fpga:vectors` writes them. **Status: done (2026-11-01), results
+   below; the contract's conflict rule is the open question.**
 2. **`fpga`: the LDPC decoder HDL.** `isdb_fpga/ldpc.py`: the code
    tables as ROM (the 11 rates' entries: 1 015 entries × 15 bits, the
    layer order computed at elaboration), S check-node units, the
@@ -410,11 +411,136 @@ Pieces 1–3 are independent and run in parallel; 4 needs 3's vectors
 (and can start on the sync stage from 3's first commit); 5 needs 3's
 format; 6 needs all.
 
+## Results
+
+### Piece 1: the layered schedule on the recordings (2026-11-01)
+
+`isdb_fec::ldpc::fixed::Schedule` as contracted (`Sequential` is
+today's decoder bit for bit: `ldpcspeed` on BS7, one thread pinned to
+one core, 4 690–4 840 cw/s before and 4 670–4 850 after).
+`isdbs3-phy` `examples/ldpcsched` decodes every codeword of the six
+recordings (BS7, BS11, BS17 at 61.44 Msps, 2026-10-20; the same at
+40 Msps from the live path, 2026-10-25), quantised as `Ldpc::FIXED`
+(input scale 1, offset 1): 18 336 codewords of 16APSK 93/120. A decode's
+path does not depend on the limit, so every limit is read off one run
+at 50 (checked against a direct run at 30 or 20).
+
+**As received, nothing fails.** At any limit from 5 to 50 and any
+schedule, 0 of 18 336, all converged within 4 iterations:
+
+| Schedule | Mean iterations | Histogram (1 / 2 / 3 / 4 iterations) |
+|---|---|---|
+| sequential | 2.072 | 66 / 16 894 / 1 369 / 7 |
+| layered 1 | 2.052 | 103 / 17 183 / 1 047 / 3 |
+| layered 34 | 2.055 | 97 / 17 134 / 1 102 / 3 |
+| layered 68 | 2.062 | 93 / 17 029 / 1 206 / 8 |
+| layered 187 | 2.071 | 75 / 16 890 / 1 361 / 10 |
+| layered 374 | 2.084 | 52 / 16 711 / 1 560 / 13 |
+
+(The demapper's 1/N0 is 14.8–15.6 dB on these. VERIFICATION.md's 5 of
+9 216 failures on the live recordings were measured on 2026-10-25,
+before the carrier fixes of 2026-10-26; today's chain gives cleaner
+codewords and these recordings no longer test the decoder.)
+
+**Near threshold** (`ldpcsched --noise V`: complex Gaussian noise of
+variance V added to the main symbols before demapping, N0 measured on
+the noisy symbols as the receiver does; same 18 336 codewords). Failed
+codewords, and mean iterations at the limit:
+
+| 1/N0 | Schedule | 5 | 8 | 10 | 12 | 15 | 20 | 30 | 50 | mean at 12 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ≈ 13.0 dB (V 0.03) | sequential | 14 174 | 1 405 | 210 | 42 | 8 | 2 | 1 | 1 | 6.48 |
+| | layered 1 | 13 706 | 1 324 | 206 | 41 | 9 | 2 | 1 | 1 | 6.42 |
+| | layered 34 | 14 127 | 1 548 | 244 | 52 | 11 | 2 | 2 | 1 | 6.51 |
+| | layered 68 | 15 068 | 2 127 | 376 | 102 | 20 | 3 | 2 | 1 | 6.73 |
+| | layered 187 | 16 353 | 3 483 | 911 | 297 | 94 | 33 | 16 | 11 | 7.16 |
+| | layered 374 | 17 384 | 5 456 | 2 347 | 1 053 | 469 | 246 | 169 | 143 | 7.82 |
+| ≈ 12.8 dB (V 0.035) | sequential | 18 303 | 9 739 | 5 210 | 3 076 | 1 482 | 669 | 346 | 242 | 9.10 |
+| | layered 1 | 18 300 | 9 538 | 5 136 | 3 044 | 1 474 | 681 | 336 | 240 | 9.05 |
+| | layered 34 | 18 312 | 10 065 | 5 551 | 3 382 | 1 754 | 825 | 433 | 314 | 9.18 |
+| | layered 68 | 18 325 | 11 329 | 6 374 | 4 063 | 2 248 | 1 147 | 636 | 451 | 9.47 |
+| | layered 187 | 18 334 | 13 567 | 8 481 | 5 925 | 4 034 | 2 692 | 1 927 | 1 663 | 10.05 |
+| | layered 374 | 18 335 | 16 066 | 11 821 | 8 927 | 6 817 | 5 528 | 4 817 | 4 581 | 10.79 |
+| ≈ 12.6 dB (V 0.04) | sequential | 18 336 | 17 991 | 15 802 | 12 939 | 9 912 | 7 476 | 5 941 | 5 150 | 11.56 |
+| | layered 68 | 18 336 | 18 190 | 16 806 | 14 396 | 11 483 | 8 948 | 7 243 | 6 514 | 11.72 |
+| | layered 374 | 18 336 | 18 335 | 18 249 | 17 877 | 17 096 | 16 083 | 15 281 | 14 929 | 11.98 |
+
+(The full output, with every histogram, is what `ldpcsched` prints.) The
+waterfall is steep: 0 failures at 15 dB, about 1 at 13.0 dB with limit
+20, most at 12.6 dB. So:
+
+- **Step.** Layered steps up to 34 are as good as sequential; 68 costs
+  about 0.05 dB (twice the failures at limit 12 where they are rare);
+  187 and 374 are clearly worse and **show an error floor** (11 and 143
+  failures at limit 50 where sequential has 1).
+- **Why: the conflict rule, not the parallelism.** `examples/ldpcconflict`
+  (3 000 of the live codewords, scalar decoders, the contract rule
+  checked equal to the library's) compares the contract's rule (the
+  later check's write wins) with *delta* write-back (each check of the
+  step adds its message change r_new − r_old to the variable's L, the
+  sum saturated once; the same reads, the same steps) and with the
+  contract on steps cut wherever a check would share a variable with an
+  earlier one of its step (no conflicting pair inside a step):
+
+  | V | Rule | step 34 | step 68 | step 187 | step 374 (failed at limit 12 / 50) |
+  |---|---|---|---|---|---|
+  | 0.03 | contract | | 41 / 0 | 106 / 4 | 365 / 54 |
+  | | delta | | 16 / 0 | 17 / 0 | 18 / 0 |
+  | | split | | 14 / 0 | 14 / 0 | 14 / 0 |
+  | 0.035 | contract | 1 104 / 107 | 1 303 / 154 | 1 811 / 554 | 2 426 / 1 441 |
+  | | delta | 998 / 87 | 1 025 / 87 | 1 035 / 88 | 1 065 / 85 |
+  | | split | 997 / 87 | 997 / 87 | 997 / 87 | 997 / 87 |
+
+  With delta write-back a **whole layer per step (374 checks) decodes
+  as well as the sequential decoder** (85 against 87 of 3 000 at limit
+  50); under "later wins", the other check's update to a shared
+  variable is lost, every iteration, at 25 pairs × up to 374 positions
+  per layer of 93/120. In hardware the delta rule is a read-modify-write
+  of L with an adder (or the two writes of a pair merged before the
+  RAM), not more memory.
+- **Limit.** With the contract as it stands and step 68: limit 12
+  gives 102 failures of 18 336 at 13.0 dB against 1 at limit 50, and
+  20 gives 3. At the received SNR every limit ≥ 5 is lossless. The
+  budget table above allows 16.7 iterations at step 68 / 200 MHz and
+  22.9 at step 187 / 100 MHz.
+
+**Recommendation.** Amend the contract's conflict rule to delta
+write-back (`L_v ← sat(L_v(step start) + Σ_step (r_new,e − r_old,e))`
+over the step's edges on v; equal to today's rule wherever a variable
+has one edge in the step) and build **step 187 at 100 MHz with a limit
+of 20** (22.9 iterations of budget per codeword at 120 codewords), or
+step 374 if the check-node units fit; with the contract unchanged,
+**step 68 at 200 MHz with a limit of 16** (the budget's 16.7; 16
+failures of 18 336 at 13.0 dB, against 102 at 12, 3 at 20, and the
+sequential decoder's 4 at 16) or step 34 with a limit of 12 if
+the clock or the units do not allow it. The model change is small
+(`layered_iteration`'s write loop); the vectors would be rewritten. Not
+done here: the contract is shared with piece 2 and changes only by the
+plan's owner. (Rates other than 93/120 were not measured on recordings:
+the lab transponders carry only 93/120; 41/120 has 4 conflicting pairs
+in 79 layers, 109/120 26 in 11, so the latter is the most exposed.)
+
+### Piece 1: vectors (2026-11-01)
+
+`mise run fpga:vectors` writes `fpga/build/ldpc-tables.json` (21 kB)
+and nine sets, 0.46–1.3 MB each (`fpga/README.md` "LDPC vectors";
+format in `isdbs3-phy` `examples/ldpcvectors.rs`), plus two from a
+recording with `ISDB_RS_ISDBS3_TLV_IQ`. `tools/ldpc-vectors-check.py`, an
+independent pure-Python decoder built from the tables file, reproduces
+all eleven sets (68 codewords, every bit, iteration count, unsatisfied
+count and trace).
+
 ## Tools added for this plan
 
 - `tools/ldpc-layer-conflicts.py`: the layer structure of the eleven
   codes (q, P, edges, largest layer degree, conflicting pairs and their
   shift differences).
+- `isdbs3-phy` `examples/ldpcsched` (failures, mean iterations and
+  histogram per schedule and limit, `--noise` to move the operating
+  point), `examples/ldpcconflict` (the conflict rules compared),
+  `examples/ldpcvectors` (the FPGA vectors), and
+  `tools/ldpc-vectors-check.py` (the vectors against an independent
+  Python decoder).
 - `fpga/tezuka/utilization.tcl`: whole-design utilisation by hierarchy
   of a routed checkpoint (the table under "Capacity").
 - The measurements above are reproducible with the existing
