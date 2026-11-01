@@ -26,7 +26,7 @@ pub fn upper() -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// Index of R[r][c] (r ≤ c) in the upper-triangle order: row by row.
+/// Index of `R[r][c]` (r ≤ c) in the upper-triangle order: row by row.
 pub fn r_index(r: usize, c: usize) -> usize {
     debug_assert!(r <= c && c < TAPS);
     r * TAPS - r * (r + 1) / 2 + c
@@ -40,10 +40,10 @@ pub struct Sums {
     pub frame: u32,
     /// Training symbols summed.
     pub count: u32,
-    /// R[r][c] = Σ conj(x_r) · x_c for r ≤ c, row by row (66 complex,
+    /// `R[r][c] = Σ conj(x_r) · x_c` for r ≤ c, row by row (66 complex,
     /// 48-bit signed in the HDL).
     pub r: Vec<[i64; 2]>,
-    /// p[r] = Σ conj(x_r) · d (11 complex, 48 bits).
+    /// `p[r] = Σ conj(x_r) · d` (11 complex, 48 bits).
     pub p: Vec<[i64; 2]>,
 }
 
@@ -143,7 +143,7 @@ impl Equaliser {
 
     /// The symbol at the line's centre (index n) is a training symbol
     /// with reference `d`: add its products to the open sum (none open,
-    /// or the line not full: nothing). x_k = y_{n+5−k} = line[k].
+    /// or the line not full: nothing). x_k = y_{n+5−k} = `line[k]`.
     pub fn train(&mut self, d: [i16; 2]) {
         if !self.full() {
             return;
