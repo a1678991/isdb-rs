@@ -386,7 +386,6 @@ class LdpcDecoder(Elaboratable):
         layer_info = Signal(_bits(max(len(info_init), 2)))
         pass_no = self.passes
         decided = Signal()
-        stop = Signal()
         gap_ptr = Signal(_bits(len(gap_rows)))
         fill_g = Signal(gbits)
         fill_w = Signal(wbits)
@@ -677,6 +676,11 @@ class LdpcDecoder(Elaboratable):
         # Wc: rotate units -> lanes (lane lam <- unit (lam + b) mod S), lane addresses
         wd_v = Signal()
         m.d.sync += wd_v.eq(wc["v"])
+        # verification: the entry index of the reads at the memories and of
+        # the writes (synth/ldpc_latency.py measures WRITE_LATENCY with them)
+        wk_b, wk_c, wk_d = (Signal(kbits, name=f"wk_{x}") for x in "bcd")
+        m.d.sync += [wk_b.eq(wa_k), wk_c.eq(wk_b), wk_d.eq(wk_c)]
+        self._probe = dict(read_v=x0["v"], read_k=x0["k"], write_v=wd_v, write_k=wk_d)
         sh = wc["sh"]
         c_g = sh[:gbits]
         c_w0 = sh[gbits:gbits + stbits]
@@ -765,7 +769,7 @@ class LdpcDecoder(Elaboratable):
             # the pass's syndrome weight (iteration pass_no - 1) is complete
             total = unsat + 0
             with m.If((total == 0) | (pass_no - 1 == max_iter)):
-                m.d.sync += [phase.eq(DRAIN), stop.eq(1), drain_left.eq(3),
+                m.d.sync += [phase.eq(DRAIN), drain_left.eq(3),
                              self.res_iterations.eq(pass_no - 1),
                              self.res_converged.eq(total == 0), self.res_unsat.eq(total)]
             with m.Else():
@@ -776,7 +780,7 @@ class LdpcDecoder(Elaboratable):
         with m.If(busy & (phase == DRAIN)):
             with m.If(~wpipe_busy):
                 with m.If(drain_left == 0):
-                    m.d.sync += [busy.eq(0), stop.eq(0)]
+                    m.d.sync += busy.eq(0)
                     m.d.comb += out_go.eq(1)
                 with m.Else():
                     m.d.sync += drain_left.eq(drain_left - 1)
@@ -784,7 +788,6 @@ class LdpcDecoder(Elaboratable):
         # --- the output stream -------------------------------------------------
         og = Signal(gbits)
         ow = Signal(wbits)
-        o_reading = Signal()
         o_more = Signal()  # words left to read
         o_inflight = Signal()
         buf = Signal(S + 16)

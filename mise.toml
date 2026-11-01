@@ -192,9 +192,26 @@ run = [
   "uv run --locked python -m isdb_fpga.txmodel build/txvec-py-2-stress.json --preset stress",
 ]
 
+[tasks."fpga:ldpc-vectors"]
+description = "write the LDPC decoder's Python-model vector sets (fpga/isdb_fpga/ldpcmodel.py: toy codes, 93/120 and TMCC at step 17) into fpga/build"
+depends = ["fpga:vectors"]
+dir = "fpga"
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
+run = "uv run --locked python -m isdb_fpga.ldpcmodel --all build"
+
+[tasks."fpga:ldpc-estimate"]
+description = "Yosys synth_xilinx resource estimate of the LDPC decoder (S = 17, 34) and its cycles per iteration"
+depends = ["fpga:vectors"]
+dir = "fpga"
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
+run = [
+  "uv run --locked python synth/ldpc_estimate.py 17 34",
+  "uv run --locked python synth/ldpc_cycles.py 17 34",
+]
+
 [tasks."fpga:test"]
-description = "simulate the FPGA front end and transmit block against their models, bit for bit"
-depends = ["fpga:vectors", "fpga:tx-vectors"]
+description = "simulate the FPGA front end, transmit block and LDPC decoder against their models, bit for bit"
+depends = ["fpga:vectors", "fpga:tx-vectors", "fpga:ldpc-vectors"]
 dir = "fpga"
 env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
 run = "uv run --locked python -m unittest discover -s tests -v"
