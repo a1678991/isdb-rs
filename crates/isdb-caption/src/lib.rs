@@ -18,10 +18,23 @@
 //! event start and its own media clock; [`Timeline`] takes the document
 //! with that resolution and the arrival time (for an untimed clear).
 //!
-//! Styling, regions and ARIB extensions (`arib-tt:*`) are dropped: cues
-//! are text, one line per `<p>`, `<br/>` breaking a line.
+//! Two outputs:
+//!
+//! - [`to_srt`] and the plain [`Cue::lines`]: text, one line per `<p>`,
+//!   `<br/>` breaking a line — what a SubRip / Matroska `S_TEXT/UTF8`
+//!   track can hold;
+//! - [`to_vtt`]: the document as WebVTT keeps it — each `<p>` a cue at
+//!   its region's place (`line`/`position`/`size` from `tts:origin` and
+//!   `tts:extent` on the root canvas), its spans as classes of a `STYLE`
+//!   block (colour, background, the outline as a text shadow, font family
+//!   and size, line height, weight and style, underline), `<br/>` and
+//!   ruby as they are. What WebVTT cannot express is dropped, see
+//!   [`style`].
 
+pub mod style;
 pub mod xml;
+
+pub use style::{Paragraph, Run, Style};
 
 use std::fmt::Write as _;
 
@@ -82,7 +95,7 @@ fn parse_hms(h: &str, m: &str, s: &str) -> Option<f64> {
 
 /// One TTML document as caption lines with its own times (milliseconds on
 /// the document's clock; `None` when the document leaves them open).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Document {
     /// `xml:lang` of the root (`ja` on air), when given.
     pub lang: Option<String>,
@@ -91,7 +104,7 @@ pub struct Document {
 }
 
 /// A run of lines that shares one time interval.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     /// The begin, document clock.
     pub begin: Option<i64>,
@@ -99,6 +112,8 @@ pub struct Block {
     pub end: Option<i64>,
     /// The lines (empty: a clear).
     pub lines: Vec<String>,
+    /// The same `<p>`s with their styled runs and regions.
+    pub paragraphs: Vec<Paragraph>,
 }
 
 impl Document {
@@ -167,9 +182,11 @@ pub fn parse(bytes: &[u8]) -> Result<Document, Error> {
     let times = Times {
         frame_rate,
         tick_rate,
+        styles: style::Sheet::of(&root),
     };
     for body in root.elements().filter(|e| e.local_name() == "body") {
-        times.walk(body, None, None, &mut doc.blocks)?;
+        let inherited = times.styles.resolve(body, &Style::default());
+        times.walk(body, None, None, &inherited, &mut doc.blocks)?;
     }
     Ok(doc)
 }
@@ -177,6 +194,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, Error> {
 struct Times {
     frame_rate: f64,
     tick_rate: f64,
+    styles: style::Sheet,
 }
 
 impl Times {
@@ -221,6 +239,7 @@ impl Times {
         e: &xml::Element,
         parent_begin: Option<i64>,
         parent_end: Option<i64>,
+        inherited: &Style,
         out: &mut Vec<Block>,
     ) -> Result<(), Error> {
         let (begin, end) = self.interval(e, parent_begin, parent_end)?;
@@ -232,15 +251,26 @@ impl Times {
                 .map(|l| l.trim().to_owned())
                 .filter(|l| !l.is_empty())
                 .collect();
+            let para = self.styles.paragraph(e, inherited);
+            let paragraphs: Vec<Paragraph> = para.into_iter().collect();
             match out.last_mut() {
-                Some(b) if b.begin == begin && b.end == end => b.lines.extend(lines),
-                _ => out.push(Block { begin, end, lines }),
+                Some(b) if b.begin == begin && b.end == end => {
+                    b.lines.extend(lines);
+                    b.paragraphs.extend(paragraphs);
+                }
+                _ => out.push(Block {
+                    begin,
+                    end,
+                    lines,
+                    paragraphs,
+                }),
             }
             return Ok(());
         }
         let before = out.len();
         for c in e.elements() {
-            self.walk(c, begin, end, out)?;
+            let style = self.styles.resolve(c, inherited);
+            self.walk(c, begin, end, &style, out)?;
         }
         // A timed container with no lines below (a `div` holding only an
         // empty `p`) still marks its time: a clear.
@@ -249,6 +279,7 @@ impl Times {
                 begin,
                 end,
                 lines: Vec::new(),
+                paragraphs: Vec::new(),
             });
         }
         Ok(())
@@ -288,7 +319,7 @@ impl Times {
 }
 
 /// A cue on the output clock (milliseconds).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Cue {
     /// Shown from.
     pub start: i64,
@@ -296,6 +327,8 @@ pub struct Cue {
     pub end: i64,
     /// The lines.
     pub lines: Vec<String>,
+    /// The same text as styled paragraphs at their regions (WebVTT).
+    pub paragraphs: Vec<Paragraph>,
 }
 
 /// The documents of one caption stream into cues: a cue left open by its
@@ -304,7 +337,7 @@ pub struct Cue {
 #[derive(Debug, Clone)]
 pub struct Timeline {
     cues: Vec<Cue>,
-    open: Option<(i64, Vec<String>)>,
+    open: Option<(i64, Vec<String>, Vec<Paragraph>)>,
     /// The longest a cue may stay open (ms).
     pub max_open: i64,
 }
@@ -356,21 +389,27 @@ impl Timeline {
                     start,
                     end,
                     lines: b.lines.clone(),
+                    paragraphs: b.paragraphs.clone(),
                 }),
                 Some(_) => {}
                 None => {
                     self.close(start);
-                    self.open = Some((start, b.lines.clone()));
+                    self.open = Some((start, b.lines.clone(), b.paragraphs.clone()));
                 }
             }
         }
     }
 
     fn close(&mut self, at: i64) {
-        if let Some((start, lines)) = self.open.take() {
+        if let Some((start, lines, paragraphs)) = self.open.take() {
             let end = at.min(start + self.max_open);
             if end > start {
-                self.cues.push(Cue { start, end, lines });
+                self.cues.push(Cue {
+                    start,
+                    end,
+                    lines,
+                    paragraphs,
+                });
             }
         }
     }
@@ -379,7 +418,7 @@ impl Timeline {
     /// sorted by start.
     #[must_use]
     pub fn finish(mut self, end: Option<i64>) -> Vec<Cue> {
-        if let Some((start, _)) = &self.open {
+        if let Some((start, ..)) = &self.open {
             let at = end.unwrap_or(start + self.max_open);
             self.close(at);
         }
@@ -388,7 +427,7 @@ impl Timeline {
     }
 }
 
-fn stamp(ms: i64, frac_sep: char) -> String {
+pub(crate) fn stamp(ms: i64, frac_sep: char) -> String {
     let ms = ms.max(0);
     format!(
         "{:02}:{:02}:{:02}{frac_sep}{:03}",
@@ -416,31 +455,12 @@ pub fn to_srt(cues: &[Cue]) -> String {
     out
 }
 
-/// The cues as WebVTT (`&`, `<`, `>` escaped; a cue line never holds
-/// `-->`).
+/// The cues as WebVTT, styled and placed as their TTML has them (see
+/// [`style::write_vtt`]; a cue without paragraphs is written as its plain
+/// lines).
 #[must_use]
 pub fn to_vtt(cues: &[Cue]) -> String {
-    let mut out = String::from("WEBVTT\n\n");
-    for c in cues {
-        let text = c
-            .lines
-            .iter()
-            .map(|l| {
-                l.replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;")
-                    .replace("-->", "--&gt;")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let _ = write!(
-            out,
-            "{} --> {}\n{text}\n\n",
-            stamp(c.start, '.'),
-            stamp(c.end, '.')
-        );
-    }
-    out
+    style::write_vtt(cues)
 }
 
 #[cfg(test)]
@@ -467,14 +487,13 @@ mod tests {
     fn closed_and_open_documents() {
         let d = parse(BS17.as_bytes()).unwrap();
         assert_eq!(d.lang.as_deref(), Some("ja"));
+        assert_eq!(d.blocks.len(), 1);
         assert_eq!(
-            d.blocks,
-            vec![Block {
-                begin: Some(819_667),
-                end: Some(822_334),
-                lines: vec!["礼拝のあと　ジェーンさんは➡".into()]
-            }]
+            (d.blocks[0].begin, d.blocks[0].end),
+            (Some(819_667), Some(822_334))
         );
+        assert_eq!(d.blocks[0].lines, vec!["礼拝のあと　ジェーンさんは➡"]);
+        assert_eq!(d.blocks[0].paragraphs.len(), 1);
         let d = parse(BS11_OPEN.as_bytes()).unwrap();
         assert_eq!(d.blocks[0].end, None);
         assert_eq!(d.blocks[0].lines, vec!["中には、", "二行目"]);
@@ -512,14 +531,12 @@ mod tests {
             br#"<tt xmlns="http://www.w3.org/ns/ttml"><body begin="10s"><div><p begin="1s" dur="2s">a<br/>b <span>c</span><ruby><rb>d</rb><rt>e</rt></ruby></p></div></body></tt>"#,
         )
         .unwrap();
+        assert_eq!(d.blocks.len(), 1);
         assert_eq!(
-            d.blocks,
-            vec![Block {
-                begin: Some(11_000),
-                end: Some(13_000),
-                lines: vec!["a".into(), "b cd".into()]
-            }]
+            (d.blocks[0].begin, d.blocks[0].end),
+            (Some(11_000), Some(13_000))
         );
+        assert_eq!(d.blocks[0].lines, vec!["a", "b cd"]);
     }
 
     #[test]
@@ -528,6 +545,7 @@ mod tests {
             start: 3_723_004,
             end: 3_725_000,
             lines: vec!["a<b>".into(), "c --> d".into()],
+            paragraphs: Vec::new(),
         }];
         assert_eq!(
             to_srt(&cues),
