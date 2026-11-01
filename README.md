@@ -20,6 +20,25 @@ experiments in the lab.
  analysis ◀─ isdb ts ◀─ TS / TLV ◀─ isdb rx ◀───────┘
 ```
 
+At a glance (`test.toml` as in the [quick start](#quick-start)):
+
+```sh
+isdb mux -c test.toml --seconds 10 --out-ts out.ts            # services → transport stream
+isdb tx --mux-config test.toml --iq out.cf32 --seconds 3      # → ISDB-T IQ file
+isdb rx --iq out.cf32 --out rx.ts                             # IQ → transport stream
+isdb ts inspect rx.ts                                         # PIDs, programs, decoded SI
+isdb ts validate rx.ts                                        # findings, each citing its clause
+isdb ts diff out.ts rx.ts                                     # section-level comparison
+
+isdb tx --mux-config test.toml --radio hackrf --channel 27 --gain txvga=20 --dry-run      # RF settings only
+isdb rx --radio pluto --channel BS7 --system isdbs3 --seconds 30 --out 'bs7-{tlv_id}.tlv' # advanced BS → TLV
+isdb tlv inspect bs7-b070.tlv                                 # services, events, assets
+isdb-remux --mkv -i bs7-b070.tlv -o show.mkv                  # clear TLV → Matroska with captions
+```
+
+Transmitting to a radio needs `--rf-enable` and a conducted bench; read
+the notice below first.
+
 > [!WARNING]
 > **Legal and RF safety notice**
 >

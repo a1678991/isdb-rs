@@ -14,6 +14,24 @@
  解析 ◀─ isdb ts ◀─ TS / TLV ◀─ isdb rx ◀───────────┘
 ```
 
+主な使い方（`test.toml` は[クイックスタート](#クイックスタート)の記述）:
+
+```sh
+isdb mux -c test.toml --seconds 10 --out-ts out.ts            # サービス → トランスポートストリーム
+isdb tx --mux-config test.toml --iq out.cf32 --seconds 3      # → ISDB-T の IQ ファイル
+isdb rx --iq out.cf32 --out rx.ts                             # IQ → トランスポートストリーム
+isdb ts inspect rx.ts                                         # PID、番組、復号した SI
+isdb ts validate rx.ts                                        # 根拠条項つきの指摘
+isdb ts diff out.ts rx.ts                                     # セクション単位の比較
+
+isdb tx --mux-config test.toml --radio hackrf --channel 27 --gain txvga=20 --dry-run      # RF 設定の表示のみ
+isdb rx --radio pluto --channel BS7 --system isdbs3 --seconds 30 --out 'bs7-{tlv_id}.tlv' # 新 4K8K 衛星放送 → TLV
+isdb tlv inspect bs7-b070.tlv                                 # サービス、イベント、アセット
+isdb-remux --mkv -i bs7-b070.tlv -o show.mkv                  # スクランブルされていない TLV → 字幕つき Matroska
+```
+
+無線機からの送信には `--rf-enable` と有線接続の試験環境が必要です。先に下の注意事項を読んでください。
+
 > [!WARNING]
 > **法令および電波安全に関する注意**
 >
