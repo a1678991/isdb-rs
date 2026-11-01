@@ -84,7 +84,7 @@ proptest! {
         let ws: Vec<Vec<i8>> = seeds.iter().zip(0u16..)
             .map(|(&s, i)| word(&code, s, amp, noise, flips * (i % 3)))
             .collect();
-        let p = Params { max_iter, offset };
+        let p = Params::new(max_iter, offset);
         check::<16>(&code, &ws, p);
         check::<32>(&code, &ws[..ws.len().min(8)], p);
     }
@@ -107,7 +107,7 @@ proptest! {
         let ws: Vec<Vec<i8>> = seeds.iter().zip(0u16..)
             .map(|(&s, i)| word(&code, s, amp, noise, flips * (i % 4)))
             .collect();
-        let p = Params { max_iter, offset: 1 };
+        let p = Params::new(max_iter, 1);
         let refs: Vec<&[i8]> = ws.iter().map(Vec::as_slice).collect();
         let streamed = Decoder::<8>::default().decode_all(&code, &refs, p);
         for (i, w) in ws.iter().enumerate() {
@@ -128,22 +128,8 @@ fn saturated_and_zero_inputs_match_too() {
         word(&code, 3, 20, 30, 80),
     ];
     ws.push(ws[0].iter().map(|x| x.saturating_neg()).collect());
-    check::<8>(
-        &code,
-        &ws,
-        Params {
-            max_iter: 20,
-            offset: 1,
-        },
-    );
-    check::<64>(
-        &code,
-        &ws,
-        Params {
-            max_iter: 20,
-            offset: 0,
-        },
-    );
+    check::<8>(&code, &ws, Params::new(20, 1));
+    check::<64>(&code, &ws, Params::new(20, 0));
 }
 
 #[test]
@@ -156,10 +142,7 @@ fn converged_lanes_report_what_a_lone_decode_does() {
         word(&code, 11, 12, 18, 20),
         word(&code, 12, 3, 60, 300),
     ];
-    let p = Params {
-        max_iter: 15,
-        offset: 1,
-    };
+    let p = Params::new(15, 1);
     let r = batch::<4>(&code, &ws, p);
     assert_eq!(r[0].0, Ok(isdb_fec::ldpc::Decoded { iterations: 0 }));
     assert!(matches!(r[1].0, Ok(d) if d.iterations > 0), "{:?}", r[1].0);

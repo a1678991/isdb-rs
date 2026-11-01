@@ -103,7 +103,7 @@ fn main() {
             .flat_map(|_| q.iter().map(Vec::as_slice))
             .collect();
         let code = isdbs3_core::ldpc::code(words[0].0);
-        let p = isdb_fec::ldpc::fixed::Params { max_iter, offset };
+        let p = isdb_fec::ldpc::fixed::Params::new(max_iter, offset);
         let t0 = std::time::Instant::now();
         std::thread::scope(|sc| {
             for share in all.chunks(all.len().div_ceil(threads)) {

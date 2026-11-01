@@ -101,6 +101,78 @@ mod imp {
         }
     }
 
+    /// The message half of [`check_node`] for the layered schedule's
+    /// steps (`ldpc::fixed`, `Schedule::Layered`): the same arithmetic,
+    /// but `L` is only read; the check's `t_e` are appended to `t` and its
+    /// new messages written to `r`. [`apply_messages`] then writes
+    /// `L_v = sat(t_e + r_e)`.
+    #[inline]
+    pub fn check_messages<const W: usize>(
+        vars: &[u32],
+        l: &[Lane<W>],
+        r: &mut [Lane<W>],
+        t: &mut Vec<Lane<W>>,
+        offset: i8,
+    ) {
+        let base = t.len();
+        let mut min1 = [i8::MAX; W];
+        let mut min2 = [i8::MAX; W];
+        let mut imin = [0i8; W];
+        let mut neg = [0i8; W]; // sign parity: 0 or -1
+        for (e, (&v, re)) in vars.iter().zip(r.iter()).enumerate() {
+            let lv = &l[v as usize].0;
+            // an edge of one check: the B44 check degree is at most 32
+            // (tools/ldpc-check-degree.py), inside i8
+            #[allow(clippy::cast_possible_truncation)]
+            let e = e as i8;
+            let mut te = [0i8; W];
+            for i in 0..W {
+                let x = lv[i].saturating_sub(re.0[i]);
+                te[i] = x;
+                let a = x.saturating_abs();
+                neg[i] ^= x >> 7;
+                let lt = -i8::from(a < min1[i]);
+                imin[i] = (imin[i] & !lt) | (e & lt);
+                min2[i] = min1[i].max(min2[i].min(a));
+                min1[i] = min1[i].min(a);
+            }
+            t.push(Lane(te));
+        }
+        let mut m1 = [0i8; W];
+        let mut m2 = [0i8; W];
+        for i in 0..W {
+            m1[i] = min1[i].saturating_sub(offset).max(0);
+            m2[i] = min2[i].saturating_sub(offset).max(0);
+        }
+        for (e, (re, te)) in r.iter_mut().zip(&t[base..]).enumerate() {
+            // an edge of one check: the B44 check degree is at most 32
+            // (tools/ldpc-check-degree.py), inside i8
+            #[allow(clippy::cast_possible_truncation)]
+            let e = e as i8;
+            for i in 0..W {
+                let at = -i8::from(imin[i] == e);
+                let mag = (m1[i] & !at) | (m2[i] & at);
+                let s = neg[i] ^ (te.0[i] >> 7);
+                re.0[i] = (mag ^ s).wrapping_sub(s);
+            }
+        }
+    }
+
+    /// `L_v = sat(t_e + r_e)` for the edges of one check, in edge order.
+    #[inline]
+    pub fn apply_messages<const W: usize>(
+        vars: &[u32],
+        t: &[Lane<W>],
+        r: &[Lane<W>],
+        l: &mut [Lane<W>],
+    ) {
+        for ((&v, te), re) in vars.iter().zip(t).zip(r) {
+            for ((lv, &a), &b) in l[v as usize].0.iter_mut().zip(&te.0).zip(&re.0) {
+                *lv = a.saturating_add(b);
+            }
+        }
+    }
+
     /// Per lane: −1 if the hard decisions of `vars` have odd parity, else 0.
     #[inline]
     pub fn sign_parity<const W: usize>(vars: &[u32], l: &[Lane<W>]) -> Lane<W> {
@@ -174,6 +246,63 @@ mod imp {
         }
     }
 
+    /// The message half of [`check_node`] (see the portable back end).
+    #[inline]
+    pub fn check_messages<const W: usize>(
+        vars: &[u32],
+        l: &[Lane<W>],
+        r: &mut [Lane<W>],
+        t: &mut Vec<Lane<W>>,
+        offset: i8,
+    ) {
+        let base = t.len();
+        let mut min1 = Simd::<i8, W>::splat(i8::MAX);
+        let mut min2 = Simd::<i8, W>::splat(i8::MAX);
+        let mut imin = Simd::<i8, W>::splat(0);
+        let mut neg = Simd::<i8, W>::splat(0);
+        let seven = Simd::<i8, W>::splat(7);
+        for (e, (&var, re)) in vars.iter().zip(r.iter()).enumerate() {
+            // an edge of one check: the B44 check degree is at most 32
+            // (tools/ldpc-check-degree.py), inside i8
+            #[allow(clippy::cast_possible_truncation)]
+            let e = e as i8;
+            let x = v(&l[var as usize]).saturating_sub(v(re));
+            let a = x.saturating_abs();
+            neg ^= x >> seven;
+            imin = a.simd_lt(min1).select(Simd::splat(e), imin);
+            min2 = min1.simd_max(min2.simd_min(a));
+            min1 = min1.simd_min(a);
+            t.push(Lane(x.to_array()));
+        }
+        let zero = Simd::<i8, W>::splat(0);
+        let off = Simd::<i8, W>::splat(offset);
+        let m1 = min1.saturating_sub(off).simd_max(zero);
+        let m2 = min2.saturating_sub(off).simd_max(zero);
+        for (e, (re, te)) in r.iter_mut().zip(&t[base..]).enumerate() {
+            // an edge of one check: the B44 check degree is at most 32
+            // (tools/ldpc-check-degree.py), inside i8
+            #[allow(clippy::cast_possible_truncation)]
+            let e = e as i8;
+            let tv = v(te);
+            let mag = imin.simd_eq(Simd::splat(e)).select(m2, m1);
+            let s = neg ^ (tv >> seven);
+            re.0 = ((mag ^ s) - s).to_array();
+        }
+    }
+
+    /// `L_v = sat(t_e + r_e)` for the edges of one check, in edge order.
+    #[inline]
+    pub fn apply_messages<const W: usize>(
+        vars: &[u32],
+        t: &[Lane<W>],
+        r: &[Lane<W>],
+        l: &mut [Lane<W>],
+    ) {
+        for ((&var, te), re) in vars.iter().zip(t).zip(r) {
+            l[var as usize].0 = v(te).saturating_add(v(re)).to_array();
+        }
+    }
+
     /// Per lane: −1 if the hard decisions of `vars` have odd parity, else 0.
     #[inline]
     pub fn sign_parity<const W: usize>(vars: &[u32], l: &[Lane<W>]) -> Lane<W> {
@@ -186,4 +315,4 @@ mod imp {
     }
 }
 
-pub use imp::{check_node, sign_parity};
+pub use imp::{apply_messages, check_messages, check_node, sign_parity};

@@ -1,5 +1,5 @@
-//! Fixed-point layered min-sum for [`Code`], decoding up to `W` codewords
-//! of one code at once, one per lane.
+//! Fixed-point layered min-sum for [`Code`] (ARIB STD-B44 v2.1 §3.4 (2)),
+//! decoding up to `W` codewords of one code at once, one per lane.
 //!
 //! The arithmetic is defined per lane and is the same whatever the lane
 //! count and whichever [`crate::simd`] back end runs it, so a codeword
@@ -14,24 +14,65 @@
 //!   the caller chooses; [`quantise`] does it), saturating at ±127.
 //! - **Messages**: an `i8` check-to-variable message per edge, zero at the
 //!   start; a-posteriori LLRs `L` in `i8`, saturating.
-//! - **Check c** (checks in order 0 … P−1, edges in the order of
-//!   [`Code`]'s adjacency): `t_e = sat(L_v − r_e)` for each edge e to
-//!   variable v; the sign parity and the two smallest `|t_e|` (min1 ≤
-//!   min2, first edge index of min1 on ties); then the new message
-//!   `r_e = ±max(m − offset, 0)` with m = min2 on the min1 edge and min1
-//!   elsewhere, its sign the parity times the sign of `t_e`; and
-//!   `L_v = sat(t_e + r_e)`. `|t| ` is computed saturating, so −128
-//!   reads 127.
+//! - **Check c** (edges in the order of [`Code::check`]): `t_e = sat(L_v −
+//!   r_e)` for each edge e to variable v; the sign parity and the two
+//!   smallest `|t_e|` (min1 ≤ min2, first edge index of min1 on ties);
+//!   then the new message `r_e = ±max(m − offset, 0)` with m = min2 on
+//!   the min1 edge and min1 elsewhere, its sign the parity times the sign
+//!   of `t_e`; and `L_v = sat(t_e + r_e)`. `|t| ` is computed saturating,
+//!   so −128 reads 127.
+//! - **Schedule** ([`Schedule`]: the order of the checks in one iteration
+//!   and which `L` each reads):
+//!   - [`Schedule::Sequential`] (the default, the CPU's fast path): checks
+//!     0 … P−1 one at a time, each reading the `L` the previous check
+//!     wrote.
+//!   - [`Schedule::Layered`] `{ step }` (the FPGA decoder's; the contract
+//!     the HDL reproduces bit for bit, docs/plans/isdbs3-fpga-rx.md "The
+//!     LDPC schedule contract"): the checks layer by layer, layer l = the
+//!     374 checks c ≡ l mod q (l = 0 … q−1, q = P / 374, increasing c
+//!     within a layer), each layer cut into steps of `step` consecutive
+//!     checks (the last step of a layer shorter when `step` does not
+//!     divide 374). Within a step every check reads `L` and its messages
+//!     as they were at the step's start and computes its `t_e` and new
+//!     `r_e`; then the step's `L_v = sat(t_e + r_e)` are written check by
+//!     check in check order, so a variable two checks of one step share
+//!     (two entries of one address-table row congruent mod q, a
+//!     "conflicting pair", `tools/ldpc-layer-conflicts.py`) ends with the
+//!     later check's value, computed from the stale `L`. The next step
+//!     reads those writes. With `step` 1 this is a sequential decoder in
+//!     layer order. Why layers: the 374 bits of a group hit the checks of
+//!     a layer once each (a cyclic shift, §3.4 (2)), so a layer's checks
+//!     touch disjoint variables bar the conflicting pairs, and `step`
+//!     check-node units can run a step in parallel.
 //! - **Stopping**: after each iteration the hard decisions (`L < 0` is a
 //!   one) are checked against every parity check; a lane whose word is a
 //!   codeword stops there, its bits and iteration count recorded. A lane
 //!   already a codeword at the input stops at iteration 0. Other lanes go
-//!   on to `max_iter`.
+//!   on to `max_iter`. The same for both schedules.
 //!
 //! Lanes past the number of codewords given carry zeros and are ignored.
 
-use super::{Code, Decoded, NotConverged};
+use super::{Code, Decoded, GROUP, NotConverged};
 use crate::simd::{self, Lane};
+
+/// The order in which one iteration visits the checks, and which
+/// a-posteriori values each reads (the module docs give both in full).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Schedule {
+    /// Checks 0 … P−1 one at a time, each after the previous one's
+    /// writes: the CPU decoder.
+    #[default]
+    Sequential,
+    /// Layer by layer (layer l: the checks c ≡ l mod q, §3.4 (2)), each
+    /// layer in steps of `step` checks that all read the values of the
+    /// step's start, the step's writes landing in check order: the FPGA
+    /// decoder's schedule (`step` check-node units).
+    Layered {
+        /// Checks per step, at least 1 (1: sequential in layer order;
+        /// 374 or more: a whole layer per step).
+        step: usize,
+    },
+}
 
 /// The decoder's settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +82,20 @@ pub struct Params {
     /// Offset subtracted from every check-to-variable magnitude (offset
     /// min-sum), in LLR units of the quantised input.
     pub offset: i8,
+    /// The check schedule ([`Schedule::Sequential`] by default).
+    pub schedule: Schedule,
+}
+
+impl Params {
+    /// `max_iter` and `offset` with the default schedule,
+    /// [`Schedule::Sequential`].
+    pub const fn new(max_iter: usize, offset: i8) -> Self {
+        Self {
+            max_iter,
+            offset,
+            schedule: Schedule::Sequential,
+        }
+    }
 }
 
 /// Quantise float LLRs: `round(llr · scale)` saturated to ±127.
@@ -54,6 +109,9 @@ pub fn quantise(llr: &[f32], scale: f32, out: &mut Vec<i8>) {
 
 /// The result for one lane.
 pub type LaneResult = Result<Decoded, NotConverged>;
+
+/// The per-iteration callback of [`Decoder::decode_all_traced`].
+type Trace<'a> = Option<&'a mut dyn FnMut(usize, &[u8])>;
 
 /// Work buffers for one code and lane width, reused across calls.
 #[derive(Debug, Clone)]
@@ -82,17 +140,51 @@ impl<const W: usize> Decoder<W> {
     ///
     /// # Panics
     ///
-    /// If a word's length is not the code's n.
+    /// If a word's length is not the code's n, or the schedule is
+    /// [`Schedule::Layered`] with `step` 0.
     pub fn decode_all(
         &mut self,
         code: &Code,
         words: &[&[i8]],
         p: Params,
     ) -> Vec<(LaneResult, Vec<u8>)> {
+        self.run(code, words, p, None)
+    }
+
+    /// [`Decoder::decode_all`], calling `trace(w, bits)` after every
+    /// iteration of codeword `w` (index into `words`) with its hard
+    /// decisions (0/1, length n) after that iteration: for the FPGA
+    /// vectors, which carry them to locate a mismatch. The results are
+    /// [`Decoder::decode_all`]'s.
+    ///
+    /// # Panics
+    ///
+    /// As [`Decoder::decode_all`].
+    pub fn decode_all_traced(
+        &mut self,
+        code: &Code,
+        words: &[&[i8]],
+        p: Params,
+        mut trace: impl FnMut(usize, &[u8]),
+    ) -> Vec<(LaneResult, Vec<u8>)> {
+        self.run(code, words, p, Some(&mut trace))
+    }
+
+    fn run(
+        &mut self,
+        code: &Code,
+        words: &[&[i8]],
+        p: Params,
+        mut trace: Trace<'_>,
+    ) -> Vec<(LaneResult, Vec<u8>)> {
         let n = code.n;
         for w in words {
             assert_eq!(w.len(), n, "codeword length");
         }
+        if let Schedule::Layered { step } = p.schedule {
+            assert!(step >= 1, "layered schedule with step 0");
+        }
+        let mut hard = Vec::new();
         let mut out: Vec<Option<(LaneResult, Vec<u8>)>> = vec![None; words.len()];
         self.l.clear();
         self.l.resize(n, Lane::splat(0));
@@ -133,10 +225,22 @@ impl<const W: usize> Decoder<W> {
             if held.iter().all(Option::is_none) {
                 break;
             }
-            let (sat, unsat) = iteration(code, &mut self.l, &mut self.r, &mut self.t, p.offset);
+            let (sat, unsat) = match p.schedule {
+                Schedule::Sequential => {
+                    iteration(code, &mut self.l, &mut self.r, &mut self.t, p.offset)
+                }
+                Schedule::Layered { step } => {
+                    layered_iteration(code, &mut self.l, &mut self.r, &mut self.t, p.offset, step)
+                }
+            };
             for i in 0..W {
                 if let Some(w) = held[i] {
                     iters[i] += 1;
+                    if let Some(f) = trace.as_mut() {
+                        hard.clear();
+                        hard.extend(self.l.iter().map(|x| u8::from(x.0[i] < 0)));
+                        f(w, &hard);
+                    }
                     if sat[i] || iters[i] == p.max_iter {
                         out[w] = Some(self.result(i, iters[i], sat[i], unsat[i]));
                         held[i] = None;
@@ -158,7 +262,8 @@ impl<const W: usize> Decoder<W> {
     /// # Panics
     ///
     /// If `llrs` holds no codeword or more than `W`, `bits` not one
-    /// vector per codeword, or a codeword's length is not the code's n.
+    /// vector per codeword, a codeword's length is not the code's n, or
+    /// the schedule is [`Schedule::Layered`] with `step` 0.
     pub fn decode(
         &mut self,
         code: &Code,
@@ -235,6 +340,44 @@ fn iteration<const W: usize>(
     for c in 0..code.n - code.k {
         let (s, e) = (code.row_start[c] as usize, code.row_start[c + 1] as usize);
         simd::check_node(&code.rows[s..e], l, &mut r[s..e], t, offset);
+    }
+    syndrome(code, l)
+}
+
+/// One iteration of [`Schedule::Layered`] `{ step }`, then the syndrome:
+/// per layer, per step, every check's `t` and new messages from the
+/// step's starting `L` (the step's `t`, check after check, kept in `t`),
+/// then the step's `L` writes in check order.
+#[inline(never)]
+fn layered_iteration<const W: usize>(
+    code: &Code,
+    l: &mut [Lane<W>],
+    r: &mut [Lane<W>],
+    t: &mut Vec<Lane<W>>,
+    offset: i8,
+    step: usize,
+) -> ([bool; W], [usize; W]) {
+    let q = code.q();
+    let edges = |c: usize| (code.row_start[c] as usize, code.row_start[c + 1] as usize);
+    // P = 374 q (Code::new): every layer has exactly 374 checks, l + i·q
+    for layer in 0..q {
+        let mut i0 = 0;
+        while i0 < GROUP {
+            let i1 = (i0 + step).min(GROUP);
+            t.clear();
+            for i in i0..i1 {
+                let (s, e) = edges(layer + i * q);
+                simd::check_messages(&code.rows[s..e], l, &mut r[s..e], t, offset);
+            }
+            let mut at = 0;
+            for i in i0..i1 {
+                let (s, e) = edges(layer + i * q);
+                let d = e - s;
+                simd::apply_messages(&code.rows[s..e], &t[at..at + d], &r[s..e], l);
+                at += d;
+            }
+            i0 = i1;
+        }
     }
     syndrome(code, l)
 }

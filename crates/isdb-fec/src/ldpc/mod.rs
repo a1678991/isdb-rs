@@ -117,6 +117,28 @@ impl Code {
     pub fn k(&self) -> usize {
         self.k
     }
+    /// Parity checks P = n − k (§3.4 (2)).
+    pub fn checks(&self) -> usize {
+        self.n - self.k
+    }
+    /// q = P / 374 (§3.4 (2)): the shift between the checks that the bits
+    /// of one group hit, and the number of layers of the layered schedule
+    /// ([`fixed::Schedule::Layered`]: layer l is the checks c ≡ l mod q).
+    pub fn q(&self) -> usize {
+        (self.n - self.k) / GROUP
+    }
+    /// The variables of check `c` (0 ≤ c < P), in the decoder's edge
+    /// order: the information bits whose addresses hit c (§3.4 (2)), in
+    /// increasing bit index, then the staircase parity bits p_{c−1} (none
+    /// for c = 0) and p_c, as codeword positions k + ….
+    ///
+    /// # Panics
+    ///
+    /// If c ≥ P.
+    pub fn check(&self, c: usize) -> &[u32] {
+        let (s, e) = (self.row_start[c] as usize, self.row_start[c + 1] as usize);
+        &self.rows[s..e]
+    }
 
     /// Parity of the `k` information bits (0/1), `n − k` bits.
     ///

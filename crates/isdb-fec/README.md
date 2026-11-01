@@ -17,7 +17,7 @@ and `isdbs-core` (ISDB-S).
 | `prbs` | §3.5, Fig. 3-8 | Annex 1 §4, §6.4; annexed tables 48, 50, 51 | `Prbs15` (X¹⁵ + X¹⁴ + 1, `100101010000000`), `Prbs9` (X⁹ + X⁴ + 1, `111101101`, the ISDB-S burst), `B44Prbs` (ISDB-S3 dispersals) |
 | `bch` | — | — (ISDB-S3: ARIB STD-B44 v2.1 §3.4 (1), §3.5) | binary BCH over GF(2¹⁶), t = 12, any shortening |
 | `ldpc` | — | — (ISDB-S3: B44 §3.4 (2), §3.5) | quasi-cyclic IRA LDPC from an address table: encoder, syndrome, floating-point layered normalised min-sum (the reference) |
-| `ldpc::fixed`, `simd` | — | — | fixed-point layered offset min-sum, W codewords per SIMD lane group, bit-exact with its one-lane form (below) |
+| `ldpc::fixed`, `simd` | — | — | fixed-point layered offset min-sum, W codewords per SIMD lane group, bit-exact with its one-lane form; sequential or layered (FPGA) check schedule (below) |
 
 BO.1408-1 and B31 give the same RS field and generator (B31 writes the
 factors as (x − λⁱ), the same in characteristic 2), the same mother code
@@ -40,6 +40,24 @@ each iteration the hard decisions are checked against every parity check
 and a lane whose word is a codeword stops. `decode_all` streams any number
 of codewords through the W lanes and refills a lane as soon as it stops,
 so a slow or failing codeword does not hold the others.
+
+`Params::schedule` selects the order of the checks (`ldpc::fixed`'s
+module docs give the full rule):
+
+| Schedule | Order | Reads | Purpose |
+|---|---|---|---|
+| `Sequential` (default) | checks 0 … P − 1, one at a time | each check sees the previous one's writes | the CPU decoder, unchanged |
+| `Layered { step }` | layer by layer (layer l = the 374 checks c ≡ l mod q, increasing c), each layer in steps of `step` checks (the last one shorter) | every check of a step reads L and r as they were at the step's start; the step's L writes land in check order, so a variable two checks of a step share (a "conflicting pair", two entries of one table row congruent mod q) keeps the later check's value | the FPGA decoder's schedule (`step` check-node units in parallel), which the HDL reproduces bit for bit ([plan](../../docs/plans/isdbs3-fpga-rx.md), "The LDPC schedule contract") |
+
+The layers exist because the 374 bits of a group hit the checks of a
+layer once each (a cyclic shift by q, B44 §3.4 (2)), so a layer's checks
+touch disjoint variables bar the conflicting pairs
+(`tools/ldpc-layer-conflicts.py`: 4–26 per code). `Layered { step: 1 }` is a
+sequential decoder in layer order. Both schedules have the lane
+equivalence below, and the stopping rule is the same.
+`decode_all_traced` also reports each codeword's hard decisions after
+every iteration (for the FPGA vectors, `isdbs3-phy`
+`examples/ldpcvectors`).
 
 The arithmetic is defined per lane, so a codeword decodes to the same
 bits, in the same number of iterations, alone (W = 1, the `CpuScalar`
@@ -127,5 +145,15 @@ and fails, offset 2 slows convergence (`examples/ldpcfixed`).
   iterations and convergence equal its one-lane decode. Both property
   tests fail on an injected lane-dependent fault and on stale messages in
   a refilled lane. Run on stable and nightly.
+- `tests/ldpc_schedule.rs`: the layered schedule's lane equivalence
+  (16 and 32 lanes, streamed and refilled, steps 1 to 1 000); both
+  schedules against an independent scalar reading of the contract
+  (`Layered { step: 1 }` = the checks one by one in layer order); a code
+  with a conflicting pair in every check of a layer where the rule
+  decides a bit (later check from stale values: 0; earlier check, or no
+  step barrier: 1); the trace ends at the result. Both wrong rules,
+  injected into the decoder, fail it. `isdbs3-phy`
+  `shortened_tmcc_code_decodes_with_both_schedules` runs the shortened
+  61/120 TMCC word (known zeros at +127) through both.
 - The `isdbt-fec` suite (RS, Table 3-8 puncturing, Viterbi over AWGN,
   frame round trips, the gr-isdbt oracle) runs through this code.

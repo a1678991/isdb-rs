@@ -179,7 +179,7 @@ fn main() {
     );
     if std::env::var_os("ITERS").is_some() {
         for max_iter in [5usize, 10, 20, 50, 100, 200] {
-            let (f, i, _) = fixed_stats::<16>(&words, scale, Params { max_iter, offset });
+            let (f, i, _) = fixed_stats::<16>(&words, scale, Params::new(max_iter, offset));
             println!(
                 "fixed i8 scale {scale} offset {offset}, max {max_iter:3} iterations: {f} failed, mean {i:.2}"
             );
@@ -204,14 +204,7 @@ fn main() {
         });
         for &scale in &scales {
             for offset in [0i8, 1, 2] {
-                let (f, i, _) = fixed_stats::<32>(
-                    &words,
-                    scale,
-                    Params {
-                        max_iter: 50,
-                        offset,
-                    },
-                );
+                let (f, i, _) = fixed_stats::<32>(&words, scale, Params::new(50, offset));
                 println!(
                     "fixed i8 scale {scale} offset {offset}: {f} failed, mean {i:.2} iterations"
                 );
@@ -219,10 +212,7 @@ fn main() {
         }
         return;
     }
-    let p = Params {
-        max_iter: 50,
-        offset,
-    };
+    let p = Params::new(50, offset);
     for (w, (f, i, cw)) in [
         (1, fixed_stats::<1>(&words, scale, p)),
         (8, fixed_stats::<8>(&words, scale, p)),

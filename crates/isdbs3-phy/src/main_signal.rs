@@ -322,7 +322,7 @@ pub fn decode_frames(frames: &[FrameInput<'_>], ldpc: &Ldpc) -> Vec<Vec<SlotData
                     .max(if simd { LANES } else { 1 });
                 batches.extend(same.chunks(per).map(<[(usize, &Slot)]>::to_vec));
             }
-            let p = isdb_fec::ldpc::fixed::Params { max_iter, offset };
+            let p = isdb_fec::ldpc::fixed::Params::new(max_iter, offset);
             std::thread::scope(|sc| {
                 let handles: Vec<_> = batches
                     .iter()
