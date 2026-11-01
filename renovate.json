@@ -6,6 +6,10 @@
     ":separateMultipleMajorReleases",
     ":enableVulnerabilityAlertsWithLabel(security)"
   ],
+  "ignorePresets": ["helpers:pinGitHubActionDigests"],
+  "constraints": {
+    "ghActionsLock": "v0.4.0"
+  },
   "timezone": "Asia/Tokyo",
   "schedule": ["before 9am on saturday"],
   "prConcurrentLimit": 5,

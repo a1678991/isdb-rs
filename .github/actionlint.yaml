@@ -1,0 +1,8 @@
+# actionlint configuration (https://github.com/rhysd/actionlint/blob/main/docs/config.md).
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      # `uses: $/...` (an action of this repository at the workflow's own
+      # commit, which actions.lock requires for local actions that use
+      # remote ones) is not known to actionlint 1.7.12 (rhysd/actionlint#711).
+      - 'specifying action "\$/[^"]*" in invalid format because ref is missing'
