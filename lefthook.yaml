@@ -21,13 +21,13 @@ pre-commit:
       glob: "{**/Cargo.toml,Cargo.lock,deny.toml}"
       run: mise run deny-offline
     - name: actionlint
-      glob: ".github/workflows/*.{yml,yaml}"
+      glob: ".github/{workflows,actions}/**/*.{yml,yaml}"
       run: mise run actions:actionlint
     - name: zizmor
-      glob: ".github/workflows/*.{yml,yaml}"
+      glob: ".github/{workflows,actions}/**/*.{yml,yaml}"
       run: mise run actions:zizmor
     - name: pinact
-      glob: ".github/workflows/*.{yml,yaml}"
+      glob: ".github/{workflows,actions}/**/*.{yml,yaml}"
       run: mise run actions:pinact
       stage_fixed: true
     - name: mise-lock

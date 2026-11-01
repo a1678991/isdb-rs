@@ -211,6 +211,12 @@ jobs can be added or renamed without touching the ruleset. Not required:
 `cargo-deny advisories` (a new RustSec advisory appears without a commit
 and must not block unrelated PRs; it also runs weekly).
 
+Caches, saved from `main` only: Swatinem/rust-cache (dependencies) in every
+Rust job, and sccache (`.github/actions/sccache`: the workspace's library
+crates, as one disk-cache entry per job) in the jobs that compile and link
+(test, feature combinations, FPGA). Locally sccache is optional:
+`RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0`.
+
 Dependency updates come from Renovate (`renovate.json`) and Dependabot
 security updates. Patch, minor, digest and pin updates (not 0.x minors,
 not the Rust toolchain or MSRV) auto-merge once `CI OK` passes; majors

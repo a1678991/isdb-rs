@@ -24,6 +24,9 @@ cargo-deny = "0.20.2"
 "github:taiki-e/cargo-hack" = "0.6.45"
 # the FPGA simulation (`fpga:*`)
 uv = "0.13.6"
+# compiler cache for the CI jobs that build and link (.github/actions/sccache);
+# optional locally (RUSTC_WRAPPER=sccache)
+sccache = "0.19.0"
 
 [settings]
 minimum_release_age = "3d"
@@ -41,7 +44,7 @@ run = "actionlint"
 
 [tasks."actions:zizmor"]
 description = "run zizmor security linter on GitHub Actions workflows"
-run = "zizmor --min-confidence medium .github/workflows"
+run = "zizmor --min-confidence medium .github"
 
 [tasks."actions:pinact"]
 description = "pin GitHub Actions versions to commit hashes"
