@@ -139,7 +139,7 @@ pub struct RxArgs {
     /// (`isdbs3_phy::chain`), its output going through the `Slots` words
     /// as the FPGA's would: the bench check of the chain against the host
     /// (its first 2 frames after each (re)start are not decoded, the
-    /// layout lag). Slow: the model takes about 4.6 s per second of signal
+    /// layout lag). Slow: the model takes about 5 s per second of signal
     /// on one thread, plus the LDPC on all cores.
     #[arg(long, value_enum, default_value_t = ChainArg::Host)]
     pub chain: ChainArg,
@@ -1159,7 +1159,7 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
             info!(
                 target: "isdb::rx",
                 input = p,
-                "ISDB-S3 from the Symbols words of {p} through the FPGA receive chain's fixed-point model (slow: about 4.6 s per second of signal)"
+                "ISDB-S3 from the Symbols words of {p} through the FPGA receive chain's fixed-point model (slow: about 5 s per second of signal)"
             );
             let s = crate::slotrx::run_model(
                 p,

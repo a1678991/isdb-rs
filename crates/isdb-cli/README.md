@@ -286,6 +286,24 @@ says so at start), and the HackRF backend refuses the rate.
   `--iq-format`, stdin and `--freq-corr-ppm` are refused (ISDB-T
   options).
 
+* ISDB-S3 (`--system isdbs3`, `isdbs3_phy`; `docs/receiving.md`):
+  `--out` with `{tlv_id}`, one TLV stream file per stream id. Inputs:
+  `--iq REC`, `--radio` (with `--offload auto|fpga|cpu`: the FPGA's
+  receive chain when the image has one, `Slots` words, the host only
+  assembling TLV packets; else the FPGA symbol front end, `Symbols`
+  words decoded by the host; else blocks of IQ), `--symbols FILE` (a
+  `Symbols` words file; `--chain fixed` decodes it with the FPGA chain's
+  fixed-point model instead of the host receiver, through the `Slots`
+  words, about 5 s per second of signal: the bench check of the
+  chain) and `--slots FILE` (a `Slots` words file). `--slots-out FILE`
+  records the `Slots` words of a radio's chain or of `--chain fixed`
+  (`FILE.json` beside it). The summary's `decoded by` (`decoded_by` in
+  `--json`) names the receiver; with the chain, `--json` adds `chain`
+  (blocks, losses, frames without a layout, the last status block:
+  carrier register, n0 / MER, taps, sync statistics, the chain's
+  counters). Code: `rxs3.rs` (the host receiver and the shared TLV
+  assembly), `slotrx.rs` (the `Slots` consumer and its three callers).
+
 ### `isdb loopback` — TX → software channel → RX
 
 Inputs and feed policy as `tx` (synthetic if none). `--frames` data frames
@@ -882,6 +900,9 @@ transmit with, over the in-memory `mock::MockRadio`):
 | Test | What it proves |
 |---|---|
 | `src/rx.rs` `system_selection` | `--system auto` picks ISDB-S for BSn, ISDB-T for Tn and for files without SigMF metadata; an explicit system wins; ISDB-S options on ISDB-T and layer outputs on ISDB-S are refused |
+| `src/rx.rs` `slots_and_chain_options` | `--slots` selects ISDB-S3 and is refused with another system; `--chain fixed` only with `--symbols` and ISDB-S3, with the fixed-point LDPC; `--slots-out` only where Slots words exist (a radio's chain, `--chain fixed`) |
+| `src/slotrx.rs` `a_synthetic_chain_stream_through_the_consumer`, `a_loss_in_the_words_is_a_discontinuity` | a synthetic 16APSK stream through `isdbs3_phy::chain` and its `Slots` words: every decoded frame's 96 valid slots assembled under the TMCC's stream id, 120 slot blocks per frame (dummies), the first 2 frames undecoded (lag 2), the status block in the summary and `--json`, any split of the bytes the same output; a lost slot block counted as one loss with the rest decoded |
+| `src/symstream.rs` `s3_offload_selection` | `--offload auto` prefers the FPGA chain (`Offload::RxSlots`) over the symbol front end over the CPU; `fpga` needs a compatible front end and takes the chain when offered; another `Slots` version or front-end arithmetic does not count |
 | `src/rxs.rs` `ts_id_forms`, `output_template_rules`, `outputs_split_by_ts_id` | ISDB-S output: TS_ID syntaxes; `--out` without `{ts_id}` needs exactly one `--ts-id`; one file per selected TS_ID, null packets stripped on request |
 | `src/rx.rs` `sigmf_recordings_must_be_isdbt_rate` | `rx --system isdbt --iq` with SigMF metadata: a 40 Msps recording is refused with the pointer to `--system isdbs` and `iq tmcc`; a 512/63 MHz cs8 recording gives its data file and format; a conflicting `--iq-format` and cs16 are refused; without metadata the path and cf32 are used |
 | `src/phyargs.rs` `freq_restricted_to_the_uhf_tv_band` | `--channel BS1` is refused by ISDB-T `rx` / `tx` (satellite channel), the message pointing at `tx --system isdbs` |

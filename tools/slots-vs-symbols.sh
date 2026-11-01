@@ -16,8 +16,8 @@
 # tools/tlv-packet-diff.py A B and B C (C must equal B exactly), and the
 # frames the chain did not decode from B's summary.
 #
-# The model takes about 4.6 s per second of signal on one thread (plus the
-# LDPC on all cores): the 40 s FPGA recording takes about 4 minutes.
+# The model takes about 5 s per second of signal on one thread (plus the
+# LDPC on all cores): the 40 s FPGA recording takes about 3.5 minutes.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 sym=${1:?usage: $0 SYMBOLS_FILE [OUT_DIR] [SECONDS]}

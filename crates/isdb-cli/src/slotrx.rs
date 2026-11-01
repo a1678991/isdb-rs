@@ -11,7 +11,7 @@
 //! * `isdb rx --symbols FILE --chain fixed` ([`run_model`]): the chain's
 //!   CPU model (`isdbs3_phy::chain`) over a `Symbols` recording, its
 //!   frames written as `Slots` words and read back, as the FPGA would send
-//!   them: the bench version of bit-exactness (slow: about 4.6 s per
+//!   them: the bench version of bit-exactness (slow: about 5 s per
 //!   second of signal on one thread for the model, plus the LDPC);
 //! * `isdb rx --radio … --system isdbs3` on a radio whose FPGA has the
 //!   chain ([`run_radio`]): `isdb_radio::Backend::capture_slots`.
