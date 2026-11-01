@@ -262,20 +262,30 @@ written first in Rust, and the only reference.
 - `Schedule::Layered { step: usize }`: the P checks ordered **layer by
   layer** (layer l = the checks c with c mod q = l, l = 0 … q − 1, each
   layer's checks in increasing c), each layer cut into **steps of
-  `step` consecutive checks** (the last step of a layer shorter); within
-  a step every check reads the a-posteriori values and messages as they
-  were at the step's start, computes its new messages, and the
-  a-posteriori updates L_v = t_e + r_e are applied **in check order**
-  within the step, so a bit two checks of one step share (a
-  conflicting pair) takes the later check's value, computed from the
-  stale L (flooding inside a step, layered between steps). The stopping
-  rule and the result are otherwise the sequential decoder's. With
-  `step` = 1 this is a sequential decoder in layer order.
+  `step` consecutive checks** (the last step of a layer shorter).
+  **Amended 2026-11-01 (delta write-back; the first text, "the later
+  check's value wins", is in the Results below as the reason):**
+  - Within a step every check reads L and r as they were at the step's
+    start and computes t_e = sat(L_v − r_e,old) and r_e,new as before;
+    r is written per edge.
+  - At the step's end, for each variable v with edges e₁, …, e_m in the
+    step (m ≥ 2 only for a conflicting pair; edges in check order):
+    L_v ← sat( t_e₁ + r_e₁,new + Σ_{i=2..m} (r_eᵢ,new − r_eᵢ,old) ), the
+    sum taken in a wide integer (i16 is enough: |terms| ≤ 127 each,
+    m ≤ 3) and saturated to i8 once at the end. With m = 1 this is
+    exactly sat(t + r_new), so single-edge variables are bit-identical
+    to the sequential kernel.
+  - Flooding inside a step, layered between steps. The stopping rule
+    and the result are otherwise the sequential decoder's. With
+    `step` = 1 this is a sequential decoder in layer order.
 
 The HDL implements `Layered { step: S }` with S check-node units that
 read before any of the step writes (a pipeline with a step barrier or
 forwarding, the designer's choice as long as the values are the
-contract's). S divides 374 or not; the model does not care. The schedule
+contract's), and the step's L writes as the delta rule (a variable's
+later edges in the step add their message change to the first edge's
+t + r_new: a read-modify-write of L, or the pair's terms merged before
+the write). S divides 374 or not; the model does not care. The schedule
 is part of the vectors and of the ID word's feature bits, so a host can
 tell which decoder it is talking to. Expected: the layered schedule
 converges in about the same iterations as the sequential one (both are
@@ -375,8 +385,9 @@ RGMII input whatever we add; the blocks' own clocks had > 0.8 ns.
    offset, input LLRs, and per codeword the expected bits, iterations,
    convergence, and the hard decisions after every iteration (for
    debugging a mismatch), in `fpga/build/ldpc-*.json`; `mise run
-   fpga:vectors` writes them. **Status: done (2026-11-01), results
-   below; the contract's conflict rule is the open question.**
+   fpga:vectors` writes them. **Status: done (2026-11-01), with the
+   contract amended to delta write-back; results below. Recommended:
+   step 187 at 100 MHz, limit 20 (step 374 if the units fit).**
 2. **`fpga`: the LDPC decoder HDL.** `isdb_fpga/ldpc.py`: the code
    tables as ROM (the 11 rates' entries: 1 015 entries × 15 bits, the
    layer order computed at elaboration), S check-node units, the
@@ -415,37 +426,66 @@ format; 6 needs all.
 
 ### Piece 1: the layered schedule on the recordings (2026-11-01)
 
-`isdb_fec::ldpc::fixed::Schedule` as contracted (`Sequential` is
-today's decoder bit for bit: `ldpcspeed` on BS7, one thread pinned to
-one core, 4 690–4 840 cw/s before and 4 670–4 850 after).
-`isdbs3-phy` `examples/ldpcsched` decodes every codeword of the six
-recordings (BS7, BS11, BS17 at 61.44 Msps, 2026-10-20; the same at
-40 Msps from the live path, 2026-10-25), quantised as `Ldpc::FIXED`
-(input scale 1, offset 1): 18 336 codewords of 16APSK 93/120. A decode's
-path does not depend on the limit, so every limit is read off one run
-at 50 (checked against a direct run at 30 or 20).
+`isdb_fec::ldpc::fixed::Schedule` with the amended contract (delta
+write-back). `Sequential` is today's decoder bit for bit: `ldpcspeed`
+on BS7, one thread pinned to one core, 4 690–4 840 cw/s before the
+schedule existed and 4 761–4 842 with the delta rule. `isdbs3-phy`
+`examples/ldpcsched` decodes every codeword of the six recordings (BS7,
+BS11, BS17 at 61.44 Msps, 2026-10-20; the same at 40 Msps from the live
+path, 2026-10-25), quantised as `Ldpc::FIXED` (input scale 1, offset
+1): 18 336 codewords of 16APSK 93/120. A decode's path does not depend
+on the limit, so every limit is read off one run at 50 (checked against
+a direct run at 30).
 
 **As received, nothing fails.** At any limit from 5 to 50 and any
-schedule, 0 of 18 336, all converged within 4 iterations:
-
-| Schedule | Mean iterations | Histogram (1 / 2 / 3 / 4 iterations) |
-|---|---|---|
-| sequential | 2.072 | 66 / 16 894 / 1 369 / 7 |
-| layered 1 | 2.052 | 103 / 17 183 / 1 047 / 3 |
-| layered 34 | 2.055 | 97 / 17 134 / 1 102 / 3 |
-| layered 68 | 2.062 | 93 / 17 029 / 1 206 / 8 |
-| layered 187 | 2.071 | 75 / 16 890 / 1 361 / 10 |
-| layered 374 | 2.084 | 52 / 16 711 / 1 560 / 13 |
-
-(The demapper's 1/N0 is 14.8–15.6 dB on these. VERIFICATION.md's 5 of
-9 216 failures on the live recordings were measured on 2026-10-25,
-before the carrier fixes of 2026-10-26; today's chain gives cleaner
-codewords and these recordings no longer test the decoder.)
+schedule, 0 of 18 336, all converged within 4 iterations. Mean
+iterations: sequential 2.072, layered 1 2.052, 34 2.053, 68 2.053, 187
+2.056, 374 2.060. (The demapper's 1/N0 is 14.8–15.6 dB on these.
+VERIFICATION.md's 5 of 9 216 failures on the live recordings were
+measured on 2026-10-25, before the carrier fixes of 2026-10-26; today's
+chain gives cleaner codewords and these recordings no longer test the
+decoder.)
 
 **Near threshold** (`ldpcsched --noise V`: complex Gaussian noise of
 variance V added to the main symbols before demapping, N0 measured on
 the noisy symbols as the receiver does; same 18 336 codewords). Failed
-codewords, and mean iterations at the limit:
+codewords per limit, and mean iterations at limit 12, **with the delta
+rule**:
+
+| 1/N0 | Schedule | 5 | 8 | 10 | 12 | 16 | 20 | 30 | 50 | mean at 12 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ≈ 13.0 dB (V 0.03) | sequential | 14 174 | 1 405 | 210 | 42 | 4 | 2 | 1 | 1 | 6.48 |
+| | layered 1 | 13 706 | 1 324 | 206 | 41 | 4 | 2 | 1 | 1 | 6.42 |
+| | layered 34 | 13 738 | 1 338 | 208 | 47 | 3 | 2 | 1 | 1 | 6.43 |
+| | layered 68 | 13 878 | 1 388 | 210 | 44 | 3 | 2 | 1 | 1 | 6.45 |
+| | layered 187 | 14 109 | 1 482 | 226 | 47 | 4 | 2 | 1 | 1 | 6.49 |
+| | layered 374 | 14 412 | 1 579 | 233 | 49 | 5 | 2 | 1 | 1 | 6.54 |
+| ≈ 12.8 dB (V 0.035) | sequential | 18 303 | 9 739 | 5 210 | 3 076 | 1 229 | 669 | 346 | 242 | 9.10 |
+| | layered 1 | 18 300 | 9 538 | 5 136 | 3 044 | 1 209 | 681 | 336 | 240 | 9.05 |
+| | layered 34 | 18 300 | 9 572 | 5 160 | 3 049 | 1 221 | 688 | 341 | 242 | 9.06 |
+| | layered 68 | 18 303 | 9 696 | 5 195 | 3 098 | 1 244 | 682 | 338 | 247 | 9.08 |
+| | layered 187 | 18 314 | 9 873 | 5 341 | 3 166 | 1 271 | 691 | 345 | 244 | 9.13 |
+| | layered 374 | 18 313 | 10 125 | 5 462 | 3 250 | 1 307 | 710 | 349 | 241 | 9.19 |
+
+The waterfall is steep: 0 failures at 15 dB, 2 at 13.0 dB with limit 20,
+most at 12.6 dB. With delta write-back **every step from 1 to 374
+decodes as well as the sequential decoder**: the same failures at
+limits 20–50 (2, 1, 1 at 13.0 dB; 669–710, 336–349, 240–247 at 12.8 dB)
+and within a few per cent at 10–16, where a wider step costs at most
+0.1 iteration on average.
+
+**Final recommendation: step 187 at 100 MHz with a limit of 20** (22.9
+iterations of budget per codeword at 120 codewords, so 20 is met with
+margin; 2 failures of 18 336 at 13.0 dB, the sequential decoder's 2),
+**or step 374 if the check-node units fit** (a whole layer per step,
+twice the throughput: the same 2 failures at limit 20). Below 20 the
+cost is gradual (limit 16: 4 failures at step 187, sequential 4; limit
+12: 47 against 42).
+
+**Why the contract was amended: the first rule.** The first text of
+the contract had the later check's sat(t + r) overwrite the earlier
+one's for a variable two checks of a step share. Measured on the same
+codewords (`ldpcsched` before the amendment), failed codewords:
 
 | 1/N0 | Schedule | 5 | 8 | 10 | 12 | 15 | 20 | 30 | 50 | mean at 12 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -465,70 +505,50 @@ codewords, and mean iterations at the limit:
 | | layered 68 | 18 336 | 18 190 | 16 806 | 14 396 | 11 483 | 8 948 | 7 243 | 6 514 | 11.72 |
 | | layered 374 | 18 336 | 18 335 | 18 249 | 17 877 | 17 096 | 16 083 | 15 281 | 14 929 | 11.98 |
 
-(The full output, with every histogram, is what `ldpcsched` prints.) The
-waterfall is steep: 0 failures at 15 dB, about 1 at 13.0 dB with limit
-20, most at 12.6 dB. So:
+With "later wins", layered steps up to 34 were as good as sequential, 68
+cost a little, and 187 and 374 **showed an error floor** (11 and 143
+failures at limit 50 at 13.0 dB where sequential has 1; 1 663 and 4 581
+against 242 at 12.8 dB). `examples/ldpcconflict` (3 000 of the live
+codewords, scalar decoders; the delta rule checked equal to the
+library's decoder on every codeword) compares the rules on the same
+reads and steps, and with steps cut wherever a check would share a
+variable with an earlier one of its step (no conflicting pair inside a
+step). Failed at limit 12 / 50:
 
-- **Step.** Layered steps up to 34 are as good as sequential; 68 costs
-  about 0.05 dB (twice the failures at limit 12 where they are rare);
-  187 and 374 are clearly worse and **show an error floor** (11 and 143
-  failures at limit 50 where sequential has 1).
-- **Why: the conflict rule, not the parallelism.** `examples/ldpcconflict`
-  (3 000 of the live codewords, scalar decoders, the contract rule
-  checked equal to the library's) compares the contract's rule (the
-  later check's write wins) with *delta* write-back (each check of the
-  step adds its message change r_new − r_old to the variable's L, the
-  sum saturated once; the same reads, the same steps) and with the
-  contract on steps cut wherever a check would share a variable with an
-  earlier one of its step (no conflicting pair inside a step):
+| V | Rule | step 34 | step 68 | step 187 | step 374 |
+|---|---|---|---|---|---|
+| 0.03 | later wins (first contract) | | 41 / 0 | 106 / 4 | 365 / 54 |
+| | delta (amended contract) | | 16 / 0 | 17 / 0 | 18 / 0 |
+| | split steps, later wins | | 14 / 0 | 14 / 0 | 14 / 0 |
+| 0.035 | later wins (first contract) | 1 104 / 107 | 1 303 / 154 | 1 811 / 554 | 2 426 / 1 441 |
+| | delta (amended contract) | | 1 025 / 87 | 1 035 / 88 | 1 065 / 85 |
+| | split steps, later wins | 997 / 87 | 997 / 87 | 997 / 87 | 997 / 87 |
 
-  | V | Rule | step 34 | step 68 | step 187 | step 374 (failed at limit 12 / 50) |
-  |---|---|---|---|---|---|
-  | 0.03 | contract | | 41 / 0 | 106 / 4 | 365 / 54 |
-  | | delta | | 16 / 0 | 17 / 0 | 18 / 0 |
-  | | split | | 14 / 0 | 14 / 0 | 14 / 0 |
-  | 0.035 | contract | 1 104 / 107 | 1 303 / 154 | 1 811 / 554 | 2 426 / 1 441 |
-  | | delta | 998 / 87 | 1 025 / 87 | 1 035 / 88 | 1 065 / 85 |
-  | | split | 997 / 87 | 997 / 87 | 997 / 87 | 997 / 87 |
-
-  With delta write-back a **whole layer per step (374 checks) decodes
-  as well as the sequential decoder** (85 against 87 of 3 000 at limit
-  50); under "later wins", the other check's update to a shared
-  variable is lost, every iteration, at 25 pairs × up to 374 positions
-  per layer of 93/120. In hardware the delta rule is a read-modify-write
-  of L with an adder (or the two writes of a pair merged before the
-  RAM), not more memory.
-- **Limit.** With the contract as it stands and step 68: limit 12
-  gives 102 failures of 18 336 at 13.0 dB against 1 at limit 50, and
-  20 gives 3. At the received SNR every limit ≥ 5 is lossless. The
-  budget table above allows 16.7 iterations at step 68 / 200 MHz and
-  22.9 at step 187 / 100 MHz.
-
-**Recommendation.** Amend the contract's conflict rule to delta
-write-back (`L_v ← sat(L_v(step start) + Σ_step (r_new,e − r_old,e))`
-over the step's edges on v; equal to today's rule wherever a variable
-has one edge in the step) and build **step 187 at 100 MHz with a limit
-of 20** (22.9 iterations of budget per codeword at 120 codewords), or
-step 374 if the check-node units fit; with the contract unchanged,
-**step 68 at 200 MHz with a limit of 16** (the budget's 16.7; 16
-failures of 18 336 at 13.0 dB, against 102 at 12, 3 at 20, and the
-sequential decoder's 4 at 16) or step 34 with a limit of 12 if
-the clock or the units do not allow it. The model change is small
-(`layered_iteration`'s write loop); the vectors would be rewritten. Not
-done here: the contract is shared with piece 2 and changes only by the
-plan's owner. (Rates other than 93/120 were not measured on recordings:
-the lab transponders carry only 93/120; 41/120 has 4 conflicting pairs
-in 79 layers, 109/120 26 in 11, so the latter is the most exposed.)
+Under "later wins" the other check's update to a shared variable is
+lost, every iteration, at 25 pairs × up to 374 positions per layer of
+93/120. The delta rule restores it; in hardware it is a read-modify-write
+of L with an adder (or the two writes of a pair merged before the RAM),
+not more memory. Measured first was the variant sat(L_v + Σ over all the
+variable's edges of (r_new − r_old)); the contract's formula starts from
+the first edge's t = sat(L_v − r_old), and the two differ only when
+that t saturates. On these 3 000 codewords at V 0.03 and 0.035, steps
+68, 187 and 374, they gave identical counts (the table's delta rows are
+the contract's formula). (Rates other than 93/120 were not measured on
+recordings: the lab transponders carry only 93/120; 109/120 has 26
+conflicting pairs in 11 layers, 105/120 39 in 15, with up to three
+entries of one row in one layer in 81/120, 89/120 and 105/120, so
+m ≤ 3.)
 
 ### Piece 1: vectors (2026-11-01)
 
 `mise run fpga:vectors` writes `fpga/build/ldpc-tables.json` (21 kB)
-and nine sets, 0.46–1.3 MB each (`fpga/README.md` "LDPC vectors";
+and nine sets, 0.45–1.3 MB each (`fpga/README.md` "LDPC vectors";
 format in `isdbs3-phy` `examples/ldpcvectors.rs`), plus two from a
-recording with `ISDB_RS_ISDBS3_TLV_IQ`. `tools/ldpc-vectors-check.py`, an
-independent pure-Python decoder built from the tables file, reproduces
-all eleven sets (68 codewords, every bit, iteration count, unsatisfied
-count and trace).
+recording with `ISDB_RS_ISDBS3_TLV_IQ`, all under the amended contract.
+`tools/ldpc-vectors-check.py`, an independent pure-Python decoder built
+from the tables file, reproduces all eleven sets (68 codewords, every
+bit, iteration count, unsatisfied count and trace), and rejects the
+vectors written under the first rule.
 
 ## Tools added for this plan
 
