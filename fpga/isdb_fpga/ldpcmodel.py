@@ -29,7 +29,7 @@ python -m isdb_fpga.ldpcmodel --check VECTORS.json ... [--max N]   # the model a
 
 Presets (PRESETS): `toy-*` are small codes of the B44 form (n = 6 * 374,
 the address table carried in the file as "rows", "rate" = its row count)
-with conflicting pairs, triples, a quadruple and chains that wrap round
+with conflicting pairs, triples and chains that wrap round
 the group: the HDL tests' fast sets. `93-17` (93/120) and `tmcc-17` (the
 shortened 61/120 TMCC code, the known zeros at +127) are B44 codes at
 step 17. The format: crates/isdbs3-phy/examples/ldpcvectors.rs; these
@@ -262,14 +262,15 @@ def self_check(code, llr, max_iter=6, offset=1):
 
 # --- vectors ---------------------------------------------------------------
 
-# Toy codes of the B44 form, n = 6 * 374 (k = 374 * rows, q = P / 374).
-# toy-a (q = 4): pairs at shift differences 1 and 175 (layers 3 and 0), a
-# triple at shifts {0, 370, 373} (a chain that wraps round the group) and
-# {0, 100, 360}, {0, 1, 2}; toy-b (q = 3): a triple {0, 1, 373}, a
-# quadruple {0, 1, 2, 373}, a pair {1, 2}, a triple {0, 11, 233}.
+# Toy codes of the B44 form, n = 6 * 374 (k = 374 * rows, q = P / 374),
+# each layer of the same degree (as in every B44 code, which the HDL relies
+# on). toy-a (q = 4, d = 6): per layer, row 0 / row 1 shifts: {0, 1} /
+# {7, 182}; {0, 370, 373} (a triple that wraps round the group) / {50};
+# {5} / {0, 1, 2}; {200, 373} / {300, 301}. toy-b (q = 3, d = 6): {0, 1,
+# 373} / {200} / -; {1, 2} / - / {0, 233}; {166} / {0, 1, 373} / -.
 TOYS = {
-    "toy-a": [[1, 3, 7, 300, 1000, 1481, 1493], [0, 2, 6, 10, 400, 901, 1440, 1495]],
-    "toy-b": [[0, 3, 1119, 500, 4, 7], [2, 5, 8, 1121, 600], [1, 34, 700, 1001]],
+    "toy-a": [[0, 4, 1, 1481, 1493, 22, 803, 1495], [28, 728, 201, 2, 6, 10, 1203, 1207]],
+    "toy-b": [[0, 3, 1119, 4, 7, 500], [600, 2, 5, 1121], [1, 700]],
 }
 
 
