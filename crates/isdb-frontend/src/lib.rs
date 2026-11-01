@@ -20,6 +20,9 @@
 //! * [`format`](mod@format): the `Symbols` boundary, version 1 (16-bit words in blocks
 //!   with sync, sequence number, gain and period), its [`format::Packer`]
 //!   and the host-side [`format::Reader`] that reports losses;
+//! * [`slots`]: the `Slots` boundary, version 1 (slot, TMCC and status
+//!   blocks in the `Symbols` framing), what the radio sends when the
+//!   whole ISDB-S3 chain runs in its FPGA (`isdbs3_phy::chain`);
 //! * [`params`]: the run-time parameters (the FPGA's registers) and their
 //!   design from symbol rate, roll-off and sample rate ([`params::Design`]);
 //! * [`tables`]: the cosine table and the filter banks;
@@ -91,6 +94,7 @@ pub mod params;
 pub mod s3sync;
 pub mod shape;
 pub mod simd;
+pub mod slots;
 pub mod tables;
 pub mod txformat;
 pub mod vectors;
