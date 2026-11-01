@@ -329,17 +329,17 @@ variable with edges e₁ … e_m in a step: sat(t₁ + r₁,new + Σᵢ₌₂
   §3.4 (2) (`{"rate": 41, "rows": [[…], …]}` …, one row per 374-bit
   group), so the HDL elaborates its address ROM and layer order from the
   same source as the model;
-- `ldpc-1-93-seq` (sequential schedule, limit 50), `ldpc-2-93-layered68`
-  and `ldpc-3-93-layered187` (limit 12), `ldpc-4-41-layered68` and
-  `ldpc-5-109-layered68` (the extreme rates), `ldpc-6-tmcc-layered68`
+- `ldpc-1-93-seq` (sequential schedule, limit 50), `ldpc-2-93-layered34`
+  and `ldpc-3-93-layered187` (limit 12), `ldpc-4-41-layered34` and
+  `ldpc-5-109-layered34` (the extreme rates), `ldpc-6-tmcc-layered34`
   (the shortened 61/120 TMCC code: `"shortened": {"info_start": 1870,
   "info_len": 9614}`, the known zeros carried as +127),
-  `ldpc-7-93-stress-layered68` (a word valid at iteration 0, all-zero
+  `ldpc-7-93-stress-layered34` (a word valid at iteration 0, all-zero
   input, ±127 with strong flips, −128 inputs, failing words),
   `ldpc-8-93-trace` (2 codewords with the hard decisions after every
   iteration, `trace_hex`, to locate a mismatch), `ldpc-9-93-iter0`
   (`max_iter` 0); with `ISDB_RS_ISDBS3_TLV_IQ` set, also
-  `ldpc-10-93-rec-layered68` and `ldpc-11-tmcc-rec-layered68` (real
+  `ldpc-10-93-rec-layered34` and `ldpc-11-tmcc-rec-layered34` (real
 | `ldpc-12-93-layered17`, `ldpc-13-tmcc-layered17` | 93/120 and the TMCC code, layered step 17 (374 = 2 · 11 · 17), limit 12, with traces: small steps for the Python simulation |
   demapped codewords of its first recording). 4 to 8 codewords per file,
   0.5–1.3 MB each.

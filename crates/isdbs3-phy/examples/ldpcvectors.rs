@@ -16,16 +16,16 @@
 //! |---|---|---|---|---|
 //! | `ldpc-tables.json` | the eleven address tables | | | |
 //! | `ldpc-1-93-seq.json` | 93/120 | sequential | 50 | 8, Es/N0 from easy to failing |
-//! | `ldpc-2-93-layered68.json` | 93/120 | layered, step 68 | 12 | 8 |
+//! | `ldpc-2-93-layered34.json` | 93/120 | layered, step 34 | 12 | 8 |
 //! | `ldpc-3-93-layered187.json` | 93/120 | layered, step 187 | 12 | 8 |
-//! | `ldpc-4-41-layered68.json` | 41/120 (79 layers, degree ≤ 5 + 2) | layered, step 68 | 12 | 6 |
-//! | `ldpc-5-109-layered68.json` | 109/120 (11 layers, degree ≤ 32) | layered, step 68 | 12 | 6 |
-//! | `ldpc-6-tmcc-layered68.json` | 61/120 shortened (TMCC) | layered, step 68 | 12 | 6 |
-//! | `ldpc-7-93-stress-layered68.json` | 93/120 | layered, step 68 | 12 | 8: clean (iteration 0), all-zero input, ±127 with strong flips, −128 inputs, failing |
-//! | `ldpc-8-93-trace.json` | 93/120 | layered, step 68 | 12 | 2, with `trace_hex` |
-//! | `ldpc-9-93-iter0-layered68.json` | 93/120 | layered, step 68 | 0 | 4 |
-//! | `ldpc-10-93-rec-layered68.json` | 93/120, real codewords | layered, step 68 | 12 | 8 (opt-in) |
-//! | `ldpc-11-tmcc-rec-layered68.json` | TMCC, real codewords | layered, step 68 | 12 | 4 (opt-in): 2 as received, 2 with 3 % of the values made weak and wrong |
+//! | `ldpc-4-41-layered34.json` | 41/120 (79 layers, degree ≤ 5 + 2) | layered, step 34 | 12 | 6 |
+//! | `ldpc-5-109-layered34.json` | 109/120 (11 layers, degree ≤ 32) | layered, step 34 | 12 | 6 |
+//! | `ldpc-6-tmcc-layered34.json` | 61/120 shortened (TMCC) | layered, step 34 | 12 | 6 |
+//! | `ldpc-7-93-stress-layered34.json` | 93/120 | layered, step 34 | 12 | 8: clean (iteration 0), all-zero input, ±127 with strong flips, −128 inputs, failing |
+//! | `ldpc-8-93-trace.json` | 93/120 | layered, step 34 | 12 | 2, with `trace_hex` |
+//! | `ldpc-9-93-iter0-layered34.json` | 93/120 | layered, step 34 | 0 | 4 |
+//! | `ldpc-10-93-rec-layered34.json` | 93/120, real codewords | layered, step 34 | 12 | 8 (opt-in) |
+//! | `ldpc-11-tmcc-rec-layered34.json` | TMCC, real codewords | layered, step 34 | 12 | 4 (opt-in): 2 as received, 2 with 3 % of the values made weak and wrong |
 //! | `ldpc-12-93-layered17.json` | 93/120 | layered, step 17 | 12 | 4, with `trace_hex` (a small step for the HDL simulation) |
 //! | `ldpc-13-tmcc-layered17.json` | 61/120 shortened (TMCC) | layered, step 17 | 12 | 4, with `trace_hex` |
 //!
@@ -439,10 +439,10 @@ fn main() {
             llrs: synthetic(r93, &[4.0, 3.0, 2.4, 2.2, 2.0, 1.8, 1.6, 0.5], 1_001),
         },
         Set {
-            name: "ldpc-2-93-layered68",
+            name: "ldpc-2-93-layered34",
             rate: r93,
             shortened: false,
-            schedule: layered(68),
+            schedule: layered(34),
             max_iter: 12,
             trace: false,
             llrs: synthetic(r93, &[4.0, 3.0, 2.4, 2.2, 2.0, 1.8, 1.6, 0.5], 2_002),
@@ -457,37 +457,37 @@ fn main() {
             llrs: synthetic(r93, &[4.0, 3.0, 2.4, 2.2, 2.0, 1.8, 1.6, 0.5], 3_003),
         },
         Set {
-            name: "ldpc-4-41-layered68",
+            name: "ldpc-4-41-layered34",
             rate: rate(41),
             shortened: false,
-            schedule: layered(68),
+            schedule: layered(34),
             max_iter: 12,
             trace: false,
             llrs: synthetic(rate(41), &[0.0, -1.0, -1.5, -2.0, -2.3, -5.0], 4_004),
         },
         Set {
-            name: "ldpc-5-109-layered68",
+            name: "ldpc-5-109-layered34",
             rate: rate(109),
             shortened: false,
-            schedule: layered(68),
+            schedule: layered(34),
             max_iter: 12,
             trace: false,
             llrs: synthetic(rate(109), &[6.0, 5.0, 4.5, 4.2, 4.0, 2.5], 5_005),
         },
         Set {
-            name: "ldpc-6-tmcc-layered68",
+            name: "ldpc-6-tmcc-layered34",
             rate: CodeRate::TMCC,
             shortened: true,
-            schedule: layered(68),
+            schedule: layered(34),
             max_iter: 12,
             trace: false,
             llrs: tmcc_words(&[2.0, 0.0, -1.0, -1.5, -2.0, -4.0], 6_006),
         },
         Set {
-            name: "ldpc-7-93-stress-layered68",
+            name: "ldpc-7-93-stress-layered34",
             rate: r93,
             shortened: false,
-            schedule: layered(68),
+            schedule: layered(34),
             max_iter: 12,
             trace: false,
             llrs: stress(),
@@ -496,16 +496,16 @@ fn main() {
             name: "ldpc-8-93-trace",
             rate: r93,
             shortened: false,
-            schedule: layered(68),
+            schedule: layered(34),
             max_iter: 12,
             trace: true,
             llrs: synthetic(r93, &[2.4, 1.5], 8_008),
         },
         Set {
-            name: "ldpc-9-93-iter0-layered68",
+            name: "ldpc-9-93-iter0-layered34",
             rate: r93,
             shortened: false,
-            schedule: layered(68),
+            schedule: layered(34),
             max_iter: 0,
             trace: false,
             llrs: {
@@ -544,19 +544,19 @@ fn main() {
             tmcc.len()
         );
         sets.push(Set {
-            name: "ldpc-10-93-rec-layered68",
+            name: "ldpc-10-93-rec-layered34",
             rate: r93,
             shortened: false,
-            schedule: layered(68),
+            schedule: layered(34),
             max_iter: 12,
             trace: false,
             llrs: main,
         });
         sets.push(Set {
-            name: "ldpc-11-tmcc-rec-layered68",
+            name: "ldpc-11-tmcc-rec-layered34",
             rate: CodeRate::TMCC,
             shortened: true,
-            schedule: layered(68),
+            schedule: layered(34),
             max_iter: 12,
             trace: false,
             llrs: tmcc,

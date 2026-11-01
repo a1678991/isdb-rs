@@ -279,6 +279,8 @@ written first in Rust, and the only reference.
     and the result are otherwise the sequential decoder's. With
     `step` = 1 this is a sequential decoder in layer order.
 
+**HDL constraint (2026-11-01):** the L memory has exactly S lanes with a group's 374 positions in 374 / S words, so **S must divide 374: 11, 17, 22, 34 or 187**; the CPU model runs any step. The vector sets are therefore at steps 17, 34 and 187 (34 the design point if 187 does not fit the LUT budget).
+
 The HDL implements `Layered { step: S }` with S check-node units that
 read before any of the step writes (a pipeline with a step barrier or
 forwarding, the designer's choice as long as the values are the
