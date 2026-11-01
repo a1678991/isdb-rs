@@ -163,6 +163,12 @@ pub struct Stats {
     pub tracked_hz: f64,
     /// See `tracked_hz`.
     pub tracked_range_hz: (f64, f64),
+    /// Decoded by the ISDB-S3 chain (`Slots`: the FPGA's, a recording of
+    /// it, or the CPU model): its blocks, status and losses
+    /// ([`crate::slotrx`]); `None` for the host receiver.
+    pub chain: Option<crate::slotrx::ChainStats>,
+    /// Which receiver decoded the slots, for the summary.
+    pub decoded_by: &'static str,
 }
 
 impl Default for Stats {
@@ -194,7 +200,20 @@ impl Default for Stats {
             tmcc: None,
             streams: BTreeMap::new(),
             words: None,
+            chain: None,
+            decoded_by: DECODED_BY_HOST,
         }
+    }
+}
+
+/// [`Stats::decoded_by`]: the host's receiver (`isdbs3_phy::rx`).
+pub const DECODED_BY_HOST: &str = "host receiver";
+
+impl Stats {
+    /// Add one frame's main-signal MER, dB.
+    pub fn add_mer(&mut self, db: f64) {
+        self.mer_sum += db;
+        self.mer_n += 1;
     }
 }
 
@@ -208,6 +227,8 @@ impl Stats {
     pub fn json(&self) -> Value {
         json!({
             "system": "ISDB-S3",
+            "decoded_by": self.decoded_by,
+            "chain": self.chain.as_ref().map(crate::slotrx::ChainStats::json),
             "blocks": self.blocks,
             "time": json!({
                 "wall_s": self.wall_s,
@@ -360,38 +381,57 @@ pub fn decode(
             stats.tmcc = Some(t.clone());
         }
         if let Some(m) = f.mer_db {
-            stats.mer_sum += m;
-            stats.mer_n += 1;
+            stats.add_mer(m);
         }
     }
     for sl in r.slots.iter().filter(|sl| taken(sl.frame)) {
-        stats.slots += 1;
-        match sl.ldpc_iterations {
-            Some(i) => stats.ldpc_iterations += i as u64,
-            None => stats.ldpc_failed += 1,
-        }
-        match sl.bch_corrected {
-            Some(c) => stats.bch_corrected += c as u64,
-            None => stats.bch_failed += u64::from(sl.ldpc_iterations.is_some()),
-        }
-        let mut pk = Vec::new();
-        asm.entry(sl.stream_id)
-            .or_default()
-            .push_slot(sl.data.as_deref(), sl.head, &mut pk);
-        let e = stats.streams.entry(sl.stream_id).or_default();
-        if let Some(t) = &stats.tmcc {
-            e.2 = t
-                .slot_stream
-                .iter()
-                .filter(|&&k| t.stream_id[usize::from(k & 0x0F)] == sl.stream_id)
-                .count();
-        }
-        for p in &pk {
-            e.1.add(p);
-            out.write(sl.stream_id, &p.encode()?)?;
-        }
+        count_slot(stats, sl.ldpc_iterations, sl.bch_corrected);
+        push_slot(sl.stream_id, sl.data.as_deref(), sl.head, asm, out, stats)?;
     }
     Ok(upto.unwrap_or(z.len()))
+}
+
+/// Count one valid slot's LDPC and BCH results.
+pub fn count_slot(stats: &mut Stats, ldpc_iterations: Option<usize>, bch: Option<usize>) {
+    stats.slots += 1;
+    match ldpc_iterations {
+        Some(i) => stats.ldpc_iterations += i as u64,
+        None => stats.ldpc_failed += 1,
+    }
+    match bch {
+        Some(c) => stats.bch_corrected += c as u64,
+        None => stats.bch_failed += u64::from(ldpc_iterations.is_some()),
+    }
+}
+
+/// One valid slot of stream `stream_id` (`data` `None`: LDPC or BCH
+/// failed; `head` its head-TLV indication) through the stream's assembler
+/// in `asm`; its complete TLV packets counted and written.
+pub fn push_slot(
+    stream_id: u16,
+    data: Option<&[u8]>,
+    head: u16,
+    asm: &mut BTreeMap<u16, Assembler>,
+    out: &mut Outputs,
+    stats: &mut Stats,
+) -> Result<()> {
+    let mut pk = Vec::new();
+    asm.entry(stream_id)
+        .or_default()
+        .push_slot(data, head, &mut pk);
+    let e = stats.streams.entry(stream_id).or_default();
+    if let Some(t) = &stats.tmcc {
+        e.2 = t
+            .slot_stream
+            .iter()
+            .filter(|&&k| t.stream_id[usize::from(k & 0x0F)] == stream_id)
+            .count();
+    }
+    for p in &pk {
+        e.1.add(p);
+        out.write(stream_id, &p.encode()?)?;
+    }
+    Ok(())
 }
 
 /// Add the assemblers' counters to `stats` (at the end of a contiguous
@@ -456,6 +496,16 @@ pub fn report(stats: &Stats, secs: f64) {
             stats.tracked_range_hz.1,
             stats.carrier_offset_hz
         );
+    } else if stats.chain.is_some() {
+        info!(
+            target: "isdb::rx",
+            wall_s = stats.wall_s,
+            seconds = secs,
+            speed = secs / stats.wall_s.max(1e-9),
+            "time: {:.2} s for {secs:.3} s of signal ({:.2}× real time); the slots were decoded before the host (the host assembles TLV packets)",
+            stats.wall_s,
+            secs / stats.wall_s.max(1e-9)
+        );
     } else if stats.wall_s > 0.0 {
         info!(
             target: "isdb::rx",
@@ -489,9 +539,15 @@ pub fn report(stats: &Stats, secs: f64) {
         sync_snr_db = stats.sync_snr_db,
         sync_snr_eq_db = stats.sync_snr_eq_db.unwrap_or(f64::NAN),
         mer_db = stats.mer_db().unwrap_or(f64::NAN),
-        "done: ISDB-S3, {:.3} s of signal in {} block(s); {} frames, TMCC ok {}; {} slots, LDPC failed {}, BCH failed {} ({} bits corrected), mean {:.2} LDPC iterations; sync Es/N0 {:.1} dB{}; main MER {}",
+        decoded_by = stats.decoded_by,
+        "done: ISDB-S3 (decoded by the {}), {:.3} s of signal{}; {} frames, TMCC ok {}; {} slots, LDPC failed {}, BCH failed {} ({} bits corrected), mean {:.2} LDPC iterations; {}main MER {}",
+        stats.decoded_by,
         secs,
-        stats.blocks,
+        if stats.chain.is_some() {
+            String::new()
+        } else {
+            format!(" in {} block(s)", stats.blocks)
+        },
         stats.frames,
         stats.tmcc_ok,
         stats.slots,
@@ -499,10 +555,19 @@ pub fn report(stats: &Stats, secs: f64) {
         stats.bch_failed,
         stats.bch_corrected,
         stats.ldpc_iterations as f64 / (stats.slots - stats.ldpc_failed).max(1) as f64,
-        stats.sync_snr_db,
-        stats
-            .sync_snr_eq_db
-            .map_or(String::new(), |e| format!(" ({e:.1} dB equalised)")),
+        // the chain reports no sync Es/N0 (its status has the correlation
+        // peak, in the chain line)
+        if stats.chain.is_some() {
+            String::new()
+        } else {
+            format!(
+                "sync Es/N0 {:.1} dB{}; ",
+                stats.sync_snr_db,
+                stats
+                    .sync_snr_eq_db
+                    .map_or(String::new(), |e| format!(" ({e:.1} dB equalised)"))
+            )
+        },
         stats.mer_db().map_or("-".into(), |m| format!("{m:.1} dB"))
     );
     if let Some(t) = &stats.tmcc {

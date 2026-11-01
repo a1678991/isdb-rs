@@ -25,7 +25,7 @@ const RX_QUEUE_SECONDS: f64 = 1.0;
 
 /// `isdb rx` arguments.
 #[derive(Debug, Args)]
-#[command(group(clap::ArgGroup::new("source").required(true).args(["iq", "radio", "symbols"])))]
+#[command(group(clap::ArgGroup::new("source").required(true).args(["iq", "radio", "symbols", "slots"])))]
 pub struct RxArgs {
     /// Read baseband from this file ("-" = stdin) at 512/63 MHz. A SigMF
     /// recording (data file, `.sigmf-meta` or base name) gives its format
@@ -113,12 +113,15 @@ pub struct RxArgs {
     /// floating-point reference decoder.
     #[arg(long, value_enum, default_value_t = LdpcArg::Fixed)]
     pub ldpc: LdpcArg,
-    /// ISDB-S / ISDB-S3 from a radio: where the single-carrier front end
-    /// runs. `auto` uses the radio's FPGA front end when it offers a
-    /// compatible one and then receives continuously (the radio sends
-    /// symbols, not IQ); otherwise, and with `cpu`, contiguous IQ captures
-    /// one after another (with gaps between them). `fpga` fails without
-    /// one.
+    /// ISDB-S / ISDB-S3 from a radio: where the receiver runs. `auto` uses
+    /// the most the radio's FPGA offers: for ISDB-S3 the whole receive
+    /// chain when the image has it (the radio sends decoded slots,
+    /// `Slots`; the host only assembles TLV packets), else the FPGA
+    /// symbol front end (the radio sends symbols, the host decodes them),
+    /// either continuously; otherwise, and with `cpu`, contiguous IQ
+    /// captures one after another (with gaps between them). `fpga` needs
+    /// at least the front end (and takes the chain when offered). The
+    /// summary's `decoded by` (`decoded_by` in `--json`) says which ran.
     #[arg(long, value_enum, default_value_t = crate::symbols::OffloadArg::Auto)]
     pub offload: crate::symbols::OffloadArg,
     /// ISDB-S / ISDB-S3: decode a `Symbols` words file (`isdb symbols
@@ -126,9 +129,37 @@ pub struct RxArgs {
     /// needs `--system isdbs` or `isdbs3`.
     #[arg(long, value_name = "PATH")]
     pub symbols: Option<String>,
+    /// ISDB-S3: decode a `Slots` words file (the FPGA receive chain's
+    /// output, recorded with `--slots-out`) to TLV streams.
+    #[arg(long, value_name = "PATH")]
+    pub slots: Option<String>,
+    /// ISDB-S3 with `--symbols`: which receiver decodes the symbols.
+    /// `host` (default) is the host's receiver (`isdbs3_phy::rx`, on all
+    /// cores); `fixed` the fixed-point model of the FPGA receive chain
+    /// (`isdbs3_phy::chain`), its output going through the `Slots` words
+    /// as the FPGA's would: the bench check of the chain against the host
+    /// (its first 2 frames after each (re)start are not decoded, the
+    /// layout lag). Slow: the model takes about 4.6 s per second of signal
+    /// on one thread, plus the LDPC on all cores.
+    #[arg(long, value_enum, default_value_t = ChainArg::Host)]
+    pub chain: ChainArg,
+    /// ISDB-S3: also write the `Slots` words received (from a radio's
+    /// receive chain, or `--chain fixed`'s) to this file, with a `.json`
+    /// sidecar, for `--slots`.
+    #[arg(long, value_name = "PATH")]
+    pub slots_out: Option<String>,
 }
 
-/// What `isdb rx` reads: `--iq`, `--radio` or `--symbols`.
+/// `isdb rx --chain`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ChainArg {
+    /// The host's receiver.
+    Host,
+    /// The fixed-point model of the FPGA receive chain.
+    Fixed,
+}
+
+/// What `isdb rx` reads: `--iq`, `--radio`, `--symbols` or `--slots`.
 enum Input<'a> {
     /// `--iq PATH`.
     Iq(&'a str),
@@ -136,6 +167,8 @@ enum Input<'a> {
     Radio(&'a DeviceSpec),
     /// `--symbols PATH`.
     Symbols(&'a str),
+    /// `--slots PATH`.
+    Slots(&'a str),
 }
 
 impl RxArgs {
@@ -147,11 +180,13 @@ impl RxArgs {
             self.iq.as_deref(),
             self.radio.as_ref(),
             self.symbols.as_deref(),
+            self.slots.as_deref(),
         ) {
-            (Some(p), None, None) => Ok(Input::Iq(p)),
-            (None, Some(spec), None) => Ok(Input::Radio(spec)),
-            (None, None, Some(p)) => Ok(Input::Symbols(p)),
-            _ => bail!("give exactly one of --iq, --radio and --symbols"),
+            (Some(p), None, None, None) => Ok(Input::Iq(p)),
+            (None, Some(spec), None, None) => Ok(Input::Radio(spec)),
+            (None, None, Some(p), None) => Ok(Input::Symbols(p)),
+            (None, None, None, Some(p)) => Ok(Input::Slots(p)),
+            _ => bail!("give exactly one of --iq, --radio, --symbols and --slots"),
         }
     }
 }
@@ -693,6 +728,7 @@ pub fn run(a: RxArgs) -> Result<()> {
     if a.ldpc != LdpcArg::Fixed {
         bail!("--ldpc is an ISDB-S3 option (--system isdbs3)");
     }
+    refuse_s3_options(&a, "ISDB-T")?;
     if a.json
         && [&a.out, &a.a_out, &a.b_out, &a.c_out]
             .iter()
@@ -739,8 +775,9 @@ pub fn run(a: RxArgs) -> Result<()> {
                 format!("{path} ({format:?})"),
             )
         }
-        // resolve_system sends --symbols to ISDB-S / ISDB-S3
-        Input::Symbols(_) => {
+        // resolve_system sends --symbols to ISDB-S / ISDB-S3, --slots to
+        // ISDB-S3
+        Input::Symbols(_) | Input::Slots(_) => {
             bail!("--symbols is an ISDB-S / ISDB-S3 input (--system isdbs or isdbs3)")
         }
     };
@@ -840,6 +877,12 @@ pub fn run(a: RxArgs) -> Result<()> {
 
 /// The system `--system` selects (`auto` resolved).
 fn resolve_system(a: &RxArgs) -> Result<SystemArg> {
+    if a.slots.is_some() {
+        if !matches!(a.system, SystemArg::Auto | SystemArg::Isdbs3) {
+            bail!("--slots is an ISDB-S3 input (--system isdbs3)");
+        }
+        return Ok(SystemArg::Isdbs3);
+    }
     if a.system != SystemArg::Auto {
         if a.symbols.is_some() && !matches!(a.system, SystemArg::Isdbs | SystemArg::Isdbs3) {
             bail!("--symbols is an ISDB-S / ISDB-S3 input (--system isdbs or isdbs3)");
@@ -896,8 +939,17 @@ fn resolve_system(a: &RxArgs) -> Result<SystemArg> {
     }
 }
 
+/// `--chain fixed` and `--slots-out` are ISDB-S3's.
+fn refuse_s3_options(a: &RxArgs, system: &str) -> Result<()> {
+    if a.chain != ChainArg::Host || a.slots_out.is_some() {
+        bail!("--chain and --slots-out are ISDB-S3 options (--system isdbs3), not {system}");
+    }
+    Ok(())
+}
+
 /// `isdb rx` for ISDB-S.
 fn run_isdbs(a: RxArgs) -> Result<()> {
+    refuse_s3_options(&a, "ISDB-S")?;
     if a.a_out.is_some() || a.b_out.is_some() || a.c_out.is_some() {
         bail!(
             "--a-out/--b-out/--c-out are ISDB-T layers; ISDB-S writes one TS per TS_ID (--out PATH with {{ts_id}}, or --ts-id)"
@@ -926,6 +978,7 @@ fn run_isdbs(a: RxArgs) -> Result<()> {
             )?;
             (s, p.to_owned())
         }
+        Input::Slots(_) => bail!("--slots is an ISDB-S3 input (--system isdbs3)"),
         Input::Radio(spec) => {
             let (hz, channel) = match (a.tune.channel, a.tune.freq) {
                 (Some(c), None) => (c.tune_hz()?, Some(c)),
@@ -1058,7 +1111,67 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
     let mut out = crate::rxs3::Outputs::new(a.out.as_deref(), &a.ts_id)?;
     let mut stats = crate::rxs3::Stats::default();
     stats.ldpc = a.ldpc.ldpc();
-    let (secs, input) = match a.input()? {
+    let input = a.input()?;
+    if a.chain == ChainArg::Fixed && !matches!(input, Input::Symbols(_)) {
+        bail!(
+            "--chain fixed decodes a Symbols words file (--symbols FILE); a radio's chain is chosen by --offload"
+        );
+    }
+    if a.chain == ChainArg::Fixed && a.ldpc != LdpcArg::Fixed {
+        bail!(
+            "--ldpc: the chain model's LDPC is the fixed-point decoder of the FPGA's contract (--chain host for the others)"
+        );
+    }
+    // the words of the chain (radio or model) recorded too
+    let mut slots_out = match (&a.slots_out, &input) {
+        (None, _) => None,
+        (Some(_), Input::Symbols(_)) if a.chain == ChainArg::Host => {
+            bail!(
+                "--slots-out: the host receiver writes no Slots words (--chain fixed runs the FPGA chain's model)"
+            )
+        }
+        (Some(_), Input::Iq(_) | Input::Slots(_)) => {
+            bail!("--slots-out records a radio's or --chain fixed's Slots words")
+        }
+        (Some(p), _) => Some(std::io::BufWriter::with_capacity(
+            1 << 22,
+            crate::capture::create(std::path::Path::new(p), true)
+                .with_context(|| format!("create {p}"))?,
+        )),
+    };
+    let (secs, input) = match input {
+        Input::Slots(p) => {
+            if a.carrier_offset.is_some() || a.rate.is_some() || a.bw.is_some() {
+                bail!("--carrier-offset, --rate and --bw do not apply to a Slots words file");
+            }
+            info!(target: "isdb::rx", input = p, "ISDB-S3 from the Slots words of {p} (decoded by the FPGA receive chain or its model)");
+            let s = crate::slotrx::run_file(
+                p,
+                seconds,
+                a.status_secs > 0.0,
+                &stop,
+                &mut out,
+                &mut stats,
+            )?;
+            (s, p.to_owned())
+        }
+        Input::Symbols(p) if a.chain == ChainArg::Fixed => {
+            info!(
+                target: "isdb::rx",
+                input = p,
+                "ISDB-S3 from the Symbols words of {p} through the FPGA receive chain's fixed-point model (slow: about 4.6 s per second of signal)"
+            );
+            let s = crate::slotrx::run_model(
+                p,
+                seconds,
+                a.status_secs > 0.0,
+                &stop,
+                slots_out.as_mut().map(|w| w as &mut dyn Write),
+                &mut out,
+                &mut stats,
+            )?;
+            (s, p.to_owned())
+        }
         Input::Symbols(p) => {
             info!(target: "isdb::rx", input = p, "ISDB-S3 from the Symbols words of {p}");
             let rs = isdbs3_phy::frontend::system().symbol_rate_hz;
@@ -1113,12 +1226,34 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
                 args: spec.args.clone(),
                 gains: a.gain.clone(),
             };
-            let s = if let Some(taps) = crate::symstream::fpga_taps(backend, &cfg, a.offload)? {
-                if a.block_seconds.is_some() {
-                    bail!(
-                        "--block-seconds: the FPGA front end streams continuously (--offload cpu for blocks)"
-                    );
-                }
+            let which = crate::symstream::s3_offload(backend, &cfg, a.offload)?;
+            if which != crate::symstream::S3Offload::Cpu && a.block_seconds.is_some() {
+                bail!(
+                    "--block-seconds: the FPGA front end streams continuously (--offload cpu for blocks)"
+                );
+            }
+            if slots_out.is_some() && !matches!(which, crate::symstream::S3Offload::Slots(_)) {
+                bail!("--slots-out: the radio does not offer the FPGA receive chain (Slots)");
+            }
+            let s = if let crate::symstream::S3Offload::Slots(taps) = which {
+                info!(
+                    target: "isdb::rx",
+                    taps,
+                    "the radio's FPGA front end ({taps} taps) and receive chain: continuous reception of decoded slots (Slots); the host assembles the TLV packets"
+                );
+                crate::slotrx::run_radio(
+                    backend,
+                    &cfg,
+                    taps,
+                    seconds,
+                    a.carrier_offset,
+                    a.status_secs > 0.0,
+                    &stop,
+                    slots_out.as_mut().map(|w| w as &mut dyn Write),
+                    &mut out,
+                    &mut stats,
+                )?
+            } else if let crate::symstream::S3Offload::Symbols(taps) = which {
                 info!(target: "isdb::rx", taps, "the radio's FPGA front end ({taps} taps): continuous reception");
                 crate::rxs3::run_radio_fpga(
                     backend,
@@ -1171,7 +1306,19 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
         }
     };
     out.flush()?;
+    if let (Some(mut w), Some(p)) = (slots_out, &a.slots_out) {
+        w.flush().with_context(|| format!("write {p}"))?;
+        crate::slotrx::sidecar(
+            std::path::Path::new(p),
+            stats.decoded_by,
+            json!({"input": input}),
+            true,
+        )?;
+    }
     crate::rxs3::report(&stats, secs);
+    if let Some(c) = &stats.chain {
+        c.report();
+    }
     if a.json {
         let mut j = stats.json();
         j["input"] = json!(input);
@@ -1274,6 +1421,78 @@ mod tests {
         // ISDB-S3 reads a SigMF recording, not stdin
         let a = p(&["rx", "--iq", "-", "--system", "isdbs3"]);
         assert!(run(a).unwrap_err().to_string().contains("not stdin"));
+    }
+
+    /// `--slots` is an ISDB-S3 input (auto resolves to it); `--chain`
+    /// needs `--symbols`; `--chain fixed`, `--slots-out` are ISDB-S3's and
+    /// `--slots-out` needs words of the chain to record.
+    #[test]
+    fn slots_and_chain_options() {
+        let p = |args: &[&str]| T::try_parse_from(args).unwrap().a;
+        let a = p(&["rx", "--slots", "x.slots"]);
+        assert_eq!(resolve_system(&a).unwrap(), SystemArg::Isdbs3);
+        assert!(matches!(a.input().unwrap(), Input::Slots("x.slots")));
+        let a = p(&["rx", "--slots", "x.slots", "--system", "isdbs"]);
+        assert!(
+            resolve_system(&a)
+                .unwrap_err()
+                .to_string()
+                .contains("ISDB-S3 input")
+        );
+        // one input only
+        assert!(T::try_parse_from(["rx", "--slots", "x", "--symbols", "y"]).is_err());
+        // --chain needs --symbols
+        let a = p(&["rx", "--slots", "x", "--chain", "fixed"]);
+        assert!(
+            run(a)
+                .unwrap_err()
+                .to_string()
+                .contains("--chain fixed decodes")
+        );
+        let a = p(&[
+            "rx",
+            "--symbols",
+            "x.sym",
+            "--chain",
+            "fixed",
+            "--system",
+            "isdbs",
+        ]);
+        assert!(run(a).unwrap_err().to_string().contains("ISDB-S3 options"));
+        let a = p(&[
+            "rx",
+            "--symbols",
+            "x.sym",
+            "--system",
+            "isdbs3",
+            "--slots-out",
+            "o",
+        ]);
+        assert!(run(a).unwrap_err().to_string().contains("no Slots words"));
+        let a = p(&["rx", "--slots", "x", "--slots-out", "o"]);
+        assert!(
+            run(a)
+                .unwrap_err()
+                .to_string()
+                .contains("--slots-out records")
+        );
+        let a = p(&[
+            "rx",
+            "--symbols",
+            "x.sym",
+            "--system",
+            "isdbs3",
+            "--chain",
+            "fixed",
+            "--ldpc",
+            "float",
+        ]);
+        assert!(
+            run(a)
+                .unwrap_err()
+                .to_string()
+                .contains("fixed-point decoder")
+        );
     }
 
     #[test]

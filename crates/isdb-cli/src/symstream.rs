@@ -456,12 +456,13 @@ pub fn run(
 /// Probes of the acquisition before giving up.
 pub const ACQUIRE_ATTEMPTS: usize = 3;
 
-/// The radio side of a streamed reception.
-pub struct RadioStream {
+/// The radio side of a streamed reception; `C` the capture's summary
+/// (`isdb_radio::SymbolsCapture`, or `SlotsCapture` for the chain).
+pub struct RadioStream<C = isdb_radio::SymbolsCapture> {
     /// The words as they arrive.
     pub bytes: Bytes,
     /// The capture thread (its result: the capture's summary).
-    pub thread: std::thread::JoinHandle<Result<isdb_radio::SymbolsCapture>>,
+    pub thread: std::thread::JoinHandle<Result<C>>,
     /// Symbols per second the stream carries.
     pub symbol_rate_hz: f64,
     /// The front end's parameters (for the summary).
@@ -496,6 +497,69 @@ pub fn fpga_taps(
     Ok(found)
 }
 
+/// Where ISDB-S3 reception from a radio runs ([`s3_offload`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum S3Offload {
+    /// The FPGA front end and receive chain: `Slots` words, `taps` taps.
+    Slots(usize),
+    /// The FPGA front end: `Symbols` words, the host's receiver.
+    Symbols(usize),
+    /// Blocks of IQ, the CPU front end and receiver.
+    Cpu,
+}
+
+/// The ISDB-S3 offload among `offers` for `offload`: `auto` prefers the
+/// receive chain (`Slots`) over the symbol front end over the CPU; `fpga`
+/// needs at least a compatible front end and takes the chain when it is
+/// offered; `cpu` takes neither. The chain counts only with a compatible
+/// front end and this host's `Slots` format.
+pub fn select_s3(
+    offers: &[isdb_radio::Offload],
+    offload: crate::symbols::OffloadArg,
+) -> Result<S3Offload> {
+    use crate::symbols::OffloadArg;
+    use isdb_radio::Offload;
+    if offload == OffloadArg::Cpu {
+        return Ok(S3Offload::Cpu);
+    }
+    let arith = isdb_frontend::params::MIN_ARITH_VERSION..=isdb_frontend::params::FORMAT_VERSION;
+    let slots = offers.iter().find_map(|o| match *o {
+        Offload::RxSlots {
+            version,
+            taps,
+            slots_version,
+        } if arith.contains(&version) && slots_version == isdb_frontend::slots::SLOTS_VERSION => {
+            Some(taps)
+        }
+        _ => None,
+    });
+    let symbols = offers.iter().find_map(|o| match *o {
+        Offload::Symbols { version, taps } if arith.contains(&version) => Some(taps),
+        _ => None,
+    });
+    match (slots, symbols) {
+        (Some(t), _) => Ok(S3Offload::Slots(t)),
+        (None, Some(t)) => Ok(S3Offload::Symbols(t)),
+        (None, None) if offload == OffloadArg::Fpga => {
+            anyhow::bail!("--offload fpga: the radio has no compatible symbol front end")
+        }
+        (None, None) => Ok(S3Offload::Cpu),
+    }
+}
+
+/// [`select_s3`] on what `backend` offers with `cfg` (one register read on
+/// a Pluto).
+pub fn s3_offload(
+    backend: &dyn isdb_radio::Backend,
+    cfg: &isdb_radio::RadioConfig,
+    offload: crate::symbols::OffloadArg,
+) -> Result<S3Offload> {
+    if offload == crate::symbols::OffloadArg::Cpu {
+        return Ok(S3Offload::Cpu);
+    }
+    select_s3(&backend.offloads(cfg)?, offload)
+}
+
 /// Acquire on a short IQ capture from `backend` (`acquire(x, fs)` gives the
 /// front end's parameters and a one-line description of the acquisition,
 /// or `None` when the probe gave no usable lock: up to [`ACQUIRE_ATTEMPTS`]
@@ -508,6 +572,54 @@ pub fn start_radio(
     stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     acquire: impl FnMut(&[isdb_iq::C32], f64) -> Result<Option<(isdb_frontend::Params, String)>>,
 ) -> Result<RadioStream> {
+    start_radio_with(
+        backend,
+        cfg,
+        symbol_rate_hz,
+        stop,
+        acquire,
+        |b, cfg, p, w, stop| b.capture_symbols(cfg, p, u64::MAX, w, stop),
+    )
+}
+
+/// The device's words capture, on its own thread: `(backend, cfg,
+/// params, out, stop)` to the capture's summary.
+pub trait CaptureFn<C>:
+    FnOnce(
+        &'static dyn isdb_radio::Backend,
+        &isdb_radio::RadioConfig,
+        &isdb_frontend::Params,
+        &mut dyn std::io::Write,
+        &std::sync::atomic::AtomicBool,
+    ) -> isdb_radio::Result<C>
+    + Send
+    + 'static
+{
+}
+
+impl<C, F> CaptureFn<C> for F where
+    F: FnOnce(
+            &'static dyn isdb_radio::Backend,
+            &isdb_radio::RadioConfig,
+            &isdb_frontend::Params,
+            &mut dyn std::io::Write,
+            &std::sync::atomic::AtomicBool,
+        ) -> isdb_radio::Result<C>
+        + Send
+        + 'static
+{
+}
+
+/// [`start_radio`] with the words taken by `capture` (the symbol front
+/// end's `capture_symbols`, or the chain's `capture_slots`).
+pub fn start_radio_with<C: Send + 'static>(
+    backend: &'static dyn isdb_radio::Backend,
+    cfg: &isdb_radio::RadioConfig,
+    symbol_rate_hz: f64,
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    acquire: impl FnMut(&[isdb_iq::C32], f64) -> Result<Option<(isdb_frontend::Params, String)>>,
+    capture: impl CaptureFn<C>,
+) -> Result<RadioStream<C>> {
     let (limit, _) = backend
         .capture_limit(cfg)?
         .context("this radio cannot capture IQ, which the acquisition needs")?;
@@ -552,7 +664,7 @@ pub fn start_radio(
     let stop = std::sync::Arc::clone(stop);
     let thread = std::thread::spawn(move || {
         let mut w = ChannelWriter(tx);
-        Ok(backend.capture_symbols(&cfg, &p, u64::MAX, &mut w, &stop)?)
+        Ok(capture(backend, &cfg, &p, &mut w, &stop)?)
     });
     Ok(RadioStream {
         bytes: rx,
@@ -572,6 +684,21 @@ pub fn finish_radio(
     cap_stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     decode: impl FnOnce(Bytes) -> Result<f64>,
 ) -> Result<f64> {
+    finish_radio_with(stream, seconds, stop, cap_stop, |c| c, decode).0
+}
+
+/// [`finish_radio`] for any capture summary `C` (`summary` gives its
+/// stream part), returning the summary too (`None` when the capture
+/// ended on an error, which is warned). `seconds` 0: `decode` (or `stop`)
+/// ends the capture, by setting `cap_stop`.
+pub fn finish_radio_with<C>(
+    stream: RadioStream<C>,
+    seconds: f64,
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    cap_stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    summary: impl Fn(&C) -> &isdb_radio::SymbolsCapture,
+    decode: impl FnOnce(Bytes) -> Result<f64>,
+) -> (Result<f64>, Option<C>) {
     use std::sync::atomic::Ordering;
     let limit = (seconds > 0.0).then_some(seconds * stream.symbol_rate_hz);
     let (user, cs) = (std::sync::Arc::clone(stop), std::sync::Arc::clone(cap_stop));
@@ -607,7 +734,8 @@ pub fn finish_radio(
         std::panic::resume_unwind(p);
     }
     match capture {
-        Ok(c) => {
+        Ok(full) => {
+            let c = summary(&full);
             if c.overflows > 0 {
                 warn!(
                     target: "isdb::rx",
@@ -617,10 +745,13 @@ pub fn finish_radio(
                 );
             }
             info!(target: "isdb::rx", "{}; {}", c.method, c.gain);
+            (secs, Some(full))
         }
-        Err(e) => warn!(target: "isdb::rx", "the capture ended: {e:#}"),
+        Err(e) => {
+            warn!(target: "isdb::rx", "the capture ended: {e:#}");
+            (secs, None)
+        }
     }
-    secs
 }
 
 #[cfg(test)]
@@ -901,6 +1032,47 @@ mod tests {
         assert_eq!(st.blocks + st.blocks_dropped, blocks as u64);
         // ≈ 120 blocks short over the spell, 12 dropped per loss
         assert!(st.losses <= 15, "{} losses: {st:?}", st.losses);
+    }
+
+    /// `auto` prefers the chain over the symbols over the CPU; `fpga`
+    /// needs a front end and takes the chain when offered; `cpu` neither;
+    /// an unknown Slots format or front-end arithmetic does not count.
+    #[test]
+    fn s3_offload_selection() {
+        use crate::symbols::OffloadArg::{Auto, Cpu, Fpga};
+        use isdb_radio::Offload;
+        let v = isdb_frontend::params::FORMAT_VERSION;
+        let sym = Offload::Symbols {
+            version: v,
+            taps: 32,
+        };
+        let slots = |s| Offload::RxSlots {
+            version: v,
+            taps: 32,
+            slots_version: s,
+        };
+        assert_eq!(
+            select_s3(&[sym, slots(1)], Auto).unwrap(),
+            S3Offload::Slots(32)
+        );
+        assert_eq!(
+            select_s3(&[sym, slots(1)], Fpga).unwrap(),
+            S3Offload::Slots(32)
+        );
+        assert_eq!(select_s3(&[sym, slots(1)], Cpu).unwrap(), S3Offload::Cpu);
+        assert_eq!(select_s3(&[sym], Auto).unwrap(), S3Offload::Symbols(32));
+        assert_eq!(
+            select_s3(&[sym, slots(2)], Auto).unwrap(),
+            S3Offload::Symbols(32)
+        );
+        assert_eq!(select_s3(&[], Auto).unwrap(), S3Offload::Cpu);
+        assert!(select_s3(&[], Fpga).is_err());
+        let old = Offload::RxSlots {
+            version: 1,
+            taps: 32,
+            slots_version: 1,
+        };
+        assert!(select_s3(&[old], Fpga).is_err());
     }
 
     /// A loss in the words is reported and ends the contiguous stretch.

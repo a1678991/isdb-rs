@@ -48,6 +48,7 @@ mod s3sync;
 mod s3tmcc;
 mod satpipe;
 mod sink;
+mod slotrx;
 mod source;
 mod stop;
 mod symbols;
