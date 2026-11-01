@@ -45,3 +45,44 @@ search (0.72 s) are skipped. The front end itself (`isdb-frontend`
 More development tools: `chaintime`, `rxtime`, `rxparts`, `fetime`
 (where the time goes), `blockacq` (each segment's acquisition, fresh and
 with the first segment's).
+
+## The fixed-point chain
+
+`chain` is the streaming fixed-point model of what the FPGA will run
+after its symbol front end (docs/plans/isdbs3-fpga-rx.md, piece 3): one
+6-bit symbol in per `Chain::push`, every stage in integers whose widths,
+roundings and thresholds the module documentation states (it is the
+specification the HDL follows), and frames out with their slots, TMCC
+and status, which `chain::out::blocks` turns into the `Slots` boundary
+format (`isdb_frontend::slots`). Stages: NCO and carrier loop (gain ½
+per frame from the SSync phase steps), slot sync (±I±Q correlation,
+max + ½min magnitude, a 9 296-position accumulator with a ⅛ leak, lock
+after 4 periods and loss after 8, frame heads by a streaming
+sign-minority rule), slot phase and amplitude (16-step CORDIC per head,
+linear interpolation, the cosine table, one reciprocal per head),
+11-tap Q2.14 equaliser with 48-bit training sums solved by the host
+(`eq::solve`), TMCC soft bits (45 per unit amplitude, known zeros +127),
+the max-log demapper with |y|² cancelled against the previous frame's
+learned points and n0, de-interleaving by address, then the slot
+dispersal and BCH as `main_signal`. The LDPC is a `chain::ldpc::LdpcDecoder`
+given to the chain (default `isdb_fec::ldpc::fixed`, 50 iterations,
+offset 1). The layout decoded from frame N's TMCC is used for frame
+N + 2 (B44 §3.11, SPEC-NOTES "tmcc-timing"; lag 1 selectable), so the
+first two frames after a (re)start are not decoded.
+
+Measured against the floating-point receiver (2026-11-01):
+
+| Check | Tool | Result |
+|---|---|---|
+| Whole chain vs `rx::receive` as `isdb rx --symbols` streams it, 40 s FPGA recording of BS7 (−989 … 0 Hz drift, two losses) | `chaincheck` | 1 207 frames on both; 115 296 slots compared, all byte-identical (through the `Slots` words); 0 LDPC / BCH failures on either side; mean 2.095 / 2.081 LDPC iterations; the 6 frames not decoded are the 2 after each of the 3 (re)starts (lag 2; lag 1: 3 frames, 115 584 slots identical) |
+| Stage 1 on six IQ recordings (61.44 and 40 Msps, through the bit-exact front end) | `chainiq` | the slot offset and SSync parity of `s3sync::measure`; every chain slot head and frame head is one of `sync::synchronise`'s; 10 272 slots byte-identical with `rx::receive` |
+| Stages 1–3 on the FPGA recording | `chainsync` | 1 796 heads and 15 frame heads equal; head carrier phase within 3.4 mrad (1.7 rms), amplitude within 0.13 % |
+| Stage 4 | `chainstages` | integer sums = the f64 sums of the same symbols exactly; Q2.14 rounding ≤ 0.68 LSB; within 6.3 LSB (2.3 rms) of `eq::train` normalised by the centre tap (the chain equalises after the slot correction) |
+| Stage 5 | `chainstages` | TMCC soft-bit signs 100 % equal to `tmcc::llrs`; decoded TMCC identical on 85 of 85 frames |
+| Stage 6 | `chainstages` | LLRs 99.996 % equal to `main_signal::demap` + `fixed::quantise(1)`, never more than 1 apart |
+| CPU (one thread, LDPC apart) | `chaincheck`, `chainprof` | 4.9 s per s of signal on the recording (2.7 s per s on 5 synthetic frames, 0.96 of it the slot sync): a reference model, not a fast path |
+
+`chainvectors` writes the HDL's test vectors (fpga/README.md "Chain
+vectors"); the chain's tests decode synthetic streams (`chain::synth`:
+mixed modulations with dummies, a drift, a loss, any push split) back to
+the data sent.

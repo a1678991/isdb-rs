@@ -409,7 +409,9 @@ RGMII input whatever we add; the blocks' own clocks had > 0.8 ns.
    writer per stage and for the chain, `isdb rx --symbols --chain fixed`
    (or an example first) decoding the FPGA recordings through it with
    the slot bytes compared to `rx::receive`'s; the SPEC-NOTES entry on
-   TMCC timing. **Status: in progress (2026-11-01).**
+   TMCC timing. **Status: model, format, checks and vectors done
+   (2026-11-02, "Results" below); `isdb rx --symbols --chain fixed` not
+   done.**
 4. **`fpga`: stages 1–6 and 8–9 HDL** against piece 3's vectors, one
    block per stage, then the chain top (`SlotsRx`) sharing the front
    end's control and packer; Yosys estimates against the budget.
@@ -568,3 +570,53 @@ vectors written under the first rule.
 - The measurements above are reproducible with the existing
   `isdbs3-phy` examples `streamprof` and `rxparts` under `taskset`, and
   `isdb rx --symbols` under `/usr/bin/time -v`.
+
+## Results
+
+### Piece 3: the fixed-point chain model (2026-11-02)
+
+`isdbs3_phy::chain` (module docs: every width and rule),
+`isdb_frontend::slots` (format version 1), examples `chaincheck`,
+`chainsync`, `chainstages`, `chainiq`, `chainprof`, `chainvectors`.
+Decisions the HDL and the integrator need:
+
+- **Layout lag 2, not 1.** Frame N's TMCC codeword is complete at its
+  last symbol; frame N + 1's first main symbol leaves the equaliser 56
+  symbols later, so lag 1 needs the TMCC LDPC + BCH done in 56 symbols or
+  a slot of buffering. B44 §3.11 ("switching information two frames
+  prior") reads as the TMCC of frame N describing frame N + 2, which
+  gives the FPGA a whole frame. Lag 1 stays selectable
+  (`ChainOptions::layout_lag`); the SPEC-NOTES entry "tmcc-timing" is
+  pending real-world check (no switch observed).
+- **Equaliser after the slot correction** (stage 3 → 4, as this plan
+  orders them), on Q.10 symbols; the float receiver equalises before.
+  Taps solved from frame N are in use from frame N + 2; the host may
+  write taps at open.
+- **TMCC soft-bit scale** 45 per unit amplitude (`>> 5` of the Q.10
+  projection), known zeros +127.
+- **Demapper** = the float demapper's scale exactly (n0 in Q.20, K =
+  round(2³² / n0)), so the main LDPC sees the same `i8` LLRs as today.
+- Lock 4 periods, loss 8 periods, frame marker from a ±8 sign counter
+  with |μ| ≥ 2, two missed markers lose the frame; a loss or lost sync
+  restarts everything but the carrier register, taps, constellation and
+  n0.
+
+| Stage | Agreement with the float receiver (BS7 FPGA recording unless stated) |
+|---|---|
+| 1 slot sync | same slot offset and SSync parity as `s3sync::measure` on six IQ recordings (BS7/11/17 at 61.44 and 40 Msps); every head and frame head among `sync::synchronise`'s (1 796 heads, 15 frame heads on the FPGA recording) |
+| 2 carrier loop | followed the recording's −38 … −989 Hz drift (the host's tracking −0 … −989 Hz); synthetic −22 Hz/s and −2 kHz/s followed with the predicted lag (2·D·33 ms) |
+| 3 slot phase | head carrier phase within 3.4 mrad (1.7 rms), amplitude within 0.13 % |
+| 4 equaliser | integer sums exact; taps rounded within 0.68 LSB of Q2.14; within 6.3 LSB (2.3 rms) of `eq::train`, normalised |
+| 5 TMCC | soft-bit signs 100 % equal; decoded TMCC identical (85 / 85 frames) |
+| 6 demapper | 99.996 % of LLRs equal, max difference 1 |
+| whole chain | 1 207 frames; 115 296 of 115 296 slots byte-identical with `rx::receive` (through the Slots words); 0 LDPC / 0 BCH failures on both; 2.095 vs 2.081 mean iterations; 6 frames undecoded = 2 per (re)start (lag 2) |
+
+`Slots` words for 16APSK 93/120: 12.2 MB/s of signal (the plan's 12.5).
+CPU: the model's stages 1–6 and 8 take 4.9 s per second of signal on
+one thread (LDPC apart, 0.12 s per s on all cores): a bit-level
+reference, not a host fast path. Vectors: `chain-{1-sync,2-phase,3-eq,
+4-tmcc,5-demap,6-chain}.json` (synthetic, `mise run fpga:vectors`) and
+`chain-rec-*.json` from the FPGA recording (opt-in).
+
+Left: `isdb rx --symbols FILE --chain fixed` (the CLI path; `chaincheck`
+does the comparison meanwhile); the model's speed; the HDL (piece 4).
