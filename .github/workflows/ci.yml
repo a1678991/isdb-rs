@@ -1,17 +1,34 @@
-# Rust checks. Every step outside the no-radio-libs job calls a mise task, so
-# `mise run check` locally runs the same commands. Toolchains come from
-# rust-toolchain.toml (dev) and `rust-version` in Cargo.toml (MSRV); harness
-# tools from mise.toml.
+# Every check of the repository: commit messages, the workflows themselves,
+# Rust (fmt, clippy, feature combinations, tests, rustdoc, cargo-deny,
+# MSRV) and the FPGA simulation. Every Rust/FPGA step calls a mise task, so
+# `mise run check` locally runs the same commands. Toolchains come from rust-toolchain.toml
+# (dev) and `rust-version` in Cargo.toml (MSRV); harness tools (cargo-deny,
+# cargo-hack, uv) from mise.toml, locked in mise.lock.
+#
+# Required check: `CI OK` (the `ci-ok` job) is the only status the main
+# branch ruleset requires. It passes when every job it needs passed or was
+# skipped by its condition, so jobs can be added or renamed without
+# touching the ruleset. Dependency PRs auto-merge on it.
+#
+# Not required: `cargo-deny advisories`. A new RustSec advisory for a
+# dependency appears on main without any commit, and blocking every PR
+# (Renovate's included) on it would make CI fail for reasons unrelated to
+# the change; it runs on every push and PR and weekly, so it is seen, and
+# `cargo deny check bans licenses sources` (required) still checks the
+# change itself.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly (Monday 03:17 JST): new advisories and toolchain drift on main.
+    - cron: "17 18 * * 0"
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -23,10 +40,89 @@ env:
   RUST_BACKTRACE: short
   # `mise run` would otherwise install every tool in mise.toml (node, pnpm,
   # linters) first; the Rust tasks need only the rustup toolchain, and the
-  # deny job installs cargo-deny through mise-action.
+  # jobs that need a mise tool install that one alone.
   MISE_TASK_RUN_AUTO_INSTALL: "false"
 
 jobs:
+  changes:
+    name: changed paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      fpga: ${{ steps.filter.outputs.fpga }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          # The FPGA simulation compares the Amaranth blocks with vectors
+          # written by the Rust models (isdb-frontend, isdbs-phy and what
+          # they build on).
+          filters: |
+            fpga:
+              - "fpga/**"
+              - "crates/isdb-frontend/**"
+              - "crates/isdb-iq/**"
+              - "crates/isdbs-phy/**"
+              - "crates/isdbs-core/**"
+              - "crates/isdb-fec/**"
+              - "Cargo.lock"
+              - "rust-toolchain.toml"
+              - "mise.toml"
+              - "mise.lock"
+              - ".github/workflows/ci.yml"
+
+  # Conventional Commits (commitlint.config.mjs) for every commit of a PR.
+  commitlint:
+    name: commitlint
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install_args: node pnpm
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install commitlint
+        run: pnpm install --frozen-lockfile
+      - name: Lint commits in this PR
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: pnpm exec commitlint --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
+
+  # The workflows: syntax (actionlint, with shellcheck on run: scripts),
+  # security (zizmor) and pinned action SHAs (pinact).
+  actions:
+    name: workflow lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install_args: actionlint shellcheck zizmor pinact
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: actionlint
+        run: mise run actions:actionlint
+      - name: zizmor
+        run: mise run actions:zizmor
+      - name: pinact (verify pins)
+        run: mise run actions:pinact:check
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-24.04
@@ -63,10 +159,41 @@ jobs:
             .
             oracle/rust_tx3 -> ../../target/oracle
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: clippy (workspace, -D warnings)
+      - name: clippy (workspace, default features, -D warnings)
         run: mise run clippy
       - name: clippy (oracle/rust_tx3 helper)
         run: mise run oracle
+
+  # Feature combinations (cargo-hack, `mise run features`): clippy
+  # -D warnings in every combination of every crate's features, and the
+  # tests of isdb-cli, isdb-radio and isdb-ts without default features and
+  # with each non-backend feature (`mock`, `serde`). Deliberately no
+  # libhackrf-dev or libiio-dev: clippy only type-checks (the backends'
+  # build scripts just name the library to link), and the tests link
+  # isdb-cli and isdb-radio without the hackrf and pluto features, which
+  # must then need neither system library.
+  features:
+    name: feature combinations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install_args: github:taiki-e/cargo-hack
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: clippy, every feature combination (-D warnings)
+        run: mise run features-clippy
+      - name: test without default features, and per non-backend feature
+        run: mise run features-test
 
   test:
     name: test
@@ -89,8 +216,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Debug profile ([profile.test] is opt-level 2, the PHY crates opt-level
-      # 3); #[ignore]d stress/throughput tests are not run in CI.
+      # [profile.test] is opt-level 2, the PHY crates opt-level 3;
+      # #[ignore]d stress/throughput tests are not run in CI. The one
+      # wall-clock-paced end-to-end test is its own test binary
+      # (crates/isdb-cli/tests/live_feed.rs), so nothing else runs beside it.
       - run: mise run test
 
   doc:
@@ -113,7 +242,7 @@ jobs:
       - run: mise run doc
 
   deny:
-    name: cargo-deny
+    name: cargo-deny (bans, licenses, sources)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -123,9 +252,28 @@ jobs:
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install_args: cargo-deny
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: mise run deny
+      - run: mise run deny-offline
+
+  advisories:
+    name: cargo-deny advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install_args: cargo-deny
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: mise run deny-advisories
 
   msrv:
     name: MSRV
@@ -150,33 +298,45 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: mise run msrv
 
-  no-radio-libs:
-    name: isdb-cli without libhackrf and libiio
+  fpga:
+    name: FPGA simulation
+    needs: changes
+    if: needs.changes.outputs.fpga == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Deliberately no libhackrf-dev or libiio-dev: `--no-default-features`
-      # drops the `hackrf` and `pluto` features (isdb-cli forwards them to
-      # isdb-radio, the only crate that depends on isdb-hackrf and isdb-iio),
-      # so nothing may link either system library.
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install_args: uv
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          workspaces: ". -> target"
+          key: fpga
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: build (no default features)
-        run: cargo build -p isdb-cli --no-default-features --locked
-      - name: clippy (no default features, -D warnings)
-        run: cargo clippy -p isdb-cli --no-default-features --all-targets --locked -- -D warnings
-      - name: test (no default features)
-        run: cargo test -p isdb-cli --no-default-features --locked
-      # isdb-radio without any backend: the registry must still compile and
-      # name the missing features (its `hackrf_left_out` / `pluto_left_out`
-      # tests).
-      - name: clippy isdb-radio (no backends, -D warnings)
-        run: cargo clippy -p isdb-radio --no-default-features --all-targets --locked -- -D warnings
-      - name: test isdb-radio (no backends)
-        run: cargo test -p isdb-radio --no-default-features --locked
+      # Writes the vectors from the Rust models (release examples) and the
+      # Python model, then simulates both FPGA blocks against them, bit for
+      # bit (deterministic: fixed seeds, no wall clock).
+      - run: mise run fpga:test
+
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs: [changes, commitlint, actions, fmt, clippy, features, test, doc, deny, msrv, fpga]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # `skipped`: commitlint outside a PR, fpga when nothing it covers
+      # changed. A cancelled or failed job fails this one.
+      - name: Every required job passed (or was skipped by its condition)
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          echo "$RESULTS" | jq -e 'all(.[]; . == "success" or . == "skipped")'

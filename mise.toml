@@ -5,7 +5,8 @@
 # plus cargo-deny for `deny` / `deny-offline` (`mise install`, or
 # `cargo install --locked cargo-deny`). `mise tasks` lists every task.
 #
-#   mise run check   everything CI runs: lint, test, doc, deny, msrv, oracle
+#   mise run check   everything CI runs: lint, features, test, doc, deny,
+#                    msrv, oracle (and `fpga:test` when fpga/ changes)
 #   mise run lint    fmt-check + clippy (what the pre-commit hook runs, roughly)
 #
 # `depends` run in parallel (cargo serialises jobs that share a target
@@ -19,6 +20,10 @@ shellcheck = "0.11.0"  # used by actionlint for run: scripts
 zizmor = "1.30.1"
 pinact = "5.0.0"
 cargo-deny = "0.20.2"
+# every feature combination of the crates with features (`features-*`)
+"github:taiki-e/cargo-hack" = "0.6.45"
+# the FPGA simulation (`fpga:*`)
+uv = "0.13.6"
 
 [settings]
 minimum_release_age = "3d"
@@ -49,8 +54,8 @@ run = "pinact run --check"
 # --- Rust workspace -------------------------------------------------------
 
 [tasks.check]
-description = "everything CI runs"
-depends = ["lint", "test", "doc", "deny", "msrv", "oracle"]
+description = "everything CI runs (fpga:test only when fpga/ or its Rust models change)"
+depends = ["lint", "features", "test", "doc", "deny", "msrv", "oracle"]
 
 [tasks.lint]
 description = "formatting check + clippy -D warnings"
@@ -78,6 +83,26 @@ run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 description = "unit, integration and doc tests ([profile.test] is opt-level 2; #[ignore]d tests excluded)"
 run = "cargo test --workspace --locked"
 
+# Feature combinations (cargo-hack; `mise install` provides it). clippy
+# builds and lints every combination of every crate's features (isdb-cli,
+# isdb-radio and isdb-ts have any). The tests run each crate with features
+# once without its default features and once per feature that is not a
+# radio backend: isdb-cli and isdb-radio without hackrf and pluto (the build
+# that links neither libhackrf nor libiio), isdb-radio's `mock`, isdb-ts's
+# `serde`. `test` runs the default features, and a backend alone
+# changes only what compiles, which clippy covers.
+[tasks.features]
+description = "clippy in every feature combination, tests without the defaults (cargo-hack)"
+depends = ["features-clippy", "features-test"]
+
+[tasks.features-clippy]
+description = "clippy -D warnings, every feature combination of every crate (cargo-hack --feature-powerset)"
+run = "cargo hack clippy --workspace --feature-powerset --all-targets --locked -- -D warnings"
+
+[tasks.features-test]
+description = "tests of isdb-cli, isdb-radio, isdb-ts without default features and per non-backend feature"
+run = "cargo hack test -p isdb-cli -p isdb-radio -p isdb-ts --each-feature --skip default,hackrf,pluto --locked"
+
 [tasks.test-release]
 description = "the same tests in release (faster PHY loopbacks)"
 run = "cargo test --workspace --locked --release"
@@ -94,6 +119,10 @@ run = "cargo doc --workspace --no-deps --locked"
 [tasks.deny]
 description = "cargo-deny: advisories, bans, licenses, sources"
 run = "cargo deny --locked check"
+
+[tasks.deny-advisories]
+description = "cargo-deny: the RustSec advisory database only (changes without a commit; not a required CI check)"
+run = "cargo deny --locked check advisories"
 
 [tasks.deny-offline]
 description = "cargo-deny without the advisory database fetch (pre-commit)"
