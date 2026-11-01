@@ -108,6 +108,7 @@ fn header(id: u16, seq: u32) -> Header {
         packet_id: id,
         sequence: seq,
         scramble_info: false,
+        scramble_control: None,
     }
 }
 

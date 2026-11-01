@@ -60,7 +60,10 @@ Text in MMT-SI is UTF-8 (B60 §7.1), not the ARIB 8-unit code of TS SI.
 
 Scrambled payloads (ACAS) are recognised from the MMTP header extension
 and counted; only their payload header is in the clear (SPEC-NOTES
-"scrambled-mpu"). They are never descrambled (project policy).
+"scrambled-mpu"). They are never descrambled (project policy). A payload
+whose extension marks it clear (a stream descrambled elsewhere keeps the
+extension with its scramble control bits `00`) is reassembled like any
+other.
 
 ISO/IEC 23008-1 (MMT), ARIB STD-B61 / B62, ITU-T H.265 and ISO/IEC
 14496-3 are not available: what B60 defines is implemented from B60; the

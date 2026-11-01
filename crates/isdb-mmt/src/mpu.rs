@@ -607,6 +607,7 @@ pub(crate) mod tests {
             packet_id: id,
             sequence: seq,
             scramble_info: false,
+            scramble_control: None,
         }
     }
 

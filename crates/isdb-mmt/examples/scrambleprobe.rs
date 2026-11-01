@@ -3,8 +3,9 @@
 //! payload header fields are consistent (payload_length = payload − 2,
 //! fragment_type 2, timed 1, MPU sequence number continuous), and how
 //! often the MFU header after them would be (offset 0 for whole MFUs,
-//! movie fragment sequence number constant within an MPU). Streams the
-//! file.
+//! movie fragment sequence number constant within an MPU), and the
+//! scramble control bits of the 0001h extension (`ctrl00`…`ctrl11`:
+//! bits 4–3 of its first body byte). Streams the file.
 //!
 //! cargo run --release -p isdb-mmt --example scrambleprobe -- FILE
 
@@ -25,6 +26,7 @@ struct C {
     whole_offset0: u64,
     aggregated: u64,
     last_mpu: Option<u32>,
+    ctrl: [u64; 4],
 }
 
 fn main() {
@@ -47,6 +49,9 @@ fn main() {
         }
         let e = c.entry(h.packet_id).or_default();
         e.packets += 1;
+        if let Some(c) = h.scramble_control {
+            e.ctrl[usize::from(c)] += 1;
+        }
         e.scrambled += u64::from(h.scramble_info);
         e.len_ok += u64::from(usize::from(u16::from_be_bytes([pl[0], pl[1]])) == pl.len() - 2);
         e.type2_timed += u64::from(

@@ -210,9 +210,15 @@ pub struct Header {
     pub sequence: u32,
     /// The header extension carries a multi-type header extension of type
     /// 0001h, "information related to scramble specified in ARIB STD-B61"
-    /// (B60 Tables 6-7 to 6-9). STD-B61 is not available: its content is
-    /// not interpreted.
+    /// (B60 Tables 6-7 to 6-9), and that information does not mark the
+    /// payload clear (see [`Header::scramble_control`]).
     pub scramble_info: bool,
+    /// The 0001h extension's first body byte, bits 4–3, when there is one:
+    /// `00` on a payload that is in the clear (a stream whose payloads were
+    /// descrambled keeps the extension with these bits cleared), `10` /
+    /// `11` on a scrambled one. STD-B61 is not available; the reading is
+    /// the observation of isdb-mmt's SPEC-NOTES "scrambled-mpu".
+    pub scramble_control: Option<u8>,
 }
 
 /// Parse an MMTP packet: its header and payload.
@@ -232,6 +238,7 @@ pub fn parse(b: &[u8]) -> Option<(Header, &[u8])> {
     let sequence = u32::from_be_bytes([b[8], b[9], b[10], b[11]]);
     let mut pos = 12 + if counter { 4 } else { 0 };
     let mut scramble_info = false;
+    let mut scramble_control = None;
     if ext {
         let h = b.get(pos..pos + 4)?;
         let ext_type = u16::from_be_bytes([h[0], h[1]]);
@@ -243,7 +250,13 @@ pub fn parse(b: &[u8]) -> Option<(Header, &[u8])> {
             let mut q = 0;
             while let Some(e) = body.get(q..q + 4) {
                 let t = u16::from_be_bytes([e[0], e[1]]) & 0x7FFF;
-                scramble_info |= t == 0x0001;
+                if t == 0x0001 && scramble_control.is_none() {
+                    // bits 4–3 of the element's first byte; an element
+                    // without a body counts as scrambled
+                    let ctrl = body.get(q + 4).map(|c| (c >> 3) & 3);
+                    scramble_control = ctrl;
+                    scramble_info = ctrl.is_none_or(|c| c >= 2);
+                }
                 q += 4 + usize::from(u16::from_be_bytes([e[2], e[3]]));
                 if e[0] & 0x80 != 0 {
                     break;
@@ -260,6 +273,7 @@ pub fn parse(b: &[u8]) -> Option<(Header, &[u8])> {
             packet_id,
             sequence,
             scramble_info,
+            scramble_control,
         },
         b.get(pos..)?,
     ))
@@ -396,6 +410,55 @@ pub fn message_name(id: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An MPU packet with a multi-type extension holding one 0001h
+    /// element whose body is `body`.
+    fn with_scramble(body: &[u8]) -> Vec<u8> {
+        let mut pkt = vec![
+            0x02,
+            PayloadType::Mpu.code(),
+            0xf3,
+            0x00,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            9,
+        ];
+        let elem_len = u16::try_from(body.len()).unwrap();
+        // header extension: type 0000 (multi-type), its length
+        pkt.extend(0u16.to_be_bytes());
+        pkt.extend((4 + elem_len).to_be_bytes());
+        // one element, end flag set: 8001, its length, its body
+        pkt.extend(0x8001u16.to_be_bytes());
+        pkt.extend(elem_len.to_be_bytes());
+        pkt.extend(body);
+        pkt.extend([0xaa, 0xbb]); // payload
+        pkt
+    }
+
+    #[test]
+    fn scramble_control_bits_decide_scrambled() {
+        for (byte, ctrl, scrambled) in [
+            (0x00u8, Some(0u8), false),
+            (0x07, Some(0), false),
+            (0x10, Some(2), true),
+            (0x18, Some(3), true),
+            (0x08, Some(1), false),
+        ] {
+            let pkt = with_scramble(&[byte, 0, 0]);
+            let (h, p) = parse(&pkt).unwrap();
+            assert_eq!(h.scramble_control, ctrl, "{byte:#04x}");
+            assert_eq!(h.scramble_info, scrambled, "{byte:#04x}");
+            assert_eq!(p, [0xaa, 0xbb]);
+        }
+        // an element without a body: scrambled, unread
+        let (h, _) = parse(&with_scramble(&[])).unwrap();
+        assert_eq!((h.scramble_control, h.scramble_info), (None, true));
+    }
 
     #[test]
     fn spec_pa_message_lists_its_tables() {

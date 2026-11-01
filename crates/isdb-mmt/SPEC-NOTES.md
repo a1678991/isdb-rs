@@ -51,6 +51,18 @@ offline (2026-10-25) and 40 s live through the FPGA front end
   scrambled. Scrambled payloads are counted from the header and never
   parsed further or delivered; an aggregated scrambled payload (whose MFU
   lengths are scrambled) counts as one MFU. Status: observation.
+- Observation (2026-11-01, `examples/scrambleprobe`, its `ctrl` census):
+  bits 4–3 of the 0001h extension's first body byte read `10` or `11` on
+  every MPU packet of a recorded BS17 stream (155 402 video packets of
+  300 MB: 77 467 / 77 935, about half each — two keys in turn), and `00`
+  on every one of the same packets in the stream after a cardholder's
+  descrambler (same packet sequence numbers), which keeps the extension
+  and clears these bits.
+- Interpretation: the extension marks the payload scrambled only when
+  these bits are `10` / `11`; with `00` the payload is in the clear and
+  parses (`mmtp::Header::scramble_control`, `scramble_info` false), so a
+  stream descrambled elsewhere reassembles here. Nothing is descrambled
+  here. Status: observation.
 
 ## ntp: NTP packets among the MMTP flows
 - Spec: §3.2: NTP in UDP to port 123, IPv6 destination ending in :101,
