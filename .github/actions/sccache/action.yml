@@ -47,14 +47,14 @@ runs:
     # the newest by prefix.
     - name: Restore the sccache cache
       if: inputs.save != 'true'
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: actions/cache/restore@v6.1.0
       with:
         path: ${{ env.SCCACHE_DIR }}
         key: ${{ env.SCCACHE_KEY }}-${{ github.run_id }}
         restore-keys: ${{ env.SCCACHE_KEY }}-
     - name: Restore and save the sccache cache
       if: inputs.save == 'true'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: actions/cache@v6.1.0
       with:
         path: ${{ env.SCCACHE_DIR }}
         key: ${{ env.SCCACHE_KEY }}-${{ github.run_id }}

@@ -148,7 +148,7 @@ unset, never fail for missing data).
 - **mise** (task runner and harness tools): install
   [mise](https://mise.jdx.dev/), then run `mise install` in the repository.
   It installs the pinned node/pnpm (commitlint), lefthook, cargo-deny,
-  actionlint, zizmor, pinact and shellcheck, runs `pnpm install` and installs
+  actionlint, zizmor and shellcheck, runs `pnpm install` and installs
   the git hooks (`lefthook install`). Every check is a mise task
   ([Checks](#checks)); the Rust tasks are plain cargo/rustup underneath.
 - Without the pinned harness tools: `mise run --skip-tools <task>` does not
@@ -163,7 +163,7 @@ Managed by lefthook (`lefthook.yaml`, installed into `.git/hooks` by
 
 | Hook | Runs |
 |---|---|
-| `pre-commit` | `mise run fmt` on staged `*.rs` (re-staged), `mise run clippy` when Rust files or manifests change, `mise run deny-offline` when manifests or `deny.toml` change, actionlint / zizmor / pinact on workflow changes, `mise lock` on `mise.toml` changes |
+| `pre-commit` | `mise run fmt` on staged `*.rs` (re-staged), `mise run clippy` when Rust files or manifests change, `mise run deny-offline` when manifests or `deny.toml` change, actionlint / zizmor / `gh actions-lock --verify-local` on workflow changes, `mise lock` on `mise.toml` changes |
 | `commit-msg` | commitlint (Conventional Commits) |
 | `pre-push` | refuses direct pushes to `main` |
 
@@ -216,6 +216,21 @@ Rust job, and sccache (`.github/actions/sccache`: the workspace's library
 crates, as one disk-cache entry per job) in the jobs that compile and link
 (test, feature combinations, FPGA). Locally sccache is optional:
 `RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0`.
+
+Actions are locked in `.github/workflows/actions.lock` ([workflow
+lockfile](https://docs.github.com/en/actions/concepts/security/workflow-dependency-lockfiles)),
+written by the gh extension `github/gh-actions-lock`
+(`mise run actions:lock:install`). Workflows keep readable tags
+(`actions/checkout@v7.0.1`); the lockfile records the commit each tag
+resolved to, GitHub runs only that commit, and the repository's
+*Require lockfile* policy blocks any workflow that is not locked. After
+adding or changing a `uses:`, run `mise run actions:lock` and commit the
+lockfile with it; a lockfile diff that changes `commit` is new code, and
+one that changes `owner_id`/`repo_id` means the repository behind the name
+changed. Actions of this repository are referenced as
+`uses: $/.github/actions/<name>` (pinned to the workflow's commit), not
+`./`. CI runs `gh actions-lock --verify`; the pre-commit hook the offline
+`--verify-local`.
 
 Dependency updates come from Renovate (`renovate.json`) and Dependabot
 security updates. Patch, minor, digest and pin updates (not 0.x minors,

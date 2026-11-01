@@ -26,10 +26,11 @@ pre-commit:
     - name: zizmor
       glob: ".github/{workflows,actions}/**/*.{yml,yaml}"
       run: mise run actions:zizmor
-    - name: pinact
-      glob: ".github/{workflows,actions}/**/*.{yml,yaml}"
-      run: mise run actions:pinact
-      stage_fixed: true
+    # Coverage only (offline); CI runs the full `--verify`. After changing a
+    # uses:, run `mise run actions:lock`.
+    - name: actions-lock
+      glob: ".github/{workflows,actions}/**/*.{yml,yaml,lock}"
+      run: gh actions-lock --verify-local
     - name: mise-lock
       glob: "mise.{toml,lock}"
       run: mise lock

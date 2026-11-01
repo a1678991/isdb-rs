@@ -59,10 +59,10 @@ jobs:
     outputs:
       fpga: ${{ steps.filter.outputs.fpga }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+      - uses: dorny/paths-filter@v4.0.3
         id: filter
         with:
           # The FPGA simulation compares the Amaranth blocks with vectors
@@ -89,11 +89,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
           install_args: node pnpm
         env:
@@ -107,38 +107,43 @@ jobs:
         run: pnpm exec commitlint --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
 
   # The workflows: syntax (actionlint, with shellcheck on run: scripts),
-  # security (zizmor) and pinned action SHAs (pinact).
+  # security (zizmor), and the action lockfile (.github/workflows/actions.lock:
+  # every uses: locked, each pin still on its tag upstream).
   actions:
     name: workflow lint
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
-          install_args: actionlint shellcheck zizmor pinact
+          install_args: actionlint shellcheck zizmor
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: actionlint
         run: mise run actions:actionlint
       - name: zizmor
         run: mise run actions:zizmor
-      - name: pinact (verify pins)
-        run: mise run actions:pinact:check
+      - name: gh-actions-lock (verify actions.lock)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mise run actions:lock:install
+          mise run actions:lock:verify
 
   fmt:
     name: rustfmt
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
           install: false
           cache: false
@@ -149,16 +154,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
           install: false
           cache: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: |
             .
@@ -182,20 +187,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
           install_args: github:taiki-e/cargo-hack sccache
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: ./.github/actions/sccache
+      - uses: $/.github/actions/sccache
         with:
           key: features
           save: ${{ github.ref == 'refs/heads/main' }}
@@ -212,7 +217,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       # crates/isdb-hackrf and crates/isdb-iio link the system libhackrf and
@@ -221,15 +226,15 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libhackrf-dev libiio-dev
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
           install_args: sccache
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: ./.github/actions/sccache
+      - uses: $/.github/actions/sccache
         with:
           key: test
           save: ${{ github.ref == 'refs/heads/main' }}
@@ -247,16 +252,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
           install: false
           cache: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: mise run doc
@@ -266,12 +271,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
           install_args: cargo-deny
         env:
@@ -283,12 +288,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
           install_args: cargo-deny
         env:
@@ -300,7 +305,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Install the MSRV toolchain (rust-version in Cargo.toml)
@@ -308,11 +313,11 @@ jobs:
           msrv=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)
           test -n "$msrv"
           rustup toolchain install "$msrv" --profile minimal
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
           install: false
           cache: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: ". -> target/msrv"
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -325,22 +330,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Install toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@v5.2.5
         with:
           install_args: uv sccache
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: ". -> target"
           key: fpga
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: ./.github/actions/sccache
+      - uses: $/.github/actions/sccache
         with:
           key: fpga
           save: ${{ github.ref == 'refs/heads/main' }}

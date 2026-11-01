@@ -1,7 +1,12 @@
 # zizmor configuration (https://docs.zizmor.sh/configuration/).
 rules:
-  # `uses: ./.github/actions/...` instead of GitHub's newer `$/...` syntax:
-  # actionlint (1.7.12) does not accept `$/` yet, and the checkout is the
-  # workflow's own commit either way.
-  self-repository:
-    disable: true
+  # Actions are pinned by .github/workflows/actions.lock (GitHub Actions
+  # workflow lockfile), not by SHAs in the workflow files: `uses:` keeps the
+  # tag, the lockfile records its commit, and CI runs
+  # `gh actions-lock --verify`. zizmor 1.31 does not read the lockfile yet
+  # (zizmorcore/zizmor#2463, unreleased), so a tag is accepted here; drop
+  # this once a zizmor release honours actions.lock.
+  unpinned-uses:
+    config:
+      policies:
+        "*": ref-pin

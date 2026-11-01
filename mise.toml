@@ -18,7 +18,6 @@ lefthook = "2.2.2"
 actionlint = "1.7.12"
 shellcheck = "0.11.0"  # used by actionlint for run: scripts
 zizmor = "1.31.1"
-pinact = "5.0.2"
 cargo-deny = "0.20.2"
 # every feature combination of the crates with features (`features-*`)
 "github:taiki-e/cargo-hack" = "0.6.45"
@@ -35,8 +34,8 @@ minimum_release_age = "3d"
 postinstall = ["pnpm install --frozen-lockfile", "lefthook install"]
 
 [tasks."actions:lint"]
-description = "lint GitHub Actions workflows (actionlint + zizmor)"
-depends = ["actions:actionlint", "actions:zizmor"]
+description = "lint GitHub Actions workflows (actionlint + zizmor) and verify actions.lock"
+depends = ["actions:actionlint", "actions:zizmor", "actions:lock:verify"]
 
 [tasks."actions:actionlint"]
 description = "lint GitHub Actions workflow syntax with actionlint"
@@ -46,13 +45,28 @@ run = "actionlint"
 description = "run zizmor security linter on GitHub Actions workflows"
 run = "zizmor --min-confidence medium .github"
 
-[tasks."actions:pinact"]
-description = "pin GitHub Actions versions to commit hashes"
-run = "pinact run"
+# Action dependencies are locked in .github/workflows/actions.lock (GitHub
+# Actions workflow lockfile, https://gh.io/actions-lockfile), written by the
+# gh CLI extension github/gh-actions-lock: workflows keep tag refs, the
+# lockfile records the commit each resolves to, and GitHub runs only that
+# commit (the repository's "Require lockfile" policy blocks a workflow that
+# is not locked). Not a mise tool: the extension's releases carry no
+# checksums for mise.lock, so it is pinned by tag like GitHub's sample.
+[tasks."actions:lock:install"]
+description = "install (or re-pin) the gh-actions-lock extension"
+run = "gh extension install github/gh-actions-lock --pin v0.4.0 --force"
 
-[tasks."actions:pinact:check"]
-description = "verify GitHub Actions are pinned (CI mode)"
-run = "pinact run --check"
+[tasks."actions:lock"]
+description = "update .github/workflows/actions.lock after changing a uses: (needs gh auth)"
+run = "gh actions-lock --no-interactive"
+
+[tasks."actions:lock:verify"]
+description = "verify actions.lock: every uses: locked, every pin still resolves upstream (CI)"
+run = "gh actions-lock --verify"
+
+[tasks."actions:lock:verify-local"]
+description = "offline: every uses: has an actions.lock entry (pre-commit; coverage only)"
+run = "gh actions-lock --verify-local"
 
 # --- Rust workspace -------------------------------------------------------
 
