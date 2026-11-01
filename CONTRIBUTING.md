@@ -143,8 +143,8 @@ unset, never fail for missing data).
   feature of `isdb-cli`), also on by default (Arch `libiio`,
   Debian/Ubuntu `libiio-dev`, Fedora `libiio-devel`, Homebrew `libiio`).
 - `cargo build -p isdb-cli --no-default-features` builds without either
-  library; CI checks that build, and `isdb-radio` without any backend, in
-  the `no-radio-libs` job.
+  library; CI's `feature combinations` job checks that build, and
+  `isdb-radio` without any backend, on a runner that has neither library.
 - **mise** (task runner and harness tools): install
   [mise](https://mise.jdx.dev/), then run `mise install` in the repository.
   It installs the pinned node/pnpm (commitlint), lefthook, cargo-deny,
@@ -184,14 +184,37 @@ tasks; `mise tasks` lists them with their descriptions. The tasks that
 | `mise run lint` | `fmt-check` + `clippy` |
 | `mise run fmt` / `mise run fmt-check` | rustfmt (workspace and `oracle/rust_tx3`) |
 | `mise run clippy` | clippy on all targets, `-D warnings` |
+| `mise run features` | cargo-hack: clippy in every feature combination, tests without default features |
 | `mise run test` | unit, integration and doc tests (ignored tests excluded) |
 | `mise run test-release` | the same in release (faster PHY loopbacks) |
 | `mise run test-ignored` | heavy stress/throughput tests, release (not in CI) |
 | `mise run doc` | rustdoc with `-D warnings` |
 | `mise run deny` | cargo-deny: advisories, bans, licences, sources |
-| `mise run deny-offline` | the same without the advisory database fetch (pre-commit) |
+| `mise run deny-offline` | the same without the advisory database fetch (pre-commit; the required CI check) |
+| `mise run deny-advisories` | the advisory database only (CI runs it, not required) |
 | `mise run msrv` | `cargo +<rust-version> check` on every target |
 | `mise run oracle` | clippy on the stand-alone `oracle/rust_tx3` helper |
+| `mise run fpga:test` | the FPGA blocks simulated against the Rust/Python models (needs uv; CI runs it when `fpga/` or the model crates change) |
+
+Tests must not depend on the speed of the machine. A test that compares
+with the wall clock (a real-time producer, pacing) goes into a test
+binary of its own, like `crates/isdb-cli/tests/live_feed.rs`: cargo runs
+test binaries one after another, so nothing else competes for the CPU.
+`tools/ci-flake-check.sh` reruns test targets pinned to a few CPUs, with
+busy loops beside them, to check one.
+
+### CI
+
+One workflow, `.github/workflows/ci.yml`. Its `CI OK` job needs every
+other job and is the only status check the `main` ruleset requires, so
+jobs can be added or renamed without touching the ruleset. Not required:
+`cargo-deny advisories` (a new RustSec advisory appears without a commit
+and must not block unrelated PRs; it also runs weekly).
+
+Dependency updates come from Renovate (`renovate.json`) and Dependabot
+security updates. Patch, minor, digest and pin updates (not 0.x minors,
+not the Rust toolchain or MSRV) auto-merge once `CI OK` passes; majors
+wait for a review.
 
 Lints are configured once in `[workspace.lints]` (`Cargo.toml`); every crate
 opts in with `[lints] workspace = true`. `unsafe_code` is denied everywhere
@@ -241,8 +264,9 @@ spec and record the outcome in SPEC-NOTES / VERIFICATION.md.
   `ci:` …). The optional scope is a crate directory name (`isdb-ts`,
   `isdbt-ofdm`, …) or `oracle`, `workspace`, `ci`, `deps`. commitlint
   enforces this in the hook and in CI.
-- Work on a branch and open a pull request; `main` is merged by squash.
-  CI (`CI` and `Lint` workflows) must be green.
+- Work on a branch and open a pull request; `main` is merged by rebase
+  (linear history, so every commit must pass commitlint). The `CI OK`
+  check must be green.
 - Add a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for
   user-visible changes.
 - Update the crate README and SPEC-NOTES in the same PR as the behaviour

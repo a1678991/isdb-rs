@@ -10,14 +10,35 @@
   "schedule": ["before 9am on saturday"],
   "prConcurrentLimit": 5,
   "enabledManagers": ["cargo", "npm", "mise", "github-actions", "custom.regex"],
-  "semanticCommitScope": null,
+  "semanticCommitScope": "deps",
+  "platformAutomerge": true,
+  "automergeStrategy": "rebase",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 9am on saturday"]
+  },
   "packageRules": [
     {
       "description": "Libraries keep their Cargo.toml ranges; only Cargo.lock moves (the MSRV CI job catches dependencies that need a newer Rust).",
       "matchManagers": ["cargo"],
       "rangeStrategy": "update-lockfile"
+    },
+    {
+      "description": "Auto-merge non-major updates once the required `CI OK` check passes (GitHub native auto-merge; the main ruleset requires the check). Majors wait for a review.",
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest", "pinDigest", "lockFileMaintenance"],
+      "automerge": true
+    },
+    {
+      "description": "0.x: a minor bump is a breaking release under SemVer, so it waits for a review like a major.",
+      "matchUpdateTypes": ["minor"],
+      "matchCurrentVersion": "/^v?0\\./",
+      "automerge": false
     }
   ],
+  "vulnerabilityAlerts": {
+    "description": "Security fixes auto-merge once CI passes, 0.x minors included.",
+    "automerge": true
+  },
   "customManagers": [
     {
       "customType": "regex",
