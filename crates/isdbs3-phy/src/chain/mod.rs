@@ -287,8 +287,9 @@ pub struct ChainOptions {
     /// (1 or 2; [`LAYOUT_LAG`]).
     pub layout_lag: u32,
     /// Also hand out every slot head and corrected symbol
-    /// ([`Output::Head`], [`Output::Symbol`]; for the vectors and the
-    /// stage checks).
+    /// ([`Output::Head`], [`Output::Symbol`]) and each frame's stage
+    /// boundaries ([`frame::FrameTrace`]): for the vectors and the stage
+    /// checks.
     pub trace: bool,
 }
 
@@ -359,7 +360,11 @@ impl Chain {
             nco: Nco::new(opt.carrier),
             sync: SlotSync::new(),
             phase: SlotPhase::new(),
-            back: Back::new(opt.layout_lag, opt.eq_every, ldpc),
+            back: {
+                let mut b = Back::new(opt.layout_lag, opt.eq_every, ldpc);
+                b.set_trace(opt.trace);
+                b
+            },
             delay: std::collections::VecDeque::with_capacity(isdbs3_core::params::SYNC_SYMBOLS + 1),
             t: 0,
             agc: 0,

@@ -133,9 +133,12 @@ enum State {
 pub struct SlotSync {
     fs: [[i8; 2]; SYNC_SYMBOLS],
     ss: [[i8; 2]; SYNC_SYMBOLS],
-    /// The last 24 inputs (ring, oldest at `head`).
-    win: [[i16; 2]; SYNC_SYMBOLS],
+    /// The last 24 inputs, twice (ring of 24 written at `head` and `head
+    /// + 24`, so `win[head..head + 24]` is the window oldest first).
+    win: [[i16; 2]; 2 * SYNC_SYMBOLS],
     head: usize,
+    /// The position of the next window start mod 9 296.
+    pos: usize,
     /// Symbols pushed since the (re)start.
     t: u64,
     /// Symbol index of the (re)start in the chain's input.
@@ -171,8 +174,9 @@ impl SlotSync {
         Self {
             fs: word_symbols(FSYNC),
             ss: word_symbols(SSYNC),
-            win: [[0; 2]; SYNC_SYMBOLS],
+            win: [[0; 2]; 2 * SYNC_SYMBOLS],
             head: 0,
+            pos: 0,
             t: 0,
             base: 0,
             acc: vec![0; MOD_SLOT],
@@ -215,22 +219,26 @@ impl SlotSync {
     /// completes to `out`.
     pub fn push(&mut self, r: [i16; 2], out: &mut Vec<SyncEvent>) {
         self.win[self.head] = r;
-        self.head = (self.head + 1) % SYNC_SYMBOLS;
+        self.win[self.head + SYNC_SYMBOLS] = r;
+        self.head = if self.head + 1 == SYNC_SYMBOLS {
+            0
+        } else {
+            self.head + 1
+        };
         self.t += 1;
         if self.t < SYNC_SYMBOLS as u64 {
             return;
         }
         // the window, oldest first, starts at position n
         let n = self.t - SYNC_SYMBOLS as u64;
-        let mut w = [[0i16; 2]; SYNC_SYMBOLS];
-        for (k, v) in w.iter_mut().enumerate() {
-            *v = self.win[(self.head + k) % SYNC_SYMBOLS];
-        }
-        let cf = correlate(&w, &self.fs);
-        let cs = correlate(&w, &self.ss);
+        let w = &self.win[self.head..self.head + SYNC_SYMBOLS];
+        let cf = correlate(w, &self.fs);
+        let cs = correlate(w, &self.ss);
         let m = mag_approx(i64::from(cf[0]), i64::from(cf[1]))
             .max(mag_approx(i64::from(cs[0]), i64::from(cs[1])));
-        let pos = usize::try_from(n % SLOT_U).expect("position < 9 296");
+        let pos = self.pos;
+        self.pos = if pos + 1 == MOD_SLOT { 0 } else { pos + 1 };
+        debug_assert_eq!(pos as u64, n % SLOT_U);
         // A += (m − A) >> 3, arithmetic shift (floor)
         let a = i64::from(self.acc[pos]);
         let a = a + ((m - a) >> LEAK_SHIFT);

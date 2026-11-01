@@ -149,6 +149,25 @@ pub struct FrameOut {
     pub status: Status,
     /// The training sums latched at its end.
     pub sums: Option<Sums>,
+    /// The stage boundaries' values, with [`super::ChainOptions::trace`].
+    pub trace: Option<Box<FrameTrace>>,
+}
+
+/// One frame's values at the stage boundaries (for the vectors and the
+/// stage checks).
+#[derive(Debug, Clone, Default)]
+pub struct FrameTrace {
+    /// The equaliser's output for every symbol of the frame (Q.10), in
+    /// order.
+    pub z: Vec<[i16; 2]>,
+    /// The 31 680 TMCC soft bits.
+    pub tmcc_soft: Vec<i8>,
+    /// Per valid slot: its index and its 44 880 codeword LLRs
+    /// (de-interleaved), as the decoder got them.
+    pub llrs: Vec<(usize, Vec<i8>)>,
+    /// The points each slot was demapped against (Q.10; empty for
+    /// dummies and frames without a layout).
+    pub points: Vec<Vec<[i16; 2]>>,
 }
 
 /// A valid slot's codeword being filled: its slot index, LLRs and
@@ -174,6 +193,8 @@ struct Cur {
     /// pilots' references).
     pts: Vec<Vec<[i16; 2]>>,
     nominal: Vec<Vec<[i16; 2]>>,
+    /// The equaliser outputs, with tracing.
+    z: Option<Vec<[i16; 2]>>,
 }
 
 /// Stages 4–6, 8 and the frame bookkeeping.
@@ -195,6 +216,7 @@ pub struct Back {
     perms: BTreeMap<(Modulation, CodeRate), Arc<[u32]>>,
     ldpc: Box<dyn LdpcDecoder + Send>,
     counters: Counters,
+    trace: bool,
 }
 
 impl std::fmt::Debug for Back {
@@ -238,7 +260,14 @@ impl Back {
             perms: BTreeMap::new(),
             ldpc,
             counters: Counters::default(),
+            trace: false,
         }
+    }
+
+    /// Record the stage boundaries' values of every frame
+    /// ([`FrameOut::trace`]).
+    pub fn set_trace(&mut self, on: bool) {
+        self.trace = on;
     }
 
     /// The equaliser (taps in use).
@@ -325,6 +354,9 @@ impl Back {
             return;
         }
         cur.seen += 1;
+        if let Some(v) = cur.z.as_mut() {
+            v.push(z);
+        }
         let lay = cur.layout.as_ref().map(|l| &l.1);
         match part(j) {
             Part::Sync(t) => {
@@ -429,6 +461,7 @@ impl Back {
             learn: Learn::new(),
             pts,
             nominal: nom,
+            z: self.trace.then(|| Vec::with_capacity(SLOTS * MOD_SLOT)),
         });
     }
 
@@ -485,6 +518,14 @@ impl Back {
             constellation: in_force.learned.clone().map(Option::unwrap_or_default),
             counters: self.counters,
         };
+        let trace = c.z.map(|z| {
+            Box::new(FrameTrace {
+                z,
+                tmcc_soft: c.tmcc.clone(),
+                llrs: c.words.iter().map(|(s, w, _)| (*s, w.clone())).collect(),
+                points: c.pts.clone(),
+            })
+        });
         BackEvent::Frame(Box::new(FrameOut {
             frame: c.frame,
             at: c.at,
@@ -493,6 +534,7 @@ impl Back {
             slots,
             status,
             sums,
+            trace,
         }))
     }
 
