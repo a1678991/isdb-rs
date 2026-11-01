@@ -1,0 +1,35 @@
+# Dependabot security updates (Renovate does the version updates and
+# auto-merges them itself, renovate.json): turn on GitHub auto-merge for a
+# non-major Dependabot PR, so it merges once the `main` ruleset's required
+# check (`CI OK`) passes. Majors wait for a review.
+#
+# `pull_request`, not `pull_request_target`: for a PR opened by Dependabot
+# the GITHUB_TOKEN gets the permissions below, and nothing from the PR is
+# checked out or run.
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  automerge:
+    name: enable auto-merge
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'a1678991/isdb-rs'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      - name: Enable auto-merge (rebase) unless it is a major update
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --rebase "$PR_URL"
