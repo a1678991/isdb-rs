@@ -195,6 +195,37 @@ pub fn solve_sums(s: &Sums) -> Option<[[i16; 2]; TAPS]> {
     Some(std::array::from_fn(|k| [q(w[k].re), q(w[k].im)]))
 }
 
+/// The sums as a host reads them from the chain's registers
+/// (`isdb_frontend::control::chain::TrainingSums`, the same values).
+pub fn to_training(s: &Sums) -> isdb_frontend::control::chain::TrainingSums {
+    isdb_frontend::control::chain::TrainingSums {
+        frame: s.frame,
+        count: s.count,
+        r: s.r.clone(),
+        p: s.p.clone(),
+    }
+}
+
+/// [`to_training`] inverted.
+pub fn from_training(t: &isdb_frontend::control::chain::TrainingSums) -> Sums {
+    Sums {
+        frame: t.frame,
+        count: t.count,
+        r: t.r.clone(),
+        p: t.p.clone(),
+    }
+}
+
+/// The host's slow-loop solve on sums read from the chain's registers:
+/// [`solve_sums`] (the same `f64` solve and Q2.14 rounding as the model).
+/// `None` for a singular system, an empty sum, or sums of the wrong shape.
+pub fn solve_training(t: &isdb_frontend::control::chain::TrainingSums) -> Option<[[i16; 2]; TAPS]> {
+    if t.r.len() != R_ENTRIES || t.p.len() != TAPS {
+        return None;
+    }
+    solve_sums(&from_training(t))
+}
+
 /// [`solve_sums`] before the rounding to Q2.14.
 pub fn solve_float(s: &Sums) -> Option<Vec<Cplx>> {
     if s.count == 0 {
@@ -271,6 +302,14 @@ mod tests {
         }
         let sums = e.close().unwrap();
         let w = solve_sums(&sums).unwrap();
+        // the host's path through the registers' view gives the same taps
+        let t = to_training(&sums);
+        assert_eq!(from_training(&t), sums);
+        assert_eq!(solve_training(&t), Some(w));
+        assert_eq!(
+            t.r.len() + t.p.len(),
+            isdb_frontend::control::chain::all_sum_registers().len() / 4
+        );
         // centre ≈ 1, the next tap ≈ −0.2
         assert!((i32::from(w[CENTRE][0]) - 16_384).abs() < 300, "{w:?}");
         assert!((i32::from(w[CENTRE + 1][0]) + 3_277).abs() < 300, "{w:?}");

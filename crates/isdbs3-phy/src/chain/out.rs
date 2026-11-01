@@ -57,6 +57,19 @@ pub fn blocks(f: &FrameOut, lag: u32) -> Vec<Block> {
     out
 }
 
+/// Append the `Slots` words of `f` ([`blocks`]) to `out`, numbered by `w`:
+/// what the FPGA's packer sends for the frame.
+pub fn write_frame(
+    f: &FrameOut,
+    lag: u32,
+    w: &mut isdb_frontend::slots::Writer,
+    out: &mut Vec<u16>,
+) {
+    for b in blocks(f, lag) {
+        w.write(&b, out);
+    }
+}
+
 fn status(s: &Status) -> SlotsStatus {
     let c = s.counters;
     SlotsStatus {
