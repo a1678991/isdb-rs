@@ -4,65 +4,45 @@
 
 > この文書は [README.md](README.md) の日本語訳です。リンク先のドキュメントは英語版のみで、内容に相違がある場合は英語版が優先します。
 
-規格書に基づいてゼロから書かれた、日本の地上デジタルテレビ放送（ISDB-T）の Rust 実装です。MPEG-2 トランスポートストリームと ARIB の番組配列情報（SI）のコーデック、サービス多重化器、トランスポートストリーム解析器、ARIB STD-B31 の変調器と復調器を備え、SDR による入出力（HackRF One と ADALM-Pluto 系）に対応します。送信と受信の両方向が同じライブラリの上で動作します（サービス → TS → OFDM ベースバンド → 無線機、および無線機 → OFDM → TS → 解析）。そのため各層を、その逆変換、規格書自体に記載された数値、そして独立した受信機と突き合わせて検証できます。有線接続の試験環境（ベンチ）での受信機試験、プロトコルの学習、放送技術の実験を目的としています。ISDB-T は送受信の全体を実装しています。ISDB-S は TS_ID ごとのトランスポートストリームまで受信でき（`isdb rx --system isdbs`。衛星 IF の録音から、または無線機からブロック単位で）、それらから送信もできます（`isdb tx --system isdbs`）。送信した IQ ファイルは `isdb rx` がバイト単位で一致して読み戻し、ソフトウェアのループバック（`isdb loopback --system isdbs`）もあります。39 Msps 以上の信号は Gigabit Ethernet で無線機へ流せないため、無線機への送信では波形整形を PlutoSky R2 の FPGA に移します。ホストは 4 ビットのシンボル符号（14 MB/s）を送り、FPGA 内の送信ブロックが整形します（`isdb tx --system isdbs --radio pluto --offload fpga`。PlutoSky R2 上で AD9361 のデジタルループバックを通して実機検証済み。有線で PIX-DT295 チューナーに入れるとロックし、ベンチ放送の TS を正常に記録できます）。ISDB-S3 は TLV ストリーム ID ごとの TLV ストリームまで受信でき（`isdb rx --system isdbs3`）、その中の MMT-SI のテーブルを解読してサービス、番組、パッケージとアセットを表示できます（`isdb tlv inspect`）。スクランブルされていないアセットはエレメンタリーストリームとして書き出せます（`isdb tlv extract`。試験環境の配信ではメディアはすべてスクランブルされており、デスクランブルは行いません）。
+**日本のデジタル放送 — ISDB-T・ISDB-S・ISDB-S3 — を、規格書から Rust で実装したプロジェクトです。** サービスの記述からトランスポートストリーム（TS）を作り、IQ に変調して有線の試験環境で送信できます。地上波・衛星の信号を受信して TS や TLV ストリームに戻し、得られたものを表示・検証・比較・編集できます。
+
+送信と受信の両方向が同じライブラリの上で動くため、各層をその逆変換、規格書に記載された数値、そして独立した受信機（USB チューナー、テレビ録画機、GNU Radio の gr-isdbt）と突き合わせて検証しています。受信機の試験、プロトコルの学習、研究室での放送技術の実験を目的としています。
+
+```text
+ サービス (TOML) ─▶ isdb mux ─▶ TS ─▶ isdb tx ─▶ IQ ファイル / 無線機
+                                                    │
+ 解析 ◀─ isdb ts ◀─ TS / TLV ◀─ isdb rx ◀───────────┘
+```
 
 > [!WARNING]
 > **法令および電波安全に関する注意**
 >
 > - **送信には免許が必要です。** 放送用（UHF テレビ）の周波数で電波を発射するには無線局の免許が必要です。日本では電波法、その他の国・地域ではそれぞれの法令に基づきます。免許を受けずに送信することは違法であり、付近のすべての人のテレビ受信に妨害を与えるおそれがあります。
-> - **有線接続またはシールド環境でのみ使用してください。** `isdb tx --radio` は、電波を一切空間に放射しない試験環境での使用を想定しています。すなわち、無線機から減衰器（アッテネータ）を経由して受信機へ直接つなぐ同軸ケーブルによる接続、またはシールドボックスです。アンテナは接続しません。電波を発射するのは `--rf-enable` を指定した場合のみです。`--rf-enable` も `--dry-run` も指定しない `--radio` は拒否され、`--dry-run` は RF 設定を表示してデバイスを開く前に終了します。中心周波数は、`--freq-unrestricted` を指定しない限り UHF テレビ帯の 470〜710 MHz（13〜52 ch）に制限されます。[docs/transmitting.md](docs/transmitting.md) を参照してください。
-> - **スクランブル解除は行いません。** B-CAS／限定受信方式（CAS）には対応しておらず、本ツールがスクランブルを解除することはありません。入力はスクランブルされていないもの（transport_scrambling_control '00'）でなければならず、スクランブルされた入力は拒否します。中継する番組は、既定で元のコピー制御の信号と CA_descriptor／ECM を保持します。
+> - **有線接続またはシールド環境でのみ使用してください。** `isdb tx --radio` は、電波を一切空間に放射しない試験環境での使用を想定しています。すなわち、無線機から減衰器（アッテネータ）を経由して受信機へ直接つなぐ同軸ケーブルによる接続、またはシールドボックスです。アンテナは接続しません。電波を発射するのは `--rf-enable` を指定した場合のみです。`--rf-enable` も `--dry-run` も指定しない `--radio` は拒否され、`--dry-run` は RF 設定を表示してデバイスを開く前に終了します。地上波の中心周波数は、`--freq-unrestricted` を指定しない限り UHF テレビ帯の 470〜710 MHz（13〜52 ch）に制限されます。[docs/transmitting.md](docs/transmitting.md) を参照してください。
+> - **スクランブル解除は行いません。** B-CAS／ACAS／限定受信方式（CAS）には対応しておらず、本ソフトウェアがスクランブルを解除することはありません。スクランブルされた入力は識別したうえで拒否します（受信機では、数えたうえでそのまま出力します）。中継する番組は、既定で元のコピー制御の信号と CA_descriptor／ECM を保持します。
 > - **コンテンツの権利。** 送信または中継するコンテンツ（録画物を含む）について必要な権利を有していることは、利用者の責任です。放送事業者の番組の再送信は、同軸ケーブルを用いた私的なものであっても、お住まいの地域では制限されている場合があります。
 > - 本ソフトウェアは Apache License 2.0 の下で**無保証**で提供されます（[LICENSE](LICENSE) を参照）。
-> - **提携関係はありません。** isdb-rs は独立したプロジェクトです。ARIB、ITU、ISO/IEC、Great Scott Gadgets、Analog Devices、OpenSourceSDRLab、Sony、MyGica およびいかなる放送事業者とも提携関係になく、これらから承認や後援を受けてもいません。これらの名称、および HackRF、ADALM-Pluto、PlutoSky や BDZ などの製品名は、実装した規格と試験に用いた機器を識別する目的でのみ使用しています。これらはそれぞれの権利者の商標である場合があります（HackRF は Great Scott Gadgets の、ADALM-Pluto は Analog Devices の商標です）。
+> - **提携関係はありません。** isdb-rs は独立したプロジェクトです。ARIB、ITU、ISO/IEC、Great Scott Gadgets、Analog Devices、OpenSourceSDRLab、Sony、MyGica およびいかなる放送事業者とも提携関係になく、これらから承認や後援を受けてもいません。これらの名称、および HackRF、ADALM-Pluto、PlutoSky、PIX-DT295 や BDZ などの製品名は、実装した規格と試験に用いた機器を識別する目的でのみ使用しています。これらはそれぞれの権利者の商標である場合があります（HackRF は Great Scott Gadgets の、ADALM-Pluto は Analog Devices の商標です）。
 
-## 機能
+## できること
 
-- **TS と PSI**（`isdb-ts`、ITU-T H.222.0）：パケット、アダプテーションフィールド、PCR、PES、セクションの組み立てとパケット化、PAT/CAT/PMT、連続性カウンタの追跡、188／192／204 バイトパケットに対応した再同期機能付きのリーダ。
-- **ARIB SI**（`isdb-si`、ARIB STD-B10）：NIT、BAT、SDT、EIT、TDT、TOT、RST、ST、PCAT、BIT、NBIT、LDT と B10 の記述子を、型付きの*ロスレス*なコーデックとして実装（予約ビットもすべて保持するため `encode(decode(x)) == x` が成り立ちます）。MJD/BCD 時刻、および独立した規格適合性チェッカ。
-- **ARIB 文字符号**（`isdb-text`、ARIB STD-B24）：SI 文字列の 8 単位符号。Unicode への復号（表現できない符号はすべて報告）と、逆方向の符号化。
-- **多重化器**（`isdbt-mux`）：TOML によるサービス記述（ネットワーク、サービス、イベント、SI テーブル、実験用の上書き設定）と MPEG-2 映像および AAC ADTS ファイルから、OFDM フレームに合わせて送出される固定レートの多重を生成します。H.222.0 の T-STD バッファモデルを備えます。**TS 中継**：スクランブルされていない録画 TS（たとえば自分で作成したもの）の 1 番組を、独自の PSI/SI を持つ地上デジタル放送のサービスとして再送信します。ストリームの役割と PID は録画から検出され、元のコピー制御と限定受信の信号は既定で保持されます。**データ放送とハイブリッドキャスト**：ディレクトリ内のファイルを BML データカルーセル（DSM-CC の DII／DDB、ARIB STD-B24 第 2・3 編）として PMT／EIT の信号とともに送出し、ハイブリッドキャスト受信機が起動する HTML5 アプリケーションの URL を示す AIT（B24 第 4 編、IPTVFJ STD-0010／0013）を、生成したランチャーとともにカルーセル内で、または独立した PID で伝送します。
-- **解析器**（`isdb-analyze`）：内容の表示（inspect）、検証（validate。各指摘には根拠となる条項を明記）、2 つのキャプチャのテーブル／フィールド単位の差分、および TS の正当性を保ったままの編集（PID のヌル化、セクションの削除・置換・挿入、型付きのフィールド変更）。
-- **ISDB-T 物理層**（`isdbt-core`、`isdbt-fec`、`isdbt-ofdm`、`isdbt-phy`、ARIB STD-B31）：モード 1〜3、すべてのガードインターバル、部分受信を含む最大 3 階層の階層伝送、DQPSK／QPSK／16QAM／64QAM、すべての符号化率と時間インターリーブ長、TMCC と AC。受信側は同期、CFO（キャリア周波数オフセット）とタイミングドリフトの補正、伝送路推定、TMCC 復号、軟判定ビタビ復号と RS 復号を行い、13 セグメントの TS を再生します。
-- **入出力**（`isdb-radio`、`isdb-hackrf`、`isdb-iio`、`isdb-cli`）：IQ ファイル（GNU Radio 向けの cf32、`hackrf_transfer` 向けの cs8）と、デバイス非依存の IQ シンク／ソーストレイトを介した無線機とのストリーミング（デバイスごとに 1 つのバックエンド。HackRF One は `--radio hackrf`、ADALM-Pluto とその互換機（USB または Ethernet 接続の PlutoSky R2 など）は `--radio pluto`）。`tx`、`rx`、`loopback`、`mux`、`ts`、`capture`、`iq`、`symbols`、`completions` の各コマンドを持つ単一の `isdb` バイナリ。
-- **衛星 IF の録音**（`isdb-iq`、`isdb capture`、`isdb iq survey`）：無線機が対応する任意のサンプルレートでの受信専用キャプチャ。一括で連続した録音（Pluto では libiio 経由で 16 ビット最大 1650 万サンプル、Tezuka の maia-sdr レコーダーで 16 ビット 3355 万サンプル、8 ビット 6710 万サンプル＝40 Msps で 1.7 秒）と、欠落箇所をすべて記録するストリーミング録音（Gigabit Ethernet で欠落なしは約 40 MB/s まで、例えば 8 ビット 20 Msps）、SigMF メタデータ、BS／110 度 CS のチャンネル名による IF 周波数指定、録音からシンボルレート・搬送波オフセット・方式（ISDB-S、ISDB-S3）を求める解析。
-- **衛星のシンボル・フロントエンド**（`isdb-frontend`、`fpga/`、`isdb symbols`、`isdb iq symbols`、`isdb iq s3sync`）：IQ から 6 ビットのシンボルへの整合フィルタ、タイミング再生、AGC。既知シンボルからホストが測るタイミングのトリム付き（ループだけでは ISDB-S3 で最適点から 0.15〜0.18 シンボルずれ、5〜6 dB 失う）。CPU 上のビット精度の固定小数点モデルと、PlutoSky R2 の FPGA 向けの同じ処理（Amaranth HDL）の両方があり、FPGA 側はリンクを流れるデータ量を減らして（80 MB/s から ISDB-S 43 MB/s、ISDB-S3 51 MB/s）連続受信を可能にします。HDL はシミュレーションでモデルとビット単位で一致しますが、まだビットストリームには組み込んでいません。それまでは CPU が 1 回の連続キャプチャに対して処理します。
-- **ISDB-S の受信**（`isdbs-core`、`isdbs-phy`、`isdb iq tmcc`、`isdb rx --system isdbs`）：フレーム内の既知シンボルによるフレーム・スーパーフレーム同期、バースト信号を用いた搬送波再生、TMCC（内符号、エネルギー拡散、RS(64,48)）の復号、続いて主信号の TC8PSK／QPSK／BPSK 軟判定デマッピング、パンクチャド符号のビタビ復号、深さ 8 のフレーム間デインターリーブ、エネルギー拡散の除去、RS(204,188) を行い、TS_ID ごとに TS を出力します。ケーブル配信の BS 9 と 110 度 CS 12 のトランスポンダすべてで TMCC を復号でき、そのうち 19 で RS 誤りのない TS（311 520 パケット、訂正不能 0）が得られました（残る 2 つは SNR 不足）。無線機からは連続キャプチャを 1 つずつ復号します（FPGA フロントエンドなしでは Gigabit Ethernet で連続ストリームはできません）。CPU では実時間より遅く動作します。
-- **ISDB-S の送信**（`isdbs-core` の `TmccInfo::assign`、`isdbs-phy` の `tx::Transmitter`、`isdb-frontend` の `shape::Shaper`、`isdb tx --system isdbs`、`isdb loopback --system isdbs`）：最大 4 つの変調・符号化方式と 8 つの TS からなるスロット配置から TMCC、RS(204,188)、エネルギー拡散、インターリーブ、内符号と信号点配置、ヘッダとバーストを経てスーパーフレームのシンボルを作り、ルートロールオフの IQ（38.96 Msps 以上の任意のレート、既定 40 Msps）として SigMF メタデータ付きで書き出します。`isdb rx` がバイト単位で一致して読み戻します。ループバックは BS の配置（TC8PSK 2/3）を SNR 7 dB から、CS の配置（QPSK 3/4）を 4 dB から、搬送波オフセットと途中からの受信開始を加えても通過します。無線機へも同じ安全ゲートを通して出力しますが、Gigabit Ethernet の Pluto はこのレートでアンダーランし、HackRF はこのレートを受け付けません。
-- **ISDB-S3 の受信**（`isdbs3-core`、`isdbs3-phy`、`isdb-tlv`、`isdb iq s3tmcc`、`isdb rx --system isdbs3`、`isdb tlv inspect`；ARIB STD-B44、B32 第 3 部、B60）：π/2 シフト BPSK の同期ワードによるスロット・フレーム同期、同期・パイロットシンボルで学習する最小二乗等化器、TMCC（短縮 LDPC、BCH）、主信号（パイロットで学習した信号点配置に対するデマッピング、ビットデインターリーブ、規格書から書き起こした検査行列による LDPC、エネルギー拡散の除去、BCH）、続いて TLV パケット、ヘッダ圧縮 IP、MMTP、MMT-SI（PA／MPT／PLT、MH-EIT、MH-SDT、MH-TOT、MH-AIT、ECM、EMM）。ケーブル配信の ISDB-S3 の 3 トランスポンダ（16APSK 7/9）で全フレームと 4 512 符号語すべてを復号し、8 本の TLV ストリームを誤りなく再構成しました。100 Mbit/s に追いつくには LDPC に 32 コアのホストの全コアが必要です。
-
-## クレート
-
-| クレート | 規格 | 範囲 |
+| | 送信（生成） | 受信（復号） |
 |---|---|---|
-| [`isdb-ts`](crates/isdb-ts/README.md) | H.222.0 | ビット I/O、CRC_32、TS パケット／アダプテーションフィールド／PCR、PES、セクションの組み立てとパケット化、PAT/PMT/CAT、TS リーダ |
-| [`isdb-text`](crates/isdb-text/README.md) | B24 Vol. 1 Part 2 Ch. 7 | ARIB 8 単位符号文字列の復号／符号化 |
-| [`isdb-si`](crates/isdb-si/README.md) | B10 | SI テーブル、記述子、MJD/BCD 時刻。ロスレスな型付きコーデックと適合性チェック |
-| [`isdb-analyze`](crates/isdb-analyze/README.md) | H.222.0, B10, B32 Part 2 | TS の内容表示、条項を引用した検証、2 つのキャプチャの差分、編集 |
-| [`isdbt-mux`](crates/isdbt-mux/README.md) | H.222.0, B10, B31, B32 | サービス多重化器：PSI/SI の生成、MPEG-2 映像／AAC のパケット化、録画番組の中継、OFDM フレームに合わせた出力 |
-| [`isdbt-core`](crates/isdbt-core/README.md) | B31 の各表 | モード、ガードインターバル、階層パラメータ、そこから導かれるレートと遅延 |
-| [`isdb-fec`](crates/isdb-fec/README.md) | B31 §3.3、§3.5、§3.8；BO.1408-1 §2、§4、§9 | 方式間で共有する通信路符号化の部品：短縮 RS(255,239) 符号、拘束長 7 の畳み込み符号とビタビ復号、PRBS 生成器 |
-| [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS 再多重、RS(204,188)、エネルギー拡散、バイトインターリーブ、畳み込み符号／ビタビ復号 |
-| [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | マッピング、インターリーブ、SP/CP/TMCC/AC を含む OFDM フレーム、IFFT/GI。受信側の同期と等化 |
-| [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | 送信／受信パイプライン（TS パケット ⇄ 複素ベースバンド）、IQ ファイル形式 |
-| [`isdb-radio`](crates/isdb-radio/README.md) | — | デバイス非依存の SDR 層：IQ シンク／ソーストレイト、`--radio` によるデバイス選択、バックエンドのレジストリ（HackRF は `hackrf`、ADALM-Pluto は `pluto` フィーチャで有効化）、整数サンプルの量子化器 |
-| [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | システムの libhackrf に対する最小限の安全なラッパー（FFI）。`isdb-radio` の HackRF バックエンドが使用 |
-| [`isdb-iio`](crates/isdb-iio/README.md) | — | システムの libiio 0.x に対する最小限の安全なラッパー（FFI）。`isdb-radio` の Pluto バックエンドが使用 |
-| [`isdb-iq`](crates/isdb-iq/README.md) | —（ISDB-S／ISDB-S3 のシンボルレートを引用） | 方式に依存しない IQ 録音：サンプル形式、SigMF メタデータ、単一キャリア信号の解析（シンボルレート、搬送波オフセット、帯域、方式） |
-| [`isdb-frontend`](crates/isdb-frontend/README.md) | BO.1408-1 §9（ロールオフ。レートは `isdb-iq` から） | ISDB-S／ISDB-S3 の単一キャリア・フロントエンド（送受信の両方向）：受信（IQ → シンボル）は FPGA 処理のビット精度の固定小数点モデル、浮動小数点の参照実装、`Symbols` 境界の形式、FPGA の制御レジスタ（HDL は [`fpga/`](fpga/README.md)）。送信（シンボル → IQ）は `shape::Shaper`、(1 + α)·R 以上の任意のレートへのルートロールオフ波形整形 |
-| [`isdbs-core`](crates/isdbs-core/README.md) | BO.1408-1；総務省令第 87 号 別表第四十五号〜第五十一号 | ISDB-S のフレーム構造、変調・符号化方式の組み合わせ、スロット割当て、TMCC 情報のコーデックと信号（スロット配置からの構成を含む）、バースト |
-| [`isdbs-phy`](crates/isdbs-phy/README.md) | BO.1408-1 | フロントエンド以降の ISDB-S 受信処理（フレーム同期、搬送波再生、TMCC 復号、主信号から TS_ID ごとの TS パケットまで）と、TS ごとの TS パケットからスーパーフレームのシンボルまでの送信処理 |
-| [`isdbs3-core`](crates/isdbs3-core/README.md) | B44 v2.1 | ISDB-S3 の構造、符号化率、LDPC 検査行列、信号点配置、インターリーブ、エネルギー拡散、TMCC コーデック、スロット割当て |
-| [`isdbs3-phy`](crates/isdbs3-phy/README.md) | B44 v2.1 | フロントエンド以降の ISDB-S3 受信処理：スロット・フレーム同期、等化器、TMCC、主信号（LDPC、BCH）からスロットデータまで |
-| [`isdb-tlv`](crates/isdb-tlv/README.md) | B32 第 3 部、B60 | スロットからの TLV パケット、圧縮 IP、MMTP、MMT-SI と TLV-SI の識別 |
-| [`isdb-mmt`](crates/isdb-mmt/README.md) | B60 | MMT-SI と TLV-SI のテーブルの内容（MPT、PLT、MH-EIT、MH-SDT、MH-TOT、MH-BIT、TLV-NIT、AMT）、MPU／MFU の再構成、HEVC・LOAS・字幕のエレメンタリーストリーム |
-| [`isdb-cli`](crates/isdb-cli/README.md) | — | `isdb` バイナリ：ISDB-T と ISDB-S の `tx`／`rx`／`loopback`、ISDB-S3 の `rx`、多重化器、TS／TLV／IQ のツール、キャプチャ |
+| **ISDB-T** — 地上波、ARIB STD-B31 | ✅ サービス → TS → OFDM の IQ → HackRF / Pluto。全モード、全ガードインターバル、部分受信を含む最大 3 階層 | ✅ IQ ファイルまたは無線機 → 階層ごとの TS（TMCC/AC と状態表示つき） |
+| **ISDB-S** — BS／110 度 CS、ITU-R BO.1408 | ✅ 最大 8 本の TS → TC8PSK/QPSK/BPSK の IQ。無線機へは PlutoSky R2 の FPGA 経由 | ✅ IF の録音または無線機 → TS_ID ごとの TS |
+| **ISDB-S3** — 新 4K8K 衛星放送、ARIB STD-B44 | — | ✅ IF の録音または無線機 → ストリーム ID ごとの TLV ストリーム。MMT-SI を復号し、スクランブルされていないメディアを TS / MKV に再多重化 |
 
-各クレートの関係、フレーム／レイテンシの約束事、データの流れについては [docs/architecture.md](docs/architecture.md) を参照してください。
+物理層のまわりには次のものがあります。
+
+- **トランスポートストリームと SI** — PSI と ARIB SI を、すべてのテーブルと記述子でロスレス（`encode(decode(x)) == x`）な型付きコーデックとして実装。ARIB 8 単位符号の文字列、各指摘に根拠条項を示す検証器、フィールド単位の差分、TS の編集。
+- **サービス多重化器** — ネットワーク・サービス・イベントの TOML 記述と MPEG-2 映像／AAC ファイルから、伝送フレームに合わせて送出される一定レートの多重化ストリームを作ります。スクランブルされていない録画の 1 番組の中継、BML データカルーセルと Hybridcast の AIT、ISDB-S 用のプロセス内多重化にも対応します。
+- **新 4K8K 衛星放送の TLV／MMT** — TLV パケット、ヘッダ圧縮 IP、MMTP と MMT-SI テーブル（サービス、イベント、パッケージ、アセット）。スクランブルされていない各アセットのエレメンタリーストリームを取り出します。
+- **新 4K8K 衛星放送から再生できるファイルへ** — `isdb-remux` は、スクランブルされていない TLV ストリームを、すべての音声トラック、字幕（SubRip／WebVTT。WebVTT で表せる範囲で放送のレイアウトと色を保持）、データ放送のパッケージを含む、タイムスタンプつきの MPEG-TS または Matroska ファイルにします。
+- **SDR の入出力** — HackRF One と ADALM-Pluto 系（USB または Ethernet）、SigMF メタデータつきの IQ 録音、シンボルレート・搬送波・方式を見つける衛星 IF の測定（survey）、PlutoSky R2 用の FPGA シンボル・フロントエンド（Amaranth HDL。CPU 上のモデルとビット単位で一致）。
 
 ## クイックスタート
 
-Linux 上の Rust 1.88 以上（edition 2024）で動作確認しています。無線機への対応は `isdb-cli` の 2 つの cargo フィーチャ（`isdb-radio` のバックエンドへ転送されます）で、どちらも既定で有効です。`hackrf` はシステムの `libhackrf`（2022.09.1 以降）に、`pluto`（ADALM-Pluto 系、PlutoSky R2 など。USB または Ethernet）はシステムの `libiio`（0.x、0.21 以降）に動的リンクするため、無線機を一切接続しない場合でも、既定のビルドには両方のライブラリのインストールが必要です。
+Linux、Rust 1.88 以上。既定のビルドは、無線機をつながない場合でも、無線機のバックエンド用にシステムの `libhackrf` と `libiio` をリンクします。
 
 | システム | パッケージ |
 |---|---|
@@ -76,29 +56,21 @@ cargo build --release -p isdb-cli          # → target/release/isdb
 export PATH="$PWD/target/release:$PATH"
 ```
 
-どちらのライブラリもない場合は `cargo build --release -p isdb-cli --no-default-features` でビルドしてください（片方だけなら `--features hackrf` または `--features pluto` を追加）。ファイルを扱うコマンド（`tx --iq`、`rx --iq`、`loopback`、`mux`、`ts`）はすべて動作し、組み込まれていないバックエンドを `--radio` で指定するとフィーチャ名を示すメッセージとともに失敗します。
+無線機のライブラリがない場合は、`cargo build --release -p isdb-cli --no-default-features` でファイルを扱う機能をすべてビルドできます（片方のバックエンドだけ使うなら `--features hackrf` または `--features pluto` を追加）。
 
-以下はすべて、無線機もキャプチャデータもなしで動作します。
-
-ソフトウェアループバック。決定論的なテストパケットを変調し、再び復調して全パケットを比較します。
+**ハードウェアもデータもなしで試す** — 試験用パケットを変調し、雑音と周波数オフセットを加えて復調し、すべてのパケットを比較します。
 
 ```sh
-isdb loopback --synthetic                  # ends with "[loopback] PASS"
+isdb loopback --synthetic                  # 最後に "[loopback] PASS" と表示
 isdb loopback --synthetic --frames 8 --snr-db 22 --cfo-carriers 2.3
 ```
 
-注釈付きの多重化設定の例を表示します（利用者が用意するメディアファイルを参照します。[docs/mux-config.md](docs/mux-config.md) を参照）。
-
-```sh
-isdb mux --print-config-example > bench.toml
-```
-
-メディアを使わない設定からトランスポートストリームを生成し、解析します。
+**放送を作って受信し直す。** メディアファイルを使わない小さなサービス記述です。
 
 ```sh
 cat > test.toml <<'EOF'
 [network]
-network_id = 0x79EE            # placeholder: pick an ID unused where you are
+network_id = 0x79EE            # 仮の値: お住まいの地域で使われていない ID を選んでください
 name = "テスト"
 area_code = 0x5A5
 remote_control_key_id = 9
@@ -121,7 +93,7 @@ pcr_pid = 0x01FF
 copy_control = { recording_control = "copy-free" }
 
   [[service.stream]]
-  kind = "declared"          # listed in the PMT, no media needed
+  kind = "declared"          # PMT に記載するだけで、メディアは不要
   pid = 0x0111
   stream_type = 0x02
   component_tag = 0x00
@@ -132,81 +104,110 @@ copy_control = { recording_control = "copy-free" }
   duration = "01:00:00"
   name = "試験放送"
 EOF
-isdb mux -c test.toml --seconds 5 --out-ts test.ts
-isdb ts inspect test.ts                    # PIDs, PCR, programs, decoded SI
-isdb ts validate test.ts                   # 0 errors (one warning: the declared stream has no packets)
+
+isdb mux -c test.toml --seconds 5 --out-ts test.ts   # トランスポートストリーム
+isdb ts inspect test.ts                    # PID、PCR、番組、復号した SI
+isdb ts validate test.ts                   # エラー 0（警告 1: 宣言したストリームにパケットがない）
+
+isdb tx --mux-config test.toml --iq test.cf32 --seconds 3   # 変調（cf32 で約 195 MB）
+isdb rx --iq test.cf32 --out rx.ts --json  # 復調
+isdb ts diff test.ts rx.ts                 # すべてのセクションが一致
 ```
 
-次に、ファイル上で物理層を通して往復させます。
+`isdb mux --print-config-example` は、映像と音声を含む注釈つきの設定例を表示します。この先は [docs/getting-started.md](docs/getting-started.md) が詳しい手引きです。
 
-```sh
-isdb tx --mux-config test.toml --iq test.cf32 --seconds 3   # ≈ 195 MB of cf32
-isdb rx --iq test.cf32 --out rx.ts --json
-isdb ts diff test.ts rx.ts                 # every section identical
-```
+## コマンド
 
-次のステップ：[docs/getting-started.md](docs/getting-started.md)（より詳しい手順）、[docs/transmitting.md](docs/transmitting.md)（ベンチの構成、無線機、録画の中継）、[docs/receiving.md](docs/receiving.md)、[docs/analysis.md](docs/analysis.md)、[docs/mux-config.md](docs/mux-config.md)、[docs/test-data.md](docs/test-data.md)、[docs/glossary.md](docs/glossary.md)。
+バイナリは `isdb` ひとつと、`isdb-remux` です。
 
-## 検証方法
-
-規格書だけが唯一の拠り所です。他の実装をコピーすることはなく、独立したオラクルとしてのみ使い、食い違いは規格書を読んで判断します。他の ISDB／ARIB 実装のコードや表は一切含んでいません。JIS X 0208 → Unicode の対応表は実行時に依存クレート `encoding_rs`（WHATWG index）から取得しており、gr-isdbt のソースは、実装が完成した後に、オラクルとの食い違いを説明する目的でのみ読みました（[VERIFICATION.md](VERIFICATION.md#discrepancies)）。各層は、実装自体を信用することなく検証しています。
-
-1. **規格書の数値ベクトル** — 規格書に記載された数値（チェック値、表、PRBS の状態、コンスタレーション点、フレーム長、TSP 数）を、その表にちなんだ名前のテストで直接アサートしています。
-2. **ロスレスな往復変換** — デコーダはすべてのビットを保持し、`encode(decode(x)) == x` をプロパティベーステストで検証するとともに、合成した多重と、任意で手元のキャプチャの全セクションに対しても実行します。
-3. **逆変換の対** — 送信側の各段を受信側の対応する逆変換と突き合わせてテストし、物理層全体も 送信 → 劣化（雑音、CFO、タイミングオフセット、エコー） → 受信 の経路でバイト単位の一致を確認しています。
-4. **差分オラクル** — Rust の送信側と受信側は、GNU Radio の gr-isdbt と双方向に、8 通りのパラメータセットでバイト単位で一致して相互に復号できます。両者が異なる箇所はすべて、gr-isdbt の B31 からの逸脱です。
-5. **実受信機** — 有線接続で、MyGica S270 USB チューナーが Rust の送信信号をパケットエラーなしで復号し、Sony BDZ シリーズのレコーダー 1 台がサービスを登録して再生しました。
-
-結果、再現手順、未解決の課題は [VERIFICATION.md](VERIFICATION.md) にあります。フィールドの*値*（予約ビット、PID ごとに許される table_id、送出頻度）は、ロスレスなコーデックとは分離された検証器でチェックするため、規格に適合しないキャプチャであっても復号・編集・再符号化できます。
-
-## 規格
-
-| 規格 | 用途 |
+| コマンド | 内容 |
 |---|---|
-| ITU-T H.222.0 (05/2006) \| ISO/IEC 13818-1 | トランスポートストリーム、PES、PSI、T-STD |
-| ARIB STD-B10 v5.13 | 番組配列情報（SI） |
-| ARIB STD-B24 v6.4 Vol. 1 | 8 単位符号 |
-| ARIB STD-B31 v2.2 | ISDB-T の伝送方式 |
-| ARIB STD-B32 v3.11 Parts 1–3 | 映像・音声符号化の制約、ストリーム形式 |
+| `isdb mux` | サービス記述（TOML）とメディア → トランスポートストリーム |
+| `isdb tx` | TS → ISDB-T または ISDB-S → IQ ファイルまたは無線機 |
+| `isdb rx` | IQ ファイルまたは無線機 → ISDB-T／ISDB-S の TS、または ISDB-S3 の TLV ストリーム |
+| `isdb loopback` | 送信 → 雑音・オフセット・エコー → 受信、すべてのパケットを確認 |
+| `isdb ts` | トランスポートストリームの `inspect`、`validate`、`diff`、`edit`、`extract` |
+| `isdb tlv` | TLV ストリーム（新 4K8K 衛星放送）の `inspect`、`validate`、`extract` |
+| `isdb capture` | 無線機からの IQ の録音（受信のみ、SigMF メタデータつき） |
+| `isdb iq` | 衛星の録音: `survey`、`symbols`、`tmcc`、`s3sync`、`s3tmcc` |
+| `isdb symbols` | 無線機の FPGA フロントエンド、または CPU のモデルによる衛星のシンボル |
+| `isdb completions` | シェル補完スクリプト |
+| `isdb-remux` | スクランブルされていない新 4K8K 衛星放送の TLV ストリーム → タイムスタンプつき MPEG-TS または Matroska（字幕つき） |
 
-規格書の PDF はここでは再配布して**いません**（著作権があるため）。ITU-T 勧告と ARIB 標準規格の英語版は無料でダウンロードできます。[SPECS.md](SPECS.md) には、URL、使用した版の SHA-256 ハッシュ、gitignore 対象の `specs/` ディレクトリへ grep 可能なテキストを抽出する方法、各クレートが実装する条項、およびそれぞれの確認方法をまとめています。コードコメント中の条項番号と表番号はこれらの版を指します。本文が曖昧であったり崩れていたりする箇所は、採用した解釈を引用文とともに各クレートの `SPEC-NOTES.md`（[索引](SPEC-NOTES.md)）に記録しています。
+どのコマンドも `--help` があります。バイナリ出力が誤って対話端末に出力されることはありません。`-o FILE` を指定するか、パイプでつなぐか、`-o -` で明示的に指定してください。
 
-## 現状と制限事項
+## ドキュメント（英語）
 
-ライブラリと CLI は ISDB-T の生成・送信・受信・解析をエンドツーエンドで行えますが、部分によって独立した検証の程度には差があります。
+| | |
+|---|---|
+| [Getting started](docs/getting-started.md) | 最初の詳しい手引き |
+| [Transmitting](docs/transmitting.md) | 試験環境の構成、無線機、録画の中継、ISDB-S |
+| [Receiving](docs/receiving.md) | ファイルと無線機からの ISDB-T・ISDB-S・ISDB-S3 |
+| [Analysis](docs/analysis.md) | inspect、validate、diff、edit |
+| [Multiplex configuration](docs/mux-config.md) | TOML 記述の全フィールド |
+| [Architecture](docs/architecture.md) | クレートの関係とデータの流れ |
+| [Glossary](docs/glossary.md) | 放送の略語集 |
+| [Test data](docs/test-data.md) | 手持ちのキャプチャを使うオプトインの試験 |
+| [FPGA](fpga/README.md) | PlutoSky R2 のシンボル処理ブロック |
+| [VERIFICATION.md](VERIFICATION.md) | 何をどう検証したか、未解決の問題 |
+| [SPECS.md](SPECS.md) | 規格書とその版、入手先 |
 
-- **受信機で確認した構成は 1 つだけです。** 実受信機で確認したのは、モード 3、GI 1/8、部分受信、A 階層 1 セグメント QPSK 2/3、B 階層 12 セグメント 64QAM 3/4（時間インターリーブのインデックス 2）の構成のみで、受信機は 2 台です。その他のモードや階層構成は、オラクルとループバックでのみ検証しています。
-- **実放送の確認は 1 地域分です。** ケーブル（CATV）経由で 1 地域の 7 局を受信し、全局の TMCC が全フレームでパリティ検査に合格しました。1 局の TMCC 符号語は本プロジェクトの送信機の出力とビット単位で一致し、1 局は両階層とも RS 誤りなしで復号できました（[VERIFICATION.md](VERIFICATION.md#broadcast-reception)）。地震動警報情報の AC を送る局や DQPSK を使う局はなく、これらはループバックでのみ検証しています。
-- **DQPSK、AC の内容、緊急警報放送用起動フラグ、パラメータ切り替え**は、自己整合的なループバックでのみ検証しています（gr-isdbt はいずれも実装していません）。
-- **ARIB TR-B14**（地上デジタルテレビジョン放送の運用規定）をプロジェクトでは入手できないため、運用上の値（PCR の位置、SI の階層配置、リモコンキー番号の範囲、PID の割り当て、…）は文書化したうえでの選択であり、[isdbt-mux のノート](crates/isdbt-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers) に一覧があります。
-- **AAC はヘッダのレベルでのみチェックしています。** ADTS ヘッダは ARIB STD-B32 Part 2 に照らしてチェックします。crc_check の値は検証も挿入もしません。raw_data_block の解析には ISO/IEC 13818-7 が必要ですが、プロジェクトはこれを持っていないためです。規格に適合しない AAC は既定で拒否します。
-- **メディア**：MPEG-2 映像と AAC ADTS ファイルのみです。H.264 のワンセグストリームは PMT で宣言できますが、パケット化はしません。
-- **データ放送は、登録済み放送局の識別子のもとでのみ受信機で動作します。** カルーセルとその信号は ARIB STD-B24 第 2〜4 編に従い（配置は地上 4 局の実録画と照合）、ソニーのレコーダーは本プロジェクトの BML ページを表示しましたが、それはサービスが地域局自身のネットワーク／サービス ID をその局のチャンネルで名乗っている場合に限られます。プレースホルダのネットワークでは「d」マークは点灯しますが BML ブラウザは起動しません。ハイブリッドキャスト（IPTVFJ STD-0010／0013）は規格書どおりに実装していますが、出典のない値（start_priority ビット、監視対象の AIT モジュール、AIT の data_component_id）は文書化した既定値であり、ハイブリッドキャスト対応受信機での試験はまだなく、受信機が受け付ける organization_id は IPTV フォーラムの運用に依存します。
-- **未実装**：同一 PID のパケットを 2 つの階層で重複して送ること、SFN 同期（IIP の `network_synchronization_information` の構文のみ扱います）、放送 TS 上の AC データ、データ放送のデータイベントとイベントメッセージ、DRCS（外字）、ISDB-T<sub>SB</sub>。
-- **無線機**：バックエンドは HackRF One と ADALM-Pluto 系です（他のバックエンドは CLI を変更せずに `isdb-radio` へ追加できます）。Pluto は Ethernet 経由で 512/63 MHz の送信または受信を一度に一方向だけ扱えます。送受信を同時に行うと、ADI のファームウェア（有効な CPU は 1 つ）で動く iiod の処理能力を超え、受信側でサンプルが欠落します。PlutoSky R2 の受信には Tezuka ファームウェア v0.3.22 以降が必要です（工場出荷時のファームウェアでは基準発振器の周波数が安定しません）。復調器は現行の 16 コアのデスクトップ CPU で実時間の約 1.4 倍の速さで動作するため、リアルタイム受信には高速なマシンが必要です。
+## クレート
 
-## ロードマップ
+ワークスペースは、それぞれ単独でも使えるライブラリクレートの集まりです（各 README へのリンク）。
 
-- AC の内容とパリティを実放送で確認し、アンテナからの受信を試し、より多くの構成と受信機で試験する。
-- 確認できたものから、運用上の選択を TR-B14 の値に置き換える。
-- ISO/IEC 13818-7 そのものから書けるようになり次第、AAC の raw_data_block の解析（crc_check の検証）を実装する。H.264 ワンセグのパケット化。
-- TS／SI のクレートを再利用した ISDB-S（ITU-R BO.1408／平成 23 年総務省令第 87 号；ARIB STD-B20）および ISDB-S3（ARIB STD-B44）の受信、その後に送信 — 衛星 IF のキャプチャと解析は完了。ISDB-S は TS まで受信済みで、IQ ファイルへの送信も完了（ソフトウェアのループバックでバイト単位で一致）。ISDB-S3 は TLV ストリームと MMT-SI の識別まで受信済み。PlutoSky R2 の FPGA 向けの ISDB-S 送信ブロックは実機でループバック検証済みで、有線で PIX-DT295 に送ってロック・記録も確認済み（次はライブ入力 TS の PCR に合わせたパケット配置と衛星向け NIT）。その後、長い録音での TLV-SI の確認、LDPC の実時間化（SIMD）。
+| 層 | クレート |
+|---|---|
+| トランスポートストリームと SI | [`isdb-ts`](crates/isdb-ts/README.md)（H.222.0 の TS、PES、PSI）・[`isdb-si`](crates/isdb-si/README.md)（ARIB SI、データカルーセル、AIT）・[`isdb-text`](crates/isdb-text/README.md)（ARIB 8 単位符号）・[`isdb-analyze`](crates/isdb-analyze/README.md)（表示、検証、差分、編集） |
+| 多重化 | [`isdbt-mux`](crates/isdbt-mux/README.md)（サービス → TS、中継、データ放送、ISDB-S のスケジュール） |
+| 誤り訂正符号 | [`isdb-fec`](crates/isdb-fec/README.md)（各方式で共通の RS、畳み込み符号／ビタビ、PRBS） |
+| ISDB-T | [`isdbt-core`](crates/isdbt-core/README.md)・[`isdbt-fec`](crates/isdbt-fec/README.md)・[`isdbt-ofdm`](crates/isdbt-ofdm/README.md)・[`isdbt-phy`](crates/isdbt-phy/README.md) |
+| ISDB-S | [`isdbs-core`](crates/isdbs-core/README.md)・[`isdbs-phy`](crates/isdbs-phy/README.md) |
+| ISDB-S3 と MMT | [`isdbs3-core`](crates/isdbs3-core/README.md)・[`isdbs3-phy`](crates/isdbs3-phy/README.md)・[`isdb-tlv`](crates/isdb-tlv/README.md)（TLV、IP、MMTP）・[`isdb-mmt`](crates/isdb-mmt/README.md)（MMT-SI、MPU/MFU、エレメンタリーストリーム） |
+| メディアファイル | [`isdb-remux`](crates/isdb-remux/README.md)（タイムスタンプつき TS／MKV）・[`isdb-mkv`](crates/isdb-mkv/README.md)（Matroska の書き出し）・[`isdb-caption`](crates/isdb-caption/README.md)（ARIB TTML → SRT／WebVTT） |
+| 衛星のフロントエンドと IQ | [`isdb-frontend`](crates/isdb-frontend/README.md)（IQ ⇄ シンボル、FPGA のモデル）・[`isdb-iq`](crates/isdb-iq/README.md)（録音、SigMF、survey） |
+| 無線機 | [`isdb-radio`](crates/isdb-radio/README.md)（デバイス非依存）・[`isdb-hackrf`](crates/isdb-hackrf/README.md)・[`isdb-iio`](crates/isdb-iio/README.md)（Pluto） |
+| コマンドライン | [`isdb-cli`](crates/isdb-cli/README.md)（`isdb` バイナリ） |
+
+## 検証の方法
+
+唯一の正解は規格書です。ほかの ISDB／ARIB 実装からコードやテーブルは取り込んでおらず、それらは独立した比較対象（オラクル）としてのみ使います。各層は、実装自身を信用せずに次の方法で確認しています。
+
+1. **規格書の数値** — 規格書に記載された数値（チェック値、表、PRBS の状態、フレーム長）を、表の名前をつけた試験で確認。
+2. **ロスレスな往復** — 復号器はすべてのビットを保持し、`encode(decode(x)) == x` をプロパティテストで確認。手持ちのキャプチャがあればそれにも適用。
+3. **逆変換の組** — 送信の各段を受信側の逆変換と、全体を雑音・搬送波オフセット・タイミングオフセット・エコーを通して、バイト単位で一致することを確認。
+4. **差分オラクル** — ISDB-T の送信と受信は GNU Radio の gr-isdbt と双方向で相互に復号でき、見つかった差異はすべて gr-isdbt 側の規格からの逸脱。
+5. **実機の受信機と実際の放送** — 同軸接続で、MyGica S270 チューナーは本プロジェクトの ISDB-T をパケット誤りゼロで復号し、Sony の BDZ 録画機はサービスを再生しました。PIX-DT295 は本プロジェクトの ISDB-S の送信に同期して正常に録画しました。受信側は、ケーブル配信の地上波・BS・110 度 CS・新 4K8K 衛星放送を復号します。
+
+規格書の記述があいまいな箇所では、採用した解釈を原文の引用とともに各クレートの `SPEC-NOTES.md`（[索引](SPEC-NOTES.md)）に記録しています。結果と再現手順は [VERIFICATION.md](VERIFICATION.md) にあります。
+
+## 現状と制約
+
+- **試験した構成。** 実機の ISDB-T 受信機で確認したのは 1 つの構成（モード 3、GI 1/8、部分受信、1 セグメント QPSK 2/3 + 12 セグメント 64QAM 3/4）だけです。ほかの構成はオラクルとループバックで検証しています。
+- **ループバックのみで確認しているもの。** DQPSK、AC の内容、緊急警報放送の起動フラグ、パラメータ切り替え（送出している局がないため）。
+- **運用上の値。** ARIB TR-B14 を入手できないため、PID の割り当てや SI の配置などの値は文書化した選択です（[一覧](crates/isdbt-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers)）。
+- **メディア。** 多重化器が扱うのは MPEG-2 映像と AAC ADTS です。AAC はヘッダの水準でのみ確認しています。H.264 のワンセグは PMT に宣言できますが、パケット化はしません。
+- **データ放送**が実機の受信機で表示されるのは、登録された放送事業者のネットワーク ID とサービス ID を使った場合だけです。Hybridcast に対応した受信機では試験していません。
+- **速度。** 実時間の受信には高速なマシンが必要です。ISDB-S3 の LDPC は多数のコアを使い、ISDB-T の復調器は最近の 16 コアのデスクトップで実時間の約 1.4 倍の速度です。実時間の処理には必ず `--release` ビルドを使ってください。
+- **無線機。** HackRF One と ADALM-Pluto 系に対応しています。Pluto は一度に一方向しかストリーミングできません。ISDB-S と ISDB-S3 のレートを Ethernet で連続してストリーミングするには、PlutoSky R2 の FPGA ブロックが必要です。
+- **未実装。** ISDB-S3 の送信、SFN 同期、放送 TS への AC データの挿入、DRCS（外字）、ISDB-T<sub>SB</sub>。
 
 ## 開発
 
-[mise](https://mise.jdx.dev/) はチェック用の唯一のタスクランナーであり（タスクは [mise.toml](mise.toml) に定義）、CI も同じタスクを実行します。
+[mise](https://mise.jdx.dev/) ですべての確認を実行します。CI と同じタスクです（[mise.toml](mise.toml)）。
 
 ```sh
-mise run check                             # everything CI runs: lint, test, doc, deny, msrv, oracle helper
-mise run test                              # unit, integration and doc tests; no radio or data needed
-mise run lint                              # rustfmt check + clippy -D warnings
-mise tasks                                 # all tasks
+mise run check      # CI が実行するすべて: lint、test、doc、deny、msrv
+mise run test       # 単体・結合・ドキュメントの試験。無線機もデータも不要
+mise run lint       # rustfmt + clippy -D warnings
 ```
 
-[CONTRIBUTING.md](CONTRIBUTING.md) には、ルール（規格書を拠り所とすること、SPEC-NOTES への記載、ハードウェア試験時の電波安全、中継時のコピー制御と限定受信に関する方針）、ツールチェーン、git フック、コミットの形式をまとめています。コードの構成は [docs/architecture.md](docs/architecture.md) にあります。セキュリティ上の問題は [SECURITY.md](SECURITY.md) の手順で報告してください。変更履歴は [CHANGELOG.md](CHANGELOG.md) にあります。
+重い試験は `#[ignore]` にしてあり（`mise run test-ignored`）、実際のキャプチャを使う試験は `ISDB_RS_*` 環境変数によるオプトインです（[docs/test-data.md](docs/test-data.md)）。規則（規格書を唯一の正解とすること、SPEC-NOTES の記録、ハードウェア試験での電波安全）とコミットの書式は [CONTRIBUTING.md](CONTRIBUTING.md) にあります。セキュリティ上の問題は [SECURITY.md](SECURITY.md)、変更履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。
 
-リアルタイムで動かすものには `--release` ビルドを使ってください。最適化なしでは変調器は実時間の約 0.2 倍の速さでしか動作せず、HackRF がアンダーランします。重いテストは `#[ignore]` 指定されています（`mise run test-ignored`）。実際のキャプチャ、録画、メディアを使うテストは `ISDB_RS_*` 環境変数によるオプトイン方式で、指定がなければ `SKIP` と表示します（[docs/test-data.md](docs/test-data.md)）。
+## 規格書
+
+実装は ITU-T H.222.0 | ISO/IEC 13818-1、ARIB STD-B10、B24、B31、B32、B44、B60、ITU-R BO.1408-1、2011 年総務省令第 87 号に従っています。規格書の PDF は著作権があるため再配布していません。ITU-T の勧告と ARIB 規格の英訳は無料で入手できます。[SPECS.md](SPECS.md) には、使用した版、その SHA-256 ハッシュと入手先、各クレートが実装する条項、それぞれの確認方法をまとめています。
 
 ## ライセンス
 
-Apache License, Version 2.0 の下でライセンスされています（[LICENSE](LICENSE)。[NOTICE](NOTICE) も参照してください）。明示的に別段の意思表示をしない限り、本成果物への取り込みを目的として意図的に提出された貢献はすべて、追加の条項や条件なしに上記のとおりライセンスされるものとします。
+Apache License 2.0 の下でライセンスされています（[LICENSE](LICENSE)、[NOTICE](NOTICE) も参照）。明示的に別段の意思表示をしない限り、本プロジェクトへの取り込みを意図して提出された貢献は、追加の条件なしに上記のとおりライセンスされるものとします。

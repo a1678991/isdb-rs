@@ -2,30 +2,23 @@
 
 # isdb-rs
 
-A from-the-specification Rust implementation of Japanese digital terrestrial
-television (ISDB-T): MPEG-2 transport stream and ARIB service information
-codecs, a service multiplexer, a transport-stream analyzer, and the ARIB
-STD-B31 modulator and demodulator, with SDR I/O (HackRF One and the ADALM-Pluto family). Both directions run on
-the same library — services → TS → OFDM baseband → radio, and radio → OFDM
-→ TS → analysis — so every layer can be checked against its inverse, against
-the specifications' own numbers, and against independent receivers. It is
-meant for receiver testing, protocol study and broadcast-engineering
-experiments on a conducted bench. ISDB-T is implemented end to end.
-ISDB-S is received to transport streams, one per TS_ID (`isdb rx --system
-isdbs`, from satellite IF recordings or block by block from a radio), and
-transmitted from them (`isdb tx --system isdbs`) to IQ files that `isdb rx`
-reads back byte-exact, with a software loopback (`isdb loopback --system
-isdbs`); its ≥ 39 Msps do not stream to a radio over Gigabit Ethernet, so
-for a radio the pulse shaping moves into the PlutoSky R2's FPGA: the host
-sends 4-bit symbol codes (14 MB/s) and the transmit block there shapes
-them (`isdb tx --system isdbs --radio pluto --offload fpga`, verified on
-the board through the AD9361's digital loopback and conducted into a
-PIX-DT295 tuner, which locks and records the bench service). ISDB-S3 is received to TLV streams,
-one per TLV stream id (`isdb rx --system isdbs3`), with the MMTP packets
-and MMT-SI tables they carry decoded: services, events, packages and
-assets (`isdb tlv inspect`); unscrambled assets are written as
-elementary streams (`isdb tlv extract`; on the lab feed every media
-payload is scrambled, and nothing is descrambled).
+**Japanese digital broadcasting — ISDB-T, ISDB-S and ISDB-S3 — implemented
+in Rust from the specifications.** Build a transport stream from a service
+description, modulate it to IQ and transmit it on a conducted bench;
+receive terrestrial and satellite signals back to transport streams or TLV
+streams; inspect, validate, diff and edit what you get.
+
+Every direction runs on the same library, so each layer is checked against
+its inverse, against the numbers printed in the standards, and against
+independent receivers (a USB tuner, a TV recorder, GNU Radio's gr-isdbt).
+It is meant for receiver testing, protocol study and broadcast-engineering
+experiments in the lab.
+
+```text
+ services (TOML) ─▶ isdb mux ─▶ TS ─▶ isdb tx ─▶ IQ file / radio
+                                                    │
+ analysis ◀─ isdb ts ◀─ TS / TLV ◀─ isdb rx ◀───────┘
+```
 
 > [!WARNING]
 > **Legal and RF safety notice**
@@ -39,14 +32,15 @@ payload is scrambled, and nothing is descrambled).
 >   attenuators straight into the receiver, or a shielded enclosure. No
 >   antenna. It radiates only with `--rf-enable`: `--radio` without
 >   `--rf-enable` or `--dry-run` is rejected, and `--dry-run` prints the RF
->   settings and exits before opening the device. The centre frequency is limited to the UHF TV band, 470–710 MHz
->   (channels 13–52), unless `--freq-unrestricted` is given. See
+>   settings and exits before opening the device. The terrestrial centre
+>   frequency is limited to the UHF TV band, 470–710 MHz (channels 13–52),
+>   unless `--freq-unrestricted` is given. See
 >   [docs/transmitting.md](docs/transmitting.md).
-> - **No descrambling.** There is no B-CAS / conditional-access support and
->   the tool never descrambles. Input must be unscrambled
->   (transport_scrambling_control '00'); scrambled input is refused. A
->   relayed program keeps its source copy-control signalling and its
->   CA_descriptor/ECM by default.
+> - **No descrambling.** There is no B-CAS / ACAS / conditional-access
+>   support and nothing here ever descrambles. Scrambled input is
+>   recognised and refused (or, in the receivers, counted and passed on
+>   untouched). A relayed program keeps its source copy-control signalling
+>   and its CA_descriptor/ECM by default.
 > - **Content rights.** You are responsible for having the rights to any
 >   content you transmit or relay, including recordings. Rebroadcasting a
 >   broadcaster's programme, even privately over coax, may be restricted
@@ -57,156 +51,46 @@ payload is scrambled, and nothing is descrambled).
 >   affiliated with, endorsed by or sponsored by ARIB, ITU, ISO/IEC, Great
 >   Scott Gadgets, Analog Devices, OpenSourceSDRLab, Sony, MyGica or any
 >   broadcaster. These names, and product names such as HackRF,
->   ADALM-Pluto, PlutoSky and BDZ, are used only to identify the standards
->   implemented and the equipment tested; they may be trademarks of their
->   respective owners (HackRF is a trademark of Great Scott Gadgets,
->   ADALM-Pluto of Analog Devices).
+>   ADALM-Pluto, PlutoSky, PIX-DT295 and BDZ, are used only to identify the
+>   standards implemented and the equipment tested; they may be trademarks
+>   of their respective owners (HackRF is a trademark of Great Scott
+>   Gadgets, ADALM-Pluto of Analog Devices).
 
-## Features
+## What it does
 
-- **TS and PSI** (`isdb-ts`, ITU-T H.222.0): packets, adaptation field, PCR,
-  PES, section assembly and packetisation, PAT/CAT/PMT, continuity
-  tracking, a resynchronising reader for 188/192/204-byte packets.
-- **ARIB SI** (`isdb-si`, ARIB STD-B10): NIT, BAT, SDT, EIT, TDT, TOT, RST,
-  ST, PCAT, BIT, NBIT, LDT and the B10 descriptors as typed, *lossless*
-  codecs (every reserved bit is kept, so `encode(decode(x)) == x`), MJD/BCD
-  time, and a separate conformance checker.
-- **ARIB text** (`isdb-text`, ARIB STD-B24): the 8-unit character coding of
-  SI strings — decode to Unicode with every unrepresentable code reported,
-  and encode back.
-- **Multiplexer** (`isdbt-mux`): a TOML service description (network,
-  services, events, SI tables, experiment overrides) plus MPEG-2 video and
-  AAC ADTS files → a constant-rate multiplex paced to the OFDM frame, with
-  an H.222.0 T-STD buffer model. **TS relay**: rebroadcast one program of
-  an unscrambled recorded TS (for example one you produced yourself) as a
-  terrestrial service with its own PSI/SI; the stream roles and PIDs are
-  detected from the recording, and the source's copy control and
-  conditional-access signalling are kept by default. **Data broadcasting
-  and Hybridcast**: the files of a directory as a BML data carousel
-  (DSM-CC DII/DDB, ARIB STD-B24 Vol. 2/3) with the PMT and EIT signalling,
-  and an AIT (B24 Vol. 4, IPTVFJ STD-0010/0013) that names the HTML5
-  application URL a Hybridcast receiver starts, carried in the carousel
-  with a generated launcher or on its own PID.
-- **Analyzer** (`isdb-analyze`): inspect, validate (every finding cites the
-  clause it comes from), table/field-level diff of two captures, and edits
-  that keep the TS valid (null a PID, remove/replace/insert sections, typed
-  field mutation).
-- **ISDB-T PHY** (`isdbt-core`, `isdbt-fec`, `isdbt-ofdm`, `isdbt-phy`,
-  ARIB STD-B31): Modes 1–3, all guard intervals, up to three hierarchical
-  layers with partial reception, DQPSK/QPSK/16QAM/64QAM, all code rates and
-  time-interleave lengths, TMCC and AC. The receiver does synchronisation,
-  CFO and timing-drift correction, channel estimation, TMCC decoding,
-  soft-decision Viterbi and RS decoding, and reproduces the 13-segment TS.
-- **I/O** (`isdb-radio`, `isdb-hackrf`, `isdb-iio`, `isdb-cli`): IQ files
-  (cf32 for GNU Radio, cs8 for `hackrf_transfer`) and radio streaming
-  through device-neutral IQ sink/source traits with one backend per device
-  (HackRF One, `--radio hackrf`; ADALM-Pluto and compatibles such as the
-  PlutoSky R2 over USB or Ethernet, `--radio pluto`); one `isdb` binary with `tx`, `rx`,
-  `loopback`, `mux`, `ts`, `capture`, `iq`, `symbols` and `completions` commands.
-- **Satellite IF recordings** (`isdb-iq`, `isdb capture`, `isdb iq
-  survey`): receive-only captures at any rate the radio supports, in one
-  contiguous piece (a Pluto takes up to 16.5 M 16-bit samples through
-  libiio; with Tezuka's maia-sdr recorder 33.5 M in 16 bits or 67 M in 8
-  bits, 1.7 s at 40 Msps) or streamed with every loss marked (over
-  Gigabit Ethernet without loss up to about 40 MB/s, e.g. 8-bit samples
-  at 20 Msps),
-  with SigMF metadata, BS / 110° CS channel names at their IF, and a
-  survey that finds the symbol rate, the carrier offset and the system
-  (ISDB-S, ISDB-S3) of a recording.
-- **Satellite symbol front end** (`isdb-frontend`, `fpga/`, `isdb
-  symbols`, `isdb iq symbols`, `isdb iq s3sync`): matched filtering,
-  timing recovery and AGC from IQ to 6-bit symbols, with a timing trim
-  that the host measures on known symbols (the loop alone lands
-  0.15–0.18 symbol off the best instant on ISDB-S3: 5–6 dB). It exists as
-  a bit-exact fixed-point model on the CPU and as the same stage in
-  Amaranth HDL for the PlutoSky R2's FPGA, which cuts what crosses the
-  link (43 / 51 MB/s for ISDB-S / ISDB-S3 instead of 80) for continuous
-  reception. The HDL matches the model bit for bit in simulation but is
-  not yet in a bitstream; until then the CPU runs it on one contiguous
-  capture.
-- **ISDB-S reception** (`isdbs-core`, `isdbs-phy`, `isdb iq tmcc`, `isdb
-  rx --system isdbs`): frame and superframe sync on the frame's known
-  symbols, burst-aided carrier recovery, the TMCC (inner code, energy
-  dispersal, RS(64,48)), then the main signal: TC8PSK / QPSK / BPSK soft
-  demapping, depunctured Viterbi, depth-8 inter-frame de-interleaving,
-  energy dispersal and RS(204,188), one TS per TS_ID. The TMCC decodes
-  on all 9 BS and 12 110° CS transponders of a cable feed; 19 of them
-  give RS-clean TS (311 520 packets, 0 uncorrectable), the other two lack
-  the SNR. Live from a radio it decodes one contiguous capture after
-  another (no continuous stream over Gigabit Ethernet without the FPGA
-  front end), slower than real time on the CPU.
-- **ISDB-S transmission** (`isdbs-core` `TmccInfo::assign`, `isdbs-phy`
-  `tx::Transmitter`, `isdb-frontend` `shape::Shaper`, `isdb tx --system
-  isdbs`, `isdb loopback --system isdbs`): a slot layout of up to four
-  combinations and eight TSs → TMCC, RS(204,188), energy dispersal,
-  interleaving, inner code and mapping, header and bursts → superframes
-  of symbols → root-raised-cosine IQ at any rate ≥ 38.96 Msps (40 Msps by
-  default), written with a SigMF sidecar that `isdb rx` reads back
-  byte-exact; the loopback passes the BS layout (TC8PSK 2/3) from 7 dB
-  SNR and the CS layout (QPSK 3/4) from 4 dB with carrier offset and a
-  mid-stream start. A radio is driven through the same gate: over IQ a
-  Gigabit-Ethernet Pluto underruns at that rate and a HackRF refuses it;
-  with `--offload fpga` the host sends symbol codes and the PlutoSky's
-  transmit block (`fpga/`, `SymbolsTx`: 0 DSP48E1, a multiplier-free
-  root-raised-cosine interpolator) shapes them on the board: verified
-  on the PlutoSky R2 through the AD9361's digital loopback into the
-  FPGA receive front end, two TSs byte-exact over 20 s with 0 losses
-  (VERIFICATION.md "ISDB-S transmitter in the FPGA: on the board"), and
-  conducted through a 30 dB pad into a PIX-DT295 tuner, which locks at
-  the first tune and records the bench service's TS clean
-  (`tools/isdbs-bench-tx.sh`; "into the PIX-DT295" there). PCR-paced
-  placement of a live TS feed is the next step.
-- **ISDB-S3 reception** (`isdbs3-core`, `isdbs3-phy`, `isdb-tlv`, `isdb
-  iq s3tmcc`, `isdb rx --system isdbs3`, `isdb tlv inspect`; ARIB
-  STD-B44, B32 Part 3, B60): slot and frame sync on the π/2-BPSK sync
-  words, a least-squares equaliser trained on the sync and pilot symbols,
-  the TMCC (shortened LDPC, BCH), the main signal (demapping against the
-  pilot-learned constellation, bit de-interleaving, LDPC with the address
-  tables transcribed from the standard, energy dispersal, BCH), then TLV
-  packets, header-compressed IP, MMTP and MMT-SI (PA / MPT / PLT,
-  MH-EIT, MH-SDT, MH-TOT, MH-AIT, ECM, EMM). On the three ISDB-S3
-  transponders of a cable feed (16APSK 7/9) every frame and all 4 512
-  codewords decode, and 8 TLV streams reassemble with no error. LDPC
-  needs every core of a 32-core host to keep up with 100 Mbit/s.
-
-## Crates
-
-| Crate | Spec | Scope |
+| | Transmit (generate) | Receive (decode) |
 |---|---|---|
-| [`isdb-ts`](crates/isdb-ts/README.md) | H.222.0 | bit I/O, CRC_32, TS packet / adaptation field / PCR, PES, section assembly and packetisation, PAT/PMT/CAT, TS reader |
-| [`isdb-text`](crates/isdb-text/README.md) | B24 Vol. 1 Part 2 Ch. 7 | ARIB 8-unit string decode/encode |
-| [`isdb-si`](crates/isdb-si/README.md) | B10, B24 Vol. 2–4 | SI tables, descriptors, MJD/BCD time; lossless typed codecs plus conformance checks; DSM-CC data carousel (DII/DDB), AIT and BML signalling structures |
-| [`isdb-analyze`](crates/isdb-analyze/README.md) | H.222.0, B10, B32 Part 2 | TS inspection, validation with clause citations, diff of two captures, editing |
-| [`isdbt-mux`](crates/isdbt-mux/README.md) | H.222.0, B10, B24, B31, B32, IPTVFJ STD-0010/0013 | service multiplexer: PSI/SI generation, MPEG-2 video / AAC packetisation, recorded-program relay, BML data carousel and Hybridcast AIT, output paced to the OFDM frame |
-| [`isdbt-core`](crates/isdbt-core/README.md) | B31 tables | modes, guard intervals, layer parameters, derived rates and delays |
-| [`isdb-fec`](crates/isdb-fec/README.md) | B31 §3.3, §3.5, §3.8; BO.1408-1 §2, §4, §9 | channel-coding blocks shared by the systems: shortened RS(255,239) codes, K = 7 code and Viterbi, PRBS generators |
-| [`isdbt-fec`](crates/isdbt-fec/README.md) | B31 §3.2–3.8 | TS re-multiplexing, RS(204,188), energy dispersal, byte interleaving, convolutional code / Viterbi |
-| [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) | B31 §3.9–3.16 | mapping, interleaving, OFDM frame with SP/CP/TMCC/AC, IFFT/GI; receiver synchronisation and equalisation |
-| [`isdbt-phy`](crates/isdbt-phy/README.md) | B31 | TX/RX pipelines (TS packets ⇄ complex baseband), IQ file formats, the broadcasting TS with ISDB-T_information and IIP (Part 2 §5.5) |
-| [`isdb-radio`](crates/isdb-radio/README.md) | — | device-neutral SDR layer: IQ sink/source traits, `--radio` device selection, backend registry (HackRF behind the `hackrf` feature, ADALM-Pluto behind `pluto`), integer sample quantisers |
-| [`isdb-hackrf`](crates/isdb-hackrf/README.md) | — | minimal safe wrapper over the system libhackrf (FFI), used by the `isdb-radio` HackRF backend |
-| [`isdb-iio`](crates/isdb-iio/README.md) | — | minimal safe wrapper over the system libiio 0.x (FFI), used by the `isdb-radio` Pluto backend |
-| [`isdb-iq`](crates/isdb-iq/README.md) | — (quotes the ISDB-S / ISDB-S3 symbol rates) | IQ recordings independent of the system: sample formats, SigMF metadata, single-carrier survey (symbol rate, carrier offset, band, system) |
-| [`isdb-frontend`](crates/isdb-frontend/README.md) | BO.1408-1 §9 (roll-off; rates from `isdb-iq`) | single-carrier front end for ISDB-S / ISDB-S3, both directions: receive IQ → symbols (bit-exact fixed-point model of the FPGA stage, floating-point reference, `Symbols` boundary format, FPGA control map; the HDL is in [`fpga/`](fpga/README.md)); transmit symbols → IQ (`shape::Shaper`, root-raised-cosine pulse shaper at any rate ≥ (1 + α)·R) |
-| [`isdbs-core`](crates/isdbs-core/README.md) | BO.1408-1; MIC Ordinance No. 87 annexed tables 45–51 | ISDB-S frame geometry, combinations, slot assignment, TMCC information codec and signal (and its builder from a slot layout), burst |
-| [`isdbs-phy`](crates/isdbs-phy/README.md) | BO.1408-1 | ISDB-S receive chain after the front end (frame sync, carrier recovery, TMCC decoding, main signal to TS packets per TS_ID) and the transmitter from TS packets per TS to superframe symbols |
-| [`isdbs3-core`](crates/isdbs3-core/README.md) | B44 v2.1 | ISDB-S3 geometry, code rates, LDPC tables, constellations, interleaver, energy dispersal, TMCC codec, slot allocation |
-| [`isdbs3-phy`](crates/isdbs3-phy/README.md) | B44 v2.1 | ISDB-S3 receive chain after the front end: slot/frame sync, equaliser, TMCC, main signal (LDPC, BCH) to slot data |
-| [`isdb-tlv`](crates/isdb-tlv/README.md) | B32 Part 3, B60 | TLV packets from slots, compressed IP, MMTP, MMT-SI and TLV-SI identification |
-| [`isdb-mmt`](crates/isdb-mmt/README.md) | B60 | MMT-SI and TLV-SI table contents (MPT, PLT, MH-EIT, MH-SDT, MH-TOT, MH-BIT, TLV-NIT, AMT), MPU/MFU reassembly, HEVC / LOAS / caption elementary streams |
-| [`isdb-cli`](crates/isdb-cli/README.md) | — | the `isdb` binary: ISDB-T and ISDB-S `tx` / `rx` / `loopback`, ISDB-S3 `rx`, the multiplexer, TS / TLV / IQ tools, capture |
+| **ISDB-T** — terrestrial, ARIB STD-B31 | ✅ services → TS → OFDM IQ → HackRF / Pluto; all modes, guard intervals, three hierarchical layers, partial reception | ✅ IQ file or radio → TS per layer, with TMCC/AC and status |
+| **ISDB-S** — BS / 110° CS, ITU-R BO.1408 | ✅ up to 8 TSs → TC8PSK/QPSK/BPSK IQ; to a radio through the PlutoSky R2's FPGA | ✅ IF recording or radio → one TS per TS_ID |
+| **ISDB-S3** — advanced BS 4K/8K, ARIB STD-B44 | — | ✅ IF recording or radio → one TLV stream per stream id; MMT-SI decoded; clear media remuxed to TS / MKV |
 
-How they fit together, the frame/latency contract and the data flow:
-[docs/architecture.md](docs/architecture.md).
+Around the physical layers:
+
+- **Transport streams and SI** — PSI and ARIB SI as lossless typed codecs
+  (`encode(decode(x)) == x` for every table and descriptor), ARIB 8-unit
+  text, a validator whose every finding cites its clause, a field-level
+  diff and TS editing.
+- **A service multiplexer** — a TOML description of the network, services
+  and events plus MPEG-2 video / AAC files becomes a constant-rate multiplex
+  paced to the transmission frame; it can also relay one program of an
+  unscrambled recording, carry a BML data carousel and a Hybridcast AIT, or
+  build an ISDB-S multiplex in process.
+- **TLV / MMT** for advanced BS — TLV packets, compressed IP, MMTP and the
+  MMT-SI tables (services, events, packages, assets), with each clear
+  asset's elementary stream extracted.
+- **Playable files from advanced BS** — `isdb-remux` turns a clear TLV
+  stream into a timed MPEG-TS or a Matroska file with every audio track,
+  the captions (SubRip / WebVTT, keeping the broadcast's layout and colours
+  where WebVTT can) and the data broadcasting packages.
+- **SDR I/O** — HackRF One and the ADALM-Pluto family (USB or Ethernet),
+  raw IQ capture with SigMF metadata, a satellite IF survey that finds the
+  symbol rate, carrier and system, and an FPGA symbol front end for the
+  PlutoSky R2 (Amaranth HDL, bit-exact against its CPU model).
 
 ## Quick start
 
-Tested on Linux with Rust ≥ 1.88 (edition 2024). Radio support is two
-cargo features of `isdb-cli` (forwarded to the `isdb-radio` backends),
-both on by default: `hackrf` links the system `libhackrf` (2022.09.1 or
-later) and `pluto` the system `libiio` (0.x, 0.21 or later) dynamically,
-so the default build needs both libraries installed even if you never
-attach a radio:
+Linux, Rust ≥ 1.88. The default build links the system `libhackrf` and
+`libiio` for the radio backends, even if you never attach a radio:
 
 | System | Packages |
 |---|---|
@@ -220,31 +104,20 @@ cargo build --release -p isdb-cli          # → target/release/isdb
 export PATH="$PWD/target/release:$PATH"
 ```
 
-Without either library, build with
-`cargo build --release -p isdb-cli --no-default-features` (add
-`--features hackrf` or `--features pluto` for one of them): every
-file-based command (`tx --iq`, `rx --iq`, `loopback`, `mux`, `ts`) works,
-and `--radio` with a left-out backend fails with a message naming the
-feature.
+No radio libraries? `cargo build --release -p isdb-cli
+--no-default-features` builds everything that works on files (add
+`--features hackrf` or `--features pluto` for one backend).
 
-Everything below works without a radio and without any captured data.
-
-Software loopback — modulate deterministic test packets, demodulate them
-again and compare every packet:
+**Try it without any hardware or data** — modulate test packets, add noise
+and a frequency offset, demodulate, and compare every packet:
 
 ```sh
 isdb loopback --synthetic                  # ends with "[loopback] PASS"
 isdb loopback --synthetic --frames 8 --snr-db 22 --cfo-carriers 2.3
 ```
 
-Print the annotated example multiplex configuration (it references media
-files you supply; see [docs/mux-config.md](docs/mux-config.md)):
-
-```sh
-isdb mux --print-config-example > bench.toml
-```
-
-Generate a transport stream from a media-free configuration and analyse it:
+**Make a broadcast and receive it back.** A small service description with
+no media files:
 
 ```sh
 cat > test.toml <<'EOF'
@@ -283,174 +156,154 @@ copy_control = { recording_control = "copy-free" }
   duration = "01:00:00"
   name = "試験放送"
 EOF
-isdb mux -c test.toml --seconds 5 --out-ts test.ts
+
+isdb mux -c test.toml --seconds 5 --out-ts test.ts   # the transport stream
 isdb ts inspect test.ts                    # PIDs, PCR, programs, decoded SI
 isdb ts validate test.ts                   # 0 errors (one warning: the declared stream has no packets)
-```
 
-Then put it through the PHY in files and back:
-
-```sh
-isdb tx --mux-config test.toml --iq test.cf32 --seconds 3   # ≈ 195 MB of cf32
-isdb rx --iq test.cf32 --out rx.ts --json
+isdb tx --mux-config test.toml --iq test.cf32 --seconds 3   # modulate (≈ 195 MB of cf32)
+isdb rx --iq test.cf32 --out rx.ts --json  # demodulate
 isdb ts diff test.ts rx.ts                 # every section identical
 ```
 
-Next steps: [docs/getting-started.md](docs/getting-started.md) (a longer
-walk-through), [docs/transmitting.md](docs/transmitting.md) (bench set-up,
-radios, relaying a recording), [docs/receiving.md](docs/receiving.md),
-[docs/analysis.md](docs/analysis.md), [docs/mux-config.md](docs/mux-config.md),
-[docs/test-data.md](docs/test-data.md), [docs/glossary.md](docs/glossary.md).
+`isdb mux --print-config-example` prints a fully annotated configuration
+with video and audio. From here, [docs/getting-started.md](docs/getting-started.md)
+is the longer walk-through.
+
+## Commands
+
+One binary, `isdb`, plus `isdb-remux`:
+
+| Command | What it does |
+|---|---|
+| `isdb mux` | service description (TOML) + media → transport stream |
+| `isdb tx` | TS → ISDB-T or ISDB-S → IQ file or radio |
+| `isdb rx` | IQ file or radio → ISDB-T / ISDB-S TS, or ISDB-S3 TLV streams |
+| `isdb loopback` | TX → noise, offset, echo → RX, checking every packet |
+| `isdb ts` | `inspect`, `validate`, `diff`, `edit`, `extract` a transport stream |
+| `isdb tlv` | `inspect`, `validate`, `extract` a TLV stream (advanced BS) |
+| `isdb capture` | raw IQ capture from a radio, receive only, with SigMF metadata |
+| `isdb iq` | satellite recordings: `survey`, `symbols`, `tmcc`, `s3sync`, `s3tmcc` |
+| `isdb symbols` | satellite symbols from the radio's FPGA front end or the CPU model |
+| `isdb completions` | shell completion scripts |
+| `isdb-remux` | clear advanced-BS TLV stream → timed MPEG-TS or Matroska, with captions |
+
+Every command has `--help`. Binary output never lands on an interactive
+terminal by accident: give `-o FILE`, pipe it, or ask for it with `-o -`.
+
+## Documentation
+
+| | |
+|---|---|
+| [Getting started](docs/getting-started.md) | a longer first walk-through |
+| [Transmitting](docs/transmitting.md) | bench set-up, radios, relaying a recording, ISDB-S |
+| [Receiving](docs/receiving.md) | ISDB-T, ISDB-S and ISDB-S3 from files and radios |
+| [Analysis](docs/analysis.md) | inspect, validate, diff, edit |
+| [Multiplex configuration](docs/mux-config.md) | every field of the TOML description |
+| [Architecture](docs/architecture.md) | how the crates fit together, the data flow |
+| [Glossary](docs/glossary.md) | the acronyms of broadcasting |
+| [Test data](docs/test-data.md) | opt-in tests on your own captures |
+| [FPGA](fpga/README.md) | the PlutoSky R2 symbol blocks |
+| [VERIFICATION.md](VERIFICATION.md) | what has been checked, how, and the open questions |
+| [SPECS.md](SPECS.md) | the specifications, editions and where to get them |
+
+## Crates
+
+The workspace is a set of library crates you can use on their own; each
+links its README.
+
+| Layer | Crates |
+|---|---|
+| Transport stream and SI | [`isdb-ts`](crates/isdb-ts/README.md) (H.222.0 TS, PES, PSI) · [`isdb-si`](crates/isdb-si/README.md) (ARIB SI, data carousel, AIT) · [`isdb-text`](crates/isdb-text/README.md) (ARIB 8-unit text) · [`isdb-analyze`](crates/isdb-analyze/README.md) (inspect, validate, diff, edit) |
+| Multiplexing | [`isdbt-mux`](crates/isdbt-mux/README.md) (services → TS, relay, data broadcasting, ISDB-S schedules) |
+| Channel coding | [`isdb-fec`](crates/isdb-fec/README.md) (RS, convolutional / Viterbi, PRBS shared by the systems) |
+| ISDB-T | [`isdbt-core`](crates/isdbt-core/README.md) · [`isdbt-fec`](crates/isdbt-fec/README.md) · [`isdbt-ofdm`](crates/isdbt-ofdm/README.md) · [`isdbt-phy`](crates/isdbt-phy/README.md) |
+| ISDB-S | [`isdbs-core`](crates/isdbs-core/README.md) · [`isdbs-phy`](crates/isdbs-phy/README.md) |
+| ISDB-S3 and MMT | [`isdbs3-core`](crates/isdbs3-core/README.md) · [`isdbs3-phy`](crates/isdbs3-phy/README.md) · [`isdb-tlv`](crates/isdb-tlv/README.md) (TLV, IP, MMTP) · [`isdb-mmt`](crates/isdb-mmt/README.md) (MMT-SI, MPU/MFU, elementary streams) |
+| Media files | [`isdb-remux`](crates/isdb-remux/README.md) (timed TS / MKV) · [`isdb-mkv`](crates/isdb-mkv/README.md) (Matroska writer) · [`isdb-caption`](crates/isdb-caption/README.md) (ARIB TTML → SRT / WebVTT) |
+| Satellite front end and IQ | [`isdb-frontend`](crates/isdb-frontend/README.md) (IQ ⇄ symbols, the FPGA's model) · [`isdb-iq`](crates/isdb-iq/README.md) (recordings, SigMF, survey) |
+| Radios | [`isdb-radio`](crates/isdb-radio/README.md) (device-neutral) · [`isdb-hackrf`](crates/isdb-hackrf/README.md) · [`isdb-iio`](crates/isdb-iio/README.md) (Pluto) |
+| Command line | [`isdb-cli`](crates/isdb-cli/README.md) (the `isdb` binary) |
 
 ## How it is verified
 
-The specifications are the only ground truth. Other implementations are
-never copied; they serve only as independent oracles, and a disagreement
-is settled by reading the spec. No code or tables from other ISDB/ARIB
-implementations are included: the JIS X 0208 → Unicode mapping comes at
-run time from the `encoding_rs` dependency (WHATWG index), and the
-gr-isdbt source was read only after the implementation existed, to explain
-oracle disagreements ([VERIFICATION.md](VERIFICATION.md#discrepancies)).
-Every layer is checked without trusting the implementation itself:
+The specifications are the only ground truth: no code or tables are taken
+from other ISDB/ARIB implementations, which serve only as independent
+oracles. Every layer is checked without trusting the implementation:
 
-1. **Spec vectors** — numbers printed in the specs (check values, tables,
-   PRBS states, constellation points, frame lengths, TSP counts) are
-   asserted directly in tests named after the table.
-2. **Lossless round trips** — decoders keep every bit, and
-   `encode(decode(x)) == x` is property-tested and run over synthetic
-   multiplexes and, optionally, over every section of your own capture.
-3. **Inverse pairs** — each TX stage is tested against its RX inverse, and
-   the whole PHY as TX → impairments (noise, CFO, timing offset, echo) → RX,
+1. **Spec vectors** — numbers printed in the standards (check values,
+   tables, PRBS states, frame lengths) asserted in tests named after them.
+2. **Lossless round trips** — decoders keep every bit; `encode(decode(x))
+   == x` is property-tested and runs over your own captures if you have
+   them.
+3. **Inverse pairs** — each transmit stage against its receive inverse, and
+   the whole chain through noise, carrier offset, timing offset and echo,
    byte-exact.
-4. **Differential oracle** — the Rust TX and RX cross-decode byte-exactly
-   with GNU Radio's gr-isdbt in both directions in 8 parameter sets; every
-   place where the two differ is a gr-isdbt deviation from B31.
-5. **Real receivers** — over a conducted link, a MyGica S270 USB tuner
-   decoded the Rust TX with zero packet errors, and one Sony BDZ-series
-   recorder registered and played the service.
+4. **A differential oracle** — the ISDB-T TX and RX cross-decode with
+   GNU Radio's gr-isdbt in both directions; every difference found is a
+   gr-isdbt deviation from the standard.
+5. **Real receivers and broadcasts** — over coax, a MyGica S270 tuner
+   decodes our ISDB-T with zero packet errors and a Sony BDZ recorder
+   plays the service; a PIX-DT295 locks to our ISDB-S transmission and
+   records it clean; the receivers decode the terrestrial, BS, 110° CS and
+   advanced-BS broadcasts of a cable feed.
 
-Results, reproduction steps and open questions:
-[VERIFICATION.md](VERIFICATION.md). Field *values* (reserved bits, allowed
-table_id per PID, repetition rates) are checked by validators kept
-separate from the lossless codecs, so non-conforming captures can still be
-decoded, edited and re-encoded.
+Where a standard is ambiguous, the reading taken is recorded with the
+quoted text in the crates' `SPEC-NOTES.md` ([index](SPEC-NOTES.md)).
+Results and how to reproduce them: [VERIFICATION.md](VERIFICATION.md).
 
-## Specifications
+## Status and limits
 
-| Spec | Used for |
-|---|---|
-| ITU-T H.222.0 (05/2006) \| ISO/IEC 13818-1 | transport stream, PES, PSI, T-STD |
-| ARIB STD-B10 v5.13 | service information |
-| ARIB STD-B24 v6.4 Vol. 1 | 8-unit character coding |
-| ARIB STD-B31 v2.2 | ISDB-T transmission |
-| ARIB STD-B32 v3.11 Parts 1–3 | video/audio coding constraints, stream types |
-
-The specification PDFs are **not** redistributed here (they are
-copyrighted). ITU-T recommendations and the English translations of the
-ARIB standards are free downloads; [SPECS.md](SPECS.md) lists the URLs,
-the SHA-256 hashes of the editions used, how to extract greppable text into
-the gitignored `specs/` directory, which clauses each crate implements and
-how each is confirmed. Clause and table numbers in code comments refer to
-these editions. Where the text is ambiguous or garbled, the reading adopted
-is recorded with the quoted text in the crates' `SPEC-NOTES.md`
-([index](SPEC-NOTES.md)).
-
-## Status and limitations
-
-The library and CLI generate, transmit, receive and analyse ISDB-T end to
-end, but some parts have had less independent checking than others:
-
-- **One receiver configuration.** Real receivers have only been shown Mode
-  3, GI 1/8, partial reception, layer A 1 segment QPSK 2/3, layer B 12
-  segments 64QAM 3/4 (time-interleave index 2), on two receivers. Other
-  modes and layouts are verified by the oracle and loopback only.
-- **Broadcasts of one region decoded.** Through a cable feed, the TMCC of
-  seven stations passes the parity check in every frame, one station's
-  TMCC word equals ours bit for bit, and a station's both layers decode
-  RS-clean ([VERIFICATION.md](VERIFICATION.md#broadcast-reception)). No
-  station sends the seismic-warning AC word or uses DQPSK, so those
-  remain loopback-verified only.
-- **DQPSK, AC content, the emergency-alarm flag and parameter switching**
-  are verified by self-consistent loopback only (gr-isdbt implements none
-  of them).
-- **ARIB TR-B14** (terrestrial operational guidelines) is not available to
-  the project, so operational values (PCR positions, SI layer placement,
-  remote-control key range, PID plan, …) are documented choices, listed in
-  the [isdbt-mux notes](crates/isdbt-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers).
-- **AAC is checked at the header level only.** ADTS headers are checked
-  against ARIB STD-B32 Part 2; crc_check values are neither verified nor
-  inserted, because parsing the raw_data_block needs ISO/IEC 13818-7, which
-  the project does not have. Non-conforming AAC is refused by default.
-- **Media**: MPEG-2 video and AAC ADTS files only; H.264 one-seg streams
-  can be declared in the PMT but are not packetised.
-- **Data broadcasting works on a receiver only under a registered
-  broadcaster's identity.** The carousel and its signalling follow ARIB
-  STD-B24 Vol. 2–4 (layouts checked against four live terrestrial
-  stations) and a Sony recorder displayed this project's BML page, but
-  only when the service carried a local station's own network / service
-  IDs on that station's channel; under the placeholder network it shows
-  the "d" mark and never starts the BML browser. Hybridcast (IPTVFJ
-  STD-0010/0013) is implemented per the texts; the values without a local
-  source (start_priority bit, monitored AIT module, AIT
-  data_component_id) are documented defaults, no Hybridcast-capable
-  receiver has been tested, and which organization_id values a receiver
-  accepts is IPTV Forum policy.
-- **Not implemented**: duplicate packets for a PID on two layers, SFN
-  synchronisation (only the IIP's `network_synchronization_information`
-  syntax is handled), AC data in the broadcasting TS, data events and
-  event messages of data broadcasting, DRCS glyphs, ISDB-T<sub>SB</sub>.
-- **Radio**: HackRF One and the ADALM-Pluto family are the backends
-  (others plug into `isdb-radio` without CLI changes). A Pluto streams one
-  direction at a time at 512/63 MHz over Ethernet: TX and RX together
-  exceed what its iiod serves with ADI's firmware (one CPU enabled), and
-  the receive side then drops samples. A PlutoSky R2 needs Tezuka
-  firmware v0.3.22 or later to receive (its factory firmware leaves the
-  reference oscillator wandering). The demodulator runs at about 1.4× real time
-  on a current 16-core desktop CPU, so live reception needs a fast machine.
-
-## Roadmap
-
-- Check AC content and parity against a broadcaster, receive from an
-  antenna, and test more configurations and receivers.
-- Replace operational choices with TR-B14 values where they can be
-  confirmed.
-- AAC raw_data_block parsing (crc_check verification) once it can be
-  written from ISO/IEC 13818-7 itself; H.264 one-seg packetisation.
-- ISDB-S (ITU-R BO.1408 / MIC Ordinance No. 87 of 2011; ARIB STD-B20) and
-  ISDB-S3 (ARIB STD-B44) reception, then transmission, reusing the TS/SI
-  crates — satellite IF capture and survey done; ISDB-S received to TS
-  and transmitted to IQ files (software loopback byte-exact), with the
-  radio transmit block for the PlutoSky R2's FPGA built into the bitstream
-  and verified on the board (digital loopback byte-exact, conducted into
-  a PIX-DT295 tuner); ISDB-S3
-  received to TLV streams with MMT-SI identified; then TLV-SI checked on
-  a longer recording, and real-time LDPC (SIMD).
+- **Tested configurations.** Real ISDB-T receivers have seen one layout
+  (Mode 3, GI 1/8, partial reception, 1-segment QPSK 2/3 + 12-segment
+  64QAM 3/4); others are verified by the oracle and loopback.
+- **Loopback-only so far.** DQPSK, AC content, the emergency-alarm flag
+  and parameter switching (no station sends them).
+- **Operational values.** ARIB TR-B14 is not available, so values such as
+  PID plans and SI placement are documented choices
+  ([list](crates/isdbt-mux/SPEC-NOTES.md#operational-choices-not-dictated-by-the-local-specs--test-on-receivers)).
+- **Media.** The multiplexer takes MPEG-2 video and AAC ADTS; AAC is
+  checked at the header level. H.264 one-seg can be declared, not
+  packetised.
+- **Data broadcasting** displays on a real receiver only under a
+  registered broadcaster's network and service IDs; no Hybridcast receiver
+  has been tested.
+- **Speed.** Live reception needs a fast machine: ISDB-S3's LDPC uses many
+  cores, and the ISDB-T demodulator runs at about 1.4× real time on a
+  current 16-core desktop. Always use `--release` builds for real-time
+  work.
+- **Radios.** HackRF One and the ADALM-Pluto family. A Pluto streams one
+  direction at a time; ISDB-S and ISDB-S3 rates need the PlutoSky R2's FPGA
+  blocks for continuous streaming over Ethernet.
+- **Not implemented.** ISDB-S3 transmission, SFN synchronisation, AC data
+  in the broadcasting TS, DRCS glyphs, ISDB-T<sub>SB</sub>.
 
 ## Development
 
-[mise](https://mise.jdx.dev/) is the single task runner for checks (tasks
-in [mise.toml](mise.toml)), and CI runs the same tasks:
+[mise](https://mise.jdx.dev/) runs every check, the same tasks as CI
+([mise.toml](mise.toml)):
 
 ```sh
-mise run check                             # everything CI runs: lint, test, doc, deny, msrv, oracle helper
-mise run test                              # unit, integration and doc tests; no radio or data needed
-mise run lint                              # rustfmt check + clippy -D warnings
-mise tasks                                 # all tasks
+mise run check      # everything CI runs: lint, test, doc, deny, msrv
+mise run test       # unit, integration and doc tests; no radio or data needed
+mise run lint       # rustfmt + clippy -D warnings
 ```
 
-[CONTRIBUTING.md](CONTRIBUTING.md) has the rules (specifications as ground
-truth, SPEC-NOTES entries, RF safety for hardware tests, the relay
-copy-control and conditional-access policy), the toolchain, git hooks and
-commit format; the code layout is in
-[docs/architecture.md](docs/architecture.md). Security issues go through
-[SECURITY.md](SECURITY.md); changes are listed in
-[CHANGELOG.md](CHANGELOG.md).
+Heavy tests are `#[ignore]`d (`mise run test-ignored`); tests on real
+captures are opt-in through `ISDB_RS_*` variables
+([docs/test-data.md](docs/test-data.md)). [CONTRIBUTING.md](CONTRIBUTING.md)
+has the rules — specifications as ground truth, SPEC-NOTES entries, RF
+safety for hardware tests — and the commit format. Security issues:
+[SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 
-Use `--release` builds for anything real time: unoptimised, the modulator
-runs at ≈ 0.2× real time and a HackRF would underrun. Heavy tests are
-`#[ignore]`d (`mise run test-ignored`); tests that use real captures,
-recordings or media are opt-in through `ISDB_RS_*` environment variables
-and print `SKIP` otherwise ([docs/test-data.md](docs/test-data.md)).
+## Specifications
+
+The implementation follows ITU-T H.222.0 | ISO/IEC 13818-1, ARIB STD-B10,
+B24, B31, B32, B44 and B60, ITU-R BO.1408-1 and MIC Ordinance No. 87 of
+2011. The PDFs are not redistributed here (they are copyrighted); ITU-T
+recommendations and the English ARIB translations are free downloads.
+[SPECS.md](SPECS.md) lists the editions, their SHA-256 hashes and URLs,
+which clauses each crate implements, and how each is confirmed.
 
 ## License
 
