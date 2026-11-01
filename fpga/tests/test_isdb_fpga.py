@@ -117,8 +117,13 @@ def _is_tx(path):
 
 
 def vector_files():
-    """The receive vector files (transmit ones share the directory)."""
-    return [p for p in sorted(glob.glob(os.path.join(VECTORS, "*.json"))) if not _is_tx(p)]
+    """The receive front end's vector files (the transmit ones and the
+    LDPC decoder's `ldpc-*.json` share the directory)."""
+    return [
+        p
+        for p in sorted(glob.glob(os.path.join(VECTORS, "*.json")))
+        if not os.path.basename(p).startswith("ldpc-") and not _is_tx(p)
+    ]
 
 
 def trimmed_vector():

@@ -313,6 +313,43 @@ a missed word):
   unpacker, the counters and the clock enable (`synth/tx_parts.py`
   splits it). Device: 5 % of the xc7z020's LUTs.
 
+## LDPC vectors
+
+The ISDB-S3 LDPC decoder (in progress,
+[plan](../docs/plans/isdbs3-fpga-rx.md) "LDPC decoder" and "The LDPC
+schedule contract") is checked against the fixed-point model
+`isdb_fec::ldpc::fixed` with its `Schedule::Layered { step }`.
+`mise run fpga:vectors` writes, from `isdbs3-phy`'s
+`examples/ldpcvectors` (format version 1 in its module docs):
+
+- `ldpc-tables.json`: the eleven address tables of ARIB STD-B44 v2.1
+  §3.4 (2) (`{"rate": 41, "rows": [[…], …]}` …, one row per 374-bit
+  group), so the HDL elaborates its address ROM and layer order from the
+  same source as the model;
+- `ldpc-1-93-seq` (sequential schedule, limit 50), `ldpc-2-93-layered68`
+  and `ldpc-3-93-layered187` (limit 12), `ldpc-4-41-layered68` and
+  `ldpc-5-109-layered68` (the extreme rates), `ldpc-6-tmcc-layered68`
+  (the shortened 61/120 TMCC code: `"shortened": {"info_start": 1870,
+  "info_len": 9614}`, the known zeros carried as +127),
+  `ldpc-7-93-stress-layered68` (a word valid at iteration 0, all-zero
+  input, ±127 with strong flips, −128 inputs, failing words),
+  `ldpc-8-93-trace` (2 codewords with the hard decisions after every
+  iteration, `trace_hex`, to locate a mismatch), `ldpc-9-93-iter0`
+  (`max_iter` 0); with `ISDB_RS_ISDBS3_TLV_IQ` set, also
+  `ldpc-10-93-rec-layered68` and `ldpc-11-tmcc-rec-layered68` (real
+  demapped codewords of its first recording). 4 to 8 codewords per file,
+  0.5–1.3 MB each.
+
+Each codeword carries its n input LLRs (i8) and the expected n hard
+decisions (`bits_hex`: bit i at byte i / 8, bit i % 8, lowercase hex),
+iterations, convergence and the unsatisfied-check count. Every set is
+decoded with 16 lanes and with one, the same. `tools/ldpc-vectors-check.py
+TABLES VECTORS…` is an independent pure-Python reading of the contract,
+built from the tables file alone, that reproduces every set (2026-11-01:
+all eleven, 68 codewords, traces included) — a starting point for the
+HDL's Python stand-in model. The front end's vector test skips
+`ldpc-*.json`.
+
 ## Integration
 
 `SymbolsRx` goes between Tezuka's sample path and the ADC packer
