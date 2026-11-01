@@ -63,8 +63,10 @@ fn training(z: &[Cplx], slots: &[SlotHead], f: usize, layout: &[Slot]) -> Vec<(u
 }
 
 /// Solve the normal equations (Hermitian, `TAPS`²) by Gaussian
-/// elimination with partial pivoting.
-fn solve(mut a: Vec<Vec<Cplx>>, mut b: Vec<Cplx>) -> Option<Vec<Cplx>> {
+/// elimination with partial pivoting; `None` if a pivot is below 10⁻¹²
+/// (singular). Also the host side of the fixed-point chain's equaliser
+/// (`chain::eq::solve_sums`), on its integer sums.
+pub fn solve(mut a: Vec<Vec<Cplx>>, mut b: Vec<Cplx>) -> Option<Vec<Cplx>> {
     let n = b.len();
     for c in 0..n {
         let p = (c..n).max_by(|&x, &y| a[x][c].norm().total_cmp(&a[y][c].norm()))?;

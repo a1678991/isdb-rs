@@ -105,18 +105,27 @@ pub fn ldpc_word<T: Copy>(llr: &[T], known: T) -> Vec<T> {
 /// If `llr` does not hold [`isdbs3_core::params::TMCC_SIGNAL_BITS`] values.
 pub fn decode(llr: &[f32], max_iter: usize) -> Result<Decoded, Error> {
     let code = isdbs3_core::ldpc::code(CodeRate::TMCC);
-    // known zeros as strong LLRs
-    let mut w = ldpc_word(llr, 1.0e4);
+    // rebuild the shortened word: known zeros as strong LLRs
+    const KNOWN: f32 = 1.0e4;
+    let mut w = ldpc_word(llr, KNOWN);
     let mut bits = Vec::new();
     let d = code.decode(&mut w, &mut bits, max_iter, 0.8)?;
-    let mut data = bits[NULL_HEAD..NULL_HEAD + DATA_BITS].to_vec();
-    disperse(&mut data);
-    let corrected = isdb_fec::bch::decode(&mut data).map_err(|_| Error::Bch)?;
+    let (data, corrected) = finish(&bits).map_err(|_| Error::Bch)?;
     Ok(Decoded {
         info: TmccInfo::parse(&data[..TMCC_INFO_BITS]),
         ldpc_iterations: d.iterations,
         bch_corrected: corrected,
     })
+}
+
+/// The 9 614 data bits of a decoded shortened word's hard decisions
+/// `bits` (44 880), dispersal removed (§3.6 (2)) and BCH-corrected
+/// (§3.4 (1)), with the number of bits corrected.
+pub fn finish(bits: &[u8]) -> Result<(Vec<u8>, usize), isdb_fec::bch::Uncorrectable> {
+    let mut data = bits[NULL_HEAD..NULL_HEAD + DATA_BITS].to_vec();
+    disperse(&mut data);
+    let corrected = isdb_fec::bch::decode(&mut data)?;
+    Ok((data, corrected))
 }
 
 #[cfg(test)]

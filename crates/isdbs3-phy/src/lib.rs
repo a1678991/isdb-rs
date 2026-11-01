@@ -5,6 +5,7 @@
 //!
 //! | Module | Contents |
 //! |---|---|
+//! | [`chain`] | the streaming fixed-point model of the chain for the FPGA (sync, carrier loop, slot phase, equaliser, TMCC, demapper, BCH) |
 //! | [`frontend`] | IQ → symbols through `isdb-frontend` with the ISDB-S3 design and trim |
 //! | [`eq`] | least-squares symbol-spaced equaliser trained on each frame's sync and pilot symbols |
 //! | [`sync`] | slot heads, frame heads, carrier phase per slot from the sync words |
@@ -16,6 +17,7 @@
 // printing (docs/plans/errors-and-logging.md section 2.1).
 #![warn(clippy::print_stdout, clippy::print_stderr)]
 
+pub mod chain;
 pub mod eq;
 pub mod frontend;
 pub mod main_signal;

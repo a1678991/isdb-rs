@@ -215,7 +215,7 @@ pub fn codeword_llrs(ms: &[Cplx], s: &Slot, pts: &[Cplx], n0: f64) -> Vec<f32> {
 
 /// A decoded codeword: slot index, LDPC iterations (`None`: not
 /// converged) and the hard bits.
-type Decoded = (usize, Option<usize>, Vec<u8>);
+pub(crate) type Decoded = (usize, Option<usize>, Vec<u8>);
 
 /// One frame's input to [`decode_frames`].
 pub struct FrameInput<'a> {
@@ -382,8 +382,8 @@ pub fn decode_frames(frames: &[FrameInput<'_>], ldpc: &Ldpc) -> Vec<Vec<SlotData
 }
 
 /// Dispersal removal (in slot order) and BCH of one frame's decoded
-/// codewords, sorted by slot.
-fn finish_frame(decoded: Vec<Decoded>, layout: &[Slot]) -> Vec<SlotData> {
+/// codewords, sorted by slot (also stage 8 of the fixed-point chain).
+pub(crate) fn finish_frame(decoded: Vec<Decoded>, layout: &[Slot]) -> Vec<SlotData> {
     let mut disp = SlotDispersal::new();
     decoded
         .into_iter()
