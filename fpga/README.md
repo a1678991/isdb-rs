@@ -418,6 +418,17 @@ host does not do that yet. With symbols
 selected, the host enables only `voltage0` of `cf-ad9361-lpc` and reads
 16-bit words (`isdb_radio::Backend::capture_symbols`, `isdb symbols`).
 
+The ISDB-S3 receive chain after the front end (docs/plans/isdbs3-fpga-rx.md)
+is found the same way: the host reads bits 11–8 of the ID word, 0 on
+every front end so far, as the chain's `Slots` format version, and
+drives it through the same command words, CTRL bit 3 (with bit 2)
+selecting its `Slots` words for the DMA. The registers the host uses
+(0x400–0x6FF: version, features, carrier, layout lag, start values,
+taps, training sums, counters) are placeholders in
+`isdb_frontend::control::chain` until the chain's HDL fixes them; the
+HDL should take that file's map or change it there (the plan's "Host
+side" lists it).
+
 A dedicated IIO device per output boundary, with its format version as
 an attribute (the plan's longer-term form), would need a device-tree
 node and a driver. The GPIO route needs neither.

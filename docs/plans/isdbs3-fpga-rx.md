@@ -338,18 +338,82 @@ RGMII input whatever we add; the blocks' own clocks had > 0.8 ns.
 
 ### Host side
 
-- `isdb-radio`: `Offload::RxSlots` discovered from the ID word's
-  feature bits; `capture_slots` as `capture_symbols` (the same 16-bit
-  DMA path, `voltage0` only); the control sequence: taps and
-  constellation registers at open, the equaliser's slow loop (read sums,
-  solve, write taps) on a timer thread.
-- `isdb-cli`: `isdb rx --system isdbs3 --offload auto` prefers the slots
-  path; `--slots FILE`; `isdb slots --radio … --out FILE` records the
-  stream (as `isdb symbols` does); the JSON summary gains the FPGA's
-  counters. The chain's CPU model behind `isdb rx --symbols --chain
-  fixed` decodes a `Symbols` recording through the same stages (the
-  bench version of bit-exactness, as `isdb iq symbols` is for the front
-  end), and writes the vectors.
+As built (piece 5, 2026-11-02; nothing run on hardware: no image has the
+chain yet):
+
+- **Discovery.** Bits 11–8 of the front end's ID word (0 on every front
+  end so far) carry the chain's `Slots` format version
+  (`isdb_frontend::control::chain::slots_version`):
+  `isdb_radio::Offload::from_rx_id` gives `Offload::Symbols` and, with a
+  version there, `Offload::RxSlots { version, taps, slots_version }`. The
+  Pluto's `offloads` is still the one `gpio_in` read.
+- **Registers** (`isdb_frontend::control::chain`, one file; **every
+  address is a placeholder** for pieces 4 and 6 to fix): the chain sits
+  in the front end's command address space at 0x400–0x6FF.
+
+  | Address | Register | Host |
+  |---|---|---|
+  | 0x400 | VERSION (ro): `Slots` format version | checked at open |
+  | 0x401 | FEATURES (ro): bit 0 TAPS (host may write taps), 1 SUMS (training sums readable), 2 CONSTELLATION, 3 N0 (may load at START); bits 15–8 LDPC iteration limit, 27–16 LDPC step | gates the open and the slow loop |
+  | 0x402 | CARRIER: initial value before START; reads the register in use (2⁻³² turn / symbol, signed) | written at open (0), read each slow-loop tick (informational) |
+  | 0x403 | LAYOUT_LAG (1 or 2) | written at open (2) |
+  | 0x404 | INIT: bit 0 taps, 1 constellation, 2 n0: what START loads from the host | written at open |
+  | 0x405 | STATUS (ro): bit 0 locked, 1 framed, 2 decoding | read each tick (logged) |
+  | 0x406 / 0x407 | FRAME / SEQ (ro): last frame counter, next block sequence | — |
+  | 0x408 | N0 (Q.20): initial value; reads n0 in force | written at open when the host has one |
+  | 0x409 / 0x40A | LLR_SCALE / LEARNED_FROM (ro) | — |
+  | 0x40B | CONST_MASK: modulations whose CONST points are loaded | written with the points |
+  | 0x410 + k | TAPS, k < 11, re \| im << 16 (Q2.14): the next taps; reads the taps in use | slow loop, and at open with INIT bit 0 |
+  | 0x41B | TAPS_FROM: written after TAPS, commits them (loaded at the next frame start); reads the frame the taps in use came from (`0xFFFF_FFFF`: none) | slow loop |
+  | 0x420 / 0x421 | SUMS_FRAME / SUMS_COUNT (ro): the latched training sums' frame (`0xFFFF_FFFF`: none) and symbols | slow loop |
+  | 0x430 … 0x437 | COUNTERS (ro): frames, undecoded, TMCC failed, slots, LDPC failed, BCH failed, iterations low, high | read at the end of a capture |
+  | 0x500 + 4i | SUMS_R, i < 66: re low 32, re high 16 sign-extended, im low, im high | slow loop (264 reads) |
+  | 0x610 + 4i | SUMS_P, i < 11, likewise | slow loop (44 reads) |
+  | 0x640 + 32m + t | CONST: point t of modulation m (π/2-BPSK … 32APSK), re \| im << 16 (Q.10); reads the points in force | at open when the host has them |
+
+  CTRL bit 3 (`control::ctrl::SLOTS`, with SYMBOLS) sends the chain's
+  `Slots` words to the DMA instead of the symbols; the front end's
+  STATUS then reads bit 2 (`chain::STATUS_SLOTS`) as well.
+- **`isdb-radio`** (`isdb_radio::chain`, device-neutral over a
+  `RegisterAccess` trait; tested against a model of the command decoding
+  and these registers): **open** = CTRL 0; VERSION and FEATURES read
+  (another `Slots` format is `RadioError::Chain`); the front end's
+  configuration as for symbols with KP read back; CARRIER and
+  LAYOUT_LAG; the host's taps / constellation / n0 when it has them and
+  FEATURES allows (`ChainInit`; the CLI passes none, so the chain starts
+  on identity taps, the nominal points and the default n0, and what an
+  image refuses is warned); INIT; CTRL START, then RUN | SYMBOLS | SLOTS;
+  STATUS must read run, symbols and slots; a failed step sends CTRL 0.
+  **Slow loop** (`SlowLoop`, `spawn_slow_loop`): a timer thread with its
+  own libiio context (the stream's context stays on the capture thread)
+  polls every 200 ms until the first solve, then every 2 s: SUMS_FRAME,
+  SUMS_COUNT, CARRIER, TAPS_FROM and STATUS; for a frame not yet
+  solved, the 308 sum registers, SUMS_FRAME again (a moved latch is a
+  torn read, retried at the next poll), `isdbs3_phy::chain::eq::
+  solve_training` (the model's `f64` solve and Q2.14 rounding), the 11
+  taps, TAPS_FROM. A failed access ends the loop (warned, the taps in use
+  stay). **`Backend::capture_slots`** (the Pluto's): the same `voltage0`
+  16-bit DMA path as `capture_symbols`; at the end the counters and CTRL
+  0. The carrier register is read and reported only: the FPGA tracks
+  the carrier itself, the host's front-end NCO stays at the
+  acquisition's offset.
+- **`isdb-cli`** (`slotrx.rs`): one `Consumer` takes `Slots` reader
+  events to today's TLV assemblers and outputs (`rxs3::push_slot`): slot
+  blocks of a frame are assembled once its tmcc (or status) block
+  arrives, the stream ids from the TMCC whose `applies_from` covers the
+  frame; the assemblers close at a loss and wherever the decoded frames
+  are not consecutive. Three callers: `isdb rx --slots FILE` (a recorded
+  words file, `system` ISDB-S3 implied); `isdb rx --symbols FILE --chain
+  fixed [--slots-out FILE]` (the model in process, its frames through
+  `Writer` and `Reader`); `isdb rx --radio … --system isdbs3 --offload
+  auto|fpga [--slots-out FILE]` (`auto` prefers slots over symbols over
+  the CPU; `fpga` needs the front end and takes slots when offered).
+  The JSON summary gains `decoded_by` and `chain`: the block counts,
+  losses, undecoded and missing frames, discontinuities, the carrier
+  register and its range, and the last status block (n0 and MER, taps
+  and `taps_from`, sync statistics, the chain's counters), plus the
+  radio's open / slow-loop / counters. Not built: `isdb slots --radio
+  --out` (recording is `isdb rx … --slots-out` instead).
 
 ### Verification ladder
 
@@ -417,7 +481,10 @@ RGMII input whatever we add; the blocks' own clocks had > 0.8 ns.
    end's control and packer; Yosys estimates against the budget.
 5. **Host path** (`isdb-radio`, `isdb-cli`): the slots offload, the slow
    loops, the CLI, the JSON, docs (receiving.md, fpga/README.md,
-   isdb-frontend README).
+   isdb-frontend README). **Status: built and tested off the board
+   (2026-11-02, "Host side" above and the results below), with the
+   chain's register map as placeholders; `isdb rx --symbols --chain
+   fixed` done.**
 6. **Image**: `apply.sh` mode `isdbs3-rx` (receive only), build, timing,
    deploy on a card copy, the board checks of the ladder's step 4,
    VERIFICATION.md.
@@ -567,6 +634,10 @@ vectors written under the first rule.
   Python decoder).
 - `fpga/tezuka/utilization.tcl`: whole-design utilisation by hierarchy
   of a routed checkpoint (the table under "Capacity").
+- `tools/slots-vs-symbols.sh` (piece 5): `isdb rx --symbols` against
+  `--symbols --chain fixed --slots-out` and `--slots` of the words
+  written, then `tools/tlv-packet-diff.py` (TLV packets of two runs
+  aligned per stream id, the differing runs located).
 - The measurements above are reproducible with the existing
   `isdbs3-phy` examples `streamprof` and `rxparts` under `taskset`, and
   `isdb rx --symbols` under `/usr/bin/time -v`.
@@ -620,3 +691,49 @@ reference, not a host fast path. Vectors: `chain-{1-sync,2-phase,3-eq,
 
 Left: `isdb rx --symbols FILE --chain fixed` (the CLI path; `chaincheck`
 does the comparison meanwhile); the model's speed; the HDL (piece 4).
+
+### Piece 5: the host path against the host receiver (2026-11-02)
+
+`tools/slots-vs-symbols.sh ~/isdb-captures/2026-10-26-fpga/bs7-fpga-40s-drift.sym`
+(release build, this host, 32 threads):
+
+| Run | Decoded by | Frames | Slots | LDPC / BCH failed | Mean iterations | TLV packets B070 / B071 / B072 | Wall | User CPU | Max RSS |
+|---|---|---|---|---|---|---|---|---|---|
+| A `--symbols` | host receiver | 1 207 | 115 872 | 0 / 0 | 2.081 | 121 919 / 121 101 / 115 301 | 34.5 s | 380.6 s | 3.9 GB |
+| B `--symbols --chain fixed --slots-out` | the chain's CPU model, through `Slots` | 1 207 (6 undecoded) | 115 296 | 0 / 0 | 2.095 | 121 330 / 120 490 / 114 708 | 208.8 s | 225.2 s | 62 MB |
+| C `--slots` (B's words, 504 MB) | recorded `Slots` words | 1 207 (6 undecoded) | 115 296 | 0 / 0 | 2.095 | 121 330 / 120 490 / 114 708 | 3.2 s | 3.2 s | 41 MB |
+
+`tools/tlv-packet-diff.py`, per stream id (packets aligned on their bytes):
+
+- **A against B: every packet of B is a packet of A at the same place**
+  (121 330 + 120 490 + 114 708 equal, 0 packets only in B, 0 replaced).
+  A has 589 / 611 / 593 more, in **3 runs per stream, each exactly
+  275 264 bytes**, at 0 %, 25.4 % and 50.8 % of the stream: the start,
+  and the two losses in the recording's `Symbols` words (86 and 32
+  blocks missing at 10.16 s and 20.36 s), where the model restarts. 275
+  264 bytes = 2 frames × 32 slots of the stream × 4 301 data bytes of
+  93/120: the 2 frames the chain does not decode after each (re)start
+  (layout lag 2; 6 frames, 576 slots = 115 872 − 115 296). Both sides
+  are discontinuous at the two losses; B's TLV assemblers restart 2
+  frames later than A's, and resynchronise on the next head-TLV
+  indication with nothing in between differing. **All differences are
+  the chain's undecoded frames.**
+- **B against C: identical** (every packet, every byte): the `Slots`
+  words of the model as written and read back from the file give the
+  same TLV streams as the in-process path, so `--slots` (and a radio's
+  chain through the same consumer) decodes what the model decodes.
+
+The model's 1 207 frames are numbered 0 … 1 209 (3 numbers skipped at
+the two restarts: the frames the losses cut); its carrier register
+followed −38 … −1 006 Hz and ended at −758 Hz (the host receiver's
+tracked drift −0 … −989 Hz, −767 Hz at the end); n0 at the end 35 583
+(MER 14.69 dB; the host's mean main MER 14.6 dB); taps solved every 30
+frames, the last from frame 1 202.
+
+**Host CPU.** C is what a host does behind the FPGA's chain: **3.2 s of
+CPU for 40 s of signal, 0.08 cores** (Slots parsing, CRC, TLV assembly,
+the per-stream statistics and the file writes), against 380 s (9.5
+cores) for A. B's 4.96 s per second of signal is the CPU model of the
+FPGA's arithmetic (one thread for stages 1–6 and 8, the LDPC on all
+cores), a bench check and not a way to receive. The host side has not
+run against a radio: no image has the chain (pieces 4 and 6).

@@ -106,8 +106,11 @@ isdb rx --symbols bs3.sym --out 'bs3-{ts_id}.ts'             # an FPGA words fil
 | `--rate SPS` / `--bw HZ` | 40M / 56M | radio sample rate and analog bandwidth (≥ 1.35 × 28.86 Mbaud; a narrower filter costs MER) |
 | `--block-seconds S` | the radio's longest single capture | radio: seconds per contiguous capture |
 | `--carrier-offset HZ` | from the survey | carrier offset of the signal |
-| `--offload auto\|fpga\|cpu` | auto | radio: the radio's FPGA symbol front end when it offers one (continuous reception), else contiguous IQ captures with the CPU front end; `fpga` fails without one, `cpu` forces the captures |
+| `--offload auto\|fpga\|cpu` | auto | radio: the most the radio's FPGA offers, continuously: for ISDB-S3 its whole receive chain (`Slots`) when the image has one, else its symbol front end; otherwise contiguous IQ captures with the CPU front end. `fpga` fails without at least the front end, `cpu` forces the captures |
 | `--symbols FILE` | — | decode a `Symbols` words file (`isdb symbols --out`) as one continuous stream; the system comes from its `.json` sidecar |
+| `--chain host\|fixed` | host | ISDB-S3 with `--symbols`: the host receiver, or the FPGA receive chain's fixed-point model through its `Slots` output (slow; below) |
+| `--slots FILE` | — | ISDB-S3: decode a `Slots` words file (the FPGA receive chain's output, `--slots-out`) |
+| `--slots-out FILE` | — | ISDB-S3: record the `Slots` words of a radio's receive chain or of `--chain fixed` (and `FILE.json`) |
 | `--ldpc fixed\|scalar\|float` | fixed | ISDB-S3 LDPC decoder: fixed-point with 16 SIMD lanes; the same one codeword at a time (its bit-exact reference); the floating-point reference |
 | `--json` | — | summary with per-TS counters (packets, RS clean / corrected / uncorrectable) and the stage times |
 
@@ -218,6 +221,9 @@ isdb rx --iq bs11.sigmf-meta --ts-id 0xb0b0 --out b0b0.tlv     # one stream
 isdb rx --radio pluto --channel BS7 \
         --system isdbs3 --seconds 30 --out 'bs7-{tlv_id}.tlv'  # continuous, FPGA front end
 isdb rx --symbols bs7.sym --out 'bs7-{tlv_id}.tlv'             # an FPGA words file
+isdb rx --symbols bs7.sym --chain fixed \
+        --slots-out bs7.slots --out 'bs7-{tlv_id}.tlv'          # the FPGA chain's model (slow)
+isdb rx --slots bs7.slots --out 'bs7-{tlv_id}.tlv'             # a Slots words file
 isdb iq s3tmcc bs7-61-bw56.sigmf-meta                           # the TMCC of every frame
 isdb tlv inspect bs7-b070.tlv                                   # what a TLV stream carries
 ```
@@ -228,6 +234,53 @@ layer outputs do not apply. `auto` cannot tell ISDB-S3 from ISDB-S on a
 BSn channel from a radio before capturing, so give `--system isdbs3`
 there. Record ISDB-S3 with the full 56 MHz analog bandwidth: the
 default 0.8 × rate filter cuts into the 34.8 MHz band.
+
+**The receive chain in the FPGA (`Slots`).** An image whose FPGA runs
+the whole ISDB-S3 receiver after the symbol front end (slot and frame
+sync, carrier loop, equaliser, TMCC, demapper, LDPC, BCH:
+docs/plans/isdbs3-fpga-rx.md) sends decoded slots instead of symbols:
+the `Slots` words of `isdb_frontend::slots` (a block per slot with its
+header and data bits, one per frame for the TMCC and one for the chain's
+status), about 12 MB/s for 16APSK 93/120 instead of 51 MB/s of symbols.
+The host then only assembles the TLV packets and writes them: the
+host receiver's demapper, equaliser and LDPC (about 10 cores busy for
+real time on a 16-core desktop, plan "Measured") are not run at all.
+Decoding 40 s of recorded `Slots` words of BS7 took 3.2 s of one core
+(0.08 cores), against 380 s of CPU for the same 40 s from `Symbols`.
+With `--offload auto` (default) `isdb rx --radio … --system isdbs3`
+uses the chain when the radio's ID word announces it, else the symbol
+front end, else the CPU; `--offload fpga` needs at least the front end
+and takes the chain when offered. On open the host configures the front
+end as for symbols and starts the chain on identity equaliser taps, the
+nominal constellation and a default noise estimate; a thread then reads
+the chain's equaliser training sums every 2 s, solves them on the host
+(the 11 taps, as the CPU model does) and writes the taps back. The
+chain tracks the carrier itself; the summary reports its carrier
+register. `--slots-out FILE` records the words (with `FILE.json`), and
+`--slots FILE` decodes such a recording.
+
+No image has the chain yet (its HDL is in progress); the host side is
+tested against a model of the registers, and against the chain's
+fixed-point CPU model: `--symbols FILE --chain fixed` runs that model
+over a `Symbols` recording and decodes its output through the same
+`Slots` words, bit for bit what the FPGA is to send. It is slow (about
+5 s per second of signal on one thread, plus the LDPC on all cores:
+a bench check, not a way to receive). Its first two frames after each
+start or restart are not decoded (the TMCC of frame N gives the layout
+of frame N + 2), so its TLV streams start about 66 ms later than the
+host receiver's; otherwise they are the same packets
+(`tools/slots-vs-symbols.sh`; the plan's results for piece 5).
+
+**Which receiver ran** is the summary's `[rx] done: ISDB-S3 (decoded by
+the …)` (`decoded_by` in `--json`): `host receiver`, `FPGA receive
+chain (Slots)`, `recorded Slots words` or `CPU model of the FPGA chain`.
+With the chain the summary adds `[rx] slots: …` (blocks, losses in the
+words), `[rx] chain: …` (frames without a layout, gaps in the chain's
+frame counter, discontinuities) and `[rx] chain status at frame …`
+(carrier register, n0 and MER, the taps in use and the frame they were
+solved from, the slot sync, the chain's own counters); `--json` has
+them under `chain`, with the radio's open, slow-loop and counter
+read-back under `chain.radio`.
 
 `isdb tlv` reads a TLV stream file a chunk at a time:
 

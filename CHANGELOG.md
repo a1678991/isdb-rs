@@ -17,6 +17,17 @@ STD-B44) is received to TLV streams.
 
 ### Added
 
+- ISDB-S3 reception from the FPGA receive chain's `Slots` words
+  (docs/plans/isdbs3-fpga-rx.md piece 5, host side; no image has the
+  chain yet): `isdb rx --slots FILE`, `isdb rx --symbols FILE --chain
+  fixed` (the chain's fixed-point CPU model through the same words, the
+  bench check), `--slots-out FILE`, and `--offload auto|fpga` taking the
+  chain when the radio's ID word announces it; `decoded_by` and `chain`
+  in `--json`. `isdb_radio::Offload::RxSlots`, `Backend::capture_slots`
+  and `isdb_radio::chain` (the open sequence and the equaliser's slow
+  loop); `isdb_frontend::control::chain`, the host's register map of the
+  chain (placeholder addresses). Tools: `tools/slots-vs-symbols.sh`,
+  `tools/tlv-packet-diff.py`.
 - Tools: `tools/isdbs-bench-check.sh --receiver dt295|exact` (default
   `dt295`) and `--receiver-drops PIDS` (the profile's `0x0001`; `""` for
   none): the PIX-DT295's raw output drops the CAT without a null (its PID
