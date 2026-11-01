@@ -16,6 +16,7 @@
 //! | [`timing`] | the MPT clock as 90 kHz PTS/DTS |
 //! | [`ts`] | the recorder: pictures at their AU boundaries, loss handling, the MPEG-TS writer, caption alignment |
 //! | [`mkv`] | the recorder's Matroska form (`isdb-mkv`) |
+//! | [`output`] | stdout or a file, never binary onto a terminal unless forced (`-o -`) |
 //! | [`progress`] | the progress line on stderr |
 //!
 //! [`Remux::run`] walks the TLV packets: control messages feed
@@ -23,6 +24,7 @@
 //! recorded assets the [`reassemble::Reassembler`].
 
 pub mod mkv;
+pub mod output;
 pub mod progress;
 pub mod reassemble;
 pub mod signal;

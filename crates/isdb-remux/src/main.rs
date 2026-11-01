@@ -7,10 +7,12 @@
 //! isdb-remux -i dec.tlv --ts -o out.ts              # + out.ja.srt / .vtt
 //! DESCRAMBLER < rec.tlv | isdb-remux --ts > out.ts  # straight from a descrambler
 //! ```
+//!
+//! The TS goes to stdout when no `-o` is given, but not onto a terminal
+//! (refused, as curl does); `-o -` writes it to stdout anyway.
 
 use clap::Parser;
-use isdb_remux::{Remux, mkv::Mkv, ts::Session};
-use std::io::Write;
+use isdb_remux::{Remux, mkv::Mkv, output, ts::Session};
 use std::path::PathBuf;
 
 /// A `0x…` or decimal u16.
@@ -30,7 +32,8 @@ struct Args {
     /// output of a cardholder's descrambler.
     #[arg(short = 'i', long)]
     input: Option<PathBuf>,
-    /// The output file (stdout when none, `--ts` only).
+    /// The output file. `--ts` without it goes to stdout, unless stdout
+    /// is a terminal (refused; `-o -` writes there anyway).
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
     /// An MPEG-TS: the video, every audio, the data assets as private
@@ -77,24 +80,22 @@ fn main() -> anyhow::Result<()> {
         .compact()
         .with_writer(std::io::stderr)
         .init();
-    let out_name = a
-        .output
-        .as_ref()
-        .map_or_else(|| "stdout".to_owned(), |p| p.display().to_string());
+    let to_stdout = output::is_stdout(a.output.as_deref());
+    let out_name = match &a.output {
+        Some(p) if !to_stdout => p.display().to_string(),
+        _ => "stdout".to_owned(),
+    };
     let session = if a.mkv {
         let path = a.output.as_ref().expect("clap: --mkv requires -o");
+        if to_stdout {
+            anyhow::bail!("--mkv writes a file it seeks back into: give -o FILE, not -o -");
+        }
         let app = concat!("isdb-remux ", env!("CARGO_PKG_VERSION"));
         let mkv = Mkv::create(path, app)
             .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", path.display()))?;
         Session::new(Box::new(std::io::sink()), a.service)?.with_mkv(mkv)
     } else {
-        let out: Box<dyn Write + Send> = match &a.output {
-            Some(p) => Box::new(std::io::BufWriter::new(
-                std::fs::File::create(p)
-                    .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", p.display()))?,
-            )),
-            None => Box::new(std::io::BufWriter::new(std::io::stdout())),
-        };
+        let out = output::open(a.output.as_deref(), "the MPEG-TS")?;
         Session::new(out, a.service)?
     };
     let (raw, total): (Box<dyn std::io::Read>, Option<u64>) = match &a.input {
@@ -211,8 +212,8 @@ fn write_captions(
                 .map_or_else(|| "captions".into(), |s| s.to_os_string());
             dir.join(stem)
         }
-        (None, Some(out)) => out.with_extension(""),
-        (None, None) => {
+        (None, Some(out)) if !output::is_stdout(Some(out)) => out.with_extension(""),
+        (None, _) => {
             return Ok(if tracks.iter().any(|t| !t.cues.is_empty()) {
                 vec!["captions: not written (the TS goes to stdout; give --captions DIR)".into()]
             } else {

@@ -23,6 +23,12 @@ isdb-remux -i dec.tlv --service 0x0097 --ts -o out.ts  # + out.ja.srt / .vtt
 DESCRAMBLER < rec.tlv | isdb-remux --ts > out.ts      # straight from a descrambler
 ```
 
+The TS goes to stdout when no `-o` is given, but never onto an
+interactive terminal: as curl does, `isdb-remux` refuses, naming the ways
+out (`-o FILE`, a redirect or pipe); `-o -` writes it to stdout anyway.
+`--mkv` needs a real file (`-o -` is refused: it seeks back into it).
+Progress and the report always go to stderr.
+
 Options: `--service` (default: the first service whose MPT arrives),
 `--captions DIR` (where `--ts`'s `.srt` / `.vtt` go; needed for a TS to
 stdout), `-v` logs verbosely, `-q` reports only errors.
