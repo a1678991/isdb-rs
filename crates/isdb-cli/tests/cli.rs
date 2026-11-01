@@ -1,86 +1,27 @@
 //! End-to-end tests of the `isdb` binary: `tx --iq` → `rx --iq` must
-//! reproduce the input packets of every layer byte-exact, including a live
-//! feed that stalls (null padding must keep the output constant-bit-rate),
-//! and `loopback` must PASS through an impaired channel.
+//! reproduce the input packets of every layer byte-exact, and `loopback`
+//! must PASS through an impaired channel. (The live feed that stalls is in
+//! `live_feed.rs`.)
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-const ISDB: &str = env!("CARGO_BIN_EXE_isdb");
-/// Mode 3, GI 1/8: 8192·(1 + 1/8)·204 samples per OFDM frame.
-const SAMPLES_PER_FRAME: u64 = 1_880_064;
-const FRAME_S: f64 = SAMPLES_PER_FRAME as f64 * 63.0 / 512e6;
+mod common;
 
-fn tmp(name: &str) -> PathBuf {
-    let d = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("isdb-cli-{}-{name}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
-/// Distinct TS packet `n` of `pid` with a running continuity counter.
-fn packet(pid: u16, n: u32) -> [u8; 188] {
-    let mut p = [0u8; 188];
-    p[0] = 0x47;
-    p[1..3].copy_from_slice(&pid.to_be_bytes());
-    p[3] = 0x10 | (n & 15) as u8;
-    p[4..8].copy_from_slice(&n.to_be_bytes());
-    let mut x = (u64::from(n) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ u64::from(pid);
-    for b in &mut p[8..] {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        *b = x.to_le_bytes()[4]; // bits 39..32
-    }
-    p
-}
-
-fn packets(pid: u16, range: std::ops::Range<u32>) -> Vec<u8> {
-    range.flat_map(|n| packet(pid, n)).collect()
-}
-
-fn run(args: &[&str]) -> Output {
-    let o = Command::new(ISDB).args(args).output().expect("run isdb");
-    eprintln!(
-        "$ isdb {}\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&o.stderr)
-    );
-    o
-}
-
-fn s(p: &Path) -> &str {
-    p.to_str().unwrap()
-}
+use common::{SAMPLES_PER_FRAME, assert_same, packet, packets, run, s, tmp};
 
 /// The ISDB-S receive tests each run the front end's trim search (11
-/// front ends on threads) and the decoder on every core; the live-feed
-/// test needs the producer at real time. They take turns, so that the
-/// one does not starve the other.
+/// front ends on threads) and the decoder on every core; they take turns so
+/// that a test running beside them is not starved for minutes. (The one
+/// test that needs a real-time producer, the live feed, is a test binary of
+/// its own, `tests/live_feed.rs`: cargo runs test binaries one at a time.)
 static CPU_HEAVY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn cpu_heavy() -> std::sync::MutexGuard<'static, ()> {
     CPU_HEAVY
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn assert_same(got: &Path, want: &[u8], what: &str) {
-    let g = std::fs::read(got).unwrap();
-    assert_eq!(
-        g.len(),
-        want.len(),
-        "{what}: {} vs {} bytes",
-        g.len(),
-        want.len()
-    );
-    let first = g
-        .chunks(188)
-        .zip(want.chunks(188))
-        .position(|(a, b)| a != b);
-    assert!(first.is_none(), "{what}: first differing packet {first:?}");
 }
 
 #[test]
@@ -383,90 +324,6 @@ fn mux_ts_producer_throughput() {
         "mux_ts_producer_throughput: {seconds} s on air in {wall:.2} s = {speed:.2}× real time"
     );
     assert!(speed >= 2.0, "producer {speed:.2}× real time (< 2×)");
-    std::fs::remove_dir_all(&d).unwrap();
-}
-
-#[test]
-fn live_feed_with_stalling_input_stays_cbr_and_lossless() {
-    let _turn = cpu_heavy();
-    let d = tmp("live");
-    let iq = d.join("x.cs8");
-    let mut child = Command::new(ISDB)
-        .args([
-            "tx",
-            "--b-ts",
-            "-",
-            "--feed",
-            "live",
-            "--iq",
-            s(&iq),
-            "--iq-format",
-            "cs8",
-            "--status-secs",
-            "0.5",
-        ])
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let t0 = Instant::now();
-    // 3000 packets, a 1.5 s stall (≈ 6.5 frames with no input), 3000 more.
-    stdin.write_all(&packets(0x0111, 0..3000)).unwrap();
-    std::thread::sleep(Duration::from_millis(1500));
-    stdin.write_all(&packets(0x0111, 3000..6000)).unwrap();
-    drop(stdin);
-    let o = child.wait_with_output().unwrap();
-    let wall = t0.elapsed().as_secs_f64();
-    let err = String::from_utf8_lossy(&o.stderr);
-    eprintln!("{err}");
-    assert!(o.status.success());
-
-    // Constant bit rate: a whole number of frames, paced to real time, and
-    // the stall was filled with frames (not skipped).
-    let len = std::fs::metadata(&iq).unwrap().len();
-    assert_eq!(len % (SAMPLES_PER_FRAME * 2), 0);
-    let frames = len / (SAMPLES_PER_FRAME * 2);
-    let air = frames as f64 * FRAME_S;
-    // A skipped stall would leave only the data's ≈ 1.07 s; half the stall
-    // on top of that proves it was filled, with room for a producer slowed
-    // by the rest of the test suite running on every core (the full stall
-    // was missed by one frame there, plan §0.5).
-    assert!(
-        air >= 0.75 + 2.0 * 6000.0 / 2592.0 * FRAME_S,
-        "{frames} frames for a 1.5 s stall"
-    );
-    assert!(
-        (air - wall).abs() < 1.0,
-        "air time {air:.2} s vs wall {wall:.2} s"
-    );
-    // Null fill reported periodically and in the summary.
-    assert!(
-        err.matches("null fill").count() >= 2,
-        "periodic null-fill status"
-    );
-    let fill: f64 = err
-        .lines()
-        .find(|l| l.contains("layer B:") && l.contains("null fill"))
-        .and_then(|l| l.split('(').nth(1))
-        .and_then(|t| t.split('%').next())
-        .map(|t| t.trim().parse().unwrap())
-        .expect("summary line");
-    assert!(fill > 30.0, "null fill {fill}%");
-
-    // Every input packet arrives, in order, with only nulls in between.
-    let o = run(&[
-        "rx",
-        "--iq",
-        s(&iq),
-        "--iq-format",
-        "cs8",
-        "--b-out",
-        s(&d.join("rb.ts")),
-        "--strip-nulls",
-    ]);
-    assert!(o.status.success());
-    assert_same(&d.join("rb.ts"), &packets(0x0111, 0..6000), "layer B");
     std::fs::remove_dir_all(&d).unwrap();
 }
 
@@ -1188,7 +1045,7 @@ fn tx_symbols_loopback_on_a_pluto() {
         "40",
     ];
     eprintln!("$ isdb {}", tx_args.join(" "));
-    let mut tx = Command::new(ISDB)
+    let mut tx = Command::new(common::ISDB)
         .args(tx_args)
         .stderr(Stdio::piped())
         .spawn()
@@ -1208,7 +1065,7 @@ fn tx_symbols_loopback_on_a_pluto() {
     });
     let t = Instant::now();
     loop {
-        match lines_rx.recv_timeout(Duration::from_secs(60)) {
+        match lines_rx.recv_timeout(std::time::Duration::from_secs(60)) {
             Ok(l) if l.contains("FPGA transmit block running") => break,
             Ok(_) => {}
             Err(_) => {
