@@ -63,7 +63,7 @@ pub fn au_times(t: &AssetTiming, mpu: u32, index: usize) -> Option<(u64, u64)> {
 }
 
 /// The number of access units of `mpu` (its row's, or the nearest row's
-/// within [`MAX_EXTRAPOLATION`]).
+/// within 64 MPUs on the sequence-number ring).
 #[must_use]
 pub fn au_count(t: &AssetTiming, mpu: u32) -> Option<usize> {
     Some(nearest(&t.rows, mpu)?.1.access_units.len())
