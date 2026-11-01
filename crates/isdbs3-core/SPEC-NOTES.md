@@ -167,3 +167,27 @@ VERIFICATION.md "ISDB-S3 receiver").
   2.87 for 93/120 (transponder compression). Demapping against the
   learned points raises the main-signal MER by 0.7 dB with every codeword
   still decoding. Status: confirmed (live data) for 16APSK.
+
+## tmcc-timing: which frame a TMCC describes
+- Spec: B44 §3.11, first paragraph: in case of a change of the
+  transmission scheme the TMCC "transmits the switching information two
+  frames prior to actual switching", and its minimum update interval is
+  one frame. §3.11 (1): the order of change is incremented on every
+  change of the contents (pointers excepted).
+- Interpretation: a TMCC whose contents change at frame N announces a
+  layout that the main signal follows from frame N + 2; the TMCC of
+  frame N therefore describes frame N + 2, and frames N and N + 1 are
+  still sent with the previous layout. The fixed-point chain for the
+  FPGA (`isdbs3_phy::chain`, `ChainOptions::layout_lag`, default 2) uses
+  the layout decoded from frame N's TMCC for frame N + 2; the first two
+  frames after a (re)start are not decoded. Lag 1 (frame N's TMCC for
+  frame N + 1) is selectable; the floating-point receiver
+  (`isdbs3_phy::rx::receive`) uses each frame's own TMCC (lag 0). On a
+  constant allocation the three agree.
+- Confirmation: none. The lab transponders (BS7, BS11, BS17) have kept
+  one allocation (16APSK 93/120 × 120, order of change constant) on
+  every recording, so no switch has been observed and the lag is not
+  tested by live data; a recording across a change of the order of
+  change would settle it (the frames between the TMCC change and the
+  layout change decode with the old layout only under this reading).
+  Status: pending real-world check.

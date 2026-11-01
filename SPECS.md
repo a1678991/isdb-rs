@@ -704,6 +704,7 @@ have no external confirmation, because none is possible from the local texts.
 | isdbs3-core | [main-dispersal](crates/isdbs3-core/SPEC-NOTES.md#main-dispersal-order-of-bch-and-energy-dispersal-in-a-slot) | confirmed (live data) |
 | isdbs3-core | [constellation-labels](crates/isdbs3-core/SPEC-NOTES.md#constellation-labels-16apsk-and-32apsk-labels) | confirmed (live data) for 16APSK; QPSK, 8PSK, 32APSK interpretation |
 | isdbs3-core | [pilot](crates/isdbs3-core/SPEC-NOTES.md#pilot-pilot-content-and-dispersal) | confirmed (live data) for 16APSK |
+| isdbs3-core | [tmcc-timing](crates/isdbs3-core/SPEC-NOTES.md#tmcc-timing-which-frame-a-tmcc-describes) | pending real-world check (no switch observed) |
 | isdb-tlv | [head-tlv](crates/isdb-tlv/SPEC-NOTES.md#head-tlv-the-slot-headers-head-tlv-indication) | confirmed (live data) |
 | isdb-tlv | [hcfb](crates/isdb-tlv/SPEC-NOTES.md#hcfb-header-compressed-ip-layout) | confirmed (live data) for the header types on air |
 | isdb-tlv | [pa-message](crates/isdb-tlv/SPEC-NOTES.md#pa-message-pa-message-table-list) | observation |
