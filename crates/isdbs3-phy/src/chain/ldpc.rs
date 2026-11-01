@@ -45,7 +45,7 @@ impl FixedLdpc {
     pub fn with(max_iter: usize, offset: i8) -> Self {
         Self {
             // the one place the chain builds the decoder's settings
-            params: Params { max_iter, offset },
+            params: Params::new(max_iter, offset),
             threads: std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
         }
     }
