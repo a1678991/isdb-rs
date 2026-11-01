@@ -1,24 +1,24 @@
-//! Why wide layered steps converge worse: the contract's rule for a
-//! conflicting pair (`isdb_fec::ldpc::fixed::Schedule::Layered`: the
-//! later check's write wins, computed from the step's stale L) against
-//! two rules that are not the contract, on the codewords of real
-//! recordings made noisier (development tool; docs/plans/isdbs3-fpga-rx.md
-//! piece 1 "Results").
+//! Why wide layered steps converged worse under the first contract: rules
+//! for a variable two checks of one layered step share (a conflicting
+//! pair, `isdb_fec::ldpc::fixed::Schedule::Layered`), on the codewords of
+//! real recordings made noisier (development tool;
+//! docs/plans/isdbs3-fpga-rx.md piece 1 "Results").
 //!
 //! cargo run --release -p isdbs3-phy --example ldpcconflict -- [--noise V] [--words N] [--steps 68,187,374] [--limit 50] REC [REC…]
 //!
 //! Rules, each a scalar decoder with the fixed-point per-check arithmetic
-//! of `ldpc::fixed` (the contract rule is checked equal to the library's
-//! `Layered { step }` decoder on every codeword):
+//! of `ldpc::fixed`, every check of a step reading the step's starting L:
 //!
-//! - `contract`: every check of a step reads the step's starting L; the
-//!   writes `L_v = t_e + r_e` land in check order (later wins);
-//! - `delta`: the same reads, but a variable's new value is its starting
-//!   value plus the sum of every step check's message change on it
-//!   (`L_v + Σ (r_new − r_old)`, saturated once): what a pipelined HDL
-//!   with write-back accumulation would compute; equal to `contract`
-//!   wherever a variable has one edge in the step;
-//! - `split`: the contract, but a check that shares a variable with an
+//! - `LaterWins`: each edge writes `L_v = sat(t_e + r_e)` in check order
+//!   (the first contract);
+//! - `Delta`: the contract now, `L_v = sat(t_e₁ + r_e₁,new + Σᵢ₌₂ (r_eᵢ,new
+//!   − r_eᵢ,old))` over the variable's edges in the step, in a wide
+//!   integer saturated once; checked equal to the library's
+//!   `Layered { step }` decoder on every codeword;
+//! - `DeltaL`: the variant first measured, `sat(L_v + Σ (r_new −
+//!   r_old))` over all the edges (differs from `Delta` only where
+//!   `t_e₁ = sat(L_v − r_e₁,old)` saturates);
+//! - `Split`: `LaterWins`, but a check that shares a variable with an
 //!   earlier check of its step starts a new step (no conflicting pair is
 //!   ever inside a step): the steps become irregular.
 
@@ -41,8 +41,9 @@ fn opt(args: &mut Vec<String>, name: &str, default: &str) -> String {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Rule {
-    Contract,
+    LaterWins,
     Delta,
+    DeltaL,
     Split,
 }
 
@@ -120,7 +121,7 @@ fn run(code: &Code, llr: &[i8], steps: &[Vec<usize>], rule: Rule, limit: usize) 
                 outs.push((c, t, new));
             }
             match rule {
-                Rule::Contract | Rule::Split => {
+                Rule::LaterWins | Rule::Split => {
                     for (c, t, new) in outs {
                         for ((&v, &te), &re) in code.check(c).iter().zip(&t).zip(&new) {
                             l[v as usize] = te.saturating_add(re);
@@ -129,6 +130,28 @@ fn run(code: &Code, llr: &[i8], steps: &[Vec<usize>], rule: Rule, limit: usize) 
                     }
                 }
                 Rule::Delta => {
+                    // the contract: sat(t₁ + r₁,new + Σᵢ₌₂ (rᵢ,new − rᵢ,old)),
+                    // edges per variable in check order, i32 then i8
+                    let mut first: std::collections::HashMap<usize, i32> =
+                        std::collections::HashMap::new();
+                    for (c, t, new) in outs {
+                        for (e, &v) in code.check(c).iter().enumerate() {
+                            let v = v as usize;
+                            let (te, ro, rn) =
+                                (i32::from(t[e]), i32::from(r[c][e]), i32::from(new[e]));
+                            *first.entry(v).or_insert_with(|| {
+                                touched.push(v);
+                                te + ro // so that adding rn − ro gives te + rn
+                            }) += rn - ro;
+                        }
+                        r[c] = new;
+                    }
+                    for v in touched.drain(..) {
+                        let x = first[&v].clamp(-128, 127);
+                        l[v] = i8::try_from(x).expect("clamped");
+                    }
+                }
+                Rule::DeltaL => {
                     for (c, _, new) in outs {
                         for ((&v, &old), &re) in code.check(c).iter().zip(&r[c]).zip(&new) {
                             let v = v as usize;
@@ -203,7 +226,7 @@ fn main() {
         };
         let refs: Vec<&[i8]> = words.iter().map(Vec::as_slice).collect();
         let lib = Decoder::<16>::default().decode_all(code, &refs, p);
-        for rule in [Rule::Contract, Rule::Delta, Rule::Split] {
+        for rule in [Rule::LaterWins, Rule::Delta, Rule::DeltaL, Rule::Split] {
             let st = if rule == Rule::Split { &split } else { &plain };
             let res: Vec<(bool, usize)> = std::thread::scope(|sc| {
                 let hs: Vec<_> = words
@@ -220,7 +243,7 @@ fn main() {
                     .flat_map(|h| h.join().expect("thread"))
                     .collect()
             });
-            if rule == Rule::Contract {
+            if rule == Rule::Delta {
                 for (i, (a, (b, _))) in res.iter().zip(&lib).enumerate() {
                     let bi = match b {
                         Ok(d) => (true, d.iterations),

@@ -318,7 +318,10 @@ a missed word):
 The ISDB-S3 LDPC decoder (in progress,
 [plan](../docs/plans/isdbs3-fpga-rx.md) "LDPC decoder" and "The LDPC
 schedule contract") is checked against the fixed-point model
-`isdb_fec::ldpc::fixed` with its `Schedule::Layered { step }`.
+`isdb_fec::ldpc::fixed` with its `Schedule::Layered { step }`, whose
+step writes are the delta write-back of the amended contract (a
+variable with edges e₁ … e_m in a step: sat(t₁ + r₁,new + Σᵢ₌₂
+(rᵢ,new − rᵢ,old)) in i16, saturated once; m ≤ 3 in the B44 codes).
 `mise run fpga:vectors` writes, from `isdbs3-phy`'s
 `examples/ldpcvectors` (format version 1 in its module docs):
 

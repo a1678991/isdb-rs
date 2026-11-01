@@ -8,7 +8,10 @@ Builds the code from `ldpc-tables.json` alone (ARIB STD-B44 v2.1
 table row g, then the staircase parity bits c-1 and c), decodes each
 codeword's `llr` with the file's schedule, limit and offset in plain
 integer arithmetic, and compares bits, iterations, convergence, the
-unsatisfied count and (when present) every trace entry.
+unsatisfied count and (when present) every trace entry. The layered
+schedule's step writes are the contract's delta write-back: a variable
+with edges e1 ... em in a step gets sat(t_e1 + r_e1,new + sum over
+i = 2..m of (r_ei,new - r_ei,old)).
 
 Usage: tools/ldpc-vectors-check.py [--max N] TABLES.json VECTORS.json [VECTORS.json …]
 (files in parallel; --max: the first N codewords of each)
@@ -96,10 +99,19 @@ def decode(checks, steps, llr, max_iter, offset):
                     mag = max((min2 if e == imin else min1) - offset, 0)
                     new.append(-mag if par ^ (x < 0) else mag)
                 out.append((c, t, new))
-            for c, t, new in out:  # check order: the later check wins
-                for v, te, re in zip(checks[c], t, new):
-                    l[v] = sat(te + re)
+            # delta write-back: per variable, its edges in check order;
+            # sat(t1 + r1_new + sum over the later edges of (r_new - r_old)),
+            # summed exactly, saturated once
+            acc = {}
+            for c, t, new in out:
+                for e, v in enumerate(checks[c]):
+                    if v in acc:
+                        acc[v] += new[e] - r[c][e]
+                    else:
+                        acc[v] = t[e] + new[e]
                 r[c] = new
+            for v, x in acc.items():
+                l[v] = sat(x)
         hard = [int(x < 0) for x in l]
         trace.append(pack(hard))
         u = unsatisfied(checks, hard)

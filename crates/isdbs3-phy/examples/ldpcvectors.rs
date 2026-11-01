@@ -2,7 +2,11 @@
 //! model `isdb_fec::ldpc::fixed` with the ISDB-S3 codes (ARIB STD-B44 v2.1
 //! §3.4 (2), and §3.5 for the shortened TMCC code), for the HDL
 //! simulation in `fpga/` (docs/plans/isdbs3-fpga-rx.md, "The LDPC
-//! schedule contract", work split item 1).
+//! schedule contract", work split item 1). The layered sets follow the
+//! amended contract (2026-11-01): a variable with several edges in one
+//! step gets the delta write-back, sat(t₁ + r₁,new + Σᵢ₌₂ (rᵢ,new −
+//! rᵢ,old)); vectors written before that date are of the first rule
+//! and no longer match.
 //!
 //! cargo run --release -p isdbs3-phy --example ldpcvectors -- OUTDIR [--trace] [--recording REC]
 //!
