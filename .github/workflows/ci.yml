@@ -163,7 +163,7 @@ jobs:
         with:
           install: false
           cache: false
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: |
             .
@@ -197,7 +197,7 @@ jobs:
           install_args: github:taiki-e/cargo-hack sccache
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: $/.github/actions/sccache
@@ -231,7 +231,7 @@ jobs:
           install_args: sccache
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: $/.github/actions/sccache
@@ -261,7 +261,7 @@ jobs:
         with:
           install: false
           cache: false
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: mise run doc
@@ -317,7 +317,7 @@ jobs:
         with:
           install: false
           cache: false
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: ". -> target/msrv"
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -340,7 +340,7 @@ jobs:
           install_args: uv sccache
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: ". -> target"
           key: fpga
