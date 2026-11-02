@@ -662,14 +662,21 @@ class TxRegisterTest(unittest.TestCase):
 # Vectors: the Rust model's ldpc-*.json (`mise run fpga:vectors`) and the
 # Python model's ldpcvec-py-*.json (`mise run fpga:ldpc-vectors`), in the
 # same directory; without them the vector tests are skipped (the unit
-# tests below run on the toy codes, made in process). The HDL simulation of
-# a 44 880-bit codeword is slow (README, "The LDPC decoder"): by default
-# it runs on every toy set and on the first codewords of the 93/120 and
-# TMCC sets at step 17; FPGA_LDPC_ALL=1 runs every codeword of every
-# layered set (several hours).
+# tests below run on the toy codes, made in process). The HDL runs on the
+# compiled CXXRTL backend where a C++ compiler is found (`simldpc`,
+# `chain.simx`; FPGA_SIM=pysim forces the Python simulator), and then the
+# default covers every codeword of every layered B44 set, one all-rates
+# decoder per step (17, 34, 187); on the Python simulator (about 1 200
+# cycles per second: 70-80 s per 93/120 codeword) only the first codewords
+# of the 93/120 and TMCC sets at step 17 (FPGA_LDPC_ALL=1: every set).
+# LdpcPysimTest keeps the Python simulator's path covered either way.
 
 LDPC_ALL = os.environ.get("FPGA_LDPC_ALL") == "1"
 LDPC_DEFAULT = {"ldpc-12-93-layered17.json": 2, "ldpc-13-tmcc-layered17.json": 1}
+
+
+def ldpc_compiled():
+    return simldpc.backend_default() == "cxxrtl"
 
 
 def ldpc_files():
@@ -790,14 +797,39 @@ class LdpcVectorTest(unittest.TestCase):
         self.assertEqual(simldpc.compare(doc, results), [])
         return results
 
-    def test_toy_codes(self):
+    def toy(self, step):
+        """The toy sets at `step` (one test per step, so the compiled
+        designs build in parallel under pytest-xdist): the files, else the
+        Python model's presets made in process."""
         files = [p for p in ldpc_files() if "-toy-" in os.path.basename(p)]
         docs = [(os.path.basename(p), load(p)) for p in files] or [
             (f"ldpcmodel {name}", ldpcmodel.vectors(name))
-            for name in ("toy-a", "toy-a-short", "toy-b-34")]
+            for name in ("toy-a", "toy-a-short", "toy-a-11", "toy-a-22", "toy-a-34", "toy-a-187",
+                         "toy-b", "toy-b-34")]
+        docs = [(n, d) for n, d in docs if d["schedule"]["step"] == step]
+        if not docs:
+            self.skipTest(f"no toy set at step {step}")
         for name, doc in docs:
             with self.subTest(vectors=name):
                 self.check(doc)
+
+    def test_toy_step11(self):
+        self.toy(11)
+
+    def test_toy_step17(self):
+        self.toy(17)
+
+    def test_toy_step22(self):
+        self.toy(22)
+
+    def test_toy_step34(self):
+        self.toy(34)
+
+    @unittest.skipUnless(LDPC_ALL, "S = 187 (FPGA_LDPC_ALL=1): about 19 min to compile, or "
+                         "about 80 s on the Python simulator; the scheme at 187 is checked by "
+                         "LdpcModelTest.test_lane_scheme_equals_the_contract")
+    def test_toy_step187(self):
+        self.toy(187)
 
     def test_known_zeros_filled_by_the_decoder(self):
         doc = ldpcmodel.vectors("toy-a-short")
@@ -858,23 +890,54 @@ class LdpcVectorTest(unittest.TestCase):
         res = simldpc.simulate(doc, plan=plan)
         self.assertEqual(simldpc.compare(dict(doc, codewords=[cw[y], cw[x]]), res), [])
 
-    def test_b44_vectors(self):
-        files = [p for p in ldpc_files() if "-toy-" not in os.path.basename(p)]
+    def b44(self, step, python_model=False):
+        """Every layered B44 set at `step` (the Rust model's, or with
+        `python_model` the Python model's): every codeword on the compiled
+        backend (or with FPGA_LDPC_ALL=1), else the default few; one
+        all-rates decoder per step on the compiled backend (one library)."""
         runs = []
-        for p in files:
-            doc = load(p)
-            if doc["schedule"]["kind"] != "layered":
-                continue
+        for p in ldpc_files():
             base = os.path.basename(p)
-            if LDPC_ALL:
+            if "-toy-" in base or base.startswith("ldpcvec-") != python_model:
+                continue
+            doc = load(p)
+            if doc["schedule"] != {"kind": "layered", "step": step}:
+                continue
+            if LDPC_ALL or ldpc_compiled():
                 runs.append((base, doc, None))
             elif base in LDPC_DEFAULT:
                 runs.append((base, doc, LDPC_DEFAULT[base]))
         if not runs:
-            self.skipTest("no B44 LDPC vectors (mise run fpga:vectors), or none of the default set")
+            self.skipTest(f"no step-{step} B44 LDPC vectors in the default set (mise run "
+                          "fpga:vectors; the compiled backend runs every set)")
         for base, doc, limit in runs:
             with self.subTest(vectors=base):
-                self.check(doc, limit, fill_known=bool(doc.get("shortened")))
+                self.check(doc, limit, fill_known=bool(doc.get("shortened")),
+                           all_rates=ldpc_compiled())
+
+    def test_b44_step17(self):
+        self.b44(17)
+
+    def test_b44_step34(self):
+        self.b44(34)
+
+    @unittest.skipUnless(LDPC_ALL, "S = 187 (FPGA_LDPC_ALL=1): its compiled build takes "
+                         "about 16 min and runs at about 3 000 cycles per second")
+    def test_b44_step187(self):
+        self.b44(187)
+
+    def test_b44_python_model_sets(self):
+        self.b44(17, python_model=True)
+
+
+class LdpcPysimTest(unittest.TestCase):
+    """The Python simulator's path, whatever the default backend: a toy
+    set with the known zeros filled by the decoder, bit-exact."""
+
+    def test_toy_set_on_pysim(self):
+        doc = ldpcmodel.vectors("toy-a-short")
+        results = simldpc.simulate(doc, fill_known=True, backend="pysim")
+        self.assertEqual(simldpc.compare(doc, results), [])
 
 
 if __name__ == "__main__":
