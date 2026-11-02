@@ -519,7 +519,11 @@ are needed: not provably narrower).
   `build/isdb_slots_rx.v` (module `isdb_slots_rx`: clocks `clk`,
   `fast_clk`, `ldpc_ref`; about 374 000 lines).
 
-**What is left**: timing (the receive-only image fits, 85.5 % LUT and 119 BRAM36, but misses its clocks: [below](#building-the-plutosky-r2-bitstream-tezuka), "Status of `isdbs3-rx`"; the Yosys estimate's LUT shortfall above did not materialise in Vivado);
+**What is left**: the equaliser's training sums on the board (the
+receive-only image meets timing and decodes BS7, [below](#building-the-plutosky-r2-bitstream-tezuka),
+"Status of `isdbs3-rx`", but the host never reads a whole set: the latch
+moves every frame and a read of 308 registers takes about 15, so the
+chain runs on identity taps: 268 LDPC failures of 87 177 slots in 30 s);
 the restart epoch for a layout committed after a restart (the model's
 insert happens before it); `SlotsRx` as a whole with its front end in
 simulation (the chain's simulations start at the symbols); a host CONST /
@@ -1162,8 +1166,28 @@ exceptions), `skew_check.tcl` (the symbol ↔ fast crossings) and
 directives);
 `build.sh` keeps the final checkpoint in `WORK/out/MODE/`.
 
-**Status of `isdbs3-rx` (2026-11-02): it fits, it misses timing, no
-bitstream, not deployed.** Final checkpoints (`timing.tcl`,
+**Status of `isdbs3-rx` (2026-11-03): with the fit's timing remedies
+(`7f70e26`) every constraint is met and the image runs on the bench
+board** (`isdbs3_rx_top.bin`; VERIFICATION.md "ISDB-S3 receive chain in
+the FPGA: the image"; rollback: `tools/pluto-image.sh rollback
+uEnv.txt.prev-txrx2`). Build 6's final checkpoint met setup everywhere
+and left one hold violation outside the block, Tezuka's RGMII receive
+IDDR (−0.433 ns, the Vivado 2025+ router): `holdfix.tcl`
+(`vivado-batch.sh holdfix.tcl FINAL.dcp OUTDIR`: phys_opt
+`ExploreWithHoldFix` and the failing nets rerouted, until met) repairs
+it on the checkpoint and writes the bitstream and an XSA, which
+`sdbin.sh` converts. The decoder crossing's 5 ns rule names the two
+clocks (with the bridge FIFOs in block RAM, a cell rule caught their
+same-clock paths). Build 6 after `holdfix.tcl`: **43 817 LUT (82.4 %),
+49 845 FF, 123.5 BRAM36 (88 %), 176 DSP (80 %); WNS +0.045 ns, WHS
++0.011 ns, 0 failing endpoints**; per clock (WNS / WHS, ns): `rx_clk`
++0.045 / +0.011, decoder `c0` +0.194 / +0.042, symbol clock +1.625 /
++0.044, symbol → l_clk +0.255, l_clk → symbol +0.593, symbol ↔ decoder
++3.237 / +3.108, `clk_fpga_0` +1.143, `RGMII_rxc` +0.100 / +0.192.
+`isdbs3_rx_top.bin`: 2 746 304 bytes, sha256
+`41997abe5f455fb8117ccda14d2c414ead397d39d9aac2508b9ced0bf54995ac`.
+
+Before the remedies (fit `5c8b9eb`; final checkpoints, `timing.tcl`,
 `utilization.tcl`, `failing.tcl`; the ADI flow stops at "Timing
 Constraints NOT met" and writes no XSA):
 
@@ -1199,8 +1223,8 @@ that the fit's phase-aligned 4× scheme assumed away. ADI's own `rx_clk`
 paths (4 ns, its 61.44 Msps case) lost their margin under the placement
 pressure (−2.65 ns in build 2, −0.53 ns in build 4). Directives (`reimpl.tcl`:
 `ExtraTimingOpt`, `AggressiveExplore`) changed nothing material. What the
-HDL needs is in docs/plans/isdbs3-fpga-rx.md, Results, "Piece 6"; this
-piece did not change the block's HDL.
+HDL needed is in docs/plans/isdbs3-fpga-rx.md, Results, "Piece 6"; the
+fit's `7f70e26` did it (this piece did not change the block's HDL).
 
 | Upstream | Revision |
 |---|---|

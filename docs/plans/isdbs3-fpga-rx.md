@@ -505,10 +505,15 @@ chain yet):
    fixed` done.**
 6. **Image**: `apply.sh` mode `isdbs3-rx` (receive only), build, timing,
    deploy on a card copy, the board checks of the ladder's step 4,
-   VERIFICATION.md. **Status (2026-11-02): built; fits (85 % LUT, 119
-   BRAM36, 176 DSP) but misses timing (WNS −3.257 ns: the BCH unit at
-   160 MHz, the decoder at 200 MHz, the equaliser's symbol → fast feed);
-   not deployed. Results below, "Piece 6".**
+   VERIFICATION.md. **Status (2026-11-03): with the fit's HDL timing
+   remedies (`7f70e26`) the image meets every constraint (WNS +0.045,
+   WHS +0.011 ns; 82 % LUT, 123.5 BRAM36, 176 DSP), runs on the bench
+   board as `isdbs3_rx_top.bin` and decodes BS7 through the Slots path
+   (909 frames, 0 losses, 0.4 cores of host CPU); the equaliser's slow
+   loop never wrote taps (the training sums move every frame, a read of
+   308 registers takes about 15 frames), so the chain ran on identity
+   taps: 268 LDPC failures of 87 177 slots, mean 4.63 iterations, where
+   the CPU model with taps has 1 and 2.08. Results below, "Piece 6".**
 
 Pieces 1–3 are independent and run in parallel; 4 needs 3's vectors
 (and can start on the sync stage from 3's first commit); 5 needs 3's
@@ -990,7 +995,9 @@ Not covered: a loss or a lost lock on live signal (none occurred), the
 drift range (−185 Hz here, against −989 Hz on the recording), and the
 chain on the board (pieces 4 and 6).
 
-### Piece 6: the receive-only image (2026-11-02): fits, misses timing, not deployed
+### Piece 6: the receive-only image (2026-11-02 / 03)
+
+#### Builds 1–4 (fit `5c8b9eb`): fit, missed timing
 
 `fpga/tezuka/build.sh WORK isdbs3-rx` (Vivado 2026.1, `xc7z020clg484-2`;
 `apply.sh --isdbs3-rx`, fpga/README.md "Building the PlutoSky R2
@@ -1069,7 +1076,103 @@ queue model (`ldpcqueue`) would have to re-check (9 overruns of 363 at
 symbol-clock → DSP feed registered on the fast side; the clocking glue
 above. Then the ADI paths' placement pressure has to be seen again.
 
-**Not deployed**: no bitstream was written (the flow refuses on failed
-timing), the board was not touched (`isdb_txrx2_top.bin` still boots;
-nothing to roll back), and the board checks of the ladder's step 4 were
-not run.
+Builds 1–4 wrote no bitstream (the flow refuses on failed timing) and
+the board was not touched.
+
+#### Builds 5–6 (fit `7f70e26`, the HDL remedies): timing met
+
+The fit registered the chain's 160 MHz and crossing paths and pipelined
+the decoder (its bridge FIFOs in block RAM, +4.5 BRAM36; default
+iteration limit 14, K = 3), bit-exact on every set. `ram_style.py` now
+leaves a memory's own `ram_style` alone (Yosys writes the attribute
+lines above a declaration's `src`; the first version would have overridden
+the bridge FIFOs' `block`). Build 5's placement failed only on the
+decoder crossing's 5 ns rule, which named cells: with the FIFO memories
+in block RAM (clocked by both clocks) it caught same-clock paths into
+and out of them (181 endpoints, −1.551 ns); the rule now names the two
+clocks (`isdb_slots.xdc` rule 4). Build 6, final checkpoint: setup met
+everywhere (WNS +0.021 ns) and one hold violation outside the block,
+Tezuka's RGMII receive IDDR into the fabric (−0.433 ns; the Vivado
+2025+ router, as upstream's `hold_fix.tcl` says). `holdfix.tcl` on that
+checkpoint (phys_opt `ExploreWithHoldFix`, the failing nets rerouted,
+twice): **every constraint met, WNS +0.045 ns, WHS +0.011 ns, 0 failing
+endpoints of 161 991 (setup) / 161 821 (hold)**; it wrote the bitstream
+and the XSA.
+
+| Clock | WNS (ns) | WHS (ns) |
+|---|---|---|
+| `rx_clk` (l_clk; the block's fast domain at 6.25 ns, ADI's paths at 4 ns) | +0.045 | +0.011 |
+| `c0` (the decoder's 200 MHz) | +0.194 | +0.042 |
+| `clk_div_sel_0_s` (the symbol clock) | +1.625 | +0.044 |
+| symbol clock → l_clk / l_clk → symbol clock | +0.255 / +0.593 | +0.051 / +0.050 |
+| symbol clock ↔ decoder (5 ns, datapath) | +3.237 / +3.108 | |
+| `clk_div_sel_1_s` | +0.519 | +0.088 |
+| `clk_fpga_0` / `clk_fpga_1` | +1.143 / +1.537 | +0.048 / +0.121 |
+| `RGMII_rxc` | +0.100 | +0.192 |
+
+Utilisation (build 6): 43 817 LUT (82.4 %; 3 918 as LUT RAM), 49 845 FF,
+123.5 BRAM36 (88 %), 176 DSP (80 %); `isdb_slots` 37 354 LUT, 39 331 FF,
+117 BRAM36, 164 DSP (front end 6 098 / 1 / 112, chain 18 185 / 31.5 /
+52, decoder 11 693 / 79.5 / 0, bridge 270 / 4.5 / 0, control 1 029).
+Artefacts: `isdbs3_rx_top.bin` 2 746 304 bytes, sha256
+`41997abe5f455fb8117ccda14d2c414ead397d39d9aac2508b9ced0bf54995ac`; the XSA
+(from `holdfix.tcl`) `19003701d60c91c99eecfe2f2e956f732b3827cf7a4a74a7e87fdae063dcb61a`.
+
+#### On the board (2026-11-03, receive only)
+
+Deployed with `tools/pluto-image.sh deploy` beside the other images
+(`/boot/isdbs3_rx_top.bin`; the previous `uEnv.txt`, `bitstream_image=
+isdb_txrx2_top.bin`, saved as `uEnv.txt.prev-txrx2`). First boot:
+"Tuning TX FAILED" (the known 2-in-3), `cf-ad9361-lpc` bound on the
+second rebind (`pluto-image.sh recover`). ID word 0x15DB4120 (front end
+format 4, 32 taps, `Slots` version 1). `tools/isdbs3-board-check.sh`, BS7,
+30 s each:
+
+| Run | Decoded by | Frames (TMCC ok) | Slots | LDPC / BCH failed | Mean iterations | MER | TLV packets B070 / B071 / B072 | Losses | Host CPU | Max RSS |
+|---|---|---|---|---|---|---|---|---|---|---|
+| FPGA chain (`isdb rx --offload auto`, 03:34) | the FPGA receive chain (`Slots`) | 909 (909; 2 undecoded) | 87 177 | **268** / 0 | **4.63** | 13.0 dB (n0) | 91 183 / 91 431 / 90 587 (lost slots 133 / 65 / 70) | 0 (190.8 M words, 0 blocks missing) | **10.2 s user + 2.1 s sys for 30 s (0.41 cores, the IQ acquisition included)**, wall 34.4 s | 6.2 GB |
+| `--slots` of its recorded words | recorded `Slots` | 909 | 87 177 | 268 / 0 | 4.63 | | identical to the live run (every packet) | | | |
+| host receiver on the Symbols capture just before (03:33) | host | 907 (907) | 87 072 | 0 / 0 | 2.061 | 15.4 dB main | 91 721 / 91 339 / 91 121 | 0 | 286.1 s user (9.5 cores) | 3.9 GB |
+| CPU model (`--chain fixed`) on the same capture | the chain's model | 907 (2 undecoded) | 86 880 | 1 / 0 | 2.077 | | every packet a packet of the host's, the 2 lag frames missing | | | |
+
+- The open line: "FPGA receive chain: Slots format 1, features 0x220e03
+  (LDPC limit 14, step 34)"; `--offload auto` took the slots path. The
+  chain locked (offset 6 542, peak/mean 4.5, 0 missed markers), tracked
+  the carrier from +38.9 to −762.8 Hz in 30 s (−753 Hz at the end; the
+  drift was faster than on 2026-11-02), TMCC 16APSK 93/120 × 120 every
+  frame, 0 restarts, 0 discontinuities. The TLV streams parse cleanly
+  (`isdb tlv inspect`: 1 271 tables on B070, 0 CRC errors; NIT, SDT,
+  EIT, TOT as on the host's), their lost slots being exactly the 268
+  LDPC failures.
+- **The equaliser ran on identity taps all along**: "the equaliser's
+  slow loop wrote taps 0 time(s) in 46 ticks". A debug run (8 s,
+  `RUST_LOG=isdb::chain=debug`) shows why: SUMS_FRAME reads a new frame
+  each tick (6 720 symbols, as designed) and has moved 14–15 frames on
+  by the time the 308 sum registers are read through iiod, so every read
+  is torn and retried, forever. The FPGA latches the sums every frame
+  (33 ms); one read of the set takes about 0.5 s. With identity taps the
+  chain's n0 gives MER 13.0 dB (the model with solved taps, on the
+  2026-11-02 capture: 15.06 dB), mean 4.63 LDPC iterations and 268
+  failures at limit 14, where the model (with taps) has 1. Not changed
+  here (HDL and host are another piece's): the HDL could hold the latched
+  sums until the host has read them (a request / release register), or
+  the host could load taps solved from its acquisition IQ at open
+  (`ChainInit`, which the CLI does not pass yet).
+- The ADC core reported 27 DMA overflows during the Slots run (the first
+  after 5.2 M words) and 1 at the end of the 'before' Symbols capture,
+  while the `Slots` sequence numbers show 0 blocks missing and the CRC
+  0 errors: the flag does not correspond to lost words here; cause not
+  found.
+- Packets across runs: the host's 'before' streams against the FPGA's
+  (a minute apart: different content) have 1 027 / 358 / 358 packets
+  equal and aligned (the repeated SI), everything else different, as
+  expected for different windows; the like-for-like check is the model
+  against the host on the same capture (above) and the FPGA run against
+  its recorded words (identical).
+- The host's 6.2 GB RSS on the radio path (41–67 MB replaying `--slots`)
+  is the capture side's buffering; not investigated.
+
+**Rollback** (the board stays on `isdbs3_rx_top.bin`):
+`tools/pluto-image.sh rollback uEnv.txt.prev-txrx2` then
+`tools/pluto-image.sh reboot` (and `recover` if `cf-ad9361-lpc` is
+missing) boots `isdb_txrx2_top.bin` again, with the transmit block.

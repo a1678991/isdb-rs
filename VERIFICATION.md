@@ -1646,12 +1646,14 @@ piece 3/5 on a live capture") against the host receiver on 30 s of live
 - The chain's carrier register followed the drift (−148.7 Hz at the
   end against the host's −155 Hz tracked).
 
-## ISDB-S3 receive chain in the FPGA: the image (2026-11-02)
+## ISDB-S3 receive chain in the FPGA: the image (2026-11-02 / 03)
 
 `fpga/tezuka/build.sh WORK isdbs3-rx` with Vivado 2026.1, the pinned
 Tezuka v0.3.24 / maia-sdr f7092ba sources: the receive-only PlutoSky R2
 image with `SlotsRx` (the symbol front end, the ISDB-S3 chain and the LDPC
-decoder, S = 34, K = 3, from the verified fit `5c8b9eb`, HDL unchanged),
+decoder, S = 34, K = 3; builds 1–4 from the verified fit `5c8b9eb`,
+builds 5–6 from `7f70e26` with the fit's timing remedies; HDL not
+changed by this piece),
 without maia-sdr, `SymbolsTx`, the DVB-S2 transmitter and the TX FIR, the
 AD9361 core's TX datapath disabled (docs/plans/isdbs3-fpga-rx.md, Results,
 "Piece 6"; fpga/README.md "Status of `isdbs3-rx`").
@@ -1662,6 +1664,8 @@ AD9361 core's TX datapath disabled (docs/plans/isdbs3-fpga-rx.md, Results,
 | build 2: memories of depth ≤ 64 as LUT RAM | 45 506 (85.5 %) | 43 109 | 119 | 176 | −5.934 ns | +0.050 ns | 10 600 of 150 558 |
 | `isdb_slots` in build 2 | 39 026 | 32 531 | 112.5 | 164 | | | |
 | build 4: + the chain's 25 ns rule, reset false paths, BUFR + BUFG fast clock | 45 275 (85.1 %) | 43 030 | 119 | 176 | −3.257 ns | +0.016 ns | 7 429 of 150 507 |
+| build 6: fit `7f70e26`, the crossing rule by clocks; `holdfix.tcl` on the final checkpoint | 43 817 (82.4 %) | 49 845 | 123.5 | 176 | **+0.045 ns** | **+0.011 ns** | **0** of 161 991 |
+| `isdb_slots` in build 6 | 37 354 | 39 331 | 117 | 164 | | | |
 
 Worst setup by clock and block, build 2 (`failing.tcl`): symbol clock →
 l_clk crossings −5.934 ns (2 794 endpoints; a 4.2 ns skew between
@@ -1672,11 +1676,54 @@ the decoder's 200 MHz −2.708 (6 123), `axi_ad9361` at ADI's 4 ns −2.654
 - The slacks are those of the final checkpoints
   (`system_top_postroute_physopt.dcp`, `fpga/tezuka/timing.tcl` and
   `failing.tcl`); the ADI flow writes no XSA when timing fails.
-- **Not deployed and not run on the board**: the bench PlutoSky R2 still
-  boots `isdb_txrx2_top.bin` (nothing on the card or in `uEnv.txt` was
-  changed); the board checks (ID word, `isdb rx --offload auto` on BS7,
-  the packet comparison, the host's CPU time) wait for an image that
-  meets timing. `tools/isdbs3-board-check.sh` runs them.
+- Build 6 per clock (WNS / WHS, ns): `rx_clk` +0.045 / +0.011, the
+  decoder's `c0` +0.194 / +0.042, the symbol clock +1.625 / +0.044,
+  symbol → l_clk +0.255, l_clk → symbol +0.593, symbol ↔ decoder
+  +3.237 / +3.108, `clk_fpga_0` +1.143, `RGMII_rxc` +0.100 / +0.192 (its
+  −0.433 ns hold violation, outside the block, repaired by `holdfix.tcl`).
+  `isdbs3_rx_top.bin` 2 746 304 bytes, sha256
+  `41997abe5f455fb8117ccda14d2c414ead397d39d9aac2508b9ced0bf54995ac`.
+
+### On the board (2026-11-03)
+
+Receive only, PlutoSky R2 at `ip:10.10.0.30`, `/boot/uEnv.txt`
+`bitstream_image=isdbs3_rx_top.bin` (previous entry saved as
+`uEnv.txt.prev-txrx2`; the other images untouched). First boot "Tuning TX
+FAILED", `cf-ad9361-lpc` bound on the second rebind. ID word 0x15DB4120;
+the open line "Slots format 1, features 0x220e03 (LDPC limit 14, step
+34)". `tools/isdbs3-board-check.sh` on BS7, 30 s per run:
+
+| | FPGA chain (`isdb rx --offload auto`) | host receiver, Symbols capture just before | CPU model of the chain on that capture |
+|---|---|---|---|
+| frames, TMCC ok | 909, 909 (2 undecoded) | 907, 907 | 907, 907 (2 undecoded) |
+| slots, LDPC / BCH failed | 87 177, **268** / 0 | 87 072, 0 / 0 | 86 880, 1 / 0 |
+| mean LDPC iterations | **4.63** | 2.061 | 2.077 |
+| MER | 13.0 dB (n0, identity taps) | 15.4 dB (main) | |
+| losses | 0 (110 897 blocks, none missing by sequence number); 27 ADC overflow flags (see below) | 0 | 0 |
+| host CPU for 30 s | 10.2 s user + 2.1 s sys (0.41 cores, the IQ acquisition included); wall 34.4 s; RSS 6.2 GB | 286.1 s user (9.5 cores) | — |
+
+- The `Slots` path works end to end: lock, carrier tracking (+38.9 …
+  −762.8 Hz), TMCC every frame, the TLV streams (B070 91 183, B071
+  91 431, B072 90 587 packets) parse cleanly in `isdb tlv inspect` (0
+  CRC errors in 1 271 tables on B070), and `isdb rx --slots` of the
+  recorded words gives the live run's packets exactly.
+- **The equaliser's taps were never set**: the host's slow loop read the
+  training sums 46 times and every read was torn (SUMS_FRAME moves every
+  33 ms frame; reading 308 registers through iiod takes about 15 frames),
+  so the chain ran on its identity taps: MER 13.0 dB, 4.63 iterations,
+  268 failed codewords (the 268 lost slots of the TLV streams). The model
+  with its taps solved has 1 failure on the capture taken just before.
+  Needs a sums hold in the HDL or host-loaded taps at open
+  (docs/plans/isdbs3-fpga-rx.md, Results, "Piece 6").
+- The ADC core's overflow flag rose 27 times during the Slots run and
+  once at the end of a Symbols capture, with no block missing by
+  sequence number and no CRC error: cause not found.
+- Packets of the FPGA run against the host's run a minute earlier: 1 027
+  / 358 / 358 aligned packets equal (the repeated SI), the rest different
+  content.
+- Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-txrx2`,
+  `tools/pluto-image.sh reboot`, `tools/pluto-image.sh recover` if
+  `cf-ad9361-lpc` is missing.
 
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
