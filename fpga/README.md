@@ -66,6 +66,7 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `isdb_fpga/ldpc.py` | `LdpcDecoder`: the ISDB-S3 LDPC decoder ([below](#the-ldpc-decoder-ldpcdecoder)); its schedule, memory layout and pipeline in the docstring |
 | `isdb_fpga/ldpcsched.py` | the decoder's static schedule computed at elaboration (layer address generation and its derivation, chain thresholds, hazard gaps) and `lane_decode`, the design's own scheme in Python |
 | `isdb_fpga/ldpcmodel.py` | a Python model of the LDPC contract, the IRA encoder and the vectors writer (`python -m isdb_fpga.ldpcmodel --all build`; `--check VECTORS…`) |
+| `isdb_fpga/ldpcqueue.py` | a model of the decoder's codeword queue over frames (K banks, the overrun rule, the TMCC staged or interleaved) |
 | `isdb_fpga/simldpc.py` | the decoder against LDPC vectors files (`python -m isdb_fpga.simldpc VECTORS… [--max N] [--fill-known] [--all-rates]`) |
 | `synth/ldpc_estimate.py`, `synth/ldpc_cycles.py`, `synth/ldpc_memories.py` | the decoder's Yosys estimate per S, its cycles per iteration per rate and S, and how Yosys maps each memory shape |
 
@@ -441,8 +442,58 @@ cycle.
   13 200 known-zero positions itself (S per cycle, 1 320 cycles at S = 17)
   and only the 31 680 sent LLRs are loaded; the tests check the file's
   values there are +127 and run both ways.
-- **Memory**: two banks (double buffer: one loads or streams out while
-  the other decodes) of S lanes, each 120 × Wp words of 9 bits (L and H,
+- **The codeword queue and the iteration limit.** The limit is a
+  run-time input per codeword (`st_max_iter`; the chain's register
+  resets to 16). K L/H banks (a build parameter, **default 3**): a
+  codeword holds a bank from its `begin` until its hard decisions have
+  left; the engine decodes the committed codewords in commit order and
+  the results leave in that order. The input never stalls; `load_ready`
+  (a bank is free) is the back-pressure, and a codeword whose `begin`
+  comes while all K banks are held is dropped: `overruns` counts it and
+  its place in the result sequence still gets a record (res_overrun 1,
+  converged 0, iterations 0, no data words), exactly like a slot whose
+  LDPC failed, so the dispersal and the host's slot count stay in step.
+  **Why K = 3:** a codeword is complete only at its slot's end (the
+  interleaver spreads it over the slot, T = 33.05 ms / 121 ≈ 54.6k
+  cycles at 200 MHz), so with K banks one codeword may take about
+  (K − 1)·T less the output (2.8k cycles) and any queue wait: K = 2
+  gives 9 passes at 93/120, S = 34 (8 iterations, the worst-case figure
+  again), K = 3 about 19 (a limit of 16 for an isolated long codeword).
+  The frame-average budget is 6.61 M cycles / (121 × 5 420) ≈ 10.1
+  passes per codeword against a measured mean of 3.1 (2.1 iterations
+  + 1): a codeword may run to the limit as long as the frame's total
+  stays inside the budget. Not a symbol-level queue before the demapper
+  (it would need a demapper faster than one symbol per clock), not
+  limit 8 (1 338 failures of 18 336 near threshold against 3 at 16).
+  **The TMCC codeword** is staged by the TMCC stage across the frame and
+  loaded as a burst after the frame's end, on context 1 (`in_ctx`), its
+  writes sharing the single input port with the slot LLRs cycle by cycle
+  (the port carries one write per cycle; the slot LLRs use ≈ 0.81 of the
+  cycles at 200 MHz, so the 31 680-write burst takes ≈ 167k cycles, about
+  three slots); the default K = 3 assumes that. Interleaved TMCC LLRs
+  would hold a bank for the whole frame and need K = 4.
+  `isdb_fpga/ldpcqueue.py` models the queue over frames (tests
+  `LdpcQueueModelTest`, S = 34, 200 MHz, 93/120, limit 16):
+
+  | frames (×3) | K = 2 | K = 3 | K = 4 |
+  |---|---|---|---|
+  | measured distribution (mean 2.1, three isolated codewords at 16), TMCC staged | 13 overruns of 363 | **0** | 0 |
+  | the same with two adjacent pairs at 16, TMCC staged | 16 | 6 | 0 |
+  | the measured distribution, TMCC interleaved | 68 | 7 | 0 |
+  | all 120 slots at the limit (×2), TMCC staged | 104 of 242 | 96 | 95 |
+
+  (K = 2 overruns even without long codewords: 4 in 3 frames, the TMCC
+  burst holding a bank across three slots.) The HDL tests check the
+  overrun record in order (K = 2, a codeword begun while both banks are
+  held), two contexts open at once with the results in commit order, and
+  the limit as a run-time input (toy codewords at 16 against the model).
+- **The contract points this design relies on** (agreed with the Rust
+  model's owner): the edge order inside a check is free (ties give every
+  edge the same magnitude); the output stream is in storage order, so its
+  first k bits are the information bits in natural order and the parity
+  follows layer by layer; a shortened codeword's known zeros are written
+  as +127 by the decoder itself.
+- **Memory**: K banks of S lanes, each 120 × Wp words of 9 bits (L and H,
   Wp = W rounded up to a power of two); the check records (m1, m2 after
   the offset, the min1 index: 19 bits) one word of 19 S bits per step; the
   edge signs one word of S bits per (step, entry); a 64-deep FIFO between
@@ -454,9 +505,10 @@ cycle.
 **Cycles per iteration** (`synth/ldpc_cycles.py`: the static schedule's
 steady state, the hazard gaps included; the read and write phases of
 consecutive steps overlap, a step taking d cycles, d the layer degree)
-and the iterations per codeword the frame allows: 33.05 ms per frame,
-121 codewords (120 slots + the TMCC) at the limit in the worst case,
-one pass more than the iterations (the syndrome of the last one):
+and the iterations per codeword if all 121 codewords of a frame (120
+slots + the TMCC) ran equally long, one pass more than the iterations
+(the syndrome of the last one): the frame-average budget, not a limit
+(the queue above lets single codewords run longer):
 
 | S | rate | d | cycles per pass | iterations per codeword, 100 MHz | 200 MHz |
 |---|---|---|---|---|---|
@@ -488,14 +540,30 @@ eleven rates, before place and route), against the plan's budget of
 | 34 | 12 976 | 8 663 | 59.5 (25 + 69/2) | 250 | 0 | 1 108 |
 | 187 | 72 250 | 44 288 | 58 (3 + 110/2) | 5 806 | 0 | 5 401 |
 
-S = 34 at 200 MHz meets the LUT budget (93 % of it) and allows 9.1
-iterations per codeword at 93/120 in the worst case (all 121 codewords
-at the limit), 10.3 for the TMCC code, 11.5 for 41/120; it is 9.5 BRAM36
-over the 50 budgeted. S = 187 would be 5× the LUT budget (the units and
-the 187-lane rotators), so it is out.
+(These rows are two banks without the queue, 2026-11-02 morning.) With
+the queue, S = 34, by bank count K and the rates built in (the record
+and sign memories are sized by the largest rate built: `codes` /
+`--rates`):
+
+| S = 34 | rates | K | LUT | FF | BRAM36 (RAMB36E1 + RAMB18E1/2) |
+|---|---|---|---|---|---|
+| all eleven | 41 … 109 | 3 | 14 034 | 9 202 | 76.5 (25 + 103/2) |
+| all eleven | 41 … 109 | 2 | 13 082 | 9 167 | 59.5 (25 + 69/2) |
+| 93/120 and the TMCC's 61/120 | 61, 93 | 3 | 13 415 | 8 964 | 74.5 (23 + 103/2) |
+| 93/120 only (no TMCC) | 93 | 3 | 13 492 | 8 930 | 65 (14 + 102/2) |
+| 93/120 only (no TMCC) | 93 | 2 | 12 590 | 8 895 | 48 (14 + 68/2) |
+
+0 DSP48E1 throughout. **The decision (2026-11-02): S = 34, K = 3, all
+eleven rates, 76.5 BRAM36**, from the receive-only image's budget (107
+BRAM36 free without `SymbolsTx` and `maia_sdr`), 14 034 LUT (the plan's
+14 000). Sizing the record and sign memories by the rates built saves
+little because the TMCC's 61/120 has 649 steps per pass, nearly 41/120's
+869; only a 93/120-only build (no TMCC) reaches 65 (K = 3) or 48 (K = 2).
+S = 187 would be 5× the LUT budget (the units and the 187-lane
+rotators), so it is out.
 
 Block RAM by memory at S = 34 (`synth/ldpc_memories.py`): the L/H
-banks 2 × 34 RAMB18 = 34, the check records (646 × 869) 18, the edge
+banks K × 34 RAMB18 (17 BRAM36 per bank), the check records (646 × 869) 18, the edge
 signs (34 × 4 785) 5, the ROMs 2.5. The data needs 15.2 + 4.4 + 2 × 4.4
 BRAM36 for records, signs and L; the records' and signs' depth is set by
 41/120 (869 steps, 4 785 edges per unit) while every other rate needs at
@@ -508,7 +576,11 @@ stress inputs, the limit) and on the Rust sets' 93/120 and TMCC codewords
 at step 17; ≈ 70 s of simulation per 93/120 codeword at 4 iterations
 (≈ 14 s per pass at S = 17), so the default `fpga:test` set is two
 93/120 codewords and one TMCC codeword; `FPGA_LDPC_ALL=1` runs every
-codeword of every layered set.
+codeword of every layered set. With the queue (K banks, 2026-11-02):
+the same sets bit-exact through K = 3, plus the overrun record in order
+(K = 2), two load contexts open at once, and the limit as a run-time
+input; the Rust set `ldpc-2-93-layered34` (3 codewords) bit-exact at
+81–105 s per codeword (run by the integrator).
 
 ## Integration
 
