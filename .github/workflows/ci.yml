@@ -328,7 +328,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.fpga == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -350,8 +350,10 @@ jobs:
           key: fpga
           save: ${{ github.ref == 'refs/heads/main' }}
       # Writes the vectors from the Rust models (release examples) and the
-      # Python model, then simulates both FPGA blocks against them, bit for
-      # bit (deterministic: fixed seeds, no wall clock).
+      # Python models, then simulates every FPGA block against them, bit for
+      # bit (deterministic: fixed seeds, no wall clock). The LDPC decoder's
+      # and the ISDB-S3 chain's default sets take about 19 minutes on a
+      # 16-core host in Amaranth's Python simulator; the runner is slower.
       - run: mise run fpga:test
       - name: sccache statistics
         if: always()
