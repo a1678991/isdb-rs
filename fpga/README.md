@@ -246,8 +246,9 @@ results; the model's block order needs those held, about 3 slots of
 results, or a format that lets a frame's TMCC and status follow later:
 the integrator's call); the restart epoch for a layout committed after a
 restart (the model's insert happens before it); the chain run through
-`LdpcBridge` with the real decoder (`isdb_fpga/ldpc.py`, on its branch); the register file of `SlotsRx`
-simulated through `gpio_out` (it is elaborated, not simulated); a loss in
+`LdpcBridge` with the real decoder (`isdb_fpga/ldpc.py`); `SlotsRx` as a whole in
+simulation (its register file is simulated through `gpio_out`:
+`SlotsRxRegisterTest`; the CARRIER register has no write port yet); a loss in
 the input stream (`i_loss`) and a sync loss in simulation (the synthetic
 sets have neither); the 2×/4× clocks for the FIR and the demapper, and
 the LUT reductions above; the recording sets (`chain-rec-*`, opt-in)

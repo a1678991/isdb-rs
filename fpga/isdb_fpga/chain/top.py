@@ -33,9 +33,10 @@ WRITE, READ, CTRL on `gpio_out`, `gpio_in` the ID word or the readback):
 
 | Address | Register |
 |---|---|
-| 0x100 | CARRIER: the carrier register (read: in use; write: the initial value at START) |
-| 0x101 | MAX_ITER (8 bits, reset 16) |
+| 0x100 | CARRIER (read only): the carrier register in use (its initial value is the build's; no write port yet) |
+| 0x101 | MAX_ITER (8 bits, reset 16): the LDPC iteration limit each codeword is committed with |
 | 0x102 | AGC: the input AGC gain reported in the status (Q6.10) |
+| other | the front end's (`control.py`): a READ of an address outside 0x100 .. 0x14F and 0x200 .. 0x333 shows the front end's readback |
 | 0x103 | FEATURES (read only): bit 0 the chain (SlotsRx), bit 1 layout lag 2 |
 | 0x110 + 2k, + 2k + 1 | tap k (re, im) Q2.14 into the pending set |
 | 0x126 | TAP_CTRL: write 1: the pending taps in use now; 2: armed for frame TAP_AT |
@@ -168,7 +169,7 @@ class SlotsRx(Elaboratable):
         from .ldpc_if import LdpcBridge
 
         self.core = SymbolFrontend(taps, cos_table, h, g, k)
-        self.chain = SlotsChain()
+        self.chain = SlotsChain(max_iter=16)  # MAX_ITER's reset: the decoder's default
         self.bridge = LdpcBridge(self.chain.port)
         self.ldpc_cls = ldpc_cls
         self.taps = taps
@@ -239,14 +240,24 @@ class SlotsRx(Elaboratable):
         tap_at = Signal(32)
         tap_from = Signal(32)
         m.d.comb += [eqm.tap_at.eq(tap_at), eqm.tap_from_in.eq(tap_from)]
+        # the chain's own addresses; a READ of any other goes to the front
+        # end's Control (which decodes the same command words) and its
+        # readback is what gpio_in shows
+        chain_addr = Signal()
+        m.d.comb += chain_addr.eq(((addr >= 0x100) & (addr < 0x150)) | ((addr >= 0x200) & (addr < 0x200 + 308)))
+        bk = ch.back
         with m.If(go):
+            # every command but a READ of a chain address hands gpio_in back
+            m.d.sync += show.eq((op == OP_READ) & chain_addr)
             with m.Switch(op):
                 with m.Case(OP_ADDR):
-                    m.d.sync += [addr.eq(arg[:16]), show.eq(0)]
+                    m.d.sync += addr.eq(arg[:16])
                 with m.Case(OP_HI):
                     m.d.sync += staged.eq(arg[:16])
                 with m.Case(OP_WRITE):
-                    m.d.sync += [addr.eq(addr + 1), show.eq(0)]
+                    m.d.sync += addr.eq(addr + 1)
+                    with m.If(addr == 0x101):
+                        m.d.sync += bk.max_iter.eq(value[:8])
                     with m.If(addr == 0x102):
                         m.d.sync += agc.eq(value[:16])
                     with m.If((addr >= 0x110) & (addr < 0x126)):
@@ -258,10 +269,13 @@ class SlotsRx(Elaboratable):
                     with m.If(addr == 0x128):
                         m.d.sync += tap_from.eq(value)
                 with m.Case(OP_READ):
-                    m.d.sync += show.eq(1)
                     with m.Switch(addr):
                         with m.Case(0x100):
                             m.d.sync += readback.eq(ch.front.nco.f)
+                        with m.Case(0x101):
+                            m.d.sync += readback.eq(bk.max_iter)
+                        with m.Case(0x102):
+                            m.d.sync += readback.eq(agc)
                         with m.Case(0x103):
                             m.d.sync += readback.eq(0b11)
                         with m.Case(0x130):
@@ -277,7 +291,7 @@ class SlotsRx(Elaboratable):
                         with m.Default():
                             m.d.sync += readback.eq(0)
                 with m.Case(OP_CTRL):
-                    m.d.sync += [show.eq(0), slots_on.eq(arg[3])]
+                    m.d.sync += slots_on.eq(arg[3])
         # the low tap word holds re, the next im (the pending set takes both
         # at the im write)
         re_hold = Signal(16)
