@@ -907,13 +907,14 @@ def blocks_by_frame(words):
     first slot blocks: the host re-associates them by frame counter)."""
     from . import slots as S
 
-    out, order = {}, []
+    out, order, twice = {}, [], []
     for kind, _seq, frame, pay in S.blocks(words):
         key = (frame, kind, pay[0] & 0x7F if kind == S.SLOT else 0)
-        assert key not in out, f"block {key} twice"
+        if key in out:
+            twice.append(key)
         out[key] = pay
         order.append(key)
-    return out, order
+    return out, order, twice
 
 
 def lateness(order):
@@ -966,20 +967,32 @@ def run_chain_real(doc, taps, backend="cxxrtl", symbols=None):
     except RuntimeError as err:
         stuck = str(err)
     got = [w for (w,) in e.read(g)]
+    import json
+
+    with open(os.path.join(os.path.dirname(__file__), "..", "..", "build", f"chain-real-got-{n}.json"), "w") as f:
+        json.dump(got, f)
     diag = {k: e.get(k) for k in ("tdone", "port_lost", "late", "overrun", "frames_done", "in_lost",
                                   "dec_overruns", "queue_overflow")}
     cyc = e.cycles()
     dt = time.time() - t0
     bad = [stuck] if stuck else []
     try:
-        gb, gorder = blocks_by_frame(got)
+        gb, gorder, twice = blocks_by_frame(got)
     except AssertionError as err:
         return "", bad + [f"the output does not parse as Slots blocks: {err}"]
-    eb, _ = blocks_by_frame(doc["slots_words"])
+    eb, _, _ = blocks_by_frame(doc["slots_words"])
     if symbols is not None:
         # a prefix: the frames it completes
         done = {k[0] for k in gb}
         eb = {k: v for k, v in eb.items() if k[0] in done}
+    # frames the model did not send (a frame dropped, or not finished when
+    # the input ended): the chain sends the slot blocks it decoded before
+    # (README "Integration"); they are reported, not compared
+    model_frames = {k[0] for k in eb}
+    extra = sorted({k[0] for k in gb} - model_frames)
+    extra_blocks = {f: sum(1 for k in gb if k[0] == f) for f in extra}
+    gb = {k: v for k, v in gb.items() if k[0] in model_frames}
+    bad += [f"block {k} twice" for k in twice if k[0] in model_frames]
     for k_ in sorted(set(eb) | set(gb)):
         if k_ not in gb:
             bad.append(f"block {k_} missing")
@@ -995,6 +1008,7 @@ def run_chain_real(doc, taps, backend="cxxrtl", symbols=None):
     for k_ in ("port_lost", "late", "overrun", "in_lost", "dec_overruns", "queue_overflow"):
         if diag[k_]:
             bad.append(f"{k_} {diag[k_]}")
-    what = (f"{n} symbols in, {len(got)} Slots words, {len(gb)} blocks ({diag}); lateness "
-            f"{lateness(gorder)} slot blocks; build {t_build:.0f} s, {cyc} cycles in {dt:.1f} s")
+    what = (f"{n} symbols in, {len(got)} Slots words, {len(gb)} blocks of the model's frames ({diag}); "
+            f"blocks of frames the model did not send: {extra_blocks}; lateness {lateness(gorder)} "
+            f"slot blocks; build {t_build:.0f} s, {cyc} cycles in {dt:.1f} s ({cyc / max(dt, 1e-9):.0f}/s)")
     return what, bad
