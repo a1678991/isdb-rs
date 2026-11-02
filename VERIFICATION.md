@@ -1721,9 +1721,48 @@ the open line "Slots format 1, features 0x220e03 (LDPC limit 14, step
 - Packets of the FPGA run against the host's run a minute earlier: 1 027
   / 358 / 358 aligned packets equal (the repeated SI), the rest different
   content.
-- Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-txrx2`,
-  `tools/pluto-image.sh reboot`, `tools/pluto-image.sh recover` if
-  `cf-ad9361-lpc` is missing.
+- Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-txrx2`
+  (`isdb_txrx2_top.bin`) or `rollback uEnv.txt.prev-rx6` (build 6, kept
+  as `isdbs3_rx6_top.bin`), `tools/pluto-image.sh reboot`,
+  `tools/pluto-image.sh recover` if `cf-ad9361-lpc` is missing.
+
+### Build 7 on the board: the taps arrive (2026-11-03)
+
+Fit `d4042bb` (SUMS_CAPTURE: the training sums of a host-armed frame end
+held for the host; FEATURES bit 4). Build 7 met every constraint in the
+project flow (WNS +0.067 ns, WHS +0.029 ns, 0 failing endpoints; 43 731
+LUT, 123.5 BRAM36, 176 DSP); `isdbs3_rx_top.bin` sha256
+`717f7e34adaf5cadd906aa70bd2a8b482a3b5ceb6c328f2f52299ceed28e6a2a`, build 6
+kept on the card as `isdbs3_rx6_top.bin`. Clean boot. BS7, 30 s:
+
+| | FPGA chain | `--slots` replay | host receiver (capture just before) | CPU model (same capture) |
+|---|---|---|---|---|
+| frames, slots | 909, 87 187 | 909, 87 187 | 907, 87 072 | 907, 86 880 |
+| LDPC / BCH failed | **7 808** / 0 | 7 808 / 0 | 1 / 0 | 2 / 0 |
+| mean iterations | 2.38 | 2.38 | 2.078 | 2.094 |
+| n0 (Q.20) | 52 556 every frame (the default) | | | 32 000–33 700 |
+| losses | 0 | 0 | 0 | 0 |
+| host CPU, max RSS | 12.3 s for 30 s; 6.28 GB | 2.3 s; 39 MB | 294 s; 3.9 GB | |
+
+- Slow loop: features 0x220e13 at open; first taps written 0.90 s after
+  the chain's open (from frame 5), 12 solves in 24 ticks, 0 torn, 0
+  singular. Taps in force from frame 26.
+- With good taps: 0 failures in frames 26–269 and 379–909, 2.0–2.2
+  iterations per frame (the model's).
+- One solve of twelve (host label: frame 250; centre [18 691, −285], the
+  others [17 3xx … 17 848]) failed every codeword of frames 270–350 (81
+  frames; 7 800 of the 7 808 failures; the other 8: 7 before the first taps, 1 in frame 378) until the next solve, and the
+  TLV streams' 2 597 / 2 617 / 2 594 lost slots. The model's solves on the
+  capture just before all have centres 17 315–17 379. Cause not found.
+- n0 stays at `N0_DEFAULT` (52 556, LLR scale 81 722) in every status
+  block of both board runs, while the model learns ≈ 32 500–33 700: the
+  board's n0 update does not happen.
+- The status's `taps_from` lags one write (the first set reads 0, the
+  next 5, …).
+- The radio path's 6.28 GB RSS is the capture side's: the replay of the
+  same words takes 39 MB.
+- `crates/isdb-frontend/examples/slotsstatus.rs` prints the per-frame
+  table these come from.
 
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
