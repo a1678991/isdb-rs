@@ -12,16 +12,20 @@ first k bits of a slot codeword (k = 374 r, rate from the tag), the first
 22 814 of the TMCC's (1 426 words); the rest of the n = 44 880 are taken
 from the decoder and dropped, `last` on the last one kept.
 
-Capacity: 4 096 entries are 1.6 results of 93/120 (2 174 words + 5). The
-finish stage needs about 2 200 symbol clocks to take a result, about 2 200
-to send its slot block and nothing more when the BCH check passes, 10 000
-more for a word with errors (Berlekamp-Massey and the Chien search in the
-4x clock); a 16APSK frame brings a result every 13 750 symbol clocks on
-average (4 valid slots in 5 at 11 000), so the finish stage keeps up with
-every slot corrected: the FIFO absorbs the burst a corrected slot causes
-(the next result's 2 200 words) and the decoder is never held more than
-it was without a correction. (32APSK, five valid slots in five, keeps up
-while at most about 2 in 3 consecutive slots need the Chien search.)
+Capacity: 4 096 entries are 1.88 results of 93/120 (2 174 words + 5).
+The finish stage needs about 2 200 symbol clocks to take a result, about
+2 200 to send its slot block and nothing more when the BCH check passes,
+about 9 000 more for a word with errors (Berlekamp-Massey, its product
+steps two fast cycles each, and the Chien search in the 4x clock: 8 993
+at 12 errors, tools/bch_cycles.py), about 13 400 in all. A 16APSK frame
+brings its 4 valid slots in 5 at 11 000 symbol clocks: with every one
+corrected the finish stage falls 2 400 behind per slot, 7 200 after the
+fourth, and catches up in the dummy slot (55 000 per five slots against
+53 600 of work), so a result waits while the one before is finished and
+the next has not come: at most one result held (2 179 entries) and the
+decoder never held more than it was without a correction. (32APSK, five
+valid slots in five at 11 000, keeps up while at most about 7 in 10
+slots need correcting: 0.73 x 13 400 + 0.27 x 4 400 = 11 000.)
 """
 
 from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal

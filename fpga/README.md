@@ -262,9 +262,17 @@ module's docstring states its contract by reference and its schedule):
   constraint (4 ns, its 61.44 Msps worst case) would apply, so the
   block's l_clk paths and its sync↔fast paths get `set_max_delay 6.250`
   (the real period, skew and hold kept). The crossing is clock-enable
-  phasing, no FIFO: `common.Phase4` finds the phase from a toggle of
-  `sync`; fast logic reads `sync` registers on any phase (they change only
-  on the common edge), and `sync` reads fast registers written by phase 2.
+  phasing, no FIFO: `common.Phase4`'s phase is a fast register (a counter
+  kept in step by a toggle of `sync` registered twice in `fast`), and a
+  `sync` value enters fast logic through one fast register (or a
+  register's select, the demapper's squarer operand) with no logic of the
+  `sync` side's after it: such a register holds a symbol clock's values in
+  fast cycles 1, 2, 3 and the next 0, which the blocks address with
+  `Phase4.late` (the phase one fast cycle late; the equaliser's products
+  move two fast cycles, still inside their symbol clock); `sync` reads
+  fast registers written by phase 2. Vivado (build 4, 2026-11-03) had
+  timed the unregistered crossings at −2.9 ns (the equaliser's tap select
+  into the DSPs) and −1.6 ns (the phase toggle into the BCH).
   The demapper's metrics (16 products for 32 points: 8 per fast cycle)
   and the equaliser's FIR (11 products, one kind per phase) run here. The
   chain is valid at 40 Msps only (l_clk 160 MHz);
@@ -277,9 +285,13 @@ module's docstring states its contract by reference and its schedule):
   363 codewords on the measured distribution at 160 MHz, 0 at 200 MHz;
   and 32APSK's 163 M LLR/s (one LLR per decoder cycle) exceeds 160 MHz.
 
-The BCH's Chien search stays at one position per symbol clock (a frame of
-96 slots all with errors would still need 3.9 M cycles; on the lab signal
-no slot has needed BCH after a converged LDPC). Stage 1 holds the input
+The BCH unit runs in `fast` (`finish.FastBch`): Chien one position per
+fast cycle, Berlekamp-Massey's product steps two fast cycles each (the
+operands registered, then the product used: Vivado had a locator read,
+the GF(2¹⁶) multiplier and a locator write in one 6.25 ns cycle, 10 LUT
+levels, −3.3 ns); `tools/bch_cycles.py` measures it: a 93/120 word with
+12 errors takes 8 993 symbol clocks after its last beat (8 855 with
+one-cycle steps), a TMCC word 2 703, an error-free word 7. Stage 1 holds the input
 for about 0.7 % of the clocks (its decisions) and stage 3's ring when its
 reader stalls; `SlotsRx` puts a 1 024-symbol FIFO in front, the front end
 delivering 84 % of the clocks.
@@ -344,7 +356,10 @@ the front end: 20 873 / 27.5 / 52) = **52 616 LUT (98.9 %), 137 BRAM36
 (97.9 %), 192 DSP48E1 (87 %)** (before the last LUT steps: 53 337,
 100.3 %). DSP and block RAM fit; the LUTs are at the edge (Yosys figures;
 Vivado was within 1 % of Yosys on the front end, 5 824 against 5 879).
-94 % (50 008) needs about 2 600 LUT less. What did not reach its target
+94 % (50 008) needs about 2 600 LUT less. (Vivado, build 4, 2026-11-03:
+45 275 LUT, 85 %, 119 BRAM36, 176 DSP: Vivado is about 7 % under Yosys,
+so the image fits; its timing remedies, docs/plans/isdbs3-fpga-rx.md
+"Vivado, build 4", cost 51 LUT and 785 FF in Yosys.) What did not reach its target
 is the finish stage (5 941 against 3 500; by submodule, Yosys keeping the
 hierarchy: the BCH unit 2 276 (`synth/bch_parts.py unit4`: its 4-bit
 syndrome networks 407, Chien 216, multiplier 185, the rest the syndrome,
