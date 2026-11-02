@@ -17,7 +17,9 @@
 #     cs12_cs8.tcl (the place isdb_symbols.tcl takes in the other images).
 # Copies next to the upstream Tcl in projects/common: isdb_rx_base.tcl,
 # isdb_slots.tcl, isdb_slots.xdc, isdb_slots_top.v and the generated
-# isdb_slots_rx.v (`mise run fpga:slots-verilog`, always regenerated).
+# isdb_slots_rx.v (`mise run fpga:slots-verilog`, always regenerated), its
+# memories of depth <= 64 marked as LUT RAM for Vivado (ram_style.py; the
+# first build without it needed 146.5 BRAM36 of 140).
 #
 # Copyright isdb-rs contributors; this file is part of isdb-rs (see the
 # repository licence).
@@ -92,7 +94,10 @@ EOF
 for f in isdb_rx_base.tcl isdb_slots.tcl isdb_slots.xdc isdb_slots_top.v; do
     cp "$REPO/fpga/tezuka/$f" "$COMMON/$f"
 done
-cp "$V_S3" "$COMMON/isdb_slots_rx.v"
+# the block's memories of depth <= 64 as LUT RAM (ram_style.py: left to
+# itself, Vivado put 35 of them in block RAM, 30.5 BRAM36 that the image
+# does not have)
+python3 -I "$REPO/fpga/tezuka/ram_style.py" "$V_S3" "$COMMON/isdb_slots_rx.v"
 
 echo "patched $BD"
 grep -n 'isdb_' "$BD"
