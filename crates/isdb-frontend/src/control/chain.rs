@@ -69,6 +69,11 @@ pub const MAX_POINTS: usize = 32;
 /// "None" in a frame register (`0xFFFF_FFFF`, as in the `Slots` status
 /// block).
 pub const NONE: u32 = u32::MAX;
+/// [`reg::MAX_ITER`] at reset, the LDPC iteration limit the chain decodes
+/// with unless the host writes another: the HDL's `ldpc.DEFAULT_MAX_ITER`
+/// and the model's `isdbs3_phy::chain::ldpc::HDL_MAX_ITER` (the decoder's
+/// queue has no overrun at the chain's pace with it; at 16 it would).
+pub const MAX_ITER_RESET: u32 = 14;
 /// The front end's STATUS ([`super::reg::STATUS`]) bit that says the
 /// chain's `Slots` words go to the DMA.
 pub const STATUS_SLOTS: u32 = 4;
@@ -123,7 +128,8 @@ pub mod reg {
     /// written with the points before START.
     pub const CONST_MASK: u16 = 0x40B;
     /// The LDPC iteration limit each codeword is committed with (8 bits,
-    /// reset 16; [`super::features::ldpc_limit`] reads it too).
+    /// reset [`super::MAX_ITER_RESET`]; [`super::features::ldpc_limit`]
+    /// reads it too).
     pub const MAX_ITER: u16 = 0x40C;
     /// The input's AGC gain (Q6.10) the status blocks report.
     pub const AGC: u16 = 0x40D;
