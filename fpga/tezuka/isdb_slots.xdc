@@ -65,6 +65,16 @@ set_max_delay 6.250 -from $slots_fast -to $slots_fast
 set_max_delay 6.250 -from $slots_slow -to $slots_fast
 set_max_delay 6.250 -from $slots_fast -to $slots_slow
 
+# 3b. The chain's own symbol-clock paths at the real 25 ns (40 Msps). ADI
+#    times util_ad9361_divclk at 16 ns (l_clk / 4 of its 4 ns rx_clk); the
+#    chain needs l_clk at 160 MHz (its fast domain, rule 3) and so runs only
+#    at 40 Msps, where the symbol clock is 25 ns. Only the chain's and the
+#    decoder bridge's registers: the front end, its control and the
+#    register file and output selection of `SlotsRx` keep ADI's 16 ns (the
+#    front end alone serves other rates).
+set chain_slow [filter $slots_slow {NAME =~ */isdb_slots/inst/rx/chain/* || NAME =~ */isdb_slots/inst/rx/bridge/*}]
+set_max_delay 25.000 -from $chain_slow -to $chain_slow
+
 # 4. The decoder's clock against the symbol clock: only the bridge's
 #    AsyncFIFOs cross (Gray-coded pointers through two-register
 #    synchronisers, the FIFO memories' read data); bound them to the faster
@@ -72,3 +82,11 @@ set_max_delay 6.250 -from $slots_fast -to $slots_slow
 set slots_ldpc [filter [all_registers -clock [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */isdb_slots/inst/*mmcm*/CLKOUT0}]]] {NAME =~ */isdb_slots/inst/*}]
 set_max_delay -datapath_only 5.0 -from $slots_slow -to $slots_ldpc
 set_max_delay -datapath_only 5.0 -from $slots_ldpc -to $slots_slow
+
+# 5. Asynchronous resets into the block's reset synchronizers (Amaranth's
+#    ResetSynchronizer and the AsyncFIFOs' rst_cdc: a reset asserted
+#    asynchronously on the stages' PRE pins and released through the two
+#    stages in the destination clock). The assertion path from the symbol
+#    clock's reset into the decoder's clock is not a timed transfer.
+set_false_path -to [get_pins -hier -filter {NAME =~ */isdb_slots/inst/* && NAME =~ *_cdc/stage*_reg/PRE}]
+set_false_path -to [get_pins -hier -filter {NAME =~ */isdb_slots/inst/* && NAME =~ *_rst*/stage*_reg/PRE}]
