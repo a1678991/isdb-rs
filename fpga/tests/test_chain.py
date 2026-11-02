@@ -206,6 +206,36 @@ class DemapTest(unittest.TestCase):
         self.run_stage("cxxrtl", None)
 
 
+@needs("6-chain")
+@needs("3-eq")
+class ChainTest(unittest.TestCase):
+    """The whole chain (`SlotsChain`: stages 1-6, 8, 9) on chain-6: the
+    input symbols in, every `Slots` word out compared with the model's,
+    with the host's taps written at open and the LDPC stub (ldpc_if.py)
+    answering each frame's codewords after its TMCC codeword is committed.
+    The compiled backend only (about 50 000 cycles/s here; the Python
+    simulator would need hours): by default the first 2 260 000 symbols
+    (lock, the frame head, frame 0's TMCC and status blocks, 683 words);
+    the whole set (5 587 896 symbols, 3 frames, frame 2 decoded: 120 slot
+    blocks, 211 281 words, about 3 minutes) with FPGA_CHAIN_FULL=1."""
+
+    def run_chain(self, symbols):
+        from isdb_fpga.chain.stages import run_chain
+
+        what, bad = run_chain(doc("6-chain"), doc("3-eq")["taps"], "cxxrtl", symbols)
+        self.assertEqual(bad, [], "\n".join(bad[:8]))
+        return what
+
+    @cxx
+    def test_frame_0(self):
+        self.run_chain(2_260_000)
+
+    @cxx
+    @unittest.skipUnless(FULL, "FPGA_CHAIN_FULL=1")
+    def test_whole_set(self):
+        self.run_chain(None)
+
+
 class BridgeTest(unittest.TestCase):
     """The bridge from the chain's decoder port (40 MHz, 5-lane beats) to
     `ldpc.py`'s ports (200 MHz, one LLR per cycle, begin / start, results in

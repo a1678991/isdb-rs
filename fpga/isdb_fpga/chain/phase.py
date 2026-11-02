@@ -70,8 +70,9 @@ class SlotPhase(Elaboratable):
     def __init__(self, in_bits=6, table=None, snap_bits=1):
         self.snap_bits = snap_bits
         self.h_snap = Signal(snap_bits)  # the chain's status snapshot now (after head b's decision)
-        # the snapshot of the last frame-final slot (number 119) read: the
-        # status of the frame it ends (the model's state when it corrected it)
+        # the snapshot taken with the last slot numbered 0 (a frame's status:
+        # the model's state when that slot was corrected, which completes the
+        # previous frame's last symbol at the FIR's centre)
         self.o_snap = Signal(snap_bits)
         self.rb = r_bits(in_bits)
         self.table = list(table) if table is not None else cos_table()
@@ -268,8 +269,11 @@ class SlotPhase(Elaboratable):
         with m.Elif(adv):
             with m.If(j == SLOT - 1):
                 m.d.sync += busy.eq(0)
-        with m.If(adv & (j == SLOT - 1) & s_numbered & (s_number == SLOTS - 1)):
-            m.d.sync += self.o_snap.eq(s_snap)
+        # a frame ends (in the model) in the push whose symbol completes the
+        # FIR's 5 look-ahead after its last one: the next frame's slot 0,
+        # corrected at the head after it, whose snapshot that is
+        with m.If(take & q_numbered & (q_number == 0)):
+            m.d.sync += self.o_snap.eq(q_snap)
         with m.If(adv & ~take):
             m.d.sync += [j.eq(j + 1), ra.eq(Mux(ra == RING - 1, 0, ra + 1)),
                          pd.eq(pd + s_delta), pg.eq(pg + s_gamma)]

@@ -211,7 +211,7 @@ B44 frames of 16APSK 93/120, −400 Hz drifting, 14 dB):
 | 6 (4–6) | chain-3 → chain-5 (+ chain-4) | all 96 codewords' 1 077 120 beats (count, flags, tags), both codewords chain-5 carries in full (every position and LLR, the de-interleaved words), 16 learned points, n0 and K for the next frame, the TMCC soft bits | 12 000 symbols (the first codeword whole), 7 s | the whole frame, 9 s |
 | 8 (BCH) | gf.py (the Rust decoder's port) | 32 random words of 9 614 and 34 776 bits with 0–20 errors: result, count, roots | 2 words | 32 words |
 | bridge | — | the 40 MHz port to the 200 MHz decoder ports and back, two clocks | the test | — |
-| 1–9 | chain-6-chain | CHAIN6_RESULT | — | CHAIN6_TIME |
+| 1–9 | chain-6-chain (+ chain-3's taps) | every `Slots` word: 5 587 896 symbols in, 211 281 words out (3 frames: TMCC and status blocks; frame 2 decoded, 120 slot blocks), the LDPC stub answering each frame after its TMCC codeword is committed | — | 2 260 000 symbols (frame 0's blocks, 683 words) by default, about a minute (after the first build of the chain's library, about 3 minutes); the whole set (`FPGA_CHAIN_FULL=1`) 171 s, about 38 000 cycles/s |
 
 **Estimates** (`mise run fpga:chain-estimate`: Yosys `synth_xilinx`,
 before place and route; 6-bit input) against the plan's budget:
@@ -225,6 +225,9 @@ before place and route; 6-bit input) against the plan's budget:
 | `Demap` | 14 324 | 11 409 | 7 | 95 | (same row) |
 | `Finish` (`TmccResult`, BCH, PRBS, packer, status) | 7 282 | 3 337 | 2 | 0 | finish + packer + registers: 3 000 / 4 / 0 |
 | **sum** | **29 744** | **26 099** | **38** | **160** | 12 000 / 16 / 68–116 |
+
+(The whole `SlotsChain` in one run, `chain_estimate.py chain`, does not
+finish: abc9 in the 32-bit WebAssembly Yosys runs out of its 4 GB.)
 
 Over the budget, and where it goes: the demapper's ten 32-bit min trees
 (about 9 000 LUT) and the per-symbol choice between its two point sets,
@@ -242,8 +245,8 @@ decoder's commit order puts frame N's TMCC after frame N + 1's first slot
 results; the model's block order needs those held, about 3 slots of
 results, or a format that lets a frame's TMCC and status follow later:
 the integrator's call); the restart epoch for a layout committed after a
-restart (the model's insert happens before it); the chain-6 run through
-`LdpcBridge` with the real decoder; the register file of `SlotsRx`
+restart (the model's insert happens before it); the chain run through
+`LdpcBridge` with the real decoder (`isdb_fpga/ldpc.py`, on its branch); the register file of `SlotsRx`
 simulated through `gpio_out` (it is elaborated, not simulated); a loss in
 the input stream (`i_loss`) and a sync loss in simulation (the synthetic
 sets have neither); the 2×/4× clocks for the FIR and the demapper, and
