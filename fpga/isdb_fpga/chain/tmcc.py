@@ -344,7 +344,18 @@ class TmccResult(Elaboratable):
     only for a converged word: `o_bch_ok`), the first 200 into
     `TmccLayout`."""
 
-    def __init__(self, lag=LAYOUT_LAG):
+    def __init__(self, lag=LAYOUT_LAG, own_align=True):
+        """`own_align` False: the realignment into the BCH unit is the
+        caller's (`Finish` shares one `Realign` between the slots and the
+        TMCC): `al_*` drive it, `al_o_*` are its outputs."""
+        self.own_align = own_align
+        self.al_start = Signal()
+        self.al_i_valid = Signal()
+        self.al_i_bits = Signal(16)
+        self.al_i_q = Signal(12)
+        self.al_o_valid = Signal()
+        self.al_o_bits = Signal(16)
+        self.al_o_last = Signal()
         self.layout = TmccLayout(lag)
         self.r_valid = Signal()
         self.r_ready = Signal()
@@ -381,7 +392,14 @@ class TmccResult(Elaboratable):
         m = Module()
         m.submodules.layout = lay = self.layout
         m.submodules.ext = ext = Realign()
-        m.submodules.al = al = Realign()
+        if self.own_align:
+            m.submodules.al = al = Realign()
+            m.d.comb += [
+                al.skip.eq(0), al.take.eq(TMCC_DATA), al.lead.eq((-TMCC_DATA) % 16),
+                al.start.eq(self.al_start), al.i_valid.eq(self.al_i_valid), al.i_bits.eq(self.al_i_bits),
+                al.i_q.eq(self.al_i_q),
+                self.al_o_valid.eq(al.o_valid), self.al_o_bits.eq(al.o_bits), self.al_o_last.eq(al.o_last),
+            ]
         m.submodules.prbs = prbs = Prbs15("100000000001110")
         buf = Memory(shape=16, depth=608, init=[])
         m.submodules.buf = buf
@@ -396,12 +414,12 @@ class TmccResult(Elaboratable):
         m.d.comb += [
             dis.eq(ext.o_bits ^ prbs.bits),
             ext.skip.eq(NULL_HEAD), ext.take.eq(TMCC_DATA), ext.lead.eq(0),
-            al.skip.eq(0), al.take.eq(TMCC_DATA), al.lead.eq((-TMCC_DATA) % 16),
             ext.i_bits.eq(self.r_bits), ext.i_q.eq(q),
             prbs.step.eq(ext.o_valid), prbs.count.eq(Mux(ext.o_last, TMCC_DATA % 16, 16)),
             wp.addr.eq(nout), wp.data.eq(dis), wp.en.eq(ext.o_valid),
-            al.i_valid.eq(ext.o_valid), al.i_bits.eq(dis), al.i_q.eq(nout),
-            self.bch_valid.eq(al.o_valid), self.bch_bits.eq(al.o_bits), self.bch_last.eq(al.o_last),
+            self.al_i_valid.eq(ext.o_valid), self.al_i_bits.eq(dis), self.al_i_q.eq(nout),
+            self.bch_valid.eq(self.al_o_valid), self.bch_bits.eq(self.al_o_bits),
+            self.bch_last.eq(self.al_o_last),
         ]
         with m.If(ext.o_valid):
             m.d.sync += nout.eq(nout + 1)
@@ -426,7 +444,7 @@ class TmccResult(Elaboratable):
                     m.d.sync += [iters.eq(self.r_iterations), conv.eq(self.r_converged), fr.eq(self.frame),
                                  q.eq(0), nout.eq(0), self.busy.eq(1)]
                     # the next cycle may bring the first beat: start now
-                    m.d.comb += [ext.start.eq(1), al.start.eq(1), prbs.reset.eq(1), self.bch_start.eq(1)]
+                    m.d.comb += [ext.start.eq(1), self.al_start.eq(1), prbs.reset.eq(1), self.bch_start.eq(1)]
                     m.next = "BITS"
             with m.State("BITS"):
                 m.d.comb += [self.r_ready.eq(1), ext.i_valid.eq(self.r_valid)]
