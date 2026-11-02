@@ -124,8 +124,9 @@ def _is_tx(path):
 
 
 def vector_files():
-    """The receive front end's vector files (the transmit ones and the
-    LDPC decoder's `ldpc-*.json` share the directory)."""
+    """The receive front end's vector files (the transmit ones, the LDPC
+    decoder's `ldpc-*.json` and the chain's `chain-*.json` share the
+    directory)."""
     return [
         p
         for p in sorted(glob.glob(os.path.join(VECTORS, "*.json")))

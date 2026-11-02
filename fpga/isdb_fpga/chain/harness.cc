@@ -1,0 +1,191 @@
+// Generic stream driver for a CXXRTL-compiled block (isdb_fpga/chain/simx.py).
+//
+// The design is compiled together with this file into a shared library;
+// Python (ctypes) names the ports, hands over the input records and the
+// output groups, and `run` clocks the design until the inputs are used
+// up and `tail` more cycles have passed. Per cycle: the current input
+// record (if any) is put on the input ports with `valid` high; the
+// combinational logic is settled with the clock low and `ready` read; the
+// clock rises; every output group whose valid port is high after the edge
+// appends its data ports' values (sign-extended as told) to its buffer.
+// That is exactly the Amaranth testbench sequence ctx.set(...); await
+// ctx.tick(); ctx.get(...) of isdb_fpga/chain/simx.py's pysim backend.
+
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+#include <cxxrtl/capi/cxxrtl_capi.h>
+
+extern "C" cxxrtl_toplevel cxxrtl_design_create();
+
+struct Port {
+	cxxrtl_object *obj;
+	size_t width;
+	int is_signed;
+};
+
+struct Group {
+	int valid;
+	std::vector<int> data;
+	std::vector<int64_t> out;
+};
+
+struct Harness {
+	cxxrtl_handle h;
+	cxxrtl_object *clk;
+	std::vector<Port> ports;
+	std::vector<Group> groups;
+	uint64_t cycles = 0;
+};
+
+static void put(cxxrtl_object *o, size_t width, int64_t v) {
+	uint32_t *p = o->next ? o->next : o->curr;
+	size_t chunks = (width + 31) / 32;
+	for (size_t i = 0; i < chunks; i++) {
+		uint32_t w = i < 2 ? (uint32_t)((uint64_t)v >> (32 * i)) : (v < 0 ? 0xFFFFFFFFu : 0);
+		size_t bits = width - 32 * i;
+		if (bits < 32)
+			w &= (1u << bits) - 1;
+		p[i] = w;
+	}
+}
+
+static int64_t get(const Port &p) {
+	uint64_t v = p.obj->curr[0];
+	if (p.width > 32)
+		v |= (uint64_t)p.obj->curr[1] << 32;
+	if (p.width < 64) {
+		v &= (1ull << p.width) - 1;
+		if (p.is_signed && (v >> (p.width - 1)) & 1)
+			v |= ~((1ull << p.width) - 1);
+	}
+	return (int64_t)v;
+}
+
+extern "C" {
+
+void *h_create() {
+	Harness *s = new Harness;
+	s->h = cxxrtl_create(cxxrtl_design_create());
+	s->clk = cxxrtl_get(s->h, "clk");
+	cxxrtl_object *rst = cxxrtl_get(s->h, "rst");
+	if (rst)
+		put(rst, 1, 0);
+	return s;
+}
+
+void h_destroy(void *p) {
+	Harness *s = (Harness *)p;
+	cxxrtl_destroy(s->h);
+	delete s;
+}
+
+// Index of port `name` (-1 if absent); `is_signed` sign-extends reads.
+int h_port(void *p, const char *name, int is_signed) {
+	Harness *s = (Harness *)p;
+	cxxrtl_object *o = cxxrtl_get(s->h, name);
+	if (!o)
+		return -1;
+	s->ports.push_back(Port{o, o->width, is_signed});
+	return (int)s->ports.size() - 1;
+}
+
+void h_set(void *p, int port, int64_t v) {
+	Harness *s = (Harness *)p;
+	put(s->ports[port].obj, s->ports[port].width, v);
+}
+
+int64_t h_get(void *p, int port) {
+	Harness *s = (Harness *)p;
+	return get(s->ports[port]);
+}
+
+static void settle(Harness *s) {
+	put(s->clk, 1, 0);
+	cxxrtl_step(s->h);
+}
+
+static void edge(Harness *s) {
+	put(s->clk, 1, 1);
+	cxxrtl_step(s->h);
+	s->cycles++;
+}
+
+// One clock: settle, rise, collect the groups.
+static void tick(Harness *s) {
+	settle(s);
+	edge(s);
+	for (auto &g : s->groups) {
+		if (get(s->ports[g.valid])) {
+			for (int d : g.data)
+				g.out.push_back(get(s->ports[d]));
+		}
+	}
+}
+
+void h_tick(void *p, int n) {
+	Harness *s = (Harness *)p;
+	for (int i = 0; i < n; i++)
+		tick(s);
+}
+
+int h_group(void *p, int valid, const int *data, int n) {
+	Harness *s = (Harness *)p;
+	Group g;
+	g.valid = valid;
+	g.data.assign(data, data + n);
+	s->groups.push_back(g);
+	return (int)s->groups.size() - 1;
+}
+
+int64_t h_group_len(void *p, int g) {
+	return (int64_t)((Harness *)p)->groups[g].out.size();
+}
+
+void h_group_read(void *p, int g, int64_t *dst) {
+	Harness *s = (Harness *)p;
+	std::memcpy(dst, s->groups[g].out.data(), s->groups[g].out.size() * sizeof(int64_t));
+	s->groups[g].out.clear();
+}
+
+uint64_t h_cycles(void *p) {
+	return ((Harness *)p)->cycles;
+}
+
+// Feed `n` records of `k` fields (row-major) through ports `fields`, with
+// `valid` high while a record is presented and `ready` (or -1: always)
+// accepting it at the edge; `gap[i]` idle cycles after record i (NULL:
+// none). Then `tail` cycles. Returns the cycles used.
+uint64_t h_run(void *p, int valid, int ready, const int *fields, int k, const int64_t *rec,
+               int64_t n, const int32_t *gap, int64_t tail) {
+	Harness *s = (Harness *)p;
+	uint64_t start = s->cycles;
+	for (int64_t i = 0; i < n; i++) {
+		for (int f = 0; f < k; f++)
+			put(s->ports[fields[f]].obj, s->ports[fields[f]].width, rec[i * k + f]);
+		put(s->ports[valid].obj, 1, 1);
+		for (;;) {
+			settle(s);
+			bool ok = ready < 0 || get(s->ports[ready]);
+			edge(s);
+			for (auto &g : s->groups) {
+				if (get(s->ports[g.valid])) {
+					for (int d : g.data)
+						g.out.push_back(get(s->ports[d]));
+				}
+			}
+			if (ok)
+				break;
+		}
+		put(s->ports[valid].obj, 1, 0);
+		if (gap)
+			for (int32_t j = 0; j < gap[i]; j++)
+				tick(s);
+	}
+	for (int64_t j = 0; j < tail; j++)
+		tick(s);
+	return s->cycles - start;
+}
+
+}
