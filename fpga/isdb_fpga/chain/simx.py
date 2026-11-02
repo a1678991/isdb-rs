@@ -129,6 +129,8 @@ class _Cxx:
                               ctypes.c_int, ctypes.POINTER(ctypes.c_int64), ctypes.c_int64,
                               ctypes.POINTER(ctypes.c_int32), ctypes.c_int64]
         lib.h_destroy.argtypes = [ctypes.c_void_p]
+        lib.h_stall_limit.argtypes = [ctypes.c_int64]
+        lib.h_stalled.restype = ctypes.c_int64
         self.lib = lib
         self.h = lib.h_create()
         self.idx = {}
@@ -140,6 +142,7 @@ class _Cxx:
             self.idx[name] = i
             self.width[name] = len(sig)
         self.groups = []
+        self.stall_limit = 20_000_000
 
     def set(self, name, v):
         self.lib.h_set(self.h, self.idx[name], int(v))
@@ -177,8 +180,13 @@ class _Cxx:
         rec = (ctypes.c_int64 * len(flat))(*flat)
         fl = (ctypes.c_int * k)(*[self.idx[f] for f in fields])
         gp = (ctypes.c_int32 * n)(*gaps) if gaps is not None else None
-        return self.lib.h_run(self.h, self.idx[valid], self.idx[ready] if ready else -1, fl, k, rec, n,
-                              gp, tail)
+        self.lib.h_stall_limit(self.stall_limit)
+        c = self.lib.h_run(self.h, self.idx[valid], self.idx[ready] if ready else -1, fl, k, rec, n,
+                           gp, tail)
+        self.stalled = self.lib.h_stalled()
+        if self.stalled >= 0:
+            raise RuntimeError(f"record {self.stalled} not accepted within {self.stall_limit} cycles")
+        return c
 
     def close(self):
         if self.h:

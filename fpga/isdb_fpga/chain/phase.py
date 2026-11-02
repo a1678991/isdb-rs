@@ -67,7 +67,12 @@ STEP_BITS = 40  # |Delta| <= 2**31 * 2**37 / 9 296 / 2**21 < 2**34; |Gamma| < 2*
 
 
 class SlotPhase(Elaboratable):
-    def __init__(self, in_bits=6, table=None):
+    def __init__(self, in_bits=6, table=None, snap_bits=1):
+        self.snap_bits = snap_bits
+        self.h_snap = Signal(snap_bits)  # the chain's status snapshot now (after head b's decision)
+        # the snapshot of the last frame-final slot (number 119) read: the
+        # status of the frame it ends (the model's state when it corrected it)
+        self.o_snap = Signal(snap_bits)
         self.rb = r_bits(in_bits)
         self.table = list(table) if table is not None else cos_table()
         # the NCO stream
@@ -147,6 +152,7 @@ class SlotPhase(Elaboratable):
         q_numbered = Signal()
         q_number = Signal(range(SLOTS))
         q_frame = Signal(32)
+        q_snap = Signal(self.snap_bits)
         take = Signal()
 
         m.submodules.gdiv = gdiv = DivRound(33, 26)
@@ -213,7 +219,7 @@ class SlotPhase(Elaboratable):
                         q_gain.eq(a_gain),
                         q_gamma.eq(round_shift(mgamma.p, 37 - INTERP_FRAC)),
                         q_word.eq(a_word), q_numbered.eq(a_numbered), q_number.eq(a_number),
-                        q_frame.eq(a_frame),
+                        q_frame.eq(a_frame), q_snap.eq(self.h_snap),
                     ]
                     m.next = "SHIFT"
             with m.State("SHIFT"):
@@ -238,6 +244,7 @@ class SlotPhase(Elaboratable):
         s_numbered = Signal()
         s_number = Signal(range(SLOTS))
         s_frame = Signal(32)
+        s_snap = Signal(self.snap_bits)
         pd = Signal(signed(STEP_BITS + 15))  # Delta * j
         pg = Signal(signed(STEP_BITS + 15))  # Gamma * j
         adv = Signal()
@@ -256,11 +263,13 @@ class SlotPhase(Elaboratable):
                 busy.eq(1), j.eq(0), ra.eq(q_addr), s_at.eq(q_at), s_theta.eq(q_theta),
                 s_delta.eq(q_delta), s_gain.eq(q_gain), s_gamma.eq(q_gamma), s_word.eq(q_word),
                 s_numbered.eq(q_numbered), s_number.eq(q_number), s_frame.eq(q_frame),
-                pd.eq(0), pg.eq(0),
+                pd.eq(0), pg.eq(0), s_snap.eq(q_snap),
             ]
         with m.Elif(adv):
             with m.If(j == SLOT - 1):
                 m.d.sync += busy.eq(0)
+        with m.If(adv & (j == SLOT - 1) & s_numbered & (s_number == SLOTS - 1)):
+            m.d.sync += self.o_snap.eq(s_snap)
         with m.If(adv & ~take):
             m.d.sync += [j.eq(j + 1), ra.eq(Mux(ra == RING - 1, 0, ra + 1)),
                          pd.eq(pd + s_delta), pg.eq(pg + s_gamma)]

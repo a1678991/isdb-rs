@@ -206,6 +206,96 @@ class DemapTest(unittest.TestCase):
         self.run_stage("cxxrtl", None)
 
 
+class BridgeTest(unittest.TestCase):
+    """The bridge from the chain's decoder port (40 MHz, 5-lane beats) to
+    `ldpc.py`'s ports (200 MHz, one LLR per cycle, begin / start, results in
+    commit order): a 3-lane codeword with first/last, a TMCC begin / write /
+    done, then a result record and two words back with the tags in order."""
+
+    def test_two_clocks(self):
+        from amaranth.hdl import Module
+        from amaranth.sim import Simulator
+
+        from isdb_fpga.chain.ldpc_if import OP_BEGIN, OP_DONE, OP_WRITE, LdpcBridge, LdpcPort
+
+        port = LdpcPort()
+        br = LdpcBridge(port, max_iter=16)
+        top = Module()
+        top.submodules.br = br
+        from amaranth.hdl import ClockDomain
+
+        top.domains.sync = ClockDomain()
+        top.domains.ldpc = ClockDomain()
+        sim = Simulator(top)
+        sim.add_clock(25e-9, domain="sync")
+        sim.add_clock(5e-9, domain="ldpc")
+        writes, begins, starts, outs = [], [], [], []
+        beats = [
+            (OP_WRITE, 0, 3, 1, 0, 7, [10, 20, 30], [1, -2, 3], 0xA1),
+            (OP_WRITE, 0, 3, 0, 1, 7, [11, 21, 31], [4, -5, 6], 0xA1),
+            (OP_BEGIN, 1, 1, 0, 0, 3, [0], [0], 0x80),
+            (OP_WRITE, 1, 1, 0, 0, 3, [1870], [-7], 0x80),
+            (OP_DONE, 1, 1, 0, 0, 3, [0], [0], 0x80),
+        ]
+
+        async def chain(ctx):
+            for op, cx, n, fi, la, rate, pos, llr, tag in beats:
+                ctx.set(port.in_valid, 1)
+                ctx.set(port.in_op, op)
+                ctx.set(port.in_ctx, cx)
+                ctx.set(port.in_n, n)
+                ctx.set(port.in_first, fi)
+                ctx.set(port.in_last, la)
+                ctx.set(port.in_rate, rate)
+                ctx.set(port.in_tag, tag)
+                ctx.set(port.in_shortened, cx)
+                for k in range(5):
+                    ctx.set(port.in_pos[k], pos[k] if k < len(pos) else 0)
+                    ctx.set(port.in_llr[k], llr[k] if k < len(llr) else 0)
+                await ctx.tick("sync")
+            ctx.set(port.in_valid, 0)
+            ctx.set(port.out_ready, 1)
+            for _ in range(200):
+                await ctx.tick("sync")
+                if ctx.get(port.out_valid):
+                    if ctx.get(port.out_head):
+                        outs.append(("head", ctx.get(port.out_tag), ctx.get(port.out_iterations)))
+                    else:
+                        outs.append(("word", ctx.get(port.out_bits), ctx.get(port.out_last)))
+
+        async def decoder(ctx):
+            for cyc in range(400):
+                await ctx.tick("ldpc")
+                if ctx.get(br.begin):
+                    begins.append(ctx.get(br.d_ctx))
+                if ctx.get(br.d_valid):
+                    writes.append((ctx.get(br.d_ctx), ctx.get(br.d_pos), ctx.get(br.d_llr), ctx.get(br.d_rate)))
+                if ctx.get(br.start):
+                    starts.append((ctx.get(br.d_ctx), ctx.get(br.st_rate), ctx.get(br.st_short),
+                                   ctx.get(br.st_max_iter)))
+                if cyc == 300:
+                    ctx.set(br.res_valid, 1)
+                    ctx.set(br.res_iterations, 2)
+                    ctx.set(br.res_converged, 1)
+                elif cyc in (301, 302):
+                    ctx.set(br.res_valid, 0)
+                    ctx.set(br.o_valid, 1)
+                    ctx.set(br.o_data, 0x1234 + cyc)
+                    ctx.set(br.o_last, cyc == 302)
+                else:
+                    ctx.set(br.res_valid, 0)
+                    ctx.set(br.o_valid, 0)
+
+        sim.add_testbench(chain)
+        sim.add_testbench(decoder)
+        sim.run()
+        self.assertEqual(begins, [0, 1])
+        self.assertEqual(writes, [(0, 10, 1, 6), (0, 20, -2, 6), (0, 30, 3, 6), (0, 11, 4, 6),
+                                  (0, 21, -5, 6), (0, 31, 6, 6), (1, 1870, -7, 2)])
+        self.assertEqual(starts, [(0, 6, 0, 16), (1, 2, 1, 16)])
+        self.assertEqual(outs, [("head", 0xA1, 2), ("word", 0x1234 + 301, 0), ("word", 0x1234 + 302, 1)])
+
+
 class BchTest(unittest.TestCase):
     """The BCH unit (finish.py) against gf.decode, the Python port of
     `isdb_fec::bch::decode`: random words of the TMCC (9 614) and 93/120

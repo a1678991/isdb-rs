@@ -77,6 +77,9 @@ from .common import (
 from .nco import Nco
 
 AT_BITS = 48  # symbol indices (2**48 symbols: 96 days at 33.76 Mbaud)
+# the status snapshot's fields (SyncFront.snap), as the status block wants them
+SNAP_FIELDS = [("peak", 32), ("pos", 16), ("sum", 48), ("locked", 1), ("parity", 1), ("offset", 16),
+               ("stray", 32), ("missed", 32), ("carrier", 32)]
 
 
 def ab_max(in_bits):
@@ -613,6 +616,10 @@ class SyncFront(Elaboratable):
         self.o_f_at = Signal(AT_BITS)
         self.o_restart = Signal()
         self.o_restart_loss = Signal()
+        self.ext_hold = Signal()  # a later stage holds the input (stage 3's ring)
+        # the status snapshot after each decision (the model's state after
+        # the push that completes a decision window): SNAP_FIELDS
+        self.snap = Signal(sum(w for _, w in SNAP_FIELDS))
 
     def elaborate(self, platform):
         m = Module()
@@ -622,7 +629,7 @@ class SyncFront(Elaboratable):
         drain = Signal(range(32))
         loss_go = Signal()
         m.d.comb += [
-            self.i_ready.eq(~sy.hold & (drain == 0) & ~loss_go),
+            self.i_ready.eq(~sy.hold & (drain == 0) & ~loss_go & ~self.ext_hold),
             nco.i_valid.eq(self.i_valid & ~self.i_loss),
             nco.i_ready.eq(self.i_ready),
             sy.i_accept.eq(nco.accept),
@@ -640,6 +647,13 @@ class SyncFront(Elaboratable):
         ]
         with m.If(nco.accept):
             m.d.sync += tot.eq(tot + 1)
+        # the decision's end: the carrier loop has answered and the period's
+        # statistics are in (one cycle later for the register update)
+        snap_go = Signal()
+        m.d.sync += snap_go.eq(sy.decided | sy.restart)
+        with m.If(snap_go):
+            m.d.sync += self.snap.eq(Cat(sy.st_peak, sy.st_pos, sy.st_sum, sy.st_locked, sy.st_parity,
+                                         sy.st_offset, sy.st_stray, sy.st_missed, nco.f))
         m.d.sync += [self.o_restart.eq(sy.restart), self.o_restart_loss.eq(loss_go), loss_go.eq(0)]
         # a loss: let the windows in flight through, then restart at the
         # index after the gap

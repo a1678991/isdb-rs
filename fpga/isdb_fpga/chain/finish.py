@@ -343,3 +343,357 @@ class SlotPrbs(Elaboratable):
                         m.d.sync += reg.eq(Cat(*after[cnum]))
         del states
         return m
+
+
+RATES = [41, 49, 61, 73, 81, 89, 93, 97, 101, 105, 109]
+TMCC_N = 9614
+BCH_LENGTHS = sorted({374 * r - 6 for r in RATES} | {TMCC_N})
+
+
+class Finish(Elaboratable):
+    """The result side of stages 7-9: the decoder's results (`r_*`, the
+    LDPC port's out stream) into `Slots` blocks through the packer, in the
+    model's order: per whole frame its slots (decoded frames: all 120, the
+    dummies included), its TMCC, its status.
+
+    - **Frames** (`f_*`): at each whole frame's end the back end pushes
+      (frame, decoded) and a status snapshot (`snap_*`, `packer.status_layout`
+      less the counters, which are this stage's). One snapshot register: a
+      frame's status leaves before the next frame ends (its TMCC result
+      comes within the next frame).
+    - **Slot results** (tag bit 7 clear): the slot PRBS (reset at a frame's
+      first slot result) over the first k positions, k = 374 r (an overrun
+      codeword, no words, advances it by k too and carries zeros); the
+      words into a 2 560-word buffer and, realigned, the first k - 6 bits
+      into the BCH unit (converged words only); then the slot block: w0, w1,
+      w2 and the 176 + D header and data bits with the Chien roots flipped
+      (whatever the result, as the model). Before a valid slot k the dummy
+      blocks of the slots since the last valid one (mode, modulation and
+      rate of that valid slot: the dummies of a unit follow its valid
+      slots); after the frame's last valid slot, at the TMCC result, the
+      rest up to slot 119.
+    - **TMCC results** (tag bit 7): `TmccResult` (dispersal, BCH, layout),
+      the TMCC block (BCH, iterations, the frame its layout applies from,
+      the 9 422 bits), the counters, then the status block (`StatusSource`).
+    - **Order**: the blocks are the model's when the results come in frame
+      order (a frame's slot results, then its TMCC result). The decoder
+      returns them in commit order, in which frame N's TMCC (its burst ends
+      about 3 slots into frame N + 1) follows frame N + 1's first 2 or 3
+      slot results: reproducing the model's order then needs those slot
+      results held (about 3 x 2 548 words) until frame N's status is out.
+      Not built: fpga/README.md "The ISDB-S3 chain", what is left. The
+      chain-6 simulation's LDPC stub answers in frame order.
+    """
+
+    def __init__(self, lag=2):
+        from .packer import Packer, StatusSource
+        from .tmcc import TmccResult
+
+        self.tmcc = TmccResult(lag)
+        self.bch = BchUnit(BCH_LENGTHS)
+        self.prbs = SlotPrbs()
+        self.packer = Packer()
+        self.status = StatusSource()
+        self.lag = lag
+        # results
+        self.r_valid = Signal()
+        self.r_ready = Signal()
+        self.r_head = Signal()
+        self.r_tag = Signal(64)
+        self.r_iterations = Signal(8)
+        self.r_converged = Signal()
+        self.r_overrun = Signal()
+        self.r_bits = Signal(16)
+        self.r_last = Signal()
+        # frames
+        self.f_valid = Signal()
+        self.f_frame = Signal(32)
+        self.f_decoded = Signal()
+        # the demapper's point RAM for the status (bank select: the frame's)
+        self.pt_prev = Signal()
+        # counters
+        names = ("frames", "undecoded", "tmcc_failed", "slots", "ldpc_failed", "bch_failed")
+        self.counters = {n: Signal(32, name=f"cnt_{n}") for n in names}
+        self.iterations = Signal(64)
+        self.o_valid = self.packer.o_valid
+        self.o_word = self.packer.o_word
+
+    def elaborate(self, platform):
+        from amaranth.lib.fifo import SyncFIFO
+        from amaranth.lib.memory import Memory
+
+        from .tmcc import Realign
+
+        m = Module()
+        m.submodules.tmcc = tr = self.tmcc
+        m.submodules.bch = bch = self.bch
+        m.submodules.prbs = prbs = self.prbs
+        m.submodules.packer = pk = self.packer
+        m.submodules.status = st = self.status
+        m.submodules.al = al = Realign()
+        m.submodules.frames = ff = SyncFIFO(width=33, depth=4)
+        cnt = self.counters
+        m.d.comb += [ff.w_data.eq(Cat(self.f_frame, self.f_decoded)), ff.w_en.eq(self.f_valid)]
+        fr_frame = ff.r_data[:32]
+        fr_dec = ff.r_data[32]
+
+        tag = self.r_tag
+        is_tmcc = tag[7]
+        slot = tag[0:7]
+        rate = tag[8:12]
+        mod = tag[12:16]
+        mode = tag[16:19]
+        tframe = tag[32:64]
+        k_of = Array(Const(374 * RATES[i - 1] if 1 <= i <= 11 else 0, 16) for i in range(16))
+        nsel_of = Array(Const(BCH_LENGTHS.index(374 * RATES[i - 1] - 6) if 1 <= i <= 11 else 0,
+                              range(len(BCH_LENGTHS))) for i in range(16))
+        tmcc_sel = BCH_LENGTHS.index(TMCC_N)
+
+        # the slot in hand
+        s_slot = Signal(7)
+        s_mode = Signal(3)
+        s_mod = Signal(4)
+        s_rate = Signal(4)
+        s_it = Signal(8)
+        s_conv = Signal()
+        s_k = Signal(16)
+        s_q = Signal(12)
+        s_run = Signal()  # the BCH runs on this slot
+        last_valid = Signal(8, init=0xFF)  # the last slot emitted (0xFF: none in this frame)
+        d_mode = Signal(3)
+        d_mod = Signal(4)
+        d_rate = Signal(4)
+        dslot = Signal(8)
+        dend = Signal(8)
+        prev_frame = Signal(32)
+        have_prev = Signal()
+
+        buf = Memory(shape=16, depth=2560, init=[])
+        m.submodules.buf = buf
+        bw = buf.write_port()
+        brd = buf.read_port()
+        remaining = Signal(17)
+        cntw = Signal(5)
+        m.d.comb += cntw.eq(Mux(remaining >= 16, 16, remaining))
+        dis = self.r_bits ^ prbs.bits
+        keep = ((Const(1, 17) << cntw) - 1)[:16]
+
+        # BCH sharing: the slot path or TmccResult
+        tmode = Signal()
+        slot_start = Signal()
+        m.d.comb += [
+            bch.start.eq(Mux(tmode, tr.bch_start, slot_start)),
+            bch.n_sel.eq(Mux(tmode, tmcc_sel, nsel_of[rate])),
+            bch.i_valid.eq(Mux(tmode, tr.bch_valid, al.o_valid & s_run)),
+            bch.i_bits.eq(Mux(tmode, tr.bch_bits, al.o_bits)),
+            bch.i_last.eq(Mux(tmode, tr.bch_last, al.o_last)),
+            tr.bch_done.eq(bch.done & tmode), tr.bch_ok.eq(bch.ok), tr.bch_corrected.eq(bch.corrected),
+            tr.bch_mask.eq(bch.o_mask),
+            al.skip.eq(0), al.take.eq(k_of[rate] - 6), al.lead.eq((-(k_of[rate] - 6))[:4]),
+            al.start.eq(slot_start),
+            al.i_bits.eq(dis & keep), al.i_q.eq(s_q),
+            tr.r_bits.eq(self.r_bits), tr.r_last.eq(self.r_last), tr.r_head.eq(self.r_head),
+            tr.r_iterations.eq(self.r_iterations), tr.r_converged.eq(self.r_converged & ~self.r_overrun),
+            tr.frame.eq(fr_frame),
+        ]
+        q_out = Signal(12)
+        m.d.comb += bch.q_beat.eq(Mux(tmode, tr.bch_q, q_out))
+        bch_done_l = Signal()
+        bch_ok_l = Signal()
+        bch_cor_l = Signal(4)
+        with m.If(bch.done & ~tmode):
+            m.d.sync += [bch_done_l.eq(1), bch_ok_l.eq(bch.ok), bch_cor_l.eq(bch.corrected)]
+
+        m.d.sync += [pk.b_valid.eq(0), st.begin.eq(0), st.next.eq(0)]
+        m.d.comb += [prbs.step.eq(0), prbs.count.eq(cntw), bw.en.eq(0), al.i_valid.eq(0),
+                     tr.r_valid.eq(0), tr.o_go.eq(0)]
+        nb = Signal(12)  # payload bit words of the slot
+        hd_bits = Signal(17)
+        word_i = Signal(12)
+        tw = Signal(2)
+        tmcc_hdr = Signal(64)
+        pace = Signal()
+
+        def block(kind, frame, length):
+            m.d.sync += [pk.b_valid.eq(1), pk.b_kind.eq(kind), pk.b_frame.eq(frame), pk.b_len.eq(length)]
+
+        s_frame = Signal(32)
+        frame_of_slot = s_frame
+        m.d.comb += pk.w_valid.eq(0)
+        with m.FSM(name="finish"):
+            with m.State("IDLE"):
+                with m.If(self.r_valid & self.r_head & is_tmcc & ff.r_rdy):
+                    m.d.sync += [tmode.eq(1), dslot.eq(Mux(have_prev & (prev_frame == fr_frame), last_valid + 1, 0)),
+                                 dend.eq(Mux(fr_dec, 120, 0))]
+                    m.next = "TMCC_DUMMIES"
+                with m.Elif(self.r_valid & self.r_head & ~is_tmcc):
+                    new_frame = ~have_prev | (prev_frame != tframe)
+                    with m.If(new_frame):
+                        m.d.sync += [have_prev.eq(1), prev_frame.eq(tframe)]
+                        m.d.comb += prbs.reset.eq(1)
+                    m.d.comb += slot_start.eq(1)
+                    with m.If(1):
+                        m.d.sync += [s_slot.eq(slot), s_mode.eq(mode), s_mod.eq(mod), s_rate.eq(rate),
+                                     s_it.eq(self.r_iterations), s_conv.eq(self.r_converged & ~self.r_overrun),
+                                     s_k.eq(k_of[rate]), remaining.eq(k_of[rate]), s_q.eq(0),
+                                     s_run.eq(self.r_converged & ~self.r_overrun), bch_done_l.eq(0),
+                                     dslot.eq(Mux(new_frame, 0, last_valid + 1)), s_frame.eq(tframe)]
+                        m.d.comb += self.r_ready.eq(1)
+                        with m.If(self.r_overrun):
+                            m.next = "OVERRUN"
+                        with m.Else():
+                            m.next = "WORDS"
+            with m.State("WORDS"):
+                m.d.comb += self.r_ready.eq(1)
+                with m.If(self.r_valid):
+                    with m.If(remaining > 0):
+                        m.d.comb += [prbs.step.eq(1), bw.addr.eq(s_q), bw.data.eq(dis & keep), bw.en.eq(1),
+                                     al.i_valid.eq(1)]
+                        m.d.sync += [remaining.eq(remaining - cntw), s_q.eq(s_q + 1)]
+                    with m.If(self.r_last):
+                        m.next = "BCH"
+            with m.State("OVERRUN"):
+                with m.If(remaining > 0):
+                    m.d.comb += [prbs.step.eq(1), bw.addr.eq(s_q), bw.data.eq(0), bw.en.eq(1)]
+                    m.d.sync += [remaining.eq(remaining - cntw), s_q.eq(s_q + 1)]
+                with m.Else():
+                    m.next = "BCH"
+            with m.State("BCH"):
+                with m.If(~s_run | bch_done_l):
+                    m.next = "DUMMIES"
+            with m.State("DUMMIES"):
+                # the dummy slots before this one
+                with m.If(dslot < s_slot):
+                    with m.If(pk.b_ready & ~pk.b_valid):
+                        block(1, frame_of_slot, 3)
+                        m.d.sync += word_i.eq(0)
+                        m.next = "DUMMY_W"
+                with m.Else():
+                    with m.If(pk.b_ready & ~pk.b_valid):
+                        hb = s_k - 198
+                        m.d.sync += [hd_bits.eq(hb), nb.eq((hb + 15) >> 4), word_i.eq(0), q_out.eq(0)]
+                        block(1, frame_of_slot, 3 + ((hb + 15) >> 4))
+                        m.next = "SLOT_W"
+            with m.State("DUMMY_W"):
+                ws = Array([Cat(dslot[:8], d_mode, Const(1, 1), Const(0, 4)), Cat(d_mod, d_rate, Const(0, 8)),
+                            Const(0xFFFF, 16)])
+                m.d.comb += [pk.w_valid.eq(1), pk.w_data.eq(ws[word_i[:2]])]
+                with m.If(pk.w_ready):
+                    m.d.sync += word_i.eq(word_i + 1)
+                    with m.If(word_i == 2):
+                        m.d.sync += dslot.eq(dslot + 1)
+                        m.next = "DUMMIES"
+            with m.State("SLOT_W"):
+                bok = s_run & bch_ok_l
+                w0 = Cat(s_slot, Const(0, 1), s_mode, Const(0, 1), s_conv, bok, Const(0, 2))
+                w1 = Cat(s_mod, s_rate, s_it)
+                w2 = Mux(bok, bch_cor_l, 0xFFFF)
+                m.d.comb += brd.addr.eq(q_out)
+                with m.If(word_i < 3):
+                    m.d.comb += [pk.w_valid.eq(1), pk.w_data.eq(Array([w0, w1, w2])[word_i[:2]])]
+                    with m.If(pk.w_ready):
+                        m.d.sync += word_i.eq(word_i + 1)
+                        with m.If(word_i == 2):
+                            m.d.sync += pace.eq(0)
+                with m.Else():
+                    # two clocks per word: the buffer read, then the word
+                    with m.If(~pace):
+                        m.d.sync += pace.eq(1)
+                    with m.Else():
+                        q = word_i - 3
+                        lastw = q == nb - 1
+                        rem = hd_bits[:4]
+                        v = brd.data ^ Mux(s_run, bch.o_mask, 0)
+                        v = Mux(lastw & (rem != 0), v & ((Const(1, 17) << rem) - 1)[:16], v)
+                        m.d.comb += [bch.q_beat.eq(q), pk.w_valid.eq(1), pk.w_data.eq(v)]
+                        with m.If(pk.w_ready):
+                            m.d.sync += [word_i.eq(word_i + 1), q_out.eq(q_out + 1), pace.eq(0)]
+                            with m.If(lastw):
+                                m.next = "SLOT_DONE"
+            with m.State("SLOT_DONE"):
+                m.d.sync += [last_valid.eq(s_slot), d_mode.eq(s_mode), d_mod.eq(s_mod), d_rate.eq(s_rate),
+                             cnt["slots"].eq(cnt["slots"] + 1)]
+                with m.If(~s_conv):
+                    m.d.sync += cnt["ldpc_failed"].eq(cnt["ldpc_failed"] + 1)
+                with m.Else():
+                    m.d.sync += self.iterations.eq(self.iterations + s_it)
+                    with m.If(~bch_ok_l):
+                        m.d.sync += cnt["bch_failed"].eq(cnt["bch_failed"] + 1)
+                m.next = "IDLE"
+            # ---- the TMCC result: the frame's remaining dummies, then its blocks
+            with m.State("TMCC_DUMMIES"):
+                with m.If(dslot < dend):
+                    with m.If(pk.b_ready & ~pk.b_valid):
+                        block(1, fr_frame, 3)
+                        m.d.sync += word_i.eq(0)
+                        m.next = "TDUMMY_W"
+                with m.Else():
+                    m.next = "TMCC_RUN"
+            with m.State("TDUMMY_W"):
+                ws = Array([Cat(dslot[:8], d_mode, Const(1, 1), Const(0, 4)), Cat(d_mod, d_rate, Const(0, 8)),
+                            Const(0xFFFF, 16)])
+                m.d.comb += [pk.w_valid.eq(1), pk.w_data.eq(ws[word_i[:2]])]
+                with m.If(pk.w_ready):
+                    m.d.sync += word_i.eq(word_i + 1)
+                    with m.If(word_i == 2):
+                        m.d.sync += dslot.eq(dslot + 1)
+                        m.next = "TMCC_DUMMIES"
+            with m.State("TMCC_RUN"):
+                # TmccResult consumes the result stream
+                m.d.comb += [tr.r_valid.eq(self.r_valid), self.r_ready.eq(tr.r_ready)]
+                with m.If(tr.o_head):
+                    bok = tr.o_bch_ok
+                    m.d.sync += tmcc_hdr.eq(Cat(Mux(bok, tr.o_bch, 0xFFFF)[:16],
+                                                Mux(tr.o_conv, tr.o_iter, 0xFFFF)[:16],
+                                                (fr_frame + self.lag)[:32]))
+                    m.d.sync += [cnt["frames"].eq(cnt["frames"] + 1)]
+                    with m.If(~bok):
+                        m.d.sync += cnt["tmcc_failed"].eq(cnt["tmcc_failed"] + 1)
+                    with m.If(~fr_dec):
+                        m.d.sync += cnt["undecoded"].eq(cnt["undecoded"] + 1)
+                    m.next = "TMCC_HDR"
+            with m.State("TMCC_HDR"):
+                with m.If(pk.b_ready & ~pk.b_valid):
+                    block(2, fr_frame, 4 + 589)
+                    m.d.sync += word_i.eq(0)
+                    m.next = "TMCC_W"
+            with m.State("TMCC_W"):
+                m.d.comb += [pk.w_valid.eq(1), pk.w_data.eq(Array([tmcc_hdr[16 * i:16 * i + 16] for i in range(4)])[word_i[:2]])]
+                with m.If(pk.w_ready):
+                    m.d.sync += word_i.eq(word_i + 1)
+                    with m.If(word_i == 3):
+                        m.next = "TMCC_GO"
+            with m.State("TMCC_GO"):
+                m.d.comb += tr.o_go.eq(1)
+                m.next = "TMCC_BITS"
+            with m.State("TMCC_BITS"):
+                # the packer takes a word per clock in its payload state
+                m.d.comb += [pk.w_valid.eq(tr.o_valid), pk.w_data.eq(tr.o_bits)]
+                with m.If(tr.o_valid & tr.o_last):
+                    m.next = "TMCC_WAIT"
+            with m.State("TMCC_WAIT"):
+                with m.If(~tr.busy):
+                    m.d.sync += [tmode.eq(0), st.begin.eq(1)]
+                    m.next = "STATUS_HDR"
+            with m.State("STATUS_HDR"):
+                with m.If(pk.b_ready & ~pk.b_valid & ~st.begin):
+                    block(3, fr_frame, st.length)
+                    m.d.sync += pace.eq(0)
+                    m.next = "STATUS_W"
+            with m.State("STATUS_W"):
+                with m.If(~pace):
+                    m.d.sync += pace.eq(1)
+                with m.Else():
+                    m.d.comb += [pk.w_valid.eq(1), pk.w_data.eq(st.word)]
+                    with m.If(pk.w_ready):
+                        m.d.sync += [st.next.eq(1), pace.eq(0)]
+                        with m.If(st.last):
+                            m.next = "FRAME_DONE"
+            with m.State("FRAME_DONE"):
+                m.d.comb += ff.r_en.eq(1)
+                m.next = "IDLE"
+        # the counters in the status
+        for n_, sig in cnt.items():
+            m.d.comb += st.snap[n_].eq(sig)
+        m.d.comb += st.snap["iterations"].eq(self.iterations)
+        return m
