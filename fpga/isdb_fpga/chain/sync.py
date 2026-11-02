@@ -158,6 +158,12 @@ class SlotSync(Elaboratable):
         self.o_head_numbered = Signal()
         self.o_head_number = Signal(range(SLOTS))
         self.o_head_frame = Signal(32)
+        # verification (tools/chain_window.py): the input side's and the
+        # window side's positions, the decision FSM idle
+        self.dbg_cnt_in = Signal(range(SYNC))
+        self.dbg_ipos = Signal(range(SLOT))
+        self.dbg_pos = Signal(range(SLOT))
+        self.dbg_idle = Signal()
 
     def elaborate(self, platform):
         m = Module()
@@ -166,6 +172,7 @@ class SlotSync(Elaboratable):
         # ---- input side: which accepted symbol completes a decision window
         cnt_in = Signal(range(SYNC))
         ipos = Signal(range(SLOT))
+        m.d.comb += [self.dbg_cnt_in.eq(cnt_in), self.dbg_ipos.eq(ipos)]
         locked = Signal()
         offset = Signal(range(SLOT))
         release = Signal()
@@ -296,6 +303,7 @@ class SlotSync(Elaboratable):
         rp = acc.read_port()
         wp = acc.write_port()
         pos_next = Signal(range(SLOT))
+        m.d.comb += self.dbg_pos.eq(pos_next)
         wat = Signal(AT_BITS)
         first = Signal(init=1)
         p0_v = Signal()
@@ -420,7 +428,8 @@ class SlotSync(Elaboratable):
                 self.st_missed.eq(0),
             ]
 
-        with m.FSM(name="decide"):
+        with m.FSM(name="decide") as decide_fsm:
+            m.d.comb += self.dbg_idle.eq(decide_fsm.ongoing("IDLE"))
             with m.State("IDLE"):
                 with m.If(self.loss):
                     restart_all()
@@ -658,7 +667,9 @@ class SyncFront(Elaboratable):
         drain = Signal(range(32))
         loss_go = Signal()
         m.d.comb += [
-            self.i_ready.eq(~sy.hold & (drain == 0) & ~loss_go & ~self.ext_hold),
+            # (not in the cycle the restart takes effect: a symbol accepted
+            # then would complete a window with the counters of before)
+            self.i_ready.eq(~sy.hold & (drain == 0) & ~loss_go & ~sy.restart & ~self.ext_hold),
             nco.i_valid.eq(self.i_valid & ~self.i_loss),
             nco.i_ready.eq(self.i_ready),
             sy.i_accept.eq(nco.accept),
