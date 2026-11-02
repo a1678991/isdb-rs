@@ -73,6 +73,7 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `isdb_fpga/chain/` | the ISDB-S3 chain after the front end (stages 1–6, 8, 9; [below](#the-isdb-s3-chain-slotsrx)) |
 | `synth/chain_estimate.py` | Yosys estimates of the chain's blocks (LUT including the LUT RAM cells' LUTs) |
 | `synth/cells.py`, `synth/bch_parts.py` | which cells (DSP, block RAM, LUT RAM) a block's estimate made, by name; the BCH unit's parts |
+| `tools/queue_sweep.py` | the decoder queue's overruns at the chain's pace by S, clock, banks and iteration limit (the 160 MHz and S = 22 decisions) |
 | `tezuka/isdb_slots.xdc` | the constraints of `SlotsRx` (its three clocks, the GPIO paths) |
 | `tests/test_chain.py` | the chain's stage and chain tests against `chain-*.json` |
 
@@ -316,16 +317,17 @@ fit (2026-11-02) against the fit's targets:
 | Block | LUT before → after | FF before → after | BRAM36 before → after | DSP48E1 before → after | Target LUT / BRAM36 / DSP |
 |---|---|---|---|---|---|
 | `SyncFront` (NCO, slot sync, carrier loop) | 4 194 → **3 783** | 4 627 → 4 086 | 5.5 → **5.5** | 7 → **4** | 3 500 / 5.5 / 6 |
-| `SlotPhase` | 1 122 → **1 540** | 2 116 → 2 857 | 8 → **4** | 8 → **12** | — / 4 / — |
+| `SlotPhase` | 1 122 → **1 439** | 2 116 → 2 737 | 8 → **4** | 8 → **12** | — / 4 / — |
 | `Equaliser` + `FrameCtl` (own nominal ROM) | 2 682 → **2 322** | 4 546 → 4 015 | 7.5 → **3** | 50 → **15** | 2 500 / 3 / 18 |
 | `TmccSoft` | 134 → **183** | 65 → 63 | 8 → **8** | 0 → 0 | — |
-| `Demap` (own nominal ROM) | 14 348 → **4 919** | 11 420 → 4 621 | 7 → **2.5** | 95 → **21** | 4 500 / 3 / 22 |
-| `Finish` (`TmccResult`, BCH, PRBS, packer, status) | 7 301 → **6 624** | 3 339 → 2 876 | 2 → **2** | 0 → 0 | 3 500 / — / 0 |
-| **sum of the rows** | 29 781 → **19 371** | 26 113 → 18 518 | 38 → **25** | 160 → **52** | 16 000 / 26 / 60 |
-| `Back` (eq, FrameCtl, TMCC soft bits, demapper, one shared nominal ROM) | 7 967 | 8 382 | 13.5 | 36 | |
-| chain = `SyncFront` + `SlotPhase` + `Back` + `Finish` | **19 914** | 18 201 | **25** | **52** | 16 000 / 26 / 60 |
+| `Demap` (own nominal ROM) | 14 348 → **4 909** | 11 420 → 4 909 | 7 → **2.5** | 95 → **21** | 4 500 / 3 / 22 |
+| `Finish` (`TmccResult`, BCH in the 4× clock, PRBS, packer, status) | 7 301 → **5 941** | 3 339 → 2 883 | 2 → **2** | 0 → 0 | 3 500 / — / 0 |
+| **sum of the rows** | 29 781 → **18 577** | 26 113 → 18 693 | 38 → **25** | 160 → **52** | 16 000 / 26 / 60 |
+| `Back` (eq, FrameCtl, TMCC soft bits, demapper, one shared nominal ROM) | 7 959 | 8 670 | 13.5 | 36 | |
+| chain = `SyncFront` + `SlotPhase` + `Back` + `Finish` | **19 122** | 18 376 | **25** | **52** | 16 000 / 26 / 60 |
+| + the result FIFO (`results.py`, 4 096 × 18) | (in `SlotsRx`) | | 2 | 0 | |
 | + bridge (LUT RAM FIFOs) and the 1 024-symbol input FIFO | 713 | 733 | 0.5 | 0 | |
-| `SlotsRx` without the decoder (front end, control, chain, bridge, registers; one run) | **27 473** | 26 220 | **26** | **164** | |
+| `SlotsRx` without the decoder (front end, control, chain, result FIFO, bridge, registers; one run) | **26 752** | 26 595 | **28** | **164** | |
 | of which the front end (`SymbolsRx`, its own run) | 5 879 | 5 426 | 0.5 | 112 | |
 
 (The before figures counted logic LUTs only; the LUT RAM then was 11
@@ -338,16 +340,18 @@ run: 14 043 LUT, 76.5 BRAM36, 0 DSP at S = 34, K = 3.)
 the receive-only image: the fixed part (`axi_ad9361`, the front end as
 Vivado placed it, DMAs and clocking: ≈ 17 700 LUT, 33 BRAM36, 140 DSP) +
 the decoder (14 043 / 76.5 / 0) + the chain and its glue (`SlotsRx` less
-the front end: 21 594 / 25.5 / 52) = **53 337 LUT (100.3 %), 135 BRAM36
-(96 %), 192 DSP48E1 (87 %)**. DSP and block RAM fit; the LUTs do not
-(Yosys figures; Vivado was within 1 % of Yosys on the front end, 5 824
-against 5 879). The image needs about 6 000 LUT less (10 % headroom for
-placement and routing) before it can be built: what did not reach its
-target is the finish stage (6 624 against 3 500: the BCH unit, about
-3 000 with its syndrome networks (677), Chien (216), multiplier (185),
-the syndrome and Chien registers and the roots, `synth/bch_parts.py`; the
-status block's word mux, 600; the packer, 570; the layout, 590; two
-`Realign`s and two PRBS, 800), the demapper (4 919 against 4 500: 25
+the front end: 20 873 / 27.5 / 52) = **52 616 LUT (98.9 %), 137 BRAM36
+(97.9 %), 192 DSP48E1 (87 %)** (before the last LUT steps: 53 337,
+100.3 %). DSP and block RAM fit; the LUTs are at the edge (Yosys figures;
+Vivado was within 1 % of Yosys on the front end, 5 824 against 5 879).
+94 % (50 008) needs about 2 600 LUT less. What did not reach its target
+is the finish stage (5 941 against 3 500; by submodule, Yosys keeping the
+hierarchy: the BCH unit 2 276 (`synth/bch_parts.py unit4`: its 4-bit
+syndrome networks 407, Chien 216, multiplier 185, the rest the syndrome,
+locator-step and Chien registers, the roots and the control), the glue
+920, the status block's word mux 603, the layout 589, the packer 429,
+the `Realign` 365 and the TMCC's extraction 320, two PRBS 293 (different
+polynomials), two root fixers 204), the demapper (4 909 against 4 500: 25
 compare-selects of 32-bit metrics, the eight 56-bit LUT RAM lanes, 384,
 the 3-bit-per-clock divider for n0 and K, about 250) and stage 1
 (3 783 against 3 500). Stage 3 grew (the NCO re-applied after the ring: its table and
@@ -367,7 +371,18 @@ the NCO input (three symbols per 36-bit word); stage 1's FSync and SSync
 trees shared (C = P ± Q) and its lock rule's products as shifts; the BCH
 roots flipped in the buffers rather than a per-beat mask; one `Realign`
 for the slot and TMCC BCH words; the BCH locator in three LUT RAM banks
-whose roles rotate (no copy); one divider for n0 and K.
+whose roles rotate (no copy); one divider for n0 and K. Then (after the
+first report, each a commit, LUT saved): the BCH unit in the 4× clock
+with 4-bit syndrome steps (`FastBch`; with the result FIFO, below) and
+the packer's sequence number through its one CRC network (`Finish` 6 624
+→ 6 235); the slot setup's Delta and Gamma on one bit-serial multiplier
+(`SlotPhase` 1 540 → 1 439); one read of the syndromes and one squarer
+for the BCH's even syndromes and Berlekamp-Massey (`Finish` 6 235 →
+5 941). Looked at and left: a RAM-backed register readback (the
+readback's word select is a mux either way: a RAM would need a copy of
+every register written on change, the same mux on its write side), the
+status block's word mux (the same), the demapper's metric width (32 bits
+are needed: not provably narrower).
 
 **Integration** (fit, 2026-11-02):
 
@@ -412,12 +427,41 @@ whose roles rotate (no copy); one divider for n0 and K.
   per clock) plus its decode (under a slot), so at most the blocks of the
   next frame's first 26 slots precede a frame's TMCC block; measured on
   chain-7, -8 and -9: 3 slot blocks.
+- **A corrected slot no longer holds the decoder.** The BCH's Chien search
+  took n symbol clocks (34 776 at 93/120, 3.1 slots) while the finish
+  stage held the result stream, and with it a decoder bank: a few
+  consecutive slots with BCH corrections would overrun the decoder. Now
+  the BCH unit runs in the 4× clock (`finish.FastBch`: 4-bit syndrome
+  steps at the input's pace, Berlekamp-Massey and Chien at one step per
+  fast cycle: n / 4 = 8 694 symbol clocks) and a result FIFO
+  (`results.py`, 4 096 × 18, 2 RAMB36; a header 5 entries, a word 1, only
+  the first k bits of a codeword kept) decouples the finish stage from
+  the decoder. Worst case: at 16APSK (4 valid slots in 5, a result every
+  13 750 symbol clocks on average) the finish stage takes a result in
+  about 2 200, sends it in about 2 200 and corrects in about 10 000 more,
+  so it keeps up with every slot corrected and the FIFO holds at most
+  the next result (2 179 entries of 4 096); 32APSK (every slot valid)
+  keeps up while at most about 2 in 3 consecutive slots need correcting.
+  chain-10-bch (chain-7's input, the decoder's hard decisions with 12,
+  1, 7, 12, 3, 12, 9, 12 bit errors in eight consecutive 93/120 slots,
+  frame 1, slots 10-17: `bch_errors` in the set, the bench XORs them into
+  the decoder's words): **bit-exact with the real decoder**, the eight
+  slots corrected, 0 overruns, no queue overflow, the FIFO's peak 1 426
+  entries (`RealDecoderChainTest.test_bch_corrections`).
 - **Queue at 160 MHz** (`ldpcqueue.run(..., finish_hz=40e6)`: the result
   stream at the chain's pace and the TMCC burst at the chain's): the
   measured distribution (3 frames, mean 2.1, three isolated codewords at
   the limit 16, TMCC staged) overruns 9 of 363 codewords at 160 MHz, 0 at
   200 MHz; with two adjacent pairs at 16: 15 and 6. So the decoder keeps
-  its 200 MHz (an MMCM on clk_fpga_0) and the async bridge.
+  its 200 MHz (an MMCM on clk_fpga_0) and the async bridge
+  (`tools/queue_sweep.py`).
+- **S = 22 as a LUT fallback: not usable.** The decoder at S = 22, K = 3
+  (`synth/ldpc_estimate.py 22`): 9 647 LUT (−4 396) but 92 BRAM36
+  (+15.5): the device would need 152.5 of 140. At K = 2 (70 BRAM36, the
+  two-bank estimate) the queue overruns 15-36 of 363 codewords at every
+  limit from 8 to 16. And at K = 3 its queue at 200 MHz overruns 9 (21
+  with the adjacent pairs) at limit 16, 0 only at limit ≤ 10 (≤ 8 with
+  the pairs); S = 34 overruns 0 (6 with the pairs).
 - **Loss and sync loss** (chain-8-loss: 6 144 symbols lost half-way into
   frame 1; chain-9-fade: the signal replaced by noise for 330 000 symbols:
   the slot sync lost after 8 periods and regained; both decode frame 3

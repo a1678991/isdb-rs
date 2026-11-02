@@ -334,13 +334,13 @@ decoder: ≤ 14 000 LUT, ≤ 50 BRAM36, 0 DSP.**
 
 | Stage | LUT | BRAM36 | DSP48E1 | Fit (2026-11-02, Yosys; target LUT / BRAM36 / DSP) |
 |---|---|---|---|---|
-| sync, carrier loop, slot phase | 3 000 | 9 | 8 | 3 783 + 1 540 / 5.5 + 4 / 4 + 12 (3 500 / 5.5 / 6; — / 4 / —) |
+| sync, carrier loop, slot phase | 3 000 | 9 | 8 | 3 783 + 1 439 / 5.5 + 4 / 4 + 12 (3 500 / 5.5 / 6; — / 4 / —) |
 | equaliser FIR + training sums | 2 500 | 1 | 44 (22 at 2×) | 2 322 / 3 / 15 (2 500 / 3 / 18) |
-| TMCC soft bits, demapper, de-interleave, constellation and noise accumulators | 3 500 | 2 | 16–64 | 183 + 4 919 / 8 + 2.5 / 21 (4 500 / 3 / 22 for the demapper) |
+| TMCC soft bits, demapper, de-interleave, constellation and noise accumulators | 3 500 | 2 | 16–64 | 183 + 4 909 / 8 + 2.5 / 21 (4 500 / 3 / 22 for the demapper) |
 | LDPC decoder (budget; **measured 2026-11-02: 14 034 LUT, 76.5 BRAM36 at S = 34, K = 3, all rates**, `fpga/README.md`) | 14 000 | 50 → 77 | 0 | 14 034 / 76.5 / 0 |
 | TMCC staging buffer (31 680 × 8, in the TMCC stage, so the decoder keeps its 3 banks for slots) | — | 7 | — | (in the TMCC row: 8) |
-| dispersal, BCH, packer, registers | 3 000 | 4 | 0 | 6 624 / 2 / 0 (3 500 / — / 0) |
-| **total** | **26 000** | **66 → 100** | **68–116** | chain 19 914 / 25 / 52 (one nominal ROM); + bridge, FIFO, registers: `SlotsRx` less the front end 21 594 / 25.5 / 52 (16 000 / 26 / 60) |
+| dispersal, BCH, packer, registers | 3 000 | 4 | 0 | 5 941 / 2 / 0 (3 500 / — / 0); + the result FIFO 2 BRAM36 |
+| **total** | **26 000** | **66 → 100** | **68–116** | chain 19 122 / 25 / 52 (one nominal ROM); + bridge, FIFOs, registers: `SlotsRx` less the front end 20 873 / 27.5 / 52 (16 000 / 26 / 60) |
 
 Against 29.6k LUT / 72 BRAM36 / 62 DSP free in the deployed image, or
 35.5k / 107 / 80 in a receive-only image. **Decision (2026-11-02): the
@@ -714,7 +714,7 @@ does the comparison meanwhile); the model's speed; the HDL (piece 4).
 
 The receive-only image must hold the fixed part (≈ 17 700 LUT, 33 BRAM36,
 140 DSP: `axi_ad9361`, the front end, DMAs and clocking), the decoder
-(S = 34, K = 3: 14 034 / 76.5 / 0) and the chain: the chain's stages 1–9
+(S = 34, K = 3: 14 043 / 76.5 / 0) and the chain: the chain's stages 1–9
 had to come to ≤ 16 000 LUT, ≤ 26 BRAM36, ≤ 60 DSP48E1 from 29 744 / 38 /
 160 (fpga/README.md, "The ISDB-S3 chain": every table and the clocking).
 
@@ -737,18 +737,31 @@ and on what it is computed.
 |---|---|---|---|---|
 | demapper | 14 348 → 4 919 | 7 → 2.5 | 95 → 21 | metrics in the 4× clock, 8 points per fast cycle; per-phase minima and running minima (the max-log minimum is order-free); K products time-shared; point sets and pilot accumulators in LUT RAM; one compact nominal ROM |
 | equaliser + FrameCtl | 2 682 → 2 322 | 7.5 → 3 | 50 → 15 | 44 products on 11 DSPs in the 4× clock; the compact ROM; sign ROM in LUTs |
-| slot phase | 1 122 → 1 540 | 8 → 4 | 8 → 12 | the ring holds the NCO's 6-bit input (three per 36-bit word), the NCO re-applied after it |
-| finish / BCH | 7 301 → 6 624 | 2 → 2 | 0 | one Realign shared; the BCH roots flipped in the buffers; the locator in LUT RAM banks with rotating roles (+ the state a late TMCC result needs) |
+| slot phase | 1 122 → 1 439 | 8 → 4 | 8 → 12 | the ring holds the NCO's 6-bit input (three per 36-bit word), the NCO re-applied after it; Delta and Gamma on one bit-serial multiplier |
+| finish / BCH | 7 301 → 5 941 | 2 → 2 | 0 | one Realign shared; the BCH roots flipped in the buffers; the locator in LUT RAM banks with rotating roles (+ the state a late TMCC result needs); the BCH in the 4× clock with 4-bit syndrome steps; one syndrome read and squarer; the packer's one CRC network |
 | stage 1 | 4 194 → 3 783 | 5.5 → 5.5 | 7 → 4 | FSync / SSync trees shared (C = P ± Q); the lock rule by shifts; one multiplier for the FSync sign |
 | TMCC soft bits | 134 → 183 | 8 → 8 | 0 | four values per burst beat (a fix: the burst held a decoder bank 15.6 slots, the queue model assumed 3) |
 
-**The device does not fit on LUTs yet**: fixed ≈ 17 700 + decoder 14 043 +
-`SlotsRx` less the front end 21 594 = 53 337 LUT, 100.3 % of 53 200; 135
-BRAM36 (96 %), 192 DSP (87 %). About 6 000 LUT more must go before the
-image (piece 6) is built: the finish stage (6 624 against its 3 500: the
-BCH unit, the status block's word mux, the packer, the layout, two
-Realigns and PRBS), the demapper (4 919 against 4 500), stage 1 (3 783
-against 3 500), `SlotsRx`'s register readback.
+**The device is at the edge on LUTs**: fixed ≈ 17 700 + decoder 14 043 +
+`SlotsRx` less the front end 20 873 = 52 616 LUT, 98.9 % of 53 200 (from
+53 337, 100.3 %); 137 BRAM36 (97.9 %; the result FIFO's 2 included), 192
+DSP (87 %). 94 % needs about 2 600 LUT more: the finish stage (5 941
+against its 3 500: the BCH unit 2 276, its glue, the status block's word
+mux, the layout, the packer, the Realign and the TMCC extraction, two
+PRBS and root fixers), the demapper (4 909 against 4 500), stage 1
+(3 783 against 3 500). The decoder at S = 22 is not a way out: 9 647 LUT
+but 92 BRAM36 at K = 3 (152.5 of 140 in the device) and at K = 2 its
+queue overruns at every limit (`fpga/tools/queue_sweep.py`); at K = 3 it
+would also need the limit at 10 or less (9 overruns of 363 at 16, 200 MHz).
+
+**A corrected slot no longer holds the decoder.** The BCH (Chien over n,
+3.1 slots at 93/120) held the result stream and a decoder bank; it now
+runs in the 4× clock (`FastBch`, 8 694 symbol clocks of Chien) behind a
+4 096 × 18 result FIFO (2 RAMB36; sized so the finish stage keeps up with
+every 16APSK slot corrected, the FIFO then holding at most the next
+result, 2 179 entries). chain-10-bch (eight consecutive slots with 1-12
+bit errors injected into the decoder's words) is bit-exact with the real
+decoder, 0 overruns, the FIFO's peak 1 426 entries.
 
 **Integration.** The real decoder in the chain (`ldpc.LdpcDecoder` S = 34,
 K = 3 behind the bridge, its own 5× domain, the input at the front end's
@@ -762,7 +775,7 @@ Chien search held the results 35 000 cycles and the decoder overran), and
 an input loss deadlocked stage 1. Result
 order: the decoder's commit order puts frame N's TMCC (and its trailing
 dummies and status) after frame N + 1's first slot blocks; `Finish` keeps
-their contents the model's, nothing is buffered, the host (`isdb-cli`
+their contents the model's, nothing is reordered, the host (`isdb-cli`
 `slotrx.rs`) releases frames by frame counter within one frame (a unit
 test: the FPGA order decodes the same as the model's); the HDL's bound is
 the TMCC burst plus its decode, the next frame's first 26 slots at most
