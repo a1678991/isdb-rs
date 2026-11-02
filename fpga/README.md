@@ -812,8 +812,9 @@ cycle.
   (K − 1)·T less the output (2.8k cycles) and any queue wait: K = 2
   gives 9 passes at 93/120, S = 34 (8 iterations, the worst-case figure
   again), K = 3 about 19 (a limit of 16 for an isolated long codeword).
-  The frame-average budget is 6.61 M cycles / (121 × 5 420) ≈ 10.1
-  passes per codeword against a measured mean of 3.1 (2.1 iterations
+  The frame-average budget is 6.61 M cycles / (121 × 6 125) ≈ 8.9
+  passes per codeword (with the 200 MHz pipeline of 2026-11-03; 10.1
+  before it) against a measured mean of 3.1 (2.1 iterations
   + 1): a codeword may run to the limit as long as the frame's total
   stays inside the budget. Not a symbol-level queue before the demapper
   (it would need a demapper faster than one symbol per clock), not
@@ -826,14 +827,18 @@ cycle.
   three slots); the default K = 3 assumes that. Interleaved TMCC LLRs
   would hold a bank for the whole frame and need K = 4.
   `isdb_fpga/ldpcqueue.py` models the queue over frames (tests
-  `LdpcQueueModelTest`, S = 34, 200 MHz, 93/120, limit 16):
+  `LdpcQueueModelTest`, S = 34, 200 MHz, 93/120, limit 16; the cycles per
+  pass of the 200 MHz pipeline, 6 125 at 93/120 and 5 180 for the TMCC):
 
   | frames (×3) | K = 2 | K = 3 | K = 4 |
   |---|---|---|---|
   | measured distribution (mean 2.1, three isolated codewords at 16), TMCC staged | 13 overruns of 363 | **0** | 0 |
   | the same with two adjacent pairs at 16, TMCC staged | 16 | 6 | 0 |
   | the measured distribution, TMCC interleaved | 68 | 7 | 0 |
-  | all 120 slots at the limit (×2), TMCC staged | 104 of 242 | 96 | 95 |
+  | all 120 slots at the limit (×2), TMCC staged | 115 of 242 | 113 | 112 |
+
+  (The same as with the cycles before the pipelining, 5 420 per pass,
+  but for the all-at-limit row, 104 / 96 / 95.)
 
   (K = 2 overruns even without long codewords: 4 in 3 frames, the TMCC
   burst holding a bank across three slots.) The HDL tests check the
@@ -850,10 +855,42 @@ cycle.
   Wp = W rounded up to a power of two); the check records (m1, m2 after
   the offset, the min1 index: 19 bits) one word of 19 S bits per step; the
   edge signs one word of S bits per (step, entry); a 64-deep FIFO between
-  the read and write phases (LUTRAM); the ROMs (entries, chains, gaps).
-- **Clock**: designed for 200 MHz (each stage at most one carry chain
-  plus a few LUT levels; the rotators log2 S levels of 2:1 muxes). Not
-  yet timed by Vivado.
+  the read and write phases (LUTRAM, `ram_style`); the ROMs (entries,
+  chains, gaps). Every lane bank port is a register per bank and lane
+  (read address; write address, data, enable), and every block RAM's
+  output goes into a register first (its DO_REG).
+- **Clock: 200 MHz, timed by Vivado** (2026-11-03). The first full build
+  (85 % LUT, 119 BRAM36) failed setup in the decoder: WNS −3.016 ns on
+  5 063 endpoints (closing at about 125–130 MHz), and −1.005 ns on 228 in
+  the bridge (`chain/ldpc_if.py`). Pipelining only (every result bit-identical
+  on every vector set; the cycle counts change), checked with
+  `synth/ldpc_vivado.py` (out of context: synth_design, place, route of
+  the decoder alone, 2–3 min; `--bridge` for the bridge with its two
+  clocks) and summarised from a build's `failing.tcl` log with
+  `synth/failing_summary.py`:
+
+  | Path class (the build's worst) | before | fix |
+  |---|---|---|
+  | the sequencer's issue → its counters' enables (gap ROM, per-rate muxes) | −3.0 ns | the rate's constants registered at a SETUP cycle; the wait a countdown loaded a step ahead; issue from three registers |
+  | fill bounds → the lanes' write enables | −2.9 | the bounds registered a cycle ahead |
+  | bank read → K:1 mux → rotation → L | −2.3 | the BRAMs' output registers; the mux and the rotation's two halves each a stage |
+  | the bank ports' muxes (engine / output / loader) → BRAM pins | −1.9 | per-bank, per-lane port registers |
+  | min − offset → the record memory | −1.5 | subtract, then clamp in the next stage |
+  | t = sat(L − r) | −1.5 | the add and the saturation in two stages |
+  | the write side's rotation, its amount computed in place | −1.45 | the amount registered, the rotation in two stages |
+  | the record's hold, the min-sum's resets (k == 0 fan-out) | −1.4 | k == 0 carried as a flag |
+  | the output stream: BRAM → shift → buffer | −2.0 | a prefetch queue of 8 words and a head word; the packer's comparisons registered |
+  | the bridge's input FIFO (LUTRAM, 512 × 216 bits) | −1.0 | the AsyncFIFOs in block RAM (`ram_style`), the output FIFO's writes and `o_ready` registered |
+
+  Out of context, S = 34, K = 3, all eleven rates: **WNS +0.391 ns at
+  5.0 ns** (from −2.738 ns for the source before, the same flow), 11 790
+  LUT, 15 232 FF, 79.5 BRAM36, 0 DSP (the first build's decoder:
+  12 632 LUT, 8 789 FF, 79.5 BRAM36); the bridge +0.231 ns (its last
+  three paths inside Amaranth's AsyncFIFO: the gray pointer → the next
+  read address → the BRAM), 257 LUT, 4.5 BRAM36 (658 LUT, 0 BRAM36
+  before). The cost: WRITE_LATENCY 8 → 16 and the pass turnaround
+  (DECIDE) 12 → 19 cycles, both measured by `synth/ldpc_latency.py`, so
+  3–13 % more cycles per pass (below).
 
 **Cycles per iteration** (`synth/ldpc_cycles.py`: the static schedule's
 steady state, the hazard gaps included; the read and write phases of
@@ -865,21 +902,23 @@ slots + the TMCC) ran equally long, one pass more than the iterations
 
 | S | rate | d | cycles per pass | iterations per codeword, 100 MHz | 200 MHz |
 |---|---|---|---|---|---|
-| 17 | 41/120 | 5 | 8 702 | 2.1 | 5.3 |
-| 17 | 93/120 | 16 | 10 199 | 1.7 | 4.4 |
-| 17 | 109/120 | 32 | 8 438 | 2.2 | 5.5 |
-| 22 | 41/120 | 5 | 6 727 | 3.1 | 7.1 |
-| 22 | 93/120 | 16 | 8 007 | 2.4 | 5.8 |
-| 34 | 41/120 | 5 | 4 357 | 5.3 | 11.5 |
-| 34 | 61/120 (TMCC) | 7 | 4 842 | 4.6 | 10.3 |
-| 34 | 93/120 | 16 | 5 420 | 4.0 | **9.1** |
-| 34 | 109/120 | 32 | 4 315 | 5.3 | 11.7 |
-| 187 | 41/120 | 5 | 1 291 | 20.2 | 41.3 |
-| 187 | 93/120 | 16 | 1 150 | 22.8 | 46.5 |
+| 17 | 41/120 | 5 | 8 709 | 2.1 | 5.3 |
+| 17 | 93/120 | 16 | 10 914 | 1.5 | 4.0 |
+| 17 | 109/120 | 32 | 9 125 | 2.0 | 5.0 |
+| 22 | 41/120 | 5 | 6 745 | 3.0 | 7.1 |
+| 22 | 93/120 | 16 | 8 697 | 2.1 | 5.3 |
+| 34 | 41/120 | 5 | 4 508 | 5.1 | 11.1 |
+| 34 | 61/120 (TMCC) | 7 | 5 180 | 4.3 | 9.5 |
+| 34 | 93/120 | 16 | 6 125 | 3.5 | **7.9** |
+| 34 | 109/120 | 32 | 4 738 | 4.8 | 10.5 |
+| 187 | 41/120 | 5 | 1 954 | 13.0 | 27.0 |
+| 187 | 93/120 | 16 | 1 467 | 17.6 | 36.2 |
 
-(The plan's estimate, P/S steps × (d + 6), counted the pipeline per
-step; here only the hazard gaps add to d per step: 84 of 297 steps at
-93/120, S = 34, wait, 668 cycles in all.)
+(With the 200 MHz pipeline, 2026-11-03: WRITE_LATENCY 16, DECIDE 19.
+Before it, at 8 and 12: 4 357, 4 842, 5 420 and 4 315 cycles at S = 34
+for 41, 61, 93 and 109/120. The plan's estimate, P/S steps × (d + 6),
+counted the pipeline per step; here only the hazard gaps add to d per
+step: 89 of 297 steps at 93/120, S = 34, wait, 1 373 cycles in all.)
 
 **Estimate** (`mise run fpga:ldpc-estimate`, Yosys `synth_xilinx`, all
 eleven rates, before place and route), against the plan's budget of
@@ -913,7 +952,8 @@ BRAM36 free without `SymbolsTx` and `maia_sdr`), 14 034 LUT (the plan's
 little because the TMCC's 61/120 has 649 steps per pass, nearly 41/120's
 869; only a 93/120-only build (no TMCC) reaches 65 (K = 3) or 48 (K = 2).
 S = 187 would be 5× the LUT budget (the units and the 187-lane
-rotators), so it is out.
+rotators), so it is out. (These Yosys figures are of the source before the
+200 MHz pipeline; the current ones are Vivado's, under "Clock" above.)
 
 Block RAM by memory at S = 34 (`synth/ldpc_memories.py`): the L/H
 banks K × 34 RAMB18 (17 BRAM36 per bank), the check records (646 × 869) 18, the edge

@@ -44,12 +44,11 @@ formats the slot block (no gap), as long as the stage keeps up on average.
 import math
 
 from . import ldpcmodel, ldpcsched
+from .ldpc import DECIDE, WRITE_LATENCY  # the HDL's pipeline (synth/ldpc_latency.py)
 
 FRAME_S = 33.05e-3
 SLOTS = 120
 TMCC_SENT = 31_680
-WRITE_LATENCY = 8
-DECIDE = 12
 DRAIN = 40  # the write pipeline's drain and the result's hand-over, about
 FINISH_FORMAT = 20 + 3 + 2 * 2174 + 9  # finish.py, a 93/120 slot block
 BURST_LANES = 4  # tmcc.py: TMCC values per port beat

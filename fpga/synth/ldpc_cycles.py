@@ -14,13 +14,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from isdb_fpga import ldpcmodel, ldpcsched  # noqa: E402
+from isdb_fpga import ldpc, ldpcmodel, ldpcsched  # noqa: E402
 
 FRAME_S = 33.05e-3
 CODEWORDS = 121
-# the HDL pipeline's figures (ldpc.py asserts them)
-WRITE_LATENCY = 8
-DECIDE = 12
+# the HDL pipeline's figures (synth/ldpc_latency.py measures them)
+WRITE_LATENCY, DECIDE = ldpc.WRITE_LATENCY, ldpc.DECIDE
 
 
 def main(argv):

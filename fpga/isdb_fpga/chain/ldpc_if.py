@@ -63,6 +63,30 @@ or BCH-corrected) is reported as a gap in the comparison.
 from amaranth.hdl import Array, Cat, Const, DomainRenamer, Elaboratable, Module, Mux, Signal, signed
 
 OP_BEGIN, OP_WRITE, OP_DONE = 0, 1, 2
+
+
+def _block_fifo(width, depth, w_domain, r_domain):
+    """An AsyncFIFO whose storage is a block RAM (`ram_style = "block"`):
+    Vivado otherwise maps the bridge's 512 x 216-bit input FIFO to LUTRAM
+    (about 1 700 LUTs, a deep read mux behind a read address that depends on
+    the synchronised write pointer: -1.0 ns at 200 MHz in the first full
+    build); on block RAM the address meets a handful of BRAM pins and the
+    read data is registered inside them."""
+    import functools
+
+    import amaranth.lib.fifo as fifo_mod
+    from amaranth.lib.fifo import AsyncFIFO
+
+    class BlockAsyncFIFO(AsyncFIFO):
+        def elaborate(self, platform):
+            orig = fifo_mod.Memory
+            fifo_mod.Memory = functools.partial(orig, attrs={"ram_style": "block"})
+            try:
+                return super().elaborate(platform)
+            finally:
+                fifo_mod.Memory = orig
+
+    return BlockAsyncFIFO(width=width, depth=depth, w_domain=w_domain, r_domain=r_domain)
 LANES = 5
 TAG_TMCC = 1 << 7
 TMCC_RATE_CODE = 3  # 61/120
@@ -127,7 +151,7 @@ class LdpcBridge(Elaboratable):
       words (`o_data`, `o_last`; all n bits, the first k in natural order)
       through an AsyncFIFO (OUT_DEPTH = 64) back to the chain's domain as
       the port's `out_*` stream (`out_head` the record; a dropped codeword,
-      `res_overrun`, has no words). `o_ready` keeps room for one record, so
+      `res_overrun`, has no words). `o_ready` (a register) keeps room for one record, so
       a `res_valid` (one cycle, no handshake) always has a place.
     """
 
@@ -167,7 +191,7 @@ class LdpcBridge(Elaboratable):
         self.out_overrun = Signal()  # chain side: the record's overrun flag
 
     def elaborate(self, platform):
-        from amaranth.lib.fifo import AsyncFIFO, SyncFIFO
+        from amaranth.lib.fifo import SyncFIFO
 
         m = Module()
         p = self.p
@@ -175,7 +199,7 @@ class LdpcBridge(Elaboratable):
         fields = [p.in_op, p.in_ctx, p.in_n, p.in_first, p.in_last, p.in_rate, p.in_shortened,
                   p.in_tag, p.in_max_iter, p.in_offset, *p.in_pos, *p.in_llr]
         width = sum(len(f) for f in fields)
-        fin = AsyncFIFO(width=width, depth=self.IN_DEPTH, w_domain="sync", r_domain="ldpc")
+        fin = _block_fifo(width, self.IN_DEPTH, "sync", "ldpc")
         m.submodules.fin = fin
         m.d.comb += [fin.w_data.eq(Cat(*fields)), fin.w_en.eq(p.in_valid), p.in_ready.eq(1)]
         with m.If(p.in_valid & ~fin.w_rdy):
@@ -224,16 +248,21 @@ class LdpcBridge(Elaboratable):
         # ---- out ------------------------------------------------------------
         # entry: kind (1: record), then the record (tag 64, iterations 8,
         # converged, overrun) or the word (data 16, last)
-        fout = AsyncFIFO(width=1 + 64 + 8 + 1 + 1, depth=self.OUT_DEPTH, w_domain="ldpc", r_domain="sync")
+        fout = _block_fifo(1 + 64 + 8 + 1 + 1, self.OUT_DEPTH, "ldpc", "sync")
         m.submodules.fout = fout
-        m.d.comb += [
-            tags.r_en.eq(self.res_valid),
-            self.o_ready.eq(fout.w_level < self.OUT_DEPTH - 2),
-            fout.w_en.eq(self.res_valid | (self.o_valid & self.o_ready)),
-            fout.w_data.eq(Mux(self.res_valid,
-                               Cat(Const(1, 1), tags.r_data, self.res_iterations, self.res_converged,
-                                   self.res_overrun),
-                               Cat(Const(0, 1), self.o_data, self.o_last))),
+        # the writes registered (the tag FIFO's output and the mux off the
+        # FIFO's write port), and o_ready a register: up to two more words
+        # and a record arrive after the level crosses, so it keeps four free
+        fw_en = Signal()
+        fw_data = Signal(len(fout.w_data))
+        m.d.comb += [tags.r_en.eq(self.res_valid), fout.w_en.eq(fw_en), fout.w_data.eq(fw_data)]
+        m.d.ldpc += [
+            self.o_ready.eq(fout.w_level < self.OUT_DEPTH - 4),
+            fw_en.eq(self.res_valid | (self.o_valid & self.o_ready)),
+            fw_data.eq(Mux(self.res_valid,
+                           Cat(Const(1, 1), tags.r_data, self.res_iterations, self.res_converged,
+                               self.res_overrun),
+                           Cat(Const(0, 1), self.o_data, self.o_last))),
         ]
         e = fout.r_data
         m.d.comb += [
