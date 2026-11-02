@@ -344,7 +344,7 @@ class TmccBench(Elaboratable):
             bch.start.eq(r.bch_start), bch.n_sel.eq(0), bch.i_valid.eq(r.bch_valid),
             bch.i_bits.eq(r.bch_bits), bch.i_last.eq(r.bch_last),
             r.bch_done.eq(bch.done), r.bch_ok.eq(bch.ok), r.bch_corrected.eq(bch.corrected),
-            bch.q_beat.eq(r.bch_q), r.bch_mask.eq(bch.o_mask),
+            r.bch_nroots.eq(bch.nroots), *[r.bch_roots[x].eq(bch.roots[x]) for x in range(12)],
         ]
         return m
 

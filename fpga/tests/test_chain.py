@@ -23,6 +23,10 @@ from isdb_fpga.chain.common import model_constants  # noqa: E402
 from isdb_fpga.chain.sim import check_constants, compare_stage1, load, simulate_stage1  # noqa: E402
 from isdb_fpga.chain.tables import pilot_signs  # noqa: E402
 
+from amaranth.hdl import Cat, Elaboratable, Module, Mux, Signal  # noqa: E402
+
+from isdb_fpga.chain.finish import Finish  # noqa: E402
+
 VECTORS = os.environ.get("FPGA_VECTORS", os.path.join(os.path.dirname(__file__), "..", "build"))
 FULL = os.environ.get("FPGA_CHAIN_FULL") == "1"
 
@@ -240,6 +244,38 @@ class ChainTest(unittest.TestCase):
         self.run_chain(None)
 
 
+class FinishBench(Elaboratable):
+    """`Finish` fed one record per accepted cycle: kind 0 a frame (a:
+    frame, b: decoded), 1 a result header (a, b: the tag's low and high
+    words, c: iterations, d: converged, e: overrun), 2 a word (a: bits, b:
+    last)."""
+
+    def __init__(self):
+        self.fin = Finish()
+        self.i_valid = Signal()
+        self.i_ready = Signal()
+        self.kind = Signal(2)
+        self.a = Signal(32)
+        self.b = Signal(32)
+        self.c = Signal(8)
+        self.d = Signal()
+        self.e = Signal()
+
+    def elaborate(self, platform):
+        m = Module()
+        m.submodules.fin = f = self.fin
+        go = self.i_valid & self.i_ready
+        res = self.kind != 0
+        m.d.comb += [
+            self.i_ready.eq(Mux(res, f.r_ready, 1)),
+            f.f_valid.eq(go & (self.kind == 0)), f.f_frame.eq(self.a), f.f_decoded.eq(self.b[0]),
+            f.r_valid.eq(self.i_valid & res), f.r_head.eq(self.kind == 1),
+            f.r_tag.eq(Cat(self.a, self.b)), f.r_iterations.eq(self.c), f.r_converged.eq(self.d),
+            f.r_overrun.eq(self.e & (self.kind == 1)), f.r_bits.eq(self.a[:16]), f.r_last.eq(self.b[0]),
+        ]
+        return m
+
+
 class TmccOverrunTest(unittest.TestCase):
     """A TMCC codeword the decoder dropped comes back as its header alone
     (res_overrun = 1, no words). `Finish` must consume just the header: the
@@ -258,31 +294,7 @@ class TmccOverrunTest(unittest.TestCase):
         from isdb_fpga.chain.finish import Finish
         from isdb_fpga.chain.tables import SLOT_INIT, prbs
 
-        class Bench(Elaboratable):
-            def __init__(self):
-                self.fin = Finish()
-                self.i_valid = Signal()
-                self.i_ready = Signal()
-                self.kind = Signal(2)
-                self.a = Signal(32)
-                self.b = Signal(32)
-                self.c = Signal(8)
-                self.d = Signal()
-                self.e = Signal()
-
-            def elaborate(self, platform):
-                m = Module()
-                m.submodules.fin = f = self.fin
-                go = self.i_valid & self.i_ready
-                res = self.kind != 0
-                m.d.comb += [
-                    self.i_ready.eq(Mux(res, f.r_ready, 1)),
-                    f.f_valid.eq(go & (self.kind == 0)), f.f_frame.eq(self.a), f.f_decoded.eq(self.b[0]),
-                    f.r_valid.eq(self.i_valid & res), f.r_head.eq(self.kind == 1),
-                    f.r_tag.eq(Cat(self.a, self.b)), f.r_iterations.eq(self.c), f.r_converged.eq(self.d),
-                    f.r_overrun.eq(self.e & (self.kind == 1)), f.r_bits.eq(self.a[:16]), f.r_last.eq(self.b[0]),
-                ]
-                return m
+        Bench = FinishBench
 
         rng = random.Random(5)
         k = 374 * 93
@@ -316,6 +328,55 @@ class TmccOverrunTest(unittest.TestCase):
         pay = bl[2][3]
         self.assertEqual(pay[:3], [0, 4 | 7 << 4 | 50 << 8, 0xFFFF])
         self.assertEqual(S.unpack_bits(pay[3:], k - 198), hd)
+
+
+class SlotBchTest(unittest.TestCase):
+    """A converged slot codeword with bit errors in its BCH word (93/120,
+    frame 6, slot 3): `Finish` corrects them (the BCH unit's roots flipped
+    in its word buffer) and the slot block carries the sent header and data
+    bits, BCH OK with the count (w2), the PRBS removed. The synthetic
+    vectors never need a BCH correction; this is the slot path's."""
+
+    def test_corrected(self):
+        import random
+
+        from isdb_fpga.chain import gf
+        from isdb_fpga.chain import slots as S
+        from isdb_fpga.chain.tables import SLOT_INIT, prbs
+
+        rng = random.Random(11)
+        k = 374 * 93
+        n = 44880
+        msg = [rng.randrange(2) for _ in range(k - 198)]
+        word = gf.encode(msg) + [1] * 6 + [rng.randrange(2) for _ in range(n - k)]
+        flips = sorted(rng.sample(range(k - 6), 5))
+        for f in flips:
+            word[f] ^= 1
+        pr = prbs(SLOT_INIT, 22, 25, k) + [0] * (n - k)
+        sent = [x ^ y for x, y in zip(word, pr)]
+        nw = n // 16
+        words = [sum(sent[16 * q + b] << b for b in range(16)) for q in range(nw)]
+        recs = [(0, 6, 1, 0, 0, 0),
+                (1, 3 | 7 << 8 | 4 << 12, 6, 2, 1, 0)]
+        recs += [(2, w, int(i == nw - 1), 0, 0, 0) for i, w in enumerate(words)]
+        b = FinishBench()
+        f = b.fin
+        ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a, "b": b.b, "c": b.c,
+                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word}
+        backend = "cxxrtl" if simx.available() else "pysim"
+        e = simx.engine(b, ports, backend, tag="slotbch")
+        g = e.group("ov", ["ow"])
+        e.stall_limit = 2_000_000 if backend == "cxxrtl" else None
+        e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=60_000)
+        bl = S.blocks([w for (w,) in e.read(g)])
+        slots = [x for x in bl if x[0] == S.SLOT]
+        # the dummies before slot 3, then slot 3
+        self.assertEqual(len(slots), 4)
+        pay = slots[3][3]
+        self.assertEqual(pay[0] & 0x7F, 3)
+        self.assertEqual(pay[0] >> 12 & 3, 3, "converged, BCH OK")
+        self.assertEqual(pay[2], len(flips))
+        self.assertEqual(S.unpack_bits(pay[3:], k - 198), msg)
 
 
 class BpskCodewordTest(unittest.TestCase):

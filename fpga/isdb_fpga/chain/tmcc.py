@@ -373,8 +373,8 @@ class TmccResult(Elaboratable):
         self.bch_done = Signal()
         self.bch_ok = Signal()
         self.bch_corrected = Signal(4)
-        self.bch_q = Signal(12)
-        self.bch_mask = Signal(16)
+        self.bch_roots = [Signal(16, name=f"bch_root{k}") for k in range(12)]
+        self.bch_nroots = Signal(5)
         # out
         self.o_head = Signal()
         self.o_frame = Signal(32)
@@ -401,10 +401,14 @@ class TmccResult(Elaboratable):
                 self.al_o_valid.eq(al.o_valid), self.al_o_bits.eq(al.o_bits), self.al_o_last.eq(al.o_last),
             ]
         m.submodules.prbs = prbs = Prbs15("100000000001110")
+        from .finish import FixRoots
+
+        m.submodules.fix = fix = FixRoots(self.bch_roots, self.bch_nroots, aw=10)
         buf = Memory(shape=16, depth=608, init=[])
         m.submodules.buf = buf
         wp = buf.write_port()
         rp = buf.read_port()
+        m.d.comb += fix.rd_data.eq(rp.data)
         q = Signal(12)
         nout = Signal(10)
         iters = Signal(8)
@@ -458,6 +462,13 @@ class TmccResult(Elaboratable):
                                  self.o_head.eq(1), self.o_frame.eq(fr), self.o_iter.eq(iters),
                                  self.o_conv.eq(conv), self.o_bch_ok.eq(bok & conv),
                                  self.o_bch.eq(bcor)]
+                    # a successful BCH's roots flipped in the buffer
+                    m.d.comb += fix.go.eq(bok)
+                    m.next = "FIX"
+            with m.State("FIX"):
+                m.d.comb += [rp.addr.eq(fix.rd_addr), wp.addr.eq(fix.wr_addr), wp.data.eq(fix.wr_data),
+                             wp.en.eq(fix.wr_en)]
+                with m.If(~fix.busy & ~fix.go):
                     m.next = "HOLD"
             with m.State("HOLD"):
                 # the consumer (the finish stage) sends the block's first words
@@ -468,10 +479,10 @@ class TmccResult(Elaboratable):
                 m.d.sync += rq.eq(rq + 1)
                 m.next = "OUT"
             with m.State("OUT"):
-                # the read port has beat rq - 1; its flips from the BCH unit
-                m.d.comb += [rp.addr.eq(rq), self.bch_q.eq(rq - 1)]
+                # the read port has beat rq - 1 (the BCH's flips in it)
+                m.d.comb += rp.addr.eq(rq)
                 v = Signal(16)
-                m.d.comb += v.eq(rp.data ^ Mux(okl, self.bch_mask, 0))
+                m.d.comb += v.eq(rp.data)
                 last = rq - 1 == INFO_BEATS - 1
                 m.d.sync += [self.o_valid.eq(1),
                              self.o_bits.eq(Mux(last, v & ((1 << (INFO_BITS % 16)) - 1), v)),

@@ -45,9 +45,11 @@ symbols); on the lab signal no slot has needed BCH after a converged LDPC
 (0 corrections, plan "Results"). A clock of 4x, or 4 positions per clock,
 covers the worst case (open question in fpga/README.md).
 
-`o_mask` (of `q_beat`): the 16-bit flip mask of beat q_beat of the word
-in position order (bit b = word[16 q + b]; not the aligned input beats)
-from the kept roots: 12 comparators.
+The kept roots (`roots`, the first min(`nroots`, 12), ascending: the
+Chien search scans upwards) are positions in the word, bit b of beat q =
+word[16 q + b] (not the aligned input beats): the users flip them in
+their word buffers, one read-modify-write per root (`FixRoots`), instead
+of a flip mask per beat (12 comparators).
 """
 
 from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal
@@ -127,8 +129,6 @@ class BchUnit(Elaboratable):
         self.nroots = Signal(range(gf.T + 2))
         self.roots = [Signal(16, name=f"root{k}") for k in range(gf.T)]
         self.busy = Signal()
-        self.q_beat = Signal(12)
-        self.o_mask = Signal(16)
 
     def elaborate(self, platform):
         m = Module()
@@ -298,13 +298,47 @@ class BchUnit(Elaboratable):
                 m.d.sync += [self.ok.eq(0), self.corrected.eq(0), nroots.eq(0), self.done.eq(1),
                              self.busy.eq(0)]
                 m.next = "IN"
-        # flip mask of an aligned beat
-        mask = Const(0, 16)
-        for x in range(T):
-            aj = self.roots[x]
-            hit = (x < nroots) & (aj[4:] == self.q_beat)
-            mask = mask | Mux(hit, Const(1, 16) << aj[:4], 0)
-        m.d.comb += self.o_mask.eq(mask)
+        return m
+
+
+class FixRoots(Elaboratable):
+    """Flip a BCH unit's kept roots in a word buffer of 16-bit beats (bit b
+    of beat q = word bit 16 q + b): `go` (one cycle) with `roots`, `nroots`
+    (the unit's outputs, held); per root a read (`rd_addr`, the buffer's
+    synchronous read port, data in `rd_data` the cycle after) and the write
+    back (`wr_en`, `wr_addr`, `wr_data`); `busy` until done (3 cycles per
+    root, so a word with two roots is read after its first write)."""
+
+    def __init__(self, roots, nroots, aw=12):
+        self.roots = roots
+        self.nroots = nroots
+        self.go = Signal()
+        self.busy = Signal()
+        self.rd_addr = Signal(aw)
+        self.rd_data = Signal(16)
+        self.wr_en = Signal()
+        self.wr_addr = Signal(aw)
+        self.wr_data = Signal(16)
+
+    def elaborate(self, platform):
+        m = Module()
+        T = gf.T
+        x = Signal(range(T + 1))
+        st = Signal(2)
+        cur = Array(self.roots)[x[:4]]
+        n = Mux(self.nroots > T, T, self.nroots)
+        m.d.comb += [self.rd_addr.eq(cur[4:]), self.wr_addr.eq(cur[4:]),
+                     self.wr_data.eq(self.rd_data ^ (Const(1, 16) << cur[:4]))]
+        with m.If(self.go):
+            m.d.sync += [x.eq(0), st.eq(0), self.busy.eq(self.nroots != 0)]
+        with m.Elif(self.busy):
+            m.d.sync += st.eq(Mux(st == 2, 0, st + 1))
+            with m.If(st == 1):
+                m.d.comb += self.wr_en.eq(1)
+            with m.If(st == 2):
+                m.d.sync += x.eq(x + 1)
+                with m.If(x + 1 >= n):
+                    m.d.sync += self.busy.eq(0)
         return m
 
 
@@ -493,7 +527,7 @@ class Finish(Elaboratable):
             bch.i_bits.eq(Mux(tmode, tr.bch_bits, al.o_bits)),
             bch.i_last.eq(Mux(tmode, tr.bch_last, al.o_last)),
             tr.bch_done.eq(bch.done & tmode), tr.bch_ok.eq(bch.ok), tr.bch_corrected.eq(bch.corrected),
-            tr.bch_mask.eq(bch.o_mask),
+            tr.bch_nroots.eq(bch.nroots),
             # one Realign for the slots' BCH words and the TMCC's (tmode)
             al.skip.eq(0),
             al.take.eq(Mux(tmode, TMCC_DATA_BITS, k_of[rate] - 6)),
@@ -506,7 +540,9 @@ class Finish(Elaboratable):
             tr.frame.eq(fr_frame),
         ]
         q_out = Signal(12)
-        m.d.comb += bch.q_beat.eq(Mux(tmode, tr.bch_q, q_out))
+        m.submodules.fix = fix = FixRoots(bch.roots, bch.nroots)
+        m.d.comb += [tr.bch_roots[x].eq(bch.roots[x]) for x in range(gf.T)]
+        m.d.comb += fix.rd_data.eq(brd.data)
         bch_done_l = Signal()
         bch_ok_l = Signal()
         bch_cor_l = Signal(4)
@@ -568,7 +604,16 @@ class Finish(Elaboratable):
                 with m.Else():
                     m.next = "BCH"
             with m.State("BCH"):
-                with m.If(~s_run | bch_done_l):
+                with m.If(~s_run):
+                    m.next = "DUMMIES"
+                with m.Elif(bch_done_l):
+                    # the roots flipped in the buffer (whatever the result, as the model)
+                    m.d.comb += fix.go.eq(1)
+                    m.next = "FIX"
+            with m.State("FIX"):
+                m.d.comb += [brd.addr.eq(fix.rd_addr), bw.addr.eq(fix.wr_addr), bw.data.eq(fix.wr_data),
+                             bw.en.eq(fix.wr_en)]
+                with m.If(~fix.busy):
                     m.next = "DUMMIES"
             with m.State("DUMMIES"):
                 # the dummy slots before this one
@@ -612,9 +657,9 @@ class Finish(Elaboratable):
                         q = word_i - 3
                         lastw = q == nb - 1
                         rem = hd_bits[:4]
-                        v = brd.data ^ Mux(s_run, bch.o_mask, 0)
+                        v = brd.data
                         v = Mux(lastw & (rem != 0), v & ((Const(1, 17) << rem) - 1)[:16], v)
-                        m.d.comb += [bch.q_beat.eq(q), pk.w_valid.eq(1), pk.w_data.eq(v)]
+                        m.d.comb += [pk.w_valid.eq(1), pk.w_data.eq(v)]
                         with m.If(pk.w_ready):
                             m.d.sync += [word_i.eq(word_i + 1), q_out.eq(q_out + 1), pace.eq(0)]
                             with m.If(lastw):
