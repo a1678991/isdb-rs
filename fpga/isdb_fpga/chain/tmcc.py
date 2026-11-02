@@ -50,7 +50,7 @@ from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal, s
 from amaranth.lib.memory import Memory
 
 from .common import LAYOUT_LAG, SLOTS, TMCC_SHIFT, round_shift, sat127
-from .frame import lay_pack
+from .frame import LAY_BITS, lay_pack
 from .ldpc_if import OP_BEGIN, OP_DONE, OP_WRITE, TAG_TMCC, TMCC_RATE_CODE
 from .tables import lfsr_state
 
@@ -158,7 +158,7 @@ class TmccLayout(Elaboratable):
         self.lw_open = Signal()
         self.lw_en = Signal()
         self.lw_slot = Signal(range(SLOTS))
-        self.lw_data = Signal(48)
+        self.lw_data = Signal(LAY_BITS)
         self.lw_commit = Signal()
         self.lw_frame = Signal(32)
         self.lw_from = Signal(32)

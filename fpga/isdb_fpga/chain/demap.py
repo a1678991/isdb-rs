@@ -101,7 +101,7 @@ class Demap(Elaboratable):
         self.f_drop = Signal()  # it was dropped
         # the layout in force (FrameCtl's second read port, one cycle)
         self.lay_addr = Signal(range(SLOTS))
-        self.lay_data = Signal(48)
+        self.lay_data = Signal(49)  # frame.LAY_BITS
         # the decoder's input port
         self.o_valid = Signal()
         self.o_n = Signal(range(LANES + 1))
@@ -165,14 +165,15 @@ class Demap(Elaboratable):
         cw_mode = Signal(3)
         cw_mod = Signal(4)
         cw_rate = Signal(4)
-        cw_syms = Signal(15)
-        sym = Signal(15)
+        # a codeword's symbols and the index in it: up to 44 880 (pi/2-BPSK)
+        cw_syms = Signal(16)
+        sym = Signal(16)
         nx_ok = Signal()  # the next codeword found (and its points loaded)
         nx_slot = Signal(7)
         nx_mode = Signal(3)
         nx_mod = Signal(4)
         nx_rate = Signal(4)
-        nx_syms = Signal(15)
+        nx_syms = Signal(16)
         scan = Signal(range(SLOTS + 1))
         frame = Signal(32)
 
@@ -213,7 +214,7 @@ class Demap(Elaboratable):
 
         # layout scan: the next valid slot from `scan`
         ld = self.lay_data
-        l_mode, l_mod, l_rate, l_dummy, l_syms = ld[0:3], ld[3:7], ld[7:11], ld[11], ld[33:48]
+        l_mode, l_mod, l_rate, l_dummy, l_syms = ld[0:3], ld[3:7], ld[7:11], ld[11], ld[33:49]
         m.d.comb += self.lay_addr.eq(Mux(scan < SLOTS, scan, 0)[:7])
         main = self.valid & self.is_main
         end_cw = main & cw_ok & (sym == cw_syms - 1)
@@ -282,13 +283,11 @@ class Demap(Elaboratable):
         z1 = [Signal(signed(16), name=f"z1_{c}") for c in range(2)]
         s1 = Signal()
         nb1 = Signal(3)
-        ctx_w = 16 + 15 + 1 + 1 + 3 + 4 + 4 + 7 + 3 + 1  # pos base etc.
         ctx = Signal(64)
         dirn = Array(Const(direction(md, rc) if 1 <= md <= 5 and 1 <= rc <= 11 else 0, 2)
                      for md in range(16) for rc in range(16))[Cat(cw_rate, cw_mod)]
         ctx_now = Cat(sym, end_cw, sym == 0, Mux(cw_set, NB[1], NB[0]), cw_mod, cw_rate, cw_slot,
                       cw_mode, dirn, (sym % NOISE_STEP) == 0)
-        del ctx_w
         m.d.sync += [v1.eq(a_v), z1[0].eq(self.z[0]), z1[1].eq(self.z[1]), s1.eq(cw_set), ctx.eq(ctx_now)]
         # A+1: products
         prod = [[Signal(signed(29), name=f"zp{x}_{c}") for c in range(2)] for x in range(32)]
@@ -303,7 +302,7 @@ class Demap(Elaboratable):
         v2 = Signal()
         ctx2 = Signal(64)
         m.d.sync += [v2.eq(v1), ctx2.eq(ctx)]
-        nb2 = ctx2[17:20]
+        nb2 = ctx2[18:21]
         # A+2: metrics
         met = [Signal(signed(32), name=f"met{x}") for x in range(32)]
         for x in range(32):
@@ -363,18 +362,20 @@ class Demap(Elaboratable):
         # noise sample at A+8
         nsum = Signal(48)
         ncnt = Signal(20)
-        with m.If(v8 & ctx8[40]):
+        with m.If(v8 & ctx8[41]):
             m.d.sync += [nsum.eq(nsum + zz8 + best), ncnt.eq(ncnt + 1)]
         # A+9: the beat
-        s9 = ctx9[0:15]
-        nb9 = ctx9[17:20]
-        mod9 = ctx9[20:24]
-        rate9 = ctx9[24:28]
-        slot9 = ctx9[28:35]
-        mode9 = ctx9[35:38]
-        dir9 = ctx9[38:40]
+        # the context word: sym 0-15, last 16, first 17, bits 18-20, mod 21-24,
+        # rate 25-28, slot 29-35, mode 36-38, direction 39-40, noise 41
+        s9 = ctx9[0:16]
+        nb9 = ctx9[18:21]
+        mod9 = ctx9[21:25]
+        rate9 = ctx9[25:29]
+        slot9 = ctx9[29:36]
+        mode9 = ctx9[36:39]
+        dir9 = ctx9[39:41]
         rows = Array(Const(N_LDPC // b if b else 0, 16) for b in range(8))[nb9]
-        m.d.sync += [self.o_valid.eq(v9), self.o_n.eq(nb9), self.o_last.eq(ctx9[15]), self.o_first.eq(ctx9[16]),
+        m.d.sync += [self.o_valid.eq(v9), self.o_n.eq(nb9), self.o_last.eq(ctx9[16]), self.o_first.eq(ctx9[17]),
                      self.o_tag.eq(Cat(slot9, Const(0, 1), rate9, mod9, mode9, Const(0, 13), frame)),
                      self.o_rate.eq(rate9)]
         llr_pos = [sat127(round_shift(dk[p], LLR_SHIFT)) for p in range(5)]

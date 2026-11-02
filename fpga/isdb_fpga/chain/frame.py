@@ -19,7 +19,7 @@ Rules (the model's):
 
 Layout memory: three banks of 120 slot entries (mode, modulation code, rate
 code, dummy, the codeword's first main symbol in the frame and its symbol
-count: 3 + 4 + 4 + 1 + 21 + 15 = 48 bits), one RAMB18 in all. A bank is
+count, up to 44 880 for pi/2-BPSK: 3 + 4 + 4 + 1 + 21 + 16 = 49 bits), one RAMB18 in all. A bank is
 "in force" (taken at a frame start), "queued" (applies_to frame), or free;
 the TMCC stage latches a free bank (`lw_open`; `lw_bank` says which), writes it and commits it.
 With lag 2 at most one bank is in force, one queued and one being written.
@@ -39,7 +39,7 @@ from amaranth.lib.memory import Memory
 
 from .common import FRAME, MAIN_RUN, PILOTS, SLOT, SLOTS, SYNC, TMCC_RUN
 
-LAY_BITS = 48
+LAY_BITS = 49
 
 
 def lay_pack(mode, mod, rate, dummy, start, symbols):
@@ -84,7 +84,7 @@ class FrameCtl(Elaboratable):
         self.s_rate = Signal(4)
         self.s_dummy = Signal()
         self.s_start = Signal(21)
-        self.s_symbols = Signal(15)
+        self.s_symbols = Signal(16)  # up to 44 880 (a pi/2-BPSK codeword)
         # frame events (one cycle after the centre cycle)
         self.o_done = Signal()
         self.o_dropped = Signal()
@@ -176,7 +176,7 @@ class FrameCtl(Elaboratable):
         rd = rp.data
         m.d.comb += [
             c.s_mode.eq(rd[0:3]), c.s_mod.eq(rd[3:7]), c.s_rate.eq(rd[7:11]),
-            c.s_dummy.eq(rd[11]), c.s_start.eq(rd[12:33]), c.s_symbols.eq(rd[33:48]),
+            c.s_dummy.eq(rd[11]), c.s_start.eq(rd[12:33]), c.s_symbols.eq(rd[33:49]),
         ]
         with m.If(c.cv & (j == 0)):
             # slot k's first main and TMCC indices, k * 8 976 and k * 264, as running
