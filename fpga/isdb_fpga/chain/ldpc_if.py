@@ -105,8 +105,9 @@ class LdpcBridge(Elaboratable):
       the decoder one LLR per cycle (`in_valid`, `in_pos`, `in_llr`,
       `in_rate` = the rate index, `in_ctx`), with `begin` on the cycle of a
       codeword's first LLR (or alone, OP_BEGIN) and `start` (`st_rate`,
-      `st_max_iter`, `st_offset`, `st_short`) on the cycle after its last
-      (or alone, OP_DONE). The slot beats have priority on the chain side
+      `st_max_iter`, `st_offset`, `st_short`: the closing beat's
+      `in_max_iter`, `in_offset`, `in_shortened`, carried in the FIFO with
+      the beat) on the cycle after its last (or alone, OP_DONE). The slot beats have priority on the chain side
       (`back.py`), so the TMCC burst takes the free cycles and never
       starves them. Rates: a 32APSK main symbol per 40 MHz clock is 5
       LLRs, exactly the decoder's 200 MHz; the front end's 33.76 Msymbol/s
@@ -130,7 +131,9 @@ class LdpcBridge(Elaboratable):
     OUT_DEPTH = 64
     TAG_DEPTH = 16
 
-    def __init__(self, port, max_iter=16, offset=1):
+    def __init__(self, port, max_iter=None, offset=None):
+        # the limit and offset come with each codeword's closing beat
+        # (`in_max_iter`, `in_offset` of the port); the arguments are unused
         self.p = port
         self.max_iter = max_iter
         self.offset = offset
@@ -166,7 +169,7 @@ class LdpcBridge(Elaboratable):
         p = self.p
         # ---- in -------------------------------------------------------------
         fields = [p.in_op, p.in_ctx, p.in_n, p.in_first, p.in_last, p.in_rate, p.in_shortened,
-                  p.in_tag, *p.in_pos, *p.in_llr]
+                  p.in_tag, p.in_max_iter, p.in_offset, *p.in_pos, *p.in_llr]
         width = sum(len(f) for f in fields)
         fin = AsyncFIFO(width=width, depth=self.IN_DEPTH, w_domain="sync", r_domain="ldpc")
         m.submodules.fin = fin
@@ -179,7 +182,8 @@ class LdpcBridge(Elaboratable):
         lane = Signal(3)
         o = 0
         f = {}
-        for name, sig in zip(["op", "ctx", "n", "first", "last", "rate", "short", "tag"], fields[:8]):
+        for name, sig in zip(["op", "ctx", "n", "first", "last", "rate", "short", "tag", "max_iter", "offset"],
+                             fields[:10]):
             f[name] = cur[o:o + len(sig)]
             o += len(sig)
         pos = [cur[o + 16 * k:o + 16 * k + 16] for k in range(LANES)]
@@ -197,7 +201,7 @@ class LdpcBridge(Elaboratable):
         rate_idx = (f["rate"] - 1)[:4]
         with m.If(need_start):
             m.d.ldpc += [self.start.eq(1), self.d_ctx.eq(f["ctx"]), self.st_rate.eq(rate_idx),
-                         self.st_max_iter.eq(self.max_iter), self.st_offset.eq(self.offset),
+                         self.st_max_iter.eq(f["max_iter"]), self.st_offset.eq(f["offset"]),
                          self.st_short.eq(f["short"]), tags.w_en.eq(1), need_start.eq(0)]
         with m.Elif(~have & fin.r_rdy):
             m.d.ldpc += [cur.eq(fin.r_data), have.eq(1), lane.eq(0)]

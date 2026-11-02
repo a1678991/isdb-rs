@@ -240,7 +240,9 @@ class BridgeTest(unittest.TestCase):
     """The bridge from the chain's decoder port (40 MHz, 5-lane beats) to
     `ldpc.py`'s ports (200 MHz, one LLR per cycle, begin / start, results in
     commit order): a 3-lane codeword with first/last, a TMCC begin / write /
-    done, then a result record and two words back with the tags in order."""
+    done, each committed with the limit and offset of its own closing beat
+    (16 / 1 and 50 / 4), then a result record and two words back with the
+    tags in order."""
 
     def test_two_clocks(self):
         from amaranth.hdl import Module
@@ -249,7 +251,7 @@ class BridgeTest(unittest.TestCase):
         from isdb_fpga.chain.ldpc_if import OP_BEGIN, OP_DONE, OP_WRITE, LdpcBridge, LdpcPort
 
         port = LdpcPort()
-        br = LdpcBridge(port, max_iter=16)
+        br = LdpcBridge(port)
         top = Module()
         top.submodules.br = br
         from amaranth.hdl import ClockDomain
@@ -260,16 +262,20 @@ class BridgeTest(unittest.TestCase):
         sim.add_clock(25e-9, domain="sync")
         sim.add_clock(5e-9, domain="ldpc")
         writes, begins, starts, outs = [], [], [], []
+        # the two codewords close with different limits and offsets (the
+        # port's per-codeword in_max_iter, in_offset)
         beats = [
-            (OP_WRITE, 0, 3, 1, 0, 7, [10, 20, 30], [1, -2, 3], 0xA1),
-            (OP_WRITE, 0, 3, 0, 1, 7, [11, 21, 31], [4, -5, 6], 0xA1),
-            (OP_BEGIN, 1, 1, 0, 0, 3, [0], [0], 0x80),
-            (OP_WRITE, 1, 1, 0, 0, 3, [1870], [-7], 0x80),
-            (OP_DONE, 1, 1, 0, 0, 3, [0], [0], 0x80),
+            (OP_WRITE, 0, 3, 1, 0, 7, [10, 20, 30], [1, -2, 3], 0xA1, 9, 2),
+            (OP_WRITE, 0, 3, 0, 1, 7, [11, 21, 31], [4, -5, 6], 0xA1, 16, 1),
+            (OP_BEGIN, 1, 1, 0, 0, 3, [0], [0], 0x80, 3, 3),
+            (OP_WRITE, 1, 1, 0, 0, 3, [1870], [-7], 0x80, 7, 0),
+            (OP_DONE, 1, 1, 0, 0, 3, [0], [0], 0x80, 50, 4),
         ]
 
         async def chain(ctx):
-            for op, cx, n, fi, la, rate, pos, llr, tag in beats:
+            for op, cx, n, fi, la, rate, pos, llr, tag, mi, off in beats:
+                ctx.set(port.in_max_iter, mi)
+                ctx.set(port.in_offset, off)
                 ctx.set(port.in_valid, 1)
                 ctx.set(port.in_op, op)
                 ctx.set(port.in_ctx, cx)
@@ -302,7 +308,7 @@ class BridgeTest(unittest.TestCase):
                     writes.append((ctx.get(br.d_ctx), ctx.get(br.d_pos), ctx.get(br.d_llr), ctx.get(br.d_rate)))
                 if ctx.get(br.start):
                     starts.append((ctx.get(br.d_ctx), ctx.get(br.st_rate), ctx.get(br.st_short),
-                                   ctx.get(br.st_max_iter)))
+                                   ctx.get(br.st_max_iter), ctx.get(br.st_offset)))
                 if cyc == 300:
                     ctx.set(br.res_valid, 1)
                     ctx.set(br.res_iterations, 2)
@@ -322,7 +328,7 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(begins, [0, 1])
         self.assertEqual(writes, [(0, 10, 1, 6), (0, 20, -2, 6), (0, 30, 3, 6), (0, 11, 4, 6),
                                   (0, 21, -5, 6), (0, 31, 6, 6), (1, 1870, -7, 2)])
-        self.assertEqual(starts, [(0, 6, 0, 16), (1, 2, 1, 16)])
+        self.assertEqual(starts, [(0, 6, 0, 16, 1), (1, 2, 1, 50, 4)])
         self.assertEqual(outs, [("head", 0xA1, 2), ("word", 0x1234 + 301, 0), ("word", 0x1234 + 302, 1)])
 
 

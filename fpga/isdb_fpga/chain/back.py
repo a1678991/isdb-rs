@@ -47,8 +47,9 @@ class Back(Elaboratable):
         self.tmcc = TmccSoft(max_iter, offset)
         self.demap = Demap()
         self.port = LdpcPort()
-        self.max_iter = max_iter
-        self.offset = offset
+        # the decoder's per-codeword settings (registers: SlotsRx MAX_ITER)
+        self.max_iter = Signal(8, init=max_iter)
+        self.offset = Signal(3, init=offset)
         self.restart = Signal()
         self.port_lost = Signal(16)
 
