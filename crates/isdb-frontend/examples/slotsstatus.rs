@@ -1,0 +1,96 @@
+//! Frame by frame, what a recorded `Slots` stream says about the chain:
+//! for each status block the frame, the taps in use (their frame and
+//! centre tap), the latched sums' frame, n0 and the LLR scale, the frame
+//! the constellation was learned on, and the frame's slot blocks (valid,
+//! failed, mean iterations). For finding when a board run's decoding
+//! changed and what the chain had in force then.
+//!
+//! `cargo run --release -p isdb-frontend --example slotsstatus -- FILE.slots [EVERY]`
+//!
+//! EVERY: print every n-th status block, and every block whose frame had
+//! a failed slot or whose taps changed (default 1).
+
+use std::collections::BTreeMap;
+use std::io::Read;
+
+use isdb_frontend::slots::{Block, Event, Reader};
+
+#[derive(Default)]
+struct FrameSlots {
+    valid: u32,
+    failed: u32,
+    iterations: u64,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let path = args.get(1).ok_or("usage: slotsstatus FILE.slots [EVERY]")?;
+    let every: u32 = args.get(2).map_or(Ok(1), |s| s.parse())?;
+    let mut f = std::fs::File::open(path)?;
+    let mut reader = Reader::new();
+    let mut events = Vec::new();
+    let mut buf = vec![0u8; 1 << 22];
+    let mut slots: BTreeMap<u32, FrameSlots> = BTreeMap::new();
+    let mut prev_taps_from = None;
+    let mut n = 0u32;
+    println!(
+        "frame  taps_from  centre_tap      sums_frame  n0      llr_scale  learned_from  slots(valid/failed)  mean_iter"
+    );
+    loop {
+        let got = f.read(&mut buf)?;
+        if got == 0 {
+            break;
+        }
+        reader.feed_bytes(&buf[..got], &mut events);
+        for e in events.drain(..) {
+            match e {
+                Event::Block {
+                    block: Block::Slot(s),
+                    ..
+                } => {
+                    if !s.dummy {
+                        let e = slots.entry(s.frame).or_default();
+                        e.valid += 1;
+                        e.iterations += u64::from(s.iterations);
+                        if !s.converged {
+                            e.failed += 1;
+                        }
+                    }
+                }
+                Event::Block {
+                    block: Block::Status(st),
+                    ..
+                } => {
+                    let fs = slots.remove(&st.frame).unwrap_or_default();
+                    let changed = prev_taps_from != Some(st.taps_from);
+                    prev_taps_from = Some(st.taps_from);
+                    if n.is_multiple_of(every) || fs.failed > 0 || changed {
+                        let mean = if fs.valid > 0 {
+                            fs.iterations as f64 / f64::from(fs.valid)
+                        } else {
+                            0.0
+                        };
+                        println!(
+                            "{:5}  {:>9}  {:>6},{:>6}   {:>10}  {:6}  {:9}  {:>12}  {:4} / {:4}          {:.2}",
+                            st.frame,
+                            st.taps_from.map_or("-".into(), |v| v.to_string()),
+                            st.taps[5][0],
+                            st.taps[5][1],
+                            st.sums_frame.map_or("-".into(), |v| v.to_string()),
+                            st.n0,
+                            st.llr_scale,
+                            st.learned_from.map_or("-".into(), |v| v.to_string()),
+                            fs.valid,
+                            fs.failed,
+                            mean
+                        );
+                    }
+                    n += 1;
+                }
+                Event::Loss { blocks, words } => println!("loss: {blocks} blocks, {words} words"),
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
