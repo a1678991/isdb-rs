@@ -67,8 +67,9 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `isdb_fpga/ldpcsched.py` | the decoder's static schedule computed at elaboration (layer address generation and its derivation, chain thresholds, hazard gaps) and `lane_decode`, the design's own scheme in Python |
 | `isdb_fpga/ldpcmodel.py` | a Python model of the LDPC contract, the IRA encoder and the vectors writer (`python -m isdb_fpga.ldpcmodel --all build`; `--check VECTORS…`) |
 | `isdb_fpga/ldpcqueue.py` | a model of the decoder's codeword queue over frames (K banks, the overrun rule, the TMCC staged or interleaved) |
-| `isdb_fpga/simldpc.py` | the decoder against LDPC vectors files (`python -m isdb_fpga.simldpc VECTORS… [--max N] [--fill-known] [--all-rates] [--backend pysim\|cxxrtl]`): Amaranth's Python simulator or the design compiled with CXXRTL (`chain.simx`, the default where a C++ compiler is found) |
+| `isdb_fpga/simldpc.py` | the decoder against LDPC vectors files (`python -m isdb_fpga.simldpc VECTORS… [--max N] [--fill-known] [--all-rates] [--backend pysim\|cxxrtl\|verilator]`): Amaranth's Python simulator or the design compiled with Verilator or CXXRTL (`chain.simx`; the default where it can be built: Verilator where installed, else CXXRTL) |
 | `synth/ldpc_estimate.py`, `synth/ldpc_cycles.py`, `synth/ldpc_memories.py`, `synth/ldpc_simspeed.py`, `synth/ldpc_latency.py` | the decoder's Yosys estimate per S, its cycles per iteration per rate and S, how Yosys maps each memory shape, the simulation speed of both backends, the measured write latency |
+| `synth/sim_compare.py`, `synth/sim_speed.py`, `synth/sim_parallel_build.py`, `synth/sim_xcheck.py` | the compiled simulation backends ([below](#simulation-backends)): every test bench on two backends compared value for value (`--x-unique SEED`: Verilator's X values random), one bench's build time and speed, parallel builders of one library, the random X values in effect |
 | `isdb_fpga/chain/` | the ISDB-S3 chain after the front end (stages 1–6, 8, 9; [below](#the-isdb-s3-chain-slotsrx)) |
 | `synth/chain_estimate.py` | Yosys estimates of the chain's blocks |
 | `tests/test_chain.py` | the chain's stage and chain tests against `chain-*.json` |
@@ -92,6 +93,73 @@ mise run fpga:chain-estimate  # resource estimates of the ISDB-S3 chain's blocks
 two TX sets; the Rust model's TX vectors, in the same directory, are
 simulated too. The tasks set `UV_DEFAULT_INDEX` to PyPI, the index
 `uv.lock` records, unless it is already set.)
+
+### Simulation backends
+
+The chain's stages and the LDPC decoder run long vector sets through
+one stream API (`isdb_fpga/chain/simx.py`) with three backends:
+
+| `FPGA_SIM` | Backend | Needs | Built |
+|---|---|---|---|
+| `verilator` | the design as Verilog (the venv's Yosys) Verilated, with `chain/harness.cc` (`chain/simv.py`) | Verilator ≥ 5 (`$VERILATOR`), a C++ compiler | `make -j`, cached in `build/verilator/` |
+| `cxxrtl` | Yosys `write_cxxrtl`, with the same `harness.cc` | a C++ compiler (the CXXRTL headers come with yowasp-yosys) | one translation unit (`c++ -O1`), cached in `build/cxxrtl/` |
+| `pysim` | Amaranth's Python simulator | — | — |
+
+The tests' compiled paths (the chain's whole sets, the LDPC decoder's
+B44 sets) use `simx.compiled_backend()`: `FPGA_SIM` if it names a compiled
+backend, else Verilator where it is installed, else CXXRTL, else they skip
+(the chain) or run their Python-simulator subset (the decoder,
+`FPGA_SIM=pysim` too). Both compiled libraries are keyed by the design,
+`harness.cc` and their build flags (Verilator's also by its version, its
+design without the `src` attributes, so another checkout shares them),
+never by the Python around them; one process builds a library while the
+others (pytest-xdist workers) wait on its lock. On Ubuntu `apt install
+verilator` (5.032 on 26.04); `tools/verilator-apt-time.sh` times that in
+a container.
+
+The backends give the same records, value for value: `synth/sim_compare.py`
+runs every compiled test bench (the chain's stages 1–6 and BCH whole, the
+chain's frame 0, every step-17/34 B44 set, the toy sets, the plans) on
+CXXRTL and on Verilator and compares every value the engine returns (each
+group's records, each `get`, the cycle counts) and the ports before the
+first clock; `--x-unique SEED` with Verilator's X values random
+(`--x-initial unique --x-assign unique`; the designs initialise every
+register and memory, the only X being memory read ports before their
+first read and parallel-mux defaults, none of which reaches a record).
+`tests/test_simx.py` runs a bench of the harness's whole protocol
+(backpressure, gaps, two groups, signed and 64-bit ports, a memory, an
+output combinational from registers) on all three backends and the
+chain-2 set on both compiled ones. The same holds with Ubuntu 26.04's
+Verilator 5.032 (the CI's). Measured on this host (Ryzen 9 7950X, GCC
+16.2, Verilator 5.054), 2026-11-02, one core (`taskset`) unless said:
+
+| Design (`sim_compare.py` case) | Harness cycles | Verilator | CXXRTL | Verilator build: 1 job / 4 jobs | CXXRTL build |
+|---|---|---|---|---|---|
+| `SlotsChain` + stub, frame 0 (`chain`) | 2 504 981 | 374 000–381 000 cycles/s | 27 000 cycles/s | 43 s / 23 s | 183 s |
+| `LdpcDecoder` S = 34, all rates, every step-34 set (`ldpc-34`) | 2 615 569 | 500 000–530 000 cycles/s | 31 000 cycles/s | 22 s / 11 s | 58 s |
+| `LdpcDecoder` S = 187, all rates, `ldpc-3` (`ldpc-187`, loaded host) | 377 489 | 158 000 cycles/s | 1 900 cycles/s | ≈ 45 s with 8 jobs | 1 282 s |
+| the TMCC stage (`tmcc`, loaded host) | 133 108 | 1.6 M cycles/s | 39 000 cycles/s | 6 s with 8 jobs | 45–53 s |
+
+(`synth/sim_speed_all.sh`, `synth/sim_speed.py`: cycles over the time in
+the engine's `run` / `tick` calls; the build alone, in an empty
+directory; the cached setup, elaboration and the RTLIL included, is
+about 17 s for the chain and 2 s for the decoder on both.) The small
+stages (sync, phase, equaliser, demapper) run at 0.3–1.9 M cycles/s on
+both, within a factor of 2.5. CXXRTL takes three steps per cycle (one
+to settle the inputs, two at the edge), Verilator two: CXXRTL's step
+commits the registers after evaluating the logic, so an output
+combinational from registers needs the second step to read as it is
+after the edge, as on the other two (`harness.cc`; until 2026-11-02 it
+read one edge late: the LDPC decoder's output words reached the harness
+a cycle later, with the same records).
+
+The whole `pytest -n 4 --dist worksteal tests` on four cores (the CI
+runner has four vCPUs; without the recordings' opt-in sets):
+
+| Backend | Every model built | Cached | Tests |
+|---|---|---|---|
+| Verilator (the default where installed) | 296 s | 161 s | 84, S = 187 included |
+| `FPGA_SIM=cxxrtl` | 479 s | 265 s | 82 (S = 187 skipped) |
 
 Results (format 4, 2026-10-26):
 
@@ -175,7 +243,7 @@ module's docstring states its contract by reference and its schedule):
 | `finish.py`, `gf.py` | 8 | the BCH unit (syndromes 16 bits per clock, Berlekamp–Massey on one GF(2¹⁶) multiplier, Chien one position per clock, the roots flipped as the Rust decoder does), the slot PRBS, `Finish` (the result stream into slot, TMCC and status blocks in frame order); `gf.py`: the field and a Python port of `isdb_fec::bch::decode` |
 | `packer.py`, `slots.py` | 9 | the `Slots` block framing with the front end's CRC-32C network, the status block's words; `slots.py`: the format in Python (reader, CRC) |
 | `top.py` | | `SlotsChain` (the stages wired, the status snapshot), `SlotsRx` (the sketch of the bitstream block: front end → FIFO → chain → bridge → decoder, the register file, the output selection) |
-| `sim.py`, `stages.py`, `simx.py`, `harness.cc`, `bchsim.py` | | simulation against the vectors (`python -m isdb_fpga.chain.sim VECTORS.json [--backend pysim\|cxxrtl] [--symbols N]`) |
+| `sim.py`, `stages.py`, `simx.py`, `simv.py`, `harness.cc`, `bchsim.py` | | simulation against the vectors (`python -m isdb_fpga.chain.sim VECTORS.json [--backend pysim\|cxxrtl\|verilator] [--symbols N]`) |
 
 **Clocks.** Everything runs at one symbol per clock in the 40 MHz symbol
 clock (`util_ad9361_divclk`) but the LDPC decoder (`ldpc` domain, 200 MHz),
@@ -191,14 +259,17 @@ Stage 1 holds the input for about 0.7 % of the clocks (its decisions) and
 stage 3's ring when its reader stalls; `SlotsRx` puts a 1 024-symbol FIFO
 in front, the front end delivering 84 % of the clocks.
 
-**Simulation** (`tests/test_chain.py`, part of `mise run fpga:test`): two
+**Simulation** (`tests/test_chain.py`, part of `mise run fpga:test`): three
 backends behind one stream API (`simx.py`): Amaranth's Python simulator
-(the default; about 6 500 cycles/s on the stage-1 block, 2 000 on the
-back end) and an optional compiled one, CXXRTL from the venv's Yosys and
-the system C++ compiler (about 1.1 M cycles/s; built and cached in
-`build/cxxrtl/` on first use, 5 s to a few minutes per block;
-`simx.available()` decides, the tests that need it skip without it;
-`FPGA_SIM=cxxrtl` makes it the default of `python -m isdb_fpga.chain.sim`).
+(about 6 500 cycles/s on the stage-1 block, 2 000 on the back end) and
+two compiled ones driven by the same stream harness (`harness.cc`):
+Verilator (`simv.py`: Yosys `write_verilog`, Verilator 5, `make -j`;
+built and cached in `build/verilator/`) and CXXRTL (the venv's Yosys and
+the system C++ compiler, one translation unit; cached in `build/cxxrtl/`).
+The whole-set tests run on `simx.compiled_backend()`: `FPGA_SIM` if it
+names a compiled backend, else Verilator where it is installed, else
+CXXRTL, else they skip; `FPGA_SIM=cxxrtl` (or `verilator`) also makes it
+the default of `python -m isdb_fpga.chain.sim` ([backends](#simulation-backends)).
 Measured on this host, 2026-11-02, the synthetic sets (`chainvectors`, 5
 B44 frames of 16APSK 93/120, −400 Hz drifting, 14 dB):
 
@@ -211,7 +282,7 @@ B44 frames of 16APSK 93/120, −400 Hz drifting, 14 dB):
 | 6 (4–6) | chain-3 → chain-5 (+ chain-4) | all 96 codewords' 1 077 120 beats (count, flags, tags), both codewords chain-5 carries in full (every position and LLR, the de-interleaved words), 16 learned points, n0 and K for the next frame, the TMCC soft bits | 12 000 symbols (the first codeword whole), 7 s | the whole frame, 9 s |
 | 8 (BCH) | gf.py (the Rust decoder's port) | 32 random words of 9 614 and 34 776 bits with 0–20 errors: result, count, roots | 2 words | 32 words |
 | bridge | — | the 40 MHz port to the 200 MHz decoder ports and back, two clocks | the test | — |
-| 1–9 | chain-6-chain (+ chain-3's taps) | every `Slots` word: 5 587 896 symbols in, 211 281 words out (3 frames: TMCC and status blocks; frame 2 decoded, 120 slot blocks), the LDPC stub answering each frame after its TMCC codeword is committed | — | 2 260 000 symbols (frame 0's blocks, 683 words) by default, about a minute (after the first build of the chain's library, about 3 minutes); the whole set (`FPGA_CHAIN_FULL=1`) 171 s, about 38 000 cycles/s |
+| 1–9 | chain-6-chain (+ chain-3's taps) | every `Slots` word: 5 587 896 symbols in, 211 281 words out (3 frames: TMCC and status blocks; frame 2 decoded, 120 slot blocks), the LDPC stub answering each frame after its TMCC codeword is committed | — | 2 260 000 symbols (frame 0's blocks, 683 words) by default: about 45 s on Verilator (7 s of it simulation, 380 000 cycles/s; the first build 23–43 s), 130 s on CXXRTL (27 000 cycles/s; the first build about 3 minutes); the whole set (`FPGA_CHAIN_FULL=1`) 171 s on CXXRTL before its harness settled combinational outputs (38 000 cycles/s) |
 
 **Estimates** (`mise run fpga:chain-estimate`: Yosys `synth_xilinx`,
 before place and route; 6-bit input) against the plan's budget:
@@ -720,6 +791,19 @@ the libraries cached, about 150 s with them built (longest:
 `test_b44_step34`, 67 s / 148 s), against 193 s (`test_b44_vectors`,
 3 codewords) and 143 s (`test_toy_codes`) for the previous Python-only
 set.
+
+**Verilator (2026-11-02).** Where Verilator is installed it is the
+compiled default ([Simulation backends](#simulation-backends)): the S = 34
+decoder builds in 22 s (one make job; 11 s with four, CXXRTL 58 s) and
+runs at about 500 000 harness cycles per second (CXXRTL 31 000; the
+table above counts the codewords' decoder cycles over the wall time, and
+is from before the harness's second step at the edge); S = 187 builds in
+about a minute and runs at 158 000 (CXXRTL: 21 minutes, 1 900), so
+`test_b44_step187` and `test_toy_step187` run by default on Verilator
+(about 80 s each, the build included); on CXXRTL they stay opt-in
+(`FPGA_LDPC_ALL=1`). Both backends give the same records on every set,
+S = 187 included (`synth/sim_compare.py ldpc-17 ldpc-34 ldpc-py toy
+plans ldpc-187 toy-187`).
 
 ## Integration
 
