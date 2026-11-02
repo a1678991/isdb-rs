@@ -204,11 +204,11 @@ def _flags():
 class Verilator(simx._Cxx):
     build_dir = BUILD
 
-    def __init__(self, dut, ports, tag):
+    def __init__(self, dut, ports, tag, clocks=simx.CLOCKS):
         if not available():
             raise RuntimeError("the verilator backend needs Verilator >= 5 (on PATH or $VERILATOR)"
                                " and a C++ compiler")
-        super().__init__(dut, ports, tag)
+        super().__init__(dut, ports, tag, clocks)
 
     @staticmethod
     def _key(il):

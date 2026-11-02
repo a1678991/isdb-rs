@@ -153,6 +153,31 @@ def mag_approx(re, im):
     return Mux(a > b, a, b) + (Mux(a > b, b, a) >> 1)
 
 
+# --- the 4x clock -------------------------------------------------------------
+
+class Phase4(Elaboratable):
+    """The phase of the `fast` domain (4x the symbol clock `sync`, phase-
+    aligned: every edge of `sync` is an edge of `fast`; fpga/tezuka/
+    isdb_slots.xdc): `phase` (fast domain, combinational) is 0 in the fast
+    cycle after the common edge, then 1, 2, 3. Found from a toggle of the
+    symbol clock that the fast domain registers: the cycle in which the two
+    differ is phase 0 (so the counter is right from the first symbol clock
+    edge on, whatever the reset states)."""
+
+    def __init__(self):
+        self.phase = Signal(2)
+
+    def elaborate(self, platform):
+        m = Module()
+        tg = Signal()
+        tq = Signal()
+        cnt = Signal(2)
+        m.d.sync += tg.eq(~tg)
+        m.d.fast += [tq.eq(tg), cnt.eq(self.phase + 1)]
+        m.d.comb += self.phase.eq(Mux(tg ^ tq, 0, cnt))
+        return m
+
+
 # --- sequential units -------------------------------------------------------
 
 class SeqMul(Elaboratable):

@@ -108,3 +108,39 @@ def nominal_rom():
             pts = nominal(mod, rc) if rc <= 11 else []
             rom += pts + [(0, 0)] * (32 - len(pts))
     return rom
+
+
+# --- the nominal points, compact (one table for the equaliser's references
+# and the demapper's points) ---------------------------------------------------
+
+NOM_BITS = 12  # |coordinate| <= 1 360 in Q.10 (32APSK 61/120's outer ring)
+
+
+def nominal_compact():
+    """The distinct point sets of every (modulation, rate code) once:
+    (entries, base) with entries the (re, im) of the sets back to back and
+    base[(mod, rate_code)] the first entry of that mode's set (16APSK and
+    32APSK depend on the rate through their ring ratios; rates with equal
+    ratios share a set): 23 sets, 510 entries, so one RAMB18 (512 x 24
+    bits) holds them all."""
+    entries, base, seen = [], {}, {}
+    for mod in range(1, 6):
+        for rc in range(1, 12):
+            pts = tuple(nominal(mod, rc))
+            if pts not in seen:
+                seen[pts] = len(entries)
+                entries += list(pts)
+            base[(mod, rc)] = seen[pts]
+    lim = 1 << (NOM_BITS - 1)
+    assert len(entries) <= 512 and all(-lim <= v < lim for p in entries for v in p)
+    return entries, base
+
+
+def nominal_word(re, im):
+    return (re & ((1 << NOM_BITS) - 1)) | (im & ((1 << NOM_BITS) - 1)) << NOM_BITS
+
+
+def pilot_sign_rom():
+    """The pilot signs as a 4 096 x 1 table (1: negative), entry k * 32 + t."""
+    s = [1 if v < 0 else 0 for v in pilot_signs()]
+    return s + [0] * (4096 - len(s))

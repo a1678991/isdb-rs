@@ -29,6 +29,12 @@ BUDGET = {
 }
 
 
+# LUTs per distributed-RAM cell (7-series: RAM32M / RAM64M a quad of
+# LUTs, the dual-port 1-bit cells a pair)
+LUTRAM_LUTS = {"RAM32M": 4, "RAM64M": 4, "RAM32X1D": 2, "RAM64X1D": 2, "RAM128X1D": 4,
+               "RAM32X1S": 1, "RAM64X1S": 1, "RAM128X1S": 2, "RAM256X1S": 4}
+
+
 def blocks():
     from amaranth.hdl import Elaboratable, Module
 
@@ -145,10 +151,15 @@ def stat(dut, ports, tag):
             counts[parts[1]] = int(parts[0])
     luts = sum(v for k, v in counts.items() if k.startswith("LUT"))
     lram = sum(v for k, v in counts.items() if k.startswith("RAM") and not k.startswith("RAMB"))
+    # the LUTs the LUT RAM and shift-register cells occupy (SLICEM LUTs:
+    # Vivado counts them in "Slice LUTs")
+    lram_luts = sum(v * LUTRAM_LUTS.get(k, 1) for k, v in counts.items()
+                    if (k.startswith("RAM") and not k.startswith("RAMB")) or k.startswith("SRL"))
     ff = sum(v for k, v in counts.items() if k.startswith("FD"))
     b36 = counts.get("RAMB36E1", 0) + counts.get("RAMB18E1", 0) / 2
     return {"LUT": luts, "FF": ff, "BRAM36": b36, "DSP": counts.get("DSP48E1", 0),
-            "LUTRAM": lram, "CARRY4": counts.get("CARRY4", 0)}
+            "LUTRAM": lram, "LUTRAM_LUTS": lram_luts, "LUT_ALL": luts + lram_luts,
+            "CARRY4": counts.get("CARRY4", 0)}
 
 
 def main(argv):
@@ -162,8 +173,9 @@ def main(argv):
         if r is None:
             print(f"{n}: synthesis failed")
             continue
-        print(f"{n}: {r['LUT']} LUT, {r['FF']} FF, {r['BRAM36']:g} BRAM36 (RAMB18 as 1/2), "
-              f"{r['DSP']} DSP48E1, {r['LUTRAM']} LUTRAM cells, {r['CARRY4']} CARRY4", flush=True)
+        print(f"{n}: {r['LUT_ALL']} LUT ({r['LUT']} logic + {r['LUTRAM_LUTS']} in {r['LUTRAM']} LUT RAM "
+              f"cells), {r['FF']} FF, {r['BRAM36']:g} BRAM36 (RAMB18 as 1/2), {r['DSP']} DSP48E1, "
+              f"{r['CARRY4']} CARRY4", flush=True)
     return 0
 
 
