@@ -1,11 +1,12 @@
-# Timing of the symbol-clock <-> fast-clock crossings of isdb_slots with the
-# fast clock taken through the block wrapper's BUFR (BYPASS) and
-# BUFGMUX_CTRL (isdb_slots_top.v), on a placed or routed checkpoint: Vivado
-# does not propagate rx_clk through the BYPASS BUFR, so the block's fast
-# registers are unclocked unless a clock is defined on its output. This
-# defines it (divide by 1 of l_clk), re-applies isdb_slots.xdc's fast-domain
-# rules to that clock, and reports the clock-pair slacks and the worst
-# crossings with their skew.
+# Timing of the symbol-clock <-> fast-clock crossings of isdb_slots on a
+# placed or routed checkpoint of the third isdbs3-rx build, whose wrapper
+# put fast_clk through a BUFR (BYPASS) and a BUFGMUX_CTRL with its select
+# tied: Vivado propagated rx_clk through the BUFR but not the BUFGCTRL, so
+# the block's fast registers were unclocked. This defines the clock on the
+# global buffer's output (divide by 1, from its I0), re-applies
+# isdb_slots.xdc's fast-domain rules to it, and reports the clock-pair
+# slacks and the worst crossings with their skew. (isdb_slots_top.v now
+# uses a BUFG, through which the clock propagates: timing.tcl suffices.)
 #
 #   fpga/tezuka/vivado-batch.sh skew_check.tcl CHECKPOINT.dcp OUT.rpt
 set dcp [lindex $argv 0]
