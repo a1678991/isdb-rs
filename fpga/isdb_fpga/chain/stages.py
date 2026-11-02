@@ -21,8 +21,9 @@ from .sim import first_mismatch
 # --- stage 3 -------------------------------------------------------------------
 
 class PhaseBench(Elaboratable):
-    """Records: kind 0 = an NCO output (at, r0, r1); kind 1 = a head (at,
-    word, theta, amp, numbered, number, frame)."""
+    """Records: kind 0 = an NCO input with its phase (at, x0, x1, phi); kind
+    1 = a head (at, word, theta, amp, numbered, number, frame, and in phi the
+    carrier register after it)."""
 
     def __init__(self, in_bits=6):
         self.dut = SlotPhase(in_bits)
@@ -36,6 +37,7 @@ class PhaseBench(Elaboratable):
         self.numbered = Signal()
         self.number = Signal(7)
         self.frame = Signal(32)
+        self.phi = Signal(32)
 
     def elaborate(self, platform):
         m = Module()
@@ -44,7 +46,8 @@ class PhaseBench(Elaboratable):
         head = self.i_valid & self.i_ready & (self.kind == 1)
         m.d.comb += [
             self.i_ready.eq(~d.full),
-            d.i_valid.eq(sym), d.i_at.eq(self.at), d.i_r[0].eq(self.a), d.i_r[1].eq(self.b),
+            d.i_valid.eq(sym), d.i_at.eq(self.at), d.i_x[0].eq(self.a), d.i_x[1].eq(self.b),
+            d.i_phi.eq(self.phi), d.h_f.eq(self.phi),
             d.h_valid.eq(head), d.h_late.eq(0), d.h_at.eq(self.at), d.h_word.eq(self.word),
             d.h_theta.eq(self.a), d.h_amp.eq(self.b), d.h_numbered.eq(self.numbered),
             d.h_number.eq(self.number), d.h_frame.eq(self.frame),
@@ -56,40 +59,47 @@ class PhaseBench(Elaboratable):
         return {
             "i_valid": self.i_valid, "i_ready": self.i_ready, "kind": self.kind, "at": self.at,
             "a": self.a, "b": self.b, "word": self.word, "numbered": self.numbered,
-            "number": self.number, "frame": self.frame,
+            "number": self.number, "frame": self.frame, "phi": self.phi,
             "ov": d.o_valid, "oat": d.o_at, "oj": d.o_j, "ophi": d.o_phi, "og": d.o_gain,
             "oy0": d.o_y[0], "oy1": d.o_y[1], "or0": d.o_r[0], "or1": d.o_r[1],
         }
 
 
-def head_record(h):
+def head_record(h, f=0):
     at, word, _c0, _c1, theta, amp, number, frame = h
     theta_s = theta - (1 << 32) if theta >= 1 << 31 else theta
-    return (1, at, theta_s, amp, word, int(number >= 0), max(number, 0), max(frame, 0))
+    return (1, at, theta_s, amp, word, int(number >= 0), max(number, 0), max(frame, 0), f & 0xFFFFFFFF)
 
 
 def run_phase(doc, backend):
     heads = doc["heads"]
     r = doc["r"]
+    x, phi = doc["x"], doc["phi"]
     a0 = heads[0][0]
     recs = []
-    # the slots' symbols; each head after its window's last symbol (as
-    # the model emits it, 24 symbols in), the stream padded past the last
+    # the slots' symbols (the NCO's input and phase); each head after its
+    # window's last symbol (as the model emits it, 24 symbols in) with the
+    # carrier register after it (f from its symbol + 24 on), the stream
+    # padded past the last
     n = len(r) // 2
+
+    def f_at(i):
+        return (phi[i + 1] - phi[i]) & 0xFFFFFFFF if i + 1 < n else 0
+
     pad = 24 + 256
     hq = {h[0] + 24: h for h in heads}
     for i in range(n + pad):
         at = a0 + i
         if at in hq:
-            recs.append(head_record(hq[at]))
-        v = (r[2 * i], r[2 * i + 1]) if i < n else (0, 0)
-        recs.append((0, at, v[0], v[1], 0, 0, 0, 0))
+            recs.append(head_record(hq[at], f_at(at - a0) if at - a0 < n else 0))
+        v = (x[2 * i], x[2 * i + 1], phi[i]) if i < n else (0, 0, 0)
+        recs.append((0, at, v[0], v[1], 0, 0, 0, 0, v[2]))
     b = PhaseBench()
     p = b.ports()
     e = engine(b, p, backend, tag="chain2")
     g = e.group("ov", ["oat", "oj", "ophi", "og", "oy0", "oy1", "or0", "or1"])
     t0 = time.time()
-    e.run("i_valid", "i_ready", ["kind", "at", "a", "b", "word", "numbered", "number", "frame"],
+    e.run("i_valid", "i_ready", ["kind", "at", "a", "b", "word", "numbered", "number", "frame", "phi"],
           recs, tail=9600)
     got = e.read(g)
     cyc = e.cycles()
