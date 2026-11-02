@@ -845,7 +845,7 @@ def run_chain(doc, taps, backend, symbols=None):
 class RealChainBench(Elaboratable):
     """`SlotsChain` with the real decoder: `LdpcBridge` and `ldpc.LdpcDecoder`
     (S = 34, K = 3, every rate; the `ldpc` domain, 5x the symbol clock in
-    the simulation), MAX_ITER 16. Records: C_SYM (x0, x1), C_TAP / C_TAPNOW
+    the simulation), MAX_ITER `ldpc.DEFAULT_MAX_ITER` (14). Records: C_SYM (x0, x1), C_TAP / C_TAPNOW
     (the host's taps at open), C_LOSS (a symbols lost before the next).
     `errors`: [(frame, slot, [positions])] bits to flip in the decoder's
     output stream (a set's `bch_errors`: the model flipped the same in its
@@ -860,7 +860,9 @@ class RealChainBench(Elaboratable):
 
         from .ldpc_if import LdpcPort
 
-        self.ch = SlotsChain(max_iter=16)
+        from .. import ldpc
+
+        self.ch = SlotsChain(max_iter=ldpc.DEFAULT_MAX_ITER)
         self.bport = LdpcPort("brg")
         self.br = LdpcBridge(self.bport)
         flips = {}
