@@ -40,7 +40,7 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | Address | Register |
 |---|---|
 | 0x400 | VERSION (ro): the `Slots` format, 1 |
-| 0x401 | FEATURES (ro): bit 0 TAPS, bit 1 SUMS (no host constellation or n0 at START: bits 2, 3 clear); bits 15-8 MAX_ITER, bits 27-16 the decoder's step (34) |
+| 0x401 | FEATURES (ro): bit 0 TAPS, bit 1 SUMS (no host constellation or n0 at START: bits 2, 3 clear), bit 4 SUMS_CAPTURE; bits 15-8 MAX_ITER, bits 27-16 the decoder's step (34) |
 | 0x402 | CARRIER: written, loaded into the carrier register at START; read, the register in use (2^-32 turn per symbol) |
 | 0x403 | LAYOUT_LAG (ro): 2 (lag 1 is not built) |
 | 0x404 | INIT: bit 0, START puts the written taps in use (bits 1, 2 ignored: FEATURES) |
@@ -51,7 +51,8 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | 0x40D | AGC: the input AGC gain reported in the status (Q6.10) |
 | 0x410 + k | TAPS, k < 11: written (re + (im << 16), Q2.14), the pending taps; read, the taps in use |
 | 0x41B | TAPS_FROM: written after TAPS, the frame N they were solved from: in use from frame N + 2 (the model's EQ_APPLY_FRAMES); read, the frame of the taps in use |
-| 0x420 / 0x421 | SUMS_FRAME / SUMS_COUNT (ro) |
+| 0x420 / 0x421 | SUMS_FRAME / SUMS_COUNT (ro): of the latched sums |
+| 0x422 | SUMS_CAPTURE: written (any value), the next frame end latches the training sums and holds them (later frames are summed but not latched) until the next write; read, bit 0 VALID (latched and held since the write), bit 1 ARMED (waiting for a frame end). Before the first write every frame end latches |
 | 0x430 .. 0x437 | COUNTERS (ro): frames, undecoded, TMCC failed, slots, LDPC failed, BCH failed, iterations low, high |
 | 0x438 | TMCC_OVERRUNS (ro): TMCC codewords the decoder dropped (also counted as TMCC failed) |
 | 0x500 + 4i, 0x610 + 4i | SUMS_R (i < 66), SUMS_P (i < 11): re low 32, re high 16 sign-extended, im low, im high (the read waits for the MAC unit) |
@@ -198,12 +199,15 @@ REG_TAPS = 0x410
 REG_TAPS_FROM = 0x41B
 REG_SUMS_FRAME = 0x420
 REG_SUMS_COUNT = 0x421
+REG_SUMS_CAPTURE = 0x422
 REG_COUNTERS = 0x430
 REG_TMCC_OVERRUNS = 0x438
 REG_SUMS_R = 0x500
 REG_SUMS_P = 0x610
 SLOTS_VERSION = 1  # the Slots format (isdb_frontend::slots::SLOTS_VERSION)
-FEATURES = 0b11  # TAPS (the host writes taps), SUMS (the training sums readable)
+# TAPS (the host writes taps), SUMS (the training sums readable), bit 4
+# SUMS_CAPTURE (the sums held from a host-armed frame end)
+FEATURES = 0b10011
 LAYOUT_LAG = 2
 EQ_APPLY_FRAMES = 2
 NONE = 0xFFFFFFFF
@@ -334,7 +338,7 @@ class SlotsRx(Elaboratable):
         nco = ch.front.nco
         carrier = Signal(32)
         init = Signal(3)
-        m.d.comb += [eqm.tap_we.eq(0), eqm.tap_now.eq(0), eqm.tap_arm.eq(0), nco.f_load.eq(0),
+        m.d.comb += [eqm.tap_we.eq(0), eqm.tap_now.eq(0), eqm.tap_arm.eq(0), eqm.cap_strobe.eq(0), nco.f_load.eq(0),
                      nco.f_in.eq(carrier)]
         tap_at = Signal(32)
         tap_from = Signal(32)
@@ -382,6 +386,8 @@ class SlotsRx(Elaboratable):
                             # the model's rule: taps solved from frame N in use from N + 2
                             m.d.sync += [tap_from.eq(value), tap_at.eq(value + EQ_APPLY_FRAMES)]
                             m.d.comb += eqm.tap_arm.eq(1)
+                        with m.Case(REG_SUMS_CAPTURE):
+                            m.d.comb += eqm.cap_strobe.eq(1)
                     with m.If(is_tap):
                         m.d.comb += eqm.tap_we.eq(1)
                 with m.Case(OP_READ):
@@ -404,6 +410,7 @@ class SlotsRx(Elaboratable):
                             REG_TAPS_FROM: eqm.taps_from,
                             REG_SUMS_FRAME: eqm.sums_frame,
                             REG_SUMS_COUNT: eqm.sums_count,
+                            REG_SUMS_CAPTURE: Cat(eqm.cap_valid, eqm.cap_armed),
                             REG_TMCC_OVERRUNS: fin.tmcc_overruns,
                         }
                         for i, n in enumerate(("frames", "undecoded", "tmcc_failed", "slots", "ldpc_failed",

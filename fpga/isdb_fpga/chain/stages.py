@@ -115,7 +115,7 @@ def run_phase(doc, backend):
 
 # --- stage 4 -------------------------------------------------------------------
 
-K_SYM, K_READ, K_LAY, K_COMMIT, K_TAP, K_TAPNOW = range(6)
+K_SYM, K_READ, K_LAY, K_COMMIT, K_TAP, K_TAPNOW, K_CAP = range(7)
 
 
 def pack_meta(**f):
@@ -159,7 +159,8 @@ def wire_eq_frame(m, eq, fc):
 class EqBench(Elaboratable):
     """Records (kind, a, b, c, meta): K_SYM y = (a, b) with meta; K_READ
     sums word a; K_LAY layout entry of slot a = meta; K_COMMIT the layout
-    for frame a (from frame b); K_TAP tap a = (b, c); K_TAPNOW."""
+    for frame a (from frame b); K_TAP tap a = (b, c); K_TAPNOW; K_CAP the
+    host's SUMS_CAPTURE strobe."""
 
     def __init__(self):
         self.eq = Equaliser()
@@ -193,6 +194,7 @@ class EqBench(Elaboratable):
             eq.tap_we.eq(go & (k == K_TAP)), eq.tap_idx.eq(self.a), eq.tap_val[0].eq(self.b),
             eq.tap_val[1].eq(self.c),
             eq.tap_now.eq(go & (k == K_TAPNOW)),
+            eq.cap_strobe.eq(go & (k == K_CAP)),
         ]
         return m
 
@@ -204,6 +206,7 @@ class EqBench(Elaboratable):
             "ov": e.o_valid, "oz0": e.o_z[0], "oz1": e.o_z[1], "ometa": self.o_ms,
             "dv": e.d_valid, "dat": e.d_at, "d0": e.d_ref[0], "d1": e.d_ref[1],
             "rack": e.rd_ack, "rdata": e.rd_data, "sframe": e.sums_frame, "scount": e.sums_count,
+            "cvalid": e.cap_valid, "carmed": e.cap_armed,
         }
 
 
@@ -292,6 +295,73 @@ def run_eq(doc, layout, backend, symbols=None):
             bad.append(f"sums frame/count {rs[-1][1:] if rs else None} != {want}")
     what = (f"{len(got_z)} frame symbols equalised, {len(ds)} training references, {len(rs)} sum words; "
             f"{cyc} cycles in {dt:.1f} s")
+    return what, bad
+
+
+def run_eq_capture(doc, layout, backend, strobe=True):
+    """The training sums' capture (SUMS_CAPTURE) over chain-3-eq's frame F
+    sent three times as frames F, F + 1, F + 2 (each with its layout), the
+    strobe (`strobe`) before F: the latch takes F's sums and holds them
+    while F + 1 and F + 2 are summed and close; read after F + 2, the sums
+    are F's (the model's, bit for bit), with VALID set. Without the
+    strobe the latch moves on to F + 2 (the frame number checked).
+    Returns (what, bad)."""
+    F, at = doc["frame"], doc["at"]
+    y = doc["y"]
+    words = slot_words(doc["training"])
+    recs = []
+    for i, t in enumerate(doc["taps"][0::2]):
+        recs.append((K_TAP, i, t, doc["taps"][2 * i + 1], 0))
+    recs.append((K_TAPNOW, 0, 0, 0, 0))
+    # F's layout now, F + r + 1's a slot into frame F + r (one queued at
+    # a time, as the TMCC stage commits them)
+    recs += layout_records(layout, F, F - 2)
+    if strobe:
+        recs.append((K_CAP, 0, 0, 0, 0))
+    n = len(y) // 2
+    rel0 = doc["y_from"] - at  # the first symbol's position (before F)
+    body = [i for i in range(n) if 0 <= doc["y_from"] + i - at < FRAME]
+    for r in range(3):
+        idx_list = ([i for i in range(n) if doc["y_from"] + i - at < 0] if r == 0 else []) + body
+        if r == 2:
+            idx_list += [i for i in range(n) if doc["y_from"] + i - at >= FRAME]
+        for q, i in enumerate(idx_list):
+            if r < 2 and q == len(idx_list) // 2:
+                recs += [x + (0,) for x in layout_records(layout, F + r + 1, F + r - 1)]
+            rel = doc["y_from"] + i - at
+            if rel < 0:
+                fr, k, j = F - 1, SLOTS - 1, SLOT + rel
+            elif rel >= FRAME:
+                fr, k, j = F + 3, 0, rel - FRAME
+            else:
+                fr, k, j = F + r, rel // SLOT, rel % SLOT
+            w = words[k] if F <= fr <= F + 2 else (0 if k == SLOTS - 1 else 1)
+            recs.append((K_SYM, y[2 * i], y[2 * i + 1], 0,
+                         pack_meta(j=j, number=k, numbered=1, frame=fr, word=w), at + r * FRAME + rel))
+    del rel0
+    recs += [(K_READ, a, 0, 0, 0) for a in range(4 * ENTRIES)]
+    b = EqBench()
+    e = engine(b, b.ports(), backend, tag="chain3")
+    gr = e.group("rack", ["rdata", "sframe", "scount", "cvalid", "carmed"])
+    t0 = time.time()
+    recs = [r if len(r) == 6 else r + (0,) for r in recs]
+    e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "meta", "at"], recs, tail=100)
+    rs = e.read(gr)
+    bad = []
+    exp_r = []
+    for v in doc["sums"]["r"] + doc["sums"]["p"]:
+        (rh, rl), (ih, il) = v
+        exp_r += [rl, rh & 0xFFFFFFFF, il, ih & 0xFFFFFFFF]
+    if strobe:
+        # F's sums (F + 1's and F + 2's differ a little: their first
+        # training lines hold the end of the repeated frame)
+        bad += first_mismatch("sums word", [(r[0],) for r in rs], [(v,) for v in exp_r],
+                              key=lambda i, v: f"entry {i // 4} part {i % 4}")
+    want = (F if strobe else F + 2, doc["sums"]["count"], int(strobe), 0)
+    got = tuple(rs[-1][1:]) if rs else None
+    if got != want:
+        bad.append(f"sums frame/count/valid/armed {got} != {want}")
+    what = f"{len(rs)} sum words, frame/count/valid/armed {got}; {e.cycles()} cycles in {time.time() - t0:.1f} s"
     return what, bad
 
 

@@ -47,6 +47,12 @@ Implementation:
   MAC) and latches it at its end (`frame_close`): the host reads the
   latched bank (`rd_*`, 4 words per entry: re low 32, re high 16 sign-
   extended, im low, im high; the read waits for the MAC unit to be idle).
+  **Capture** (`cap_strobe`, the host's SUMS_CAPTURE): the next frame end
+  latches as always and then holds: later frames are summed in the other
+  bank but not latched until the next strobe, so the host reads one
+  frame's sums however long its reads take (`cap_valid`: latched since
+  the strobe; `cap_armed`: waiting for a frame end). Before any strobe
+  every frame end latches (the free-running latch).
 
 Ports: `i_valid`, `i_y`, `i_meta` (the stage-3 record's at, j, number,
 numbered, frame, word); `restart`; outputs at C: `cv` and the centre's
@@ -123,6 +129,9 @@ class Equaliser(Elaboratable):
         self.rd_addr = Signal(range(4 * ENTRIES))
         self.rd_data = Signal(32)
         self.rd_ack = Signal()
+        self.cap_strobe = Signal()
+        self.cap_valid = Signal()
+        self.cap_armed = Signal()
         self.rd_busy = Signal()
         # training internals (verification)
         self.d_valid = Signal()
@@ -486,10 +495,18 @@ class Equaliser(Elaboratable):
                 m.d.sync += [self.rd_data.eq(word_), self.rd_ack.eq(1), rd_pend.eq(0)]
                 m.next = "IDLE"
         # frame end: latch the open sum (the last slot's MACs ended 9 000
-        # symbols earlier)
+        # symbols earlier), unless a capture holds the latched bank
+        hold = Signal()
         with m.If(self.frame_close & opened):
-            m.d.sync += [latched.eq(work), opened.eq(0), self.sums_frame.eq(self.close_frame),
-                         self.sums_count.eq(count)]
+            m.d.sync += opened.eq(0)
+            with m.If(~hold | self.cap_armed):
+                m.d.sync += [latched.eq(work), self.sums_frame.eq(self.close_frame), self.sums_count.eq(count)]
+                with m.If(self.cap_armed):
+                    m.d.sync += [hold.eq(1), self.cap_armed.eq(0), self.cap_valid.eq(1)]
+        # the host's strobe (after the frame end: a strobe in its cycle
+        # arms the next one)
+        with m.If(self.cap_strobe):
+            m.d.sync += [self.cap_armed.eq(1), self.cap_valid.eq(0)]
         with m.If(self.restart):
             m.d.sync += [opened.eq(0), go_pend.eq(0), open_pend.eq(0)]
         return m
