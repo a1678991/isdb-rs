@@ -857,7 +857,7 @@ class RealChainBench(Elaboratable):
 
         self.ch = SlotsChain(max_iter=16)
         self.br = LdpcBridge(self.ch.port)
-        self.dec = LdpcDecoder(units, banks=banks)
+        self.dec = LdpcDecoder(units, banks=banks, sim=True)  # the CXXRTL-safe build
         self.dec_r = DomainRenamer("ldpc")(self.dec)
         self.i_valid = Signal()
         self.i_ready = Signal()
