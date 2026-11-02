@@ -970,10 +970,18 @@ def lateness(order):
     return worst
 
 
-def run_chain_real(doc, taps, backend="cxxrtl", symbols=None):
+def run_chain_real(doc, taps, backend=None, symbols=None):
     """The whole chain with the real decoder on a whole-chain set written
-    with the decoder's settings (chain-7-hdl, chain-8-loss, chain-9-fade):
-    every block of the model's stream, compared per (frame, kind, slot)."""
+    with the decoder's settings (chain-7-hdl, chain-8-loss, chain-9-fade,
+    chain-10-bch): every block of the model's stream, compared per (frame,
+    kind, slot). `backend` None: the compiled one (`simx.compiled_backend`:
+    `$FPGA_SIM` if it names one, else Verilator where installed, else
+    CXXRTL); the decoder makes pysim impractical here."""
+    from . import simx
+
+    backend = backend or simx.compiled_backend()
+    if backend is None:
+        raise RuntimeError("the real-decoder chain needs a compiled backend (simx.compiled_backend)")
     x = doc["input"]
     n = len(x) // 2 if symbols is None else min(symbols, len(x) // 2)
     losses = {at: k for at, k in doc.get("losses", [])}

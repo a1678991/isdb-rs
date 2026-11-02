@@ -18,6 +18,7 @@ from amaranth.hdl import Signal
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from isdb_fpga.chain.ldpc_if import OP_BEGIN, OP_DONE  # noqa: E402
+from isdb_fpga.chain import simx  # noqa: E402
 from isdb_fpga.chain.simx import engine  # noqa: E402
 from isdb_fpga.chain.stages import C_LOSS, C_SYM, C_TAP, C_TAPNOW, RealChainBench  # noqa: E402
 
@@ -43,7 +44,7 @@ class Bench(RealChainBench):
 
 def main(argv):
     path = argv[1]
-    backend = argv[argv.index("--backend") + 1] if "--backend" in argv else "verilator"
+    backend = argv[argv.index("--backend") + 1] if "--backend" in argv else simx.compiled_backend()
     start = int(argv[argv.index("--from") + 1]) if "--from" in argv else 0
     doc = json.load(open(path))
     taps = json.load(open(path.replace("7-hdl", "3-eq")))["taps"] if "7-hdl" in path else None

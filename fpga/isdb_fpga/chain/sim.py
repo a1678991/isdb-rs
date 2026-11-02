@@ -2,10 +2,12 @@
 `isdbs3-phy`'s `examples/chainvectors` (fpga/README.md "Chain vectors"),
 bit for bit, the first mismatch reported with its symbol index.
 
-python -m isdb_fpga.chain.sim VECTORS.json [--backend pysim|cxxrtl] [--symbols N]
+python -m isdb_fpga.chain.sim VECTORS.json [--backend pysim|cxxrtl|verilator] [--symbols N]
 
-The backend defaults to `$FPGA_SIM`, else pysim (`simx.py`: cxxrtl is the
-optional compiled accelerator, needed for whole sets in seconds).
+The backend defaults to `$FPGA_SIM`, else pysim (`simx.py`: the compiled
+backends, needed for whole sets in seconds); the real-decoder sets
+(chain-7-hdl, -8-loss, -9-fade, -10-bch) to the compiled backend
+(`simx.compiled_backend`).
 
 The stage is taken from the file's name (chain-1-sync, chain-2-phase, ...,
 chain-rec-*). `--symbols N` simulates a prefix of the input (stage 1: the
