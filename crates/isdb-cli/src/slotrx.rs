@@ -30,9 +30,13 @@
 //! its status block come after frame N + 1's first slot blocks (the HDL's
 //! bound: within one frame, `fpga/isdb_fpga/chain/finish.py`). Every block
 //! carries its frame counter: the slot blocks wait per frame, and a frame
-//! is released (to the assemblers, in frame order) when its tmcc or status
-//! block arrives, or a later frame's tmcc, or a slot block two frames on:
-//! a window of one frame, so either order decodes the same.
+//! is released (to the assemblers, in frame order) when its own tmcc or
+//! status block arrives: either order decodes the same. Slot blocks of a
+//! frame that gets neither (the FPGA sends a frame's slots as they are
+//! decoded; a frame it drops later, at a loss or a lost sync, never gets
+//! its tmcc and status, and the model sends nothing of it) are discarded
+//! when a later frame's tmcc or status arrives, a slot block two frames on
+//! (a window of one frame), a loss or the end (`orphan_slots`).
 //!
 //! **Discontinuities.** The assemblers are closed (the TLV streams are
 //! discontinuous there, counted) at a loss in the words, and wherever the
@@ -94,6 +98,11 @@ pub struct ChainStats {
     pub discontinuities: u64,
     /// Slots of a frame for which no TMCC was known (not assembled).
     pub unmapped_slots: u64,
+    /// Slot blocks of frames that never got their own tmcc or status block
+    /// (the FPGA sends a frame's slots as they are decoded, so a frame it
+    /// drops later, at a loss or a lost sync, leaves those: discarded, as
+    /// the model sends nothing of a dropped frame; or blocks lost).
+    pub orphan_slots: u64,
     /// TMCC blocks whose BCH failed.
     pub tmcc_failed: u64,
     /// Frames with the slot sync locked at their end.
@@ -143,6 +152,7 @@ impl ChainStats {
             "frames_missing": self.frames_missing,
             "discontinuities": self.discontinuities,
             "unmapped_slots": self.unmapped_slots,
+            "orphan_slots": self.orphan_slots,
             "tmcc_failed": self.tmcc_failed,
             "locked_frames": self.locked_frames,
             "first_frame": self.first_frame,
@@ -426,30 +436,47 @@ impl Consumer {
         };
     }
 
-    /// The waiting frames up to and including `frame` (frame counters
-    /// compared within a window: a frame "before" is less than half the
-    /// counter's range behind), in frame order.
+    /// `frame`'s tmcc or status block: the frames waiting before it are
+    /// orphans (frame counters compared within a window: a frame "before"
+    /// is less than half the counter's range behind), its own slots go to
+    /// the assemblers.
     fn flush_through(&mut self, frame: u32, out: &mut Outputs, stats: &mut Stats) -> Result<()> {
-        self.flush_before(frame.wrapping_add(1), out, stats)
+        self.flush_before(frame, out, stats)?;
+        if let Some(slots) = self.pending.remove(&frame) {
+            self.flush(frame, slots, out, stats)?;
+        }
+        Ok(())
     }
 
-    /// The waiting frames before `frame`, in frame order.
-    fn flush_before(&mut self, frame: u32, out: &mut Outputs, stats: &mut Stats) -> Result<()> {
+    /// The waiting frames before `frame`: orphans (no tmcc or status of
+    /// their own), discarded.
+    fn flush_before(&mut self, frame: u32, _out: &mut Outputs, stats: &mut Stats) -> Result<()> {
         while let Some(&f) = self.pending.keys().next()
             && frame.wrapping_sub(f).cast_signed() > 0
         {
             let slots = self.pending.remove(&f).unwrap_or_default();
-            self.flush(f, slots, out, stats)?;
+            self.orphans(f, &slots, stats);
         }
         Ok(())
     }
 
-    /// Every waiting frame, in frame order.
-    fn flush_all(&mut self, out: &mut Outputs, stats: &mut Stats) -> Result<()> {
+    /// Every waiting frame (a loss, the end): orphans.
+    fn flush_all(&mut self, _out: &mut Outputs, stats: &mut Stats) -> Result<()> {
         while let Some((f, slots)) = self.pending.pop_first() {
-            self.flush(f, slots, out, stats)?;
+            self.orphans(f, &slots, stats);
         }
         Ok(())
+    }
+
+    fn orphans(&mut self, frame: u32, slots: &[SlotBlock], stats: &mut Stats) {
+        let n = slots.len() as u64;
+        Self::chain(stats).orphan_slots += n;
+        warn!(
+            target: "isdb::rx",
+            frame,
+            blocks = n,
+            "{n} slot block(s) of frame {frame} without its tmcc and status block (a frame dropped after its first slots, or blocks lost): discarded"
+        );
     }
 
     /// A frame's slots to the assemblers.
@@ -1106,6 +1133,30 @@ mod tests {
             (cb.discontinuities, cb.unmapped_slots, cb.frames_undecoded)
         );
         assert_eq!((cb.discontinuities, cb.unmapped_slots), (0, 0));
+        // a frame the FPGA dropped after decoding its first slots: its slot
+        // blocks, no tmcc or status; discarded, the rest as before
+        let last = frames.iter().flatten().map(Block::frame).max().unwrap();
+        let mut with_orphans = moved.clone();
+        let Some(Block::Status(st)) = with_orphans.pop() else {
+            panic!("the last block is a status")
+        };
+        let orphans: Vec<Block> = frames[frames.len() - 2]
+            .iter()
+            .filter_map(|b| match b {
+                Block::Slot(x) => Some(Block::Slot(SlotBlock {
+                    frame: last + 1,
+                    ..x.clone()
+                })),
+                _ => None,
+            })
+            .take(10)
+            .collect();
+        with_orphans.extend(orphans);
+        with_orphans.push(Block::Status(st));
+        let (c, tlv_c) = consume_words(&write(&with_orphans), 4096);
+        assert_eq!(tlv_c, tlv_a);
+        assert_eq!((c.frames, c.slots), (a.frames, a.slots));
+        assert_eq!(c.chain.as_ref().unwrap().orphan_slots, 10);
     }
 
     /// A lost slot block is a loss: counted, the assemblers closed, the
