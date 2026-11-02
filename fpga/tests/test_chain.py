@@ -256,14 +256,14 @@ class RealDecoderChainTest(unittest.TestCase):
     offset 1), the input at the front end's 33.76 Msymbol/s: every block of
     the model's stream, compared per (frame, kind, slot) (the decoder's
     commit order puts a frame's TMCC and status after the next frame's
-    first slot blocks; the host re-associates them). The compiled backend,
-    opt-in (FPGA_CHAIN_REAL=1): the decoder's C++ is about 10 MB and takes
-    several minutes to compile, the runs tens of minutes (README)."""
+    first slot blocks; the host re-associates them). The compiled backend
+    (`simx.compiled_backend`: Verilator where installed, about two minutes
+    a set; on CXXRTL tens of minutes), opt-in (FPGA_CHAIN_REAL=1)."""
 
     def run_set(self, name, taps):
         from isdb_fpga.chain.stages import run_chain_real
 
-        what, bad = run_chain_real(doc(name), taps, "cxxrtl")
+        what, bad = run_chain_real(doc(name), taps, COMPILED)
         self.assertEqual(bad, [], "\n".join(bad[:8]))
         return what
 
@@ -284,6 +284,7 @@ class RealDecoderChainTest(unittest.TestCase):
     def test_signal_removed(self):
         self.run_set("9-fade", None)
 
+    @cxx
     @needs("10-bch")
     @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
     def test_bch_corrections(self):
