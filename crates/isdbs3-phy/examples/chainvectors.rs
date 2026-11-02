@@ -73,6 +73,13 @@
 //!   Gaussian noise of the signal's power, quantised as the input): the
 //!   slot sync is lost (8 periods without a counting peak), regained, and
 //!   the frames after decode.
+//! - **10-bch**: chain-6's input and taps with bit errors in the LDPC's
+//!   output of eight consecutive valid slots of the decoded frame (valid
+//!   slots 10 … 17, 1 … 12 errors each, below the BCH's t = 12, in the BCH
+//!   word): the BCH corrects them (the slot blocks' counts). `bch_errors`:
+//!   `[frame, slot, [positions]]` per slot, the positions in the
+//!   codeword's hard decisions (the decoder's output stream order), so an
+//!   HDL bench can flip the same bits in its decoder's output.
 
 use isdb_fec::ldpc::fixed::Schedule;
 use isdbs3_core::params::{FRAME_SYMBOLS, MOD_SLOT, SLOTS, SYMBOL_RATE};
@@ -195,6 +202,37 @@ fn hdl_ldpc() -> FixedLdpc {
     l
 }
 
+/// The FPGA decoder with bit errors flipped in its output: in the
+/// `frame_call`-th call for 93/120 (one per decoded frame), word i of
+/// `errors` (a valid slot in slot order) gets its positions flipped.
+struct Injected {
+    inner: FixedLdpc,
+    call: usize,
+    frame_call: usize,
+    errors: Vec<(usize, Vec<usize>)>,
+}
+
+impl isdbs3_phy::chain::ldpc::LdpcDecoder for Injected {
+    fn decode(
+        &mut self,
+        code: &isdb_fec::ldpc::Code,
+        words: &[&[i8]],
+    ) -> Vec<(isdb_fec::ldpc::fixed::LaneResult, Vec<u8>)> {
+        let mut out = self.inner.decode(code, words);
+        if code.k() == 374 * 93 {
+            if self.call == self.frame_call {
+                for (w, pos) in &self.errors {
+                    for &p in pos {
+                        out[*w].1[p] ^= 1;
+                    }
+                }
+            }
+            self.call += 1;
+        }
+        out
+    }
+}
+
 fn run_with(
     input: Vec<[i8; 2]>,
     losses: Vec<(usize, u64)>,
@@ -208,10 +246,15 @@ fn run_with(
         initial_taps: taps,
         ..ChainOptions::default()
     };
-    let mut c = match ldpc {
+    let c = match ldpc {
         Some(l) => Chain::with_ldpc(opt, Box::new(l)),
         None => Chain::new(opt),
     };
+    run_chain_with(input, losses, c)
+}
+
+/// Chain `c` over `input` with `losses` (`[before_index, symbols]`).
+fn run_chain_with(input: Vec<[i8; 2]>, losses: Vec<(usize, u64)>, mut c: Chain) -> Run {
     let mut out = Vec::new();
     let mut r = Run {
         input: Vec::new(),
@@ -690,7 +733,7 @@ fn main() {
         .find_map(isdbs3_phy::chain::eq::solve_sums);
     assert!(taps.is_some());
     let hdl = run_with(s.symbols.clone(), Vec::new(), taps, 1, Some(hdl_ldpc()));
-    let r = run(s.symbols, Vec::new(), taps);
+    let r = run(s.symbols.clone(), Vec::new(), taps);
     // the chain decodes what was sent
     let decoded: Vec<&FrameOut> = r.frames.iter().filter(|f| !f.slots.is_empty()).collect();
     assert!(!decoded.is_empty());
@@ -732,7 +775,77 @@ fn main() {
     let mut v = stage6(&hdl);
     v["source"] = src(7, "chain-6's input");
     write(&dir, "chain-7-hdl.json", v);
+    write_bch(&dir, &s.symbols, taps, &src);
     write_events(&dir, &o, &src);
+}
+
+/// The set with BCH corrections (module docs: 10-bch).
+fn write_bch(
+    dir: &Path,
+    symbols: &[[i8; 2]],
+    taps: Option<[[i16; 2]; 11]>,
+    src: &dyn Fn(u64, &str) -> Value,
+) {
+    let k = 374 * 93;
+    let counts = [12usize, 1, 7, 12, 3, 12, 9, 12];
+    let mut rng: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut errors = Vec::new();
+    for (i, &c) in counts.iter().enumerate() {
+        let mut pos: Vec<usize> = Vec::new();
+        while pos.len() < c {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let p = usize::try_from(rng % (k as u64 - 6)).unwrap();
+            if !pos.contains(&p) {
+                pos.push(p);
+            }
+        }
+        pos.sort_unstable();
+        errors.push((10 + i, pos));
+    }
+    let opt = ChainOptions {
+        trace: true,
+        eq_every: 1,
+        initial_taps: taps,
+        ..ChainOptions::default()
+    };
+    let inj = Injected {
+        inner: hdl_ldpc(),
+        call: 0,
+        frame_call: 0,
+        errors: errors.clone(),
+    };
+    let r = run_chain_with(
+        symbols.to_vec(),
+        Vec::new(),
+        Chain::with_ldpc(opt, Box::new(inj)),
+    );
+    let f = r
+        .frames
+        .iter()
+        .find(|f| !f.slots.is_empty())
+        .expect("a decoded frame");
+    let valid: Vec<u8> = f
+        .slots
+        .iter()
+        .filter(|x| !x.dummy)
+        .map(|x| x.slot)
+        .collect();
+    let mut listed = Vec::new();
+    for (w, pos) in &errors {
+        let slot = valid[*w];
+        let got = f.slots.iter().find(|x| x.slot == slot).unwrap();
+        assert_eq!(got.bch_corrected, Some(pos.len()), "slot {slot} corrected");
+        listed.push(json!([f.frame, slot, pos]));
+    }
+    let mut v = stage6(&r);
+    v["bch_errors"] = json!(listed);
+    v["source"] = src(
+        10,
+        "chain-6's input, bit errors in eight slots' LDPC output",
+    );
+    write(dir, "chain-10-bch.json", v);
 }
 
 /// The two sets with events (module docs: 8-loss, 9-fade).
