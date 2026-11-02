@@ -35,16 +35,16 @@ Implementation:
   register at the record (`h_f`, after the head's carrier update) is f
   from a + 24 on to the slot's end (the next update is the next head's).
   The reader runs behind: it starts reading slot a's first symbol once
-  head b's slot setup is done (<= 75 cycles after head b's record), one
-  symbol per clock, so it is never more than 9 296 + 24 + 75 symbols
+  head b's slot setup is done (<= 100 cycles after head b's record), one
+  symbol per clock, so it is never more than 9 296 + 24 + 100 symbols
   behind the writer, and the writer never overwrites an entry not yet
   read. `full` (to the input hold) guards a stalled reader (`o_ready`
   low) anyway: it is high while the writer is within 22 words (66
   symbols) of the oldest unread one.
 - **Slot setup** (once per head, sequential, no DSP): G_b by a restoring
   divider (33-bit numerator, 35 cycles), then Delta and Gamma by two
-  bit-serial multiplies over the 24-bit constant (24 cycles each, in
-  parallel), queued as the slot (theta_a, Delta, G_a, Gamma, ring address
+  bit-serial multiplies over the 24-bit constant (24 cycles each, one
+  after the other on one multiplier), queued as the slot (theta_a, Delta, G_a, Gamma, ring address
   of head a, head a's word, number and frame). A one-entry queue holds the
   next slot while the reader finishes the current one.
 - **The products per symbol** are exact running sums: `Delta * j` and
@@ -217,9 +217,10 @@ class SlotPhase(Elaboratable):
         take = Signal()
 
         m.submodules.gdiv = gdiv = DivRound(33, 26)
+        # Delta and then Gamma on one bit-serial multiplier
         m.submodules.mdelta = mdelta = SeqMul(33, 24)
-        m.submodules.mgamma = mgamma = SeqMul(GAIN_BITS + 1, 24)
-        m.d.sync += [gdiv.start.eq(0), mdelta.start.eq(0), mgamma.start.eq(0)]
+        p_delta = Signal(signed(57))
+        m.d.sync += [gdiv.start.eq(0), mdelta.start.eq(0)]
         # the head's symbol in the history (written 23 symbols before its
         # record; the late head 0, 9 296 before, is never corrected)
         dist = (last_at - self.h_at)[:6]
@@ -266,13 +267,19 @@ class SlotPhase(Elaboratable):
                         m.d.sync += [
                             mdelta.a.eq((b_theta - a_theta)[:32].as_signed()),
                             mdelta.b.eq(SLOT_RECIP), mdelta.start.eq(1),
-                            mgamma.a.eq(gdiv.q[:GAIN_BITS].as_signed() - a_gain.as_signed()),
-                            mgamma.b.eq(SLOT_RECIP), mgamma.start.eq(1),
                         ]
                         m.next = "STEPS"
                     with m.Else():
                         m.next = "SHIFT"
             with m.State("STEPS"):
+                with m.If(mdelta.done):
+                    m.d.sync += [
+                        p_delta.eq(mdelta.p),
+                        mdelta.a.eq(gdiv.q[:GAIN_BITS].as_signed() - a_gain.as_signed()),
+                        mdelta.b.eq(SLOT_RECIP), mdelta.start.eq(1),
+                    ]
+                    m.next = "STEPS_G"
+            with m.State("STEPS_G"):
                 with m.If(mdelta.done):
                     m.next = "QUEUE"
             with m.State("QUEUE"):
@@ -280,9 +287,9 @@ class SlotPhase(Elaboratable):
                     m.d.sync += [
                         q_valid.eq(1), q_at.eq(a_at), q_w.eq(a_w), q_l.eq(a_l), q_phi.eq(a_phi),
                         q_f0.eq(a_f0), q_f1.eq(a_f1), q_theta.eq(a_theta),
-                        q_delta.eq(round_shift(mdelta.p, 37 - INTERP_FRAC)),
+                        q_delta.eq(round_shift(p_delta, 37 - INTERP_FRAC)),
                         q_gain.eq(a_gain),
-                        q_gamma.eq(round_shift(mgamma.p, 37 - INTERP_FRAC)),
+                        q_gamma.eq(round_shift(mdelta.p, 37 - INTERP_FRAC)),
                         q_word.eq(a_word), q_numbered.eq(a_numbered), q_number.eq(a_number),
                         q_frame.eq(a_frame), q_snap.eq(self.h_snap),
                     ]
