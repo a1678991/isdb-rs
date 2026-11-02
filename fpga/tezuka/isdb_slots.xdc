@@ -78,10 +78,15 @@ set_max_delay 25.000 -from $chain_slow -to $chain_slow
 # 4. The decoder's clock against the symbol clock: only the bridge's
 #    AsyncFIFOs cross (Gray-coded pointers through two-register
 #    synchronisers, the FIFO memories' read data); bound them to the faster
-#    period, datapath only (the clocks have no phase relation).
-set slots_ldpc [filter [all_registers -clock [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */isdb_slots/inst/*mmcm*/CLKOUT0}]]] {NAME =~ */isdb_slots/inst/*}]
-set_max_delay -datapath_only 5.0 -from $slots_slow -to $slots_ldpc
-set_max_delay -datapath_only 5.0 -from $slots_ldpc -to $slots_slow
+#    period, datapath only (the clocks have no phase relation). Given by
+#    clocks, not cells: the bridge's FIFO memories are block RAMs clocked
+#    by both (written in one domain, read in the other), and a cell rule
+#    would also put 5 ns on the same-clock paths into and out of them (the
+#    fifth build: a symbol-clock FIFO read address at 5 ns, -1.55 ns at
+#    placement). The decoder's clock exists only in this block.
+set slots_ldpc_clk [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */isdb_slots/inst/*mmcm*/CLKOUT0}]]
+set_max_delay -datapath_only 5.0 -from [get_clocks clk_div_sel_0_s] -to $slots_ldpc_clk
+set_max_delay -datapath_only 5.0 -from $slots_ldpc_clk -to [get_clocks clk_div_sel_0_s]
 
 # 5. Asynchronous resets into the block's reset synchronizers (Amaranth's
 #    ResetSynchronizer and the AsyncFIFOs' rst_cdc: a reset asserted
