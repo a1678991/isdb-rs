@@ -334,13 +334,13 @@ decoder: ≤ 14 000 LUT, ≤ 50 BRAM36, 0 DSP.**
 
 | Stage | LUT | BRAM36 | DSP48E1 | Fit (2026-11-02, Yosys; target LUT / BRAM36 / DSP) |
 |---|---|---|---|---|
-| sync, carrier loop, slot phase | 3 000 | 9 | 8 | 3 784 + 1 540 / 5.5 + 4 / 4 + 12 (3 500 / 5.5 / 6; — / 4 / —) |
+| sync, carrier loop, slot phase | 3 000 | 9 | 8 | 3 783 + 1 540 / 5.5 + 4 / 4 + 12 (3 500 / 5.5 / 6; — / 4 / —) |
 | equaliser FIR + training sums | 2 500 | 1 | 44 (22 at 2×) | 2 322 / 3 / 15 (2 500 / 3 / 18) |
-| TMCC soft bits, demapper, de-interleave, constellation and noise accumulators | 3 500 | 2 | 16–64 | 183 + 5 047 / 8 + 2.5 / 21 (4 500 / 3 / 22 for the demapper) |
+| TMCC soft bits, demapper, de-interleave, constellation and noise accumulators | 3 500 | 2 | 16–64 | 183 + 4 919 / 8 + 2.5 / 21 (4 500 / 3 / 22 for the demapper) |
 | LDPC decoder (budget; **measured 2026-11-02: 14 034 LUT, 76.5 BRAM36 at S = 34, K = 3, all rates**, `fpga/README.md`) | 14 000 | 50 → 77 | 0 | 14 034 / 76.5 / 0 |
 | TMCC staging buffer (31 680 × 8, in the TMCC stage, so the decoder keeps its 3 banks for slots) | — | 7 | — | (in the TMCC row: 8) |
-| dispersal, BCH, packer, registers | 3 000 | 4 | 0 | 7 022 / 2 / 0 (3 500 / — / 0) |
-| **total** | **26 000** | **66 → 100** | **68–116** | chain 20 410 / 25 / 52 (one nominal ROM); + bridge, FIFO, registers: `SlotsRx` less the front end 22 074 / 25.5 / 52 (16 000 / 26 / 60) |
+| dispersal, BCH, packer, registers | 3 000 | 4 | 0 | 6 624 / 2 / 0 (3 500 / — / 0) |
+| **total** | **26 000** | **66 → 100** | **68–116** | chain 19 914 / 25 / 52 (one nominal ROM); + bridge, FIFO, registers: `SlotsRx` less the front end 21 594 / 25.5 / 52 (16 000 / 26 / 60) |
 
 Against 29.6k LUT / 72 BRAM36 / 62 DSP free in the deployed image, or
 35.5k / 107 / 80 in a receive-only image. **Decision (2026-11-02): the
@@ -735,20 +735,20 @@ and on what it is computed.
 
 | Block | LUT | BRAM36 | DSP48E1 | How |
 |---|---|---|---|---|
-| demapper | 14 348 → 5 047 | 7 → 2.5 | 95 → 21 | metrics in the 4× clock, 8 points per fast cycle; per-phase minima and running minima (the max-log minimum is order-free); K products time-shared; point sets and pilot accumulators in LUT RAM; one compact nominal ROM |
+| demapper | 14 348 → 4 919 | 7 → 2.5 | 95 → 21 | metrics in the 4× clock, 8 points per fast cycle; per-phase minima and running minima (the max-log minimum is order-free); K products time-shared; point sets and pilot accumulators in LUT RAM; one compact nominal ROM |
 | equaliser + FrameCtl | 2 682 → 2 322 | 7.5 → 3 | 50 → 15 | 44 products on 11 DSPs in the 4× clock; the compact ROM; sign ROM in LUTs |
 | slot phase | 1 122 → 1 540 | 8 → 4 | 8 → 12 | the ring holds the NCO's 6-bit input (three per 36-bit word), the NCO re-applied after it |
-| finish / BCH | 7 301 → 7 022 | 2 → 2 | 0 | one Realign shared; the BCH roots flipped in the buffers; (+ the state a late TMCC result needs) |
-| stage 1 | 4 194 → 3 784 | 5.5 → 5.5 | 7 → 4 | FSync / SSync trees shared (C = P ± Q); the lock rule by shifts; one multiplier for the FSync sign |
+| finish / BCH | 7 301 → 6 624 | 2 → 2 | 0 | one Realign shared; the BCH roots flipped in the buffers; the locator in LUT RAM banks with rotating roles (+ the state a late TMCC result needs) |
+| stage 1 | 4 194 → 3 783 | 5.5 → 5.5 | 7 → 4 | FSync / SSync trees shared (C = P ± Q); the lock rule by shifts; one multiplier for the FSync sign |
 | TMCC soft bits | 134 → 183 | 8 → 8 | 0 | four values per burst beat (a fix: the burst held a decoder bank 15.6 slots, the queue model assumed 3) |
 
-**The device does not fit on LUTs yet**: fixed ≈ 17 700 + decoder 14 034 +
-`SlotsRx` less the front end 22 074 = 53 808 LUT, 101 % of 53 200; 135
+**The device does not fit on LUTs yet**: fixed ≈ 17 700 + decoder 14 043 +
+`SlotsRx` less the front end 21 594 = 53 337 LUT, 100.3 % of 53 200; 135
 BRAM36 (96 %), 192 DSP (87 %). About 6 000 LUT more must go before the
-image (piece 6) is built: the finish stage (7 022 against its 3 500: the
-BCH unit's Berlekamp–Massey registers and index muxes, the status block's
-word mux, the packer, the layout), the demapper (5 047 against 4 500),
-stage 1 (3 784 against 3 500), `SlotsRx`'s register readback.
+image (piece 6) is built: the finish stage (6 624 against its 3 500: the
+BCH unit, the status block's word mux, the packer, the layout, two
+Realigns and PRBS), the demapper (4 919 against 4 500), stage 1 (3 783
+against 3 500), `SlotsRx`'s register readback.
 
 **Integration.** The real decoder in the chain (CXXRTL, the decoder in its
 own 5× domain, the input at the front end's rate): RESULT_CHAIN7. Result
