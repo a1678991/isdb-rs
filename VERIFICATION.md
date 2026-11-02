@@ -1646,6 +1646,38 @@ piece 3/5 on a live capture") against the host receiver on 30 s of live
 - The chain's carrier register followed the drift (−148.7 Hz at the
   end against the host's −155 Hz tracked).
 
+## ISDB-S3 receive chain in the FPGA: the image (2026-11-02)
+
+`fpga/tezuka/build.sh WORK isdbs3-rx` with Vivado 2026.1, the pinned
+Tezuka v0.3.24 / maia-sdr f7092ba sources: the receive-only PlutoSky R2
+image with `SlotsRx` (the symbol front end, the ISDB-S3 chain and the LDPC
+decoder, S = 34, K = 3, from the verified fit `5c8b9eb`, HDL unchanged),
+without maia-sdr, `SymbolsTx`, the DVB-S2 transmitter and the TX FIR, the
+AD9361 core's TX datapath disabled (docs/plans/isdbs3-fpga-rx.md, Results,
+"Piece 6"; fpga/README.md "Status of `isdbs3-rx`").
+
+| | LUT | FF | BRAM36 | DSP48E1 | WNS | WHS | failing setup endpoints |
+|---|---|---|---|---|---|---|---|
+| build 1 | — | — | 146.5 of 140 | — | (stopped before placement) | | |
+| build 2: memories of depth ≤ 64 as LUT RAM | 45 506 (85.5 %) | 43 109 | 119 | 176 | −5.934 ns | +0.050 ns | 10 600 of 150 558 |
+| `isdb_slots` in build 2 | 39 026 | 32 531 | 112.5 | 164 | | | |
+| build 4: + the chain's 25 ns rule, reset false paths, BUFR + BUFG fast clock | 45 275 (85.1 %) | 43 030 | 119 | 176 | −3.257 ns | +0.016 ns | 7 429 of 150 507 |
+
+Worst setup by clock and block, build 2 (`failing.tcl`): symbol clock →
+l_clk crossings −5.934 ns (2 794 endpoints; a 4.2 ns skew between
+`util_ad9361_divclk` and l_clk), l_clk inside the BCH unit −3.834 (790),
+the decoder's 200 MHz −2.708 (6 123), `axi_ad9361` at ADI's 4 ns −2.654
+(≈ 300), the bridge's decoder side −1.355 (310). Build 4: the BCH unit −3.257 (812), the decoder −3.016 (5 063), the symbol → l_clk crossings −2.863 (1 177; the skew down to about 0.5 ns, the equaliser's DSP inputs left), the chain's `back` in l_clk −1.379 (115), the bridge −1.005 (228), ADI's `rx_clk` paths −0.525 (≈ 25); the symbol clock +0.663 and l_clk → symbol clock +0.305 met.
+
+- The slacks are those of the final checkpoints
+  (`system_top_postroute_physopt.dcp`, `fpga/tezuka/timing.tcl` and
+  `failing.tcl`); the ADI flow writes no XSA when timing fails.
+- **Not deployed and not run on the board**: the bench PlutoSky R2 still
+  boots `isdb_txrx2_top.bin` (nothing on the card or in `uEnv.txt` was
+  changed); the board checks (ID word, `isdb rx --offload auto` on BS7,
+  the packet comparison, the host's CPU time) wait for an image that
+  meets timing. `tools/isdbs3-board-check.sh` runs them.
+
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
 The checks of [docs/plans/isdbs-fpga-tx.md](docs/plans/isdbs-fpga-tx.md)

@@ -519,7 +519,7 @@ are needed: not provably narrower).
   `build/isdb_slots_rx.v` (module `isdb_slots_rx`: clocks `clk`,
   `fast_clk`, `ldpc_ref`; about 374 000 lines).
 
-**What is left**: the LUTs (above: about 6 000 over a buildable image);
+**What is left**: timing (the receive-only image fits, 85.5 % LUT and 119 BRAM36, but misses its clocks: [below](#building-the-plutosky-r2-bitstream-tezuka), "Status of `isdbs3-rx`"; the Yosys estimate's LUT shortfall above did not materialise in Vivado);
 the restart epoch for a layout committed after a restart (the model's
 insert happens before it); `SlotsRx` as a whole with its front end in
 simulation (the chain's simulations start at the symbols); a host CONST /
@@ -1102,6 +1102,7 @@ node and a driver. The GPIO route needs neither.
 fpga/tezuka/build.sh WORK stock     # the unmodified design
 fpga/tezuka/build.sh WORK isdb      # with SymbolsRx and SymbolsTx
 fpga/tezuka/build.sh WORK isdb-tx   # with SymbolsTx alone
+fpga/tezuka/build.sh WORK isdbs3-rx # receive only: SlotsRx (front end, ISDB-S3 chain, LDPC decoder)
 fpga/tezuka/sdbin.sh WORK/out/isdb/plutoskyr2.xsa isdb_txrx_top.bin   # both blocks (the deployed image)
 ```
 
@@ -1119,6 +1120,87 @@ TX FIR, whose place the transmit block takes), and adds
 `isdb_symbols.xdc` and `isdb_symbols_tx.xdc` (below). `sdbin.sh` turns
 an XSA into the file U-Boot loads from the SD card (Tezuka's
 `postimage-sd.sh` conversion).
+
+The `isdbs3-rx` mode (`apply.sh --isdbs3-rx`, which runs
+`apply_s3rx.sh`) is the receive-only image of
+[the ISDB-S3 receive chain](#the-isdb-s3-chain-slotsrx): `SlotsRx` on the
+RX path (`isdb_slots.tcl`: the same ADC-path connections as
+`isdb_symbols.tcl`, `fast_clk` = `axi_ad9361/l_clk`, `ldpc_ref` =
+`clk_fpga_0`, the GPIO pair; `isdb_slots_top.v` around the generated
+`isdb_slots_rx.v` registers the fast domain's reset twice on l_clk;
+`isdb_slots.xdc` implementation-only, late) and nothing that receiving
+does not use:
+
+- no maia-sdr core (spectrometer, DDC, recorder: 3 412 LUT, 29 BRAM36,
+  18 DSP in the deployed image) and its clock wizard: `isdb_rx_base.tcl`
+  replaces `maia.tcl`, `maiafirtoiq.tcl` and `sweeper.tcl` with what the
+  rest needs (the two DMAs on HP2, the `mux_decim_i/q` sample muxes on
+  path 0; HP1 off). Tezuka's web spectrum (`maia-httpd`) has no core to
+  open: its first register read takes a bus error, as Tezuka's own
+  scripts do on the blocks a board lacks; the stock `system_top.bin`
+  stays on the card for it;
+- no `SymbolsTx`, no DVB-S2 transmitter, no ×8 TX FIR, and the AD9361
+  core's TX datapath off (`DAC_DATAPATH_DISABLE 1`, `dac_dds` dropped: no
+  DDS, no DMA data into the DAC, no TX IQ correction: `axi_ad9361` 7 603 →
+  2 647 LUT, 28 → 12 DSP). The core's TX PN generator stays (the parameter keeps it),
+  which the ad9361 driver's TX interface tuning uses; the DAC DMA, the
+  unpacker and the DAC FIFO stay (the kernel's device tree probes the
+  DMA; 546 LUT, 2 BRAM36). Nothing can be transmitted with this
+  image;
+- Tezuka's cs12 packers stay (`isdb capture` with 8 or 12 bits).
+
+`ram_style.py` marks the block's memories of depth ≤ 64 as LUT RAM in the
+copy of `isdb_slots_rx.v`: left to itself, Vivado put 35 of them in block
+RAM (the decoder's 64 × 714 input FIFO in ten RAMB36, the bridge FIFOs,
+31 of the front end's 64 × 18 coefficient banks), 146.5 BRAM36 of 140 in
+all. `vivado-batch.sh` runs this directory's Tcl on a checkpoint:
+`timing.tcl` (WNS / WHS, per clock), `utilization.tcl`, `ram_report.tcl`
+(`report_ram_utilization -detail`), `failing.tcl` (failing endpoints by
+clock pair and block), `paths.tcl` (the worst paths per clock and the
+exceptions), `skew_check.tcl` (the symbol ↔ fast crossings) and
+`reimpl.tcl` (place and route an optimised checkpoint again with other
+directives);
+`build.sh` keeps the final checkpoint in `WORK/out/MODE/`.
+
+**Status of `isdbs3-rx` (2026-11-02): it fits, it misses timing, no
+bitstream, not deployed.** Final checkpoints (`timing.tcl`,
+`utilization.tcl`, `failing.tcl`; the ADI flow stops at "Timing
+Constraints NOT met" and writes no XSA):
+
+| xc7z020clg484-2 | LUT | FF | BRAM36 | DSP | WNS | WHS | failing endpoints |
+|---|---|---|---|---|---|---|---|
+| build 2 (LUT RAM memories) | 45 506 (85.5 %) | 43 109 | 119 (85 %) | 176 (80 %) | −5.934 ns | +0.050 ns | 10 600 |
+| of which `isdb_slots` | 39 026 (3 666 LUT RAM) | 32 531 | 112.5 | 164 | | | |
+| — front end (`core`) / chain / decoder / bridge / control | 6 102 / 18 346 / 12 819 / 661 / 1 027 | | 1 / 31.5 / 79.5 / 0 / 0 | 112 / 52 / 0 / 0 / 0 | | | |
+| build 4 (+ 25 ns chain rule, reset false paths, BUFR + BUFG fast clock) | 45 275 (85.1 %) | 43 030 | 119 (85 %) | 176 (80 %) | **−3.257 ns** | +0.016 ns | 7 429 |
+
+Per clock, worst setup in ns (build 2 → build 4):
+
+| Clock (paths) | Build 2 | Build 4 | Failing endpoints (build 4) |
+|---|---|---|---|
+| `rx_clk` = l_clk inside the block (6.25 ns rule): the finish stage's BCH unit | −3.834 | **−3.257** | 812 |
+| `rx_clk` inside the block: chain `back` (equaliser, demapper) | −1.623 | −1.379 | 115 |
+| symbol clock → l_clk crossings (6.25 ns): `back` / `finish` | −5.934 / −4.234 | **−2.863** / −1.563 | 711 / 466 |
+| `c0`, the decoder's 200 MHz (5 ns): `ldpc` / bridge | −2.708 / −1.355 | **−3.016** / −1.005 | 5 063 / 228 |
+| `rx_clk`, ADI's own paths (4 ns) | −2.654 | −0.525 | ≈ 25 |
+| `clk_div_sel_0_s`, the symbol clock (16 ns; the chain's 25 ns) | +0.194 | +0.663 | 0 |
+| l_clk → symbol clock crossings | +0.041 | +0.305 | 0 |
+| `clk_fpga_0` / `RGMII_rxc` | +0.571 / +0.100 | +1.001 / +0.100 | 0 |
+| hold, every clock | +0.050 | +0.016 | 0 |
+
+The failures are the block's logic depth at the fit's clocks, not the
+image's resources: the BCH unit (`FastBch`, a Berlekamp–Massey step of
+syndrome read, GF(2¹⁶) product and locator write in one 160 MHz cycle:
+9–10 ns), the decoder at 200 MHz (the TMCC fill's bounds into 34 block
+RAM enables and the layer-table loads: 7.2–8.0 ns; it closes at about
+125–130 MHz), the equaliser's symbol-clock → DSP inputs; and, until the BUFR +
+BUFG fast clock, a 4.2 ns skew between `util_ad9361_divclk` and l_clk
+that the fit's phase-aligned 4× scheme assumed away. ADI's own `rx_clk`
+paths (4 ns, its 61.44 Msps case) lost their margin under the placement
+pressure (−2.65 ns in build 2, −0.53 ns in build 4). Directives (`reimpl.tcl`:
+`ExtraTimingOpt`, `AggressiveExplore`) changed nothing material. What the
+HDL needs is in docs/plans/isdbs3-fpga-rx.md, Results, "Piece 6"; this
+piece did not change the block's HDL.
 
 | Upstream | Revision |
 |---|---|
