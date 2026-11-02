@@ -23,13 +23,14 @@
 # isdb_symbols_tx.v). The edits exist only in the build tree.
 set -euo pipefail
 
-MAIA=${1:?usage: apply.sh MAIA_SDR_DIR REPO_DIR [--tx-only]}
-REPO=${2:?usage: apply.sh MAIA_SDR_DIR REPO_DIR [--tx-only]}
+MAIA=${1:?usage: apply.sh MAIA_SDR_DIR REPO_DIR [--tx-only|--isdbs3-rx]}
+REPO=${2:?usage: apply.sh MAIA_SDR_DIR REPO_DIR [--tx-only|--isdbs3-rx]}
 RX=1
 case "${3:-}" in
     "") ;;
     --tx-only) RX=0 ;;
-    *) echo "usage: apply.sh MAIA_SDR_DIR REPO_DIR [--tx-only]" >&2; exit 2 ;;
+    --isdbs3-rx) RX=s3 ;;
+    *) echo "usage: apply.sh MAIA_SDR_DIR REPO_DIR [--tx-only|--isdbs3-rx]" >&2; exit 2 ;;
 esac
 BD="$MAIA/maia-hdl/projects/tezuka/system_bd.tcl"
 COMMON="$MAIA/maia-hdl/projects/common"
@@ -39,13 +40,17 @@ V_TX="$REPO/fpga/build/isdb_symbols_tx.v"
 # Always regenerate: fpga/build is not versioned, and a stale file would put
 # an older format into the bitstream (it happened once: the file predated
 # format 3).
+grep -q 'isdb_' "$BD" && { echo "$BD already patched" >&2; exit 1; }
+if [ "$RX" = s3 ]; then
+    "$(dirname "$0")/apply_s3rx.sh" "$MAIA" "$REPO"
+    exit
+fi
 if [ "$RX" = 1 ]; then
     (cd "$REPO" && UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX:-https://pypi.org/simple} mise run fpga:verilog)
     [ -f "$V_RX" ] || { echo "missing $V_RX after mise run fpga:verilog" >&2; exit 1; }
 fi
 (cd "$REPO" && UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX:-https://pypi.org/simple} mise run fpga:tx-verilog)
 [ -f "$V_TX" ] || { echo "missing $V_TX after mise run fpga:tx-verilog" >&2; exit 1; }
-grep -q 'isdb_symbols' "$BD" && { echo "$BD already patched" >&2; exit 1; }
 
 # 1. the plutoskyr2 board flags
 grep -q '^       set dvb "dvb"$' "$BD" || { echo "anchor 'set dvb' not found in $BD" >&2; exit 1; }

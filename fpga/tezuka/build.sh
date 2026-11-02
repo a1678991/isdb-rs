@@ -2,13 +2,17 @@
 # Build the PlutoSky R2 bitstream (XSA) of Tezuka v0.3.24, stock or with the
 # isdb-rs blocks, from the pinned upstream revisions.
 #
-# Usage: fpga/tezuka/build.sh WORKDIR [stock|isdb|isdb-tx]
+# Usage: fpga/tezuka/build.sh WORKDIR [stock|isdb|isdb-tx|isdbs3-rx]
 #   WORKDIR  a directory outside this repository with room for the sources
 #            and the Vivado run (several GB; an NFS path is fine)
 #   stock    the unmodified design, to check the toolchain (default)
 #   isdb     with SymbolsRx (fpga/build/isdb_symbols_rx.v) on the RX path
 #            and SymbolsTx (fpga/build/isdb_symbols_tx.v) on the DAC path
 #   isdb-tx  with SymbolsTx alone
+#   isdbs3-rx  receive only: SlotsRx (front end, ISDB-S3 chain, LDPC
+#            decoder; fpga/build/isdb_slots_rx.v) on the RX path, without
+#            maia-sdr, SymbolsTx, the DVB-S2 transmitter, the TX FIR and the
+#            AD9361 core's TX datapath (apply.sh --isdbs3-rx)
 #
 # Needs: Vivado (VIVADO_SETTINGS: the path of its settings64.sh)
 # with Zynq-7000 devices and a licence that covers xc7z020 (the free BASIC
@@ -26,7 +30,7 @@
 #     XilinxUnisimLibrary  1c8e05fd1e9a79ceb8b996a0996674122eed086f (submodule)
 set -euo pipefail
 
-WORK=${1:?usage: fpga/tezuka/build.sh WORKDIR [stock|isdb|isdb-tx]}
+WORK=${1:?usage: fpga/tezuka/build.sh WORKDIR [stock|isdb|isdb-tx|isdbs3-rx]}
 MODE=${2:-stock}
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
@@ -34,7 +38,7 @@ VIVADO_SETTINGS=${VIVADO_SETTINGS:?set VIVADO_SETTINGS to the path of the Vivado
 TEZUKA_REV=a304a1f7ecba49dc4cd9d57a7935ec52504c7334
 MAIA_REV=f7092ba
 
-case "$MODE" in stock|isdb|isdb-tx) ;; *) echo "mode: stock, isdb or isdb-tx" >&2; exit 2 ;; esac
+case "$MODE" in stock|isdb|isdb-tx|isdbs3-rx) ;; *) echo "mode: stock, isdb, isdb-tx or isdbs3-rx" >&2; exit 2 ;; esac
 case "$WORK" in "$REPO"|"$REPO"/*) echo "WORKDIR must be outside the repository" >&2; exit 2 ;; esac
 mkdir -p "$WORK"
 cd "$WORK"
@@ -72,6 +76,8 @@ if [ "$MODE" = isdb ]; then
     "$HERE/apply.sh" "$WORK/maia-sdr" "$REPO"
 elif [ "$MODE" = isdb-tx ]; then
     "$HERE/apply.sh" "$WORK/maia-sdr" "$REPO" --tx-only
+elif [ "$MODE" = isdbs3-rx ]; then
+    "$HERE/apply.sh" "$WORK/maia-sdr" "$REPO" --isdbs3-rx
 fi
 
 # The install target copies to a hardcoded path of the upstream author's
@@ -97,4 +103,7 @@ mkdir -p "$OUT"
 cp -f plutoskyr2.sdk/system_top.xsa "$OUT/plutoskyr2.xsa"
 cp -f plutoskyr2.runs/impl_1/*_timing_summary_routed.rpt "$OUT/" 2>/dev/null || true
 cp -f plutoskyr2.runs/impl_1/*_utilization_placed.rpt "$OUT/" 2>/dev/null || true
+# the checkpoint the bitstream is written from, for timing.tcl and
+# utilization.tcl (the next build of any mode overwrites the project)
+cp -f plutoskyr2.runs/impl_1/system_top_postroute_physopt.dcp "$OUT/" 2>/dev/null || true
 echo "XSA: $OUT/plutoskyr2.xsa"
