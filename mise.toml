@@ -215,8 +215,10 @@ depends = ["fpga:vectors", "fpga:tx-vectors", "fpga:ldpc-vectors"]
 dir = "fpga"
 env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
 # pytest runs the unittest classes on every core (xdist): the suite is a
-# set of independent single-threaded simulations, 19 min serial on one
-# core, 6.4 min on four.
+# set of independent single-threaded simulations. On four cores of the
+# 7950X with Verilator installed (the compiled default, fpga/README.md
+# "Simulation backends"): 5 min with every compiled model built, 2.7 min
+# with them cached; FPGA_SIM=cxxrtl: 8 and 4.4 min (without S = 187).
 run = "uv run --locked pytest -q -n auto --dist worksteal tests"
 
 [tasks."fpga:verilog"]
