@@ -70,6 +70,7 @@ from .finish import Finish
 from .ldpc_if import OP_DONE
 from .packer import status_layout
 from .phase import SlotPhase
+from .results import ResultFifo
 from .sync import SNAP_FIELDS, SyncFront
 
 SNAP_BITS = sum(w for _, w in SNAP_FIELDS)
@@ -90,6 +91,7 @@ class SlotsChain(Elaboratable):
         self.phase = SlotPhase(in_bits, snap_bits=SNAP_BITS)
         self.back = Back(max_iter, offset)
         self.finish = Finish()
+        self.results = ResultFifo()
         self.port = self.back.port
         self.i_valid = self.front.i_valid
         self.i_ready = self.front.i_ready
@@ -156,13 +158,18 @@ class SlotsChain(Elaboratable):
             fc.lw_data.eq(lay.lw_data), fc.lw_commit.eq(lay.lw_commit), fc.lw_frame.eq(lay.lw_frame),
             fc.lw_from.eq(lay.lw_from),
         ]
-        # the decoder's results
+        # the decoder's results, through the result FIFO (results.py)
         p = self.port
+        m.submodules.results = rf = self.results
         m.d.comb += [
-            fin.r_valid.eq(p.out_valid), fin.r_head.eq(p.out_head), fin.r_tag.eq(p.out_tag),
-            fin.r_iterations.eq(p.out_iterations), fin.r_converged.eq(p.out_converged),
-            fin.r_overrun.eq(self.r_overrun), fin.r_bits.eq(p.out_bits), fin.r_last.eq(p.out_last),
-            p.out_ready.eq(fin.r_ready),
+            rf.i_valid.eq(p.out_valid), rf.i_head.eq(p.out_head), rf.i_tag.eq(p.out_tag),
+            rf.i_iterations.eq(p.out_iterations), rf.i_converged.eq(p.out_converged),
+            rf.i_overrun.eq(self.r_overrun), rf.i_bits.eq(p.out_bits), rf.i_last.eq(p.out_last),
+            p.out_ready.eq(rf.i_ready),
+            fin.r_valid.eq(rf.o_valid), fin.r_head.eq(rf.o_head), fin.r_tag.eq(rf.o_tag),
+            fin.r_iterations.eq(rf.o_iterations), fin.r_converged.eq(rf.o_converged),
+            fin.r_overrun.eq(rf.o_overrun), fin.r_bits.eq(rf.o_bits), fin.r_last.eq(rf.o_last),
+            rf.o_ready.eq(fin.r_ready),
         ]
         with m.If(p.in_valid & p.in_ready & p.in_ctx & (p.in_op == OP_DONE)):
             m.d.sync += self.tmcc_done.eq(self.tmcc_done + 1)
