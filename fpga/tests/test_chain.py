@@ -236,6 +236,75 @@ class ChainTest(unittest.TestCase):
         self.run_chain(None)
 
 
+class SlotsRxRegisterTest(unittest.TestCase):
+    """`SlotsRx`'s register file through `gpio_out` (the command protocol of
+    control.py): the ID word with ID_CHAIN; a front-end register written and
+    read back (PERIOD_NOMINAL, 0x01: its READ must show the front end's
+    readback, not the chain's); the chain's MAX_ITER (0x101, reset 16)
+    written and read, AGC (0x102) and FEATURES (0x103); then the front end's
+    register again."""
+
+    def test_reads(self):
+        from amaranth.hdl import ClockDomain, Module
+        from amaranth.sim import Simulator
+
+        from isdb_fpga.chain.common import cos_table
+        from isdb_fpga.chain.top import ID_CHAIN, SlotsRx
+        from isdb_fpga.control import ID_MAGIC, OP_ADDR, OP_HI, OP_NOP, OP_READ, OP_WRITE
+        from isdb_fpga.frontend import FORMAT_VERSION
+
+        dut = SlotsRx(32, cos_table())
+        top = Module()
+        top.submodules.dut = dut
+        top.domains.sync = ClockDomain()
+        top.domains.ldpc = ClockDomain()
+        sim = Simulator(top)
+        sim.add_clock(25e-9, domain="sync")
+        sim.add_clock(5e-9, domain="ldpc")
+        seen = {}
+
+        async def bench(ctx):
+            t = 0
+
+            async def cmd(op, arg=0):
+                nonlocal t
+                t ^= 1
+                ctx.set(dut.gpio_out, t << 31 | op << 28 | (arg & 0x7FFFFFF) << 1)
+                for _ in range(8):
+                    await ctx.tick("sync")
+                return ctx.get(dut.gpio_in)
+
+            seen["id"] = await cmd(OP_NOP)
+            await cmd(OP_ADDR, 0x01)
+            await cmd(OP_HI, 0x1234)
+            await cmd(OP_WRITE, 0x5678)
+            await cmd(OP_ADDR, 0x01)
+            seen["period"] = await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x101)
+            seen["max_iter_reset"] = await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x101)
+            await cmd(OP_HI, 0)
+            await cmd(OP_WRITE, 33)
+            await cmd(OP_WRITE, 0x0400)  # 0x102, AGC (the address advanced)
+            await cmd(OP_ADDR, 0x101)
+            seen["max_iter"] = await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x102)
+            seen["agc"] = await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x103)
+            seen["features"] = await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x01)
+            seen["period_again"] = await cmd(OP_READ)
+            seen["id_again"] = await cmd(OP_NOP)
+
+        sim.add_testbench(bench)
+        sim.run()
+        ident = ID_MAGIC << 16 | FORMAT_VERSION << 12 | 32 | ID_CHAIN
+        self.assertEqual(seen, {
+            "id": ident, "period": 0x12345678, "max_iter_reset": 16, "max_iter": 33, "agc": 0x0400,
+            "features": 0b11, "period_again": 0x12345678, "id_again": ident,
+        })
+
+
 class BridgeTest(unittest.TestCase):
     """The bridge from the chain's decoder port (40 MHz, 5-lane beats) to
     `ldpc.py`'s ports (200 MHz, one LLR per cycle, begin / start, results in
