@@ -513,7 +513,11 @@ chain yet):
    loop never wrote taps (the training sums move every frame, a read of
    308 registers takes about 15 frames), so the chain ran on identity
    taps: 268 LDPC failures of 87 177 slots, mean 4.63 iterations, where
-   the CPU model with taps has 1 and 2.08. Results below, "Piece 6".**
+   the CPU model with taps has 1 and 2.08. Build 7 (`d4042bb`,
+   SUMS_CAPTURE) meets timing without repair and the taps arrive (first
+   write 0.9 s after open, 12 in 30 s): 0 failures with good taps, but one
+   solve of twelve made every codeword fail for 81 frames (7 808 failed),
+   and n0 stays at its default on the board. Results below, "Piece 6".**
 
 Pieces 1–3 are independent and run in parallel; 4 needs 3's vectors
 (and can start on the sync stage from 3's first commit); 5 needs 3's
@@ -1172,7 +1176,74 @@ format 4, 32 taps, `Slots` version 1). `tools/isdbs3-board-check.sh`, BS7,
 - The host's 6.2 GB RSS on the radio path (41–67 MB replaying `--slots`)
   is the capture side's buffering; not investigated.
 
-**Rollback** (the board stays on `isdbs3_rx_top.bin`):
+**Rollback** (the board stays on `isdbs3_rx_top.bin`, now build 7):
 `tools/pluto-image.sh rollback uEnv.txt.prev-txrx2` then
 `tools/pluto-image.sh reboot` (and `recover` if `cf-ad9361-lpc` is
-missing) boots `isdb_txrx2_top.bin` again, with the transmit block.
+missing) boots `isdb_txrx2_top.bin` again, with the transmit block;
+`rollback uEnv.txt.prev-rx6` boots build 6 (`isdbs3_rx6_top.bin`).
+
+#### Build 7 (fit `d4042bb`: SUMS_CAPTURE) on the board (2026-11-03)
+
+The fit's taps fix: a SUMS_CAPTURE register (0x422) holds the training
+sums of a host-armed frame end, FEATURES bit 4, the slow loop reading a
+held frame once. Build 7 met every constraint in the project flow itself
+(no `holdfix.tcl` needed): **WNS +0.067 ns, WHS +0.029 ns, 0 failing
+endpoints**; `rx_clk` +0.067 / +0.051, decoder `c0` +0.235 / +0.048, symbol
+clock +0.578 / +0.029, symbol → l_clk +0.264, l_clk → symbol +0.578,
+symbol ↔ decoder +3.327 / +3.201, `clk_fpga_0` +1.345, `RGMII_rxc` +0.100 /
++0.133. 43 731 LUT (82.2 %), 49 812 FF, 123.5 BRAM36, 176 DSP; `isdb_slots`
+37 253 LUT, 117 BRAM36, 164 DSP. `isdbs3_rx_top.bin` 2 833 440 bytes,
+sha256 `717f7e34adaf5cadd906aa70bd2a8b482a3b5ceb6c328f2f52299ceed28e6a2a`
+(XSA `1b1abd0ff308df3245fecb94b3971c94ee66351ea345a7254c3aec19df31558e`).
+On the card: build 6 kept as `isdbs3_rx6_top.bin` (`uEnv.txt.prev-rx6`
+selects it), build 7 as `isdbs3_rx_top.bin`; the boot bound
+`cf-ad9361-lpc` at once (no TX tune failure); ID word 0x15DB4120.
+
+`tools/isdbs3-board-check.sh`, BS7, 30 s (log lines stamped; the
+recorded words replayed):
+
+| Run | Frames | Slots | LDPC / BCH failed | Mean iterations | n0 / MER | TLV packets B070 / B071 / B072 (lost slots) | Losses | Host CPU | Max RSS |
+|---|---|---|---|---|---|---|---|---|---|
+| FPGA chain (`--offload auto`) | 909 (2 undecoded) | 87 187 | **7 808** / 0 | 2.38 | 52 556 (13.0 dB) all run | 83 483 / 38 448 / 83 199 (2 597 / 2 617 / 2 594) | 0 | 9.97 s user + 2.33 s sys, wall 34.4 s | **6.28 GB** |
+| `--slots` replay of its words | 909 | 87 187 | 7 808 / 0 | 2.38 | | identical | 0 | 2.28 s user, 2.29 s wall | **39 MB** |
+| host receiver, Symbols capture just before | 907 | 87 072 | 1 / 0 | 2.078 | 15.4 dB main | 91 686 / 42 190 / 91 662 | 0 | 294 s user | 3.9 GB |
+| CPU model (`--chain fixed`) on that capture | 907 (2 undecoded) | 86 880 | 2 / 0 | 2.094 | 32 000–33 700 (≈ 15 dB) | every packet a packet of the host's | 0 | | |
+
+- **The taps now arrive**: the open line reads "features 0x220e13
+  (LDPC limit 14, step 34)" (bit 4 SUMS_CAPTURE); the slow loop wrote
+  taps 12 times in 24 ticks, 0 torn reads, 0 singular; the **first write
+  0.90 s after the chain's open** (solved from frame 5; the chain's first
+  frame is 2), then about every 2.7 s (81 frames). The taps were in
+  force from frame 26 on (`examples/slotsstatus` on the recorded words).
+- **With good taps the chain decodes like the model**: frames 26–269 and
+  379–909, 0 failed codewords, mean 2.0–2.2 iterations per frame.
+- **One solve of the twelve was bad**: the host's "solved from frame 250"
+  (centre tap [18 691, −285]; the eleven others [17 325 … 17 848,
+  −190 … −271]) was in force from frame 270 to 350, and **every
+  codeword of those 81 frames failed** (96 / 96, 10.4 mean iterations,
+  limit 14; with the switching frames 270 and 351, 7 800 of the 7 808 failures; the other 8: 7 in frames 2–25, before the first taps, 1 in frame 378), and 2 597 / 2 617 / 2 594 lost
+  slots in the TLV streams (the 81 frames × 32 slots per stream). The next
+  solve (frame 331's) brought the decoding back within a frame. The
+  model's 30 solves on the capture just before are all within
+  [17 315 … 17 379]. Cause not found: the host does not log the sums it
+  solves from, and SUMS_COUNT read 6 720 as for every capture.
+- **n0 is never learned on the board**: the status blocks give n0 =
+  52 556, the reset default (`N0_DEFAULT`), and LLR scale 81 722 in every
+  frame of both board runs, while `learned_from` advances every frame (the
+  constellation is learned); the model on the same signal learns n0
+  ≈ 32 500–33 700 (≈ 15 dB) from its fourth frame. The decoder then sees
+  LLRs scaled about 0.62× the model's; the iteration means are close
+  (2.07–2.2 vs 2.09) on this signal, but the FPGA is not the model here.
+- **The taps' frame label lags one write**: the status's `taps_from`
+  shows the previous TAPS_FROM written (the first set, solved from frame
+  5, reads 0; the set from 87 reads 5, …), consistent with `SlotsRx`
+  arming the equaliser with `tap_from` / `tap_at` in the same cycle as it
+  registers the new value (`top.py`, REG_TAPS_FROM). The taps themselves
+  were applied (their values change in the status about 20 frames after
+  each write).
+- **The 6.2 GB RSS is the radio path's**: the same words replayed with
+  `--slots` take 39 MB and 2.3 s of CPU.
+- ADC overflow flag: 8 during the Slots run, no block missing by sequence
+  number, as in run 1.
+- The 'before' Symbols capture decodes on the host with 1 failure in
+  87 072 slots (MER 15.4 dB): the signal is as on 2026-11-02.

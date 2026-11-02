@@ -519,11 +519,13 @@ are needed: not provably narrower).
   `build/isdb_slots_rx.v` (module `isdb_slots_rx`: clocks `clk`,
   `fast_clk`, `ldpc_ref`; about 374 000 lines).
 
-**What is left**: the equaliser's training sums on the board (the
-receive-only image meets timing and decodes BS7, [below](#building-the-plutosky-r2-bitstream-tezuka),
-"Status of `isdbs3-rx`", but the host never reads a whole set: the latch
-moves every frame and a read of 308 registers takes about 15, so the
-chain runs on identity taps: 268 LDPC failures of 87 177 slots in 30 s);
+**What is left** (the receive-only image meets timing and decodes BS7,
+[below](#building-the-plutosky-r2-bitstream-tezuka), "Status of
+`isdbs3-rx`"; with SUMS_CAPTURE the taps arrive and good taps decode as
+the model): one solved tap set in twelve on the board failed every
+codeword for 81 frames (cause not found); the board's n0 never leaves
+`N0_DEFAULT` (the model learns it every frame); the status's `taps_from`
+lags one TAPS_FROM write (VERIFICATION.md "Build 7 on the board");
 the restart epoch for a layout committed after a restart (the model's
 insert happens before it); `SlotsRx` as a whole with its front end in
 simulation (the chain's simulations start at the symbols); a host CONST /
@@ -1185,7 +1187,13 @@ same-clock paths). Build 6 after `holdfix.tcl`: **43 817 LUT (82.4 %),
 +0.044, symbol → l_clk +0.255, l_clk → symbol +0.593, symbol ↔ decoder
 +3.237 / +3.108, `clk_fpga_0` +1.143, `RGMII_rxc` +0.100 / +0.192.
 `isdbs3_rx_top.bin`: 2 746 304 bytes, sha256
-`41997abe5f455fb8117ccda14d2c414ead397d39d9aac2508b9ced0bf54995ac`.
+`41997abe5f455fb8117ccda14d2c414ead397d39d9aac2508b9ced0bf54995ac` (kept on
+the card as `isdbs3_rx6_top.bin`). Build 7 (fit `d4042bb`, SUMS_CAPTURE)
+met every constraint in the project flow without `holdfix.tcl`: WNS
++0.067 ns, WHS +0.029 ns; 43 731 LUT, 123.5 BRAM36, 176 DSP;
+`isdbs3_rx_top.bin` 2 833 440 bytes, sha256
+`717f7e34adaf5cadd906aa70bd2a8b482a3b5ceb6c328f2f52299ceed28e6a2a`, the
+image on the card (`uEnv.txt.prev-rx6` selects build 6).
 
 Before the remedies (fit `5c8b9eb`; final checkpoints, `timing.tcl`,
 `utilization.tcl`, `failing.tcl`; the ADI flow stops at "Timing
