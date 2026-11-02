@@ -46,22 +46,35 @@ def main(argv):
         while not ctx.get(dut.busy):  # the commit reaches the queue after the last write
             await ctx.tick()
         clock = 0
-        while ctx.get(dut.busy) and clock < 4000:
+        last_issue = None
+        while ctx.get(dut.busy) and clock < 20000:
             if ctx.get(mod["read_v"]) and ctx.get(mod["read_k"]) == 0 and "read" not in found:
                 found["read"] = clock
             if ctx.get(mod["write_v"]) and ctx.get(mod["write_k"]) == 0 and "read" in found \
                     and "write" not in found:
                 found["write"] = clock
+            if ctx.get(mod["issue"]):
+                if last_issue is not None and "turn" not in found:
+                    found["turn"] = clock - last_issue - 1
+                last_issue = clock if ctx.get(mod["pass_last"]) else None
             await ctx.tick()
             clock += 1
 
     sim.add_testbench(bench)
     sim.run()
-    d = ldpcsched.Layout(rows, 6, s).d  # the layer degree (check 0 has one edge less)
+    lay = ldpcsched.Layout(rows, 6, s)
+    d = lay.d  # the layer degree (check 0 has one edge less)
     real = found["write"] - found["read"] - d
     print(f"entry 0: read address at {found['read']}, write at {found['write']}, d = {d}: "
           f"write latency {real} (ldpc.WRITE_LATENCY = {ldpc.WRITE_LATENCY})")
-    return 0 if real <= ldpc.WRITE_LATENCY else 1
+    # a pass's turnaround: the idle cycles between its last issue and the
+    # next pass's first, i.e. the model's DECIDE when the step-0 gap is less
+    g0 = ldpcsched.gaps(lay, ldpc.WRITE_LATENCY, ldpc.DECIDE)[0][0]
+    turn = found.get("turn")
+    print(f"pass turnaround: {turn} idle cycles (ldpc.DECIDE = {ldpc.DECIDE}; the step-0 gap "
+          f"{g0}{', which then sets it' if turn == g0 else ''})")
+    ok = real <= ldpc.WRITE_LATENCY and (turn is None or turn in (ldpc.DECIDE, g0))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
