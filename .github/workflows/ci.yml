@@ -328,7 +328,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.fpga == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-26.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -349,11 +349,20 @@ jobs:
         with:
           key: fpga
           save: ${{ github.ref == 'refs/heads/main' }}
+      # The chain tests' compiled simulations (Yosys write_cxxrtl + c++,
+      # about 3 minutes for the whole chain) are content-addressed .so files
+      # under fpga/build/cxxrtl, keyed by the HDL: restored across runs and
+      # rebuilt only for a changed design.
+      - name: Restore the compiled CXXRTL simulations
+        uses: actions/cache@v6.1.0
+        with:
+          path: fpga/build/cxxrtl/*.so
+          key: fpga-cxxrtl-${{ hashFiles('fpga/isdb_fpga/**/*.py', 'fpga/isdb_fpga/**/*.cc', 'fpga/uv.lock') }}
+          restore-keys: fpga-cxxrtl-
       # Writes the vectors from the Rust models (release examples) and the
       # Python models, then simulates every FPGA block against them, bit for
-      # bit (deterministic: fixed seeds, no wall clock). The LDPC decoder's
-      # and the ISDB-S3 chain's default sets take about 19 minutes on a
-      # 16-core host in Amaranth's Python simulator; the runner is slower.
+      # bit (deterministic: fixed seeds, no wall clock), the tests spread
+      # over the runner's cores (pytest-xdist).
       - run: mise run fpga:test
       - name: sccache statistics
         if: always()

@@ -214,7 +214,10 @@ description = "simulate the FPGA front end, transmit block, LDPC decoder and the
 depends = ["fpga:vectors", "fpga:tx-vectors", "fpga:ldpc-vectors"]
 dir = "fpga"
 env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
-run = "uv run --locked python -m unittest discover -s tests -v"
+# pytest runs the unittest classes on every core (xdist): the suite is a
+# set of independent single-threaded simulations, 19 min serial on one
+# core, 6.4 min on four.
+run = "uv run --locked pytest -q -n auto tests"
 
 [tasks."fpga:verilog"]
 description = "Verilog of the 32-tap front end block for a vendor flow (fpga/build/isdb_symbols_rx.v)"

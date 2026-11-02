@@ -14,7 +14,12 @@ dev = [
   "yowasp-yosys==0.70.0.0.post1259",
   # `uv run --locked pytest` (the tests are unittest classes; mise uses unittest).
   "pytest==9.1.1",
+  "pytest-xdist==3.8.0",
 ]
 
 [tool.uv]
 package = false
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
