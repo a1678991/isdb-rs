@@ -71,8 +71,10 @@ cycle:
   the frame's end) each label's round(sum / count) by a sequential divider
   into the point RAM's other bank.
 - **Noise**: a 48-bit sum and a count; at a decoded frame's end n0 and K
-  by two 3-bit-per-cycle dividers (about 30 cycles: the next frame's first
-  main symbol reaches the K product 57 symbols later at the earliest).
+  by one 3-bit-per-cycle divider, one after the other (about 37 cycles from
+  the frame end's event, which is 12 after its last symbol: the next
+  frame's first main symbol reaches the K product 57 symbols later at the
+  earliest).
   `late` counts a K not ready in time (never on a stream with the
   frame's 56 leading sync and pilot symbols, cycle count above).
 - At a decoded frame's end the banks swap (the learned points and n0 are
@@ -686,13 +688,14 @@ class Demap(Elaboratable):
         m.d.comb += [pw.addr.eq(Cat(self.lp_addr, nfb)), pw.data.eq(self.lp_data), pw.en.eq(self.lp_valid)]
 
         # ---- frame end: n0, K, the swap ------------------------------------------------
-        m.submodules.ndiv = ndiv = SeqDivR(50, 20, 3)
-        m.submodules.kdiv = kdiv = SeqDivR(35, 34, 3)
+        # one divider for n0 and then K (17 cycles each)
+        m.submodules.ndiv = ndiv = SeqDivR(50, 34, 3)
+        kdiv = ndiv
         nn0 = Signal(32)
         k_pending = Signal()
         with m.If(a_v & k_pending):
             m.d.sync += self.late.eq(self.late + 1)
-        m.d.sync += [ndiv.start.eq(0), kdiv.start.eq(0), self.nx_valid.eq(0)]
+        m.d.sync += [ndiv.start.eq(0), self.nx_valid.eq(0)]
         with m.FSM(name="noise"):
             with m.State("IDLE"):
                 with m.If(self.f_end):
