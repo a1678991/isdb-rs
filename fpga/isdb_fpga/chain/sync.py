@@ -5,12 +5,14 @@ Contract: `isdbs3_phy::chain::sync::SlotSync` and the module docs of
 `isdbs3_phy::chain`, "Stage 1"; every rule below is the model's:
 
 - per position n the correlations of r_n .. r_{n+23} with FSync and SSync
-  (`C = sum r_k conj(w_k)`, w_k = (+-1 +- j)). With a_k = r_i + r_q and
+  (`C = sum r_k conj(w_k)`, w_k = (+-1 +- j); the two words agree on 14
+  symbols and are opposite on 10, so C_F = P + Q and C_S = P - Q with P, Q
+  the sums over those positions: shared trees). With a_k = r_i + r_q and
   b_k = r_q - r_i (one adder each per symbol, shared by both words) a word
   symbol with w_i = w_q adds w_i a_k to re and w_i b_k to im, one with w_i
-  = -w_q adds -w_i b_k to re and w_i a_k to im: four add/subtract trees of
-  24 leaves (one adder per node, the signs folded into add or subtract),
-  no multiplier;
+  = -w_q adds -w_i b_k to re and w_i a_k to im: per component a 14- and
+  a 10-leaf add/subtract tree (one adder per node, the signs folded into
+  add or subtract) and P +- Q, no multiplier;
 - `m = max(M(C_F), M(C_S))`, M = max(|re|, |im|) + (min >> 1);
 - `A[n mod 9 296] += (m - A) >> 3` (arithmetic shift) in a 9 296-entry
   RAM, read the cycle before it is written (positions arrive in order, so
@@ -47,8 +49,9 @@ position 9 295) holds the input from the accept of the symbol that
 completes it (`hold`: known at the accept from the input-side position
 counter and the lock state, which changes only at a period end, itself
 such a window) until the decision is taken: the head's CORDIC (35 cycles;
-twice for the first pair), the FSync sign product (bit-serial, 17
-cycles), the frame counter's division at a frame head (48 cycles), the
+twice for the first pair), the FSync sign product (two bit-serial
+products on one multiplier, 2 x 17 cycles), the frame counter's division
+at a frame head (48 cycles), the
 carrier loop's answer (1 cycle, or 20 for the 60th step), the lock rule
 (2 cycles). That is what the model does inside one `push`: the carrier
 register a head changes rotates the very next symbol, and a loss restarts
@@ -72,7 +75,7 @@ from amaranth.lib.memory import Memory
 from .common import (
     FRAME, FRAME_MISS_LIMIT, FSYNC, LEAK_SHIFT, LOCK_PERIODS, LOCK_RATIO, LOSS_PERIODS,
     MAJORITY_MAX, MAJORITY_MIN, SLOT, SLOTS, SSYNC, SYNC, W_FSYNC, W_NFSYNC, W_SSYNC,
-    Cordic, SeqDiv, SeqMul, mag_approx, r_bits, word_symbols,
+    NO_DSP, Cordic, SeqDiv, SeqMul, mag_approx, r_bits, word_symbols,
 )
 from .nco import Nco
 
@@ -249,12 +252,26 @@ class SlotSync(Elaboratable):
             m.d.comb += out.eq(v if s > 0 else -v)
             return out, lvl
 
+        # FSync and SSync share their trees: where the words agree the
+        # leaves are the same, where they differ (10 of 24 symbols) negated,
+        # so with P the sum over the agreeing positions and Q over the others
+        # (FSync's signs) C_F = P + Q and C_S = P - Q: 14- and 10-leaf trees
+        # and one add / subtract per component instead of two 24-leaf trees
+        # (the same depth, 5 registered levels; exact in cb bits)
         fre, fim = leaves(FSYNC)
-        sre, sim = leaves(SSYNC)
-        cf_re, depth = tree(fre, "cf_re")
-        cf_im, _ = tree(fim, "cf_im")
-        cs_re, _ = tree(sre, "cs_re")
-        cs_im, _ = tree(sim, "cs_im")
+        sre, _ = leaves(SSYNC)
+        same = [fre[k][0] == sre[k][0] for k in range(SYNC)]
+        sums = {}
+        for comp, lv in (("re", fre), ("im", fim)):
+            pv, depth_p = tree([x for k, x in enumerate(lv) if same[k]], f"p_{comp}")
+            qv, depth_q = tree([x for k, x in enumerate(lv) if not same[k]], f"q_{comp}")
+            assert depth_p == depth_q == 4
+            f_ = Signal(signed(cb), name=f"cf_{comp}")
+            s_ = Signal(signed(cb), name=f"cs_{comp}")
+            m.d.sync += [f_.eq(pv + qv), s_.eq(pv - qv)]
+            sums[comp] = (f_, s_)
+        (cf_re, cs_re), (cf_im, cs_im) = sums["re"], sums["im"]
+        depth = 5
         tf = Signal(depth)
         m.d.sync += tf.eq(Cat(line_f, tf[:-1]))
         mf = Signal(ab)
@@ -368,11 +385,13 @@ class SlotSync(Elaboratable):
         end_pending = Signal()
 
         m.submodules.cordic = cordic = Cordic()
+        # Re(C_F conj(C_S,prev)) = re re' + im im': the two products on one
+        # bit-serial multiplier, one after the other
         m.submodules.mre = mre = SeqMul(cb, cb, b_signed=True)
-        m.submodules.mim = mim = SeqMul(cb, cb, b_signed=True)
+        p_re = Signal(signed(2 * cb))
         m.submodules.fdiv = fdiv = SeqDiv(AT_BITS, 21)
         m.d.sync += [
-            cordic.start.eq(0), mre.start.eq(0), mim.start.eq(0), fdiv.start.eq(0),
+            cordic.start.eq(0), mre.start.eq(0), fdiv.start.eq(0),
             self.h_valid.eq(0), self.o_head_valid.eq(0), self.o_per_valid.eq(0),
             release.eq(0), do_restart.eq(0), self.decided.eq(0),
         ]
@@ -382,7 +401,13 @@ class SlotSync(Elaboratable):
             return mag_approx(c[2], c[3]).as_signed() - mag_approx(c[0], c[1]).as_signed()
 
         lock_counts = Signal()
-        m.d.comb += lock_counts.eq((peak > 0) & ((peak * SLOT) >= (psum * LOCK_RATIO)))
+        # peak * 9 296 >= 3 sum by shifts and adds (9 296 = 2^13 + 2^10 + 2^6 + 2^4)
+        assert SLOT == (1 << 13) + (1 << 10) + (1 << 6) + (1 << 4) and LOCK_RATIO == 3
+        pk_s = Signal(ab + 14, attrs=NO_DSP)
+        ps_3 = Signal(36, attrs=NO_DSP)
+        m.d.comb += [pk_s.eq((peak << 13) + (peak << 10) + (peak << 6) + (peak << 4)),
+                     ps_3.eq((psum << 1) + psum)]
+        m.d.comb += lock_counts.eq((peak > 0) & (pk_s >= ps_3))
 
         def restart_all():
             m.d.sync += [
@@ -436,12 +461,15 @@ class SlotSync(Elaboratable):
                 with m.Else():
                     m.d.sync += [
                         mre.a.eq(wh_c[0]), mre.b.eq(last_ss[0]), mre.start.eq(1),
-                        mim.a.eq(wh_c[1]), mim.b.eq(last_ss[1]), mim.start.eq(1),
                     ]
+                    m.next = "SIGN_RE"
+            with m.State("SIGN_RE"):
+                with m.If(mre.done):
+                    m.d.sync += [p_re.eq(mre.p), mre.a.eq(wh_c[1]), mre.b.eq(last_ss[1]), mre.start.eq(1)]
                     m.next = "SIGN"
             with m.State("SIGN"):
                 with m.If(mre.done):
-                    neg = (mre.p + mim.p) < 0
+                    neg = (p_re + mre.p) < 0
                     m.d.sync += [
                         wh_word.eq(Mux(neg, W_NFSYNC, W_FSYNC)),
                         wh_corr[0].eq(Mux(neg, -wh_c[0], wh_c[0])),
