@@ -15,6 +15,8 @@
 #   2  isdb rx --offload auto --slots-out …        (the FPGA chain: Slots, the
 #                                                  host assembling TLV only),
 #      under /usr/bin/time -v, TLV to OUT/fpga/fpga-{tlv_id}.tlv
+#   2b isdb rx --slots OUT/fpga.slots             (the same words replayed:
+#      the host's CPU and memory without the radio)
 #   3  isdb symbols … --out OUT/after.sym          (just after)
 #   4  isdb rx --symbols OUT/before.sym            (the host receiver on 1),
 #      TLV to OUT/host/host-{tlv_id}.tlv
@@ -37,6 +39,9 @@ mkdir -p "$out"/{fpga,host}
 rm -f "$out"/fpga/*.tlv "$out"/host/*.tlv
 
 step() { echo "== $*" >&2; }
+# wall-clock seconds before each line of the radio run's log (the slow
+# loop's first tap write against the lock)
+stamp() { perl -MTime::HiRes=time -ne '$|=1; printf "%.3f %s", time, $_'; }
 
 step "0: probe"
 "$isdb" symbols --radio "$radio" --freq "$chan" --probe >"$out/probe.txt" 2>&1 || true
@@ -52,11 +57,18 @@ step "1: Symbols capture before ($secs s)"
 step "2: the FPGA chain (--offload auto, $secs s)"
 /usr/bin/time -v "$isdb" rx --system isdbs3 --radio "$radio" --channel "$chan" --freq-unrestricted --offload auto \
     --seconds "$secs" --json --status-secs 5 --slots-out "$out/fpga.slots" \
-    --out "$out/fpga/fpga-{tlv_id}.tlv" >"$out/fpga.json" 2>"$out/fpga.log" || {
+    --out "$out/fpga/fpga-{tlv_id}.tlv" >"$out/fpga.json" 2> >(stamp >"$out/fpga.log") || {
+    sleep 1
     tail -30 "$out/fpga.log" >&2
     exit 1
 }
+sleep 1  # the stamping process flushes
 grep -i -E 'offload|decoded by|slots|chain' "$out/fpga.log" | head -20 >&2 || true
+
+step "2b: the recorded Slots words again (--slots), the host's cost without the radio"
+/usr/bin/time -v "$isdb" rx --slots "$out/fpga.slots" --json --status-secs 0 \
+    >"$out/replay.json" 2>"$out/replay.log" || true
+grep -E 'done:|Maximum resident|User time|Elapsed' "$out/replay.log" >&2 || true
 
 step "3: Symbols capture after ($secs s)"
 "$isdb" symbols --radio "$radio" --freq "$chan" --system isdb-s3 --offload auto \
