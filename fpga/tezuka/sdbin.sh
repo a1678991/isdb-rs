@@ -17,7 +17,11 @@ source "$VIVADO_SETTINGS"
 set -u
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-unzip -p "$XSA" system_top.bit > "$T/system_top.bit"
+# the project flow's XSA holds system_top.bit; one written by
+# write_hw_platform (holdfix.tcl) names it after the XSA: take its one .bit
+BIT=$(unzip -Z1 "$XSA" | grep '\.bit$')
+[ "$(echo "$BIT" | wc -l)" = 1 ] || { echo "$XSA: expected one .bit, found: $BIT" >&2; exit 1; }
+unzip -p "$XSA" "$BIT" > "$T/system_top.bit"
 echo "img : {$T/system_top.bit }" > "$T/b.bif"
 bootgen -image "$T/b.bif" -process_bitstream bin -arch zynq -w -o i "$T/system_top.bit.bin" >/dev/null
 cp "$T/system_top.bit.bin" "$OUT"
