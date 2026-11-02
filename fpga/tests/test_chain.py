@@ -236,6 +236,84 @@ class ChainTest(unittest.TestCase):
         self.run_chain(None)
 
 
+class TmccOverrunTest(unittest.TestCase):
+    """A TMCC codeword the decoder dropped comes back as its header alone
+    (res_overrun = 1, no words). `Finish` must consume just the header: the
+    TMCC block of frame 5 as a failed decode (BCH 0xFFFF, iterations
+    0xFFFF, layout from frame 7, zero information words), its status
+    block (frames, undecoded and TMCC failed counted), and then the next
+    result, slot 0 of frame 6 (93/120, not converged: its bits as decoded,
+    the slot PRBS removed), as its own block; TMCC_OVERRUNS counts 1."""
+
+    def test_header_only(self):
+        import random
+
+        from amaranth.hdl import Cat, Elaboratable, Module, Mux, Signal
+
+        from isdb_fpga.chain import slots as S
+        from isdb_fpga.chain.finish import Finish
+        from isdb_fpga.chain.tables import SLOT_INIT, prbs
+
+        class Bench(Elaboratable):
+            def __init__(self):
+                self.fin = Finish()
+                self.i_valid = Signal()
+                self.i_ready = Signal()
+                self.kind = Signal(2)
+                self.a = Signal(32)
+                self.b = Signal(32)
+                self.c = Signal(8)
+                self.d = Signal()
+                self.e = Signal()
+
+            def elaborate(self, platform):
+                m = Module()
+                m.submodules.fin = f = self.fin
+                go = self.i_valid & self.i_ready
+                res = self.kind != 0
+                m.d.comb += [
+                    self.i_ready.eq(Mux(res, f.r_ready, 1)),
+                    f.f_valid.eq(go & (self.kind == 0)), f.f_frame.eq(self.a), f.f_decoded.eq(self.b[0]),
+                    f.r_valid.eq(self.i_valid & res), f.r_head.eq(self.kind == 1),
+                    f.r_tag.eq(Cat(self.a, self.b)), f.r_iterations.eq(self.c), f.r_converged.eq(self.d),
+                    f.r_overrun.eq(self.e & (self.kind == 1)), f.r_bits.eq(self.a[:16]), f.r_last.eq(self.b[0]),
+                ]
+                return m
+
+        rng = random.Random(5)
+        k = 374 * 93
+        nw = (k + 15) // 16
+        words = [rng.randrange(1 << 16) for _ in range(nw)]
+        recs = [(0, 5, 0, 0, 0, 0),
+                (1, 1 << 7 | 3 << 8, 5, 0, 0, 1),  # TMCC of frame 5, dropped
+                (1, 0 | 7 << 8 | 4 << 12 | 0 << 16, 6, 50, 0, 0)]  # slot 0 of frame 6, not converged
+        recs += [(2, w, int(i == nw - 1), 0, 0, 0) for i, w in enumerate(words)]
+        b = Bench()
+        f = b.fin
+        ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a, "b": b.b, "c": b.c,
+                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word, "ovr": f.tmcc_overruns}
+        backend = "cxxrtl" if simx.available() else "pysim"
+        e = simx.engine(b, ports, backend, tag="tovr")
+        g = e.group("ov", ["ow"])
+        e.stall_limit = 1_000_000 if backend == "cxxrtl" else None
+        e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=20_000)
+        out = [w for (w,) in e.read(g)]
+        self.assertEqual(e.get("ovr"), 1)
+        bl = S.blocks(out)
+        self.assertEqual([(x[0], x[2]) for x in bl], [(S.TMCC, 5), (S.STATUS, 5), (S.SLOT, 6)])
+        self.assertEqual(bl[0][3], [0xFFFF, 0xFFFF, 7, 0] + [0] * 589)
+        st = bl[1][3]
+        # the counters follow the 47 head words and 5 constellation counts
+        self.assertEqual((st[52], st[54], st[56], st[58]), (1, 1, 1, 0))  # frames, undecoded, TMCC failed, slots
+        # the slot: header and data bits as decoded, the PRBS removed
+        bits = [(words[i // 16] >> (i % 16)) & 1 for i in range(k)]
+        pr = prbs(SLOT_INIT, 22, 25, k)
+        hd = [x ^ y for x, y in zip(bits, pr)][:k - 198]
+        pay = bl[2][3]
+        self.assertEqual(pay[:3], [0, 4 | 7 << 4 | 50 << 8, 0xFFFF])
+        self.assertEqual(S.unpack_bits(pay[3:], k - 198), hd)
+
+
 class BpskCodewordTest(unittest.TestCase):
     """A pi/2-BPSK codeword is 44 880 main symbols (5 slots' worth), more
     than 15 bits hold: the demapper's codeword cursor, on a pi/2-BPSK
