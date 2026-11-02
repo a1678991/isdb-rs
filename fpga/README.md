@@ -379,7 +379,23 @@ whose roles rotate (no copy); one divider for n0 and K.
   front end's 33.76 Msymbol/s, against chain-7-hdl (chain-6's input,
   decoded by the model with the decoder's settings: `Schedule::Layered
   { step: 34 }`, limit 16, offset 1), every block compared per (frame,
-  kind, slot): RESULT_CHAIN7.
+  kind, slot). **Bit-exact**: all 126 blocks of the three frames the model
+  sends (frame 2 decoded: 96 slots, 24 dummies; three TMCC and status
+  blocks), 0 decoder overruns, no queue overflow, no lost beat; the chain
+  also sends 118 slot blocks of frame 3, which the input ends inside (the
+  model sends nothing of an unfinished frame; the host discards them:
+  `orphan_slots`). Verilator (README, [Simulation backends](#simulation-backends)): 8.2
+  M symbol clocks in 92 s plus a 45-65 s build; on CXXRTL the same run takes
+  about 100 minutes (about 1 500 cycles/s; its 10.7 MB of C++ compile in 7
+  minutes). The first runs failed (slot 118 of frame 2 missing, its status
+  counters, 89 overruns, a queue overflow): an HDL defect, not the
+  harness's: the demapper tagged a frame's last codeword with the next
+  frame's counter (its register moved on at the next frame's start before
+  the codeword's last beats left), the finish stage took it for the next
+  frame, reset the slot PRBS there, the BCH saw a wrong word and its Chien
+  search held the result stream about 35 000 cycles, so the decoder's banks
+  filled. Fixed (the frame travels with each beat); the stub-based test
+  could not show it (the stub supplies the tags).
 - **Block order.** The decoder returns results in commit order: frame N's
   TMCC codeword (its burst four values per port beat, about 4 slots at the
   front end's rate) follows frame N + 1's first slot codewords, so frame
@@ -387,11 +403,15 @@ whose roles rotate (no copy); one divider for n0 and K.
   slot blocks; `Finish` keeps their contents the model's (it holds frame
   N's last valid slot and slot counters at frame N + 1's first result)
   and nothing is buffered. The host (`isdb-cli` `slotrx.rs`) releases a
-  frame by frame counter, within a window of one frame. The bound: the
+  frame when its own tmcc or status block arrives; the chain sends a
+  frame's slot blocks as they are decoded, so a frame dropped later (a
+  loss, a lost sync, the end) leaves slot blocks without them, which the
+  host discards (`orphan_slots`; the model sends nothing of such a
+  frame). The bound: the
   TMCC burst (≈ 4 slots at the front end's rate; 25 slots at one symbol
   per clock) plus its decode (under a slot), so at most the blocks of the
   next frame's first 26 slots precede a frame's TMCC block; measured on
-  chain-7: LATENESS.
+  chain-7, -8 and -9: 3 slot blocks.
 - **Queue at 160 MHz** (`ldpcqueue.run(..., finish_hz=40e6)`: the result
   stream at the chain's pace and the TMCC burst at the chain's): the
   measured distribution (3 frames, mean 2.1, three isolated codewords at
@@ -402,7 +422,12 @@ whose roles rotate (no copy); one divider for n0 and K.
   frame 1; chain-9-fade: the signal replaced by noise for 330 000 symbols:
   the slot sync lost after 8 periods and regained; both decode frame 3
   after the event; `LossChainTest` with the stub, `FPGA_CHAIN_FULL=1`, and
-  `RealDecoderChainTest`): RESULT_LOSS.
+  `RealDecoderChainTest`): bit-exact with the stub (every Slots word, 7.6 M
+  cycles each, 12 minutes on CXXRTL) and with the real decoder (every block
+  of the model's frames 1-3, 0 overruns; about 105 s each on Verilator).
+  The loss runs first deadlocked stage 1 (a symbol accepted in the cycle
+  the restart took effect completed a window with the counters of
+  before), fixed; no set had a loss before.
 - **`SlotsRx`**: the decoder inside (S = 34, K = 3) with its MMCM
   (`mmcm=True`), the register map of `isdb_frontend::control::chain` (the
   host's; three registers added there: MAX_ITER, AGC, TMCC_OVERRUNS; the
