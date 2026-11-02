@@ -4,9 +4,8 @@
 //! `isdb_frontend::control` on any [`RegisterAccess`] (libiio's register
 //! access on a Pluto, a model of the block in the tests).
 //!
-//! The register map is `isdb_frontend::control::chain`'s, whose addresses
-//! are placeholders until the chain's HDL is final; this module uses its
-//! names only.
+//! The register map is `isdb_frontend::control::chain`'s (the HDL's,
+//! `fpga/isdb_fpga/chain/top.py`); this module uses its names only.
 //!
 //! **Open** ([`ChainControl::open`]): CTRL 0 (a chain left running by a
 //! process that did not close stops); VERSION and FEATURES read (the
