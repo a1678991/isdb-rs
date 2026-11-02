@@ -24,14 +24,16 @@ module docs of `isdbs3_phy::chain`, "Stage 4":
 
 Implementation:
 
-- **FIR**: a line of 11 input registers, 44 real products (16 x 16 bits,
-  DSP48E1 at the symbol clock: the plan's 44; 22 at a 2x clock is not
-  done here), two 22-leaf adder trees, rounding and saturation. Schedule
-  (C = the cycle after the input's shift, the "centre cycle"): C products,
-  C+1..C+5 tree (registered per level), C+6 `o_valid`, `o_z` and the
-  centre's meta. The taps for the centre symbol are chosen at C (the
-  pending set replaces the in-use set at the first centre of the armed
-  frame) and the products at C use them.
+- **FIR**: a line of 11 input registers; the 44 real products (16 x 16
+  bits) on 11 DSP48E1 in the 4x clock (`fast`): in the four fast cycles of
+  the centre cycle C (C = the cycle after the input's shift) phase p
+  computes kind p of every tap (w_r x_r, w_i x_i, w_r x_i, w_i x_r), one
+  11-leaf adder tree (4 registered levels) sums each kind, re = S0 - S1
+  and im = S2 + S3 settle in phase 0 of C+2; the symbol clock takes them
+  then and delays them, rounding and saturation to the 44-DSP design's
+  schedule: `o_valid`, `o_z` and the centre's meta at C+6. The taps for the
+  centre symbol are chosen at C (the pending set replaces the in-use set
+  at the first centre of the armed frame) and the products of C use them.
 - **Training** (time-multiplexed, the plan's slow loop): at the centre of
   position 0 of a slot the line (y_{n0+5} .. y_{n0-5}) is copied into a
   66-entry buffer, then the newest input at each centre of positions 1 ..

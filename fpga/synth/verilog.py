@@ -4,6 +4,14 @@ Yosys).
 
 python synth/verilog.py VECTORS.json TAPS OUT.v   # SymbolsRx, module isdb_symbols_rx
 python synth/verilog.py TXVECTORS.json OUT.v [--any-design]  # SymbolsTx, module isdb_symbols_tx
+python synth/verilog.py VECTORS.json TAPS OUT.v --slots   # SlotsRx, module isdb_slots_rx
+
+SlotsRx (the front end and the ISDB-S3 chain with the LDPC decoder) has
+three clock inputs: `clk` / `rst` (the symbol clock, util_ad9361_divclk),
+`fast_clk` / `fast_rst` (its 4x, axi_ad9361 l_clk; `fast_rst` tied low or
+to the same reset), and `ldpc_ref` (clk_fpga_0, 100 MHz, into the block's
+MMCM for the decoder's 200 MHz); fpga/tezuka/isdb_slots.xdc constrains
+them.
 
 The coefficient memories start with the vectors' banks. The receive host
 rewrites them through the command register anyway; the transmit block's
@@ -26,7 +34,7 @@ from isdb_fpga.top import SymbolsRx, SymbolsTx  # noqa: E402
 
 def main(argv):
     doc = json.load(open(argv[1]))
-    out = [a for a in argv if a != "--any-design"][-1]
+    out = [a for a in argv if a not in ("--any-design", "--slots")][-1]
     p = doc["params"]
     if is_tx(doc):
         d = doc["design"]
@@ -44,8 +52,14 @@ def main(argv):
         h = [(row + [0] * taps)[:taps] for row in p["h"]]
         g = [(row + [0] * taps)[:taps] for row in p["g"]]
         k = [(row + [0] * taps)[:taps] for row in p.get("k", p["h"])]
-        dut = SymbolsRx(taps, doc["cos_table"], h, g, k)
-        name = "isdb_symbols_rx"
+        if "--slots" in argv:
+            from isdb_fpga.chain.top import SlotsRx
+
+            dut = SlotsRx(taps, doc["cos_table"], h, g, k, mmcm=True)
+            name = "isdb_slots_rx"
+        else:
+            dut = SymbolsRx(taps, doc["cos_table"], h, g, k)
+            name = "isdb_symbols_rx"
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     il = out + ".il"
     with open(il, "w") as f:

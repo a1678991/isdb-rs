@@ -6,6 +6,7 @@ backend (`simx.py`) can feed millions of records without Python in the
 loop.
 """
 
+import os
 import time
 
 from amaranth.hdl import Cat, Elaboratable, Module, Mux, Signal, signed
@@ -354,7 +355,8 @@ class TmccBench(Elaboratable):
             "i_valid": self.i_valid, "i_ready": self.i_ready, "kind": self.kind, "a": self.a,
             "b": self.b, "c": self.c, "d": self.d,
             "sv": s.s_valid, "sidx": s.s_idx, "ssoft": s.s_soft,
-            "bv": self.taken, "bop": s.b_op, "bpos": s.b_pos, "bllr": s.b_llr, "btag": s.b_tag,
+            "bv": self.taken, "bop": s.b_op, "bn": s.b_n, "btag": s.b_tag,
+            **{f"bpos{k}": s.b_pos[k] for k in range(4)}, **{f"bllr{k}": s.b_llr[k] for k in range(4)},
             "oh": r.o_head, "ofr": r.o_frame, "oit": r.o_iter, "ocv": r.o_conv, "obok": r.o_bch_ok,
             "obch": r.o_bch, "ov": r.o_valid, "obits": r.o_bits, "olast": r.o_last,
             "lwe": lay.lw_en, "lws": lay.lw_slot, "lwd": lay.lw_data, "lwc": lay.lw_commit,
@@ -407,7 +409,7 @@ def run_tmcc(doc, backend, flips=()):
     p = bn.ports()
     e = engine(bn, p, backend, tag="chain4")
     gs = e.group("sv", ["sidx", "ssoft"])
-    gb = e.group("bv", ["bop", "bpos", "bllr", "btag"])
+    gb = e.group("bv", ["bop", "btag", "bn"] + [f"bpos{k}" for k in range(4)] + [f"bllr{k}" for k in range(4)])
     gh = e.group("oh", ["ofr", "oit", "ocv", "obok", "obch"])
     go = e.group("ov", ["obits", "olast"])
     gl = e.group("lwe", ["lws", "lwd"])
@@ -421,9 +423,14 @@ def run_tmcc(doc, backend, flips=()):
     bad = []
     bad += first_mismatch("soft", soft, list(enumerate(doc["soft"])), key=lambda i, v: f"TMCC bit {i}")
     exp_b = [(OP_BEGIN,)] + [(OP_WRITE, pos, v) for pos, v in zip(doc["position"], doc["soft"])] + [(OP_DONE,)]
-    got_b = [(x[0],) if x[0] != OP_WRITE else (x[0], x[1], x[2]) for x in burst]
-    bad += first_mismatch("burst", got_b, exp_b, key=lambda i, v: f"beat {i}")
-    tags = {x[3] for x in burst}
+    got_b = []
+    for x in burst:
+        if x[0] != OP_WRITE:
+            got_b.append((x[0],))
+        else:
+            got_b += [(x[0], x[3 + k], x[7 + k]) for k in range(x[2])]
+    bad += first_mismatch("burst", got_b, exp_b, key=lambda i, v: f"value {i}")
+    tags = {x[1] for x in burst}
     if tags != {TAG_TMCC | 3 << 8 | F << 32}:
         bad.append(f"burst tags {tags}")
     bits = doc["bits"]
@@ -621,12 +628,18 @@ def run(stage, doc, backend, symbols):
                         backend, symbols)
     if stage == "6-chain":
         return run_chain(doc, load(path.replace("6-chain", "3-eq"))["taps"], backend, symbols)
+    if stage in ("8-loss", "9-fade") and os.environ.get("FPGA_LDPC") == "stub":
+        return run_chain(doc, None, backend, symbols)
+    if stage == "7-hdl":
+        return run_chain_real(doc, load(path.replace("7-hdl", "3-eq"))["taps"], backend, symbols)
+    if stage in ("8-loss", "9-fade"):
+        return run_chain_real(doc, None, backend, symbols)
     raise NotImplementedError(stage)
 
 
 # --- the whole chain (stages 1-6, 8, 9 with the LDPC stub) ----------------------
 
-C_SYM, C_TAP, C_TAPNOW, C_HEAD, C_WORD = range(5)
+C_SYM, C_TAP, C_TAPNOW, C_HEAD, C_WORD, C_LOSS = range(6)
 
 
 class ChainBench(Elaboratable):
@@ -660,8 +673,9 @@ class ChainBench(Elaboratable):
         res = (k == C_HEAD) | (k == C_WORD)
         gate = ch.tmcc_done >= self.e
         m.d.comb += [
-            self.i_ready.eq(Mux(k == C_SYM, ch.i_ready, Mux(res, gate & p.out_ready, 1))),
-            ch.i_valid.eq(self.i_valid & (k == C_SYM)),
+            self.i_ready.eq(Mux((k == C_SYM) | (k == C_LOSS), ch.i_ready, Mux(res, gate & p.out_ready, 1))),
+            ch.i_valid.eq(self.i_valid & ((k == C_SYM) | (k == C_LOSS))),
+            ch.i_loss.eq(k == C_LOSS), ch.i_lost.eq(self.a),
             ch.i_x[0].eq(self.a), ch.i_x[1].eq(self.b),
             eq.tap_we.eq(self.i_valid & (k == C_TAP)), eq.tap_idx.eq(self.a), eq.tap_val[0].eq(self.b),
             eq.tap_val[1].eq(self.c), eq.tap_now.eq(self.i_valid & (k == C_TAPNOW)),
@@ -770,11 +784,18 @@ def run_chain(doc, taps, backend, symbols=None):
         # its last symbol needs the FIR's 5 look-ahead symbols, which stage 3
         # corrects once the head after the next slot's is in: two slots on
         at = ats[fr] + FRAME + 2 * 9296
+        # the chain's index counts the lost symbols; the input's does not
+        at -= sum(k for b, k in doc.get("losses", []) if b + k <= at)
         if at <= n:  # a prefix: only the frames it completes
             inject.setdefault(at, []).extend([r + (i + 1,) for r in res[fr]])
-    recs = [(C_TAP, i, taps[2 * i], taps[2 * i + 1], 0, 0) for i in range(11)] + [(C_TAPNOW, 0, 0, 0, 0, 0)]
+    recs = []
+    if taps is not None:
+        recs = [(C_TAP, i, taps[2 * i], taps[2 * i + 1], 0, 0) for i in range(11)] + [(C_TAPNOW, 0, 0, 0, 0, 0)]
+    losses = {at: k for at, k in doc.get("losses", [])}
     for i in range(n):
         recs.extend(inject.get(i, []))
+        if i in losses:
+            recs.append((C_LOSS, losses[i], 0, 0, 0, 0))
         recs.append((C_SYM, x[2 * i], x[2 * i + 1], 0, 0, 0))
     recs.extend(inject.get(n, []))
     b = ChainBench()
@@ -814,4 +835,166 @@ def run_chain(doc, taps, backend, symbols=None):
             bad.append(f"{k_} {v}")
     what = (f"{n} symbols in, {len(got)} Slots words out ({len(frames)} frames, {diag}); "
             f"{cyc} cycles in {dt:.1f} s")
+    return what, bad
+
+
+# --- the whole chain with the real decoder ---------------------------------------
+
+
+
+class RealChainBench(Elaboratable):
+    """`SlotsChain` with the real decoder: `LdpcBridge` and `ldpc.LdpcDecoder`
+    (S = 34, K = 3, every rate; the `ldpc` domain, 5x the symbol clock in
+    the simulation), MAX_ITER 16. Records: C_SYM (x0, x1), C_TAP / C_TAPNOW
+    (the host's taps at open), C_LOSS (a symbols lost before the next)."""
+
+    def __init__(self, units=34, banks=3):
+        from amaranth.hdl import DomainRenamer
+
+        from ..ldpc import LdpcDecoder
+        from .ldpc_if import LdpcBridge
+        from .top import SlotsChain
+
+        self.ch = SlotsChain(max_iter=16)
+        self.br = LdpcBridge(self.ch.port)
+        self.dec = LdpcDecoder(units, banks=banks)
+        self.dec_r = DomainRenamer("ldpc")(self.dec)
+        self.i_valid = Signal()
+        self.i_ready = Signal()
+        self.kind = Signal(3)
+        self.a = Signal(signed(33))
+        self.b = Signal(signed(33))
+        self.c = Signal(signed(32))
+
+    def elaborate(self, platform):
+        m = Module()
+        m.submodules.ch = ch = self.ch
+        m.submodules.br = br = self.br
+        m.submodules.dec = self.dec_r
+        from .ldpc_if import connect_decoder
+
+        connect_decoder(m, br, self.dec)
+        eq = ch.back.eq
+        k = self.kind
+        go = self.i_valid & self.i_ready
+        m.d.comb += [
+            self.i_ready.eq(Mux((k == C_SYM) | (k == C_LOSS), ch.i_ready, 1)),
+            ch.i_valid.eq(self.i_valid & ((k == C_SYM) | (k == C_LOSS))),
+            ch.i_loss.eq(k == C_LOSS), ch.i_lost.eq(self.a),
+            ch.i_x[0].eq(self.a), ch.i_x[1].eq(self.b),
+            eq.tap_we.eq(go & (k == C_TAP)), eq.tap_idx.eq(self.a), eq.tap_val[0].eq(self.b),
+            eq.tap_val[1].eq(self.c), eq.tap_now.eq(go & (k == C_TAPNOW)),
+            ch.r_overrun.eq(br.out_overrun),
+        ]
+        return m
+
+    def ports(self):
+        ch = self.ch
+        return {"i_valid": self.i_valid, "i_ready": self.i_ready, "kind": self.kind, "a": self.a,
+                "b": self.b, "c": self.c,
+                "ov": ch.o_valid, "ow": ch.o_word, "tdone": ch.tmcc_done,
+                "frames_done": ch.finish.counters["frames"], "port_lost": ch.back.port_lost,
+                "late": ch.back.demap.late, "overrun": ch.back.tmcc.overrun,
+                "in_lost": self.br.in_lost, "dec_overruns": self.dec.overruns,
+                "queue_overflow": self.dec.queue_overflow}
+
+
+def blocks_by_frame(words):
+    """{(frame, kind, slot): payload} of a `Slots` stream (slot: the slot
+    index for a slot block, else 0), and the stream's block order as
+    [(frame, kind, slot)]: the comparison tolerant of the decoder's result
+    order (a frame's TMCC and status blocks may follow the next frame's
+    first slot blocks: the host re-associates them by frame counter)."""
+    from . import slots as S
+
+    out, order = {}, []
+    for kind, _seq, frame, pay in S.blocks(words):
+        key = (frame, kind, pay[0] & 0x7F if kind == S.SLOT else 0)
+        assert key not in out, f"block {key} twice"
+        out[key] = pay
+        order.append(key)
+    return out, order
+
+
+def lateness(order):
+    """The largest number of the next frame's slot blocks that precede a
+    frame's TMCC block (0 in the model's order)."""
+    from . import slots as S
+
+    worst = 0
+    for i, (frame, kind, _s) in enumerate(order):
+        if kind == S.TMCC:
+            before = sum(1 for f, k, _ in order[:i] if k == S.SLOT and f > frame)
+            worst = max(worst, before)
+    return worst
+
+
+def run_chain_real(doc, taps, backend="cxxrtl", symbols=None):
+    """The whole chain with the real decoder on a whole-chain set written
+    with the decoder's settings (chain-7-hdl, chain-8-loss, chain-9-fade):
+    every block of the model's stream, compared per (frame, kind, slot)."""
+    x = doc["input"]
+    n = len(x) // 2 if symbols is None else min(symbols, len(x) // 2)
+    losses = {at: k for at, k in doc.get("losses", [])}
+    recs = []
+    if taps is not None:
+        recs = [(C_TAP, i, taps[2 * i], taps[2 * i + 1]) for i in range(11)] + [(C_TAPNOW, 0, 0, 0)]
+    # the front end's rate: 33.756 Msymbol/s in the 40 MHz clock (an idle
+    # cycle after about every 5.4 symbols), so the TMCC burst gets the
+    # free port cycles it has on the board
+    gaps = [0] * len(recs)
+    acc = 0.0
+    for i in range(n):
+        if i in losses:
+            recs.append((C_LOSS, losses[i], 0, 0))
+            gaps.append(0)
+        recs.append((C_SYM, x[2 * i], x[2 * i + 1], 0))
+        acc += 40e6 / 33.7561e6 - 1
+        gaps.append(int(acc))
+        acc -= int(acc)
+    b = RealChainBench()
+    p = b.ports()
+    t0 = time.time()
+    e = engine(b, p, backend, tag="chainreal")
+    t_build = time.time() - t0
+    e.stall_limit = 3_000_000
+    g = e.group("ov", ["ow"])
+    t0 = time.time()
+    stuck = None
+    try:
+        e.run("i_valid", "i_ready", ["kind", "a", "b", "c"], recs, tail=1_500_000, gaps=gaps)
+    except RuntimeError as err:
+        stuck = str(err)
+    got = [w for (w,) in e.read(g)]
+    diag = {k: e.get(k) for k in ("tdone", "port_lost", "late", "overrun", "frames_done", "in_lost",
+                                  "dec_overruns", "queue_overflow")}
+    cyc = e.cycles()
+    dt = time.time() - t0
+    bad = [stuck] if stuck else []
+    try:
+        gb, gorder = blocks_by_frame(got)
+    except AssertionError as err:
+        return "", bad + [f"the output does not parse as Slots blocks: {err}"]
+    eb, _ = blocks_by_frame(doc["slots_words"])
+    if symbols is not None:
+        # a prefix: the frames it completes
+        done = {k[0] for k in gb}
+        eb = {k: v for k, v in eb.items() if k[0] in done}
+    for k_ in sorted(set(eb) | set(gb)):
+        if k_ not in gb:
+            bad.append(f"block {k_} missing")
+        elif k_ not in eb:
+            bad.append(f"block {k_} not in the model's stream")
+        elif gb[k_] != eb[k_]:
+            w = next(i for i, (u, v) in enumerate(zip(gb[k_], eb[k_])) if u != v) \
+                if len(gb[k_]) == len(eb[k_]) else None
+            bad.append(f"block {k_}: payload word {w} differs" if w is not None
+                       else f"block {k_}: {len(gb[k_])} words, {len(eb[k_])} expected")
+        if len(bad) > 12:
+            break
+    for k_ in ("port_lost", "late", "overrun", "in_lost", "dec_overruns", "queue_overflow"):
+        if diag[k_]:
+            bad.append(f"{k_} {diag[k_]}")
+    what = (f"{n} symbols in, {len(got)} Slots words, {len(gb)} blocks ({diag}); lateness "
+            f"{lateness(gorder)} slot blocks; build {t_build:.0f} s, {cyc} cycles in {dt:.1f} s")
     return what, bad
