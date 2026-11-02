@@ -236,6 +236,69 @@ class ChainTest(unittest.TestCase):
         self.run_chain(None)
 
 
+class BpskCodewordTest(unittest.TestCase):
+    """A pi/2-BPSK codeword is 44 880 main symbols (5 slots' worth), more
+    than 15 bits hold: the demapper's codeword cursor, on a pi/2-BPSK
+    layout (61/120: slot 0 of each unit valid, slots 1-4 dummy), gives
+    slot 0's codeword exactly 44 880 beats (first on the first, last on the
+    44 880th, position = symbol index) before slot 5's starts. A directed
+    test of the cursor (the synthetic generator `isdbs3_phy::chain::synth`
+    makes 16APSK 93/120 frames only)."""
+
+    def test_cursor(self):
+        from amaranth.hdl import Elaboratable, Module, Signal, signed
+        from amaranth.lib.memory import Memory
+
+        from isdb_fpga.chain.demap import Demap
+        from isdb_fpga.chain.frame import LAY_BITS, lay_pack
+
+        N = 44880
+
+        class Bench(Elaboratable):
+            def __init__(self):
+                self.dm = Demap()
+                self.i_valid = Signal()
+                self.i_ready = Signal()
+                self.kind = Signal()
+                self.a = Signal(signed(16))
+
+            def elaborate(self, platform):
+                m = Module()
+                m.submodules.dm = dm = self.dm
+                lay = [lay_pack(0, 1, 3, int(k % 5 != 0), (k // 5) * N, 0 if k % 5 else N) for k in range(120)]
+                mem = Memory(shape=LAY_BITS, depth=128, init=lay + [0] * 8)
+                m.submodules.lay = mem
+                rp = mem.read_port()
+                go = self.i_valid & self.i_ready
+                m.d.comb += [
+                    self.i_ready.eq(1), rp.addr.eq(dm.lay_addr), dm.lay_data.eq(rp.data),
+                    dm.f_start.eq(go & (self.kind == 0)), dm.frame.eq(7),
+                    dm.valid.eq(go & (self.kind == 1)), dm.is_main.eq(1), dm.z[0].eq(self.a),
+                    dm.z[1].eq(-self.a), dm.slot_mod.eq(1),
+                ]
+                return m
+
+        b = Bench()
+        dm = b.dm
+        ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a,
+                 "ov": dm.o_valid, "on": dm.o_n, "of": dm.o_first, "ol": dm.o_last, "otag": dm.o_tag,
+                 "op": dm.o_pos[0]}
+        backend = "cxxrtl" if simx.available() else "pysim"
+        e = simx.engine(b, ports, backend, tag="bpsk")
+        g = e.group("ov", ["on", "of", "ol", "otag", "op"])
+        recs = [(0, 0)] + [(1, (s * 37) % 900 - 450) for s in range(N + 100)]
+        gaps = [100] + [0] * (N + 100)
+        e.run("i_valid", "i_ready", ["kind", "a"], recs, tail=50, gaps=gaps)
+        beats = e.read(g)
+        first = [x for x in beats if x[3] & 0x7F == 0]
+        self.assertEqual(len(first), N)
+        self.assertEqual([i for i, x in enumerate(first) if x[1]], [0])
+        self.assertEqual([i for i, x in enumerate(first) if x[2]], [N - 1])
+        self.assertTrue(all(x[0] == 1 and x[4] == i for i, x in enumerate(first)))
+        nxt = beats[N:]
+        self.assertTrue(nxt and nxt[0][3] & 0x7F == 5 and nxt[0][1], nxt[:1])
+
+
 class SlotsRxRegisterTest(unittest.TestCase):
     """`SlotsRx`'s register file through `gpio_out` (the command protocol of
     control.py): the ID word with ID_CHAIN; a front-end register written and
