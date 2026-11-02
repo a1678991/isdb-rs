@@ -315,42 +315,42 @@ fit (2026-11-02) against the fit's targets:
 
 | Block | LUT before → after | FF before → after | BRAM36 before → after | DSP48E1 before → after | Target LUT / BRAM36 / DSP |
 |---|---|---|---|---|---|
-| `SyncFront` (NCO, slot sync, carrier loop) | 4 194 → **3 784** | 4 627 → 4 086 | 5.5 → **5.5** | 7 → **4** | 3 500 / 5.5 / 6 |
+| `SyncFront` (NCO, slot sync, carrier loop) | 4 194 → **3 783** | 4 627 → 4 086 | 5.5 → **5.5** | 7 → **4** | 3 500 / 5.5 / 6 |
 | `SlotPhase` | 1 122 → **1 540** | 2 116 → 2 857 | 8 → **4** | 8 → **12** | — / 4 / — |
 | `Equaliser` + `FrameCtl` (own nominal ROM) | 2 682 → **2 322** | 4 546 → 4 015 | 7.5 → **3** | 50 → **15** | 2 500 / 3 / 18 |
 | `TmccSoft` | 134 → **183** | 65 → 63 | 8 → **8** | 0 → 0 | — |
-| `Demap` (own nominal ROM) | 14 348 → **5 047** | 11 420 → 4 724 | 7 → **2.5** | 95 → **21** | 4 500 / 3 / 22 |
-| `Finish` (`TmccResult`, BCH, PRBS, packer, status) | 7 301 → **7 022** | 3 339 → 3 494 | 2 → **2** | 0 → 0 | 3 500 / — / 0 |
-| **sum of the rows** | 29 781 → **19 898** | 26 113 → 19 239 | 38 → **25** | 160 → **52** | 16 000 / 26 / 60 |
-| `Back` (eq, FrameCtl, TMCC soft bits, demapper, one shared nominal ROM) | | 8 485 | 13.5 | 36 | |
-| chain = `SyncFront` + `SlotPhase` + `Back` + `Finish` | **20 410** | 18 922 | **25** | **52** | 16 000 / 26 / 60 |
+| `Demap` (own nominal ROM) | 14 348 → **4 919** | 11 420 → 4 621 | 7 → **2.5** | 95 → **21** | 4 500 / 3 / 22 |
+| `Finish` (`TmccResult`, BCH, PRBS, packer, status) | 7 301 → **6 624** | 3 339 → 2 876 | 2 → **2** | 0 → 0 | 3 500 / — / 0 |
+| **sum of the rows** | 29 781 → **19 371** | 26 113 → 18 518 | 38 → **25** | 160 → **52** | 16 000 / 26 / 60 |
+| `Back` (eq, FrameCtl, TMCC soft bits, demapper, one shared nominal ROM) | 7 967 | 8 382 | 13.5 | 36 | |
+| chain = `SyncFront` + `SlotPhase` + `Back` + `Finish` | **19 914** | 18 201 | **25** | **52** | 16 000 / 26 / 60 |
 | + bridge (LUT RAM FIFOs) and the 1 024-symbol input FIFO | 713 | 733 | 0.5 | 0 | |
-| `SlotsRx` without the decoder (front end, control, chain, bridge, registers; one run) | **27 953** | 26 941 | **26** | **164** | |
+| `SlotsRx` without the decoder (front end, control, chain, bridge, registers; one run) | **27 473** | 26 220 | **26** | **164** | |
 | of which the front end (`SymbolsRx`, its own run) | 5 879 | 5 426 | 0.5 | 112 | |
 
 (The before figures counted logic LUTs only; the LUT RAM then was 11
 cells in the equaliser and 6 in `Finish`. `chain_estimate.py back`,
 `bridge` and `rx` are run by name; `SlotsRx` with the decoder in one run
 is too large for the 4 GB WebAssembly Yosys, so the decoder is its own
-run: 14 034 LUT, 76.5 BRAM36, 0 DSP at S = 34, K = 3.)
+run: 14 043 LUT, 76.5 BRAM36, 0 DSP at S = 34, K = 3.)
 
 **Against the device** (xc7z020: 53 200 LUT, 140 BRAM36, 220 DSP48E1),
 the receive-only image: the fixed part (`axi_ad9361`, the front end as
 Vivado placed it, DMAs and clocking: ≈ 17 700 LUT, 33 BRAM36, 140 DSP) +
-the decoder (14 034 / 76.5 / 0) + the chain and its glue (`SlotsRx` less
-the front end: 22 074 / 25.5 / 52) = **53 808 LUT (101 %), 135 BRAM36
+the decoder (14 043 / 76.5 / 0) + the chain and its glue (`SlotsRx` less
+the front end: 21 594 / 25.5 / 52) = **53 337 LUT (100.3 %), 135 BRAM36
 (96 %), 192 DSP48E1 (87 %)**. DSP and block RAM fit; the LUTs do not
 (Yosys figures; Vivado was within 1 % of Yosys on the front end, 5 824
 against 5 879). The image needs about 6 000 LUT less (10 % headroom for
 placement and routing) before it can be built: what did not reach its
-target is the finish stage (7 022 against 3 500: the BCH unit's
-Berlekamp–Massey registers and index muxes, about 2 400 LUT beyond its
-syndrome networks (677), Chien (216) and multiplier (185), `synth/
-bch_parts.py`; the status block's word mux, 600; the packer, 570; the
-layout, 590), the demapper (5 047 against 4 500: 25 compare-selects of
-32-bit metrics, the eight 56-bit LUT RAM lanes, 384, the two 3-bit-per-
-clock dividers for n0 and K, about 400) and stage 1 (3 784 against
-3 500). Stage 3 grew (the NCO re-applied after the ring: its table and
+target is the finish stage (6 624 against 3 500: the BCH unit, about
+3 000 with its syndrome networks (677), Chien (216), multiplier (185),
+the syndrome and Chien registers and the roots, `synth/bch_parts.py`; the
+status block's word mux, 600; the packer, 570; the layout, 590; two
+`Realign`s and two PRBS, 800), the demapper (4 919 against 4 500: 25
+compare-selects of 32-bit metrics, the eight 56-bit LUT RAM lanes, 384,
+the 3-bit-per-clock divider for n0 and K, about 250) and stage 1
+(3 783 against 3 500). Stage 3 grew (the NCO re-applied after the ring: its table and
 four products) to bring its block RAM to 4.
 
 How each block got there (each a commit): the demapper's metrics in the
@@ -366,7 +366,8 @@ nominal ROM (23 distinct sets, 510 × 24 bits) for both; stage 3's ring of
 the NCO input (three symbols per 36-bit word); stage 1's FSync and SSync
 trees shared (C = P ± Q) and its lock rule's products as shifts; the BCH
 roots flipped in the buffers rather than a per-beat mask; one `Realign`
-for the slot and TMCC BCH words.
+for the slot and TMCC BCH words; the BCH locator in three LUT RAM banks
+whose roles rotate (no copy); one divider for n0 and K.
 
 **Integration** (fit, 2026-11-02):
 
