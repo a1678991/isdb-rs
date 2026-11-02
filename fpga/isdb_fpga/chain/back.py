@@ -24,6 +24,7 @@ from .demap import Demap
 from .eq import Equaliser
 from .frame import FrameCtl
 from .ldpc_if import OP_WRITE, LdpcPort
+from .nominal import NominalRom
 from .tmcc import TmccSoft
 
 AUX = [("active", 1), ("lay", 1), ("main", 1), ("pilot", 1), ("tmcc", 1), ("t", 5), ("ti", 15),
@@ -42,10 +43,13 @@ def aux_field(sig, name):
 
 class Back(Elaboratable):
     def __init__(self, max_iter=50, offset=1):
-        self.eq = Equaliser(aux=AUX_BITS)
+        # one nominal-point ROM for the equaliser's references and the
+        # demapper's points (two read ports of one RAMB18)
+        self.nom = NominalRom(2)
+        self.eq = Equaliser(aux=AUX_BITS, nominal=self.nom.ports[0])
         self.fc = FrameCtl()
         self.tmcc = TmccSoft(max_iter, offset)
-        self.demap = Demap()
+        self.demap = Demap(nominal=self.nom.ports[1])
         self.port = LdpcPort()
         # the decoder's per-codeword settings (registers: SlotsRx MAX_ITER)
         self.max_iter = Signal(8, init=max_iter)
@@ -55,6 +59,7 @@ class Back(Elaboratable):
 
     def elaborate(self, platform):
         m = Module()
+        m.submodules.nom = self.nom
         m.submodules.eq = eq = self.eq
         m.submodules.fc = fc = self.fc
         m.submodules.tmcc = tm = self.tmcc

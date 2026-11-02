@@ -57,9 +57,10 @@ active, a layout in force, sync or pilot), `t_pilot`, `t_t`, `t_mod`,
 from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal, signed
 from amaranth.lib.memory import Memory
 
-from .common import FSYNC, NO_DSP, PILOTS, SLOTS, SSYNC, SYNC, SYNC_REF, TAP_FRAC, TAPS, W_NFSYNC, W_SSYNC
+from .common import FSYNC, NO_DSP, Phase4, PILOTS, SLOTS, SSYNC, SYNC, SYNC_REF, TAP_FRAC, TAPS, W_NFSYNC, W_SSYNC
 from .common import round_shift, sat16, word_symbols
-from .tables import MOD_BITS, nominal_rom, pilot_signs
+from .nominal import NominalRom
+from .tables import MOD_BITS, pilot_sign_rom
 
 CENTRE = TAPS // 2
 R_ENTRIES = TAPS * (TAPS + 1) // 2
@@ -77,11 +78,14 @@ def entries():
 
 
 class Equaliser(Elaboratable):
-    def __init__(self, aux=0):
+    def __init__(self, aux=0, nominal=None):
         """`aux`: bits of a record the caller attaches to the centre symbol
         (`c_aux`, at the centre cycle) and gets back with its output
-        (`o_aux`): the back end's routing of the symbol."""
+        (`o_aux`): the back end's routing of the symbol. `nominal`: a
+        `NominalPort` of a shared `NominalRom` (back.py), or None for one of
+        its own."""
         self.aux = aux
+        self.nominal = nominal
         self.c_aux = Signal(max(aux, 1))
         self.i_valid = Signal()
         self.i_y = [Signal(signed(16), name=f"i_y{k}") for k in range(2)]
@@ -180,52 +184,66 @@ class Equaliser(Elaboratable):
             m.d.sync += [self.taps_from.eq(pend_from), pend_valid.eq(0)]
         w = [[Mux(switch, pend[k][c], self.taps[k][c]) for c in range(2)] for k in range(TAPS)]
 
-        # ---- FIR -------------------------------------------------------------
-        prods = {"re": [], "im": []}
+        # ---- FIR (4x clock) ------------------------------------------------------
+        # In the centre cycle C the line and the chosen taps are stable; the
+        # fast domain's phase p computes product kind p of all 11 taps on 11
+        # multipliers (0: w_r x_r, 1: w_i x_i, 2: w_r x_i, 3: w_i x_r), an
+        # 11-leaf tree (4 levels) sums each kind, re = S0 - S1 and im = S2 + S3
+        # land in fast registers by phase 0 of C+2, and the symbol clock takes
+        # them at C+2 and delays them to the 44-product design's schedule
+        # (o_* at C+7). Exact integer sums in any order: the same z.
+        m.submodules.ph = ph4 = Phase4()
+        ph = ph4.phase
+        fast = m.d.fast
+        kind_i = ph[0]  # w_i (kinds 1, 3)
+        kind_x = ph[0] ^ ph[1]  # x_i (kinds 1, 2)
+        lv = []
         for k in range(TAPS):
-            wr, wi = w[k]
-            xr, xi = line[k]
-            for name, v in (("rr", wr * xr), ("ii", wi * xi), ("ri", wr * xi), ("ir", wi * xr)):
-                s = Signal(signed(32), name=f"p{name}{k}")
-                m.d.sync += s.eq(v)
-                if name == "rr":
-                    prods["re"].append((1, s))
-                elif name == "ii":
-                    prods["re"].append((-1, s))
+            a = Mux(kind_i, w[k][1], w[k][0])
+            b = Mux(kind_x, line[k][1], line[k][0])
+            s = Signal(signed(32), name=f"fp{k}")
+            fast += s.eq(a * b)
+            lv.append(s)
+        fk = Signal(2)
+        fast += fk.eq(ph)
+        kinds = [fk]
+        cur = lv
+        lvl = 0
+        while len(cur) > 1:
+            nxt = []
+            for i in range(0, len(cur), 2):
+                if i + 1 == len(cur):
+                    r = Signal(signed(len(cur[i])), name=f"ft_l{lvl}_{i // 2}")
+                    fast += r.eq(cur[i])
                 else:
-                    prods["im"].append((1, s))
-
-        def tree(lv, name):
-            cur = list(lv)
-            lvl = 0
-            while len(cur) > 1:
-                nxt = []
-                for i in range(0, len(cur), 2):
-                    if i + 1 == len(cur):
-                        s, v = cur[i]
-                        r = Signal(signed(len(v)), name=f"{name}_l{lvl}_{i // 2}")
-                        m.d.sync += r.eq(v)
-                        nxt.append((s, r))
-                        continue
-                    (sa, va), (sb, vb) = cur[i], cur[i + 1]
-                    r = Signal(signed(max(len(va), len(vb)) + 1), name=f"{name}_l{lvl}_{i // 2}",
+                    r = Signal(signed(max(len(cur[i]), len(cur[i + 1])) + 1), name=f"ft_l{lvl}_{i // 2}",
                                attrs=NO_DSP)
-                    if sa == sb:
-                        m.d.sync += r.eq(va + vb)
-                        nxt.append((sa, r))
-                    elif sa > 0:
-                        m.d.sync += r.eq(va - vb)
-                        nxt.append((1, r))
-                    else:
-                        m.d.sync += r.eq(vb - va)
-                        nxt.append((1, r))
-                cur = nxt
-                lvl += 1
-            s, v = cur[0]
-            return (v if s > 0 else -v), lvl
-
-        sre, depth = tree(prods["re"], "fre")
-        sim_, _ = tree(prods["im"], "fim")
+                    fast += r.eq(cur[i] + cur[i + 1])
+                nxt.append(r)
+            kk_ = Signal(2, name=f"ft_kind{lvl}")
+            fast += kk_.eq(kinds[-1])
+            kinds.append(kk_)
+            cur = nxt
+            lvl += 1
+        ssum, skind = cur[0], kinds[-1]
+        held = [Signal(signed(len(ssum)), name=f"fs{p}") for p in range(3)]
+        for p in range(3):
+            with m.If(skind == p):
+                fast += held[p].eq(ssum)
+        f_re = Signal(signed(len(ssum) + 1))
+        f_im = Signal(signed(len(ssum) + 1))
+        with m.If(skind == 3):
+            fast += [f_re.eq(held[0] - held[1]), f_im.eq(held[2] + ssum)]
+        # the symbol clock: f_re / f_im settle in phase 0 of C+2, taken at its
+        # end, then delayed to C+6
+        zd = [(f_re, f_im)]
+        for d in range(3, 7):
+            r = Signal(signed(len(f_re)), name=f"zre{d}")
+            i_ = Signal(signed(len(f_im)), name=f"zim{d}")
+            m.d.sync += [r.eq(zd[-1][0]), i_.eq(zd[-1][1])]
+            zd.append((r, i_))
+        sre, sim_ = zd[-1]
+        depth = 5
         vpipe = Signal(depth + 1)
         mpipe = [Signal(META_BITS + self.aux, name=f"mpipe{k}") for k in range(depth + 1)]
         m.d.sync += vpipe.eq(Cat(cv, vpipe[:-1]))
@@ -242,7 +260,7 @@ class Equaliser(Elaboratable):
             m.d.sync += [vpipe.eq(0), self.o_valid.eq(0)]
 
         # ---- training capture -------------------------------------------------
-        buf = Memory(shape=32, depth=BUF, init=[])
+        buf = Memory(shape=32, depth=BUF, init=[], attrs={"ram_style": "distributed"})
         m.submodules.buf = buf
         bw = buf.write_port()
         cj = mf(self.c_meta, "j")
@@ -271,20 +289,20 @@ class Equaliser(Elaboratable):
         # references, a cycle after the centre (the ROMs are RAMs)
         fs = word_symbols(FSYNC)
         ss = word_symbols(SSYNC)
-        rom = nominal_rom()
-        rom = rom + [(0, 0)] * (4096 - len(rom))  # the whole address range (mod code 0..7)
-        nrom = Memory(shape=32, depth=len(rom), init=[(re & 0xFFFF) | (im & 0xFFFF) << 16 for re, im in rom])
-        m.submodules.nominal = nrom
-        nrp = nrom.read_port()
-        signs = [1 if s < 0 else 0 for s in pilot_signs()]
-        srom = Memory(shape=1, depth=4096, init=signs + [0] * (4096 - len(signs)))
+        if self.nominal is None:
+            m.submodules.nominal = nrom = NominalRom(1)
+            nrp = nrom.ports[0]
+        else:
+            nrp = self.nominal
+        # the pilot signs: a LUT ROM, registered (a cycle, as the nominal port)
+        srom = Memory(shape=1, depth=4096, init=pilot_sign_rom())
         m.submodules.signs = srom
-        srp = srom.read_port()
+        srp = srom.read_port(domain="comb")
         tt = self.t_t
         bits = Array(Const(MOD_BITS.get(i, 1), 3) for i in range(8))[self.t_mod[:3]]
         label = tt & ((Const(1, 6) << bits) - 1)[:5]
         m.d.comb += [
-            nrp.addr.eq(Cat(label, (self.t_rate - 1)[:4], (self.t_mod - 1)[:3])),
+            nrp.mod.eq(self.t_mod), nrp.rate.eq(self.t_rate), nrp.label.eq(label),
             srp.addr.eq(ck * PILOTS + tt),
         ]
         en_d = Signal()
@@ -306,15 +324,17 @@ class Equaliser(Elaboratable):
             pil_d.eq(self.t_pilot),
             idx_d.eq(Mux(cj < TRAIN, cj, 0)),
             at_d.eq(mf(self.c_meta, "at")),
-            sref[0].eq(Mux(neg, -wr_, wr_) * SYNC_REF),
-            sref[1].eq(Mux(neg, -wi_, wi_) * SYNC_REF),
+            # +-w * 724 (w = +-1): a choice of two constants
+            sref[0].eq(Mux((wr_ < 0) ^ neg, -SYNC_REF, SYNC_REF)),
+            sref[1].eq(Mux((wi_ < 0) ^ neg, -SYNC_REF, SYNC_REF)),
         ]
+        neg_p = Signal()
+        m.d.sync += neg_p.eq(srp.data[0])
         ten = Signal(TRAIN)
         ten_d = Signal()
         m.d.sync += ten_d.eq(self.t_en & self.c_full)
-        nre = nrp.data[:16].as_signed()
-        nim = nrp.data[16:].as_signed()
-        neg_p = srp.data[0]
+        nre = nrp.re
+        nim = nrp.im
         d_re = Mux(pil_d, Mux(neg_p, -nre, nre), sref[0])
         d_im = Mux(pil_d, Mux(neg_p, -nim, nim), sref[1])
         dbuf = Memory(shape=32, depth=TRAIN, init=[])
