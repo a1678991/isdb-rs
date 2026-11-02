@@ -148,6 +148,7 @@ def main(argv):
     backend = argv[argv.index("--backend") + 1] if "--backend" in argv else None
     symbols = int(argv[argv.index("--symbols") + 1]) if "--symbols" in argv else None
     doc = load(path)
+    doc["_path"] = path
     st = stage_of(path)
     bad = check_constants(doc)
     if st == "1-sync":

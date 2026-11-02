@@ -120,5 +120,35 @@ class PhaseTest(unittest.TestCase):
         self.run_stage("cxxrtl")
 
 
+@needs("3-eq")
+@needs("4-tmcc")
+class EqTest(unittest.TestCase):
+    """Stage 4 (`Equaliser` with `FrameCtl`) on chain-3-eq's frame (non-
+    identity taps written at open): z of every symbol, the 6 720 training
+    references, the 77 latched 48-bit sums (308 words through the readback
+    port), their count and frame. The Python simulator runs a prefix of
+    two slots (z and the references of slots 0 and 1, both slots' MACs);
+    the sums need the whole frame."""
+
+    PREFIX = 2 * 9296
+
+    def run_stage(self, backend, symbols):
+        from isdb_fpga.chain.stages import run_eq
+
+        what, bad = run_eq(doc("3-eq"), doc("4-tmcc")["layout"], backend, symbols)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
+    def test_prefix_pysim(self):
+        self.run_stage("pysim", self.PREFIX)
+
+    @cxx
+    def test_whole_frame_cxxrtl(self):
+        self.run_stage("cxxrtl", None)
+
+    @unittest.skipUnless(FULL, "FPGA_CHAIN_FULL=1")
+    def test_whole_frame_pysim(self):
+        self.run_stage("pysim", None)
+
+
 if __name__ == "__main__":
     unittest.main()
