@@ -337,16 +337,21 @@ decoder: ≤ 14 000 LUT, ≤ 50 BRAM36, 0 DSP.**
 | sync, carrier loop, slot phase | 3 000 | 9 | 8 |
 | equaliser FIR + training sums | 2 500 | 1 | 44 (22 at 2×) |
 | TMCC soft bits, demapper, de-interleave, constellation and noise accumulators | 3 500 | 2 | 16–64 |
-| LDPC decoder | 14 000 | 50 | 0 |
+| LDPC decoder (budget; **measured 2026-11-02: 14 034 LUT, 76.5 BRAM36 at S = 34, K = 3, all rates**, `fpga/README.md`) | 14 000 | 50 → 77 | 0 |
+| TMCC staging buffer (31 680 × 8, in the TMCC stage, so the decoder keeps its 3 banks for slots) | — | 7 | — |
 | dispersal, BCH, packer, registers | 3 000 | 4 | 0 |
-| **total** | **26 000** | **66** | **68–116** |
+| **total** | **26 000** | **66 → 100** | **68–116** |
 
 Against 29.6k LUT / 72 BRAM36 / 62 DSP free in the deployed image, or
-35.5k / 107 / 80 in a receive-only image. The DSP budget forces either
-the receive-only image (no `SymbolsTx`, no `maia_sdr`) with the
-demapper at a 2× or 4× clock, or moving the front end's `k` products
-to the fabric. The decision is taken on the Yosys estimates of the
-stages, not now. Timing: the PlutoSky R2 image has +0.100 ns on the
+35.5k / 107 / 80 in a receive-only image. **Decision (2026-11-02): the
+chain goes into a receive-only image** (no `SymbolsTx`, no `maia_sdr`;
+the stock image stays on the card for them): the decoder's three
+codeword banks (17 BRAM36 each; two banks cap the usable iteration
+limit at 8, which fails 1 338 of 18 336 near-threshold codewords where
+16 fails 3) and the TMCC staging take the BRAM to about 100 of 107, and
+the DSP budget wants the same image anyway, with the demapper at a 2×
+or 4× clock, or the front end's `k` products moved to the fabric. The
+remaining stage estimates (piece 4) decide the DSP side. Timing: the PlutoSky R2 image has +0.100 ns on the
 RGMII input whatever we add; the blocks' own clocks had > 0.8 ns.
 
 ### Host side
