@@ -77,7 +77,7 @@ class TmccSoft(Elaboratable):
         self.b_op = Signal(2)
         self.b_pos = Signal(16)
         self.b_llr = Signal(signed(8))
-        self.b_tag = Signal(32)
+        self.b_tag = Signal(64)
         self.grant = Signal()  # the beat is taken this cycle
         self.overrun = Signal(16)
         self.busy = Signal()
@@ -101,12 +101,12 @@ class TmccSoft(Elaboratable):
         m.d.sync += [self.s_valid.eq(self.t_valid), self.s_idx.eq(self.t_idx), self.s_soft.eq(soft)]
 
         r = Signal(15)
-        fr = Signal(8)
+        fr = Signal(32)
         take = self.grant
         with m.FSM(name="burst") as fsm:
             with m.State("IDLE"):
                 with m.If(self.frame_done):
-                    m.d.sync += [fr.eq(self.frame[:8]), r.eq(0), self.busy.eq(1)]
+                    m.d.sync += [fr.eq(self.frame), r.eq(0), self.busy.eq(1)]
                     m.next = "BEGIN"
             with m.State("BEGIN"):
                 m.d.comb += [self.b_valid.eq(1), self.b_op.eq(OP_BEGIN)]
@@ -128,7 +128,7 @@ class TmccSoft(Elaboratable):
                     m.d.sync += self.busy.eq(0)
                     m.next = "IDLE"
         m.d.comb += [
-            self.b_tag.eq(TAG_TMCC | (fr << 8) | (TMCC_RATE_CODE << 16)),
+            self.b_tag.eq(Cat(Const(TAG_TMCC | TMCC_RATE_CODE << 8, 32), fr)),
             rp.addr.eq(Mux(fsm.ongoing("WRITE"), Mux(take & (r != TMCC_BITS - 1), r + 1, r), 0)),
             rp.en.eq(1),
         ]
@@ -375,6 +375,7 @@ class TmccResult(Elaboratable):
         self.o_bits = Signal(16)
         self.o_last = Signal()
         self.busy = Signal()
+        self.o_go = Signal(init=1)  # in: stream the information bits now
 
     def elaborate(self, platform):
         m = Module()
@@ -439,6 +440,10 @@ class TmccResult(Elaboratable):
                                  self.o_head.eq(1), self.o_frame.eq(fr), self.o_iter.eq(iters),
                                  self.o_conv.eq(conv), self.o_bch_ok.eq(bok & conv),
                                  self.o_bch.eq(bcor)]
+                    m.next = "HOLD"
+            with m.State("HOLD"):
+                # the consumer (the finish stage) sends the block's first words
+                with m.If(self.o_go):
                     m.next = "READ"
             with m.State("READ"):
                 m.d.comb += rp.addr.eq(rq)

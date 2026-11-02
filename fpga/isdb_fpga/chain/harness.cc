@@ -156,12 +156,21 @@ uint64_t h_cycles(void *p) {
 // Feed `n` records of `k` fields (row-major) through ports `fields`, with
 // `valid` high while a record is presented and `ready` (or -1: always)
 // accepting it at the edge; `gap[i]` idle cycles after record i (NULL:
-// none). Then `tail` cycles. Returns the cycles used.
+// none). Then `tail` cycles. Returns the cycles used. A record that waits
+// more than h_stall_limit cycles stops the run (h_stalled says at which).
+static int64_t stall_limit = 50000000;
+static int64_t stalled = -1;
+
+void h_stall_limit(int64_t n) { stall_limit = n; }
+int64_t h_stalled() { return stalled; }
+
 uint64_t h_run(void *p, int valid, int ready, const int *fields, int k, const int64_t *rec,
                int64_t n, const int32_t *gap, int64_t tail) {
 	Harness *s = (Harness *)p;
 	uint64_t start = s->cycles;
+	stalled = -1;
 	for (int64_t i = 0; i < n; i++) {
+		int64_t waited = 0;
 		for (int f = 0; f < k; f++)
 			put(s->ports[fields[f]].obj, s->ports[fields[f]].width, rec[i * k + f]);
 		put(s->ports[valid].obj, 1, 1);
@@ -177,6 +186,10 @@ uint64_t h_run(void *p, int valid, int ready, const int *fields, int k, const in
 			}
 			if (ok)
 				break;
+			if (++waited > stall_limit) {
+				stalled = i;
+				return s->cycles - start;
+			}
 		}
 		put(s->ports[valid].obj, 1, 0);
 		if (gap)

@@ -414,7 +414,7 @@ def run_tmcc(doc, backend, flips=()):
     got_b = [(x[0],) if x[0] != OP_WRITE else (x[0], x[1], x[2]) for x in burst]
     bad += first_mismatch("burst", got_b, exp_b, key=lambda i, v: f"beat {i}")
     tags = {x[3] for x in burst}
-    if tags != {TAG_TMCC | (F & 0xFF) << 8 | 3 << 16}:
+    if tags != {TAG_TMCC | 3 << 8 | F << 32}:
         bad.append(f"burst tags {tags}")
     bits = doc["bits"]
     exp_o = [(sum(bits[16 * q + b] << b for b in range(16) if 16 * q + b < len(bits)),
@@ -552,7 +552,7 @@ def run_back(eqdoc, demapdoc, tmccdoc, backend, symbols=None):
             bad.append(f"slot {s[0]}: {len(got)} beats (expected {s[6]}) or first/last flags wrong")
             break
         tag = got[0][3]
-        if (tag >> 8 & 0xFF, tag >> 16 & 0xF, tag >> 20 & 0xF, tag >> 24 & 7) != (F & 0xFF, s[3], s[2], s[1]):
+        if (tag >> 32, tag >> 8 & 0xF, tag >> 12 & 0xF, tag >> 16 & 7) != (F, s[3], s[2], s[1]):
             bad.append(f"slot {s[0]}: tag {tag:#x}")
             break
     for sd in demapdoc["slots"]:
@@ -609,4 +609,162 @@ def run(stage, doc, backend, symbols):
     if stage == "5-demap":
         return run_back(load(path.replace("5-demap", "3-eq")), doc, load(path.replace("5-demap", "4-tmcc")),
                         backend, symbols)
+    if stage == "6-chain":
+        return run_chain(doc, load(path.replace("6-chain", "3-eq"))["taps"], backend, symbols)
     raise NotImplementedError(stage)
+
+
+# --- the whole chain (stages 1-6, 8, 9 with the LDPC stub) ----------------------
+
+C_SYM, C_TAP, C_TAPNOW, C_HEAD, C_WORD = range(5)
+
+
+class ChainBench(Elaboratable):
+    """`SlotsChain` with the LDPC stub as records: C_SYM (x0, x1), C_TAP
+    (tap a = (b, c)) and C_TAPNOW (the host's taps at open), C_HEAD (tag
+    low a, tag high b, iterations c, converged d) and C_WORD (bits a, last
+    b) of the stub's results; a result record waits until `d`/`c` ... its
+    frame's TMCC codeword has been committed on the port (`need` in e:
+    that many TMCC OP_DONEs), so the stub never answers a codeword before
+    the chain has sent it."""
+
+    def __init__(self):
+        from .top import SlotsChain
+
+        self.ch = SlotsChain()
+        self.i_valid = Signal()
+        self.i_ready = Signal()
+        self.kind = Signal(3)
+        self.a = Signal(signed(33))
+        self.b = Signal(signed(33))
+        self.c = Signal(signed(32))
+        self.d = Signal(signed(32))
+        self.e = Signal(16)
+
+    def elaborate(self, platform):
+        m = Module()
+        m.submodules.ch = ch = self.ch
+        eq = ch.back.eq
+        p = ch.port
+        k = self.kind
+        res = (k == C_HEAD) | (k == C_WORD)
+        gate = ch.tmcc_done >= self.e
+        m.d.comb += [
+            self.i_ready.eq(Mux(k == C_SYM, ch.i_ready, Mux(res, gate & p.out_ready, 1))),
+            ch.i_valid.eq(self.i_valid & (k == C_SYM)),
+            ch.i_x[0].eq(self.a), ch.i_x[1].eq(self.b),
+            eq.tap_we.eq(self.i_valid & (k == C_TAP)), eq.tap_idx.eq(self.a), eq.tap_val[0].eq(self.b),
+            eq.tap_val[1].eq(self.c), eq.tap_now.eq(self.i_valid & (k == C_TAPNOW)),
+            p.in_ready.eq(1),
+            p.out_valid.eq(self.i_valid & res & gate),
+            p.out_head.eq(k == C_HEAD),
+            p.out_tag.eq(Cat(self.a[:32], self.b[:32])),
+            p.out_iterations.eq(self.c), p.out_converged.eq(self.d[0]),
+            p.out_bits.eq(self.a), p.out_last.eq(self.b[0]),
+        ]
+        return m
+
+    def ports(self):
+        ch = self.ch
+        return {"i_valid": self.i_valid, "i_ready": self.i_ready, "kind": self.kind, "a": self.a,
+                "b": self.b, "c": self.c, "d": self.d, "e": self.e,
+                "ov": ch.o_valid, "ow": ch.o_word, "tdone": ch.tmcc_done,
+                "port_lost": ch.back.port_lost, "late": ch.back.demap.late,
+                "overrun": ch.back.tmcc.overrun}
+
+
+def stub_results(words):
+    """The LDPC stub's results per frame, from the expected `Slots` words:
+    {frame: [records]} in the frame order the model emits (its slots, then
+    its TMCC), with `need` (the TMCC commits that must have happened: the
+    frame's index + 1) filled in by the caller."""
+    from . import gf
+    from . import slots as S
+    from .tables import SLOT_INIT, prbs
+
+    out = {}
+    frames = []
+    for kind, _seq, frame, pay in S.blocks(words):
+        if frame not in out:
+            out[frame] = {"slots": [], "tmcc": None}
+            frames.append(frame)
+        if kind == S.SLOT:
+            f = S.slot_fields(pay)
+            if not f["dummy"]:
+                out[frame]["slots"].append(f)
+        elif kind == S.TMCC:
+            out[frame]["tmcc"] = pay
+    recs = {}
+    for frame in frames:
+        r = []
+        sl = out[frame]["slots"]
+        kbits = [374 * S.RATES[f["rate"] - 1] for f in sl]
+        pr = prbs(SLOT_INIT, 22, 25, sum(kbits))
+        o = 0
+        for f, kb in zip(sl, kbits):
+            assert f["converged"] and f["bch"] == 0, "the stub rebuilds converged, uncorrected slots only"
+            word = gf.encode(f["bits"]) + [1] * 6
+            assert len(word) == kb
+            word = [b ^ pr[o + i] for i, b in enumerate(word)]
+            o += kb
+            tag = f["slot"] | f["rate"] << 8 | f["mod"] << 12 | f["mode"] << 16
+            r.append((C_HEAD, tag, frame, f["iterations"], 1))
+            nw = (kb + 15) // 16
+            r += [(C_WORD, sum(word[16 * q + b] << b for b in range(16) if 16 * q + b < kb), int(q == nw - 1), 0, 0)
+                  for q in range(nw)]
+        tp = out[frame]["tmcc"]
+        info = S.unpack_bits(tp[4:], 9422)
+        it = tp[1]
+        r.append((C_HEAD, 1 << 7 | 3 << 8, frame, 0 if it == 0xFFFF else it, int(it != 0xFFFF)))
+        beats = tmcc_stub_bits(info)
+        r += [(C_WORD, v, int(q == len(beats) - 1), 0, 0) for q, v in enumerate(beats)]
+        recs[frame] = r
+    return frames, recs
+
+
+def run_chain(doc, taps, backend, symbols=None):
+    """The whole chain on chain-6: the input symbols in, the `Slots` words
+    out, compared word for word with the model's (`slots_words`), with the
+    host's taps at open (chain-3's: the model's run wrote the same) and the
+    LDPC stub's results after each frame's TMCC codeword (frame order)."""
+    from .common import FRAME
+
+    x = doc["input"]
+    n = len(x) // 2 if symbols is None else min(symbols, len(x) // 2)
+    frames, res = stub_results(doc["slots_words"])
+    ats = {f["frame"]: f["at"] for f in doc["frames"]}
+    inject = {}
+    for i, fr in enumerate(frames):
+        at = min(ats[fr] + FRAME + 9296, n)
+        inject.setdefault(at, []).extend([r + (i + 1,) for r in res[fr]])
+    recs = [(C_TAP, i, taps[2 * i], taps[2 * i + 1], 0, 0) for i in range(11)] + [(C_TAPNOW, 0, 0, 0, 0, 0)]
+    for i in range(n):
+        recs.extend(inject.get(i, []))
+        recs.append((C_SYM, x[2 * i], x[2 * i + 1], 0, 0, 0))
+    recs.extend(inject.get(n, []))
+    b = ChainBench()
+    p = b.ports()
+    e = engine(b, p, backend, tag="chain6")
+    g = e.group("ov", ["ow"])
+    t0 = time.time()
+    e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=200_000)
+    got = [w for (w,) in e.read(g)]
+    diag = {k: e.get(k) for k in ("tdone", "port_lost", "late", "overrun")}
+    cyc = e.cycles()
+    dt = time.time() - t0
+    exp = doc["slots_words"]
+    bad = []
+    if symbols is not None:
+        exp = exp[:len(got)]
+    for i, (a_, b_) in enumerate(zip(got, exp)):
+        if a_ != b_:
+            bad.append(f"Slots word {i}: {a_:#06x} != {b_:#06x}")
+            break
+    if len(got) != len(exp):
+        bad.append(f"{len(got)} Slots words, {len(exp)} expected")
+    for k_, v in diag.items():
+        if k_ != "tdone" and v:
+            bad.append(f"{k_} {v}")
+    what = (f"{n} symbols in, {len(got)} Slots words out ({len(frames)} frames, {diag['tdone']} TMCC codewords "
+            f"committed); {cyc} cycles in {dt:.1f} s")
+    return what, bad

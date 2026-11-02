@@ -34,7 +34,7 @@ Implementation (one main symbol per clock):
   Schedule from the symbol's arrival (A, the equaliser's output cycle):
   A+1 products, A+2 metrics, A+3..A+6 min trees, A+7 differences, A+8 x K,
   A+9 the beat (`o_*`: up to 5 positions and LLRs, `o_first` / `o_last`
-  of the codeword, the 32-bit tag) to the decoder's port.
+  of the codeword, the 64-bit tag: ldpc_if.py) to the decoder's port.
 - **Codeword cursor**: the frame's valid slots in order, from the layout
   in force (`FrameCtl`'s second read port), the next one looked up when a
   codeword starts; its points loaded into the free register set then.
@@ -109,7 +109,7 @@ class Demap(Elaboratable):
         self.o_llr = [Signal(signed(8), name=f"o_llr{k}") for k in range(LANES)]
         self.o_first = Signal()
         self.o_last = Signal()
-        self.o_tag = Signal(32)
+        self.o_tag = Signal(64)
         self.o_rate = Signal(4)
         # in force (status)
         self.n0 = Signal(32, init=N0_DEFAULT)
@@ -375,7 +375,7 @@ class Demap(Elaboratable):
         dir9 = ctx9[38:40]
         rows = Array(Const(N_LDPC // b if b else 0, 16) for b in range(8))[nb9]
         m.d.sync += [self.o_valid.eq(v9), self.o_n.eq(nb9), self.o_last.eq(ctx9[15]), self.o_first.eq(ctx9[16]),
-                     self.o_tag.eq(Cat(slot9, Const(0, 1), frame[:8], rate9, mod9, mode9)),
+                     self.o_tag.eq(Cat(slot9, Const(0, 1), rate9, mod9, mode9, Const(0, 13), frame)),
                      self.o_rate.eq(rate9)]
         llr_pos = [sat127(round_shift(dk[p], LLR_SHIFT)) for p in range(5)]
         for b in range(5):

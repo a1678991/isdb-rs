@@ -78,7 +78,45 @@ def blocks():
         d = EqFrame()
         return d, d.ports()
 
-    return {"sync": sync, "phase": phase, "eq": eq}
+    def tmcc():
+        from isdb_fpga.chain.tmcc import TmccSoft
+
+        d = TmccSoft()
+        return d, [d.t_valid, *d.t_z, d.t_odd, d.t_idx, d.frame_done, d.frame, d.b_valid, d.b_op, d.b_pos,
+                   d.b_llr, d.b_tag, d.grant, d.overrun]
+
+    def demap():
+        from isdb_fpga.chain.demap import Demap
+
+        d = Demap()
+        return d, [d.valid, *d.z, d.is_main, d.is_pilot, d.k, d.t, d.slot_mod, d.frame, d.f_start, d.f_swap,
+                   d.f_end, d.f_drop, d.lay_addr, d.lay_data, d.o_valid, d.o_n, *d.o_pos, *d.o_llr, d.o_first,
+                   d.o_last, d.o_tag, d.o_rate, d.n0, d.kk, d.learned_from, d.learned_valid, d.st_prev,
+                   d.st_addr, d.st_data, d.late]
+
+    def finish():
+        from isdb_fpga.chain.finish import Finish
+
+        d = Finish()
+        st = d.status
+        return d, [d.r_valid, d.r_ready, d.r_head, d.r_tag, d.r_iterations, d.r_converged, d.r_overrun,
+                   d.r_bits, d.r_last, d.f_valid, d.f_frame, d.f_decoded, d.o_valid, d.o_word,
+                   st.pt_addr, st.pt_data, *st.snap.values(),
+                   *[getattr(d.tmcc.layout, n) for n in ("lw_open", "lw_en", "lw_slot", "lw_data", "lw_commit",
+                                                        "lw_frame", "lw_from")]]
+
+    def chain():
+        from isdb_fpga.chain.top import SlotsChain
+
+        d = SlotsChain()
+        p = d.port
+        return d, [d.i_valid, d.i_ready, *d.i_x, d.i_loss, d.i_lost, d.agc, d.r_overrun, d.o_valid, d.o_word,
+                   p.in_valid, p.in_ready, p.in_op, p.in_ctx, p.in_n, *p.in_pos, *p.in_llr, p.in_first,
+                   p.in_last, p.in_rate, p.in_tag, p.out_valid, p.out_ready, p.out_head, p.out_tag,
+                   p.out_iterations, p.out_converged, p.out_bits, p.out_last]
+
+    return {"sync": sync, "phase": phase, "eq": eq, "tmcc": tmcc, "demap": demap, "finish": finish,
+            "chain": chain}
 
 
 def stat(dut, ports, tag):
