@@ -71,7 +71,9 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `synth/ldpc_estimate.py`, `synth/ldpc_cycles.py`, `synth/ldpc_memories.py`, `synth/ldpc_simspeed.py`, `synth/ldpc_latency.py` | the decoder's Yosys estimate per S, its cycles per iteration per rate and S, how Yosys maps each memory shape, the simulation speed of both backends, the measured write latency |
 | `synth/sim_compare.py`, `synth/sim_speed.py`, `synth/sim_parallel_build.py`, `synth/sim_xcheck.py` | the compiled simulation backends ([below](#simulation-backends)): every test bench on two backends compared value for value (`--x-unique SEED`: Verilator's X values random), one bench's build time and speed, parallel builders of one library, the random X values in effect |
 | `isdb_fpga/chain/` | the ISDB-S3 chain after the front end (stages 1–6, 8, 9; [below](#the-isdb-s3-chain-slotsrx)) |
-| `synth/chain_estimate.py` | Yosys estimates of the chain's blocks |
+| `synth/chain_estimate.py` | Yosys estimates of the chain's blocks (LUT including the LUT RAM cells' LUTs) |
+| `synth/cells.py`, `synth/bch_parts.py` | which cells (DSP, block RAM, LUT RAM) a block's estimate made, by name; the BCH unit's parts |
+| `tezuka/isdb_slots.xdc` | the constraints of `SlotsRx` (its three clocks, the GPIO paths) |
 | `tests/test_chain.py` | the chain's stage and chain tests against `chain-*.json` |
 
 ## Running
@@ -87,6 +89,7 @@ mise run fpga:verilog      # fpga/build/isdb_symbols_rx.v for a vendor flow
 mise run fpga:tx-estimate  # resource estimate of the transmit block
 mise run fpga:tx-verilog   # fpga/build/isdb_symbols_tx.v (the default bank as BRAM init)
 mise run fpga:chain-estimate  # resource estimates of the ISDB-S3 chain's blocks
+mise run fpga:slots-verilog   # fpga/build/isdb_slots_rx.v: front end + chain + LDPC decoder
 ```
 
 (`fpga:tx-vectors`, which `fpga:test` runs, writes the Python model's
@@ -233,31 +236,52 @@ module's docstring states its contract by reference and its schedule):
 | Module | Stage | Content |
 |---|---|---|
 | `nco.py` | 2a, 2b | the rotation by the carrier register (the front end's cosine table, round_shift 11), the loop update after 60 SSync phase steps (a bit-serial product by 246 412) |
-| `sync.py` | 1 | `SlotSync`: FSync/SSync correlators as add/subtract trees on a = r_i + r_q, b = r_q − r_i, max + ½min, the 9 296-entry leaky accumulator in RAM, period peak and sum, lock/loss, parity, FSync sign (bit-serial), the frame-head counter and flywheel, the frame counter (a sequential divider), the head record (16-iteration CORDIC); `SyncFront` = NCO + `SlotSync`, the input held around each decision window, the status snapshot |
-| `phase.py` | 3 | the slot ring (9 512 entries), per head the gain by a divider and the steps by bit-serial products, the interpolation as running sums, the conjugate rotation and the gain product, Q.10 |
-| `eq.py`, `frame.py` | 4 | the 11-tap FIR (44 products), the taps (at once, or armed for a frame), the training sums time-multiplexed on one complex MAC into a two-bank accumulator RAM with a readback port; `FrameCtl`: the frame bookkeeping and the layout queue at the FIR's centre |
-| `tmcc.py` | 5 | soft bits, the 31 680 × 8 staging buffer and its burst into the decoder (context 1, the shared port's free cycles); `TmccResult` (dispersal, BCH, the information bits); `TmccLayout` (`allocation_ok`, the 120 slot entries for frame + 2) |
-| `demap.py` | 6 | the max-log metric against two 32-point register sets, the min trees, × K, the de-interleaved positions, the codeword cursor, the pilot sums and learned points, n0 and K at a frame's end |
+| `sync.py` | 1 | `SlotSync`: FSync/SSync correlators as add/subtract trees on a = r_i + r_q, b = r_q − r_i (shared: C_F = P + Q, C_S = P − Q over the 14 agreeing and 10 opposite symbols), max + ½min, the 9 296-entry leaky accumulator in RAM, period peak and sum, lock/loss, parity, FSync sign (bit-serial), the frame-head counter and flywheel, the frame counter (a sequential divider), the head record (16-iteration CORDIC); `SyncFront` = NCO + `SlotSync`, the input held around each decision window, the status snapshot |
+| `phase.py` | 3 | the slot ring of the NCO's 6-bit *input* (9 513 symbols, three per 36-bit word: three RAMB36 and a LUT RAM tail) and the NCO re-applied after it (its phase and carrier register per head from a 64-entry history), per head the gain by a divider and the steps by bit-serial products, the interpolation as running sums, the conjugate rotation and the gain product, Q.10 |
+| `eq.py`, `frame.py` | 4 | the 11-tap FIR (44 products on 11 DSP48E1 in the 4× clock, one product kind per phase, one 11-leaf tree), the taps (at once, or armed for a frame), the training sums time-multiplexed on one complex MAC into a two-bank accumulator RAM with a readback port; `FrameCtl`: the frame bookkeeping and the layout queue at the FIR's centre |
+| `tmcc.py` | 5 | soft bits, the 31 680 × 8 staging buffer (four lanes) and its burst into the decoder (four values per beat, context 1, the shared port's free cycles); `TmccResult` (dispersal, BCH, the information bits); `TmccLayout` (`allocation_ok`, the 120 slot entries for frame + 2) |
+| `demap.py` | 6 | the max-log metric in the 4× clock, 8 points per fast cycle from two 32-point sets in eight LUT RAM lanes (16 products), minima of four and running minima per bit position and value, × K on two time-shared units, the de-interleaved positions, the codeword cursor, the pilot sums and learned points, n0 and K at a frame's end |
 | `back.py` | 4–6 | the equaliser with FrameCtl, the routing record through the FIR pipeline, TMCC and demapper on its output, the decoder port's arbiter |
 | `ldpc_if.py` | (7) | the decoder interface (the chain's port), `LdpcBridge` to `isdb_fpga/ldpc.py`'s ports (async FIFOs, the serialiser, the tags in commit order), and how the stub works |
-| `finish.py`, `gf.py` | 8 | the BCH unit (syndromes 16 bits per clock, Berlekamp–Massey on one GF(2¹⁶) multiplier, Chien one position per clock, the roots flipped as the Rust decoder does), the slot PRBS, `Finish` (the result stream into slot, TMCC and status blocks in frame order); `gf.py`: the field and a Python port of `isdb_fec::bch::decode` |
+| `finish.py`, `gf.py` | 8 | the BCH unit (syndromes 16 bits per clock, Berlekamp–Massey on one GF(2¹⁶) multiplier, Chien one position per clock, the roots flipped in the word buffers as the Rust decoder flips them: `FixRoots`), the slot PRBS, `Finish` (the result stream into slot, TMCC and status blocks; a frame's TMCC and status may follow the next frame's first slot blocks, with their contents the model's); `gf.py`: the field and a Python port of `isdb_fec::bch::decode` |
 | `packer.py`, `slots.py` | 9 | the `Slots` block framing with the front end's CRC-32C network, the status block's words; `slots.py`: the format in Python (reader, CRC) |
-| `top.py` | | `SlotsChain` (the stages wired, the status snapshot), `SlotsRx` (the sketch of the bitstream block: front end → FIFO → chain → bridge → decoder, the register file, the output selection) |
+| `top.py` | | `SlotsChain` (the stages wired, the status snapshot), `SlotsRx` (the bitstream block: front end → FIFO → chain → bridge → decoder and its MMCM, the register file at the host's map, the output selection) |
+| `nominal.py` | 4, 6 | the nominal points of every mode in one ROM (23 distinct sets, 510 × 24 bits, one RAMB18), shared by the equaliser and the demapper |
 | `sim.py`, `stages.py`, `simx.py`, `simv.py`, `harness.cc`, `bchsim.py` | | simulation against the vectors (`python -m isdb_fpga.chain.sim VECTORS.json [--backend pysim\|cxxrtl\|verilator] [--symbols N]`) |
 
-**Clocks.** Everything runs at one symbol per clock in the 40 MHz symbol
-clock (`util_ad9361_divclk`) but the LDPC decoder (`ldpc` domain, 200 MHz),
-which `LdpcBridge` reaches through two async FIFOs (512 beats in, 64
-words out) and a tag FIFO; no other signal crosses. Assumed faster clocks:
-none in these blocks. The demapper's 64 products are at the symbol clock
-(the plan's 16 at 4× is not done), the FIR's 44 likewise (22 at 2× not
-done), and the BCH's Chien search runs at one position per clock, enough
-only while few slots need it (a frame of 96 slots all with errors would
-need 3.9 M cycles: 4× the clock or 4 positions per clock for the worst
-case; on the lab signal no slot has needed BCH after a converged LDPC).
-Stage 1 holds the input for about 0.7 % of the clocks (its decisions) and
-stage 3's ring when its reader stalls; `SlotsRx` puts a 1 024-symbol FIFO
-in front, the front end delivering 84 % of the clocks.
+**Clocks** (fit, 2026-11-02; `fpga/tezuka/isdb_slots.xdc`). Three:
+
+- `sync`, the symbol clock (`util_ad9361_divclk` = l_clk / 4, 40 MHz at
+  40 Msps): the chain's stream, one symbol per clock;
+- `fast`, its 4×: `axi_ad9361` l_clk itself (160.0 MHz measured). Chosen
+  over an MMCM from divclk: the 4:1 ratio and phase hold by construction
+  (util_clkdiv divides l_clk, and ADI's constraints already declare
+  divclk a generated clock of rx_clk, so Vivado times the crossings as
+  related), no MMCM, BUFG or lock to manage; either way ADI's rx_clk
+  constraint (4 ns, its 61.44 Msps worst case) would apply, so the
+  block's l_clk paths and its sync↔fast paths get `set_max_delay 6.250`
+  (the real period, skew and hold kept). The crossing is clock-enable
+  phasing, no FIFO: `common.Phase4` finds the phase from a toggle of
+  `sync`; fast logic reads `sync` registers on any phase (they change only
+  on the common edge), and `sync` reads fast registers written by phase 2.
+  The demapper's metrics (16 products for 32 points: 8 per fast cycle)
+  and the equaliser's FIR (11 products, one kind per phase) run here. The
+  chain is valid at 40 Msps only (l_clk 160 MHz);
+- `ldpc`, the decoder's 200 MHz from an MMCME2_BASE in the block on the
+  PS's clk_fpga_0 (100 MHz × 10 / 5), reached through `LdpcBridge`'s
+  AsyncFIFOs (64 beats in, LUT RAM; 64 words out) and the tag FIFO,
+  `set_max_delay -datapath_only 5.0` both ways. Not 160 MHz on the fast
+  clock: the queue model (`ldpcqueue.py`, S = 34, K = 3, limit 16, TMCC
+  staged, with the result stream at the chain's pace) gives 9 overruns of
+  363 codewords on the measured distribution at 160 MHz, 0 at 200 MHz;
+  and 32APSK's 163 M LLR/s (one LLR per decoder cycle) exceeds 160 MHz.
+
+The BCH's Chien search stays at one position per symbol clock (a frame of
+96 slots all with errors would still need 3.9 M cycles; on the lab signal
+no slot has needed BCH after a converged LDPC). Stage 1 holds the input
+for about 0.7 % of the clocks (its decisions) and stage 3's ring when its
+reader stalls; `SlotsRx` puts a 1 024-symbol FIFO in front, the front end
+delivering 84 % of the clocks.
 
 **Simulation** (`tests/test_chain.py`, part of `mise run fpga:test`): three
 backends behind one stream API (`simx.py`): Amaranth's Python simulator
@@ -285,45 +309,114 @@ B44 frames of 16APSK 93/120, −400 Hz drifting, 14 dB):
 | 1–9 | chain-6-chain (+ chain-3's taps) | every `Slots` word: 5 587 896 symbols in, 211 281 words out (3 frames: TMCC and status blocks; frame 2 decoded, 120 slot blocks), the LDPC stub answering each frame after its TMCC codeword is committed | — | 2 260 000 symbols (frame 0's blocks, 683 words) by default: about 45 s on Verilator (7 s of it simulation, 380 000 cycles/s; the first build 23–43 s), 130 s on CXXRTL (27 000 cycles/s; the first build about 3 minutes); the whole set (`FPGA_CHAIN_FULL=1`) 171 s on CXXRTL before its harness settled combinational outputs (38 000 cycles/s) |
 
 **Estimates** (`mise run fpga:chain-estimate`: Yosys `synth_xilinx`,
-before place and route; 6-bit input) against the plan's budget:
+before place and route; 6-bit input; LUT includes the LUT RAM cells'
+LUTs, which Vivado counts as Slice LUTs). Before (piece 4) and after the
+fit (2026-11-02) against the fit's targets:
 
-| Block | LUT | FF | BRAM36 | DSP48E1 | Plan row: LUT / BRAM36 / DSP |
+| Block | LUT before → after | FF before → after | BRAM36 before → after | DSP48E1 before → after | Target LUT / BRAM36 / DSP |
 |---|---|---|---|---|---|
-| `SyncFront` (NCO, slot sync, carrier loop) | 4 197 | 4 626 | 5.5 | 7 | sync + carrier + phase: 3 000 / 9 / 8 |
-| `SlotPhase` | 1 122 | 2 116 | 8 | 8 | (same row) |
-| `Equaliser` + `FrameCtl` | 2 685 | 4 546 | 7.5 | 50 | equaliser: 2 500 / 1 / 44 (22 at 2×) |
-| `TmccSoft` | 134 | 65 | 8 | 0 | TMCC + demapper + accumulators: 3 500 / 2 / 16–64 |
-| `Demap` | 14 324 | 11 409 | 7 | 95 | (same row) |
-| `Finish` (`TmccResult`, BCH, PRBS, packer, status) | 7 282 | 3 337 | 2 | 0 | finish + packer + registers: 3 000 / 4 / 0 |
-| **sum** | **29 744** | **26 099** | **38** | **160** | 12 000 / 16 / 68–116 |
+| `SyncFront` (NCO, slot sync, carrier loop) | 4 194 → **3 784** | 4 627 → 4 086 | 5.5 → **5.5** | 7 → **4** | 3 500 / 5.5 / 6 |
+| `SlotPhase` | 1 122 → **1 540** | 2 116 → 2 857 | 8 → **4** | 8 → **12** | — / 4 / — |
+| `Equaliser` + `FrameCtl` (own nominal ROM) | 2 682 → **2 322** | 4 546 → 4 015 | 7.5 → **3** | 50 → **15** | 2 500 / 3 / 18 |
+| `TmccSoft` | 134 → **183** | 65 → 63 | 8 → **8** | 0 → 0 | — |
+| `Demap` (own nominal ROM) | 14 348 → **5 047** | 11 420 → 4 724 | 7 → **2.5** | 95 → **21** | 4 500 / 3 / 22 |
+| `Finish` (`TmccResult`, BCH, PRBS, packer, status) | 7 301 → **7 022** | 3 339 → 3 494 | 2 → **2** | 0 → 0 | 3 500 / — / 0 |
+| **sum of the rows** | 29 781 → **19 898** | 26 113 → 19 239 | 38 → **25** | 160 → **52** | 16 000 / 26 / 60 |
+| `Back` (eq, FrameCtl, TMCC soft bits, demapper, one shared nominal ROM) | | 8 485 | 13.5 | 36 | |
+| chain = `SyncFront` + `SlotPhase` + `Back` + `Finish` | **20 410** | 18 922 | **25** | **52** | 16 000 / 26 / 60 |
+| + bridge (LUT RAM FIFOs) and the 1 024-symbol input FIFO | 713 | 733 | 0.5 | 0 | |
+| `SlotsRx` without the decoder (front end, control, chain, bridge, registers; one run) | **27 953** | 26 941 | **26** | **164** | |
+| of which the front end (`SymbolsRx`, its own run) | 5 879 | 5 426 | 0.5 | 112 | |
 
-(The whole `SlotsChain` in one run, `chain_estimate.py chain`, does not
-finish: abc9 in the 32-bit WebAssembly Yosys runs out of its 4 GB.)
+(The before figures counted logic LUTs only; the LUT RAM then was 11
+cells in the equaliser and 6 in `Finish`. `chain_estimate.py back`,
+`bridge` and `rx` are run by name; `SlotsRx` with the decoder in one run
+is too large for the 4 GB WebAssembly Yosys, so the decoder is its own
+run: 14 034 LUT, 76.5 BRAM36, 0 DSP at S = 34, K = 3.)
 
-Over the budget, and where it goes: the demapper's ten 32-bit min trees
-(about 9 000 LUT) and the per-symbol choice between its two point sets,
-its 64 + 2 + 10 products (the five × K products are 31 × 25 bits, two DSP
-each; the position products `col · rows` are by small variables Yosys maps
-to DSP); the stage-3 ring as 16 RAMB18 (9 512 × 22 bits; storing the 12-bit
-input and rotating on the read side would halve it); the TMCC staging
-buffer (7 RAMB36, the coordinator's design); the nominal-point ROMs (4 096
-× 32 bits, twice: 2 560 × 24 would do); the BCH unit's 24 XOR networks and
-GF multiplier and the status block's word muxes. The budget's DSP total
-assumed the demapper at 4× and the FIR at 2×.
+**Against the device** (xc7z020: 53 200 LUT, 140 BRAM36, 220 DSP48E1),
+the receive-only image: the fixed part (`axi_ad9361`, the front end as
+Vivado placed it, DMAs and clocking: ≈ 17 700 LUT, 33 BRAM36, 140 DSP) +
+the decoder (14 034 / 76.5 / 0) + the chain and its glue (`SlotsRx` less
+the front end: 22 074 / 25.5 / 52) = **53 808 LUT (101 %), 135 BRAM36
+(96 %), 192 DSP48E1 (87 %)**. DSP and block RAM fit; the LUTs do not
+(Yosys figures; Vivado was within 1 % of Yosys on the front end, 5 824
+against 5 879). The image needs about 6 000 LUT less (10 % headroom for
+placement and routing) before it can be built: what did not reach its
+target is the finish stage (7 022 against 3 500: the BCH unit's
+Berlekamp–Massey registers and index muxes, about 2 400 LUT beyond its
+syndrome networks (677), Chien (216) and multiplier (185), `synth/
+bch_parts.py`; the status block's word mux, 600; the packer, 570; the
+layout, 590), the demapper (5 047 against 4 500: 25 compare-selects of
+32-bit metrics, the eight 56-bit LUT RAM lanes, 384, the two 3-bit-per-
+clock dividers for n0 and K, about 400) and stage 1 (3 784 against
+3 500). Stage 3 grew (the NCO re-applied after the ring: its table and
+four products) to bring its block RAM to 4.
 
-**What is left** (2026-11-02): the result reorder in `Finish` (the
-decoder's commit order puts frame N's TMCC after frame N + 1's first slot
-results; the model's block order needs those held, about 3 slots of
-results, or a format that lets a frame's TMCC and status follow later:
-the integrator's call); the restart epoch for a layout committed after a
-restart (the model's insert happens before it); the chain run through
-`LdpcBridge` with the real decoder (`isdb_fpga/ldpc.py`); `SlotsRx` as a whole in
-simulation (its register file is simulated through `gpio_out`:
-`SlotsRxRegisterTest`; the CARRIER register has no write port yet); a loss in
-the input stream (`i_loss`) and a sync loss in simulation (the synthetic
-sets have neither); the 2×/4× clocks for the FIR and the demapper, and
-the LUT reductions above; the recording sets (`chain-rec-*`, opt-in)
-were not generated here.
+How each block got there (each a commit): the demapper's metrics in the
+4× clock, 8 points per fast cycle (16 products; the max-log minimum over
+a label set is the same in any visiting order, so per-phase minima of
+four and running minima per bit position and value are the 32-leaf trees'
+values), the K products on two time-shared units (Delta split at bit 17,
+K ≤ 2²⁴ so its bit 24 alone is a shift), the point sets in LUT RAM, the
+slot pilot accumulators in LUT RAM, the frame sums on one read port, the
+position products as constant tables; the equaliser's 44 products on 11
+DSPs in the 4× clock, one kind per phase, one 11-leaf tree; one compact
+nominal ROM (23 distinct sets, 510 × 24 bits) for both; stage 3's ring of
+the NCO input (three symbols per 36-bit word); stage 1's FSync and SSync
+trees shared (C = P ± Q) and its lock rule's products as shifts; the BCH
+roots flipped in the buffers rather than a per-beat mask; one `Realign`
+for the slot and TMCC BCH words.
+
+**Integration** (fit, 2026-11-02):
+
+- **The real decoder in the chain** (`stages.run_chain_real`, `python -m
+  isdb_fpga.chain.sim build/chain-7-hdl.json --backend cxxrtl`;
+  `RealDecoderChainTest`, opt-in `FPGA_CHAIN_REAL=1`): `SlotsChain` +
+  `LdpcBridge` + `ldpc.LdpcDecoder` (S = 34, K = 3, every rate; its
+  domain at 5× the symbol clock in the simulation), the input at the
+  front end's 33.76 Msymbol/s, against chain-7-hdl (chain-6's input,
+  decoded by the model with the decoder's settings: `Schedule::Layered
+  { step: 34 }`, limit 16, offset 1), every block compared per (frame,
+  kind, slot): RESULT_CHAIN7.
+- **Block order.** The decoder returns results in commit order: frame N's
+  TMCC codeword (its burst four values per port beat, about 4 slots at the
+  front end's rate) follows frame N + 1's first slot codewords, so frame
+  N's trailing dummy, TMCC and status blocks follow frame N + 1's first
+  slot blocks; `Finish` keeps their contents the model's (it holds frame
+  N's last valid slot and slot counters at frame N + 1's first result)
+  and nothing is buffered. The host (`isdb-cli` `slotrx.rs`) releases a
+  frame by frame counter, within a window of one frame. The bound: the
+  TMCC burst (≈ 4 slots at the front end's rate; 25 slots at one symbol
+  per clock) plus its decode (under a slot), so at most the blocks of the
+  next frame's first 26 slots precede a frame's TMCC block; measured on
+  chain-7: LATENESS.
+- **Queue at 160 MHz** (`ldpcqueue.run(..., finish_hz=40e6)`: the result
+  stream at the chain's pace and the TMCC burst at the chain's): the
+  measured distribution (3 frames, mean 2.1, three isolated codewords at
+  the limit 16, TMCC staged) overruns 9 of 363 codewords at 160 MHz, 0 at
+  200 MHz; with two adjacent pairs at 16: 15 and 6. So the decoder keeps
+  its 200 MHz (an MMCM on clk_fpga_0) and the async bridge.
+- **Loss and sync loss** (chain-8-loss: 6 144 symbols lost half-way into
+  frame 1; chain-9-fade: the signal replaced by noise for 330 000 symbols:
+  the slot sync lost after 8 periods and regained; both decode frame 3
+  after the event; `LossChainTest` with the stub, `FPGA_CHAIN_FULL=1`, and
+  `RealDecoderChainTest`): RESULT_LOSS.
+- **`SlotsRx`**: the decoder inside (S = 34, K = 3) with its MMCM
+  (`mmcm=True`), the register map of `isdb_frontend::control::chain` (the
+  host's; three registers added there: MAX_ITER, AGC, TMCC_OVERRUNS; the
+  first image offers taps and sums, not a host constellation or n0, and
+  lag 2 only), CTRL START restarting the chain; `SlotsRxRegisterTest`
+  through `gpio_out`. `mise run fpga:slots-verilog` writes
+  `build/isdb_slots_rx.v` (module `isdb_slots_rx`: clocks `clk`,
+  `fast_clk`, `ldpc_ref`; about 374 000 lines).
+
+**What is left**: the LUTs (above: about 6 000 over a buildable image);
+the restart epoch for a layout committed after a restart (the model's
+insert happens before it); `SlotsRx` as a whole with its front end in
+simulation (the chain's simulations start at the symbols); a host CONST /
+N0 load and layout lag 1 (FEATURES says so); the recording sets
+(`chain-rec-*`, opt-in) were not generated here.
 
 ## The transmit block (`SymbolsTx`)
 
