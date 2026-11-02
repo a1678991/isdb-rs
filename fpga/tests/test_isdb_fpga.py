@@ -786,12 +786,22 @@ class LdpcQueueModelTest(unittest.TestCase):
     def test_the_chain_pace_and_the_decoder_clock(self):
         # the result stream at the chain's pace (one word per 40 MHz symbol
         # clock, the finish stage's block between codewords) and the TMCC
-        # burst on the port cycles the demapper leaves (fit, 2026-11-02): the
-        # measured distribution still fits K = 3 at 200 MHz, not at 160 MHz
-        # (the 4x symbol clock), which is why the decoder keeps its own clock
-        frame = ldpcqueue.measured_frame()
-        self.assertEqual(self.run_frames([frame] * 3, banks=3, finish_hz=40e6)["overruns"], 0)
-        self.assertGreater(self.run_frames([frame] * 3, banks=3, finish_hz=40e6, clock_hz=160e6)["overruns"], 0)
+        # burst on the port cycles the demapper leaves (fit, 2026-11-02),
+        # with the pipelined decoder's passes (93/120: 6 125 cycles): the
+        # measured distribution, its long codewords at the default limit 14,
+        # fits K = 3 at 200 MHz, not at 160 MHz (the 4x symbol clock), which
+        # is why the decoder keeps its own clock. At limit 16 K = 3
+        # overruns 9 of 363 (K = 4 would not, but needs 17 BRAM36 more than
+        # the device has): hence the default 14 (fpga/README.md).
+        lim = ldpc.DEFAULT_MAX_ITER
+        self.assertEqual(lim, 14)
+        frame = ldpcqueue.measured_frame(long_iter=lim)
+        self.assertEqual(self.run_frames([frame] * 3, banks=3, limit=lim, finish_hz=40e6)["overruns"], 0)
+        self.assertGreater(
+            self.run_frames([frame] * 3, banks=3, limit=lim, finish_hz=40e6, clock_hz=160e6)["overruns"], 0)
+        f16 = ldpcqueue.measured_frame(long_iter=16)
+        self.assertEqual(self.run_frames([f16] * 3, banks=3, limit=16, finish_hz=40e6)["overruns"], 9)
+        self.assertEqual(self.run_frames([f16] * 3, banks=4, limit=16, finish_hz=40e6)["overruns"], 0)
 
     def test_all_at_the_limit_overruns_and_is_counted(self):
         r = self.run_frames([[ldpc.DEFAULT_MAX_ITER + 1] * 120] * 2, banks=3)
