@@ -21,7 +21,7 @@ Layout memory: three banks of 120 slot entries (mode, modulation code, rate
 code, dummy, the codeword's first main symbol in the frame and its symbol
 count: 3 + 4 + 4 + 1 + 21 + 15 = 48 bits), one RAMB18 in all. A bank is
 "in force" (taken at a frame start), "queued" (applies_to frame), or free;
-the TMCC stage writes a free bank (`lw_bank` says which) and commits it.
+the TMCC stage latches a free bank (`lw_open`; `lw_bank` says which), writes it and commits it.
 With lag 2 at most one bank is in force, one queued and one being written.
 
 Part decoding (Fig. 3.3-1): counters advanced with j (positions arrive in
@@ -57,7 +57,8 @@ class FrameCtl(Elaboratable):
         self.c_at = Signal(48)
         self.restart = Signal()
         # layout writes (TMCC stage)
-        self.lw_bank = Signal(2)  # a free bank (output)
+        self.lw_open = Signal()  # latch a free bank for the layout about to be written
+        self.lw_bank = Signal(2)  # that bank (output)
         self.lw_en = Signal()
         self.lw_slot = Signal(range(SLOTS))
         self.lw_data = Signal(LAY_BITS)
@@ -112,7 +113,9 @@ class FrameCtl(Elaboratable):
         # a free bank: neither in force (while a frame with a layout is open) nor queued
         used = Signal(3)
         m.d.comb += used.eq(q_valid | Mux(self.cur_valid & cur_has, 1 << bank_force, 0))
-        m.d.comb += self.lw_bank.eq(Mux(~used[0], 0, Mux(~used[1], 1, 2)))
+        free = Mux(~used[0], 0, Mux(~used[1], 1, 2))
+        with m.If(self.lw_open):
+            m.d.sync += self.lw_bank.eq(free)
         m.d.comb += [wp.addr.eq(Cat(self.lw_slot, self.lw_bank)), wp.data.eq(self.lw_data),
                      wp.en.eq(self.lw_en)]
 
@@ -168,7 +171,13 @@ class FrameCtl(Elaboratable):
             c.s_dummy.eq(rd[11]), c.s_start.eq(rd[12:33]), c.s_symbols.eq(rd[33:48]),
         ]
         with m.If(c.cv & (j == 0)):
-            m.d.sync += [kbase_m.eq(c.c_number * (66 * MAIN_RUN)), kbase_t.eq(c.c_number * (66 * TMCC_RUN))]
+            # slot k's first main and TMCC indices, k * 8 976 and k * 264, as running
+            # sums (the slots of a frame arrive in order; slot 0 restarts them)
+            first_slot = c.c_number == 0
+            m.d.sync += [
+                kbase_m.eq(Mux(first_slot, 0, kbase_m + 66 * MAIN_RUN)),
+                kbase_t.eq(Mux(first_slot, 0, kbase_t + 66 * TMCC_RUN)),
+            ]
 
         m.d.sync += [c.o_done.eq(0), c.o_dropped.eq(0)]
         with m.If(c.restart):
