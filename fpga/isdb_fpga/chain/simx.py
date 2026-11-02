@@ -37,6 +37,7 @@ import ctypes
 import hashlib
 import os
 import shutil
+import fcntl
 import subprocess
 import sys
 
@@ -89,27 +90,14 @@ class _Cxx:
         os.makedirs(BUILD, exist_ok=True)
         so = os.path.join(BUILD, f"{tag}-{key}.so")
         if not os.path.exists(so):
-            ilp = os.path.join(BUILD, f"{tag}-{key}.il")
-            cc = os.path.join(BUILD, f"{tag}-{key}.cc")
-            with open(ilp, "w") as f:
-                f.write(il)
-            r = subprocess.run(
-                [yosys_path(), "-q", "-p",
-                 f"read_rtlil {ilp}; hierarchy -top top; write_cxxrtl -g2 {cc}"],
-                capture_output=True, text=True)
-            if r.returncode:
-                raise RuntimeError("write_cxxrtl: " + r.stdout + r.stderr)
-            # per process: parallel test workers may build the same design
-            tmp = f"{so}.{os.getpid()}.tmp"
-            r = subprocess.run(
-                [os.environ.get("CXX", "c++"), "-O1", "-std=c++17", "-shared", "-fPIC", "-w",
-                 "-I", cxxrtl_include(), cc,
-                 os.path.join(cxxrtl_include(), "cxxrtl", "capi", "cxxrtl_capi.cc"),
-                 os.path.join(HERE, "harness.cc"), "-o", tmp],
-                capture_output=True, text=True)
-            if r.returncode:
-                raise RuntimeError("c++: " + r.stderr[-4000:])
-            os.replace(tmp, so)
+            # One builder per design at a time: parallel test workers (xdist)
+            # may want the same library, and the write_cxxrtl input and output
+            # must not be shared half-written. The lock is held for the whole
+            # build; a waiter finds the finished .so and skips the build.
+            with open(f"{so}.lock", "w") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                if not os.path.exists(so):
+                    self._build(il, so)
         lib = ctypes.CDLL(so)
         lib.h_create.restype = ctypes.c_void_p
         lib.h_port.restype = ctypes.c_int
@@ -194,6 +182,30 @@ class _Cxx:
             self.lib.h_destroy(self.h)
             self.h = None
 
+    @staticmethod
+    def _build(il, so):
+        pid = os.getpid()
+        ilp, cc, tmp = f"{so}.{pid}.il", f"{so}.{pid}.cc", f"{so}.{pid}.tmp"
+        with open(ilp, "w") as f:
+            f.write(il)
+        r = subprocess.run(
+            [yosys_path(), "-q", "-p",
+             f"read_rtlil {ilp}; hierarchy -top top; write_cxxrtl -g2 {cc}"],
+            capture_output=True, text=True)
+        if r.returncode:
+            raise RuntimeError("write_cxxrtl: " + r.stdout + r.stderr)
+        r = subprocess.run(
+            [os.environ.get("CXX", "c++"), "-O1", "-std=c++17", "-shared", "-fPIC", "-w",
+             "-I", cxxrtl_include(), cc,
+             os.path.join(cxxrtl_include(), "cxxrtl", "capi", "cxxrtl_capi.cc"),
+             os.path.join(HERE, "harness.cc"), "-o", tmp],
+            capture_output=True, text=True)
+        if r.returncode:
+            raise RuntimeError("c++: " + r.stderr[-4000:])
+        os.replace(tmp, so)
+        # the generated sources are kept for inspection under the library's name
+        os.replace(ilp, so[:-3] + ".il")
+        os.replace(cc, so[:-3] + ".cc")
 
 class _Py:
     """The Python simulator with the same per-cycle sequence, one-shot:
