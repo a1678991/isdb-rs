@@ -157,6 +157,23 @@ class EqTest(unittest.TestCase):
     def test_whole_frame_pysim(self):
         self.run_stage("pysim", None)
 
+    @cxx
+    def test_sums_capture_holds_a_frame(self):
+        # SUMS_CAPTURE before frame F, then frames F + 1 and F + 2 close:
+        # the sums read after them are F's (bit for bit), VALID set; the
+        # host's 308 reads may take many frames (on the board about 15)
+        from isdb_fpga.chain.stages import run_eq_capture
+
+        what, bad = run_eq_capture(doc("3-eq"), doc("4-tmcc")["layout"], COMPILED)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
+    @cxx
+    def test_sums_latch_moves_without_a_capture(self):
+        from isdb_fpga.chain.stages import run_eq_capture
+
+        what, bad = run_eq_capture(doc("3-eq"), doc("4-tmcc")["layout"], COMPILED, strobe=False)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
 
 @needs("4-tmcc")
 class TmccTest(unittest.TestCase):
@@ -524,7 +541,8 @@ class SlotsRxRegisterTest(unittest.TestCase):
     written and read back (PERIOD_NOMINAL, 0x01: its READ must show the
     front end's readback, not the chain's); the chain's VERSION (0x400),
     MAX_ITER (0x40C, reset ldpc.DEFAULT_MAX_ITER, 14) written and read, AGC (0x40D), FEATURES
-    (0x401: TAPS | SUMS, the limit in bits 15-8, the step 34 in 27-16), a tap
+    (0x401: TAPS | SUMS | SUMS_CAPTURE, the limit in bits 15-8, the step 34 in
+    27-16), SUMS_CAPTURE (0x422: 0, then ARMED after a write), a tap
     (0x410 + 3, re | im << 16) written with WRITE_S and committed by START
     (INIT bit 0), CARRIER (0x402) written and loaded by START; the front
     end's STATUS (0x10) with bit 2 (the Slots words selected); then the
@@ -582,6 +600,14 @@ class SlotsRxRegisterTest(unittest.TestCase):
             seen["agc"] = await cmd(OP_READ)
             await cmd(OP_ADDR, 0x401)
             seen["features"] = await cmd(OP_READ)
+            # SUMS_CAPTURE: idle, then armed by a write (no frame ends here:
+            # EqTest.test_sums_capture_holds_a_frame holds one)
+            await cmd(OP_ADDR, 0x422)
+            seen["capture_idle"] = await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x422)
+            await cmd(OP_WRITE_S, 1)
+            await cmd(OP_ADDR, 0x422)
+            seen["capture_armed"] = await cmd(OP_READ)
             # tap 3 = (-5, 7) and carrier -1234, loaded by START with INIT bit 0
             await cmd(OP_ADDR, 0x413)
             await cmd(OP_HI, 7)
@@ -606,7 +632,7 @@ class SlotsRxRegisterTest(unittest.TestCase):
         ident = ID_MAGIC << 16 | FORMAT_VERSION << 12 | 32 | ID_CHAIN
         self.assertEqual(seen, {
             "id": ident, "period": 0x12345678, "version": 1, "max_iter_reset": 14, "max_iter": 33,
-            "agc": 0x0400, "features": 0b11 | 33 << 8 | 34 << 16, "tap3": 7 << 16 | 0xFFFB,
+            "agc": 0x0400, "features": 0b10011 | 33 << 8 | 34 << 16, "capture_idle": 0, "capture_armed": 0b10, "tap3": 7 << 16 | 0xFFFB,
             "carrier": (-1234) & 0xFFFFFFFF, "status": 0b101, "period_again": 0x12345678, "id_again": ident,
         })
 
