@@ -5,7 +5,10 @@ for the whole chain"). Before place and route; Vivado will differ.
 python synth/chain_estimate.py [STAGE ...]     # default: every stage
 
 Stages: sync (SyncFront: NCO, slot sync, carrier loop), phase (SlotPhase),
-eq (Equaliser + FrameCtl), and the later ones as they exist. Writes
+eq (Equaliser + FrameCtl), tmcc (TmccSoft), demap (Demap), finish (Finish:
+TmccResult, the BCH unit, the PRBS, the packer, the status source); chain
+(SlotsChain, all of them) only when named: abc9 in YoWASP's 32-bit
+WebAssembly runs out of memory on it. Writes
 build/chain_<stage>.il / .stat and prints one line per stage.
 """
 
@@ -149,7 +152,9 @@ def stat(dut, ports, tag):
 
 
 def main(argv):
-    names = argv[1:] or list(blocks())
+    # `chain` (the whole SlotsChain) is not in the default list: YoWASP
+    # Yosys's abc9 runs out of the 4 GB WebAssembly memory on it
+    names = argv[1:] or [n for n in blocks() if n != "chain"]
     bl = blocks()
     for n in names:
         dut, ports = bl[n]()

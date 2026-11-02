@@ -669,6 +669,7 @@ class ChainBench(Elaboratable):
         return {"i_valid": self.i_valid, "i_ready": self.i_ready, "kind": self.kind, "a": self.a,
                 "b": self.b, "c": self.c, "d": self.d, "e": self.e,
                 "ov": ch.o_valid, "ow": ch.o_word, "tdone": ch.tmcc_done,
+                "frames_done": ch.finish.counters["frames"], "tbusy": ch.back.tmcc.busy,
                 "port_lost": ch.back.port_lost, "late": ch.back.demap.late,
                 "overrun": ch.back.tmcc.overrun}
 
@@ -722,6 +723,27 @@ def stub_results(words):
     return frames, recs
 
 
+def block_diff(got, exp, limit=12):
+    """The blocks that differ: (index, kind, frame, the first payload word
+    that differs, its values)."""
+    from . import slots as S
+
+    out = []
+    try:
+        gb = S.blocks(got)
+    except AssertionError as err:
+        return [f"the output does not parse as Slots blocks near word {err}"]
+    eb = S.blocks(exp)
+    for i, (g_, e_) in enumerate(zip(gb, eb)):
+        if g_ != e_:
+            w = next((k for k, (x, y) in enumerate(zip(g_[3], e_[3])) if x != y), None)
+            out.append(f"block {i} (kind {e_[0]}, frame {e_[2]}): payload word {w}: "
+                       f"{g_[3][w] if w is not None else len(g_[3])} != {e_[3][w] if w is not None else len(e_[3])}")
+            if len(out) >= limit:
+                break
+    return out
+
+
 def run_chain(doc, taps, backend, symbols=None):
     """The whole chain on chain-6: the input symbols in, the `Slots` words
     out, compared word for word with the model's (`slots_words`), with the
@@ -735,8 +757,11 @@ def run_chain(doc, taps, backend, symbols=None):
     ats = {f["frame"]: f["at"] for f in doc["frames"]}
     inject = {}
     for i, fr in enumerate(frames):
-        at = min(ats[fr] + FRAME + 9296, n)
-        inject.setdefault(at, []).extend([r + (i + 1,) for r in res[fr]])
+        # its last symbol needs the FIR's 5 look-ahead symbols, which stage 3
+        # corrects once the head after the next slot's is in: two slots on
+        at = ats[fr] + FRAME + 2 * 9296
+        if at <= n:  # a prefix: only the frames it completes
+            inject.setdefault(at, []).extend([r + (i + 1,) for r in res[fr]])
     recs = [(C_TAP, i, taps[2 * i], taps[2 * i + 1], 0, 0) for i in range(11)] + [(C_TAPNOW, 0, 0, 0, 0, 0)]
     for i in range(n):
         recs.extend(inject.get(i, []))
@@ -745,26 +770,38 @@ def run_chain(doc, taps, backend, symbols=None):
     b = ChainBench()
     p = b.ports()
     e = engine(b, p, backend, tag="chain6")
+    e.stall_limit = 3_000_000
     g = e.group("ov", ["ow"])
     t0 = time.time()
-    e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=200_000)
+    stuck = None
+    try:
+        e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=200_000)
+    except RuntimeError as err:
+        stuck = f"{err} (record kinds around: {[r[0] for r in recs[max(0, e.stalled - 2):e.stalled + 3]]})"
     got = [w for (w,) in e.read(g)]
-    diag = {k: e.get(k) for k in ("tdone", "port_lost", "late", "overrun")}
+    import json
+    import os
+
+    with open(os.path.join(os.path.dirname(__file__), "..", "..", "build", "chain-6-got.json"), "w") as f:
+        json.dump(got, f)
+    diag = {k: e.get(k) for k in ("tdone", "port_lost", "late", "overrun", "frames_done", "tbusy")}
     cyc = e.cycles()
     dt = time.time() - t0
     exp = doc["slots_words"]
-    bad = []
+    bad = [stuck] if stuck else []
     if symbols is not None:
         exp = exp[:len(got)]
     for i, (a_, b_) in enumerate(zip(got, exp)):
         if a_ != b_:
             bad.append(f"Slots word {i}: {a_:#06x} != {b_:#06x}")
             break
+    if bad:
+        bad += block_diff(got, exp)
     if len(got) != len(exp):
         bad.append(f"{len(got)} Slots words, {len(exp)} expected")
     for k_, v in diag.items():
-        if k_ != "tdone" and v:
+        if k_ not in ("tdone", "frames_done", "tbusy") and v:
             bad.append(f"{k_} {v}")
-    what = (f"{n} symbols in, {len(got)} Slots words out ({len(frames)} frames, {diag['tdone']} TMCC codewords "
-            f"committed); {cyc} cycles in {dt:.1f} s")
+    what = (f"{n} symbols in, {len(got)} Slots words out ({len(frames)} frames, {diag}); "
+            f"{cyc} cycles in {dt:.1f} s")
     return what, bad

@@ -66,7 +66,7 @@ point), `restart` (a lost sync, one pulse), the statistics of the last
 period with the live marker counters (`st_*`, the status block's).
 """
 
-from amaranth.hdl import Cat, Elaboratable, Module, Mux, Signal, signed, unsigned
+from amaranth.hdl import Cat, Const, Elaboratable, Module, Mux, Signal, signed, unsigned
 from amaranth.lib.memory import Memory
 
 from .common import (
@@ -652,8 +652,11 @@ class SyncFront(Elaboratable):
         snap_go = Signal()
         m.d.sync += snap_go.eq(sy.decided | sy.restart)
         with m.If(snap_go):
-            m.d.sync += self.snap.eq(Cat(sy.st_peak, sy.st_pos, sy.st_sum, sy.st_locked, sy.st_parity,
-                                         sy.st_offset, sy.st_stray, sy.st_missed, nco.f))
+            vals = [sy.st_peak, sy.st_pos, sy.st_sum, sy.st_locked, sy.st_parity, sy.st_offset,
+                    sy.st_stray, sy.st_missed, nco.f]
+            # each field at its SNAP_FIELDS width (zero-extended; the carrier is 32 bits)
+            m.d.sync += self.snap.eq(Cat(*[Cat(v, Const(0, w - len(v))) if w > len(v) else v[:w]
+                                           for v, (_, w) in zip(vals, SNAP_FIELDS)]))
         m.d.sync += [self.o_restart.eq(sy.restart), self.o_restart_loss.eq(loss_go), loss_go.eq(0)]
         # a loss: let the windows in flight through, then restart at the
         # index after the gap
