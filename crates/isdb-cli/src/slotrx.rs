@@ -23,6 +23,17 @@
 //! joined after that block uses the frame's own TMCC (the host receiver
 //! uses each frame's own, the same on a constant allocation).
 //!
+//! **Block order.** The model sends a frame's slot blocks, then its tmcc
+//! and status blocks. The FPGA's decoder returns its results in commit
+//! order, and a frame's TMCC codeword is committed a few slots into the
+//! next frame, so there frame N's trailing dummy slot blocks, its tmcc and
+//! its status block come after frame N + 1's first slot blocks (the HDL's
+//! bound: within one frame, `fpga/isdb_fpga/chain/finish.py`). Every block
+//! carries its frame counter: the slot blocks wait per frame, and a frame
+//! is released (to the assemblers, in frame order) when its tmcc or status
+//! block arrives, or a later frame's tmcc, or a slot block two frames on:
+//! a window of one frame, so either order decodes the same.
+//!
 //! **Discontinuities.** The assemblers are closed (the TLV streams are
 //! discontinuous there, counted) at a loss in the words, and wherever the
 //! decoded frames are not consecutive: the chain's undecoded frames after
@@ -279,8 +290,9 @@ pub struct Consumer {
     in_force: BTreeMap<u32, TmccInfo>,
     /// The last frame's own TMCC.
     own: Option<(u32, TmccInfo)>,
-    /// The slot blocks of the frame being received.
-    pending: Option<(u32, Vec<SlotBlock>)>,
+    /// The slot blocks of the frames being received (at most two: the
+    /// window of one frame, module documentation "Block order").
+    pending: BTreeMap<u32, Vec<SlotBlock>>,
     last_decoded: Option<u32>,
     started: bool,
 }
@@ -321,7 +333,7 @@ impl Consumer {
                     words_skipped = words,
                     "slots loss: {blocks} block(s) missing, {words} words skipped: a discontinuity in the TLV streams"
                 );
-                self.flush(out, stats)?;
+                self.flush_all(out, stats)?;
                 self.end_stretch(stats);
                 Ok(())
             }
@@ -339,18 +351,15 @@ impl Consumer {
     }
 
     fn block(&mut self, b: Block, out: &mut Outputs, stats: &mut Stats) -> Result<()> {
-        if self.pending.as_ref().is_some_and(|p| p.0 != b.frame()) {
-            self.flush(out, stats)?;
-        }
         match b {
             Block::Slot(s) => {
                 let c = Self::chain(stats);
                 c.slot_blocks += 1;
                 c.dummy_slots += u64::from(s.dummy);
-                self.pending
-                    .get_or_insert_with(|| (s.frame, Vec::new()))
-                    .1
-                    .push(s);
+                // a frame two before this one has had its window: release it
+                // (its tmcc and status blocks were lost or never sent)
+                self.flush_before(s.frame.wrapping_sub(1), out, stats)?;
+                self.pending.entry(s.frame).or_default().push(s);
             }
             Block::Tmcc(t) => {
                 let c = Self::chain(stats);
@@ -368,11 +377,12 @@ impl Consumer {
                 } else {
                     c.tmcc_failed += 1;
                 }
-                // the frame's slots came before its TMCC
-                self.flush(out, stats)?;
+                // the frame's slots came before its TMCC (and any earlier
+                // frame's still waiting is released first)
+                self.flush_through(t.frame, out, stats)?;
             }
             Block::Status(s) => {
-                self.flush(out, stats)?;
+                self.flush_through(s.frame, out, stats)?;
                 self.status(&s, stats);
             }
         }
@@ -416,11 +426,40 @@ impl Consumer {
         };
     }
 
-    /// The pending frame's slots to the assemblers.
-    fn flush(&mut self, out: &mut Outputs, stats: &mut Stats) -> Result<()> {
-        let Some((frame, slots)) = self.pending.take() else {
-            return Ok(());
-        };
+    /// The waiting frames up to and including `frame` (frame counters
+    /// compared within a window: a frame "before" is less than half the
+    /// counter's range behind), in frame order.
+    fn flush_through(&mut self, frame: u32, out: &mut Outputs, stats: &mut Stats) -> Result<()> {
+        self.flush_before(frame.wrapping_add(1), out, stats)
+    }
+
+    /// The waiting frames before `frame`, in frame order.
+    fn flush_before(&mut self, frame: u32, out: &mut Outputs, stats: &mut Stats) -> Result<()> {
+        while let Some(&f) = self.pending.keys().next()
+            && frame.wrapping_sub(f).cast_signed() > 0
+        {
+            let slots = self.pending.remove(&f).unwrap_or_default();
+            self.flush(f, slots, out, stats)?;
+        }
+        Ok(())
+    }
+
+    /// Every waiting frame, in frame order.
+    fn flush_all(&mut self, out: &mut Outputs, stats: &mut Stats) -> Result<()> {
+        while let Some((f, slots)) = self.pending.pop_first() {
+            self.flush(f, slots, out, stats)?;
+        }
+        Ok(())
+    }
+
+    /// A frame's slots to the assemblers.
+    fn flush(
+        &mut self,
+        frame: u32,
+        slots: Vec<SlotBlock>,
+        out: &mut Outputs,
+        stats: &mut Stats,
+    ) -> Result<()> {
         let info = self
             .in_force
             .range(..=frame)
@@ -470,7 +509,7 @@ impl Consumer {
     ///
     /// Writing an output.
     pub fn finish(&mut self, out: &mut Outputs, stats: &mut Stats) -> Result<()> {
-        self.flush(out, stats)?;
+        self.flush_all(out, stats)?;
         self.end_stretch(stats);
         Ok(())
     }
@@ -994,6 +1033,79 @@ mod tests {
         assert_eq!(j["decoded_by"], crate::rxs3::DECODED_BY_HOST);
         assert_eq!(j["chain"]["frames_undecoded"], 2);
         assert_eq!(j["chain"]["status"]["counters"]["slots"], decoded * VALID);
+    }
+
+    /// The FPGA's block order (its decoder's commit order): from the
+    /// third frame on, a frame's last slot blocks, its tmcc and its status
+    /// block come after the next frame's first four slot blocks (the
+    /// sequence numbers in the order sent). The same slots, the same TLV
+    /// bytes, the same summary as the model's order.
+    #[test]
+    fn the_fpga_block_order_decodes_the_same() {
+        let o = SynthOptions::default();
+        let s = generate(&o, 7);
+        let opt = ChainOptions::default();
+        let lag = opt.layout_lag;
+        let mut chain = Chain::new(opt);
+        let mut frames: Vec<Vec<Block>> = Vec::new();
+        let mut out = Vec::new();
+        for &x in &s.symbols {
+            chain.push(x, &mut out);
+            for o in out.drain(..) {
+                if let Output::Frame(f) = o {
+                    frames.push(isdbs3_phy::chain::out::blocks(&f, lag));
+                }
+            }
+        }
+        assert!(frames.len() >= 5);
+        let write = |order: &[Block]| {
+            let mut w = isdb_frontend::slots::Writer::new();
+            let mut words = Vec::new();
+            for b in order {
+                w.write(b, &mut words);
+            }
+            words
+        };
+        let in_order: Vec<Block> = frames.iter().flatten().cloned().collect();
+        // frame k's tail (its last 3 slot blocks, if any, its tmcc and
+        // status) after frame k + 1's first 4 slot blocks
+        let mut moved: Vec<Block> = Vec::new();
+        let mut tail: Vec<Block> = Vec::new();
+        let mut late = 0;
+        for f in &frames {
+            let (slots, rest): (Vec<&Block>, Vec<&Block>) =
+                f.iter().partition(|b| matches!(b, Block::Slot(_)));
+            let head = slots.len().min(4);
+            moved.extend(slots[..head].iter().copied().cloned());
+            moved.append(&mut tail);
+            let cut = slots.len().saturating_sub(3).max(head);
+            moved.extend(slots[head..cut].iter().copied().cloned());
+            tail.extend(slots[cut..].iter().copied().cloned());
+            tail.extend(rest.into_iter().cloned());
+            late += usize::from(head > 0);
+        }
+        moved.append(&mut tail);
+        assert!(late >= 3, "{late} frames reordered");
+        assert_ne!(moved, in_order);
+        assert_eq!(moved.len(), in_order.len());
+        let (a, tlv_a) = consume_words(&write(&in_order), 4096);
+        let (b, tlv_b) = consume_words(&write(&moved), 4096);
+        assert_eq!(tlv_a, tlv_b);
+        assert!(a.slots > 0);
+        assert_eq!(
+            (a.frames, a.slots, a.tmcc_ok),
+            (b.frames, b.slots, b.tmcc_ok)
+        );
+        assert_eq!(
+            a.streams.get(&0xB070).map(|x| x.2),
+            b.streams.get(&0xB070).map(|x| x.2)
+        );
+        let (ca, cb) = (a.chain.as_ref().unwrap(), b.chain.as_ref().unwrap());
+        assert_eq!(
+            (ca.discontinuities, ca.unmapped_slots, ca.frames_undecoded),
+            (cb.discontinuities, cb.unmapped_slots, cb.frames_undecoded)
+        );
+        assert_eq!((cb.discontinuities, cb.unmapped_slots), (0, 0));
     }
 
     /// A lost slot block is a loss: counted, the assemblers closed, the
