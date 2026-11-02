@@ -50,7 +50,7 @@ step "1: Symbols capture before ($secs s)"
 }
 
 step "2: the FPGA chain (--offload auto, $secs s)"
-/usr/bin/time -v "$isdb" rx --system isdbs3 --radio "$radio" --freq "$chan" --offload auto \
+/usr/bin/time -v "$isdb" rx --system isdbs3 --radio "$radio" --channel "$chan" --freq-unrestricted --offload auto \
     --seconds "$secs" --json --status-secs 5 --slots-out "$out/fpga.slots" \
     --out "$out/fpga/fpga-{tlv_id}.tlv" >"$out/fpga.json" 2>"$out/fpga.log" || {
     tail -30 "$out/fpga.log" >&2

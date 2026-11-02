@@ -72,6 +72,25 @@ rebind)
         /etc/init.d/S23udc restart; \
         for d in /sys/bus/iio/devices/iio:device*; do echo "$d $(cat $d/name)"; done'
     ;;
+recover)
+    # rebind until cf-ad9361-lpc is there (the TX tune is probabilistic)
+    tries=${2:-6}
+    for i in $(seq 1 "$tries"); do
+        if on 'cat /sys/bus/iio/devices/*/name' | grep -qx cf-ad9361-lpc; then
+            echo "cf-ad9361-lpc present (after $((i - 1)) rebinds)"
+            exit 0
+        fi
+        echo "rebind $i"
+        "$0" rebind >/dev/null 2>&1 || true
+    done
+    if on 'cat /sys/bus/iio/devices/*/name' | grep -qx cf-ad9361-lpc; then
+        echo "cf-ad9361-lpc present (after $tries rebinds)"
+        exit 0
+    fi
+    echo "cf-ad9361-lpc still missing after $tries rebinds" >&2
+    on 'dmesg | grep -iE "tuning|cf_axi_adc" | tail -4' >&2
+    exit 1
+    ;;
 run)
     on "${2:?run COMMAND}"
     ;;
