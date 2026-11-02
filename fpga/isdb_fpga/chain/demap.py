@@ -91,7 +91,7 @@ from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal, s
 from amaranth.lib.memory import Memory
 
 from .common import LLR_SHIFT, N0_DEFAULT, N0_MIN, NOISE_STEP, PILOTS, SLOTS, Phase4, SeqDiv, SeqDivR
-from .common import round_shift, sat16, sat127
+from .common import sat16, sat127
 from .ldpc_if import LANES
 from .nominal import NominalPort, NominalRom
 from .tables import MOD_BITS, pilot_sign_rom
@@ -361,9 +361,14 @@ class Demap(Elaboratable):
             lanes.append((mem.write_port(domain="fast"), mem.read_port(domain="comb")))
         # the squarer: phase 0 z_re^2, 1 z_im^2 (the symbol of A+1), 2 re^2,
         # 3 im^2 (the loader's point)
-        sq_in = Array([z1[0], z1[1], lq[0], lq[1]])[ph]
+        # the operand registered a fast cycle ahead (`sq_op`: the multiplier's
+        # input from a register, the crossing from the symbol clock's
+        # registers through one select): in phase 3 the next symbol clock's
+        # z_re, which z1 takes at the coming edge (the eq's output register)
+        sq_op = Signal(signed(16))
+        fast += sq_op.eq(Array([z1[1], lq[0], lq[1], self.z[0]])[ph])
         sq = Signal(signed(32))
-        fast += sq.eq(sq_in * sq_in)
+        fast += sq.eq(sq_op * sq_op)
         sq_a = Signal(signed(32))
         zz_f = Signal(32)
         w_v = Signal()
@@ -487,14 +492,19 @@ class Demap(Elaboratable):
             dsel = Array(dlt[p] for p in poss)[kc]
             p_lo = Signal(signed(43), name=f"p_lo{u}")
             p_hi = Signal(signed(41), name=f"p_hi{u}")
-            d_r = Signal(signed(33), name=f"d_r{u}")
+            # the rounding's half (round_shift) added with the products and
+            # Delta << 24, so that the last stage is a shift and the
+            # saturation: dk = Delta K + 2^(LLR_SHIFT - 1)
+            half = 1 << (LLR_SHIFT - 1)
+            d_r = Signal(signed(59), name=f"d_r{u}")
             p_v, p_i = Signal(name=f"p_v{u}"), Signal(2, name=f"p_i{u}")
-            fast += [p_lo.eq(k25 * Cat(dsel[:17], Const(0, 1)).as_signed()), p_hi.eq(k25 * dsel[17:33].as_signed()),
-                     d_r.eq(dsel), p_v.eq(k_go), p_i.eq(kc)]
-            dk = Signal(signed(58), name=f"dk{u}")
+            fast += [p_lo.eq(k25 * Cat(dsel[:17], Const(0, 1)).as_signed() + half),
+                     p_hi.eq(k25 * dsel[17:33].as_signed()),
+                     d_r.eq((dsel << 24) + half), p_v.eq(k_go), p_i.eq(kc)]
+            dk = Signal(signed(59), name=f"dk{u}")
             dk_v, dk_i = Signal(name=f"dk_v{u}"), Signal(2, name=f"dk_i{u}")
-            fast += [dk.eq(Mux(k_top, d_r << 24, p_lo + (p_hi << 17))), dk_v.eq(p_v), dk_i.eq(p_i)]
-            v8 = sat127(round_shift(dk, LLR_SHIFT))
+            fast += [dk.eq(Mux(k_top, d_r, p_lo + (p_hi << 17))), dk_v.eq(p_v), dk_i.eq(p_i)]
+            v8 = sat127(dk >> LLR_SHIFT)
             for i, p in enumerate(poss):
                 with m.If(dk_v & (dk_i == i)):
                     fast += llr_f[p].eq(v8)
