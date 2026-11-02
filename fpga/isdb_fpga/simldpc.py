@@ -10,15 +10,16 @@ isdb_fpga.ldpcmodel`); the decoder is built for the file's code (a toy
 code's "rows", or the B44 rate) with S = the file's step.
 
 python -m isdb_fpga.simldpc VECTORS.json [--max N] [--all-rates] [--fill-known]
-                            [--backend pysim|cxxrtl]
+                            [--backend pysim|cxxrtl|verilator]
 
 --all-rates builds the decoder with all eleven rates' ROMs (slower to
 elaborate; the default is the file's rate only). --fill-known loads only
 the sent positions of a shortened (TMCC) codeword and lets the decoder
 write the known zeros (+127) itself; the file's values there are checked
 to be +127 first. --backend: Amaranth's Python simulator or the design
-compiled with Yosys's CXXRTL backend (`chain.simx`; the default where a
-C++ compiler is found, `$FPGA_SIM` overrides).
+compiled with Yosys's CXXRTL backend or Verilator (`chain.simx`; the
+default where a C++ compiler is found, Verilator where it is installed,
+`$FPGA_SIM` overrides).
 """
 
 import hashlib
@@ -107,25 +108,26 @@ def known_positions(doc, words, fill_known):
 
 
 def backend_default():
-    """`$FPGA_SIM` if set, else cxxrtl where it can be built, else pysim."""
-    env = os.environ.get("FPGA_SIM")
-    if env:
-        return env
-    return "cxxrtl" if simx.available() else "pysim"
+    """`$FPGA_SIM` if set, else the compiled backend where one can be built
+    (verilator, else cxxrtl: `simx.compiled_backend`), else pysim."""
+    return os.environ.get("FPGA_SIM") or simx.compiled_backend() or "pysim"
 
 
 def simulate(doc, limit=None, all_rates=False, fill_known=False, log=None, banks=3, plan=None,
              max_iter=None, backend=None):
     """Run the codewords through the decoder (see `_simulate_py` for the
     arguments and the result) on `backend`: "pysim" (Amaranth's Python
-    simulator) or "cxxrtl" (the design compiled with Yosys's CXXRTL
-    backend, `chain.simx`); default `backend_default()`. Both give the
-    same records: the results are a function of the inputs alone, and the
-    plan's timing (the waits for `load_ready`) is applied cycle for cycle
-    on both."""
+    simulator), "cxxrtl" or "verilator" (the design compiled with Yosys's
+    CXXRTL backend or with Verilator, `chain.simx`); default
+    `backend_default()`. All give the same records: the results are a
+    function of the inputs alone, and the plan's timing (the waits for
+    `load_ready`) is applied cycle for cycle on each."""
     backend = backend or backend_default()
-    fn = _simulate_cxx if backend == "cxxrtl" else _simulate_py
-    return fn(doc, limit, all_rates, fill_known, log, banks, plan, max_iter)
+    if backend == "pysim":
+        return _simulate_py(doc, limit, all_rates, fill_known, log, banks, plan, max_iter)
+    if backend not in simx.COMPILED:
+        raise ValueError(f"unknown simulation backend {backend!r} (pysim, cxxrtl, verilator)")
+    return _simulate_cxx(doc, limit, all_rates, fill_known, log, banks, plan, max_iter, backend)
 
 
 def _ports(dut):
@@ -137,7 +139,7 @@ def _ports(dut):
 _ENGINES = {}  # design key -> (engine, result group, output group)
 
 
-def _engine(doc, all_rates, banks):
+def _engine(doc, all_rates, banks, backend):
     """The compiled decoder for the file's design (code or rate set, S, K,
     shortening), its two output groups and the file's rate index. One
     engine per design and process: elaborated, converted and loaded once
@@ -149,13 +151,14 @@ def _engine(doc, all_rates, banks):
     the counters (`overruns`) carry over, which `_simulate_cxx` reports
     as a difference."""
     kw, ridx = _design(doc, all_rates, banks=banks)
-    key = json.dumps([kw["units"], kw["banks"], kw["ngroups"], kw["shortened"],
-                      sorted(kw["codes"].items())])
+    design = json.dumps([kw["units"], kw["banks"], kw["ngroups"], kw["shortened"],
+                         sorted(kw["codes"].items())])
+    key = (backend, design)
     if key not in _ENGINES:
         dut = LdpcDecoder(**kw, sim=True)  # the bounded-depth concatenations
-        h = hashlib.sha256(key.encode()).hexdigest()[:8]
+        h = hashlib.sha256(design.encode()).hexdigest()[:8]
         rates = "all" if len(kw["codes"]) > 1 else f"r{doc['rate']}"
-        e = simx.engine(dut, _ports(dut), "cxxrtl", tag=f"ldpc-s{dut.S}-k{dut.K}-{rates}-{h}")
+        e = simx.engine(dut, _ports(dut), backend, tag=f"ldpc-s{dut.S}-k{dut.K}-{rates}-{h}")
         g_res = e.group("res_valid", ["res_iterations", "res_converged", "res_unsat",
                                       "res_overrun", "cycles", "passes"])
         g_out = e.group("o_valid", ["o_data", "o_last"])
@@ -165,11 +168,11 @@ def _engine(doc, all_rates, banks):
 
 
 def _simulate_cxx(doc, limit=None, all_rates=False, fill_known=False, log=None, banks=3,
-                  plan=None, max_iter=None):
+                  plan=None, max_iter=None, backend="cxxrtl"):
     """`_simulate_py` on the compiled design: the same plan, applied cycle
     for cycle through the engine's set / tick / run, the result records
     and output words collected by the harness's output groups."""
-    e, g_res, g_out, ridx = _engine(doc, all_rates, banks)
+    e, g_res, g_out, ridx = _engine(doc, all_rates, banks, backend)
     words = doc["codewords"][:limit]
     plan = default_plan(len(words)) if plan is None else plan
     commits = sum(1 for op in plan if op[0] == "start")

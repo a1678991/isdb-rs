@@ -1,8 +1,8 @@
-"""Stream simulation of the chain's blocks: one engine API, two backends.
+"""Stream simulation of the chain's blocks: one engine API, three backends.
 
-`pysim` (the default, always available): Amaranth's Python simulator.
+`pysim` (always available): Amaranth's Python simulator.
 
-`cxxrtl` (an optional accelerator): the block is written out with Yosys's
+`cxxrtl` (a compiled accelerator): the block is written out with Yosys's
 CXXRTL backend (`write_cxxrtl` of the venv's YoWASP Yosys) and compiled
 with the system C++ compiler (`$CXX`, else `c++`) into a shared library
 together with `harness.cc`, a generic stream driver loaded through
@@ -12,16 +12,31 @@ ctypes. The CXXRTL runtime headers come from the yowasp-yosys wheel
 harness.cc without that include path, which is harmless). Nothing else is
 needed: `python -m isdb_fpga.chain.sim VECTORS --backend cxxrtl` builds
 and caches the library in fpga/build/cxxrtl/ (keyed by the design's
-RTLIL, harness.cc and this file) on first use, about 5-60 s per block.
-`available()` says whether it can be used; the tests that need it skip
-otherwise.
+RTLIL, harness.cc and the compiler flags) on first use, seconds to
+minutes per block. `available()` says whether it can be used.
+
+`verilator` (`simv.py`, the faster compiled accelerator): the same
+harness.cc around the design Verilated (Verilator 5 on PATH), cached in
+fpga/build/verilator/. `simv.available()` says whether it can be used.
+
+`compiled_backend()` is the compiled backend the tests use for the whole
+sets: `$FPGA_SIM` if it names one, else verilator where it is available,
+else cxxrtl where it is, else none (those tests skip).
 
 Why: the chain's vector sets are long (chain-1-sync: 2.24 M symbols,
 chain-6-chain: 5.59 M) and the Python simulator runs the stage-1 block at
-about 6 500 cycles per second against about 1.1 M for the compiled one
-(README "The ISDB-S3 chain"). Both backends apply the same per-cycle
+about 6 500 cycles per second against about 1 M for the compiled ones
+(README "The ISDB-S3 chain"). Every backend applies the same per-cycle
 sequence (inputs set, a clock edge, the output groups sampled after it),
-and the tests run both on the same prefix.
+and the tests run them on the same sets.
+
+Combinational outputs: the harness reads a group after the edge as the
+logic is then (an output combinational from registers included: CXXRTL
+needs a second step for it, harness.cc), and before the first edge as
+the initial state gives it, on every backend alike; tests/test_simx.py
+checks both compiled backends against the Python simulator on a bench of
+such outputs, `synth/sim_compare.py` against each other on the tests'
+benches, value for value.
 
 Engine API:
   e = engine(dut, ports, backend)   ports: the top-level signals by name
@@ -29,8 +44,6 @@ Engine API:
   g = e.group(valid, [data...])     records sampled whenever valid is high
   e.run(valid, ready, [fields...], records, tail, gaps=None)
   e.read(g) -> list of tuples
-The compiled libraries are cached in fpga/build/cxxrtl/ by the hash of the
-design's RTLIL.
 """
 
 import ctypes
@@ -76,8 +89,25 @@ def available():
     return have_cxx() and os.path.exists(os.path.join(inc, "cxxrtl", "capi", "cxxrtl_capi.h"))
 
 
+COMPILED = ("verilator", "cxxrtl")  # the compiled backends, the preferred first
+
+
+def compiled_backend():
+    """The compiled backend used where one is wanted: `$FPGA_SIM` if it
+    names one, else verilator where it is available, else cxxrtl where it
+    is, else None."""
+    env = os.environ.get("FPGA_SIM")
+    if env in COMPILED:
+        return env
+    from . import simv
+
+    if simv.available():
+        return "verilator"
+    return "cxxrtl" if available() else None
+
+
 def default_backend():
-    """`$FPGA_SIM` (pysim or cxxrtl), else pysim."""
+    """`$FPGA_SIM` (pysim, cxxrtl or verilator), else pysim."""
     return os.environ.get("FPGA_SIM", "pysim")
 
 
@@ -86,15 +116,13 @@ def _signame(s):
 
 
 class _Cxx:
+    build_dir = BUILD
+
     def __init__(self, dut, ports, tag):
         il = rtlil.convert(dut, name="top", ports=list(ports.values()))
-        # The library depends on the design, the harness and the compiler
-        # flags, and on nothing else: a change to this module's Python side
-        # must not invalidate the libraries cached across CI runs.
-        key = hashlib.sha256(il.encode() + open(os.path.join(HERE, "harness.cc"), "rb").read()
-                             + " ".join(CXXFLAGS).encode() + b"write_cxxrtl -g2").hexdigest()[:16]
-        os.makedirs(BUILD, exist_ok=True)
-        so = os.path.join(BUILD, f"{tag}-{key}.so")
+        key = hashlib.sha256(self._key(il)).hexdigest()[:16]
+        os.makedirs(self.build_dir, exist_ok=True)
+        so = os.path.join(self.build_dir, f"{tag}-{key}.so")
         if not os.path.exists(so):
             # One builder per design at a time: parallel test workers (xdist)
             # may want the same library, and the write_cxxrtl input and output
@@ -187,6 +215,14 @@ class _Cxx:
         if self.h:
             self.lib.h_destroy(self.h)
             self.h = None
+
+    @staticmethod
+    def _key(il):
+        # The library depends on the design, the harness and the compiler
+        # flags, and on nothing else: a change to this module's Python side
+        # must not invalidate the libraries cached across CI runs.
+        return (il.encode() + open(os.path.join(HERE, "harness.cc"), "rb").read()
+                + " ".join(CXXFLAGS).encode() + b"write_cxxrtl -g2")
 
     @staticmethod
     def _build(il, so):
@@ -323,6 +359,12 @@ class _Py:
 
 def engine(dut, ports, backend=None, tag="dut"):
     backend = backend or default_backend()
+    if backend == "verilator":
+        from .simv import Verilator
+
+        return Verilator(dut, ports, tag)
     if backend == "cxxrtl":
         return _Cxx(dut, ports, tag)
-    return _Py(dut, ports, tag)
+    if backend == "pysim":
+        return _Py(dut, ports, tag)
+    raise ValueError(f"unknown simulation backend {backend!r} (pysim, cxxrtl, verilator)")

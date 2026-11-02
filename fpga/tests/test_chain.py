@@ -4,11 +4,11 @@ fpga/build/chain-*.json; FPGA_VECTORS names another directory). Without a
 stage's file its tests are skipped.
 
 The default set runs on Amaranth's Python simulator over prefixes that
-still cover what the stage must do (stated per test), and, where the
-optional compiled backend is available (`isdb_fpga.chain.simx`:
-`available()`, a C++ compiler and the CXXRTL headers of the venv's
-yowasp-yosys), over the whole sets. FPGA_CHAIN_FULL=1 also runs the whole
-sets on the Python simulator (slow: minutes to hours, README).
+still cover what the stage must do (stated per test), and, where a
+compiled backend is available (`isdb_fpga.chain.simx.compiled_backend`:
+Verilator where it is installed, else CXXRTL with a C++ compiler; FPGA_SIM
+chooses), over the whole sets. FPGA_CHAIN_FULL=1 also runs the whole sets
+on the Python simulator (slow: minutes to hours, README).
 """
 
 import functools
@@ -41,7 +41,11 @@ def needs(name):
                                f"no {path(name)} (mise run fpga:vectors)")
 
 
-cxx = unittest.skipUnless(simx.available(), "no C++ compiler / CXXRTL headers (simx.available)")
+# the compiled backend of the whole-set tests: $FPGA_SIM if it names one,
+# else Verilator where it is installed, else CXXRTL (simx.compiled_backend)
+COMPILED = simx.compiled_backend()
+cxx = unittest.skipUnless(COMPILED, "no compiled backend (a C++ compiler and Verilator or the "
+                          "CXXRTL headers: simx.compiled_backend)")
 
 
 @needs("2-phase")
@@ -79,8 +83,8 @@ class SyncTest(unittest.TestCase):
         self.assertGreaterEqual(len(res["heads"]), 7)
 
     @cxx
-    def test_whole_set_cxxrtl(self):
-        res = self.check("cxxrtl", None)
+    def test_whole_set_compiled(self):
+        res = self.check(COMPILED, None)
         self.assertEqual(len(res["heads"]), len(doc("1-sync")["heads"]))
         self.assertEqual(len(res["carrier"]), 1)
         self.assertTrue(any(h[6] and h[7] == 0 for h in res["heads"]), "a frame head")
@@ -95,7 +99,7 @@ class SyncTest(unittest.TestCase):
         heads = [list(h) for h in d["heads"]]
         heads[3][4] ^= 1
         d["heads"] = heads
-        res = simulate_stage1(doc("1-sync"), "cxxrtl", self.PREFIX)
+        res = simulate_stage1(doc("1-sync"), COMPILED, self.PREFIX)
         bad = compare_stage1(d, res)
         self.assertTrue(any("head" in b for b in bad), bad)
 
@@ -116,8 +120,8 @@ class PhaseTest(unittest.TestCase):
         self.run_stage("pysim")
 
     @cxx
-    def test_cxxrtl(self):
-        self.run_stage("cxxrtl")
+    def test_compiled(self):
+        self.run_stage(COMPILED)
 
 
 @needs("3-eq")
@@ -142,8 +146,8 @@ class EqTest(unittest.TestCase):
         self.run_stage("pysim", self.PREFIX)
 
     @cxx
-    def test_whole_frame_cxxrtl(self):
-        self.run_stage("cxxrtl", None)
+    def test_whole_frame_compiled(self):
+        self.run_stage(COMPILED, None)
 
     @unittest.skipUnless(FULL, "FPGA_CHAIN_FULL=1")
     def test_whole_frame_pysim(self):
@@ -169,14 +173,14 @@ class TmccTest(unittest.TestCase):
         self.run_stage("pysim")
 
     @cxx
-    def test_cxxrtl(self):
-        self.run_stage("cxxrtl")
+    def test_compiled(self):
+        self.run_stage(COMPILED)
 
     @cxx
     def test_bch_corrects_the_tmcc(self):
         # 7 bit errors in the data bits (positions 1 870 ..): corrected, the
         # same information bits and layout, 7 reported
-        self.run_stage("cxxrtl", flips=(1870, 2000, 5003, 7777, 9000, 11000, 11483))
+        self.run_stage(COMPILED, flips=(1870, 2000, 5003, 7777, 9000, 11000, 11483))
 
 
 @needs("3-eq")
@@ -202,8 +206,8 @@ class DemapTest(unittest.TestCase):
         self.run_stage("pysim", 12_000)
 
     @cxx
-    def test_whole_frame_cxxrtl(self):
-        self.run_stage("cxxrtl", None)
+    def test_whole_frame_compiled(self):
+        self.run_stage(COMPILED, None)
 
 
 @needs("6-chain")
@@ -213,8 +217,8 @@ class ChainTest(unittest.TestCase):
     input symbols in, every `Slots` word out compared with the model's,
     with the host's taps written at open and the LDPC stub (ldpc_if.py)
     answering each frame's codewords after its TMCC codeword is committed.
-    The compiled backend only (about 50 000 cycles/s here; the Python
-    simulator would need hours): by default the first 2 260 000 symbols
+    The compiled backend only (about 300 000 cycles/s on Verilator, 37 000
+    on CXXRTL here; the Python simulator would need hours): by default the first 2 260 000 symbols
     (lock, the frame head, frame 0's TMCC and status blocks, 683 words);
     the whole set (5 587 896 symbols, 3 frames, frame 2 decoded: 120 slot
     blocks, 211 281 words, about 3 minutes) with FPGA_CHAIN_FULL=1."""
@@ -222,7 +226,7 @@ class ChainTest(unittest.TestCase):
     def run_chain(self, symbols):
         from isdb_fpga.chain.stages import run_chain
 
-        what, bad = run_chain(doc("6-chain"), doc("3-eq")["taps"], "cxxrtl", symbols)
+        what, bad = run_chain(doc("6-chain"), doc("3-eq")["taps"], COMPILED, symbols)
         self.assertEqual(bad, [], "\n".join(bad[:8]))
         return what
 
@@ -292,10 +296,10 @@ class TmccOverrunTest(unittest.TestCase):
         f = b.fin
         ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a, "b": b.b, "c": b.c,
                  "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word, "ovr": f.tmcc_overruns}
-        backend = "cxxrtl" if simx.available() else "pysim"
+        backend = COMPILED or "pysim"
         e = simx.engine(b, ports, backend, tag="tovr")
         g = e.group("ov", ["ow"])
-        e.stall_limit = 1_000_000 if backend == "cxxrtl" else None
+        e.stall_limit = 1_000_000 if backend != "pysim" else None
         e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=20_000)
         out = [w for (w,) in e.read(g)]
         self.assertEqual(e.get("ovr"), 1)
@@ -361,7 +365,7 @@ class BpskCodewordTest(unittest.TestCase):
         ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a,
                  "ov": dm.o_valid, "on": dm.o_n, "of": dm.o_first, "ol": dm.o_last, "otag": dm.o_tag,
                  "op": dm.o_pos[0]}
-        backend = "cxxrtl" if simx.available() else "pysim"
+        backend = COMPILED or "pysim"
         e = simx.engine(b, ports, backend, tag="bpsk")
         g = e.group("ov", ["on", "of", "ol", "otag", "op"])
         recs = [(0, 0)] + [(1, (s * 37) % 900 - 450) for s in range(N + 100)]
@@ -555,10 +559,10 @@ class BchTest(unittest.TestCase):
         self.assertEqual(bad, [])
 
     @cxx
-    def test_cxxrtl(self):
+    def test_compiled(self):
         from isdb_fpga.chain.bchsim import run
 
-        _, _, bad = run("cxxrtl", 32)
+        _, _, bad = run(COMPILED, 32)
         self.assertEqual(bad, [])
 
     def test_python_port_corrects(self):

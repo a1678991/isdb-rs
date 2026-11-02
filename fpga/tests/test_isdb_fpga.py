@@ -29,6 +29,7 @@ from amaranth.hdl import UnusedElaboratable  # noqa: E402
 from amaranth.sim import Simulator  # noqa: E402
 
 from isdb_fpga import ldpc, ldpcmodel, ldpcqueue, ldpcsched, simldpc, tx, txmodel  # noqa: E402
+from isdb_fpga.chain import simx  # noqa: E402
 from isdb_fpga.frontend import crc32c_word, crc32c_word_terms  # noqa: E402
 from isdb_fpga.sim import compare, load, simulate, simulate_top  # noqa: E402
 from isdb_fpga.sim import compare_tx, is_tx, run_tx_top, simulate_tx, simulate_tx_top  # noqa: E402
@@ -662,11 +663,12 @@ class TxRegisterTest(unittest.TestCase):
 # Vectors: the Rust model's ldpc-*.json (`mise run fpga:vectors`) and the
 # Python model's ldpcvec-py-*.json (`mise run fpga:ldpc-vectors`), in the
 # same directory; without them the vector tests are skipped (the unit
-# tests below run on the toy codes, made in process). The HDL runs on the
-# compiled CXXRTL backend where a C++ compiler is found (`simldpc`,
-# `chain.simx`; FPGA_SIM=pysim forces the Python simulator), and then the
-# default covers every codeword of every layered B44 set, one all-rates
-# decoder per step (17, 34, 187); on the Python simulator (about 1 200
+# tests below run on the toy codes, made in process). The HDL runs on a
+# compiled backend where one can be built (`simldpc`, `chain.simx`:
+# Verilator where it is installed, else CXXRTL; FPGA_SIM=pysim forces the
+# Python simulator), and then the default covers every codeword of every
+# layered B44 set, one all-rates decoder per step (17, 34, 187); on the
+# Python simulator (about 1 200
 # cycles per second: 70-80 s per 93/120 codeword) only the first codewords
 # of the 93/120 and TMCC sets at step 17 (FPGA_LDPC_ALL=1: every set).
 # LdpcPysimTest keeps the Python simulator's path covered either way.
@@ -676,7 +678,7 @@ LDPC_DEFAULT = {"ldpc-12-93-layered17.json": 2, "ldpc-13-tmcc-layered17.json": 1
 
 
 def ldpc_compiled():
-    return simldpc.backend_default() == "cxxrtl"
+    return simldpc.backend_default() in simx.COMPILED
 
 
 def ldpc_files():

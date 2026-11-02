@@ -1,4 +1,5 @@
-// Generic stream driver for a CXXRTL-compiled block (isdb_fpga/chain/simx.py).
+// Generic stream driver for a compiled block (isdb_fpga/chain/simx.py):
+// CXXRTL's C API, or the same subset on a Verilated model (simv.py).
 //
 // The design is compiled together with this file into a shared library;
 // Python (ctypes) names the ports, hands over the input records and the
@@ -74,7 +75,7 @@ void *h_create() {
 		put(rst, 1, 0);
 	// settled before the first clock (no edge: the clock stays low), so a
 	// read before it sees the combinational outputs of the initial state,
-	// as on the Python simulator
+	// as on the Python simulator and on Verilator
 	put(s->clk, 1, 0);
 	cxxrtl_step(s->h);
 	return s;
@@ -118,8 +119,8 @@ static void edge(Harness *s) {
 	// CXXRTL's step evaluates the logic once and commits the registers
 	// after it: an output combinational from registers would still show
 	// its value from before the edge. A second step (the clock still high,
-	// no edge) settles it, as on the Python simulator. (A backend whose
-	// step settles by itself defines HARNESS_EDGE_SETTLES.)
+	// no edge) settles it. A Verilated model's eval() settles by itself
+	// (simv.py's adapter defines HARNESS_EDGE_SETTLES).
 	cxxrtl_step(s->h);
 #endif
 	s->cycles++;
