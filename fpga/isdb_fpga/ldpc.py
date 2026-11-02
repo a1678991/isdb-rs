@@ -174,7 +174,37 @@ def _bits(x):
     return max(1, int(x).bit_length())
 
 
-def _rotate(m, vec, width, n, amount, name):
+def _pow2(n):
+    """The power of two at least n (at least 2): the ROMs and lane memories
+    are that deep, so every address their ports can see is inside them (a
+    don't-care read on an idle cycle stays in range: the compiled
+    simulation checks it, and a block RAM is that deep anyway)."""
+    return max(2, 1 << (n - 1).bit_length())
+
+
+CAT_FANIN = 32
+
+
+def _cat(m, parts, name):
+    """Cat(*parts) for a long list, as a tree of wires of at most CAT_FANIN
+    parts each: the same bits, but a compiled simulation gets nested
+    expressions of bounded depth instead of one S-deep concatenation (the
+    C++ compiler refuses that at S = 187: template depth). Each node is
+    `chunk ^ 0` into a wire marked keep: a plain connection would only be
+    an alias of the concatenation in RTLIL, and write_cxxrtl -O6 inlines
+    every public wire not marked keep. Synthesis removes the XOR."""
+    if len(parts) <= CAT_FANIN:
+        return Cat(*parts)
+    nodes = []
+    for j in range(0, len(parts), CAT_FANIN):
+        chunk = Cat(*parts[j:j + CAT_FANIN])
+        w = Signal(len(chunk), name=f"{name}_{j // CAT_FANIN}", attrs={"keep": 1})
+        m.d.comb += w.eq(chunk ^ Const(0, len(chunk)))
+        nodes.append(w)
+    return _cat(m, nodes, name + "_")
+
+
+def _rotate(m, vec, width, n, amount, name, cat):
     """vec (n fields of `width` bits) rotated so that field i of the result
     is field (i - amount) mod n of vec (amount < n): a barrel rotator, one
     2:1 mux level per bit of `amount`."""
@@ -183,7 +213,7 @@ def _rotate(m, vec, width, n, amount, name):
         sh = 1 << i
         if sh >= n:
             break
-        rot = Cat(*[cur[width * ((f - sh) % n):width * ((f - sh) % n) + width] for f in range(n)])
+        rot = cat([cur[width * ((f - sh) % n):width * ((f - sh) % n) + width] for f in range(n)], f"{name}{i}r")
         # a rotation by sh < n; amounts are < n, so the levels' sum stays < 2n:
         # the wrap is exact because every level is a true rotation mod n
         nxt = Signal(width * n, name=f"{name}{i}")
@@ -222,10 +252,12 @@ class LdpcDecoder(Elaboratable):
     `ngroups` 120), the rate index of the ports is the position in
     sorted(codes)."""
 
-    def __init__(self, units, codes=None, ngroups=120, shortened=ldpcmodel.TMCC_SHORT, banks=3):
+    def __init__(self, units, codes=None, ngroups=120, shortened=ldpcmodel.TMCC_SHORT, banks=3,
+                 sim=False):
         self.S = S = units
         assert banks >= 2, "at least two banks (one loading while one decodes)"
         self.K = banks
+        self.sim = sim  # the concatenation tree of `_cat` (compiled simulation only)
         assert GROUP % S == 0 and S <= GROUP // 2, f"S = {S} must divide 374 and be at most 187"
         self.codes = codes if codes is not None else default_codes()
         self.rate_ids = sorted(self.codes)
@@ -274,6 +306,22 @@ class LdpcDecoder(Elaboratable):
 
     def elaborate(self, platform):
         m = Module()
+
+        def cat(parts, name):
+            """Cat(*parts); for the compiled simulation a bounded-depth tree
+            (`_cat`), which a synthesis build does without."""
+            return _cat(m, parts, name) if self.sim else Cat(*parts)
+
+        def deep(n):
+            """A memory's depth: for the compiled simulation a power of two,
+            so a don't-care address on an idle cycle stays inside it (CXXRTL
+            checks every port access); a synthesis build uses n."""
+            return _pow2(n) if self.sim else n
+
+        def idle0(valid, addr):
+            """A memory address, 0 on an idle cycle for the compiled
+            simulation (the counters run one past the end between passes)."""
+            return Mux(valid, addr, 0) if self.sim else addr
         S, W, Wp, NG = self.S, self.W, self.Wp, self.NG
         rates = self.rates
         gbits = _bits(NG - 1)
@@ -343,12 +391,12 @@ class LdpcDecoder(Elaboratable):
                 sh += w
             return out
 
-        info_rom = Memory(shape=gbits + 11, depth=len(info_init) + 34, init=info_init)
+        info_rom = Memory(shape=gbits + 11, depth=deep(len(info_init) + 34), init=info_init)
         chain_init = [ch_pack(e) for e in chain_rows] or [0]
-        chain_rom = Memory(shape=ch_width, depth=max(len(chain_init), 2), init=chain_init)
-        gap_rom = Memory(shape=stepbits + gapbits, depth=len(gap_rows),
+        chain_rom = Memory(shape=ch_width, depth=deep(max(len(chain_init), 2)), init=chain_init)
+        gap_rom = Memory(shape=stepbits + gapbits, depth=deep(len(gap_rows)),
                          init=[i | g << stepbits for i, g in gap_rows])
-        divmod_rom = Memory(shape=stbits + ubits, depth=GROUP,
+        divmod_rom = Memory(shape=stbits + ubits, depth=deep(GROUP),
                             init=[(s // S) | (s % S) << stbits for s in range(GROUP)])
         m.submodules.info_rom = info_rom
         m.submodules.chain_rom = chain_rom
@@ -379,7 +427,7 @@ class LdpcDecoder(Elaboratable):
         for b in range(K):
             lanes = []
             for lam in range(S):
-                mem = Memory(shape=9, depth=NG * Wp, init=[])
+                mem = Memory(shape=9, depth=deep(NG * Wp), init=[])
                 m.submodules[f"l{b}_{lam}"] = mem
                 lanes.append((mem.read_port(), mem.write_port()))
             banks.append(lanes)
@@ -543,7 +591,10 @@ class LdpcDecoder(Elaboratable):
             {"eq0": W, "eq1": W, "td": S, "lo1": S, "lo2": S}.get(n, 0), len(v)))
             for n, v in ch.items()}), "x0")
         # A (= X0): lane addresses at the memories; record and sign reads
-        m.d.comb += [rec_rp.addr.eq(x0["n"]), sgn_rp.addr.eq(x0["e"])]
+        # read only for a valid entry (`idle0`: the step and edge counters run
+        # one past the pass's end between passes)
+        m.d.comb += [rec_rp.addr.eq(idle0(x0["v"], x0["n"])), sgn_rp.addr.eq(idle0(x0["v"], x0["e"])),
+                     rec_rp.en.eq(x0["v"]), sgn_rp.en.eq(x0["v"])]
         x1 = pipe(x0, "x1")
 
         # --- X1: rotate lanes to units, r_old, the per-unit flags ------------
@@ -560,7 +611,7 @@ class LdpcDecoder(Elaboratable):
         bsel = x1["b"]
         rotated = Signal(9 * S)
         # unit u <- lane (u - b) mod S: a right rotation of the lane vector by b
-        m.d.comb += rotated.eq(_rotate(m, Cat(*rdata), 9, S, bsel, "rr"))
+        m.d.comb += rotated.eq(_rotate(m, cat(rdata, "rdcat"), 9, S, bsel, "rr", cat))
         gt = [x1["st"] > x1["c_eq0"], x1["st"] > x1["c_eq1"]]
         eq = [x1["st"] == x1["c_eq0"], x1["st"] == x1["c_eq1"]]
         for u in range(S):
@@ -619,7 +670,7 @@ class LdpcDecoder(Elaboratable):
             fu_word.append(Cat(t, rmag3[u], rneg3[u], h3[u], fl3[u]["dmode"], fl3[u]["acc"],
                                fl3[u]["valid"]))
         m.d.comb += [
-            fu_wp.addr.eq(push_ptr), fu_wp.data.eq(Cat(*fu_word)), fu_wp.en.eq(x3["v"]),
+            fu_wp.addr.eq(push_ptr), fu_wp.data.eq(cat(fu_word, "fucat")), fu_wp.en.eq(x3["v"]),
             fs_wp.addr.eq(push_ptr),
             fs_wp.data.eq(Cat(x3["g"], x3["w0"], x3["w1"], x3["b"], x3["e"])),
             fs_wp.en.eq(x3["v"]),
@@ -662,8 +713,8 @@ class LdpcDecoder(Elaboratable):
             rec_word.append(Cat(o1[:7], o2[:7], imin[u]))
             with m.If(x5["v"]):
                 m.d.sync += [rm1[u].eq(o1), rm2[u].eq(o2), rim[u].eq(imin[u]), rpar[u].eq(par[u])]
-        m.d.comb += [rec_wp.addr.eq(x5["n"]), rec_wp.data.eq(Cat(*rec_word)), rec_wp.en.eq(x5["v"])]
-        m.d.sync += [hvalid.eq(x5["v"]), hvec.eq(Cat(*hpar))]
+        m.d.comb += [rec_wp.addr.eq(idle0(x5["v"], x5["n"])), rec_wp.data.eq(cat(rec_word, "reccat")), rec_wp.en.eq(x5["v"])]
+        m.d.sync += [hvalid.eq(x5["v"]), hvec.eq(cat(hpar, "hcat"))]
         # popcount in two stages
         chunks = [hvec[i:i + 8] for i in range(0, S, 8)]
         part = [Signal(4, name=f"pc{i}") for i in range(len(chunks))]
@@ -715,8 +766,8 @@ class LdpcDecoder(Elaboratable):
         vc = [Signal(signed(10), name=f"vc_{u}") for u in range(S)]
         xc = [Signal(4, name=f"xc_{u}") for u in range(S)]  # h, acc, valid
         sh_e = wb["sh"][gbits + 2 * stbits + ubits:]
-        m.d.comb += [sgn_wp.addr.eq(sh_e), sgn_wp.en.eq(wb["v"]),
-                     sgn_wp.data.eq(Cat(*[rnew_b[u] < 0 for u in range(S)]))]
+        m.d.comb += [sgn_wp.addr.eq(idle0(wb["v"], sh_e)), sgn_wp.en.eq(wb["v"]),
+                     sgn_wp.data.eq(cat([rnew_b[u] < 0 for u in range(S)], "sgncat"))]
         for u in range(S):
             f = fub[u]
             t, rmag, rneg, h, dmode, acc, valid = (f[:8].as_signed(), f[8:15], f[15], f[16],
@@ -741,8 +792,8 @@ class LdpcDecoder(Elaboratable):
         units = [Cat(vc[u], xc[u]) for u in range(S)]
         lanes_w = Signal(14 * S)
         # lane lam <- unit (lam + b) mod S: the inverse rotation
-        m.d.comb += lanes_w.eq(_rotate(m, Cat(*units), 14, S,
-                                       Mux(c_b == 0, 0, S - c_b), "rw"))
+        m.d.comb += lanes_w.eq(_rotate(m, cat(units, "ucat"), 14, S,
+                                       Mux(c_b == 0, 0, S - c_b), "rw", cat))
         wd_addr = [Signal(abits, name=f"wda{lam}") for lam in range(S)]
         vd = [Signal(signed(10), name=f"vd_{lam}") for lam in range(S)]
         xd = [Signal(4, name=f"xd_{lam}") for lam in range(S)]
@@ -892,7 +943,7 @@ class LdpcDecoder(Elaboratable):
         buf_after = Signal.like(buf)
         m.d.comb += [cnt_after.eq(Mux(emit, Mux(cnt >= 16, cnt - 16, 0), cnt)),
                      buf_after.eq(Mux(emit, buf >> 16, buf))]
-        hbits = Cat(*[odata[lam][8] for lam in range(S)])
+        hbits = cat([odata[lam][8] for lam in range(S)], "hbcat")
         with m.If(out_active & ~out_go):
             with m.If(o_inflight):
                 m.d.sync += [buf.eq(buf_after | (hbits << cnt_after)), cnt.eq(cnt_after + S)]
@@ -977,7 +1028,7 @@ class LdpcDecoder(Elaboratable):
         g_ld = Mux(cur["isp"], cur["G"] + cur["r"], cur["quo"])
         j_ld = Mux(cur["isp"], cur["quo"], cur["r"])
         regs = cur
-        jdm = Memory(shape=stbits + ubits, depth=GROUP,
+        jdm = Memory(shape=stbits + ubits, depth=deep(GROUP),
                      init=[(j // S) | (j % S) << stbits for j in range(GROUP)])
         m.submodules.jdm = jdm
         jrp = jdm.read_port(domain="comb")

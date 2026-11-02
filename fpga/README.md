@@ -67,8 +67,8 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `isdb_fpga/ldpcsched.py` | the decoder's static schedule computed at elaboration (layer address generation and its derivation, chain thresholds, hazard gaps) and `lane_decode`, the design's own scheme in Python |
 | `isdb_fpga/ldpcmodel.py` | a Python model of the LDPC contract, the IRA encoder and the vectors writer (`python -m isdb_fpga.ldpcmodel --all build`; `--check VECTORS…`) |
 | `isdb_fpga/ldpcqueue.py` | a model of the decoder's codeword queue over frames (K banks, the overrun rule, the TMCC staged or interleaved) |
-| `isdb_fpga/simldpc.py` | the decoder against LDPC vectors files (`python -m isdb_fpga.simldpc VECTORS… [--max N] [--fill-known] [--all-rates]`) |
-| `synth/ldpc_estimate.py`, `synth/ldpc_cycles.py`, `synth/ldpc_memories.py` | the decoder's Yosys estimate per S, its cycles per iteration per rate and S, and how Yosys maps each memory shape |
+| `isdb_fpga/simldpc.py` | the decoder against LDPC vectors files (`python -m isdb_fpga.simldpc VECTORS… [--max N] [--fill-known] [--all-rates] [--backend pysim\|cxxrtl]`): Amaranth's Python simulator or the design compiled with CXXRTL (`chain.simx`, the default where a C++ compiler is found) |
+| `synth/ldpc_estimate.py`, `synth/ldpc_cycles.py`, `synth/ldpc_memories.py`, `synth/ldpc_simspeed.py`, `synth/ldpc_latency.py` | the decoder's Yosys estimate per S, its cycles per iteration per rate and S, how Yosys maps each memory shape, the simulation speed of both backends, the measured write latency |
 | `isdb_fpga/chain/` | the ISDB-S3 chain after the front end (stages 1–6, 8, 9; [below](#the-isdb-s3-chain-slotsrx)) |
 | `synth/chain_estimate.py` | Yosys estimates of the chain's blocks |
 | `tests/test_chain.py` | the chain's stage and chain tests against `chain-*.json` |
@@ -685,6 +685,41 @@ the same sets bit-exact through K = 3, plus the overrun record in order
 (K = 2), two load contexts open at once, and the limit as a run-time
 input; the Rust set `ldpc-2-93-layered34` (3 codewords) bit-exact at
 81–105 s per codeword (run by the integrator).
+
+**Simulation backends (2026-11-02).** `simldpc` runs the decoder on
+Amaranth's Python simulator or compiled with Yosys's CXXRTL backend
+through the chain's `chain.simx` (write_cxxrtl, `c++ -O1`, a library per
+design cached in `fpga/build/cxxrtl` by its RTLIL, loaded through
+ctypes); the compiled one is the default where a C++ compiler is found,
+`FPGA_SIM=pysim` forces the Python one. The B44 sets run on one
+all-rates decoder per step (one library); a process keeps one engine per
+design and reuses it across files (the decoder is idle and history-free
+after a run). For the compiled build `LdpcDecoder(..., sim=True)` makes
+the S-wide concatenations a bounded-depth tree (the C++ compiler refuses
+a 187-deep one), the memories' depths powers of two and idle addresses 0
+(CXXRTL checks every port access); the synthesis build is without them
+(S = 34, K = 3: 14 043 LUT, 76.5 BRAM36, the same as before but 9 LUT
+for the record and sign memories' read enables). Measured on this host
+(Ryzen 9 7950X), one core:
+
+| Design | compile (write_cxxrtl + c++ -O1) | CXXRTL | Python simulator |
+|---|---|---|---|
+| S = 17, all rates | 25 s | 207 000 cycles/s | 1 170 cycles/s |
+| S = 34, all rates | 59 s | 63 000 cycles/s | 630 cycles/s |
+| S = 187, all rates | 977 s | 3 100 cycles/s | — |
+| toy codes (n = 2 244), each | 15–65 s (S = 187: ≈ 19 min) | — | — |
+
+So the default test now covers every codeword of every layered B44 set
+at steps 17 and 34 (the Rust model's 11 sets and the Python model's 2:
+65 codewords, traces included) and every toy set but S = 187; S = 187
+(its B44 set and its toy set: the compile alone exceeds the CI budget)
+is opt-in with `FPGA_LDPC_ALL=1` (bit-exact on both, 2026-11-02).
+`LdpcPysimTest` keeps the Python simulator's path covered. The LDPC
+tests under `pytest -n auto --dist worksteal` on this host: 68 s with
+the libraries cached, about 150 s with them built (longest:
+`test_b44_step34`, 67 s / 148 s), against 193 s (`test_b44_vectors`,
+3 codewords) and 143 s (`test_toy_codes`) for the previous Python-only
+set.
 
 ## Integration
 
