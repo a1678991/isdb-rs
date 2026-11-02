@@ -12,13 +12,17 @@ FIFO, nothing else crosses.
   slot codewords, 1: the frame's TMCC codeword); OP_WRITE writes `in_n`
   (1 .. 5) LLRs, lane l at codeword position `in_pos[l]` (< 44 880) with
   value `in_llr[l]` (i8, -127 .. 127) into the open buffer of `in_ctx`;
-  OP_DONE closes it: decode as rate `in_rate` (numerator r of r/120; 61
+  OP_DONE closes it (a write beat may also carry `in_first`, which opens
+  the buffer first, and `in_last`, which closes it after: the demapper's
+  form, one beat per main symbol with no beat to spare at a codeword's
+  ends; the TMCC burst uses OP_BEGIN and OP_DONE): decode as rate `in_rate` (numerator r of r/120; 61
   for the TMCC), at most `in_max_iter` iterations, offset `in_offset`,
   `in_shortened` (the TMCC's shortened 61/120 word: positions 0 .. 1 869
   and 11 484 .. 22 813 are known zeros the decoder fills with +127 itself;
-  they are never written), with the 16-bit `in_tag` returned with the
+  they are never written), with the 32-bit `in_tag` returned with the
   result (bits 0-6 the slot index, bit 7 TMCC, bits 8-15 the frame
-  counter's low byte).
+  counter's low byte, 16-19 the rate code, 20-23 the modulation code,
+  24-26 the transmission mode: what the finish stage needs of the slot).
 - A slot codeword is written by the demapper, one beat per main symbol
   (its 1 .. 5 label bits at their de-interleaved positions); the TMCC
   codeword is burst from the TMCC stage's staging buffer (5 positions per
@@ -60,6 +64,7 @@ from amaranth.hdl import Signal, signed
 OP_BEGIN, OP_WRITE, OP_DONE = 0, 1, 2
 LANES = 5
 TAG_TMCC = 1 << 7
+TMCC_RATE_CODE = 3  # 61/120
 
 
 class LdpcPort:
@@ -77,11 +82,13 @@ class LdpcPort:
         self.in_max_iter = Signal(8, name=f"{name}_in_max_iter")
         self.in_offset = Signal(3, name=f"{name}_in_offset")
         self.in_shortened = Signal(name=f"{name}_in_shortened")
-        self.in_tag = Signal(16, name=f"{name}_in_tag")
+        self.in_first = Signal(name=f"{name}_in_first")
+        self.in_last = Signal(name=f"{name}_in_last")
+        self.in_tag = Signal(32, name=f"{name}_in_tag")
         self.out_valid = Signal(name=f"{name}_out_valid")
         self.out_ready = Signal(name=f"{name}_out_ready")
         self.out_head = Signal(name=f"{name}_out_head")
-        self.out_tag = Signal(16, name=f"{name}_out_tag")
+        self.out_tag = Signal(32, name=f"{name}_out_tag")
         self.out_iterations = Signal(8, name=f"{name}_out_iterations")
         self.out_converged = Signal(name=f"{name}_out_converged")
         self.out_bits = Signal(16, name=f"{name}_out_bits")

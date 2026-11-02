@@ -229,6 +229,44 @@ class SeqDiv(Elaboratable):
         return m
 
 
+class SeqDivR(Elaboratable):
+    """Unsigned restoring division q = n // d with `k` quotient bits per
+    clock (k chained compare-subtract steps): ceil(wn / k) cycles after
+    `start` `done` pulses with q valid (held). For the frame-boundary
+    divisions that must be short (demap.py: n0 and its reciprocal)."""
+
+    def __init__(self, wn, wd, k=3):
+        self.wn = -(-wn // k) * k
+        self.wd, self.k = wd, k
+        self.start = Signal()
+        self.n = Signal(wn)
+        self.d = Signal(wd)
+        self.q = Signal(self.wn)
+        self.done = Signal()
+        self.busy = Signal()
+
+    def elaborate(self, platform):
+        m = Module()
+        rem = Signal(self.wd + 1)
+        dd = Signal(self.wd)
+        steps = self.wn // self.k
+        i = Signal(range(steps + 1))
+        m.d.sync += self.done.eq(0)
+        with m.If(self.start):
+            m.d.sync += [self.q.eq(self.n), rem.eq(0), dd.eq(self.d), i.eq(0), self.busy.eq(1)]
+        with m.Elif(self.busy):
+            r, q = rem, self.q
+            for _ in range(self.k):
+                r2 = Cat(q[-1], r[: self.wd])
+                ge = r2 >= dd
+                r = Mux(ge, r2 - dd, r2)[: self.wd + 1]
+                q = Cat(ge, q[:-1])
+            m.d.sync += [rem.eq(r), self.q.eq(q), i.eq(i + 1)]
+            with m.If(i == steps - 1):
+                m.d.sync += [self.busy.eq(0), self.done.eq(1)]
+        return m
+
+
 class DivRound(Elaboratable):
     """`fx::div_round` for a > 0 numerators: round(n / d) = floor((2n + d) /
     2d) on `SeqDiv` (wn + 2 cycles after `start`, `done` pulses, `q` held).

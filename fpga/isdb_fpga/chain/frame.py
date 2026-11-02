@@ -94,6 +94,13 @@ class FrameCtl(Elaboratable):
         self.o_layout_from = Signal(32)
         # the open frame
         self.cur_valid = Signal()
+        # the same events, combinational at the centre cycle (for the back
+        # end's routing record), and a second read port of the layout in
+        # force (the demapper's codeword cursor)
+        self.done_now = Signal()
+        self.drop_now = Signal()
+        self.r2_addr = Signal(range(SLOTS))
+        self.r2_data = Signal(LAY_BITS)
         self.cur_frame = Signal(32)
 
     def elaborate(self, platform):
@@ -102,6 +109,7 @@ class FrameCtl(Elaboratable):
         m.submodules.lay = lay
         wp = lay.write_port()
         rp = lay.read_port()
+        rp2 = lay.read_port()
         bank_force = Signal(2)
         q_valid = Signal(3)
         q_frame = [Signal(32, name=f"q_frame{b}") for b in range(3)]
@@ -179,6 +187,11 @@ class FrameCtl(Elaboratable):
                 kbase_t.eq(Mux(first_slot, 0, kbase_t + 66 * TMCC_RUN)),
             ]
 
+        m.d.comb += [
+            c.done_now.eq(c.active & ~first & c.last & (seen + 1 == FRAME)),
+            c.drop_now.eq((first & c.cur_valid) | (c.active & ~first & c.last & (seen + 1 != FRAME))),
+            rp2.addr.eq(Cat(c.r2_addr, bank_force)), c.r2_data.eq(rp2.data),
+        ]
         m.d.sync += [c.o_done.eq(0), c.o_dropped.eq(0)]
         with m.If(c.restart):
             with m.If(c.cur_valid):

@@ -51,7 +51,7 @@ from amaranth.lib.memory import Memory
 
 from .common import LAYOUT_LAG, SLOTS, TMCC_SHIFT, round_shift, sat127
 from .frame import lay_pack
-from .ldpc_if import OP_BEGIN, OP_DONE, OP_WRITE, TAG_TMCC
+from .ldpc_if import OP_BEGIN, OP_DONE, OP_WRITE, TAG_TMCC, TMCC_RATE_CODE
 from .tables import lfsr_state
 
 TMCC_BITS = 31680
@@ -77,7 +77,7 @@ class TmccSoft(Elaboratable):
         self.b_op = Signal(2)
         self.b_pos = Signal(16)
         self.b_llr = Signal(signed(8))
-        self.b_tag = Signal(16)
+        self.b_tag = Signal(32)
         self.grant = Signal()  # the beat is taken this cycle
         self.overrun = Signal(16)
         self.busy = Signal()
@@ -97,7 +97,7 @@ class TmccSoft(Elaboratable):
         s = Mux(self.t_odd, zq - zi, zi + zq)
         soft = Signal(signed(8))
         m.d.comb += soft.eq(sat127(round_shift(s, TMCC_SHIFT)))
-        m.d.comb += [wp.addr.eq(self.t_idx), wp.data.eq(soft), wp.en.eq(self.t_valid)]
+        m.d.comb += [wp.addr.eq(Mux(self.t_valid, self.t_idx, 0)), wp.data.eq(soft), wp.en.eq(self.t_valid)]
         m.d.sync += [self.s_valid.eq(self.t_valid), self.s_idx.eq(self.t_idx), self.s_soft.eq(soft)]
 
         r = Signal(15)
@@ -128,7 +128,7 @@ class TmccSoft(Elaboratable):
                     m.d.sync += self.busy.eq(0)
                     m.next = "IDLE"
         m.d.comb += [
-            self.b_tag.eq(TAG_TMCC | (fr << 8)),
+            self.b_tag.eq(TAG_TMCC | (fr << 8) | (TMCC_RATE_CODE << 16)),
             rp.addr.eq(Mux(fsm.ongoing("WRITE"), Mux(take & (r != TMCC_BITS - 1), r + 1, r), 0)),
             rp.en.eq(1),
         ]
