@@ -1619,6 +1619,33 @@ The host drops under induced load are the decoder sharing the cores with
 48 busy threads (≈ 0.9× real time then); they are reported
 discontinuities, not stalls of the capture.
 
+### The receive chain's fixed-point model on a live capture (2026-11-02)
+
+The FPGA receive chain's CPU model (`isdbs3_phy::chain`, the reference
+the chain HDL must match; docs/plans/isdbs3-fpga-rx.md, "Results,
+piece 3/5 on a live capture") against the host receiver on 30 s of live
+`Symbols` words, receive only: PlutoSky R2 with `isdb_txrx2_top.bin`, BS7
+(16APSK 93/120, 3 TLV streams), `isdb symbols --offload auto --seconds
+30`: 50.8 MB/s, 0 DMA overflows, 0 losses; sync Es/N0 14.2 dB, main MER
+15.4 dB, residual drift −0 … −185 Hz.
+
+| | host receiver (`isdb rx --symbols`) | chain model (`--chain fixed`) | its `Slots` words (`--slots`) |
+|---|---|---|---|
+| frames, TMCC ok | 907, 907 | 907, 907 (2 undecoded) | 907, 907 (2 undecoded) |
+| slots, LDPC / BCH failed | 87 072, 0 / 0 | 86 880, 0 / 0 | 86 880, 0 / 0 |
+| mean LDPC iterations | 2.055 | 2.066 | 2.066 |
+| user CPU for 30 s | 286.5 s | 164.2 s | 2.4 s |
+
+- **Slot by slot** (`examples/chaincheck`): 86 880 of 86 880 slots
+  byte-identical, every frame matched; the 192 slots the chain lacks
+  are its first two frames (layout lag 2).
+- **TLV packets** (`tools/tlv-packet-diff.py`): the chain's three
+  streams equal the host's from byte 275 264 (2 frames × 32 slots ×
+  4 301 bytes) to the end, nothing else differs; the `--slots` replay's
+  TLV files are byte-identical to the model's.
+- The chain's carrier register followed the drift (−148.7 Hz at the
+  end against the host's −155 Hz tracked).
+
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
 The checks of [docs/plans/isdbs-fpga-tx.md](docs/plans/isdbs-fpga-tx.md)

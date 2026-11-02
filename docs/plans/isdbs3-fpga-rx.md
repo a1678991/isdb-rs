@@ -755,3 +755,67 @@ cores) for A. B's 4.96 s per second of signal is the CPU model of the
 FPGA's arithmetic (one thread for stages 1–6 and 8, the LDPC on all
 cores), a bench check and not a way to receive. The host side has not
 run against a radio: no image has the chain (pieces 4 and 6).
+
+### Results, piece 3/5 on a live capture (2026-11-02)
+
+The model and the host path on a fresh signal, not the 2026-10-26
+recording they were developed against. Receive only (nothing
+transmitted, nothing changed on the board): PlutoSky R2 at
+`ip:10.10.0.30`, `isdb_txrx2_top.bin` (`--probe`: "the symbol front end
+(format 4, 32 taps)"; no image has the chain yet), release build of
+`eb28673`, this host (32 threads).
+
+**Capture.** `isdb symbols --radio pluto:uri=ip:10.10.0.30 --freq BS7
+--system isdb-s3 --offload auto --seconds 30 --out bs7-live.sym`,
+14:04:51 JST: BS7 locked at the first try (carrier −193.2 kHz, trim
+−0.166 symbol, acquisition sync Es/N0 14.27 dB; AGC slow_attack, 32 dB
+at the end). 762 231 858 words (1.52 GB), 50.8 MB/s, 0 DMA overflows;
+the reader finds 247 236 blocks, **0 losses** (0 blocks missing; 2 439
+words skipped at the join, the stream starting mid-block). Signal: sync
+Es/N0 14.2 dB (17.7 dB equalised), main MER 15.4 dB, residual carrier
+drift −0 … −175 Hz (−155 Hz at the end) as the host tracks it. TMCC
+16APSK 93/120 × 120, three TLV streams B070 / B071 / B072 of 40 slots
+(32 data + 8 dummy each), as on the recording.
+
+| Run | Decoded by | Frames (TMCC ok) | Slots | LDPC / BCH failed | Mean iterations | MER | TLV packets B070 / B071 / B072 | Wall | User CPU | Max RSS |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A `--symbols` | host receiver | 907 (907) | 87 072 | 0 / 0 | 2.055 | 15.36 dB (main) | 88 795 / 90 486 / 90 398 | 17.8 s | 286.5 s | 3.9 GB |
+| B `--symbols --chain fixed --slots-out` | the chain's CPU model, through `Slots` | 907 (907; 2 undecoded) | 86 880 | 0 / 0 | 2.066 | 15.06 dB (n0) | 88 592 / 90 288 / 90 206 | 152.0 s | 164.2 s | 67 MB |
+| C `--slots` (B's words, 380 MB) | recorded `Slots` words | 907 (907; 2 undecoded) | 86 880 | 0 / 0 | 2.066 | 15.06 dB | 88 592 / 90 288 / 90 206 | 2.4 s | 2.4 s | 43 MB |
+
+- **A against B** (`tools/tlv-packet-diff.py`): every packet of B is a
+  packet of A at the same place (0 only in B, 0 replaced); A has 203 /
+  198 / 192 more, in **one run per stream at 0 %, exactly 275 264
+  bytes** (2 frames × 32 data slots × 4 301 bytes): the two frames the
+  chain does not decode after its start (layout lag 2; 192 slots =
+  87 072 − 86 880). `cmp -i 275264:0` confirms B's three files equal A's
+  from byte 275 264 to the end. With no loss there is no restart, so one
+  run instead of the recording's three.
+- **B against C: identical** (`cmp` on all three files; same frames,
+  slots, iterations, packets): the `Slots` words written and read back
+  decode as in process.
+- **`chaincheck`** (`cargo run --release -p isdbs3-phy --example
+  chaincheck -- bs7-live.sym`): frames 907 / 907, all matched (0 only
+  one side), the chain 0 TMCC failures, 2 not decoded, 0 restarts;
+  **86 880 slots compared, 86 880 byte-identical, 0 different**; LDPC /
+  BCH failures 0 / 0 on both; mean iterations 2.066 (chain) vs 2.055
+  (reference). `Slots`: 110 414 blocks, 190 003 369 words, 12.67 MB/s of
+  signal, 0 losses. Carrier: the chain's register −8.5 … −185.2 Hz,
+  −148.7 Hz at the end, against the reference's tracked −0 … −175.2 Hz
+  (−155 Hz at the end, from the CLI run); n0 32 702 (Q.20, MER
+  15.06 dB), taps last solved from frame 902 (centre [17 330, −255]),
+  sync locked at offset 2 781 (peak/mean 4.3, 0 stray, 0 missed
+  markers). The model's stages 1–6 and 8: 4.705 s per second of signal
+  on one thread (LDPC 3.41 s on all cores).
+- **No model defect found**: no slot where both decoded differs. The
+  differences between A and B are only the lag's two frames; the
+  chain's iteration mean is 0.011 above the float receiver's (0.014 on
+  the recording), and its n0-based MER reads 0.3 dB below the host's main
+  MER (a different estimator, not a decoding difference).
+- **Host CPU behind the chain** (C): 2.4 s for 30 s of signal,
+  0.08 cores, as on the recording; A takes 286.5 s (9.6 cores), B 4.83 s
+  per second of signal (the bench model, not a receive path).
+
+Not covered: a loss or a lost lock on live signal (none occurred), the
+drift range (−185 Hz here, against −989 Hz on the recording), and the
+chain on the board (pieces 4 and 6).
