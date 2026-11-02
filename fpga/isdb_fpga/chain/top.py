@@ -47,7 +47,7 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | 0x405 | STATUS (ro): bit 0 locked, 1 a frame head since the (re)start, 2 the last frame decoded |
 | 0x406 / 0x407 | FRAME (the last whole frame's counter, 0xFFFF_FFFF none) / SEQ (the next block's sequence number) (ro) |
 | 0x408 / 0x409 / 0x40A / 0x40B | N0, LLR_SCALE, LEARNED_FROM, CONST_MASK (ro): n0, K, the frame they were learned on, the learned modulations, in force |
-| 0x40C | MAX_ITER (8 bits, reset 16): the LDPC iteration limit each codeword is committed with |
+| 0x40C | MAX_ITER (8 bits, reset 14, `ldpc.DEFAULT_MAX_ITER`): the LDPC iteration limit each codeword is committed with |
 | 0x40D | AGC: the input AGC gain reported in the status (Q6.10) |
 | 0x410 + k | TAPS, k < 11: written (re + (im << 16), Q2.14), the pending taps; read, the taps in use |
 | 0x41B | TAPS_FROM: written after TAPS, the frame N they were solved from: in use from frame N + 2 (the model's EQ_APPLY_FRAMES); read, the frame of the taps in use |
@@ -65,6 +65,7 @@ The ID word gains the chain's `Slots` format version in bits 11-8
 
 from amaranth.hdl import Cat, Const, Elaboratable, Module, Mux, Signal, signed
 
+from .. import ldpc
 from .back import Back
 from .finish import Finish
 from .ldpc_if import OP_DONE
@@ -228,7 +229,8 @@ class SlotsRx(Elaboratable):
         from .ldpc_if import LdpcBridge
 
         self.core = SymbolFrontend(taps, cos_table, h, g, k)
-        self.chain = SlotsChain(max_iter=16)  # MAX_ITER's reset: the decoder's default
+        # MAX_ITER's reset: the decoder's default
+        self.chain = SlotsChain(max_iter=ldpc.DEFAULT_MAX_ITER)
         self.bridge = LdpcBridge(self.chain.port)
         self.decoder = None
         if decoder:

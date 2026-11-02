@@ -523,7 +523,7 @@ class SlotsRxRegisterTest(unittest.TestCase):
     ID word with the Slots format version (bit 8); a front-end register
     written and read back (PERIOD_NOMINAL, 0x01: its READ must show the
     front end's readback, not the chain's); the chain's VERSION (0x400),
-    MAX_ITER (0x40C, reset 16) written and read, AGC (0x40D), FEATURES
+    MAX_ITER (0x40C, reset ldpc.DEFAULT_MAX_ITER, 14) written and read, AGC (0x40D), FEATURES
     (0x401: TAPS | SUMS, the limit in bits 15-8, the step 34 in 27-16), a tap
     (0x410 + 3, re | im << 16) written with WRITE_S and committed by START
     (INIT bit 0), CARRIER (0x402) written and loaded by START; the front
@@ -605,7 +605,7 @@ class SlotsRxRegisterTest(unittest.TestCase):
         sim.run()
         ident = ID_MAGIC << 16 | FORMAT_VERSION << 12 | 32 | ID_CHAIN
         self.assertEqual(seen, {
-            "id": ident, "period": 0x12345678, "version": 1, "max_iter_reset": 16, "max_iter": 33,
+            "id": ident, "period": 0x12345678, "version": 1, "max_iter_reset": 14, "max_iter": 33,
             "agc": 0x0400, "features": 0b11 | 33 << 8 | 34 << 16, "tap3": 7 << 16 | 0xFFFB,
             "carrier": (-1234) & 0xFFFFFFFF, "status": 0b101, "period_again": 0x12345678, "id_again": ident,
         })

@@ -162,7 +162,7 @@ Ports (all in the sync domain):
       commit context in_ctx's codeword (one cycle, after its last LLR;
       `start` and `begin` of the next codeword may share a cycle).
       st_max_iter: the iteration limit (the chain's register; its reset
-      value is DEFAULT_MAX_ITER = 16). st_short: the shortened TMCC code:
+      value is DEFAULT_MAX_ITER = 14). st_short: the shortened TMCC code:
       the decoder writes +127 itself into the known-zero positions [0,
       info_start) and [info_start + info_len, k) (`shortened`, by default
       (1870, 9614)) before the first pass, so only the 31 680 sent
@@ -194,7 +194,7 @@ DECIDE = 19
 FIFO_DEPTH = 64
 OFFSET_BITS = 7
 ITER_BITS = 8
-DEFAULT_MAX_ITER = 16
+DEFAULT_MAX_ITER = 14
 QUEUE_DEPTH = 8
 NO_DSP = {"use_dsp": "no"}
 # Vivado synthesis attribute: replicate a register that drives many loads
