@@ -3,10 +3,15 @@
 //! its output the `Slots` words of [`crate::slots`]): discovery, the
 //! registers the host writes at open, and the ones its slow loop reads.
 //!
-//! **Every address and bit here is a placeholder** until the chain's HDL
-//! (plan piece 4) and the image (piece 6) fix the final map; the host
-//! (`isdb-radio`'s `ChainControl`) uses only the names of this file, so the
-//! final map is a change to this file alone.
+//! **The map is the HDL's** (`fpga/isdb_fpga/chain/top.py`, `SlotsRx`,
+//! 2026-11-02): the HDL took these addresses and adds [`reg::MAX_ITER`],
+//! [`reg::AGC`] and [`reg::TMCC_OVERRUNS`]. What the first image offers
+//! ([`features`]): the host's taps ([`features::TAPS`]) and the training
+//! sums ([`features::SUMS`]); not a constellation or an n0 at START
+//! ([`reg::CONST`] reads 0, [`reg::N0`] is read only), and the layout lag
+//! is 2 only ([`reg::LAYOUT_LAG`] reads 2). START also restarts the chain
+//! (the model's `Chain::loss`) and the blocks' sequence numbers. The host
+//! (`isdb-radio`'s `ChainControl`) uses only the names of this file.
 //!
 //! The chain shares the front end's command protocol ([`super::Encoder`],
 //! the `gpio_out` / `gpio_in` pair of `cf-ad9361-lpc`) and its address
@@ -40,8 +45,8 @@
 //! reads [`reg::SUMS_FRAME`] again (a different value: the latch moved on
 //! during the read, read again later), solves in `f64` and writes the 11
 //! taps ([`reg::TAPS`], [`pack_point`]) and then [`reg::TAPS_FROM`] with
-//! the frame they were solved from, which commits them: the block takes
-//! them at its next frame start. Reading [`reg::TAPS`] and
+//! the frame N they were solved from, which commits them: the block takes
+//! them at the start of frame N + 2 (the model's rule). Reading [`reg::TAPS`] and
 //! [`reg::TAPS_FROM`] gives the taps in use.
 
 use super::{ID_MAGIC, Identity};
@@ -85,7 +90,7 @@ pub fn id_word(id: &Identity, version: u16) -> u32 {
     id.word() | u32::from(version & 0xF) << 8
 }
 
-/// Register addresses (placeholders, module documentation).
+/// Register addresses (module documentation).
 pub mod reg {
     /// Read only: the `Slots` format version the chain writes.
     pub const VERSION: u16 = 0x400;
@@ -105,8 +110,8 @@ pub mod reg {
     pub const FRAME: u16 = 0x406;
     /// Read only: the sequence number of the next `Slots` block.
     pub const SEQ: u16 = 0x407;
-    /// n0, Q.20: written, the initial value ([`super::init::N0`]); read,
-    /// the value in force.
+    /// n0, Q.20: written, the initial value ([`super::init::N0`], an image
+    /// with [`super::features::N0`]); read, the value in force.
     pub const N0: u16 = 0x408;
     /// Read only: the LLR scale in force (`round(2³² / n0)`).
     pub const LLR_SCALE: u16 = 0x409;
@@ -117,12 +122,18 @@ pub mod reg {
     /// host's, [`super::init::CONSTELLATION`]), not the nominal ones;
     /// written with the points before START.
     pub const CONST_MASK: u16 = 0x40B;
+    /// The LDPC iteration limit each codeword is committed with (8 bits,
+    /// reset 16; [`super::features::ldpc_limit`] reads it too).
+    pub const MAX_ITER: u16 = 0x40C;
+    /// The input's AGC gain (Q6.10) the status blocks report.
+    pub const AGC: u16 = 0x40D;
     /// Tap k at `TAPS + k` (k < 11, [`super::pack_point`]): written, the
     /// next taps (committed by [`TAPS_FROM`], or loaded by START with
     /// [`super::init::TAPS`]); read, the taps in use.
     pub const TAPS: u16 = 0x410;
-    /// Written after [`TAPS`]: the frame the taps were solved from
-    /// (commits them; the block loads them at its next frame start).
+    /// Written after [`TAPS`]: the frame N the taps were solved from
+    /// (commits them; the block loads them at the start of frame N + 2,
+    /// the model's rule, or of the next frame if that has passed).
     /// Read: the frame the taps in use were solved from
     /// ([`super::NONE`]: identity, or the host's at open).
     pub const TAPS_FROM: u16 = 0x41B;
@@ -135,6 +146,9 @@ pub mod reg {
     /// at `COUNTERS + i` in [`super::Counters::NAMES`] order (the
     /// iteration sum as two registers, low first).
     pub const COUNTERS: u16 = 0x430;
+    /// Read only: TMCC codewords the LDPC decoder dropped (its queue was
+    /// full; also counted as TMCC failed).
+    pub const TMCC_OVERRUNS: u16 = 0x438;
     /// Read only: R's 66 upper-triangle entries ([`super::sum_registers`]).
     pub const SUMS_R: u16 = 0x500;
     /// Read only: p's 11 entries ([`super::sum_registers`]).
@@ -145,7 +159,7 @@ pub mod reg {
     pub const CONST: u16 = 0x640;
 }
 
-/// [`reg::FEATURES`] bits (placeholders).
+/// [`reg::FEATURES`] bits.
 pub mod features {
     /// The host may write taps ([`super::reg::TAPS`],
     /// [`super::reg::TAPS_FROM`]).
@@ -399,6 +413,9 @@ mod tests {
             reg::LLR_SCALE,
             reg::LEARNED_FROM,
             reg::CONST_MASK,
+            reg::MAX_ITER,
+            reg::AGC,
+            reg::TMCC_OVERRUNS,
             reg::TAPS_FROM,
             reg::SUMS_FRAME,
             reg::SUMS_COUNT,
