@@ -349,7 +349,9 @@ class FixRoots(Elaboratable):
         st = Signal(2)
         cur = Array(self.roots)[x[:4]]
         n = Mux(self.nroots > T, T, self.nroots)
-        m.d.comb += [self.rd_addr.eq(cur[4:]), self.wr_addr.eq(cur[4:]),
+        # (address 0 while idle: a stale root may lie past the buffer, which
+        # the compiled simulation asserts on even for a disabled port)
+        m.d.comb += [self.rd_addr.eq(Mux(self.busy, cur[4:], 0)), self.wr_addr.eq(Mux(self.busy, cur[4:], 0)),
                      self.wr_data.eq(self.rd_data ^ (Const(1, 16) << cur[:4]))]
         with m.If(self.go):
             m.d.sync += [x.eq(0), st.eq(0), self.busy.eq(self.nroots != 0)]
