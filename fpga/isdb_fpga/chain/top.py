@@ -44,6 +44,7 @@ WRITE, READ, CTRL on `gpio_out`, `gpio_in` the ID word or the readback):
 | 0x130 | SUMS_FRAME, 0x131 SUMS_COUNT (read only) |
 | 0x200 + w | the latched training sums, word w (0 .. 307; the read waits for the MAC unit) |
 | 0x140 .. 0x146 | the counters (frames, undecoded, TMCC failed, slots, LDPC failed, BCH failed, iterations low) |
+| 0x147 | TMCC_OVERRUNS: TMCC codewords the decoder dropped (also counted as TMCC failed) |
 | CTRL | bit 0 RUN, bit 1 START (the chain restarts; the packer's sequence restarts), bit 3 SLOTS (the DMA carries the `Slots` words) |
 
 The ID word gains the chain's version: 0x15DB, format 4, taps, and bit 8
@@ -288,6 +289,8 @@ class SlotsRx(Elaboratable):
                                 m.d.sync += readback.eq(fin.counters[n])
                         with m.Case(0x146):
                             m.d.sync += readback.eq(fin.iterations[:32])
+                        with m.Case(0x147):
+                            m.d.sync += readback.eq(fin.tmcc_overruns)
                         with m.Default():
                             m.d.sync += readback.eq(0)
                 with m.Case(OP_CTRL):

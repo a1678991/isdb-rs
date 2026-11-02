@@ -415,6 +415,9 @@ class Finish(Elaboratable):
         names = ("frames", "undecoded", "tmcc_failed", "slots", "ldpc_failed", "bch_failed")
         self.counters = {n: Signal(32, name=f"cnt_{n}") for n in names}
         self.iterations = Signal(64)
+        # TMCC codewords the decoder dropped (its overrun record, no words):
+        # a register, not in the status block (its format is the model's)
+        self.tmcc_overruns = Signal(32)
         self.o_valid = self.packer.o_valid
         self.o_word = self.packer.o_word
 
@@ -481,6 +484,7 @@ class Finish(Elaboratable):
         # BCH sharing: the slot path or TmccResult
         tmode = Signal()
         slot_start = Signal()
+        t_ovr = Signal()  # the TMCC record in hand is an overrun (no words)
         m.d.comb += [
             bch.start.eq(Mux(tmode, tr.bch_start, slot_start)),
             bch.n_sel.eq(Mux(tmode, tmcc_sel, nsel_of[rate])),
@@ -524,7 +528,7 @@ class Finish(Elaboratable):
             with m.State("IDLE"):
                 with m.If(self.r_valid & self.r_head & is_tmcc & ff.r_rdy):
                     m.d.sync += [tmode.eq(1), dslot.eq(Mux(have_prev & (prev_frame == fr_frame), last_valid + 1, 0)),
-                                 dend.eq(Mux(fr_dec, 120, 0))]
+                                 dend.eq(Mux(fr_dec, 120, 0)), t_ovr.eq(self.r_overrun)]
                     m.next = "TMCC_DUMMIES"
                 with m.Elif(self.r_valid & self.r_head & ~is_tmcc):
                     new_frame = ~have_prev | (prev_frame != tframe)
@@ -627,8 +631,26 @@ class Finish(Elaboratable):
                         block(1, fr_frame, 3)
                         m.d.sync += word_i.eq(0)
                         m.next = "TDUMMY_W"
+                with m.Elif(t_ovr):
+                    m.next = "TMCC_OVR"
                 with m.Else():
                     m.next = "TMCC_RUN"
+            with m.State("TMCC_OVR"):
+                # the decoder dropped the TMCC codeword: its record has no
+                # words. Consume it, send the TMCC block as a failed decode
+                # (BCH and iterations 0xFFFF, no bits decoded: zeros), no
+                # layout, and count it
+                m.d.comb += self.r_ready.eq(1)
+                with m.If(self.r_valid):
+                    m.d.sync += [
+                        tmcc_hdr.eq(Cat(Const(0xFFFF, 16), Const(0xFFFF, 16), (fr_frame + self.lag)[:32])),
+                        cnt["frames"].eq(cnt["frames"] + 1),
+                        cnt["tmcc_failed"].eq(cnt["tmcc_failed"] + 1),
+                        self.tmcc_overruns.eq(self.tmcc_overruns + 1),
+                    ]
+                    with m.If(~fr_dec):
+                        m.d.sync += cnt["undecoded"].eq(cnt["undecoded"] + 1)
+                    m.next = "TMCC_HDR"
             with m.State("TDUMMY_W"):
                 ws = Array([Cat(dslot[:8], d_mode, Const(1, 1), Const(0, 4)), Cat(d_mod, d_rate, Const(0, 8)),
                             Const(0xFFFF, 16)])
@@ -663,6 +685,16 @@ class Finish(Elaboratable):
                     m.d.sync += word_i.eq(word_i + 1)
                     with m.If(word_i == 3):
                         m.next = "TMCC_GO"
+                        with m.If(t_ovr):
+                            m.d.sync += word_i.eq(0)
+                            m.next = "TMCC_ZERO"
+            with m.State("TMCC_ZERO"):
+                # the 589 information words of a dropped TMCC: zeros
+                m.d.comb += [pk.w_valid.eq(1), pk.w_data.eq(0)]
+                with m.If(pk.w_ready):
+                    m.d.sync += word_i.eq(word_i + 1)
+                    with m.If(word_i == 588):
+                        m.next = "TMCC_WAIT"
             with m.State("TMCC_GO"):
                 m.d.comb += tr.o_go.eq(1)
                 m.next = "TMCC_BITS"
