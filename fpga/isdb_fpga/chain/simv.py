@@ -30,6 +30,7 @@ from another checkout or entry point finds the same library.
 """
 
 import functools
+import glob
 import os
 import re
 import shutil
@@ -225,9 +226,12 @@ class Verilator(simx._Cxx):
         """yosys (RTLIL -> Verilog), verilator (-> C++ and its makefile),
         the adapter for the model's member names, make (-> the library);
         in a directory of this process's own, removed once the library is
-        in place (kept, with its build.log, if a step fails)."""
+        in place (kept, with its build.log, if a step fails, until the
+        next build of the library: the lock is held, so any other
+        builder's directory is left from a failed or killed one)."""
+        for old in glob.glob(glob.escape(so) + ".*.build"):
+            shutil.rmtree(old, ignore_errors=True)
         work = f"{so}.{os.getpid()}.build"
-        shutil.rmtree(work, ignore_errors=True)
         os.makedirs(work)
         with open(os.path.join(work, "top.il"), "w") as f:
             f.write(il)
