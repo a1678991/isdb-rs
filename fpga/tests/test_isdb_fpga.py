@@ -667,13 +667,17 @@ class TxRegisterTest(unittest.TestCase):
 # compiled backend where one can be built (`simldpc`, `chain.simx`:
 # Verilator where it is installed, else CXXRTL; FPGA_SIM=pysim forces the
 # Python simulator), and then the default covers every codeword of every
-# layered B44 set, one all-rates decoder per step (17, 34, 187); on the
-# Python simulator (about 1 200
-# cycles per second: 70-80 s per 93/120 codeword) only the first codewords
-# of the 93/120 and TMCC sets at step 17 (FPGA_LDPC_ALL=1: every set).
+# layered B44 set, one all-rates decoder per step (17, 34; 187 below); on
+# the Python simulator (about 1 200 cycles per second: 70-80 s per 93/120
+# codeword) only the first codewords of the 93/120 and TMCC sets at step
+# 17 (FPGA_LDPC_ALL=1: every set).
 # LdpcPysimTest keeps the Python simulator's path covered either way.
 
 LDPC_ALL = os.environ.get("FPGA_LDPC_ALL") == "1"
+# S = 187 by default on Verilator (about a minute to build, 160 000 cycles
+# per second), else with FPGA_LDPC_ALL=1 (CXXRTL: about 20 minutes to
+# build, 2 000 cycles per second)
+LDPC_187 = LDPC_ALL or simldpc.backend_default() == "verilator"
 LDPC_DEFAULT = {"ldpc-12-93-layered17.json": 2, "ldpc-13-tmcc-layered17.json": 1}
 
 
@@ -827,9 +831,9 @@ class LdpcVectorTest(unittest.TestCase):
     def test_toy_step34(self):
         self.toy(34)
 
-    @unittest.skipUnless(LDPC_ALL, "S = 187 (FPGA_LDPC_ALL=1): about 19 min to compile, or "
-                         "about 80 s on the Python simulator; the scheme at 187 is checked by "
-                         "LdpcModelTest.test_lane_scheme_equals_the_contract")
+    @unittest.skipUnless(LDPC_187, "S = 187 (Verilator, or FPGA_LDPC_ALL=1): about 19 min to "
+                         "compile on CXXRTL, or about 80 s on the Python simulator; the scheme "
+                         "at 187 is checked by LdpcModelTest.test_lane_scheme_equals_the_contract")
     def test_toy_step187(self):
         self.toy(187)
 
@@ -923,8 +927,8 @@ class LdpcVectorTest(unittest.TestCase):
     def test_b44_step34(self):
         self.b44(34)
 
-    @unittest.skipUnless(LDPC_ALL, "S = 187 (FPGA_LDPC_ALL=1): its compiled build takes "
-                         "about 16 min and runs at about 3 000 cycles per second")
+    @unittest.skipUnless(LDPC_187, "S = 187 (Verilator, or FPGA_LDPC_ALL=1): its CXXRTL build "
+                         "takes about 20 min and runs at about 2 000 cycles per second")
     def test_b44_step187(self):
         self.b44(187)
 
