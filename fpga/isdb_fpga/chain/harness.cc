@@ -72,6 +72,11 @@ void *h_create() {
 	cxxrtl_object *rst = cxxrtl_get(s->h, "rst");
 	if (rst)
 		put(rst, 1, 0);
+	// settled before the first clock (no edge: the clock stays low), so a
+	// read before it sees the combinational outputs of the initial state,
+	// as on the Python simulator
+	put(s->clk, 1, 0);
+	cxxrtl_step(s->h);
 	return s;
 }
 
@@ -109,6 +114,14 @@ static void settle(Harness *s) {
 static void edge(Harness *s) {
 	put(s->clk, 1, 1);
 	cxxrtl_step(s->h);
+#ifndef HARNESS_EDGE_SETTLES
+	// CXXRTL's step evaluates the logic once and commits the registers
+	// after it: an output combinational from registers would still show
+	// its value from before the edge. A second step (the clock still high,
+	// no edge) settles it, as on the Python simulator. (A backend whose
+	// step settles by itself defines HARNESS_EDGE_SETTLES.)
+	cxxrtl_step(s->h);
+#endif
 	s->cycles++;
 }
 
