@@ -176,17 +176,30 @@ class BchUnit(Elaboratable):
         i = Signal(range(2 * T + 2))
         d = Signal(16)
         coef = Signal(16)
+        # The steps with a product take two cycles (`half` 0, then 1): the
+        # first registers the multiplier's operands (`ma`, `mb`: a locator
+        # or syndrome read, a select), the second uses the product of the
+        # registers (`prod`) and acts; the operands are the same in both
+        # (nothing they depend on changes in the first). So no path holds
+        # a read, the multiplier and a write: 4x the symbol clock, Vivado.
         ma = Signal(16)
         mb = Signal(16)
+        ma_r = Signal(16)
+        mb_r = Signal(16)
         prod = Signal(16)
-        m.d.comb += prod.eq(gf_mul(ma, mb))
+        half = Signal()
+        m.d.sync += [ma_r.eq(ma), mb_r.eq(mb)]
+        m.d.comb += prod.eq(gf_mul(ma_r, mb_r))
         sa = Array(s)
         # one read of the syndromes, by `sx`: S_i (EVEN, squared into S_2i),
-        # S_k+1 (BM_D0), S_k+1-i (BM_D)
+        # S_k+1 (BM_D0), S_k+1-i (BM_D); registered (`sv_r`) for the steps
+        # that use it whole
         sx = Signal(5)
         sv = Signal(16)
+        sv_r = Signal(16)
         sq_v = Signal(16)
-        m.d.comb += [sx.eq((k + 1 - i)[:5]), sv.eq(sa[sx]), sq_v.eq(gf_square(sv))]
+        m.d.sync += sv_r.eq(sv)
+        m.d.comb += [sx.eq((k + 1 - i)[:5]), sv.eq(sa[sx]), sq_v.eq(gf_square(sv_r))]
         m.d.comb += [prc.addr.eq(Cat(i[:4], pc)), pwr.addr.eq(Cat(i[:4], pf)), pwr.en.eq(0)]
         c_i = prc.data  # c[i]
         xsq = Signal(16)
@@ -210,12 +223,14 @@ class BchUnit(Elaboratable):
             with m.State("EVEN"):
                 # S_2i = S_i^2 for 2i = 2, 4, ... 24, in order
                 m.d.comb += sx.eq(i[:5])
-                for e in range(2, 2 * T + 1, 2):
-                    with m.If(i == e // 2):
-                        m.d.sync += s[e].eq(sq_v)
-                m.d.sync += i.eq(i + 1)
-                with m.If(i == T):
-                    m.next = "CHECK"
+                with m.If(half):
+                    for e in range(2, 2 * T + 1, 2):
+                        with m.If(i == e // 2):
+                            m.d.sync += s[e].eq(sq_v)
+                    m.d.sync += i.eq(i + 1)
+                    with m.If(i == T):
+                        m.next = "CHECK"
+                m.d.sync += half.eq(~half)
             with m.State("CHECK"):
                 anyv = Cat(*[s[x] != 0 for x in range(1, 2 * T + 1)]).any()
                 with m.If(~anyv):
@@ -235,13 +250,17 @@ class BchUnit(Elaboratable):
                     m.next = "BM_D0"
             with m.State("BM_D0"):
                 m.d.comb += sx.eq((k + 1)[:5])
-                m.d.sync += [d.eq(sv), i.eq(1)]
-                m.next = "BM_D"
+                with m.If(half):
+                    m.d.sync += [d.eq(sv_r), i.eq(1)]
+                    m.next = "BM_D"
+                m.d.sync += half.eq(~half)
             with m.State("BM_D"):
                 # d ^= c_i s_{k+1-i}, i = 1 .. L
                 with m.If(i <= ll):
                     m.d.comb += [ma.eq(c_i), mb.eq(sv)]
-                    m.d.sync += [d.eq(d ^ prod), i.eq(i + 1)]
+                    with m.If(half):
+                        m.d.sync += [d.eq(d ^ prod), i.eq(i + 1)]
+                    m.d.sync += half.eq(~half)
                 with m.Else():
                     m.next = "BM_E"
             with m.State("BM_E"):
@@ -250,17 +269,21 @@ class BchUnit(Elaboratable):
                     m.next = "BM_NEXT"
                 with m.Else():
                     m.d.comb += [ma.eq(d), mb.eq(binv)]
-                    m.d.sync += [coef.eq(prod), i.eq(0)]
-                    m.next = "BM_U"
+                    with m.If(half):
+                        m.d.sync += [coef.eq(prod), i.eq(0)]
+                        m.next = "BM_U"
+                    m.d.sync += half.eq(~half)
             with m.State("BM_U"):
                 # the new c into the free bank: c[x] ^ coef bp[x - m] (x >= m),
                 # x = i = 0 .. 12
                 upd = i >= mm
                 m.d.comb += [prb.addr.eq(Cat((i - mm)[:4], pb)), ma.eq(coef), mb.eq(prb.data),
-                             pwr.data.eq(c_i ^ Mux(upd, prod, 0)), pwr.en.eq(1)]
-                m.d.sync += i.eq(i + 1)
-                with m.If(i == T):
-                    m.next = "BM_ROLES"
+                             pwr.data.eq(c_i ^ Mux(upd, prod, 0)), pwr.en.eq(half)]
+                with m.If(half):
+                    m.d.sync += i.eq(i + 1)
+                    with m.If(i == T):
+                        m.next = "BM_ROLES"
+                m.d.sync += half.eq(~half)
             with m.State("BM_ROLES"):
                 with m.If(2 * ll <= k):
                     # bp = the old c, c = the new one
@@ -283,10 +306,12 @@ class BchUnit(Elaboratable):
             with m.State("INV"):
                 sq = gf_square(xsq)
                 m.d.comb += [ma.eq(r_inv), mb.eq(sq)]
-                m.d.sync += [xsq.eq(sq), r_inv.eq(prod), cnt.eq(cnt + 1)]
-                with m.If(cnt == 14):
-                    m.d.sync += binv.eq(prod)
-                    m.next = "BM_NEXT"
+                with m.If(half):
+                    m.d.sync += [xsq.eq(sq), r_inv.eq(prod), cnt.eq(cnt + 1)]
+                    with m.If(cnt == 14):
+                        m.d.sync += binv.eq(prod)
+                        m.next = "BM_NEXT"
+                m.d.sync += half.eq(~half)
             with m.State("BM_NEXT"):
                 m.d.sync += k.eq(k + 1)
                 with m.If(k == 2 * T - 1):
@@ -298,18 +323,22 @@ class BchUnit(Elaboratable):
                 # R_i = c_i a^i with a = alpha^-(n-1); apow holds a^i
                 with m.If(i <= T):
                     m.d.comb += [ma.eq(c_i), mb.eq(apow)]
-                    for x in range(1, T + 1):
-                        with m.If(i == x):
-                            m.d.sync += R[x].eq(Mux(i <= ll, prod, 0))
-                    m.d.sync += i.eq(i + 1)
-                    m.next = "CH_POW"
+                    with m.If(half):
+                        for x in range(1, T + 1):
+                            with m.If(i == x):
+                                m.d.sync += R[x].eq(Mux(i <= ll, prod, 0))
+                        m.d.sync += i.eq(i + 1)
+                        m.next = "CH_POW"
+                    m.d.sync += half.eq(~half)
                 with m.Else():
                     m.d.sync += [jpos.eq(0), nroots.eq(0)]
                     m.next = "CHIEN"
             with m.State("CH_POW"):
                 m.d.comb += [ma.eq(apow), mb.eq(a_n[nsel])]
-                m.d.sync += apow.eq(prod)
-                m.next = "CH_INIT"
+                with m.If(half):
+                    m.d.sync += apow.eq(prod)
+                    m.next = "CH_INIT"
+                m.d.sync += half.eq(~half)
             with m.State("CHIEN"):
                 v = Const(1, 16)
                 for x in range(1, T + 1):
@@ -412,11 +441,20 @@ class FastBch(Elaboratable):
         u = self.unit
         m.submodules.ph = ph = Phase4()
         m.submodules.unit = DomainRenamer("fast")(u)
-        p0 = ph.phase == 0
-        # the beat's four 4-bit chunks on phases 0 .. 3 (bit 0, the first, first)
-        m.d.comb += [u.start.eq(self.start & p0), u.n_sel.eq(self.n_sel), u.i_valid.eq(self.i_valid),
-                     u.i_bits.eq(self.i_bits.word_select(ph.phase, 4)),
-                     u.i_last.eq(self.i_last & (ph.phase == 3))]
+        # the symbol clock's inputs cross through fast registers (every fast
+        # cycle): they hold a beat in the fast cycles 1, 2, 3 and the next
+        # 0, in which `late` is 0 .. 3: the beat's four 4-bit chunks then
+        # (bit 0, the first, first)
+        st_q = Signal()
+        ns_q = Signal.like(self.n_sel)
+        v_q = Signal()
+        b_q = Signal(16)
+        l_q = Signal()
+        m.d.fast += [st_q.eq(self.start), ns_q.eq(self.n_sel), v_q.eq(self.i_valid), b_q.eq(self.i_bits),
+                     l_q.eq(self.i_last)]
+        p = ph.late
+        m.d.comb += [u.start.eq(st_q & (p == 0)), u.n_sel.eq(ns_q), u.i_valid.eq(v_q),
+                     u.i_bits.eq(b_q.word_select(p, 4)), u.i_last.eq(l_q & (p == 3))]
         tg = Signal()
         tq = Signal()
         with m.If(u.done):

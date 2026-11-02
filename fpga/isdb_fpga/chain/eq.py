@@ -194,20 +194,34 @@ class Equaliser(Elaboratable):
         # land in fast registers by phase 0 of C+2, and the symbol clock takes
         # them at C+2 and delays them to the 44-product design's schedule
         # (o_* at C+7). Exact integer sums in any order: the same z.
+        # The crossing: the chosen taps and the line through fast registers
+        # (`wq`, `lq`, every fast cycle: C's values in its fast cycles 1-3 and
+        # C+1's 0), then the products' operands registered (`a_r`, `b_r`,
+        # kind = the phase one fast cycle late: kinds 0-3 at the ends of
+        # those four cycles), the products a cycle later: two fast cycles
+        # after the single-stage schedule, re / im in phase 2 of C+2, still
+        # inside C+2.
         m.submodules.ph = ph4 = Phase4()
-        ph = ph4.phase
+        kd = ph4.late
         fast = m.d.fast
-        kind_i = ph[0]  # w_i (kinds 1, 3)
-        kind_x = ph[0] ^ ph[1]  # x_i (kinds 1, 2)
+        kind_i = kd[0]  # w_i (kinds 1, 3)
+        kind_x = kd[0] ^ kd[1]  # x_i (kinds 1, 2)
         lv = []
+        a_k = Signal(2)
+        fast += a_k.eq(kd)
         for k in range(TAPS):
-            a = Mux(kind_i, w[k][1], w[k][0])
-            b = Mux(kind_x, line[k][1], line[k][0])
+            wq = [Signal(signed(16), name=f"wq{k}_{c}") for c in range(2)]
+            lq = [Signal(signed(16), name=f"lq{k}_{c}") for c in range(2)]
+            fast += [wq[c].eq(w[k][c]) for c in range(2)]
+            fast += [lq[c].eq(line[k][c]) for c in range(2)]
+            a_r = Signal(signed(16), name=f"fa{k}")
+            b_r = Signal(signed(16), name=f"fb{k}")
+            fast += [a_r.eq(Mux(kind_i, wq[1], wq[0])), b_r.eq(Mux(kind_x, lq[1], lq[0]))]
             s = Signal(signed(32), name=f"fp{k}")
-            fast += s.eq(a * b)
+            fast += s.eq(a_r * b_r)
             lv.append(s)
         fk = Signal(2)
-        fast += fk.eq(ph)
+        fast += fk.eq(a_k)
         kinds = [fk]
         cur = lv
         lvl = 0
