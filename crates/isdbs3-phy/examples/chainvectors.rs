@@ -58,11 +58,28 @@
 //!   symbols]`, none synthetic) and `slots_words` (every `Slots` word the
 //!   chain's frames give, `chain::out::blocks` through the `Writer`), with
 //!   `frames` (per frame: counter, decoded, LDPC iterations per slot).
+//!
+//! Three more whole-chain sets (the 6-chain fields; synthetic only), with
+//! the FPGA decoder's settings (`isdb_fec::ldpc::fixed`, `Schedule::Layered
+//! { step: 34 }`, limit 16, offset 1: the HDL decoder's defaults), so an
+//! HDL chain with the real decoder matches them bit for bit:
+//!
+//! - **7-hdl**: 6-chain's input and taps.
+//! - **8-loss**: 6 frames (seed 8, identity taps, no equaliser solve), a
+//!   block loss of 6 144 symbols (`losses`) half-way into frame 1: the chain
+//!   restarts (`Chain::loss`), reacquires and decodes the frames after it.
+//! - **9-fade**: 6 frames (seed 9, likewise), the signal removed for
+//!   330 000 symbols (0.3 frame) from 1.2 frames on (the symbols replaced by
+//!   Gaussian noise of the signal's power, quantised as the input): the
+//!   slot sync is lost (8 periods without a counting peak), regained, and
+//!   the frames after decode.
 
+use isdb_fec::ldpc::fixed::Schedule;
 use isdbs3_core::params::{FRAME_SYMBOLS, MOD_SLOT, SLOTS, SYMBOL_RATE};
 use isdbs3_phy::chain::frame::{FrameOut, Part, part};
 use isdbs3_phy::chain::fx::CORDIC_ATAN;
 use isdbs3_phy::chain::input::{Input, for_each};
+use isdbs3_phy::chain::ldpc::FixedLdpc;
 use isdbs3_phy::chain::phase::Corrected;
 use isdbs3_phy::chain::sync::{Head, Nco, SlotSync, SyncEvent, Word};
 use isdbs3_phy::chain::synth::{SynthOptions, generate};
@@ -167,12 +184,34 @@ struct Run {
 }
 
 fn run(input: Vec<[i8; 2]>, losses: Vec<(usize, u64)>, taps: Option<[[i16; 2]; 11]>) -> Run {
-    let mut c = Chain::new(ChainOptions {
+    run_with(input, losses, taps, 1, None)
+}
+
+/// The FPGA decoder's settings (ldpc.py: S = 34, the chain's MAX_ITER
+/// reset 16, offset 1).
+fn hdl_ldpc() -> FixedLdpc {
+    let mut l = FixedLdpc::with(16, 1);
+    l.params.schedule = Schedule::Layered { step: 34 };
+    l
+}
+
+fn run_with(
+    input: Vec<[i8; 2]>,
+    losses: Vec<(usize, u64)>,
+    taps: Option<[[i16; 2]; 11]>,
+    eq_every: u32,
+    ldpc: Option<FixedLdpc>,
+) -> Run {
+    let opt = ChainOptions {
         trace: true,
-        eq_every: 1,
+        eq_every,
         initial_taps: taps,
         ..ChainOptions::default()
-    });
+    };
+    let mut c = match ldpc {
+        Some(l) => Chain::with_ldpc(opt, Box::new(l)),
+        None => Chain::new(opt),
+    };
     let mut out = Vec::new();
     let mut r = Run {
         input: Vec::new(),
@@ -650,6 +689,7 @@ fn main() {
         .filter_map(|f| f.sums.as_ref())
         .find_map(isdbs3_phy::chain::eq::solve_sums);
     assert!(taps.is_some());
+    let hdl = run_with(s.symbols.clone(), Vec::new(), taps, 1, Some(hdl_ldpc()));
     let r = run(s.symbols, Vec::new(), taps);
     // the chain decodes what was sent
     let decoded: Vec<&FrameOut> = r.frames.iter().filter(|f| !f.slots.is_empty()).collect();
@@ -683,4 +723,86 @@ fn main() {
         }),
         &r,
     );
+    let src = |seed: u64, what: &str| {
+        json!({"synthetic": {"frames": 6, "modes": "16APSK 93/120 x120", "seed": seed,
+            "carrier_hz": o.carrier_hz, "drift_hz_s": o.drift_hz_s, "snr_db": o.snr_db,
+            "amplitude": o.amplitude, "bits": o.bits, "events": what,
+            "ldpc": "layered 34, limit 16, offset 1"}})
+    };
+    let mut v = stage6(&hdl);
+    v["source"] = src(7, "chain-6's input");
+    write(&dir, "chain-7-hdl.json", v);
+    write_events(&dir, &o, &src);
+}
+
+/// The two sets with events (module docs: 8-loss, 9-fade).
+fn write_events(dir: &Path, o: &SynthOptions, src: &dyn Fn(u64, &str) -> Value) {
+    let f = FRAME_SYMBOLS;
+    // a block loss half-way into frame 1
+    let s = generate(
+        &SynthOptions {
+            seed: 8,
+            ..o.clone()
+        },
+        6,
+    );
+    let cut = o.lead + f + f / 2;
+    let lost = 6_144;
+    let mut input = s.symbols[..cut].to_vec();
+    input.extend_from_slice(&s.symbols[cut + lost..]);
+    let r = run_with(input, vec![(cut, lost as u64)], None, 0, Some(hdl_ldpc()));
+    assert!(
+        r.frames
+            .iter()
+            .any(|x| !x.slots.is_empty() && x.at > cut as u64),
+        "decodes after the loss"
+    );
+    let mut v = stage6(&r);
+    v["source"] = src(8, &format!("{lost} symbols lost before input index {cut}"));
+    write(dir, "chain-8-loss.json", v);
+    // the signal removed (noise of the signal's power) for 0.3 frame
+    let s = generate(
+        &SynthOptions {
+            seed: 9,
+            ..o.clone()
+        },
+        6,
+    );
+    let (a, n) = (o.lead + f + f / 5, 330_000);
+    let mut input = s.symbols.clone();
+    let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut unif = || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        // 53 bits of the state as a fraction in (0, 1]
+        #[allow(clippy::cast_precision_loss)]
+        let u = ((rng >> 11) + 1) as f64 / (1u64 << 53) as f64;
+        u
+    };
+    let lim = f64::from((1i32 << (o.bits - 1)) - 1);
+    for x in &mut input[a..a + n] {
+        for c in x.iter_mut() {
+            // a Gaussian of the symbols' RMS per component (amplitude / sqrt 2)
+            let g = (-2.0 * unif().ln()).sqrt() * (std::f64::consts::TAU * unif()).cos();
+            #[allow(clippy::cast_possible_truncation)]
+            let q = (g * o.amplitude / std::f64::consts::SQRT_2)
+                .round()
+                .clamp(-lim - 1.0, lim) as i8;
+            *c = q;
+        }
+    }
+    let r = run_with(input, Vec::new(), None, 0, Some(hdl_ldpc()));
+    assert!(
+        r.frames
+            .iter()
+            .any(|x| !x.slots.is_empty() && x.at > (a + n) as u64),
+        "decodes after the fade"
+    );
+    let mut v = stage6(&r);
+    v["source"] = src(
+        9,
+        &format!("the signal replaced by noise for {n} symbols from input index {a}"),
+    );
+    write(dir, "chain-9-fade.json", v);
 }
