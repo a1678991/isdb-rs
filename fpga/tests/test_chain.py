@@ -284,6 +284,13 @@ class RealDecoderChainTest(unittest.TestCase):
     def test_signal_removed(self):
         self.run_set("9-fade", None)
 
+    @needs("10-bch")
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    def test_bch_corrections(self):
+        # eight consecutive valid slots with 1-12 bit errors in the decoder's
+        # output (the same flipped in the model's): corrected, no overrun
+        self.run_set("10-bch", doc("3-eq")["taps"])
+
 
 @needs("8-loss")
 @needs("9-fade")

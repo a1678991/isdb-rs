@@ -308,12 +308,12 @@ class TmccBench(Elaboratable):
     pseudo-random pattern (the demapper's priority, about half the cycles)."""
 
     def __init__(self):
-        from .finish import BchUnit
+        from .finish import FastBch
         from .tmcc import TMCC_DATA, TmccResult, TmccSoft
 
         self.soft = TmccSoft()
         self.res = TmccResult()
-        self.bch = BchUnit([TMCC_DATA])
+        self.bch = FastBch([TMCC_DATA])
         self.i_valid = Signal()
         self.i_ready = Signal()
         self.kind = Signal(2)
@@ -630,8 +630,8 @@ def run(stage, doc, backend, symbols):
         return run_chain(doc, load(path.replace("6-chain", "3-eq"))["taps"], backend, symbols)
     if stage in ("8-loss", "9-fade") and os.environ.get("FPGA_LDPC") == "stub":
         return run_chain(doc, None, backend, symbols)
-    if stage == "7-hdl":
-        return run_chain_real(doc, load(path.replace("7-hdl", "3-eq"))["taps"], backend, symbols)
+    if stage in ("7-hdl", "10-bch"):
+        return run_chain_real(doc, load(path.replace(stage, "3-eq"))["taps"], backend, symbols)
     if stage in ("8-loss", "9-fade"):
         return run_chain_real(doc, None, backend, symbols)
     raise NotImplementedError(stage)
@@ -846,17 +846,29 @@ class RealChainBench(Elaboratable):
     """`SlotsChain` with the real decoder: `LdpcBridge` and `ldpc.LdpcDecoder`
     (S = 34, K = 3, every rate; the `ldpc` domain, 5x the symbol clock in
     the simulation), MAX_ITER 16. Records: C_SYM (x0, x1), C_TAP / C_TAPNOW
-    (the host's taps at open), C_LOSS (a symbols lost before the next)."""
+    (the host's taps at open), C_LOSS (a symbols lost before the next).
+    `errors`: [(frame, slot, [positions])] bits to flip in the decoder's
+    output stream (a set's `bch_errors`: the model flipped the same in its
+    decoder's output), between the bridge and the chain."""
 
-    def __init__(self, units=34, banks=3):
+    def __init__(self, units=34, banks=3, errors=()):
         from amaranth.hdl import DomainRenamer
 
         from ..ldpc import LdpcDecoder
         from .ldpc_if import LdpcBridge
         from .top import SlotsChain
 
+        from .ldpc_if import LdpcPort
+
         self.ch = SlotsChain(max_iter=16)
-        self.br = LdpcBridge(self.ch.port)
+        self.bport = LdpcPort("brg")
+        self.br = LdpcBridge(self.bport)
+        flips = {}
+        for fr, sl, pos in errors:
+            for p_ in pos:
+                key = (fr, sl, p_ // 16)
+                flips[key] = flips.get(key, 0) | 1 << (p_ % 16)
+        self.flips = sorted(flips.items())
         self.dec = LdpcDecoder(units, banks=banks, sim=True)  # the CXXRTL-safe build
         self.dec_r = DomainRenamer("ldpc")(self.dec)
         self.i_valid = Signal()
@@ -874,6 +886,33 @@ class RealChainBench(Elaboratable):
         from .ldpc_if import connect_decoder
 
         connect_decoder(m, br, self.dec)
+        # the chain's port <-> the bridge's, with the bit errors in the results
+        cp, bp = ch.port, self.bport
+        m.d.comb += [getattr(bp, n).eq(getattr(cp, n)) for n in (
+            "in_valid", "in_op", "in_ctx", "in_n", "in_rate", "in_max_iter", "in_offset", "in_shortened",
+            "in_first", "in_last", "in_tag", "out_ready")]
+        m.d.comb += [bp.in_pos[k].eq(cp.in_pos[k]) for k in range(len(cp.in_pos))]
+        m.d.comb += [bp.in_llr[k].eq(cp.in_llr[k]) for k in range(len(cp.in_llr))]
+        m.d.comb += [getattr(cp, n).eq(getattr(bp, n)) for n in (
+            "in_ready", "out_valid", "out_head", "out_tag", "out_iterations", "out_converged", "out_last")]
+        mask = Signal(16)
+        m.d.comb += cp.out_bits.eq(bp.out_bits ^ mask)
+        if self.flips:
+            from amaranth.hdl import Array, Const
+
+            fl = self.flips + [((0xFFFFFFFF, 0x7F, 0xFFF), 0)]
+            ptr = Signal(range(len(fl)))
+            ent = Array(Const(fr << 19 | sl << 12 | w, 51) for (fr, sl, w), _ in fl)[ptr]
+            msk = Array(Const(mk, 16) for _, mk in fl)[ptr]
+            cur = Signal(51)  # frame, slot, word of the beat in hand
+            take = bp.out_valid & cp.out_ready
+            with m.If(take & bp.out_head):
+                m.d.sync += cur.eq(Cat(Const(0, 12), bp.out_tag[0:7], bp.out_tag[32:64]))
+            with m.If(take & ~bp.out_head):
+                m.d.sync += cur.eq(cur + 1)
+                with m.If(cur == ent):
+                    m.d.comb += mask.eq(msk)
+                    m.d.sync += ptr.eq(ptr + 1)
         eq = ch.back.eq
         k = self.kind
         go = self.i_valid & self.i_ready
@@ -896,6 +935,7 @@ class RealChainBench(Elaboratable):
                 "frames_done": ch.finish.counters["frames"], "port_lost": ch.back.port_lost,
                 "late": ch.back.demap.late, "overrun": ch.back.tmcc.overrun,
                 "in_lost": self.br.in_lost, "dec_overruns": self.dec.overruns,
+                "fifo_max": ch.results.max_level,
                 "queue_overflow": self.dec.queue_overflow}
 
 
@@ -953,7 +993,7 @@ def run_chain_real(doc, taps, backend="cxxrtl", symbols=None):
         acc += 40e6 / 33.7561e6 - 1
         gaps.append(int(acc))
         acc -= int(acc)
-    b = RealChainBench()
+    b = RealChainBench(errors=doc.get("bch_errors", ()))
     p = b.ports()
     t0 = time.time()
     e = engine(b, p, backend, tag="chainreal")
@@ -972,7 +1012,7 @@ def run_chain_real(doc, taps, backend="cxxrtl", symbols=None):
     with open(os.path.join(os.path.dirname(__file__), "..", "..", "build", f"chain-real-got-{n}.json"), "w") as f:
         json.dump(got, f)
     diag = {k: e.get(k) for k in ("tdone", "port_lost", "late", "overrun", "frames_done", "in_lost",
-                                  "dec_overruns", "queue_overflow")}
+                                  "dec_overruns", "queue_overflow", "fifo_max")}
     cyc = e.cycles()
     dt = time.time() - t0
     bad = [stuck] if stuck else []

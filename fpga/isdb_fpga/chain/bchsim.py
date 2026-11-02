@@ -10,7 +10,7 @@ import sys
 from amaranth.hdl import Elaboratable, Module, Signal
 
 from . import gf
-from .finish import BchUnit
+from .finish import FastBch
 from .simx import engine
 
 TMCC_N = 9614
@@ -19,7 +19,7 @@ SLOT_N = 374 * 93 - 6  # 93/120: header + data + parity
 
 class BchBench(Elaboratable):
     def __init__(self, lengths):
-        self.dut = BchUnit(lengths)
+        self.dut = FastBch(lengths)
         self.i_valid = Signal()
         self.i_ready = Signal()
         self.kind = Signal()

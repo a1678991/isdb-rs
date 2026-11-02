@@ -36,7 +36,9 @@ dummy blocks), so a bank is held about 7 200 symbol clocks longer than
 the decoder's own output time. The TMCC burst then also runs at the
 chain's pace: four values per beat on the port cycles the demapper leaves
 (tmcc.py), 18.5 % of the symbol clock at the front end's 33.76 Msymbol/s
-(`CHAIN_FREE`): 1.07 ms, 3.9 slots.
+(`CHAIN_FREE`): 1.07 ms, 3.9 slots. `result_fifo`: the chain's result
+FIFO (chain/results.py) takes the next stream while the finish stage
+formats the slot block (no gap), as long as the stage keeps up on average.
 """
 
 import math
@@ -76,7 +78,7 @@ def measured_frame(seed=1, long_at=(17, 61, 103), long_iter=16):
 
 
 def run(frames, banks=3, limit=16, rate=93, s_units=34, clock_hz=200e6, tmcc="staged",
-        tmcc_iter=2, cycles=None, tmcc_cycles=None, finish_hz=None):
+        tmcc_iter=2, cycles=None, tmcc_cycles=None, finish_hz=None, result_fifo=False):
     """Simulate `frames` (a list of frames, each a list of 120 slot
     codewords' iteration counts; a count above `limit` means not
     converged at the limit). Returns {"records": [(frame, "slot" s |
@@ -90,7 +92,7 @@ def run(frames, banks=3, limit=16, rate=93, s_units=34, clock_hz=200e6, tmcc="st
     out_gap = 0.0
     if finish_hz:
         out_cycles = (math.ceil(n / 16) + 8) * clock_hz / finish_hz
-        out_gap = FINISH_FORMAT * clock_hz / finish_hz
+        out_gap = 0.0 if result_fifo else FINISH_FORMAT * clock_hz / finish_hz
     cpp = cycles or passes_cycles(rate, s_units)
     cpp_t = tmcc_cycles or passes_cycles(61, s_units)
     fill_t = math.ceil(ldpcmodel.TMCC_SHORT[0] / s_units) + math.ceil(

@@ -113,18 +113,22 @@ def _xpow(k):
     return v
 
 
-def beat_terms(i):
-    """For syndrome S_i: the constants alpha^(16 i) and alpha^((15 - b) i)."""
-    return gf.alpha(16 * i), [gf.alpha((15 - b) * i) for b in range(16)]
+def beat_terms(i, w=16):
+    """For syndrome S_i and w-bit beats: the constants alpha^(w i) and
+    alpha^((w - 1 - b) i)."""
+    return gf.alpha(w * i), [gf.alpha((w - 1 - b) * i) for b in range(w)]
 
 
 class BchUnit(Elaboratable):
-    def __init__(self, lengths):
+    def __init__(self, lengths, width=16):
+        """`width`: bits per input beat (16; `FastBch` gives the unit a
+        16-bit beat as four of 4 bits, one per fast cycle)."""
         self.lengths = sorted(set(lengths))
+        self.width = width
         self.start = Signal()
         self.n_sel = Signal(range(len(self.lengths)))  # index of the word length
         self.i_valid = Signal()
-        self.i_bits = Signal(16)
+        self.i_bits = Signal(width)
         self.i_last = Signal()
         self.done = Signal()
         self.ok = Signal()
@@ -146,9 +150,9 @@ class BchUnit(Elaboratable):
             m.d.sync += [n.eq(ns[self.n_sel]), z.eq((-ns[self.n_sel])[:4])]
         with m.Elif(self.i_valid):
             for i in range(1, 2 * T + 1, 2):
-                c16, cb = beat_terms(i)
+                c16, cb = beat_terms(i, self.width)
                 acc = gf_const_mul(s[i], c16)
-                for b in range(16):
+                for b in range(self.width):
                     acc = acc ^ Mux(self.i_bits[b], Const(cb[b], 16), 0)
                 m.d.sync += s[i].eq(acc)
         # ---- BM / Chien --------------------------------------------------------
@@ -366,6 +370,58 @@ class FixRoots(Elaboratable):
         return m
 
 
+class FastBch(Elaboratable):
+    """`BchUnit` in the 4x clock (`fast`) with the symbol clock's interface:
+    the syndromes take one 16-bit beat per symbol clock (the input's pace)
+    as four 4-bit steps (4-bit networks: about 40 % less logic than the
+    16-bit ones), and Berlekamp-Massey and the Chien search run at one step per
+    fast cycle, so a word with errors costs n / 4 symbol clocks of Chien
+    (8 694 for a 93/120 slot, 0.8 slot) instead of n (34 776, 3.1 slots).
+    `start` and `i_valid` (symbol-clock pulses) reach the unit on phase 0
+    only; `done` comes back as a one-cycle pulse of the symbol clock (a
+    toggle of the fast domain, registered and compared there); `ok`, `corrected`, `nroots`
+    and `roots` are fast registers that hold from `done` to the next
+    `start`; `busy` (symbol clock) from the word's last beat to `done`."""
+
+    def __init__(self, lengths):
+        self.unit = BchUnit(lengths, width=4)
+        u = self.unit
+        self.lengths = u.lengths
+        self.start, self.n_sel, self.i_valid, self.i_bits, self.i_last = (
+            u.start.like(u.start, name="fb_start"), u.n_sel.like(u.n_sel, name="fb_n_sel"),
+            u.i_valid.like(u.i_valid, name="fb_i_valid"), Signal(16, name="fb_i_bits"),
+            u.i_last.like(u.i_last, name="fb_i_last"))
+        self.done = Signal()
+        self.busy = Signal()
+        self.ok, self.corrected, self.nroots, self.roots = u.ok, u.corrected, u.nroots, u.roots
+
+    def elaborate(self, platform):
+        from amaranth.hdl import DomainRenamer
+
+        from .common import Phase4
+
+        m = Module()
+        u = self.unit
+        m.submodules.ph = ph = Phase4()
+        m.submodules.unit = DomainRenamer("fast")(u)
+        p0 = ph.phase == 0
+        # the beat's four 4-bit chunks on phases 0 .. 3 (bit 0, the first, first)
+        m.d.comb += [u.start.eq(self.start & p0), u.n_sel.eq(self.n_sel), u.i_valid.eq(self.i_valid),
+                     u.i_bits.eq(self.i_bits.word_select(ph.phase, 4)),
+                     u.i_last.eq(self.i_last & (ph.phase == 3))]
+        tg = Signal()
+        tq = Signal()
+        with m.If(u.done):
+            m.d.fast += tg.eq(~tg)
+        # a register of the symbol clock: one cycle after the edge that sees the toggle
+        m.d.sync += [tq.eq(tg), self.done.eq(tg ^ tq)]
+        with m.If(self.i_valid & self.i_last):
+            m.d.sync += self.busy.eq(1)
+        with m.Elif(self.done):
+            m.d.sync += self.busy.eq(0)
+        return m
+
+
 class SlotPrbs(Elaboratable):
     """The slot dispersal PRBS (X^25 + X^22 + 1, last stage out), 16 output
     bits per `step` (bit b = the b-th bit in order), or 1..16 with `count`
@@ -458,7 +514,7 @@ class Finish(Elaboratable):
         from .tmcc import TmccResult
 
         self.tmcc = TmccResult(lag, own_align=False)
-        self.bch = BchUnit(BCH_LENGTHS)
+        self.bch = FastBch(BCH_LENGTHS)
         self.prbs = SlotPrbs()
         self.packer = Packer()
         self.status = StatusSource()
@@ -711,7 +767,8 @@ class Finish(Elaboratable):
                         with m.If(word_i == 2):
                             m.d.sync += pace.eq(0)
                 with m.Else():
-                    # two clocks per word: the buffer read, then the word
+                    # a word per clock: the buffer read one ahead (`pace`: the
+                    # read port holds word q_out)
                     with m.If(~pace):
                         m.d.sync += pace.eq(1)
                     with m.Else():
@@ -722,7 +779,8 @@ class Finish(Elaboratable):
                         v = Mux(lastw & (rem != 0), v & ((Const(1, 17) << rem) - 1)[:16], v)
                         m.d.comb += [pk.w_valid.eq(1), pk.w_data.eq(v)]
                         with m.If(pk.w_ready):
-                            m.d.sync += [word_i.eq(word_i + 1), q_out.eq(q_out + 1), pace.eq(0)]
+                            m.d.comb += brd.addr.eq(q_out + 1)
+                            m.d.sync += [word_i.eq(word_i + 1), q_out.eq(q_out + 1)]
                             with m.If(lastw):
                                 m.next = "SLOT_DONE"
             with m.State("SLOT_DONE"):
