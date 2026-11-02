@@ -28,7 +28,7 @@ from amaranth.hdl import Elaboratable, Module, Signal  # noqa: E402
 from amaranth.hdl import UnusedElaboratable  # noqa: E402
 from amaranth.sim import Simulator  # noqa: E402
 
-from isdb_fpga import tx, txmodel  # noqa: E402
+from isdb_fpga import ldpc, ldpcmodel, ldpcqueue, ldpcsched, simldpc, tx, txmodel  # noqa: E402
 from isdb_fpga.frontend import crc32c_word, crc32c_word_terms  # noqa: E402
 from isdb_fpga.sim import compare, load, simulate, simulate_top  # noqa: E402
 from isdb_fpga.sim import compare_tx, is_tx, run_tx_top, simulate_tx, simulate_tx_top  # noqa: E402
@@ -111,8 +111,15 @@ class CrcTest(unittest.TestCase):
         self.assertLessEqual(widest, 32)
 
 
+# vector files of other blocks in the same directory: the LDPC decoder's and
+# the receive chain's stages (isdbs3-phy's chain vectors)
+OTHER_VECTORS = ("ldpc-", "ldpcvec-", "chain-")
+
+
 @functools.lru_cache(maxsize=None)
 def _is_tx(path):
+    if os.path.basename(path).startswith(OTHER_VECTORS):
+        return False
     return is_tx(load(path))
 
 
@@ -122,7 +129,7 @@ def vector_files():
     return [
         p
         for p in sorted(glob.glob(os.path.join(VECTORS, "*.json")))
-        if not os.path.basename(p).startswith("ldpc-") and not _is_tx(p)
+        if not os.path.basename(p).startswith(OTHER_VECTORS) and not _is_tx(p)
     ]
 
 
@@ -647,6 +654,226 @@ class TxRegisterTest(unittest.TestCase):
         self.assertEqual(out["latched"], (0xFFFF_FFFF, 1, 1))
         self.assertEqual(out["first_miss"], 0x3_0000_0005)
         self.assertEqual(out["samples"], 0x4_0000_0007)
+
+
+# --- the LDPC decoder ----------------------------------------------------------
+#
+# Vectors: the Rust model's ldpc-*.json (`mise run fpga:vectors`) and the
+# Python model's ldpcvec-py-*.json (`mise run fpga:ldpc-vectors`), in the
+# same directory; without them the vector tests are skipped (the unit
+# tests below run on the toy codes, made in process). The HDL simulation of
+# a 44 880-bit codeword is slow (README, "The LDPC decoder"): by default
+# it runs on every toy set and on the first codewords of the 93/120 and
+# TMCC sets at step 17; FPGA_LDPC_ALL=1 runs every codeword of every
+# layered set (several hours).
+
+LDPC_ALL = os.environ.get("FPGA_LDPC_ALL") == "1"
+LDPC_DEFAULT = {"ldpc-12-93-layered17.json": 2, "ldpc-13-tmcc-layered17.json": 1}
+
+
+def ldpc_files():
+    pats = ("ldpc-[0-9]*.json", "ldpcvec-py-*.json")
+    return sorted(p for pat in pats for p in glob.glob(os.path.join(VECTORS, pat)))
+
+
+@functools.lru_cache(maxsize=None)
+def ldpc_tables():
+    return ldpcmodel.load_tables(os.path.join(VECTORS, "ldpc-tables.json"))
+
+
+class LdpcModelTest(unittest.TestCase):
+    """The Python model of the contract: the tables, the schedules' self-
+    check, the layer address generation and the HDL's own scheme in Python
+    (`ldpcsched.lane_decode`), and every vectors file reproduced."""
+
+    def test_tables_json_matches_the_source(self):
+        path = os.path.join(VECTORS, "ldpc-tables.json")
+        if not os.path.exists(path):
+            self.skipTest("no ldpc-tables.json")
+        self.assertEqual(ldpcmodel.load_tables(path), ldpcmodel.parse_tables_rs())
+
+    def test_sequential_and_step_1_are_the_in_place_decoder(self):
+        for name, rows in ldpcmodel.TOYS.items():
+            code = ldpcmodel.Code(6 * ldpcmodel.GROUP, rows)
+            rng = ldpcmodel.Rng(11)
+            for es in (0.0, -2.5):
+                with self.subTest(code=name, esn0=es):
+                    llr = ldpcmodel.noisy(code, (es,), rng)[0]
+                    self.assertEqual(ldpcmodel.self_check(code, llr), [])
+
+    def test_layer_addresses_are_the_codes_checks(self):
+        codes = [(name, rows, 6) for name, rows in ldpcmodel.TOYS.items()]
+        codes += [(r, rows, 120) for r, rows in ldpc_tables().items()]
+        for name, rows, ng in codes:
+            code = ldpcmodel.Code(ng * ldpcmodel.GROUP, rows)
+            for s in (11, 17, 34, 187):
+                with self.subTest(code=name, S=s):
+                    lay = ldpcsched.Layout(rows, ng, s)
+                    self.assertEqual(ldpcsched.check_layout(lay, code.checks, code.k),
+                                     len([v for c in code.checks for v in c]))
+
+    def test_lane_scheme_equals_the_contract(self):
+        for name, rows in ldpcmodel.TOYS.items():
+            code = ldpcmodel.Code(6 * ldpcmodel.GROUP, rows)
+            rng = ldpcmodel.Rng(5)
+            for s in (11, 17, 22, 34, 187):
+                lay = ldpcsched.Layout(rows, 6, s)
+                for es in (1.0, -2.0, -3.5):
+                    with self.subTest(code=name, S=s, esn0=es):
+                        llr = ldpcmodel.noisy(code, (es,), rng)[0]
+                        w = ldpcmodel.decode(code, llr, {"kind": "layered", "step": s}, 10, 1)
+                        self.assertEqual(ldpcsched.lane_decode(lay, llr, 10, 1),
+                                         (w["bits"], w["iterations"], w["converged"],
+                                          w["unsatisfied"]))
+
+    def test_model_reproduces_every_vectors_file(self):
+        files = ldpc_files()
+        if not files:
+            self.skipTest(f"no LDPC vectors in {VECTORS}")
+        for path in files:
+            with self.subTest(vectors=os.path.basename(path)):
+                doc = load(path)
+                self.assertEqual(ldpcmodel.check_doc(doc, ldpc_tables()), [])
+
+
+class LdpcQueueModelTest(unittest.TestCase):
+    """The codeword queue over frames (`ldpcqueue`, S = 34, 200 MHz,
+    93/120, limit 16, the TMCC staged and loaded as a burst after the
+    frame): the measured iteration distribution fits K = 3 and not K = 2;
+    a frame of codewords all at the limit overruns, every drop counted
+    and recorded in order."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cpp = ldpcqueue.passes_cycles(93, 34, ldpc_tables())
+        cls.cpp_t = ldpcqueue.passes_cycles(61, 34, ldpc_tables())
+
+    def run_frames(self, frames, banks, **kw):
+        r = ldpcqueue.run(frames, banks=banks, cycles=self.cpp, tmcc_cycles=self.cpp_t, **kw)
+        # one record per codeword, in commit order: per frame its slots in
+        # order, the frame's TMCC after them
+        per = len(frames[0]) + 1
+        self.assertEqual(len(r["records"]), len(frames) * per)
+        for fi in range(len(frames)):
+            labels = [x[1] for x in r["records"] if x[0] == fi]
+            self.assertEqual(labels, [f"slot {s}" for s in range(per - 1)] + ["tmcc"])
+        self.assertEqual(sum(1 for x in r["records"] if x[2] == "overrun"), r["overruns"])
+        return r
+
+    def test_measured_distribution(self):
+        frame = ldpcqueue.measured_frame()
+        self.assertAlmostEqual(sum(frame) / len(frame), 2.1, delta=0.05)
+        self.assertEqual(max(frame), 16)
+        self.assertGreater(self.run_frames([frame] * 3, banks=2)["overruns"], 0)
+        r = self.run_frames([frame] * 3, banks=3)
+        self.assertEqual(r["overruns"], 0)
+        self.assertLess(r["passes"], ldpcqueue.budget(93, 34) / 2)
+
+    def test_all_at_the_limit_overruns_and_is_counted(self):
+        r = self.run_frames([[ldpc.DEFAULT_MAX_ITER + 1] * 120] * 2, banks=3)
+        self.assertGreater(r["overruns"], 60)
+
+    def test_tmcc_interleaved_needs_a_fourth_bank(self):
+        frames = [ldpcqueue.measured_frame()] * 3
+        self.assertGreater(self.run_frames(frames, 3, tmcc="interleaved")["overruns"], 0)
+        self.assertEqual(self.run_frames(frames, 4, tmcc="interleaved")["overruns"], 0)
+
+
+class LdpcVectorTest(unittest.TestCase):
+    """The HDL against the vectors, bit for bit: every codeword's n hard
+    decisions, iterations, convergence and unsatisfied count."""
+
+    def check(self, doc, limit=None, **kw):
+        results = simldpc.simulate(doc, limit, **kw)
+        self.assertEqual(len(results), len(doc["codewords"][:limit]))
+        self.assertEqual(simldpc.compare(doc, results), [])
+        return results
+
+    def test_toy_codes(self):
+        files = [p for p in ldpc_files() if "-toy-" in os.path.basename(p)]
+        docs = [(os.path.basename(p), load(p)) for p in files] or [
+            (f"ldpcmodel {name}", ldpcmodel.vectors(name))
+            for name in ("toy-a", "toy-a-short", "toy-b-34")]
+        for name, doc in docs:
+            with self.subTest(vectors=name):
+                self.check(doc)
+
+    def test_known_zeros_filled_by_the_decoder(self):
+        doc = ldpcmodel.vectors("toy-a-short")
+        self.check(doc, fill_known=True)
+
+    def test_a_wrong_offset_is_caught(self):
+        doc = ldpcmodel.vectors("toy-a")
+        bad = dict(doc, codewords=[c for c in doc["codewords"] if c["iterations"] > 1][:1])
+        results = simldpc.simulate(dict(bad, offset=2))
+        self.assertNotEqual(simldpc.compare(bad, results), [])
+
+    def test_iteration_limit_is_a_run_time_input(self):
+        # the same toy codewords at the default limit (16) instead of the file's
+        doc = ldpcmodel.vectors("toy-a")
+        cws = [c for c in doc["codewords"] if not c["converged"]][:2]
+        code = ldpcmodel.code_of(doc)
+        exp = []
+        for c in cws:
+            r = ldpcmodel.decode(code, c["llr"], doc["schedule"], ldpc.DEFAULT_MAX_ITER, 1)
+            exp.append(dict(c, bits_hex=ldpcmodel.pack(r["bits"]), iterations=r["iterations"],
+                            converged=r["converged"], unsatisfied=r["unsatisfied"]))
+        d16 = dict(doc, max_iter=ldpc.DEFAULT_MAX_ITER, codewords=exp)
+        self.assertTrue(any(e["iterations"] > doc["max_iter"] for e in exp))
+        self.check(d16)
+
+    def test_overrun_record_in_order(self):
+        # K = 2: codeword A decodes (12 iterations, long), B waits in the
+        # second bank, C begins while both are held: dropped, counted, and
+        # its record leaves after B's and before D's; no data words for it
+        doc = ldpcmodel.vectors("toy-a")
+        cw = doc["codewords"]
+        slow = [i for i, c in enumerate(cw) if c["iterations"] == doc["max_iter"]][:2]
+        fast = [i for i, c in enumerate(cw) if c["converged"] and c["iterations"] > 0]
+        a, b, c_, d = slow[0], slow[1], fast[0], fast[1]
+        plan = [("begin", a, 0, True), ("llr", a, 0, 0, None), ("start", a, 0),
+                ("begin", b, 0, True), ("llr", b, 0, 0, None), ("start", b, 0),
+                ("begin", c_, 0, False), ("llr", c_, 0, 0, None), ("start", c_, 0),
+                ("begin", d, 0, True), ("llr", d, 0, 0, None), ("start", d, 0)]
+        res = simldpc.simulate(doc, banks=2, plan=plan)
+        self.assertEqual([r["overrun"] for r in res], [False, False, True, False])
+        self.assertEqual(res[-1]["overruns"], 1)
+        self.assertEqual((res[2]["converged"], res[2]["iterations"], res[2]["bits"]),
+                         (False, 0, None))
+        ordered = dict(doc, codewords=[cw[a], cw[b], cw[d]])
+        self.assertEqual(simldpc.compare(ordered, [res[0], res[1], res[3]]), [])
+
+    def test_two_contexts_interleaved(self):
+        # a context-1 codeword (the TMCC's burst) begins, half of it loads,
+        # a context-0 codeword loads and commits in between, then the rest:
+        # results in commit order, both bit-exact
+        doc = ldpcmodel.vectors("toy-a")
+        cw = doc["codewords"]
+        x, y = 1, 2
+        half = doc["n"] // 2
+        plan = [("begin", x, 1, True), ("llr", x, 1, 0, half),
+                ("begin", y, 0, True), ("llr", y, 0, 0, None), ("start", y, 0),
+                ("llr", x, 1, half, None), ("start", x, 1)]
+        res = simldpc.simulate(doc, plan=plan)
+        self.assertEqual(simldpc.compare(dict(doc, codewords=[cw[y], cw[x]]), res), [])
+
+    def test_b44_vectors(self):
+        files = [p for p in ldpc_files() if "-toy-" not in os.path.basename(p)]
+        runs = []
+        for p in files:
+            doc = load(p)
+            if doc["schedule"]["kind"] != "layered":
+                continue
+            base = os.path.basename(p)
+            if LDPC_ALL:
+                runs.append((base, doc, None))
+            elif base in LDPC_DEFAULT:
+                runs.append((base, doc, LDPC_DEFAULT[base]))
+        if not runs:
+            self.skipTest("no B44 LDPC vectors (mise run fpga:vectors), or none of the default set")
+        for base, doc, limit in runs:
+            with self.subTest(vectors=base):
+                self.check(doc, limit, fill_known=bool(doc.get("shortened")))
 
 
 if __name__ == "__main__":
