@@ -22,11 +22,14 @@
 // The fast clock through the same buffer types as the symbol clock. The
 // symbol clock is util_ad9361_divclk: l_clk (a BUFG) -> BUFR divide 4 ->
 // BUFGMUX_CTRL (ADI util_clkdiv), about 4.2 ns later at its registers than
-// l_clk's BUFG (the first image's final checkpoint: 8.14 ns against 3.93 ns
-// of clock delay), which leaves a symbol-clock register's output about 2 ns
-// of the 6.25 ns before the next fast edge. fast_clk goes through a BUFR in
-// BYPASS and a BUFGMUX_CTRL as well, so that both clocks see a BUFR and a
-// global buffer after l_clk's BUFG; Vivado times the remaining skew.
+// l_clk's BUFG (the second build's final checkpoint: 8.14 ns against
+// 3.93 ns of clock delay), which leaves a symbol-clock register's output
+// about 2 ns of the 6.25 ns before the next fast edge. fast_clk goes through
+// a BUFR in BYPASS and a BUFG as well, so that both clocks see a BUFR and a
+// global buffer after l_clk's BUFG (on the third build's placement: skew
+// -0.49 ns instead of -3.99); Vivado times the remaining skew. (A
+// BUFGMUX_CTRL with its select tied, the third build's choice, stops
+// Vivado's clock propagation: the fast registers were unclocked.)
 //
 // ldpc_ref is clk_fpga_0 (100 MHz) into the block's MMCM (200 MHz for the
 // LDPC decoder); ldpc_locked is its lock output, left for debugging.
@@ -65,10 +68,8 @@ module isdb_slots_top (
     .CE(1'b1),
     .CLR(1'b0),
     .O(fast_bufr));
-  BUFGMUX_CTRL fast_gbuf_i (
-    .I0(fast_bufr),
-    .I1(1'b0),
-    .S(1'b0),
+  BUFG fast_gbuf_i (
+    .I(fast_bufr),
     .O(fast_g));
 
   (* shreg_extract = "no", async_reg = "true" *) reg fast_rst_m = 1'b1;
