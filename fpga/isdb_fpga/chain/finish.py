@@ -181,6 +181,12 @@ class BchUnit(Elaboratable):
         prod = Signal(16)
         m.d.comb += prod.eq(gf_mul(ma, mb))
         sa = Array(s)
+        # one read of the syndromes, by `sx`: S_i (EVEN, squared into S_2i),
+        # S_k+1 (BM_D0), S_k+1-i (BM_D)
+        sx = Signal(5)
+        sv = Signal(16)
+        sq_v = Signal(16)
+        m.d.comb += [sx.eq((k + 1 - i)[:5]), sv.eq(sa[sx]), sq_v.eq(gf_square(sv))]
         m.d.comb += [prc.addr.eq(Cat(i[:4], pc)), pwr.addr.eq(Cat(i[:4], pf)), pwr.en.eq(0)]
         c_i = prc.data  # c[i]
         xsq = Signal(16)
@@ -203,9 +209,10 @@ class BchUnit(Elaboratable):
                     m.next = "EVEN"
             with m.State("EVEN"):
                 # S_2i = S_i^2 for 2i = 2, 4, ... 24, in order
+                m.d.comb += sx.eq(i[:5])
                 for e in range(2, 2 * T + 1, 2):
                     with m.If(i == e // 2):
-                        m.d.sync += s[e].eq(gf_square(s[e // 2]))
+                        m.d.sync += s[e].eq(sq_v)
                 m.d.sync += i.eq(i + 1)
                 with m.If(i == T):
                     m.next = "CHECK"
@@ -227,12 +234,13 @@ class BchUnit(Elaboratable):
                     m.d.sync += pf.eq(1)
                     m.next = "BM_D0"
             with m.State("BM_D0"):
-                m.d.sync += [d.eq(sa[k + 1]), i.eq(1)]
+                m.d.comb += sx.eq((k + 1)[:5])
+                m.d.sync += [d.eq(sv), i.eq(1)]
                 m.next = "BM_D"
             with m.State("BM_D"):
                 # d ^= c_i s_{k+1-i}, i = 1 .. L
                 with m.If(i <= ll):
-                    m.d.comb += [ma.eq(c_i), mb.eq(sa[(k + 1 - i)[:5]])]
+                    m.d.comb += [ma.eq(c_i), mb.eq(sv)]
                     m.d.sync += [d.eq(d ^ prod), i.eq(i + 1)]
                 with m.Else():
                     m.next = "BM_E"
