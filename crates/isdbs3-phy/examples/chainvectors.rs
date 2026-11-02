@@ -29,8 +29,10 @@
 //!   !FSync, number and frame −1 when unknown) and `carrier` (`[at, f]`
 //!   after each register update: `at` the first symbol rotated with it).
 //! - **2-phase** (stage 3): the heads of three slots (as above) and the
-//!   NCO outputs `r` of the two slots between them; `out`: per symbol
-//!   `[at, j, phi, gain, y_re, y_im]`.
+//!   NCO outputs `r` of the two slots between them, with the NCO's input
+//!   `x` (the symbols) and phase `phi` (φ each symbol was rotated with)
+//!   for the HDL that delays the input and rotates it after the delay;
+//!   `out`: per symbol `[at, j, phi, gain, y_re, y_im]`.
 //! - **3-eq** (stage 4): `taps` (Q2.14, 11 complex: in use over the
 //!   frame, written at open by the host as `ChainOptions::initial_taps`
 //!   from a first pass over the same symbols, so the FIR is not the
@@ -320,9 +322,30 @@ fn stage2(r: &Run) -> Value {
         .filter(|c| (a..b).contains(&usize::try_from(c.at).unwrap()))
         .map(|c| c.r)
         .collect();
+    // the NCO's phase of every symbol up to b (stage 2a and the carrier
+    // loop replayed as stage 1 does), checked against the chain's r
+    let mut nco = Nco::new(0);
+    let mut sy = SlotSync::new();
+    let mut ev = Vec::new();
+    let mut phi = Vec::with_capacity(b);
+    for &x in &r.input[..b] {
+        phi.push(nco.phase);
+        let v = nco.rotate(x);
+        sy.push(v, &mut ev);
+        for e in ev.drain(..) {
+            if let SyncEvent::Head(h) = e {
+                nco.head(&h);
+            }
+        }
+        if phi.len() > a {
+            assert_eq!(v, rr[phi.len() - 1 - a], "the replayed NCO");
+        }
+    }
     json!({
         "heads": hs.iter().map(head_json).collect::<Vec<_>>(),
         "r": flat2(&rr),
+        "x": flat2(&r.input[a..b]),
+        "phi": phi[a..b].iter().map(|&p| i64::from(p)).collect::<Vec<_>>(),
         "out": out,
     })
 }
