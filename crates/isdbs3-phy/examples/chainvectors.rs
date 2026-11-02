@@ -60,8 +60,8 @@
 //!   `frames` (per frame: counter, decoded, LDPC iterations per slot).
 //!
 //! Three more whole-chain sets (the 6-chain fields; synthetic only), with
-//! the FPGA decoder's settings (`isdb_fec::ldpc::fixed`, `Schedule::Layered
-//! { step: 34 }`, limit 16, offset 1: the HDL decoder's defaults), so an
+//! the FPGA decoder's settings (`FixedLdpc::hdl`: `Schedule::Layered
+//! { step: 34 }`, limit 14, offset 1: the HDL decoder's defaults), so an
 //! HDL chain with the real decoder matches them bit for bit:
 //!
 //! - **7-hdl**: 6-chain's input and taps.
@@ -81,12 +81,11 @@
 //!   codeword's hard decisions (the decoder's output stream order), so an
 //!   HDL bench can flip the same bits in its decoder's output.
 
-use isdb_fec::ldpc::fixed::Schedule;
 use isdbs3_core::params::{FRAME_SYMBOLS, MOD_SLOT, SLOTS, SYMBOL_RATE};
 use isdbs3_phy::chain::frame::{FrameOut, Part, part};
 use isdbs3_phy::chain::fx::CORDIC_ATAN;
 use isdbs3_phy::chain::input::{Input, for_each};
-use isdbs3_phy::chain::ldpc::FixedLdpc;
+use isdbs3_phy::chain::ldpc::{FixedLdpc, HDL_MAX_ITER, HDL_OFFSET, HDL_STEP};
 use isdbs3_phy::chain::phase::Corrected;
 use isdbs3_phy::chain::sync::{Head, Nco, SlotSync, SyncEvent, Word};
 use isdbs3_phy::chain::synth::{SynthOptions, generate};
@@ -195,11 +194,9 @@ fn run(input: Vec<[i8; 2]>, losses: Vec<(usize, u64)>, taps: Option<[[i16; 2]; 1
 }
 
 /// The FPGA decoder's settings (ldpc.py: S = 34, the chain's MAX_ITER
-/// reset 16, offset 1).
+/// reset, offset 1).
 fn hdl_ldpc() -> FixedLdpc {
-    let mut l = FixedLdpc::with(16, 1);
-    l.params.schedule = Schedule::Layered { step: 34 };
-    l
+    FixedLdpc::hdl()
 }
 
 /// The FPGA decoder with bit errors flipped in its output: in the
@@ -770,7 +767,7 @@ fn main() {
         json!({"synthetic": {"frames": 6, "modes": "16APSK 93/120 x120", "seed": seed,
             "carrier_hz": o.carrier_hz, "drift_hz_s": o.drift_hz_s, "snr_db": o.snr_db,
             "amplitude": o.amplitude, "bits": o.bits, "events": what,
-            "ldpc": "layered 34, limit 16, offset 1"}})
+            "ldpc": format!("layered {HDL_STEP}, limit {HDL_MAX_ITER}, offset {HDL_OFFSET}")}})
     };
     let mut v = stage6(&hdl);
     v["source"] = src(7, "chain-6's input");

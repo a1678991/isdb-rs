@@ -57,6 +57,28 @@ impl Default for FixedLdpc {
     }
 }
 
+/// The FPGA decoder's default iteration limit (fpga `ldpc.DEFAULT_MAX_ITER`,
+/// the chain's MAX_ITER register at reset): 14, so that its queue (S = 34,
+/// three banks, 200 MHz) has no overrun on the measured distribution at
+/// the chain's pace (at 16 it overruns 9 of 363 codewords).
+pub const HDL_MAX_ITER: usize = 14;
+/// The FPGA decoder's layered schedule step (S = 34 units).
+pub const HDL_STEP: usize = 34;
+/// The FPGA decoder's min-sum offset.
+pub const HDL_OFFSET: i8 = 1;
+
+impl FixedLdpc {
+    /// The FPGA decoder's default settings: `Schedule::Layered { step:
+    /// HDL_STEP }`, [`HDL_MAX_ITER`] iterations, offset [`HDL_OFFSET`]; an
+    /// HDL chain with the real decoder matches the model with these bit
+    /// for bit.
+    pub fn hdl() -> Self {
+        let mut l = Self::with(HDL_MAX_ITER, HDL_OFFSET);
+        l.params.schedule = isdb_fec::ldpc::fixed::Schedule::Layered { step: HDL_STEP };
+        l
+    }
+}
+
 /// Lanes of the CPU decoder.
 const LANES: usize = 16;
 
