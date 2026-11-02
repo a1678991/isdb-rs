@@ -100,5 +100,25 @@ class SyncTest(unittest.TestCase):
         self.assertTrue(any("head" in b for b in bad), bad)
 
 
+@needs("2-phase")
+class PhaseTest(unittest.TestCase):
+    """Stage 3 (`SlotPhase`): two slots between three heads, every
+    symbol's phi, gain, y and r (18 592 symbols), with the heads fed as
+    stage 1 gives them (after their window's last symbol)."""
+
+    def run_stage(self, backend):
+        from isdb_fpga.chain.stages import run_phase
+
+        what, bad = run_phase(doc("2-phase"), backend)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
+    def test_pysim(self):
+        self.run_stage("pysim")
+
+    @cxx
+    def test_cxxrtl(self):
+        self.run_stage("cxxrtl")
+
+
 if __name__ == "__main__":
     unittest.main()
