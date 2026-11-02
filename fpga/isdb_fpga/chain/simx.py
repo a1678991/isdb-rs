@@ -99,7 +99,8 @@ class _Cxx:
                 capture_output=True, text=True)
             if r.returncode:
                 raise RuntimeError("write_cxxrtl: " + r.stdout + r.stderr)
-            tmp = so + ".tmp"
+            # per process: parallel test workers may build the same design
+            tmp = f"{so}.{os.getpid()}.tmp"
             r = subprocess.run(
                 [os.environ.get("CXX", "c++"), "-O1", "-std=c++17", "-shared", "-fPIC", "-w",
                  "-I", cxxrtl_include(), cc,
