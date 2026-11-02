@@ -790,6 +790,34 @@ added: MAX_ITER, AGC, TMCC_OVERRUNS; the first image offers the host's
 taps and the sums, not a constellation or n0 at START, lag 2 only) and
 `mise run fpga:slots-verilog` writes its Verilog.
 
+**Vivado, build 4 (2026-11-03, the image piece, of 5c8b9eb).** It fits:
+45 275 LUT (85 %), 119 BRAM36, 176 DSP; the chain 18 346 LUT (Vivado
+about 7 % under Yosys). Setup failed (WNS −3.257 ns, 7 429 endpoints;
+hold met); the chain's share and the remedies (each value unchanged,
+every bit-exact test passing; `fpga/tools/vivado_paths.py` reads the
+reports):
+
+| Path (clock) | Slack, endpoints | Remedy |
+|---|---|---|
+| BCH: locator read → GF(2¹⁶) multiplier → locator write, 10 LUT levels (l_clk) | −3.257 ns, 812 | Berlekamp-Massey's product steps two fast cycles: operands registered, then the product used; the syndrome read registered for the steps that use it whole |
+| symbol-clock toggle → `Phase4`'s combinational phase → BCH / demapper fast logic | −1.563 / −1.132 ns, 466 / 217 | the phase a fast register (a counter kept in step by the toggle registered twice in l_clk), plus the phase one fast cycle late |
+| equaliser: the tap switch's 32-bit compare and selects → DSP A / B inputs (crossing), the phase → B inputs (l_clk) | −2.863 / −1.379 ns, 494 / 5 | the chosen taps and the line through fast registers, the 22 operands registered before the products (two fast cycles later, still inside the symbol clock) |
+| demapper: the K product → rounding add → saturation → LLR (l_clk) | −1.201 ns, 110 | the rounding's half added with the products, so the last stage is a shift and the saturation |
+| FastBch's inputs from the finish stage (crossing) | (in the 466) | through fast registers, the beat's chunks on the late phase |
+
+The BCH's budget per corrected slot: 8 993 symbol clocks after the word
+(8 855 before; only Berlekamp-Massey's steps doubled, the Chien search
+is one position per fast cycle as before), so the result FIFO's account
+holds (at most one result waiting at 16APSK with every slot corrected);
+chain-10-bch with the real decoder: bit-exact, 0 overruns, the FIFO's
+peak 1 426 entries of 4 096. Yosys: `SlotsRx` without the decoder
+26 803 LUT (+51), 27 380 FF (+785), BRAM and DSP unchanged. The decoder's
+own 200 MHz paths (`ldpc.py`) are the decoder's piece; `LdpcBridge`'s
+input FIFO (188 endpoints at 200 MHz, −1.0 ns: Amaranth's AsyncFIFO, the
+synchronised write pointer → empty compare → read address → 64-deep LUT
+RAM, 211 bits wide → read register) is left for the next build: a
+block-RAM FIFO or a registered read address would remove it.
+
 ### Piece 5: the host path against the host receiver (2026-11-02)
 
 `tools/slots-vs-symbols.sh ~/isdb-captures/2026-10-26-fpga/bs7-fpga-40s-drift.sym`
