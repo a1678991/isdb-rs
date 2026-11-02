@@ -78,7 +78,7 @@ def main():
         "chien": lambda: (lambda d: (d, [d.load, d.root, *d.r]))(Chien()),
         "gfmul": lambda: (lambda d: (d, [d.a, d.b, d.p]))(Mul()),
         "unit": lambda: (lambda d: (d, [d.start, d.n_sel, d.i_valid, d.i_bits, d.i_last, d.done, d.ok,
-                                        d.corrected, d.nroots, *d.roots, d.q_beat, d.o_mask]))(
+                                        d.corrected, d.nroots, *d.roots]))(
             BchUnit(BCH_LENGTHS)),
     }
     for name in sys.argv[1:] or parts:

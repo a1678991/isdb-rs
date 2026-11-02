@@ -27,8 +27,10 @@ port, the unit tests' reference):
   leading zeros (they do not change r(x));
 - if every syndrome is 0: done (corrected 0) one cycle later;
 - **Berlekamp-Massey**, 24 steps on one GF(2^16) multiplier (combinational,
-  256 AND + XOR reduction): the discrepancy (L products), the update (up to
-  13 products), and at a length change the inverse of the new b by
+  256 AND + XOR reduction): the discrepancy (L products), the update (13
+  cycles: the new locator written into the free one of three banks of a LUT
+  RAM, so that keeping the old one as bp is a change of the banks' roles,
+  not a copy), and at a length change the inverse of the new b by
   a^(2^16 - 2) (15 squarings and products): at most about 1 300 cycles;
   L > 12 at any step fails at once (the model's final check, exact since L
   never decreases);
@@ -53,6 +55,7 @@ of a flip mask per beat (12 comparators).
 """
 
 from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal
+from amaranth.lib.memory import Memory
 
 from . import gf
 from .tables import SLOT_INIT, lfsr_state
@@ -149,9 +152,18 @@ class BchUnit(Elaboratable):
                     acc = acc ^ Mux(self.i_bits[b], Const(cb[b], 16), 0)
                 m.d.sync += s[i].eq(acc)
         # ---- BM / Chien --------------------------------------------------------
-        c = [Signal(16, name=f"c{i}") for i in range(T + 1)]
-        bp = [Signal(16, name=f"bp{i}") for i in range(T + 1)]
-        tc = [Signal(16, name=f"tc{i}") for i in range(T + 1)]
+        # the locator c and the previous one bp: three banks of 16 in a LUT
+        # RAM (one write, two asynchronous reads), their roles by pointers:
+        # an update writes the new c into the free bank (BM's copy of c
+        # becomes a pointer move)
+        poly = Memory(shape=16, depth=64, init=[], attrs={"ram_style": "distributed"})
+        m.submodules.poly = poly
+        pwr = poly.write_port()
+        prc = poly.read_port(domain="comb")
+        prb = poly.read_port(domain="comb")
+        pc = Signal(2)  # c's bank
+        pb = Signal(2)  # bp's bank
+        pf = Signal(2)  # the free bank
         ll = Signal(range(2 * T + 2))
         mm = Signal(range(2 * T + 2))
         b = Signal(16)
@@ -165,8 +177,8 @@ class BchUnit(Elaboratable):
         prod = Signal(16)
         m.d.comb += prod.eq(gf_mul(ma, mb))
         sa = Array(s)
-        ca = Array(c)
-        bpa = Array(bp)
+        m.d.comb += [prc.addr.eq(Cat(i[:4], pc)), pwr.addr.eq(Cat(i[:4], pf)), pwr.en.eq(0)]
+        c_i = prc.data  # c[i]
         xsq = Signal(16)
         r_inv = Signal(16)
         cnt = Signal(5)
@@ -200,10 +212,15 @@ class BchUnit(Elaboratable):
                                  self.busy.eq(0)]
                     m.next = "IN"
                 with m.Else():
-                    m.d.sync += [c[0].eq(1), bp[0].eq(1), ll.eq(0), mm.eq(1), b.eq(1), binv.eq(1),
-                                 k.eq(0)]
-                    m.d.sync += [c[x].eq(0) for x in range(1, T + 1)]
-                    m.d.sync += [bp[x].eq(0) for x in range(1, T + 1)]
+                    # c = bp = 1 (both in bank 0)
+                    m.d.sync += [ll.eq(0), mm.eq(1), b.eq(1), binv.eq(1), k.eq(0), i.eq(0),
+                                 pc.eq(0), pb.eq(0), pf.eq(0)]
+                    m.next = "BM_INIT"
+            with m.State("BM_INIT"):
+                m.d.comb += [pwr.data.eq(Mux(i == 0, 1, 0)), pwr.en.eq(1)]
+                m.d.sync += i.eq(i + 1)
+                with m.If(i == T):
+                    m.d.sync += pf.eq(1)
                     m.next = "BM_D0"
             with m.State("BM_D0"):
                 m.d.sync += [d.eq(sa[k + 1]), i.eq(1)]
@@ -211,7 +228,7 @@ class BchUnit(Elaboratable):
             with m.State("BM_D"):
                 # d ^= c_i s_{k+1-i}, i = 1 .. L
                 with m.If(i <= ll):
-                    m.d.comb += [ma.eq(ca[i[:4]]), mb.eq(sa[(k + 1 - i)[:5]])]
+                    m.d.comb += [ma.eq(c_i), mb.eq(sa[(k + 1 - i)[:5]])]
                     m.d.sync += [d.eq(d ^ prod), i.eq(i + 1)]
                 with m.Else():
                     m.next = "BM_E"
@@ -222,21 +239,26 @@ class BchUnit(Elaboratable):
                 with m.Else():
                     m.d.comb += [ma.eq(d), mb.eq(binv)]
                     m.d.sync += [coef.eq(prod), i.eq(0)]
-                    m.d.sync += [tc[x].eq(c[x]) for x in range(T + 1)]
                     m.next = "BM_U"
             with m.State("BM_U"):
-                # c[i + m] ^= coef bp[i] for i + m <= 12
-                with m.If(i + mm <= T):
-                    m.d.comb += [ma.eq(coef), mb.eq(bpa[i[:4]])]
-                    for x in range(T + 1):
-                        with m.If(i + mm == x):
-                            m.d.sync += c[x].eq(c[x] ^ prod)
-                    m.d.sync += i.eq(i + 1)
+                # the new c into the free bank: c[x] ^ coef bp[x - m] (x >= m),
+                # x = i = 0 .. 12
+                upd = i >= mm
+                m.d.comb += [prb.addr.eq(Cat((i - mm)[:4], pb)), ma.eq(coef), mb.eq(prb.data),
+                             pwr.data.eq(c_i ^ Mux(upd, prod, 0)), pwr.en.eq(1)]
+                m.d.sync += i.eq(i + 1)
+                with m.If(i == T):
+                    m.next = "BM_ROLES"
+            with m.State("BM_ROLES"):
+                with m.If(2 * ll <= k):
+                    # bp = the old c, c = the new one
+                    m.d.sync += [pb.eq(pc), pc.eq(pf), pf.eq(3 - pc - pf)]
                 with m.Else():
+                    m.d.sync += [pc.eq(pf), pf.eq(3 - pb - pf)]
+                with m.If(1):
                     with m.If(2 * ll <= k):
                         nl = k + 1 - ll
                         m.d.sync += [ll.eq(nl), b.eq(d), mm.eq(1)]
-                        m.d.sync += [bp[x].eq(tc[x]) for x in range(T + 1)]
                         with m.If(nl > T):
                             m.next = "FAIL"
                         with m.Else():
@@ -263,7 +285,7 @@ class BchUnit(Elaboratable):
             with m.State("CH_INIT"):
                 # R_i = c_i a^i with a = alpha^-(n-1); apow holds a^i
                 with m.If(i <= T):
-                    m.d.comb += [ma.eq(ca[i[:4]]), mb.eq(apow)]
+                    m.d.comb += [ma.eq(c_i), mb.eq(apow)]
                     for x in range(1, T + 1):
                         with m.If(i == x):
                             m.d.sync += R[x].eq(Mux(i <= ll, prod, 0))
