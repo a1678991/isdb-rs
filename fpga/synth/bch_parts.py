@@ -7,7 +7,7 @@ python synth/bch_parts.py
   and 1 bit(s) per clock (S_i <- S_i alpha^(w i) + the beat's terms);
 - `chien`: the 12 constant multipliers R_x <- R_x alpha^x and the sum;
 - `gfmul`: one general GF(2^16) multiplier;
-- `unit`: the whole BchUnit.
+- `unit`, `unit4`: the whole BchUnit, 16- and 4-bit beats.
 """
 
 import os
@@ -80,6 +80,9 @@ def main():
         "unit": lambda: (lambda d: (d, [d.start, d.n_sel, d.i_valid, d.i_bits, d.i_last, d.done, d.ok,
                                         d.corrected, d.nroots, *d.roots]))(
             BchUnit(BCH_LENGTHS)),
+        "unit4": lambda: (lambda d: (d, [d.start, d.n_sel, d.i_valid, d.i_bits, d.i_last, d.done, d.ok,
+                                         d.corrected, d.nroots, *d.roots]))(
+            BchUnit(BCH_LENGTHS, width=4)),
     }
     for name in sys.argv[1:] or parts:
         dut, ports = parts[name]()
