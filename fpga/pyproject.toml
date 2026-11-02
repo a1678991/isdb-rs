@@ -12,6 +12,8 @@ dependencies = [
 dev = [
   # Synthesis for resource estimates (WebAssembly Yosys, user space).
   "yowasp-yosys==0.70.0.0.post1259",
+  # `uv run --locked pytest` (the tests are unittest classes; mise uses unittest).
+  "pytest==9.1.1",
 ]
 
 [tool.uv]
