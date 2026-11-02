@@ -347,6 +347,7 @@ class SlotPrbs(Elaboratable):
 
 RATES = [41, 49, 61, 73, 81, 89, 93, 97, 101, 105, 109]
 TMCC_N = 9614
+TMCC_DATA_BITS = 9614  # tmcc.TMCC_DATA: the TMCC's BCH word
 BCH_LENGTHS = sorted({374 * r - 6 for r in RATES} | {TMCC_N})
 
 
@@ -389,7 +390,7 @@ class Finish(Elaboratable):
         from .packer import Packer, StatusSource
         from .tmcc import TmccResult
 
-        self.tmcc = TmccResult(lag)
+        self.tmcc = TmccResult(lag, own_align=False)
         self.bch = BchUnit(BCH_LENGTHS)
         self.prbs = SlotPrbs()
         self.packer = Packer()
@@ -493,9 +494,13 @@ class Finish(Elaboratable):
             bch.i_last.eq(Mux(tmode, tr.bch_last, al.o_last)),
             tr.bch_done.eq(bch.done & tmode), tr.bch_ok.eq(bch.ok), tr.bch_corrected.eq(bch.corrected),
             tr.bch_mask.eq(bch.o_mask),
-            al.skip.eq(0), al.take.eq(k_of[rate] - 6), al.lead.eq((-(k_of[rate] - 6))[:4]),
-            al.start.eq(slot_start),
-            al.i_bits.eq(dis & keep), al.i_q.eq(s_q),
+            # one Realign for the slots' BCH words and the TMCC's (tmode)
+            al.skip.eq(0),
+            al.take.eq(Mux(tmode, TMCC_DATA_BITS, k_of[rate] - 6)),
+            al.lead.eq(Mux(tmode, (-TMCC_DATA_BITS) % 16, (-(k_of[rate] - 6))[:4])),
+            al.start.eq(Mux(tmode, tr.al_start, slot_start)),
+            al.i_bits.eq(Mux(tmode, tr.al_i_bits, dis & keep)), al.i_q.eq(Mux(tmode, tr.al_i_q, s_q)),
+            tr.al_o_valid.eq(al.o_valid), tr.al_o_bits.eq(al.o_bits), tr.al_o_last.eq(al.o_last),
             tr.r_bits.eq(self.r_bits), tr.r_last.eq(self.r_last), tr.r_head.eq(self.r_head),
             tr.r_iterations.eq(self.r_iterations), tr.r_converged.eq(self.r_converged & ~self.r_overrun),
             tr.frame.eq(fr_frame),
@@ -509,7 +514,7 @@ class Finish(Elaboratable):
             m.d.sync += [bch_done_l.eq(1), bch_ok_l.eq(bch.ok), bch_cor_l.eq(bch.corrected)]
 
         m.d.sync += [pk.b_valid.eq(0), st.begin.eq(0), st.next.eq(0)]
-        m.d.comb += [prbs.step.eq(0), prbs.count.eq(cntw), bw.en.eq(0), al.i_valid.eq(0),
+        m.d.comb += [prbs.step.eq(0), prbs.count.eq(cntw), bw.en.eq(0), al.i_valid.eq(tmode & tr.al_i_valid),
                      tr.r_valid.eq(0), tr.o_go.eq(0)]
         nb = Signal(12)  # payload bit words of the slot
         hd_bits = Signal(17)
