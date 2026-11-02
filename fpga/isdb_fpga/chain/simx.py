@@ -46,6 +46,9 @@ from amaranth.sim import Simulator
 
 HERE = os.path.dirname(__file__)
 BUILD = os.path.join(HERE, "..", "..", "build", "cxxrtl")
+# -O1: -O0 on the generated code took 98 minutes and 30 GB here (measured
+# on the whole chain, 2026-11-02); -O1 takes 214 s and 1.8 GB.
+CXXFLAGS = ["-O1", "-std=c++17", "-shared", "-fPIC", "-w"]
 
 
 def yosys_path():
@@ -85,8 +88,11 @@ def _signame(s):
 class _Cxx:
     def __init__(self, dut, ports, tag):
         il = rtlil.convert(dut, name="top", ports=list(ports.values()))
+        # The library depends on the design, the harness and the compiler
+        # flags, and on nothing else: a change to this module's Python side
+        # must not invalidate the libraries cached across CI runs.
         key = hashlib.sha256(il.encode() + open(os.path.join(HERE, "harness.cc"), "rb").read()
-                             + open(__file__, "rb").read()).hexdigest()[:16]
+                             + " ".join(CXXFLAGS).encode() + b"write_cxxrtl -g2").hexdigest()[:16]
         os.makedirs(BUILD, exist_ok=True)
         so = os.path.join(BUILD, f"{tag}-{key}.so")
         if not os.path.exists(so):
@@ -195,7 +201,7 @@ class _Cxx:
         if r.returncode:
             raise RuntimeError("write_cxxrtl: " + r.stdout + r.stderr)
         r = subprocess.run(
-            [os.environ.get("CXX", "c++"), "-O1", "-std=c++17", "-shared", "-fPIC", "-w",
+            [os.environ.get("CXX", "c++"), *CXXFLAGS,
              "-I", cxxrtl_include(), cc,
              os.path.join(cxxrtl_include(), "cxxrtl", "capi", "cxxrtl_capi.cc"),
              os.path.join(HERE, "harness.cc"), "-o", tmp],
