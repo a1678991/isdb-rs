@@ -752,7 +752,8 @@ PRBS and root fixers), the demapper (4 909 against 4 500), stage 1
 (3 783 against 3 500). The decoder at S = 22 is not a way out: 9 647 LUT
 but 92 BRAM36 at K = 3 (152.5 of 140 in the device) and at K = 2 its
 queue overruns at every limit (`fpga/tools/queue_sweep.py`); at K = 3 it
-would also need the limit at 10 or less (9 overruns of 363 at 16, 200 MHz).
+would also need the limit at 10 or less (9 overruns of 363 at 16, 200 MHz,
+the passes before the decoder's pipelining).
 
 **A corrected slot no longer holds the decoder.** The BCH (Chien over n,
 3.1 slots at 93/120) held the result stream and a decoder bank; it now
@@ -816,7 +817,29 @@ own 200 MHz paths (`ldpc.py`) are the decoder's piece; `LdpcBridge`'s
 input FIFO (188 endpoints at 200 MHz, −1.0 ns: Amaranth's AsyncFIFO, the
 synchronised write pointer → empty compare → read address → 64-deep LUT
 RAM, 211 bits wide → read register) is left for the next build: a
-block-RAM FIFO or a registered read address would remove it.
+block-RAM FIFO or a registered read address would remove it (the
+decoder's timing commit did: its FIFOs in block RAM).
+
+**The iteration limit: 14 (2026-11-03).** With the decoder pipelined for
+200 MHz (93/120: 6 125 cycles per pass, from 5 420) the queue at the
+chain's pace (`ldpcqueue.run(..., finish_hz=40e6)`, the measured
+distribution, its long codewords at the limit; `tools/queue_sweep.py`)
+gives, of 363 codewords at 200 MHz:
+
+| K | limit | overruns | with two adjacent long pairs | BRAM36 (Vivado 119 + the bridge's FIFOs in block RAM) |
+|---|---|---|---|---|
+| 3 | 16 | 9 | 15 | ≈ 123.5 |
+| 3 | **14** | **0** | 6 | ≈ 123.5 |
+| 4 | 16 | 0 | 6 | ≈ 140.5: over the device |
+
+(K = 3 at limits 12 and 10: 0 as well; at 160 MHz, limit 14: 9.) So K = 3
+and the default limit 14: `ldpc.DEFAULT_MAX_ITER`, the chain's MAX_ITER
+reset, the model's `chain::ldpc::HDL_MAX_ITER` (`FixedLdpc::hdl`) and the
+host's `control::chain::MAX_ITER_RESET` agree; the host may write
+another limit (MAX_ITER), and K = 4 stays a build parameter (`banks`).
+The sensitivity cost is small: at 13.0 dB the layered decoder fails 3 of
+18 336 codewords at limit 16 and 47 at 12 (the piece-1 table), 14 between.
+With it the regenerated decoder-settings sets (chain-7-hdl, -8-loss, -9-fade, -10-bch; no codeword of them needs more than 4 iterations) are bit-exact with the real decoder, and the FPGA suite and cargo test pass.
 
 ### Piece 5: the host path against the host receiver (2026-11-02)
 

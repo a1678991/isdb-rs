@@ -280,9 +280,10 @@ module's docstring states its contract by reference and its schedule):
   PS's clk_fpga_0 (100 MHz × 10 / 5), reached through `LdpcBridge`'s
   AsyncFIFOs (64 beats in, LUT RAM; 64 words out) and the tag FIFO,
   `set_max_delay -datapath_only 5.0` both ways. Not 160 MHz on the fast
-  clock: the queue model (`ldpcqueue.py`, S = 34, K = 3, limit 16, TMCC
-  staged, with the result stream at the chain's pace) gives 9 overruns of
-  363 codewords on the measured distribution at 160 MHz, 0 at 200 MHz;
+  clock: the queue model (`ldpcqueue.py`, S = 34, K = 3, the default
+  limit 14, TMCC staged, with the result stream at the chain's pace) gives
+  9 overruns of 363 codewords on the measured distribution at 160 MHz, 0
+  at 200 MHz;
   and 32APSK's 163 M LLR/s (one LLR per decoder cycle) exceeds 160 MHz.
 
 The BCH unit runs in `fast` (`finish.FastBch`): Chien one position per
@@ -408,7 +409,7 @@ are needed: not provably narrower).
   domain at 5× the symbol clock in the simulation), the input at the
   front end's 33.76 Msymbol/s, against chain-7-hdl (chain-6's input,
   decoded by the model with the decoder's settings: `Schedule::Layered
-  { step: 34 }`, limit 16, offset 1), every block compared per (frame,
+  { step: 34 }`, limit 14, offset 1), every block compared per (frame,
   kind, slot). **Bit-exact**: all 126 blocks of the three frames the model
   sends (frame 2 decoded: 96 slots, 24 dummies; three TMCC and status
   blocks), 0 decoder overruns, no queue overflow, no lost beat; the chain
@@ -466,15 +467,37 @@ are needed: not provably narrower).
 - **Queue at 160 MHz** (`ldpcqueue.run(..., finish_hz=40e6)`: the result
   stream at the chain's pace and the TMCC burst at the chain's): the
   measured distribution (3 frames, mean 2.1, three isolated codewords at
-  the limit 16, TMCC staged) overruns 9 of 363 codewords at 160 MHz, 0 at
-  200 MHz; with two adjacent pairs at 16: 15 and 6. So the decoder keeps
-  its 200 MHz (an MMCM on clk_fpga_0) and the async bridge
-  (`tools/queue_sweep.py`).
+  the limit, TMCC staged) overruns 9 of 363 codewords at 160 MHz, 0 at
+  200 MHz (limit 16 with the decoder before its 200 MHz pipelining; limit
+  14 with it, below); so the decoder keeps its 200 MHz (an MMCM on
+  clk_fpga_0) and the async bridge (`tools/queue_sweep.py`).
+- **The iteration limit: 14 (2026-11-03).** With the decoder pipelined for
+  200 MHz (93/120: 6 125 cycles per pass, from 5 420) the queue at the
+  chain's pace (`ldpcqueue.run(..., finish_hz=40e6)`, the measured
+  distribution, its long codewords at the limit; `tools/queue_sweep.py`)
+  gives, of 363 codewords at 200 MHz:
+  
+  | K | limit | overruns | with two adjacent long pairs | BRAM36 (Vivado 119 + the bridge's FIFOs in block RAM) |
+  |---|---|---|---|---|
+  | 3 | 16 | 9 | 15 | ≈ 123.5 |
+  | 3 | **14** | **0** | 6 | ≈ 123.5 |
+  | 4 | 16 | 0 | 6 | ≈ 140.5: over the device |
+  
+  (K = 3 at limits 12 and 10: 0 as well; at 160 MHz, limit 14: 9.) So K = 3
+  and the default limit 14: `ldpc.DEFAULT_MAX_ITER`, the chain's MAX_ITER
+  reset, the model's `chain::ldpc::HDL_MAX_ITER` (`FixedLdpc::hdl`) and the
+  host's `control::chain::MAX_ITER_RESET` agree; the host may write
+  another limit (MAX_ITER), and K = 4 stays a build parameter (`banks`).
+  The sensitivity cost is small: at 13.0 dB the layered decoder fails 3 of
+  18 336 codewords at limit 16 and 47 at 12 (the piece-1 table), 14 between.
+  With it the regenerated decoder-settings sets (chain-7-hdl, -8-loss, -9-fade, -10-bch; no codeword of them needs more than 4 iterations) are bit-exact with the real decoder, and the FPGA suite and cargo test pass.
+
 - **S = 22 as a LUT fallback: not usable.** The decoder at S = 22, K = 3
   (`synth/ldpc_estimate.py 22`): 9 647 LUT (−4 396) but 92 BRAM36
   (+15.5): the device would need 152.5 of 140. At K = 2 (70 BRAM36, the
   two-bank estimate) the queue overruns 15-36 of 363 codewords at every
-  limit from 8 to 16. And at K = 3 its queue at 200 MHz overruns 9 (21
+  limit from 8 to 16. And at K = 3 (passes before the decoder's
+  pipelining) its queue at 200 MHz overruns 9 (21
   with the adjacent pairs) at limit 16, 0 only at limit ≤ 10 (≤ 8 with
   the pairs); S = 34 overruns 0 (6 with the pairs).
 - **Loss and sync loss** (chain-8-loss: 6 144 symbols lost half-way into
