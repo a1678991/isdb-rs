@@ -505,7 +505,10 @@ chain yet):
    fixed` done.**
 6. **Image**: `apply.sh` mode `isdbs3-rx` (receive only), build, timing,
    deploy on a card copy, the board checks of the ladder's step 4,
-   VERIFICATION.md.
+   VERIFICATION.md. **Status (2026-11-02): built; fits (85 % LUT, 119
+   BRAM36, 176 DSP) but misses timing (WNS −3.257 ns: the BCH unit at
+   160 MHz, the decoder at 200 MHz, the equaliser's symbol → fast feed);
+   not deployed. Results below, "Piece 6".**
 
 Pieces 1–3 are independent and run in parallel; 4 needs 3's vectors
 (and can start on the sync stage from 3's first commit); 5 needs 3's
@@ -986,3 +989,87 @@ drift −0 … −175 Hz (−155 Hz at the end) as the host tracks it. TMCC
 Not covered: a loss or a lost lock on live signal (none occurred), the
 drift range (−185 Hz here, against −989 Hz on the recording), and the
 chain on the board (pieces 4 and 6).
+
+### Piece 6: the receive-only image (2026-11-02): fits, misses timing, not deployed
+
+`fpga/tezuka/build.sh WORK isdbs3-rx` (Vivado 2026.1, `xc7z020clg484-2`;
+`apply.sh --isdbs3-rx`, fpga/README.md "Building the PlutoSky R2
+bitstream"): `SlotsRx` from the verified fit (`5c8b9eb`, HDL unchanged) on
+the RX path, without maia-sdr, `SymbolsTx`, the DVB-S2 transmitter and the
+TX FIR, and with the AD9361 core's TX datapath disabled
+(`DAC_DATAPATH_DISABLE`: `axi_ad9361` 7 603 → 2 647 LUT, 28 → 12 DSP). The
+DAC DMA, unpacker and FIFO stay (the device tree probes the DMA; 546 LUT,
+2 BRAM36); the cs12 packers stay.
+
+**Resources: fit, with margin.** The first build stopped before
+placement at 146.5 BRAM36 of 140: Vivado put the 64-deep memories of the
+block in block RAM where the Yosys estimates count LUT RAM (the decoder's
+64 × 714 input FIFO alone ten RAMB36). `ram_style.py` marks every memory
+of depth ≤ 64 distributed (the RTL's behaviour unchanged). Then, the
+second build's final checkpoint: **45 506 LUT (85.5 %), 43 109 FF, 119 BRAM36 (85 %), 176 DSP
+(80 %)**; `isdb_slots` 39 026 LUT (3 666 as LUT RAM), 32 531 FF, 112.5
+BRAM36, 164 DSP (front end 6 102 / 1 / 112, chain 18 346 / 31.5 / 52,
+decoder 12 819 / 79.5 / 0, bridge 661 / 0 / 0, control 1 027). Vivado's
+LUT count is 7 % under the Yosys sum (52 616 before the drops).
+
+**Timing: not met** (the ADI flow stops before the bitstream:
+"Timing Constraints NOT met"). Second build's final checkpoint
+(`system_top_postroute_physopt.dcp`): WNS −5.934 ns, 10 600 failing
+endpoints of 150 558, WHS +0.050. By clock and block (`failing.tcl`):
+
+| Launch → capture | Block | Failing endpoints | Worst setup | Cause |
+|---|---|---|---|---|
+| symbol clock → l_clk (6.25 ns rule) | chain `back` (equaliser, demapper), `finish` | 2 794 | −5.934 ns | **clock skew**: `util_ad9361_divclk` (BUFR ÷ 4 + BUFGMUX) reaches its registers 4.2 ns after l_clk's BUFG; the fit's phase-aligned 4× clock is aligned logically, not physically |
+| l_clk → l_clk (6.25 ns) | `finish`: the BCH unit (`FastBch`: Berlekamp–Massey's syndrome read, GF(2¹⁶) multiply and locator write in one cycle; 10 LUT levels, 9–10 ns) | 790 | −3.834 ns | logic depth |
+| l_clk → l_clk | chain `back` | 182 | −1.623 ns | logic depth |
+| decoder 200 MHz | `ldpc` (the TMCC fill's lo/hi bounds from `fill_base` into 34 BRAM enables: 4 CARRY4 + 5 LUT, 7.2 ns; `layer_info` loads) | 6 123 | −2.708 ns | logic depth: the decoder closes at about 125–130 MHz |
+| decoder 200 MHz | bridge FIFOs' decoder side | 310 | −1.355 ns | logic depth |
+| rx_clk at ADI's 4 ns | `axi_ad9361` PN monitors, data format, TX channels | ≈ 300 | −2.654 ns | placement pressure (the deployed image: +0.542) |
+| symbol clock at ADI's 16 ns | `finish` (`al`: 19 levels, 16.3 ns) | 0 | +0.194 (−0.454 at placement) | met by a hair; the chain runs only at 40 Msps: 25 ns (below) |
+
+Remedies tried, each once:
+
+- **Directives** (`reimpl.tcl` on the optimised checkpoint: place
+  `ExtraTimingOpt`, phys_opt / route / post-route phys_opt
+  `AggressiveExplore`): WNS −5.815, the decoder −2.846, the fast domain
+  −4.009: nothing material.
+- **XDC**: the chain's and the bridge's own symbol-clock paths at the real
+  25 ns (the 6.25 ns l_clk rule's argument), false paths for the
+  asynchronous reset assertions into the reset synchronisers (a bridge
+  FIFO's `rst_cdc`, −3.634 ns at 1 ns of requirement).
+- **Clock skew glue** (`isdb_slots_top.v`): fast_clk through a BUFR in
+  BYPASS and a global buffer, like the symbol clock. On the third build's
+  placement (`skew_check.tcl`): skew −0.49 ns instead of −3.99, the
+  symbol → fast crossings' worst setup −1.69 ns (a DSP A input of the
+  equaliser, 3.1 ns of DSP setup) instead of −5.93. The third build used a
+  BUFGMUX_CTRL with its select tied, through which Vivado does not
+  propagate the clock (the fast registers unclocked); the fourth uses a
+  BUFG. **Fourth build, final checkpoint: WNS −3.257 ns, 7 429 failing
+  endpoints** (45 275 LUT, 43 030 FF, 119 BRAM36, 176 DSP; WHS +0.016):
+  the BCH unit −3.257 (812 endpoints), the decoder −3.016 (5 063; the
+  bridge −1.005, 228), the symbol → l_clk crossings −2.863 (1 177: the
+  equaliser's symbol-clock registers into DSP A inputs, 3.1 ns of DSP
+  setup), the chain's `back` in l_clk −1.379 (115), ADI's own `rx_clk`
+  paths −0.525 (about 25); the symbol clock (+0.663) and the l_clk →
+  symbol clock crossings (+0.305) met.
+- `use_dsp` hints: not applicable (the failing paths are GF(2) logic,
+  comparators and DSP inputs, not adders in fabric); pipeline registers
+  absorbed by existing enables: none found on the failing paths (the BCH
+  unit's FSM and the decoder's fill and layer control are single-cycle
+  loops).
+
+**What the HDL needs before an image** (not done here: the fit's
+arithmetic is out of this piece's scope): the BCH unit's
+Berlekamp–Massey step split over two fast cycles (or the syndrome mux
+registered); the decoder's TMCC fill bounds (`fill_lo`, `fill_hi`)
+computed a cycle ahead (they depend on `fill_base` only) and its
+`layer_info` load registered, or the decoder at about 125 MHz, which the
+queue model (`ldpcqueue`) would have to re-check (9 overruns of 363 at
+160 MHz with limit 16 on the measured distribution); the equaliser's
+symbol-clock → DSP feed registered on the fast side; the clocking glue
+above. Then the ADI paths' placement pressure has to be seen again.
+
+**Not deployed**: no bitstream was written (the flow refuses on failed
+timing), the board was not touched (`isdb_txrx2_top.bin` still boots;
+nothing to roll back), and the board checks of the ladder's step 4 were
+not run.
