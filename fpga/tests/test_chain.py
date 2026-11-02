@@ -150,5 +150,66 @@ class EqTest(unittest.TestCase):
         self.run_stage("pysim", None)
 
 
+@needs("4-tmcc")
+class TmccTest(unittest.TestCase):
+    """Stage 5 (`TmccSoft`, `TmccResult`, `TmccLayout`, the BCH unit) on
+    chain-4-tmcc's frame with the LDPC stub (ldpc_if.py): the 31 680 soft
+    bits, the burst (OP_BEGIN, 31 680 writes in order with their positions
+    and values, OP_DONE, the tag) with the port granted on about half the
+    cycles, the 9 422 information bits, the result and the 120 layout
+    entries with their commit for frame + 2."""
+
+    def run_stage(self, backend, flips=()):
+        from isdb_fpga.chain.stages import run_tmcc
+
+        what, bad = run_tmcc(doc("4-tmcc"), backend, flips)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
+    def test_pysim(self):
+        self.run_stage("pysim")
+
+    @cxx
+    def test_cxxrtl(self):
+        self.run_stage("cxxrtl")
+
+    @cxx
+    def test_bch_corrects_the_tmcc(self):
+        # 7 bit errors in the data bits (positions 1 870 ..): corrected, the
+        # same information bits and layout, 7 reported
+        self.run_stage("cxxrtl", flips=(1870, 2000, 5003, 7777, 9000, 11000, 11483))
+
+
+class BchTest(unittest.TestCase):
+    """The BCH unit (finish.py) against gf.decode, the Python port of
+    `isdb_fec::bch::decode`: random words of the TMCC (9 614) and 93/120
+    slot (34 776) lengths with 0, 1, 2, 5, 11, 12, 13 and 20 bit errors:
+    the result, the count and the roots (the bits flipped)."""
+
+    def test_pysim(self):
+        from isdb_fpga.chain.bchsim import run
+
+        _, _, bad = run("pysim", 2)
+        self.assertEqual(bad, [])
+
+    @cxx
+    def test_cxxrtl(self):
+        from isdb_fpga.chain.bchsim import run
+
+        _, _, bad = run("cxxrtl", 32)
+        self.assertEqual(bad, [])
+
+    def test_python_port_corrects(self):
+        import random
+
+        from isdb_fpga.chain import gf
+
+        r = random.Random(3)
+        w = gf.encode([r.randrange(2) for _ in range(9614 - 192)])
+        e = list(w)
+        for p in r.sample(range(len(w)), 12):
+            e[p] ^= 1
+        self.assertEqual(gf.decode(e), (12, w))
+
+
 if __name__ == "__main__":
     unittest.main()

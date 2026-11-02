@@ -284,9 +284,156 @@ def run_eq(doc, layout, backend, symbols=None):
     return what, bad
 
 
-def run(stage, doc, backend, symbols):
-    import os
+# --- stage 5 -------------------------------------------------------------------
 
+T_SYM, T_DONE, T_HEAD, T_BEAT = range(4)
+
+
+class TmccBench(Elaboratable):
+    """TmccSoft (soft bits, staging buffer, burst) and TmccResult (with its
+    own BCH unit here) between a stub decoder: records T_SYM (z0, z1, odd,
+    idx), T_DONE (frame), T_HEAD (iterations, converged, frame) and T_BEAT
+    (bits, last) of the stub's result. The port grant follows a fixed
+    pseudo-random pattern (the demapper's priority, about half the cycles)."""
+
+    def __init__(self):
+        from .finish import BchUnit
+        from .tmcc import TMCC_DATA, TmccResult, TmccSoft
+
+        self.soft = TmccSoft()
+        self.res = TmccResult()
+        self.bch = BchUnit([TMCC_DATA])
+        self.i_valid = Signal()
+        self.i_ready = Signal()
+        self.kind = Signal(2)
+        self.a = Signal(signed(32))
+        self.b = Signal(signed(32))
+        self.c = Signal(32)
+        self.d = Signal(16)
+        self.taken = Signal()
+
+    def elaborate(self, platform):
+        m = Module()
+        m.submodules.soft = s = self.soft
+        m.submodules.res = r = self.res
+        m.submodules.bch = bch = self.bch
+        go = self.i_valid & self.i_ready
+        k = self.kind
+        lfsr = Signal(16, init=0xACE1)
+        m.d.sync += lfsr.eq(Cat(lfsr[1:], lfsr[0] ^ lfsr[2] ^ lfsr[3] ^ lfsr[5]))
+        m.d.comb += [
+            self.i_ready.eq(Mux(k >= T_HEAD, r.r_ready, 1)),
+            s.t_valid.eq(go & (k == T_SYM)), s.t_z[0].eq(self.a), s.t_z[1].eq(self.b),
+            s.t_odd.eq(self.c[0]), s.t_idx.eq(self.d),
+            s.frame_done.eq(go & (k == T_DONE)), s.frame.eq(self.a),
+            s.grant.eq(s.b_valid & lfsr[0]),
+            self.taken.eq(s.b_valid & lfsr[0]),
+            r.r_valid.eq(go & (k >= T_HEAD)), r.r_head.eq(k == T_HEAD),
+            r.r_iterations.eq(self.a), r.r_converged.eq(self.b[0]), r.frame.eq(self.c),
+            r.r_bits.eq(self.a), r.r_last.eq(self.b[0]),
+            bch.start.eq(r.bch_start), bch.n_sel.eq(0), bch.i_valid.eq(r.bch_valid),
+            bch.i_bits.eq(r.bch_bits), bch.i_last.eq(r.bch_last),
+            r.bch_done.eq(bch.done), r.bch_ok.eq(bch.ok), r.bch_corrected.eq(bch.corrected),
+            bch.q_beat.eq(r.bch_q), r.bch_mask.eq(bch.o_mask),
+        ]
+        return m
+
+    def ports(self):
+        s, r, lay = self.soft, self.res, self.res.layout
+        return {
+            "i_valid": self.i_valid, "i_ready": self.i_ready, "kind": self.kind, "a": self.a,
+            "b": self.b, "c": self.c, "d": self.d,
+            "sv": s.s_valid, "sidx": s.s_idx, "ssoft": s.s_soft,
+            "bv": self.taken, "bop": s.b_op, "bpos": s.b_pos, "bllr": s.b_llr, "btag": s.b_tag,
+            "oh": r.o_head, "ofr": r.o_frame, "oit": r.o_iter, "ocv": r.o_conv, "obok": r.o_bch_ok,
+            "obch": r.o_bch, "ov": r.o_valid, "obits": r.o_bits, "olast": r.o_last,
+            "lwe": lay.lw_en, "lws": lay.lw_slot, "lwd": lay.lw_data, "lwc": lay.lw_commit,
+            "lwf": lay.lw_frame, "lwfrom": lay.lw_from, "over": s.overrun,
+        }
+
+
+def tmcc_stub_bits(info_bits):
+    """The LDPC decoder's first 22 814 hard decisions of the frame's TMCC
+    word for the information bits the vectors give (converged, no BCH
+    correction): the known zeros 0, the 9 614 data bits = the TMCC
+    dispersal of the BCH codeword, the rest of the first k (known zeros) 0;
+    as 1 426 beats."""
+    from . import gf
+    from .tables import TMCC_INIT, prbs
+    from .tmcc import NULL_HEAD
+
+    data = gf.encode(info_bits)
+    pr = prbs(TMCC_INIT, 14, 15, len(data))
+    word = [0] * 22814
+    for i, (d, p) in enumerate(zip(data, pr)):
+        word[NULL_HEAD + i] = d ^ p
+    return [sum(word[16 * q + b] << b for b in range(16) if 16 * q + b < len(word))
+            for q in range((len(word) + 15) // 16)]
+
+
+def run_tmcc(doc, backend, flips=()):
+    """Stage 5 on chain-4-tmcc. `flips`: decoder output positions to flip
+    (bit errors the BCH must correct: the vectors have none; the expected
+    result is then the vectors' with that many corrections)."""
+    from .frame import lay_pack
+    from .ldpc_if import OP_BEGIN, OP_DONE, OP_WRITE, TAG_TMCC
+
+    F = doc["frame"]
+    z = doc["z_tmcc"]
+    recs = []
+    for b, j in enumerate(doc["j"]):
+        recs.append((T_SYM, z[2 * b], z[2 * b + 1], j & 1, b))
+    recs.append((T_DONE, F, 0, 0, 0))
+    gaps = [0] * len(recs)
+    gaps[-1] = 80_000  # the burst (about half the cycles granted)
+    beats = tmcc_stub_bits(doc["bits"])
+    for p_ in flips:
+        beats[p_ // 16] ^= 1 << (p_ % 16)
+    it = doc["ldpc_iterations"]
+    recs.append((T_HEAD, it if it is not None else 50, int(it is not None), F, 0))
+    recs += [(T_BEAT, v, int(q == len(beats) - 1), 0, 0) for q, v in enumerate(beats)]
+    gaps += [0] * (len(beats) + 1)
+    bn = TmccBench()
+    p = bn.ports()
+    e = engine(bn, p, backend, tag="chain4")
+    gs = e.group("sv", ["sidx", "ssoft"])
+    gb = e.group("bv", ["bop", "bpos", "bllr", "btag"])
+    gh = e.group("oh", ["ofr", "oit", "ocv", "obok", "obch"])
+    go = e.group("ov", ["obits", "olast"])
+    gl = e.group("lwe", ["lws", "lwd"])
+    gc = e.group("lwc", ["lwf", "lwfrom"])
+    t0 = time.time()
+    e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d"], recs, tail=20_000, gaps=gaps)
+    soft, burst, head, out, lw, com = (e.read(g) for g in (gs, gb, gh, go, gl, gc))
+    over = e.get("over")
+    cyc = e.cycles()
+    dt = time.time() - t0
+    bad = []
+    bad += first_mismatch("soft", soft, list(enumerate(doc["soft"])), key=lambda i, v: f"TMCC bit {i}")
+    exp_b = [(OP_BEGIN,)] + [(OP_WRITE, pos, v) for pos, v in zip(doc["position"], doc["soft"])] + [(OP_DONE,)]
+    got_b = [(x[0],) if x[0] != OP_WRITE else (x[0], x[1], x[2]) for x in burst]
+    bad += first_mismatch("burst", got_b, exp_b, key=lambda i, v: f"beat {i}")
+    tags = {x[3] for x in burst}
+    if tags != {TAG_TMCC | (F & 0xFF) << 8}:
+        bad.append(f"burst tags {tags}")
+    bits = doc["bits"]
+    exp_o = [(sum(bits[16 * q + b] << b for b in range(16) if 16 * q + b < len(bits)),
+              int(q == (len(bits) + 15) // 16 - 1)) for q in range((len(bits) + 15) // 16)]
+    bad += first_mismatch("tmcc bits", out, exp_o, key=lambda i, v: f"beat {i}")
+    bch = doc["bch_corrected"] + len(flips) if doc["bch_corrected"] is not None else None
+    want_h = [(F, it if it is not None else 50, int(it is not None), int(bch is not None), bch or 0)]
+    bad += first_mismatch("tmcc result", head, want_h)
+    exp_l = [(s[0], lay_pack(s[1], s[2], s[3], s[4], s[5], s[6])) for s in doc["layout"]]
+    bad += first_mismatch("layout", lw, exp_l, key=lambda i, v: f"slot {v[0]}")
+    bad += first_mismatch("layout commit", com, [(doc["applies_to"], F)])
+    if over:
+        bad.append(f"staging overrun {over}")
+    what = (f"{len(soft)} TMCC soft bits, {len(burst)} burst beats, {len(out)} information beats, "
+            f"{len(lw)} layout entries; {cyc} cycles in {dt:.1f} s")
+    return what, bad
+
+
+def run(stage, doc, backend, symbols):
     from .sim import load
 
     path = doc.get("_path", "")
@@ -295,4 +442,6 @@ def run(stage, doc, backend, symbols):
     if stage == "3-eq":
         lay = load(path.replace("3-eq", "4-tmcc"))["layout"]
         return run_eq(doc, lay, backend, symbols)
+    if stage == "4-tmcc":
+        return run_tmcc(doc, backend)
     raise NotImplementedError(stage)

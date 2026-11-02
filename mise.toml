@@ -210,7 +210,7 @@ run = [
 ]
 
 [tasks."fpga:test"]
-description = "simulate the FPGA front end, transmit block and LDPC decoder against their models, bit for bit"
+description = "simulate the FPGA front end, transmit block, LDPC decoder and the ISDB-S3 chain stages against their models, bit for bit"
 depends = ["fpga:vectors", "fpga:tx-vectors", "fpga:ldpc-vectors"]
 dir = "fpga"
 env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
@@ -236,6 +236,12 @@ depends = ["fpga:vectors"]
 dir = "fpga"
 env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
 run = "uv run --locked python synth/estimate.py build/tx-1-continuous.json"
+
+[tasks."fpga:chain-estimate"]
+description = "Yosys synth_xilinx resource estimates of the ISDB-S3 chain's stages (fpga/isdb_fpga/chain) against the plan's budget"
+dir = "fpga"
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
+run = "uv run --locked python synth/chain_estimate.py"
 
 [tasks."fpga:estimate"]
 description = "Yosys synth_xilinx resource estimate of the 32-tap front end"
