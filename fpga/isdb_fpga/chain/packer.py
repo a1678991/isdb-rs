@@ -63,6 +63,12 @@ class Packer(Elaboratable):
         for i in range(9):
             m.d.comb += hwa[i].eq(hw[i])
         m.d.sync += self.o_valid.eq(0)
+        # one CRC-32C network: the sequence number's two words go through it
+        # in the header's first two cycles, the payload words after
+        c_in = Signal(32)
+        d_in = Signal(16)
+        c_out = Signal(32)
+        m.d.comb += [c_in.eq(crc), d_in.eq(self.w_data), c_out.eq(crc32c_word(c_in, d_in))]
         with m.FSM(name="packer"):
             with m.State("IDLE"):
                 m.d.comb += self.b_ready.eq(1)
@@ -74,7 +80,11 @@ class Packer(Elaboratable):
             with m.State("HEADER"):
                 m.d.sync += [self.o_valid.eq(1), self.o_word.eq(hwa[idx[:4]]), idx.eq(idx + 1)]
                 with m.If(idx == 0):
-                    m.d.sync += crc.eq(crc32c_word(crc32c_word(Const(0xFFFFFFFF, 32), seq[:16]), seq[16:]))
+                    m.d.comb += [c_in.eq(0xFFFFFFFF), d_in.eq(seq[:16])]
+                    m.d.sync += crc.eq(c_out)
+                with m.If(idx == 1):
+                    m.d.comb += d_in.eq(seq[16:])
+                    m.d.sync += crc.eq(c_out)
                 with m.If(idx == 8):
                     m.d.sync += idx.eq(0)
                     m.next = "PAYLOAD"
@@ -86,7 +96,7 @@ class Packer(Elaboratable):
                     m.d.comb += self.w_ready.eq(1)
                     with m.If(self.w_valid):
                         m.d.sync += [self.o_valid.eq(1), self.o_word.eq(self.w_data), idx.eq(idx + 1),
-                                     crc.eq(crc32c_word(crc, self.w_data))]
+                                     crc.eq(c_out)]
             with m.State("TRAILER"):
                 out = ~crc
                 m.d.sync += [self.o_valid.eq(1), self.o_word.eq(Mux(idx == 0, out[:16], out[16:])),
