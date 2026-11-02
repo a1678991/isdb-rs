@@ -14,6 +14,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <cxxrtl/capi/cxxrtl_capi.h>
@@ -32,9 +34,21 @@ struct Group {
 	std::vector<int64_t> out;
 };
 
+// A faster clock related to `clk` (`<name>_clk`): `ratio` rising edges per
+// period of clk, one of them coincident with clk's.
+struct Fast {
+	cxxrtl_object *clk;
+	int ratio;
+};
+
 struct Harness {
 	cxxrtl_handle h;
 	cxxrtl_object *clk;
+	std::vector<Fast> fast;
+	// the edges inside one period of clk, after its edge: (time in
+	// 1 / lcm units, clock index), in time order
+	std::vector<std::pair<int, int>> sched;
+	int period = 1;
 	std::vector<Port> ports;
 	std::vector<Group> groups;
 	uint64_t cycles = 0;
@@ -81,6 +95,33 @@ void *h_create() {
 	return s;
 }
 
+static int gcd(int a, int b) { return b ? gcd(b, a % b) : a; }
+
+// Drive the domain `name` (its `<name>_clk` port, if the design has one) at
+// `ratio` x clk, phase-aligned with clk (an edge of both at clk's edge).
+// Returns 0 if the design has no such clock.
+int h_fast_clock(void *p, const char *name, int ratio) {
+	Harness *s = (Harness *)p;
+	std::string base(name);
+	cxxrtl_object *c = cxxrtl_get(s->h, (base + "_clk").c_str());
+	if (!c)
+		return 0;
+	cxxrtl_object *r = cxxrtl_get(s->h, (base + "_rst").c_str());
+	if (r)
+		put(r, 1, 0);
+	s->fast.push_back(Fast{c, ratio});
+	int l = 1;
+	for (auto &f : s->fast)
+		l = l / gcd(l, f.ratio) * f.ratio;
+	s->period = l;
+	s->sched.clear();
+	for (int t = 1; t < l; t++)
+		for (size_t i = 0; i < s->fast.size(); i++)
+			if (t % (l / s->fast[i].ratio) == 0)
+				s->sched.push_back({t, (int)i});
+	return 1;
+}
+
 void h_destroy(void *p) {
 	Harness *s = (Harness *)p;
 	cxxrtl_destroy(s->h);
@@ -109,11 +150,36 @@ int64_t h_get(void *p, int port) {
 
 static void settle(Harness *s) {
 	put(s->clk, 1, 0);
+	for (auto &f : s->fast)
+		put(f.clk, 1, 0);
 	cxxrtl_step(s->h);
 }
 
+// The faster clocks' edges between clk's edges (the inputs of the cycle
+// already applied, as an Amaranth testbench sets them right after clk's
+// edge); none before the first edge of clk, as in Amaranth's simulator.
+static void fast_edges(Harness *s) {
+	if (s->sched.empty() || s->cycles == 0)
+		return;
+	size_t k = 0;
+	while (k < s->sched.size()) {
+		int t = s->sched[k].first;
+		size_t j = k;
+		for (; j < s->sched.size() && s->sched[j].first == t; j++)
+			put(s->fast[s->sched[j].second].clk, 1, 1);
+		cxxrtl_step(s->h);
+		for (size_t i = k; i < j; i++)
+			put(s->fast[s->sched[i].second].clk, 1, 0);
+		cxxrtl_step(s->h);
+		k = j;
+	}
+}
+
 static void edge(Harness *s) {
+	fast_edges(s);
 	put(s->clk, 1, 1);
+	for (auto &f : s->fast)
+		put(f.clk, 1, 1);
 	cxxrtl_step(s->h);
 #ifndef HARNESS_EDGE_SETTLES
 	// CXXRTL's step evaluates the logic once and commits the registers

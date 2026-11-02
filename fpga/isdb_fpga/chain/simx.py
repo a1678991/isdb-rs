@@ -38,6 +38,16 @@ checks both compiled backends against the Python simulator on a bench of
 such outputs, `synth/sim_compare.py` against each other on the tests'
 benches, value for value.
 
+Clocks: the design's `sync` domain is the symbol clock (one engine cycle
+per period); the domains named in `clocks` (default `CLOCKS`: `fast` at
+4x, the chain's time-multiplexed datapaths, and `ldpc` at 5x, the
+decoder's 200 MHz) run phase-aligned with it, one edge of each on every
+edge of `sync` (both backends: Amaranth's simulator with the clocks'
+phases aligned, the harness with the faster edges scheduled between the
+cycles' edges). The engine's inputs change right after an edge of `sync`,
+as the slow domain's registers do; the ready and output-group signals must
+be the slow domain's (they are read once per cycle).
+
 Engine API:
   e = engine(dut, ports, backend)   ports: the top-level signals by name
   e.set(name, value); e.get(name); e.tick(n)
@@ -62,6 +72,8 @@ BUILD = os.path.join(HERE, "..", "..", "build", "cxxrtl")
 # -O1: -O0 on the generated code took 98 minutes and 30 GB here (measured
 # on the whole chain, 2026-11-02); -O1 takes 214 s and 1.8 GB.
 CXXFLAGS = ["-O1", "-std=c++17", "-shared", "-fPIC", "-w"]
+# the related clocks the engine drives (domain: edges per symbol clock)
+CLOCKS = {"fast": 4, "ldpc": 5}
 
 
 def yosys_path():
@@ -118,7 +130,7 @@ def _signame(s):
 class _Cxx:
     build_dir = BUILD
 
-    def __init__(self, dut, ports, tag):
+    def __init__(self, dut, ports, tag, clocks=CLOCKS):
         il = rtlil.convert(dut, name="top", ports=list(ports.values()))
         key = hashlib.sha256(self._key(il)).hexdigest()[:16]
         os.makedirs(self.build_dir, exist_ok=True)
@@ -154,8 +166,12 @@ class _Cxx:
         lib.h_destroy.argtypes = [ctypes.c_void_p]
         lib.h_stall_limit.argtypes = [ctypes.c_int64]
         lib.h_stalled.restype = ctypes.c_int64
+        lib.h_fast_clock.restype = ctypes.c_int
+        lib.h_fast_clock.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
         self.lib = lib
         self.h = lib.h_create()
+        for name, ratio in clocks.items():
+            lib.h_fast_clock(self.h, name.encode(), ratio)
         self.idx = {}
         self.width = {}
         for name, sig in ports.items():
@@ -256,7 +272,8 @@ class _Py:
     queued after that (Amaranth cannot add a testbench to a simulation
     that has run)."""
 
-    def __init__(self, dut, ports, tag):
+    def __init__(self, dut, ports, tag, clocks=CLOCKS):
+        self.clocks = clocks
         self.ports = ports
         self.dut = dut
         self.groups = []
@@ -329,6 +346,9 @@ class _Py:
         self.done = True
         sim = Simulator(self.dut)
         sim.add_clock(1e-8)
+        for name, ratio in self.clocks.items():
+            # the first edge with sync's (at half its period)
+            sim.add_clock(1e-8 / ratio, phase=5e-9, domain=name, if_exists=True)
         ops = self.ops
 
         async def bench(ctx):
@@ -357,14 +377,14 @@ class _Py:
         pass
 
 
-def engine(dut, ports, backend=None, tag="dut"):
+def engine(dut, ports, backend=None, tag="dut", clocks=CLOCKS):
     backend = backend or default_backend()
     if backend == "verilator":
         from .simv import Verilator
 
-        return Verilator(dut, ports, tag)
+        return Verilator(dut, ports, tag, clocks)
     if backend == "cxxrtl":
-        return _Cxx(dut, ports, tag)
+        return _Cxx(dut, ports, tag, clocks)
     if backend == "pysim":
-        return _Py(dut, ports, tag)
+        return _Py(dut, ports, tag, clocks)
     raise ValueError(f"unknown simulation backend {backend!r} (pysim, cxxrtl, verilator)")

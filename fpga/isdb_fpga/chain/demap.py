@@ -21,29 +21,55 @@ Contract: `isdbs3_phy::chain::demap` (`demap`, `Learn`, `InForce`) and
   every 16th symbol of each codeword of the previous decoded frame (else
   the n0 before; 52 556 at the start), K = round(2^32 / max(n0, 256)).
 
-Implementation (one main symbol per clock):
+Implementation: one main symbol per symbol clock (`sync`); the metrics in
+the 4x clock (`fast`, phase-aligned with `sync`: four fast cycles per
+symbol clock, phase 0 the one after the common edge), 8 points per fast
+cycle:
 
-- **Metrics**: two register sets of 32 points (re, im, |p|^2), one in use
-  and one loaded for the next codeword (32 cycles from the point RAM or the
-  nominal ROM, |p|^2 by two multipliers), the set selected per symbol; 64
-  products (16 x 12 bits: 64 DSP48E1 at the symbol clock, the plan's upper
-  figure; 16 at 4x is not done here), 32 metric adders, labels beyond
-  2^bits masked; per label bit position (LSB-based) and value a 16-leaf
-  min tree (10 trees, 4 levels), the overall minimum for the noise, the 5
-  differences, 5 products by K (31 x 24 bits), rounding and saturation.
-  Schedule from the symbol's arrival (A, the equaliser's output cycle):
-  A+1 products, A+2 metrics, A+3..A+6 min trees, A+7 differences, A+8 x K,
-  A+9 the beat (`o_*`: up to 5 positions and LLRs, `o_first` / `o_last`
-  of the codeword, the 64-bit tag: ldpc_if.py) to the decoder's port.
+- **Point sets**: two sets of 32 points (re, im 16 bits; |p|^2 truncated
+  to 24 bits as before), one in use and one loaded for the next codeword,
+  in eight LUT RAMs (lane l: points 8 p + l of both sets, address {set,
+  p}), written in the fast domain: the loader reads one point per symbol
+  clock (the learned RAM or the nominal ROM, `nominal.py`) and the fast
+  domain's squarer (one DSP48E1, shared with |y|^2) makes |p|^2 on phases
+  2 and 3 and writes the lane on the next phase 0.
+- **Metrics**, per fast cycle (the symbol arrives at A, its z and set held
+  in the symbol clock's registers through A+1; phase p of A+1 reads lane
+  address {set, p}): F0 the eight points; F1 16 products (16 x 16 bits,
+  16 DSP48E1, truncated to 29 bits as the 64-product design did); F2 the
+  eight metrics (labels >= 2^bits masked to 2^31 - 1); F3 eight pair
+  minima; F4 per LSB-based bit position 0..2 and value a minimum of four
+  (shared pairs: {0,2,4,6}, {1,3,5,7}, {0,1,4,5}, {2,3,6,7}, {0,1,2,3},
+  {4,5,6,7}); F5 those into running minima (reset on phase 0), the minimum
+  of all eight; F6 that into the running minima of positions 3 and 4 (the
+  eight points of phase p share bits 3, 4 = p & 1, p >> 1). The max-log
+  minimum over a label set is the same in any visiting order, so these
+  are the 32-leaf trees' values exactly. After phase 3's update: the five
+  differences and the overall minimum (F7), the five products by K on two
+  multipliers (25 x 33 bits, two DSP48E1 each; positions 0-2 on one,
+  3-4 on the other, one per fast cycle), the rounding and saturation:
+  the LLRs are in registers by phase 2 of A+4, |y|^2 (the squarer on
+  phases 0, 1 of A+1) by A+2, the minimum by A+4; the symbol clock takes
+  them there and delays them to the 64-product design's schedule, so
+  everything after is unchanged: the noise sample at A+8, the beat at A+9.
+  21 DSP48E1 in all (the 64-product design: 95).
+- **The beat** at A+9 (`o_*`: up to 5 positions and LLRs, `o_first` /
+  `o_last` of the codeword, the 64-bit tag: ldpc_if.py) to the decoder's
+  port; the positions col * rows + s from a constant table (rows =
+  44 880 / bits), s * bits + b for bits 1, 2 by a shift.
 - **Codeword cursor**: the frame's valid slots in order, from the layout
   in force (`FrameCtl`'s second read port), the next one looked up when a
-  codeword starts; its points loaded into the free register set then.
-- **Pilots**: 32 slot accumulators by label (21 bits), added into the
-  frame's sums (one RAM entry per modulation and label, 32 bits per
-  component) after each slot's pilots; the count of a label is the slots
-  of its modulation times 32 / 2^bits. After the last slot's pilots (9 240
-  symbols before the frame's end) each label's round(sum / count) by a
-  sequential divider into the point RAM's other bank.
+  codeword starts; its points loaded into the free set then (36 cycles:
+  the frame's first codeword is current before the frame's 57th symbol,
+  its first main one).
+- **Pilots**: 32 slot accumulators by label (21 bits; a LUT RAM with a
+  valid bit per label, one adder), added into the frame's sums (one RAM
+  entry per modulation and label, 32 bits per component, one read port
+  shared by the slot flush and the learning, which never overlap) after
+  each slot's pilots; the count of a label is the slots of its modulation
+  times 32 / 2^bits. After the last slot's pilots (9 240 symbols before
+  the frame's end) each label's round(sum / count) by a sequential divider
+  into the point RAM's other bank.
 - **Noise**: a 48-bit sum and a count; at a decoded frame's end n0 and K
   by two 3-bit-per-cycle dividers (about 30 cycles: the next frame's first
   main symbol reaches the K product 57 symbols later at the earliest).
@@ -51,18 +77,26 @@ Implementation (one main symbol per clock):
   frame's 56 leading sync and pilot symbols, cycle count above).
 - At a decoded frame's end the banks swap (the learned points and n0 are
   in force from the next frame); a dropped frame changes nothing.
+
+Clock crossing (fpga/tezuka/isdb_slots.xdc): the fast domain reads the
+symbol clock's registers on all four phases (they change only on the
+common edge) and the symbol clock reads the fast registers one symbol
+clock after they settle (written by phase 2 at the latest); the phase is
+found from a toggle of the symbol clock (`phase.py`'s `Phase4`).
 """
 
 from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal, signed
 from amaranth.lib.memory import Memory
 
-from .common import LLR_SHIFT, N0_DEFAULT, N0_MIN, NOISE_STEP, PILOTS, SLOTS, SeqDiv, SeqDivR
+from .common import LLR_SHIFT, N0_DEFAULT, N0_MIN, NOISE_STEP, PILOTS, SLOTS, Phase4, SeqDiv, SeqDivR
 from .common import round_shift, sat16, sat127
 from .ldpc_if import LANES
-from .tables import MOD_BITS, nominal_rom, pilot_signs
+from .nominal import NominalPort, NominalRom
+from .tables import MOD_BITS, pilot_sign_rom
 
 N_LDPC = 44880
 INF = (1 << 31) - 1  # a masked metric (larger than any real one)
+LANES8 = 8  # points per fast cycle
 
 
 def k_of(n0):
@@ -84,8 +118,18 @@ def direction(mod, rate_code):
     return 1
 
 
+def smin(m, dom, a, b, name):
+    """A registered minimum of two signed values (in domain `dom`)."""
+    r = Signal(signed(max(len(a), len(b))), name=name)
+    dom += r.eq(Mux(a < b, a, b))
+    return r
+
+
 class Demap(Elaboratable):
-    def __init__(self):
+    def __init__(self, nominal=None):
+        """`nominal`: a `NominalPort` of a shared `NominalRom` (back.py), or
+        None for one of its own."""
+        self.nominal = nominal
         # the equaliser's output, routed (aligned with z)
         self.valid = Signal()
         self.z = [Signal(signed(16), name=f"z{k}") for k in range(2)]
@@ -134,7 +178,10 @@ class Demap(Elaboratable):
 
     def elaborate(self, platform):
         m = Module()
+        fast = m.d.fast
         bitsa = Array(Const(MOD_BITS.get(i, 1), 3) for i in range(16))
+        m.submodules.ph = ph4 = Phase4()
+        ph = ph4.phase  # the fast cycle's phase (0 .. 3)
 
         # ---- point RAM (2 banks x 8 modulations x 32 labels) and nominal ROM
         pts = Memory(shape=32, depth=512, init=[])
@@ -142,20 +189,17 @@ class Demap(Elaboratable):
         pw = pts.write_port()
         pr = pts.read_port()
         pst = pts.read_port()
-        rom = nominal_rom()
-        rom = rom + [(0, 0)] * (4096 - len(rom))
-        nom = Memory(shape=32, depth=4096, init=[(a & 0xFFFF) | (b & 0xFFFF) << 16 for a, b in rom])
-        m.submodules.nom = nom
-        nr = nom.read_port()
+        if self.nominal is None:
+            m.submodules.nom = nrom = NominalRom(1)
+            nr = nrom.ports[0]
+        else:
+            nr = self.nominal
         fb = Signal()  # the bank in force
         valid_b = [Signal(5, name=f"lvalid{b}") for b in range(2)]
         m.d.comb += [self.learned_valid.eq(Mux(fb, valid_b[1], valid_b[0])),
                      pst.addr.eq(Cat(self.st_addr, fb ^ self.st_prev)), self.st_data.eq(pst.data),
                      self.st_valid.eq(Mux(fb ^ self.st_prev, valid_b[1], valid_b[0]))]
 
-        # ---- the two point register sets ------------------------------------
-        P = [[[Signal(signed(16), name=f"p{s}_{x}_{c}") for c in range(2)] for x in range(32)] for s in range(2)]
-        PP = [[Signal(signed(24), name=f"pp{s}_{x}") for x in range(32)] for s in range(2)]
         NB = [Signal(3, name=f"nb{s}") for s in range(2)]  # bits of the set's modulation
 
         # ---- codeword cursor --------------------------------------------------
@@ -177,7 +221,9 @@ class Demap(Elaboratable):
         scan = Signal(range(SLOTS + 1))
         frame = Signal(32)
 
-        # loader: label counter, from the RAM (learned) or the ROM (nominal)
+        # loader: label counter, from the RAM (learned) or the ROM (nominal);
+        # the point reaches its lane LUT RAM three symbol clocks after its
+        # read (the fast squarer), so the loader counts 2 more before idle
         ld_busy = Signal()
         ld_i = Signal(6)
         ld_set = Signal()
@@ -188,20 +234,20 @@ class Demap(Elaboratable):
         ld_lab = Signal(5)
         m.d.comb += [
             pr.addr.eq(Cat(ld_i[:5], (ld_mod - 1)[:3], fb)),
-            nr.addr.eq(Cat(ld_i[:5], (ld_rate - 1)[:4], Mux(ld_mod > 5, 0, ld_mod - 1)[:3])),
+            nr.mod.eq(Mux(ld_mod > 5, 1, ld_mod)), nr.rate.eq(ld_rate), nr.label.eq(ld_i[:5]),
         ]
         m.d.sync += [ld_v.eq(ld_busy & (ld_i < 32)), ld_lab.eq(ld_i[:5])]
-        lw = Mux(ld_learned, pr.data, nr.data)
-        lre = lw[:16].as_signed()
-        lim = lw[16:].as_signed()
-        with m.If(ld_v):
-            for s in range(2):
-                for x in range(32):
-                    with m.If((ld_set == s) & (ld_lab == x)):
-                        m.d.sync += [P[s][x][0].eq(lre), P[s][x][1].eq(lim), PP[s][x].eq(lre * lre + lim * lim)]
+        lre = Mux(ld_learned, pr.data[:16].as_signed(), nr.re)
+        lim = Mux(ld_learned, pr.data[16:].as_signed(), nr.im)
+        # the point in hand for the fast domain (one symbol clock)
+        lq_v = Signal()
+        lq_set = Signal()
+        lq_lab = Signal(5)
+        lq = [Signal(signed(16), name=f"lq{c}") for c in range(2)]
+        m.d.sync += [lq_v.eq(ld_v), lq_set.eq(ld_set), lq_lab.eq(ld_lab), lq[0].eq(lre), lq[1].eq(lim)]
         with m.If(ld_busy):
             m.d.sync += ld_i.eq(ld_i + 1)
-            with m.If(ld_i == 32):
+            with m.If(ld_i == 34):
                 m.d.sync += ld_busy.eq(0)
 
         def load(set_, mod, rate):
@@ -276,97 +322,205 @@ class Demap(Elaboratable):
         with m.If(main & cw_ok):
             m.d.sync += sym.eq(Mux(end_cw, 0, sym + 1))
 
-        # ---- the metric pipeline ---------------------------------------------
+        # ---- the symbol clock's side of the metric pipeline -------------------
         # A: arrival (main & cw_ok)
         a_v = main & cw_ok
         v1 = Signal()
         z1 = [Signal(signed(16), name=f"z1_{c}") for c in range(2)]
         s1 = Signal()
-        nb1 = Signal(3)
         ctx = Signal(64)
         dirn = Array(Const(direction(md, rc) if 1 <= md <= 5 and 1 <= rc <= 11 else 0, 2)
                      for md in range(16) for rc in range(16))[Cat(cw_rate, cw_mod)]
         ctx_now = Cat(sym, end_cw, sym == 0, Mux(cw_set, NB[1], NB[0]), cw_mod, cw_rate, cw_slot,
                       cw_mode, dirn, (sym % NOISE_STEP) == 0)
         m.d.sync += [v1.eq(a_v), z1[0].eq(self.z[0]), z1[1].eq(self.z[1]), s1.eq(cw_set), ctx.eq(ctx_now)]
-        # A+1: products
-        prod = [[Signal(signed(29), name=f"zp{x}_{c}") for c in range(2)] for x in range(32)]
-        ppx = [Signal(signed(24), name=f"ppx{x}") for x in range(32)]
-        for x in range(32):
-            pi_ = Mux(s1, P[1][x][0], P[0][x][0])
-            pq_ = Mux(s1, P[1][x][1], P[0][x][1])
-            m.d.sync += [prod[x][0].eq(z1[0] * pi_), prod[x][1].eq(z1[1] * pq_),
-                         ppx[x].eq(Mux(s1, PP[1][x], PP[0][x]))]
-        zz = Signal(32)
-        m.d.sync += zz.eq(z1[0] * z1[0] + z1[1] * z1[1])
-        v2 = Signal()
-        ctx2 = Signal(64)
-        m.d.sync += [v2.eq(v1), ctx2.eq(ctx)]
-        nb2 = ctx2[18:21]
-        # A+2: metrics
-        met = [Signal(signed(32), name=f"met{x}") for x in range(32)]
-        for x in range(32):
-            ok = x < (Const(1, 6) << nb2)
-            m.d.sync += met[x].eq(Mux(ok, ppx[x] - ((prod[x][0] + prod[x][1]) << 1), INF))
-        v3 = Signal()
-        ctx3 = Signal(64)
-        zz3 = Signal(32)
-        m.d.sync += [v3.eq(v2), ctx3.eq(ctx2), zz3.eq(zz)]
-
-        # A+3 .. A+6: min trees per LSB position and value
-        def mintree(vals, name):
-            cur = vals
-            lvl = 0
-            while len(cur) > 1:
-                nxt = []
-                for i in range(0, len(cur), 2):
-                    r = Signal(signed(32), name=f"{name}_{lvl}_{i // 2}")
-                    m.d.sync += r.eq(Mux(cur[i] < cur[i + 1], cur[i], cur[i + 1]))
-                    nxt.append(r)
-                cur = nxt
-                lvl += 1
-            return cur[0], lvl
-
-        mins = {}
-        for pos in range(5):
-            for v in range(2):
-                mins[pos, v], depth = mintree([met[x] for x in range(32) if (x >> pos) & 1 == v],
-                                              f"mn{pos}{v}")
-        vp = [v3]
-        cp = [ctx3]
-        zp = [zz3]
-        for d in range(depth):
-            nv = Signal(name=f"vm{d}")
-            nc = Signal(64, name=f"cm{d}")
-            nz = Signal(32, name=f"zm{d}")
-            m.d.sync += [nv.eq(vp[-1]), nc.eq(cp[-1]), nz.eq(zp[-1])]
-            vp.append(nv)
+        # the context word: sym 0-15, last 16, first 17, bits 18-20, mod 21-24,
+        # rate 25-28, slot 29-35, mode 36-38, direction 39-40, noise 41
+        cp = [ctx]
+        vp = [v1]
+        for d in range(2, 10):
+            nc = Signal(64, name=f"ctx{d}")
+            nv = Signal(name=f"v{d}")
+            m.d.sync += [nc.eq(cp[-1]), nv.eq(vp[-1])]
             cp.append(nc)
-            zp.append(nz)
-        v7, ctx7, zz7 = vp[-1], cp[-1], zp[-1]
-        # A+7: differences, the overall minimum
+            vp.append(nv)
+        # cp[i] / vp[i] hold the symbol during A+1+i
+        nb1 = ctx[18:21]
+
+        # ---- the fast domain: lanes, squarer, metrics --------------------------
+        lanes = []
+        for la in range(LANES8):
+            mem = Memory(shape=56, depth=8, init=[])
+            m.submodules[f"lane{la}"] = mem
+            lanes.append((mem.write_port(domain="fast"), mem.read_port(domain="comb")))
+        # the squarer: phase 0 z_re^2, 1 z_im^2 (the symbol of A+1), 2 re^2,
+        # 3 im^2 (the loader's point)
+        sq_in = Array([z1[0], z1[1], lq[0], lq[1]])[ph]
+        sq = Signal(signed(32))
+        fast += sq.eq(sq_in * sq_in)
+        sq_a = Signal(signed(32))
+        zz_f = Signal(32)
+        w_v = Signal()
+        w_set = Signal()
+        w_lab = Signal(5)
+        w_p = [Signal(signed(16), name=f"w_p{c}") for c in range(2)]
+        with m.If(ph == 1):
+            fast += sq_a.eq(sq)  # z_re^2
+        with m.If(ph == 2):
+            fast += zz_f.eq(sq_a + sq)  # + z_im^2
+        with m.If(ph == 3):
+            fast += [sq_a.eq(sq), w_v.eq(lq_v), w_set.eq(lq_set), w_lab.eq(lq_lab),
+                     w_p[0].eq(lq[0]), w_p[1].eq(lq[1])]  # re^2
+        ppw = Signal(signed(24))
+        m.d.comb += ppw.eq(sq_a + sq)  # in phase 0: re^2 + im^2, truncated to 24 bits
+        for la, (wp, _rp) in enumerate(lanes):
+            m.d.comb += [wp.addr.eq(Cat(w_lab[3:5], w_set)),
+                         wp.data.eq(Cat(w_p[0], w_p[1], ppw)),
+                         wp.en.eq((ph == 0) & w_v & (w_lab[:3] == la))]
+
+        # F0: the eight points of phase p of the symbol in hand
+        e_v = Signal()
+        e_p = Signal(2)
+        e_nb = Signal(3)
+        e_z = [Signal(signed(16), name=f"e_z{c}") for c in range(2)]
+        e_pt = [[Signal(signed(16), name=f"e_p{la}_{c}") for c in range(2)] for la in range(LANES8)]
+        e_pp = [Signal(signed(24), name=f"e_pp{la}") for la in range(LANES8)]
+        fast += [e_v.eq(v1), e_p.eq(ph), e_nb.eq(nb1), e_z[0].eq(z1[0]), e_z[1].eq(z1[1])]
+        for la, (_wp, rp) in enumerate(lanes):
+            m.d.comb += rp.addr.eq(Cat(ph, s1))
+            fast += [e_pt[la][0].eq(rp.data[0:16].as_signed()), e_pt[la][1].eq(rp.data[16:32].as_signed()),
+                     e_pp[la].eq(rp.data[32:56].as_signed())]
+        # F1: the products (truncated to 29 bits), |p|^2
+        f1_v, f1_p, f1_nb = Signal(), Signal(2), Signal(3)
+        prod = [[Signal(signed(29), name=f"zp{la}_{c}") for c in range(2)] for la in range(LANES8)]
+        pp1 = [Signal(signed(24), name=f"pp1_{la}") for la in range(LANES8)]
+        fast += [f1_v.eq(e_v), f1_p.eq(e_p), f1_nb.eq(e_nb)]
+        for la in range(LANES8):
+            fast += [prod[la][0].eq(e_z[0] * e_pt[la][0]), prod[la][1].eq(e_z[1] * e_pt[la][1]),
+                     pp1[la].eq(e_pp[la])]
+        # F2: the metrics, labels past 2^bits masked
+        f2_v, f2_p = Signal(), Signal(2)
+        met = [Signal(signed(32), name=f"met{la}") for la in range(LANES8)]
+        fast += [f2_v.eq(f1_v), f2_p.eq(f1_p)]
+        for la in range(LANES8):
+            ok = Cat(Const(la, 3), f1_p) < (Const(1, 6) << f1_nb)
+            fast += met[la].eq(Mux(ok, pp1[la] - ((prod[la][0] + prod[la][1]) << 1), INF))
+        # F3: pair minima
+        f3_v, f3_p = Signal(), Signal(2)
+        fast += [f3_v.eq(f2_v), f3_p.eq(f2_p)]
+        pm = {}
+        for a, b in ((0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (4, 6), (1, 3), (5, 7)):
+            pm[a, b] = smin(m, fast, met[a], met[b], f"pm{a}{b}")
+        # F4: per position 0..2 and value, the minimum of four
+        f4_v, f4_p = Signal(), Signal(2)
+        fast += [f4_v.eq(f3_v), f4_p.eq(f3_p)]
+        q4 = {
+            (0, 0): smin(m, fast, pm[0, 2], pm[4, 6], "q00"), (0, 1): smin(m, fast, pm[1, 3], pm[5, 7], "q01"),
+            (1, 0): smin(m, fast, pm[0, 1], pm[4, 5], "q10"), (1, 1): smin(m, fast, pm[2, 3], pm[6, 7], "q11"),
+            (2, 0): smin(m, fast, pm[0, 1], pm[2, 3], "q20"), (2, 1): smin(m, fast, pm[4, 5], pm[6, 7], "q21"),
+        }
+        # F5: running minima of positions 0..2 (the symbol's phases in order),
+        # the minimum of all eight
+        f5_v, f5_p = Signal(), Signal(2)
+        fast += [f5_v.eq(f4_v), f5_p.eq(f4_p)]
+        all8 = smin(m, fast, q4[2, 0], q4[2, 1], "all8")
+        run = {}
+        fin = {}
+        for pos in range(3):
+            for v in range(2):
+                r = Signal(signed(32), name=f"run{pos}{v}")
+                fi = Signal(signed(32), name=f"fin{pos}{v}")
+                nxt = Mux(f4_p == 0, q4[pos, v], Mux(q4[pos, v] < r, q4[pos, v], r))
+                with m.If(f4_v):
+                    fast += r.eq(nxt)
+                    with m.If(f4_p == 3):
+                        fast += fi.eq(nxt)
+                run[pos, v], fin[pos, v] = r, fi
+        # F6: positions 3 (value p & 1) and 4 (value p >> 1)
+        f6_v = Signal()
+        fast += f6_v.eq(f5_v & (f5_p == 3))
+        for pos, sel in ((3, lambda p, v: p[0] == v), (4, lambda p, v: p[1] == v)):
+            for v in range(2):
+                r = Signal(signed(32), name=f"run{pos}{v}")
+                fi = Signal(signed(32), name=f"fin{pos}{v}")
+                first_p = v if pos == 3 else 2 * v
+                nxt = Mux(f5_p == first_p, all8, Mux(all8 < r, all8, r))
+                with m.If(f5_v & sel(f5_p, v)):
+                    fast += r.eq(nxt)
+                with m.If(f5_v & (f5_p == 3)):
+                    fast += fi.eq(Mux(sel(f5_p, v), nxt, r))
+                run[pos, v], fin[pos, v] = r, fi
+        # F7: the differences and the overall minimum, as soon as their
+        # minima are final (positions 0-2 after F5 of phase 3, 3-4 after F6)
         dlt = [Signal(signed(33), name=f"dlt{p}") for p in range(5)]
-        best = Signal(signed(32))
-        m.d.sync += [dlt[p].eq(mins[p, 1] - mins[p, 0]) for p in range(5)]
-        m.d.sync += best.eq(Mux(mins[0, 0] < mins[0, 1], mins[0, 0], mins[0, 1]))
-        v8 = Signal()
-        ctx8 = Signal(64)
-        zz8 = Signal(32)
-        m.d.sync += [v8.eq(v7), ctx8.eq(ctx7), zz8.eq(zz7)]
-        # A+8: x K
-        dk = [Signal(signed(58), name=f"dk{p}") for p in range(5)]
-        m.d.sync += [dk[p].eq(dlt[p] * self.kk[:25]) for p in range(5)]
-        v9 = Signal()
-        ctx9 = Signal(64)
-        m.d.sync += [v9.eq(v8), ctx9.eq(ctx8)]
+        best_f = Signal(signed(32))
+        g0 = f5_v & (f5_p == 3)
+        with m.If(g0):
+            fast += [dlt[p].eq(fin[p, 1] - fin[p, 0]) for p in range(3)]
+            fast += best_f.eq(Mux(fin[0, 0] < fin[0, 1], fin[0, 0], fin[0, 1]))
+        with m.If(f6_v):
+            fast += [dlt[p].eq(fin[p, 1] - fin[p, 0]) for p in range(3, 5)]
+        # F8..: the products by K, positions 0-2 on unit 0 (from F7 of 0-2) and
+        # 3-4 on unit 1, one per fast cycle: K <= 2^24 (= round(2^32 / max(n0,
+        # 256))), so Delta * K[:25] is Delta << 24 when bit 24 is set (the rest
+        # is then 0), else Delta * K[:24]: Delta split at bit 17, two 25 x 18
+        # products (two DSP48E1) summed a cycle later; then the rounding and
+        # saturation into llr_f
+        k25 = Cat(self.kk[:24], Const(0, 1)).as_signed()
+        k_top = self.kk[24]
+        llr_f = [Signal(signed(8), name=f"llr_f{p}") for p in range(5)]
+        for u, (start, poss) in enumerate(((g0, (0, 1, 2)), (f6_v, (3, 4)))):
+            kc = Signal(2, name=f"kc{u}")
+            k_go = Signal(name=f"k_go{u}")
+            with m.If(start):
+                fast += [kc.eq(0), k_go.eq(1)]
+            with m.Elif(k_go):
+                fast += kc.eq(kc + 1)
+                with m.If(kc == len(poss) - 1):
+                    fast += k_go.eq(0)
+            dsel = Array(dlt[p] for p in poss)[kc]
+            p_lo = Signal(signed(43), name=f"p_lo{u}")
+            p_hi = Signal(signed(41), name=f"p_hi{u}")
+            d_r = Signal(signed(33), name=f"d_r{u}")
+            p_v, p_i = Signal(name=f"p_v{u}"), Signal(2, name=f"p_i{u}")
+            fast += [p_lo.eq(k25 * Cat(dsel[:17], Const(0, 1)).as_signed()), p_hi.eq(k25 * dsel[17:33].as_signed()),
+                     d_r.eq(dsel), p_v.eq(k_go), p_i.eq(kc)]
+            dk = Signal(signed(58), name=f"dk{u}")
+            dk_v, dk_i = Signal(name=f"dk_v{u}"), Signal(2, name=f"dk_i{u}")
+            fast += [dk.eq(Mux(k_top, d_r << 24, p_lo + (p_hi << 17))), dk_v.eq(p_v), dk_i.eq(p_i)]
+            v8 = sat127(round_shift(dk, LLR_SHIFT))
+            for i, p in enumerate(poss):
+                with m.If(dk_v & (dk_i == i)):
+                    fast += llr_f[p].eq(v8)
+
+        # ---- back in the symbol clock: the 64-product design's schedule ---------
+        # llr_f settles by phase 2 of A+4, best_f by phase 3 of A+3, zz_f by
+        # phase 2 of A+1
+        llr_d = [llr_f]
+        for d in range(5, 10):
+            regs = [Signal(signed(8), name=f"llr{d}_{p}") for p in range(5)]
+            m.d.sync += [regs[p].eq(llr_d[-1][p]) for p in range(5)]
+            llr_d.append(regs)
+        llr9 = llr_d[-1]  # A+9
+        best_d = [best_f]
+        for d in range(4, 9):
+            r = Signal(signed(32), name=f"best{d}")
+            m.d.sync += r.eq(best_d[-1])
+            best_d.append(r)
+        zz_d = [zz_f]
+        for d in range(2, 9):
+            r = Signal(32, name=f"zz{d}")
+            m.d.sync += r.eq(zz_d[-1])
+            zz_d.append(r)
+        best8, zz8 = best_d[-1], zz_d[-1]
+        v8, ctx8 = vp[7], cp[7]
+        v9, ctx9 = vp[8], cp[8]
         # noise sample at A+8
         nsum = Signal(48)
         ncnt = Signal(20)
         with m.If(v8 & ctx8[41]):
-            m.d.sync += [nsum.eq(nsum + zz8 + best), ncnt.eq(ncnt + 1)]
+            m.d.sync += [nsum.eq(nsum + zz8 + best8), ncnt.eq(ncnt + 1)]
         # A+9: the beat
-        # the context word: sym 0-15, last 16, first 17, bits 18-20, mod 21-24,
-        # rate 25-28, slot 29-35, mode 36-38, direction 39-40, noise 41
         s9 = ctx9[0:16]
         nb9 = ctx9[18:21]
         mod9 = ctx9[21:25]
@@ -374,25 +528,25 @@ class Demap(Elaboratable):
         slot9 = ctx9[29:36]
         mode9 = ctx9[36:39]
         dir9 = ctx9[39:41]
-        rows = Array(Const(N_LDPC // b if b else 0, 16) for b in range(8))[nb9]
+        # col * rows (rows = 44 880 / bits) for col < bits <= 5
+        crows = Array(Const(c * (N_LDPC // b) if 1 <= b <= 5 and c < b else 0, 16)
+                      for b in range(8) for c in range(8))
         m.d.sync += [self.o_valid.eq(v9), self.o_n.eq(nb9), self.o_last.eq(ctx9[16]), self.o_first.eq(ctx9[17]),
                      self.o_tag.eq(Cat(slot9, Const(0, 1), rate9, mod9, mode9, Const(0, 13), frame)),
                      self.o_rate.eq(rate9)]
-        llr_pos = [sat127(round_shift(dk[p], LLR_SHIFT)) for p in range(5)]
         for b in range(5):
             # label bit b (MSB first) is LSB position bits - 1 - b
             pos_lsb = (nb9 - 1 - b)[:3]
-            llr = Array(llr_pos)[pos_lsb]
+            llr = Array(llr9)[pos_lsb]
             col = Mux(dir9 == 2, nb9 - 1 - b, b)[:3]
-            p_int = col * rows + s9
-            p_id = (s9 * nb9 + b)[:16]
+            p_int = crows[Cat(col, nb9)] + s9
+            # s * bits + b: bits is 1 or 2 where it is used (direction 0)
+            p_id = (Mux(nb9 == 2, s9 << 1, s9) + b)[:16]
             m.d.sync += [self.o_llr[b].eq(Mux(b < nb9, llr, 0)),
                          self.o_pos[b].eq(Mux(b < nb9, Mux(dir9 == 0, p_id, p_int[:16]), 0))]
-        # these products are by constants in practice (rows per modulation)
 
         # ---- pilots -------------------------------------------------------------
-        signs = [1 if s < 0 else 0 for s in pilot_signs()]
-        srom = Memory(shape=1, depth=4096, init=signs + [0] * (4096 - len(signs)))
+        srom = Memory(shape=1, depth=4096, init=pilot_sign_rom())
         m.submodules.signs = srom
         sp = srom.read_port(domain="comb")
         m.d.comb += sp.addr.eq(self.k * PILOTS + self.t)
@@ -404,17 +558,25 @@ class Demap(Elaboratable):
         pv = self.valid & self.is_pilot
         nbits = bitsa[self.slot_mod]
         lab = self.t & ((Const(1, 6) << nbits) - 1)[:5]
-        sacc = [[Signal(signed(24), name=f"sacc{x}_{c}") for c in range(2)] for x in range(32)]
-        with m.If(pv):
-            for x in range(32):
-                with m.If(lab == x):
-                    m.d.sync += [sacc[x][0].eq(sacc[x][0] + sneg(self.z[0])),
-                                 sacc[x][1].eq(sacc[x][1] + sneg(self.z[1]))]
+        # the slot accumulators: a LUT RAM (re, im 24 bits) and a valid bit per
+        # label (cleared at a frame's start and by the flush)
+        sacc = Memory(shape=48, depth=32, init=[])
+        m.submodules.sacc = sacc
+        sa_w = sacc.write_port()
+        sa_r = sacc.read_port(domain="comb")
+        sa_f = sacc.read_port(domain="comb")
+        sval = Signal(32)
+        m.d.comb += sa_r.addr.eq(lab)
+        old_v = Mux(sval.bit_select(lab, 1), sa_r.data, 0)
+        m.d.comb += [sa_w.addr.eq(lab),
+                     sa_w.data.eq(Cat((old_v[:24].as_signed() + sneg(self.z[0]))[:24],
+                                      (old_v[24:].as_signed() + sneg(self.z[1]))[:24])),
+                     sa_w.en.eq(pv)]
         # the slot's pilots into the frame sums
         fs = Memory(shape=64, depth=256, init=[])
         m.submodules.fsums = fs
         fw = fs.write_port()
-        fr_ = fs.read_port()
+        fr_ = fs.read_port()  # the flush's read-modify-write and the learning
         slots_of = [Signal(8, name=f"slots_of{i}") for i in range(5)]
         fl_busy = Signal()
         fl_i = Signal(6)
@@ -431,24 +593,29 @@ class Demap(Elaboratable):
             for i in range(5):
                 with m.If(self.slot_mod == i + 1):
                     m.d.sync += slots_of[i].eq(slots_of[i] + 1)
-        m.d.comb += fr_.addr.eq(Cat(fl_i[:5], (fl_mod - 1)[:3]))
         m.d.sync += [fl_v.eq(fl_busy & (fl_i < fl_n)), fl_lab.eq(fl_i[:5])]
         with m.If(fl_busy & ~last_pilot):
             m.d.sync += fl_i.eq(fl_i + 1)
             with m.If(fl_i == fl_n):
                 m.d.sync += fl_busy.eq(0)
-        sa_re = Array(s[0] for s in sacc)[fl_lab]
-        sa_im = Array(s[1] for s in sacc)[fl_lab]
+        m.d.comb += sa_f.addr.eq(fl_lab)
+        sf = Mux(sval.bit_select(fl_lab, 1), sa_f.data, 0)
+        sa_re = sf[:24].as_signed()
+        sa_im = sf[24:].as_signed()
         old_re = fr_.data[:32].as_signed()
         old_im = fr_.data[32:].as_signed()
         # the first slot of a modulation in the frame writes its sums (no clearing pass)
         m.d.comb += [fw.addr.eq(Cat(fl_lab, (fl_mod - 1)[:3])),
                      fw.data.eq(Cat(Mux(fl_first, sa_re, old_re + sa_re)[:32], Mux(fl_first, sa_im, old_im + sa_im)[:32])),
                      fw.en.eq(fl_v)]
-        with m.If(fl_v):
+        # the valid bits: set by an accumulation, cleared by the flush (the next
+        # pilots are a slot later) and at a frame's start
+        with m.If(self.f_start):
+            m.d.sync += sval.eq(0)
+        with m.Else():
             for x in range(32):
-                with m.If(fl_lab == x):
-                    m.d.sync += [sacc[x][0].eq(0), sacc[x][1].eq(0)]
+                with m.If((pv & (lab == x)) | (fl_v & (fl_lab == x))):
+                    m.d.sync += sval[x].eq(pv & (lab == x))
 
         # ---- learning: after the last slot's pilots ---------------------------------
         # labels of every modulation with slots, divided into the other bank
@@ -462,11 +629,12 @@ class Demap(Elaboratable):
         lr_done = Signal()
         nb_l = Array(Const(1 << (i + 1), 6) for i in range(8))[lr_mod]
         cnt_l = Signal(16)
-        m.d.comb += cnt_l.eq(Array(slots_of)[lr_mod] * (Array(Const(32 >> (i + 1), 6) for i in range(8))[lr_mod]))
-        rd2 = fs.read_port()
-        m.d.comb += rd2.addr.eq(Cat(lr_lab[:5], lr_mod))
+        # slots of the modulation x 32 / 2^bits
+        m.d.comb += cnt_l.eq(Array(slots_of)[lr_mod] << Array(Const(4 - i if i < 5 else 0, 3)
+                                                             for i in range(8))[lr_mod])
+        m.d.comb += fr_.addr.eq(Mux(lr_busy, Cat(lr_lab[:5], lr_mod), Cat(fl_i[:5], (fl_mod - 1)[:3])))
+        rd2 = fr_
         num = Signal(signed(36))
-        anum = Signal(36)
         m.d.sync += [ldiv.start.eq(0), self.lp_valid.eq(0)]
         with m.If(pv & (self.k == SLOTS - 1) & (self.t == PILOTS - 1)):
             m.d.sync += lr_go.eq(1)
@@ -559,9 +727,9 @@ class Demap(Elaboratable):
         # division (f_end, 12 cycles later)
         with m.If(self.f_swap):
             m.d.sync += [fb.eq(~fb), self.prev_from.eq(self.learned_from), self.learned_from.eq(frame)]
-        # frame start: the frame sums cleared, the per-modulation slot counts zero
+        # frame start: the per-modulation slot counts zero (the slot
+        # accumulators' valid bits above)
         with m.If(self.f_start):
             m.d.sync += [lr_go.eq(0), lr_done.eq(0)]
             m.d.sync += [s.eq(0) for s in slots_of]
-            m.d.sync += [sacc[x][c].eq(0) for x in range(32) for c in range(2)]
         return m
