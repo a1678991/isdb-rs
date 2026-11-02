@@ -17,20 +17,27 @@
 //! front end's STATUS must read run, symbols and slots.
 //!
 //! **Slow loop** ([`SlowLoop::tick`], on a timer thread by
-//! [`spawn_slow_loop`]): SUMS_FRAME, SUMS_COUNT, CARRIER, TAPS_FROM and
-//! the chain's STATUS read; when a frame's sums are latched that were not
-//! solved yet, the 308 sum registers, SUMS_FRAME again (a different value:
-//! the latch moved during the read; tried again at the next tick), the
-//! solve (the caller's [`Solver`]: `isdbs3_phy::chain::eq::solve_training`,
-//! the model's `f64` solve and Q2.14 rounding), the 11 taps and TAPS_FROM
-//! (which commits them). Until the first solve it polls every
+//! [`spawn_slow_loop`]): FEATURES once; then each tick SUMS_FRAME,
+//! SUMS_COUNT, CARRIER, TAPS_FROM and the chain's STATUS read (and
+//! SUMS_CAPTURE with [`features::SUMS_CAPTURE`]). With the capture: a
+//! tick that has not armed one writes SUMS_CAPTURE (the next frame end
+//! latches the sums and holds them); the next ticks poll it until VALID;
+//! then the 308 sum registers are read (about 15 frames through iiod: the
+//! hold keeps them one frame's) and SUMS_FRAME again, which must be the
+//! same (else warned and counted as torn). Without it (older images) the
+//! latch moves every frame: a frame's sums not solved yet are read, then
+//! SUMS_FRAME again (a different value: the latch moved during the read;
+//! tried again at the next tick). Then the solve (the caller's [`Solver`]:
+//! `isdbs3_phy::chain::eq::solve_training`, the model's `f64` solve and
+//! Q2.14 rounding), the 11 taps and TAPS_FROM (which commits them). Until
+//! the first solve, and while a capture is pending, it polls every
 //! [`SlowLoopOptions::poll`]; then every [`SlowLoopOptions::every`]. The
 //! carrier register is read every tick and reported (informational: the
 //! FPGA tracks the carrier itself).
 
 use crate::{RadioError, Result};
 use isdb_frontend::control::chain::{
-    self as cc, ChainInit, NONE, Taps, TrainingSums, features, init, pack_point, reg,
+    self as cc, ChainInit, NONE, Taps, TrainingSums, capture, features, init, pack_point, reg,
 };
 use isdb_frontend::control::{self, Encoder, GPIO_IN_REG, GPIO_OUT_REG, Op};
 use std::sync::Arc;
@@ -374,6 +381,9 @@ pub enum Tick {
     Same,
     /// The latch moved while the sums were read: tried again later.
     Torn,
+    /// A capture armed ([`reg::SUMS_CAPTURE`] written) or still waiting
+    /// for its frame end.
+    Capturing,
     /// The sums did not solve (singular, or empty).
     Singular {
         /// The frame summed.
@@ -416,6 +426,11 @@ pub struct SlowLoop {
     opts: SlowLoopOptions,
     /// Totals so far.
     pub report: SlowLoopReport,
+    /// The image holds captured sums ([`features::SUMS_CAPTURE`]; read at
+    /// the first tick).
+    capture: Option<bool>,
+    /// A capture is armed and not read yet.
+    armed: bool,
 }
 
 impl SlowLoop {
@@ -424,6 +439,8 @@ impl SlowLoop {
         Self {
             opts,
             report: SlowLoopReport::default(),
+            capture: None,
+            armed: false,
         }
     }
 
@@ -432,7 +449,7 @@ impl SlowLoop {
     /// [`SlowLoopOptions::every`].
     pub fn wait(&self, last: Tick) -> Duration {
         match last {
-            Tick::Torn | Tick::NoSums => self.opts.poll,
+            Tick::Torn | Tick::NoSums | Tick::Capturing => self.opts.poll,
             _ if self.report.solves == 0 => self.opts.poll,
             _ => self.opts.every,
         }
@@ -445,16 +462,32 @@ impl SlowLoop {
     /// A failed register access.
     pub fn tick(&mut self, c: &mut ChainControl, port: &dyn RegisterAccess) -> Result<Tick> {
         self.report.ticks += 1;
-        let v = c.read_regs(
-            port,
-            &[
-                reg::SUMS_FRAME,
-                reg::SUMS_COUNT,
-                reg::CARRIER,
-                reg::TAPS_FROM,
-                reg::STATUS,
-            ],
-        )?;
+        let capture = match self.capture {
+            Some(x) => x,
+            None => {
+                let f = c.read_regs(port, &[reg::FEATURES])?[0];
+                let x = f & features::SUMS_CAPTURE != 0;
+                self.capture = Some(x);
+                x
+            }
+        };
+        let mut regs = vec![
+            reg::SUMS_FRAME,
+            reg::SUMS_COUNT,
+            reg::CARRIER,
+            reg::TAPS_FROM,
+            reg::STATUS,
+        ];
+        if capture {
+            // first: VALID read before the frame it holds
+            regs.insert(0, reg::SUMS_CAPTURE);
+        }
+        let read = c.read_regs(port, &regs)?;
+        let (cap, v) = if capture {
+            (Some(read[0]), &read[1..])
+        } else {
+            (None, &read[..])
+        };
         let (frame, count, carrier) = (v[0], v[1], v[2].cast_signed());
         self.report.carrier = Some(carrier);
         self.report.carrier_range = Some(
@@ -476,6 +509,18 @@ impl SlowLoop {
             v[3],
             v[4]
         );
+        if let Some(cap) = cap {
+            if !self.armed {
+                c.write(port, reg::SUMS_CAPTURE, &[1])?;
+                self.armed = true;
+                return Ok(Tick::Capturing);
+            }
+            if cap & capture::VALID == 0 {
+                return Ok(Tick::Capturing);
+            }
+            // held: read it now; the next tick arms another
+            self.armed = false;
+        }
         if frame == NONE {
             return Ok(Tick::NoSums);
         }
@@ -486,12 +531,21 @@ impl SlowLoop {
         let again = c.read_regs(port, &[reg::SUMS_FRAME])?[0];
         if again != frame {
             self.report.torn += 1;
-            debug!(
-                target: "isdb::chain",
-                frame,
-                again,
-                "chain: the training sums moved from frame {frame} to {again} while they were read; reading them again"
-            );
+            if capture {
+                warn!(
+                    target: "isdb::chain",
+                    frame,
+                    again,
+                    "chain: the held training sums moved from frame {frame} to {again} while they were read (the capture did not hold); capturing again"
+                );
+            } else {
+                debug!(
+                    target: "isdb::chain",
+                    frame,
+                    again,
+                    "chain: the training sums moved from frame {frame} to {again} while they were read; reading them again"
+                );
+            }
             return Ok(Tick::Torn);
         }
         let sums = cc::sums_from_words(frame, count, &words);
@@ -611,6 +665,8 @@ pub(crate) mod tests {
         sum_reads: usize,
         /// Taps in use and the frame they came from.
         pub taps: Option<(Taps, u32)>,
+        /// SUMS_CAPTURE: armed, valid, holding.
+        pub cap: (bool, bool, bool),
         /// A STATUS that never shows the chain selected.
         pub deaf: bool,
         pub bus_writes: usize,
@@ -629,9 +685,25 @@ pub(crate) mod tests {
             m
         }
 
+        /// A frame end with these sums: latched unless a capture holds
+        /// the last one; an armed capture latches and holds.
+        pub fn frame_end(&mut self, s: (u32, u32, Vec<u32>)) {
+            let (armed, _, hold) = self.cap;
+            if !hold || armed {
+                self.sums = Some(s);
+                if armed {
+                    self.cap = (false, true, true);
+                }
+            }
+        }
+
         fn store(&mut self, v: u32) {
             self.regs.insert(self.addr, v);
             self.writes.push((self.addr, v));
+            if self.addr == reg::SUMS_CAPTURE {
+                self.cap.0 = true;
+                self.cap.1 = false;
+            }
             if self.addr == reg::TAPS_FROM {
                 let t: Taps = std::array::from_fn(|k| {
                     cc::unpack_point(self.regs[&(reg::TAPS + u16::try_from(k).unwrap())])
@@ -657,6 +729,9 @@ pub(crate) mod tests {
             }
             if a == reg::SUMS_COUNT {
                 return self.sums.as_ref().map_or(0, |s| s.1);
+            }
+            if a == reg::SUMS_CAPTURE {
+                return u32::from(self.cap.1) | u32::from(self.cap.0) << 1;
             }
             let sums: Vec<u16> = cc::all_sum_registers();
             if let Some(i) = sums.iter().position(|&r| r == a) {
@@ -921,7 +996,12 @@ pub(crate) mod tests {
     /// register followed; poll until the first solve, then `every`.
     #[test]
     fn slow_loop_sequence() {
-        let m = chain();
+        let m = Mock::new(Model::new(
+            id_word(),
+            cc::SLOTS_VERSION,
+            features::ALL & !features::SUMS_CAPTURE,
+        ));
+        m.get().gpio_out = 1;
         let mut c = ChainControl::attach("mock", &m).unwrap();
         c.open(&m, &params(), &ChainInit::default()).unwrap();
         let opts = SlowLoopOptions::new(fake_solve, 33.7561e6);
@@ -986,6 +1066,48 @@ pub(crate) mod tests {
         assert_eq!(m.get().gpio_in, id_word());
     }
 
+    /// The slow loop on an image with SUMS_CAPTURE: a tick arms a capture
+    /// (SUMS_CAPTURE written once), ticks poll until the frame end holds
+    /// one; frames ending meanwhile do not move it; the 308 registers are
+    /// read without a retry and solved; the next tick arms again.
+    #[test]
+    fn slow_loop_capture_sequence() {
+        let m = chain();
+        let mut c = ChainControl::attach("mock", &m).unwrap();
+        c.open(&m, &params(), &ChainInit::default()).unwrap();
+        let opts = SlowLoopOptions::new(fake_solve, 33.7561e6);
+        let mut l = SlowLoop::new(opts);
+        let strobes = |m: &Mock| {
+            m.get()
+                .writes
+                .iter()
+                .filter(|w| w.0 == reg::SUMS_CAPTURE)
+                .count()
+        };
+        // free-running before the first capture: frame 40 latched
+        m.get().frame_end(sums(40, 6_720));
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Capturing);
+        assert_eq!(strobes(&m), 1);
+        assert_eq!(l.wait(Tick::Capturing), opts.poll);
+        // no frame end yet: still waiting, no second strobe
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Capturing);
+        assert_eq!(strobes(&m), 1);
+        // frame 50 ends (captured and held), then 51 (summed, not latched)
+        m.get().frame_end(sums(50, 6_720));
+        m.get().frame_end(sums(51, 6_720));
+        assert_eq!(m.get().sums.as_ref().unwrap().0, 50);
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 50 });
+        assert_eq!(m.get().taps.unwrap().1, 50);
+        assert_eq!(l.wait(Tick::Solved { frame: 50 }), opts.every);
+        // the next tick arms again; frame 52 is captured
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Capturing);
+        assert_eq!(strobes(&m), 2);
+        m.get().frame_end(sums(52, 6_720));
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 52 });
+        assert_eq!((l.report.solves, l.report.torn), (2, 0));
+        assert_eq!(m.get().gpio_in, id_word());
+    }
+
     /// The timer thread: solves the latched frames as they come and stops
     /// at once on `stop`, its encoder continuing the open's toggle bit.
     #[test]
@@ -993,7 +1115,6 @@ pub(crate) mod tests {
         let m = chain();
         let mut c = ChainControl::attach("mock", &m).unwrap();
         c.open(&m, &params(), &ChainInit::default()).unwrap();
-        m.get().sums = Some(sums(7, 6_720));
         let stop = Arc::new(AtomicBool::new(false));
         let opts = SlowLoopOptions {
             every: Duration::from_millis(20),
@@ -1001,20 +1122,25 @@ pub(crate) mod tests {
             ..SlowLoopOptions::new(fake_solve, 33.7561e6)
         };
         let h = spawn_slow_loop("mock", Box::new(m.clone()), opts, Arc::clone(&stop)).unwrap();
+        // frames end every 2 ms: 7 until it is solved, then 8, 9, ...
         let t = Instant::now();
         while m.get().taps.is_none_or(|t| t.1 != 7) {
             assert!(t.elapsed() < Duration::from_secs(10), "no solve");
+            m.get().frame_end(sums(7, 6_720));
             std::thread::sleep(Duration::from_millis(2));
         }
-        m.get().sums = Some(sums(8, 6_720));
-        while m.get().taps.is_none_or(|t| t.1 != 8) {
+        let mut f = 8;
+        while m.get().taps.is_none_or(|t| t.1 < 8) {
             assert!(t.elapsed() < Duration::from_secs(10), "no second solve");
+            m.get().frame_end(sums(f, 6_720));
+            f += 1;
             std::thread::sleep(Duration::from_millis(2));
         }
         stop.store(true, Ordering::SeqCst);
         let r = h.join().unwrap();
-        assert_eq!(r.solves, 2);
-        assert_eq!(r.last_frame, Some(8));
+        assert!(r.solves >= 2);
+        assert!(r.last_frame >= Some(8));
+        assert_eq!(r.torn, 0, "the capture holds the frame read");
         assert!(r.error.is_none());
         // the main thread takes over the commands after the join
         let mut c = ChainControl::attach("mock", &m).unwrap();
