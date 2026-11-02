@@ -5,8 +5,11 @@ front end's `SymbolFrontend` output into the chain, the decoder bridge,
 the `Slots` words out, and the command protocol of `control.py` on the
 same GPIO pair with the chain's registers.
 
-Data path, all in the symbol clock domain (`util_ad9361_divclk`, 40 MHz)
-but the decoder (`ldpc` domain, 200 MHz, behind `LdpcBridge`'s FIFOs):
+Data path in the symbol clock domain (`util_ad9361_divclk`, 40 MHz), with
+the time-multiplexed datapaths (the demapper's metrics, the equaliser's
+FIR) in its 4x (`fast`, l_clk, phase-aligned) and the decoder in its own
+200 MHz (`ldpc`, behind `LdpcBridge`'s asynchronous FIFOs);
+fpga/tezuka/isdb_slots.xdc has the constraints:
 
   symbols (i8, one per clock at most) -> SyncFront (NCO, slot sync,
   carrier loop; holds the input around decisions and while stage 3's ring
@@ -29,27 +32,35 @@ per sample and holds no back-pressure; the chain holds its input about
 is 84 % of the clocks: a 1 024-entry FIFO (2 RAMB18) absorbs the holds.
 
 Register map (`SlotsRx`, the command protocol of `control.py`: ADDR, HI,
-WRITE, READ, CTRL on `gpio_out`, `gpio_in` the ID word or the readback):
+WRITE / WRITE_S, READ, CTRL on `gpio_out`, `gpio_in` the ID word or the
+readback): the host's map, `isdb_frontend::control::chain` (fixed there
+from this HDL, 2026-11-02), in the front end's address space at 0x400 -
+0x6FF; a READ of any other address shows the front end's readback.
 
 | Address | Register |
 |---|---|
-| 0x100 | CARRIER (read only): the carrier register in use (its initial value is the build's; no write port yet) |
-| 0x101 | MAX_ITER (8 bits, reset 16): the LDPC iteration limit each codeword is committed with |
-| 0x102 | AGC: the input AGC gain reported in the status (Q6.10) |
-| other | the front end's (`control.py`): a READ of an address outside 0x100 .. 0x14F and 0x200 .. 0x333 shows the front end's readback |
-| 0x103 | FEATURES (read only): bit 0 the chain (SlotsRx), bit 1 layout lag 2 |
-| 0x110 + 2k, + 2k + 1 | tap k (re, im) Q2.14 into the pending set |
-| 0x126 | TAP_CTRL: write 1: the pending taps in use now; 2: armed for frame TAP_AT |
-| 0x127 | TAP_AT, 0x128 TAP_FROM (the frame the taps were solved from) |
-| 0x130 | SUMS_FRAME, 0x131 SUMS_COUNT (read only) |
-| 0x200 + w | the latched training sums, word w (0 .. 307; the read waits for the MAC unit) |
-| 0x140 .. 0x146 | the counters (frames, undecoded, TMCC failed, slots, LDPC failed, BCH failed, iterations low) |
-| 0x147 | TMCC_OVERRUNS: TMCC codewords the decoder dropped (also counted as TMCC failed) |
-| CTRL | bit 0 RUN, bit 1 START (the chain restarts; the packer's sequence restarts), bit 3 SLOTS (the DMA carries the `Slots` words) |
+| 0x400 | VERSION (ro): the `Slots` format, 1 |
+| 0x401 | FEATURES (ro): bit 0 TAPS, bit 1 SUMS (no host constellation or n0 at START: bits 2, 3 clear); bits 15-8 MAX_ITER, bits 27-16 the decoder's step (34) |
+| 0x402 | CARRIER: written, loaded into the carrier register at START; read, the register in use (2^-32 turn per symbol) |
+| 0x403 | LAYOUT_LAG (ro): 2 (lag 1 is not built) |
+| 0x404 | INIT: bit 0, START puts the written taps in use (bits 1, 2 ignored: FEATURES) |
+| 0x405 | STATUS (ro): bit 0 locked, 1 a frame head since the (re)start, 2 the last frame decoded |
+| 0x406 / 0x407 | FRAME (the last whole frame's counter, 0xFFFF_FFFF none) / SEQ (the next block's sequence number) (ro) |
+| 0x408 / 0x409 / 0x40A / 0x40B | N0, LLR_SCALE, LEARNED_FROM, CONST_MASK (ro): n0, K, the frame they were learned on, the learned modulations, in force |
+| 0x40C | MAX_ITER (8 bits, reset 16): the LDPC iteration limit each codeword is committed with |
+| 0x40D | AGC: the input AGC gain reported in the status (Q6.10) |
+| 0x410 + k | TAPS, k < 11: written (re \| im << 16, Q2.14), the pending taps; read, the taps in use |
+| 0x41B | TAPS_FROM: written after TAPS, the frame N they were solved from: in use from frame N + 2 (the model's EQ_APPLY_FRAMES); read, the frame of the taps in use |
+| 0x420 / 0x421 | SUMS_FRAME / SUMS_COUNT (ro) |
+| 0x430 .. 0x437 | COUNTERS (ro): frames, undecoded, TMCC failed, slots, LDPC failed, BCH failed, iterations low, high |
+| 0x438 | TMCC_OVERRUNS (ro): TMCC codewords the decoder dropped (also counted as TMCC failed) |
+| 0x500 + 4i, 0x610 + 4i | SUMS_R (i < 66), SUMS_P (i < 11): re low 32, re high 16 sign-extended, im low, im high (the read waits for the MAC unit) |
+| 0x640 .. | CONST: not built (reads 0) |
+| CTRL | the front end's bits (RUN, START, SYMBOLS) and bit 3 SLOTS (the DMA carries the `Slots` words); START also restarts the chain (the model's `Chain::loss` of 0 symbols: everything but the carrier register, the taps, the constellation and n0), loads CARRIER and, with INIT bit 0, the taps, and restarts the blocks' sequence numbers |
 
-The ID word gains the chain's version: 0x15DB, format 4, taps, and bit 8
-(`ID_CHAIN`) when the chain is in the image (the front end's ID word had
-bits 8-11 zero), so a host tells the images apart from one register read.
+The ID word gains the chain's `Slots` format version in bits 11-8
+(`ID_CHAIN`: 1 << 8), 0 on every front end so far; the front end's STATUS
+(0x10) reads bit 2 while the `Slots` words are selected.
 """
 
 from amaranth.hdl import Cat, Const, Elaboratable, Module, Mux, Signal, signed
@@ -158,22 +169,67 @@ class SlotsChain(Elaboratable):
         return m
 
 
-class SlotsRx(Elaboratable):
-    """The bitstream block (a sketch: elaborated, estimated, not simulated
-    as a whole): the front end (`top.SymbolsRx`'s core and control), a
-    1 024-symbol FIFO, `SlotsChain`, the decoder bridge (`ldpc_if.LdpcBridge`)
-    and the decoder (`ldpc_cls`, the other branch's `isdb_fpga.ldpc` decoder;
-    None: its ports are left as the block's ports), the output selection
-    (raw IQ, `Symbols`, `Slots`). See the module docstring for the map."""
+# The chain's registers (isdb_frontend::control::chain, the host's map; the
+# module docstring): the front end's command address space at 0x400-0x6FF.
+REG_BASE, REG_END = 0x400, 0x700
+REG_VERSION = 0x400
+REG_FEATURES = 0x401
+REG_CARRIER = 0x402
+REG_LAYOUT_LAG = 0x403
+REG_INIT = 0x404
+REG_STATUS = 0x405
+REG_FRAME = 0x406
+REG_SEQ = 0x407
+REG_N0 = 0x408
+REG_LLR_SCALE = 0x409
+REG_LEARNED_FROM = 0x40A
+REG_CONST_MASK = 0x40B
+REG_MAX_ITER = 0x40C
+REG_AGC = 0x40D
+REG_TAPS = 0x410
+REG_TAPS_FROM = 0x41B
+REG_SUMS_FRAME = 0x420
+REG_SUMS_COUNT = 0x421
+REG_COUNTERS = 0x430
+REG_TMCC_OVERRUNS = 0x438
+REG_SUMS_R = 0x500
+REG_SUMS_P = 0x610
+SLOTS_VERSION = 1  # the Slots format (isdb_frontend::slots::SLOTS_VERSION)
+FEATURES = 0b11  # TAPS (the host writes taps), SUMS (the training sums readable)
+LAYOUT_LAG = 2
+EQ_APPLY_FRAMES = 2
+NONE = 0xFFFFFFFF
 
-    def __init__(self, taps, cos_table, h=None, g=None, k=None, ldpc_cls=None):
+
+class SlotsRx(Elaboratable):
+    """The bitstream block: the front end (`SymbolFrontend` and its
+    `Control`), a 1 024-symbol FIFO, `SlotsChain`, the decoder bridge
+    (`ldpc_if.LdpcBridge`), the LDPC decoder (`isdb_fpga.ldpc.LdpcDecoder`,
+    S = 34, K = 3, every rate; `decoder=False` leaves its ports as the
+    block's ports), the output selection (raw IQ, `Symbols`, `Slots`) and
+    the chain's registers (the module docstring's map).
+
+    Clocks (fpga/tezuka/isdb_slots.xdc): `sync` the symbol clock
+    (`util_ad9361_divclk`, l_clk / 4), `fast` its 4x (`axi_ad9361` l_clk
+    itself), `ldpc` the decoder's 200 MHz: with `mmcm`, an MMCME2_BASE on
+    `ldpc_ref` (the PS's clk_fpga_0, 100 MHz) inside the block, its reset
+    held until the MMCM locks; without (the simulations), the `ldpc`
+    domain from outside."""
+
+    def __init__(self, taps, cos_table, h=None, g=None, k=None, decoder=True, mmcm=False, units=34):
         from ..frontend import SymbolFrontend
         from .ldpc_if import LdpcBridge
 
         self.core = SymbolFrontend(taps, cos_table, h, g, k)
         self.chain = SlotsChain(max_iter=16)  # MAX_ITER's reset: the decoder's default
         self.bridge = LdpcBridge(self.chain.port)
-        self.ldpc_cls = ldpc_cls
+        self.decoder = None
+        if decoder:
+            from ..ldpc import LdpcDecoder
+
+            self.decoder = LdpcDecoder(units)
+        self.mmcm = mmcm
+        self.units = units  # the decoder's step (the one built, or the one outside)
         self.taps = taps
         self.adc_valid = Signal()
         self.adc_i = Signal(signed(16))
@@ -186,19 +242,29 @@ class SlotsRx(Elaboratable):
         self.pack_data1 = Signal(16)
         self.gpio_out = Signal(32)
         self.gpio_in = Signal(32)
+        self.ldpc_ref = Signal()  # with mmcm: the MMCM's input clock
+        self.ldpc_locked = Signal()
 
     def ports(self):
-        b = self.bridge
-        return [self.adc_valid, self.adc_i, self.adc_q, self.pass_valid, self.pass_data0, self.pass_data1,
-                self.pack_valid, self.pack_data0, self.pack_data1, self.gpio_out, self.gpio_in,
-                b.begin, b.d_ctx, b.d_valid, b.d_pos, b.d_llr, b.d_rate, b.start, b.st_rate, b.st_max_iter,
-                b.st_offset, b.st_short, b.o_valid, b.o_data, b.o_last, b.o_ready, b.res_valid,
-                b.res_iterations, b.res_converged, b.res_unsat, b.res_overrun]
+        out = [self.adc_valid, self.adc_i, self.adc_q, self.pass_valid, self.pass_data0, self.pass_data1,
+               self.pack_valid, self.pack_data0, self.pack_data1, self.gpio_out, self.gpio_in]
+        if self.mmcm:
+            out += [self.ldpc_ref, self.ldpc_locked]
+        if self.decoder is None:
+            b = self.bridge
+            out += [b.begin, b.d_ctx, b.d_valid, b.d_pos, b.d_llr, b.d_rate, b.start, b.st_rate,
+                    b.st_max_iter, b.st_offset, b.st_short, b.load_ready, b.o_valid, b.o_data, b.o_last,
+                    b.o_ready, b.res_valid, b.res_iterations, b.res_converged, b.res_unsat, b.res_overrun]
+        return out
 
     def elaborate(self, platform):
+        from amaranth.hdl import ClockDomain, DomainRenamer, Instance
+        from amaranth.lib.cdc import ResetSynchronizer
         from amaranth.lib.fifo import SyncFIFOBuffered
 
-        from ..control import OP_ADDR, OP_CTRL, OP_HI, OP_READ, OP_WRITE, Control
+        from ..control import ID_MAGIC, OP_ADDR, OP_CTRL, OP_HI, OP_READ, OP_WRITE, OP_WRITE_S, STATUS, Control
+        from ..frontend import FORMAT_VERSION
+        from .ldpc_if import connect_decoder
 
         m = Module()
         m.submodules.core = core = self.core
@@ -206,19 +272,35 @@ class SlotsRx(Elaboratable):
         m.submodules.chain = ch = self.chain
         m.submodules.bridge = br = self.bridge
         m.submodules.fifo = fifo = SyncFIFOBuffered(width=12, depth=1024)
-        if self.ldpc_cls is not None:
-            m.submodules.ldpc = self.ldpc_cls(br)
+        if self.decoder is not None:
+            m.submodules.ldpc = DomainRenamer("ldpc")(self.decoder)
+            connect_decoder(m, br, self.decoder)
+        if self.mmcm:
+            # 100 MHz x 10 / 5 = 200 MHz (VCO 1 GHz)
+            m.domains.ldpc = cd = ClockDomain("ldpc")
+            fb = Signal()
+            c0 = Signal()
+            m.submodules.mmcm = Instance(
+                "MMCME2_BASE", p_CLKIN1_PERIOD=10.0, p_CLKFBOUT_MULT_F=10.0, p_DIVCLK_DIVIDE=1,
+                p_CLKOUT0_DIVIDE_F=5.0, i_CLKIN1=self.ldpc_ref, i_CLKFBIN=fb, o_CLKFBOUT=fb,
+                o_CLKOUT0=c0, o_LOCKED=self.ldpc_locked, i_RST=0, i_PWRDWN=0)
+            m.submodules.ldpc_bufg = Instance("BUFG", i_I=c0, o_O=cd.clk)
+            m.submodules.ldpc_rst = ResetSynchronizer(~self.ldpc_locked, domain="ldpc")
         # the front end's symbols (the quantiser's 6-bit k output) into the chain
         slots_on = Signal()
+        restart = Signal()  # CTRL START: the chain restarts (`Chain::loss` with 0 symbols)
         m.d.comb += [
             core.i_valid.eq(self.adc_valid & ctl.run),
             core.i_i.eq(self.adc_i), core.i_q.eq(self.adc_q),
             fifo.w_en.eq(core.s_valid & slots_on),
             fifo.w_data.eq(Cat(core.s_q[0][:6], core.s_q[1][:6])),
-            ch.i_valid.eq(fifo.r_rdy), fifo.r_en.eq(ch.i_ready),
+            ch.i_valid.eq(Mux(restart, 1, fifo.r_rdy)), fifo.r_en.eq(ch.i_ready & ~restart),
+            ch.i_loss.eq(restart), ch.i_lost.eq(0),
             ch.i_x[0].eq(fifo.r_data[:6]), ch.i_x[1].eq(fifo.r_data[6:]),
             ch.r_overrun.eq(br.out_overrun),
         ]
+        with m.If(restart & ch.i_ready):
+            m.d.sync += restart.eq(0)
         # the chain's registers on the front end's command protocol (the
         # same synchronised gpio_out the front end's Control decodes)
         s1 = Signal(32)
@@ -232,89 +314,122 @@ class SlotsRx(Elaboratable):
         arg = s2[1:28]
         addr = Signal(16)
         staged = Signal(16)
-        value = Cat(arg[:16], staged)
+        value = Signal(32)
+        m.d.comb += value.eq(Mux(op == OP_WRITE_S, arg.as_signed(), Cat(arg[:16], staged)))
         readback = Signal(32)
         show = Signal()
-        agc = ch.agc
+        fe_status = Signal()  # the last READ was the front end's STATUS
         eqm = ch.back.eq
         fin = ch.finish
-        m.d.comb += [eqm.tap_we.eq(0), eqm.tap_now.eq(0), eqm.tap_arm.eq(0)]
+        dm = ch.back.demap
+        nco = ch.front.nco
+        carrier = Signal(32)
+        init = Signal(3)
+        m.d.comb += [eqm.tap_we.eq(0), eqm.tap_now.eq(0), eqm.tap_arm.eq(0), nco.f_load.eq(0),
+                     nco.f_in.eq(carrier)]
         tap_at = Signal(32)
         tap_from = Signal(32)
         m.d.comb += [eqm.tap_at.eq(tap_at), eqm.tap_from_in.eq(tap_from)]
-        # the chain's own addresses; a READ of any other goes to the front
-        # end's Control (which decodes the same command words) and its
-        # readback is what gpio_in shows
+        # STATUS: locked, a frame head seen since the (re)start, frames decoded
+        framed = Signal()
+        decoding = Signal()
+        sy = ch.front.sync
+        with m.If(ch.front.o_restart):
+            m.d.sync += framed.eq(0)
+        with m.Elif(sy.o_head_valid & sy.o_head_numbered):
+            m.d.sync += framed.eq(1)
+        fc = ch.back.fc
+        with m.If(fc.o_done | fc.o_dropped):
+            m.d.sync += decoding.eq(fc.o_done & fc.o_has_layout)
+        last_frame = Signal(32, init=NONE)
+        with m.If(fin.f_valid):
+            m.d.sync += last_frame.eq(fin.f_frame)
         chain_addr = Signal()
-        m.d.comb += chain_addr.eq(((addr >= 0x100) & (addr < 0x150)) | ((addr >= 0x200) & (addr < 0x200 + 308)))
-        bk = ch.back
+        m.d.comb += chain_addr.eq((addr >= REG_BASE) & (addr < REG_END))
+        sums_r = (addr >= REG_SUMS_R) & (addr < REG_SUMS_R + 4 * 66)
+        sums_p = (addr >= REG_SUMS_P) & (addr < REG_SUMS_P + 4 * 11)
+        sums_w = Mux(sums_r, addr - REG_SUMS_R, addr - REG_SUMS_P + 4 * 66)[:9]
+        is_tap = (addr >= REG_TAPS) & (addr < REG_TAPS + 11)
         with m.If(go):
-            # every command but a READ of a chain address hands gpio_in back
             m.d.sync += show.eq((op == OP_READ) & chain_addr)
+            m.d.sync += fe_status.eq((op == OP_READ) & (addr == STATUS))
             with m.Switch(op):
                 with m.Case(OP_ADDR):
                     m.d.sync += addr.eq(arg[:16])
                 with m.Case(OP_HI):
                     m.d.sync += staged.eq(arg[:16])
-                with m.Case(OP_WRITE):
+                with m.Case(OP_WRITE, OP_WRITE_S):
                     m.d.sync += addr.eq(addr + 1)
-                    with m.If(addr == 0x101):
-                        m.d.sync += bk.max_iter.eq(value[:8])
-                    with m.If(addr == 0x102):
-                        m.d.sync += agc.eq(value[:16])
-                    with m.If((addr >= 0x110) & (addr < 0x126)):
-                        m.d.comb += [eqm.tap_we.eq(addr[0] == 1), eqm.tap_idx.eq((addr - 0x110)[1:5])]
-                    with m.If(addr == 0x126):
-                        m.d.comb += [eqm.tap_now.eq(value[0]), eqm.tap_arm.eq(value[1])]
-                    with m.If(addr == 0x127):
-                        m.d.sync += tap_at.eq(value)
-                    with m.If(addr == 0x128):
-                        m.d.sync += tap_from.eq(value)
+                    with m.Switch(addr):
+                        with m.Case(REG_CARRIER):
+                            m.d.sync += carrier.eq(value)
+                        with m.Case(REG_INIT):
+                            m.d.sync += init.eq(value[:3])
+                        with m.Case(REG_MAX_ITER):
+                            m.d.sync += ch.back.max_iter.eq(value[:8])
+                        with m.Case(REG_AGC):
+                            m.d.sync += ch.agc.eq(value[:16])
+                        with m.Case(REG_TAPS_FROM):
+                            # the model's rule: taps solved from frame N in use from N + 2
+                            m.d.sync += [tap_from.eq(value), tap_at.eq(value + EQ_APPLY_FRAMES)]
+                            m.d.comb += eqm.tap_arm.eq(1)
+                    with m.If(is_tap):
+                        m.d.comb += eqm.tap_we.eq(1)
                 with m.Case(OP_READ):
                     with m.Switch(addr):
-                        with m.Case(0x100):
-                            m.d.sync += readback.eq(ch.front.nco.f)
-                        with m.Case(0x101):
-                            m.d.sync += readback.eq(bk.max_iter)
-                        with m.Case(0x102):
-                            m.d.sync += readback.eq(agc)
-                        with m.Case(0x103):
-                            m.d.sync += readback.eq(0b11)
-                        with m.Case(0x130):
-                            m.d.sync += readback.eq(eqm.sums_frame)
-                        with m.Case(0x131):
-                            m.d.sync += readback.eq(eqm.sums_count)
+                        regs = {
+                            REG_VERSION: SLOTS_VERSION,
+                            REG_FEATURES: Cat(Const(FEATURES, 8), ch.back.max_iter, Const(self.units, 12)),
+                            REG_CARRIER: nco.f,
+                            REG_LAYOUT_LAG: LAYOUT_LAG,
+                            REG_INIT: init,
+                            REG_STATUS: Cat(sy.st_locked, framed, decoding),
+                            REG_FRAME: last_frame,
+                            REG_SEQ: fin.packer.seq,
+                            REG_N0: dm.n0,
+                            REG_LLR_SCALE: dm.kk,
+                            REG_LEARNED_FROM: dm.learned_from,
+                            REG_CONST_MASK: dm.learned_valid,
+                            REG_MAX_ITER: ch.back.max_iter,
+                            REG_AGC: ch.agc,
+                            REG_TAPS_FROM: eqm.taps_from,
+                            REG_SUMS_FRAME: eqm.sums_frame,
+                            REG_SUMS_COUNT: eqm.sums_count,
+                            REG_TMCC_OVERRUNS: fin.tmcc_overruns,
+                        }
                         for i, n in enumerate(("frames", "undecoded", "tmcc_failed", "slots", "ldpc_failed",
                                                "bch_failed")):
-                            with m.Case(0x140 + i):
-                                m.d.sync += readback.eq(fin.counters[n])
-                        with m.Case(0x146):
-                            m.d.sync += readback.eq(fin.iterations[:32])
-                        with m.Case(0x147):
-                            m.d.sync += readback.eq(fin.tmcc_overruns)
+                            regs[REG_COUNTERS + i] = fin.counters[n]
+                        regs[REG_COUNTERS + 6] = fin.iterations[:32]
+                        regs[REG_COUNTERS + 7] = fin.iterations[32:]
+                        for k in range(11):
+                            regs[REG_TAPS + k] = Cat(eqm.taps[k][0], eqm.taps[k][1])
+                        for a, v in regs.items():
+                            with m.Case(a):
+                                m.d.sync += readback.eq(v)
                         with m.Default():
                             m.d.sync += readback.eq(0)
                 with m.Case(OP_CTRL):
                     m.d.sync += slots_on.eq(arg[3])
-        # the low tap word holds re, the next im (the pending set takes both
-        # at the im write)
-        re_hold = Signal(16)
-        with m.If(go & (op == OP_WRITE) & (addr >= 0x110) & (addr < 0x126) & (addr[0] == 0)):
-            m.d.sync += re_hold.eq(value[:16])
-        m.d.comb += [eqm.tap_val[0].eq(re_hold), eqm.tap_val[1].eq(value[:16])]
-        # the training sums' readback (0x200 + w): requested at READ, shown when done
-        m.d.comb += [eqm.rd_req.eq(go & (op == OP_READ) & (addr >= 0x200) & (addr < 0x200 + 308)),
-                     eqm.rd_addr.eq((addr - 0x200)[:9])]
+                    with m.If(arg[1]):
+                        # START: the chain restarts, the host's carrier and
+                        # (INIT bit 0) taps loaded, the Slots sequence from 0
+                        m.d.sync += restart.eq(1)
+                        m.d.comb += [nco.f_load.eq(1), eqm.tap_now.eq(init[0]), fin.packer.start.eq(1)]
+        m.d.comb += [eqm.tap_idx.eq((addr - REG_TAPS)[:4]), eqm.tap_val[0].eq(value[:16]),
+                     eqm.tap_val[1].eq(value[16:])]
+        # the training sums' readback: requested at READ, shown when done
+        m.d.comb += [eqm.rd_req.eq(go & (op == OP_READ) & (sums_r | sums_p)), eqm.rd_addr.eq(sums_w)]
         with m.If(eqm.rd_ack):
             m.d.sync += readback.eq(eqm.rd_data)
         # the chain's readback, else the front end's (its own READs), whose
-        # ID word gains ID_CHAIN
-        from ..control import ID_MAGIC
-        from ..frontend import FORMAT_VERSION
-
+        # ID word carries the Slots format version in bits 11-8 and whose
+        # STATUS bit 2 says the Slots words go to the DMA
         ident = ID_MAGIC << 16 | FORMAT_VERSION << 12 | (self.taps & 0xFF)
         fe = ctl.gpio_in
-        m.d.comb += self.gpio_in.eq(Mux(show, readback, Mux(fe == ident, ident | ID_CHAIN, fe)))
+        m.d.comb += self.gpio_in.eq(Mux(show, readback,
+                                        Mux(fe == ident, ident | ID_CHAIN,
+                                            Mux(fe_status, fe | (slots_on << 2), fe))))
         # the output selection: the chain's Slots words, else the front end's block
         m.d.comb += [
             ctl.gpio_out.eq(self.gpio_out),

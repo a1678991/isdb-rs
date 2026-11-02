@@ -246,3 +246,19 @@ def tmcc_position(b):
     """`chain::tmcc::word_position`: TMCC signal bit b's position in the
     shortened word."""
     return b + 1870 if b < 9614 else b + 13200
+
+
+def connect_decoder(m, br, dec):
+    """`LdpcBridge` (its decoder side, the `ldpc` domain) to `LdpcDecoder`."""
+    m.d.comb += [
+        dec.begin.eq(br.begin), dec.in_ctx.eq(br.d_ctx), dec.in_valid.eq(br.d_valid),
+        dec.in_pos.eq(br.d_pos), dec.in_llr.eq(br.d_llr), dec.in_rate.eq(br.d_rate),
+        dec.start.eq(br.start), dec.st_rate.eq(br.st_rate), dec.st_max_iter.eq(br.st_max_iter),
+        dec.st_offset.eq(br.st_offset), dec.st_short.eq(br.st_short),
+        br.load_ready.eq(dec.load_ready),
+        br.o_valid.eq(dec.o_valid), br.o_data.eq(dec.o_data), br.o_last.eq(dec.o_last),
+        dec.o_ready.eq(br.o_ready),
+        br.res_valid.eq(dec.res_valid), br.res_iterations.eq(dec.res_iterations),
+        br.res_converged.eq(dec.res_converged), br.res_unsat.eq(dec.res_unsat),
+        br.res_overrun.eq(dec.res_overrun),
+    ]
