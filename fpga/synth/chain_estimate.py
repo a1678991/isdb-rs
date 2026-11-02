@@ -91,8 +91,8 @@ def blocks():
         from isdb_fpga.chain.tmcc import TmccSoft
 
         d = TmccSoft()
-        return d, [d.t_valid, *d.t_z, d.t_odd, d.t_idx, d.frame_done, d.frame, d.b_valid, d.b_op, d.b_pos,
-                   d.b_llr, d.b_tag, d.grant, d.overrun]
+        return d, [d.t_valid, *d.t_z, d.t_odd, d.t_idx, d.frame_done, d.frame, d.b_valid, d.b_op, d.b_n, *d.b_pos,
+                   *d.b_llr, d.b_tag, d.grant, d.overrun]
 
     def demap():
         from isdb_fpga.chain.demap import Demap

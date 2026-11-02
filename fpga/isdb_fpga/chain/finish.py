@@ -382,6 +382,7 @@ class SlotPrbs(Elaboratable):
 RATES = [41, 49, 61, 73, 81, 89, 93, 97, 101, 105, 109]
 TMCC_N = 9614
 TMCC_DATA_BITS = 9614  # tmcc.TMCC_DATA: the TMCC's BCH word
+SLOT_COUNTERS = ("slots", "ldpc_failed", "bch_failed")
 BCH_LENGTHS = sorted({374 * r - 6 for r in RATES} | {TMCC_N})
 
 
@@ -413,11 +414,19 @@ class Finish(Elaboratable):
     - **Order**: the blocks are the model's when the results come in frame
       order (a frame's slot results, then its TMCC result). The decoder
       returns them in commit order, in which frame N's TMCC (its burst ends
-      about 3 slots into frame N + 1) follows frame N + 1's first 2 or 3
-      slot results: reproducing the model's order then needs those slot
-      results held (about 3 x 2 548 words) until frame N's status is out.
-      Not built: fpga/README.md "The ISDB-S3 chain", what is left. The
-      chain-6 simulation's LDPC stub answers in frame order.
+      about 4 slots into frame N + 1) follows frame N + 1's first slot
+      results: then frame N's trailing dummy blocks, its TMCC and its status
+      block follow frame N + 1's first slot blocks (each block carries its
+      frame counter; the host re-associates them: isdb-cli `slotrx.rs`),
+      with their contents the model's: at frame N + 1's first slot result
+      the stage holds frame N's last valid slot (the trailing dummies' mode)
+      and the slot counters (the status block's), which a later TMCC
+      result of an earlier frame uses. Nothing is buffered. The lateness
+      is bounded by the TMCC burst and decode: tmcc.py's burst (about 4
+      slots at the front end's rate, 25 at one symbol per clock) plus a
+      TMCC decode (a few passes, under a slot), so at most the slot blocks
+      of frame N + 1's first 26 slots (with their dummies) precede frame
+      N's TMCC block, well inside one frame.
     """
 
     def __init__(self, lag=2):
@@ -564,11 +573,32 @@ class Finish(Elaboratable):
 
         s_frame = Signal(32)
         frame_of_slot = s_frame
+        # held at a new frame's first slot result (see IDLE)
+        h_v = Signal()
+        h_next = Signal(32)
+        h_have = Signal()
+        h_frame = Signal(32)
+        h_last = Signal(8)
+        h_dmode = Signal(3)
+        h_dmod = Signal(4)
+        h_drate = Signal(4)
+        h_cnt = {n_: Signal(32, name=f"h_{n_}") for n_ in SLOT_COUNTERS}
+        h_iter = Signal(64)
+        t_held = Signal()
+        t_cnt_held = Signal()
         m.d.comb += pk.w_valid.eq(0)
         with m.FSM(name="finish"):
             with m.State("IDLE"):
                 with m.If(self.r_valid & self.r_head & is_tmcc & ff.r_rdy):
-                    m.d.sync += [tmode.eq(1), dslot.eq(Mux(have_prev & (prev_frame == fr_frame), last_valid + 1, 0)),
+                    # the frame's trailing dummies continue from its last valid
+                    # slot: the current one, or the one held when the next
+                    # frame's slots came first (the decoder's commit order)
+                    cur = have_prev & (prev_frame == fr_frame)
+                    old = h_have & (h_frame == fr_frame)
+                    m.d.sync += [tmode.eq(1),
+                                 dslot.eq(Mux(cur, last_valid + 1, Mux(old, h_last + 1, 0))),
+                                 t_held.eq(~cur & old),
+                                 t_cnt_held.eq(h_v & ((h_next - fr_frame)[:32].as_signed() > 0)),
                                  dend.eq(Mux(fr_dec, 120, 0)), t_ovr.eq(self.r_overrun)]
                     m.next = "TMCC_DUMMIES"
                 with m.Elif(self.r_valid & self.r_head & ~is_tmcc):
@@ -576,6 +606,13 @@ class Finish(Elaboratable):
                     with m.If(new_frame):
                         m.d.sync += [have_prev.eq(1), prev_frame.eq(tframe)]
                         m.d.comb += prbs.reset.eq(1)
+                        # what a late TMCC result of an earlier frame needs:
+                        # that frame's last valid slot and the slot counters
+                        # as they were at its end
+                        m.d.sync += [h_v.eq(1), h_next.eq(tframe), h_have.eq(have_prev), h_frame.eq(prev_frame),
+                                     h_last.eq(last_valid), h_dmode.eq(d_mode), h_dmod.eq(d_mod),
+                                     h_drate.eq(d_rate), h_iter.eq(self.iterations)]
+                        m.d.sync += [h_cnt[n_].eq(cnt[n_]) for n_ in SLOT_COUNTERS]
                     m.d.comb += slot_start.eq(1)
                     with m.If(1):
                         m.d.sync += [s_slot.eq(slot), s_mode.eq(mode), s_mod.eq(mod), s_rate.eq(rate),
@@ -702,7 +739,9 @@ class Finish(Elaboratable):
                         m.d.sync += cnt["undecoded"].eq(cnt["undecoded"] + 1)
                     m.next = "TMCC_HDR"
             with m.State("TDUMMY_W"):
-                ws = Array([Cat(dslot[:8], d_mode, Const(1, 1), Const(0, 4)), Cat(d_mod, d_rate, Const(0, 8)),
+                tdm = Mux(t_held, h_dmode, d_mode)
+                ws = Array([Cat(dslot[:8], tdm, Const(1, 1), Const(0, 4)),
+                            Cat(Mux(t_held, h_dmod, d_mod), Mux(t_held, h_drate, d_rate), Const(0, 8)),
                             Const(0xFFFF, 16)])
                 m.d.comb += [pk.w_valid.eq(1), pk.w_data.eq(ws[word_i[:2]])]
                 with m.If(pk.w_ready):
@@ -775,7 +814,9 @@ class Finish(Elaboratable):
                 m.d.comb += ff.r_en.eq(1)
                 m.next = "IDLE"
         # the counters in the status
+        # (a frame's status sent after the next frame's first slots: its
+        # slot counters as they were at its end)
         for n_, sig in cnt.items():
-            m.d.comb += st.snap[n_].eq(sig)
-        m.d.comb += st.snap["iterations"].eq(self.iterations)
+            m.d.comb += st.snap[n_].eq(Mux(t_cnt_held, h_cnt[n_], sig) if n_ in SLOT_COUNTERS else sig)
+        m.d.comb += st.snap["iterations"].eq(Mux(t_cnt_held, h_iter, self.iterations))
         return m
