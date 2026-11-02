@@ -349,10 +349,29 @@ jobs:
         with:
           key: fpga
           save: ${{ github.ref == 'refs/heads/main' }}
-      # The chain tests' compiled simulations (Yosys write_cxxrtl + c++,
-      # about 3 minutes for the whole chain) are content-addressed .so files
-      # under fpga/build/cxxrtl, keyed by the HDL: restored across runs and
-      # rebuilt only for a changed design.
+      # Verilator, the compiled simulations' default backend
+      # (fpga/isdb_fpga/chain/simv.py; without it they fall back to CXXRTL):
+      # Ubuntu's package (5.032 on 26.04), about 12 s with the index update.
+      - name: Install Verilator
+        id: verilator
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends verilator
+          verilator --version
+          echo "version=$(verilator --version | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+      # The compiled simulations are content-addressed .so files keyed by
+      # the design, harness.cc and the build flags (and, for Verilator, its
+      # version), not by the Python around them: restored from the latest
+      # entry (restore-keys) and rebuilt only for a changed design. Verilator
+      # builds the whole chain in about 25 s on four cores and the S = 187
+      # decoder in about a minute; CXXRTL builds only tests/test_simx.py's
+      # two small designs here (the chain would take 3 minutes, S = 187 20).
+      - name: Restore the compiled Verilator simulations
+        uses: actions/cache@v6.1.0
+        with:
+          path: fpga/build/verilator/*.so
+          key: fpga-verilator-${{ steps.verilator.outputs.version }}-${{ hashFiles('fpga/isdb_fpga/**/*.py', 'fpga/isdb_fpga/**/*.cc', 'fpga/uv.lock') }}
+          restore-keys: fpga-verilator-${{ steps.verilator.outputs.version }}-
       - name: Restore the compiled CXXRTL simulations
         uses: actions/cache@v6.1.0
         with:
@@ -362,8 +381,12 @@ jobs:
       # Writes the vectors from the Rust models (release examples) and the
       # Python models, then simulates every FPGA block against them, bit for
       # bit (deterministic: fixed seeds, no wall clock), the tests spread
-      # over the runner's cores (pytest-xdist).
+      # over the runner's cores (pytest-xdist). FPGA_SIM=verilator: the
+      # compiled tests fail rather than fall back to CXXRTL if Verilator is
+      # missing.
       - run: mise run fpga:test
+        env:
+          FPGA_SIM: verilator
       - name: sccache statistics
         if: always()
         run: '"$RUSTC_WRAPPER" --show-stats'
