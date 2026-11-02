@@ -750,17 +750,29 @@ BCH unit, the status block's word mux, the packer, the layout, two
 Realigns and PRBS), the demapper (4 919 against 4 500), stage 1 (3 783
 against 3 500), `SlotsRx`'s register readback.
 
-**Integration.** The real decoder in the chain (CXXRTL, the decoder in its
-own 5× domain, the input at the front end's rate): RESULT_CHAIN7. Result
+**Integration.** The real decoder in the chain (`ldpc.LdpcDecoder` S = 34,
+K = 3 behind the bridge, its own 5× domain, the input at the front end's
+rate; Verilator, fpga/README.md "Simulation backends"):
+**bit-exact** on chain-7-hdl (chain-6's input decoded by the model with the
+decoder's settings) and on the loss and fade sets: every block of the
+model's frames, 0 decoder overruns, no queue overflow. It found two HDL
+defects, both fixed: the demapper tagged a frame's last codeword with the
+next frame's counter (the finish stage then reset the slot PRBS, the BCH's
+Chien search held the results 35 000 cycles and the decoder overran), and
+an input loss deadlocked stage 1. Result
 order: the decoder's commit order puts frame N's TMCC (and its trailing
 dummies and status) after frame N + 1's first slot blocks; `Finish` keeps
 their contents the model's, nothing is buffered, the host (`isdb-cli`
 `slotrx.rs`) releases frames by frame counter within one frame (a unit
 test: the FPGA order decodes the same as the model's); the HDL's bound is
 the TMCC burst plus its decode, the next frame's first 26 slots at most
-(4 at the front end's rate), measured LATENESS. Loss and sync loss
-(chain-8-loss, chain-9-fade, decoded with the decoder's settings):
-RESULT_LOSS. `SlotsRx` takes the host's register map (three registers
+(4 at the front end's rate), measured 3. Loss and sync loss
+(chain-8-loss, chain-9-fade, decoded with the decoder's settings): the
+chain restarts or loses and regains sync and decodes frame 3 after the
+event, bit-exact with the stub and with the real decoder. A frame the chain
+drops after its first slots were decoded leaves those slot blocks without
+its tmcc and status (the model sends nothing of it): the host discards
+them (`orphan_slots`). `SlotsRx` takes the host's register map (three registers
 added: MAX_ITER, AGC, TMCC_OVERRUNS; the first image offers the host's
 taps and the sums, not a constellation or n0 at START, lag 2 only) and
 `mise run fpga:slots-verilog` writes its Verilog.
