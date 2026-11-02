@@ -61,6 +61,7 @@ class Nco(Elaboratable):
         self.o_valid = Signal()
         self.o_r = [Signal(signed(self.rb), name=f"o_r{k}") for k in range(2)]
         self.o_phase = Signal(32)
+        self.o_x = [Signal(signed(in_bits), name=f"o_x{k}") for k in range(2)]  # the input, with o_r
         self.i_at = Signal(48)  # the chain index of the symbol offered (piped to o_at)
         self.o_at = Signal(48)
         # carrier loop
@@ -106,6 +107,9 @@ class Nco(Elaboratable):
         p = [Signal(signed(pw), name=f"p{k}") for k in range(4)]
         v2 = Signal()
         ph2 = Signal(32)
+        x2 = [Signal(signed(self.in_bits), name=f"x2_{k}") for k in range(2)]
+        m.d.sync += [x2[k].eq(x1[k]) for k in range(2)]
+        m.d.sync += [self.o_x[k].eq(x2[k]) for k in range(2)]
         m.d.sync += [
             v2.eq(v1),
             ph2.eq(ph1),

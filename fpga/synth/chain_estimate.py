@@ -77,7 +77,7 @@ def blocks():
 
     def phase():
         d = SlotPhase(6)
-        ports = [d.i_valid, d.i_at, *d.i_r, d.full, d.h_valid, d.h_late, d.h_at, d.h_word,
+        ports = [d.i_valid, d.i_at, *d.i_x, d.i_phi, d.h_f, d.full, d.h_valid, d.h_late, d.h_at, d.h_word,
                  d.h_theta, d.h_amp, d.h_numbered, d.h_number, d.h_frame, d.restart, d.o_ready,
                  d.o_valid, d.o_at, d.o_j, *d.o_y, d.o_word, d.o_numbered, d.o_number, d.o_frame,
                  d.o_restart]

@@ -102,7 +102,8 @@ class SlotsChain(Elaboratable):
         m.d.comb += [
             sf.ext_hold.eq(ph.full),
             ph.i_valid.eq(sf.o_r_valid), ph.i_at.eq(sf.o_at),
-            ph.i_r[0].eq(sf.o_r[0]), ph.i_r[1].eq(sf.o_r[1]),
+            ph.i_x[0].eq(sf.o_x[0]), ph.i_x[1].eq(sf.o_x[1]), ph.i_phi.eq(sf.o_phase),
+            ph.h_f.eq(sf.nco.f),
             ph.h_valid.eq(sy.o_head_valid), ph.h_late.eq(sy.o_head_late), ph.h_at.eq(sy.o_head_at),
             ph.h_word.eq(sy.o_head_word), ph.h_theta.eq(sy.o_head_theta), ph.h_amp.eq(sy.o_head_amp),
             ph.h_numbered.eq(sy.o_head_numbered), ph.h_number.eq(sy.o_head_number),

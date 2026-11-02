@@ -611,6 +611,7 @@ class SyncFront(Elaboratable):
         self.o_r_valid = self.nco.o_valid
         self.o_r = self.nco.o_r
         self.o_phase = self.nco.o_phase
+        self.o_x = self.nco.o_x
         self.o_at = self.nco.o_at
         self.o_f_valid = self.nco.o_f_valid
         self.o_f_at = Signal(AT_BITS)
