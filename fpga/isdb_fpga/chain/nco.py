@@ -72,6 +72,8 @@ class Nco(Elaboratable):
         self.restart = Signal()
         self.o_f_valid = Signal()
         self.f = Signal(signed(32), init=carrier)
+        self.f_load = Signal()  # f = f_in (the host's initial value at a start)
+        self.f_in = Signal(signed(32))
         self.phi = Signal(32)  # phi before the next accepted symbol
 
     def elaborate(self, platform):
@@ -170,6 +172,8 @@ class Nco(Elaboratable):
                         self.o_f_valid.eq(1),
                     ]
                     m.next = "IDLE"
+        with m.If(self.f_load):
+            m.d.sync += f.eq(self.f_in)
         return m
 
 

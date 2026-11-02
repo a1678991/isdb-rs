@@ -444,11 +444,16 @@ class BpskCodewordTest(unittest.TestCase):
 
 class SlotsRxRegisterTest(unittest.TestCase):
     """`SlotsRx`'s register file through `gpio_out` (the command protocol of
-    control.py): the ID word with ID_CHAIN; a front-end register written and
-    read back (PERIOD_NOMINAL, 0x01: its READ must show the front end's
-    readback, not the chain's); the chain's MAX_ITER (0x101, reset 16)
-    written and read, AGC (0x102) and FEATURES (0x103); then the front end's
-    register again."""
+    control.py), at the host's addresses (isdb_frontend::control::chain): the
+    ID word with the Slots format version (bit 8); a front-end register
+    written and read back (PERIOD_NOMINAL, 0x01: its READ must show the
+    front end's readback, not the chain's); the chain's VERSION (0x400),
+    MAX_ITER (0x40C, reset 16) written and read, AGC (0x40D), FEATURES
+    (0x401: TAPS | SUMS, the limit in bits 15-8, the step 34 in 27-16), a tap
+    (0x410 + 3, re | im << 16) written with WRITE_S and committed by START
+    (INIT bit 0), CARRIER (0x402) written and loaded by START; the front
+    end's STATUS (0x10) with bit 2 (the Slots words selected); then the
+    front end's register again."""
 
     def test_reads(self):
         from amaranth.hdl import ClockDomain, Module
@@ -456,16 +461,18 @@ class SlotsRxRegisterTest(unittest.TestCase):
 
         from isdb_fpga.chain.common import cos_table
         from isdb_fpga.chain.top import ID_CHAIN, SlotsRx
-        from isdb_fpga.control import ID_MAGIC, OP_ADDR, OP_HI, OP_NOP, OP_READ, OP_WRITE
+        from isdb_fpga.control import ID_MAGIC, OP_ADDR, OP_CTRL, OP_HI, OP_NOP, OP_READ, OP_WRITE, OP_WRITE_S
         from isdb_fpga.frontend import FORMAT_VERSION
 
-        dut = SlotsRx(32, cos_table())
+        dut = SlotsRx(32, cos_table(), decoder=False)
         top = Module()
         top.submodules.dut = dut
         top.domains.sync = ClockDomain()
+        top.domains.fast = ClockDomain()
         top.domains.ldpc = ClockDomain()
         sim = Simulator(top)
         sim.add_clock(25e-9, domain="sync")
+        sim.add_clock(6.25e-9, phase=12.5e-9, domain="fast")
         sim.add_clock(5e-9, domain="ldpc")
         seen = {}
 
@@ -486,18 +493,35 @@ class SlotsRxRegisterTest(unittest.TestCase):
             await cmd(OP_WRITE, 0x5678)
             await cmd(OP_ADDR, 0x01)
             seen["period"] = await cmd(OP_READ)
-            await cmd(OP_ADDR, 0x101)
+            await cmd(OP_ADDR, 0x400)
+            seen["version"] = await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x40C)
             seen["max_iter_reset"] = await cmd(OP_READ)
-            await cmd(OP_ADDR, 0x101)
+            await cmd(OP_ADDR, 0x40C)
             await cmd(OP_HI, 0)
             await cmd(OP_WRITE, 33)
-            await cmd(OP_WRITE, 0x0400)  # 0x102, AGC (the address advanced)
-            await cmd(OP_ADDR, 0x101)
+            await cmd(OP_WRITE, 0x0400)  # 0x40D, AGC (the address advanced)
+            await cmd(OP_ADDR, 0x40C)
             seen["max_iter"] = await cmd(OP_READ)
-            await cmd(OP_ADDR, 0x102)
+            await cmd(OP_ADDR, 0x40D)
             seen["agc"] = await cmd(OP_READ)
-            await cmd(OP_ADDR, 0x103)
+            await cmd(OP_ADDR, 0x401)
             seen["features"] = await cmd(OP_READ)
+            # tap 3 = (-5, 7) and carrier -1234, loaded by START with INIT bit 0
+            await cmd(OP_ADDR, 0x413)
+            await cmd(OP_HI, 7)
+            await cmd(OP_WRITE, (-5) & 0xFFFF)
+            await cmd(OP_ADDR, 0x402)
+            await cmd(OP_WRITE_S, -1234)
+            await cmd(OP_ADDR, 0x404)
+            await cmd(OP_WRITE_S, 1)
+            await cmd(OP_CTRL, 0b1011)  # RUN, START, SLOTS
+            await cmd(OP_ADDR, 0x413)
+            seen["tap3"] = await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x402)
+            seen["carrier"] = await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x10)
+            seen["status"] = await cmd(OP_READ)
             await cmd(OP_ADDR, 0x01)
             seen["period_again"] = await cmd(OP_READ)
             seen["id_again"] = await cmd(OP_NOP)
@@ -506,8 +530,9 @@ class SlotsRxRegisterTest(unittest.TestCase):
         sim.run()
         ident = ID_MAGIC << 16 | FORMAT_VERSION << 12 | 32 | ID_CHAIN
         self.assertEqual(seen, {
-            "id": ident, "period": 0x12345678, "max_iter_reset": 16, "max_iter": 33, "agc": 0x0400,
-            "features": 0b11, "period_again": 0x12345678, "id_again": ident,
+            "id": ident, "period": 0x12345678, "version": 1, "max_iter_reset": 16, "max_iter": 33,
+            "agc": 0x0400, "features": 0b11 | 33 << 8 | 34 << 16, "tap3": 7 << 16 | 0xFFFB,
+            "carrier": (-1234) & 0xFFFFFFFF, "status": 0b101, "period_again": 0x12345678, "id_again": ident,
         })
 
 
