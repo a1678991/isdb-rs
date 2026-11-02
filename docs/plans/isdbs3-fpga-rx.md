@@ -232,12 +232,25 @@ written first in Rust, and the only reference.
    model and the HDL share (next section). Early stop when the hard
    decisions satisfy every check (checked on the fly: a layer's checks
    report unsatisfied; an iteration whose every layer was satisfied
-   before its updates ends the codeword), a fixed iteration limit. The
-   codeword queue (slots in arrival order, the TMCC codeword at the
-   frame's end) is provisioned for the worst case, all 120 codewords at
-   the iteration limit, so the result of a codeword never depends on
-   load: it is a function of its LLRs, the code, the schedule and the
-   limit, as on the CPU.
+   before its updates ends the codeword), a fixed iteration limit (a
+   run-time register, default 16). The result of a decoded codeword is a
+   function of its LLRs, the code, the schedule and the limit, as on the
+   CPU; load decides only whether it is decoded. **Amended 2026-11-02:**
+   the queue is not provisioned for all 121 codewords at the limit (that
+   would cap the limit at 8 at S = 34 / 200 MHz, 1 338 failures of 18 336
+   near threshold against 3 at 16) but for the frame average: K = 3
+   L/H banks, because a codeword is complete only at its slot's end, so
+   with K banks one codeword may take about (K − 1) slots (K = 2: 9
+   passes, K = 3: about 19) while the frame budget is about 10 passes
+   per codeword against a measured mean of 3.1; a codeword begun with all
+   banks held is dropped, counted (`ldpc_overrun`) and reported in order
+   as a slot not decoded (fpga/README.md "The LDPC decoder"). Not a
+   symbol queue before the demapper (it would break the one-symbol-per-
+   clock demapper), not limit 8. The TMCC stage stages its codeword
+   across the frame and loads it as a burst after the frame's end (an
+   interleaved TMCC load would hold a bank all frame and need K = 4).
+   Cost: 76.5 BRAM36 at S = 34 with all rates, from the receive-only
+   image's budget.
 8. **Dispersal and BCH.** The slot dispersal PRBS runs across the
    frame's valid slots in order (`SlotDispersal`), then the (k − 6)-bit
    BCH word (header + data + 192 parity): syndromes S₁ … S₂₄ computed

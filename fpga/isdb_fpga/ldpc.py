@@ -18,9 +18,9 @@ bit j of group g is lane j mod S, word j div S; the information groups are
 the codeword's bits in order, the parity groups G + l hold p_{l + i q} at
 bit i. Each lane is a memory of NG * Wp words (Wp = W rounded up to a
 power of two, W = 374 / S), address {g, w}, 9 bits: L (i8) and H (the hard
-decision of the previous iteration, below). Two such banks (double
-buffer): one loads the next codeword while the other decodes and then
-streams its result. A step of layer l reads, per table entry (g, s = a S +
+decision of the previous iteration, below). K such banks (the codeword
+queue, below): codewords load, wait, decode and stream their results in
+different banks. A step of layer l reads, per table entry (g, s = a S +
 b), every lane once: lane lam at word (st - a - [lam >= S - b]) mod W,
 for unit (lam + b) mod S (a rotation by b); the two parity entries are
 generated (p_{c-1}: group G + l - 1, or G + q - 1 at shift 1 in layer 0,
@@ -90,24 +90,64 @@ few LUT levels (the rotators are three LUT levels of 4:1 muxes at S = 34).
 No DSP: the input address mapping divides by 374 and by q with pipelined
 restoring dividers.
 
+The codeword queue. K banks (a build parameter, default 3) of L/H; a
+codeword holds a bank from its `begin` (the first of its LLRs) until its
+hard decisions have left on the output stream. Two load contexts
+(`in_ctx`: 0 the slot codewords, 1 the TMCC codeword, whose LLRs arrive
+interleaved with the slots') may be open at once; each LLR write carries
+its codeword's bank. A bank is allocated at `begin` (the lowest free one)
+and freed when its output stream ends; `load_ready` = a bank is free.
+`start` commits the context's codeword (after its last LLR) to the
+result queue, in commit order; the engine decodes the queue in order, and
+the results leave in the same order. The input never stalls (the
+demapper runs at one symbol per clock), so the back-pressure is
+`load_ready` and the overrun rule: a codeword whose `begin` comes while
+every bank is held is **dropped**: its LLRs are discarded, `overruns`
+counts it, and at its `start` it still enters the result queue, so in
+its place in the sequence the decoder emits a result record with
+res_overrun = 1, res_converged = 0, res_iterations = 0, res_unsat = 0
+and no data words: a slot not decoded, like a failed LDPC (the
+downstream dispersal runs across the valid slots in order and the host
+counts every slot). Why K = 3: a codeword is complete only at its slot's
+end (the interleaver spreads it over the slot, T = 33.05 ms / 121 ≈ 54.6k
+cycles at 200 MHz), so with K banks a codeword may take up to about
+(K - 1) T less the output (2.8k cycles) and any queue wait: K = 2 gives
+9 passes at 93/120, S = 34 (8 iterations, the worst-case figure), K = 3
+about 19 (a limit of 16 for an isolated long codeword); the frame-average
+budget is about 10 passes per codeword against a measured mean of 3.1
+(`ldpcqueue.py` models it). The result queue holds QUEUE_DEPTH entries;
+an entry committed while it is full (beyond any rate the slots can
+cause) is lost and sets the sticky `queue_overflow`.
+
 Ports (all in the sync domain):
-  in_valid, in_pos (16), in_llr (i8), in_rate (rate index), in_ready
-      one LLR per cycle into the loading bank, any order; the codeword's
-      rate must be on in_rate (the parity positions map through q);
-  start, st_rate, st_max_iter (8), st_offset (7), st_short, start_ready
-      decode the loaded bank; st_short: the shortened TMCC code: the
-      decoder writes +127 itself into the known-zero positions
-      [0, info_start) and [info_start + info_len, k) (`shortened`, by
-      default (1870, 9614)) before the first pass, so only the 31 680 sent
+  begin, in_ctx
+      a codeword of context in_ctx begins (one cycle, before or with its
+      first LLR): a bank is allocated, or the codeword is dropped;
+  load_ready
+      a bank is free (a `begin` now is not dropped);
+  in_valid, in_pos (16), in_llr (i8), in_rate (rate index), in_ctx
+      one LLR per cycle into context in_ctx's codeword, any order, never
+      stalled; the codeword's rate must be on in_rate (the parity
+      positions map through q);
+  start, in_ctx, st_rate, st_max_iter (8), st_offset (7), st_short
+      commit context in_ctx's codeword (one cycle, after its last LLR;
+      `start` and `begin` of the next codeword may share a cycle).
+      st_max_iter: the iteration limit (the chain's register; its reset
+      value is DEFAULT_MAX_ITER = 16). st_short: the shortened TMCC code:
+      the decoder writes +127 itself into the known-zero positions [0,
+      info_start) and [info_start + info_len, k) (`shortened`, by default
+      (1870, 9614)) before the first pass, so only the 31 680 sent
       positions need loading;
   o_valid, o_data (16), o_last, o_ready
       the hard decisions, 16 per word, bit 0 first: the NG groups in
       order, 374 bits each (so the information bits in codeword order,
       then the parity in layer order: p_l, p_{l+q}, ... per l; the bits
-      of the last word past n are 0);
-  res_valid (one cycle, before the first word), res_iterations,
-  res_converged, res_unsat
-      the codeword's result;
+      of the last word past n are 0); none for a dropped codeword;
+  res_valid (one cycle, before the codeword's first word), res_iterations,
+  res_converged, res_unsat, res_overrun
+      each committed codeword's result, in commit order;
+  overruns (16), queue_overflow
+      dropped codewords since reset (wraps), and the sticky queue flag;
   busy, passes, cycles (verification: the engine's passes and cycles of
       the last codeword).
 """
@@ -125,6 +165,8 @@ DECIDE = 12
 FIFO_DEPTH = 64
 OFFSET_BITS = 7
 ITER_BITS = 8
+DEFAULT_MAX_ITER = 16
+QUEUE_DEPTH = 8
 NO_DSP = {"use_dsp": "no"}
 
 
@@ -180,8 +222,10 @@ class LdpcDecoder(Elaboratable):
     `ngroups` 120), the rate index of the ports is the position in
     sorted(codes)."""
 
-    def __init__(self, units, codes=None, ngroups=120, shortened=ldpcmodel.TMCC_SHORT):
+    def __init__(self, units, codes=None, ngroups=120, shortened=ldpcmodel.TMCC_SHORT, banks=3):
         self.S = S = units
+        assert banks >= 2, "at least two banks (one loading while one decodes)"
+        self.K = banks
         assert GROUP % S == 0 and S <= GROUP // 2, f"S = {S} must divide 374 and be at most 187"
         self.codes = codes if codes is not None else default_codes()
         self.rate_ids = sorted(self.codes)
@@ -194,17 +238,18 @@ class LdpcDecoder(Elaboratable):
         self.max_d = max(r.d for r in self.rates)
         assert self.max_d <= 32 and self.max_d + 2 * WRITE_LATENCY < FIFO_DEPTH
         nr = len(self.rates)
+        self.begin = Signal()
+        self.in_ctx = Signal()
+        self.load_ready = Signal()
         self.in_valid = Signal()
         self.in_pos = Signal(16)
         self.in_llr = Signal(signed(8))
         self.in_rate = Signal(range(max(nr, 2)))
-        self.in_ready = Signal()
         self.start = Signal()
         self.st_rate = Signal(range(max(nr, 2)))
         self.st_max_iter = Signal(ITER_BITS)
         self.st_offset = Signal(OFFSET_BITS)
         self.st_short = Signal()
-        self.start_ready = Signal()
         self.o_valid = Signal()
         self.o_data = Signal(16)
         self.o_last = Signal()
@@ -213,15 +258,19 @@ class LdpcDecoder(Elaboratable):
         self.res_iterations = Signal(ITER_BITS)
         self.res_converged = Signal()
         self.res_unsat = Signal(16)
+        self.res_overrun = Signal()
+        self.overruns = Signal(16)
+        self.queue_overflow = Signal()
         self.busy = Signal()
         self.passes = Signal(ITER_BITS + 1)
         self.cycles = Signal(24)
 
     def ports(self):
-        return [self.in_valid, self.in_pos, self.in_llr, self.in_rate, self.in_ready, self.start,
-                self.st_rate, self.st_max_iter, self.st_offset, self.st_short, self.start_ready,
-                self.o_valid, self.o_data, self.o_last, self.o_ready, self.res_valid,
-                self.res_iterations, self.res_converged, self.res_unsat, self.busy]
+        return [self.begin, self.in_ctx, self.load_ready, self.in_valid, self.in_pos, self.in_llr,
+                self.in_rate, self.start, self.st_rate, self.st_max_iter, self.st_offset,
+                self.st_short, self.o_valid, self.o_data, self.o_last, self.o_ready,
+                self.res_valid, self.res_iterations, self.res_converged, self.res_unsat,
+                self.res_overrun, self.overruns, self.queue_overflow, self.busy]
 
     def elaborate(self, platform):
         m = Module()
@@ -324,8 +373,10 @@ class LdpcDecoder(Elaboratable):
         r_steps = R("ns", [r.steps for r in rates])[rate]
 
         # --- the banks -------------------------------------------------------
+        K = self.K
+        kb = _bits(K - 1)
         banks = []
-        for b in range(2):
+        for b in range(K):
             lanes = []
             for lam in range(S):
                 mem = Memory(shape=9, depth=NG * Wp, init=[])
@@ -345,9 +396,8 @@ class LdpcDecoder(Elaboratable):
         fu_rp, fu_wp = fifo_u.read_port(), fifo_u.write_port()
         fs_rp, fs_wp = fifo_s.read_port(), fifo_s.write_port()
 
-        load_buf = Signal()
-        dec_buf = Signal()
-        out_buf = Signal()
+        dec_buf = Signal(kb)  # the bank the engine decodes
+        out_buf = Signal(kb)  # the bank the output streams
         out_active = Signal()
         busy = self.busy
 
@@ -360,18 +410,20 @@ class LdpcDecoder(Elaboratable):
         ld_addr = Signal(abits)
         ld_data = Signal(9)
         ld_lane = Signal(range(S))
+        ld_bank = Signal(kb)
         ld_en = Signal()
-        for b in range(2):
+        for b in range(K):
             mine = busy & (dec_buf == b)
             for lam, (rp, wp) in enumerate(banks[b]):
                 m.d.comb += [
                     rp.addr.eq(Mux(mine, dec_raddr[lam], out_raddr)),
                     wp.addr.eq(Mux(mine, dec_waddr[lam], ld_addr)),
                     wp.data.eq(Mux(mine, dec_wdata[lam], ld_data)),
-                    wp.en.eq(Mux(mine, dec_wen[lam], ld_en & (load_buf == b) & (ld_lane == lam))),
+                    wp.en.eq(Mux(mine, dec_wen[lam],
+                                 ld_en & (ld_bank == b) & (ld_lane == lam))),
                 ]
-        rdata = [Mux(dec_buf, banks[1][lam][0].data, banks[0][lam][0].data) for lam in range(S)]
-        odata = [Mux(out_buf, banks[1][lam][0].data, banks[0][lam][0].data) for lam in range(S)]
+        rdata = [Array([banks[b][lam][0].data for b in range(K)])[dec_buf] for lam in range(S)]
+        odata = [Array([banks[b][lam][0].data for b in range(K)])[out_buf] for lam in range(S)]
 
         # --- the sequencer (I0) ----------------------------------------------
         FILL, PASS, WAITD, DRAIN = range(4)
@@ -726,10 +778,30 @@ class LdpcDecoder(Elaboratable):
             | wa_v | wb["v"] | wc["v"] | wd_v | i1["v"] | i2["v"]
         cyc = self.cycles
         drain_left = Signal(4)
-        ld_busy = Signal()
-        m.d.comb += self.start_ready.eq(~busy & ~ld_busy & ~(out_active & (out_buf == load_buf)))
         out_go = Signal()
         m.d.comb += out_go.eq(0)
+
+        # --- the result queue: committed codewords, in order ------------------
+        qb = _bits(QUEUE_DEPTH - 1)
+        assert QUEUE_DEPTH == 1 << qb
+        q_drop = Array([Signal(name=f"q{i}_drop") for i in range(QUEUE_DEPTH)])
+        q_bank = Array([Signal(kb, name=f"q{i}_bank") for i in range(QUEUE_DEPTH)])
+        q_rate = Array([Signal.like(self.st_rate, name=f"q{i}_rate") for i in range(QUEUE_DEPTH)])
+        q_max = Array([Signal(ITER_BITS, name=f"q{i}_max") for i in range(QUEUE_DEPTH)])
+        q_off = Array([Signal(OFFSET_BITS, name=f"q{i}_off") for i in range(QUEUE_DEPTH)])
+        q_short = Array([Signal(name=f"q{i}_short") for i in range(QUEUE_DEPTH)])
+        q_wr = Signal(qb + 1)  # next entry to write
+        q_dq = Signal(qb + 1)  # next entry the engine takes
+        q_oq = Signal(qb + 1)  # next entry whose result leaves
+        cur_q = Signal(qb + 1)  # the entry the engine decodes
+        e_iter = Signal(ITER_BITS)
+        e_conv = Signal()
+        e_unsat = Signal(16)
+        head = q_dq[:qb]
+        take = Signal()  # the engine takes the queue's next entry
+        m.d.comb += take.eq(~busy & (q_dq != q_wr))
+        drop_emit = Signal()  # the result record of a dropped codeword leaves
+        m.d.comb += drop_emit.eq(~out_active & ~out_go & (q_oq != q_dq) & q_drop[q_oq[:qb]])
         info_start, info_len = self.shortened
         info_end = info_start + info_len
         m.d.comb += [fill_en.eq(busy & (phase == FILL)), fill_addr.eq(Cat(fill_w, fill_g))]
@@ -742,20 +814,21 @@ class LdpcDecoder(Elaboratable):
         ]
         with m.If(busy):
             m.d.sync += cyc.eq(cyc + 1)
-        with m.If(self.start & self.start_ready):
+        with m.If(take):
+            m.d.sync += q_dq.eq(q_dq + 1)
+        with m.If(take & ~q_drop[head]):
+            h_rate = q_rate[head]
             m.d.sync += [
-                busy.eq(1), dec_buf.eq(load_buf), load_buf.eq(~load_buf), rate.eq(self.st_rate),
-                max_iter.eq(self.st_max_iter), offset.eq(self.st_offset), short.eq(self.st_short),
-                phase.eq(Mux(self.st_short, FILL, PASS)), pass_no.eq(1), cyc.eq(0),
+                busy.eq(1), dec_buf.eq(q_bank[head]), cur_q.eq(q_dq), rate.eq(h_rate),
+                max_iter.eq(q_max[head]), offset.eq(q_off[head]), short.eq(q_short[head]),
+                phase.eq(Mux(q_short[head], FILL, PASS)), pass_no.eq(1), cyc.eq(0),
                 layer.eq(0), st.eq(0), k.eq(0), n_idx.eq(0), e_idx.eq(0), in_step.eq(0),
                 idle.eq(255), decided.eq(1), unsat.eq(0), fill_g.eq(0), fill_w.eq(0),
                 fill_base.eq(0), push_ptr.eq(0), pop_ptr.eq(0),
-                layer_info.eq(Array([Const(v, len(layer_info)) for v in info_base + [0]])[
-                    self.st_rate]),
+                layer_info.eq(Array([Const(v, len(layer_info)) for v in info_base + [0]])[h_rate]),
                 layer_chain.eq(Array([Const(v, len(layer_chain)) for v in chain_base + [0]])[
-                    self.st_rate]),
-                gap_ptr.eq(Array([Const(v, len(gap_ptr)) for v in gap_base + [0]])[
-                    self.st_rate]),
+                    h_rate]),
+                gap_ptr.eq(Array([Const(v, len(gap_ptr)) for v in gap_base + [0]])[h_rate]),
             ]
         with m.If(busy & (phase == FILL)):
             m.d.sync += fill_base.eq(fill_base + S)
@@ -769,9 +842,8 @@ class LdpcDecoder(Elaboratable):
             # the pass's syndrome weight (iteration pass_no - 1) is complete
             total = unsat + 0
             with m.If((total == 0) | (pass_no - 1 == max_iter)):
-                m.d.sync += [phase.eq(DRAIN), drain_left.eq(3),
-                             self.res_iterations.eq(pass_no - 1),
-                             self.res_converged.eq(total == 0), self.res_unsat.eq(total)]
+                m.d.sync += [phase.eq(DRAIN), drain_left.eq(3), e_iter.eq(pass_no - 1),
+                             e_conv.eq(total == 0), e_unsat.eq(total)]
             with m.Else():
                 m.d.sync += [phase.eq(PASS), pass_no.eq(pass_no + 1), decided.eq(1),
                              layer.eq(0), st.eq(0), k.eq(0), n_idx.eq(0), e_idx.eq(0),
@@ -779,9 +851,12 @@ class LdpcDecoder(Elaboratable):
                              gap_ptr.eq(r_gap)]
         with m.If(busy & (phase == DRAIN)):
             with m.If(~wpipe_busy):
+                # the result leaves once every earlier one has (in order) and
+                # the output stream is free
                 with m.If(drain_left == 0):
-                    m.d.sync += busy.eq(0)
-                    m.d.comb += out_go.eq(1)
+                    with m.If(~out_active & (q_oq == cur_q)):
+                        m.d.sync += busy.eq(0)
+                        m.d.comb += out_go.eq(1)
                 with m.Else():
                     m.d.sync += drain_left.eq(drain_left - 1)
 
@@ -794,10 +869,18 @@ class LdpcDecoder(Elaboratable):
         cnt = Signal(range(S + 17))
         bits_left = Signal(17)
         m.d.comb += out_raddr.eq(Cat(ow, og))
-        m.d.sync += self.res_valid.eq(out_go)
+        m.d.sync += self.res_valid.eq(out_go | drop_emit)
+        with m.If(out_go | drop_emit):
+            m.d.sync += q_oq.eq(q_oq + 1)
         with m.If(out_go):
             m.d.sync += [out_active.eq(1), out_buf.eq(dec_buf), og.eq(0), ow.eq(0), o_more.eq(1),
-                         cnt.eq(0), bits_left.eq(self.n), o_inflight.eq(0)]
+                         cnt.eq(0), bits_left.eq(self.n), o_inflight.eq(0),
+                         self.res_iterations.eq(e_iter), self.res_converged.eq(e_conv),
+                         self.res_unsat.eq(e_unsat), self.res_overrun.eq(0)]
+        with m.If(drop_emit):
+            m.d.sync += [self.res_iterations.eq(0), self.res_converged.eq(0),
+                         self.res_unsat.eq(0), self.res_overrun.eq(1)]
+        free_mask = Signal(K)  # the bank whose output stream ends this cycle
         emit = Signal()
         m.d.comb += [
             emit.eq(out_active & self.o_ready & ((cnt >= 16) | (~o_more & ~o_inflight & (cnt != 0)))),
@@ -828,35 +911,68 @@ class LdpcDecoder(Elaboratable):
                 m.d.sync += bits_left.eq(bits_left - 16)
                 with m.If(self.o_last):
                     m.d.sync += out_active.eq(0)
+                    m.d.comb += free_mask.eq(1 << out_buf)
         # --- the input mapping (position -> lane, address) ----------------------
         # information (pos < k): g = pos div 374, j = pos mod 374; parity
         # (c = pos - k): g = G + (c mod q), j = c div q; then the word j div S
         # and the lane j mod S (a ROM). Both divisions restoring, one quotient
         # bit per stage (pos div 374 < 128, c div q < 374 < 512): 9 stages.
+        # bank allocation at `begin`, per load context: the lowest free bank,
+        # or the codeword is dropped (no bank, counted, its result an overrun
+        # record in order)
+        alloc = Signal(K)  # 1: the bank holds a codeword (loading .. output)
+        ctx_bank = Array([Signal(kb, name=f"ctx{c}_bank") for c in range(2)])
+        ctx_drop = Array([Signal(name=f"ctx{c}_drop", init=1) for c in range(2)])
+        full = alloc.all()
+        lowest = Signal(kb)
+        for b in reversed(range(K)):
+            with m.If(~alloc[b]):
+                m.d.comb += lowest.eq(b)
+        set_mask = Signal(K)
+        m.d.comb += self.load_ready.eq(~full)
+        with m.If(self.begin):
+            m.d.sync += [ctx_bank[self.in_ctx].eq(lowest), ctx_drop[self.in_ctx].eq(full)]
+            with m.If(full):
+                m.d.sync += self.overruns.eq(self.overruns + 1)
+            with m.Else():
+                m.d.comb += set_mask.eq(1 << lowest)
+        m.d.sync += alloc.eq((alloc | set_mask) & ~free_mask)
+        w_bank = Mux(self.begin, lowest, ctx_bank[self.in_ctx])
+        w_drop = Mux(self.begin, full, ctx_drop[self.in_ctx])
+
         in_k = R("ik", [r.k for r in rates], 16)[self.in_rate]
         in_G = R("iG", [r.G for r in rates], gbits)[self.in_rate]
         in_q = R("iq", [r.q for r in rates])[self.in_rate]
         st0 = dict(v=Signal(name="ld_v"), llr=Signal(signed(8), name="ld_llr"),
                    isp=Signal(name="ld_isp"), G=Signal(gbits, name="ld_G"),
                    q=Signal(len(in_q), name="ld_q"), r=Signal(16, name="ld_r"),
-                   quo=Signal(9, name="ld_quo"))
+                   quo=Signal(9, name="ld_quo"), bank=Signal(kb, name="ld_bank"),
+                   tok=Signal(name="ld_tok"), tdrop=Signal(name="ld_tdrop"),
+                   tbank=Signal(kb, name="ld_tbank"), trate=Signal.like(self.st_rate),
+                   tmax=Signal(ITER_BITS), toff=Signal(OFFSET_BITS), tshort=Signal())
         isp = self.in_pos >= in_k
+        # the commit token travels with the writes, so the entry enters the
+        # queue after the codeword's last write has reached its bank
         m.d.sync += [
-            st0["v"].eq(self.in_valid & self.in_ready), st0["llr"].eq(self.in_llr),
+            st0["v"].eq(self.in_valid & ~w_drop), st0["llr"].eq(self.in_llr),
             st0["isp"].eq(isp), st0["G"].eq(in_G), st0["q"].eq(in_q),
             st0["r"].eq(Mux(isp, self.in_pos - in_k, self.in_pos)), st0["quo"].eq(0),
+            st0["bank"].eq(w_bank), st0["tok"].eq(self.start),
+            st0["tdrop"].eq(ctx_drop[self.in_ctx]), st0["tbank"].eq(ctx_bank[self.in_ctx]),
+            st0["trate"].eq(self.st_rate), st0["tmax"].eq(self.st_max_iter),
+            st0["toff"].eq(self.st_offset), st0["tshort"].eq(self.st_short),
         ]
-        stages = [st0["v"]]
+        passthru = ("v", "llr", "isp", "G", "q", "bank", "tok", "tdrop", "tbank", "trate",
+                    "tmax", "toff", "tshort")
         cur = st0
         for i in range(8, -1, -1):
             dv = Mux(cur["isp"], cur["q"] << i, GROUP << i if i <= 6 else (1 << 17) - 1)
             ge = cur["r"] >= dv
             nxt = {key: Signal.like(sig, name=f"ld{i}_{key}") for key, sig in cur.items()}
-            for key in ("v", "llr", "isp", "G", "q"):
+            for key in passthru:
                 m.d.sync += nxt[key].eq(cur[key])
             m.d.sync += [nxt["r"].eq(Mux(ge, cur["r"] - dv, cur["r"])),
                          nxt["quo"].eq(cur["quo"] | (ge << i))]
-            stages.append(nxt["v"])
             cur = nxt
         g_ld = Mux(cur["isp"], cur["G"] + cur["r"], cur["quo"])
         j_ld = Mux(cur["isp"], cur["quo"], cur["r"])
@@ -869,11 +985,24 @@ class LdpcDecoder(Elaboratable):
         fin = dict(v=Signal(name="ldf_v"), g=Signal(gbits, name="ldf_g"),
                    w=Signal(stbits, name="ldf_w"), lane=Signal(ubits, name="ldf_lane"),
                    llr=Signal(signed(8), name="ldf_llr"))
+        fin_bank = Signal(kb, name="ldf_bank")
         m.d.sync += [fin["v"].eq(regs["v"]), fin["g"].eq(g_ld), fin["w"].eq(jrp.data[:stbits]),
-                     fin["lane"].eq(jrp.data[stbits:]), fin["llr"].eq(regs["llr"])]
-        stages.append(fin["v"])
+                     fin["lane"].eq(jrp.data[stbits:]), fin["llr"].eq(regs["llr"]),
+                     fin_bank.eq(regs["bank"])]
         m.d.comb += [ld_addr.eq(Cat(fin["w"][:wbits], fin["g"])), ld_data.eq(Cat(fin["llr"], 0)),
-                     ld_lane.eq(fin["lane"]), ld_en.eq(fin["v"])]
-        m.d.comb += ld_busy.eq(Cat(*stages).any())
-        m.d.comb += self.in_ready.eq(~(out_active & (out_buf == load_buf)))
+                     ld_lane.eq(fin["lane"]), ld_en.eq(fin["v"]), ld_bank.eq(fin_bank)]
+        # the token one stage later than the last write: into the queue
+        tok = {key: Signal.like(regs[key], name=f"tk_{key}") for key in passthru[6:]}
+        for key in tok:
+            m.d.sync += tok[key].eq(regs[key])
+        slot = q_wr[:qb]
+        with m.If(tok["tok"]):
+            with m.If((q_wr - q_oq)[:qb + 1] == QUEUE_DEPTH):
+                m.d.sync += self.queue_overflow.eq(1)
+            with m.Else():
+                m.d.sync += [
+                    q_wr.eq(q_wr + 1), q_drop[slot].eq(tok["tdrop"]), q_bank[slot].eq(tok["tbank"]),
+                    q_rate[slot].eq(tok["trate"]), q_max[slot].eq(tok["tmax"]),
+                    q_off[slot].eq(tok["toff"]), q_short[slot].eq(tok["tshort"]),
+                ]
         return m

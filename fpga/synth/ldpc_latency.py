@@ -29,13 +29,13 @@ def main(argv):
 
     async def bench(ctx):
         for pos, v in enumerate(llr):
+            ctx.set(dut.begin, pos == 0)
             ctx.set(dut.in_valid, 1)
             ctx.set(dut.in_pos, pos)
             ctx.set(dut.in_llr, v)
             await ctx.tick()
+        ctx.set(dut.begin, 0)
         ctx.set(dut.in_valid, 0)
-        while not ctx.get(dut.start_ready):
-            await ctx.tick()
         ctx.set(dut.start, 1)
         ctx.set(dut.st_rate, 0)
         ctx.set(dut.st_max_iter, 3)
@@ -43,6 +43,8 @@ def main(argv):
         await ctx.tick()
         ctx.set(dut.start, 0)
         mod = dut._probe
+        while not ctx.get(dut.busy):  # the commit reaches the queue after the last write
+            await ctx.tick()
         clock = 0
         while ctx.get(dut.busy) and clock < 4000:
             if ctx.get(mod["read_v"]) and ctx.get(mod["read_k"]) == 0 and "read" not in found:
