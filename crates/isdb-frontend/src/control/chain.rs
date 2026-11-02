@@ -41,9 +41,14 @@
 //! each frame with a layout the block latches the frame's normal-equation
 //! sums ([`reg::SUMS_FRAME`], [`reg::SUMS_COUNT`], [`reg::SUMS_R`],
 //! [`reg::SUMS_P`]; 66 + 11 complex values of 48 bits, two registers per
-//! component: [`sum_registers`], [`sums_from_words`]); the host reads them,
-//! reads [`reg::SUMS_FRAME`] again (a different value: the latch moved on
-//! during the read, read again later), solves in `f64` and writes the 11
+//! component: [`sum_registers`], [`sums_from_words`]). With
+//! [`features::SUMS_CAPTURE`] the host writes [`reg::SUMS_CAPTURE`], polls
+//! it for [`capture::VALID`] (the next frame end latched and holds the
+//! sums: later frames are summed but not latched until the next write),
+//! reads them (308 registers: about 15 frames through iiod) and
+//! [`reg::SUMS_FRAME`] again (the same, or the hold failed); without it
+//! the latch moves every frame and the host re-reads [`reg::SUMS_FRAME`]
+//! to find a torn read (read again later). Then it solves in `f64` and writes the 11
 //! taps ([`reg::TAPS`], [`pack_point`]) and then [`reg::TAPS_FROM`] with
 //! the frame N they were solved from, which commits them: the block takes
 //! them at the start of frame N + 2 (the model's rule). Reading [`reg::TAPS`] and
@@ -148,6 +153,10 @@ pub mod reg {
     pub const SUMS_FRAME: u16 = 0x420;
     /// Read only: training symbols in the latched sums.
     pub const SUMS_COUNT: u16 = 0x421;
+    /// Written (any value): the next frame end latches the training sums
+    /// and holds them until the next write ([`super::features::SUMS_CAPTURE`]);
+    /// read: [`super::capture`] bits.
+    pub const SUMS_CAPTURE: u16 = 0x422;
     /// Read only: the counters of the `Slots` status block, 32 bits each,
     /// at `COUNTERS + i` in [`super::Counters::NAMES`] order (the
     /// iteration sum as two registers, low first).
@@ -176,8 +185,11 @@ pub mod features {
     pub const CONSTELLATION: u32 = 4;
     /// The host may load n0 at START.
     pub const N0: u32 = 8;
+    /// The training sums are held from a host-armed frame end
+    /// ([`super::reg::SUMS_CAPTURE`]).
+    pub const SUMS_CAPTURE: u32 = 16;
     /// Every flag this host knows.
-    pub const ALL: u32 = TAPS | SUMS | CONSTELLATION | N0;
+    pub const ALL: u32 = TAPS | SUMS | CONSTELLATION | N0 | SUMS_CAPTURE;
     /// Bits 15–8: the LDPC decoder's iteration limit.
     pub fn ldpc_limit(f: u32) -> u32 {
         (f >> 8) & 0xFF
@@ -187,6 +199,14 @@ pub mod features {
     pub fn ldpc_step(f: u32) -> u32 {
         (f >> 16) & 0xFFF
     }
+}
+
+/// [`reg::SUMS_CAPTURE`] bits (read).
+pub mod capture {
+    /// The sums latched since the last write, and held.
+    pub const VALID: u32 = 1;
+    /// Waiting for a frame end.
+    pub const ARMED: u32 = 2;
 }
 
 /// [`reg::INIT`] bits.
@@ -425,6 +445,7 @@ mod tests {
             reg::TAPS_FROM,
             reg::SUMS_FRAME,
             reg::SUMS_COUNT,
+            reg::SUMS_CAPTURE,
         ];
         all.extend((0..TAPS).map(|k| reg::TAPS + u16::try_from(k).unwrap()));
         all.extend(Counters::registers());
