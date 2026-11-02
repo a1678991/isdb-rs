@@ -97,6 +97,7 @@ from .nominal import NominalPort, NominalRom
 from .tables import MOD_BITS, pilot_sign_rom
 
 N_LDPC = 44880
+CTX_BITS = 74
 INF = (1 << 31) - 1  # a masked metric (larger than any real one)
 LANES8 = 8  # points per fast cycle
 
@@ -330,18 +331,21 @@ class Demap(Elaboratable):
         v1 = Signal()
         z1 = [Signal(signed(16), name=f"z1_{c}") for c in range(2)]
         s1 = Signal()
-        ctx = Signal(64)
+        ctx = Signal(CTX_BITS)
         dirn = Array(Const(direction(md, rc) if 1 <= md <= 5 and 1 <= rc <= 11 else 0, 2)
                      for md in range(16) for rc in range(16))[Cat(cw_rate, cw_mod)]
         ctx_now = Cat(sym, end_cw, sym == 0, Mux(cw_set, NB[1], NB[0]), cw_mod, cw_rate, cw_slot,
-                      cw_mode, dirn, (sym % NOISE_STEP) == 0)
+                      cw_mode, dirn, (sym % NOISE_STEP) == 0, frame)
         m.d.sync += [v1.eq(a_v), z1[0].eq(self.z[0]), z1[1].eq(self.z[1]), s1.eq(cw_set), ctx.eq(ctx_now)]
         # the context word: sym 0-15, last 16, first 17, bits 18-20, mod 21-24,
-        # rate 25-28, slot 29-35, mode 36-38, direction 39-40, noise 41
+        # rate 25-28, slot 29-35, mode 36-38, direction 39-40, noise 41, the
+        # codeword's frame 42-73 (the tag's: `frame` itself moves on at the
+        # next frame's start, which can come before a frame's last beats
+        # leave)
         cp = [ctx]
         vp = [v1]
         for d in range(2, 10):
-            nc = Signal(64, name=f"ctx{d}")
+            nc = Signal(CTX_BITS, name=f"ctx{d}")
             nv = Signal(name=f"v{d}")
             m.d.sync += [nc.eq(cp[-1]), nv.eq(vp[-1])]
             cp.append(nc)
@@ -534,7 +538,7 @@ class Demap(Elaboratable):
         crows = Array(Const(c * (N_LDPC // b) if 1 <= b <= 5 and c < b else 0, 16)
                       for b in range(8) for c in range(8))
         m.d.sync += [self.o_valid.eq(v9), self.o_n.eq(nb9), self.o_last.eq(ctx9[16]), self.o_first.eq(ctx9[17]),
-                     self.o_tag.eq(Cat(slot9, Const(0, 1), rate9, mod9, mode9, Const(0, 13), frame)),
+                     self.o_tag.eq(Cat(slot9, Const(0, 1), rate9, mod9, mode9, Const(0, 13), ctx9[42:74])),
                      self.o_rate.eq(rate9)]
         for b in range(5):
             # label bit b (MSB first) is LSB position bits - 1 - b
