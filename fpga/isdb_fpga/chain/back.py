@@ -106,7 +106,7 @@ class Back(Elaboratable):
             tm.grant.eq(~use_dm & tm.b_valid & p.in_ready),
             p.in_ctx.eq(~use_dm),
             p.in_op.eq(Mux(use_dm, OP_WRITE, tm.b_op)),
-            p.in_n.eq(Mux(use_dm, dm.o_n, 1)),
+            p.in_n.eq(Mux(use_dm, dm.o_n, tm.b_n)),
             p.in_first.eq(use_dm & dm.o_first),
             p.in_last.eq(use_dm & dm.o_last),
             p.in_tag.eq(Mux(use_dm, dm.o_tag, tm.b_tag)),
@@ -117,8 +117,8 @@ class Back(Elaboratable):
         ]
         for k in range(5):
             m.d.comb += [
-                p.in_pos[k].eq(Mux(use_dm, dm.o_pos[k], tm.b_pos if k == 0 else 0)),
-                p.in_llr[k].eq(Mux(use_dm, dm.o_llr[k], tm.b_llr if k == 0 else 0)),
+                p.in_pos[k].eq(Mux(use_dm, dm.o_pos[k], tm.b_pos[k] if k < len(tm.b_pos) else 0)),
+                p.in_llr[k].eq(Mux(use_dm, dm.o_llr[k], tm.b_llr[k] if k < len(tm.b_llr) else 0)),
             ]
         with m.If(use_dm & ~p.in_ready):
             m.d.sync += self.port_lost.eq(self.port_lost + 1)

@@ -25,6 +25,18 @@ Timing (cycles of the decoder's clock f):
   the output stream (n / 16 words) of the codeword before it, and its
   bank is freed when its own stream ends; the engine is held until its
   result can leave (ldpc.py's DRAIN).
+
+`finish_hz` (the chain's symbol clock, 40 MHz; None: the decoder's own
+rate, the first model): the stream leaves at one 16-bit word per symbol
+clock (the bridge's FIFO into the chain's finish stage, which takes one
+per clock), and the next codeword's stream waits until the finish stage
+has sent the slot's block (`FINISH_FORMAT` symbol clocks: the BCH check,
+the 3 header words and 2 clocks per payload word for 93/120, up to three
+dummy blocks), so a bank is held about 7 200 symbol clocks longer than
+the decoder's own output time. The TMCC burst then also runs at the
+chain's pace: four values per beat on the port cycles the demapper leaves
+(tmcc.py), 18.5 % of the symbol clock at the front end's 33.76 Msymbol/s
+(`CHAIN_FREE`): 1.07 ms, 3.9 slots.
 """
 
 import math
@@ -37,6 +49,9 @@ TMCC_SENT = 31_680
 WRITE_LATENCY = 8
 DECIDE = 12
 DRAIN = 40  # the write pipeline's drain and the result's hand-over, about
+FINISH_FORMAT = 20 + 3 + 2 * 2174 + 9  # finish.py, a 93/120 slot block
+BURST_LANES = 4  # tmcc.py: TMCC values per port beat
+CHAIN_FREE = 1 - 33.7561e6 / 40e6 * 8976 / 9296  # the port cycles the demapper leaves
 
 
 def passes_cycles(rate, s_units=34, tables=None):
@@ -61,7 +76,7 @@ def measured_frame(seed=1, long_at=(17, 61, 103), long_iter=16):
 
 
 def run(frames, banks=3, limit=16, rate=93, s_units=34, clock_hz=200e6, tmcc="staged",
-        tmcc_iter=2, cycles=None, tmcc_cycles=None):
+        tmcc_iter=2, cycles=None, tmcc_cycles=None, finish_hz=None):
     """Simulate `frames` (a list of frames, each a list of 120 slot
     codewords' iteration counts; a count above `limit` means not
     converged at the limit). Returns {"records": [(frame, "slot" s |
@@ -72,11 +87,17 @@ def run(frames, banks=3, limit=16, rate=93, s_units=34, clock_hz=200e6, tmcc="st
     T = F / SLOTS
     n = ldpcmodel.N
     out_cycles = math.ceil(n / 16) + 8
+    out_gap = 0.0
+    if finish_hz:
+        out_cycles = (math.ceil(n / 16) + 8) * clock_hz / finish_hz
+        out_gap = FINISH_FORMAT * clock_hz / finish_hz
     cpp = cycles or passes_cycles(rate, s_units)
     cpp_t = tmcc_cycles or passes_cycles(61, s_units)
     fill_t = math.ceil(ldpcmodel.TMCC_SHORT[0] / s_units) + math.ceil(
         (ldpcmodel.GROUP * 61 - sum(ldpcmodel.TMCC_SHORT)) / s_units)
     burst = TMCC_SENT / (1 - SLOTS * n * (1 / FRAME_S) / clock_hz)
+    if finish_hz:
+        burst = TMCC_SENT / BURST_LANES / (CHAIN_FREE * finish_hz) * clock_hz
     cws = []  # (begin, commit, decode cycles, label)
     for fi, frame in enumerate(frames):
         t0 = fi * F
@@ -111,9 +132,9 @@ def run(frames, banks=3, limit=16, rate=93, s_units=34, clock_hz=200e6, tmcc="st
             start = max(cws[i][1], engine)
             end = start + cws[i][2]
             leave = max(end, out_free)
-            out_free = leave + out_cycles
+            free_at[i] = leave + out_cycles
+            out_free = leave + out_cycles + out_gap
             engine = leave
-            free_at[i] = out_free
 
     busy = 0.0
     for i in by_begin:

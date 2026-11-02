@@ -783,6 +783,16 @@ class LdpcQueueModelTest(unittest.TestCase):
         self.assertEqual(r["overruns"], 0)
         self.assertLess(r["passes"], ldpcqueue.budget(93, 34) / 2)
 
+    def test_the_chain_pace_and_the_decoder_clock(self):
+        # the result stream at the chain's pace (one word per 40 MHz symbol
+        # clock, the finish stage's block between codewords) and the TMCC
+        # burst on the port cycles the demapper leaves (fit, 2026-11-02): the
+        # measured distribution still fits K = 3 at 200 MHz, not at 160 MHz
+        # (the 4x symbol clock), which is why the decoder keeps its own clock
+        frame = ldpcqueue.measured_frame()
+        self.assertEqual(self.run_frames([frame] * 3, banks=3, finish_hz=40e6)["overruns"], 0)
+        self.assertGreater(self.run_frames([frame] * 3, banks=3, finish_hz=40e6, clock_hz=160e6)["overruns"], 0)
+
     def test_all_at_the_limit_overruns_and_is_counted(self):
         r = self.run_frames([[ldpc.DEFAULT_MAX_ITER + 1] * 120] * 2, banks=3)
         self.assertGreater(r["overruns"], 60)

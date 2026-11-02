@@ -18,19 +18,24 @@ Contract: `isdbs3_phy::chain::tmcc` and the module docs of
 `TmccSoft` (the input side):
 
 - **Staging buffer**: 31 680 x 8 bits (the sent positions in the model's
-  TMCC order, one RAM of 7 RAMB36), written at TMCC symbol b of the open
-  frame (the eq's output, `t_*`).
+  TMCC order) in four lanes (bit b in lane b mod 4, word b div 4: 7 920 x 8
+  each, two RAMB36 per lane, 8 in all), written at TMCC symbol b of the
+  open frame (the eq's output, `t_*`).
 - **Burst**: when the frame ends whole (`frame_done`), OP_BEGIN on context
-  1, then the 31 680 values in order b = 0 .. 31 679 (position
-  `tmcc_position(b)`, one per beat, `in_n` = 1), then OP_DONE (rate 61,
-  shortened, tag TMCC | frame). The port is shared with the demapper cycle
-  by cycle (`grant`: the demapper has priority; the burst takes the cycles
-  it leaves, at least the 320 sync, pilot and TMCC positions of every
-  slot, so the 31 680 beats need at most 99 of the next frame's slots).
+  1, then the 31 680 values in order b = 0 .. 31 679, four per beat
+  (`b_n` = 4, positions `tmcc_position(b)`: one word of the four lanes),
+  then OP_DONE (rate 61, shortened, tag TMCC | frame). The port is shared
+  with the demapper cycle by cycle (`grant`: the demapper has priority;
+  the burst takes the cycles it leaves): at the front end's 33.76 Msymbol/s
+  in the 40 MHz clock about 18 % of the cycles are free, so the 7 920 beats
+  take about 1.1 ms (3.9 slots; one value per beat took 15.6 slots, and
+  the TMCC codeword holds a decoder bank from its first value: the queue
+  model's three slots assume four per beat); at one symbol per clock only
+  the 320 sync, pilot and TMCC positions of each slot are free: 25 slots.
 - **No overtaking**: the next frame's TMCC writes start at its slot 0,
-  position 192 and advance 4 per 140 positions; the burst has read 56
+  position 192 and advance 4 per 140 positions; the burst has read 4 x 56
   values by then (positions 0 .. 55 leave the port free) and reads at
-  least 4 per 140 positions after, so the writer never reaches an unread
+  least 16 per 140 positions after, so the writer never reaches an unread
   value. `overrun` counts it if it ever did (status).
 - Latency is free: the lag-2 rule needs frame N's layout only for frame
   N + 2.
@@ -59,6 +64,7 @@ TMCC_DATA = 9614
 NULL_HEAD = 1870
 NULL_TAIL = 11330
 TMCC_RATE = 61
+BURST_LANES = 4  # TMCC values per burst beat
 
 
 class TmccSoft(Elaboratable):
@@ -75,8 +81,9 @@ class TmccSoft(Elaboratable):
         # the shared decoder port (request side)
         self.b_valid = Signal()
         self.b_op = Signal(2)
-        self.b_pos = Signal(16)
-        self.b_llr = Signal(signed(8))
+        self.b_n = Signal(3)
+        self.b_pos = [Signal(16, name=f"b_pos{k}") for k in range(BURST_LANES)]
+        self.b_llr = [Signal(signed(8), name=f"b_llr{k}") for k in range(BURST_LANES)]
         self.b_tag = Signal(64)
         self.grant = Signal()  # the beat is taken this cycle
         self.overrun = Signal(16)
@@ -88,19 +95,23 @@ class TmccSoft(Elaboratable):
 
     def elaborate(self, platform):
         m = Module()
-        mem = Memory(
-            shape=signed(8), depth=TMCC_BITS, init=[])
-        m.submodules.stage = mem
-        wp = mem.write_port()
-        rp = mem.read_port()
+        L = BURST_LANES
+        words = TMCC_BITS // L
+        lanes = []
+        for la in range(L):
+            mem = Memory(shape=signed(8), depth=words, init=[])
+            m.submodules[f"stage{la}"] = mem
+            lanes.append((mem.write_port(), mem.read_port()))
         zi, zq = self.t_z
         s = Mux(self.t_odd, zq - zi, zi + zq)
         soft = Signal(signed(8))
         m.d.comb += soft.eq(sat127(round_shift(s, TMCC_SHIFT)))
-        m.d.comb += [wp.addr.eq(Mux(self.t_valid, self.t_idx, 0)), wp.data.eq(soft), wp.en.eq(self.t_valid)]
+        for la, (wp, _rp) in enumerate(lanes):
+            m.d.comb += [wp.addr.eq(Mux(self.t_valid, self.t_idx[2:], 0)), wp.data.eq(soft),
+                         wp.en.eq(self.t_valid & (self.t_idx[:2] == la))]
         m.d.sync += [self.s_valid.eq(self.t_valid), self.s_idx.eq(self.t_idx), self.s_soft.eq(soft)]
 
-        r = Signal(15)
+        r = Signal(13)  # the word
         fr = Signal(32)
         take = self.grant
         with m.FSM(name="burst") as fsm:
@@ -113,14 +124,14 @@ class TmccSoft(Elaboratable):
                 with m.If(take):
                     m.next = "WRITE"
             with m.State("WRITE"):
-                m.d.comb += [
-                    self.b_valid.eq(1), self.b_op.eq(OP_WRITE),
-                    self.b_pos.eq(r + Mux(r < TMCC_DATA, NULL_HEAD, NULL_HEAD + NULL_TAIL)),
-                    self.b_llr.eq(rp.data),
-                ]
+                m.d.comb += [self.b_valid.eq(1), self.b_op.eq(OP_WRITE), self.b_n.eq(L)]
+                for la, (_wp, rp) in enumerate(lanes):
+                    b = Cat(Const(la, 2), r)
+                    m.d.comb += [self.b_pos[la].eq(b + Mux(b < TMCC_DATA, NULL_HEAD, NULL_HEAD + NULL_TAIL)),
+                                 self.b_llr[la].eq(rp.data)]
                 with m.If(take):
                     m.d.sync += r.eq(r + 1)
-                    with m.If(r == TMCC_BITS - 1):
+                    with m.If(r == words - 1):
                         m.next = "DONE"
             with m.State("DONE"):
                 m.d.comb += [self.b_valid.eq(1), self.b_op.eq(OP_DONE)]
@@ -129,11 +140,12 @@ class TmccSoft(Elaboratable):
                     m.next = "IDLE"
         m.d.comb += [
             self.b_tag.eq(Cat(Const(TAG_TMCC | TMCC_RATE_CODE << 8, 32), fr)),
-            rp.addr.eq(Mux(fsm.ongoing("WRITE"), Mux(take & (r != TMCC_BITS - 1), r + 1, r), 0)),
-            rp.en.eq(1),
         ]
+        for _wp, rp in lanes:
+            m.d.comb += [rp.addr.eq(Mux(fsm.ongoing("WRITE"), Mux(take & (r != words - 1), r + 1, r), 0)),
+                         rp.en.eq(1)]
         # the writer must never reach a value the burst has not read
-        with m.If(self.t_valid & fsm.ongoing("WRITE") & (self.t_idx >= r)):
+        with m.If(self.t_valid & fsm.ongoing("WRITE") & (self.t_idx >= Cat(Const(0, 2), r))):
             m.d.sync += self.overrun.eq(self.overrun + 1)
         return m
 
