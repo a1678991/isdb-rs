@@ -228,6 +228,13 @@ dir = "fpga"
 env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
 run = "uv run --locked python synth/verilog.py build/vec-2-s3-t32.json 32 build/isdb_symbols_rx.v"
 
+[tasks."fpga:slots-verilog"]
+description = "Verilog of the ISDB-S3 receive block (front end, chain, LDPC decoder, its MMCM) for a vendor flow (fpga/build/isdb_slots_rx.v; constraints fpga/tezuka/isdb_slots.xdc)"
+depends = ["fpga:vectors"]
+dir = "fpga"
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
+run = "uv run --locked python synth/verilog.py build/vec-2-s3-t32.json 32 build/isdb_slots_rx.v --slots"
+
 [tasks."fpga:tx-verilog"]
 description = "Verilog of the transmit block, the Rust model's default bank (ISDB-S, 40 Msps, 10 dB) as BRAM init (fpga/build/isdb_symbols_tx.v)"
 depends = ["fpga:vectors"]

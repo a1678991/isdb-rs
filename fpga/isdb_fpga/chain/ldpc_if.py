@@ -100,7 +100,8 @@ class LdpcBridge(Elaboratable):
     """The chain's port (`LdpcPort`, sync domain = the 40 MHz symbol clock)
     to the decoder's ports (`isdb_fpga/ldpc.py`, domain `ldpc`, 200 MHz):
 
-    - **in**: an AsyncFIFO of beats (IN_DEPTH = 512 beats of up to 5 LLRs)
+    - **in**: an AsyncFIFO of beats (IN_DEPTH = 64 beats of up to 5 LLRs,
+      211 bits: LUT RAM; 512 took three RAMB36)
       into the decoder's domain, where a serialiser pops a beat and gives
       the decoder one LLR per cycle (`in_valid`, `in_pos`, `in_llr`,
       `in_rate` = the rate index, `in_ctx`), with `begin` on the cycle of a
@@ -114,8 +115,11 @@ class LdpcBridge(Elaboratable):
       with 3.4 % non-main positions makes 163 M LLR/s for 32APSK, 130 M
       for 16APSK (the decoder's 0.81 share), plus the TMCC's 31 680 per
       frame (1 M/s): the FIFO absorbs only the bursts of a stream that
-      momentarily runs at one symbol per clock. A beat written while the
-      FIFO is full is counted (`in_lost`; never in a simulation here).
+      momentarily runs at one symbol per clock (a beat of n LLRs takes n + 1
+      decoder cycles, 6 for 32APSK against the 5 of a symbol clock: after a
+      100-cycle hold of stage 1 the backlog grows by about 17 beats). A beat
+      written while the FIFO is full is counted (`in_lost`; never in a
+      simulation here).
     - **tags**: the decoder returns results in commit order without a tag;
       each `start` pushes its tag into a FIFO (TAG_DEPTH = 16, beyond the
       decoder's queue and its banks) that each `res_valid` pops.
@@ -127,7 +131,7 @@ class LdpcBridge(Elaboratable):
       a `res_valid` (one cycle, no handshake) always has a place.
     """
 
-    IN_DEPTH = 512
+    IN_DEPTH = 64
     OUT_DEPTH = 64
     TAG_DEPTH = 16
 

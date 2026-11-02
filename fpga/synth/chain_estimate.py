@@ -8,7 +8,9 @@ Stages: sync (SyncFront: NCO, slot sync, carrier loop), phase (SlotPhase),
 eq (Equaliser + FrameCtl), tmcc (TmccSoft), demap (Demap), finish (Finish:
 TmccResult, the BCH unit, the PRBS, the packer, the status source); chain
 (SlotsChain, all of them) only when named: abc9 in YoWASP's 32-bit
-WebAssembly runs out of memory on it. Writes
+WebAssembly runs out of memory on it; back (Back: eq, FrameCtl, TMCC soft
+bits, demapper with their shared ROM), bridge (LdpcBridge and SlotsRx's
+input FIFO), rx (SlotsRx without the decoder) likewise only when named. Writes
 build/chain_<stage>.il / .stat and prints one line per stage.
 """
 
@@ -124,8 +126,62 @@ def blocks():
                    p.in_last, p.in_rate, p.in_tag, p.out_valid, p.out_ready, p.out_head, p.out_tag,
                    p.out_iterations, p.out_converged, p.out_bits, p.out_last]
 
+    def back():
+        # equaliser, FrameCtl, TMCC soft bits, demapper and the port arbiter
+        # with their shared nominal-point ROM (the eq and demap rows each
+        # count their own)
+        from isdb_fpga.chain.back import Back
+
+        d = Back()
+        p = d.port
+        e = d.eq
+        return d, [e.i_valid, *e.i_y, e.i_meta, d.restart, e.tap_we, e.tap_idx, *e.tap_val, e.tap_now,
+                   e.tap_arm, e.tap_at, e.tap_from_in, e.rd_req, e.rd_addr, e.rd_data, e.rd_ack,
+                   d.fc.lw_en, d.fc.lw_slot, d.fc.lw_data, d.fc.lw_commit, d.fc.lw_frame, d.fc.lw_from,
+                   p.in_valid, p.in_ready, p.in_op, p.in_ctx, p.in_n, *p.in_pos, *p.in_llr, p.in_first,
+                   p.in_last, p.in_rate, p.in_tag, p.in_max_iter, p.in_offset, p.in_shortened,
+                   d.demap.st_addr, d.demap.st_data, d.port_lost]
+
+    def bridge():
+        # the decoder bridge and SlotsRx's 1 024-symbol input FIFO
+        from amaranth.hdl import Elaboratable, Module
+        from amaranth.lib.fifo import SyncFIFOBuffered
+
+        from isdb_fpga.chain.ldpc_if import LdpcBridge, LdpcPort
+
+        class Glue(Elaboratable):
+            def __init__(self):
+                self.port = LdpcPort()
+                self.br = LdpcBridge(self.port)
+                self.fifo = SyncFIFOBuffered(width=12, depth=1024)
+
+            def elaborate(self, platform):
+                m = Module()
+                m.submodules.br = self.br
+                m.submodules.fifo = self.fifo
+                return m
+
+        d = Glue()
+        p, b, f = d.port, d.br, d.fifo
+        return d, [p.in_valid, p.in_op, p.in_ctx, p.in_n, *p.in_pos, *p.in_llr, p.in_first, p.in_last,
+                   p.in_rate, p.in_tag, p.in_max_iter, p.in_offset, p.in_shortened, p.out_valid,
+                   p.out_ready, p.out_head, p.out_tag, p.out_iterations, p.out_converged, p.out_bits,
+                   p.out_last, b.begin, b.d_ctx, b.d_valid, b.d_pos, b.d_llr, b.d_rate, b.start,
+                   b.st_rate, b.st_max_iter, b.st_offset, b.st_short, b.o_valid, b.o_data, b.o_last,
+                   b.o_ready, b.res_valid, b.res_iterations, b.res_converged, b.res_overrun, b.out_overrun,
+                   b.in_lost, f.w_en, f.w_data, f.r_en, f.r_data, f.r_rdy]
+
+    def rx():
+        # SlotsRx without the decoder (its ports out): front end, control,
+        # FIFO, chain, bridge, registers
+        from isdb_fpga.chain.common import cos_table
+        from isdb_fpga.chain.top import SlotsRx
+
+        d = SlotsRx(32, cos_table(), decoder=False)
+        return d, d.ports()
+
     return {"sync": sync, "phase": phase, "eq": eq, "tmcc": tmcc, "demap": demap, "finish": finish,
-            "chain": chain}
+            "back": back, "bridge": bridge, "chain": chain, "rx": rx}
 
 
 def stat(dut, ports, tag):
@@ -165,7 +221,7 @@ def stat(dut, ports, tag):
 def main(argv):
     # `chain` (the whole SlotsChain) is not in the default list: YoWASP
     # Yosys's abc9 runs out of the 4 GB WebAssembly memory on it
-    names = argv[1:] or [n for n in blocks() if n != "chain"]
+    names = argv[1:] or [n for n in blocks() if n not in ("chain", "back", "rx")]
     bl = blocks()
     for n in names:
         dut, ports = bl[n]()

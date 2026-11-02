@@ -244,6 +244,73 @@ class ChainTest(unittest.TestCase):
         self.run_chain(None)
 
 
+REAL = os.environ.get("FPGA_CHAIN_REAL") == "1"
+
+
+@needs("7-hdl")
+@needs("3-eq")
+class RealDecoderChainTest(unittest.TestCase):
+    """The whole chain with the real LDPC decoder (`ldpc.LdpcDecoder`, S =
+    34, K = 3, through `LdpcBridge`, its 200 MHz domain at 5x the symbol
+    clock) on the sets written with its settings (layered 34, limit 16,
+    offset 1), the input at the front end's 33.76 Msymbol/s: every block of
+    the model's stream, compared per (frame, kind, slot) (the decoder's
+    commit order puts a frame's TMCC and status after the next frame's
+    first slot blocks; the host re-associates them). The compiled backend,
+    opt-in (FPGA_CHAIN_REAL=1): the decoder's C++ is about 10 MB and takes
+    several minutes to compile, the runs tens of minutes (README)."""
+
+    def run_set(self, name, taps):
+        from isdb_fpga.chain.stages import run_chain_real
+
+        what, bad = run_chain_real(doc(name), taps, "cxxrtl")
+        self.assertEqual(bad, [], "\n".join(bad[:8]))
+        return what
+
+    @cxx
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    def test_chain7(self):
+        self.run_set("7-hdl", doc("3-eq")["taps"])
+
+    @cxx
+    @needs("8-loss")
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    def test_block_loss(self):
+        self.run_set("8-loss", None)
+
+    @cxx
+    @needs("9-fade")
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    def test_signal_removed(self):
+        self.run_set("9-fade", None)
+
+
+@needs("8-loss")
+@needs("9-fade")
+class LossChainTest(unittest.TestCase):
+    """The whole chain (the LDPC stub) through a block loss (chain-8: the
+    chain restarts, `Chain::loss`, and decodes the frames after it) and the
+    signal removed for 0.3 frame (chain-9: the slot sync is lost and
+    regained), every Slots word against the model's. The compiled backend,
+    with FPGA_CHAIN_FULL=1 (6.7 M symbols each)."""
+
+    def run_set(self, name):
+        from isdb_fpga.chain.stages import run_chain
+
+        what, bad = run_chain(doc(name), None, "cxxrtl")
+        self.assertEqual(bad, [], "\n".join(bad[:8]))
+
+    @cxx
+    @unittest.skipUnless(FULL, "FPGA_CHAIN_FULL=1")
+    def test_block_loss(self):
+        self.run_set("8-loss")
+
+    @cxx
+    @unittest.skipUnless(FULL, "FPGA_CHAIN_FULL=1")
+    def test_signal_removed(self):
+        self.run_set("9-fade")
+
+
 class FinishBench(Elaboratable):
     """`Finish` fed one record per accepted cycle: kind 0 a frame (a:
     frame, b: decoded), 1 a result header (a, b: the tag's low and high

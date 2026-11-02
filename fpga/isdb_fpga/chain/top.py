@@ -49,7 +49,7 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | 0x408 / 0x409 / 0x40A / 0x40B | N0, LLR_SCALE, LEARNED_FROM, CONST_MASK (ro): n0, K, the frame they were learned on, the learned modulations, in force |
 | 0x40C | MAX_ITER (8 bits, reset 16): the LDPC iteration limit each codeword is committed with |
 | 0x40D | AGC: the input AGC gain reported in the status (Q6.10) |
-| 0x410 + k | TAPS, k < 11: written (re \| im << 16, Q2.14), the pending taps; read, the taps in use |
+| 0x410 + k | TAPS, k < 11: written (re + (im << 16), Q2.14), the pending taps; read, the taps in use |
 | 0x41B | TAPS_FROM: written after TAPS, the frame N they were solved from: in use from frame N + 2 (the model's EQ_APPLY_FRAMES); read, the frame of the taps in use |
 | 0x420 / 0x421 | SUMS_FRAME / SUMS_COUNT (ro) |
 | 0x430 .. 0x437 | COUNTERS (ro): frames, undecoded, TMCC failed, slots, LDPC failed, BCH failed, iterations low, high |
