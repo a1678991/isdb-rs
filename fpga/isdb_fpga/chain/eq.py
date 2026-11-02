@@ -77,7 +77,12 @@ def entries():
 
 
 class Equaliser(Elaboratable):
-    def __init__(self):
+    def __init__(self, aux=0):
+        """`aux`: bits of a record the caller attaches to the centre symbol
+        (`c_aux`, at the centre cycle) and gets back with its output
+        (`o_aux`): the back end's routing of the symbol."""
+        self.aux = aux
+        self.c_aux = Signal(max(aux, 1))
         self.i_valid = Signal()
         self.i_y = [Signal(signed(16), name=f"i_y{k}") for k in range(2)]
         self.i_meta = Signal(META_BITS)
@@ -121,6 +126,7 @@ class Equaliser(Elaboratable):
         self.o_valid = Signal()
         self.o_z = [Signal(signed(16), name=f"o_z{k}") for k in range(2)]
         self.o_meta = Signal(META_BITS)
+        self.o_aux = Signal(max(aux, 1))
 
     def meta_field(self, sig, name):
         o = 0
@@ -221,13 +227,14 @@ class Equaliser(Elaboratable):
         sre, depth = tree(prods["re"], "fre")
         sim_, _ = tree(prods["im"], "fim")
         vpipe = Signal(depth + 1)
-        mpipe = [Signal(META_BITS, name=f"mpipe{k}") for k in range(depth + 1)]
+        mpipe = [Signal(META_BITS + self.aux, name=f"mpipe{k}") for k in range(depth + 1)]
         m.d.sync += vpipe.eq(Cat(cv, vpipe[:-1]))
-        m.d.sync += mpipe[0].eq(self.c_meta)
+        m.d.sync += mpipe[0].eq(Cat(self.c_meta, self.c_aux))
         m.d.sync += [mpipe[k].eq(mpipe[k - 1]) for k in range(1, depth + 1)]
         m.d.sync += [
             self.o_valid.eq(vpipe[-1]),
-            self.o_meta.eq(mpipe[-1]),
+            self.o_meta.eq(mpipe[-1][:META_BITS]),
+            self.o_aux.eq(mpipe[-1][META_BITS:]),
             self.o_z[0].eq(sat16(round_shift(sre, TAP_FRAC))),
             self.o_z[1].eq(sat16(round_shift(sim_, TAP_FRAC))),
         ]

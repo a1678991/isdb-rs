@@ -414,7 +414,7 @@ def run_tmcc(doc, backend, flips=()):
     got_b = [(x[0],) if x[0] != OP_WRITE else (x[0], x[1], x[2]) for x in burst]
     bad += first_mismatch("burst", got_b, exp_b, key=lambda i, v: f"beat {i}")
     tags = {x[3] for x in burst}
-    if tags != {TAG_TMCC | (F & 0xFF) << 8}:
+    if tags != {TAG_TMCC | (F & 0xFF) << 8 | 3 << 16}:
         bad.append(f"burst tags {tags}")
     bits = doc["bits"]
     exp_o = [(sum(bits[16 * q + b] << b for b in range(16) if 16 * q + b < len(bits)),
@@ -433,6 +433,168 @@ def run_tmcc(doc, backend, flips=()):
     return what, bad
 
 
+# --- stage 6 (and 4, 5 together: the back end) -----------------------------------
+
+class BackBench(Elaboratable):
+    """`Back` (equaliser, FrameCtl, TMCC input side, demapper, the port
+    arbiter) fed as `EqBench`; the decoder port always ready."""
+
+    def __init__(self):
+        from .back import Back
+
+        self.back = Back()
+        self.i_valid = Signal()
+        self.i_ready = Signal()
+        self.kind = Signal(3)
+        self.a = Signal(signed(32))
+        self.b = Signal(signed(32))
+        self.c = Signal(signed(32))
+        self.meta = Signal(META_SMALL)
+        self.at = Signal(48)
+        self.pv = Signal()
+
+    def elaborate(self, platform):
+        m = Module()
+        m.submodules.back = bk = self.back
+        eq, fc = bk.eq, bk.fc
+        go = self.i_valid & self.i_ready
+        k = self.kind
+        p = bk.port
+        m.d.comb += [
+            self.i_ready.eq(1),
+            eq.i_valid.eq(go & (k == K_SYM)), eq.i_y[0].eq(self.a), eq.i_y[1].eq(self.b),
+            eq.i_meta.eq(Cat(self.meta, self.at)),
+            fc.lw_en.eq(go & (k == K_LAY)), fc.lw_slot.eq(self.a), fc.lw_data.eq(self.meta),
+            fc.lw_commit.eq(go & (k == K_COMMIT)), fc.lw_frame.eq(self.a), fc.lw_from.eq(self.b),
+            eq.tap_we.eq(go & (k == K_TAP)), eq.tap_idx.eq(self.a), eq.tap_val[0].eq(self.b),
+            eq.tap_val[1].eq(self.c),
+            eq.tap_now.eq(go & (k == K_TAPNOW)),
+            p.in_ready.eq(1),
+            self.pv.eq(p.in_valid & (p.in_ctx == 0)),
+        ]
+        return m
+
+    def ports(self):
+        bk = self.back
+        p, dm = bk.port, bk.demap
+        out = {
+            "i_valid": self.i_valid, "i_ready": self.i_ready, "kind": self.kind, "a": self.a,
+            "b": self.b, "c": self.c, "meta": self.meta, "at": self.at,
+            "pv": self.pv, "pn": p.in_n, "pf": p.in_first, "pl": p.in_last, "ptag": p.in_tag,
+            "lpv": dm.lp_valid, "lpa": dm.lp_addr, "lpd": dm.lp_data,
+            "nxv": dm.nx_valid, "nxn0": dm.nx_n0, "nxk": dm.nx_k, "late": dm.late,
+            "kk": dm.kk, "tv": bk.tmcc.s_valid, "tidx": bk.tmcc.s_idx, "tsoft": bk.tmcc.s_soft,
+        }
+        for i in range(5):
+            out[f"pp{i}"] = p.in_pos[i]
+            out[f"pl{i}"] = p.in_llr[i]
+        return out
+
+
+def run_back(eqdoc, demapdoc, tmccdoc, backend, symbols=None):
+    """The back end on chain-3-eq's frame (whose equalised symbols chain-5
+    demaps): every demapped beat of the two codewords chain-5 carries in
+    full (positions and LLRs of every symbol, in label order), the beat
+    count and flags of all 96 codewords, the learned points and n0, K for
+    the next frame; and the TMCC soft bits against chain-4 (the same
+    frame). `symbols`: a prefix of the frame (then only the codewords and
+    TMCC bits it completes are compared)."""
+    F, at = eqdoc["frame"], eqdoc["at"]
+    assert demapdoc["frame"] == F == tmccdoc["frame"]
+    y = eqdoc["y"]
+    words = slot_words(eqdoc["training"])
+    recs = []
+    for i, t in enumerate(eqdoc["taps"][0::2]):
+        recs.append((K_TAP, i, t, eqdoc["taps"][2 * i + 1], 0, 0))
+    recs.append((K_TAPNOW, 0, 0, 0, 0, 0))
+    recs += [r + (0,) for r in layout_records(tmccdoc["layout"], F, F - 2)]
+    n = len(y) // 2 if symbols is None else min(len(y) // 2, symbols + 5)
+    whole = n == len(y) // 2
+    for i in range(n):
+        idx = eqdoc["y_from"] + i
+        rel = idx - at
+        if rel < 0:
+            fr, k, j = F - 1, SLOTS - 1, SLOT + rel
+        elif rel >= FRAME:
+            fr, k, j = F + 1, 0, rel - FRAME
+        else:
+            fr, k, j = F, rel // SLOT, rel % SLOT
+        w = words[k] if fr == F else (0 if k == SLOTS - 1 else 1)
+        recs.append((K_SYM, y[2 * i], y[2 * i + 1], 0,
+                     pack_meta(j=j, number=k, numbered=1, frame=fr, word=w), idx))
+    b = BackBench()
+    p = b.ports()
+    e = engine(b, p, backend, tag="chain5")
+    gp = e.group("pv", ["pn", "pf", "pl", "ptag"] + [f"pp{i}" for i in range(5)] + [f"pl{i}" for i in range(5)])
+    gl = e.group("lpv", ["lpa", "lpd"])
+    gn = e.group("nxv", ["nxn0", "nxk"])
+    gt = e.group("tv", ["tidx", "tsoft"])
+    t0 = time.time()
+    e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "meta", "at"], recs, tail=2000)
+    beats, learned, nx, tsoft = e.read(gp), e.read(gl), e.read(gn), e.read(gt)
+    late = e.get("late")
+    cyc = e.cycles()
+    dt = time.time() - t0
+    bad = []
+    by_slot = {}
+    for x in beats:
+        by_slot.setdefault(x[3] & 0x7F, []).append(x)
+    lay = {s[0]: s for s in tmccdoc["layout"]}
+    valid = [s for s in tmccdoc["layout"] if not s[4]]
+    if not whole:
+        valid = [s for s in valid if s[0] in by_slot and len(by_slot[s[0]]) == s[6]]
+    elif sorted(by_slot) != sorted(s[0] for s in valid):
+        bad.append(f"codewords of slots {sorted(by_slot)[:5]}... != the valid slots")
+    for s in valid:
+        got = by_slot.get(s[0], [])
+        if len(got) != s[6] or not got or not got[0][1] or not got[-1][2] \
+                or any(x[1] or x[2] for x in got[1:-1]):
+            bad.append(f"slot {s[0]}: {len(got)} beats (expected {s[6]}) or first/last flags wrong")
+            break
+        tag = got[0][3]
+        if (tag >> 8 & 0xFF, tag >> 16 & 0xF, tag >> 20 & 0xF, tag >> 24 & 7) != (F & 0xFF, s[3], s[2], s[1]):
+            bad.append(f"slot {s[0]}: tag {tag:#x}")
+            break
+    for sd in demapdoc["slots"]:
+        if not whole and sd["slot"] not in [s[0] for s in valid]:
+            continue
+        nb = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5}[sd["modulation"]]
+        perm, lab = sd["perm"], sd["llr_label"]
+        exp = []
+        for s_ in range(len(sd["z"]) // 2):
+            exp.append(tuple(perm[s_ * nb + q] for q in range(nb)) + tuple(lab[s_ * nb + q] for q in range(nb)))
+        got = [x[4:4 + nb] + x[9:9 + nb] for x in by_slot.get(sd["slot"], [])]
+        bad += first_mismatch(f"slot {sd['slot']} beat (positions, LLRs)", got, exp,
+                              key=lambda i, v: f"codeword symbol {i}")
+        # the de-interleaved word equals the vectors'
+        word = [None] * 44880
+        for g in got:
+            for q in range(nb):
+                word[g[q]] = g[nb + q]
+        if word != sd["llr"]:
+            bad.append(f"slot {sd['slot']}: the de-interleaved word differs")
+    exp_l = []
+    for mi, pts in enumerate(demapdoc["learned"]):
+        if pts:
+            exp_l += [(lb | mi << 5, (pts[2 * lb] & 0xFFFF) | (pts[2 * lb + 1] & 0xFFFF) << 16)
+                      for lb in range(len(pts) // 2)]
+    exp_t = list(enumerate(tmccdoc["soft"]))
+    if whole:
+        bad += first_mismatch("learned point", learned, exp_l, key=lambda i, v: f"label {v[0] & 31} of {v[0] >> 5}")
+        bad += first_mismatch("next n0, K", nx, [(demapdoc["n0_next"], demapdoc["k_next"])])
+    else:
+        exp_t = exp_t[:len(tsoft)]
+        if len(valid) == 0:
+            bad.append("the prefix completes no codeword")
+    bad += first_mismatch("TMCC soft", tsoft, exp_t, key=lambda i, v: f"bit {i}")
+    if late:
+        bad.append(f"K late on {late} symbols")
+    del lay
+    what = (f"{len(beats)} demapped beats of {len(by_slot)} codewords, {len(learned)} learned points, "
+            f"{len(tsoft)} TMCC soft bits; {cyc} cycles in {dt:.1f} s")
+    return what, bad
+
+
 def run(stage, doc, backend, symbols):
     from .sim import load
 
@@ -444,4 +606,7 @@ def run(stage, doc, backend, symbols):
         return run_eq(doc, lay, backend, symbols)
     if stage == "4-tmcc":
         return run_tmcc(doc, backend)
+    if stage == "5-demap":
+        return run_back(load(path.replace("5-demap", "3-eq")), doc, load(path.replace("5-demap", "4-tmcc")),
+                        backend, symbols)
     raise NotImplementedError(stage)

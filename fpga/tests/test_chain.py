@@ -179,6 +179,33 @@ class TmccTest(unittest.TestCase):
         self.run_stage("cxxrtl", flips=(1870, 2000, 5003, 7777, 9000, 11000, 11483))
 
 
+@needs("3-eq")
+@needs("4-tmcc")
+@needs("5-demap")
+class DemapTest(unittest.TestCase):
+    """Stage 6 (`Demap`) in the back end (`Back`: stage 4, FrameCtl, stage
+    5's input side, stage 6, the decoder port's arbiter) on chain-3-eq's
+    frame, which chain-5 demaps: every beat of the 96 codewords (count,
+    first/last, tag), the two codewords chain-5 carries in full (every
+    symbol's positions and LLRs in label order, the de-interleaved words),
+    the 16 learned points, the next frame's n0 and K, and the TMCC soft
+    bits. The Python simulator runs the frame's first 12 000 symbols (the
+    first codeword, 11 220 symbols, whole)."""
+
+    def run_stage(self, backend, symbols):
+        from isdb_fpga.chain.stages import run_back
+
+        what, bad = run_back(doc("3-eq"), doc("5-demap"), doc("4-tmcc"), backend, symbols)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
+    def test_prefix_pysim(self):
+        self.run_stage("pysim", 12_000)
+
+    @cxx
+    def test_whole_frame_cxxrtl(self):
+        self.run_stage("cxxrtl", None)
+
+
 class BchTest(unittest.TestCase):
     """The BCH unit (finish.py) against gf.decode, the Python port of
     `isdb_fec::bch::decode`: random words of the TMCC (9 614) and 93/120
