@@ -332,15 +332,15 @@ decoder: ≤ 14 000 LUT, ≤ 50 BRAM36, 0 DSP.**
 
 ### Budget for the whole chain
 
-| Stage | LUT | BRAM36 | DSP48E1 |
-|---|---|---|---|
-| sync, carrier loop, slot phase | 3 000 | 9 | 8 |
-| equaliser FIR + training sums | 2 500 | 1 | 44 (22 at 2×) |
-| TMCC soft bits, demapper, de-interleave, constellation and noise accumulators | 3 500 | 2 | 16–64 |
-| LDPC decoder (budget; **measured 2026-11-02: 14 034 LUT, 76.5 BRAM36 at S = 34, K = 3, all rates**, `fpga/README.md`) | 14 000 | 50 → 77 | 0 |
-| TMCC staging buffer (31 680 × 8, in the TMCC stage, so the decoder keeps its 3 banks for slots) | — | 7 | — |
-| dispersal, BCH, packer, registers | 3 000 | 4 | 0 |
-| **total** | **26 000** | **66 → 100** | **68–116** |
+| Stage | LUT | BRAM36 | DSP48E1 | Fit (2026-11-02, Yosys; target LUT / BRAM36 / DSP) |
+|---|---|---|---|---|
+| sync, carrier loop, slot phase | 3 000 | 9 | 8 | 3 784 + 1 540 / 5.5 + 4 / 4 + 12 (3 500 / 5.5 / 6; — / 4 / —) |
+| equaliser FIR + training sums | 2 500 | 1 | 44 (22 at 2×) | 2 322 / 3 / 15 (2 500 / 3 / 18) |
+| TMCC soft bits, demapper, de-interleave, constellation and noise accumulators | 3 500 | 2 | 16–64 | 183 + 5 047 / 8 + 2.5 / 21 (4 500 / 3 / 22 for the demapper) |
+| LDPC decoder (budget; **measured 2026-11-02: 14 034 LUT, 76.5 BRAM36 at S = 34, K = 3, all rates**, `fpga/README.md`) | 14 000 | 50 → 77 | 0 | 14 034 / 76.5 / 0 |
+| TMCC staging buffer (31 680 × 8, in the TMCC stage, so the decoder keeps its 3 banks for slots) | — | 7 | — | (in the TMCC row: 8) |
+| dispersal, BCH, packer, registers | 3 000 | 4 | 0 | 7 022 / 2 / 0 (3 500 / — / 0) |
+| **total** | **26 000** | **66 → 100** | **68–116** | chain 20 410 / 25 / 52 (one nominal ROM); + bridge, FIFO, registers: `SlotsRx` less the front end 22 074 / 25.5 / 52 (16 000 / 26 / 60) |
 
 Against 29.6k LUT / 72 BRAM36 / 62 DSP free in the deployed image, or
 35.5k / 107 / 80 in a receive-only image. **Decision (2026-11-02): the
@@ -709,6 +709,61 @@ reference, not a host fast path. Vectors: `chain-{1-sync,2-phase,3-eq,
 
 Left: `isdb rx --symbols FILE --chain fixed` (the CLI path; `chaincheck`
 does the comparison meanwhile); the model's speed; the HDL (piece 4).
+
+### Fit: the chain next to the front end and the decoder (2026-11-02)
+
+The receive-only image must hold the fixed part (≈ 17 700 LUT, 33 BRAM36,
+140 DSP: `axi_ad9361`, the front end, DMAs and clocking), the decoder
+(S = 34, K = 3: 14 034 / 76.5 / 0) and the chain: the chain's stages 1–9
+had to come to ≤ 16 000 LUT, ≤ 26 BRAM36, ≤ 60 DSP48E1 from 29 744 / 38 /
+160 (fpga/README.md, "The ISDB-S3 chain": every table and the clocking).
+
+**Clocking.** A 4× of the symbol clock (`fast`): `axi_ad9361` l_clk itself
+(160.0 MHz; the symbol clock is l_clk / 4, so the ratio and the phase hold
+by construction), clock-enable phasing (the phase from a toggle of the
+symbol clock, no FIFO), the block's l_clk paths constrained at their real
+6.25 ns (`fpga/tezuka/isdb_slots.xdc`: ADI times rx_clk at 4 ns). The
+decoder keeps 200 MHz from an MMCM on clk_fpga_0 behind the async bridge:
+the queue model with the chain's pace (`ldpcqueue.run(finish_hz=40e6)`)
+overruns 9 of 363 codewords at 160 MHz, 0 at 200 MHz, and 32APSK's
+163 M LLR/s exceeds one LLR per 160 MHz cycle. The chain is valid at
+40 Msps only.
+
+**Every stage stayed bit-exact** (the whole existing vector suite, the
+whole-chain sets): the arithmetic is the model's; what changed is when
+and on what it is computed.
+
+| Block | LUT | BRAM36 | DSP48E1 | How |
+|---|---|---|---|---|
+| demapper | 14 348 → 5 047 | 7 → 2.5 | 95 → 21 | metrics in the 4× clock, 8 points per fast cycle; per-phase minima and running minima (the max-log minimum is order-free); K products time-shared; point sets and pilot accumulators in LUT RAM; one compact nominal ROM |
+| equaliser + FrameCtl | 2 682 → 2 322 | 7.5 → 3 | 50 → 15 | 44 products on 11 DSPs in the 4× clock; the compact ROM; sign ROM in LUTs |
+| slot phase | 1 122 → 1 540 | 8 → 4 | 8 → 12 | the ring holds the NCO's 6-bit input (three per 36-bit word), the NCO re-applied after it |
+| finish / BCH | 7 301 → 7 022 | 2 → 2 | 0 | one Realign shared; the BCH roots flipped in the buffers; (+ the state a late TMCC result needs) |
+| stage 1 | 4 194 → 3 784 | 5.5 → 5.5 | 7 → 4 | FSync / SSync trees shared (C = P ± Q); the lock rule by shifts; one multiplier for the FSync sign |
+| TMCC soft bits | 134 → 183 | 8 → 8 | 0 | four values per burst beat (a fix: the burst held a decoder bank 15.6 slots, the queue model assumed 3) |
+
+**The device does not fit on LUTs yet**: fixed ≈ 17 700 + decoder 14 034 +
+`SlotsRx` less the front end 22 074 = 53 808 LUT, 101 % of 53 200; 135
+BRAM36 (96 %), 192 DSP (87 %). About 6 000 LUT more must go before the
+image (piece 6) is built: the finish stage (7 022 against its 3 500: the
+BCH unit's Berlekamp–Massey registers and index muxes, the status block's
+word mux, the packer, the layout), the demapper (5 047 against 4 500),
+stage 1 (3 784 against 3 500), `SlotsRx`'s register readback.
+
+**Integration.** The real decoder in the chain (CXXRTL, the decoder in its
+own 5× domain, the input at the front end's rate): RESULT_CHAIN7. Result
+order: the decoder's commit order puts frame N's TMCC (and its trailing
+dummies and status) after frame N + 1's first slot blocks; `Finish` keeps
+their contents the model's, nothing is buffered, the host (`isdb-cli`
+`slotrx.rs`) releases frames by frame counter within one frame (a unit
+test: the FPGA order decodes the same as the model's); the HDL's bound is
+the TMCC burst plus its decode, the next frame's first 26 slots at most
+(4 at the front end's rate), measured LATENESS. Loss and sync loss
+(chain-8-loss, chain-9-fade, decoded with the decoder's settings):
+RESULT_LOSS. `SlotsRx` takes the host's register map (three registers
+added: MAX_ITER, AGC, TMCC_OVERRUNS; the first image offers the host's
+taps and the sums, not a constellation or n0 at START, lag 2 only) and
+`mise run fpga:slots-verilog` writes its Verilog.
 
 ### Piece 5: the host path against the host receiver (2026-11-02)
 
