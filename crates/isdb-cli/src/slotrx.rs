@@ -1008,6 +1008,7 @@ pub fn run_radio(
                 "captures_rejected": l.captures_rejected,
                 "captures_rejected_by": l.captures_rejected_by,
                 "reverts": l.reverts,
+                "recoveries": l.recoveries,
                 "unverified": l.unverified,
                 "last_good_frame": l.last_good_frame,
                 "last_frame": l.last_frame,
@@ -1060,10 +1061,10 @@ pub fn run_radio(
                 l.rereads,
                 l.words_read,
                 l.torn,
-                if l.reverts + l.unverified > 0 {
+                if l.reverts + l.unverified + l.recoveries > 0 {
                     format!(
-                        "; {} written set(s) taken back on the frames under them, {} kept unverified",
-                        l.reverts, l.unverified
+                        "; {} written set(s) taken back on the frames under them, {} kept unverified, {} recover(ies) from a time without a layout",
+                        l.reverts, l.unverified, l.recoveries
                     )
                 } else {
                     String::new()
