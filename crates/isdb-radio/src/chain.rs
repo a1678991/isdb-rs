@@ -29,11 +29,26 @@
 //! SUMS_FRAME again (a different value: the latch moved during the read;
 //! tried again at the next tick). Then the solve (the caller's [`Solver`]:
 //! `isdbs3_phy::chain::eq::solve_training`, the model's `f64` solve and
-//! Q2.14 rounding), the 11 taps and TAPS_FROM (which commits them). Until
-//! the first solve, and while a capture is pending, it polls every
-//! [`SlowLoopOptions::poll`]; then every [`SlowLoopOptions::every`]. The
-//! carrier register is read every tick and reported (informational: the
-//! FPGA tracks the carrier itself).
+//! Q2.14 rounding), the [`Gate`], the 11 taps and TAPS_FROM (which commits
+//! them). Until the first solve, and while a capture is pending, it polls
+//! every [`SlowLoopOptions::poll`]; then every [`SlowLoopOptions::every`].
+//! The carrier register is read every tick and reported (informational:
+//! the FPGA tracks the carrier itself). Each read set of sums is logged at
+//! debug level (frame, count, a digest of the 308 words, the centre's
+//! power and correlation, the solved taps), so that a bad solve can be
+//! traced to its sums.
+//!
+//! **Gate**: a solve is not written (the taps in use stay; counted in
+//! [`SlowLoopReport::solves_rejected`]) when the normal equations' relative
+//! residual `‖R w − p‖ / ‖p‖` of its Q2.14 taps exceeds
+//! [`Gate::residual`] (a failed or clamped solve), or when its centre
+//! tap's magnitude differs from the last written set's by more than
+//! [`Gate::centre`] (relative) — unless the solve before it was rejected
+//! for the same reason and this one is within the bound of that one: a
+//! lasting change of the signal's level is then taken one solve later.
+//! The board's one bad solve in twelve (build 7: centre 18 691 against
+//! 17 325–17 848, every codeword of the next 81 frames failed) is 7.8 %
+//! off; the good ones moved by up to 3 %.
 
 use crate::{RadioError, Result};
 use isdb_frontend::control::chain::{
@@ -346,6 +361,88 @@ impl ChainControl {
     }
 }
 
+/// The sanity gate before taps are written (module documentation).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gate {
+    /// Largest relative change of the centre tap's magnitude from the last
+    /// written set.
+    pub centre: f64,
+    /// Largest relative residual `‖R w − p‖ / ‖p‖` of the solved taps.
+    pub residual: f64,
+}
+
+impl Default for Gate {
+    /// 5 % (0.42 dB) for the centre tap; 5 % for the residual (Q2.14
+    /// rounding leaves about 10⁻⁴).
+    fn default() -> Self {
+        Self {
+            centre: 0.05,
+            residual: 0.05,
+        }
+    }
+}
+
+/// Why a solve was not written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rejected {
+    /// The normal equations' residual is above [`Gate::residual`].
+    Residual,
+    /// The centre tap moved by more than [`Gate::centre`].
+    Centre,
+}
+
+/// The normal equations' relative residual `‖R w − p‖ / ‖p‖` of `taps`
+/// (Q2.14) on `s` (R Hermitian from its upper triangle, as the solve
+/// fills it); infinite for `p = 0`.
+pub fn residual(s: &TrainingSums, taps: &Taps) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    let c = |v: [i64; 2]| [v[0] as f64, v[1] as f64];
+    let scale = f64::from(1u32 << 14);
+    let w: Vec<[f64; 2]> = taps
+        .iter()
+        .map(|t| [f64::from(t[0]) / scale, f64::from(t[1]) / scale])
+        .collect();
+    let mul = |x: [f64; 2], y: [f64; 2]| [x[0] * y[0] - x[1] * y[1], x[0] * y[1] + x[1] * y[0]];
+    // R w over the upper triangle: entry (r, col) in row r, its conjugate
+    // in row col
+    let mut rw = [[0.0; 2]; cc::TAPS];
+    let pairs = (0..cc::TAPS).flat_map(|r| (r..cc::TAPS).map(move |col| (r, col)));
+    for (&v, (r, col)) in s.r.iter().zip(pairs) {
+        let v = c(v);
+        let x = mul(v, w[col]);
+        rw[r] = [rw[r][0] + x[0], rw[r][1] + x[1]];
+        if col != r {
+            let x = mul([v[0], -v[1]], w[r]);
+            rw[col] = [rw[col][0] + x[0], rw[col][1] + x[1]];
+        }
+    }
+    let (mut num, mut den) = (0.0, 0.0);
+    for (x, &p) in rw.iter().zip(&s.p) {
+        let b = c(p);
+        num += (x[0] - b[0]).powi(2) + (x[1] - b[1]).powi(2);
+        den += b[0] * b[0] + b[1] * b[1];
+    }
+    if den == 0.0 {
+        f64::INFINITY
+    } else {
+        (num / den).sqrt()
+    }
+}
+
+/// A 64-bit FNV-1a digest of the sum registers' words (for the log).
+pub fn digest(words: &[u32]) -> u64 {
+    words
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        })
+}
+
+fn magnitude(t: [i16; 2]) -> f64 {
+    f64::from(t[0]).hypot(f64::from(t[1]))
+}
+
 /// How the slow loop runs.
 #[derive(Debug, Clone, Copy)]
 pub struct SlowLoopOptions {
@@ -358,16 +455,20 @@ pub struct SlowLoopOptions {
     pub solve: Solver,
     /// Symbols per second, for the carrier register in Hz.
     pub symbol_rate_hz: f64,
+    /// The sanity gate (`None`: every solve is written).
+    pub gate: Option<Gate>,
 }
 
 impl SlowLoopOptions {
-    /// Every 2 s, polling every 200 ms until the first solve.
+    /// Every 2 s, polling every 200 ms until the first solve; the default
+    /// [`Gate`].
     pub fn new(solve: Solver, symbol_rate_hz: f64) -> Self {
         Self {
             every: Duration::from_secs(2),
             poll: Duration::from_millis(200),
             solve,
             symbol_rate_hz,
+            gate: Some(Gate::default()),
         }
     }
 }
@@ -394,6 +495,14 @@ pub enum Tick {
         /// The frame summed.
         frame: u32,
     },
+    /// Taps solved from `frame` not written: the [`Gate`] rejected them
+    /// (the taps in use stay).
+    Rejected {
+        /// The frame summed.
+        frame: u32,
+        /// Why.
+        why: Rejected,
+    },
 }
 
 /// The slow loop's totals, for the summary.
@@ -407,6 +516,8 @@ pub struct SlowLoopReport {
     pub singular: u64,
     /// Reads torn by the latch moving.
     pub torn: u64,
+    /// Solves the [`Gate`] rejected (not written).
+    pub solves_rejected: u64,
     /// The frame of the last taps written.
     pub last_frame: Option<u32>,
     /// The last taps written.
@@ -431,6 +542,9 @@ pub struct SlowLoop {
     capture: Option<bool>,
     /// A capture is armed and not read yet.
     armed: bool,
+    /// The centre tap's magnitude of the last solve the gate rejected for
+    /// it, if the last solve was that.
+    pending_centre: Option<f64>,
 }
 
 impl SlowLoop {
@@ -441,6 +555,7 @@ impl SlowLoop {
             report: SlowLoopReport::default(),
             capture: None,
             armed: false,
+            pending_centre: None,
         }
     }
 
@@ -549,7 +664,21 @@ impl SlowLoop {
             return Ok(Tick::Torn);
         }
         let sums = cc::sums_from_words(frame, count, &words);
-        let Some(taps) = (self.opts.solve)(&sums) else {
+        let solved = (self.opts.solve)(&sums);
+        let centre = cc::TAPS / 2;
+        let rc = cc::R_ENTRIES - (cc::TAPS - centre) * (cc::TAPS - centre + 1) / 2;
+        debug!(
+            target: "isdb::chain",
+            frame,
+            count,
+            digest = digest(&words),
+            "chain: training sums of frame {frame} ({count} symbols): digest {:016x}, R[{centre}][{centre}] {:?}, p[{centre}] {:?}; solved taps {:?}",
+            digest(&words),
+            sums.r[rc],
+            sums.p[centre],
+            solved
+        );
+        let Some(taps) = solved else {
             self.report.singular += 1;
             // the frame is not solved again; the next one may be
             self.report.last_frame = Some(frame);
@@ -561,6 +690,28 @@ impl SlowLoop {
             );
             return Ok(Tick::Singular { frame });
         };
+        if let Some(why) = self.gate(&sums, &taps) {
+            self.report.solves_rejected += 1;
+            // the frame is not solved again; the next one may be
+            self.report.last_frame = Some(frame);
+            warn!(
+                target: "isdb::chain",
+                frame,
+                count,
+                rejected = self.report.solves_rejected,
+                "chain: the taps solved from frame {frame} (centre tap {:?}, residual {:.2e}) are not written ({}); the taps in use stay",
+                taps[centre],
+                residual(&sums, &taps),
+                match why {
+                    Rejected::Residual => "the normal equations' residual is too large".to_string(),
+                    Rejected::Centre => format!(
+                        "the centre tap moved from {:?}",
+                        self.report.last_taps.map(|t| t[centre])
+                    ),
+                }
+            );
+            return Ok(Tick::Rejected { frame, why });
+        }
         let w: Vec<u32> = taps.iter().map(|&p| pack_point(p)).collect();
         c.write(port, reg::TAPS, &w)?;
         c.write(port, reg::TAPS_FROM, &[frame])?;
@@ -580,6 +731,33 @@ impl SlowLoop {
             cc::carrier_hz(carrier, self.opts.symbol_rate_hz)
         );
         Ok(Tick::Solved { frame })
+    }
+
+    /// The [`Gate`] on a solve: `None` to write it.
+    fn gate(&mut self, sums: &TrainingSums, taps: &Taps) -> Option<Rejected> {
+        let g = self.opts.gate?;
+        let r = residual(sums, taps);
+        if r.is_nan() || r > g.residual {
+            self.pending_centre = None;
+            return Some(Rejected::Residual);
+        }
+        let c = magnitude(taps[cc::TAPS / 2]);
+        let off = |from: f64| (c - from).abs() > g.centre * from;
+        let moved = self
+            .report
+            .last_taps
+            .is_some_and(|t| off(magnitude(t[cc::TAPS / 2])));
+        if !moved {
+            self.pending_centre = None;
+            return None;
+        }
+        if self.pending_centre.is_some_and(|p| !off(p)) {
+            // the second solve in a row at the new level: a lasting change
+            self.pending_centre = None;
+            return None;
+        }
+        self.pending_centre = Some(c);
+        Some(Rejected::Centre)
     }
 }
 
@@ -830,7 +1008,8 @@ pub(crate) mod tests {
         mock
     }
 
-    /// A solver that marks the frame in the centre tap.
+    /// A solver that marks the frame in the centre tap (its taps do not
+    /// solve the sums: the tests that use it run without the gate).
     fn fake_solve(s: &TrainingSums) -> Option<Taps> {
         if s.count == 0 {
             return None;
@@ -1004,7 +1183,10 @@ pub(crate) mod tests {
         m.get().gpio_out = 1;
         let mut c = ChainControl::attach("mock", &m).unwrap();
         c.open(&m, &params(), &ChainInit::default()).unwrap();
-        let opts = SlowLoopOptions::new(fake_solve, 33.7561e6);
+        let opts = SlowLoopOptions {
+            gate: None,
+            ..SlowLoopOptions::new(fake_solve, 33.7561e6)
+        };
         let mut l = SlowLoop::new(opts);
         assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::NoSums);
         assert_eq!(l.wait(Tick::NoSums), opts.poll);
@@ -1075,7 +1257,10 @@ pub(crate) mod tests {
         let m = chain();
         let mut c = ChainControl::attach("mock", &m).unwrap();
         c.open(&m, &params(), &ChainInit::default()).unwrap();
-        let opts = SlowLoopOptions::new(fake_solve, 33.7561e6);
+        let opts = SlowLoopOptions {
+            gate: None,
+            ..SlowLoopOptions::new(fake_solve, 33.7561e6)
+        };
         let mut l = SlowLoop::new(opts);
         let strobes = |m: &Mock| {
             m.get()
@@ -1108,6 +1293,151 @@ pub(crate) mod tests {
         assert_eq!(m.get().gpio_in, id_word());
     }
 
+    /// Sums whose solve is `taps`: R diagonal (2³⁰ on each tap), p = R w.
+    fn sums_for(frame: u32, taps: &Taps) -> TrainingSums {
+        let mut r = vec![[0i64; 2]; cc::R_ENTRIES];
+        let mut i = 0;
+        for row in 0..cc::TAPS {
+            r[i] = [1 << 30, 0];
+            i += cc::TAPS - row;
+        }
+        TrainingSums {
+            frame,
+            count: 6_720,
+            r,
+            p: taps
+                .iter()
+                .map(|t| [i64::from(t[0]) << 16, i64::from(t[1]) << 16])
+                .collect(),
+        }
+    }
+
+    /// Taps with the centre tap `centre` (the board's, build 7) and two
+    /// small taps beside it.
+    fn board_taps(centre: [i16; 2]) -> Taps {
+        let mut t = cc::Taps::default();
+        t[cc::TAPS / 2] = centre;
+        t[cc::TAPS / 2 + 1] = [-410, 95];
+        t[cc::TAPS / 2 - 1] = [233, -61];
+        t
+    }
+
+    /// The exact solve of [`sums_for`]'s diagonal sums (frame 575: a
+    /// clamped centre tap, as a failed solve would give).
+    fn diag_solve(s: &TrainingSums) -> Option<Taps> {
+        let mut i = 0;
+        let mut t = cc::Taps::default();
+        for (row, w) in t.iter_mut().enumerate() {
+            let d = s.r[i][0];
+            if d == 0 {
+                return None;
+            }
+            *w = [
+                i16::try_from(s.p[row][0] * (1 << 14) / d).ok()?,
+                i16::try_from(s.p[row][1] * (1 << 14) / d).ok()?,
+            ];
+            i += cc::TAPS - row;
+        }
+        if s.frame == 575 {
+            t[cc::TAPS / 2] = [i16::MAX, 0];
+        }
+        Some(t)
+    }
+
+    /// The residual: about 0 for the solve of the sums, large for other
+    /// taps; infinite for p = 0.
+    #[test]
+    fn residual_of_the_solve_and_of_other_taps() {
+        let w = board_taps([17_338, -269]);
+        let s = sums_for(5, &w);
+        assert!(residual(&s, &w) < 1e-12);
+        assert_eq!(diag_solve(&s), Some(w));
+        let off = board_taps([18_691, -285]);
+        let r = residual(&s, &off);
+        assert!((0.07..0.09).contains(&r), "{r}");
+        let mut z = s.clone();
+        z.p = vec![[0, 0]; cc::TAPS];
+        assert!(residual(&z, &w).is_infinite());
+        // an off-diagonal entry (R[4][5], upper-triangle index 39) enters
+        // rows 4 and 5
+        let mut h = s;
+        h.r[39] = [1 << 28, 1 << 27];
+        assert!(residual(&h, &w) > 0.01);
+        assert_eq!(digest(&[]), 0xcbf2_9ce4_8422_2325);
+        assert_ne!(digest(&[1, 2]), digest(&[2, 1]));
+    }
+
+    /// The gate on the board's sequence of solves (build 7): frame 250's
+    /// centre tap 18 691 against 17 325 is not written (the taps of frame
+    /// 168 stay), frame 331's 17 848 is; a lasting change of level is
+    /// written at its second solve; a clamped solve is not written. The
+    /// rejected solves are counted and not retried.
+    #[test]
+    fn slow_loop_gate() {
+        let m = Mock::new(Model::new(
+            id_word(),
+            cc::SLOTS_VERSION,
+            features::ALL & !features::SUMS_CAPTURE,
+        ));
+        m.get().gpio_out = 1;
+        let mut c = ChainControl::attach("mock", &m).unwrap();
+        c.open(&m, &params(), &ChainInit::default()).unwrap();
+        let mut l = SlowLoop::new(SlowLoopOptions::new(diag_solve, 33.7561e6));
+        use Rejected::{Centre, Residual};
+        let expect = [
+            (5, [17_338, -269], Tick::Solved { frame: 5 }, 5),
+            (87, [17_332, -271], Tick::Solved { frame: 87 }, 87),
+            (168, [17_325, -236], Tick::Solved { frame: 168 }, 168),
+            (
+                250,
+                [18_691, -285],
+                Tick::Rejected {
+                    frame: 250,
+                    why: Centre,
+                },
+                168,
+            ),
+            (331, [17_848, -197], Tick::Solved { frame: 331 }, 331),
+            (
+                413,
+                [19_000, -250],
+                Tick::Rejected {
+                    frame: 413,
+                    why: Centre,
+                },
+                331,
+            ),
+            (494, [19_100, -240], Tick::Solved { frame: 494 }, 494),
+            (
+                575,
+                [19_050, -240],
+                Tick::Rejected {
+                    frame: 575,
+                    why: Residual,
+                },
+                494,
+            ),
+            (656, [19_050, -240], Tick::Solved { frame: 656 }, 656),
+        ];
+        let mut written = std::collections::HashMap::new();
+        for (frame, centre, tick, from) in expect {
+            written.insert(frame, centre);
+            let s = sums_for(frame, &board_taps(centre));
+            m.get().sums = Some((frame, s.count, cc::sums_to_words(&s)));
+            let t = l.tick(&mut c, &m).unwrap();
+            let now = m.get().taps.map(|(t, from)| (t[cc::TAPS / 2], from));
+            assert_eq!(t, tick, "frame {frame}");
+            assert_eq!(now, Some((written[&from], from)), "frame {frame}");
+            // a rejected frame is not solved again
+            assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Same);
+        }
+        assert_eq!(
+            (l.report.solves, l.report.solves_rejected, l.report.singular),
+            (6, 3, 0)
+        );
+        assert_eq!(l.report.last_frame, Some(656));
+    }
+
     /// The timer thread: solves the latched frames as they come and stops
     /// at once on `stop`, its encoder continuing the open's toggle bit.
     #[test]
@@ -1119,6 +1449,7 @@ pub(crate) mod tests {
         let opts = SlowLoopOptions {
             every: Duration::from_millis(20),
             poll: Duration::from_millis(5),
+            gate: None,
             ..SlowLoopOptions::new(fake_solve, 33.7561e6)
         };
         let h = spawn_slow_loop("mock", Box::new(m.clone()), opts, Arc::clone(&stop)).unwrap();
