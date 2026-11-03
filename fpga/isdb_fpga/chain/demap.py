@@ -76,7 +76,12 @@ cycle:
   frame's first main symbol reaches the K product 57 symbols later at the
   earliest).
   `late` counts a K not ready in time (never on a stream with the
-  frame's 56 leading sync and pilot symbols, cycle count above).
+  frame's 56 leading sync and pilot symbols, cycle count above). The sum
+  and count clear at a frame's start or drop, except while a decoded
+  frame's end drains (its last symbol to the division's start): on a
+  stream without gaps the next frame starts in that window, a cycle after
+  the last symbol, and its start must not discard the ended frame's
+  samples (the board's n0 stayed at the default that way).
 - At a decoded frame's end the banks swap (the learned points and n0 are
   in force from the next frame); a dropped frame changes nothing.
 
@@ -171,6 +176,9 @@ class Demap(Elaboratable):
         self.prev_k = Signal(32, init=k_of(N0_DEFAULT))
         self.prev_from = Signal(32, init=0xFFFFFFFF)
         self.late = Signal(16)
+        # verification: the noise count and the noise division idle
+        self.dbg_ncnt = Signal(20)
+        self.dbg_noise_idle = Signal()
         # the next frame's (verification)
         self.nx_valid = Signal()
         self.nx_n0 = Signal(32)
@@ -707,10 +715,21 @@ class Demap(Elaboratable):
         kdiv = ndiv
         nn0 = Signal(32)
         k_pending = Signal()
+        # a decoded frame's end is draining (f_swap .. f_end): its last noise
+        # samples are still on their way (A+8), and the next frame may start
+        # meanwhile (its first symbol right after the last one on a stream
+        # without gaps), so its start must not clear the sum (the next
+        # frame's first sample is 64 symbols after its start at the earliest)
+        drain = Signal()
+        with m.If(self.f_swap):
+            m.d.sync += drain.eq(1)
+        with m.Elif(self.f_end):
+            m.d.sync += drain.eq(0)
         with m.If(a_v & k_pending):
             m.d.sync += self.late.eq(self.late + 1)
         m.d.sync += [ndiv.start.eq(0), self.nx_valid.eq(0)]
-        with m.FSM(name="noise"):
+        m.d.comb += self.dbg_ncnt.eq(ncnt)
+        with m.FSM(name="noise") as nfsm:
             with m.State("IDLE"):
                 with m.If(self.f_end):
                     m.d.sync += k_pending.eq(1)
@@ -721,7 +740,7 @@ class Demap(Elaboratable):
                         # round(S / c) = floor((2S + c) / 2c)
                         m.d.sync += [ndiv.n.eq((nsum << 1) + ncnt), ndiv.d.eq(ncnt << 1), ndiv.start.eq(1)]
                         m.next = "N0"
-                with m.Elif(self.f_start | self.f_drop):
+                with m.Elif((self.f_start | self.f_drop) & ~drain):
                     m.d.sync += [nsum.eq(0), ncnt.eq(0)]
             with m.State("N0"):
                 with m.If(ndiv.done):
@@ -739,6 +758,7 @@ class Demap(Elaboratable):
                                  self.nx_valid.eq(1), self.nx_n0.eq(nn0),
                                  self.nx_k.eq(kdiv.q[:32]), nsum.eq(0), ncnt.eq(0)]
                     m.next = "IDLE"
+        m.d.comb += self.dbg_noise_idle.eq(nfsm.ongoing("IDLE"))
         # a decoded frame's end: the learned points (ready since its last
         # slot's pilots) in force at once; n0 and K follow from the noise
         # division (f_end, 12 cycles later)
