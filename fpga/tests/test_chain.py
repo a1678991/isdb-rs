@@ -619,7 +619,9 @@ class SlotsRxRegisterTest(unittest.TestCase):
     (0x410 + 3, re | im << 16) written with WRITE_S and committed by START
     (INIT bit 0), CARRIER (0x402) written and loaded by START; the front
     end's STATUS (0x10) with bit 2 (the Slots words selected); then the
-    front end's register again."""
+    front end's register again. Issue #28: DECODER (0x439) and
+    RECLAIMED (0x43A), the decoder's health through the bridge's
+    handshake from its clock (the bridge's inputs set here: no decoder)."""
 
     def test_reads(self):
         from amaranth.hdl import ClockDomain, Module
@@ -706,15 +708,27 @@ class SlotsRxRegisterTest(unittest.TestCase):
             await cmd(OP_ADDR, 0x01)
             seen["period_again"] = await cmd(OP_READ)
             seen["id_again"] = await cmd(OP_NOP)
+            # the decoder's health (the bridge's ldpc-side inputs: no decoder here)
+            br = dut.bridge
+            for sig, v in ((br.h_overruns, 0x1234), (br.h_overflow, 1), (br.h_held, 2), (br.h_aborted, 7),
+                           (br.h_reused, 9)):
+                ctx.set(sig, v)
+            for _ in range(40):
+                await ctx.tick("sync")
+            await cmd(OP_ADDR, 0x439)
+            seen["decoder"] = await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x43A)
+            seen["reclaimed"] = await cmd(OP_READ)
 
         sim.add_testbench(bench)
         sim.run()
         ident = ID_MAGIC << 16 | FORMAT_VERSION << 12 | 32 | ID_CHAIN
         self.assertEqual(seen, {
             "id": ident, "period": 0x12345678, "version": 1, "max_iter_reset": 14, "max_iter": 33,
-            "agc": 0x0400, "features": 0b10011 | 33 << 8 | 34 << 16, "capture_idle": 0, "capture_armed": 0b10,
-            "armed": [(5, 7), (87, 89)], "tap3": 7 << 16 | 0xFFFB,
+            "agc": 0x0400, "features": 0b0110011 | 33 << 8 | 34 << 16, "capture_idle": 0,
+            "capture_armed": 0b10, "armed": [(5, 7), (87, 89)], "tap3": 7 << 16 | 0xFFFB,
             "carrier": (-1234) & 0xFFFFFFFF, "status": 0b101, "period_again": 0x12345678, "id_again": ident,
+            "decoder": 0x1234 | 1 << 16 | 2 << 20 | 3 << 24, "reclaimed": 7 | 9 << 16,
         })
 
 

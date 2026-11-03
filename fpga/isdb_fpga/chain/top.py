@@ -40,7 +40,7 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | Address | Register |
 |---|---|
 | 0x400 | VERSION (ro): the `Slots` format, 1 |
-| 0x401 | FEATURES (ro): bit 0 TAPS, bit 1 SUMS (no host constellation or n0 at START: bits 2, 3 clear), bit 4 SUMS_CAPTURE; bits 15-8 MAX_ITER, bits 27-16 the decoder's step (34) |
+| 0x401 | FEATURES (ro): bit 0 TAPS, bit 1 SUMS (no host constellation or n0 at START: bits 2, 3 clear), bit 4 SUMS_CAPTURE, bit 5 DECODER_HEALTH (DECODER and RECLAIMED below; the decoder frees abandoned banks); bits 15-8 MAX_ITER, bits 27-16 the decoder's step (34) |
 | 0x402 | CARRIER: written, loaded into the carrier register at START; read, the register in use (2^-32 turn per symbol) |
 | 0x403 | LAYOUT_LAG (ro): 2 (lag 1 is not built) |
 | 0x404 | INIT: bit 0, START puts the written taps in use (bits 1, 2 ignored: FEATURES) |
@@ -55,6 +55,8 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | 0x422 | SUMS_CAPTURE: written (any value), the next frame end latches the training sums and holds them (later frames are summed but not latched) until the next write; read, bit 0 VALID (latched and held since the write), bit 1 ARMED (waiting for a frame end). Before the first write every frame end latches |
 | 0x430 .. 0x437 | COUNTERS (ro): frames, undecoded, TMCC failed, slots, LDPC failed, BCH failed, iterations low, high |
 | 0x438 | TMCC_OVERRUNS (ro): TMCC codewords the decoder dropped (also counted as TMCC failed) |
+| 0x439 | DECODER (ro): the LDPC decoder's health (a snapshot from its clock, under 1 us old): bits 15-0 OVERRUNS (codewords it dropped for want of a free bank since configuration, slots and TMCC, wrapping), bit 16 QUEUE_OVERFLOW (sticky: a commit its result queue could not take), bits 23-20 HELD (banks allocated now: 0 while the chain is stopped and the decoder idle), bits 27-24 BANKS (K, 3) |
+| 0x43A | RECLAIMED (ro): bits 15-0 ABORTED (banks freed by the abort after a frame drop or restart), bits 31-16 REUSED (banks a codeword's begin took back from its context's abandoned codeword), since configuration, wrapping |
 | 0x500 + 4i, 0x610 + 4i | SUMS_R (i < 66), SUMS_P (i < 11): re low 32, re high 16 sign-extended, im low, im high (the read waits for the MAC unit) |
 | 0x640 .. | CONST: not built (reads 0) |
 | CTRL | the front end's bits (RUN, START, SYMBOLS) and bit 3 SLOTS (the DMA carries the `Slots` words); START also restarts the chain (the model's `Chain::loss` of 0 symbols: everything but the carrier register, the taps, the constellation and n0), loads CARRIER and, with INIT bit 0, the taps, and restarts the blocks' sequence numbers |
@@ -64,8 +66,8 @@ by START. The restart drops the slot codeword being loaded, and the back
 end then sends the decoder an abort for it (back.py), which frees its bank;
 codewords already committed decode and their blocks leave as usual (a
 stop, CTRL without SLOTS, lets them drain: the chain's output runs on, not
-selected). So after a stop and a START every bank is free, no context
-is open and the bridge's FIFOs and tag queue are empty; a
+selected). So after a stop and a START every bank is free (DECODER HELD
+0), no context is open and the bridge's FIFOs and tag queue are empty; a
 START while the chain runs may be followed by blocks of codewords
 committed before it (each carries its frame counter) and by a TMCC
 codeword whose burst had begun (it is never cut, and the layout it gives
@@ -217,12 +219,15 @@ REG_SUMS_COUNT = 0x421
 REG_SUMS_CAPTURE = 0x422
 REG_COUNTERS = 0x430
 REG_TMCC_OVERRUNS = 0x438
+REG_DECODER = 0x439
+REG_RECLAIMED = 0x43A
 REG_SUMS_R = 0x500
 REG_SUMS_P = 0x610
 SLOTS_VERSION = 1  # the Slots format (isdb_frontend::slots::SLOTS_VERSION)
 # TAPS (the host writes taps), SUMS (the training sums readable), bit 4
-# SUMS_CAPTURE (the sums held from a host-armed frame end)
-FEATURES = 0b10011
+# SUMS_CAPTURE (the sums held from a host-armed frame end), bit 5
+# DECODER_HEALTH (DECODER, RECLAIMED; abandoned banks freed)
+FEATURES = 0b0110011
 LAYOUT_LAG = 2
 EQ_APPLY_FRAMES = 2
 NONE = 0xFFFFFFFF
@@ -258,6 +263,7 @@ class SlotsRx(Elaboratable):
             self.decoder = LdpcDecoder(units)
         self.mmcm = mmcm
         self.units = units  # the decoder's step (the one built, or the one outside)
+        self.banks = self.decoder.K if self.decoder is not None else 3  # DECODER's BANKS
         self.taps = taps
         self.adc_valid = Signal()
         self.adc_i = Signal(signed(16))
@@ -283,7 +289,7 @@ class SlotsRx(Elaboratable):
             out += [b.begin, b.d_ctx, b.d_valid, b.d_pos, b.d_llr, b.d_rate, b.start, b.st_rate,
                     b.st_max_iter, b.st_offset, b.st_short, b.load_ready, b.o_valid, b.o_data, b.o_last,
                     b.o_ready, b.res_valid, b.res_iterations, b.res_converged, b.res_unsat, b.res_overrun,
-                    b.abort]
+                    b.abort, b.h_overruns, b.h_overflow, b.h_held, b.h_aborted, b.h_reused]
         return out
 
     def elaborate(self, platform):
@@ -426,6 +432,9 @@ class SlotsRx(Elaboratable):
                             REG_SUMS_COUNT: eqm.sums_count,
                             REG_SUMS_CAPTURE: Cat(eqm.cap_valid, eqm.cap_armed),
                             REG_TMCC_OVERRUNS: fin.tmcc_overruns,
+                            REG_DECODER: Cat(br.health_overruns, br.health_overflow, Const(0, 3),
+                                             br.health_held, Const(self.banks, 4)),
+                            REG_RECLAIMED: Cat(br.health_aborted, br.health_reused),
                         }
                         for i, n in enumerate(("frames", "undecoded", "tmcc_failed", "slots", "ldpc_failed",
                                                "bch_failed")):

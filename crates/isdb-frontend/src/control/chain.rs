@@ -53,6 +53,24 @@
 //! the frame N they were solved from, which commits them: the block takes
 //! them at the start of frame N + 2 (the model's rule). Reading [`reg::TAPS`] and
 //! [`reg::TAPS_FROM`] gives the taps in use.
+//!
+//! **START and the decoder** (issue #28, [`features::DECODER_HEALTH`]):
+//! START, a lost sync or a dropped frame gives up the slot codeword being
+//! loaded and the block frees its LDPC decoder bank (an abort); committed
+//! codewords decode and leave as usual. After a stop (CTRL without
+//! [`super::ctrl::SLOTS`]) and START every bank is free:
+//! [`DecoderHealth::held`] 0. Without [`init::TAPS`] START leaves the taps in
+//! use (and a set armed by [`reg::TAPS_FROM`]) as they are; with it the
+//! taps last written to [`reg::TAPS`] go in use at once. [`reg::DECODER`]
+//! and [`reg::RECLAIMED`] ([`DecoderHealth`]) show the decoder's state.
+//!
+//! **Without a layout** (TMCC not decoding: [`status::DECODING`] clear)
+//! the block still sends, per whole frame (1 115 520 symbols, 33.05 ms at
+//! 33.756 Mbaud), its TMCC block (604 words with the header and trailer)
+//! and its status block (79 words, plus 2 · 2^(m+1) for each learned
+//! modulation m, up to 203): 683 to 807 words a frame, at least 20 668
+//! words/s (a 1 Mi-word buffer fills in 50.7 s); nothing while the sync
+//! is not locked or no frame ends whole.
 
 use super::{ID_MAGIC, Identity};
 
@@ -164,6 +182,19 @@ pub mod reg {
     /// Read only: TMCC codewords the LDPC decoder dropped (its queue was
     /// full; also counted as TMCC failed).
     pub const TMCC_OVERRUNS: u16 = 0x438;
+    /// Read only ([`super::features::DECODER_HEALTH`]): the LDPC decoder's
+    /// state, a snapshot from its clock under 1 µs old: bits 15–0 its
+    /// overruns (codewords dropped for want of a free bank, slots and
+    /// TMCC, since configuration, wrapping), bit 16 its sticky queue
+    /// overflow, bits 23–20 the banks allocated now, bits 27–24 its banks
+    /// (3) ([`super::DecoderHealth`]).
+    pub const DECODER: u16 = 0x439;
+    /// Read only ([`super::features::DECODER_HEALTH`]): bits 15–0 the
+    /// decoder banks freed by the abort after a frame drop or restart,
+    /// bits 31–16 the banks a codeword's begin took back from its
+    /// context's abandoned codeword, since configuration, wrapping
+    /// ([`super::DecoderHealth`]).
+    pub const RECLAIMED: u16 = 0x43A;
     /// Read only: R's 66 upper-triangle entries ([`super::sum_registers`]).
     pub const SUMS_R: u16 = 0x500;
     /// Read only: p's 11 entries ([`super::sum_registers`]).
@@ -188,8 +219,12 @@ pub mod features {
     /// The training sums are held from a host-armed frame end
     /// ([`super::reg::SUMS_CAPTURE`]).
     pub const SUMS_CAPTURE: u32 = 16;
+    /// [`super::reg::DECODER`] and [`super::reg::RECLAIMED`] are there, and
+    /// the block frees the decoder bank of a codeword it gives up (a stop
+    /// and START leaves every bank free).
+    pub const DECODER_HEALTH: u32 = 32;
     /// Every flag this host knows.
-    pub const ALL: u32 = TAPS | SUMS | CONSTELLATION | N0 | SUMS_CAPTURE;
+    pub const ALL: u32 = TAPS | SUMS | CONSTELLATION | N0 | SUMS_CAPTURE | DECODER_HEALTH;
     /// Bits 15–8: the LDPC decoder's iteration limit.
     pub fn ldpc_limit(f: u32) -> u32 {
         (f >> 8) & 0xFF
@@ -394,6 +429,41 @@ impl Counters {
     }
 }
 
+/// The LDPC decoder's state ([`reg::DECODER`], [`reg::RECLAIMED`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DecoderHealth {
+    /// Codewords dropped for want of a free bank (wrapping).
+    pub overruns: u16,
+    /// A commit the result queue could not take (sticky).
+    pub queue_overflow: bool,
+    /// Banks allocated now (0 when the chain is stopped and idle).
+    pub held: u8,
+    /// The decoder's banks.
+    pub banks: u8,
+    /// Banks freed by the abort after a frame drop or restart (wrapping).
+    pub aborted: u16,
+    /// Banks a begin took back from an abandoned codeword (wrapping).
+    pub reused: u16,
+}
+
+impl DecoderHealth {
+    /// The registers [`DecoderHealth::from_words`] takes.
+    pub const REGISTERS: [u16; 2] = [reg::DECODER, reg::RECLAIMED];
+
+    /// From the values of [`DecoderHealth::REGISTERS`].
+    pub fn from_words(w: [u32; 2]) -> Self {
+        let field = |v: u32, at: u32, bits: u32| v >> at & ((1 << bits) - 1);
+        Self {
+            overruns: u16::try_from(field(w[0], 0, 16)).expect("16 bits"),
+            queue_overflow: field(w[0], 16, 1) != 0,
+            held: u8::try_from(field(w[0], 20, 4)).expect("4 bits"),
+            banks: u8::try_from(field(w[0], 24, 4)).expect("4 bits"),
+            aborted: u16::try_from(field(w[1], 0, 16)).expect("16 bits"),
+            reused: u16::try_from(field(w[1], 16, 16)).expect("16 bits"),
+        }
+    }
+}
+
 /// The carrier register in Hz at `symbol_rate_hz` (2⁻³² turn per symbol).
 pub fn carrier_hz(carrier: i32, symbol_rate_hz: f64) -> f64 {
     f64::from(carrier) * symbol_rate_hz / 2f64.powi(32)
@@ -442,6 +512,8 @@ mod tests {
             reg::MAX_ITER,
             reg::AGC,
             reg::TMCC_OVERRUNS,
+            reg::DECODER,
+            reg::RECLAIMED,
             reg::TAPS_FROM,
             reg::SUMS_FRAME,
             reg::SUMS_COUNT,
@@ -481,6 +553,24 @@ mod tests {
         assert_eq!(w.len(), all_sum_registers().len());
         assert_eq!(sums_from_words(7, 6_720, &w), s);
         assert_eq!(sum_value(0xFFFF_FFFF, 0xFFFF_FFFF), -1);
+    }
+
+    #[test]
+    fn the_decoder_health_parses() {
+        // the HDL's words (fpga/isdb_fpga/chain/top.py, SlotsRxRegisterTest)
+        let h = DecoderHealth::from_words([0x1234 | 1 << 16 | 2 << 20 | 3 << 24, 7 | 9 << 16]);
+        assert_eq!(
+            h,
+            DecoderHealth {
+                overruns: 0x1234,
+                queue_overflow: true,
+                held: 2,
+                banks: 3,
+                aborted: 7,
+                reused: 9,
+            }
+        );
+        assert_eq!(features::ALL, 0x3F);
     }
 
     #[test]
