@@ -15,7 +15,7 @@ board without the hardware-in-the-loop checks.
 ### What the host still does for ISDB-S3 after the front end
 
 `isdb rx --symbols` on the 40 s FPGA symbol recording of BS7
-(`~/isdb-captures/2026-10-26-fpga/bs7-fpga-40s-drift.sym`, 16APSK 93/120
+(`/path/to/captures/2026-10-26-fpga/bs7-fpga-40s-drift.sym`, 16APSK 93/120
 on all 120 slots, 3 TLV streams, 1 207 frames, 0 LDPC / BCH failures,
 mean 2.08 LDPC iterations), release build, x86-64 baseline:
 
@@ -895,7 +895,7 @@ explained off the board:
 
 ### Piece 5: the host path against the host receiver (2026-11-02)
 
-`tools/slots-vs-symbols.sh ~/isdb-captures/2026-10-26-fpga/bs7-fpga-40s-drift.sym`
+`tools/slots-vs-symbols.sh /path/to/captures/2026-10-26-fpga/bs7-fpga-40s-drift.sym`
 (release build, this host, 32 threads):
 
 | Run | Decoded by | Frames | Slots | LDPC / BCH failed | Mean iterations | TLV packets B070 / B071 / B072 | Wall | User CPU | Max RSS |
@@ -1268,7 +1268,7 @@ BRAM36, 176 DSP; `isdb_slots` 37 244 LUT, 117 BRAM36, 164 DSP.
 `f2cb47d12b6d6732497b04f57d8635b82a78e50c90122244460190b2131ff1b4` (XSA
 from `holdfix.tcl`
 `2c6028ecf3024875cf0c0d29068dd28298bdb52305b5de93fd6c7c20826d4b56`), in
-`~/dev/sdr/isdb-work/out/isdbs3-rx-build8/`.
+`/path/to/sdr/isdb-work/out/isdbs3-rx-build8/`.
 
 The bench board was unreachable for a while after this host's restart
 (04:41–13:15 JST); powered up again it had booted build 7 from the card.
@@ -1281,7 +1281,7 @@ it), build 8 as `isdbs3_rx_top.bin` (selected), build 6
 Clean boot (`cf-ad9361-lpc` at once), ID word 0x15DB4120, open line
 "features 0x220e13 (LDPC limit 14, step 34)".
 `RUST_LOG='info,isdb::chain=debug' tools/isdbs3-board-check.sh`, BS7, 30
-s; the captures on disk in `~/dev/sdr/isdbs3-bench/build8/` (not
+s; the captures on disk in `/path/to/sdr/isdbs3-bench/build8/` (not
 committed).
 
 | Run | Frames | Slots | LDPC / BCH failed | Mean iterations | MER | TLV packets B070 / B071 / B072 (lost slots) | Losses | Host CPU | Max RSS |
@@ -1466,7 +1466,7 @@ card: build 8 as `isdbs3_rx8_top.bin` (`uEnv.txt.prev-rx8`), build 9 as
 FAILED"); ID word 0x15DB4120. Every run opened with "features 0x220e73
 (LDPC limit 14, step 34); taps identity (loaded)" (bits 4 SUMS_CAPTURE,
 5 DECODER_HEALTH, 6 SUMS_SEQ). Runs with `tools/isdbs3-issue-checks.sh`
-(captures in `~/dev/sdr/isdbs3-bench/build9/`, not committed).
+(captures in `/path/to/sdr/isdbs3-bench/build9/`, not committed).
 
 **#28, stop/START (6 × 8 s back to back, then 60 s, no reboot; twice).**
 Every run completed with exit status 0 and decoded; the dropped slots

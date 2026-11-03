@@ -44,9 +44,9 @@ rustdoc clean, FPGA suite 24/24):
   entry, `uEnv.txt.prev-isdb` = the RX-only entry; `isdb_txrx_top.bin`,
   `isdb_top.bin` and `system_top.bin` still on the card). TX ID word
   0xB5D11918 on `cf-ad9361-dds-core-lpc` 0x800000B8, RX 0x15DB4020 on
-  `cf-ad9361-lpc`. Vivado 2026.1 at `/opt/Xilinx/2026.1`; the build work
-  tree is `~/dev/sdr/isdb-work` (`out/isdb/plutoskyr2.xsa`,
-  `isdb_txrx_top.bin`, reports); upstream sources at `~/dev/sdr/`.
+  `cf-ad9361-lpc`. Vivado 2026.1 at `/path/to/Xilinx/2026.1`; the build work
+  tree is `/path/to/sdr/isdb-work` (`out/isdb/plutoskyr2.xsa`,
+  `isdb_txrx_top.bin`, reports); upstream sources at `/path/to/sdr/`.
 - **2026-10-31: TX1 was disconnected from the PIX-DT295** (the user's
   word) and reconnected the same day for the bench acceptance of items 1
   and 2 (VERIFICATION.md "ISDB-S PCR-paced placement and BS SI into the
@@ -57,7 +57,7 @@ rustdoc clean, FPGA suite 24/24):
   adaptation-only packets. `tools/isdbs-bench-check.sh --placed` accounts
   for it (`--receiver dt295`, the default).
 - TX1 → 30 dB attenuator → DC block → PIX-DT295 (USB `06b8:103b`, hub
-  port `1-2.1`), driven by `~/dev/PIX-DT295` (`target/release/dt295`:
+  port `1-2.1`), driven by `/path/to/PIX-DT295` (`target/release/dt295`:
   `init [--auto]`, `tune --isdbs bs1 --tsid 4017`, `status --isdbs
   --watch N`, `stream --isdbs bs1 --tsid 4017 --raw-config --out F
   --seconds N`; STATE 0xFFFF needs `tools/power-cycle.sh 1-2 1 3` then a
@@ -200,7 +200,7 @@ rustdoc clean, FPGA suite 24/24):
    for the CSV and the §6.3 table, `-test.sh` with stubs). Bench run:
    `tools/isdbs-bench-tx.sh WORK 45 ip:<PLUTO_IP>` in its own terminal
    (its pid into a file), then `tools/isdbs-level-sweep.sh --conducted
-   --tx-pid FILE --uri ip:<PLUTO_IP> ~/dev/sdr/isdbs-bench/sweep-1`
+   --tx-pid FILE --uri ip:<PLUTO_IP> /path/to/sdr/isdbs-bench/sweep-1`
    (or `--start-tx WORK` to let the sweep start and stop it); the first
    step is also the unverified check that an `iio_attr` hardwaregain
    write while `isdb tx` streams takes effect without an underrun or
@@ -294,7 +294,7 @@ Read-only investigation of the Work list, one report per cluster under
 
 - 2026-10-31: the session scratchpad (`/tmp/claude-…`) is tmpfs: TS, IQ
   and placed-TS files cost RAM there. Bench work trees go on disk
-  (`~/dev/sdr/isdbs-bench`: `bench60.ts`, `bs-bench.toml`, recordings).
+  (`/path/to/sdr/isdbs-bench`: `bench60.ts`, `bs-bench.toml`, recordings).
 - 2026-10-31: the board booted without `cf-ad9361-lpc`; the §2 rebind
   recovery bound it on the third bind (the first two: "Tuning TX
   FAILED", probe error −5); afterwards `tx_symbols_loopback_on_a_pluto`
@@ -325,7 +325,7 @@ first, then docs/plans/isdbs-fpga-tx.md and the four "ISDB-S transmitter
 in the FPGA" sections of VERIFICATION.md). State: the FPGA transmitter is
 built, deployed on the PlutoSky R2 (ip:<PLUTO_IP>, isdb_txrx_top.bin) and
 verified bit-exact in loopback and conducted into a PIX-DT295 tuner
-(driver: ~/dev/PIX-DT295, `dt295`), which locks on the bench broadcast of
+(driver: /path/to/PIX-DT295, `dt295`), which locks on the bench broadcast of
 tools/isdbs-bench-tx.sh. The broadcast may still be running
 (`pgrep -af "isdb tx --system isdbs"`); stop it before changing anything
 on the board. The bench is conducted only: TX1 → 30 dB pad → DC block →

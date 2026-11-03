@@ -249,7 +249,7 @@ FEATURES & COUNTERS64, else the host-only extension.
 
 ## 5d. Cost, timing, register map and compatibility
 
-Last build (VERIFICATION.md L1656–1657; `~/dev/sdr/isdb-work/out/isdb/
+Last build (VERIFICATION.md L1656–1657; `/path/to/sdr/isdb-work/out/isdb/
 final_timing_isdb_util.rpt`): `isdb_symbols_tx` 2 331 LUT (core 2 150,
 control 178), 2 672 FF, 12 RAMB18, 0 DSP; image 23 470 LUT (44 %),
 158 DSP.
@@ -305,8 +305,8 @@ Result 2026-10-30: vectors regenerated (`fpga:vectors`, `fpga:tx-vectors`),
 uv run --locked python -m unittest discover -s tests -v` (needs the
 vectors in `fpga/build`).
 
-Rebuild (not run): `VIVADO_SETTINGS=/opt/Xilinx/2026.1/…/settings64.sh
-fpga/tezuka/build.sh ~/dev/sdr/isdb-work isdb` (both blocks, the deployed
+Rebuild (not run): `VIVADO_SETTINGS=/path/to/Xilinx/2026.1/…/settings64.sh
+fpga/tezuka/build.sh /path/to/sdr/isdb-work isdb` (both blocks, the deployed
 kind; `isdb-tx` is the TX-only image), ≈ 25 min; then `fpga/tezuka/
 sdbin.sh WORK/out/isdb/plutoskyr2.xsa NAME.bin`, `vivado -mode batch
 -source fpga/tezuka/timing.tcl -tclargs …/system_top_postroute_physopt.dcp`.
@@ -352,7 +352,7 @@ to PyPI, the index `uv.lock` records, unless it is already set.)".
 
 ## 6g. `worktree-agent-*` branches
 
-`git worktree list`: only `~/dev/isdb-rs 371e72b [main]`;
+`git worktree list`: only `/path/to/isdb-rs 371e72b [main]`;
 `git worktree prune --dry-run -v`: nothing; `.claude/worktrees/` empty.
 All seven are in `git branch --merged main` and `git log main..BRANCH`
 is empty:

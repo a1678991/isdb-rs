@@ -17,10 +17,10 @@
 # HOST (required: the board's address, or PLUTO_HOST), SSHPASS (required:
 # the board's root password; Tezuka keeps the ADI firmware's default).
 set -euo pipefail
-HOST=${HOST:-${PLUTO_HOST:?set HOST or PLUTO_HOST to the board's address}}
+PLUTO_HOST=${PLUTO_HOST:-${HOST:?set PLUTO_HOST or HOST to the board's address}}
 export SSHPASS=${SSHPASS:?set SSHPASS to the board's root password}
 SSH=(sshpass -e ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR
-     -o ConnectTimeout=5 "root@$HOST")
+     -o ConnectTimeout=5 "root@$PLUTO_HOST")
 SCP=(sshpass -e scp -O -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR)
 # the images that must never be overwritten
 PROTECTED="isdb_txrx2_top.bin isdb_txrx_top.bin isdb_top.bin system_top.bin tezuka_top.bin"
@@ -40,7 +40,7 @@ deploy)
     for p in $PROTECTED; do [ "$name" != "$p" ] || { echo "refusing to overwrite $p" >&2; exit 2; }; done
     on "test ! -e /boot/$name" || { echo "/boot/$name exists: refusing" >&2; exit 2; }
     on "test ! -e /boot/$save" || { echo "/boot/$save exists: refusing" >&2; exit 2; }
-    "${SCP[@]}" "$bin" "root@$HOST:/boot/$name.tmp"
+    "${SCP[@]}" "$bin" "root@$PLUTO_HOST:/boot/$name.tmp"
     local_sum=$(sha256sum "$bin" | cut -d' ' -f1)
     remote_sum=$(on "sha256sum /boot/$name.tmp" | cut -d' ' -f1)
     [ "$local_sum" = "$remote_sum" ] || { echo "sha256 mismatch after copy" >&2; on "rm -f /boot/$name.tmp"; exit 1; }

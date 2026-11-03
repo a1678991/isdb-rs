@@ -72,7 +72,7 @@
 #   --run LABEL       run label prefix in the table (s1)
 #   --margin          allow attenuations below 45 dB (an explicit overload
 #                     measurement only)
-# Environment: DT295 (default ~/dev/PIX-DT295/target/release/dt295, needs
+# Environment: DT295 (default dt295 on PATH, needs
 # `status --json`), ISDB (target/release/isdb of this checkout), IIO_ATTR
 # (iio_attr), BENCH_TX (tools/isdbs-bench-tx.sh).
 # Output: OUTDIR/sweep.csv (one row per step), OUTDIR/sweep.md (the
@@ -118,7 +118,7 @@ TP=bs1
 TSID=4017
 CHAN=voltage0
 RUN=s1
-DT295=${DT295:-$HOME/dev/PIX-DT295/target/release/dt295}
+DT295=${DT295:-dt295}
 ISDB=${ISDB:-$HERE/target/release/isdb}
 IIO_ATTR=${IIO_ATTR:-iio_attr}
 BENCH_TX=${BENCH_TX:-$HERE/tools/isdbs-bench-tx.sh}
@@ -205,7 +205,7 @@ for o in "${TX_OPTS[@]}"; do
 done
 [ -x "$DT295" ] || die "dt295 not found at $DT295 (set DT295)"
 "$DT295" status --help 2>/dev/null | grep -q -- '--json' ||
-    die "$DT295 has no 'status --json' (rebuild ~/dev/PIX-DT295 at d4ad6dc or later)"
+    die "$DT295 has no 'status --json' (rebuild your PIX-DT295 checkout at d4ad6dc or later)"
 command -v "$IIO_ATTR" >/dev/null || die "iio_attr not found (libiio tools; or set IIO_ATTR)"
 [ "$STREAM_SECS" = 0 ] || [ -x "$ISDB" ] || die "$ISDB not found (cargo build --release -p isdb-cli, or set ISDB; or --stream-secs 0)"
 [ -z "$START_TX" ] || [ -x "$BENCH_TX" ] || die "bench script $BENCH_TX not executable"

@@ -240,3 +240,22 @@ Results go to `target/oracle-matrix/<config>/` with a summary on stdout.
 The per-step commands (gr-isdbt TX → Rust RX, Rust TX → gr-isdbt RX,
 carrier comparison, rotation-numbering check) are in
 [VERIFICATION.md](../VERIFICATION.md).
+
+## Local hardware utility settings
+
+All device addresses and external checkout/capture paths in this repository
+are placeholders. Substitute your local values at execution time. Set
+`ISDB_PLUTO_URI=ip:<DEVICE_IP>` for `tools/isdbs3-board-check.sh` (its URI
+argument takes precedence). Set `PLUTO_HOST=<DEVICE_IP_OR_HOSTNAME>` for
+`tools/pluto-image.sh`; it requires this value before any board operation.
+For example, with the variables already exported locally:
+
+```sh
+tools/pluto-image.sh status
+tools/isdbs3-board-check.sh /path/to/output
+```
+
+The bench check and level sweep find `dt295` on PATH by default; set
+`DT295=/path/to/dt295` to select another binary. The bench check also accepts
+`--dt295 /path/to/dt295`. Keep actual values in your shell environment or
+ignored local configuration, rather than committing them.
