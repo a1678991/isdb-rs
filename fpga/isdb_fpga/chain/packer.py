@@ -131,8 +131,9 @@ class StatusSource(Elaboratable):
     signals by `status_layout`), in order: `next` advances, `word` is the
     current one, `last` on the last; the learned points through
     `pt_addr` / `pt_data` (the demapper's point RAM of the bank in force
-    for the frame, one cycle: the consumer reads `word` a cycle after it
-    changed)."""
+    for the frame, a registered read: `word` of a point is valid a cycle
+    after the sequencer moved, two after `next`; the finish stage reads
+    each word two cycles after its `next`)."""
 
     def __init__(self):
         self.snap = {n: Signal(w, name=f"snap_{n}") for n, w in status_layout()}

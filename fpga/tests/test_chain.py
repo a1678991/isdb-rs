@@ -430,6 +430,55 @@ class TmccOverrunTest(unittest.TestCase):
         self.assertEqual(S.unpack_bits(pay[3:], k - 198), hd)
 
 
+class StatusPointsTest(unittest.TestCase):
+    """The status block's learned points (`StatusSource` through the
+    demapper's point RAM, a registered read) in `Finish`'s pacing: with
+    16APSK learned, words 47-49 the three empty counts, 50 the count 16,
+    then each point's re and im in label order. The whole-chain sets end
+    before a status block carries learned points; on build 7's symbols
+    each point's re came out as the previous point's (the word taken in
+    the cycle the RAM's address moved)."""
+
+    def test_points_in_order(self):
+        from amaranth.lib.memory import Memory
+
+        from isdb_fpga.chain import slots as S
+
+        pts = [(100 + 3 * lb, -(200 + 5 * lb)) for lb in range(16)]
+
+        class Bench(FinishBench):
+            def elaborate(self, platform):
+                m = super().elaborate(platform)
+                st = self.fin.status
+                init = [0] * 256
+                for lb, (re, im) in enumerate(pts):
+                    init[3 << 5 | lb] = (re & 0xFFFF) | (im & 0xFFFF) << 16
+                m.submodules.pts = mem = Memory(shape=32, depth=256, init=init)
+                rp = mem.read_port()
+                m.d.comb += [rp.addr.eq(st.pt_addr), st.pt_data.eq(rp.data), st.snap["learned"].eq(1 << 3)]
+                return m
+
+        # frame 5 ends, its TMCC codeword comes back dropped: the TMCC
+        # block, then the status block
+        recs = [(0, 5, 0, 0, 0, 0), (1, 1 << 7 | 3 << 8, 5, 0, 0, 1)]
+        b = Bench()
+        f = b.fin
+        ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a, "b": b.b, "c": b.c,
+                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word}
+        backend = COMPILED or "pysim"
+        e = simx.engine(b, ports, backend, tag="stpts")
+        g = e.group("ov", ["ow"])
+        e.stall_limit = 1_000_000 if backend != "pysim" else None
+        e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=20_000)
+        bl = S.blocks([w for (w,) in e.read(g)])
+        self.assertEqual([(x[0], x[2]) for x in bl], [(S.TMCC, 5), (S.STATUS, 5)])
+        st = bl[1][3]
+        want = [v & 0xFFFF for p in pts for v in p]
+        self.assertEqual(st[47:51], [0, 0, 0, 16])
+        self.assertEqual(st[51:51 + 32], want)
+        self.assertEqual(st[51 + 32], 0)  # 32APSK: none
+
+
 class SlotBchTest(unittest.TestCase):
     """A converged slot codeword with bit errors in its BCH word (93/120,
     frame 6, slot 3): `Finish` corrects them (the BCH unit's roots flipped

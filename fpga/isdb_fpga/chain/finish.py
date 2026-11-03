@@ -693,6 +693,9 @@ class Finish(Elaboratable):
         tw = Signal(2)
         tmcc_hdr = Signal(64)
         pace = Signal()
+        # the status words: two cycles after `next` (its register, then the
+        # point RAM's read of the new address)
+        st_pace = Signal(2)
 
         def block(kind, frame, length):
             m.d.sync += [pk.b_valid.eq(1), pk.b_kind.eq(kind), pk.b_frame.eq(frame), pk.b_len.eq(length)]
@@ -927,15 +930,15 @@ class Finish(Elaboratable):
             with m.State("STATUS_HDR"):
                 with m.If(pk.b_ready & ~pk.b_valid & ~st.begin):
                     block(3, fr_frame, st.length)
-                    m.d.sync += pace.eq(0)
+                    m.d.sync += st_pace.eq(0)
                     m.next = "STATUS_W"
             with m.State("STATUS_W"):
-                with m.If(~pace):
-                    m.d.sync += pace.eq(1)
+                with m.If(st_pace != 2):
+                    m.d.sync += st_pace.eq(st_pace + 1)
                 with m.Else():
                     m.d.comb += [pk.w_valid.eq(1), pk.w_data.eq(st.word)]
                     with m.If(pk.w_ready):
-                        m.d.sync += [st.next.eq(1), pace.eq(0)]
+                        m.d.sync += [st.next.eq(1), st_pace.eq(0)]
                         with m.If(st.last):
                             m.next = "FRAME_DONE"
             with m.State("FRAME_DONE"):
