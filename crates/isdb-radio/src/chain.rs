@@ -70,19 +70,49 @@
 //! as 0 (#29's foreign value) moves an entry by up to 2³² ≈ 4.3·10⁹
 //! against a diagonal of 6.5·10⁹: the checks caught 82 % of such sets
 //! among R's words (the rest moved the taps by at most 7 %) and 73 % among
-//! p's; the [`Gate`] is the second line for p.
+//! p's; with the [`Gate`] against the solve of 5 frames before, 81 % of
+//! p's, the rest moving the taps by at most 14 % (a word of p read low
+//! lowers the fit, which the checks cannot see; the gate's fit rule can).
 //!
 //! **Gate**: a solve is not written (the taps in use stay; counted in
 //! [`SlowLoopReport::solves_rejected`]) when the normal equations' relative
 //! residual `‖R w − p‖ / ‖p‖` of its Q2.14 taps exceeds
-//! [`Gate::residual`] (a failed or clamped solve), or when its centre
-//! tap's magnitude differs from the last written set's by more than
-//! [`Gate::centre`] (relative) — unless the solve before it was rejected
-//! for the same reason and this one is within the bound of that one: a
-//! lasting change of the signal's level is then taken one solve later.
-//! The board's one bad solve in twelve (build 7: centre 18 691 against
-//! 17 325–17 848, every codeword of the next 81 frames failed) is 7.8 %
-//! off; the good ones moved by up to 3 %.
+//! [`Gate::residual`] (a failed or clamped solve), or when, against the
+//! last good set ([`Gate::against`]), its centre tap's magnitude moved by
+//! more than [`Gate::centre`] (5 %), the whole vector by more than
+//! [`Gate::change`] (`‖w − w_good‖ / ‖w_good‖` > 0.20), its off-centre
+//! energy `‖w_{k≠5}‖ / |w_5|` rose above max(0.30, the good set's + 0.10)
+//! ([`Gate::off_centre`], [`Gate::off_centre_floor`]), or the [`fit`] of
+//! its sums moved by more than [`Gate::fit`] (0.02) — unless the solve
+//! before it was rejected by these rules and this one passes them
+//! against that one: a lasting change of the signal is then taken one
+//! solve later. The bounds: the board's one bad solve in twelve (build 7:
+//! centre 18 691 against 17 325–17 848, every codeword of the next 81
+//! frames failed) is 7.8 % off, the good ones moved by up to 3 %; #27's
+//! run A (BS-14, 160 sets written) had its 13 bad sets at a change of
+//! 0.21–1.29 against the median of the last five written and an
+//! off-centre energy of 0.31–0.86, its 147 good ones at 0.006–0.207 and
+//! 0.12–0.31; 12 of the bad 13 moved the centre by 4.4 % or less, which
+//! the centre rule alone let through. The fit of BS7's sums moved within
+//! 0.002 over 25 s.
+//!
+//! **Revert** (with [`SlowLoopOptions::health`]: the consumer of the
+//! `Slots` words reports each frame's status block and slots,
+//! [`ChainHealth`]): a written set is watched ([`Tick::Watching`]: no new
+//! solve meanwhile) until the status blocks show [`Revert::frames`] (10)
+//! frames under it (their `taps_from` is its frame); it is taken back —
+//! the last good set written again with its own TAPS_FROM (in force from
+//! the next frame), or the identity committed from the chain's FRAME
+//! without one, [`Tick::Reverted`], counted in
+//! [`SlowLoopReport::reverts`] — when its frames have no layout (10
+//! undecoded), more than [`Revert::failed`] (5 %) of their codewords
+//! failed (slots the decoder dropped with 0 iterations, issue #28, not
+//! counted), or their mean n0 is more than [`Revert::n0`] (20 %) above the
+//! good set's (#27: run A's good sets failed 0.1 % of their codewords,
+//! its bad ones more than 50 %; run C's one bad set raised n0 from
+//! 41 000 to 55 000, +34 %). Otherwise it becomes the good set. A set the
+//! status blocks never show within [`Revert::timeout`] (5 s) is kept,
+//! unverified ([`SlowLoopReport::unverified`]).
 
 use crate::{RadioError, Result};
 use isdb_frontend::control::chain::{
@@ -505,19 +535,35 @@ impl ChainControl {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Gate {
     /// Largest relative change of the centre tap's magnitude from the last
-    /// written set.
+    /// good set.
     pub centre: f64,
     /// Largest relative residual `‖R w − p‖ / ‖p‖` of the solved taps.
     pub residual: f64,
+    /// Largest `‖w − w_good‖ / ‖w_good‖` (the whole vector against the last
+    /// good set).
+    pub change: f64,
+    /// Largest rise of the off-centre energy `‖w_{k≠5}‖ / |w_5|` over the
+    /// last good set's, above [`Gate::off_centre_floor`].
+    pub off_centre: f64,
+    /// Off-centre energy that is never too much (see `off_centre`).
+    pub off_centre_floor: f64,
+    /// Largest change of the solve's [`fit`] from the last good solve's.
+    pub fit: f64,
 }
 
 impl Default for Gate {
     /// 5 % (0.42 dB) for the centre tap; 5 % for the residual (Q2.14
-    /// rounding leaves about 10⁻⁴).
+    /// rounding leaves about 10⁻⁴); 0.20 for the change of the vector;
+    /// an off-centre energy above max(0.30, the last good's + 0.10); 0.02
+    /// for the fit (module documentation, "Gate", for the reasons).
     fn default() -> Self {
         Self {
             centre: 0.05,
             residual: 0.05,
+            change: 0.20,
+            off_centre: 0.10,
+            off_centre_floor: 0.30,
+            fit: 0.02,
         }
     }
 }
@@ -529,6 +575,80 @@ pub enum Rejected {
     Residual,
     /// The centre tap moved by more than [`Gate::centre`].
     Centre,
+    /// The tap vector moved by more than [`Gate::change`].
+    Change,
+    /// The off-centre energy rose beyond [`Gate::off_centre`].
+    OffCentre,
+    /// The fit moved by more than [`Gate::fit`].
+    Fit,
+}
+
+/// A set of taps the gate compares against: the taps and the [`fit`] of
+/// the sums they were solved from (`None`: not solved here, e.g. the
+/// identity).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Judged {
+    /// The taps (Q2.14).
+    pub taps: Taps,
+    /// Their solve's [`fit`].
+    pub fit: Option<f64>,
+}
+
+/// `‖w_{k≠5}‖ / |w_5|` of `t` (infinite with a zero centre tap).
+pub fn off_centre(t: &Taps) -> f64 {
+    let c = magnitude(t[cc::TAPS / 2]);
+    let side = t
+        .iter()
+        .enumerate()
+        .filter(|&(k, _)| k != cc::TAPS / 2)
+        .map(|(_, &w)| magnitude(w).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    if c == 0.0 { f64::INFINITY } else { side / c }
+}
+
+/// `‖a − b‖ / ‖b‖` of two tap vectors (infinite for b = 0).
+pub fn change(a: &Taps, b: &Taps) -> f64 {
+    let (mut d, mut n) = (0.0, 0.0);
+    for (x, y) in a.iter().zip(b) {
+        d += (f64::from(x[0]) - f64::from(y[0])).powi(2)
+            + (f64::from(x[1]) - f64::from(y[1])).powi(2);
+        n += f64::from(y[0]).powi(2) + f64::from(y[1]).powi(2);
+    }
+    if n == 0.0 {
+        f64::INFINITY
+    } else {
+        (d / n).sqrt()
+    }
+}
+
+impl Gate {
+    /// The rules that compare a solve with a reference set (all but the
+    /// residual): the first one `new` breaks against `good`.
+    pub fn against(&self, good: &Judged, new: &Judged) -> Option<Rejected> {
+        let (c, c0) = (
+            magnitude(new.taps[cc::TAPS / 2]),
+            magnitude(good.taps[cc::TAPS / 2]),
+        );
+        if (c - c0).abs() > self.centre * c0 {
+            return Some(Rejected::Centre);
+        }
+        if change(&new.taps, &good.taps) > self.change {
+            return Some(Rejected::Change);
+        }
+        let limit = self
+            .off_centre_floor
+            .max(off_centre(&good.taps) + self.off_centre);
+        if off_centre(&new.taps) > limit {
+            return Some(Rejected::OffCentre);
+        }
+        if let (Some(f), Some(f0)) = (new.fit, good.fit)
+            && (f - f0).abs() > self.fit
+        {
+            return Some(Rejected::Fit);
+        }
+        None
+    }
 }
 
 /// The normal equations' relative residual `‖R w − p‖ / ‖p‖` of `taps`
@@ -836,8 +956,220 @@ pub fn check_sums(s: &TrainingSums, check: &SumsCheck) -> Option<SumsFault> {
     None
 }
 
+/// The identity taps (1.0 on the centre tap, Q2.14): what START loads
+/// without the host's.
+pub fn identity() -> Taps {
+    let mut t = Taps::default();
+    t[cc::TAPS / 2] = [1 << 14, 0];
+    t
+}
+
 fn magnitude(t: [i16; 2]) -> f64 {
     f64::from(t[0]).hypot(f64::from(t[1]))
+}
+
+/// One frame as the host decoded it from the chain's `Slots` words: its
+/// status block and its slot blocks (what the slow loop's revert rule
+/// watches; [`ChainHealth::frame`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FrameHealth {
+    /// The frame counter.
+    pub frame: u32,
+    /// The status block's `taps_from`: the taps in force (`None`: the
+    /// ones START loaded).
+    pub taps_from: Option<u32>,
+    /// The status block's n0 (Q.20).
+    pub n0: u32,
+    /// The frame's slots were decoded (it had a layout).
+    pub decoded: bool,
+    /// Its slots (not the dummies).
+    pub slots: u32,
+    /// Of which the LDPC did not converge after at least one iteration.
+    pub failed: u32,
+    /// Of which the decoder took none (0 iterations, not converged: no
+    /// free decoder bank, issue #28): not the taps' fault.
+    pub dropped: u32,
+}
+
+/// The frames decoded under one set of taps (one value of the status
+/// blocks' `taps_from`, from the first frame it showed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TapsHealth {
+    /// The status blocks' `taps_from`.
+    pub taps_from: Option<u32>,
+    /// The first frame it showed.
+    pub first_frame: u32,
+    /// Decoded frames, and frames without a layout.
+    pub frames: u32,
+    /// See `frames`.
+    pub undecoded: u32,
+    /// The sum of the decoded frames' n0.
+    pub n0_sum: u64,
+    /// Slots, LDPC failures and dropped slots ([`FrameHealth`]).
+    pub slots: u64,
+    /// See `slots`.
+    pub failed: u64,
+    /// See `slots`.
+    pub dropped: u64,
+}
+
+impl TapsHealth {
+    /// The mean n0 of the decoded frames.
+    pub fn n0(&self) -> Option<f64> {
+        #[allow(clippy::cast_precision_loss)]
+        (self.frames > 0).then(|| self.n0_sum as f64 / f64::from(self.frames))
+    }
+
+    /// The share of the decoded slots (not the dropped ones) whose LDPC
+    /// failed.
+    pub fn failed_share(&self) -> Option<f64> {
+        let tried = self.slots.saturating_sub(self.dropped);
+        #[allow(clippy::cast_precision_loss)]
+        (tried > 0).then(|| self.failed as f64 / tried as f64)
+    }
+}
+
+/// What the decoded status blocks have said so far ([`ChainHealth`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HealthState {
+    /// The taps in force at the last status block, and the frames under
+    /// them.
+    pub current: TapsHealth,
+    /// The set before.
+    pub previous: TapsHealth,
+    /// Status blocks seen.
+    pub frames: u64,
+}
+
+/// The channel from the consumer of the chain's `Slots` words to the slow
+/// loop ([`SlowLoopOptions::health`]): the consumer reports each frame
+/// ([`ChainHealth::frame`]), the loop reads the frames decoded under the
+/// taps in force ([`ChainHealth::snapshot`]) to judge the taps it wrote
+/// (module documentation, "Revert").
+#[derive(Debug, Default)]
+pub struct ChainHealth(std::sync::Mutex<HealthState>);
+
+impl ChainHealth {
+    /// Nothing seen yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, HealthState> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// One frame's status (and slots).
+    pub fn frame(&self, f: FrameHealth) {
+        let mut s = self.state();
+        if s.frames == 0 || s.current.taps_from != f.taps_from {
+            if s.frames > 0 {
+                s.previous = s.current;
+            }
+            s.current = TapsHealth {
+                taps_from: f.taps_from,
+                first_frame: f.frame,
+                ..TapsHealth::default()
+            };
+        }
+        s.frames += 1;
+        let c = &mut s.current;
+        if f.decoded {
+            c.frames += 1;
+            c.n0_sum += u64::from(f.n0);
+        } else {
+            c.undecoded += 1;
+        }
+        c.slots += u64::from(f.slots);
+        c.failed += u64::from(f.failed);
+        c.dropped += u64::from(f.dropped);
+    }
+
+    /// The state now.
+    pub fn snapshot(&self) -> HealthState {
+        *self.state()
+    }
+}
+
+/// When the slow loop takes back a set it wrote (module documentation,
+/// "Revert").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Revert {
+    /// Largest rise of the mean n0 under the new set over the last good
+    /// set's (relative).
+    pub n0: f64,
+    /// Largest share of LDPC failures (of the slots tried) under the new
+    /// set.
+    pub failed: f64,
+    /// Frames under the new set before it is judged.
+    pub frames: u32,
+    /// Give up waiting for them after this long (the set is then kept,
+    /// unverified).
+    pub timeout: Duration,
+}
+
+impl Default for Revert {
+    /// n0 + 20 %, 5 % of the codewords failed, judged on 10 frames
+    /// (0.33 s), within 5 s.
+    fn default() -> Self {
+        Self {
+            n0: 0.20,
+            failed: 0.05,
+            frames: 10,
+            timeout: Duration::from_secs(5),
+        }
+    }
+}
+
+/// Why a written set was taken back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Reverted {
+    /// The mean n0 under it, over the last good set's.
+    N0 {
+        /// Its mean n0.
+        n0: f64,
+        /// The last good set's.
+        good: f64,
+    },
+    /// This share of the codewords failed under it.
+    Failed {
+        /// The share.
+        share: f64,
+    },
+    /// Frames without a layout under it.
+    Undecoded {
+        /// How many.
+        frames: u32,
+    },
+}
+
+impl std::fmt::Display for Reverted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::N0 { n0, good } => write!(
+                f,
+                "n0 {n0:.0} under it against {good:.0} under the last good set (+{:.0} %)",
+                100.0 * (n0 / good - 1.0)
+            ),
+            Self::Failed { share } => {
+                write!(f, "{:.1} % of the codewords failed under it", 100.0 * share)
+            }
+            Self::Undecoded { frames } => {
+                write!(f, "{frames} frame(s) without a layout under it")
+            }
+        }
+    }
+}
+
+/// A set written and not judged yet.
+#[derive(Debug, Clone, Copy)]
+struct Watch {
+    /// The TAPS_FROM written.
+    from: u32,
+    set: Judged,
+    since: Instant,
 }
 
 /// Registers that identify the held capture besides SUMS_FRAME: read with
@@ -847,7 +1179,7 @@ fn magnitude(t: [i16; 2]) -> f64 {
 const HELD_EXTRA: &[u16] = &[];
 
 /// How the slow loop runs.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SlowLoopOptions {
     /// Solve at most this often once the first taps are written (the
     /// plan's "every few seconds").
@@ -862,11 +1194,16 @@ pub struct SlowLoopOptions {
     pub gate: Option<Gate>,
     /// The checks on the sums themselves (`None`: none).
     pub check: Option<SumsCheck>,
+    /// The decoded frames, from the consumer of the `Slots` words
+    /// (`None`: no revert, a written set is good at once).
+    pub health: Option<Arc<ChainHealth>>,
+    /// When a written set is taken back (with `health`).
+    pub revert: Revert,
 }
 
 impl SlowLoopOptions {
     /// Every 2 s, polling every 200 ms until the first solve; the default
-    /// [`Gate`] and [`SumsCheck`].
+    /// [`Gate`], [`SumsCheck`] and [`Revert`], no `health`.
     pub fn new(solve: Solver, symbol_rate_hz: f64) -> Self {
         Self {
             every: Duration::from_secs(2),
@@ -875,6 +1212,8 @@ impl SlowLoopOptions {
             symbol_rate_hz,
             gate: Some(Gate::default()),
             check: Some(SumsCheck::default()),
+            health: None,
+            revert: Revert::default(),
         }
     }
 }
@@ -909,6 +1248,17 @@ pub enum Tick {
     Solved {
         /// The frame summed.
         frame: u32,
+    },
+    /// The set written last is being judged on the frames under it (no
+    /// solve until it is: [`Revert`]).
+    Watching,
+    /// The set solved from `frame` was taken back: the last good set (or
+    /// the identity) written again.
+    Reverted {
+        /// The frame the set taken back was solved from.
+        frame: u32,
+        /// Why.
+        why: Reverted,
     },
     /// Taps solved from `frame` not written: the [`Gate`] rejected them
     /// (the taps in use stay).
@@ -948,10 +1298,21 @@ pub struct SlowLoopReport {
     pub captures_rejected_by: std::collections::BTreeMap<String, u64>,
     /// Solves the [`Gate`] rejected (not written).
     pub solves_rejected: u64,
-    /// The frame of the last taps written.
+    /// Written sets taken back ([`Tick::Reverted`]).
+    pub reverts: u64,
+    /// Written sets kept unverified: the status blocks did not show
+    /// [`Revert::frames`] frames under them within [`Revert::timeout`].
+    pub unverified: u64,
+    /// The frame of the last sums read (solved, rejected or not
+    /// solvable: not read again).
     pub last_frame: Option<u32>,
     /// The last taps written.
     pub last_taps: Option<Taps>,
+    /// The last good set: written and not taken back (and the frame it
+    /// was solved from).
+    pub last_good: Option<Taps>,
+    /// See `last_good`.
+    pub last_good_frame: Option<u32>,
     /// The carrier register at the last tick (2⁻³² turn per symbol) and
     /// its extremes over the run.
     pub carrier: Option<i32>,
@@ -972,9 +1333,17 @@ pub struct SlowLoop {
     capture: Option<bool>,
     /// A capture is armed and not read yet.
     armed: bool,
-    /// The centre tap's magnitude of the last solve the gate rejected for
-    /// it, if the last solve was that.
-    pending_centre: Option<f64>,
+    /// The last solve the gate rejected against the good set, if the last
+    /// solve was that (a lasting change is taken at its second solve).
+    pending: Option<Judged>,
+    /// The last good set: the gate's reference, and what a revert writes.
+    good: Option<Judged>,
+    /// The TAPS_FROM the good set was written with (`None`: START's).
+    good_from: Option<u32>,
+    /// The mean n0 measured under the good set.
+    good_n0: Option<f64>,
+    /// The set written last, until it is judged.
+    watch: Option<Watch>,
 }
 
 impl SlowLoop {
@@ -985,16 +1354,20 @@ impl SlowLoop {
             report: SlowLoopReport::default(),
             capture: None,
             armed: false,
-            pending_centre: None,
+            pending: None,
+            good: None,
+            good_from: None,
+            good_n0: None,
+            watch: None,
         }
     }
 
     /// The wait before the next tick: [`SlowLoopOptions::poll`] until the
-    /// first solve (and after a torn read), then
-    /// [`SlowLoopOptions::every`].
+    /// first solve (and after a torn read, while a capture or a written
+    /// set is pending), then [`SlowLoopOptions::every`].
     pub fn wait(&self, last: Tick) -> Duration {
         match last {
-            Tick::Torn | Tick::NoSums | Tick::Capturing => self.opts.poll,
+            Tick::Torn | Tick::NoSums | Tick::Capturing | Tick::Watching => self.opts.poll,
             _ if self.report.solves == 0 => self.opts.poll,
             _ => self.opts.every,
         }
@@ -1006,6 +1379,20 @@ impl SlowLoop {
     ///
     /// A failed register access.
     pub fn tick(&mut self, c: &mut ChainControl, port: &dyn RegisterAccess) -> Result<Tick> {
+        self.tick_at(c, port, Instant::now())
+    }
+
+    /// [`SlowLoop::tick`] at the time `now` (the tests' clock).
+    ///
+    /// # Errors
+    ///
+    /// A failed register access.
+    pub fn tick_at(
+        &mut self,
+        c: &mut ChainControl,
+        port: &dyn RegisterAccess,
+        now: Instant,
+    ) -> Result<Tick> {
         self.report.ticks += 1;
         let capture = match self.capture {
             Some(x) => x,
@@ -1055,11 +1442,17 @@ impl SlowLoop {
             carrier,
             taps_from = v[3],
             status = v[4],
-            "chain: sums of frame {frame:#x} ({count} symbols), carrier register {carrier} ({:+.1} Hz, informational: the FPGA tracks it), taps from {:#x}, status {:#x}",
+            frame_now = v[5],
+            "chain: sums of frame {frame:#x} ({count} symbols), carrier register {carrier} ({:+.1} Hz, informational: the FPGA tracks it), taps from {:#x}, status {:#x}, frame {}",
             cc::carrier_hz(carrier, self.opts.symbol_rate_hz),
             v[3],
-            v[4]
+            v[4],
+            v[5]
         );
+        let frame_now = v[5];
+        if let Some(t) = self.judge(c, port, frame_now, now)? {
+            return Ok(t);
+        }
         if let Some(cap) = cap {
             if !self.armed {
                 c.write(port, reg::SUMS_CAPTURE, &[1])?;
@@ -1179,10 +1572,12 @@ impl SlowLoop {
             );
             return Ok(Tick::Singular { frame });
         };
-        if let Some(why) = self.gate(&sums, &taps) {
+        let new = Judged { taps, fit: fitted };
+        if let Some(why) = self.gate(&sums, &new) {
             self.report.solves_rejected += 1;
             // the frame is not solved again; the next one may be
             self.report.last_frame = Some(frame);
+            let good = self.good;
             warn!(
                 target: "isdb::chain",
                 frame,
@@ -1191,22 +1586,45 @@ impl SlowLoop {
                 "chain: the taps solved from frame {frame} (centre tap {:?}, residual {:.2e}) are not written ({}); the taps in use stay",
                 taps[centre],
                 residual(&sums, &taps),
-                match why {
-                    Rejected::Residual => "the normal equations' residual is too large".to_string(),
-                    Rejected::Centre => format!(
+                match (why, good) {
+                    (Rejected::Residual, _) | (_, None) =>
+                        "the normal equations' residual is too large".to_string(),
+                    (Rejected::Centre, Some(g)) => format!(
                         "the centre tap moved from {:?}",
-                        self.report.last_taps.map(|t| t[centre])
+                        g.taps[centre]
+                    ),
+                    (Rejected::Change, Some(g)) => format!(
+                        "the tap vector moved by {:.1} % of the last good set's",
+                        100.0 * change(&taps, &g.taps)
+                    ),
+                    (Rejected::OffCentre, Some(g)) => format!(
+                        "the off-centre energy rose from {:.3} to {:.3}",
+                        off_centre(&g.taps),
+                        off_centre(&taps)
+                    ),
+                    (Rejected::Fit, Some(g)) => format!(
+                        "the fit moved from {:.4} to {:.4}",
+                        g.fit.unwrap_or(f64::NAN),
+                        fitted.unwrap_or(f64::NAN)
                     ),
                 }
             );
             return Ok(Tick::Rejected { frame, why });
         }
-        let w: Vec<u32> = taps.iter().map(|&p| pack_point(p)).collect();
-        c.write(port, reg::TAPS, &w)?;
-        c.write(port, reg::TAPS_FROM, &[frame])?;
+        Self::write_taps(c, port, &taps, frame)?;
         self.report.solves += 1;
         self.report.last_frame = Some(frame);
         self.report.last_taps = Some(taps);
+        let w = Watch {
+            from: frame,
+            set: new,
+            since: now,
+        };
+        if self.opts.health.is_some() {
+            self.watch = Some(w);
+        } else {
+            self.accept(w, None);
+        }
         info!(
             target: "isdb::chain",
             frame,
@@ -1253,30 +1671,140 @@ impl SlowLoop {
     }
 
     /// The [`Gate`] on a solve: `None` to write it.
-    fn gate(&mut self, sums: &TrainingSums, taps: &Taps) -> Option<Rejected> {
+    fn gate(&mut self, sums: &TrainingSums, new: &Judged) -> Option<Rejected> {
         let g = self.opts.gate?;
-        let r = residual(sums, taps);
+        let r = residual(sums, &new.taps);
         if r.is_nan() || r > g.residual {
-            self.pending_centre = None;
+            self.pending = None;
             return Some(Rejected::Residual);
         }
-        let c = magnitude(taps[cc::TAPS / 2]);
-        let off = |from: f64| (c - from).abs() > g.centre * from;
-        let moved = self
-            .report
-            .last_taps
-            .is_some_and(|t| off(magnitude(t[cc::TAPS / 2])));
-        if !moved {
-            self.pending_centre = None;
+        let Some(why) = self.good.and_then(|good| g.against(&good, new)) else {
+            self.pending = None;
+            return None;
+        };
+        if self.pending.is_some_and(|p| g.against(&p, new).is_none()) {
+            // the second solve in a row like this: a lasting change
+            self.pending = None;
             return None;
         }
-        if self.pending_centre.is_some_and(|p| !off(p)) {
-            // the second solve in a row at the new level: a lasting change
-            self.pending_centre = None;
-            return None;
+        self.pending = Some(*new);
+        Some(why)
+    }
+
+    /// Write `taps` with TAPS_FROM `from` (committed at the next frame
+    /// start, or two frames after `from`).
+    fn write_taps(
+        c: &mut ChainControl,
+        port: &dyn RegisterAccess,
+        taps: &Taps,
+        from: u32,
+    ) -> Result<()> {
+        let w: Vec<u32> = taps.iter().map(|&p| pack_point(p)).collect();
+        c.write(port, reg::TAPS, &w)?;
+        c.write(port, reg::TAPS_FROM, &[from])?;
+        Ok(())
+    }
+
+    /// The set to go back to and its TAPS_FROM: the last good one with the
+    /// TAPS_FROM it had (already passed: in force from the next frame), or
+    /// the identity committed from `frame_now` (the chain's FRAME).
+    fn fallback(&self, frame_now: u32) -> (Taps, u32) {
+        match (self.good, self.good_from) {
+            (Some(g), Some(f)) => (g.taps, f),
+            (Some(g), None) => (g.taps, frame_now),
+            (None, _) => (identity(), frame_now),
         }
-        self.pending_centre = Some(c);
-        Some(Rejected::Centre)
+    }
+
+    /// The written set under watch against the frames decoded under it
+    /// (module documentation, "Revert"): `Some` tick when this tick ends
+    /// here (still watching, or reverted).
+    fn judge(
+        &mut self,
+        c: &mut ChainControl,
+        port: &dyn RegisterAccess,
+        frame_now: u32,
+        now: Instant,
+    ) -> Result<Option<Tick>> {
+        let (Some(w), Some(h)) = (self.watch, self.opts.health.clone()) else {
+            return Ok(None);
+        };
+        let rv = self.opts.revert;
+        let s = h.snapshot();
+        let cur = s.current;
+        let under = cur.taps_from == Some(w.from);
+        if !under || cur.frames + cur.undecoded < rv.frames {
+            if now.duration_since(w.since) < rv.timeout {
+                return Ok(Some(Tick::Watching));
+            }
+            // never shown under it (the words stopped, or the status
+            // blocks): kept, unverified
+            self.report.unverified += 1;
+            debug!(
+                target: "isdb::chain",
+                from = w.from,
+                "chain: the taps written with TAPS_FROM {} did not show in {} frames of status blocks within {:.1} s; kept unverified",
+                w.from,
+                rv.frames,
+                rv.timeout.as_secs_f64()
+            );
+            self.accept(w, None);
+            return Ok(None);
+        }
+        let baseline = self.good_n0.or_else(|| {
+            let p = s.previous;
+            (p.taps_from != Some(w.from) && p.frames >= rv.frames)
+                .then(|| p.n0())
+                .flatten()
+        });
+        let why = if cur.undecoded >= rv.frames {
+            Some(Reverted::Undecoded {
+                frames: cur.undecoded,
+            })
+        } else if let Some(share) = cur.failed_share().filter(|&x| x > rv.failed) {
+            Some(Reverted::Failed { share })
+        } else {
+            match (cur.n0(), baseline) {
+                (Some(n0), Some(good)) if n0 > good * (1.0 + rv.n0) => {
+                    Some(Reverted::N0 { n0, good })
+                }
+                _ => None,
+            }
+        };
+        let Some(why) = why else {
+            self.accept(w, cur.n0());
+            return Ok(None);
+        };
+        let (taps, from) = self.fallback(frame_now);
+        Self::write_taps(c, port, &taps, from)?;
+        self.watch = None;
+        self.pending = None;
+        self.report.reverts += 1;
+        self.report.last_taps = Some(taps);
+        warn!(
+            target: "isdb::chain",
+            frame = w.from,
+            reverts = self.report.reverts,
+            "chain: the taps solved from frame {} are taken back after {} frames under them: {why}; {} written again (TAPS_FROM {from})",
+            w.from,
+            cur.frames + cur.undecoded,
+            if self.good.is_some() {
+                "the last good set"
+            } else {
+                "the identity"
+            }
+        );
+        Ok(Some(Tick::Reverted { frame: w.from, why }))
+    }
+
+    /// The set under watch is good.
+    fn accept(&mut self, w: Watch, n0: Option<f64>) {
+        self.watch = None;
+        self.good = Some(w.set);
+        self.good_from = Some(w.from);
+        self.good_n0 = n0;
+        self.report.last_good = Some(w.set.taps);
+        self.report.last_good_frame = Some(w.from);
     }
 }
 
@@ -1732,7 +2260,7 @@ pub(crate) mod tests {
             check: None,
             ..SlowLoopOptions::new(fake_solve, 33.7561e6)
         };
-        let mut l = SlowLoop::new(opts);
+        let mut l = SlowLoop::new(opts.clone());
         assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::NoSums);
         assert_eq!(l.wait(Tick::NoSums), opts.poll);
         {
@@ -1807,7 +2335,7 @@ pub(crate) mod tests {
             check: None,
             ..SlowLoopOptions::new(fake_solve, 33.7561e6)
         };
-        let mut l = SlowLoop::new(opts);
+        let mut l = SlowLoop::new(opts.clone());
         let strobes = |m: &Mock| {
             m.get()
                 .writes
@@ -2054,8 +2582,12 @@ pub(crate) mod tests {
     /// like the board's; p[3].re is negative, so its high word is
     /// 0xFFFF_FFFF.
     pub(crate) fn board_sums(frame: u32) -> TrainingSums {
+        board_sums_for(frame, &board_like_taps())
+    }
+
+    /// [`board_sums`] whose solve is `w`.
+    pub(crate) fn board_sums_for(frame: u32, w: &Taps) -> TrainingSums {
         let n = cc::TAPS;
-        let w = board_like_taps();
         let wf: Vec<[f64; 2]> = w
             .iter()
             .map(|t| [f64::from(t[0]) / 16_384.0, f64::from(t[1]) / 16_384.0])
@@ -2250,6 +2782,252 @@ pub(crate) mod tests {
         assert!(fit(&bad, &t) > 1.2);
         latch(&m, &board_sums(103));
         assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 103 });
+    }
+
+    fn judged(taps: Taps, fit: f64) -> Judged {
+        Judged {
+            taps,
+            fit: Some(fit),
+        }
+    }
+
+    /// #27 "Gate metrics on run A": the whole vector and the fit. A
+    /// single-tap error of a word read wrong (tap 3 + 0.65, centre
+    /// unchanged: the centre rule cannot see it) is a change of ≈ 0.65;
+    /// the bound 0.20 lies between the good sets' 0.006–0.207 and the bad
+    /// ones' 0.21–1.29. The off-centre energy may rise by 0.10 over the
+    /// good set's above the floor 0.30 (good 0.12–0.31, bad 0.31–0.86).
+    /// The fit may move by 0.02 (0.971–0.973 over 25 s of BS7).
+    #[test]
+    fn the_gate_looks_at_the_whole_vector_and_the_fit() {
+        let g = Gate::default();
+        let good = judged(board_like_taps(), 0.95);
+        assert!((0.10..0.13).contains(&off_centre(&good.taps)));
+        assert_eq!(g.against(&good, &good), None);
+        // tap 3 + 0.65 (#27: frame 9449's tap 3 im + 12 739)
+        let mut bad = board_like_taps();
+        bad[3][1] += 12_739;
+        assert!(change(&bad, &good.taps) > 0.6);
+        assert_eq!(g.against(&good, &judged(bad, 0.95)), Some(Rejected::Change));
+        // at the bound: 0.21 rejected, 0.19 written
+        let moved = |share: f64| {
+            let mut t = board_like_taps();
+            #[allow(clippy::cast_possible_truncation)]
+            let d = (share * 16_660.0) as i16;
+            t[7][0] += d;
+            t
+        };
+        assert!((0.205..0.215).contains(&change(&moved(0.21), &good.taps)));
+        assert_eq!(
+            g.against(&good, &judged(moved(0.21), 0.95)),
+            Some(Rejected::Change)
+        );
+        assert_eq!(g.against(&good, &judged(moved(0.19), 0.95)), None);
+        // off-centre: from 0.25 to 0.40 with a change of 0.15
+        let mut g25 = cc::Taps::default();
+        g25[5] = [16_550, 0];
+        g25[4] = [-4_137, 0];
+        let mut n40 = g25;
+        n40[4] = [-6_620, 0];
+        assert!((0.24..0.26).contains(&off_centre(&g25)));
+        assert!((0.39..0.41).contains(&off_centre(&n40)));
+        assert!(change(&n40, &g25) < 0.2);
+        assert_eq!(
+            g.against(&judged(g25, 0.95), &judged(n40, 0.95)),
+            Some(Rejected::OffCentre)
+        );
+        // below the floor any rise is accepted
+        let mut n29 = g25;
+        n29[4] = [-4_800, 0];
+        assert_eq!(g.against(&judged(g25, 0.95), &judged(n29, 0.95)), None);
+        // the fit
+        assert_eq!(
+            g.against(&good, &judged(board_like_taps(), 0.92)),
+            Some(Rejected::Fit)
+        );
+        assert_eq!(g.against(&good, &judged(board_like_taps(), 0.94)), None);
+        // no fit known (the identity at open): not compared
+        let id = Judged {
+            taps: identity(),
+            fit: None,
+        };
+        assert_eq!(
+            g.against(
+                &id,
+                &Judged {
+                    taps: identity(),
+                    fit: Some(0.5)
+                }
+            ),
+            None
+        );
+    }
+
+    /// `n` frames of status under `taps_from`, n0 `n0`, 96 slots with
+    /// `failed` LDPC failures and `dropped` dropped slots each.
+    fn frames(
+        h: &ChainHealth,
+        first: u32,
+        n: u32,
+        taps_from: Option<u32>,
+        n0: u32,
+        failed: u32,
+        dropped: u32,
+    ) {
+        for f in first..first + n {
+            h.frame(FrameHealth {
+                frame: f,
+                taps_from,
+                n0,
+                decoded: true,
+                slots: 96,
+                failed,
+                dropped,
+            });
+        }
+    }
+
+    /// The taps the board-like sums of a slightly different signal solve
+    /// to (centre + 1 %: within every gate bound).
+    fn board_like_taps_2() -> Taps {
+        let mut t = board_like_taps();
+        t[5][0] += 165;
+        t
+    }
+
+    /// #27 "What should be fixed" 3: a written set is watched on the
+    /// frames under it (the status blocks' taps_from) and taken back,
+    /// with the last good set written again with its own TAPS_FROM, when
+    /// n0 rises by more than 20 % over the good set's or more than 5 % of
+    /// the codewords fail; dropped slots (0 iterations) do not count; no
+    /// solve while a set is watched; a set never shown is kept
+    /// unverified after the timeout.
+    #[test]
+    fn a_written_set_is_watched_and_taken_back() {
+        let (m, mut c) = opened(features::ALL & !features::SUMS_CAPTURE);
+        let h = Arc::new(ChainHealth::new());
+        let opts = SlowLoopOptions {
+            health: Some(Arc::clone(&h)),
+            ..SlowLoopOptions::new(ls_solve, 33.7561e6)
+        };
+        let mut l = SlowLoop::new(opts);
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        // the identity's frames (n0 46 000, as build 8 before the first
+        // set), then the first solve
+        frames(&h, 1, 30, None, 46_000, 1, 0);
+        latch(&m, &board_sums(100));
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(0)).unwrap(),
+            Tick::Solved { frame: 100 }
+        );
+        // not shown under it yet: watching, no solve of a new capture
+        latch(&m, &board_sums_for(130, &board_like_taps_2()));
+        assert_eq!(l.tick_at(&mut c, &m, at(200)).unwrap(), Tick::Watching);
+        assert_eq!(l.wait(Tick::Watching), Duration::from_millis(200));
+        // 12 frames under it, n0 33 000: good; the capture is then solved
+        frames(&h, 31, 12, Some(100), 33_000, 0, 0);
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(400)).unwrap(),
+            Tick::Solved { frame: 130 }
+        );
+        assert_eq!(l.report.last_good_frame, Some(100));
+        // n0 + 33 % under the set of frame 130 (#29: 41 000 → 55 000)
+        frames(&h, 43, 12, Some(130), 44_000, 0, 0);
+        let t = l.tick_at(&mut c, &m, at(600)).unwrap();
+        let Tick::Reverted {
+            frame: 130,
+            why: Reverted::N0 { n0, good },
+        } = t
+        else {
+            panic!("{t:?}");
+        };
+        assert_eq!((n0, good), (44_000.0, 33_000.0));
+        assert_eq!(
+            m.get().taps,
+            Some((ls_solve(&board_sums(100)).unwrap(), 100))
+        );
+        assert_eq!(l.report.reverts, 1);
+        // the good set again (taps_from 100); a set with 60 of 96
+        // codewords failed per frame is taken back
+        frames(&h, 55, 5, Some(100), 33_100, 0, 0);
+        latch(&m, &board_sums_for(200, &board_like_taps_2()));
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(800)).unwrap(),
+            Tick::Solved { frame: 200 }
+        );
+        frames(&h, 60, 12, Some(200), 33_500, 60, 0);
+        let t = l.tick_at(&mut c, &m, at(1_000)).unwrap();
+        assert!(
+            matches!(
+                t,
+                Tick::Reverted {
+                    frame: 200,
+                    why: Reverted::Failed { .. }
+                }
+            ),
+            "{t:?}"
+        );
+        assert_eq!(m.get().taps.unwrap().1, 100);
+        // dropped slots (the decoder's lost banks, #28) are not the taps'
+        frames(&h, 72, 3, Some(100), 33_100, 0, 50);
+        latch(&m, &board_sums_for(260, &board_like_taps_2()));
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(1_200)).unwrap(),
+            Tick::Solved { frame: 260 }
+        );
+        frames(&h, 75, 12, Some(260), 33_400, 1, 50);
+        assert_eq!(l.tick_at(&mut c, &m, at(1_400)).unwrap(), Tick::Same);
+        assert_eq!(l.report.last_good_frame, Some(260));
+        // a set never shown: watched until the timeout, then kept
+        latch(&m, &board_sums(300));
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(1_600)).unwrap(),
+            Tick::Solved { frame: 300 }
+        );
+        assert_eq!(l.tick_at(&mut c, &m, at(6_000)).unwrap(), Tick::Watching);
+        assert_eq!(l.tick_at(&mut c, &m, at(6_700)).unwrap(), Tick::Same);
+        assert_eq!((l.report.unverified, l.report.reverts), (1, 2));
+        assert_eq!(l.report.last_good_frame, Some(300));
+    }
+
+    /// Frames without a layout under a new set (it killed the TMCC, #28):
+    /// taken back; with no good set yet, the identity is written,
+    /// committed from the chain's FRAME.
+    #[test]
+    fn a_set_that_kills_the_layout_is_taken_back() {
+        let (m, mut c) = opened(features::ALL & !features::SUMS_CAPTURE);
+        m.get().regs.insert(reg::FRAME, 777);
+        let h = Arc::new(ChainHealth::new());
+        let opts = SlowLoopOptions {
+            health: Some(Arc::clone(&h)),
+            ..SlowLoopOptions::new(ls_solve, 33.7561e6)
+        };
+        let mut l = SlowLoop::new(opts);
+        let t0 = Instant::now();
+        latch(&m, &board_sums(700));
+        assert_eq!(
+            l.tick_at(&mut c, &m, t0).unwrap(),
+            Tick::Solved { frame: 700 }
+        );
+        for f in 0..12 {
+            h.frame(FrameHealth {
+                frame: 760 + f,
+                taps_from: Some(700),
+                ..FrameHealth::default()
+            });
+        }
+        let t = l
+            .tick_at(&mut c, &m, t0 + Duration::from_millis(300))
+            .unwrap();
+        assert_eq!(
+            t,
+            Tick::Reverted {
+                frame: 700,
+                why: Reverted::Undecoded { frames: 12 }
+            }
+        );
+        assert_eq!(m.get().taps, Some((identity(), 777)));
     }
 
     /// The timer thread: solves the latched frames as they come and stops

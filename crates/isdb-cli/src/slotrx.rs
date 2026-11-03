@@ -47,12 +47,14 @@ use crate::rxs3::{Outputs, Stats, close, count_slot, push_slot};
 use anyhow::{Context, Result};
 use isdb_frontend::control::chain::{carrier_hz, mer_db};
 use isdb_frontend::slots::{Block, Event, Reader, SlotBlock, Status};
+use isdb_radio::chain::{ChainHealth, FrameHealth};
 use isdb_tlv::Assembler;
 use isdbs3_core::TmccInfo;
 use isdbs3_core::params::{FRAME_SYMBOLS, SYMBOL_RATE};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{info, warn};
 
@@ -105,6 +107,9 @@ pub struct ChainStats {
     pub orphan_slots: u64,
     /// TMCC blocks whose BCH failed.
     pub tmcc_failed: u64,
+    /// Slots the LDPC decoder dropped: 0 iterations, not converged (no
+    /// free decoder bank, issue #28); counted in the LDPC failures too.
+    pub dropped_slots: u64,
     /// Frames with the slot sync locked at their end.
     pub locked_frames: u64,
     /// The carrier register's extremes over the run (2⁻³² turn / symbol).
@@ -305,9 +310,23 @@ pub struct Consumer {
     pending: BTreeMap<u32, Vec<SlotBlock>>,
     last_decoded: Option<u32>,
     started: bool,
+    /// Where each frame's status goes for the slow loop (`run_radio`).
+    health: Option<Arc<ChainHealth>>,
+    /// The last frame flushed and its (slots, LDPC failed, dropped).
+    flushed: Option<(u32, [u32; 3])>,
 }
 
 impl Consumer {
+    /// A consumer at the start of a stream that reports each frame to
+    /// `health` (the chain's slow loop judges the taps it writes on them:
+    /// `isdb_radio::chain`, "Revert").
+    pub fn with_health(health: Arc<ChainHealth>) -> Self {
+        Self {
+            health: Some(health),
+            ..Self::default()
+        }
+    }
+
     /// A consumer at the start of a stream.
     pub fn new() -> Self {
         Self::default()
@@ -402,6 +421,21 @@ impl Consumer {
     fn status(&mut self, s: &Status, stats: &mut Stats) {
         stats.frames += 1;
         let decoded = self.last_decoded == Some(s.frame);
+        if let Some(h) = &self.health {
+            let [slots, failed, dropped] = self
+                .flushed
+                .filter(|f| f.0 == s.frame)
+                .map_or([0; 3], |f| f.1);
+            h.frame(FrameHealth {
+                frame: s.frame,
+                taps_from: s.taps_from,
+                n0: s.n0,
+                decoded,
+                slots,
+                failed,
+                dropped,
+            });
+        }
         let c = Self::chain(stats);
         c.status_blocks += 1;
         if let Some(l) = c.last_frame {
@@ -487,6 +521,16 @@ impl Consumer {
         out: &mut Outputs,
         stats: &mut Stats,
     ) -> Result<()> {
+        let mut n = [0u32; 3];
+        for s in slots.iter().filter(|s| !s.dummy) {
+            n[0] += 1;
+            if !s.converged {
+                // 0 iterations: the decoder took no bank for it (#28)
+                n[if s.iterations == 0 { 2 } else { 1 }] += 1;
+            }
+        }
+        self.flushed = Some((frame, n));
+        Self::chain(stats).dropped_slots += u64::from(n[2]);
         let info = self
             .in_force
             .range(..=frame)
@@ -606,6 +650,7 @@ impl StatusLines {
 #[allow(clippy::too_many_arguments)]
 fn consume(
     bytes: crate::symstream::Bytes,
+    mut c: Consumer,
     seconds_max: f64,
     status: bool,
     stop: &AtomicBool,
@@ -617,7 +662,6 @@ fn consume(
     let t0 = std::time::Instant::now();
     let mut reader = Reader::new();
     let mut ev = Vec::new();
-    let mut c = Consumer::new();
     let mut lines = StatusLines::new(status);
     Consumer::chain(stats);
     for chunk in bytes {
@@ -665,7 +709,17 @@ pub fn run_file(
 ) -> Result<f64> {
     stats.decoded_by = BY_FILE;
     let bytes = crate::symstream::file_bytes(std::path::Path::new(path))?;
-    consume(bytes, seconds_max, status, stop, None, None, out, stats)
+    consume(
+        bytes,
+        Consumer::new(),
+        seconds_max,
+        status,
+        stop,
+        None,
+        None,
+        out,
+        stats,
+    )
 }
 
 /// The `OUT.json` sidecar of a `Slots` words file.
@@ -843,7 +897,13 @@ pub fn run_radio(
     let mut acq = None;
     let cap_stop = std::sync::Arc::new(AtomicBool::new(false));
     let init = isdb_frontend::control::chain::ChainInit::default();
-    let slow = isdb_radio::chain::SlowLoopOptions::new(isdbs3_phy::chain::eq::solve_training, rs);
+    // the consumer reports each decoded frame to the slow loop, which
+    // judges the taps it writes on them (and takes a bad set back)
+    let health = Arc::new(ChainHealth::new());
+    let slow = isdb_radio::chain::SlowLoopOptions {
+        health: Some(Arc::clone(&health)),
+        ..isdb_radio::chain::SlowLoopOptions::new(isdbs3_phy::chain::eq::solve_training, rs)
+    };
     let stream = crate::symstream::start_radio_with(
         backend,
         cfg,
@@ -893,6 +953,7 @@ pub fn run_radio(
         |rx| {
             consume(
                 rx,
+                Consumer::with_health(health),
                 seconds_max,
                 status,
                 stop,
@@ -921,6 +982,9 @@ pub fn run_radio(
                 "rereads": l.rereads,
                 "captures_rejected": l.captures_rejected,
                 "captures_rejected_by": l.captures_rejected_by,
+                "reverts": l.reverts,
+                "unverified": l.unverified,
+                "last_good_frame": l.last_good_frame,
                 "last_frame": l.last_frame,
                 "last_taps": l.last_taps,
                 "carrier_register": l.carrier,
@@ -948,7 +1012,7 @@ pub fn run_radio(
                 ticks = l.ticks,
                 captures_rejected = l.captures_rejected,
                 rereads = l.rereads,
-                "the equaliser's slow loop wrote taps {} time(s) in {} ticks ({} solve(s) rejected by its gate, {} capture(s) by the checks on the sums{}; {} of {} register reads read again after a foreign value, {} torn){}",
+                "the equaliser's slow loop wrote taps {} time(s) in {} ticks ({} solve(s) rejected by its gate, {} capture(s) by the checks on the sums{}; {} of {} register reads read again after a foreign value, {} torn){}{}",
                 l.solves,
                 l.ticks,
                 l.solves_rejected,
@@ -968,6 +1032,14 @@ pub fn run_radio(
                 l.rereads,
                 l.words_read,
                 l.torn,
+                if l.reverts + l.unverified > 0 {
+                    format!(
+                        "; {} written set(s) taken back on the frames under them, {} kept unverified",
+                        l.reverts, l.unverified
+                    )
+                } else {
+                    String::new()
+                },
                 l.error
                     .as_ref()
                     .map_or(String::new(), |e| format!("; it stopped on: {e}"))
@@ -1012,6 +1084,16 @@ mod tests {
     }
 
     fn consume_words(words: &[u16], split: usize) -> (Stats, Vec<u8>) {
+        consume_words_with(words, split, Consumer::new(), |e| e)
+    }
+
+    /// [`consume_words`] through `c`, each reader event through `edit`.
+    fn consume_words_with(
+        words: &[u16],
+        split: usize,
+        mut c: Consumer,
+        edit: impl Fn(Event) -> Event,
+    ) -> (Stats, Vec<u8>) {
         let dir = std::env::temp_dir().join(format!(
             "isdb-slotrx-{}-{split}-{}",
             std::process::id(),
@@ -1021,19 +1103,18 @@ mod tests {
         let path = dir.join("{tlv_id}.tlv").display().to_string();
         let mut out = Outputs::new(Some(&path), &[]).unwrap();
         let mut stats = Stats::default();
-        let mut c = Consumer::new();
         let mut r = Reader::new();
         let mut ev = Vec::new();
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         for ch in bytes.chunks(split) {
             r.feed_bytes(ch, &mut ev);
             for e in ev.drain(..) {
-                c.event(e, &mut out, &mut stats).unwrap();
+                c.event(edit(e), &mut out, &mut stats).unwrap();
             }
         }
         r.finish(&mut ev);
         for e in ev.drain(..) {
-            c.event(e, &mut out, &mut stats).unwrap();
+            c.event(edit(e), &mut out, &mut stats).unwrap();
         }
         c.finish(&mut out, &mut stats).unwrap();
         out.flush().unwrap();
@@ -1047,6 +1128,54 @@ mod tests {
     /// Valid slots of a 16APSK frame (Table 3.2-2: 96 of 120, the rest
     /// dummies).
     const VALID: u64 = 96;
+
+    /// The consumer reports each frame to the slow loop's health: the
+    /// frames under the start taps (taps_from none), decoded or not (the
+    /// lag frames), their n0 and slots; slots the decoder dropped (0
+    /// iterations, not converged) apart from the LDPC failures, and in the
+    /// summary's `dropped_slots` (still counted as LDPC failed).
+    #[test]
+    fn the_consumer_reports_each_frame_to_the_slow_loop() {
+        let (words, n) = slots_words(6, None);
+        let n = u32::try_from(n).unwrap();
+        let h = Arc::new(ChainHealth::new());
+        // slots 0 and 2 of every decoded frame dropped, as with one leaked
+        // decoder bank (#28)
+        let drop_two = |e: Event| match e {
+            Event::Block {
+                block: Block::Slot(mut s),
+                seq,
+            } if !s.dummy && (s.slot == 0 || s.slot == 2) => {
+                s.converged = false;
+                s.iterations = 0;
+                s.bch = None;
+                Event::Block {
+                    block: Block::Slot(s),
+                    seq,
+                }
+            }
+            e => e,
+        };
+        let (st, _) = consume_words_with(
+            &words,
+            65_536,
+            Consumer::with_health(Arc::clone(&h)),
+            drop_two,
+        );
+        let s = h.snapshot();
+        assert_eq!(s.frames, u64::from(n));
+        let c = s.current;
+        assert_eq!(c.taps_from, None);
+        assert_eq!((c.frames, c.undecoded), (n - 2, 2));
+        let decoded = u64::from(n - 2);
+        assert_eq!(c.slots, decoded * VALID);
+        assert_eq!((c.failed, c.dropped), (0, decoded * 2));
+        assert_eq!(c.failed_share(), Some(0.0));
+        assert!(c.n0().is_some_and(|x| x > 0.0));
+        let ch = st.chain.as_ref().unwrap();
+        assert_eq!(ch.dropped_slots, decoded * 2);
+        assert_eq!(st.ldpc_failed, decoded * 2);
+    }
 
     /// The synthetic stream (one TLV stream id B070h on all 120 slots of
     /// 16APSK 93/120, random data): every decoded frame's slots counted,
