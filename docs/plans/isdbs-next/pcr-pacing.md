@@ -1,6 +1,6 @@
 # PCR-paced placement in the ISDB-S producer (isdbs-next.md work item 1): investigation and design
 
-Investigation only, 2026-10-30. Repository `~/dev/isdb-rs` at `371e72b`, clean.
+Investigation only, 2026-10-30. Repository `/path/to/isdb-rs` at `371e72b`, clean.
 Nothing transmitted; the board was not touched. Offline measurements use a `bench60.ts`
 regenerated in the scratchpad by the same steps as `tools/isdbs-bench-tx.sh` (the bench
 WORKDIR's copy was not found under `~`, `/tmp` or `/var/tmp`) and a placement model

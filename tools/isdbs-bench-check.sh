@@ -66,7 +66,7 @@
 #   --transponder TP   for --record, and the 0x43 frequency expected with
 #                      BS SI (default bs1)
 #   --dt295 PATH       dt295 binary (default $DT295, else
-#                      ~/dev/PIX-DT295/target/release/dt295)
+#                      dt295 on PATH)
 # Environment: ISDB (default target/release/isdb of this checkout).
 # Exit status: 0 PASS, 1 FAIL, 2 usage or a tool failed.
 set -euo pipefail
@@ -84,7 +84,7 @@ DROPS_SET=
 IGNORE_NULLS=
 RECORD=
 TP=bs1
-DT295=${DT295:-$HOME/dev/PIX-DT295/target/release/dt295}
+DT295=${DT295:-dt295}
 need() { [ $# -ge 2 ] || die "$1 needs a value"; }
 while [ $# -gt 0 ]; do
     case $1 in

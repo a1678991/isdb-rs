@@ -1,7 +1,7 @@
 # ISDB-S next, items 3 and 4: media in the bench service, the in-process multiplexer, level margin
 
-Investigation only, 2026-10-30. Repository `~/dev/isdb-rs` at `371e72b`;
-tuner driver `~/dev/PIX-DT295` at `72872e5`. Nothing was transmitted, no board or tuner
+Investigation only, 2026-10-30. Repository `/path/to/isdb-rs` at `371e72b`;
+tuner driver `/path/to/PIX-DT295` at `72872e5`. Nothing was transmitted, no board or tuner
 command was run. Local runs: `isdb mux` of the media bench service (12 s, scratchpad),
 ffprobe / ffmpeg on that file, and a shell test of the bench script's FIFO loop.
 **[confirm]** marks what a bench run still has to settle. Item 1 (PCR-paced placement) is
@@ -149,7 +149,7 @@ frames, 21.355 s.)
 ES packets to pass **[confirm]**.
 
 ```sh
-D=~/dev/PIX-DT295/target/release/dt295
+D=/path/to/PIX-DT295/target/release/dt295
 $D status --isdbs                       # STATE 0x0011 (else tools/power-cycle.sh 1-2 1 3, then `dt295 init`)
 $D stream --isdbs bs1 --tsid 4010 --raw-config --seconds 30 --out "$WORK/rec-media.ts"
 ```
@@ -333,7 +333,7 @@ the AGC byte); **once 0xC3 = 0**: 0xBC 2 B (C/N raw), 0xEB 3 B and 0xF0 3 B (INF
 counters of the two hierarchical layers; tc90522 reads two 5-byte records from 0xEB).
 C/N in dB: tc90522 polynomial on `x = raw − 3000`, `None` below 3000 (`:938-951`).
 
-Evidence from the 2026-10-29 transcripts (`~/dev/PIX-DT295/captures/linux-20261029-*.i2c.txt`):
+Evidence from the 2026-10-29 transcripts (`/path/to/PIX-DT295/captures/linux-20261029-*.i2c.txt`):
 `status` 181755 read 0xBC in all 27 rounds, 0x0B66–0x0B7A, c3 = 00 every round; `tune`
 181740 0x0B6F; `stream` 181758 / 182110 0x0B72. Polynomial: raw 3 000 → 58.9 dB,
 3 500 → 36.5, 4 000 → 31.1, 5 000 → 25.7, 7 235 → 20.5 (the off-air BS-15 reading,
@@ -470,7 +470,7 @@ tools/isdbs-level-sweep.sh --conducted --uri ip:<PLUTO_IP> --tx-pid FILE \
 The ISDB-T level figures are prose today, in "Real receivers" (VERIFICATION.md:350-361):
 "It received at `att=60` and `att=80`, not at `att=85`" (TV, PlutoSky TX2, UHF 44,
 64QAM 3/4). docs/transmitting.md:88-95 repeats it. The tabular precedent is the PIX-DT295
-ISDB-T sweep (`~/dev/PIX-DT295/docs/bench-validation.md:282-296`):
+ISDB-T sweep (`/path/to/PIX-DT295/docs/bench-validation.md:282-296`):
 
 ```text
 | txvga | backoff | Level vs. baseline | Lock | Time to 0x80 = 00 | 0x80 progression | C/N mean (min…max) | 0x82 | Error regs A/B/C at end | Run |

@@ -4,7 +4,7 @@
 //! and captures of the bytes as the device stores them (for packed
 //! formats such as Tezuka's 8- and 12-bit modes).
 //!
-//! A [`Context`] is one connection to an IIO context (`ip:192.168.2.1`,
+//! A [`Context`] is one connection to an IIO context (`ip:192.0.2.30`,
 //! `usb:1.2.5`, `local:`, …). Attributes are read and written through
 //! [`Device`] and [`Channel`] handles borrowed from it. Streaming runs on a
 //! thread per stream that owns the IIO buffer and exchanges interleaved
@@ -64,7 +64,7 @@
 //! # Example
 //!
 //! ```no_run
-//! let mut ctx = isdb_iio::Context::open("ip:192.168.2.1")?;
+//! let mut ctx = isdb_iio::Context::open("ip:192.0.2.30")?;
 //! println!("{}", ctx.description());
 //! let phy = ctx.device("ad9361-phy")?;
 //! phy.channel("voltage0", false)?.write_i64("sampling_frequency", 8_126_984)?;

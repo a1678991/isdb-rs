@@ -66,7 +66,7 @@ No broadcast specification. The surface is the libiio 0.x C API
 
 | Item | Role |
 |---|---|
-| `Context::open(uri)` | connect (`ip:192.168.2.1`, `ip:pluto.local`, `usb:1.4.5`, `local:`); `uri`, `description`, `attr` (context attributes such as `hw_model`, `fw_version`), `set_timeout` |
+| `Context::open(uri)` | connect (`ip:192.0.2.30`, `ip:pluto.local`, `usb:1.4.5`, `local:`); `uri`, `description`, `attr` (context attributes such as `hw_model`, `fw_version`), `set_timeout` |
 | `Context::device(name) -> Device` | `read`/`write` and `read_debug`/`write_debug` of device attributes, `channel(name, output) -> Channel` |
 | `Channel` | `read`/`write` (text), `read_i64`/`write_i64`, `read_f64`/`write_f64` |
 | `Context::start_tx(device, channels, samples, kernel_buffers, depth) -> TxStream` | `sender: SyncSender<Vec<i16>>` (drop it to end the stream) + `counters` |
@@ -82,7 +82,7 @@ No broadcast specification. The surface is the libiio 0.x C API
 Receive one buffer from an AD936x (needs a device, so not run in tests):
 
 ```rust,no_run
-let mut ctx = isdb_iio::Context::open("ip:192.168.2.1")?;
+let mut ctx = isdb_iio::Context::open("ip:192.0.2.30")?;
 let phy = ctx.device("ad9361-phy")?;
 phy.channel("voltage0", false)?.write_i64("sampling_frequency", 8_126_984)?;
 phy.channel("altvoltage0", true)?.write_i64("frequency", 473_142_857)?; // RX LO
@@ -95,7 +95,7 @@ ctx.stop()?;
 
 `examples/info.rs` prints the library version, the context description
 and attributes, the ENSM mode and the TX clock chain of an AD936x without
-any RF activity: `cargo run -p isdb-iio --example info -- ip:192.168.2.1`.
+any RF activity: `cargo run -p isdb-iio --example info -- ip:192.0.2.30`.
 
 Diagnostics are `tracing` events, never printed; the crate installs no
 subscriber. `warn`: the first underrun or overrun of a stream (`count`,

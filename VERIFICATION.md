@@ -1797,7 +1797,7 @@ boot. BS7, 30 s, `RUST_LOG='info,isdb::chain=debug'`:
 - The TLV streams parse (`isdb tlv inspect`); the model's packets on the
   'after' capture are all packets of the host's; the FPGA run's are a
   different minute of the same streams.
-- Captures in `~/dev/sdr/isdbs3-bench/build8/` (not committed). The
+- Captures in `/path/to/sdr/isdbs3-bench/build8/` (not committed). The
   'before' capture mis-acquired (−528 kHz) and is not used.
 
 ### Build 9 on the board: issues #27, #28, #29 (2026-11-04)
@@ -1856,7 +1856,7 @@ capture with `isdb capture`; the analysis with
 
 ## ISDB-S transmitter in the FPGA: the image (2026-10-29)
 
-`fpga/tezuka/build.sh WORK isdb` with Vivado 2026.1 (`/opt/Xilinx/2026.1`),
+`fpga/tezuka/build.sh WORK isdb` with Vivado 2026.1 (`/path/to/Xilinx/2026.1`),
 the pinned Tezuka v0.3.24 / maia-sdr f7092ba sources: the PlutoSky R2
 image with the receive front end and `SymbolsTx`, without the DVB-S2
 transmitter and the ×8 TX FIR.
@@ -2195,18 +2195,18 @@ prints the Pluto's settings without opening a device.
 Waits for TX1 → 30 dB → DC block → PIX-DT295 to be reconnected
 (docs/plans/isdbs-next.md, bench notes). Media from `$M`
 (`crates/isdbt-mux/examples/media` of the main checkout); recordings in
-`~/dev/sdr/isdbs-bench/media-bench/`, never /tmp.
+`/path/to/sdr/isdbs-bench/media-bench/`, never /tmp.
 
 ```sh
-cd ~/dev/isdb-rs
+cd /path/to/isdb-rs
 M=$PWD/crates/isdbt-mux/examples/media
-W=~/dev/sdr/isdbs-bench/media-bench
+W=/path/to/sdr/isdbs-bench/media-bench
 pgrep -af "isdb tx --system isdbs"                       # nothing else on air
 tools/isdbs-bench-tx.sh --media="$M" --dry-run "$W" 45 ip:<PLUTO_IP>   # settings only
 # 1. the looped file (the default), placed TS kept for the comparison
 tools/isdbs-bench-tx.sh --media="$M" --placed 'placed-{ts_id}.ts' "$W" 45 ip:<PLUTO_IP> &
 echo $! > "$W/tx.pid"
-D=~/dev/PIX-DT295/target/release/dt295
+D=/path/to/PIX-DT295/target/release/dt295
 $D status --isdbs                                        # STATE 0x0011
 $D tune --isdbs bs1 --tsid 4017
 tools/isdbs-bench-check.sh --record 30 --placed "$W/placed-4017.ts" "$W/rec-media-loop.ts"
@@ -2324,11 +2324,11 @@ same packets), `uniform_mux_grid_is_the_pacers_slot_clock`.
 ### Pending: the bench run
 
 Waits for TX1 → 30 dB → DC block → PIX-DT295 to be reconnected, as the
-media run above. Recordings in `~/dev/sdr/isdbs-bench/mux-bench/`.
+media run above. Recordings in `/path/to/sdr/isdbs-bench/mux-bench/`.
 
 ```sh
-cd ~/dev/isdb-rs
-W=~/dev/sdr/isdbs-bench/mux-bench; mkdir -p "$W"
+cd /path/to/isdb-rs
+W=/path/to/sdr/isdbs-bench/mux-bench; mkdir -p "$W"
 sed 's/^layer = "B"/layer = "A"/' crates/isdbt-mux/examples/bs-bench.toml > "$W/bs.toml"
 pgrep -af "isdb tx --system isdbs"                       # nothing else on air
 target/release/isdb tx --system isdbs --channel BS1 --freq-unrestricted --mux-config "$W/bs.toml" \
@@ -2337,7 +2337,7 @@ target/release/isdb tx --system isdbs --channel BS1 --freq-unrestricted --mux-co
     --radio pluto:uri=ip:<PLUTO_IP> --offload fpga --gain att=45 --rf-enable \
     --placed-ts "$W/placed-{ts_id}.ts" &
 echo $! > "$W/tx.pid"
-D=~/dev/PIX-DT295/target/release/dt295
+D=/path/to/PIX-DT295/target/release/dt295
 $D tune --isdbs bs1 --tsid 4017
 tools/isdbs-bench-check.sh --record 20 --placed "$W/placed-4017.ts" "$W/rec-mux.ts"
 kill "$(cat "$W/tx.pid")"
@@ -2358,7 +2358,7 @@ attenuator → DC block → PIX-DT295 satellite input; FPGA image 2
 Tezuka v0.3.24, TX attenuation 45 dB, BS1 IF 1049.48 MHz.
 
 ```sh
-D=~/dev/sdr/isdbs-bench
+D=/path/to/sdr/isdbs-bench
 tools/isdbs-bench-tx.sh --feed loop --placed 'placed-{ts_id}.ts' "$D" 45 ip:<PLUTO_IP> &
 tools/isdbs-bench-check.sh --record 20 --placed "$D/placed-4017.ts" "$D/rec-bs-paced.ts"
 ```
@@ -2486,7 +2486,7 @@ the attenuation written live with `iio_attr … hardwaregain` while `isdb tx`
 streams, read back within 0.125 dB at every step, **0 host underruns and
 MISSED 0 throughout**; at each level a 10 s hold (`status --watch`, 86
 rounds), a fresh `dt295 tune`, and a 5 s `stream` checked with `isdb ts
-inspect`. Results (`~/dev/sdr/isdbs-bench/sweep-1/sweep.{csv,md}`):
+inspect`. Results (`/path/to/sdr/isdbs-bench/sweep-1/sweep.{csv,md}`):
 
 | TX att | vs. att 45 | Hold (locked rounds) | Fresh tune | 0xBC raw mean | C/N (tc90522 formula) | Errors 0xEB | TS 5 s sync / TEI / CC |
 |---|---|---|---|---|---|---|---|
@@ -2531,7 +2531,7 @@ inspect`. Results (`~/dev/sdr/isdbs-bench/sweep-1/sweep.{csv,md}`):
 
 Plan item 3 piece C (docs/plans/isdbs-next/media-and-margin.md §7). Same
 bench; `tools/isdbs-bench-tx.sh --media --placed 'placed-{ts_id}.ts'
-~/dev/sdr/isdbs-bench/media-bench 45 ip:<PLUTO_IP>` (the media of
+/path/to/sdr/isdbs-bench/media-bench 45 ip:<PLUTO_IP>` (the media of
 `crates/isdbt-mux/examples/media/`: MPEG-2 1440×1080i 300 pictures, AAC
 470 frames, 10.027 s loop → a 9.947 s TS, looped by `isdb tx --feed loop`,
 13 passes, cc-fixed 109, pes-shifted 8 561, 0 underruns, MISSED 0), then

@@ -11,7 +11,7 @@ use std::str::FromStr;
 /// key); the backend checks the argument names and values. The syntax
 /// cannot express every string: the name cannot contain `:` (it is
 /// `[A-Za-z0-9_-]+`), keys cannot contain `,` or `=`, values cannot
-/// contain `,` (they may contain `=` and `:`, e.g. `uri=ip:192.168.2.1`),
+/// contain `,` (they may contain `=` and `:`, e.g. `uri=ip:192.0.2.30`),
 /// and whitespace around names, keys and values is dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSpec {
@@ -125,11 +125,11 @@ mod tests {
         assert_eq!(d.backend, "sdr");
         assert_eq!(d.get("serial"), Some("0000abcd"));
         assert_eq!(d.get("other"), None);
-        let d = p("pluto:uri=ip:192.168.2.1,buffer=65536").unwrap();
+        let d = p("pluto:uri=ip:192.0.2.30,buffer=65536").unwrap();
         assert_eq!(
             d.args,
             vec![
-                ("uri".to_string(), "ip:192.168.2.1".to_string()),
+                ("uri".to_string(), "ip:192.0.2.30".to_string()),
                 ("buffer".to_string(), "65536".to_string())
             ]
         );

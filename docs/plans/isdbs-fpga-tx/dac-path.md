@@ -6,16 +6,16 @@ Read-only investigation, 2026-10-29. No code changed, no device accessed.
 
 | Abbrev. | Path | Revision |
 |---|---|---|
-| `F5` | `~/dev/sdr/maia-sdr-f5oeo/maia-hdl` (F5OEO fork, branch `refactor`) | HEAD `9c1cd64`. The bitstream was built from `f7092ba`. `git log f7092ba..HEAD` touches only `projects/common/uart16550.tcl` and the fishball7020 case of `projects/tezuka/system_bd.tcl`, so **every TX file below is identical at f7092ba**. |
-| `ADI` | `~/dev/sdr/adi-hdl` (sparse checkout; the other files were read with `git show HEAD:path`) | `c9a501d` (2026-10-20). **This is not the pinned `cf81ab15`**, which is absent from this clone. The fork's own `maia-hdl/adi-hdl` and `maia-hdl/dvb_fpga` submodules are **not initialised** (empty directories). |
+| `F5` | `/path/to/sdr/maia-sdr-f5oeo/maia-hdl` (F5OEO fork, branch `refactor`) | HEAD `9c1cd64`. The bitstream was built from `f7092ba`. `git log f7092ba..HEAD` touches only `projects/common/uart16550.tcl` and the fishball7020 case of `projects/tezuka/system_bd.tcl`, so **every TX file below is identical at f7092ba**. |
+| `ADI` | `/path/to/sdr/adi-hdl` (sparse checkout; the other files were read with `git show HEAD:path`) | `c9a501d` (2026-10-20). **This is not the pinned `cf81ab15`**, which is absent from this clone. The fork's own `maia-hdl/adi-hdl` and `maia-hdl/dvb_fpga` submodules are **not initialised** (empty directories). |
 | `DVB` | OpenResearchInstitute/dvb_fpga `297a5b7e`, fetched with `gh api` (`build/vivado/dvbs2_encoder_wrapper.vhd`, `rtl/dvbs2_encoder.vhd`) plus the fork's patches `F5/patches/dvb_fpga/*.patch` | `297a5b7e` |
-| `TZ` | `~/dev/sdr/tezuka_fw` | v0.3.24 `a304a1f` |
+| `TZ` | `/path/to/sdr/tezuka_fw` | v0.3.24 `a304a1f` |
 | `PS` | F5OEO/pluto-ori-ps `d76565f` (branch `tezukadvb`: `pluto_stream`, `pluto_mqtt_ctrl`), fetched with `gh api`. The pin is in `TZ/package/pluto_stream/pluto-stream.mk:12`. | `d76565f` |
 | `LX` | analogdevicesinc/linux `bf1d49f` (the kernel Tezuka builds, `TZ/configs/plutoskyr2_defconfig:25`): `drivers/iio/adc/ad9361.c`, `ad9361_conv.c`, `ad9361_regs.h`. `cf_axi_dds.c` / `.h` were read at `main`. | `bf1d49f` |
 
 The DSP figures for the ADI blocks below assume `c9a501d` behaves like `cf81ab15` for `util_rfifo`, `util_upack2`, `up_dac_common` and `axi_dmac`. These cores change rarely, but a diff against `cf81ab15` would settle it.
 
-No utilisation report exists on this machine: `~/dev/sdr/out` does not exist, and no `*utilization*.rpt` is under `~`. The `WORK/out/isdb/v4b_utilization*.rpt` that `fpga/README.md` cites is not present. Resource figures come from `fpga/README.md` and `TZ/doc/fpga_usage.md`.
+No utilisation report exists on this machine: `/path/to/sdr/out` does not exist, and no `*utilization*.rpt` is under `~`. The `WORK/out/isdb/v4b_utilization*.rpt` that `fpga/README.md` cites is not present. Resource figures come from `fpga/README.md` and `TZ/doc/fpga_usage.md`.
 
 ---
 

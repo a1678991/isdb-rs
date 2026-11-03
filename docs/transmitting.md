@@ -236,7 +236,7 @@ a program of *another* network (e.g. a satellite recording), use
 |---|---|---|
 | `--iq PATH` | — | write baseband to a file (`-` = stdout) instead of a radio |
 | `--iq-format cf32\|cs8` | cf32 | float32 I/Q (GNU Radio) or signed 8-bit I/Q (`hackrf_transfer`, scaled with `--backoff-db`) |
-| `--radio NAME[:key=value,...]` | — | transmit with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.168.2.1`); needs `--channel` or `--freq`, and `--rf-enable` or `--dry-run`. An unknown name lists the compiled-in backends and their cargo features |
+| `--radio NAME[:key=value,...]` | — | transmit with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.0.2.30`); needs `--channel` or `--freq`, and `--rf-enable` or `--dry-run`. An unknown name lists the compiled-in backends and their cargo features |
 | `--channel T` / `--freq HZ` | — | terrestrial channel T13–T52 (a bare number N means TN), or a centre frequency in Hz, within 470–710 MHz. Satellite channels (BSn, NDn) are refused |
 | `--freq-unrestricted` | off | allow a centre outside the 470–710 MHz TV band (shielded lab setups only); the backend's own range still applies (HackRF 1 MHz–6 GHz, Pluto 47 MHz–6 GHz) |
 | `--rf-enable` | off | **actually radiate** (licensed or conducted/shielded use only) |

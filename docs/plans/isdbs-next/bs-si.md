@@ -2,7 +2,7 @@
 
 Investigation only, 2026-10-30, for Work item 2 of
 [isdbs-next.md](../isdbs-next.md). Repository at `371e72b`; PIX-DT295 driver at
-`~/dev/PIX-DT295` `72872e5`. Nothing was transmitted and no device was opened.
+`/path/to/PIX-DT295` `72872e5`. Nothing was transmitted and no device was opened.
 Marks: **[spec]** a clause of a local spec; **[live]** seen in a BS recording
 (see §3.3); **[knowledge]** neither (from tables of other projects or memory);
 **[confirm]** still to be settled on the bench.
@@ -160,7 +160,7 @@ right-hand and even left-hand (sources in SPECS.md §1.2 l.132).
   notes as pending.
 - So the following are all **[live]** or **[knowledge]**, never [spec]:
   - the TS_ID layout `0x4 | 3 bits | transponder(5) | 0 | TS number(3)`
-    (stated by `~/dev/PIX-DT295/crates/dt295-recisdb/src/tsid.rs:1-20` from
+    (stated by `/path/to/PIX-DT295/crates/dt295-recisdb/src/tsid.rs:1-20` from
     the recisdb-rs and px4_drv tables);
   - that receivers show the BS service_id as a 3-digit decimal channel
     number;

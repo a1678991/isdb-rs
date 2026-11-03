@@ -1,5 +1,5 @@
 //! Print the libiio version and the context attributes of an IIO device
-//! (no RF activity): `cargo run -p isdb-iio --example info -- ip:192.168.2.1`.
+//! (no RF activity): `cargo run -p isdb-iio --example info -- ip:192.0.2.30`.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let uri = std::env::args()
         .nth(1)
