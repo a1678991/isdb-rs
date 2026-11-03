@@ -13,7 +13,12 @@
 isdb_quiet() {
   # avahi-daemon stays: `--radio pluto` without a uri finds the board by
   # mDNS. Watchers and controllers first, so nothing restarts what follows
-  # ([x]yz patterns never match the shell running this script)
+  # ([x]yz patterns never match the shell running this script).
+  # api_controller.sh (S95bgcript) must not run while isdb drives the FPGA
+  # receive chain: it reads cf-ad9361-lpc / -dds-core-lpc 0x80000088 and
+  # ad9361-phy 0x5E/0x5F through direct_reg_access every few seconds,
+  # which moves the address between the host's address write and read
+  # (isdb-rs issues #27, #29), and it write-1-clears the ADC overflow bit
   for p in '[w]atchdatveasy' '[w]atchconsolefreq' '[w]atchconsoletx' '[a]pi_controller' \
            '[m]qtt_obs_ctrl' '[b]itrate_strategy' '[m]qtt_longmynd' '[l]nb_config'; do
     pkill -f "$p"
