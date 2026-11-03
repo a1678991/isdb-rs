@@ -340,9 +340,9 @@ class SlotsRx(Elaboratable):
         init = Signal(3)
         m.d.comb += [eqm.tap_we.eq(0), eqm.tap_now.eq(0), eqm.tap_arm.eq(0), eqm.cap_strobe.eq(0), nco.f_load.eq(0),
                      nco.f_in.eq(carrier)]
-        tap_at = Signal(32)
-        tap_from = Signal(32)
-        m.d.comb += [eqm.tap_at.eq(tap_at), eqm.tap_from_in.eq(tap_from)]
+        # TAPS_FROM's value arms the equaliser in the cycle it is written
+        # (the model's rule: taps solved from frame N in use from N + 2)
+        m.d.comb += [eqm.tap_at.eq(value + EQ_APPLY_FRAMES), eqm.tap_from_in.eq(value)]
         # STATUS: locked, a frame head seen since the (re)start, frames decoded
         framed = Signal()
         decoding = Signal()
@@ -383,8 +383,6 @@ class SlotsRx(Elaboratable):
                         with m.Case(REG_AGC):
                             m.d.sync += ch.agc.eq(value[:16])
                         with m.Case(REG_TAPS_FROM):
-                            # the model's rule: taps solved from frame N in use from N + 2
-                            m.d.sync += [tap_from.eq(value), tap_at.eq(value + EQ_APPLY_FRAMES)]
                             m.d.comb += eqm.tap_arm.eq(1)
                         with m.Case(REG_SUMS_CAPTURE):
                             m.d.comb += eqm.cap_strobe.eq(1)

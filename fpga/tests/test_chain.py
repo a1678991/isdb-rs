@@ -550,7 +550,9 @@ class SlotsRxRegisterTest(unittest.TestCase):
     front end's readback, not the chain's); the chain's VERSION (0x400),
     MAX_ITER (0x40C, reset ldpc.DEFAULT_MAX_ITER, 14) written and read, AGC (0x40D), FEATURES
     (0x401: TAPS | SUMS | SUMS_CAPTURE, the limit in bits 15-8, the step 34 in
-    27-16), SUMS_CAPTURE (0x422: 0, then ARMED after a write), a tap
+    27-16), SUMS_CAPTURE (0x422: 0, then ARMED after a write), TAPS_FROM
+    (0x41B) twice, each arming the equaliser with its own frame (in use
+    from N + 2, reported as N), a tap
     (0x410 + 3, re | im << 16) written with WRITE_S and committed by START
     (INIT bit 0), CARRIER (0x402) written and loaded by START; the front
     end's STATUS (0x10) with bit 2 (the Slots words selected); then the
@@ -616,6 +618,13 @@ class SlotsRxRegisterTest(unittest.TestCase):
             await cmd(OP_WRITE_S, 1)
             await cmd(OP_ADDR, 0x422)
             seen["capture_armed"] = await cmd(OP_READ)
+            # TAPS_FROM arms the equaliser with the frame written (in use
+            # from N + 2), not the one written before it
+            eqm = dut.chain.back.eq
+            for n in (5, 87):
+                await cmd(OP_ADDR, 0x41B)
+                await cmd(OP_WRITE_S, n)
+                seen.setdefault("armed", []).append((ctx.get(eqm.pend_from), ctx.get(eqm.pend_at)))
             # tap 3 = (-5, 7) and carrier -1234, loaded by START with INIT bit 0
             await cmd(OP_ADDR, 0x413)
             await cmd(OP_HI, 7)
@@ -640,7 +649,8 @@ class SlotsRxRegisterTest(unittest.TestCase):
         ident = ID_MAGIC << 16 | FORMAT_VERSION << 12 | 32 | ID_CHAIN
         self.assertEqual(seen, {
             "id": ident, "period": 0x12345678, "version": 1, "max_iter_reset": 14, "max_iter": 33,
-            "agc": 0x0400, "features": 0b10011 | 33 << 8 | 34 << 16, "capture_idle": 0, "capture_armed": 0b10, "tap3": 7 << 16 | 0xFFFB,
+            "agc": 0x0400, "features": 0b10011 | 33 << 8 | 34 << 16, "capture_idle": 0, "capture_armed": 0b10,
+            "armed": [(5, 7), (87, 89)], "tap3": 7 << 16 | 0xFFFB,
             "carrier": (-1234) & 0xFFFFFFFF, "status": 0b101, "period_again": 0x12345678, "id_again": ident,
         })
 

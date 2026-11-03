@@ -122,6 +122,9 @@ class Equaliser(Elaboratable):
         self.taps = [[Signal(signed(16), name=f"w{k}_{c}", init=(1 << TAP_FRAC if k == CENTRE and c == 0 else 0))
                       for c in range(2)] for k in range(TAPS)]
         self.taps_from = Signal(32, init=0xFFFFFFFF)
+        # the armed set's frames (verification)
+        self.pend_at = Signal(32)
+        self.pend_from = Signal(32)
         # sums readback
         self.sums_frame = Signal(32, init=0xFFFFFFFF)
         self.sums_count = Signal(16)
@@ -177,8 +180,8 @@ class Equaliser(Elaboratable):
         # ---- taps ----------------------------------------------------------
         pend = [[Signal(signed(16), name=f"pend{k}_{c}") for c in range(2)] for k in range(TAPS)]
         pend_valid = Signal()
-        pend_at = Signal(32)
-        pend_from = Signal(32)
+        pend_at = self.pend_at
+        pend_from = self.pend_from
         with m.If(self.tap_we):
             for k in range(TAPS):
                 with m.If(self.tap_idx == k):
