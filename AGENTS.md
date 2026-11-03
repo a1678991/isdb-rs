@@ -14,6 +14,24 @@
   reusable investigation scripts in `scripts/` or `tools/` and commit them;
   keep generated data, build products and large logs out of git.
 
+## Public repository and local overrides
+
+- This repository is public. In committed code, documentation, examples,
+  configuration and verification reports, use placeholders for host-specific
+  IP addresses, hostnames and filesystem paths. For example, use
+  `ip:<DEVICE_IP>` and `/path/to/capture.ts`, not actual device addresses,
+  usernames, home directories or recording locations. Repository-relative
+  paths such as `fpga/build/` should remain concrete.
+- Make host-specific settings overridable at execution time through CLI
+  arguments, environment variables or gitignored local configuration. Prefer
+  existing interfaces such as `ISDB_PLUTO_URI` and `ISDB_RS_CAPTURE_TS`;
+  document the override mechanism when adding a new setting.
+- The user or agent may substitute actual values locally for an authorized
+  run without editing committed defaults. Do not write resolved values back
+  into tracked files. Sanitize command transcripts and generated reports
+  before committing or posting them publicly, and review staged diffs for
+  accidental disclosure of local addresses or paths.
+
 ## Repository map
 
 This is a Rust workspace implementing Japanese digital broadcasting from
