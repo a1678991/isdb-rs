@@ -148,6 +148,31 @@ budget is about 10 passes per codeword against a measured mean of 3.1
 an entry committed while it is full (beyond any rate the slots can
 cause) is lost and sets the sticky `queue_overflow`.
 
+Abandoned codewords (issue #28). A context's codeword holds its bank from
+`begin` until it is committed; the chain may give one up before its last
+LLR: a frame dropped or the chain restarted (a lost sync, the host's
+START) while a slot codeword loads, the host stopping the input mid-way.
+Two rules return such a bank, so none stays allocated without a codeword
+that will ever be committed (before them each abandoned codeword kept its
+bank until the bitstream was reloaded: 3, 2, 1, then no free bank, every
+codeword dropped, the TMCC's too):
+
+- `begin` on a context that still holds an uncommitted bank (its codeword
+  begun, not committed, not dropped) takes that bank again (`reused`
+  counts it): the new codeword writes every position it uses after the
+  old one's writes (the load pipeline is in order), so nothing of the old
+  survives into its decode;
+- `abort` (one cycle, `in_ctx`) gives up the context's open codeword: its
+  bank is freed at once (`aborted` counts it) and the context is closed
+  (a commit of it without a new `begin` would enter the queue as a
+  dropped codeword: an overrun record, as for a `begin` with no free
+  bank). Committed codewords are untouched: they decode and their results
+  leave in order as always. The chain sends `abort` on context 0 after
+  every frame drop and restart (`back.py`), through the bridge's input
+  FIFO in order with the beats.
+
+`held` is the number of banks allocated (registered).
+
 Ports (all in the sync domain):
   begin, in_ctx
       a codeword of context in_ctx begins (one cycle, before or with its
@@ -175,8 +200,14 @@ Ports (all in the sync domain):
   res_valid (one cycle, before the codeword's first word), res_iterations,
   res_converged, res_unsat, res_overrun
       each committed codeword's result, in commit order;
+  abort, in_ctx
+      give up context in_ctx's open (begun, uncommitted) codeword: its
+      bank freed (one cycle, not with `begin` or `start`);
   overruns (16), queue_overflow
       dropped codewords since reset (wraps), and the sticky queue flag;
+  held, aborted (16), reused (16)
+      the banks allocated now; banks freed by `abort` and banks a `begin`
+      took back from its context's abandoned codeword, since reset (wrap);
   busy, passes, cycles (verification: the engine's passes and cycles of
       the last codeword).
 """
@@ -330,6 +361,10 @@ class LdpcDecoder(Elaboratable):
         self.res_overrun = Signal()
         self.overruns = Signal(16)
         self.queue_overflow = Signal()
+        self.abort = Signal()
+        self.held = Signal(range(banks + 1))
+        self.aborted = Signal(16)
+        self.reused = Signal(16)
         self.busy = Signal()
         self.passes = Signal(ITER_BITS + 1)
         self.cycles = Signal(24)
@@ -339,7 +374,8 @@ class LdpcDecoder(Elaboratable):
                 self.in_rate, self.start, self.st_rate, self.st_max_iter, self.st_offset,
                 self.st_short, self.o_valid, self.o_data, self.o_last, self.o_ready,
                 self.res_valid, self.res_iterations, self.res_converged, self.res_unsat,
-                self.res_overrun, self.overruns, self.queue_overflow, self.busy]
+                self.res_overrun, self.overruns, self.queue_overflow, self.busy, self.abort,
+                self.held, self.aborted, self.reused]
 
     def elaborate(self, platform):
         m = Module()
@@ -1234,26 +1270,47 @@ class LdpcDecoder(Elaboratable):
         # bit per stage (pos div 374 < 128, c div q < 374 < 512): 9 stages.
         # bank allocation at `begin`, per load context: the lowest free bank,
         # or the codeword is dropped (no bank, counted, its result an overrun
-        # record in order)
+        # record in order); a context still holding the bank of a codeword
+        # it gave up takes that one again, and `abort` frees it (docstring,
+        # "Abandoned codewords")
         alloc = Signal(K)  # 1: the bank holds a codeword (loading .. output)
         ctx_bank = Array([Signal(kb, name=f"ctx{c}_bank") for c in range(2)])
         ctx_drop = Array([Signal(name=f"ctx{c}_drop", init=1) for c in range(2)])
+        ctx_open = Array([Signal(name=f"ctx{c}_open") for c in range(2)])  # begun, not committed
         full = alloc.all()
         lowest = Signal(kb)
         for b in reversed(range(K)):
             with m.If(~alloc[b]):
                 m.d.comb += lowest.eq(b)
         set_mask = Signal(K)
+        abort_mask = Signal(K)  # the bank `abort` frees this cycle
+        holds = Signal()  # in_ctx holds the bank of an uncommitted codeword
+        reuse = Signal()  # this `begin` takes that bank again
+        m.d.comb += [holds.eq(ctx_open[self.in_ctx] & ~ctx_drop[self.in_ctx]),
+                     reuse.eq(self.begin & holds & ~self.start)]
+        fresh = self.begin & ~reuse
         m.d.comb += self.load_ready.eq(~full)
         with m.If(self.begin):
-            m.d.sync += [ctx_bank[self.in_ctx].eq(lowest), ctx_drop[self.in_ctx].eq(full)]
-            with m.If(full):
-                m.d.sync += self.overruns.eq(self.overruns + 1)
+            m.d.sync += ctx_open[self.in_ctx].eq(1)
+            with m.If(reuse):
+                m.d.sync += self.reused.eq(self.reused + 1)
             with m.Else():
-                m.d.comb += set_mask.eq(1 << lowest)
-        m.d.sync += alloc.eq((alloc | set_mask) & ~free_mask)
-        w_bank = Mux(self.begin, lowest, ctx_bank[self.in_ctx])
-        w_drop = Mux(self.begin, full, ctx_drop[self.in_ctx])
+                m.d.sync += [ctx_bank[self.in_ctx].eq(lowest), ctx_drop[self.in_ctx].eq(full)]
+                with m.If(full):
+                    m.d.sync += self.overruns.eq(self.overruns + 1)
+                with m.Else():
+                    m.d.comb += set_mask.eq(1 << lowest)
+        with m.Elif(self.start):
+            m.d.sync += ctx_open[self.in_ctx].eq(0)
+        with m.Elif(self.abort):
+            m.d.sync += [ctx_open[self.in_ctx].eq(0), ctx_drop[self.in_ctx].eq(1)]
+            with m.If(holds):
+                m.d.comb += abort_mask.eq(1 << ctx_bank[self.in_ctx])
+                m.d.sync += self.aborted.eq(self.aborted + 1)
+        m.d.sync += alloc.eq((alloc | set_mask) & ~free_mask & ~abort_mask)
+        m.d.sync += self.held.eq(sum(alloc[b] for b in range(K)))
+        w_bank = Mux(fresh, lowest, ctx_bank[self.in_ctx])
+        w_drop = Mux(fresh, full, ctx_drop[self.in_ctx])
 
         in_k = R("ik", [r.k for r in rates], 16)[self.in_rate]
         in_G = R("iG", [r.G for r in rates], gbits)[self.in_rate]

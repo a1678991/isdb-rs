@@ -916,6 +916,60 @@ class LdpcVectorTest(unittest.TestCase):
         res = simldpc.simulate(doc, plan=plan)
         self.assertEqual(simldpc.compare(dict(doc, codewords=[cw[y], cw[x]]), res), [])
 
+    def test_abort_frees_an_abandoned_bank(self):
+        # issue #28 (the board's recipe, at the decoder): a codeword begins,
+        # half of it loads, the chain stops and restarts (its abort), five
+        # times: after each abort no bank is held and `load_ready` is up;
+        # then K = 3 codewords back to back (no wait for a bank) all decode,
+        # bit-exact, none dropped. Before the abort every stop kept a bank:
+        # after three, every codeword was dropped
+        doc = ldpcmodel.vectors("toy-a")
+        cw = doc["codewords"]
+        half = doc["n"] // 2
+        x, after = 4, [0, 1, 2]
+        plan = []
+        for r in range(5):
+            # (no wait for a free bank: the design before the abort had none left)
+            plan += [("begin", x, 0, False), ("llr", x, 0, 0, half), ("abort", 0), ("tick", 3),
+                     ("probe", f"restart {r}")]
+        for i in after:
+            plan += [("begin", i, 0, False), ("llr", i, 0, 0, None), ("start", i, 0)]
+        probes = []
+        res = simldpc.simulate(doc, plan=plan, probes=probes)
+        self.assertEqual([(p["held"], p["load_ready"]) for p in probes], [(0, 1)] * 5)
+        self.assertEqual(probes[-1]["aborted"] - probes[0]["aborted"], 4)
+        self.assertEqual([r["overrun"] for r in res], [False] * 3)
+        self.assertEqual(res[-1]["overruns"], 0)
+        self.assertEqual(simldpc.compare(dict(doc, codewords=[cw[i] for i in after]), res), [])
+
+    def test_a_begin_takes_back_its_contexts_abandoned_bank(self):
+        # issue #28 without the abort: five codewords of context 0 begin and
+        # are given up (no commit, no abort; one bank held, four taken back),
+        # a TMCC-like codeword of context 1 is given up half-way and begun
+        # again; a context-0 codeword in between: both decode bit-exact in
+        # commit order, nothing dropped, and every bank is free at the end
+        doc = ldpcmodel.vectors("toy-a")
+        cw = doc["codewords"]
+        half = doc["n"] // 2
+        x, y, z = 4, 1, 2
+        plan = []
+        for _ in range(5):
+            plan += [("begin", x, 0, False), ("llr", x, 0, 0, half)]
+        plan += [("tick", 3), ("probe", "five abandoned"),
+                 ("begin", y, 1, False), ("llr", y, 1, 0, half),
+                 ("begin", z, 0, False), ("llr", z, 0, 0, None), ("start", z, 0),
+                 ("begin", y, 1, False), ("llr", y, 1, 0, None), ("start", y, 1),
+                 ("tick", 40_000), ("probe", "drained")]
+        probes = []
+        res = simldpc.simulate(doc, plan=plan, probes=probes)
+        first, end = probes
+        self.assertEqual((first["held"], first["overruns"]), (1, end["overruns"]))
+        self.assertEqual(end["reused"] - first["reused"], 2)
+        self.assertEqual((end["held"], end["load_ready"]), (0, 1))
+        self.assertEqual([r["overrun"] for r in res], [False, False])
+        self.assertEqual(res[-1]["overruns"], 0)
+        self.assertEqual(simldpc.compare(dict(doc, codewords=[cw[z], cw[y]]), res), [])
+
     def b44(self, step, python_model=False):
         """Every layered B44 set at `step` (the Rust model's, or with
         `python_model` the Python model's): every codeword on the compiled

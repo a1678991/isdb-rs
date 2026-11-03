@@ -873,6 +873,29 @@ cycle.
   overrun record in order (K = 2, a codeword begun while both banks are
   held), two contexts open at once with the results in commit order, and
   the limit as a run-time input (toy codewords at 16 against the model).
+- **Abandoned codewords** (issue #28, 2026-11-04). A codeword the chain
+  gives up before its last LLR (a frame dropped, a restart: a lost sync or
+  the host's START, the input stopped mid-slot) used to keep its bank
+  until the bitstream was reloaded: on the board 0, then 2, then 50 of 96
+  slots dropped per frame over consecutive stop/START runs, then every
+  codeword, the TMCC's too (no layout, no slot blocks). Two rules now: a
+  `begin` on a context that still holds an uncommitted bank takes that
+  bank again (`reused`; the load pipeline is in order, so the new
+  codeword's writes follow the old one's), and `abort` (`in_ctx`) gives up
+  the context's open codeword and frees its bank at once (`aborted`; a
+  commit of the closed context without a `begin` would be a dropped
+  codeword's overrun record). Committed codewords are never touched: they
+  decode and leave in order, so the result stream, the bridge's tag queue
+  and the finish stage stay in step. `held` counts the banks allocated.
+  The chain sends the abort as an OP_ABORT beat on context 0 after each
+  frame drop and restart (`back.py`, once the demapper's pipeline has
+  emptied), in order with the other beats through the bridge. Tests:
+  `test_abort_frees_an_abandoned_bank` (five half-loaded codewords each
+  aborted: no bank held after each, then K codewords back to back all
+  decode), `test_a_begin_takes_back_its_contexts_abandoned_bank` (five
+  given up without an abort, a context-1 codeword begun twice: bit-exact,
+  nothing dropped, every bank free after), and the chain-level
+  `RealDecoderChainTest.test_stop_and_start_free_the_decoder`.
 - **The contract points this design relies on** (agreed with the Rust
   model's owner): the edge order inside a check is free (ties give every
   edge the same magnitude); the output stream is in storage order, so its

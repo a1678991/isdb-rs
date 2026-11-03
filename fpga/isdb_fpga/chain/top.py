@@ -59,6 +59,21 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | 0x640 .. | CONST: not built (reads 0) |
 | CTRL | the front end's bits (RUN, START, SYMBOLS) and bit 3 SLOTS (the DMA carries the `Slots` words); START also restarts the chain (the model's `Chain::loss` of 0 symbols: everything but the carrier register, the taps, the constellation and n0), loads CARRIER and, with INIT bit 0, the taps, and restarts the blocks' sequence numbers |
 
+START and the decoder (issue #28): the decoder's clock domain is not reset
+by START. The restart drops the slot codeword being loaded, and the back
+end then sends the decoder an abort for it (back.py), which frees its bank;
+codewords already committed decode and their blocks leave as usual (a
+stop, CTRL without SLOTS, lets them drain: the chain's output runs on, not
+selected). So after a stop and a START every bank is free, no context
+is open and the bridge's FIFOs and tag queue are empty; a
+START while the chain runs may be followed by blocks of codewords
+committed before it (each carries its frame counter) and by a TMCC
+codeword whose burst had begun (it is never cut, and the layout it gives
+after the restart stays queued: the restart epoch, README "What is
+left"). A codeword's begin on a
+context that still holds an abandoned bank takes it back, so no bank
+stays held even without the abort.
+
 The ID word gains the chain's `Slots` format version in bits 11-8
 (`ID_CHAIN`: 1 << 8), 0 on every front end so far; the front end's STATUS
 (0x10) reads bit 2 while the `Slots` words are selected.
@@ -267,7 +282,8 @@ class SlotsRx(Elaboratable):
             b = self.bridge
             out += [b.begin, b.d_ctx, b.d_valid, b.d_pos, b.d_llr, b.d_rate, b.start, b.st_rate,
                     b.st_max_iter, b.st_offset, b.st_short, b.load_ready, b.o_valid, b.o_data, b.o_last,
-                    b.o_ready, b.res_valid, b.res_iterations, b.res_converged, b.res_unsat, b.res_overrun]
+                    b.o_ready, b.res_valid, b.res_iterations, b.res_converged, b.res_unsat, b.res_overrun,
+                    b.abort]
         return out
 
     def elaborate(self, platform):

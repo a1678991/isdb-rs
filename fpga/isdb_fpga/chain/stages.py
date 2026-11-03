@@ -541,6 +541,8 @@ class BackBench(Elaboratable):
         self.pv = Signal()
 
     def elaborate(self, platform):
+        from .ldpc_if import OP_WRITE
+
         m = Module()
         m.submodules.back = bk = self.back
         eq, fc = bk.eq, bk.fc
@@ -558,7 +560,8 @@ class BackBench(Elaboratable):
             eq.tap_val[1].eq(self.c),
             eq.tap_now.eq(go & (k == K_TAPNOW)),
             p.in_ready.eq(1),
-            self.pv.eq(p.in_valid & (p.in_ctx == 0)),
+            # the demapper's beats (not the abort beat after a drop, back.py)
+            self.pv.eq(p.in_valid & (p.in_ctx == 0) & (p.in_op == OP_WRITE)),
         ]
         return m
 
@@ -728,7 +731,7 @@ def run(stage, doc, backend, symbols):
 
 # --- the whole chain (stages 1-6, 8, 9 with the LDPC stub) ----------------------
 
-C_SYM, C_TAP, C_TAPNOW, C_HEAD, C_WORD, C_LOSS = range(6)
+C_SYM, C_TAP, C_TAPNOW, C_HEAD, C_WORD, C_LOSS, C_START = range(7)
 
 
 class ChainBench(Elaboratable):
@@ -963,7 +966,10 @@ class RealChainBench(Elaboratable):
     """`SlotsChain` with the real decoder: `LdpcBridge` and `ldpc.LdpcDecoder`
     (S = 34, K = 3, every rate; the `ldpc` domain, 5x the symbol clock in
     the simulation), MAX_ITER `ldpc.DEFAULT_MAX_ITER` (14). Records: C_SYM (x0, x1), C_TAP / C_TAPNOW
-    (the host's taps at open), C_LOSS (a symbols lost before the next).
+    (the host's taps at open), C_LOSS (a symbols lost before the next),
+    C_START (what `SlotsRx`'s CTRL START does to the chain: a loss of 0
+    symbols, the carrier register loaded with the host's CARRIER, 0, the
+    taps written loaded as with INIT bit 0, the blocks' sequence from 0).
     `errors`: [(frame, slot, [positions])] bits to flip in the decoder's
     output stream (a set's `bch_errors`: the model flipped the same in its
     decoder's output), between the bridge and the chain."""
@@ -1035,13 +1041,16 @@ class RealChainBench(Elaboratable):
         eq = ch.back.eq
         k = self.kind
         go = self.i_valid & self.i_ready
+        to_chain = (k == C_SYM) | (k == C_LOSS) | (k == C_START)
+        start = go & (k == C_START)
         m.d.comb += [
-            self.i_ready.eq(Mux((k == C_SYM) | (k == C_LOSS), ch.i_ready, 1)),
-            ch.i_valid.eq(self.i_valid & ((k == C_SYM) | (k == C_LOSS))),
-            ch.i_loss.eq(k == C_LOSS), ch.i_lost.eq(self.a),
+            self.i_ready.eq(Mux(to_chain, ch.i_ready, 1)),
+            ch.i_valid.eq(self.i_valid & to_chain),
+            ch.i_loss.eq((k == C_LOSS) | (k == C_START)), ch.i_lost.eq(Mux(k == C_START, 0, self.a)),
             ch.i_x[0].eq(self.a), ch.i_x[1].eq(self.b),
             eq.tap_we.eq(go & (k == C_TAP)), eq.tap_idx.eq(self.a), eq.tap_val[0].eq(self.b),
-            eq.tap_val[1].eq(self.c), eq.tap_now.eq(go & (k == C_TAPNOW)),
+            eq.tap_val[1].eq(self.c), eq.tap_now.eq(go & ((k == C_TAPNOW) | (k == C_START))),
+            ch.front.nco.f_load.eq(start), ch.front.nco.f_in.eq(0), ch.finish.packer.start.eq(start),
             ch.r_overrun.eq(br.out_overrun),
         ]
         return m
@@ -1055,7 +1064,11 @@ class RealChainBench(Elaboratable):
                 "late": ch.back.demap.late, "overrun": ch.back.tmcc.overrun,
                 "in_lost": self.br.in_lost, "dec_overruns": self.dec.overruns,
                 "fifo_max": ch.results.max_level,
-                "queue_overflow": self.dec.queue_overflow}
+                "queue_overflow": self.dec.queue_overflow,
+                # the decoder's banks and the bridge's queues (issue #28)
+                "held": self.dec.held, "load_ready": self.dec.load_ready, "aborted": self.dec.aborted,
+                "reused": self.dec.reused, "aborts": ch.back.aborts, "in_level": self.br.v_in_level,
+                "tag_level": self.br.v_tags, "out_level": self.br.v_out_level, "rf_level": ch.results.level}
 
 
 def blocks_by_frame(words):
@@ -1178,4 +1191,127 @@ def run_chain_real(doc, taps, backend=None, symbols=None):
     what = (f"{n} symbols in, {len(got)} Slots words, {len(gb)} blocks of the model's frames ({diag}); "
             f"blocks of frames the model did not send: {extra_blocks}; lateness {lateness(gorder)} "
             f"slot blocks; build {t_build:.0f} s, {cyc} cycles in {dt:.1f} s ({cyc / max(dt, 1e-9):.0f}/s)")
+    return what, bad
+
+
+def run_chain_restarts(doc, taps, backend=None, cycles=4, pause=200_000):
+    """Issue #28's recipe on the chain with the real decoder (chain-7-hdl):
+    the input from its start to inside the first codeword of the first
+    decoded frame (frame 2), then the host's stop (no input for `pause`
+    symbol clocks: what was committed drains) and its START (C_START),
+    `cycles` times; then the whole input once more. After each START: no
+    bank held, a bank free (`load_ready`), the bridge's FIFOs and tag queue
+    and the result FIFO empty. The last pass: the slot and TMCC blocks of
+    its three frames against the model's (below: the decoded bits and
+    BCH results; not the frame counter, which runs on across a restart,
+    nor the iteration counts), so frame 2 decodes every slot as without a
+    stop. Before the abort each stop kept a decoder bank (one of three):
+    the last pass had none. Returns (what, bad)."""
+    from . import simx
+    from . import slots as S
+
+    backend = backend or simx.compiled_backend()
+    if backend is None:
+        raise RuntimeError("the real-decoder chain needs a compiled backend (simx.compiled_backend)")
+    x = doc["input"]
+    n = len(x) // 2
+    decoded = [f for f in doc["frames"] if f["decoded"]]
+    # inside the frame's first codeword in the demapper (it starts at the
+    # frame's symbol 56; stage 3 releases a slot once the next slot's head
+    # is in: a slot and more behind the input)
+    stop = decoded[0]["at"] + SLOT + 6000
+
+    def symbols(m):
+        recs, gaps, acc = [], [], 0.0
+        for i in range(m):
+            recs.append((C_SYM, x[2 * i], x[2 * i + 1], 0))
+            acc += 40e6 / 33.7561e6 - 1
+            gaps.append(int(acc))
+            acc -= int(acc)
+        return recs, gaps
+
+    b = RealChainBench(errors=doc.get("bch_errors", ()))
+    t0 = time.time()
+    e = engine(b, b.ports(), backend, tag="chainreal")
+    e.stall_limit = 3_000_000
+    g = e.group("ov", ["ow"])
+    bad, starts = [], []
+    keys = ("held", "load_ready", "in_level", "tag_level", "out_level", "rf_level", "aborted", "aborts",
+            "reused", "dec_overruns")
+    stop_recs, stop_gaps = symbols(stop)
+    for r in range(cycles + 1):
+        last = r == cycles
+        recs, gaps = (symbols(n) if last else (list(stop_recs), list(stop_gaps)))
+        if r == 0 and taps is not None:
+            head = [(C_TAP, i, taps[2 * i], taps[2 * i + 1]) for i in range(11)] + [(C_TAPNOW, 0, 0, 0)]
+            recs, gaps = head + recs, [0] * len(head) + gaps
+        if not last:
+            # the stop: `pause` idle clocks after the last symbol (a gap
+            # follows its record), then START
+            gaps[-1] += pause
+            recs.append((C_START, 0, 0, 0))
+            gaps.append(0)
+        try:
+            e.run("i_valid", "i_ready", ["kind", "a", "b", "c"], recs, tail=1_500_000 if last else 3000,
+                  gaps=gaps)
+        except RuntimeError as err:
+            return "", bad + [f"pass {r}: {err}"]
+        words = [w for (w,) in e.read(g)]
+        if not last:
+            st = {k: e.get(k) for k in keys}
+            starts.append(st)
+            if (st["held"], st["load_ready"], st["in_level"], st["tag_level"], st["out_level"],
+                    st["rf_level"]) != (0, 1, 0, 0, 0, 0):
+                bad.append(f"after START {r + 1}: {st}")
+    dt = time.time() - t0
+    # the last pass against the model: its frames in order are the model's 0, 1, 2
+    try:
+        got = S.blocks(words)
+    except AssertionError as err:
+        return "", bad + [f"the last pass does not parse as Slots blocks: {err}"]
+    exp = S.blocks(doc["slots_words"])
+    frames = sorted({f for k, _, f, _ in got if k == S.TMCC})
+    mframes = sorted({f for k, _, f, _ in exp if k == S.TMCC})
+    if len(frames) != len(mframes):
+        return "", bad + [f"the last pass has TMCC blocks of frames {frames}, the model of {mframes}"]
+    to_model = dict(zip(frames, mframes))
+    gk = {(to_model[f], k, p[0] & 0x7F if k == S.SLOT else 0): p for k, _, f, p in got if f in to_model}
+    ek = {(f, k, p[0] & 0x7F if k == S.SLOT else 0): p for k, _, f, p in exp}
+    # A restart keeps the NCO's phase (the model's `Chain::loss` does), so
+    # the last pass's symbols are rotated by another phase than the model's
+    # run from reset: the same decisions, LLRs that may differ by rounding,
+    # so a slot's iteration count may too (7 of 96 here; with the phase
+    # zeroed at START, a scratch experiment, none). Compared: every block's kind, every slot's mode, modulation,
+    # rate, convergence, BCH result and decoded bits, and the TMCC's bits
+    # and BCH result; the iteration counts that differ are reported.
+    dropped = compared = 0
+    iters = []
+    for key in sorted(ek):
+        f, k, _s = key
+        if k == S.STATUS:
+            continue  # its counters run on across the restarts
+        if key not in gk:
+            bad.append(f"block {key} missing in the last pass")
+            continue
+        gp, ep = list(gk[key]), list(ek[key])
+        compared += 1
+        if k == S.SLOT:
+            gf_, ef_ = S.slot_fields(gp), S.slot_fields(ep)
+            dropped += int(not gf_["dummy"] and not gf_["converged"] and gf_["iterations"] == 0)
+            diff = [n_ for n_ in ef_ if n_ != "iterations" and gf_[n_] != ef_[n_]]
+            if gf_["iterations"] != ef_["iterations"]:
+                iters.append((key[2], gf_["iterations"], ef_["iterations"]))
+            if diff:
+                bad.append(f"block {key}: {diff} differ in the last pass")
+        else:
+            if gp[0] != ep[0] or gp[4:] != ep[4:]:  # BCH, the bits (1: iterations, 2-3: the frame)
+                bad.append(f"block {key}: the TMCC's BCH or bits differ in the last pass")
+        if len(bad) > 12:
+            break
+    if dropped:
+        bad.append(f"{dropped} dropped slots in the last pass")
+    what = (f"{cycles} stop/START cycles (stop at symbol {stop}, {pause} clocks), then the whole input: "
+            f"{compared} slot and TMCC blocks of the model's compared, {dropped} dropped, iterations "
+            f"(slot, got, model's) differing in {iters}; after each START {starts}; "
+            f"{e.cycles()} cycles in {dt:.0f} s")
     return what, bad
