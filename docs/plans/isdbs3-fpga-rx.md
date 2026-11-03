@@ -1444,3 +1444,82 @@ other `direct_reg_access` client) go. It is a `Slots` format change: the
 model (`isdbs3_phy::chain` emits the block, so the bit-exact tests keep
 it), the vectors, `isdb_frontend::slots` (version 2, the reader) and the
 host's slow loop, about 150 lines each side.
+
+#### Build 9 on the board (2026-11-04, receive only)
+
+The image of `fpga/isdbs3-rx-issues-27-28-29` (HDL at 291756f; host
+binary from 291756f for the first runs and from 91c360a, the clean-end
+fix, for the repeat of #28's recipe). Built in the project flow with
+every constraint met, no `holdfix.tcl` needed: **WNS +0.044 ns, WHS
++0.050 ns, 0 failing endpoints of 162 123**; `rx_clk` +0.044 / +0.051,
+decoder `c0` **+0.240** / +0.050 (the allocation path's extra LUT level
+did not cost the 200 MHz), symbol clock +0.416 / +0.053, symbol → l_clk
++0.151, l_clk → symbol +0.416, symbol ↔ decoder +2.833 / +2.134,
+`clk_fpga_0` +1.388, `RGMII_rxc` +0.100 / +0.062. 43 730 LUT (82.2 %),
+49 859 FF, 123.5 BRAM36, 176 DSP; `isdb_slots` 37 266 LUT (decoder 11 572,
+chain 18 189, bridge 308), 117 BRAM36, 164 DSP. `isdbs3_rx_top.bin`
+2 788 864 bytes, sha256
+`447223e684eee748484b5e8f5072625f5e5ab862a33916ef200dea2157109dc3` (XSA
+`33a53cd5b4d711ca7228ee20f7e648644bb1f3487f01b85cc353e8259f5c1feb`). On the
+card: build 8 as `isdbs3_rx8_top.bin` (`uEnv.txt.prev-rx8`), build 9 as
+`isdbs3_rx_top.bin`; the first boot needed two rebinds ("Tuning TX
+FAILED"); ID word 0x15DB4120. Every run opened with "features 0x220e73
+(LDPC limit 14, step 34); taps identity (loaded)" (bits 4 SUMS_CAPTURE,
+5 DECODER_HEALTH, 6 SUMS_SEQ). Runs with `tools/isdbs3-issue-checks.sh`
+(captures in `~/dev/sdr/isdbs3-bench/build9/`, not committed).
+
+**#28, stop/START (6 × 8 s back to back, then 60 s, no reboot; twice).**
+Every run completed with exit status 0 and decoded; the dropped slots
+(not converged with 0 iterations) per run:
+
+| Series | run 1 | 2 | 3 | 4 | 5 | 6 | 60 s after | at most per frame |
+|---|---|---|---|---|---|---|---|---|
+| host 291756f, 02:13 | 1 | 2 | 0 | 3 | 3 | 0 | 0 | 1 |
+| host 91c360a, 02:34 | 4 | 3 | 3 | 4 | 1 | 2 | 1 | 2 |
+
+The issue's 0 → 2 → 50 → dead progression is gone: nothing accumulates
+over 12 consecutive stop/START cycles. Every drop falls in a run's first
+34 frames, before its first solved taps are in force (identity taps,
+4.1–4.8 iterations per codeword, the decoder at its busiest), and the
+not-converged slots there too (7–13 frames per 8 s run before the taps,
+0–1 after): load, not a leak. At each open the decoder reads **1 of 3
+banks held** ("the LDPC decoder still holds banks before START …; START
+frees them": a JSON-logged run, `held 1, banks 3, overruns 30`), so a
+stop still leaves its open codeword's bank, and START's abort frees it:
+the runs after show no held bank's effect. TMCC decoded every frame,
+STATUS locked / framed / decoding throughout, 0 losses in the second
+series; the 60 s runs: 4 and 2 not converged (0 and 1 dropped), 2.30
+mean iterations, MER ≈ 15.0 dB.
+
+The first series lost blocks twice (runs 4 and 5: 10 704 and 15 329
+blocks, 3.4 and 4.9 s of signal, early in the run), and the 600 s run
+below once (14 615 blocks at 45 s): the board's `dmesg` shows its
+Ethernet link down and up three times in that period ("macb … Link is
+Down", "unable to generate target frequency: 125000000 Hz", "Link is Up
+- 1Gbps/Full"), and no further flap and no loss in the 20 min of runs
+after. A link fault of the board (or its switch port), not the chain;
+the Slots sequence numbers counted every lost block.
+
+**#27 / #29, with `api_controller.sh` running (600 s, `RUST_LOG=
+isdb::chain=debug`).** `tools/pluto-autorun.sh` had stopped it at boot;
+started again for this run (`setsid /root/api_controller.sh`), running
+throughout (two processes). Result: 1 731 413 valid slots, **8 not
+converged** (2 dropped), per minute of signal 4 0 1 0 2 0 1 0 0 0
+(3 of the 8 before the first taps); 200 tap sets written in 400 ticks,
+**0 solves rejected, 0 captures rejected, 0 reverts, 0 recoveries, 0
+torn, 0 unsettled, 1 reread** (1 of 65 201 register reads read again
+after a foreign value: the race was there and caught); no "capture did
+not hold"; n0 33 100–34 500 at every 2-minute mark (K 124 380–129 687),
+MER 15.04 dB at the end, mean iterations 2.11; 70.9 s user + 5.4 s sys
+for 600 s (0.13 cores), RSS 6.0 GB; exit 0. One loss (the link flap
+above, 14 615 blocks, 120 frames).
+
+**Then `api_controller.sh` stopped, 300 s.** 871 488 valid slots, **2 not
+converged** (0 dropped; per minute 1 0 0 0 1), 102 solves, **0
+rereads**, every other counter 0, 0 losses, MER 15.09 dB, 2.11 mean
+iterations, exit 0. (The `pkill -f '[a]pi_controller'` on the board also
+ended the ssh session it ran in, whose command line contained the
+pattern; the board was fine.)
+
+Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-rx8` (build 8),
+`prev-rx7`, `prev-rx6` or `prev-txrx2`, then `reboot` and `recover`.

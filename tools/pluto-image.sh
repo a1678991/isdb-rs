@@ -14,10 +14,11 @@
 #   tools/pluto-image.sh rebind                 the §2 recovery when cf-ad9361-lpc is missing
 #   tools/pluto-image.sh run 'COMMAND'          one command on the board
 #
-# HOST (default 10.10.0.30), SSHPASS (default analog: Tezuka's root).
+# HOST (required: the board's address, or PLUTO_HOST), SSHPASS (required:
+# the board's root password; Tezuka keeps the ADI firmware's default).
 set -euo pipefail
-HOST=${HOST:-10.10.0.30}
-export SSHPASS=${SSHPASS:-analog}
+HOST=${HOST:-${PLUTO_HOST:?set HOST or PLUTO_HOST to the board's address}}
+export SSHPASS=${SSHPASS:?set SSHPASS to the board's root password}
 SSH=(sshpass -e ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR
      -o ConnectTimeout=5 "root@$HOST")
 SCP=(sshpass -e scp -O -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR)

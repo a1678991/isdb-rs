@@ -977,7 +977,7 @@ fn isdbs_offload_dry_runs() {
 
 /// Opt-in hardware test of the FPGA transmit path, nothing radiated:
 /// `ISDB_RS_PLUTO_TX_LOOPBACK_URI` names a PlutoSky R2 (libiio URI, e.g.
-/// `ip:192.0.2.30`) running a bitstream with both FPGA blocks (the
+/// `ip:<PLUTO_IP>`) running a bitstream with both FPGA blocks (the
 /// transmit block `SymbolsTx` and the receive front end). `isdb tx
 /// --system isdbs --offload fpga` sends two TS files into the AD9361's
 /// digital loopback (`loopback=on`: the TX LO powered down, the
@@ -1349,7 +1349,7 @@ fn iq_symbols_writes_words_that_read_back() {
 static RADIO: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Opt-in hardware test (receive only): `ISDB_RS_PLUTO_URI` names a
-/// PlutoSDR-family radio, e.g. `ip:192.0.2.30`; `ISDB_RS_PLUTO_CAPTURE_FREQ`
+/// PlutoSDR-family radio, e.g. `ip:<PLUTO_IP>`; `ISDB_RS_PLUTO_CAPTURE_FREQ`
 /// the frequency or channel to capture (default `BS1`, the BS1 satellite
 /// IF). Captures two short segments and checks the recording and its
 /// metadata; the signal itself is not checked.
@@ -1462,7 +1462,7 @@ fn symbols_probe_on_a_pluto() {
 
 /// Opt-in hardware test (receive only) of what needs the Tezuka firmware:
 /// `ISDB_RS_TEZUKA_URI` names a PlutoSDR-family radio running Tezuka
-/// (e.g. `ip:192.0.2.30`), `ISDB_RS_PLUTO_CAPTURE_FREQ` the frequency
+/// (e.g. `ip:<PLUTO_IP>`), `ISDB_RS_PLUTO_CAPTURE_FREQ` the frequency
 /// (default `bs1`). Takes an 8-bit libiio buffer, a 1 s 8-bit stream and
 /// maia-sdr recordings in 8 and 12 bits, and checks each file against its
 /// metadata; the signal itself is not checked.

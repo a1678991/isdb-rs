@@ -1,6 +1,6 @@
 # ISDB-S next, items 3 and 4: media in the bench service, the in-process multiplexer, level margin
 
-Investigation only, 2026-10-30. Repository `/home/a1678991/dev/isdb-rs` at `371e72b`;
+Investigation only, 2026-10-30. Repository `~/dev/isdb-rs` at `371e72b`;
 tuner driver `~/dev/PIX-DT295` at `72872e5`. Nothing was transmitted, no board or tuner
 command was run. Local runs: `isdb mux` of the media bench service (12 s, scratchpad),
 ffprobe / ffmpeg on that file, and a shell test of the bench script's FIFO loop.
@@ -375,7 +375,7 @@ repo, separate commits):
   kernel queue (580 ms), docs/transmitting.md:602-606; the tuner loses lock each time. Gives
   the acquisition threshold, not the hold threshold.
 - **External write while streaming** (no code):
-  `iio_attr -u ip:10.10.0.30 -q -o -c -- ad9361-phy voltage0 hardwaregain -55`
+  `iio_attr -u ip:<PLUTO_IP> -q -o -c -- ad9361-phy voltage0 hardwaregain -55`
   (libiio 0.26 on this host; the `--` keeps getopt from reading `-55` as options
   **[confirm the exact argument order once, with a read: no value]**). The attribute is the
   same sysfs file `set_level` writes; iiod serves several clients; the DMA stream is
@@ -411,7 +411,7 @@ Plan a second pass with +20 dB of fixed attenuation (50 dB pad) overlapping the 
    block → PIX-DT295; nothing else on TX1; `--rf-enable` only through
    `tools/isdbs-bench-tx.sh`.
 1. Tuner up: `dt295 status --isdbs` STATE 0x0011 (else power-cycle + `init`).
-2. Transmitter: `tools/isdbs-bench-tx.sh WORK 45 ip:10.10.0.30` in its own process group, pid
+2. Transmitter: `tools/isdbs-bench-tx.sh WORK 45 ip:<PLUTO_IP>` in its own process group, pid
    in a file; wait for "FPGA transmit block running"; `dt295 tune --isdbs bs1 --tsid 4010`
    must lock.
 3. Baseline at 45: `status --watch 10` + `stream --raw-config --seconds 10` (TS counters).
@@ -442,7 +442,7 @@ count is non-zero; TS-onset: first step with TEI or CC > 0 in `stream`.
 ### 6.2 Script design: `tools/isdbs-level-sweep.sh`
 
 ```text
-tools/isdbs-level-sweep.sh --conducted --uri ip:10.10.0.30 --tx-pid FILE \
+tools/isdbs-level-sweep.sh --conducted --uri ip:<PLUTO_IP> --tx-pid FILE \
     [--from 45] [--to 89.75] [--coarse 5] [--fine 1] [--finest 0.25] \
     [--dwell 10] [--stream-every 5] [--allow-below-45] OUTDIR
 ```

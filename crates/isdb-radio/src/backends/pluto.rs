@@ -4,7 +4,7 @@
 //!
 //! * Device arguments:
 //!   * `uri`: libiio context URI, e.g. `ip:192.168.2.1` (USB RNDIS),
-//!     `ip:192.0.2.30` (Ethernet), `usb:1.4.5`. Without it, the
+//!     `ip:<PLUTO_IP>` (Ethernet), `usb:1.4.5`. Without it, the
 //!     `ISDB_PLUTO_URI` environment variable; without that, the device is
 //!     found by mDNS when it is opened: the one host on the link answering
 //!     for libiio's DNS-SD service `_iio._tcp.local` or for `pluto.local`
