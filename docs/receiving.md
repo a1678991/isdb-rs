@@ -251,16 +251,87 @@ With `--offload auto` (default) `isdb rx --radio … --system isdbs3`
 uses the chain when the radio's ID word announces it, else the symbol
 front end, else the CPU; `--offload fpga` needs at least the front end
 and takes the chain when offered. On open the host configures the front
-end as for symbols and starts the chain on identity equaliser taps, the
-nominal constellation and a default noise estimate; a thread then reads
-the chain's equaliser training sums every 2 s, solves them on the host
-(the 11 taps, as the CPU model does) and writes the taps back. The
-chain tracks the carrier itself; the summary reports its carrier
-register. `--slots-out FILE` records the words (with `FILE.json`), and
-`--slots FILE` decodes such a recording.
+end as for symbols and starts the chain on known equaliser taps — the
+identity, or the last good set of an earlier capture of the same
+process; never the taps the chain still holds from the run before
+(START keeps them otherwise, and a bad set there could stop the TMCC
+decoding from the first frame: issue #28) — the nominal constellation
+and a default noise estimate; a thread then reads the chain's equaliser
+training sums every 2 s, solves them on the host (the 11 taps, as the
+CPU model does) and writes the taps back. The chain tracks the carrier
+itself; the summary reports its carrier register. `--slots-out FILE`
+records the words (with `FILE.json`), and `--slots FILE` decodes such a
+recording.
 
-No image has the chain yet (its HDL is in progress); the host side is
-tested against a model of the registers, and against the chain's
+**Stop board-side register pollers while the chain runs.** The host
+reads the chain's registers (the 308 training-sum words among them)
+through `cf-ad9361-lpc`'s `direct_reg_access`: libiio writes the
+register's address there, then reads the value, and that address is
+one for every client of the device. Any other client that reads or
+writes a register of the core between the two makes the host's read
+return that register instead (issues #27, #29). Tezuka's
+`/root/api_controller.sh`, started at boot by `/etc/init.d/S95bgcript`,
+is such a client: every 3–4 s it reads `cf-ad9361-lpc` and
+`cf-ad9361-dds-core-lpc` 0x80000088 and `ad9361-phy` 0x5E / 0x5F
+(`iio_attr -D … direct_reg_access`), and with it running 7 of 146
+training-sum sets read on a PlutoSky R2 had a word read as 0, against 0
+of 163 with it stopped. Stop it before `isdb rx` (until the next boot):
+
+```sh
+ssh root@PLUTO "pkill -f '[a]pi_controller'"   # or kill -STOP its pid to pause it
+```
+
+`tools/pluto-autorun.sh` (installed as the board's
+`/mnt/jffs2/autorun.sh`) stops it at every boot, with Tezuka's other
+watchers and receivers. The same script write-1-clears the ADC
+overflow bit (0x80000088 bit 2) whenever it sees it set while the RX DMA
+runs, so with it running the overflow counts of IQ and `Symbols`
+captures can miss real overflows; the `Slots` path does not poll that
+bit at all (its blocks' sequence numbers count every loss: `blocks_lost`
+in the summary).
+
+**How the host guards the taps** (`isdb_radio::chain`, the slow loop):
+
+- **Verified reads.** Every chain register is read until two `gpio_in`
+  reads in a row, each its own address write, agree (at most 8); a
+  register that never settles makes the tick a torn read, tried again.
+  This catches a foreign read between the address write and the read,
+  whoever made it. Within `isdb` every `direct_reg_access` access holds
+  one process-wide lock (`isdb-iio`), and the `Slots` stream polls no
+  register while the slow loop runs.
+- **Checks on the sums** before a solve is written: R's diagonal real
+  and within 8 % of its mean, R near-Toeplitz (`|R[r][c] − R[r+1][c+1]|`
+  within 4 % of the diagonal), and the solve's fit (the share of the
+  training references' energy its taps reproduce) at most 1.01. A
+  failed capture is counted with its reason (`captures_rejected_by`).
+- **The gate** against the last good set: the centre tap within 5 %, the
+  whole vector within 0.20 (`‖w − w_good‖ / ‖w_good‖`), the off-centre
+  energy at most max(0.30, the good set's + 0.10), the fit within 0.02;
+  a second solve in a row like the rejected one is a lasting change and
+  is written.
+- **Revert.** A written set is judged on the frames decoded under it
+  (the status blocks' `taps_from`, 10 frames): more than 5 % of their
+  codewords failed (slots the decoder dropped, 0 iterations, not
+  counted), their mean n0 more than 20 % above the good set's, or 10
+  frames without a layout, and the last good set is written again
+  (`reverts`).
+- **Recovery.** No layout (the chain's STATUS without DECODING), or no
+  training-sum capture held, for more than 1.5 s: the last good set is
+  written again unless it is the one in force, else the identity
+  (`recoveries`); with the identity in force nothing more can be done
+  from the host (warned: the signal, or the decoder).
+- **A stream that dries up is an error.** The `Slots` stream uses
+  buffers of 64 Ki words (one fills in about 3 s even when the chain
+  sends only its TMCC and status blocks) and a 30 s libiio timeout; a
+  refill that still times out ends the capture with an error that
+  names the chain's STATUS and counters read at that moment, the
+  summary reports it (`chain.capture_error`), and `isdb rx` exits
+  non-zero. Slots the LDPC decoder dropped (0 iterations, not
+  converged: a decoder bank lost across stop and START, issue #28) are
+  counted apart (`chain.dropped_slots`) as well as among the LDPC
+  failures.
+
+The host side is tested against a model of the registers, and against the chain's
 fixed-point CPU model: `--symbols FILE --chain fixed` runs that model
 over a `Symbols` recording and decodes its output through the same
 `Slots` words, bit for bit what the FPGA is to send. It is slow (about

@@ -142,8 +142,9 @@ program the RX as `open_rx` does and wait 100 ms for the LO and the AGC.
 
 ### RX Slots: the ISDB-S3 receive chain in the FPGA
 
-Not on any image yet (docs/plans/isdbs3-fpga-rx.md, pieces 4 and 6); the
-host side is built and tested against a model of the registers. An image
+The receive-only `isdbs3-rx` image (docs/plans/isdbs3-fpga-rx.md,
+piece 6) has the chain; the host side is also tested against a model of
+the registers. An image
 with the chain puts its `Slots` format version in bits 11–8 of the front
 end's ID word (`cf-ad9361-lpc` `gpio_in`, 0x800000B8), so `offloads`
 finds it with the same one register read and returns
@@ -152,15 +153,52 @@ the front end's format and taps and the chain's `Slots` version,
 configures the RX as for symbols, runs `chain::ChainControl::open`
 through the command words on `gpio_out` (0x800000BC): CTRL 0, VERSION
 and FEATURES, the front end's configuration with KP read back, the
-carrier and layout-lag registers, the host's taps / constellation / n0
-if given and FEATURES allows, INIT, CTRL START then RUN | SYMBOLS |
-SLOTS, STATUS checked; starts the equaliser's slow loop on a thread with
-a second libiio context (when FEATURES has the training sums); streams
-`voltage0` 16-bit words as `capture_symbols` does (the overflow bit
-checked per buffer; the words' sequence numbers count what is lost);
-stops the slow loop, reads the chain's counters and sends CTRL 0 (also
-after an error). The register addresses are placeholders in one file,
-`isdb_frontend::control::chain`, so the final map changes nothing here.
+carrier and layout-lag registers, the host's taps (the identity when it
+has none: CTRL START keeps the taps in force otherwise, and a bad set of
+the run before would survive, issue #28) / constellation / n0 if given
+and FEATURES allows, INIT, CTRL START then RUN | SYMBOLS | SLOTS,
+STATUS checked; starts the equaliser's slow loop on a thread with a
+second libiio context (when FEATURES has the training sums); streams
+`voltage0` 16-bit words on the same DMA path as `capture_symbols`, in
+buffers of 65 536 words by default (64 kernel buffers, a 30 s libiio
+timeout: a buffer must fill even while the chain has no layout and sends
+only its TMCC and status blocks, ≈ 21 000 words/s) and without polling
+the ADC overflow bit (the words' sequence numbers count what is lost,
+and the poll's register read raced the slow loop's, issue #27); stops
+the slow loop, reads the chain's counters (and after a failed stream
+its STATUS, frame and capture registers, `ChainControl::state`, which
+the error then names) and sends CTRL 0 (also after an error). The
+register map is one file, `isdb_frontend::control::chain`.
+
+**Register reads are not atomic** (issues #27, #29). libiio 0.x reads a
+register as two requests to the device's `direct_reg_access` (the
+address, then the value), and the address is shared by every client of
+the device: a read or write by another thread, process or host in
+between returns the other register. `isdb-iio` holds one process-wide
+lock over every `direct_reg_access` access; other processes are not
+covered, so `chain::ChainControl` reads every register until two
+`gpio_in` reads in a row agree (`chain::settled`, at most 8 reads; a
+register that never settles is `Unsettled`, a torn tick), and checks
+the training sums before solving (`SumsCheck`: R's diagonal real and
+within 8 %, R near-Toeplitz within 4 %, the solve's `fit` at most 1.01).
+On a Tezuka board, stop `/root/api_controller.sh` (started by
+`/etc/init.d/S95bgcript`; it polls `cf-ad9361-lpc` 0x80000088 and
+`ad9361-phy` 0x5E/0x5F every few seconds and write-1-clears the ADC
+overflow bit) while the chain runs: `pkill -f '[a]pi_controller'`, or
+`tools/pluto-autorun.sh` at boot. Its clearing of the overflow bit also
+means an IQ or symbol capture's overflow count is no proof of no loss
+while it runs.
+
+**The slow loop** (`chain::SlowLoop`) gates a solve against the last
+good set (`Gate`: the centre tap 5 %, the vector 0.20, the off-centre
+energy, the fit 0.02); with `SlowLoopOptions::health` (the CLI's
+consumer of the `Slots` words reports each frame, `ChainHealth`) it
+watches a written set on the frames under it and takes it back
+(`Revert`: n0 + 20 %, 5 % of the codewords failed, or no layout); and
+when the chain has had no layout, or no capture held, for 1.5 s it
+writes the last good set or the identity (`Tick::Recovered`). The
+module documentation gives the bounds and the measurements behind
+them.
 
 ### TX symbol codes: the FPGA transmit block
 
