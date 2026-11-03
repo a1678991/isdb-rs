@@ -1506,7 +1506,7 @@ Zen 4.
 
 2026-10-26, PlutoSky R2 with the format-4 bitstream (`fpga/README.md`),
 receive only, satellite IF through RX1 (no DC block), 40 Msps, 56 MHz.
-`isdb rx --system isdbs|isdbs3 --radio pluto:uri=ip:192.0.2.30 --channel
+`isdb rx --system isdbs|isdbs3 --radio pluto:uri=ip:<PLUTO_IP> --channel
 … --seconds 30` with the default `--offload auto` (plan §0.16).
 
 | | ISDB-S, BS1 | ISDB-S3, BS7 |
@@ -1686,7 +1686,7 @@ the decoder's 200 MHz −2.708 (6 123), `axi_ad9361` at ADI's 4 ns −2.654
 
 ### On the board (2026-11-03)
 
-Receive only, PlutoSky R2 at `ip:10.10.0.30`, `/boot/uEnv.txt`
+Receive only, PlutoSky R2 at `ip:<PLUTO_IP>`, `/boot/uEnv.txt`
 `bitstream_image=isdbs3_rx_top.bin` (previous entry saved as
 `uEnv.txt.prev-txrx2`; the other images untouched). First boot "Tuning TX
 FAILED", `cf-ad9361-lpc` bound on the second rebind. ID word 0x15DB4120;
@@ -1804,7 +1804,7 @@ boot. BS7, 30 s, `RUST_LOG='info,isdb::chain=debug'`:
 
 The checks of [docs/plans/isdbs-fpga-tx.md](docs/plans/isdbs-fpga-tx.md)
 §5, run on the PlutoSky R2 (Tezuka v0.3.24, the format-4 `isdb_top.bin`,
-`ip:10.10.0.30`) before the transmit block was written. Register reads
+`ip:<PLUTO_IP>`) before the transmit block was written. Register reads
 with `iio_reg`; the transmit runs with `isdb-radio`'s `examples/txrate.rs`
 into the AD9361's digital data-port loopback with the TX LO powered down
 and the attenuation at its maximum (nothing reaches the TX port); the
@@ -2083,7 +2083,7 @@ terrestrial service through the script before this change gives the same
 (0.097 / 0.100 s), so it is the 4 s file's edge, not BS SI.
 
 Also checked without a radio: `tools/isdbs-bench-tx.sh --dry-run --feed
-loop WORK 45 ip:10.10.0.30` multiplexes `bs60.ts` and prints the Pluto's
+loop WORK 45 ip:<PLUTO_IP>` multiplexes `bs60.ts` and prints the Pluto's
 settings for `--ts 0x4017=…` (`--dry-run` opens no device); `isdb tx
 --system isdbs --ts 0x4010=<the 0x4017 TS>` warns once that the PAT's
 transport_stream_id 0x4017 is not the TMCC's 0x4010; `isdb tx
@@ -2173,9 +2173,9 @@ cd ~/dev/isdb-rs
 M=$PWD/crates/isdbt-mux/examples/media
 W=~/dev/sdr/isdbs-bench/media-bench
 pgrep -af "isdb tx --system isdbs"                       # nothing else on air
-tools/isdbs-bench-tx.sh --media="$M" --dry-run "$W" 45 ip:10.10.0.30   # settings only
+tools/isdbs-bench-tx.sh --media="$M" --dry-run "$W" 45 ip:<PLUTO_IP>   # settings only
 # 1. the looped file (the default), placed TS kept for the comparison
-tools/isdbs-bench-tx.sh --media="$M" --placed 'placed-{ts_id}.ts' "$W" 45 ip:10.10.0.30 &
+tools/isdbs-bench-tx.sh --media="$M" --placed 'placed-{ts_id}.ts' "$W" 45 ip:<PLUTO_IP> &
 echo $! > "$W/tx.pid"
 D=~/dev/PIX-DT295/target/release/dt295
 $D status --isdbs                                        # STATE 0x0011
@@ -2185,7 +2185,7 @@ python3 -I tools/media-decode-check.py --source "$M" --max-jumps 3 \
     --keep "$W/check-loop" --json "$W/check-loop.json" "$W/rec-media-loop.ts"
 kill "$(cat "$W/tx.pid")"                                # the script stops isdb tx and its writer
 # 2. the live multiplexer (no file seam)
-tools/isdbs-bench-tx.sh --media="$M" --feed fifo "$W" 45 ip:10.10.0.30 &
+tools/isdbs-bench-tx.sh --media="$M" --feed fifo "$W" 45 ip:<PLUTO_IP> &
 echo $! > "$W/tx.pid"
 $D tune --isdbs bs1 --tsid 4017
 tools/isdbs-bench-check.sh --record 30 "$W/rec-media-live.ts"
@@ -2303,9 +2303,9 @@ W=~/dev/sdr/isdbs-bench/mux-bench; mkdir -p "$W"
 sed 's/^layer = "B"/layer = "A"/' crates/isdbt-mux/examples/bs-bench.toml > "$W/bs.toml"
 pgrep -af "isdb tx --system isdbs"                       # nothing else on air
 target/release/isdb tx --system isdbs --channel BS1 --freq-unrestricted --mux-config "$W/bs.toml" \
-    --radio pluto:uri=ip:10.10.0.30 --offload fpga --gain att=45 --dry-run
+    --radio pluto:uri=ip:<PLUTO_IP> --offload fpga --gain att=45 --dry-run
 target/release/isdb tx --system isdbs --channel BS1 --freq-unrestricted --mux-config "$W/bs.toml" \
-    --radio pluto:uri=ip:10.10.0.30 --offload fpga --gain att=45 --rf-enable \
+    --radio pluto:uri=ip:<PLUTO_IP> --offload fpga --gain att=45 --rf-enable \
     --placed-ts "$W/placed-{ts_id}.ts" &
 echo $! > "$W/tx.pid"
 D=~/dev/PIX-DT295/target/release/dt295
@@ -2330,7 +2330,7 @@ Tezuka v0.3.24, TX attenuation 45 dB, BS1 IF 1049.48 MHz.
 
 ```sh
 D=~/dev/sdr/isdbs-bench
-tools/isdbs-bench-tx.sh --feed loop --placed 'placed-{ts_id}.ts' "$D" 45 ip:10.10.0.30 &
+tools/isdbs-bench-tx.sh --feed loop --placed 'placed-{ts_id}.ts' "$D" 45 ip:<PLUTO_IP> &
 tools/isdbs-bench-check.sh --record 20 --placed "$D/placed-4017.ts" "$D/rec-bs-paced.ts"
 ```
 
@@ -2451,7 +2451,7 @@ docs/plans/isdbs-next/media-and-margin.md §6). Image 2 on the PlutoSky R2,
 the PCR-paced BS bench broadcast (`tools/isdbs-bench-tx.sh --feed loop`,
 TS_ID 0x4017) on air, TX1 → 30 dB fixed attenuator (no extra pad) → DC
 block → PIX-DT295 (driver `d4ad6dc`, `status --json`).
-`tools/isdbs-level-sweep.sh --conducted --tx-pid … --uri ip:10.10.0.30`
+`tools/isdbs-level-sweep.sh --conducted --tx-pid … --uri ip:<PLUTO_IP>`
 (`3f42d0e`: the read-back needs `iio_attr` without `-q` on libiio 0.26):
 the attenuation written live with `iio_attr … hardwaregain` while `isdb tx`
 streams, read back within 0.125 dB at every step, **0 host underruns and
@@ -2502,7 +2502,7 @@ inspect`. Results (`~/dev/sdr/isdbs-bench/sweep-1/sweep.{csv,md}`):
 
 Plan item 3 piece C (docs/plans/isdbs-next/media-and-margin.md §7). Same
 bench; `tools/isdbs-bench-tx.sh --media --placed 'placed-{ts_id}.ts'
-~/dev/sdr/isdbs-bench/media-bench 45 ip:10.10.0.30` (the media of
+~/dev/sdr/isdbs-bench/media-bench 45 ip:<PLUTO_IP>` (the media of
 `crates/isdbt-mux/examples/media/`: MPEG-2 1440×1080i 300 pictures, AAC
 470 frames, 10.027 s loop → a 9.947 s TS, looped by `isdb tx --feed loop`,
 13 passes, cc-fixed 109, pes-shifted 8 561, 0 underruns, MISSED 0), then
@@ -2526,7 +2526,7 @@ plays the bench service; the per-pass media gap of a looped file (video
 ## In-process ISDB-S multiplexer into the PIX-DT295 (2026-10-31)
 
 Plan item 3 piece J bench run. Same bench; `isdb tx --system isdbs --radio
-pluto:uri=ip:10.10.0.30 --channel BS1 --freq-unrestricted --offload fpga
+pluto:uri=ip:<PLUTO_IP> --channel BS1 --freq-unrestricted --offload fpga
 --rf-enable --gain att=45 --mux-config bs.toml --placed-ts …` (bs.toml =
 `bs-bench.toml` with `layer = "A"`; PCR grid uniform; 0 underruns, MISSED
 0, 0 late PES), then `tools/isdbs-bench-check.sh --record 20 --rate
