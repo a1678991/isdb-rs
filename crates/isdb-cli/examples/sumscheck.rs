@@ -6,9 +6,10 @@
 //! deviation, all over the mean diagonal) and the `fit` of its solve.
 //! Then, for every `EVERY`-th frame, each of the 308 register words read
 //! as 0 (the value a foreign `direct_reg_access` client gives, #29): how
-//! many of these corrupted sets the default `SumsCheck` catches, and how
-//! far the taps of the ones it does not catch are from the clean solve
-//! (`‖Δw‖ / ‖w‖`), for words of R and of p apart.
+//! many of these corrupted sets the default `SumsCheck` catches, alone and
+//! followed by the default `Gate` against the clean solve of 5 frames
+//! before, and how far the taps of the ones they do not catch are from the
+//! clean solve (`‖Δw‖ / ‖w‖`), for words of R and of p apart.
 //!
 //! Prints one line per frame (frame, count, the shape's three shares, the
 //! fit and its MER), the first frame's diagonal profile, and a summary:
@@ -17,7 +18,7 @@
 //! cargo run --release -p isdb-cli --example sumscheck -- WORDS_FILE [MAX_SECONDS [EVERY]]
 
 use isdb_frontend::control::chain::{R_ENTRIES, TrainingSums, sums_from_words, sums_to_words};
-use isdb_radio::chain::{SumsCheck, check_sums, fit, sums_shape};
+use isdb_radio::chain::{Gate, Judged, SumsCheck, check_sums, fit, residual, sums_shape};
 use isdbs3_core::params::SYMBOL_RATE;
 use isdbs3_phy::chain::eq::{r_index, solve_training, to_training};
 use isdbs3_phy::chain::input::{Input, for_each};
@@ -43,18 +44,35 @@ fn distance(a: &Taps, b: &Taps) -> f64 {
         .sqrt()
 }
 
-/// The checks the slow loop applies: R's structure, then the solve's fit.
-fn caught(s: &TrainingSums, check: &SumsCheck) -> (bool, Option<Taps>) {
+/// The checks the slow loop applies: R's structure, then the solve's fit
+/// (caught by the checks), then the gate against `good` (caught by the
+/// gate); the solved taps.
+fn caught(s: &TrainingSums, check: &SumsCheck, good: &Judged) -> (bool, bool, Option<Taps>) {
     if check_sums(s, check).is_some() {
-        return (true, None);
+        return (true, true, None);
     }
-    match solve_training(s) {
-        None => (true, None),
-        Some(t) => (fit(s, &t) > check.fit, Some(t)),
+    let Some(t) = solve_training(s) else {
+        return (true, true, None);
+    };
+    let f = fit(s, &t);
+    if f > check.fit {
+        return (true, true, Some(t));
     }
+    let g = Gate::default();
+    let gated = residual(s, &t) > g.residual
+        || g.against(
+            good,
+            &Judged {
+                taps: t,
+                fit: Some(f),
+            },
+        )
+        .is_some();
+    (false, gated, Some(t))
 }
 
-/// Corrupted sets of words of R or of p.
+/// Corrupted sets of words of R or of p, missed by the checks alone or by
+/// the checks and the gate.
 #[derive(Default, Clone, Copy)]
 struct Corruptions {
     sets: u64,
@@ -63,6 +81,21 @@ struct Corruptions {
     /// Missed sets whose taps moved by more than 2 %, 5 %, 20 %.
     missed_over: [u64; 3],
     missed_max: f64,
+}
+
+impl Corruptions {
+    fn count(&mut self, caught: bool, moved: f64) {
+        self.sets += 1;
+        if caught {
+            self.caught += 1;
+            return;
+        }
+        self.missed += 1;
+        self.missed_max = self.missed_max.max(moved);
+        for (n, b) in self.missed_over.iter_mut().zip([0.02, 0.05, 0.2]) {
+            *n += u64::from(moved > b);
+        }
+    }
 }
 
 fn main() {
@@ -75,7 +108,8 @@ fn main() {
     let mut outs = Vec::new();
     let mut ext = [(f64::INFINITY, f64::NEG_INFINITY); 5];
     let (mut frames, mut failing, mut zeros) = (0u32, 0u32, 0u64);
-    let mut cor = [Corruptions::default(); 2];
+    let mut cor = [[Corruptions::default(); 2]; 2];
+    let mut prev = std::collections::VecDeque::<Judged>::new();
     println!("frame count imaginary spread toeplitz fit fit_mer_db");
     for_each(f, |item| {
         match item {
@@ -131,6 +165,19 @@ fn main() {
                 );
             }
             frames += 1;
+            // the gate's reference: the clean solve 5 frames before (as a
+            // slow loop's last good set would be, 2 s before: ~60 frames)
+            let good = prev.front().copied().unwrap_or(Judged {
+                taps: t,
+                fit: Some(ft),
+            });
+            prev.push_back(Judged {
+                taps: t,
+                fit: Some(ft),
+            });
+            if prev.len() > 5 {
+                prev.pop_front();
+            }
             if frames % every == 0 {
                 let words = sums_to_words(&s);
                 let w0 = norm(&t);
@@ -142,19 +189,11 @@ fn main() {
                     let mut w = words.clone();
                     w[i] = 0;
                     let bad = sums_from_words(s.frame, s.count, &w);
-                    let c = &mut cor[usize::from(i >= 4 * R_ENTRIES)];
-                    c.sets += 1;
-                    match caught(&bad, &check) {
-                        (true, _) => c.caught += 1,
-                        (false, tb) => {
-                            c.missed += 1;
-                            let d = tb.map_or(0.0, |tb| distance(&tb, &t) / w0);
-                            c.missed_max = c.missed_max.max(d);
-                            for (n, b) in c.missed_over.iter_mut().zip([0.02, 0.05, 0.2]) {
-                                *n += u64::from(d > b);
-                            }
-                        }
-                    }
+                    let (by_checks, by_gate, tb) = caught(&bad, &check, &good);
+                    let moved = tb.map_or(0.0, |tb| distance(&tb, &t) / w0);
+                    let k = usize::from(i >= 4 * R_ENTRIES);
+                    cor[k][0].count(by_checks, moved);
+                    cor[k][1].count(by_gate, moved);
                 }
             }
         }
@@ -167,9 +206,17 @@ fn main() {
         println!("# {n}: {:.4e} … {:.4e}", e.0, e.1);
     }
     println!("# one word read as 0, every {every}th frame ({zeros} words already 0, not counted):");
-    for (what, c) in ["R", "p"].iter().zip(cor) {
+    for (what, by) in ["R", "p"].iter().zip(cor) {
+        for (who, c) in ["the checks", "the checks and the gate"].iter().zip(by) {
+            report(what, who, c);
+        }
+    }
+}
+
+fn report(what: &str, who: &str, c: Corruptions) {
+    {
         println!(
-            "#   words of {what}: {} sets; caught {} ({:.2} %), missed {}: taps off by > 2 % in {}, > 5 % in {}, > 20 % in {}; at most {:.2} %",
+            "#   words of {what}, {who}: {} sets; caught {} ({:.2} %), missed {}: taps off by > 2 % in {}, > 5 % in {}, > 20 % in {}; at most {:.2} %",
             c.sets,
             c.caught,
             100.0 * c.caught as f64 / c.sets.max(1) as f64,
