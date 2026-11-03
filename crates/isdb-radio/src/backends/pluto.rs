@@ -1850,6 +1850,9 @@ fn stream_words(
             let data = match stream.receiver.recv_timeout(timeout) {
                 Ok(d) => d,
                 Err(RecvTimeoutError::Timeout) => {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
                     return Err(rx_stream(StreamProblem::Silent {
                         what: "words",
                         seconds: timeout.as_secs_f64(),
@@ -1878,9 +1881,15 @@ fn stream_words(
                 }
             }
             let n = ((data.len() / 2) as u64).min(words - written);
-            out.write_all(&data[..n as usize * 2])
-                .map_err(|e| RadioError::io("write the words", e))?;
-            written += n;
+            match out.write_all(&data[..n as usize * 2]) {
+                Ok(()) => written += n,
+                // the words' consumer (the host's own decoder or file) went
+                // away: the run ended on the host side, which is not a
+                // failure of the stream (a `--seconds` end or Ctrl-C closes
+                // the channel while a buffer is still being written)
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => break,
+                Err(e) => return Err(RadioError::io("write the words", e)),
+            }
         }
         Ok(())
     })();

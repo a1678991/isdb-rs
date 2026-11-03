@@ -716,6 +716,10 @@ pub fn finish_radio_with<C>(
         for b in bytes {
             words += (b.len() / 2) as u64;
             if tx.send(b).is_err() {
+                // the decoder stopped reading: the run is over; say so to
+                // the capture before its channel is dropped below, so a
+                // write that fails from here on is a stop, not an error
+                cs.store(true, Ordering::SeqCst);
                 break;
             }
             if user.load(Ordering::Relaxed) || limit.is_some_and(|l| words as f64 / wps >= l) {
@@ -760,6 +764,85 @@ mod tests {
     use super::*;
     use isdb_frontend::format::Packer;
     use isdb_frontend::params::{Design, Params};
+
+    /// The normal end of a radio run (`--seconds` reached, the decoder
+    /// stops reading) while the capture thread is still writing into the
+    /// channel: the capture ends cleanly, not with a broken-pipe error
+    /// that `isdb rx` would report as a failed stream (review of #31).
+    #[test]
+    fn a_capture_still_writing_at_the_decoders_end_is_not_an_error() {
+        use std::io::Write;
+        let d = Design::new(40e6, 33.7561e6, 0.03);
+        let params = Params::design(&d).unwrap();
+        let (tx, rx) = sync_channel::<Vec<u8>>(2);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cap_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cs = std::sync::Arc::clone(&cap_stop);
+        // a capture thread writing as a radio backend's `stream_words`
+        // does: until the channel's consumer goes away (BrokenPipe) or the
+        // stop is raised, which it reports as the words written
+        let thread = std::thread::spawn(move || -> Result<isdb_radio::SymbolsCapture> {
+            let mut w = ChannelWriter(tx);
+            let mut written = 0u64;
+            loop {
+                if cs.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                match w.write_all(&[0u8; 65_536]) {
+                    Ok(()) => written += 32_768,
+                    // as `stream_words`: the consumer went away, the run
+                    // is over; the feeder must have raised the stop before
+                    // it let the channel go (else a backend that only
+                    // honours the stop flag would report an error here)
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                        anyhow::ensure!(
+                            cs.load(std::sync::atomic::Ordering::SeqCst),
+                            "the channel broke before the stop was raised"
+                        );
+                        break;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Ok(isdb_radio::SymbolsCapture {
+                words: written,
+                overflows: 0,
+                sample_rate_hz: 40e6,
+                lo_hz: 0,
+                rf_bandwidth_hz: None,
+                gain: String::new(),
+                device: "fake".into(),
+                method: "fake".into(),
+                time: 0.0,
+            })
+        });
+        let stream = RadioStream {
+            bytes: rx,
+            thread,
+            symbol_rate_hz: 33.7561e6,
+            params,
+        };
+        let (secs, capture) = finish_radio_with(
+            stream,
+            0.0,
+            &stop,
+            &cap_stop,
+            |c| c,
+            |rx| {
+                // the decoder reads a few chunks and returns (its seconds
+                // are in): the receiver is dropped here
+                let mut n = 0;
+                for _ in rx.iter().take(3) {
+                    n += 1;
+                }
+                Ok(f64::from(n))
+            },
+        );
+        assert_eq!(secs.unwrap(), 3.0);
+        let c = capture.expect("the capture ends cleanly at the decoder's end");
+        assert!(c.words >= 3 * 32_768, "{}", c.words);
+        assert!(cap_stop.load(std::sync::atomic::Ordering::SeqCst));
+    }
 
     /// `n_blocks` blocks of `Symbols` words (block_log2 12: 4 096 symbols).
     fn words(n_blocks: usize) -> Vec<u8> {
