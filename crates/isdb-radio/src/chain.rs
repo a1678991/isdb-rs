@@ -11,10 +11,12 @@
 //! process that did not close stops); VERSION and FEATURES read (the
 //! `Slots` format must be this host's); the front end configured as for
 //! symbols (`Encoder::configure`, KP read back); CARRIER and LAYOUT_LAG;
-//! the host's taps, constellation and n0 when it has them and FEATURES
-//! allows (else the block starts on the identity taps, the nominal points
-//! and the default n0); INIT; CTRL START, then RUN | SYMBOLS | SLOTS; the
-//! front end's STATUS must read run, symbols and slots.
+//! the host's taps — or the identity when it has none: CTRL START keeps
+//! the taps in force without INIT bit 0, so a bad set of the run before
+//! would survive into this one (#28) — and its constellation and n0 when
+//! it has them, as FEATURES allows (else the block starts on the nominal
+//! points and the default n0); INIT; CTRL START, then RUN | SYMBOLS |
+//! SLOTS; the front end's STATUS must read run, symbols and slots.
 //!
 //! **Slow loop** ([`SlowLoop::tick`], on a timer thread by
 //! [`spawn_slow_loop`]): FEATURES once; then each tick SUMS_FRAME,
@@ -208,6 +210,10 @@ pub struct OpenReport {
     pub loaded: u32,
     /// What the host had but FEATURES did not allow (INIT bits).
     pub refused: u32,
+    /// The taps START loaded from the host (the host's, or the identity
+    /// when it had none: never the previous run's), `None` when the image
+    /// does not take taps.
+    pub taps: Option<Taps>,
     /// Command words written.
     pub commands: usize,
 }
@@ -216,7 +222,9 @@ impl OpenReport {
     /// `taps, constellation (16APSK) loaded; n0 default` and the like.
     pub fn describe(&self) -> String {
         let what = |bit: u32, name: &str| -> String {
-            if self.loaded & bit != 0 {
+            if bit == init::TAPS && self.taps == Some(identity()) {
+                "taps identity (loaded)".into()
+            } else if self.loaded & bit != 0 {
                 format!("{name} from the host")
             } else if self.refused & bit != 0 {
                 format!("{name} default (the image does not take it)")
@@ -426,14 +434,19 @@ impl ChainControl {
             &[init.carrier.cast_unsigned(), init.layout_lag],
         )?;
         let (mut loaded, mut refused) = (0u32, 0u32);
-        if let Some(t) = &init.taps {
-            if self.features & features::TAPS != 0 {
-                let w: Vec<u32> = t.iter().map(|&p| pack_point(p)).collect();
-                n += self.write(port, reg::TAPS, &w)?;
-                loaded |= init::TAPS;
-            } else {
-                refused |= init::TAPS;
-            }
+        // CTRL START keeps the taps in force unless INIT bit 0 loads the
+        // host's (#28: a bad set of the run before, which may have killed
+        // the layout, survived into the next process): the identity is
+        // loaded when the host has none
+        let mut taps = None;
+        if self.features & features::TAPS != 0 {
+            let t = init.taps.unwrap_or_else(identity);
+            let w: Vec<u32> = t.iter().map(|&p| pack_point(p)).collect();
+            n += self.write(port, reg::TAPS, &w)?;
+            loaded |= init::TAPS;
+            taps = Some(t);
+        } else if init.taps.is_some() {
+            refused |= init::TAPS;
         }
         if init.constellation.iter().any(Option::is_some) {
             if self.features & features::CONSTELLATION != 0 {
@@ -495,6 +508,7 @@ impl ChainControl {
             features: self.features,
             loaded,
             refused,
+            taps,
             commands: n,
         })
     }
@@ -1199,6 +1213,10 @@ pub struct SlowLoopOptions {
     pub health: Option<Arc<ChainHealth>>,
     /// When a written set is taken back (with `health`).
     pub revert: Revert,
+    /// The taps the open loaded ([`OpenReport::taps`]): a set other than
+    /// the identity (the last good one of a run before) is the gate's and
+    /// the revert's good set until a solve replaces it.
+    pub start: Option<Taps>,
 }
 
 impl SlowLoopOptions {
@@ -1214,6 +1232,7 @@ impl SlowLoopOptions {
             check: Some(SumsCheck::default()),
             health: None,
             revert: Revert::default(),
+            start: None,
         }
     }
 }
@@ -1349,13 +1368,22 @@ pub struct SlowLoop {
 impl SlowLoop {
     /// A loop that has solved nothing.
     pub fn new(opts: SlowLoopOptions) -> Self {
+        // the open's taps, unless the identity (which needs no gate: the
+        // first solve is judged by the residual and the checks alone)
+        let good = opts
+            .start
+            .filter(|t| *t != identity())
+            .map(|taps| Judged { taps, fit: None });
         Self {
+            report: SlowLoopReport {
+                last_good: good.map(|g| g.taps),
+                ..SlowLoopReport::default()
+            },
             opts,
-            report: SlowLoopReport::default(),
             capture: None,
             armed: false,
             pending: None,
-            good: None,
+            good,
             good_from: None,
             good_n0: None,
             watch: None,
@@ -2106,12 +2134,21 @@ pub(crate) mod tests {
 
     /// The open sequence on an image with every feature, nothing from the
     /// host: CTRL 0; VERSION, FEATURES; the front end's configuration
-    /// with KP read back; CARRIER and LAYOUT_LAG; INIT 0; START; RUN |
-    /// SYMBOLS | SLOTS; STATUS. Then release.
+    /// with KP read back; CARRIER and LAYOUT_LAG; the identity taps and
+    /// INIT bit 0 (#28: START would keep the taps of the run before);
+    /// START; RUN | SYMBOLS | SLOTS; STATUS. Then release.
     #[test]
     fn open_with_nothing_from_the_host() {
         let p = params();
         let m = chain();
+        // the taps of a run before, still in the block
+        let mut old = identity();
+        old[3] = [0, 12_739];
+        for (k, t) in old.iter().enumerate() {
+            m.get()
+                .regs
+                .insert(reg::TAPS + u16::try_from(k).unwrap(), pack_point(*t));
+        }
         let mut c = ChainControl::attach("mock", &m).unwrap();
         let init = ChainInit {
             carrier: -1234,
@@ -2119,8 +2156,13 @@ pub(crate) mod tests {
         };
         let r = c.open(&m, &p, &init).unwrap();
         assert_eq!(
-            (r.version, r.features, r.loaded, r.refused),
-            (1, features::ALL, 0, 0)
+            (r.version, r.features, r.loaded, r.refused, r.taps),
+            (1, features::ALL, init::TAPS, 0, Some(identity()))
+        );
+        assert!(
+            r.describe().contains("taps identity (loaded)"),
+            "{}",
+            r.describe()
         );
         {
             let d = m.get();
@@ -2130,26 +2172,38 @@ pub(crate) mod tests {
             assert_eq!(d.regs[&control::reg::KP], i32::from(p.kp).cast_unsigned());
             assert_eq!(d.regs[&reg::CARRIER].cast_signed(), -1234);
             assert_eq!(d.regs[&reg::LAYOUT_LAG], 2);
-            assert_eq!(d.regs[&reg::INIT], 0);
-            assert!(!d.regs.contains_key(&reg::TAPS), "no taps written");
+            assert_eq!(d.regs[&reg::INIT], init::TAPS);
+            for (k, t) in identity().iter().enumerate() {
+                let a = reg::TAPS + u16::try_from(k).unwrap();
+                assert_eq!(cc::unpack_point(d.regs[&a]), *t, "tap {k}");
+            }
             assert!(!d.regs.contains_key(&reg::CONST_MASK));
             assert_eq!(d.gpio_in, id_word(), "the ID word after the last read");
             assert_eq!(d.bus_writes, r.commands);
-            // CARRIER, LAYOUT_LAG, INIT: the last chain writes, after the
-            // front end's banks
+            // CARRIER, LAYOUT_LAG, the 11 taps, INIT: the last chain
+            // writes, after the front end's banks
             let n = d.writes.len();
             assert_eq!(
-                d.writes[n - 3..],
+                d.writes[n - 14..n - 11],
                 [
                     (reg::CARRIER, (-1234i32).cast_unsigned()),
                     (reg::LAYOUT_LAG, 2),
-                    (reg::INIT, 0)
+                    (reg::TAPS, 0),
                 ]
             );
+            assert_eq!(d.writes[n - 1], (reg::INIT, init::TAPS));
         }
         c.release(&m).unwrap();
         assert_eq!(m.get().ctrl.last(), Some(&0));
         assert!(!m.get().slots);
+        // an image that does not take taps: none written, nothing refused
+        let m = Mock::new(Model::new(id_word(), 1, features::SUMS));
+        let r = ChainControl::attach("mock", &m)
+            .unwrap()
+            .open(&m, &p, &ChainInit::default())
+            .unwrap();
+        assert_eq!((r.loaded, r.refused, r.taps), (0, 0, None));
+        assert!(!m.get().regs.contains_key(&reg::TAPS));
     }
 
     /// With the host's taps, a constellation and n0: each written and
@@ -2989,6 +3043,38 @@ pub(crate) mod tests {
         assert_eq!(l.tick_at(&mut c, &m, at(6_700)).unwrap(), Tick::Same);
         assert_eq!((l.report.unverified, l.report.reverts), (1, 2));
         assert_eq!(l.report.last_good_frame, Some(300));
+    }
+
+    /// #28: the open's taps are the loop's good set when they are not the
+    /// identity (the last good set of a capture before): the first solve
+    /// is gated against them and a revert writes them again; on the
+    /// identity the first solve is free.
+    #[test]
+    fn the_open_taps_are_the_first_good_set() {
+        let (m, mut c) = opened(features::ALL & !features::SUMS_CAPTURE);
+        let mut start = board_like_taps();
+        start[5][0] = 19_000; // 15 % above the solve's centre
+        let l = SlowLoop::new(SlowLoopOptions {
+            start: Some(identity()),
+            ..SlowLoopOptions::new(ls_solve, 33.7561e6)
+        });
+        assert_eq!(l.report.last_good, None);
+        let mut l = SlowLoop::new(SlowLoopOptions {
+            start: Some(start),
+            ..SlowLoopOptions::new(ls_solve, 33.7561e6)
+        });
+        assert_eq!(l.report.last_good, Some(start));
+        latch(&m, &board_sums(40));
+        assert_eq!(
+            l.tick(&mut c, &m).unwrap(),
+            Tick::Rejected {
+                frame: 40,
+                why: Rejected::Centre
+            }
+        );
+        // the same level again: a lasting change, written
+        latch(&m, &board_sums(41));
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 41 });
     }
 
     /// Frames without a layout under a new set (it killed the TMCC, #28):
