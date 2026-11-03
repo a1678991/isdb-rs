@@ -427,6 +427,25 @@ impl ChainControl {
                 need: cc::SLOTS_VERSION,
             });
         }
+        // #28: on an image that reports it, banks still held by the decoder
+        // before START are leaked codewords of an earlier run; the START
+        // below frees them (the decoder aborts open contexts), so this is a
+        // warning, not a refusal
+        if self.features & features::DECODER_HEALTH != 0 {
+            let w = self.read_regs(port, &[reg::DECODER, reg::RECLAIMED])?;
+            n += 5;
+            let d = cc::DecoderHealth::from_words([w[0], w[1]]);
+            if d.held != 0 || d.queue_overflow {
+                warn!(
+                    target: "isdb::chain",
+                    held = d.held,
+                    banks = d.banks,
+                    overruns = d.overruns,
+                    queue_overflow = d.queue_overflow,
+                    "the LDPC decoder still holds banks before START (leaked by an earlier run); START frees them"
+                );
+            }
+        }
         // the front end, as for symbols
         let cmds = self.enc.configure(params);
         for &w in &cmds {
@@ -577,6 +596,9 @@ pub struct ChainState {
     pub sums_capture: u32,
     /// TMCC_OVERRUNS.
     pub tmcc_overruns: u32,
+    /// The LDPC decoder's health (DECODER and RECLAIMED; both read 0 on an
+    /// image without [`features::DECODER_HEALTH`]).
+    pub decoder: cc::DecoderHealth,
     /// The counters.
     pub counters: cc::Counters,
 }
@@ -621,6 +643,21 @@ impl std::fmt::Display for ChainState {
             k.slots,
             k.ldpc_failed,
             k.bch_failed
+        )?;
+        let d = &self.decoder;
+        write!(
+            f,
+            "; decoder: {} of {} banks held, {} overruns, {} aborted, {} reused{}",
+            d.held,
+            d.banks,
+            d.overruns,
+            d.aborted,
+            d.reused,
+            if d.queue_overflow {
+                ", queue overflow"
+            } else {
+                ""
+            }
         )
     }
 }
@@ -642,6 +679,8 @@ impl ChainControl {
                 reg::SUMS_FRAME,
                 reg::SUMS_CAPTURE,
                 reg::TMCC_OVERRUNS,
+                reg::DECODER,
+                reg::RECLAIMED,
             ],
         )?;
         Ok(ChainState {
@@ -652,6 +691,7 @@ impl ChainControl {
             sums_frame: v[4],
             sums_capture: v[5],
             tmcc_overruns: v[6],
+            decoder: cc::DecoderHealth::from_words([v[7], v[8]]),
             counters: self.counters(port)?,
         })
     }
@@ -1300,9 +1340,11 @@ struct Watch {
 
 /// Registers that identify the held capture besides SUMS_FRAME: read with
 /// it before the 308 sum registers and again after them, all equal or the
-/// read is torn. None on today's map; with the HDL's capture sequence
-/// number (in progress) its register goes here.
-const HELD_EXTRA: &[u16] = &[];
+/// read is torn. SUMS_CAPTURE's read word carries the latch sequence
+/// number in bits 15–8 on an image with [`features::SUMS_SEQ`] (and the
+/// VALID / ARMED / NO_LAYOUT bits, stable while a capture is held); on an
+/// older image those bits read 0 and the word is stable all the same.
+const HELD_EXTRA: &[u16] = &[reg::SUMS_CAPTURE];
 
 /// How the slow loop runs.
 #[derive(Debug, Clone)]
@@ -3470,7 +3512,7 @@ pub(crate) mod tests {
         }
         // commands only (ADDR, READ, NOP), no register written
         let n = m.get().bus_writes - writes;
-        assert_eq!(n, 2 * (7 + 8) + 2);
+        assert_eq!(n, 2 * (9 + 8) + 2);
         assert_eq!(m.get().writes.len(), stored);
     }
 
