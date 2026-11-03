@@ -517,7 +517,11 @@ chain yet):
    SUMS_CAPTURE) meets timing without repair and the taps arrive (first
    write 0.9 s after open, 12 in 30 s): 0 failures with good taps, but one
    solve of twelve made every codeword fail for 81 frames (7 808 failed),
-   and n0 stays at its default on the board. Results below, "Piece 6".**
+   and n0 stays at its default on the board. Build 8 (`682032e`: n0
+   learned, the status's points, TAPS_FROM, the tap gate) on the board:
+   1 LDPC failure in 30 s, 2.15 mean iterations, MER 14.9 dB, 0 losses,
+   0.41 cores, like the CPU model on the same signal. Results below,
+   "Piece 6".**
 
 Pieces 1–3 are independent and run in parallel; 4 needs 3's vectors
 (and can start on the sync stage from 3's first commit); 5 needs 3's
@@ -1266,12 +1270,62 @@ from `holdfix.tcl`
 `2c6028ecf3024875cf0c0d29068dd28298bdb52305b5de93fd6c7c20826d4b56`), in
 `~/dev/sdr/isdb-work/out/isdbs3-rx-build8/`.
 
-**Not deployed yet: the bench board is unreachable.** This host was
-down from 04:41 to 13:15 JST; since then 10.10.0.30 answers neither
-ping nor ARP and no Pluto is on USB, so the board is off or hung (it was
-last seen booted on build 7, `isdbs3_rx_top.bin`). Nothing was changed
-on the card for build 8 (build 7 still `isdbs3_rx_top.bin`, build 6
-`isdbs3_rx6_top.bin`, the `uEnv.txt.prev-rx6` / `prev-txrx2` entries as
-left). Once it is powered and reachable: copy build 7 to
-`isdbs3_rx7_top.bin` with a `uEnv.txt.prev-rx7` entry, deploy build 8,
-and run the board checks with `RUST_LOG=isdb::chain=debug`.
+The bench board was unreachable for a while after this host's restart
+(04:41–13:15 JST); powered up again it had booted build 7 from the card.
+
+#### Build 8 on the board (2026-11-03, 14:23 JST, receive only)
+
+Card: build 7 kept as `isdbs3_rx7_top.bin` (`uEnv.txt.prev-rx7` selects
+it), build 8 as `isdbs3_rx_top.bin` (selected), build 6
+`isdbs3_rx6_top.bin` (`prev-rx6`), `isdb_txrx2_top.bin` (`prev-txrx2`).
+Clean boot (`cf-ad9361-lpc` at once), ID word 0x15DB4120, open line
+"features 0x220e13 (LDPC limit 14, step 34)".
+`RUST_LOG='info,isdb::chain=debug' tools/isdbs3-board-check.sh`, BS7, 30
+s; the captures on disk in `~/dev/sdr/isdbs3-bench/build8/` (not
+committed).
+
+| Run | Frames | Slots | LDPC / BCH failed | Mean iterations | MER | TLV packets B070 / B071 / B072 (lost slots) | Losses | Host CPU | Max RSS |
+|---|---|---|---|---|---|---|---|---|---|
+| FPGA chain (`--offload auto`) | 909 (2 undecoded) | 87 234 | **1** / 0 | **2.15** | **14.9 dB** (n0) | 88 399 / 91 518 / 90 846 (0 / 0 / 1) | 0 | 10.28 s user + 1.93 s sys for 30 s (0.41 cores), wall 34.4 s | 6.28 GB |
+| its words replayed (`--slots`) | 909 | 87 234 | 1 / 0 | 2.15 | 14.9 dB | identical | 0 | 2.41 s | 39 MB |
+| host receiver, the Symbols capture after | 907 | 87 072 | 1 / 0 | 2.113 | 15.2 dB main | 90 222 / 91 741 / 89 305 | 0 | 291.6 s user (9.7 cores) | |
+| CPU model on the same capture | 907 (2 undecoded) | 86 880 | 1 / 0 | 2.129 | | every packet one of the host's (the 2 lag frames apart) | 0 | | |
+
+The fix agent's checks (`examples/slotsstatus` on the recorded words):
+
+- **n0 learned**: frame 4 on (the frame after the first decoded one,
+  frame 3) n0 is the measured value: 46 000–47 400 while the identity
+  taps are in force (frames 4–26), 33 000–34 000 once the first taps are
+  (from frame 28), K = 2³²/n0 throughout (e.g. 33 650 → 127 636). Frames
+  30–909: n0 mean 33 705 (30 892 … 39 389), K 109 040 … 139 032; the
+  model on the 'after' capture: mean 33 554 (31 186 … 35 417).
+- **Learned 16APSK points plausible**: frame 911, 4 inner points at
+  radius 445–473 on the diagonals and 12 outer at 1 025–1 156 (Q.10),
+  ring ratio ≈ 2.3.
+- **`taps_from` = the solve frame**: the first set (solved from frame 6)
+  reads 6 from frame 26; every later change carries the host's frame
+  (86, 168, 249, 330, 411, 492, 573, 655, 763, 844).
+- **Slow loop**: 11 solves written in 24 ticks, the first 0.87 s after
+  the Slots open (from frame 6); **0 rejected by the gate**; one capture
+  did not hold ("the held training sums moved from frame 0 to 736 while
+  they were read"; recaptured, the next solve from frame 763). R[5][5]
+  6.46–6.53 × 10⁹ and p[5] re 6.58–6.61 × 10⁹ in all eleven, digests all
+  distinct.
+- **The last solve (frame 844) passed the gate but is off in its outer
+  taps**: centre [17 150, −267] (−0.9 % from the previous set), but tap
+  3 −893 where the other ten have +300 … +406, tap 4 −1 546 (others
+  −1 716 … −1 866), tap 0 301 (others 167 … 217). Its R[5][5] and p[5]
+  are like the others'. In force from frame 865: n0 rose from ≈ 33 700
+  to 36 300–39 400 and the mean iterations from 2.07 to 2.3–2.5 for the
+  last 45 frames, with no failure. The gate looks at the centre tap and
+  the residual only; a check of the whole tap vector against the
+  previous set would have held this one. (The carrier drifted fast on
+  this run, +208 → +2 384 Hz in 30 s, the board warming after its power
+  cycle; the chain tracked it.)
+- LDPC failures 1 in 30 s (the model's figure on the capture after: 1),
+  0 losses (0 blocks missing), BCH 0. The ADC overflow flag rose 13
+  times, nothing lost by sequence number, as before.
+- The 'before' Symbols capture mis-acquired (carrier −528 kHz, Es/N0
+  6.4 dB in the 0.1 s survey: the first capture after the reboot); the
+  host could not decode it, so the comparisons use the 'after' capture.
+- The radio path's RSS is 6.28 GB again against 39 MB for the replay.
