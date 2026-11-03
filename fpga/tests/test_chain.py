@@ -217,10 +217,10 @@ class DemapTest(unittest.TestCase):
     bits. The Python simulator runs the frame's first 12 000 symbols (the
     first codeword, 11 220 symbols, whole)."""
 
-    def run_stage(self, backend, symbols):
+    def run_stage(self, backend, symbols, next_start=False):
         from isdb_fpga.chain.stages import run_back
 
-        what, bad = run_back(doc("3-eq"), doc("5-demap"), doc("4-tmcc"), backend, symbols)
+        what, bad = run_back(doc("3-eq"), doc("5-demap"), doc("4-tmcc"), backend, symbols, next_start)
         self.assertEqual(bad, [], "\n".join(bad[:5]))
 
     def test_prefix_pysim(self):
@@ -229,6 +229,14 @@ class DemapTest(unittest.TestCase):
     @cxx
     def test_whole_frame_compiled(self):
         self.run_stage(COMPILED, None)
+
+    @cxx
+    def test_next_frame_starts_at_once(self):
+        """The next frame (with a layout) starts a cycle after the frame's
+        last symbol, as on the board's gapless stream: its start must not
+        clear the noise sum before the frame's n0 is divided (the board's
+        n0 stayed at the default)."""
+        self.run_stage(COMPILED, None, next_start=True)
 
 
 @needs("6-chain")

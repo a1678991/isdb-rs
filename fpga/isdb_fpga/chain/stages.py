@@ -11,7 +11,7 @@ import time
 
 from amaranth.hdl import Cat, Elaboratable, Module, Mux, Signal, signed
 
-from .common import FRAME, FSYNC, SLOT, SLOTS, SSYNC, SYNC_REF, word_symbols
+from .common import FRAME, FSYNC, PILOTS, SLOT, SLOTS, SSYNC, SYNC, SYNC_REF, word_symbols
 from .eq import ENTRIES, META, META_SMALL, Equaliser
 from .frame import FrameCtl, lay_pack
 from .phase import SlotPhase
@@ -115,7 +115,7 @@ def run_phase(doc, backend):
 
 # --- stage 4 -------------------------------------------------------------------
 
-K_SYM, K_READ, K_LAY, K_COMMIT, K_TAP, K_TAPNOW, K_CAP = range(7)
+K_SYM, K_READ, K_LAY, K_COMMIT, K_TAP, K_TAPNOW, K_CAP, K_OPEN = range(8)
 
 
 def pack_meta(**f):
@@ -551,6 +551,7 @@ class BackBench(Elaboratable):
             self.i_ready.eq(1),
             eq.i_valid.eq(go & (k == K_SYM)), eq.i_y[0].eq(self.a), eq.i_y[1].eq(self.b),
             eq.i_meta.eq(Cat(self.meta, self.at)),
+            fc.lw_open.eq(go & (k == K_OPEN)),
             fc.lw_en.eq(go & (k == K_LAY)), fc.lw_slot.eq(self.a), fc.lw_data.eq(self.meta),
             fc.lw_commit.eq(go & (k == K_COMMIT)), fc.lw_frame.eq(self.a), fc.lw_from.eq(self.b),
             eq.tap_we.eq(go & (k == K_TAP)), eq.tap_idx.eq(self.a), eq.tap_val[0].eq(self.b),
@@ -578,14 +579,19 @@ class BackBench(Elaboratable):
         return out
 
 
-def run_back(eqdoc, demapdoc, tmccdoc, backend, symbols=None):
+def run_back(eqdoc, demapdoc, tmccdoc, backend, symbols=None, next_start=False):
     """The back end on chain-3-eq's frame (whose equalised symbols chain-5
     demaps): every demapped beat of the two codewords chain-5 carries in
     full (positions and LLRs of every symbol, in label order), the beat
     count and flags of all 96 codewords, the learned points and n0, K for
     the next frame; and the TMCC soft bits against chain-4 (the same
     frame). `symbols`: a prefix of the frame (then only the codewords and
-    TMCC bits it completes are compared)."""
+    TMCC bits it completes are compared). `next_start`: the next frame has
+    a layout too and its first 72 symbols (the frame's own at the same
+    positions: sync, pilots, 16 main symbols) follow the frame's last at
+    once, as on a stream without gaps: its start reaches the demapper a
+    cycle after the frame's end, before the noise division, and its first
+    main symbols need the new K (`late`); its beats are not compared."""
     F, at = eqdoc["frame"], eqdoc["at"]
     assert demapdoc["frame"] == F == tmccdoc["frame"]
     y = eqdoc["y"]
@@ -597,6 +603,11 @@ def run_back(eqdoc, demapdoc, tmccdoc, backend, symbols=None):
     recs += [r + (0,) for r in layout_records(tmccdoc["layout"], F, F - 2)]
     n = len(y) // 2 if symbols is None else min(len(y) // 2, symbols + 5)
     whole = n == len(y) // 2
+    if next_start:
+        assert whole
+        # into a free bank (K_OPEN: FrameCtl's lw_open, as the TMCC stage)
+        recs.append((K_OPEN, 0, 0, 0, 0, 0))
+        recs += [r + (0,) for r in layout_records(tmccdoc["layout"], F + 1, F - 1)]
     for i in range(n):
         idx = eqdoc["y_from"] + i
         rel = idx - at
@@ -609,6 +620,13 @@ def run_back(eqdoc, demapdoc, tmccdoc, backend, symbols=None):
         w = words[k] if fr == F else (0 if k == SLOTS - 1 else 1)
         recs.append((K_SYM, y[2 * i], y[2 * i + 1], 0,
                      pack_meta(j=j, number=k, numbered=1, frame=fr, word=w), idx))
+    if next_start:
+        # rel FRAME + 5 .. FRAME + 76: the next frame's symbols 5 .. 76, so
+        # the FIR puts out its symbols 0 .. 71
+        for j in range(5, SYNC + PILOTS + 5 + 16):
+            i = j + (at - eqdoc["y_from"])
+            recs.append((K_SYM, y[2 * i], y[2 * i + 1], 0,
+                         pack_meta(j=j, number=0, numbered=1, frame=F + 1, word=1), at + FRAME + j))
     b = BackBench()
     p = b.ports()
     e = engine(b, p, backend, tag="chain5")
@@ -619,6 +637,7 @@ def run_back(eqdoc, demapdoc, tmccdoc, backend, symbols=None):
     t0 = time.time()
     e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "meta", "at"], recs, tail=2000)
     beats, learned, nx, tsoft = e.read(gp), e.read(gl), e.read(gn), e.read(gt)
+    beats = [x for x in beats if x[3] >> 32 == F]
     late = e.get("late")
     cyc = e.cycles()
     dt = time.time() - t0
@@ -836,6 +855,34 @@ def block_diff(got, exp, limit=12):
             if len(out) >= limit:
                 break
     return out
+
+
+def chain_records(doc, taps, n):
+    """`ChainBench` records for the first `n` input symbols of a
+    whole-chain set: the host's taps at open, the symbols (and the set's
+    losses), the LDPC stub's results after each frame's TMCC codeword."""
+    from .common import FRAME
+
+    x = doc["input"]
+    frames, res = stub_results(doc["slots_words"])
+    ats = {f["frame"]: f["at"] for f in doc["frames"]}
+    inject = {}
+    for i, fr in enumerate(frames):
+        at = ats[fr] + FRAME + 2 * 9296
+        at -= sum(k for b, k in doc.get("losses", []) if b + k <= at)
+        if at <= n:
+            inject.setdefault(at, []).extend([r + (i + 1,) for r in res[fr]])
+    recs = []
+    if taps is not None:
+        recs = [(C_TAP, i, taps[2 * i], taps[2 * i + 1], 0, 0) for i in range(11)] + [(C_TAPNOW, 0, 0, 0, 0, 0)]
+    losses = {at: k for at, k in doc.get("losses", [])}
+    for i in range(n):
+        recs.extend(inject.get(i, []))
+        if i in losses:
+            recs.append((C_LOSS, losses[i], 0, 0, 0, 0))
+        recs.append((C_SYM, x[2 * i], x[2 * i + 1], 0, 0, 0))
+    recs.extend(inject.get(n, []))
+    return recs
 
 
 def run_chain(doc, taps, backend, symbols=None):
