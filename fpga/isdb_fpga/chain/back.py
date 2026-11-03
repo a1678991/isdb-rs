@@ -16,6 +16,18 @@ The decoder port: the demapper's beat (one per main symbol of a valid
 codeword) has priority; the TMCC burst takes the other cycles (`grant`).
 Both wait for the decoder's `in_ready` (back-pressure from its input FIFO;
 the demapper cannot wait: a full FIFO there is counted as `port_lost`).
+
+The abort (issue #28): a frame dropped or a restart (`f_drop` of the
+demapper) gives up the slot codeword it was loading, whose last beat never
+comes; the decoder would keep its bank. After every `f_drop` the port
+carries one OP_ABORT beat on context 0 (`ldpc.py` "Abandoned codewords":
+the bank is freed), once the demapper's pipeline has emptied (ABORT_WAIT
+cycles: the beats of symbols that arrived before the drop are written
+first) and on a cycle neither the demapper nor the TMCC burst uses (the
+burst never waits for it). A new codeword's first beat after that wait
+and before the abort cancels it: that `begin` takes the old bank back
+instead. No beat, codeword or
+result of the chain's moves: the abort only frees a bank.
 """
 
 from amaranth.hdl import Cat, Elaboratable, Module, Mux, Signal
@@ -23,13 +35,17 @@ from amaranth.hdl import Cat, Elaboratable, Module, Mux, Signal
 from .demap import Demap
 from .eq import Equaliser
 from .frame import FrameCtl
-from .ldpc_if import OP_WRITE, LdpcPort
+from .ldpc_if import OP_ABORT, OP_WRITE, LdpcPort
 from .nominal import NominalRom
 from .tmcc import TmccSoft
 
 AUX = [("active", 1), ("lay", 1), ("main", 1), ("pilot", 1), ("tmcc", 1), ("t", 5), ("ti", 15),
        ("k", 7), ("smod", 4), ("start", 1), ("done", 1), ("drop", 1), ("frame", 32), ("odd", 1)]
 AUX_BITS = sum(w for _, w in AUX)
+# cycles from the demapper's `f_drop` to its abort beat: the demapper's
+# beat leaves 10 cycles after its symbol's arrival (A + 9, registered), and
+# no symbol arrives after the drop
+ABORT_WAIT = 12
 
 
 def aux_field(sig, name):
@@ -56,6 +72,7 @@ class Back(Elaboratable):
         self.offset = Signal(3, init=offset)
         self.restart = Signal()
         self.port_lost = Signal(16)
+        self.aborts = Signal(16)  # abort beats sent (verification)
 
     def elaborate(self, platform):
         m = Module()
@@ -101,11 +118,26 @@ class Back(Elaboratable):
         # the decoder port
         p = self.port
         use_dm = dm.o_valid
+        # the abort beat after a drop (docstring)
+        ab_pend = Signal()
+        ab_wait = Signal(range(ABORT_WAIT + 1))
+        ab_go = Signal()
+        m.d.comb += ab_go.eq(ab_pend & (ab_wait == 0) & ~use_dm & ~tm.b_valid & p.in_ready)
+        with m.If(dm.f_drop):
+            m.d.sync += [ab_pend.eq(1), ab_wait.eq(ABORT_WAIT)]
+        with m.Elif(ab_wait != 0):
+            # the dropped codeword's last beats (a first one among them too)
+            m.d.sync += ab_wait.eq(ab_wait - 1)
+        with m.Elif(use_dm & dm.o_first):
+            # a new codeword began first: its `begin` takes the bank back
+            m.d.sync += ab_pend.eq(0)
+        with m.Elif(ab_go):
+            m.d.sync += [ab_pend.eq(0), self.aborts.eq(self.aborts + 1)]
         m.d.comb += [
-            p.in_valid.eq(use_dm | tm.b_valid),
+            p.in_valid.eq(use_dm | tm.b_valid | ab_go),
             tm.grant.eq(~use_dm & tm.b_valid & p.in_ready),
-            p.in_ctx.eq(~use_dm),
-            p.in_op.eq(Mux(use_dm, OP_WRITE, tm.b_op)),
+            p.in_ctx.eq(~use_dm & ~ab_go),
+            p.in_op.eq(Mux(use_dm, OP_WRITE, Mux(ab_go, OP_ABORT, tm.b_op))),
             p.in_n.eq(Mux(use_dm, dm.o_n, tm.b_n)),
             p.in_first.eq(use_dm & dm.o_first),
             p.in_last.eq(use_dm & dm.o_last),

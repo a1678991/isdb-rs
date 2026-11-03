@@ -15,7 +15,10 @@ FIFO, nothing else crosses.
   OP_DONE closes it (a write beat may also carry `in_first`, which opens
   the buffer first, and `in_last`, which closes it after: the demapper's
   form, one beat per main symbol with no beat to spare at a codeword's
-  ends; the TMCC burst uses OP_BEGIN and OP_DONE): decode as rate `in_rate` (numerator r of r/120; 61
+  ends; the TMCC burst uses OP_BEGIN and OP_DONE; OP_ABORT gives up the
+  context's open codeword, `ldpc.py` "Abandoned codewords": the back end
+  sends it on context 0 after a frame drop or a restart, once the
+  demapper's pipeline has emptied): decode as rate `in_rate` (numerator r of r/120; 61
   for the TMCC), at most `in_max_iter` iterations, offset `in_offset`,
   `in_shortened` (the TMCC's shortened 61/120 word: positions 0 .. 1 869
   and 11 484 .. 22 813 are known zeros the decoder fills with +127 itself;
@@ -62,7 +65,7 @@ or BCH-corrected) is reported as a gap in the comparison.
 
 from amaranth.hdl import Array, Cat, Const, DomainRenamer, Elaboratable, Module, Mux, Signal, signed
 
-OP_BEGIN, OP_WRITE, OP_DONE = 0, 1, 2
+OP_BEGIN, OP_WRITE, OP_DONE, OP_ABORT = 0, 1, 2, 3
 
 
 def _block_fifo(width, depth, w_domain, r_domain):
@@ -147,6 +150,8 @@ class LdpcBridge(Elaboratable):
     - **tags**: the decoder returns results in commit order without a tag;
       each `start` pushes its tag into a FIFO (TAG_DEPTH = 16, beyond the
       decoder's queue and its banks) that each `res_valid` pops.
+    - **abort**: an OP_ABORT beat becomes `abort` (one cycle, `d_ctx`), in
+      order with the beats around it.
     - **out**: the record (`res_*` with the tag) and the decoder's hard-bit
       words (`o_data`, `o_last`; all n bits, the first k in natural order)
       through an AsyncFIFO (OUT_DEPTH = 64) back to the chain's domain as
@@ -187,8 +192,14 @@ class LdpcBridge(Elaboratable):
         self.res_converged = Signal()
         self.res_unsat = Signal(16)
         self.res_overrun = Signal()
+        self.abort = Signal()
         self.in_lost = Signal(16)
         self.out_overrun = Signal()  # chain side: the record's overrun flag
+        # verification: the input FIFO's and tag queue's levels (ldpc
+        # domain), the output FIFO's (chain side)
+        self.v_in_level = Signal(range(self.IN_DEPTH + 1))
+        self.v_tags = Signal(range(self.TAG_DEPTH + 1))
+        self.v_out_level = Signal(range(self.OUT_DEPTH + 1))
 
     def elaborate(self, platform):
         from amaranth.lib.fifo import SyncFIFO
@@ -225,7 +236,7 @@ class LdpcBridge(Elaboratable):
         n = Mux(is_write, f["n"], 0)
         need_start = Signal()
         m.d.comb += [fin.r_en.eq(~have & ~need_start), tags.w_data.eq(f["tag"])]
-        m.d.ldpc += [self.begin.eq(0), self.d_valid.eq(0), self.start.eq(0), tags.w_en.eq(0)]
+        m.d.ldpc += [self.begin.eq(0), self.d_valid.eq(0), self.start.eq(0), self.abort.eq(0), tags.w_en.eq(0)]
         rate_idx = (f["rate"] - 1)[:4]
         with m.If(need_start):
             m.d.ldpc += [self.start.eq(1), self.d_ctx.eq(f["ctx"]), self.st_rate.eq(rate_idx),
@@ -236,7 +247,7 @@ class LdpcBridge(Elaboratable):
         with m.Elif(have):
             m.d.ldpc += [self.d_ctx.eq(f["ctx"]), self.d_rate.eq(rate_idx)]
             with m.If(lane == 0):
-                m.d.ldpc += self.begin.eq(opens)
+                m.d.ldpc += [self.begin.eq(opens), self.abort.eq(f["op"] == OP_ABORT)]
             with m.If(lane < n):
                 m.d.ldpc += [self.d_valid.eq(1), self.d_pos.eq(Array(pos)[lane]),
                              self.d_llr.eq(Array(llr)[lane])]
@@ -271,7 +282,8 @@ class LdpcBridge(Elaboratable):
             p.out_converged.eq(e[73]), self.out_overrun.eq(e[74]),
             p.out_bits.eq(e[1:17]), p.out_last.eq(e[17]),
         ]
-
+        m.d.comb += [self.v_in_level.eq(fin.r_level), self.v_tags.eq(tags.level),
+                     self.v_out_level.eq(fout.r_level)]
         return m
 
 
@@ -294,4 +306,5 @@ def connect_decoder(m, br, dec):
         br.res_valid.eq(dec.res_valid), br.res_iterations.eq(dec.res_iterations),
         br.res_converged.eq(dec.res_converged), br.res_unsat.eq(dec.res_unsat),
         br.res_overrun.eq(dec.res_overrun),
+        dec.abort.eq(br.abort),
     ]

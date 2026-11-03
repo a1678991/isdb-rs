@@ -114,7 +114,7 @@ def backend_default():
 
 
 def simulate(doc, limit=None, all_rates=False, fill_known=False, log=None, banks=3, plan=None,
-             max_iter=None, backend=None):
+             max_iter=None, backend=None, probes=None):
     """Run the codewords through the decoder (see `_simulate_py` for the
     arguments and the result) on `backend`: "pysim" (Amaranth's Python
     simulator), "cxxrtl" or "verilator" (the design compiled with Yosys's
@@ -124,10 +124,18 @@ def simulate(doc, limit=None, all_rates=False, fill_known=False, log=None, banks
     `load_ready`) is applied cycle for cycle on each."""
     backend = backend or backend_default()
     if backend == "pysim":
-        return _simulate_py(doc, limit, all_rates, fill_known, log, banks, plan, max_iter)
+        return _simulate_py(doc, limit, all_rates, fill_known, log, banks, plan, max_iter, probes)
     if backend not in simx.COMPILED:
         raise ValueError(f"unknown simulation backend {backend!r} (pysim, cxxrtl, verilator)")
-    return _simulate_cxx(doc, limit, all_rates, fill_known, log, banks, plan, max_iter, backend)
+    return _simulate_cxx(doc, limit, all_rates, fill_known, log, banks, plan, max_iter, backend, probes)
+
+
+PROBED = ("held", "load_ready", "overruns", "aborted", "reused")
+
+
+def _probe(label, get):
+    """A ("probe", label) op's record: the decoder's bank state then."""
+    return dict({"label": label}, **{n: get(n) for n in PROBED})
 
 
 def _ports(dut):
@@ -168,7 +176,7 @@ def _engine(doc, all_rates, banks, backend):
 
 
 def _simulate_cxx(doc, limit=None, all_rates=False, fill_known=False, log=None, banks=3,
-                  plan=None, max_iter=None, backend="cxxrtl"):
+                  plan=None, max_iter=None, backend="cxxrtl", probes=None):
     """`_simulate_py` on the compiled design: the same plan, applied cycle
     for cycle through the engine's set / tick / run, the result records
     and output words collected by the harness's output groups."""
@@ -199,6 +207,16 @@ def _simulate_cxx(doc, limit=None, all_rates=False, fill_known=False, log=None, 
                     if pos not in known]
             if recs:
                 e.run("in_valid", None, ["in_pos", "in_llr"], recs)
+        elif op[0] == "abort":
+            e.set("abort", 1)
+            e.set("in_ctx", op[1])
+            e.tick()
+            e.set("abort", 0)
+        elif op[0] == "tick":
+            e.tick(op[1])
+        elif op[0] == "probe":
+            if probes is not None:
+                probes.append(_probe(op[1], e.get))
         else:
             _, i, c = op
             e.set("start", 1)
@@ -254,11 +272,14 @@ def _simulate_cxx(doc, limit=None, all_rates=False, fill_known=False, log=None, 
 
 
 def _simulate_py(doc, limit=None, all_rates=False, fill_known=False, log=None, banks=3, plan=None,
-                 max_iter=None):
+                 max_iter=None, probes=None):
     """Run the codewords through one decoder instance by `plan` (default
     `default_plan`): a list of ("begin", i, ctx, wait_for_load_ready),
     ("llr", i, ctx, lo, hi) (codeword i's LLRs at positions lo .. hi - 1,
-    one per cycle; hi None: to the end) and ("start", i, ctx). Returns the
+    one per cycle; hi None: to the end), ("start", i, ctx), ("abort", ctx)
+    (give up the context's open codeword), ("tick", n) (n idle cycles) and
+    ("probe", label) (append the decoder's `PROBED` values to `probes`;
+    plans with an abandoned codeword commit fewer than they begin). Returns the
     result records in the order they leave: {"bits" (None for an overrun
     record), "iterations", "converged", "unsatisfied", "overrun",
     "cycles", "passes", "seconds"}; the last also has "overruns" and
@@ -273,6 +294,7 @@ def _simulate_py(doc, limit=None, all_rates=False, fill_known=False, log=None, b
     sim = Simulator(dut)
     sim.add_clock(5e-9)
     results = []
+    loaded = []  # the plan has run to its end (its last ticks and probes)
 
     async def loader(ctx):
         ctx.set(dut.in_rate, ridx)
@@ -297,6 +319,16 @@ def _simulate_py(doc, limit=None, all_rates=False, fill_known=False, log=None, b
                     ctx.set(dut.in_llr, llr[pos])
                     await ctx.tick()
                 ctx.set(dut.in_valid, 0)
+            elif op[0] == "abort":
+                ctx.set(dut.abort, 1)
+                ctx.set(dut.in_ctx, op[1])
+                await ctx.tick()
+                ctx.set(dut.abort, 0)
+            elif op[0] == "tick":
+                await ctx.tick().repeat(op[1])
+            elif op[0] == "probe":
+                if probes is not None:
+                    probes.append(_probe(op[1], lambda n: ctx.get(getattr(dut, n))))
             else:
                 _, i, c = op
                 ctx.set(dut.start, 1)
@@ -307,6 +339,7 @@ def _simulate_py(doc, limit=None, all_rates=False, fill_known=False, log=None, b
                 ctx.set(dut.st_short, int(bool(known)))
                 await ctx.tick()
                 ctx.set(dut.start, 0)
+        loaded.append(True)
 
     async def reader(ctx):
         ctx.set(dut.o_ready, 1)
@@ -341,6 +374,8 @@ def _simulate_py(doc, limit=None, all_rates=False, fill_known=False, log=None, b
             if log:
                 log(i, res)
         await ctx.tick()
+        while not loaded:
+            await ctx.tick()
         if results:
             results[-1]["overruns"] = ctx.get(dut.overruns)
             results[-1]["queue_overflow"] = ctx.get(dut.queue_overflow)

@@ -298,6 +298,20 @@ class RealDecoderChainTest(unittest.TestCase):
         self.run_set("7-hdl", doc("3-eq")["taps"])
 
     @cxx
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    def test_stop_and_start_free_the_decoder(self):
+        # issue #28: four times the input to inside frame 2's first
+        # codeword, the host's stop and START (stages.run_chain_restarts);
+        # after each no decoder bank held and the bridge empty, and the
+        # last pass decodes every slot as the model does (the same bits
+        # and BCH results; a restart keeps the NCO's phase, so iteration
+        # counts may differ)
+        from isdb_fpga.chain.stages import run_chain_restarts
+
+        what, bad = run_chain_restarts(doc("7-hdl"), doc("3-eq")["taps"], COMPILED)
+        self.assertEqual(bad, [], "\n".join(bad[:8]))
+
+    @cxx
     @needs("8-loss")
     @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
     def test_block_loss(self):
@@ -709,14 +723,15 @@ class BridgeTest(unittest.TestCase):
     `ldpc.py`'s ports (200 MHz, one LLR per cycle, begin / start, results in
     commit order): a 3-lane codeword with first/last, a TMCC begin / write /
     done, each committed with the limit and offset of its own closing beat
-    (16 / 1 and 50 / 4), then a result record and two words back with the
-    tags in order."""
+    (16 / 1 and 50 / 4), an abort beat on context 0 (one `abort` cycle, no
+    write, begin or start: issue #28), then a result record and two words
+    back with the tags in order."""
 
     def test_two_clocks(self):
         from amaranth.hdl import Module
         from amaranth.sim import Simulator
 
-        from isdb_fpga.chain.ldpc_if import OP_BEGIN, OP_DONE, OP_WRITE, LdpcBridge, LdpcPort
+        from isdb_fpga.chain.ldpc_if import OP_ABORT, OP_BEGIN, OP_DONE, OP_WRITE, LdpcBridge, LdpcPort
 
         port = LdpcPort()
         br = LdpcBridge(port)
@@ -729,7 +744,7 @@ class BridgeTest(unittest.TestCase):
         sim = Simulator(top)
         sim.add_clock(25e-9, domain="sync")
         sim.add_clock(5e-9, domain="ldpc")
-        writes, begins, starts, outs = [], [], [], []
+        writes, begins, starts, outs, aborts = [], [], [], [], []
         # the two codewords close with different limits and offsets (the
         # port's per-codeword in_max_iter, in_offset)
         beats = [
@@ -738,6 +753,7 @@ class BridgeTest(unittest.TestCase):
             (OP_BEGIN, 1, 1, 0, 0, 3, [0], [0], 0x80, 3, 3),
             (OP_WRITE, 1, 1, 0, 0, 3, [1870], [-7], 0x80, 7, 0),
             (OP_DONE, 1, 1, 0, 0, 3, [0], [0], 0x80, 50, 4),
+            (OP_ABORT, 0, 1, 0, 0, 3, [0], [0], 0x80, 50, 4),
         ]
 
         async def chain(ctx):
@@ -772,6 +788,8 @@ class BridgeTest(unittest.TestCase):
                 await ctx.tick("ldpc")
                 if ctx.get(br.begin):
                     begins.append(ctx.get(br.d_ctx))
+                if ctx.get(br.abort):
+                    aborts.append(ctx.get(br.d_ctx))
                 if ctx.get(br.d_valid):
                     writes.append((ctx.get(br.d_ctx), ctx.get(br.d_pos), ctx.get(br.d_llr), ctx.get(br.d_rate)))
                 if ctx.get(br.start):
@@ -794,6 +812,7 @@ class BridgeTest(unittest.TestCase):
         sim.add_testbench(decoder)
         sim.run()
         self.assertEqual(begins, [0, 1])
+        self.assertEqual(aborts, [0])
         self.assertEqual(writes, [(0, 10, 1, 6), (0, 20, -2, 6), (0, 30, 3, 6), (0, 11, 4, 6),
                                   (0, 21, -5, 6), (0, 31, 6, 6), (1, 1870, -7, 2)])
         self.assertEqual(starts, [(0, 6, 0, 16, 1), (1, 2, 1, 50, 4)])
