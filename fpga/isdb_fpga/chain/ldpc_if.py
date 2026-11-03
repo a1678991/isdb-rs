@@ -152,6 +152,13 @@ class LdpcBridge(Elaboratable):
       decoder's queue and its banks) that each `res_valid` pops.
     - **abort**: an OP_ABORT beat becomes `abort` (one cycle, `d_ctx`), in
       order with the beats around it.
+    - **health**: the decoder's `overruns`, `queue_overflow`, `held`,
+      `aborted` and `reused` (`h_*`, ldpc domain) as one snapshot into the
+      chain's domain (`health_*`, the HEALTH registers of `SlotsRx`): a
+      toggle handshake (each side's toggle through two registers; the
+      snapshot is taken when the request arrives and read by the chain
+      after the acknowledgement, so it is stable for at least two symbol
+      clocks before it is sampled), a new one about every 100 ns.
     - **out**: the record (`res_*` with the tag) and the decoder's hard-bit
       words (`o_data`, `o_last`; all n bits, the first k in natural order)
       through an AsyncFIFO (OUT_DEPTH = 64) back to the chain's domain as
@@ -193,6 +200,17 @@ class LdpcBridge(Elaboratable):
         self.res_unsat = Signal(16)
         self.res_overrun = Signal()
         self.abort = Signal()
+        # the decoder's health (ldpc domain) and its snapshot (chain side)
+        self.h_overruns = Signal(16)
+        self.h_overflow = Signal()
+        self.h_held = Signal(4)
+        self.h_aborted = Signal(16)
+        self.h_reused = Signal(16)
+        self.health_overruns = Signal(16)
+        self.health_overflow = Signal()
+        self.health_held = Signal(4)
+        self.health_aborted = Signal(16)
+        self.health_reused = Signal(16)
         self.in_lost = Signal(16)
         self.out_overrun = Signal()  # chain side: the record's overrun flag
         # verification: the input FIFO's and tag queue's levels (ldpc
@@ -284,6 +302,23 @@ class LdpcBridge(Elaboratable):
         ]
         m.d.comb += [self.v_in_level.eq(fin.r_level), self.v_tags.eq(tags.level),
                      self.v_out_level.eq(fout.r_level)]
+        # ---- health -----------------------------------------------------------
+        from amaranth.lib.cdc import FFSynchronizer
+
+        h_in = Cat(self.h_overruns, self.h_overflow, self.h_held, self.h_aborted, self.h_reused)
+        h_out = Cat(self.health_overruns, self.health_overflow, self.health_held, self.health_aborted,
+                    self.health_reused)
+        snap = Signal(len(h_in))  # ldpc: taken when a request arrives
+        req = Signal()  # chain side's toggle
+        ack = Signal()  # decoder side's toggle
+        req_l = Signal()
+        ack_s = Signal()
+        m.submodules.h_req = FFSynchronizer(req, req_l, o_domain="ldpc")
+        m.submodules.h_ack = FFSynchronizer(ack, ack_s, o_domain="sync")
+        with m.If(req_l != ack):
+            m.d.ldpc += [snap.eq(h_in), ack.eq(req_l)]
+        with m.If(ack_s == req):
+            m.d.sync += [h_out.eq(snap), req.eq(~req)]
         return m
 
 
@@ -307,4 +342,6 @@ def connect_decoder(m, br, dec):
         br.res_converged.eq(dec.res_converged), br.res_unsat.eq(dec.res_unsat),
         br.res_overrun.eq(dec.res_overrun),
         dec.abort.eq(br.abort),
+        br.h_overruns.eq(dec.overruns), br.h_overflow.eq(dec.queue_overflow), br.h_held.eq(dec.held),
+        br.h_aborted.eq(dec.aborted), br.h_reused.eq(dec.reused),
     ]

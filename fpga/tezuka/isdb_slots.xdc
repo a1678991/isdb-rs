@@ -26,7 +26,7 @@
 #   ldpc     the decoder's 200 MHz, from the block's MMCME2_BASE on ldpc_ref
 #            = clk_fpga_0 (100 MHz; Vivado derives the 5 ns clock itself):
 #            asynchronous to the other two, reached only through the
-#            bridge's AsyncFIFOs (ldpc_if.LdpcBridge).
+#            bridge's AsyncFIFOs and its health handshake (ldpc_if.LdpcBridge).
 #
 # The chain is designed for 40 Msps (l_clk 160 MHz): at another sample rate
 # the fast domain runs out of these constraints, and the host takes the
@@ -77,7 +77,10 @@ set_max_delay 25.000 -from $chain_slow -to $chain_slow
 
 # 4. The decoder's clock against the symbol clock: only the bridge's
 #    AsyncFIFOs cross (Gray-coded pointers through two-register
-#    synchronisers, the FIFO memories' read data); bound them to the faster
+#    synchronisers, the FIFO memories' read data), and its health snapshot
+#    (two toggles through two-register synchronisers, the snapshot register
+#    into the chain's copy, stable for two symbol clocks before it is
+#    sampled: ldpc_if.LdpcBridge "health"); bound them to the faster
 #    period, datapath only (the clocks have no phase relation). Given by
 #    clocks, not cells: the bridge's FIFO memories are block RAMs clocked
 #    by both (written in one domain, read in the other), and a cell rule
