@@ -1764,16 +1764,41 @@ kept on the card as `isdbs3_rx6_top.bin`. Clean boot. BS7, 30 s:
 - `crates/isdb-frontend/examples/slotsstatus.rs` prints the per-frame
   table these come from.
 
-### Build 8: met, not yet on the board (2026-11-03)
+### Build 8 on the board (2026-11-03)
 
 Fit `682032e` (n0 learned, the status's learned points, TAPS_FROM arming
 with the frame written, the host's tap gate). Final checkpoint after
 `holdfix.tcl` (one RGMII hold endpoint, −0.046 ns, repaired): WNS +0.034
 ns, WHS +0.033 ns, 0 failing endpoints; 43 704 LUT, 123.5 BRAM36, 176
 DSP. `isdbs3_rx_top.bin` sha256
-`f2cb47d12b6d6732497b04f57d8635b82a78e50c90122244460190b2131ff1b4`. The
-bench board has been unreachable since this host's restart (no ping,
-no ARP, not on USB): not deployed, no board checks.
+`f2cb47d12b6d6732497b04f57d8635b82a78e50c90122244460190b2131ff1b4`; build 7
+kept on the card as `isdbs3_rx7_top.bin` (`uEnv.txt.prev-rx7`). Clean
+boot. BS7, 30 s, `RUST_LOG='info,isdb::chain=debug'`:
+
+| | FPGA chain | `--slots` replay | host receiver (capture after) | CPU model (same capture) |
+|---|---|---|---|---|
+| frames, slots | 909, 87 234 | 909, 87 234 | 907, 87 072 | 907, 86 880 |
+| LDPC / BCH failed | **1** / 0 | 1 / 0 | 1 / 0 | 1 / 0 |
+| mean iterations | **2.15** | 2.15 | 2.113 | 2.129 |
+| MER / n0 | 14.9 dB; n0 33 705 mean (frames 30–909) | | 15.2 dB main | n0 33 554 mean |
+| losses | 0 | 0 | 0 | 0 |
+| host CPU, max RSS | 12.2 s for 30 s (0.41 cores); 6.28 GB | 2.4 s; 39 MB | 291.6 s; | |
+
+- n0 is learned from frame 4 (46–47 k on the identity taps, 33–34 k once
+  the taps are in force), K = 2³²/n0 every frame; the learned 16APSK
+  points are a 4 + 12 constellation (radii 445–473 and 1 025–1 156, Q.10);
+  `taps_from` equals each set's solve frame (6, 86, …, 844).
+- Slow loop: 11 solves, the first 0.87 s after open, 0 rejected, one
+  capture that did not hold (recaptured). The last solve (frame 844)
+  passed the centre-tap / residual gate with outer taps unlike the other
+  ten (tap 3 −893 against +300 … +406) and R[5][5] / p[5] like theirs;
+  for its last 45 frames the run's n0 rose to 36–39 k and the iterations
+  to 2.3–2.5, without failures.
+- The TLV streams parse (`isdb tlv inspect`); the model's packets on the
+  'after' capture are all packets of the host's; the FPGA run's are a
+  different minute of the same streams.
+- Captures in `~/dev/sdr/isdbs3-bench/build8/` (not committed). The
+  'before' capture mis-acquired (−528 kHz) and is not used.
 
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 

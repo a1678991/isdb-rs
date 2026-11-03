@@ -519,13 +519,12 @@ are needed: not provably narrower).
   `build/isdb_slots_rx.v` (module `isdb_slots_rx`: clocks `clk`,
   `fast_clk`, `ldpc_ref`; about 374 000 lines).
 
-**What is left** (the receive-only image meets timing and decodes BS7,
-[below](#building-the-plutosky-r2-bitstream-tezuka), "Status of
-`isdbs3-rx`"; with SUMS_CAPTURE the taps arrive and good taps decode as
-the model): one solved tap set in twelve on the board failed every
-codeword for 81 frames (cause not found); the board's n0 never leaves
-`N0_DEFAULT` (the model learns it every frame); the status's `taps_from`
-lags one TAPS_FROM write (VERIFICATION.md "Build 7 on the board");
+**What is left** (the receive-only image meets timing and, with fit
+`682032e`, decodes BS7 on the board as the model does: 1 LDPC failure in
+30 s, 2.15 mean iterations, n0 learned; VERIFICATION.md "Build 8 on the
+board"): the slow loop's gate checks the centre tap and the residual
+only, and let through one set with odd outer taps (a whole-vector check
+would hold it);
 the restart epoch for a layout committed after a restart (the model's
 insert happens before it); `SlotsRx` as a whole with its front end in
 simulation (the chain's simulations start at the symbols); a host CONST /
