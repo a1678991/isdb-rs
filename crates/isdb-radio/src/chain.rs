@@ -558,6 +558,105 @@ impl ChainControl {
     }
 }
 
+/// The chain's state registers, read at once ([`ChainControl::state`]):
+/// what an error report needs (#28: a stream that dried up because the
+/// chain had no layout).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainState {
+    /// STATUS ([`cc::status`]).
+    pub status: u32,
+    /// FRAME: the last frame out.
+    pub frame: u32,
+    /// SEQ: the next block's sequence number.
+    pub seq: u32,
+    /// TAPS_FROM.
+    pub taps_from: u32,
+    /// SUMS_FRAME.
+    pub sums_frame: u32,
+    /// SUMS_CAPTURE ([`capture`]).
+    pub sums_capture: u32,
+    /// TMCC_OVERRUNS.
+    pub tmcc_overruns: u32,
+    /// The counters.
+    pub counters: cc::Counters,
+}
+
+impl std::fmt::Display for ChainState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = self.status;
+        let bit = |b: u32, yes: &'static str, no: &'static str| if s & b != 0 { yes } else { no };
+        let frame = |v: u32| {
+            if v == NONE {
+                "none".to_string()
+            } else {
+                v.to_string()
+            }
+        };
+        let k = &self.counters;
+        write!(
+            f,
+            "STATUS {s:#x} ({}, {}, {}), frame {}, next block {}, taps from {}, sums of frame {}, SUMS_CAPTURE {:#x} ({}{}), TMCC overruns {}; counters: {} frames ({} undecoded), {} TMCC failed, {} slots, {} LDPC failed, {} BCH failed",
+            bit(cc::status::LOCKED, "locked", "not locked"),
+            bit(cc::status::FRAMED, "framed", "not framed"),
+            bit(cc::status::DECODING, "decoding", "not decoding: no layout"),
+            self.frame,
+            self.seq,
+            frame(self.taps_from),
+            frame(self.sums_frame),
+            self.sums_capture,
+            if self.sums_capture & capture::ARMED != 0 {
+                "armed"
+            } else {
+                "not armed"
+            },
+            if self.sums_capture & capture::VALID != 0 {
+                ", valid"
+            } else {
+                ""
+            },
+            self.tmcc_overruns,
+            k.frames,
+            k.frames_undecoded,
+            k.tmcc_failed,
+            k.slots,
+            k.ldpc_failed,
+            k.bch_failed
+        )
+    }
+}
+
+impl ChainControl {
+    /// [`ChainState`], read (verified reads; nothing written).
+    ///
+    /// # Errors
+    ///
+    /// A failed register access, or a register whose reads never agree.
+    pub fn state(&mut self, port: &dyn RegisterAccess) -> Result<ChainState> {
+        let v = self.read_regs(
+            port,
+            &[
+                reg::STATUS,
+                reg::FRAME,
+                reg::SEQ,
+                reg::TAPS_FROM,
+                reg::SUMS_FRAME,
+                reg::SUMS_CAPTURE,
+                reg::TMCC_OVERRUNS,
+            ],
+        )?;
+        Ok(ChainState {
+            status: v[0],
+            frame: v[1],
+            seq: v[2],
+            taps_from: v[3],
+            sums_frame: v[4],
+            sums_capture: v[5],
+            tmcc_overruns: v[6],
+            counters: self.counters(port)?,
+        })
+    }
+}
+
 /// The sanity gate before taps are written (module documentation).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Gate {
@@ -3337,6 +3436,42 @@ pub(crate) mod tests {
         assert_eq!(m.get().taps, Some((good, 50)), "the good set again");
         assert_eq!(l.report.last_good_frame, Some(50));
         assert_eq!(l.report.recoveries, 2);
+    }
+
+    /// #28: the chain's state for an error report (a stream that dried
+    /// up): STATUS spelled out, the frame registers, the capture and the
+    /// counters; read only.
+    #[test]
+    fn the_chain_state_for_an_error_report() {
+        let (m, mut c) = opened(features::ALL);
+        {
+            let mut d = m.get();
+            d.regs.insert(reg::STATUS, 3);
+            d.regs.insert(reg::FRAME, 8_652);
+            d.regs.insert(reg::TAPS_FROM, 8_600);
+            d.regs.insert(reg::COUNTERS + 1, 41);
+            d.cap = (true, false, false);
+        }
+        let writes = m.get().bus_writes;
+        let stored = m.get().writes.len();
+        let s = c.state(&m).unwrap();
+        assert_eq!((s.status, s.frame, s.taps_from), (3, 8_652, 8_600));
+        assert_eq!(s.counters.frames_undecoded, 41);
+        let t = s.to_string();
+        for want in [
+            "STATUS 0x3 (locked, framed, not decoding: no layout)",
+            "frame 8652",
+            "taps from 8600",
+            "sums of frame none",
+            "(armed)",
+            "(41 undecoded)",
+        ] {
+            assert!(t.contains(want), "{want}: {t}");
+        }
+        // commands only (ADDR, READ, NOP), no register written
+        let n = m.get().bus_writes - writes;
+        assert_eq!(n, 2 * (7 + 8) + 2);
+        assert_eq!(m.get().writes.len(), stored);
     }
 
     /// Frames without a layout under a new set (it killed the TMCC, #28):
