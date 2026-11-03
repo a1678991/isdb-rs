@@ -8,7 +8,8 @@
 //! `cargo run --release -p isdb-frontend --example slotsstatus -- FILE.slots [EVERY]`
 //!
 //! EVERY: print every n-th status block, and every block whose frame had
-//! a failed slot or whose taps changed (default 1).
+//! a failed slot or whose taps changed (default 1). At the end, the last
+//! status block's learned constellation points.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -33,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut slots: BTreeMap<u32, FrameSlots> = BTreeMap::new();
     let mut prev_taps_from = None;
     let mut n = 0u32;
+    let mut last = None;
     println!(
         "frame  taps_from  centre_tap      sums_frame  n0      llr_scale  learned_from  slots(valid/failed)  mean_iter"
     );
@@ -86,9 +88,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                     n += 1;
+                    last = Some(st);
                 }
                 Event::Loss { blocks, words } => println!("loss: {blocks} blocks, {words} words"),
                 _ => {}
+            }
+        }
+    }
+    // the learned constellation of the last status block, per modulation
+    // (count 0: the nominal points in force), Q.10, with each point's
+    // radius, for a look at whether it is a plausible constellation
+    if let Some(st) = last {
+        let names = ["pi/2-BPSK", "QPSK", "8PSK", "16APSK", "32APSK"];
+        for (name, pts) in names.iter().zip(&st.constellation) {
+            if pts.is_empty() {
+                continue;
+            }
+            println!(
+                "learned {name} at frame {} ({} points, Q.10, re im radius):",
+                st.frame,
+                pts.len()
+            );
+            for (i, p) in pts.iter().enumerate() {
+                let r = f64::from(p[0]).hypot(f64::from(p[1]));
+                println!("  {i:2}: {:6} {:6}  {r:7.1}", p[0], p[1]);
             }
         }
     }
