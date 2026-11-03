@@ -518,6 +518,45 @@ are needed: not provably narrower).
   through `gpio_out`. `mise run fpga:slots-verilog` writes
   `build/isdb_slots_rx.v` (module `isdb_slots_rx`: clocks `clk`,
   `fast_clk`, `ldpc_ref`; about 374 000 lines).
+- **Build 8 issues** (#27, #28, #29, a second board running build 8;
+  2026-11-04; docs/plans/isdbs3-fpga-rx.md "Build 8 issues"). The
+  register map (`top.py`'s docstring and `isdb_frontend::control::chain`)
+  gains:
+
+  | Address | Bits | Meaning |
+  |---|---|---|
+  | 0x401 FEATURES | 5 DECODER_HEALTH | DECODER and RECLAIMED exist; the decoder frees the banks of abandoned codewords |
+  | 0x401 FEATURES | 6 SUMS_SEQ | SUMS_CAPTURE's bits 2 and 15-8; a sum READ is answered in 3 symbol clocks |
+  | 0x405 STATUS | 2 DECODING | now also cleared by a restart (the restart drops the layouts) |
+  | 0x422 SUMS_CAPTURE (read) | 2 NO_LAYOUT | STATUS bit 2 clear: nothing latches, an armed capture waits |
+  | 0x422 SUMS_CAPTURE (read) | 15-8 SEQ | latches since configuration (wrapping): the same before and after a 308-word set, no latch moved |
+  | 0x439 DECODER (ro) | 15-0 OVERRUNS, 16 QUEUE_OVERFLOW, 23-20 HELD, 27-24 BANKS | the decoder's dropped codewords (wrapping), its sticky queue overflow, the banks allocated now, K (3); a snapshot under 1 µs old |
+  | 0x43A RECLAIMED (ro) | 15-0 ABORTED, 31-16 REUSED | banks freed by the abort, banks a begin took back (wrapping) |
+  | 0x500 .. 0x63F SUMS (ro) | | a READ answered 3 symbol clocks after it is decoded, the readback keeping the previous READ's value until then (it showed 0 for up to about 4 400) |
+
+  **START and the decoder**: the decoder's clock is not reset by START.
+  The restart (as a lost sync or a dropped frame) gives up the slot
+  codeword being loaded and the back end sends the decoder its abort,
+  which frees the bank ([Abandoned codewords](#the-ldpc-decoder-ldpcdecoder));
+  committed codewords decode and leave as always. A stop (CTRL without
+  SLOTS) lets them drain, so after a stop and START every bank is free
+  (DECODER HELD 0), no context is open, the bridge's FIFOs, tag queue and
+  the result FIFO are empty. A START while the chain runs may be
+  followed by blocks of codewords committed before it and by the TMCC
+  codeword of a burst already begun (never cut; each block carries its
+  frame counter; the layout it decodes after the restart stays queued,
+  the restart epoch below). START with INIT bit 0 puts the taps last written to
+  TAPS in use at once (an armed TAPS_FROM set dropped); without it the
+  taps in use and an armed set stay.
+
+  **Without a layout** the chain still sends, per whole frame, its TMCC
+  block (604 words with header and trailer) and its status block (79, + 4
+  · 2^m per learned modulation m): 683 to 807 words per 33.05 ms, at
+  least 20 668 words/s; nothing while the sync is unlocked or no frame
+  ends whole.
+
+  Fit (Yosys): `SlotsRx` without the decoder 26 395 → 26 487 LUT, 27 119
+  → 27 245 FF, BRAM and DSP unchanged; the decoder 12 510 → 12 538 LUT.
 
 **What is left** (the receive-only image meets timing and, with fit
 `682032e`, decodes BS7 on the board as the model does: 1 LDPC failure in
@@ -526,7 +565,9 @@ board"): the slow loop's gate checks the centre tap and the residual
 only, and let through one set with odd outer taps (a whole-vector check
 would hold it);
 the restart epoch for a layout committed after a restart (the model's
-insert happens before it); `SlotsRx` as a whole with its front end in
+insert happens before it); the training sums delivered in the `Slots`
+stream (a block with its CRC instead of 308 register reads: the plan's
+"Build 8 issues", follow-up); `SlotsRx` as a whole with its front end in
 simulation (the chain's simulations start at the symbols); a host CONST /
 N0 load and layout lag 1 (FEATURES says so); the recording sets
 (`chain-rec-*`, opt-in) were not generated here.
