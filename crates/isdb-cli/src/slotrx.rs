@@ -916,6 +916,11 @@ pub fn run_radio(
                 "singular": l.singular,
                 "solves_rejected": l.solves_rejected,
                 "torn_reads": l.torn,
+                "unsettled_reads": l.unsettled,
+                "words_read": l.words_read,
+                "rereads": l.rereads,
+                "captures_rejected": l.captures_rejected,
+                "captures_rejected_by": l.captures_rejected_by,
                 "last_frame": l.last_frame,
                 "last_taps": l.last_taps,
                 "carrier_register": l.carrier,
@@ -939,10 +944,28 @@ pub fn run_radio(
                 solves = l.solves,
                 solves_rejected = l.solves_rejected,
                 ticks = l.ticks,
-                "the equaliser's slow loop wrote taps {} time(s) in {} ticks ({} solve(s) rejected by its gate){}",
+                captures_rejected = l.captures_rejected,
+                rereads = l.rereads,
+                "the equaliser's slow loop wrote taps {} time(s) in {} ticks ({} solve(s) rejected by its gate, {} capture(s) by the checks on the sums{}; {} of {} register reads read again after a foreign value, {} torn){}",
                 l.solves,
                 l.ticks,
                 l.solves_rejected,
+                l.captures_rejected,
+                if l.captures_rejected_by.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        ": {}",
+                        l.captures_rejected_by
+                            .iter()
+                            .map(|(k, v)| format!("{v} {k}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+                l.rereads,
+                l.words_read,
+                l.torn,
                 l.error
                     .as_ref()
                     .map_or(String::new(), |e| format!("; it stopped on: {e}"))
