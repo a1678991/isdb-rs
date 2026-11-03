@@ -1331,6 +1331,12 @@ fn run_isdbs3(a: RxArgs) -> Result<()> {
         );
         println!("{}", serde_json::to_string_pretty(&j)?);
     }
+    // the radio's Slots capture ended on an error (#28: a refill that
+    // timed out, the chain's state in the message): after the summary,
+    // the run fails
+    if let Some(e) = stats.chain.as_ref().and_then(|c| c.capture_error.as_ref()) {
+        bail!("the radio's capture ended on an error: {e}");
+    }
     Ok(())
 }
 

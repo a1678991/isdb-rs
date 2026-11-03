@@ -47,13 +47,20 @@
 //!       (16 / 12 / 8 bits).
 //!     * `buffer` (`recorder=stream` and the FPGA symbol stream; not
 //!       `maia`): samples (words) per libiio buffer, as for streaming
-//!       (default 1048576).
+//!       (default 1048576; 65536 for the receive chain's `Slots` stream,
+//!       which must fill a buffer within libiio's timeout even while the
+//!       chain has no layout and sends only its TMCC and status blocks,
+//!       issue #28; its context's timeout is 30 s, and a refill that times
+//!       out ends the capture with an error naming the chain's STATUS and
+//!       counters).
 //!     * `kbuffers` (the FPGA symbol stream, `isdb symbols` / `isdb rx`
 //!       with the front end): kernel buffers on the device, 2..=64
 //!       (default 16 × 1 Mi words = 330 ms of a 50.8 MB/s ISDB-S3 stream).
 //!       iiod uses ≈ 72 % of a Pluto core at that rate and the stream stalls
 //!       for ≈ 10 ms every ≈ 10.2 s; with 4 buffers that overflowed the DMA
-//!       every time (plan §0.18), with 8 or 16 never in 45–60 s.
+//!       every time (plan §0.18), with 8 or 16 never in 45–60 s. The
+//!       `Slots` stream's default is 64 × 64 Ki words (8 MiB, 0.7 s of
+//!       its ≈ 12 MB/s).
 //!
 //!     A streamed capture checks the overflow bit of the ADC core
 //!     (`cf-ad9361-lpc` register 0x80000088 bit 2, write 1 to clear)
@@ -206,6 +213,26 @@ const STREAM_DEPTH: usize = 8;
 /// memory, 660 ms at 50.8 MB/s) ride it out with room for host-side stalls
 /// as well; setting `cubic` on the board removes the pause itself.
 const SYMBOLS_KERNEL_BUFFERS: u32 = 16;
+/// Words per libiio buffer of the receive chain's `Slots` stream by
+/// default (128 KiB). A buffer must fill well inside libiio's timeout in
+/// every state of the chain (#28): decoding 16APSK 93/120 it sends ≈ 6 M
+/// words/s (a buffer every 11 ms); without a layout only a TMCC block
+/// (604 words) and a status block (79–111) per frame, ≈ 21 000 words/s
+/// at 30.3 frames/s (3.1 s per buffer, inside libiio's 5 s network
+/// default), or the status blocks alone, ≈ 2 400–3 400 words/s (19–27 s:
+/// inside [`SLOTS_TIMEOUT`]). The 1 Mi words of the symbol stream took
+/// 50 s and more there, and the refill timed out.
+const SLOTS_BUFFER_WORDS: usize = 65_536;
+/// Kernel buffers of the `Slots` stream by default: 64 × 128 KiB = 8 MiB,
+/// 0.7 s of the decoding stream's 6 M words/s (the device's slack while
+/// iiod or the link pauses; a BBR PROBE_RTT pause is ≥ 200 ms, plan
+/// §0.20).
+const SLOTS_KERNEL_BUFFERS: u32 = 64;
+/// libiio's timeout on the `Slots` stream's context (its refills): a
+/// buffer of status blocks alone takes up to 27 s (above); a stream that
+/// sends nothing for this long ends with an error that reports the chain's
+/// state.
+const SLOTS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Accepted `kbuffers`.
 const SYMBOLS_KERNEL_BUFFERS_RANGE: std::ops::RangeInclusive<u32> = 2..=64;
 /// DMA samples per IIO buffer of the TX symbol codes by default: 262 144
@@ -1537,24 +1564,42 @@ impl Backend for Pluto {
         loop_stop.store(true, Ordering::SeqCst);
         let slow_report =
             slow_loop.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)));
-        // the counters, then back to IQ samples, whatever happened (the
-        // encoder continues from gpio_out, after the slow loop's commands)
-        let (counters, restored) = {
+        // the counters (and after a failed stream the chain's state), then
+        // back to IQ samples, whatever happened (the encoder continues from
+        // gpio_out, after the slow loop's commands)
+        let (counters, state, restored) = {
             let op = "switch the RX back to IQ samples";
             match ctx.device(RX_DEV).at(op) {
                 Ok(rx) => match ChainControl::attach(NAME, &rx) {
                     Ok(mut c) => {
-                        let counters = streamed.is_ok().then(|| c.counters(&rx).ok()).flatten();
-                        (counters, c.release(&rx))
+                        let counters = c.counters(&rx).ok();
+                        let state = streamed.is_err().then(|| {
+                            c.state(&rx)
+                                .map_or_else(|e| format!("not readable: {e}"), |s| s.to_string())
+                        });
+                        (counters, state, c.release(&rx))
                     }
-                    Err(e) => (None, Err(e)),
+                    Err(e) => (None, None, Err(e)),
                 },
-                Err(e) => (None, Err(e)),
+                Err(e) => (None, None, Err(e)),
             }
         };
         // overflows: 0, the bit is not polled (the sequence numbers count
         // the losses)
-        let (written, overflows) = streamed?;
+        let (written, overflows) = streamed.map_err(|e| {
+            // #28: a refill that timed out says nothing of why; the chain
+            // does (STATUS without DECODING: no layout, few words)
+            let state = state.unwrap_or_else(|| "not readable".into());
+            warn!(
+                backend = NAME,
+                state, "the Slots stream ended on an error; the chain then: {state}"
+            );
+            RadioError::device(
+                NAME,
+                format!("the Slots stream ended (the chain then: {state})"),
+                e,
+            )
+        })?;
         restored?;
         let read_back = "read back the RX settings";
         let phy = ctx.device(PHY).at(read_back)?;
@@ -1720,31 +1765,45 @@ struct WordStream {
     poll_overflow: bool,
     /// No buffer for this long ends the stream ([`StreamProblem::Silent`]).
     silence: Duration,
+    /// libiio's timeout set on the context first (`None`: its default).
+    timeout: Option<Duration>,
 }
 
 impl WordStream {
     /// The symbol front end's stream: `buffer` and `kbuffers` (default
     /// [`SYMBOLS_KERNEL_BUFFERS`]), the overflow bit polled per buffer
     /// (nothing else uses the device's registers meanwhile, and the
-    /// `Symbols` reader needs the losses placed), 10 s of silence.
+    /// `Symbols` reader needs the losses placed), 10 s of silence,
+    /// libiio's timeout.
     fn symbols(dev: &DeviceArgs) -> Self {
         Self {
             buffer: dev.buffer,
             kernel_buffers: dev.kernel_buffers.unwrap_or(SYMBOLS_KERNEL_BUFFERS),
             poll_overflow: true,
             silence: Duration::from_secs(10),
+            timeout: None,
         }
     }
 
-    /// The receive chain's stream: as for symbols, but the overflow bit is
-    /// not polled (#27: that read raced the slow loop's on the other
-    /// context, and the `Slots` blocks' sequence numbers count every loss
-    /// anyway): while it runs the slow loop is the process's only register
-    /// user.
+    /// The receive chain's stream: `buffer` (default
+    /// [`SLOTS_BUFFER_WORDS`]) and `kbuffers` (default
+    /// [`SLOTS_KERNEL_BUFFERS`]), libiio's timeout [`SLOTS_TIMEOUT`] and 5 s
+    /// more of silence (a chain without a layout sends few words: #28),
+    /// and the overflow bit not polled (#27: that read raced the slow
+    /// loop's on the other context, and the `Slots` blocks' sequence
+    /// numbers count every loss anyway): while it runs the slow loop is
+    /// the process's only register user.
     fn slots(dev: &DeviceArgs) -> Self {
         Self {
+            buffer: if dev.buffer_given {
+                dev.buffer
+            } else {
+                SLOTS_BUFFER_WORDS
+            },
+            kernel_buffers: dev.kernel_buffers.unwrap_or(SLOTS_KERNEL_BUFFERS),
             poll_overflow: false,
-            ..Self::symbols(dev)
+            silence: SLOTS_TIMEOUT + Duration::from_secs(5),
+            timeout: Some(SLOTS_TIMEOUT),
         }
     }
 }
@@ -1761,6 +1820,10 @@ fn stream_words(
     out: &mut dyn std::io::Write,
     stop: &AtomicBool,
 ) -> Result<(u64, u64)> {
+    if let Some(t) = how.timeout {
+        ctx.set_timeout(u32::try_from(t.as_millis()).unwrap_or(u32::MAX))
+            .at("set the libiio timeout of the RX stream")?;
+    }
     let stream = ctx
         .start_rx_raw(
             RX_DEV,
@@ -3219,6 +3282,41 @@ mod tests {
             (DEFAULT_STREAM_BUFFER_SAMPLES, SYMBOLS_KERNEL_BUFFERS)
         );
         assert!(!WordStream::slots(&dev).poll_overflow);
+    }
+
+    /// #28: the Slots stream's buffers fill inside libiio's timeout even
+    /// without a layout (TMCC and status blocks only), and its context
+    /// waits longer than libiio's default; `buffer` and `kbuffers` given
+    /// are used as given.
+    #[test]
+    fn the_slots_stream_fills_its_buffers_without_a_layout() {
+        let dev = device_args(&cfg(&[], &[]), Dir::Capture).unwrap();
+        let s = WordStream::slots(&dev);
+        assert_eq!(
+            (s.buffer, s.kernel_buffers, s.timeout, s.silence),
+            (
+                65_536,
+                64,
+                Some(Duration::from_secs(30)),
+                Duration::from_secs(35)
+            )
+        );
+        // TMCC (604 words) and status (≤ 111) blocks per frame at 30.3
+        // frames/s: a buffer in under libiio's 5 s default; the status
+        // blocks alone (≥ 79 words): in under the 30 s
+        let frames_s = 33.7561e6 / 1_115_520.0;
+        assert!((30.0..30.5).contains(&frames_s), "{frames_s}");
+        #[allow(clippy::cast_precision_loss)]
+        let b = s.buffer as f64;
+        assert!(b / ((604.0 + 79.0) * frames_s) < 5.0);
+        assert!(b / (79.0 * frames_s) < 30.0);
+        let given = device_args(
+            &cfg(&[("buffer", "16384"), ("kbuffers", "8")], &[]),
+            Dir::Capture,
+        )
+        .unwrap();
+        let s = WordStream::slots(&given);
+        assert_eq!((s.buffer, s.kernel_buffers), (16_384, 8));
     }
 
     #[test]

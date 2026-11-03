@@ -684,12 +684,16 @@ pub fn finish_radio(
     cap_stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     decode: impl FnOnce(Bytes) -> Result<f64>,
 ) -> Result<f64> {
-    finish_radio_with(stream, seconds, stop, cap_stop, |c| c, decode).0
+    let (secs, capture) = finish_radio_with(stream, seconds, stop, cap_stop, |c| c, decode);
+    if let Err(e) = capture {
+        warn!(target: "isdb::rx", "the capture ended: {e:#}");
+    }
+    secs
 }
 
 /// [`finish_radio`] for any capture summary `C` (`summary` gives its
-/// stream part), returning the summary too (`None` when the capture
-/// ended on an error, which is warned). `seconds` 0: `decode` (or `stop`)
+/// stream part), returning the summary too, or the error the capture
+/// ended on (not warned: the caller's). `seconds` 0: `decode` (or `stop`)
 /// ends the capture, by setting `cap_stop`.
 pub fn finish_radio_with<C>(
     stream: RadioStream<C>,
@@ -698,7 +702,7 @@ pub fn finish_radio_with<C>(
     cap_stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     summary: impl Fn(&C) -> &isdb_radio::SymbolsCapture,
     decode: impl FnOnce(Bytes) -> Result<f64>,
-) -> (Result<f64>, Option<C>) {
+) -> (Result<f64>, Result<C>) {
     use std::sync::atomic::Ordering;
     let limit = (seconds > 0.0).then_some(seconds * stream.symbol_rate_hz);
     let (user, cs) = (std::sync::Arc::clone(stop), std::sync::Arc::clone(cap_stop));
@@ -745,12 +749,9 @@ pub fn finish_radio_with<C>(
                 );
             }
             info!(target: "isdb::rx", "{}; {}", c.method, c.gain);
-            (secs, Some(full))
+            (secs, Ok(full))
         }
-        Err(e) => {
-            warn!(target: "isdb::rx", "the capture ended: {e:#}");
-            (secs, None)
-        }
+        Err(e) => (secs, Err(e)),
     }
 }
 

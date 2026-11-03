@@ -128,6 +128,9 @@ pub struct ChainStats {
     pub frames_dropped: Option<u64>,
     /// The radio's capture: the chain's open, slow loop and counters.
     pub radio: Option<Value>,
+    /// The error the radio's capture ended on (`isdb rx` exits non-zero
+    /// after the summary).
+    pub capture_error: Option<String>,
 }
 
 impl ChainStats {
@@ -159,6 +162,7 @@ impl ChainStats {
             "unmapped_slots": self.unmapped_slots,
             "orphan_slots": self.orphan_slots,
             "tmcc_failed": self.tmcc_failed,
+            "dropped_slots": self.dropped_slots,
             "locked_frames": self.locked_frames,
             "first_frame": self.first_frame,
             "last_frame": self.last_frame,
@@ -168,6 +172,7 @@ impl ChainStats {
             "carrier_range_hz": self.carrier().map(|c| [c.1, c.2]),
             "status": st.map(|s| status_json(s)),
             "radio": self.radio,
+            "capture_error": self.capture_error,
         })
     }
 
@@ -216,6 +221,17 @@ impl ChainStats {
                 _ => String::new(),
             }
         );
+        if self.dropped_slots > 0 {
+            warn!(
+                target: "isdb::rx",
+                dropped_slots = self.dropped_slots,
+                "chain: {} slot(s) dropped by the LDPC decoder (0 iterations, not converged: no free decoder bank, issue #28), counted among the LDPC failures; the image's decoder state, not the signal",
+                self.dropped_slots
+            );
+        }
+        if let Some(e) = &self.capture_error {
+            warn!(target: "isdb::rx", "chain: the radio's capture ended on an error: {e}");
+        }
         if let (Some(s), Some((now, lo, hi))) = (&self.last_status, self.carrier()) {
             info!(
                 target: "isdb::rx",
@@ -990,7 +1006,19 @@ pub fn run_radio(
         },
     );
     let secs = secs?;
-    if let Some(c) = capture {
+    let c = match capture {
+        Ok(c) => c,
+        Err(e) => {
+            // #28: a stream that dried up (a refill timed out) is an error
+            // of the run: the summary says so, with the chain's state the
+            // backend read then, and `isdb rx` exits non-zero
+            // (ChainStats::capture_error)
+            warn!(target: "isdb::rx", "the capture ended: {e:#}");
+            Consumer::chain(stats).capture_error = Some(format!("{e:#}"));
+            return Ok(secs);
+        }
+    };
+    {
         let ch = Consumer::chain(stats);
         ch.radio = Some(json!({
             "open": c.open.describe(),
@@ -1204,6 +1232,9 @@ mod tests {
         let ch = st.chain.as_ref().unwrap();
         assert_eq!(ch.dropped_slots, decoded * 2);
         assert_eq!(st.ldpc_failed, decoded * 2);
+        let j = ch.json();
+        assert_eq!(j["dropped_slots"], json!(decoded * 2));
+        assert_eq!(j["capture_error"], Value::Null);
     }
 
     /// The synthetic stream (one TLV stream id B070h on all 120 slots of
