@@ -1,8 +1,8 @@
 # ISDB-S transmit symbols boundary (host → PlutoSky R2 FPGA): host side
 
-Investigation only, 2026-10-29. Repository `/home/a1678991/dev/isdb-rs` at `ccdc99c`.
-ADI HDL facts come from `/home/a1678991/dev/sdr/adi-hdl` (`c9a501d`); Tezuka's from
-`/home/a1678991/dev/sdr/maia-sdr-f5oeo/maia-hdl` and `/home/a1678991/dev/sdr/tezuka_fw`.
+Investigation only, 2026-10-29. Repository `~/dev/isdb-rs` at `ccdc99c`.
+ADI HDL facts come from `~/dev/sdr/adi-hdl` (`c9a501d`); Tezuka's from
+`~/dev/sdr/maia-sdr-f5oeo/maia-hdl` and `~/dev/sdr/tezuka_fw`.
 **[confirm]** marks a claim that the HDL agent or a board test still has to settle.
 
 ## 0. Summary

@@ -352,7 +352,7 @@ to PyPI, the index `uv.lock` records, unless it is already set.)".
 
 ## 6g. `worktree-agent-*` branches
 
-`git worktree list`: only `/home/a1678991/dev/isdb-rs 371e72b [main]`;
+`git worktree list`: only `~/dev/isdb-rs 371e72b [main]`;
 `git worktree prune --dry-run -v`: nothing; `.claude/worktrees/` empty.
 All seven are in `git branch --merged main` and `git log main..BRANCH`
 is empty:
@@ -405,8 +405,8 @@ in main: keep).
 and L913 "**Before any TX test on TX1** (all three are required):" →
 "**Before any TX test on TX1** (all three are required; 1 and 2 are in
 place on the bench since 2026-10-29, keep them):". The address line
-L928 (`ip:192.0.2.30`) is the documentation placeholder; the bench board
-is `ip:10.10.0.30` (isdbs-next.md), not to be committed as a real
+L928 (`ip:<PLUTO_IP>`) is the documentation placeholder for the bench
+board's address, not to be committed as a real
 identity — leave it.
 
 §0.23 (L862–879): L865 "2.7k LUT" (Yosys) → "2 331 LUT placed"; L868

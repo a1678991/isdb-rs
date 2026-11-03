@@ -12,14 +12,14 @@
 # stderr stamped with the wall clock in OUT/NAME.log, its exit status in
 # OUT/NAME.exit; then examples/slotsstatus's totals (not converged,
 # dropped with 0 iterations, failures per minute) in OUT/NAME.status and
-# tools/isdbs3-run-summary.py's lines in OUT/NAME.summary. URI (default
-# ip:<PLUTO_IP>), CHANNEL (BS7), ISDB (target/release/isdb), and
+# tools/isdbs3-run-summary.py's lines in OUT/NAME.summary. URI (required,
+# e.g. ip:<PLUTO_IP>, or PLUTO_URI), CHANNEL (BS7), ISDB (target/release/isdb), and
 # RUST_LOG pass through.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 isdb=${ISDB:-$here/target/release/isdb}
 status_bin=${SLOTSSTATUS:-$here/target/release/examples/slotsstatus}
-uri=${URI:-ip:<PLUTO_IP>}
+uri=${URI:-${PLUTO_URI:?set URI or PLUTO_URI, e.g. ip:<PLUTO_IP>}}
 chan=${CHANNEL:-BS7}
 
 stamp() { perl -MTime::HiRes=time -ne '$|=1; printf "%.3f %s", time, $_'; }

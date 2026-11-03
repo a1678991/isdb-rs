@@ -36,7 +36,8 @@ rustdoc clean, FPGA suite 24/24):
 
 **Bench** (as left):
 
-- PlutoSky R2 at `ip:10.10.0.30` (the docs' 192.0.2.30 is a placeholder),
+- PlutoSky R2 at `ip:<PLUTO_IP>` (the board's address; the repository
+  writes the placeholder),
   booted from SD with `/boot/uEnv.txt` `bitstream_image=isdb_txrx2_top.bin`
   (since 2026-10-31: both blocks plus the transmit block's prefetch /
   BANK_TAG / 64-bit counters; `uEnv.txt.prev-txrx` = the `isdb_txrx_top.bin`
@@ -67,7 +68,7 @@ rustdoc clean, FPGA suite 24/24):
   starts: `pgrep -af "isdb tx --system isdbs"`; stop with `kill PID`
   (the FIFO writer `pv` ends with it; the Pluto closes to attenuation
   89.75 dB, TX LO down). Restart: `tools/isdbs-bench-tx.sh WORKDIR 45
-  ip:10.10.0.30` (WORKDIR holds `bs-bench.toml`, `bs60.ts`, `ts.fifo`;
+  ip:<PLUTO_IP>` (WORKDIR holds `bs-bench.toml`, `bs60.ts`, `ts.fifo`;
   a WORKDIR of an earlier run also has the terrestrial `bench60.ts`,
   which the script now sends only with `--terrestrial-si`).
 - Board hygiene: `tools/pluto-autorun.sh` kills Tezuka's daemons at boot
@@ -76,7 +77,7 @@ rustdoc clean, FPGA suite 24/24):
   boot's "Tuning TX FAILED" (no `cf-ad9361-lpc`) happens 2 boots in 3;
   the unbind/rebind recovery of isdb-s.md §2 works after a few attempts.
 - ssh: `sshpass -e ssh -o UserKnownHostsFile=/dev/null
-  -o StrictHostKeyChecking=no root@10.10.0.30` (`SSHPASS=analog`; the
+  -o StrictHostKeyChecking=no root@<PLUTO_IP>` (`SSHPASS` set to the board's root password; the
   user's known_hosts has a stale key for this address); `scp -O` (no
   SFTP server on the board).
 
@@ -197,9 +198,9 @@ rustdoc clean, FPGA suite 24/24):
    says "below the formula's range" instead of "not read"; rebuild
    `target/release/dt295`. isdb-rs: `tools/isdbs-level-sweep.sh` (+ `.py`
    for the CSV and the §6.3 table, `-test.sh` with stubs). Bench run:
-   `tools/isdbs-bench-tx.sh WORK 45 ip:10.10.0.30` in its own terminal
+   `tools/isdbs-bench-tx.sh WORK 45 ip:<PLUTO_IP>` in its own terminal
    (its pid into a file), then `tools/isdbs-level-sweep.sh --conducted
-   --tx-pid FILE --uri ip:10.10.0.30 ~/dev/sdr/isdbs-bench/sweep-1`
+   --tx-pid FILE --uri ip:<PLUTO_IP> ~/dev/sdr/isdbs-bench/sweep-1`
    (or `--start-tx WORK` to let the sweep start and stop it); the first
    step is also the unverified check that an `iio_attr` hardwaregain
    write while `isdb tx` streams takes effect without an underrun or
@@ -322,7 +323,7 @@ Copy from here to the end of the file into the new session's first message.
 Continue the isdb-rs ISDB-S work from docs/plans/isdbs-next.md (read it
 first, then docs/plans/isdbs-fpga-tx.md and the four "ISDB-S transmitter
 in the FPGA" sections of VERIFICATION.md). State: the FPGA transmitter is
-built, deployed on the PlutoSky R2 (ip:10.10.0.30, isdb_txrx_top.bin) and
+built, deployed on the PlutoSky R2 (ip:<PLUTO_IP>, isdb_txrx_top.bin) and
 verified bit-exact in loopback and conducted into a PIX-DT295 tuner
 (driver: ~/dev/PIX-DT295, `dt295`), which locks on the bench broadcast of
 tools/isdbs-bench-tx.sh. The broadcast may still be running

@@ -730,7 +730,7 @@ STD-B44) is received to TLV streams.
   stop that cancels a blocked buffer only as a fallback.
 - `isdb-radio`: the `pluto` backend (feature `pluto`, default on) for
   AD936x radios with ADI's Pluto firmware (ADALM-Pluto, PlutoSky R2, …)
-  over libiio, e.g. `--radio pluto:uri=ip:192.0.2.30` over Ethernet. Device
+  over libiio, e.g. `--radio pluto:uri=ip:<PLUTO_IP>` over Ethernet. Device
   arguments `uri`, `channel` (TX1/RX1 or TX2/RX2), `buffer` and, on TX,
   `loopback` (digital TX→RX loopback with the TX LO powered down, for
   tests without radiating); TX gain `att` (attenuation, default the

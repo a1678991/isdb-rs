@@ -5,7 +5,7 @@
 #
 #   tools/isdbs3-board-check.sh OUT_DIR [URI] [CHANNEL] [SECONDS]
 #
-#   URI      default ip:10.10.0.30; CHANNEL default BS7; SECONDS default 30
+#   URI      the radio (e.g. ip:<PLUTO_IP>), or $PLUTO_URI; CHANNEL default BS7; SECONDS default 30
 #
 # Runs a release `isdb` (target/release/isdb, or $ISDB):
 #   0  isdb symbols --probe                       (the ID word: front end and
@@ -30,7 +30,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?usage: $0 OUT_DIR [URI] [CHANNEL] [SECONDS]}
-uri=${2:-ip:10.10.0.30}
+uri=${2:-${PLUTO_URI:?set PLUTO_URI or give URI, e.g. ip:<PLUTO_IP>}}
 chan=${3:-BS7}
 secs=${4:-30}
 isdb=${ISDB:-$here/target/release/isdb}

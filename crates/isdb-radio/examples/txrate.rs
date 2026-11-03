@@ -5,7 +5,7 @@
 //! direction (docs/plans/isdbs-fpga-tx.md §5).
 //!
 //! ```sh
-//! cargo run --release -p isdb-radio --example txrate -- ip:10.10.0.30 8e6 20
+//! cargo run --release -p isdb-radio --example txrate -- ip:<PLUTO_IP> 8e6 20
 //! ```
 //!
 //! Arguments: the libiio URI, the sample rate in Hz, the seconds to stream.

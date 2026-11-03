@@ -1800,6 +1800,35 @@ boot. BS7, 30 s, `RUST_LOG='info,isdb::chain=debug'`:
 - Captures in `~/dev/sdr/isdbs3-bench/build8/` (not committed). The
   'before' capture mis-acquired (−528 kHz) and is not used.
 
+### Build 9 on the board: issues #27, #28, #29 (2026-11-04)
+
+The `fpga/isdbs3-rx-issues-27-28-29` image (HDL 291756f): WNS +0.044 ns,
+WHS +0.050 ns, 0 failing endpoints, decoder +0.240 ns at 200 MHz; 43 730
+LUT, 123.5 BRAM36, 176 DSP. `isdbs3_rx_top.bin` sha256
+`447223e684eee748484b5e8f5072625f5e5ab862a33916ef200dea2157109dc3`; build 8
+kept as `isdbs3_rx8_top.bin` (`uEnv.txt.prev-rx8`). Open line: "features
+0x220e73 …; taps identity (loaded)". BS7, receive only:
+
+| Run | Valid slots | Not converged (dropped) | Slow loop | Losses | Exit |
+|---|---|---|---|---|---|
+| 6 × 8 s + 60 s, host 291756f | 23 232 per 8 s run | 4, 8, 5, 9, 6, 0; 60 s: 4 (dropped 1, 2, 0, 3, 3, 0; 0) | 0 rejected, 0 rereads | runs 4, 5: 10 704 / 15 329 blocks (link flaps) | 0 every run |
+| 6 × 8 s + 60 s, host 91c360a | 23 136–23 232 | 13, 11, 12, 19, 9, 7; 60 s: 2 (dropped 4, 3, 3, 4, 1, 2; 1) | 0 rejected, 0 rereads | 0 | 0 every run |
+| 600 s, `api_controller.sh` running | 1 731 413 | 8 (2) | 200 written, 0 rejected / reverts / recoveries / torn / unsettled, **1 reread** in 65 201 reads | 1 (14 615 blocks, a link flap) | 0 |
+| 300 s, `api_controller.sh` stopped | 871 488 | 2 (0) | 102 written, **0 rereads**, all else 0 | 0 | 0 |
+
+- #28: no accumulation over 12 stop/START cycles (the issue's 0 → 2 → 50
+  → no output); the decoder reads 1 of 3 banks held at each open, which
+  START frees; the few dropped slots are all in a run's first 34 frames,
+  on the identity taps (4–5 iterations per codeword), as are nearly all
+  the failures of the short runs.
+- #27 / #29: with the board-side poller running the host caught one
+  foreign value in 65 201 reads, rejected nothing and wrote no bad tap
+  set; n0 33 100–34 500 all run; failures per minute 4 0 1 0 2 0 1 0 0 0
+  (3 of 8 before the first taps).
+- The three block losses coincide with three Ethernet link flaps in the
+  board's `dmesg` (none afterwards); counted by the Slots sequence numbers.
+- Host CPU for the 600 s run: 76.3 s (0.13 cores).
+
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
 The checks of [docs/plans/isdbs-fpga-tx.md](docs/plans/isdbs-fpga-tx.md)

@@ -79,12 +79,12 @@ Device arguments, gains and ranges are listed in the
 - **Ethernet.** Gigabit Ethernet carries 512/63 MHz (32.5 MB/s) in one
   direction. Give the Pluto a static address on your LAN from its shell
   (over SSH: `192.168.2.1` on USB, or its current
-  Ethernet address): `fw_setenv ipaddr_eth 192.0.2.30;
+  Ethernet address): `fw_setenv ipaddr_eth <PLUTO_IP>;
   fw_setenv netmask_eth 255.255.255.0`, then `reboot`. The firmware writes
   `/etc/network/interfaces` from these variables at every boot (default
   `192.168.1.10/24`, which may collide with another device on a home
   network); it has no gateway setting, so the host must be on the same
-  subnet. Check with `iio_info -u ip:192.0.2.30`.
+  subnet. Check with `iio_info -u ip:<PLUTO_IP>`.
 - **Level.** The TX attenuation defaults to its maximum (`att=89.75`).
   At `att=0` and full scale the AD9361 delivers several dBm (more on
   PlutoSky variants with the 10 dB PA), so start high (`--gain att=60`)
@@ -771,11 +771,11 @@ two processes with their own libiio contexts, both at 40 Msps:
 
 ```sh
 # one shell: lead-in long enough for the receiver to acquire and configure
-isdb tx --system isdbs --radio pluto:uri=ip:192.0.2.30,loopback=on \
+isdb tx --system isdbs --radio pluto:uri=ip:<PLUTO_IP>,loopback=on \
     --channel BS1 --freq-unrestricted --offload fpga --rf-enable \
     --ts 0x4010:24=a.ts --ts 0x4011:24=b.ts --lead-superframes 1500
 # another, once the first prints "FPGA transmit block running"
-isdb rx --system isdbs --radio pluto:uri=ip:192.0.2.30 --channel BS1 \
+isdb rx --system isdbs --radio pluto:uri=ip:<PLUTO_IP> --channel BS1 \
     --offload fpga --ts-id 0x4010 --ts-id 0x4011 --seconds 20 \
     --out 'o-{ts_id}.ts' --strip-nulls --json
 ```

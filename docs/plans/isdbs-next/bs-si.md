@@ -547,7 +547,7 @@ Golden section for the example (network name "ベンチ" = `1b6f597341` as
    warning, a terrestrial TS is unchanged, and a mismatched one (0x43 with
    identifier '000011') gives `cross.delivery`.
 7. **Bench** (manual, conducted, `--rf-enable`, att ≥ 45 dB):
-   - `tools/isdbs-bench-tx.sh WORK 45 ip:10.10.0.30`;
+   - `tools/isdbs-bench-tx.sh WORK 45 ip:<PLUTO_IP>`;
    - `dt295 init`, `dt295 tune --isdbs bs1 --tsid 4017`, then `dt295 stream
      --isdbs bs1 --tsid 4017 --raw-config --out bs.ts --seconds 20`;
    - `isdb ts inspect bs.ts` shows NIT 0x0004 with 0x43 BS1 and SDT 0x03E7.

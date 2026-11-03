@@ -15,7 +15,7 @@ station identities in fixtures or docs).
   (broadcast reception records, TMCC test vectors). Ask the user whether
   to merge them into `main` before starting.
 - **ISDB-T is complete** for this purpose: modulator, demodulator, the
-  Pluto backend (`--radio pluto:uri=ip:192.0.2.30`), and real-broadcast
+  Pluto backend (`--radio pluto:uri=ip:<PLUTO_IP>`), and real-broadcast
   reception (seven stations, TMCC parity confirmed, one station
   RS-clean; see VERIFICATION.md "Broadcast reception").
 - **Not started:** anything ISDB-S / ISDB-S3. The README roadmap lists
@@ -32,7 +32,7 @@ Commits `34fb488` (isdb-iq), `a6d94b4` (isdb-radio/isdb-iio captures),
   Tezuka's maia-sdr recorder (HTTP API on port 80, `/api/recorder`,
   `/recording` tar of SigMF; 16-bit mode, 12 bits **left-aligned**, full
   scale 32768): 33 554 432 samples = 581 ms, ~5.5 s per capture.
-  `isdb capture --radio pluto:uri=ip:192.0.2.30,recorder=maia`. ≈ 1 s at
+  `isdb capture --radio pluto:uri=ip:<PLUTO_IP>,recorder=maia`. ≈ 1 s at
   16 bits is not possible (IQ8bit/IQ12bit modes would be; not wired).
 - **Contiguity** verified at 61.44 Msps via the |z|² line phase (max
   0.08 rad vs 2.95 rad per lost sample). Drops of exact multiples of 1024
@@ -352,7 +352,7 @@ seed). Findings:
 
 Workspace clippy fixed: `isdb-iq` example `bandpower` (`as_chunks`),
 committed `c5ac0c7` with the full hook. Live `isdb rx --system isdbs3
---radio pluto:uri=ip:192.0.2.30,recorder=iio,bits=8 --channel BSn
+--radio pluto:uri=ip:<PLUTO_IP>,recorder=iio,bits=8 --channel BSn
 --seconds 1.2` (receive only; 40 Msps, 56 MHz, 0.826 s libiio blocks):
 
 | | TMCC ok | slots | LDPC failed | sync Es/N0 → eq. | main MER |
@@ -700,7 +700,7 @@ from SD by the user; ID word 0x15DB4020). Commits `a9c28da` (carrier),
 
 ## 0.17 Coordinator's live check of §0.16 (2026-10-26)
 
-`isdb rx … --radio pluto:uri=ip:192.0.2.30 --seconds 30`, FPGA path,
+`isdb rx … --radio pluto:uri=ip:<PLUTO_IP> --seconds 30`, FPGA path,
 RX only (board TX LO off before and after):
 
 - **ISDB-S, BS1** (load avg ≈ 3): 30.07 s in 32.2 s wall incl. setup;
@@ -946,7 +946,7 @@ Never transmit on TX2 (open) or RX2's antenna. The project's legal notice
 applies (radiating needs a licence; conducted bench only).
 
 **The radio.** PlutoSky R2 (Zynq XC7Z020, AD9361), Ethernet
-`ip:192.0.2.30` (static, in the U-Boot environment in flash), booting
+`ip:<PLUTO_IP>` (static, in the U-Boot environment in flash), booting
 **Tezuka v0.3.24 from the SD card** (DIP switches both at 3.3 V; the
 factory firmware stays in flash: SW1 3.3 V / SW2 GND boots it). Serial
 console on the debug port at 115200 baud (the FTDI vanishes
@@ -1014,7 +1014,7 @@ symbol; the AD9361 programs exactly 57 719 999 Hz) = 72.7 ms:
 Capture recipe (RX only, safe):
 
 ```sh
-U=ip:192.0.2.30
+U=ip:<PLUTO_IP>
 iio_attr -u $U -i -c ad9361-phy voltage0 sampling_frequency 57720000
 iio_attr -u $U -i -c ad9361-phy voltage0 rf_bandwidth 44000000
 iio_attr -u $U -i -c ad9361-phy voltage0 gain_control_mode slow_attack
