@@ -944,11 +944,11 @@ run against a radio: no image has the chain (pieces 4 and 6).
 The model and the host path on a fresh signal, not the 2026-10-26
 recording they were developed against. Receive only (nothing
 transmitted, nothing changed on the board): PlutoSky R2 at
-`ip:10.10.0.30`, `isdb_txrx2_top.bin` (`--probe`: "the symbol front end
+`ip:<PLUTO_IP>`, `isdb_txrx2_top.bin` (`--probe`: "the symbol front end
 (format 4, 32 taps)"; no image has the chain yet), release build of
 `eb28673`, this host (32 threads).
 
-**Capture.** `isdb symbols --radio pluto:uri=ip:10.10.0.30 --freq BS7
+**Capture.** `isdb symbols --radio pluto:uri=ip:<PLUTO_IP> --freq BS7
 --system isdb-s3 --offload auto --seconds 30 --out bs7-live.sym`,
 14:04:51 JST: BS7 locked at the first try (carrier −193.2 kHz, trim
 −0.166 symbol, acquisition sync Es/N0 14.27 dB; AGC slow_attack, 32 dB
