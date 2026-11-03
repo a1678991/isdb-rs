@@ -841,6 +841,42 @@ The sensitivity cost is small: at 13.0 dB the layered decoder fails 3 of
 18 336 codewords at limit 16 and 47 at 12 (the piece-1 table), 14 between.
 With it the regenerated decoder-settings sets (chain-7-hdl, -8-loss, -9-fade, -10-bch; no codeword of them needs more than 4 iterations) are bit-exact with the real decoder, and the FPGA suite and cargo test pass.
 
+**Build 7's board defects (2026-11-03).** Four, all reproduced or
+explained off the board:
+
+- *n0 never learned* (52 556 and K 81 722 in every status block): the
+  demapper cleared its noise sum at every frame start, also in the 12
+  cycles between a decoded frame's last symbol and its noise division;
+  on a gapless stream the next frame starts a cycle after the last
+  symbol, so the division always saw a count of 0. No HDL set showed it:
+  the stage-6 test's next frame had no layout, and every whole-chain set
+  ends before a status block carries a learned n0 (all their status
+  blocks read 52 556, the model's too). Reproduced on sets made from
+  build 7's own Symbols capture (`chainvectors` on `before.sym`, the
+  first 0.2 s: frames 3 and 4 read 52 556 against the model's 33 540 and
+  32 891); fixed (the clear waits for the drain), K in time (`late` 0);
+  `DemapTest.test_next_frame_starts_at_once` covers it.
+  `fpga/tools/frame_events.py` prints the demapper's frame events.
+- *The status block's learned points shifted* (found behind the first):
+  the finish stage took each status word in the cycle the point RAM's
+  address moved, so each point's re was the previous point's; the words
+  now leave two cycles after `next`; `StatusPointsTest` covers it. With
+  both fixes the whole chain on build 7's symbols (5 frames, 631 175
+  words) is word-exact with the model.
+- *`taps_from` one write behind*: `SlotsRx` armed the equaliser with the
+  previous TAPS_FROM value; fixed, `SlotsRxRegisterTest` covers it.
+- *One bad solve in twelve* (frame 250, centre 18 691 against 17 325):
+  no capture-side cause found. The sums are of the equaliser's input
+  (the taps in use do not enter them), each frame's bank is cleared at
+  its start and latched whole at its end (6 720 symbols, as every other
+  solve), the hold keeps the read bank out of the MAC unit's and the
+  clear's way, and each of the 308 words re-reads the held entry. The
+  host now logs every set of sums it solves (frame, count, a digest, R
+  and p at the centre, the taps) and gates the taps it writes (isdb-radio
+  `chain::Gate`: the normal equations' residual and the centre tap's
+  magnitude, 5 % each, a lasting change taken at its second solve); on
+  build 7's sequence it rejects frame 250's solve and writes the rest.
+
 ### Piece 5: the host path against the host receiver (2026-11-02)
 
 `tools/slots-vs-symbols.sh ~/isdb-captures/2026-10-26-fpga/bs7-fpga-40s-drift.sym`
