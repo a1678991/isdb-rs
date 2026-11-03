@@ -1247,3 +1247,31 @@ recorded words replayed):
   number, as in run 1.
 - The 'before' Symbols capture decodes on the host with 1 failure in
   87 072 slots (MER 15.4 dB): the signal is as on 2026-11-02.
+
+#### Build 8 (fit `682032e`: n0 learned, the status's points, TAPS_FROM, the tap gate) (2026-11-03)
+
+Built and met: the project flow's final checkpoint had setup met (WNS
++0.034 ns) and the RGMII receive input's hold at −0.046 ns (one
+endpoint, the same class as build 6); `holdfix.tcl` repaired it in one
+round: **WNS +0.034 ns, WHS +0.033 ns, 0 failing endpoints of 161 734 /
+161 564**. Per clock (WNS / WHS, ns): `rx_clk` +0.034 / +0.044 (a
+demapper K product), decoder `c0` +0.218 / +0.043, symbol clock +0.554 /
++0.044, symbol → l_clk +0.034 / +0.050, l_clk → symbol +0.554 / +0.057,
+symbol ↔ decoder +3.570 / +3.489, `clk_fpga_0` +1.174 / +0.036,
+`RGMII_rxc` +0.100 / +0.033. 43 704 LUT (82.2 %), 49 745 FF, 123.5
+BRAM36, 176 DSP; `isdb_slots` 37 244 LUT, 117 BRAM36, 164 DSP.
+`isdbs3_rx_top.bin` 2 822 976 bytes, sha256
+`f2cb47d12b6d6732497b04f57d8635b82a78e50c90122244460190b2131ff1b4` (XSA
+from `holdfix.tcl`
+`2c6028ecf3024875cf0c0d29068dd28298bdb52305b5de93fd6c7c20826d4b56`), in
+`~/dev/sdr/isdb-work/out/isdbs3-rx-build8/`.
+
+**Not deployed yet: the bench board is unreachable.** This host was
+down from 04:41 to 13:15 JST; since then 10.10.0.30 answers neither
+ping nor ARP and no Pluto is on USB, so the board is off or hung (it was
+last seen booted on build 7, `isdbs3_rx_top.bin`). Nothing was changed
+on the card for build 8 (build 7 still `isdbs3_rx_top.bin`, build 6
+`isdbs3_rx6_top.bin`, the `uEnv.txt.prev-rx6` / `prev-txrx2` entries as
+left). Once it is powered and reachable: copy build 7 to
+`isdbs3_rx7_top.bin` with a `uEnv.txt.prev-rx7` entry, deploy build 8,
+and run the board checks with `RUST_LOG=isdb::chain=debug`.
