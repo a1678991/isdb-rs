@@ -63,7 +63,16 @@
 //!     still queued in the device, in iiod and on the host. So the capture
 //!     drops the buffer that found it and as many more as can be queued
 //!     ([`CaptureGap::discarded`]), and the samples written after a gap
-//!     are contiguous again.
+//!     are contiguous again. The FPGA symbol stream checks it the same
+//!     way; the receive chain's `Slots` stream does not (its blocks'
+//!     sequence numbers count every loss, and the check's register read
+//!     raced the chain's slow loop, issue #27). The bit is not proof
+//!     either way: another client of the device's `direct_reg_access`
+//!     can make the read return another register (`isdb_iio`, "Register
+//!     access is not atomic"), and Tezuka's `/root/api_controller.sh`
+//!     write-1-clears the bit itself whenever it sees it set while the RX
+//!     DMA runs, so a real overflow can go unseen while it runs (stop
+//!     it: docs/receiving.md).
 //! * TX gains: `att` 0..89.75 dB of attenuation in 0.25 dB steps (default
 //!   89.75, the minimum output power).
 //! * RX gains: `agc` `manual|slow_attack|fast_attack|hybrid` (default
@@ -1374,7 +1383,14 @@ impl Backend for Pluto {
             id.taps
         );
         debug!(backend = NAME, "{device}{info}");
-        let streamed = stream_words(&mut ctx, &s.dev, words, out, stop);
+        let streamed = stream_words(
+            &mut ctx,
+            &s.dev,
+            WordStream::symbols(&s.dev),
+            words,
+            out,
+            stop,
+        );
         // Back to IQ samples, whatever happened.
         let restored = ctx
             .device(RX_DEV)
@@ -1482,7 +1498,9 @@ impl Backend for Pluto {
         );
         debug!(backend = NAME, "{device}{info}");
         // the slow loop on a context of its own; while it runs, the
-        // capture's context sends no command
+        // capture's context makes no register access at all (no command,
+        // no overflow poll: WordStream::slots), so the slow loop is the
+        // process's only direct_reg_access user (#27)
         let loop_stop = Arc::new(AtomicBool::new(false));
         let slow_loop = match slow {
             Some(o)
@@ -1508,7 +1526,14 @@ impl Backend for Pluto {
             }
             None => None,
         };
-        let streamed = stream_words(&mut ctx, &s.dev, words, out, stop);
+        let streamed = stream_words(
+            &mut ctx,
+            &s.dev,
+            WordStream::slots(&s.dev),
+            words,
+            out,
+            stop,
+        );
         loop_stop.store(true, Ordering::SeqCst);
         let slow_report =
             slow_loop.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)));
@@ -1527,16 +1552,10 @@ impl Backend for Pluto {
                 Err(e) => (None, Err(e)),
             }
         };
+        // overflows: 0, the bit is not polled (the sequence numbers count
+        // the losses)
         let (written, overflows) = streamed?;
         restored?;
-        if overflows > 0 {
-            warn!(
-                backend = NAME,
-                overflows,
-                words = written,
-                "Slots capture: the ADC core reported {overflows} overflow(s) in {written} words (blocks lost; the Slots sequence numbers count them)"
-            );
-        }
         let read_back = "read back the RX settings";
         let phy = ctx.device(PHY).at(read_back)?;
         let ch = phy.channel(s.dev.phy_channel(), false).at(read_back)?;
@@ -1554,7 +1573,7 @@ impl Backend for Pluto {
                 },
                 device,
                 method: format!(
-                    "FPGA receive chain (Slots format {}), configured in {config_s:.1} s; libiio stream of 16-bit words",
+                    "FPGA receive chain (Slots format {}), configured in {config_s:.1} s; libiio stream of 16-bit words (the ADC overflow bit not polled: the Slots sequence numbers count losses)",
                     open_report.version
                 ),
                 time,
@@ -1690,13 +1709,54 @@ fn adc_overflowed(ctx: &Context) -> Result<bool> {
     Ok(true)
 }
 
+/// How a stream of 16-bit words (`Symbols` or `Slots`) runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WordStream {
+    /// Words per libiio buffer.
+    buffer: usize,
+    /// Kernel buffers on the device.
+    kernel_buffers: u32,
+    /// Check (and clear) the ADC core's overflow bit after every buffer.
+    poll_overflow: bool,
+    /// No buffer for this long ends the stream ([`StreamProblem::Silent`]).
+    silence: Duration,
+}
+
+impl WordStream {
+    /// The symbol front end's stream: `buffer` and `kbuffers` (default
+    /// [`SYMBOLS_KERNEL_BUFFERS`]), the overflow bit polled per buffer
+    /// (nothing else uses the device's registers meanwhile, and the
+    /// `Symbols` reader needs the losses placed), 10 s of silence.
+    fn symbols(dev: &DeviceArgs) -> Self {
+        Self {
+            buffer: dev.buffer,
+            kernel_buffers: dev.kernel_buffers.unwrap_or(SYMBOLS_KERNEL_BUFFERS),
+            poll_overflow: true,
+            silence: Duration::from_secs(10),
+        }
+    }
+
+    /// The receive chain's stream: as for symbols, but the overflow bit is
+    /// not polled (#27: that read raced the slow loop's on the other
+    /// context, and the `Slots` blocks' sequence numbers count every loss
+    /// anyway): while it runs the slow loop is the process's only register
+    /// user.
+    fn slots(dev: &DeviceArgs) -> Self {
+        Self {
+            poll_overflow: false,
+            ..Self::symbols(dev)
+        }
+    }
+}
+
 /// Stream `words` 16-bit words from `voltage0` of the RX (the front end's
 /// output while it is selected) into `out` until done or `stop`; returns
 /// the words written and the buffers after which the ADC core reported an
-/// overflow.
+/// overflow (0 without [`WordStream::poll_overflow`]).
 fn stream_words(
     ctx: &mut Context,
     dev: &DeviceArgs,
+    how: WordStream,
     words: u64,
     out: &mut dyn std::io::Write,
     stop: &AtomicBool,
@@ -1705,8 +1765,8 @@ fn stream_words(
         .start_rx_raw(
             RX_DEV,
             &["voltage0"],
-            dev.buffer,
-            dev.kernel_buffers.unwrap_or(SYMBOLS_KERNEL_BUFFERS),
+            how.buffer,
+            how.kernel_buffers,
             STREAM_DEPTH,
         )
         .at(&port_hint(dev, "RX"))?;
@@ -1717,9 +1777,11 @@ fn stream_words(
             want: 2,
         }));
     }
-    clear_adc_overflow(ctx)?;
+    if how.poll_overflow {
+        clear_adc_overflow(ctx)?;
+    }
     let (mut written, mut overflows) = (0u64, 0u64);
-    let timeout = Duration::from_secs(10);
+    let timeout = how.silence;
     let r = (|| -> Result<()> {
         while written < words && !stop.load(Ordering::SeqCst) {
             let data = match stream.receiver.recv_timeout(timeout) {
@@ -1732,7 +1794,7 @@ fn stream_words(
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
             };
-            if adc_overflowed(ctx)? {
+            if how.poll_overflow && adc_overflowed(ctx)? {
                 overflows += 1;
                 // the first is a warning, the rest are counted in the
                 // summary event at the end of the capture
@@ -3142,6 +3204,21 @@ mod tests {
             e,
             "pluto: buffer=1000: must be 1024..=4194304 samples in multiples of 1024"
         );
+    }
+
+    /// #27: the Slots stream polls no register (the slow loop is the
+    /// process's only `direct_reg_access` user while it runs); the symbol
+    /// stream keeps its per-buffer overflow check.
+    #[test]
+    fn the_slots_stream_polls_no_register() {
+        let dev = device_args(&cfg(&[], &[]), Dir::Capture).unwrap();
+        let sym = WordStream::symbols(&dev);
+        assert!(sym.poll_overflow);
+        assert_eq!(
+            (sym.buffer, sym.kernel_buffers),
+            (DEFAULT_STREAM_BUFFER_SAMPLES, SYMBOLS_KERNEL_BUFFERS)
+        );
+        assert!(!WordStream::slots(&dev).poll_overflow);
     }
 
     #[test]
