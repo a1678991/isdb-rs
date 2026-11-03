@@ -174,6 +174,17 @@ class EqTest(unittest.TestCase):
         what, bad = run_eq_capture(doc("3-eq"), doc("4-tmcc")["layout"], COMPILED, strobe=False)
         self.assertEqual(bad, [], "\n".join(bad[:5]))
 
+    @cxx
+    def test_sums_read_while_the_mac_runs(self):
+        # issue #27: the 308 words read while the MAC unit sums a slot of
+        # F + 1 are the held F's, each answered 3 cycles after its request
+        # (it used to wait up to about 4 400 cycles for the MAC unit, the
+        # register reading 0 meanwhile); SEQ counts the one latch
+        from isdb_fpga.chain.stages import run_eq_capture
+
+        what, bad = run_eq_capture(doc("3-eq"), doc("4-tmcc")["layout"], COMPILED, read_during=True)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
 
 @needs("4-tmcc")
 class TmccTest(unittest.TestCase):
@@ -619,9 +630,12 @@ class SlotsRxRegisterTest(unittest.TestCase):
     (0x410 + 3, re | im << 16) written with WRITE_S and committed by START
     (INIT bit 0), CARRIER (0x402) written and loaded by START; the front
     end's STATUS (0x10) with bit 2 (the Slots words selected); then the
-    front end's register again. Issue #28: DECODER (0x439) and
+    front end's register again. Issues #27/#28: DECODER (0x439) and
     RECLAIMED (0x43A), the decoder's health through the bridge's
-    handshake from its clock (the bridge's inputs set here: no decoder)."""
+    handshake from its clock (the bridge's inputs set here: no decoder);
+    SUMS_CAPTURE's NO_LAYOUT (bit 2: no frame decoded) and SEQ (15-8);
+    a sum register's READ keeps the last value on `gpio_in` until the
+    word arrives (the cycle after `rd_ack`), never a 0 in between."""
 
     def test_reads(self):
         from amaranth.hdl import ClockDomain, Module
@@ -719,16 +733,35 @@ class SlotsRxRegisterTest(unittest.TestCase):
             seen["decoder"] = await cmd(OP_READ)
             await cmd(OP_ADDR, 0x43A)
             seen["reclaimed"] = await cmd(OP_READ)
+            # a sum word's READ after VERSION's: gpio_in shows VERSION's 1
+            # until the cycle after rd_ack, then the word (0: no sums here)
+            await cmd(OP_ADDR, 0x400)
+            await cmd(OP_READ)
+            await cmd(OP_ADDR, 0x500 + 4 * 5)
+            ctx.set(dut.gpio_out, (t ^ 1) << 31 | OP_READ << 28)
+            trace = []
+            for _ in range(16):
+                await ctx.tick("sync")
+                trace.append((ctx.get(dut.gpio_in), ctx.get(eqm.rd_ack)))
+            acked = [i for i, (_, a) in enumerate(trace) if a]
+            first = acked[0] if acked else None
+            # (the front end's readback until the READ is decoded: ADDR's
+            # show the front end's)
+            seen["sum_read"] = (first is not None and first < 12,
+                                first is not None and trace[first][0] == 1
+                                and all(v != 0 for v, _ in trace[:first + 1]),
+                                trace[-1][0])
 
         sim.add_testbench(bench)
         sim.run()
         ident = ID_MAGIC << 16 | FORMAT_VERSION << 12 | 32 | ID_CHAIN
         self.assertEqual(seen, {
             "id": ident, "period": 0x12345678, "version": 1, "max_iter_reset": 14, "max_iter": 33,
-            "agc": 0x0400, "features": 0b0110011 | 33 << 8 | 34 << 16, "capture_idle": 0,
-            "capture_armed": 0b10, "armed": [(5, 7), (87, 89)], "tap3": 7 << 16 | 0xFFFB,
+            "agc": 0x0400, "features": 0b1110011 | 33 << 8 | 34 << 16, "capture_idle": 0b100,
+            "capture_armed": 0b110, "armed": [(5, 7), (87, 89)], "tap3": 7 << 16 | 0xFFFB,
             "carrier": (-1234) & 0xFFFFFFFF, "status": 0b101, "period_again": 0x12345678, "id_again": ident,
             "decoder": 0x1234 | 1 << 16 | 2 << 20 | 3 << 24, "reclaimed": 7 | 9 << 16,
+            "sum_read": (True, True, 0),
         })
 
 
