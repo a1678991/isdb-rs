@@ -914,6 +914,7 @@ pub fn run_radio(
                 "ticks": l.ticks,
                 "solves": l.solves,
                 "singular": l.singular,
+                "solves_rejected": l.solves_rejected,
                 "torn_reads": l.torn,
                 "last_frame": l.last_frame,
                 "last_taps": l.last_taps,
@@ -936,10 +937,12 @@ pub fn run_radio(
             info!(
                 target: "isdb::rx",
                 solves = l.solves,
+                solves_rejected = l.solves_rejected,
                 ticks = l.ticks,
-                "the equaliser's slow loop wrote taps {} time(s) in {} ticks{}",
+                "the equaliser's slow loop wrote taps {} time(s) in {} ticks ({} solve(s) rejected by its gate){}",
                 l.solves,
                 l.ticks,
+                l.solves_rejected,
                 l.error
                     .as_ref()
                     .map_or(String::new(), |e| format!("; it stopped on: {e}"))
