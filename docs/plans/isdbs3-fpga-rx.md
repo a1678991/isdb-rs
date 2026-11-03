@@ -1329,3 +1329,118 @@ The fix agent's checks (`examples/slotsstatus` on the recorded words):
   6.4 dB in the 0.1 s survey: the first capture after the reboot); the
   host could not decode it, so the comparisons use the 'after' capture.
 - The radio path's RSS is 6.28 GB again against 39 MB for the replay.
+
+#### Build 8 issues (#27, #28, #29; HDL side, 2026-11-04)
+
+A second user ran build 8 (built locally from `2ce1696`, timing met) on
+their own PlutoSky R2 (BS-14, receive only) and reported three issues
+with precise evidence. The host side (verified register reads, taps at
+open, recovery from a no-layout state, buffer sizing) is a separate
+change; this is the HDL's.
+
+- **#28, the decoder's banks leaked across stop/START (high).**
+  Confirmed in the code and in simulation: the `ldpc` domain is reset only
+  by the MMCM's lock, START restarts only the chain side, and a slot
+  codeword whose input stops (the host's stop, a lost sync, a dropped
+  frame) never gets its last beat: the decoder kept the bank allocated
+  at its `begin`, and the next `begin` on the context allocated another
+  and overwrote `ctx_bank`, so the old bank was never committed or freed.
+  With K = 3 that is the board's 0 → 2 → 50 of 96 dropped slots per frame
+  → nothing (TMCC dropped too: no layout, STATUS 0x3) over consecutive
+  runs. On the old HDL the regression below shows it: after its STARTs
+  1, 2, 2 and 2 banks held (with two held, the last one is the TMCC
+  codeword's while frame 2's first codeword begins, so that one is
+  dropped rather than leaked), and in the last pass slots 0, 1, 2, 3, 6,
+  8, 11, 13, 16, … of frame 2 dropped: the issue's "50 of 96" pattern,
+  slot for slot. Fix (`ldpc.py` "Abandoned codewords", `back.py`,
+  `ldpc_if.py`): `abort` gives up a context's open codeword and frees its
+  bank; the back end sends it as an OP_ABORT beat on context 0 after every
+  frame drop and restart, once the demapper's pipeline has emptied, in
+  order through the bridge's input FIFO (no new clock crossing for it);
+  and a `begin` on a context that still holds an uncommitted bank takes
+  that bank again, so no bank can stay held even without the abort.
+  **Committed codewords are never discarded**: they decode and leave in
+  order (the result stream, the tag queue and `Finish` stay in step; a
+  stop lets them drain, the chain's output running on unselected), so
+  after a stop and START every bank is free, no context open, the
+  bridge's FIFOs, tag queue and the result FIFO empty, without a
+  bitstream reload. Tests: `test_abort_frees_an_abandoned_bank`,
+  `test_a_begin_takes_back_its_contexts_abandoned_bank` (decoder, toy
+  code), `BridgeTest` (the abort beat), and the issue's recipe on the
+  chain with the real decoder, `test_stop_and_start_free_the_decoder`
+  (`stages.run_chain_restarts`, `tools/restart_cycles.py`): chain-7-hdl's
+  input to inside frame 2's first codeword, 200 000 symbol clocks of no
+  input, START (CTRL START's effect on the chain: a loss of 0 symbols,
+  CARRIER and the taps loaded, the sequence from 0), four times, then the
+  whole input: after each START no bank held and every queue empty
+  (`aborted` 1, 2, 3, 4: one bank freed per START), and the last pass
+  decodes every slot of frame 2 as the
+  model does (bits and BCH results; 7 of 96 slots take one iteration
+  more or less: a restart keeps the NCO's phase, as the model's
+  `Chain::loss` does, so the replay's symbols round differently; with the
+  phase zeroed at START in a scratch copy every block equals the model's,
+  iterations included). A first version of the test idled after START
+  instead of before: then frame 1's TMCC decoded after the restart and its
+  layout stayed queued for the replay's first frame (the known restart
+  epoch, README "What is left"), so the replay learned n0 a frame early.
+  On the board a stop precedes START by far more than the drain.
+- **#28, decoder health visible (medium).** DECODER (0x439: overruns
+  15-0, queue overflow 16, banks held 23-20, K 27-24) and RECLAIMED
+  (0x43A: banks freed by the abort 15-0, taken back by a begin 31-16), a
+  snapshot from the decoder's clock through a toggle handshake in the
+  bridge (`set_max_delay -datapath_only 5.0` already covers it), FEATURES
+  bit 5. A register only: the status block is the model's format
+  (`slots::Status`), and a field there would change the model, the
+  vectors and the host's parser.
+- **#28, a stream without frames (low).** Already so: without a layout
+  the finish stage still sends, per whole frame, its TMCC block (604
+  words) and status block (79 words, + 4 · 2^m per learned modulation m):
+  683 to 807 words per 33.05 ms frame, at least **20 668 words/s** (a
+  1 Mi-word buffer takes 50.7 s: longer than the host's refill timeout,
+  #28's "cannot fill a DMA buffer"); nothing while
+  the sync is unlocked or no frame ends whole. chain-6/7's frames 0 and 1
+  (no layout yet) are compared word for word in the existing tests. No
+  periodic block was added: the host sizes its buffers from this floor.
+- **#28, no-layout lock-in.** Kept: without a layout no sum opens, so
+  nothing latches and an armed capture waits. Visible now in one read:
+  SUMS_CAPTURE bit 2 NO_LAYOUT (= STATUS bit 2 DECODING clear; DECODING
+  is now also cleared at a restart, since the restart drops the layout
+  queue). Taps at START confirmed (`eq.py` `tap_now`): with INIT bit 0
+  the taps last written to TAPS go in use at once (TAPS_FROM NONE, an
+  armed set dropped); without it the taps in use, and an armed
+  TAPS_FROM set, stay as they are.
+- **#27/#29, the corrupted sum reads.** Their cause is not the HDL: other
+  clients of `cf-ad9361-lpc`'s `direct_reg_access` (the host's per-buffer
+  ADC overflow poll on another libiio context; Tezuka's
+  `api_controller.sh` polling 0x80000088 every 3–4 s) move the cached
+  register address between the host's address write and its read (#29's
+  E1–E3). The host verifies its reads (host change). The HDL's latent
+  window is closed anyway: a sum READ used to set the readback to 0 and
+  wait for the MAC unit to be idle (up to about 4 400 symbol clocks); now
+  the read takes the accumulator RAM's read port for one cycle (a MAC due
+  then waits a cycle; it writes only the other bank), `rd_ack` 3 symbol
+  clocks after the request, the readback keeping the previous READ's
+  value until then; SUMS_CAPTURE bits 15-8 SEQ count the latches, equal
+  before and after a 308-word set when no latch moved in between;
+  FEATURES bit 6. Tests: `EqTest.test_sums_read_while_the_mac_runs` (the
+  308 words read while the MAC unit sums a slot: the held frame's, every
+  read 3 cycles), `SlotsRxRegisterTest` (no 0 between).
+- **Fit**: Yosys, `SlotsRx` without the decoder 26 395 → 26 487 LUT (+92,
+  0.35 %), 27 119 → 27 245 FF, 32.5 BRAM36 and 164 DSP48E1 unchanged; the
+  decoder (S = 34, K = 3) 12 510 → 12 538 LUT, 17 397 → 17 433 FF, 77
+  BRAM36, 0 DSP. Not built (build 9 is the image's).
+
+**Follow-up (not this round): the sums in the `Slots` stream.** A block
+kind 4 per latch: the frame (2 words), the count (1) and the 77 complex
+48-bit sums (77 × 2 × 3 = 462 words), 465 payload words, 476 with the
+header and the CRC-32C trailer the packer already computes: at most one
+per decoded frame, 14 400 words/s, 0.23 % of a decoded frame's 210 000
+words. The HDL: a reader in `Finish` after the frame's status block taking the latched
+bank through the same one-cycle steal of the accumulator's read port (77
+entries × 6 words, the word select a 6:1 mux of 16 bits), its FSM states
+and counters: about 150–250 LUT and 100 FF, no block RAM or DSP; the
+capture's hold and the host's 308 reads (1.3–1.5 s each, exposed to any
+other `direct_reg_access` client) go. It is a `Slots` format change: the
+model (`isdbs3_phy::chain` emits the block, so the bit-exact tests keep
+it), the vectors, `isdb_frontend::slots` (version 2, the reader) and the
+host's slow loop, about 150 lines each side.
