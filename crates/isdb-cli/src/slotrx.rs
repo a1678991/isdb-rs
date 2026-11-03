@@ -869,6 +869,23 @@ pub fn run_model(
     Ok(secs)
 }
 
+/// The last good equaliser taps of a capture of this process (the next
+/// capture starts on them).
+static LAST_GOOD_TAPS: std::sync::Mutex<Option<isdb_frontend::control::chain::Taps>> =
+    std::sync::Mutex::new(None);
+
+fn last_good_taps() -> Option<isdb_frontend::control::chain::Taps> {
+    *LAST_GOOD_TAPS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn set_last_good_taps(t: isdb_frontend::control::chain::Taps) {
+    *LAST_GOOD_TAPS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(t);
+}
+
 /// Live from a radio whose FPGA has the chain: acquire on a short IQ
 /// capture (as for the symbol front end), configure the front end and
 /// the chain (`Backend::capture_slots`, the slow loop on its timer
@@ -896,12 +913,20 @@ pub fn run_radio(
     let rs = isdbs3_phy::frontend::system().symbol_rate_hz;
     let mut acq = None;
     let cap_stop = std::sync::Arc::new(AtomicBool::new(false));
-    let init = isdb_frontend::control::chain::ChainInit::default();
+    // known taps at START (#28: without INIT bit 0 the chain keeps the
+    // taps of the run before, which may be a bad set): the last good set
+    // of an earlier capture of this process, else the identity
+    let start = last_good_taps().unwrap_or_else(isdb_radio::chain::identity);
+    let init = isdb_frontend::control::chain::ChainInit {
+        taps: Some(start),
+        ..isdb_frontend::control::chain::ChainInit::default()
+    };
     // the consumer reports each decoded frame to the slow loop, which
     // judges the taps it writes on them (and takes a bad set back)
     let health = Arc::new(ChainHealth::new());
     let slow = isdb_radio::chain::SlowLoopOptions {
         health: Some(Arc::clone(&health)),
+        start: Some(start),
         ..isdb_radio::chain::SlowLoopOptions::new(isdbs3_phy::chain::eq::solve_training, rs)
     };
     let stream = crate::symstream::start_radio_with(
@@ -1005,6 +1030,9 @@ pub fn run_radio(
             "overflows": Value::Null,
         }));
         if let Some(l) = &c.slow_loop {
+            if let Some(t) = l.last_good {
+                set_last_good_taps(t);
+            }
             info!(
                 target: "isdb::rx",
                 solves = l.solves,
