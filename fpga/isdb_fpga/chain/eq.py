@@ -46,13 +46,20 @@ Implementation:
   clears its bank (77 cycles at position 0 of slot 0, before its first
   MAC) and latches it at its end (`frame_close`): the host reads the
   latched bank (`rd_*`, 4 words per entry: re low 32, re high 16 sign-
-  extended, im low, im high; the read waits for the MAC unit to be idle).
+  extended, im low, im high). A read takes the accumulator RAM's read
+  port for one cycle whatever the MAC unit does (a MAC due then waits a
+  cycle; the MAC unit writes only the other bank): `rd_ack` 3 cycles
+  after `rd_req` (before issue #27 a read waited for the MAC unit to be
+  idle, up to about 4 400 cycles, while the register showed 0).
   **Capture** (`cap_strobe`, the host's SUMS_CAPTURE): the next frame end
   latches as always and then holds: later frames are summed in the other
   bank but not latched until the next strobe, so the host reads one
   frame's sums however long its reads take (`cap_valid`: latched since
   the strobe; `cap_armed`: waiting for a frame end). Before any strobe
-  every frame end latches (the free-running latch).
+  every frame end latches (the free-running latch). `cap_seq` counts the
+  latches (8 bits, wraps): the same value before and after a set of
+  reads says no latch moved in between. Only a frame with a layout opens
+  a sum, so without a layout nothing latches and an armed capture waits.
 
 Ports: `i_valid`, `i_y`, `i_meta` (the stage-3 record's at, j, number,
 numbered, frame, word); `restart`; outputs at C: `cv` and the centre's
@@ -135,6 +142,7 @@ class Equaliser(Elaboratable):
         self.cap_strobe = Signal()
         self.cap_valid = Signal()
         self.cap_armed = Signal()
+        self.cap_seq = Signal(8)
         self.rd_busy = Signal()
         # training internals (verification)
         self.d_valid = Signal()
@@ -444,7 +452,18 @@ class Equaliser(Elaboratable):
         with m.If(self.frame_open):
             m.d.sync += open_pend.eq(1)
         m.d.sync += self.rd_ack.eq(0)
-        rd_stage = Signal(2)
+        # the host's read: the read port for one cycle (rd_go: a MAC due then
+        # is issued a cycle later), its data a cycle after (rd_s1)
+        rd_go = Signal()
+        rd_s1 = Signal()
+        m.d.comb += rd_go.eq(rd_pend & ~rd_s1)
+        m.d.sync += rd_s1.eq(rd_go)
+        with m.If(rd_go):
+            m.d.comb += arp.addr.eq(Cat((rd_a >> 2)[:7], latched))
+        with m.If(rd_s1):
+            v = arp.data
+            word_ = Array([v[0:32], v[32:48].as_signed(), v[48:80], v[80:96].as_signed()])[rd_a[:2]]
+            m.d.sync += [self.rd_data.eq(word_), self.rd_ack.eq(1), rd_pend.eq(0)]
         with m.FSM(name="mac"):
             with m.State("IDLE"):
                 with m.If(open_pend):
@@ -454,9 +473,6 @@ class Equaliser(Elaboratable):
                 with m.Elif(go_pend):
                     m.d.sync += [ci.eq(0), ce.eq(0), go_pend.eq(0)]
                     m.next = "SKIP"
-                with m.Elif(rd_pend):
-                    m.d.sync += [ce.eq(rd_a >> 2)]
-                    m.next = "READ"
             with m.State("CLEAR"):
                 m.d.sync += ce.eq(ce + 1)
                 with m.If(ce == ENTRIES - 1):
@@ -472,13 +488,14 @@ class Equaliser(Elaboratable):
                 with m.Else():
                     m.d.sync += ci.eq(ci + 1)
             with m.State("MAC"):
-                m.d.sync += [va.eq(1), ea.eq(ce), pa.eq(e_p), ce.eq(ce + 1)]
-                with m.If(ce == ENTRIES - 1):
-                    with m.If(ci == TRAIN - 1):
-                        m.next = "DRAIN"
-                    with m.Else():
-                        m.d.sync += ci.eq(ci + 1)
-                        m.next = "WAIT"
+                with m.If(~rd_go):
+                    m.d.sync += [va.eq(1), ea.eq(ce), pa.eq(e_p), ce.eq(ce + 1)]
+                    with m.If(ce == ENTRIES - 1):
+                        with m.If(ci == TRAIN - 1):
+                            m.next = "DRAIN"
+                        with m.Else():
+                            m.d.sync += ci.eq(ci + 1)
+                            m.next = "WAIT"
             with m.State("WAIT"):
                 # let the last write land before entry 0 is read again
                 m.next = "WAIT2"
@@ -488,22 +505,14 @@ class Equaliser(Elaboratable):
                 m.next = "DRAIN2"
             with m.State("DRAIN2"):
                 m.next = "IDLE"
-            with m.State("READ"):
-                m.d.comb += arp.addr.eq(Cat(ce[:7], latched))
-                m.next = "READ2"
-            with m.State("READ2"):
-                v = arp.data
-                part = rd_a[:2]
-                word_ = Array([v[0:32], v[32:48].as_signed(), v[48:80], v[80:96].as_signed()])[part]
-                m.d.sync += [self.rd_data.eq(word_), self.rd_ack.eq(1), rd_pend.eq(0)]
-                m.next = "IDLE"
         # frame end: latch the open sum (the last slot's MACs ended 9 000
         # symbols earlier), unless a capture holds the latched bank
         hold = Signal()
         with m.If(self.frame_close & opened):
             m.d.sync += opened.eq(0)
             with m.If(~hold | self.cap_armed):
-                m.d.sync += [latched.eq(work), self.sums_frame.eq(self.close_frame), self.sums_count.eq(count)]
+                m.d.sync += [latched.eq(work), self.sums_frame.eq(self.close_frame), self.sums_count.eq(count),
+                             self.cap_seq.eq(self.cap_seq + 1)]
                 with m.If(self.cap_armed):
                     m.d.sync += [hold.eq(1), self.cap_armed.eq(0), self.cap_valid.eq(1)]
         # the host's strobe (after the frame end: a strobe in its cycle

@@ -40,11 +40,11 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | Address | Register |
 |---|---|
 | 0x400 | VERSION (ro): the `Slots` format, 1 |
-| 0x401 | FEATURES (ro): bit 0 TAPS, bit 1 SUMS (no host constellation or n0 at START: bits 2, 3 clear), bit 4 SUMS_CAPTURE, bit 5 DECODER_HEALTH (DECODER and RECLAIMED below; the decoder frees abandoned banks); bits 15-8 MAX_ITER, bits 27-16 the decoder's step (34) |
+| 0x401 | FEATURES (ro): bit 0 TAPS, bit 1 SUMS (no host constellation or n0 at START: bits 2, 3 clear), bit 4 SUMS_CAPTURE, bit 5 DECODER_HEALTH (DECODER and RECLAIMED below; the decoder frees abandoned banks), bit 6 SUMS_SEQ (SUMS_CAPTURE's bits 2 and 15-8; a sum register's READ answered in 3 symbol clocks, the register keeping its last value until then); bits 15-8 MAX_ITER, bits 27-16 the decoder's step (34) |
 | 0x402 | CARRIER: written, loaded into the carrier register at START; read, the register in use (2^-32 turn per symbol) |
 | 0x403 | LAYOUT_LAG (ro): 2 (lag 1 is not built) |
 | 0x404 | INIT: bit 0, START puts the written taps in use (bits 1, 2 ignored: FEATURES) |
-| 0x405 | STATUS (ro): bit 0 locked, 1 a frame head since the (re)start, 2 the last frame decoded |
+| 0x405 | STATUS (ro): bit 0 locked, 1 a frame head since the (re)start, 2 the last frame decoded (since the (re)start) |
 | 0x406 / 0x407 | FRAME (the last whole frame's counter, 0xFFFF_FFFF none) / SEQ (the next block's sequence number) (ro) |
 | 0x408 / 0x409 / 0x40A / 0x40B | N0, LLR_SCALE, LEARNED_FROM, CONST_MASK (ro): n0, K, the frame they were learned on, the learned modulations, in force |
 | 0x40C | MAX_ITER (8 bits, reset 14, `ldpc.DEFAULT_MAX_ITER`): the LDPC iteration limit each codeword is committed with |
@@ -52,12 +52,12 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | 0x410 + k | TAPS, k < 11: written (re + (im << 16), Q2.14), the pending taps; read, the taps in use |
 | 0x41B | TAPS_FROM: written after TAPS, the frame N they were solved from: in use from frame N + 2 (the model's EQ_APPLY_FRAMES); read, the frame of the taps in use |
 | 0x420 / 0x421 | SUMS_FRAME / SUMS_COUNT (ro): of the latched sums |
-| 0x422 | SUMS_CAPTURE: written (any value), the next frame end latches the training sums and holds them (later frames are summed but not latched) until the next write; read, bit 0 VALID (latched and held since the write), bit 1 ARMED (waiting for a frame end). Before the first write every frame end latches |
+| 0x422 | SUMS_CAPTURE: written (any value), the next frame end latches the training sums and holds them (later frames are summed but not latched) until the next write; read, bit 0 VALID (latched and held since the write), bit 1 ARMED (waiting for a frame end), bit 2 NO_LAYOUT (STATUS bit 2 clear: the last frame end had no layout, so nothing latches and an armed capture waits), bits 15-8 SEQ (the latches since configuration, wrapping: equal before and after a set of sum reads, no latch moved in between). Before the first write every frame end latches. Only frames with a layout are summed and latched |
 | 0x430 .. 0x437 | COUNTERS (ro): frames, undecoded, TMCC failed, slots, LDPC failed, BCH failed, iterations low, high |
 | 0x438 | TMCC_OVERRUNS (ro): TMCC codewords the decoder dropped (also counted as TMCC failed) |
 | 0x439 | DECODER (ro): the LDPC decoder's health (a snapshot from its clock, under 1 us old): bits 15-0 OVERRUNS (codewords it dropped for want of a free bank since configuration, slots and TMCC, wrapping), bit 16 QUEUE_OVERFLOW (sticky: a commit its result queue could not take), bits 23-20 HELD (banks allocated now: 0 while the chain is stopped and the decoder idle), bits 27-24 BANKS (K, 3) |
 | 0x43A | RECLAIMED (ro): bits 15-0 ABORTED (banks freed by the abort after a frame drop or restart), bits 31-16 REUSED (banks a codeword's begin took back from its context's abandoned codeword), since configuration, wrapping |
-| 0x500 + 4i, 0x610 + 4i | SUMS_R (i < 66), SUMS_P (i < 11): re low 32, re high 16 sign-extended, im low, im high (the read waits for the MAC unit) |
+| 0x500 + 4i, 0x610 + 4i | SUMS_R (i < 66), SUMS_P (i < 11): re low 32, re high 16 sign-extended, im low, im high (the latched bank; the READ is answered 3 symbol clocks after it is decoded, the register showing the last READ's value until then) |
 | 0x640 .. | CONST: not built (reads 0) |
 | CTRL | the front end's bits (RUN, START, SYMBOLS) and bit 3 SLOTS (the DMA carries the `Slots` words); START also restarts the chain (the model's `Chain::loss` of 0 symbols: everything but the carrier register, the taps, the constellation and n0), loads CARRIER and, with INIT bit 0, the taps, and restarts the blocks' sequence numbers |
 
@@ -74,7 +74,10 @@ codeword whose burst had begun (it is never cut, and the layout it gives
 after the restart stays queued: the restart epoch, README "What is
 left"). A codeword's begin on a
 context that still holds an abandoned bank takes it back, so no bank
-stays held even without the abort.
+stays held even without the abort. Without INIT bit 0, START leaves the
+taps in use (and an armed TAPS_FROM set) as they are; with it, the taps
+last written to TAPS go in use at once (TAPS_FROM reads NONE) and an
+armed set is dropped.
 
 The ID word gains the chain's `Slots` format version in bits 11-8
 (`ID_CHAIN`: 1 << 8), 0 on every front end so far; the front end's STATUS
@@ -226,8 +229,9 @@ REG_SUMS_P = 0x610
 SLOTS_VERSION = 1  # the Slots format (isdb_frontend::slots::SLOTS_VERSION)
 # TAPS (the host writes taps), SUMS (the training sums readable), bit 4
 # SUMS_CAPTURE (the sums held from a host-armed frame end), bit 5
-# DECODER_HEALTH (DECODER, RECLAIMED; abandoned banks freed)
-FEATURES = 0b0110011
+# DECODER_HEALTH (DECODER, RECLAIMED; abandoned banks freed), bit 6
+# SUMS_SEQ (SUMS_CAPTURE's NO_LAYOUT and SEQ, the sum reads in bounded time)
+FEATURES = 0b1110011
 LAYOUT_LAG = 2
 EQ_APPLY_FRAMES = 2
 NONE = 0xFFFFFFFF
@@ -374,7 +378,10 @@ class SlotsRx(Elaboratable):
         with m.Elif(sy.o_head_valid & sy.o_head_numbered):
             m.d.sync += framed.eq(1)
         fc = ch.back.fc
-        with m.If(fc.o_done | fc.o_dropped):
+        with m.If(ch.front.o_restart):
+            # a restart drops the layouts: none in force until a TMCC decodes
+            m.d.sync += decoding.eq(0)
+        with m.Elif(fc.o_done | fc.o_dropped):
             m.d.sync += decoding.eq(fc.o_done & fc.o_has_layout)
         last_frame = Signal(32, init=NONE)
         with m.If(fin.f_valid):
@@ -430,7 +437,8 @@ class SlotsRx(Elaboratable):
                             REG_TAPS_FROM: eqm.taps_from,
                             REG_SUMS_FRAME: eqm.sums_frame,
                             REG_SUMS_COUNT: eqm.sums_count,
-                            REG_SUMS_CAPTURE: Cat(eqm.cap_valid, eqm.cap_armed),
+                            REG_SUMS_CAPTURE: Cat(eqm.cap_valid, eqm.cap_armed, ~decoding, Const(0, 5),
+                                                  eqm.cap_seq),
                             REG_TMCC_OVERRUNS: fin.tmcc_overruns,
                             REG_DECODER: Cat(br.health_overruns, br.health_overflow, Const(0, 3),
                                              br.health_held, Const(self.banks, 4)),
@@ -447,7 +455,10 @@ class SlotsRx(Elaboratable):
                             with m.Case(a):
                                 m.d.sync += readback.eq(v)
                         with m.Default():
-                            m.d.sync += readback.eq(0)
+                            # a sum register keeps the last value until its
+                            # word arrives (rd_ack, below): never a 0 between
+                            with m.If(~(sums_r | sums_p)):
+                                m.d.sync += readback.eq(0)
                 with m.Case(OP_CTRL):
                     m.d.sync += slots_on.eq(arg[3])
                     with m.If(arg[1]):

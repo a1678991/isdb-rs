@@ -175,12 +175,20 @@ class EqBench(Elaboratable):
         self.at = Signal(48)
         self.o_ms = Signal(META_SMALL)
         self.o_at = Signal(48)
+        self.rd_lat = Signal(16)  # cycles from a read's request to its rd_ack
+        self.rd_lat_max = Signal(16)
 
     def elaborate(self, platform):
         m = Module()
         m.submodules.eq = eq = self.eq
         m.submodules.fc = fc = self.fc
         wire_eq_frame(m, eq, fc)
+        with m.If(eq.rd_req):
+            m.d.sync += self.rd_lat.eq(1)
+        with m.Elif(eq.rd_busy):
+            m.d.sync += self.rd_lat.eq(self.rd_lat + 1)
+        with m.If(eq.rd_ack & (self.rd_lat > self.rd_lat_max)):
+            m.d.sync += self.rd_lat_max.eq(self.rd_lat)
         go = self.i_valid & self.i_ready
         k = self.kind
         m.d.comb += [
@@ -206,7 +214,7 @@ class EqBench(Elaboratable):
             "ov": e.o_valid, "oz0": e.o_z[0], "oz1": e.o_z[1], "ometa": self.o_ms,
             "dv": e.d_valid, "dat": e.d_at, "d0": e.d_ref[0], "d1": e.d_ref[1],
             "rack": e.rd_ack, "rdata": e.rd_data, "sframe": e.sums_frame, "scount": e.sums_count,
-            "cvalid": e.cap_valid, "carmed": e.cap_armed,
+            "cvalid": e.cap_valid, "carmed": e.cap_armed, "cseq": e.cap_seq, "rlat": self.rd_lat_max,
         }
 
 
@@ -258,8 +266,14 @@ def run_eq(doc, layout, backend, symbols=None):
         w = words[k] if fr == F else (0 if k == SLOTS - 1 else 1)
         recs.append((K_SYM, y[2 * i], y[2 * i + 1], 0,
                      pack_meta(j=j, number=k, numbered=1, frame=fr, word=w), idx))
+    gaps = [0] * len(recs)
     if whole:
+        # read once the frame has closed (its last symbol at the FIR's
+        # centre, a few cycles after the last input: a sum read is answered
+        # in 3 cycles and would see the latch before the close)
+        gaps[-1] = 64  # idle cycles after the last symbol
         recs += [(K_READ, a, 0, 0, 0) for a in range(4 * ENTRIES)]
+        gaps += [0] * (4 * ENTRIES)
     b = EqBench()
     p = b.ports()
     e = engine(b, p, backend, tag="chain3")
@@ -268,7 +282,7 @@ def run_eq(doc, layout, backend, symbols=None):
     gr = e.group("rack", ["rdata", "sframe", "scount"])
     t0 = time.time()
     recs = [r if len(r) == 6 else r + (0,) for r in recs]
-    e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "meta", "at"], recs, tail=100)
+    e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "meta", "at"], recs, tail=100, gaps=gaps)
     zs = e.read(gz)
     ds = e.read(gd)
     rs = e.read(gr)
@@ -298,14 +312,17 @@ def run_eq(doc, layout, backend, symbols=None):
     return what, bad
 
 
-def run_eq_capture(doc, layout, backend, strobe=True):
+def run_eq_capture(doc, layout, backend, strobe=True, read_during=False):
     """The training sums' capture (SUMS_CAPTURE) over chain-3-eq's frame F
     sent three times as frames F, F + 1, F + 2 (each with its layout), the
     strobe (`strobe`) before F: the latch takes F's sums and holds them
     while F + 1 and F + 2 are summed and close; read after F + 2, the sums
-    are F's (the model's, bit for bit), with VALID set. Without the
-    strobe the latch moves on to F + 2 (the frame number checked).
-    Returns (what, bad)."""
+    are F's (the model's, bit for bit), with VALID set and SEQ 1 (one
+    latch). Without the strobe the latch moves on to F + 2 (the frame
+    number checked, SEQ 3). `read_during`: the 308 words are also read in
+    frame F + 1 while the MAC unit sums its slot 10 (issue #27): F's sums
+    again, every read answered 3 cycles after its request (it waited for
+    the MAC unit before). Returns (what, bad)."""
     F, at = doc["frame"], doc["at"]
     y = doc["y"]
     words = slot_words(doc["training"])
@@ -329,6 +346,9 @@ def run_eq_capture(doc, layout, backend, strobe=True):
             if r < 2 and q == len(idx_list) // 2:
                 recs += [x + (0,) for x in layout_records(layout, F + r + 1, F + r - 1)]
             rel = doc["y_from"] + i - at
+            if read_during and r == 1 and rel == 10 * SLOT + 70:
+                # the slot's MACs (from its position 55 on) are under way
+                recs += [(K_READ, a, 0, 0, 0) for a in range(4 * ENTRIES)]
             if rel < 0:
                 fr, k, j = F - 1, SLOTS - 1, SLOT + rel
             elif rel >= FRAME:
@@ -342,26 +362,34 @@ def run_eq_capture(doc, layout, backend, strobe=True):
     recs += [(K_READ, a, 0, 0, 0) for a in range(4 * ENTRIES)]
     b = EqBench()
     e = engine(b, b.ports(), backend, tag="chain3")
-    gr = e.group("rack", ["rdata", "sframe", "scount", "cvalid", "carmed"])
+    gr = e.group("rack", ["rdata", "sframe", "scount", "cvalid", "carmed", "cseq"])
     t0 = time.time()
     recs = [r if len(r) == 6 else r + (0,) for r in recs]
     e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "meta", "at"], recs, tail=100)
     rs = e.read(gr)
+    lat = e.get("rlat")
     bad = []
     exp_r = []
     for v in doc["sums"]["r"] + doc["sums"]["p"]:
         (rh, rl), (ih, il) = v
         exp_r += [rl, rh & 0xFFFFFFFF, il, ih & 0xFFFFFFFF]
+    sets = [rs[k:k + len(exp_r)] for k in range(0, len(rs), len(exp_r))]
+    if len(sets) != 1 + int(read_during):
+        bad.append(f"{len(rs)} sum words read")
     if strobe:
         # F's sums (F + 1's and F + 2's differ a little: their first
         # training lines hold the end of the repeated frame)
-        bad += first_mismatch("sums word", [(r[0],) for r in rs], [(v,) for v in exp_r],
-                              key=lambda i, v: f"entry {i // 4} part {i % 4}")
-    want = (F if strobe else F + 2, doc["sums"]["count"], int(strobe), 0)
+        for set_ in sets:
+            bad += first_mismatch("sums word", [(r[0],) for r in set_], [(v,) for v in exp_r],
+                                  key=lambda i, v: f"entry {i // 4} part {i % 4}")
+    want = (F if strobe else F + 2, doc["sums"]["count"], int(strobe), 0, 1 if strobe else 3)
     got = tuple(rs[-1][1:]) if rs else None
     if got != want:
-        bad.append(f"sums frame/count/valid/armed {got} != {want}")
-    what = f"{len(rs)} sum words, frame/count/valid/armed {got}; {e.cycles()} cycles in {time.time() - t0:.1f} s"
+        bad.append(f"sums frame/count/valid/armed/seq {got} != {want}")
+    if lat != 3:
+        bad.append(f"a sum read waited {lat} cycles for its rd_ack (3 expected)")
+    what = (f"{len(rs)} sum words, frame/count/valid/armed/seq {got}, read latency {lat}; "
+            f"{e.cycles()} cycles in {time.time() - t0:.1f} s")
     return what, bad
 
 

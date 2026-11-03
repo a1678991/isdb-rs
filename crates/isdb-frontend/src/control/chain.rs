@@ -54,6 +54,15 @@
 //! them at the start of frame N + 2 (the model's rule). Reading [`reg::TAPS`] and
 //! [`reg::TAPS_FROM`] gives the taps in use.
 //!
+//! **Sum reads** ([`features::SUMS_SEQ`], issues #27/#29): a READ of a sum
+//! register is answered 3 symbol clocks after the block decodes it, and
+//! the readback keeps the previous READ's value until then (never a 0 in
+//! between); [`reg::SUMS_CAPTURE`] reads [`capture::seq`], the latches so
+//! far: equal before and after the 308 reads, no latch moved in between.
+//! Only a frame with a layout is summed and latched: with
+//! [`capture::NO_LAYOUT`] (the same as [`status::DECODING`] clear) an
+//! armed capture waits until TMCC decodes again.
+//!
 //! **START and the decoder** (issue #28, [`features::DECODER_HEALTH`]):
 //! START, a lost sync or a dropped frame gives up the slot codeword being
 //! loaded and the block frees its LDPC decoder bank (an abort); committed
@@ -223,8 +232,13 @@ pub mod features {
     /// the block frees the decoder bank of a codeword it gives up (a stop
     /// and START leaves every bank free).
     pub const DECODER_HEALTH: u32 = 32;
+    /// [`super::reg::SUMS_CAPTURE`] reads [`super::capture::NO_LAYOUT`] and
+    /// [`super::capture::seq`]; a sum register's READ is answered in 3
+    /// symbol clocks, the readback keeping its last value until then.
+    pub const SUMS_SEQ: u32 = 64;
     /// Every flag this host knows.
-    pub const ALL: u32 = TAPS | SUMS | CONSTELLATION | N0 | SUMS_CAPTURE | DECODER_HEALTH;
+    pub const ALL: u32 =
+        TAPS | SUMS | CONSTELLATION | N0 | SUMS_CAPTURE | DECODER_HEALTH | SUMS_SEQ;
     /// Bits 15–8: the LDPC decoder's iteration limit.
     pub fn ldpc_limit(f: u32) -> u32 {
         (f >> 8) & 0xFF
@@ -242,6 +256,15 @@ pub mod capture {
     pub const VALID: u32 = 1;
     /// Waiting for a frame end.
     pub const ARMED: u32 = 2;
+    /// The last frame end had no layout ([`super::status::DECODING`]
+    /// clear): nothing is latched, an armed capture waits
+    /// ([`super::features::SUMS_SEQ`]).
+    pub const NO_LAYOUT: u32 = 4;
+    /// Bits 15–8: the latches since configuration, wrapping
+    /// ([`super::features::SUMS_SEQ`]).
+    pub fn seq(w: u32) -> u8 {
+        u8::try_from((w >> 8) & 0xFF).expect("8 bits")
+    }
 }
 
 /// [`reg::INIT`] bits.
@@ -556,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn the_decoder_health_parses() {
+    fn the_decoder_health_and_the_capture_word_parse() {
         // the HDL's words (fpga/isdb_fpga/chain/top.py, SlotsRxRegisterTest)
         let h = DecoderHealth::from_words([0x1234 | 1 << 16 | 2 << 20 | 3 << 24, 7 | 9 << 16]);
         assert_eq!(
@@ -570,7 +593,10 @@ mod tests {
                 reused: 9,
             }
         );
-        assert_eq!(features::ALL, 0x3F);
+        let w = capture::VALID | capture::NO_LAYOUT | 0xA5 << 8;
+        assert_eq!(capture::seq(w), 0xA5);
+        assert_eq!(w & capture::ARMED, 0);
+        assert_eq!(features::ALL, 0x7F);
     }
 
     #[test]
