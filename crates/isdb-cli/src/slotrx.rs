@@ -936,7 +936,9 @@ pub fn run_radio(
                 "iterations": k.iterations,
             })),
             "words": c.stream.words,
-            "overflows": c.stream.overflows,
+            // not polled on the Slots path (#27): the blocks' sequence numbers
+            // count the losses (chain.blocks_lost)
+            "overflows": Value::Null,
         }));
         if let Some(l) = &c.slow_loop {
             info!(

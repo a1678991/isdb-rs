@@ -41,6 +41,26 @@
 //! same concurrency SoapyPlutoSDR and pyadi-iio rely on. Stopping a stream
 //! uses `iio_buffer_cancel`, which iio.h documents as thread-safe.
 //!
+//! # Register access is not atomic
+//!
+//! [`Device::reg_read`] is libiio 0.x's `iio_device_reg_read`: a write of
+//! the address to the device's `direct_reg_access` debug attribute, then
+//! a read of it — two requests, and the address is one per device, shared
+//! by every client. A register access by another thread, context, process
+//! or host between the two (a read, or a write, which sets the address as
+//! well) makes the read return that other register. Within this process
+//! every `direct_reg_access` access ([`Device::reg_read`],
+//! [`Device::reg_write`], [`Device::read_debug`], [`Device::write_debug`])
+//! holds one lock, whatever the context, so they never interleave here;
+//! other processes on the board and other hosts are not covered: a caller
+//! that must be sure reads a register until two reads agree
+//! (`isdb-radio`'s `chain::settled`). Tezuka's `/root/api_controller.sh`
+//! (started at boot by `/etc/init.d/S95bgcript`) is such a client: it
+//! reads `cf-ad9361-lpc` and `cf-ad9361-dds-core-lpc` 0x80000088 and
+//! `ad9361-phy` 0x5E / 0x5F every few seconds, and write-1-clears the
+//! ADC's overflow bit (0x88 bit 2) when it sees it set while the RX DMA
+//! runs (issue #29).
+//!
 //! # Example
 //!
 //! ```no_run
@@ -361,6 +381,20 @@ impl BufPtr {
             std::slice::from_raw_parts(start, len)
         }
     }
+}
+
+/// Held by every `direct_reg_access` access of this process (the crate
+/// documentation, "Register access is not atomic"): one lock for all
+/// contexts and devices, so that no address write of one access lands
+/// between the address write and the read of another.
+static DIRECT_REG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`DIRECT_REG`], held (a panic while it was held poisons nothing that
+/// matters: the lock guards no data).
+fn direct_reg() -> std::sync::MutexGuard<'static, ()> {
+    DIRECT_REG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// How long [`Context::stop`] waits for a stream thread before cancelling
@@ -1099,9 +1133,11 @@ impl<'a> Device<'a> {
         check("iio_device_attr_write", || self.what(attr), rc).map(|_| ())
     }
 
-    /// Read a debug attribute.
+    /// Read a debug attribute (under the process's `direct_reg_access`
+    /// lock: the crate documentation, "Register access is not atomic").
     pub fn read_debug(&self, attr: &str) -> Result<String> {
         let a = cstring("iio_device_debug_attr_read", attr)?;
+        let _held = direct_reg();
         read_string(
             "iio_device_debug_attr_read",
             || self.what(attr),
@@ -1112,12 +1148,14 @@ impl<'a> Device<'a> {
         )
     }
 
-    /// Write a debug attribute.
+    /// Write a debug attribute (under the process's `direct_reg_access`
+    /// lock, as [`Device::read_debug`]).
     pub fn write_debug(&self, attr: &str, value: &str) -> Result<()> {
         let (a, v) = (
             cstring("iio_device_debug_attr_write", attr)?,
             cstring("iio_device_debug_attr_write", value)?,
         );
+        let _held = direct_reg();
         // SAFETY: valid device and C strings.
         let rc =
             unsafe { ffi::iio_device_debug_attr_write(self.dev.as_ptr(), a.as_ptr(), v.as_ptr()) };
@@ -1126,9 +1164,12 @@ impl<'a> Device<'a> {
 
     /// Read a device register (libiio's `direct_reg_access`; ADI drivers
     /// map addresses with bit 31 set to the HDL core, the others to the
-    /// converter's SPI registers).
+    /// converter's SPI registers). Not atomic against other clients of the
+    /// device (the crate documentation, "Register access is not atomic");
+    /// within this process it holds the `direct_reg_access` lock.
     pub fn reg_read(&self, address: u32) -> Result<u32> {
         let mut value = 0u32;
+        let _held = direct_reg();
         // SAFETY: valid device and out pointer.
         let rc = unsafe { ffi::iio_device_reg_read(self.dev.as_ptr(), address, &mut value) };
         check(
@@ -1139,8 +1180,11 @@ impl<'a> Device<'a> {
         Ok(value)
     }
 
-    /// Write a device register (see [`Device::reg_read`]).
+    /// Write a device register (see [`Device::reg_read`]; the write sets
+    /// the device's `direct_reg_access` address too, so it holds the lock
+    /// as well).
     pub fn reg_write(&self, address: u32, value: u32) -> Result<()> {
+        let _held = direct_reg();
         // SAFETY: valid device.
         let rc = unsafe { ffi::iio_device_reg_write(self.dev.as_ptr(), address, value) };
         check(
@@ -1248,6 +1292,21 @@ impl Channel<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The process's `direct_reg_access` lock excludes a second holder
+    /// and survives a panic of a holder.
+    #[test]
+    fn the_register_lock_is_one_per_process() {
+        let held = direct_reg();
+        assert!(DIRECT_REG.try_lock().is_err(), "a second holder waits");
+        drop(held);
+        let _ = std::thread::spawn(|| {
+            let _held = direct_reg();
+            panic!("a holder panics");
+        })
+        .join();
+        drop(direct_reg());
+    }
 
     #[test]
     fn errors_carry_errno_text() {
