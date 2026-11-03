@@ -115,6 +115,19 @@
 //! 41 000 to 55 000, +34 %). Otherwise it becomes the good set. A set the
 //! status blocks never show within [`Revert::timeout`] (5 s) is kept,
 //! unverified ([`SlowLoopReport::unverified`]).
+//!
+//! **Recovery** (#28): without a layout the chain latches no training
+//! sums, so a set that stopped the TMCC decoding would stay for good. When
+//! STATUS lacks DECODING, or a capture armed is not VALID, for more than
+//! [`SlowLoopOptions::recover_after`] (1.5 s; polled every
+//! [`SlowLoopOptions::poll`] meanwhile), known taps are written
+//! ([`Tick::Recovered`], warned, counted in
+//! [`SlowLoopReport::recoveries`]): the last good set (with its own
+//! TAPS_FROM) unless it is what is in force, else the identity (committed
+//! from the chain's FRAME) unless that is; a set under watch is dropped.
+//! At most one write per period, each target once until a layout is back;
+//! with the identity in force nothing is written (warned once: the
+//! signal, or the decoder, issue #28's lost banks).
 
 use crate::{RadioError, Result};
 use isdb_frontend::control::chain::{
@@ -1217,6 +1230,9 @@ pub struct SlowLoopOptions {
     /// the identity (the last good one of a run before) is the gate's and
     /// the revert's good set until a solve replaces it.
     pub start: Option<Taps>,
+    /// No layout (STATUS without DECODING), or no capture held, for this
+    /// long: known taps written (module documentation, "Recovery").
+    pub recover_after: Duration,
 }
 
 impl SlowLoopOptions {
@@ -1233,6 +1249,7 @@ impl SlowLoopOptions {
             health: None,
             revert: Revert::default(),
             start: None,
+            recover_after: Duration::from_millis(1_500),
         }
     }
 }
@@ -1271,6 +1288,13 @@ pub enum Tick {
     /// The set written last is being judged on the frames under it (no
     /// solve until it is: [`Revert`]).
     Watching,
+    /// No layout, or no capture held, for
+    /// [`SlowLoopOptions::recover_after`]: known taps written (the last
+    /// good set, or the identity).
+    Recovered {
+        /// The chain's STATUS then.
+        status: u32,
+    },
     /// The set solved from `frame` was taken back: the last good set (or
     /// the identity) written again.
     Reverted {
@@ -1319,6 +1343,9 @@ pub struct SlowLoopReport {
     pub solves_rejected: u64,
     /// Written sets taken back ([`Tick::Reverted`]).
     pub reverts: u64,
+    /// Known taps written after a period without a layout or a held
+    /// capture ([`Tick::Recovered`]).
+    pub recoveries: u64,
     /// Written sets kept unverified: the status blocks did not show
     /// [`Revert::frames`] frames under them within [`Revert::timeout`].
     pub unverified: u64,
@@ -1363,6 +1390,20 @@ pub struct SlowLoop {
     good_n0: Option<f64>,
     /// The set written last, until it is judged.
     watch: Option<Watch>,
+    /// The taps in force (as far as this loop knows: the open's, then
+    /// what it wrote).
+    in_force: Taps,
+    /// Since when STATUS has lacked DECODING.
+    no_layout_since: Option<Instant>,
+    /// Since when the capture armed has not been VALID.
+    armed_since: Option<Instant>,
+    /// The last recovery (or the last time one had nothing to write).
+    last_recovery: Option<Instant>,
+    /// A recovery found nothing to write (warned once).
+    recovery_idle: bool,
+    /// This period without a layout has had the good set (written, or in
+    /// force when it began).
+    tried_good: bool,
 }
 
 impl SlowLoop {
@@ -1374,6 +1415,7 @@ impl SlowLoop {
             .start
             .filter(|t| *t != identity())
             .map(|taps| Judged { taps, fit: None });
+        let opts_start = opts.start.unwrap_or_else(identity);
         Self {
             report: SlowLoopReport {
                 last_good: good.map(|g| g.taps),
@@ -1387,6 +1429,12 @@ impl SlowLoop {
             good_from: None,
             good_n0: None,
             watch: None,
+            in_force: opts_start,
+            no_layout_since: None,
+            armed_since: None,
+            last_recovery: None,
+            recovery_idle: false,
+            tried_good: false,
         }
     }
 
@@ -1396,6 +1444,8 @@ impl SlowLoop {
     pub fn wait(&self, last: Tick) -> Duration {
         match last {
             Tick::Torn | Tick::NoSums | Tick::Capturing | Tick::Watching => self.opts.poll,
+            // no layout: watched closely for the recovery
+            _ if self.no_layout_since.is_some() => self.opts.poll,
             _ if self.report.solves == 0 => self.opts.poll,
             _ => self.opts.every,
         }
@@ -1478,6 +1528,9 @@ impl SlowLoop {
             v[5]
         );
         let frame_now = v[5];
+        if let Some(t) = self.recover(c, port, v[4], cap, frame_now, now)? {
+            return Ok(t);
+        }
         if let Some(t) = self.judge(c, port, frame_now, now)? {
             return Ok(t);
         }
@@ -1485,6 +1538,7 @@ impl SlowLoop {
             if !self.armed {
                 c.write(port, reg::SUMS_CAPTURE, &[1])?;
                 self.armed = true;
+                self.armed_since = Some(now);
                 return Ok(Tick::Capturing);
             }
             if cap & capture::VALID == 0 {
@@ -1640,6 +1694,7 @@ impl SlowLoop {
             return Ok(Tick::Rejected { frame, why });
         }
         Self::write_taps(c, port, &taps, frame)?;
+        self.in_force = taps;
         self.report.solves += 1;
         self.report.last_frame = Some(frame);
         self.report.last_taps = Some(taps);
@@ -1805,6 +1860,7 @@ impl SlowLoop {
         };
         let (taps, from) = self.fallback(frame_now);
         Self::write_taps(c, port, &taps, from)?;
+        self.in_force = taps;
         self.watch = None;
         self.pending = None;
         self.report.reverts += 1;
@@ -1823,6 +1879,112 @@ impl SlowLoop {
             }
         );
         Ok(Some(Tick::Reverted { frame: w.from, why }))
+    }
+
+    /// The no-layout recovery (module documentation, "Recovery"): STATUS
+    /// `status` without DECODING, or a capture armed and not VALID, for
+    /// longer than [`SlowLoopOptions::recover_after`] (and as long since
+    /// the last recovery): the good set written again when it is not the
+    /// one in force (or a set is under watch), else the identity when that
+    /// is not; `Some` tick when one was written.
+    fn recover(
+        &mut self,
+        c: &mut ChainControl,
+        port: &dyn RegisterAccess,
+        status: u32,
+        cap: Option<u32>,
+        frame_now: u32,
+        now: Instant,
+    ) -> Result<Option<Tick>> {
+        if status & cc::status::DECODING != 0 {
+            self.no_layout_since = None;
+        } else if self.no_layout_since.is_none() {
+            self.no_layout_since = Some(now);
+        }
+        if cap.is_some_and(|x| x & capture::VALID != 0) || !self.armed {
+            self.armed_since = None;
+        }
+        if self.no_layout_since.is_none() && self.armed_since.is_none() {
+            // a layout and the captures are back: a later loss starts over
+            self.tried_good = false;
+            self.recovery_idle = false;
+        }
+        let after = self.opts.recover_after;
+        let long = |t: Option<Instant>| t.is_some_and(|t| now.duration_since(t) > after);
+        if !(long(self.no_layout_since) || long(self.armed_since))
+            || self
+                .last_recovery
+                .is_some_and(|t| now.duration_since(t) <= after)
+        {
+            return Ok(None);
+        }
+        let watched = self.watch.take().is_some();
+        // the good set once (unless it is what failed: in force), then the
+        // identity once, then nothing
+        if self.good.is_some_and(|g| g.taps == self.in_force) && !watched {
+            self.tried_good = true;
+        }
+        let target = if self.good.is_some() && !self.tried_good {
+            self.tried_good = true;
+            Some(self.fallback(frame_now))
+        } else if self.in_force != identity() {
+            Some((identity(), frame_now))
+        } else {
+            None
+        };
+        self.last_recovery = Some(now);
+        let what = if status & cc::status::DECODING == 0 {
+            format!(
+                "STATUS {status:#x} (no layout: {}) for {:.1} s",
+                if status & cc::status::LOCKED == 0 {
+                    "the slot sync is not locked"
+                } else {
+                    "TMCC not decoded"
+                },
+                self.no_layout_since
+                    .map_or(0.0, |t| now.duration_since(t).as_secs_f64())
+            )
+        } else {
+            format!(
+                "no capture of the training sums held for {:.1} s",
+                self.armed_since
+                    .map_or(0.0, |t| now.duration_since(t).as_secs_f64())
+            )
+        };
+        let Some((taps, from)) = target else {
+            if !self.recovery_idle {
+                self.recovery_idle = true;
+                warn!(
+                    target: "isdb::chain",
+                    status,
+                    "chain: {what} with the identity taps in force: nothing to recover (the signal, or the decoder: docs/receiving.md)"
+                );
+            }
+            return Ok(None);
+        };
+        Self::write_taps(c, port, &taps, from)?;
+        self.in_force = taps;
+        self.pending = None;
+        self.recovery_idle = false;
+        self.report.recoveries += 1;
+        self.report.last_taps = Some(taps);
+        warn!(
+            target: "isdb::chain",
+            status,
+            recoveries = self.report.recoveries,
+            "chain: {what}; {} written (TAPS_FROM {from}){}",
+            if taps == identity() {
+                "the identity taps"
+            } else {
+                "the last good taps"
+            },
+            if watched {
+                ", the set just written dropped"
+            } else {
+                ""
+            }
+        );
+        Ok(Some(Tick::Recovered { status }))
     }
 
     /// The set under watch is good.
@@ -1945,6 +2107,11 @@ pub(crate) mod tests {
             m.regs.insert(reg::VERSION, u32::from(version));
             m.regs.insert(reg::FEATURES, features);
             m.regs.insert(reg::CARRIER, 0);
+            // the chain decoding (a test sets another STATUS)
+            m.regs.insert(
+                reg::STATUS,
+                cc::status::LOCKED | cc::status::FRAMED | cc::status::DECODING,
+            );
             m
         }
 
@@ -3075,6 +3242,101 @@ pub(crate) mod tests {
         // the same level again: a lasting change, written
         latch(&m, &board_sums(41));
         assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 41 });
+    }
+
+    /// #28: STATUS without DECODING for more than 1.5 s: the identity
+    /// written when the good set is in force (committed from FRAME),
+    /// counted; not again within 1.5 s; nothing written once the identity
+    /// is in force (warned once); polled meanwhile; over when DECODING is
+    /// back.
+    #[test]
+    fn no_layout_for_long_writes_known_taps() {
+        let (m, mut c) = opened(features::ALL & !features::SUMS_CAPTURE);
+        m.get().regs.insert(reg::FRAME, 4_321);
+        let mut l = SlowLoop::new(SlowLoopOptions::new(ls_solve, 33.7561e6));
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        latch(&m, &board_sums(100));
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(0)).unwrap(),
+            Tick::Solved { frame: 100 }
+        );
+        assert_eq!(l.wait(Tick::Same), Duration::from_secs(2));
+        // the layout is lost (STATUS locked | framed)
+        m.get().regs.insert(reg::STATUS, 3);
+        assert_eq!(l.tick_at(&mut c, &m, at(2_000)).unwrap(), Tick::Same);
+        assert_eq!(l.wait(Tick::Same), Duration::from_millis(200), "polled");
+        assert_eq!(l.tick_at(&mut c, &m, at(3_400)).unwrap(), Tick::Same);
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(3_600)).unwrap(),
+            Tick::Recovered { status: 3 }
+        );
+        assert_eq!(m.get().taps, Some((identity(), 4_321)));
+        assert_eq!(l.report.recoveries, 1);
+        // the identity in force: nothing more to write
+        let writes = m.get().writes.len();
+        assert_eq!(l.tick_at(&mut c, &m, at(4_000)).unwrap(), Tick::Same);
+        assert_eq!(l.tick_at(&mut c, &m, at(5_200)).unwrap(), Tick::Same);
+        assert_eq!(m.get().writes.len(), writes);
+        assert_eq!(l.report.recoveries, 1);
+        // decoding again
+        m.get().regs.insert(reg::STATUS, 7);
+        assert_eq!(l.tick_at(&mut c, &m, at(5_400)).unwrap(), Tick::Same);
+        assert_eq!(l.wait(Tick::Same), Duration::from_secs(2));
+    }
+
+    /// #28: a capture armed and never VALID (no frame with a layout ends)
+    /// for more than 1.5 s with the good set in force: the identity
+    /// written. Then a set under watch when the layout is lost: the
+    /// watched set is dropped and the last good set written again with
+    /// its own TAPS_FROM.
+    #[test]
+    fn no_capture_held_for_long_writes_known_taps() {
+        let (m, mut c) = opened(features::ALL);
+        m.get().regs.insert(reg::FRAME, 300);
+        let h = Arc::new(ChainHealth::new());
+        let mut l = SlowLoop::new(SlowLoopOptions {
+            health: Some(Arc::clone(&h)),
+            ..SlowLoopOptions::new(ls_solve, 33.7561e6)
+        });
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let s = board_sums(50);
+        let good = ls_solve(&s).unwrap();
+        assert_eq!(l.tick_at(&mut c, &m, at(0)).unwrap(), Tick::Capturing);
+        m.get().frame_end((50, s.count, cc::sums_to_words(&s)));
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(200)).unwrap(),
+            Tick::Solved { frame: 50 }
+        );
+        frames(&h, 60, 12, Some(50), 33_000, 0, 0);
+        // judged good, then the next capture armed at 400 ms, never held
+        assert_eq!(l.tick_at(&mut c, &m, at(400)).unwrap(), Tick::Capturing);
+        assert_eq!(l.report.last_good_frame, Some(50));
+        assert_eq!(l.tick_at(&mut c, &m, at(1_800)).unwrap(), Tick::Capturing);
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(2_000)).unwrap(),
+            Tick::Recovered { status: 7 }
+        );
+        assert_eq!(m.get().taps, Some((identity(), 300)));
+        // a frame with a layout ends: held, solved, watched
+        let s2 = board_sums_for(90, &board_like_taps_2());
+        m.get().frame_end((90, s2.count, cc::sums_to_words(&s2)));
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(2_200)).unwrap(),
+            Tick::Solved { frame: 90 }
+        );
+        // the layout lost under it, the status blocks silent
+        m.get().regs.insert(reg::STATUS, 3);
+        assert_eq!(l.tick_at(&mut c, &m, at(2_400)).unwrap(), Tick::Watching);
+        assert_eq!(l.tick_at(&mut c, &m, at(3_800)).unwrap(), Tick::Watching);
+        assert_eq!(
+            l.tick_at(&mut c, &m, at(4_000)).unwrap(),
+            Tick::Recovered { status: 3 }
+        );
+        assert_eq!(m.get().taps, Some((good, 50)), "the good set again");
+        assert_eq!(l.report.last_good_frame, Some(50));
+        assert_eq!(l.report.recoveries, 2);
     }
 
     /// Frames without a layout under a new set (it killed the TMCC, #28):
