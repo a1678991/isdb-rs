@@ -9,7 +9,7 @@ PYTHONHASHSEED=0 uv run --locked python synth/chain_simspeed.py \\
     --vectors build/chain-7-hdl.json --symbols 100000 --tail 1000
 PYTHONHASHSEED=0 uv run --locked python synth/chain_simspeed.py --backend cxxrtl \\
     --vectors build/chain-7-hdl.json --symbols 10000 --tail 1000 \\
-    --compiler g++ --opt=-O2 --build-seconds 900
+    --compiler g++ --opt=-O1 --build-seconds 900
 
 Backend: `--backend`, else `simx.compiled_backend()` ($FPGA_SIM, else
 Verilator where installed, else CXXRTL). The library is built on first use

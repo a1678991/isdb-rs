@@ -85,9 +85,10 @@ from amaranth.sim import Simulator
 
 HERE = os.path.dirname(__file__)
 BUILD = os.path.join(HERE, "..", "..", "build", "cxxrtl")
-# -O1: -O0 on the generated code took 98 minutes and 30 GB here (measured
-# on the whole chain, 2026-11-02); -O1 takes 214 s and 1.8 GB.
-CXXFLAGS = ["-O1", "-std=c++17", "-shared", "-fPIC", "-w"]
+# -O2: on the chain with the real decoder it compiles in 132 s and 3.0 GB and
+# runs 7 % faster than -O1, at 321 s (docs/plans/fpga-simulation-timescale.md).
+# -O0 on the generated code took 98 minutes and 30 GB (whole chain, 2026-11-02).
+CXXFLAGS = ["-O2", "-std=c++17", "-shared", "-fPIC", "-w"]
 # the related clocks the engine drives (domain: edges per symbol clock)
 CLOCKS = {"fast": 4, "ldpc": 5}
 # FPGA_SIM_PROGRESS=1: the records or drain cycles of one native call

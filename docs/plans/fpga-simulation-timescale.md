@@ -17,10 +17,11 @@ What has changed since the measurements of 2026-11-02:
 - **The cache key** is the design, `harness.cc` and the build flags (and
   Verilator's version, without the RTLIL's `src` attributes), no longer the
   Python around them.
-- **The compiler level was not adopted.** `simx.CXXFLAGS` is still `-O1`;
-  the `-O2` rows are a measurement, not the default. Verilator's models build
-  at `-O2` (`simv.VFLAGS`). The figures of 2026-11-04 below say what the
-  choice is worth today.
+- **The compiler level was adopted on 2026-11-04,** on the figures below:
+  `simx.CXXFLAGS` is `-O2`, as Verilator's models already were
+  (`simv.VFLAGS`). It compiles the real-decoder model in 132 s and 3.0 GB of
+  memory (`-O1`: 321 s; 1.8 GB when last measured). The change rebuilds each
+  CXXRTL library once.
 - **The design and the harness have changed:** the monitors, the sums block
   and a second CXXRTL step per clock edge. The 2026-11-02 rates cannot be
   compared with today's to a few percent.
@@ -43,7 +44,7 @@ so that says little).
 | Verilator, `FPGA_SIM_PROGRESS` chunks of 1 000 | the same | 120 181 | 75 800-76 100 | |
 | Verilator, idle clocks | 101 000 cycles | 101 000 | 77 100-77 300 | |
 | Verilator | 2 600 000 symbols + 1 000 | 3 108 723 | 75 200 | |
-| CXXRTL, `-O1` (the default) | 10 000 symbols + 1 000 | 12 879 | 1 395-1 405 | 321 s |
+| CXXRTL, `-O1` (the default until this measurement) | 10 000 symbols + 1 000 | 12 879 | 1 395-1 405 | 321 s |
 | CXXRTL, `-O2` | the same | 12 879 | 1 495-1 502 | 133 s |
 
 So Verilator is about 54 times CXXRTL `-O1` here. The chunks cost nothing
@@ -206,10 +207,10 @@ PYTHONHASHSEED=0 uv run --locked python synth/chain_simspeed.py \
 PYTHONHASHSEED=0 uv run --locked python synth/chain_simspeed.py \
   --vectors build/chain-7-hdl.json --symbols 100000 --tail 1000 --chunk 1000
 
-# on CXXRTL (the first run builds its library, minutes), and again at -O2
+# on CXXRTL (the first run builds its library, minutes), and again at -O1
 PYTHONHASHSEED=0 uv run --locked python synth/chain_simspeed.py --backend cxxrtl \
   --vectors build/chain-7-hdl.json --symbols 10000 --tail 1000 \
-  --compiler g++ --opt=-O2 --build-seconds 900
+  --compiler g++ --opt=-O1 --build-seconds 900
 
 # the stub chain and the decoder alone, build times included
 PYTHONHASHSEED=0 uv run --locked python synth/sim_speed.py chain verilator
