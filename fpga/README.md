@@ -849,9 +849,13 @@ are needed: not provably narrower).
     queued the head's slot, after its gain division and step products
     (about 80 cycles), by which time the period end had replaced it with
     the next period's statistics. The model's slot carries the statistics
-    after the push that gives its head. `SlotPhase` now keeps the first
+    after the push that gives its head. `SlotPhase` now takes the first
     snapshot after the head's record (`SyncFront.o_snap_valid`, the
-    snapshot's strobe): `PhaseTest.test_snapshot_of_the_head` (stage 3
+    snapshot's strobe), and for slot 1's head writes it straight into the
+    frame's snapshot (`o_snap`: the previous frame ends at the FIR after
+    slot 0's first symbols, so after it), which drops the two 210-bit
+    snapshot registers its slot queue carried:
+    `PhaseTest.test_snapshot_of_the_head` (stage 3
     alone, a period end's snapshot 40 cycles after each head's: 2001
     before, 1001 now) and `ChaosTest.test_restart_just_after_a_slot_head`
     (`FPGA_CHAIN_REAL=1`, frames 0-2 equal);

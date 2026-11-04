@@ -1633,3 +1633,11 @@ a test that fails without the fix.
   is invisible to it, and the START that follows is the same restart.
   An 18-bit counter; the stub bench (`ChainBench`, whose LDPC
   results come as one long run of records) has it off.
+
+Stage 3 also no longer carries the snapshot with its slot queue: it
+writes a frame's snapshot (`o_snap`) when the head of the frame's slot 1
+gets its snapshot (the previous frame ends at the FIR after slot 0's
+first symbols, so later), dropping its two 210-bit snapshot registers.
+Fit of the four (Yosys, against `4eb0602`): `SlotsRx` without the decoder
+26 487 → 26 461 LUT, 27 245 → 26 970 FF; `Finish` 5 832 → 5 809 LUT,
+2 960 → 2 873 FF; block RAM and DSP unchanged.
