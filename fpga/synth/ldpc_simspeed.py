@@ -31,7 +31,7 @@ def main(argv):
         simldpc.simulate(doc, 1, all_rates, backend="cxxrtl", plan=[])
         built = set(glob.glob(os.path.join(simx.BUILD, "ldpc-*.so"))) - before
         print(f"cxxrtl library: {time.time() - t0:.1f} s "
-              + ("(built: elaboration, write_cxxrtl, c++ -O1)" if built else "(cached)"))
+              + ("(built: elaboration, write_cxxrtl, c++ -O2)" if built else "(cached)"))
     for be in backends:
         if be == "cxxrtl" and not simx.available():
             print("cxxrtl: not available here")

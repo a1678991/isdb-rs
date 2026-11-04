@@ -1037,7 +1037,9 @@ STD-B44) is received to TLV streams.
   (elaboration, cache and rate reports from the compiled backends, the same
   clock sequence), `fpga/synth/chain_simspeed.py` (a bounded speed
   measurement of the chain with the real decoder) and the dated
-  measurements in `docs/plans/fpga-simulation-timescale.md`.
+  measurements in `docs/plans/fpga-simulation-timescale.md`. CXXRTL
+  libraries build at `-O2` (on the real-decoder model 132 s against 321 s
+  and 7 % faster, 3.0 GB of compiler memory against 1.8 GB).
 - `isdb rx --radio … --system isdbs3` with the FPGA receive chain starts
   the chain on equaliser taps solved from the acquisition's 0.2 s IQ
   probe (`isdbs3_phy::chain::probe::probe_taps`: the front end's and the

@@ -118,7 +118,7 @@ one stream API (`isdb_fpga/chain/simx.py`) with three backends:
 | `FPGA_SIM` | Backend | Needs | Built |
 |---|---|---|---|
 | `verilator` | the design as Verilog (the venv's Yosys) Verilated, with `chain/harness.cc` (`chain/simv.py`) | Verilator ≥ 5 (`$VERILATOR`), a C++ compiler | `make -j`, cached in `build/verilator/` |
-| `cxxrtl` | Yosys `write_cxxrtl`, with the same `harness.cc` | a C++ compiler (the CXXRTL headers come with yowasp-yosys) | one translation unit (`c++ -O1`), cached in `build/cxxrtl/` |
+| `cxxrtl` | Yosys `write_cxxrtl`, with the same `harness.cc` | a C++ compiler (the CXXRTL headers come with yowasp-yosys) | one translation unit (`c++ -O2`), cached in `build/cxxrtl/` |
 | `pysim` | Amaranth's Python simulator | — | — |
 
 The tests' compiled paths (the chain's whole sets, the LDPC decoder's
@@ -1986,7 +1986,7 @@ input; the Rust set `ldpc-2-93-layered34` (3 codewords) bit-exact at
 
 **Simulation backends (2026-11-02).** `simldpc` runs the decoder on
 Amaranth's Python simulator or compiled with Yosys's CXXRTL backend
-through the chain's `chain.simx` (write_cxxrtl, `c++ -O1`, a library per
+through the chain's `chain.simx` (write_cxxrtl, `c++ -O2`, a library per
 design cached in `fpga/build/cxxrtl` by its RTLIL, loaded through
 ctypes); the compiled one is the default where a C++ compiler is found,
 `FPGA_SIM=pysim` forces the Python one. The B44 sets run on one
@@ -1998,7 +1998,7 @@ a 187-deep one), the memories' depths powers of two and idle addresses 0
 (CXXRTL checks every port access); the synthesis build is without them
 (S = 34, K = 3: 14 043 LUT, 76.5 BRAM36, the same as before but 9 LUT
 for the record and sign memories' read enables). Measured on this host
-(Ryzen 9 7950X), one core:
+(Ryzen 9 7950X), one core, at the `-O1` of the time:
 
 | Design | compile (write_cxxrtl + c++ -O1) | CXXRTL | Python simulator |
 |---|---|---|---|
