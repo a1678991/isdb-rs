@@ -1853,8 +1853,25 @@ peak is `VmHWM` over each stage, reset before it.
   those frames' sums 14.5 dB with the start taps against 14.5 dB with
   each frame's own and 12.9 dB with the identity (10.1 / 10.1 / 9.3 dB
   at 10 dB); 10 of 10 seeds.
-- Pending: the bench run (what to look for in docs/plans/isdbs3-fpga-rx.md
-  "Build 9 residuals").
+- **On the board** (build 9 image, this host binary, BS7, receive only,
+  `tools/isdbs3-issue-checks.sh`: 3 × 8 s back to back, then 30 s;
+  `api_controller.sh` stopped; captures in
+  `/path/to/sdr/isdbs3-bench/build9-host/`, not committed):
+
+  | Run | Valid slots | Not converged (dropped) | Start taps | Slow loop | Max RSS | MER at the end |
+  |---|---|---|---|---|---|---|
+  | 8 s × 3 | 23 232, 23 232, 23 136 | **0 (0)** each | probe, its frame 2, training MER 15.68–15.82 dB (13.00–13.05 dB on the identity), 0.28–0.30 s | 3 solves each, 0 rejected, 0 reverts, 0 rereads | **681, 698, 686 MB** | 15.34, 15.10, 15.06 dB |
+  | 30 s | 86 976 | **0 (0)** | probe, 15.71 dB (13.00 dB), 0.31 s | 11 solves, all else 0 | **710 MB** | 15.08 dB |
+
+  The acquisition line ends "equaliser start taps solved from the
+  acquisition's probe (its frame 2, 6720 training symbols: …) in 0.3 s",
+  the open line reads "taps from the host", `chain.start_taps.source` is
+  "probe". From the first decoded frame the slots take 1.9–2.1 mean
+  iterations (4.1–4.8 on the identity in the build 9 runs), the first
+  slow-loop set is in force at +33–34 frames as before, and no frame has
+  a failure before or after it (`tools/slotsstatus-timeline.py`). Host
+  CPU for 30 s: 9.9 s user + 0.5 s sys (0.30 cores, the acquisition and
+  the probe's solve included). Max RSS 0.68–0.71 GB against 6.0–6.28 GB.
 
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
