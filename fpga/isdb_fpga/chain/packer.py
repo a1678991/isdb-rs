@@ -13,11 +13,18 @@ each, little endian), low word first: the front end's packer's network
 sequence number's two words from all ones, output inverted).
 
 `Packer`: `b_valid` with `b_kind`, `b_frame`, `b_len` starts a block
-(`b_ready` when idle); the 9 header words leave on the next 9 clocks, then
+(`b_ready` when idle; a block offered then is always taken); the 9 header words leave on the next 9 clocks, then
 the payload: `w_ready` asks for the next word (`w_valid`, `w_data`, one per
 clock at most), then the 2 trailer words. `o_valid`, `o_word`: the output
 (at most one word per clock: the `Symbols` packer's port, the ADC DMA's
-channel 0). The sequence number counts from 0 at reset / `start`.
+channel 0). The sequence number counts from 0 at reset; `start` (one
+cycle, CTRL START) restarts it at the next block boundary: a `start`
+while a block is being sent is latched, that block finishes whole with
+its old number (its header and CRC already carry it), and the first block
+accepted after the `start` has sequence 0 (the model's new
+`slots::Writer` at START; the host's `slots::Reader` takes a block on its
+CRC at any sequence number, so the stream stays parseable and no block is
+cut).
 
 `status_words(snap)`: the status block's payload (`slots::Status`, field
 order of its definition) from a snapshot record, as a list of 16-bit
@@ -35,8 +42,9 @@ SYNC = (0x1ACF, 0xFC1D)
 class Packer(Elaboratable):
     # the invariant monitors (monitors.py: `packer_stream`)
     MONITORS = {
-        "seq_contiguous": ("sync", "each block's sequence number is the last one's + 1, 0 for the "
-                                   "first block and for the first block accepted after `start`"),
+        "seq_contiguous": ("sync", "each block's sequence number (its header words) is the last one's "
+                                   "+ 1, 0 for the first block and for the first block accepted in or "
+                                   "after the cycle of a `start`"),
         "framing": ("sync", "the output parses as Slots blocks: sync words, the header check, the "
                             "payload length"),
         "block_kind": ("sync", "header word 2 is a Slots header of a slot, TMCC or status block"),
@@ -80,12 +88,20 @@ class Packer(Elaboratable):
         d_in = Signal(16)
         c_out = Signal(32)
         m.d.comb += [c_in.eq(crc), d_in.eq(self.w_data), c_out.eq(crc32c_word(c_in, d_in))]
+        # a `start` that came while a block was leaving: the sequence
+        # restarts when that block is done (IDLE)
+        restart = Signal()
+        with m.If(self.start):
+            m.d.sync += restart.eq(1)
         with m.FSM(name="packer"):
             with m.State("IDLE"):
                 m.d.comb += self.b_ready.eq(1)
-                with m.If(self.start):
-                    m.d.sync += seq.eq(0)
-                with m.Elif(self.b_valid):
+                with m.If(self.start | restart):
+                    m.d.sync += [seq.eq(0), restart.eq(0)]
+                # a block offered with the restart is taken (`b_valid` is the
+                # finish stage's one-cycle pulse): the header reads `seq`
+                # from the next cycle on, 0 then
+                with m.If(self.b_valid):
                     m.d.sync += [kind.eq(self.b_kind), frame.eq(self.b_frame), ln.eq(self.b_len), idx.eq(0)]
                     m.next = "HEADER"
             with m.State("HEADER"):

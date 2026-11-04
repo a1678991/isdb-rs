@@ -46,7 +46,7 @@ import contextlib
 import importlib
 import sys
 
-from amaranth.hdl import Elaboratable, Mux, Signal
+from amaranth.hdl import Cat, Elaboratable, Mux, Signal
 
 CYCLE_BITS = 48
 
@@ -269,22 +269,31 @@ def demap_noise(m, mon, dm, sample, tag_frame, ncnt, noise_idle):
 
 
 def packer_stream(m, mon, pk):
-    """`Packer`: the sequence numbers at block acceptance (contiguous from
-    0, and 0 again for the first block accepted after a `start`), and the
-    output words parsed as `Slots` blocks (sync words, header word 2, the
-    header check, the payload length that puts the next block's sync words
-    where they belong, a slot block's slot index < 120)."""
+    """`Packer`: the sequence numbers in the output's headers (contiguous
+    from 0, and 0 again for the first block accepted in or after the cycle
+    of a `start`: a `start` while a block leaves does not change that
+    block), and the output words parsed as `Slots` blocks (sync words,
+    header word 2, the header check, the payload length that puts the next
+    block's sync words where they belong, a slot block's slot index <
+    120)."""
     sync = m.d.sync
-    accept = pk.b_ready & pk.b_valid & ~pk.start
+    # which blocks must restart the count: decided at acceptance (the
+    # packer takes every block offered while idle), checked when the
+    # block's header words 3 and 4 leave (a block's header leaves before
+    # the next block can be accepted)
+    accept = pk.b_ready & pk.b_valid
     started = Signal(name="mon_seq_started")
+    zero = Signal(name="mon_seq_zero")
     last = Signal(32, name="mon_seq_last")
     have = Signal(name="mon_seq_have")
+    seq_lo = Signal(16, name="mon_seq_lo")
     with m.If(accept):
-        sync += [last.eq(pk.seq), have.eq(1), started.eq(0)]
+        sync += [zero.eq(started | pk.start | ~have), have.eq(1), started.eq(0)]
     with m.Elif(pk.start):
         sync += started.eq(1)
-    expect = Mux(started | ~have, 0, (last + 1)[:32])
-    mon.watch(m, "seq_contiguous", accept & (pk.seq != expect))
+    expect = Mux(zero, 0, (last + 1)[:32])
+    got = Cat(seq_lo, pk.o_word)
+    bad_seq = Signal(name="mon_bad_seq")
     # the output parser
     ps = Signal(4, name="mon_ps")  # 0-8 header, 9 payload, 10-11 trailer
     pi = Signal(16, name="mon_pi")
@@ -309,6 +318,11 @@ def packer_stream(m, mon, pk):
                 sync += [cs.eq(w), kind.eq(k), ps.eq(3)]
             with m.Case(3, 4, 5, 6, 7):
                 sync += [cs.eq(cs + w), ps.eq(ps + 1)]
+                with m.If(ps == 3):
+                    sync += seq_lo.eq(w)
+                with m.If(ps == 4):
+                    m.d.comb += bad_seq.eq(got != expect)
+                    sync += last.eq(got)
                 with m.If(ps == 5):
                     sync += pl.eq(w)
             with m.Case(8):
@@ -324,6 +338,7 @@ def packer_stream(m, mon, pk):
                 sync += ps.eq(11)
             with m.Default():
                 sync += ps.eq(0)
+    mon.watch(m, "seq_contiguous", bad_seq)
     mon.watch(m, "framing", bad_frame)
     mon.watch(m, "block_kind", bad_kind)
     mon.watch(m, "slot_index", bad_slot)
