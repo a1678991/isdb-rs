@@ -12,7 +12,7 @@ import time
 from amaranth.hdl import Cat, Elaboratable, Module, Mux, Signal, signed
 
 from . import monitors as mon
-from .common import FRAME, FSYNC, PILOTS, SLOT, SLOTS, SSYNC, SYNC, SYNC_REF, word_symbols
+from .common import EQ_APPLY_FRAMES, FRAME, FSYNC, PILOTS, SLOT, SLOTS, SSYNC, SYNC, SYNC_REF, word_symbols
 from .eq import ENTRIES, META, META_SMALL, Equaliser
 from .frame import FrameCtl, lay_pack
 from .phase import SlotPhase
@@ -828,7 +828,26 @@ def run(stage, doc, backend, symbols):
 
 # --- the whole chain (stages 1-6, 8, 9 with the LDPC stub) ----------------------
 
-C_SYM, C_TAP, C_TAPNOW, C_HEAD, C_WORD, C_LOSS, C_START = range(7)
+C_SYM, C_TAP, C_TAPNOW, C_HEAD, C_WORD, C_LOSS, C_START, C_TAPARM, C_AGC = range(9)
+
+
+def host_records(doc, width=4):
+    """The host's register writes a whole-chain set's run assumed (its
+    `host_writes`, `examples/chainvectors`), as bench records by the input
+    index they come before: TAPS (11 C_TAP) then TAPS_FROM (C_TAPARM, a = the
+    frame: the taps in use from frame a + EQ_APPLY_FRAMES, as `SlotsRx`'s
+    REG_TAPS_FROM write arms the equaliser), AGC (C_AGC, a = the gain).
+    Records padded with zeros to `width` fields."""
+    out = {}
+    for w in doc.get("host_writes", ()):
+        recs = out.setdefault(w["at"], [])
+        if "taps" in w:
+            t = w["taps"]
+            recs += [(C_TAP, k, t[2 * k], t[2 * k + 1]) for k in range(11)]
+            recs.append((C_TAPARM, w["taps_from"], 0, 0))
+        if "agc" in w:
+            recs.append((C_AGC, w["agc"], 0, 0))
+    return {at: [r + (0,) * (width - len(r)) for r in recs] for at, recs in out.items()}
 
 
 class ChainBench(Elaboratable):
@@ -840,7 +859,8 @@ class ChainBench(Elaboratable):
     that many TMCC OP_DONEs), so the stub never answers a codeword before
     the chain has sent it. The chain's stop (`SlotsChain.stop_after`) is
     off: the stub's results of a frame come as one run of records, with
-    no input for longer than a stop."""
+    no input for longer than a stop. C_TAPARM and C_AGC: the host's TAPS_FROM
+    and AGC writes (`host_records`)."""
 
     def __init__(self, monitors=True):
         from .top import SlotsChain
@@ -848,7 +868,7 @@ class ChainBench(Elaboratable):
         self.ch = SlotsChain(stop_after=None)
         self.i_valid = Signal()
         self.i_ready = Signal()
-        self.kind = Signal(3)
+        self.kind = Signal(4)
         self.a = Signal(signed(33))
         self.b = Signal(signed(33))
         self.c = Signal(signed(32))
@@ -871,6 +891,8 @@ class ChainBench(Elaboratable):
             ch.i_x[0].eq(self.a), ch.i_x[1].eq(self.b),
             eq.tap_we.eq(self.i_valid & (k == C_TAP)), eq.tap_idx.eq(self.a), eq.tap_val[0].eq(self.b),
             eq.tap_val[1].eq(self.c), eq.tap_now.eq(self.i_valid & (k == C_TAPNOW)),
+            eq.tap_arm.eq(self.i_valid & (k == C_TAPARM)), eq.tap_at.eq(self.a + EQ_APPLY_FRAMES),
+            eq.tap_from_in.eq(self.a),
             p.in_ready.eq(1),
             p.out_valid.eq(self.i_valid & res & gate),
             p.out_head.eq(k == C_HEAD),
@@ -878,6 +900,8 @@ class ChainBench(Elaboratable):
             p.out_iterations.eq(self.c), p.out_converged.eq(self.d[0]),
             p.out_bits.eq(self.a), p.out_last.eq(self.b[0]),
         ]
+        with m.If(self.i_valid & (k == C_AGC)):
+            m.d.sync += ch.agc.eq(self.a)
         return m
 
     def ports(self):
@@ -979,8 +1003,10 @@ def chain_records(doc, taps, n):
     if taps is not None:
         recs = [(C_TAP, i, taps[2 * i], taps[2 * i + 1], 0, 0) for i in range(11)] + [(C_TAPNOW, 0, 0, 0, 0, 0)]
     losses = {at: k for at, k in doc.get("losses", [])}
+    host = host_records(doc, 6)
     for i in range(n):
         recs.extend(inject.get(i, []))
+        recs.extend(host.get(i, []))
         if i in losses:
             recs.append((C_LOSS, losses[i], 0, 0, 0, 0))
         recs.append((C_SYM, x[2 * i], x[2 * i + 1], 0, 0, 0))
@@ -1012,8 +1038,10 @@ def run_chain(doc, taps, backend, symbols=None):
     if taps is not None:
         recs = [(C_TAP, i, taps[2 * i], taps[2 * i + 1], 0, 0) for i in range(11)] + [(C_TAPNOW, 0, 0, 0, 0, 0)]
     losses = {at: k for at, k in doc.get("losses", [])}
+    host = host_records(doc, 6)
     for i in range(n):
         recs.extend(inject.get(i, []))
+        recs.extend(host.get(i, []))
         if i in losses:
             recs.append((C_LOSS, losses[i], 0, 0, 0, 0))
         recs.append((C_SYM, x[2 * i], x[2 * i + 1], 0, 0, 0))
@@ -1069,7 +1097,8 @@ class RealChainBench(Elaboratable):
     (the host's taps at open), C_LOSS (a symbols lost before the next),
     C_START (what `SlotsRx`'s CTRL START does to the chain: a loss of 0
     symbols, the carrier register loaded with the host's CARRIER, 0, the
-    taps written loaded as with INIT bit 0, the blocks' sequence from 0).
+    taps written loaded as with INIT bit 0, the blocks' sequence from 0),
+    C_TAPARM and C_AGC (the host's TAPS_FROM and AGC writes, `host_records`).
     `errors`: [(frame, slot, [positions])] bits to flip in the decoder's
     output stream (a set's `bch_errors`: the model flipped the same in its
     decoder's output), between the bridge and the chain. The chain's stop
@@ -1100,7 +1129,7 @@ class RealChainBench(Elaboratable):
         self.dec_r = DomainRenamer("ldpc")(self.dec)
         self.i_valid = Signal()
         self.i_ready = Signal()
-        self.kind = Signal(3)
+        self.kind = Signal(4)
         self.a = Signal(signed(33))
         self.b = Signal(signed(33))
         self.c = Signal(signed(32))
@@ -1155,9 +1184,13 @@ class RealChainBench(Elaboratable):
             ch.i_x[0].eq(self.a), ch.i_x[1].eq(self.b),
             eq.tap_we.eq(go & (k == C_TAP)), eq.tap_idx.eq(self.a), eq.tap_val[0].eq(self.b),
             eq.tap_val[1].eq(self.c), eq.tap_now.eq(go & ((k == C_TAPNOW) | (k == C_START))),
+            eq.tap_arm.eq(go & (k == C_TAPARM)), eq.tap_at.eq(self.a + EQ_APPLY_FRAMES),
+            eq.tap_from_in.eq(self.a),
             ch.front.nco.f_load.eq(start), ch.front.nco.f_in.eq(0), ch.finish.packer.start.eq(start),
             ch.r_overrun.eq(br.out_overrun),
         ]
+        with m.If(go & (k == C_AGC)):
+            m.d.sync += ch.agc.eq(self.a)
         return m
 
     def ports(self):
@@ -1232,7 +1265,11 @@ def run_chain_real(doc, taps, backend=None, symbols=None):
     # free port cycles it has on the board
     gaps = [0] * len(recs)
     acc = 0.0
+    host = host_records(doc)
     for i in range(n):
+        if i in host:
+            recs += host[i]
+            gaps += [0] * len(host[i])
         if i in losses:
             recs.append((C_LOSS, losses[i], 0, 0))
             gaps.append(0)

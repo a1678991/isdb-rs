@@ -10,7 +10,7 @@ constellation. This tool reads every chain and LDPC set in `fpga/build/`
 `ldpcvec-py-*.json`) and reports, per field, the number of distinct
 values and the sets that exercise them:
 
-- every field of the `Slots` words of the whole-chain sets (6-10): the
+- every field of the `Slots` words of the whole-chain sets (6-11): the
   block header, the slot block, the TMCC block, the status block and the
   sums block (`isdb_frontend::slots` format 2: `SlotBlock`, `TmccBlock`,
   `Status`, `SumsBlock`; read with `isdb_fpga.chain.slots`), the status
@@ -60,7 +60,8 @@ from isdb_fpga.chain import slots as fmt  # noqa: E402
 
 BUILD = os.path.join(os.path.dirname(__file__), "..", "build")
 
-CHAIN_STAGES = ["sync", "phase", "eq", "tmcc", "demap", "chain", "hdl", "loss", "fade", "bch"]
+CHAIN_STAGES = ["sync", "phase", "eq", "tmcc", "demap", "chain", "hdl", "loss", "fade", "bch",
+                "taps"]
 CHAIN_RE = re.compile(r"^chain-(rec-)?(\d+)-(" + "|".join(CHAIN_STAGES) + r")\.json$")
 LDPC_RE = re.compile(r"^(ldpc-\d+-.*|ldpcvec-py-\d+-.*)\.json$")
 
@@ -110,7 +111,7 @@ class Spec:
     bounds: dict = field(default_factory=dict)  # value -> meaning (reported when never taken)
 
 
-WHOLE = ("chain-6", "chain-7", "chain-8", "chain-9", "chain-10")
+WHOLE = ("chain-6", "chain-7", "chain-8", "chain-9", "chain-10", "chain-11")
 SLOTS_PARTS = ("header", "slot", "dummy", "tmcc", "status", "sums")
 SPECS = {}
 
@@ -808,19 +809,14 @@ ALLOWED = {
 # generators (`chainvectors.rs`, `ldpcvectors.rs`) should vary, each with
 # the input that would. They are excused so the suite stays green until a
 # generator changes; remove an entry once a set covers it (the test fails
-# on a known gap that is covered). Every whole-chain set (6-10) decodes
-# exactly one frame, its last whole one, so nothing a decoded frame
-# teaches the next one reaches a status block.
+# on a known gap that is covered).
 KNOWN_GAPS = {
-    "status.n0": "always the reset n0: needs a status block of the frame after a decoded "
-                 "frame (the whole-chain sets one or more frames longer: frame D + 1 whole)",
-    "status.llr_scale": "always the reset K (K follows n0): the same input as status.n0",
-    "status.learned_from": "always none: the same input as status.n0",
-    "status.constellation.*": "no status block carries learned points: the input of status.n0 "
-                              "(frame D + 1 whole) gives 16APSK's 16; the other modulations "
-                              "need their slots (a mixed-mode TMCC)",
-    "status.taps_from": "the taps never change inside a set: needs frame D + 2 whole with "
-                        "eq_every > 0 (taps solved at D are in use from D + EQ_APPLY_FRAMES)",
+    "status.constellation.bpsk.*": "no status block carries learned pi/2-BPSK points: needs its "
+                                   "slots (a mixed-mode TMCC) and the frame after a decoded one",
+    "status.constellation.qpsk.*": "no learned QPSK points: needs its slots (a mixed-mode TMCC)",
+    "status.constellation.8psk.*": "no learned 8PSK points: needs its slots (a mixed-mode TMCC)",
+    "status.constellation.32apsk.*": "no learned 32APSK points: needs its slots (a mixed-mode "
+                                     "TMCC)",
     "status.agc": "no set writes the AGC register (reset 0): needs Chain::set_agc in the "
                   "generator and the value in the set for the bench to write REG_AGC",
     "status.ldpc_failed": "no slot fails LDPC: needs a slot whose symbols are destroyed (e.g. "
@@ -855,8 +851,9 @@ KNOWN_GAPS = {
     "demap.slot.modulation": "chain-5's codewords are 16APSK only: needs a mixed-mode frame",
     "demap.slot.rate": "chain-5's codewords are 93/120 only",
     "demap.learned.*.count": "learned points only for 16APSK, the one modulation used",
-    "demap.n0": "chain-5's frame is the first decoded one, demapped with the reset n0: needs "
-                "the frame after it (n0 learned in force)",
+    "demap.n0": "chain-5's frame is the first decoded one, demapped with the reset n0 (the "
+                "whole-chain sets' status blocks carry learned ones, status.n0): a stage set of "
+                "the frame after it needs a bench that runs frame D first",
     "demap.k": "always the reset K (K follows n0): the same input as demap.n0",
     "sync.period.peak_pos": "chain-1's slot position is fixed by its lead (1 000): needs a "
                             "set that relocks at another position (the whole-chain status "
