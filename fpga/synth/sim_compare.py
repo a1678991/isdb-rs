@@ -100,7 +100,7 @@ def cases():
         "tmcc-bch": lambda be: stages.run_tmcc(doc("4-tmcc"), be,
                                                (1870, 2000, 5003, 7777, 9000, 11000, 11483)),
         "demap": lambda be: stages.run_back(doc("3-eq"), doc("5-demap"), doc("4-tmcc"), be, None),
-        "chain": lambda be: stages.run_chain(doc("6-chain"), doc("3-eq")["taps"], be, 2_260_000),
+        "chain": lambda be: stages.run_chain(doc("6-chain"), doc("3-eq")["taps"], be, 2_400_000),
         "bch": lambda be: bchsim.run(be, 32),
     }
 

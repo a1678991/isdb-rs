@@ -496,6 +496,13 @@ STD-B44) is received to TLV streams.
   nor on its `KNOWN_GAPS` list. Today's corpus: n0, K, `learned_from`,
   the learned constellation and `taps_from` never leave their reset or
   "none" values in any status block, and no slot fails LDPC or BCH.
+- `isdbs3-phy`, `fpga`: the chain vector corpus closes value-coverage
+  gaps (issue #30 item 1). The synthetic sets' input is a window of seven
+  generated frames (5 755 224 symbols, frames 2–4 decoded, so the status
+  blocks of frames 3 and 4 carry the learned n0, K, `learned_from` and
+  16APSK points); `chain-11-taps` changes the taps in use (solved from
+  frame 2, in use from frame 4, the host's TAPS / TAPS_FROM writes in its
+  `host_writes`, which the benches write); `KNOWN_GAPS` 33 → 32 entries.
 - `fpga`: the transmit block's follow-ups (docs/plans/isdbs-next.md item
   5; not yet in a built image). Prefetch while selected: the block polls
   the DMA from SELECT, drops the underflow answers before RUN and holds
