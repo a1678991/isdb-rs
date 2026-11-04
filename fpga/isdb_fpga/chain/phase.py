@@ -100,9 +100,12 @@ class SlotPhase(Elaboratable):
         # runs, and its snapshot is the next period's
         self.h_snap = Signal(snap_bits)
         self.h_snap_valid = Signal()
-        # the snapshot taken with the last slot numbered 0 (a frame's status:
-        # the model's state when that slot was corrected, which completes the
-        # previous frame's last symbol at the FIR's centre)
+        # the snapshot of the head that completes a slot numbered 0 (a
+        # frame's status: the model's state when that slot was corrected,
+        # which completes the previous frame's last symbol at the FIR's
+        # centre), written when the head's snapshot comes: the previous
+        # frame ends at the FIR after the slot's first symbols, so after
+        # this, and the frame before it ended a frame earlier
         self.o_snap = Signal(snap_bits)
         self.rb = r_bits(in_bits)
         self.table = list(table) if table is not None else cos_table()
@@ -222,10 +225,8 @@ class SlotPhase(Elaboratable):
         q_numbered = Signal()
         q_number = Signal(range(SLOTS))
         q_frame = Signal(32)
-        q_snap = Signal(self.snap_bits)
         take = Signal()
-        # head b's snapshot (the first after its record)
-        b_snap = Signal(self.snap_bits)
+        # head b's snapshot is the first after its record
         b_snap_wait = Signal()
 
         m.submodules.gdiv = gdiv = DivRound(33, 26)
@@ -296,9 +297,7 @@ class SlotPhase(Elaboratable):
                 with m.If(mdelta.done):
                     m.next = "QUEUE"
             with m.State("QUEUE"):
-                # (the snapshot comes about 6 cycles after the record, the
-                # gain's division takes more: the wait is never taken)
-                with m.If((~q_valid | take) & ~b_snap_wait):
+                with m.If(~q_valid | take):
                     m.d.sync += [
                         q_valid.eq(1), q_at.eq(a_at), q_w.eq(a_w), q_l.eq(a_l), q_phi.eq(a_phi),
                         q_f0.eq(a_f0), q_f1.eq(a_f1), q_theta.eq(a_theta),
@@ -306,7 +305,7 @@ class SlotPhase(Elaboratable):
                         q_gain.eq(a_gain),
                         q_gamma.eq(round_shift(mdelta.p, 37 - INTERP_FRAC)),
                         q_word.eq(a_word), q_numbered.eq(a_numbered), q_number.eq(a_number),
-                        q_frame.eq(a_frame), q_snap.eq(b_snap),
+                        q_frame.eq(a_frame),
                     ]
                     m.next = "SHIFT"
             with m.State("SHIFT"):
@@ -319,8 +318,13 @@ class SlotPhase(Elaboratable):
                 ]
                 m.next = "IDLE"
 
+        # (it comes about 6 cycles after the record, while the gain's
+        # division runs: head a's fields and b's position are in place, and
+        # the slot a -> b is queued when it is whole)
         with m.If(b_snap_wait & self.h_snap_valid):
-            m.d.sync += [b_snap.eq(self.h_snap), b_snap_wait.eq(0)]
+            m.d.sync += b_snap_wait.eq(0)
+            with m.If(prev_ok & ((b_at - a_at) == SLOT) & a_numbered & (a_number == 0)):
+                m.d.sync += self.o_snap.eq(self.h_snap)
 
         # ---- reader --------------------------------------------------------
         busy = Signal()
@@ -339,7 +343,6 @@ class SlotPhase(Elaboratable):
         s_numbered = Signal()
         s_number = Signal(range(SLOTS))
         s_frame = Signal(32)
-        s_snap = Signal(self.snap_bits)
         pd = Signal(signed(STEP_BITS + 15))  # Delta * j
         pg = Signal(signed(STEP_BITS + 15))  # Gamma * j
         adv = Signal()
@@ -364,16 +367,11 @@ class SlotPhase(Elaboratable):
                 s_at.eq(q_at), s_theta.eq(q_theta),
                 s_delta.eq(q_delta), s_gain.eq(q_gain), s_gamma.eq(q_gamma), s_word.eq(q_word),
                 s_numbered.eq(q_numbered), s_number.eq(q_number), s_frame.eq(q_frame),
-                pd.eq(0), pg.eq(0), s_snap.eq(q_snap),
+                pd.eq(0), pg.eq(0),
             ]
         with m.Elif(adv):
             with m.If(j == SLOT - 1):
                 m.d.sync += busy.eq(0)
-        # a frame ends (in the model) in the push whose symbol completes the
-        # FIR's 5 look-ahead after its last one: the next frame's slot 0,
-        # corrected at the head after it, whose snapshot that is
-        with m.If(take & q_numbered & (q_number == 0)):
-            m.d.sync += self.o_snap.eq(q_snap)
         with m.If(adv & ~take):
             m.d.sync += [j.eq(j + 1), rl.eq(Mux(rl == 2, 0, rl + 1)),
                          nphi.eq(nphi + Mux(j < 24, s_f0, s_f1)),
