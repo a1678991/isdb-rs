@@ -1542,6 +1542,14 @@ STD-B44) is received to TLV streams.
 
 ### Fixed
 
+- `isdb-radio`: the chain's slow loop discarded a good held set of
+  training sums as torn ("the capture did not hold (moved from frame N
+  to N)") when the layout was lost or came back during its 308 reads: it
+  compared SUMS_CAPTURE's whole word before and after the reads, and the
+  word's NO_LAYOUT bit follows the layout while a capture holds. It
+  compares SEQ, VALID and ARMED only (a latch, or another client's
+  capture write, still tears a set); the warning names what moved.
+  Found by the timed host–FPGA model (issue #30 item 4).
 - `fpga`: a CTRL START while a `Slots` block was leaving the ISDB-S3
   chain did not restart the blocks' sequence numbers (the packer honoured
   START only between blocks); it is latched until the block is done, the
