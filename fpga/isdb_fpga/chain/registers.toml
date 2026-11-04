@@ -1,0 +1,788 @@
+# The register map of the ISDB-S3 receive chain (`SlotsRx`,
+# fpga/isdb_fpga/chain/top.py) as the HDL builds it and the host uses it
+# (isdb_frontend::control::chain, isdb_radio::chain). The one source of the
+# map (issue #30 item 5):
+#
+# - the HDL: `top.py`'s REG_* constants and FEATURES are checked against it,
+#   and its docstring table is generated from it (tools/regmap.py), as is the
+#   table in fpga/README.md ("Register map"); tests/test_registers.py checks
+#   both tables are current and simulates every register's documented
+#   reset, read and write behaviour through `gpio_out`;
+# - the host: crates/isdb-frontend/tests/chain_registers.rs checks every
+#   address, bit field, width and reset constant of
+#   `isdb_frontend::control::chain` against it (and that a register the map
+#   calls read only is documented so); isdb-radio's `chain::regmap_tests`
+#   runs the host's open sequence and slow loop on its mock register backend
+#   and checks the order and values below ([host]) and which registers the
+#   host reads and writes (`host`).
+#
+# Schema (1). Numbers are register words (32 bits) unless `width` says less.
+#
+# Per register ([[register]]):
+#   name, address        the name both copies use and the first address
+#   count                consecutive registers (an array: address + k), 1 if absent
+#   access               "ro"     a write changes nothing (no write decoded)
+#                        "rw"     a read returns the value last written, its
+#                                 bits within `width` (the rest read 0)
+#                        "staged" a write sets the next value; a read shows the
+#                                 value in use, which takes the written one at
+#                                 the event `takes_effect` names
+#                        "strobe" a write of any value is an event (`write`);
+#                                 a read shows status bits
+#   width                the bits a read can show (the rest read 0); 32 if absent
+#   signed               the value is two's complement (sign-extended to 32 bits)
+#   reset                the value read after configuration (a list: per element)
+#   read, write          the documented semantics (text, rendered into the tables)
+#   takes_effect         ("staged") when the written value goes in use
+#   frames               (TAPS_FROM) frames from the one written to the one the
+#                        taps are in use from (`top.EQ_APPLY_FRAMES`)
+#   feature              the FEATURES bit that says the register (or the behaviour
+#                        in `read` / `write`) exists
+#   write_feature        ("ro") the FEATURES bit of an image whose register takes
+#                        writes; this image has not built it, so it is read only
+#   ignored_write        ("ro") the one value the host writes although the image
+#                        ignores the write (the value it reads anyway)
+#   built                false: not built (reads 0, writes ignored)
+#   answer_after         symbol clocks from the READ's decode to the value
+#                        (0 if absent; [protocol])
+#   holds_previous       until answered, `gpio_in` keeps the previous READ's value
+#   changes              "const" (fixed by the build), "host" (only host writes and
+#                        CTRL START change it), "live" (the chain moves it)
+#   snapshot             (multi-word or live values) how a host gets a consistent
+#                        value, or why it need not
+#   host                 what the host does with it: "r", "w", "rw" or "" (never);
+#                        isdb-radio's tests assert exactly this
+#   host_note            where (isdb_radio::chain)
+#   elements             names of an array's registers
+#   [[register.field]]   name, lsb, width (1 if absent), meaning; `feature = true`
+#                        marks a FEATURES flag, `built` whether this image sets it;
+#                        `source` names the register whose value the field reads
+
+schema = 1
+block = "SlotsRx"
+# the chain's window in the front end's command address space [start, end)
+window = [0x400, 0x700]
+
+[protocol]
+# control.py / isdb_frontend::control: the command word on gpio_out
+toggle_bit = 31
+op_lsb = 28
+op_width = 3
+arg_lsb = 1
+arg_width = 27
+ops = { NOP = 0, ADDR = 1, HI = 2, WRITE = 3, READ = 4, CTRL = 5, WRITE_S = 6 }
+# symbol clocks from a gpio_out change to the command's decode (two
+# synchroniser registers, the toggle's edge, then the decode)
+decode_after = 4
+# a register's value is on gpio_in the clock after it is answered (a READ
+# is answered in its decode clock unless the register has `answer_after`)
+readback_after_answer = 1
+write = "WRITE (bits 15-0 with the HI staged bits 31-16) or WRITE_S (27 bits sign-extended) writes the addressed register and advances the address by one"
+read = "READ shows the addressed register on gpio_in until the next command; NOP, ADDR, HI, WRITE and CTRL show the ID word"
+unmapped = "an address of the window that no register has reads 0; a write to it changes nothing"
+outside = "a READ outside the window shows the front end's readback (isdb_frontend::control::reg)"
+
+# The front end's CTRL bits (isdb_frontend::control::ctrl, control.py CTRL_*)
+# and what they do to the chain.
+[[ctrl]]
+name = "RUN"
+bit = 0
+meaning = "the front end processes input samples"
+
+[[ctrl]]
+name = "START"
+bit = 1
+meaning = "one pulse: the front end restarts; the chain restarts (the model's `Chain::loss` of 0 symbols: everything but the carrier register, the taps, the constellation and n0), loads CARRIER and, with INIT bit 0, the taps written to TAPS (an armed TAPS_FROM set dropped; without it the taps in use and an armed set stay), restarts the blocks' sequence numbers (the first block the packer takes after START has sequence 0; a block leaving at START finishes whole with its old number) and releases a SUMS_CAPTURE hold and an armed capture. CARRIER, the taps and SEQ change in the clock after the decode; the restart itself (STATUS bits 1 and 2, the capture's release) reaches the equaliser as a record through stages 1-3, within 64 symbol clocks of the decode on an idle chain (`restart_within`; 32 measured)"
+restart_within = 64
+
+[[ctrl]]
+name = "SYMBOLS"
+bit = 2
+meaning = "the DMA carries symbols instead of IQ samples"
+
+[[ctrl]]
+name = "SLOTS"
+bit = 3
+meaning = "with SYMBOLS: the DMA carries the chain's `Slots` words; without it the chain's input stops (the FIFO takes no symbol) and after `top.STOP_AFTER` symbol clocks the chain restarts itself (the chain's stop: every decoder bank freed)"
+
+# The front end's registers the chain changes or its open reads.
+[[frontend]]
+name = "KP"
+address = 0x05
+meaning = "the timing loop's proportional gain: the host reads it back after configuring the front end"
+
+[[frontend]]
+name = "STATUS"
+address = 0x10
+meaning = "read only: bit 0 RUN, bit 1 SYMBOLS, bit 2 SLOTS (the chain's `Slots` words selected: CTRL SLOTS)"
+fields = { RUN = 0, SYMBOLS = 1, SLOTS = 2 }
+
+[id_word]
+# gpio_in after NOP: magic 0x15DB (31-16), front end format (15-12), the
+# chain's `Slots` format (11-8: 0 without a chain, VERSION with one), taps (7-0)
+chain_lsb = 8
+chain_width = 4
+
+# ---------------------------------------------------------------------------
+
+[[register]]
+name = "VERSION"
+address = 0x400
+access = "ro"
+reset = 2
+changes = "const"
+read = "the `Slots` format the chain writes: 2 (format 1 and the sums block); the ID word's bits 11-8 read the same"
+host = "r"
+host_note = "open: must be a format this host reads (isdb_frontend::slots::readable)"
+
+[[register]]
+name = "FEATURES"
+address = 0x401
+access = "ro"
+width = 28
+reset = 0x0022_0EF3
+changes = "host"
+read = "what the image offers (the flags below), the LDPC iteration limit (MAX_ITER's value) and the decoder's step"
+host = "r"
+host_note = "open; the slow loop once (SUMS_CAPTURE)"
+
+[[register.field]]
+name = "TAPS"
+lsb = 0
+feature = true
+built = true
+meaning = "the host may write taps (TAPS, TAPS_FROM)"
+
+[[register.field]]
+name = "SUMS"
+lsb = 1
+feature = true
+built = true
+meaning = "the training sums are readable (SUMS_FRAME, SUMS_COUNT, SUMS_R, SUMS_P)"
+
+[[register.field]]
+name = "CONSTELLATION"
+lsb = 2
+feature = true
+built = false
+meaning = "the host may load a constellation at START (CONST, CONST_MASK, INIT bit 1)"
+
+[[register.field]]
+name = "N0"
+lsb = 3
+feature = true
+built = false
+meaning = "the host may load n0 at START (N0, INIT bit 2)"
+
+[[register.field]]
+name = "SUMS_CAPTURE"
+lsb = 4
+feature = true
+built = true
+meaning = "the training sums are held from a host-armed frame end (SUMS_CAPTURE)"
+
+[[register.field]]
+name = "DECODER_HEALTH"
+lsb = 5
+feature = true
+built = true
+meaning = "DECODER and RECLAIMED exist; the decoder frees the banks of abandoned codewords"
+
+[[register.field]]
+name = "SUMS_SEQ"
+lsb = 6
+feature = true
+built = true
+meaning = "SUMS_CAPTURE's bits 2 and 15-8; a sum register's READ is answered in 3 symbol clocks, the register keeping its last value until then"
+
+[[register.field]]
+name = "SUMS_STREAM"
+lsb = 7
+feature = true
+built = true
+meaning = "each frame's latched sums also leave in the `Slots` stream, a sums block after its status block: the host needs none of the sum registers"
+
+[[register.field]]
+name = "MAX_ITER"
+lsb = 8
+width = 8
+source = "MAX_ITER"
+meaning = "the LDPC iteration limit: MAX_ITER's value"
+
+[[register.field]]
+name = "STEP"
+lsb = 16
+width = 12
+meaning = "the LDPC decoder's step (34; 0 sequential)"
+
+[[register]]
+name = "CARRIER"
+address = 0x402
+access = "staged"
+signed = true
+reset = 0
+changes = "live"
+read = "the carrier register in use (2^-32 turn per symbol; the chain tracks the carrier itself)"
+write = "the carrier register's value for the next CTRL START"
+takes_effect = "CTRL START"
+host = "rw"
+host_note = "open writes the host's carrier; the slow loop's register path reads it every tick (informational)"
+
+[[register]]
+name = "LAYOUT_LAG"
+address = 0x403
+access = "ro"
+reset = 2
+ignored_write = 2
+changes = "const"
+read = "the layout lag: 2 (lag 1 is not built)"
+write = "the host's map defines it as the lag START loads (`ChainOptions::layout_lag`, 1 or 2); this image builds lag 2 only and ignores the write"
+host = "w"
+host_note = "open writes the host's lag (2, the only one this image has)"
+
+[[register]]
+name = "INIT"
+address = 0x404
+access = "rw"
+width = 3
+reset = 0
+changes = "host"
+read = "the value written"
+write = "which host values CTRL START loads: bit 0 the taps written to TAPS (else the taps in use stay); bits 1 and 2 are stored and ignored (FEATURES CONSTELLATION and N0 are clear)"
+host = "w"
+host_note = "open, last before START"
+
+[[register.field]]
+name = "TAPS"
+lsb = 0
+meaning = "START puts the taps written to TAPS in use"
+
+[[register.field]]
+name = "CONSTELLATION"
+lsb = 1
+meaning = "START loads CONST for the modulations of CONST_MASK (FEATURES CONSTELLATION)"
+
+[[register.field]]
+name = "N0"
+lsb = 2
+meaning = "START loads N0 (FEATURES N0)"
+
+[[register]]
+name = "STATUS"
+address = 0x405
+access = "ro"
+width = 3
+reset = 0
+changes = "live"
+read = "the chain's state"
+host = "r"
+host_note = "the slow loop's register path every tick; the error report (`ChainControl::state`)"
+
+[[register.field]]
+name = "LOCKED"
+lsb = 0
+meaning = "the slot sync is locked"
+
+[[register.field]]
+name = "FRAMED"
+lsb = 1
+meaning = "a frame head since the (re)start"
+
+[[register.field]]
+name = "DECODING"
+lsb = 2
+meaning = "the last frame decoded since the (re)start: a layout in force (a restart clears it)"
+
+[[register]]
+name = "FRAME"
+address = 0x406
+access = "ro"
+reset = 0xFFFF_FFFF
+changes = "live"
+read = "the last whole frame's counter (0xFFFF_FFFF none)"
+host = "r"
+host_note = "the slow loop's register path every tick (the identity's TAPS_FROM); the error report"
+
+[[register]]
+name = "SEQ"
+address = 0x407
+access = "ro"
+reset = 0
+changes = "live"
+read = "the next `Slots` block's sequence number (0 after CTRL START)"
+host = "r"
+host_note = "the error report"
+
+[[register]]
+name = "N0"
+address = 0x408
+access = "ro"
+reset = 52_556
+write_feature = "N0"
+changes = "live"
+read = "n0 in force (Q.20; 52 556, Es/N0 13 dB, until learned)"
+write = "on an image with FEATURES N0, n0 for START (INIT bit 2); this image ignores the write"
+host = "w"
+host_note = "open writes the host's n0 only on an image with FEATURES N0"
+
+[[register]]
+name = "LLR_SCALE"
+address = 0x409
+access = "ro"
+reset = 81_722
+changes = "live"
+read = "K in force: round(2^32 / n0)"
+host = ""
+
+[[register]]
+name = "LEARNED_FROM"
+address = 0x40A
+access = "ro"
+reset = 0xFFFF_FFFF
+changes = "live"
+read = "the frame n0 and the constellation in force were learned on (0xFFFF_FFFF: the defaults)"
+host = ""
+
+[[register]]
+name = "CONST_MASK"
+address = 0x40B
+access = "ro"
+width = 5
+reset = 0
+write_feature = "CONSTELLATION"
+changes = "live"
+read = "bit m: modulation m's points in force are learned, not the nominal ones"
+write = "on an image with FEATURES CONSTELLATION, the modulations whose CONST points START loads; this image ignores the write"
+host = "w"
+host_note = "open writes it only on an image with FEATURES CONSTELLATION"
+
+[[register]]
+name = "MAX_ITER"
+address = 0x40C
+access = "rw"
+width = 8
+reset = 14
+changes = "host"
+read = "the value written (FEATURES bits 15-8 read it too)"
+write = "the LDPC iteration limit each codeword is committed with (reset `ldpc.DEFAULT_MAX_ITER`)"
+host = ""
+
+[[register]]
+name = "AGC"
+address = 0x40D
+access = "rw"
+width = 16
+reset = 0
+changes = "host"
+read = "the value written"
+write = "the input AGC gain the status blocks report (Q6.10)"
+host = ""
+
+[[register]]
+name = "TAPS"
+address = 0x410
+count = 11
+access = "staged"
+reset = [0, 0, 0, 0, 0, 0x4000, 0, 0, 0, 0, 0]
+feature = "TAPS"
+changes = "live"
+read = "tap k in use (re + (im << 16), Q2.14; the identity after configuration)"
+write = "tap k of the next set"
+takes_effect = "TAPS_FROM N: from frame N + 2; CTRL START with INIT bit 0: at once"
+snapshot = "the 11 registers change together at a frame start; TAPS_FROM reads their frame"
+host = "w"
+host_note = "open writes the host's taps (the identity without), the slow loop each solve before TAPS_FROM"
+
+[[register.field]]
+name = "RE"
+lsb = 0
+width = 16
+meaning = "real part, Q2.14"
+
+[[register.field]]
+name = "IM"
+lsb = 16
+width = 16
+meaning = "imaginary part, Q2.14"
+
+[[register]]
+name = "TAPS_FROM"
+address = 0x41B
+access = "staged"
+reset = 0xFFFF_FFFF
+feature = "TAPS"
+changes = "live"
+read = "the frame the taps in use were solved from (0xFFFF_FFFF: the identity, or taps START loaded)"
+write = "after TAPS: the frame N the taps were solved from; commits them (arms the equaliser with N and N + 2 in the clock it is written: 5f60649)"
+takes_effect = "the first frame >= N + 2 (the model's EQ_APPLY_FRAMES)"
+frames = 2
+host = "rw"
+host_note = "the slow loop writes it after each set of TAPS and reads it every tick; the error report"
+
+[[register]]
+name = "SUMS_FRAME"
+address = 0x420
+access = "ro"
+reset = 0xFFFF_FFFF
+feature = "SUMS"
+changes = "live"
+read = "the frame of the latched training sums (0xFFFF_FFFF: none yet)"
+snapshot = "read before and after the sum registers: the same frame, or the latch moved"
+host = "r"
+host_note = "the slow loop's register path every tick and after the sums; the error report"
+
+[[register]]
+name = "SUMS_COUNT"
+address = 0x421
+access = "ro"
+width = 16
+reset = 0
+feature = "SUMS"
+changes = "live"
+read = "training symbols in the latched sums"
+host = "r"
+host_note = "the slow loop's register path every tick"
+
+[[register]]
+name = "SUMS_CAPTURE"
+address = 0x422
+access = "strobe"
+width = 16
+reset = 0b100
+feature = "SUMS_CAPTURE"
+changes = "live"
+read = "the capture's state: VALID, ARMED, NO_LAYOUT (FEATURES SUMS_SEQ), SEQ (FEATURES SUMS_SEQ)"
+write = "any value: the next frame end with a layout latches the training sums and holds them (later frames are summed, not latched) until the next write. Before the first write every frame end latches; a restart (START, a lost sync, the chain's stop) releases a hold and an armed capture"
+snapshot = "SEQ read before and after a set of sum reads: equal, no latch moved in between"
+host = "rw"
+host_note = "the slow loop's register path: reads it every tick (first, with FEATURES SUMS_CAPTURE, and last), writes it to arm a capture; the error report"
+
+[[register.field]]
+name = "VALID"
+lsb = 0
+meaning = "latched and held since the write"
+
+[[register.field]]
+name = "ARMED"
+lsb = 1
+meaning = "waiting for a frame end"
+
+[[register.field]]
+name = "NO_LAYOUT"
+lsb = 2
+meaning = "STATUS bit 2 clear: the last frame end had no layout, nothing latches and an armed capture waits"
+
+[[register.field]]
+name = "SEQ"
+lsb = 8
+width = 8
+meaning = "latches since configuration (wrapping)"
+
+[[register]]
+name = "COUNTERS"
+address = 0x430
+count = 8
+access = "ro"
+reset = 0
+changes = "live"
+elements = ["frames", "frames_undecoded", "tmcc_failed", "slots", "ldpc_failed", "bch_failed", "iterations (low)", "iterations (high)"]
+read = "the status block's counters: whole frames, a frame's slots counted at its TMCC result (the slots of a frame a restart dropped are not counted); the iteration sum in two registers, low first"
+snapshot = "none: each moves at a frame's end and the iteration sum's two words can tear across one (informational: the error report)"
+host = "r"
+host_note = "the error report (`ChainControl::counters`)"
+
+[[register]]
+name = "TMCC_OVERRUNS"
+address = 0x438
+access = "ro"
+reset = 0
+changes = "live"
+read = "TMCC codewords the decoder dropped (also counted as TMCC failed)"
+host = "r"
+host_note = "the error report"
+
+[[register]]
+name = "DECODER"
+address = 0x439
+access = "ro"
+width = 28
+reset = 0x0300_0000
+feature = "DECODER_HEALTH"
+changes = "live"
+read = "the LDPC decoder's health, a snapshot from its clock under 1 us old"
+snapshot = "one word from one snapshot"
+host = "r"
+host_note = "open (banks held before START: warned); the error report"
+
+[[register.field]]
+name = "OVERRUNS"
+lsb = 0
+width = 16
+meaning = "codewords dropped for want of a free bank since configuration, slots and TMCC (wrapping)"
+
+[[register.field]]
+name = "QUEUE_OVERFLOW"
+lsb = 16
+meaning = "sticky: a commit the result queue could not take"
+
+[[register.field]]
+name = "HELD"
+lsb = 20
+width = 4
+meaning = "banks allocated now (0 once the chain has stopped, 3.3 ms after its input, and the decoder is idle)"
+
+[[register.field]]
+name = "BANKS"
+lsb = 24
+width = 4
+meaning = "K (3)"
+
+[[register]]
+name = "RECLAIMED"
+address = 0x43A
+access = "ro"
+reset = 0
+feature = "DECODER_HEALTH"
+changes = "live"
+read = "decoder banks freed since configuration (wrapping)"
+host = "r"
+host_note = "open; the error report"
+
+[[register.field]]
+name = "ABORTED"
+lsb = 0
+width = 16
+meaning = "banks freed by the abort after a frame drop or a restart (a lost sync, START, the chain's stop)"
+
+[[register.field]]
+name = "REUSED"
+lsb = 16
+width = 16
+meaning = "banks a codeword's begin took back from its context's abandoned codeword"
+
+[[register]]
+name = "SUMS_R"
+address = 0x500
+count = 264
+access = "ro"
+reset = 0
+feature = "SUMS"
+answer_after = 3
+holds_previous = true
+changes = "live"
+read = "entry i < 66 of R at 0x500 + 4i: re low 32, re high 16 sign-extended, im low, im high (the latched bank)"
+snapshot = "the latch moves at a frame end: SUMS_CAPTURE's hold and SEQ, or SUMS_FRAME before and after; the same values leave in each frame's sums block (FEATURES SUMS_STREAM)"
+host = "r"
+host_note = "the slow loop's register path, after a capture held (or a new SUMS_FRAME)"
+
+[[register]]
+name = "SUMS_P"
+address = 0x610
+count = 44
+access = "ro"
+reset = 0
+feature = "SUMS"
+answer_after = 3
+holds_previous = true
+changes = "live"
+read = "entry i < 11 of p at 0x610 + 4i, as SUMS_R"
+snapshot = "as SUMS_R"
+host = "r"
+host_note = "as SUMS_R"
+
+[[register]]
+name = "CONST"
+address = 0x640
+count = 160
+access = "ro"
+reset = 0
+built = false
+write_feature = "CONSTELLATION"
+changes = "const"
+read = "not built: reads 0 (point t of modulation m at 0x640 + 32m + t on an image with FEATURES CONSTELLATION)"
+write = "on an image with FEATURES CONSTELLATION, the points START loads; this image ignores the write"
+host = "w"
+host_note = "open writes the host's points only on an image with FEATURES CONSTELLATION"
+
+# ---------------------------------------------------------------------------
+# The host's register sequences (isdb_radio::chain), in order: what its
+# tests compare the mock backend's accesses with. A step reads or writes a
+# register (an array: every element, in address order), sends CTRL with the
+# named bits, or configures the front end (Encoder::configure: its registers
+# and banks, outside the chain's window). `if` names a FEATURES flag the step
+# needs, `if_init` a value the host must have; `value` is a number or one of
+# the host's values: init.carrier, init.layout_lag, init.taps (the identity
+# without), init.constellation, init.const_mask, init.n0, loaded (the INIT
+# bits of the steps written that name one in `init_bit`), taps and frame (the
+# solved taps and the frame they were solved from).
+
+[[host.open]]
+ctrl = []
+
+[[host.open]]
+read = "VERSION"
+
+[[host.open]]
+read = "FEATURES"
+
+[[host.open]]
+read = "DECODER"
+if = "DECODER_HEALTH"
+
+[[host.open]]
+read = "RECLAIMED"
+if = "DECODER_HEALTH"
+
+[[host.open]]
+frontend = "configure"
+
+[[host.open]]
+read = "fe.KP"
+
+[[host.open]]
+write = "CARRIER"
+value = "init.carrier"
+
+[[host.open]]
+write = "LAYOUT_LAG"
+value = "init.layout_lag"
+
+[[host.open]]
+write = "TAPS"
+value = "init.taps"
+if = "TAPS"
+init_bit = "TAPS"
+
+[[host.open]]
+write = "CONST"
+value = "init.constellation"
+if = "CONSTELLATION"
+if_init = "constellation"
+
+[[host.open]]
+write = "CONST_MASK"
+value = "init.const_mask"
+if = "CONSTELLATION"
+if_init = "constellation"
+init_bit = "CONSTELLATION"
+
+[[host.open]]
+write = "N0"
+value = "init.n0"
+if = "N0"
+if_init = "n0"
+init_bit = "N0"
+
+[[host.open]]
+write = "INIT"
+value = "loaded"
+
+[[host.open]]
+ctrl = ["START"]
+
+[[host.open]]
+ctrl = ["RUN", "SYMBOLS", "SLOTS"]
+
+[[host.open]]
+read = "fe.STATUS"
+
+# A tick of the slow loop's register path (FEATURES read once before the
+# first): the state, with SUMS_CAPTURE first on an image with the capture
+# and last always (compared again after the sums).
+[[host.tick]]
+read = "SUMS_CAPTURE"
+if = "SUMS_CAPTURE"
+
+[[host.tick]]
+read = "SUMS_FRAME"
+
+[[host.tick]]
+read = "SUMS_COUNT"
+
+[[host.tick]]
+read = "CARRIER"
+
+[[host.tick]]
+read = "TAPS_FROM"
+
+[[host.tick]]
+read = "STATUS"
+
+[[host.tick]]
+read = "FRAME"
+
+[[host.tick]]
+read = "SUMS_CAPTURE"
+
+# After the tick's reads, with the capture not armed: arm it.
+[[host.arm]]
+write = "SUMS_CAPTURE"
+value = 1
+
+# After the tick's reads, with new sums (held, on an image with the
+# capture): the sums, SUMS_FRAME and SUMS_CAPTURE again, then the solve's
+# taps committed by TAPS_FROM.
+[[host.solve]]
+read = "SUMS_R"
+
+[[host.solve]]
+read = "SUMS_P"
+
+[[host.solve]]
+read = "SUMS_FRAME"
+
+[[host.solve]]
+read = "SUMS_CAPTURE"
+
+[[host.solve]]
+write = "TAPS"
+value = "taps"
+
+[[host.solve]]
+write = "TAPS_FROM"
+value = "frame"
+
+# The stream path's solve (FEATURES SUMS_STREAM, the sums from the sums
+# blocks): no register read, the commit only.
+[[host.stream_solve]]
+write = "TAPS"
+value = "taps"
+
+[[host.stream_solve]]
+write = "TAPS_FROM"
+value = "frame"
+
+# The error report (`ChainControl::state`, then `counters`).
+[[host.state]]
+read = "STATUS"
+
+[[host.state]]
+read = "FRAME"
+
+[[host.state]]
+read = "SEQ"
+
+[[host.state]]
+read = "TAPS_FROM"
+
+[[host.state]]
+read = "SUMS_FRAME"
+
+[[host.state]]
+read = "SUMS_CAPTURE"
+
+[[host.state]]
+read = "TMCC_OVERRUNS"
+
+[[host.state]]
+read = "DECODER"
+
+[[host.state]]
+read = "RECLAIMED"
+
+[[host.state]]
+read = "COUNTERS"
+
+# Release (`ChainControl::release`): back to IQ samples.
+[[host.release]]
+ctrl = []
