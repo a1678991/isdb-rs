@@ -170,8 +170,16 @@ class LdpcBridge(Elaboratable):
     IN_DEPTH = 64
     OUT_DEPTH = 64
     TAG_DEPTH = 16
+    # the invariant monitors (monitors.py; `monitors=True`, simulation only)
+    MONITORS = {
+        "in_fifo_overflow": ("sync", "no beat written into the full input FIFO (it would be lost)"),
+        "out_fifo_overflow": ("ldpc", "no record or word written into the full output FIFO"),
+        "tag_overflow": ("ldpc", "no tag pushed into the full tag queue"),
+        "tag_underflow": ("ldpc", "every result record pops a tag (one per commit)"),
+    }
+    monitor = None
 
-    def __init__(self, port, max_iter=None, offset=None):
+    def __init__(self, port, max_iter=None, offset=None, monitors=False):
         # the limit and offset come with each codeword's closing beat
         # (`in_max_iter`, `in_offset` of the port); the arguments are unused
         self.p = port
@@ -218,6 +226,10 @@ class LdpcBridge(Elaboratable):
         self.v_in_level = Signal(range(self.IN_DEPTH + 1))
         self.v_tags = Signal(range(self.TAG_DEPTH + 1))
         self.v_out_level = Signal(range(self.OUT_DEPTH + 1))
+        if monitors:
+            from .monitors import enable
+
+            enable(self)
 
     def elaborate(self, platform):
         from amaranth.lib.fifo import SyncFIFO
@@ -319,6 +331,13 @@ class LdpcBridge(Elaboratable):
             m.d.ldpc += [snap.eq(h_in), ack.eq(req_l)]
         with m.If(ack_s == req):
             m.d.sync += [h_out.eq(snap), req.eq(~req)]
+        if self.monitor is not None:
+            from . import monitors
+
+            monitors.fifo_overflow(m, self.monitor, "in_fifo_overflow", fin)
+            monitors.fifo_overflow(m, self.monitor, "out_fifo_overflow", fout)
+            monitors.fifo_overflow(m, self.monitor, "tag_overflow", tags)
+            monitors.fifo_underflow(m, self.monitor, "tag_underflow", tags)
         return m
 
 

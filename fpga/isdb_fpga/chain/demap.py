@@ -134,6 +134,13 @@ def smin(m, dom, a, b, name):
 
 
 class Demap(Elaboratable):
+    # the invariant monitors (monitors.py: `demap_noise`)
+    MONITORS = {
+        "noise_count": ("sync", "the noise count at a decoded frame's end = the noise samples of "
+                                "that frame (243d672: the next frame's start had cleared it)"),
+    }
+    monitor = None
+
     def __init__(self, nominal=None):
         """`nominal`: a `NominalPort` of a shared `NominalRom` (back.py), or
         None for one of its own."""
@@ -759,6 +766,10 @@ class Demap(Elaboratable):
                                  self.nx_k.eq(kdiv.q[:32]), nsum.eq(0), ncnt.eq(0)]
                     m.next = "IDLE"
         m.d.comb += self.dbg_noise_idle.eq(nfsm.ongoing("IDLE"))
+        if self.monitor is not None:
+            from . import monitors
+
+            monitors.demap_noise(m, self.monitor, self, v8 & ctx8[41], ctx8[42:74], ncnt, nfsm.ongoing("IDLE"))
         # a decoded frame's end: the learned points (ready since its last
         # slot's pilots) in force at once; n0 and K follow from the noise
         # division (f_end, 12 cycles later)

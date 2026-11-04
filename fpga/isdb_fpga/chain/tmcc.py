@@ -93,6 +93,14 @@ class TmccSoft(Elaboratable):
         self.s_idx = Signal(15)
         self.s_soft = Signal(signed(8))
 
+    # the invariant monitors (monitors.py)
+    MONITORS = {
+        "staging_overrun": ("sync", "the soft-bit writer never reaches a value the burst has not read"),
+        "burst_lost": ("sync", "a frame's end never comes while the previous burst still runs (its "
+                               "TMCC codeword would not be sent)"),
+    }
+    monitor = None
+
     def elaborate(self, platform):
         m = Module()
         L = BURST_LANES
@@ -147,6 +155,10 @@ class TmccSoft(Elaboratable):
         # the writer must never reach a value the burst has not read
         with m.If(self.t_valid & fsm.ongoing("WRITE") & (self.t_idx >= Cat(Const(0, 2), r))):
             m.d.sync += self.overrun.eq(self.overrun + 1)
+        if self.monitor is not None:
+            self.monitor.watch(m, "staging_overrun",
+                               self.t_valid & fsm.ongoing("WRITE") & (self.t_idx >= Cat(Const(0, 2), r)))
+            self.monitor.watch(m, "burst_lost", self.frame_done & ~fsm.ongoing("IDLE"))
         return m
 
 

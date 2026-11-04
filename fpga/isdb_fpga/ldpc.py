@@ -317,10 +317,27 @@ class _Rate:
 class LdpcDecoder(Elaboratable):
     """The decoder; `codes` = {rate: rows} (default the eleven B44 rates,
     `ngroups` 120), the rate index of the ports is the position in
-    sorted(codes)."""
+    sorted(codes). `monitors`: the invariant monitors (`chain/monitors.py`;
+    simulation only, the default builds none)."""
+
+    # the invariant monitors (chain/monitors.py: `ldpc_banks`)
+    MONITORS = {
+        "bank_accounting": ("sync", "banks allocated = contexts holding an uncommitted bank + "
+                                    "committed codewords not yet streamed out"),
+        "held": ("sync", "`held` = the banks allocated a cycle before"),
+        "load_ready": ("sync", "`load_ready` = held < K"),
+        "abort_closes": ("sync", "after `abort` the context is closed and holds no bank"),
+        "commit_without_begin": ("sync", "`start` on a context that has no open codeword and was "
+                                         "not dropped would commit its bank twice"),
+        "bank_leak": ("sync", "no bank allocated while the decoder is idle (nothing decoding, "
+                              "streaming or queued) and no context holds one, beyond the load "
+                              "pipeline's latency"),
+        "queue_overflow": ("sync", "a commit the result queue cannot take (its bank is never freed)"),
+    }
+    monitor = None
 
     def __init__(self, units, codes=None, ngroups=120, shortened=ldpcmodel.TMCC_SHORT, banks=3,
-                 sim=False):
+                 sim=False, monitors=False):
         self.S = S = units
         assert banks >= 2, "at least two banks (one loading while one decodes)"
         self.K = banks
@@ -368,6 +385,10 @@ class LdpcDecoder(Elaboratable):
         self.busy = Signal()
         self.passes = Signal(ITER_BITS + 1)
         self.cycles = Signal(24)
+        if monitors:
+            from .chain.monitors import enable
+
+            enable(self)
 
     def ports(self):
         return [self.begin, self.in_ctx, self.load_ready, self.in_valid, self.in_pos, self.in_llr,
@@ -1378,4 +1399,10 @@ class LdpcDecoder(Elaboratable):
                     q_rate[slot].eq(tok["trate"]), q_max[slot].eq(tok["tmax"]),
                     q_off[slot].eq(tok["toff"]), q_short[slot].eq(tok["tshort"]),
                 ]
+        if self.monitor is not None:
+            from .chain import monitors
+
+            monitors.ldpc_banks(m, self.monitor, self, K=K, alloc=alloc, ctx_open=ctx_open,
+                                ctx_drop=ctx_drop, holds=holds, free_mask=free_mask, out_active=out_active,
+                                q_wr=q_wr, q_oq=q_oq)
         return m

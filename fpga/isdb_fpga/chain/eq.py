@@ -93,6 +93,13 @@ def entries():
 
 
 class Equaliser(Elaboratable):
+    # the invariant monitors (monitors.py)
+    MONITORS = {
+        "taps_from_source": ("sync", "the taps' frame in use changes only to NONE (taps loaded at "
+                                     "once) or to the armed set's frame"),
+    }
+    monitor = None
+
     def __init__(self, aux=0, nominal=None):
         """`aux`: bits of a record the caller attaches to the centre symbol
         (`c_aux`, at the centre cycle) and gets back with its output
@@ -521,4 +528,10 @@ class Equaliser(Elaboratable):
             m.d.sync += [self.cap_armed.eq(1), self.cap_valid.eq(0)]
         with m.If(self.restart):
             m.d.sync += [opened.eq(0), go_pend.eq(0), open_pend.eq(0)]
+        if self.monitor is not None:
+            prev = Signal(32, init=0xFFFFFFFF, name="mon_taps_from_d")
+            pf_d = Signal(32, name="mon_pend_from_d")
+            m.d.sync += [prev.eq(self.taps_from), pf_d.eq(self.pend_from)]
+            self.monitor.watch(m, "taps_from_source", (self.taps_from != prev) & (self.taps_from != 0xFFFFFFFF)
+                               & (self.taps_from != pf_d))
         return m

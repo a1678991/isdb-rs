@@ -33,6 +33,17 @@ SYNC = (0x1ACF, 0xFC1D)
 
 
 class Packer(Elaboratable):
+    # the invariant monitors (monitors.py: `packer_stream`)
+    MONITORS = {
+        "seq_contiguous": ("sync", "each block's sequence number is the last one's + 1, 0 for the "
+                                   "first block and for the first block accepted after `start`"),
+        "framing": ("sync", "the output parses as Slots blocks: sync words, the header check, the "
+                            "payload length"),
+        "block_kind": ("sync", "header word 2 is a Slots header of a slot, TMCC or status block"),
+        "slot_index": ("sync", "a slot block's slot index is below 120"),
+    }
+    monitor = None
+
     def __init__(self):
         self.start = Signal()
         self.b_valid = Signal()
@@ -104,6 +115,10 @@ class Packer(Elaboratable):
                 with m.If(idx == 1):
                     m.d.sync += seq.eq(seq + 1)
                     m.next = "IDLE"
+        if self.monitor is not None:
+            from . import monitors
+
+            monitors.packer_stream(m, self.monitor, self)
         return m
 
 
