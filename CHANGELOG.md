@@ -37,6 +37,21 @@ STD-B44) is received to TLV streams.
   (`isdbs3-phy` `examples/chainscenario`, `Chain::start`,
   `Back::load_taps`, `Back::open_frame`). Opt-in with `FPGA_CHAIN_REAL=1`
   (one pinned case) and `FPGA_CHAIN_CHAOS=<seeds>` (a sweep).
+- `fpga`: invariant monitors in every simulation of the ISDB-S3 chain and
+  the LDPC decoder (issue #30 item 2; `isdb_fpga/chain/monitors.py`,
+  fpga/README.md "Invariant monitors"): the decoder's bank accounting,
+  `held`, `load_ready`, the abort, double commits, idle-bank leaks and
+  the result queue; every FIFO of the chain and the bridge; the noise
+  count at a frame's end; the status words' point RAM read; the `Slots`
+  sequence numbers and framing; the sum readback and the TAPS_FROM write
+  of `SlotsRx`. Sticky first-violation registers read through the
+  engines' ports on all three backends; `monitors=True` on the benches,
+  off (nothing built) in the bitstream. `tests/test_monitors.py` re-
+  introduces each board-found defect on a scratch copy of the source and
+  shows its monitor fires; `tools/pipeline_mutation.py` (opt-in) shifts
+  each pipeline delay by one cycle and lists the vector fields that
+  notice. Found: a START in the middle of a block does not restart the
+  `Slots` sequence numbers (open, an expected-failure test).
 - Tools: `tools/isdbs-bench-check.sh --receiver dt295|exact` (default
   `dt295`) and `--receiver-drops PIDS` (the profile's `0x0001`; `""` for
   none): the PIX-DT295's raw output drops the CAT without a null (its PID
