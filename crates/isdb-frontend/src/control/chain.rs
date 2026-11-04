@@ -63,6 +63,18 @@
 //! [`capture::NO_LAYOUT`] (the same as [`status::DECODING`] clear) an
 //! armed capture waits until TMCC decodes again.
 //!
+//! **Sums in the stream** ([`features::SUMS_STREAM`], `Slots` format 2):
+//! the block also sends each latched set in the `Slots` stream, as a sums
+//! block right after its frame's status block
+//! ([`crate::slots::SumsBlock`]: the same values as these registers, in
+//! [`all_sum_registers`]' order, under the block's CRC). A host reading
+//! the stream solves from those and reads none of the 308 registers (and
+//! arms no capture): no read is exposed to another client of
+//! `direct_reg_access`. The registers, [`reg::SUMS_CAPTURE`] and its hold
+//! stay (a host of an older binary, and the proven path); a capture held
+//! keeps the latch on its frame, and a frame whose sums did not latch at
+//! its end gets no sums block.
+//!
 //! **START and the decoder** (issue #28, [`features::DECODER_HEALTH`]):
 //! START, a lost sync or a dropped frame gives up the slot codeword being
 //! loaded and the block frees its LDPC decoder bank (an abort); committed
@@ -83,8 +95,13 @@
 
 use super::{ID_MAGIC, Identity};
 
-/// The `Slots` format version this host reads ([`crate::slots::SLOTS_VERSION`]).
+/// The newest `Slots` format version this host reads
+/// ([`crate::slots::SLOTS_VERSION`]; [`SLOTS_VERSION_MIN`] the oldest:
+/// [`crate::slots::readable`]).
 pub const SLOTS_VERSION: u16 = crate::slots::SLOTS_VERSION;
+/// The oldest `Slots` format version this host reads
+/// ([`crate::slots::SLOTS_VERSION_MIN`]).
+pub const SLOTS_VERSION_MIN: u16 = crate::slots::SLOTS_VERSION_MIN;
 
 /// The equaliser's taps ([`TAPS`] complex values, Q2.14, `[re, im]`).
 pub type Taps = [[i16; 2]; TAPS];
@@ -236,9 +253,14 @@ pub mod features {
     /// [`super::capture::seq`]; a sum register's READ is answered in 3
     /// symbol clocks, the readback keeping its last value until then.
     pub const SUMS_SEQ: u32 = 64;
+    /// The latched training sums of each frame also leave in the `Slots`
+    /// stream, a sums block after its frame's status block (`Slots`
+    /// format 2, [`crate::slots::SumsBlock`]; module documentation, "Sums
+    /// in the stream").
+    pub const SUMS_STREAM: u32 = 128;
     /// Every flag this host knows.
     pub const ALL: u32 =
-        TAPS | SUMS | CONSTELLATION | N0 | SUMS_CAPTURE | DECODER_HEALTH | SUMS_SEQ;
+        TAPS | SUMS | CONSTELLATION | N0 | SUMS_CAPTURE | DECODER_HEALTH | SUMS_SEQ | SUMS_STREAM;
     /// Bits 15–8: the LDPC decoder's iteration limit.
     pub fn ldpc_limit(f: u32) -> u32 {
         (f >> 8) & 0xFF
@@ -596,7 +618,7 @@ mod tests {
         let w = capture::VALID | capture::NO_LAYOUT | 0xA5 << 8;
         assert_eq!(capture::seq(w), 0xA5);
         assert_eq!(w & capture::ARMED, 0);
-        assert_eq!(features::ALL, 0x7F);
+        assert_eq!(features::ALL, 0xFF);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! The `Slots` boundary, format version 1: what leaves the radio when the
+//! The `Slots` boundary, format version 2: what leaves the radio when the
 //! whole ISDB-S3 receive chain runs in its FPGA (docs/plans/isdbs3-fpga-rx.md
 //! "Boundary"; the chain's model is `isdbs3_phy::chain`). A stream of
 //! 16-bit little-endian words in blocks with the `Symbols` framing
@@ -9,7 +9,7 @@
 //! | Word | Content |
 //! |---|---|
 //! | 0, 1 | sync: `0x1ACF`, `0xFC1D` |
-//! | 2 | bits 0–3: `0xF` (the `Slots` marker); 4–7: block type ([`BlockType`]); 8–11: `Slots` format version ([`SLOTS_VERSION`] = 1); 12–15: flags (0) |
+//! | 2 | bits 0–3: `0xF` (the `Slots` marker); 4–7: block type ([`BlockType`]); 8–11: `Slots` format version ([`SLOTS_VERSION`] = 2 written; [`SLOTS_VERSION_MIN`] = 1 and 2 read); 12–15: flags (0) |
 //! | 3, 4 | block sequence number, 32 bits, low word first (wraps; one counter for all block types) |
 //! | 5 | payload words P |
 //! | 6, 7 | frame counter, 32 bits, low word first |
@@ -48,16 +48,57 @@
 //!   converged); w2, w3: the frame counter of the first frame its layout
 //!   applies to (frame + layout lag); then the 9 422 TMCC information bits
 //!   as decoded (§3.11) as a bit field.
-//! - **status** (type 3, once per frame, last): the fields of
+//! - **status** (type 3, once per frame, after its tmcc): the fields of
 //!   [`Status`] in the order of its definition, each as the words given
 //!   there (signed values two's complement, 32-bit values low word
 //!   first).
+//! - **sums** (type 4, version 2; at most once per frame, right after its
+//!   status block: for each frame whose training sums the equaliser
+//!   latched at its end, i.e. each decoded frame, a frame with a layout;
+//!   [`SumsBlock`]): the equaliser's normal-equation sums of the frame's
+//!   6 720 training symbols, what the chain's registers `SUMS_FRAME`,
+//!   `SUMS_COUNT`, `SUMS_R` and `SUMS_P` hold
+//!   ([`crate::control::chain`]), 465 payload words (476 with the header
+//!   and trailer):
+//!
+//!   | Payload word | Content |
+//!   |---|---|
+//!   | 0, 1 | the frame summed (`SUMS_FRAME`), 32 bits, low word first: the header's frame counter |
+//!   | 2 | training symbols summed (`SUMS_COUNT`, at most 6 720) |
+//!   | 3 + 6i … 8 + 6i | sum i < 77: re bits 0–15, 16–31, 32–47, then im bits 0–15, 16–31, 32–47: each a 48-bit two's-complement integer, low word first |
+//!
+//!   Sums 0–65 are R's upper triangle `R[r][c] = Σ conj(x_r) · x_c`, r ≤
+//!   c, row by row (`r = 0: c = 0 … 10`, then `r = 1: c = 1 … 10`, …):
+//!   the order of the registers `SUMS_R + 4i`; sums 66–76 are `p[r] =
+//!   Σ conj(x_r) · d`, r = 0 … 10, the order of `SUMS_P + 4r`
+//!   ([`crate::control::chain::all_sum_registers`]).
+//!
+//! **Versions.** Version 2 is version 1 and the sums block: the slot,
+//! tmcc and status blocks are word for word the same, only header word
+//! 2's version nibble reads 2 (every block of a stream carries its
+//! writer's version). The [`Reader`] reads both. A version-1 reader (the
+//! hosts of builds 1–9) refuses every header of a version-2 stream (its
+//! version nibble), so it delivers nothing rather than a stream it cannot
+//! fully read; the host also reads the chain's version at open
+//! (`VERSION`, and the ID word's bits 11–8) and refuses an image whose
+//! format it does not read. A block whose type this reader does not know
+//! for its header's version (types 0 and 5–15, or type 4 in a version-1
+//! header), with a valid header check and CRC, is reported as
+//! [`Event::Unknown`] and skipped: it is an intact block of a writer this
+//! reader does not fully understand, not damage, so it neither counts as
+//! a loss (which would close the host's TLV assemblers for nothing) nor
+//! disappears unnoticed.
 
 use crate::format::{HEADER_WORDS, SYNC, crc32c};
 use tracing::{debug, warn};
 
-/// The `Slots` format version this module writes and reads.
-pub const SLOTS_VERSION: u16 = 1;
+/// The `Slots` format version this module writes (and the newest it
+/// reads).
+pub const SLOTS_VERSION: u16 = 2;
+/// The oldest `Slots` format version this module reads.
+pub const SLOTS_VERSION_MIN: u16 = 1;
+/// The first version with the sums block ([`BlockType::Sums`]).
+pub const SUMS_VERSION: u16 = 2;
 /// The version nibble of a `Slots` header.
 pub const SLOTS_MARKER: u16 = 0xF;
 /// Trailer words (CRC-32C).
@@ -65,25 +106,55 @@ pub const TRAILER_WORDS: usize = 2;
 /// Payload words of a block at most (the header's word 5).
 pub const MAX_PAYLOAD: usize = 4096;
 
+/// Whether this module reads `Slots` format `version`.
+pub fn readable(version: u16) -> bool {
+    (SLOTS_VERSION_MIN..=SLOTS_VERSION).contains(&version)
+}
+
 /// A block's type (header word 2, bits 4–7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockType {
     /// One slot.
-    Slot = 1,
+    Slot,
     /// One frame's TMCC.
-    Tmcc = 2,
+    Tmcc,
     /// One frame's status.
-    Status = 3,
+    Status,
+    /// One frame's training sums (version 2).
+    Sums,
+    /// A type this module does not know (its code: 0 or 5–15).
+    Unknown(u8),
 }
 
 impl BlockType {
-    fn from_code(c: u16) -> Option<Self> {
-        Some(match c {
+    /// The code in header word 2.
+    pub fn code(self) -> u16 {
+        match self {
+            Self::Slot => 1,
+            Self::Tmcc => 2,
+            Self::Status => 3,
+            Self::Sums => 4,
+            Self::Unknown(c) => u16::from(c & 0xF),
+        }
+    }
+
+    fn from_code(c: u16) -> Self {
+        match c & 0xF {
             1 => Self::Slot,
             2 => Self::Tmcc,
             3 => Self::Status,
-            _ => return None,
-        })
+            4 => Self::Sums,
+            x => Self::Unknown(u8::try_from(x).expect("4 bits")),
+        }
+    }
+
+    /// Whether `Slots` format `version` defines this type.
+    pub fn in_version(self, version: u16) -> bool {
+        match self {
+            Self::Slot | Self::Tmcc | Self::Status => true,
+            Self::Sums => version >= SUMS_VERSION,
+            Self::Unknown(_) => false,
+        }
     }
 }
 
@@ -92,6 +163,8 @@ impl BlockType {
 pub struct Header {
     /// Block type.
     pub kind: BlockType,
+    /// `Slots` format version (header word 2, bits 8–11).
+    pub version: u16,
     /// Sequence number.
     pub seq: u32,
     /// Payload words.
@@ -106,7 +179,7 @@ impl Header {
         let mut w = [
             SYNC[0],
             SYNC[1],
-            SLOTS_MARKER | (self.kind as u16) << 4 | SLOTS_VERSION << 8,
+            SLOTS_MARKER | self.kind.code() << 4 | (self.version & 0xF) << 8,
             lo(self.seq),
             hi(self.seq),
             self.payload,
@@ -119,15 +192,17 @@ impl Header {
         w
     }
 
-    /// Parse header words: `None` unless the sync, the marker, a known
-    /// type, version 1, zero flags, a payload of at most
-    /// [`MAX_PAYLOAD`] words and the check all hold.
+    /// Parse header words: `None` unless the sync, the marker, a version
+    /// this module reads ([`readable`]), zero flags, a payload of at most
+    /// [`MAX_PAYLOAD`] words and the check all hold. Any type code is
+    /// taken ([`BlockType::Unknown`] for one this module does not know).
     pub fn parse(w: &[u16]) -> Option<Self> {
         if w.len() < HEADER_WORDS || w[0] != SYNC[0] || w[1] != SYNC[1] {
             return None;
         }
+        let version = (w[2] >> 8) & 0xF;
         if w[2] & 0xF != SLOTS_MARKER
-            || (w[2] >> 8) & 0xF != SLOTS_VERSION
+            || !readable(version)
             || w[2] >> 12 != 0
             || usize::from(w[5]) > MAX_PAYLOAD
             || w[2..HEADER_WORDS]
@@ -138,7 +213,8 @@ impl Header {
             return None;
         }
         Some(Self {
-            kind: BlockType::from_code((w[2] >> 4) & 0xF)?,
+            kind: BlockType::from_code((w[2] >> 4) & 0xF),
+            version,
             seq: u32::from(w[3]) | u32::from(w[4]) << 16,
             payload: w[5],
             frame: u32::from(w[6]) | u32::from(w[7]) << 16,
@@ -238,6 +314,74 @@ pub struct TmccBlock {
 
 /// Information bits of a TMCC block.
 pub const TMCC_BITS: usize = 9_422;
+
+/// Complex sums in a sums block: R's 66 upper-triangle entries and p's
+/// 11 ([`crate::control::chain::R_ENTRIES`], [`crate::control::chain::TAPS`]).
+pub const SUMS: usize = crate::control::chain::R_ENTRIES + crate::control::chain::TAPS;
+/// Payload words of a sums block: the frame (2), the count (1) and 6 per
+/// complex sum.
+pub const SUMS_PAYLOAD: usize = 3 + 6 * SUMS;
+
+/// One sums block (version 2): a frame's training sums as the chain
+/// latched them at its end (module documentation, "sums"; the registers
+/// of [`crate::control::chain`] hold the same values).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SumsBlock {
+    /// Frame counter (header): the frame whose status block it follows.
+    pub frame: u32,
+    /// The frame summed (payload words 0, 1; `SUMS_FRAME`): the same as
+    /// `frame` from the chain, kept as sent.
+    pub sums_frame: u32,
+    /// Training symbols summed (`SUMS_COUNT`).
+    pub count: u16,
+    /// `R[r][c]`, r ≤ c, row by row (66 complex `[re, im]`, 48-bit two's
+    /// complement: values outside ±2⁴⁷ are written truncated to 48 bits).
+    pub r: Vec<[i64; 2]>,
+    /// `p[r]` (11 complex, as `r`).
+    pub p: Vec<[i64; 2]>,
+}
+
+impl SumsBlock {
+    /// The sums as the host's slow loop takes them (the registers' view,
+    /// [`crate::control::chain::sums_from_words`]).
+    pub fn to_training(&self) -> crate::control::chain::TrainingSums {
+        crate::control::chain::TrainingSums {
+            frame: self.sums_frame,
+            count: u32::from(self.count),
+            r: self.r.clone(),
+            p: self.p.clone(),
+        }
+    }
+
+    /// The block of `t` (its frame in the header too); `None` when `t`
+    /// does not have 66 + 11 sums or its count does not fit 16 bits.
+    pub fn from_training(t: &crate::control::chain::TrainingSums) -> Option<Self> {
+        (t.r.len() == crate::control::chain::R_ENTRIES && t.p.len() == crate::control::chain::TAPS)
+            .then_some(())?;
+        Some(Self {
+            frame: t.frame,
+            sums_frame: t.frame,
+            count: u16::try_from(t.count).ok()?,
+            r: t.r.clone(),
+            p: t.p.clone(),
+        })
+    }
+}
+
+/// The three 16-bit words of a 48-bit two's-complement value, low first.
+fn w48(out: &mut Vec<u16>, v: i64) {
+    for k in 0..3 {
+        // 16-bit pieces of the low 48 bits: truncation is the value
+        #[allow(clippy::cast_possible_truncation)]
+        out.push((v >> (16 * k)) as u16);
+    }
+}
+
+/// [`w48`] inverted: the value sign-extended from bit 47.
+fn r48(w: &[u16]) -> i64 {
+    let u = u64::from(w[0]) | u64::from(w[1]) << 16 | u64::from(w[2]) << 32;
+    (u << 16).cast_signed() >> 16
+}
 
 /// One status block: the chain's state at a frame's end. Each field's
 /// words are given (s: two's complement).
@@ -445,6 +589,8 @@ pub enum Block {
     Tmcc(TmccBlock),
     /// A status.
     Status(Box<Status>),
+    /// A frame's training sums (version 2).
+    Sums(Box<SumsBlock>),
 }
 
 impl Block {
@@ -454,14 +600,17 @@ impl Block {
             Self::Slot(s) => s.frame,
             Self::Tmcc(t) => t.frame,
             Self::Status(s) => s.frame,
+            Self::Sums(s) => s.frame,
         }
     }
 
-    fn kind(&self) -> BlockType {
+    /// Its type.
+    pub fn kind(&self) -> BlockType {
         match self {
             Self::Slot(_) => BlockType::Slot,
             Self::Tmcc(_) => BlockType::Tmcc,
             Self::Status(_) => BlockType::Status,
+            Self::Sums(_) => BlockType::Sums,
         }
     }
 
@@ -491,6 +640,14 @@ impl Block {
                 pack_bits(&t.bits, &mut o);
             }
             Self::Status(s) => o = s.payload(),
+            Self::Sums(s) => {
+                w32(&mut o, s.sums_frame);
+                o.push(s.count);
+                for v in s.r.iter().chain(&s.p) {
+                    w48(&mut o, v[0]);
+                    w48(&mut o, v[1]);
+                }
+            }
         }
         o
     }
@@ -537,6 +694,24 @@ impl Block {
                 })
             }
             BlockType::Status => Self::Status(Box::new(Status::parse(h.frame, p)?)),
+            BlockType::Sums => {
+                if p.len() != SUMS_PAYLOAD {
+                    return None;
+                }
+                let v: Vec<[i64; 2]> = p[3..]
+                    .chunks(6)
+                    .map(|c| [r48(&c[..3]), r48(&c[3..])])
+                    .collect();
+                let nr = crate::control::chain::R_ENTRIES;
+                Self::Sums(Box::new(SumsBlock {
+                    frame: h.frame,
+                    sums_frame: u32::from(p[0]) | u32::from(p[1]) << 16,
+                    count: p[2],
+                    r: v[..nr].to_vec(),
+                    p: v[nr..].to_vec(),
+                }))
+            }
+            BlockType::Unknown(_) => return None,
         })
     }
 }
@@ -550,15 +725,42 @@ pub fn slot_bits(c: u8) -> Option<usize> {
 }
 
 /// Writes blocks as words, one sequence number per block.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Writer {
     seq: u32,
+    version: u16,
+}
+
+impl Default for Writer {
+    /// [`Writer::new`].
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Writer {
-    /// A writer at sequence 0.
+    /// A writer of format [`SLOTS_VERSION`] at sequence 0.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            seq: 0,
+            version: SLOTS_VERSION,
+        }
+    }
+
+    /// A writer of format `version` at sequence 0 (version 1: what the
+    /// images of builds 1–9 send, for tests of a host that reads both).
+    ///
+    /// # Panics
+    ///
+    /// Unless [`readable`]`(version)`.
+    pub fn with_version(version: u16) -> Self {
+        assert!(readable(version), "Slots format {version}");
+        Self { seq: 0, version }
+    }
+
+    /// The format version it writes.
+    pub fn version(&self) -> u16 {
+        self.version
     }
 
     /// The next block's sequence number.
@@ -571,12 +773,20 @@ impl Writer {
     /// # Panics
     ///
     /// If the payload is longer than [`MAX_PAYLOAD`] words (a slot's
-    /// bits are at most 40 392 + 176: 2 536 words).
+    /// bits are at most 40 392 + 176: 2 536 words), or the writer's
+    /// version has no such block (a sums block in version 1).
     pub fn write(&mut self, b: &Block, out: &mut Vec<u16>) {
         let p = b.payload();
         assert!(p.len() <= MAX_PAYLOAD, "payload of {} words", p.len());
+        assert!(
+            b.kind().in_version(self.version),
+            "a {:?} block in Slots format {}",
+            b.kind(),
+            self.version
+        );
         let h = Header {
             kind: b.kind(),
+            version: self.version,
             seq: self.seq,
             payload: u16::try_from(p.len()).expect("≤ 4 096"),
             frame: b.frame(),
@@ -613,6 +823,21 @@ pub enum Event {
     Truncated {
         /// Words after the last whole block.
         words: u64,
+    },
+    /// An intact block (header check and CRC) of a type this reader does
+    /// not know for its header's version (module documentation,
+    /// "Versions"): skipped, its sequence number taken (not a loss).
+    Unknown {
+        /// Its sequence number.
+        seq: u32,
+        /// Its type code (header word 2, bits 4–7).
+        kind: u16,
+        /// Its header's version.
+        version: u16,
+        /// Its frame counter.
+        frame: u32,
+        /// Its payload words.
+        payload: u16,
     },
 }
 
@@ -670,12 +895,31 @@ impl Reader {
                 }
                 let p = &avail[HEADER_WORDS..len - TRAILER_WORDS];
                 let c = crc32c(h.seq, p);
-                if avail[len - 2] == lo(c)
-                    && avail[len - 1] == hi(c)
-                    && let Some(b) = Block::parse(&h, p, &slot_bits)
-                {
-                    self.deliver(h, b, len, out);
-                    continue;
+                if avail[len - 2] == lo(c) && avail[len - 1] == hi(c) {
+                    if !h.kind.in_version(h.version) {
+                        let e = Event::Unknown {
+                            seq: h.seq,
+                            kind: h.kind.code(),
+                            version: h.version,
+                            frame: h.frame,
+                            payload: h.payload,
+                        };
+                        debug!(
+                            seq = h.seq,
+                            kind = h.kind.code(),
+                            version = h.version,
+                            "slots block {} of type {} unknown in format {}: skipped",
+                            h.seq,
+                            h.kind.code(),
+                            h.version
+                        );
+                        self.deliver(h, e, len, out);
+                        continue;
+                    }
+                    if let Some(block) = Block::parse(&h, p, &slot_bits) {
+                        self.deliver(h, Event::Block { seq: h.seq, block }, len, out);
+                        continue;
+                    }
                 }
             }
             let next = avail[1..]
@@ -691,7 +935,9 @@ impl Reader {
         }
     }
 
-    fn deliver(&mut self, h: Header, block: Block, len: usize, out: &mut Vec<Event>) {
+    /// `e` (a block, or an unknown one) for the block of header `h` and
+    /// `len` words, after the loss its sequence number shows.
+    fn deliver(&mut self, h: Header, e: Event, len: usize, out: &mut Vec<Event>) {
         let missing = self
             .expect_seq
             .map_or(0, |s| u64::from(h.seq.wrapping_sub(s)));
@@ -718,7 +964,7 @@ impl Reader {
             });
             self.skipped = 0;
         }
-        out.push(Event::Block { seq: h.seq, block });
+        out.push(e);
         self.expect_seq = Some(h.seq.wrapping_add(1));
         self.pos += len;
     }
@@ -789,6 +1035,7 @@ mod tests {
     fn spec_header_layout() {
         let h = Header {
             kind: BlockType::Slot,
+            version: 1,
             seq: 0x1234_5678,
             payload: 2_163,
             frame: 0x0001_0002,
@@ -799,6 +1046,242 @@ mod tests {
         assert_eq!(Header::parse(&w), Some(h));
         // a Symbols reader refuses it (version nibble 15)
         assert!(crate::format::Header::parse(&w).is_none());
+        // version 2: only the version nibble (and the check) differ
+        let h2 = Header {
+            kind: BlockType::Sums,
+            version: 2,
+            ..h
+        };
+        let w2 = h2.words();
+        assert_eq!(&w2[..3], &[0x1ACF, 0xFC1D, 0x024F]);
+        assert_eq!(Header::parse(&w2), Some(h2));
+        assert!(crate::format::Header::parse(&w2).is_none());
+        // versions 0 and 3: not a header this reader reads
+        for v in [0, 3, 15] {
+            let w3 = Header { version: v, ..h }.words();
+            assert_eq!(Header::parse(&w3), None, "version {v}");
+        }
+    }
+
+    /// Sums with every boundary of the 48-bit range, and a pattern that
+    /// tells the entries apart.
+    fn sums(frame: u32, seed: i64) -> SumsBlock {
+        let v = |i: usize, c: i64| {
+            let i = i64::try_from(i).unwrap();
+            match i {
+                0 => [(1 << 47) - 1, -(1 << 47)],
+                1 => [-1, 0],
+                _ => [
+                    (seed * 7_919 + i * 1_000_003 + c) % (1 << 46),
+                    -(i * 65_537) - seed,
+                ],
+            }
+        };
+        SumsBlock {
+            frame,
+            sums_frame: frame,
+            count: 6_720,
+            r: (0..66).map(|i| v(i, 1)).collect(),
+            p: (0..11).map(|i| v(i + 66, 2)).collect(),
+        }
+    }
+
+    /// The sums block's words as the module documentation gives them: the
+    /// frame, the count, then each sum's re and im as three words, low
+    /// first, R's entries in register order then p's; 465 payload words,
+    /// 476 in all. Each sum's words are its registers' (`SUMS_R + 4i`:
+    /// the low 32 bits, then the high 16 sign-extended).
+    #[test]
+    fn spec_sums_block_layout() {
+        let s = sums(0x0001_0005, 3);
+        let mut words = Vec::new();
+        Writer::new().write(&Block::Sums(Box::new(s.clone())), &mut words);
+        assert_eq!(words.len(), 476);
+        let h = Header::parse(&words).unwrap();
+        assert_eq!(
+            (h.kind, h.version, h.payload, h.frame),
+            (BlockType::Sums, 2, 465, 0x0001_0005)
+        );
+        let p = &words[HEADER_WORDS..HEADER_WORDS + 465];
+        assert_eq!(&p[..3], &[0x0005, 0x0001, 6_720]);
+        // R[0][0] = 2^47 - 1, -2^47; R[0][1] = -1, 0
+        assert_eq!(&p[3..9], &[0xFFFF, 0xFFFF, 0x7FFF, 0x0000, 0x0000, 0x8000]);
+        assert_eq!(&p[9..15], &[0xFFFF, 0xFFFF, 0xFFFF, 0, 0, 0]);
+        // the registers' words of the same sums, entry by entry
+        let reg = crate::control::chain::sums_to_words(&s.to_training());
+        assert_eq!(reg.len(), 4 * SUMS);
+        for (i, r) in reg.chunks(4).enumerate() {
+            let w = &p[3 + 6 * i..9 + 6 * i];
+            for (c, half) in [(0, &w[..3]), (1, &w[3..])] {
+                let lo = u32::from(half[0]) | u32::from(half[1]) << 16;
+                let hi = i32::from(half[2].cast_signed()).cast_unsigned();
+                assert_eq!([lo, hi], [r[2 * c], r[2 * c + 1]], "sum {i}, component {c}");
+            }
+        }
+        // read back: the same block, and the registers' view of it
+        let mut r = Reader::new();
+        let mut ev = Vec::new();
+        r.feed(&words, &mut ev);
+        assert_eq!(
+            ev,
+            vec![Event::Block {
+                seq: 0,
+                block: Block::Sums(Box::new(s.clone()))
+            }]
+        );
+        let t = s.to_training();
+        assert_eq!(
+            t,
+            crate::control::chain::sums_from_words(s.sums_frame, 6_720, &reg)
+        );
+        assert_eq!(SumsBlock::from_training(&t), Some(s));
+        assert_eq!(
+            SumsBlock::from_training(&crate::control::chain::TrainingSums {
+                count: 70_000,
+                ..t.clone()
+            }),
+            None
+        );
+        assert_eq!(
+            SumsBlock::from_training(&crate::control::chain::TrainingSums { p: Vec::new(), ..t }),
+            None
+        );
+    }
+
+    /// A version-1 stream (the images of builds 1–9) reads as before;
+    /// a version-2 stream's slot, tmcc and status blocks are the same
+    /// words but for the version nibble and the check.
+    #[test]
+    fn version_1_and_2_streams_read_alike() {
+        let blocks = [slot(4, 0, 7, 9), status(), slot(5, 1, 7, 3)];
+        let (mut w1, mut w2) = (Writer::with_version(1), Writer::new());
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        for x in &blocks {
+            w1.write(x, &mut a);
+            w2.write(x, &mut b);
+        }
+        assert_eq!((w1.version(), w2.version()), (1, 2));
+        assert_eq!(a.len(), b.len());
+        let differ: Vec<usize> = (0..a.len()).filter(|&i| a[i] != b[i]).collect();
+        // per block: word 2 (the version) and word 8 (the check)
+        assert_eq!(differ.len(), 2 * blocks.len());
+        for words in [&a, &b] {
+            let mut r = Reader::new();
+            let mut ev = Vec::new();
+            r.feed(words, &mut ev);
+            r.finish(&mut ev);
+            let got: Vec<Block> = ev
+                .into_iter()
+                .map(|e| match e {
+                    Event::Block { block, .. } => block,
+                    e => panic!("{e:?}"),
+                })
+                .collect();
+            assert_eq!(got, blocks);
+        }
+    }
+
+    /// An intact block of a type the reader does not know for its
+    /// version (type 4 in a version-1 header, type 7) is reported and
+    /// skipped: no loss, the blocks around it delivered.
+    #[test]
+    fn an_unknown_block_is_reported_not_lost() {
+        let mut w = Writer::with_version(1);
+        let mut words = Vec::new();
+        w.write(&slot(1, 0, 7, 1), &mut words);
+        // hand-made: a sums payload in a version-1 header (seq 1), then
+        // a type-7 block in a version-2 header (seq 2)
+        let mut sw = Vec::new();
+        Writer::new().write(&Block::Sums(Box::new(sums(1, 0))), &mut sw);
+        let pay = sw[HEADER_WORDS..HEADER_WORDS + SUMS_PAYLOAD].to_vec();
+        for (seq, kind, version) in [(1u32, BlockType::Sums, 1u16), (2, BlockType::Unknown(7), 2)] {
+            let h = Header {
+                kind,
+                version,
+                seq,
+                payload: u16::try_from(pay.len()).unwrap(),
+                frame: 1,
+            };
+            words.extend_from_slice(&h.words());
+            words.extend_from_slice(&pay);
+            let c = crc32c(seq, &pay);
+            words.extend_from_slice(&[lo(c), hi(c)]);
+        }
+        words.extend_from_slice(&slot_at(3));
+        let mut r = Reader::new();
+        let mut ev = Vec::new();
+        r.feed(&words, &mut ev);
+        r.finish(&mut ev);
+        assert!(matches!(ev[0], Event::Block { seq: 0, .. }));
+        assert_eq!(
+            ev[1],
+            Event::Unknown {
+                seq: 1,
+                kind: 4,
+                version: 1,
+                frame: 1,
+                payload: 465
+            }
+        );
+        assert!(matches!(
+            ev[2],
+            Event::Unknown {
+                seq: 2,
+                kind: 7,
+                version: 2,
+                ..
+            }
+        ));
+        assert!(matches!(ev[3], Event::Block { seq: 3, .. }));
+        assert_eq!(ev.len(), 4);
+    }
+
+    /// A slot block's words with sequence number `seq`.
+    fn slot_at(seq: u32) -> Vec<u16> {
+        let mut w = Writer::new();
+        let mut words = Vec::new();
+        for _ in 0..=seq {
+            words.clear();
+            w.write(&slot(1, 1, 7, 2), &mut words);
+        }
+        words
+    }
+
+    /// A version-1 writer has no sums block.
+    #[test]
+    #[should_panic(expected = "Slots format 1")]
+    fn a_version_1_writer_refuses_a_sums_block() {
+        Writer::with_version(1).write(&Block::Sums(Box::new(sums(0, 0))), &mut Vec::new());
+    }
+
+    /// A sums block of the wrong length is malformed: with a valid CRC it
+    /// is still not delivered (skipped as damage, a loss of one block).
+    #[test]
+    fn a_short_sums_block_is_malformed() {
+        let mut words = Vec::new();
+        let mut w = Writer::new();
+        w.write(&slot(1, 0, 7, 1), &mut words);
+        let pay = vec![0u16; SUMS_PAYLOAD - 6];
+        let h = Header {
+            kind: BlockType::Sums,
+            version: 2,
+            seq: 1,
+            payload: u16::try_from(pay.len()).unwrap(),
+            frame: 1,
+        };
+        words.extend_from_slice(&h.words());
+        words.extend_from_slice(&pay);
+        let c = crc32c(1, &pay);
+        words.extend_from_slice(&[lo(c), hi(c)]);
+        words.extend_from_slice(&slot_at(2));
+        let mut r = Reader::new();
+        let mut ev = Vec::new();
+        r.feed(&words, &mut ev);
+        r.finish(&mut ev);
+        assert!(matches!(ev[0], Event::Block { seq: 0, .. }));
+        assert!(matches!(ev[1], Event::Loss { blocks: 1, .. }));
+        assert!(matches!(ev[2], Event::Block { seq: 2, .. }));
+        assert_eq!(ev.len(), 3);
     }
 
     #[test]
@@ -847,8 +1330,24 @@ mod tests {
         ) {
             let mut blocks = Vec::new();
             for k in 0..n {
-                let b = match (seed >> k) % 4 {
+                let b = match (seed >> k) % 5 {
                     0 => status(),
+                    4 => {
+                        // random 48-bit sums
+                        let mut x = seed ^ (k as u64) << 32;
+                        let mut v = || {
+                            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                            (x.cast_signed() >> 16, (x << 16).cast_signed() >> 16)
+                        };
+                        let mut c = || { let (a, b) = v(); [a, b] };
+                        Block::Sums(Box::new(SumsBlock {
+                            frame: u32::try_from(k).unwrap(),
+                            sums_frame: u32::try_from(k).unwrap(),
+                            count: u16::try_from(k * 611).unwrap(),
+                            r: (0..66).map(|_| c()).collect(),
+                            p: (0..11).map(|_| c()).collect(),
+                        }))
+                    }
                     1 => Block::Tmcc(TmccBlock {
                         frame: u32::try_from(k).unwrap(),
                         bch: Some(1),
@@ -898,7 +1397,7 @@ mod tests {
                 _ => None,
             }).collect();
             let want: Vec<&Block> = blocks.iter().enumerate().filter(|(i, _)| Some(*i) != dropped).map(|(_, b)| b).collect();
-            prop_assert_eq!(got, want);
+            prop_assert_eq!(&got, &want);
             let lost: u64 = ev.iter().map(|e| match e {
                 Event::Loss { blocks, .. } => *blocks,
                 _ => 0,
@@ -908,6 +1407,16 @@ mod tests {
             // stream joined there)
             let expect = u64::from(dropped.is_some_and(|d| d > 0 && d + 1 < n));
             prop_assert_eq!(lost, expect);
+            // encode(decode(x)) == x: the blocks read written again give
+            // the same words (no block removed: the sequence numbers run on)
+            if dropped.is_none() {
+                let mut w2 = Writer::new();
+                let mut again = Vec::new();
+                for b in &got {
+                    w2.write(b, &mut again);
+                }
+                prop_assert_eq!(again, words);
+            }
         }
 
         /// A damaged word is never delivered: the block is dropped (and
