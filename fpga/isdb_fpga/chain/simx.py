@@ -23,6 +23,21 @@ fpga/build/verilator/. `simv.available()` says whether it can be used.
 sets: `$FPGA_SIM` if it names one, else verilator where it is available,
 else cxxrtl where it is, else none (those tests skip).
 
+The hash seed: Amaranth collects a design's implicit clock domains in sets,
+so with more than one of them the RTLIL's port order, and with it the
+library's key, follows Python's hash seed (`tools/sim_hashseed.py`). The
+`fpga:*` tasks that simulate set PYTHONHASHSEED=0, so test workers, later
+runs and CI share one library per design; a direct command needs the same
+variable before Python starts, or it builds its own library.
+
+FPGA_SIM_PROGRESS=1 (the compiled backends): the elaboration, the cache's
+answer and, every 10 s of a `run`, its records, drain cycles and cycles per
+second on stderr. `run` then hands the harness `PROGRESS_CHUNK` records or
+drain cycles at a time, the same clock sequence (harness.cc: a call ends
+between two cycles, with `valid` low; only a record's wait for `ready`
+counts against the stall limit, and it stays inside one call). A record
+that blocks still spends its whole stall limit inside one native call.
+
 Why: the chain's vector sets are long (chain-1-sync: 2.24 M symbols,
 chain-6-chain: 5.59 M) and the Python simulator runs the stage-1 block at
 about 6 500 cycles per second against about 1 M for the compiled ones
@@ -63,6 +78,7 @@ import shutil
 import fcntl
 import subprocess
 import sys
+import time
 
 from amaranth.back import rtlil
 from amaranth.sim import Simulator
@@ -74,6 +90,8 @@ BUILD = os.path.join(HERE, "..", "..", "build", "cxxrtl")
 CXXFLAGS = ["-O1", "-std=c++17", "-shared", "-fPIC", "-w"]
 # the related clocks the engine drives (domain: edges per symbol clock)
 CLOCKS = {"fast": 4, "ldpc": 5}
+# FPGA_SIM_PROGRESS=1: the records or drain cycles of one native call
+PROGRESS_CHUNK = 10_000
 
 
 def yosys_path():
@@ -127,14 +145,28 @@ def _signame(s):
     return s.name
 
 
+def _progress():
+    return os.environ.get("FPGA_SIM_PROGRESS") == "1"
+
+
+def _report(message):
+    print(f"simulation {message}", file=sys.stderr, flush=True)
+
+
 class _Cxx:
     build_dir = BUILD
 
     def __init__(self, dut, ports, tag, clocks=CLOCKS):
+        started = time.monotonic()
+        if _progress():
+            _report(f"{tag}: elaborating")
         il = rtlil.convert(dut, name="top", ports=list(ports.values()))
         key = hashlib.sha256(self._key(il)).hexdigest()[:16]
         os.makedirs(self.build_dir, exist_ok=True)
         so = os.path.join(self.build_dir, f"{tag}-{key}.so")
+        if _progress():
+            _report(f"{tag}: {'cache hit' if os.path.exists(so) else 'build or wait'} "
+                    f"{os.path.basename(so)} after {time.monotonic() - started:.1f} s")
         if not os.path.exists(so):
             # One builder per design at a time: parallel test workers (xdist)
             # may want the same library, and the write_cxxrtl input and output
@@ -220,12 +252,48 @@ class _Cxx:
         fl = (ctypes.c_int * k)(*[self.idx[f] for f in fields])
         gp = (ctypes.c_int32 * n)(*gaps) if gaps is not None else None
         self.lib.h_stall_limit(self.stall_limit)
-        c = self.lib.h_run(self.h, self.idx[valid], self.idx[ready] if ready else -1, fl, k, rec, n,
-                           gp, tail)
+        v, r = self.idx[valid], self.idx[ready] if ready else -1
+        if _progress():
+            return self._run_chunks(v, r, fl, k, rec, n, gp, tail)
+        c = self.lib.h_run(self.h, v, r, fl, k, rec, n, gp, tail)
         self.stalled = self.lib.h_stalled()
         if self.stalled >= 0:
             raise RuntimeError(f"record {self.stalled} not accepted within {self.stall_limit} cycles")
         return c
+
+    def _run_chunks(self, v, r, fl, k, rec, n, gp, tail):
+        """`run`'s native call in pieces, with reports between them (the
+        module's docstring: the same clock sequence). `stalled` stays the
+        record's index in the whole run."""
+        int64, int32 = ctypes.c_int64, ctypes.c_int32
+        started = reported = time.monotonic()
+        cycles = 0
+
+        def report(done, drained):
+            nonlocal reported
+            now = time.monotonic()
+            if now - reported >= 10 or (done == n and drained == tail):
+                _report(f"run: {done}/{n} records, {drained}/{tail} drain cycles, {cycles} cycles, "
+                        f"{cycles / max(now - started, 1e-9):.0f} cycles/s")
+                reported = now
+
+        for at in range(0, n, PROGRESS_CHUNK):
+            count = min(PROGRESS_CHUNK, n - at)
+            rp = ctypes.cast(ctypes.byref(rec, at * k * ctypes.sizeof(int64)), ctypes.POINTER(int64))
+            gaps = (None if gp is None else
+                    ctypes.cast(ctypes.byref(gp, at * ctypes.sizeof(int32)), ctypes.POINTER(int32)))
+            cycles += self.lib.h_run(self.h, v, r, fl, k, rp, count, gaps, 0)
+            stalled = self.lib.h_stalled()
+            self.stalled = at + stalled if stalled >= 0 else -1
+            if self.stalled >= 0:
+                raise RuntimeError(f"record {self.stalled} not accepted within {self.stall_limit} cycles")
+            report(at + count, 0)
+        self.stalled = -1
+        for at in range(0, tail, PROGRESS_CHUNK):
+            count = min(PROGRESS_CHUNK, tail - at)
+            cycles += self.lib.h_run(self.h, v, r, fl, k, rec, 0, None, count)
+            report(n, at + count)
+        return cycles
 
     def close(self):
         if self.h:
