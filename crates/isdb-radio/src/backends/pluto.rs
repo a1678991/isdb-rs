@@ -3199,7 +3199,7 @@ mod tests {
         );
         let s = tx_settings(&cfg(
             &[
-                ("uri", "ip:192.0.2.30"),
+                ("uri", "ip:<PLUTO_IP>"),
                 ("channel", "2"),
                 ("buffer", "65536"),
                 ("kbuffers", "8"),
@@ -3208,7 +3208,7 @@ mod tests {
             &[],
         ))
         .unwrap();
-        assert_eq!(s.dev.uri(), "ip:192.0.2.30");
+        assert_eq!(s.dev.uri(), "ip:<PLUTO_IP>");
         assert_eq!(s.dev.stream_channels(), ["voltage2", "voltage3"]);
         assert_eq!(s.dev.phy_channel(), "voltage1");
         assert_eq!((s.dev.buffer, s.dev.loopback), (65_536, true));
@@ -3331,7 +3331,7 @@ mod tests {
     #[test]
     fn capture_arguments_and_limits() {
         let limit = |args: &[(&str, &str)]| Pluto.capture_limit(&cfg(args, &[]));
-        let c = cfg(&[("uri", "ip:192.0.2.30"), ("recorder", "maia")], &[]);
+        let c = cfg(&[("uri", "ip:<PLUTO_IP>"), ("recorder", "maia")], &[]);
         let s = rx_settings_for(&c, Dir::Capture).unwrap();
         assert_eq!((s.dev.recorder, s.dev.bits), (Recorder::Maia, 16));
         let (n, why) = Pluto.capture_limit(&c).unwrap().unwrap();
@@ -3425,7 +3425,7 @@ mod tests {
         assert!(rx_settings(&cfg(&[("bits", "8")], &[])).is_err());
         let d = Pluto.describe_capture(&c).unwrap();
         assert!(
-            d.contains("recorder     maia-sdr recorder at http://192.0.2.30/"),
+            d.contains("recorder     maia-sdr recorder at http://<PLUTO_IP>/"),
             "{d}"
         );
         assert!(
@@ -3742,9 +3742,9 @@ mod tests {
     #[test]
     fn descriptions() {
         let d = Pluto
-            .describe_tx(&cfg(&[("uri", "ip:192.0.2.30")], &[]), &OPTS)
+            .describe_tx(&cfg(&[("uri", "ip:<PLUTO_IP>")], &[]), &OPTS)
             .unwrap();
-        assert!(d.contains("device       Pluto ip:192.0.2.30, TX1"), "{d}");
+        assert!(d.contains("device       Pluto ip:<PLUTO_IP>, TX1"), "{d}");
         assert!(
             d.contains("sample rate 512000000/63 Hz = 8.126984 MHz"),
             "{d}"
@@ -3768,11 +3768,11 @@ mod tests {
         assert!(Pluto.describe_tx(&cfg(&[], &[]), &o).is_err());
         let d = Pluto
             .describe_rx(&cfg(
-                &[("uri", "ip:192.0.2.30"), ("channel", "2")],
+                &[("uri", "ip:<PLUTO_IP>"), ("channel", "2")],
                 &[("gain", "40")],
             ))
             .unwrap();
-        assert!(d.contains("device       Pluto ip:192.0.2.30, RX2"), "{d}");
+        assert!(d.contains("device       Pluto ip:<PLUTO_IP>, RX2"), "{d}");
         assert!(d.contains("RX gain      manual 40 dB"), "{d}");
     }
 
@@ -3824,13 +3824,13 @@ mod tests {
         let p = tx_params();
         let d = Pluto
             .describe_tx_symbols(
-                &sat_cfg(&[("uri", "ip:192.0.2.30"), ("loopback", "on")]),
+                &sat_cfg(&[("uri", "ip:<PLUTO_IP>"), ("loopback", "on")]),
                 &SAT_OPTS,
                 &p,
             )
             .unwrap();
         for want in [
-            "device       Pluto ip:192.0.2.30, TX1",
+            "device       Pluto ip:<PLUTO_IP>, TX1",
             "sample rate 40000000/1 Hz = 40.000000 MHz",
             "TX atten     89.75 dB (maximum)",
             "nothing radiated",
