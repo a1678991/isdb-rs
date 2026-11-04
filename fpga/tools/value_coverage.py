@@ -72,6 +72,8 @@ REQUIRED = [f"chain-{i + 1}-{s}.json" for i, s in enumerate(CHAIN_STAGES)] + [
     "ldpc-4-41-layered34.json", "ldpc-5-109-layered34.json", "ldpc-6-tmcc-layered34.json",
     "ldpc-7-93-stress-layered34.json", "ldpc-8-93-trace.json", "ldpc-9-93-iter0-layered34.json",
     "ldpc-12-93-layered17.json", "ldpc-13-tmcc-layered17.json",
+] + [f"ldpc-{14 + i}-{r}-layered34.json"
+       for i, r in enumerate((49, 61, 73, 81, 89, 97, 101, 105))] + [
     "ldpcvec-py-1-toy-a.json", "ldpcvec-py-9-93-17.json", "ldpcvec-py-10-tmcc-17.json",
 ]
 
