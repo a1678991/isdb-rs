@@ -61,7 +61,7 @@ from isdb_fpga.chain import slots as fmt  # noqa: E402
 BUILD = os.path.join(os.path.dirname(__file__), "..", "build")
 
 CHAIN_STAGES = ["sync", "phase", "eq", "tmcc", "demap", "chain", "hdl", "loss", "fade", "bch",
-                "taps", "fail"]
+                "taps", "fail", "modes"]
 CHAIN_RE = re.compile(r"^chain-(rec-)?(\d+)-(" + "|".join(CHAIN_STAGES) + r")\.json$")
 LDPC_RE = re.compile(r"^(ldpc-\d+-.*|ldpcvec-py-\d+-.*)\.json$")
 
@@ -111,7 +111,8 @@ class Spec:
     bounds: dict = field(default_factory=dict)  # value -> meaning (reported when never taken)
 
 
-WHOLE = ("chain-6", "chain-7", "chain-8", "chain-9", "chain-10", "chain-11", "chain-12")
+WHOLE = ("chain-6", "chain-7", "chain-8", "chain-9", "chain-10", "chain-11", "chain-12",
+         "chain-13")
 SLOTS_PARTS = ("header", "slot", "dummy", "tmcc", "status", "sums")
 SPECS = {}
 
@@ -520,8 +521,9 @@ def _chain(V, sn, stage, d):
         V.add("eq.sums.p", sn, (_wide(c) for v in su["p"] for c in v))
         V.add("eq.solved", sn, d["solved"] or [None])
     elif stage == "tmcc":
-        # the frame's record and chain-12's noisy frame's (`noisy`)
-        for t in [d] + ([d["noisy"]] if "noisy" in d else []):
+        # the frame's record, chain-12's noisy frame's (`noisy`) and
+        # chain-14's mixed-mode frame's (`modes`)
+        for t in [d] + [d[k] for k in ("noisy", "modes") if k in d]:
             _cplx(V, "tmccst.z", sn, t["z_tmcc"])
             V.add("tmccst.soft", sn, t["soft"])
             V.one("tmccst.known", sn, t["known"])
@@ -816,23 +818,10 @@ ALLOWED = {
 # generator changes; remove an entry once a set covers it (the test fails
 # on a known gap that is covered).
 KNOWN_GAPS = {
-    "status.constellation.bpsk.*": "no status block carries learned pi/2-BPSK points: needs its "
-                                   "slots (a mixed-mode TMCC) and the frame after a decoded one",
-    "status.constellation.qpsk.*": "no learned QPSK points: needs its slots (a mixed-mode TMCC)",
-    "status.constellation.8psk.*": "no learned 8PSK points: needs its slots (a mixed-mode TMCC)",
-    "status.constellation.32apsk.*": "no learned 32APSK points: needs its slots (a mixed-mode "
-                                     "TMCC)",
-    "status.agc": "no set writes the AGC register (reset 0): needs Chain::set_agc in the "
-                  "generator and the value in the set for the bench to write REG_AGC",
-    "slot.mode": "every slot is mode 0: needs a TMCC with several transmission modes",
-    "slot.modulation": "every slot is 16APSK: needs pi/2-BPSK, QPSK, 8PSK and 32APSK slots "
-                       "(a mixed-mode TMCC)",
-    "slot.rate": "every slot is 93/120: needs the other ten rates",
-    "dummy.modulation": "a dummy carries its mode's codes: one mode, one value (as slot.mode)",
-    "dummy.rate": "a dummy carries its mode's codes: one mode, one value (as slot.rate)",
-    "tmccst.layout.mode": "the layout has one mode: needs a mixed-mode TMCC",
-    "tmccst.layout.modulation": "the layout is 16APSK only: needs a mixed-mode TMCC",
-    "tmccst.layout.rate": "the layout is 93/120 only: needs a mixed-mode TMCC",
+    "status.constellation.32apsk.*": "chain-13's modes leave 32APSK out: chain-14-apsk32 has "
+                                     "it, but the HDL fails that set (the bridge's input FIFO "
+                                     "overflows when 32APSK slots meet the TMCC burst, README "
+                                     "\"Integration\"), so the tool does not read it",
     "demap.slot.modulation": "chain-5's codewords are 16APSK only: needs a mixed-mode frame",
     "demap.slot.rate": "chain-5's codewords are 93/120 only",
     "demap.learned.*.count": "learned points only for 16APSK, the one modulation used",

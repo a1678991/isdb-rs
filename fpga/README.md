@@ -523,10 +523,18 @@ with the failure paths: in frame 1 a missed and a stray frame marker,
 frame 2 a codeword of noise that stops at the limit, 14, unconverged, 13
 errors in a converged slot's decoder output that the BCH cannot correct,
 and 13 in its TMCC word's, so frame 4 has no layout; the bench flips the
-same bits, `bch_errors` and `tmcc_errors`). chain-4-tmcc also carries
-chain-12's frame 1 as `noisy` (the TMCC stage test runs it with its
-decoder output's errors). The example's documentation gives every
-field. Sizes: 1–37 MB per file.
+same bits, `bch_errors` and `tmcc_errors`), `chain-13-modes` (six
+frames of their own with four transmission modes in one TMCC: 16APSK
+93/120, 8PSK 73/120, QPSK 61/120 and π/2-BPSK 41/120 with each
+modulation's dummy slots; frames 2 and 3 decoded, frame 3's status with
+the points learned on frame 2 for all four modulations; two AGC writes in
+`host_writes`, so frames 2 and 3 report their gains) and
+`chain-14-apsk32` (chain-13's modes with 32APSK 109/120 first, at Es/N0
+22 dB: an open HDL defect, under "Integration"). chain-4-tmcc also
+carries chain-12's frame 1 as `noisy` (the TMCC stage test runs it with
+its decoder output's errors) and chain-14's frame 2 as `modes` (a layout
+of five modes). The example's documentation gives every field. Sizes:
+1–37 MB per file.
 
 ## The ISDB-S3 chain (`SlotsRx`)
 
@@ -721,7 +729,9 @@ last whole one, so no status block had a learned n0, K, constellation or
 `taps_from` (33 entries); the window sets now decode frames 2–4,
 chain-11 changes the taps in use (32 entries) and chain-12 fails a slot's
 LDPC, a slot's BCH and a TMCC, corrects a TMCC and misses and strays a
-frame marker (20 entries; still one mode, 16APSK 93/120). It also fails
+frame marker (20 entries; still one mode, 16APSK 93/120); chain-13
+sends four transmission modes and the host's AGC writes (8 entries; the
+learned 32APSK points wait for the HDL defect chain-14 found). It also fails
 on a known gap that a set now covers, so
 the list shrinks as the generators (`chainvectors.rs`, `ldpcvectors.rs`)
 grow. The gate reads the default synthetic corpus only; the recording
@@ -880,6 +890,36 @@ are needed: not provably narrower).
   in the result FIFO for the shared unit), every block sent as the
   model's but the counts; 7 to 11 with FPGA_CHAIN_SWEEP=1. Finish stage
   (Yosys): 5 966 → 5 996 LUT, 2 937 FF unchanged.
+  (`br.tag_overflow`). One to five errors pass at any position (the
+  count and the bits as the model's); 13 (uncorrectable: Berlekamp-Massey
+  fails, no Chien search) pass; the TMCC stage bench alone (`TmccTest`,
+  own `Realign`, no `Finish`) corrects 7. So the fault is in `Finish`'s
+  TMCC path with the shared BCH unit and `Realign` (`tmcc.TmccResult`
+  with `own_align=False`) once the correction takes six or more roots.
+- **Mixed modes** (chain-13-modes, `RealDecoderChainTest.test_mixed_modes`,
+  2026-11-04): 16APSK 93/120, 8PSK 73/120, QPSK 61/120 and π/2-BPSK
+  41/120 in one TMCC with each modulation's dummy slots, the host's AGC
+  writes: bit-exact with the real decoder (the slot blocks' mode,
+  modulation and rate codes, frame 3's learned points of all four
+  modulations, the AGC in the status), the monitors quiet. **Open
+  defect** (found by chain-14-apsk32, not fixed): 32APSK slots right
+  after a frame boundary lose decoder input. B44 puts the 32APSK mode
+  first, so frame N + 1's first codewords are demapped while frame N's
+  TMCC burst takes the port's free cycles; `LdpcBridge`'s serialiser
+  spends n + 1 decoder cycles per beat (6 per 32APSK symbol at 32.6 M
+  main symbols/s, 5 per burst beat on the 7.4 M free cycles/s: about
+  233 M cycles/s against the decoder's 200 MHz), so its 64-beat input
+  FIFO overflows (monitor `br.in_fifo_overflow` from symbol clock
+  2 857 405, `in_lost` 9 631 by input symbol 2 450 000) and frame 2's
+  32APSK slots 0–5 leave unconverged at the limit (slot 2 a decoder
+  overrun), where the model converges in 1–3 iterations
+  (`test_apsk32_after_the_tmcc_burst`, an expected failure;
+  `tools/real_variant.py build/chain-14-apsk32.json --symbols 2450000`,
+  then `tools/real_blocks.py build/chain-14-apsk32.json
+  build/chain-real-got-2450000.json`). Even without the burst a 32APSK
+  stream needs 196 M of the 200 M cycles. 16APSK first (4 LLRs a beat,
+  5 cycles) passes. The 32APSK demapper itself is not yet checked by any
+  set (chain-14 fails before it can tell).
 - **A corrected slot no longer holds the decoder.** The BCH's Chien search
   took n symbol clocks (34 776 at 93/120, 3.1 slots) while the finish
   stage held the result stream, and with it a decoder bank: a few
