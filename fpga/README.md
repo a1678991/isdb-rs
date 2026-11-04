@@ -478,7 +478,7 @@ sum registers answering 3 symbol clocks after the decode with the
 previous value held, FEATURES, the CTRL bits and the ID word); on the
 host, `crates/isdb-frontend/tests/chain_registers.rs` checks every
 address, field and reset constant of `isdb_frontend::control::chain`,
-and `isdb-radio`'s `chain::regmap_tests` runs the open sequence and the
+and `isdb-radio`'s `chain::tests::regmap` runs the open sequence and the
 slow loop on its mock backend against the map's steps and the registers
 each side may write. The host writes LAYOUT_LAG at open (its map's
 `ChainOptions::layout_lag`) although this image builds lag 2 only and
