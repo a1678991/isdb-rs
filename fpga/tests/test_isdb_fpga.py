@@ -803,6 +803,24 @@ class LdpcQueueModelTest(unittest.TestCase):
         self.assertEqual(self.run_frames([f16] * 3, banks=3, limit=16, finish_hz=40e6)["overruns"], 9)
         self.assertEqual(self.run_frames([f16] * 3, banks=4, limit=16, finish_hz=40e6)["overruns"], 0)
 
+    def test_apsk32_at_the_chain_pace(self):
+        # 32APSK 109/120 (every slot valid; 4 738 cycles a pass): the queue
+        # keeps K = 3 at the default limit, also with the adjacent pairs;
+        # its input port with the TMCC burst needs 192.6 M of the 200 M
+        # cycles at n cycles a beat (the bridge since 2026-11-04), 232.6 M
+        # at n + 1 (before: chain-14's FIFO overflow); 16APSK 160 M (200 M)
+        lim = ldpc.DEFAULT_MAX_ITER
+        frame = ldpcqueue.measured_frame(long_iter=lim)
+        pairs = [lim if i in (17, 18, 61, 62) else v for i, v in enumerate(frame)]
+        for fr in (frame, pairs):
+            r = ldpcqueue.run([fr] * 3, banks=3, limit=lim, finish_hz=40e6, rate=109,
+                              tmcc_cycles=self.cpp_t)
+            self.assertEqual(r["overruns"], 0)
+        self.assertAlmostEqual(ldpcqueue.port_cycles(5) / 1e6, 192.6, delta=0.05)
+        self.assertGreater(ldpcqueue.port_cycles(5, per_beat=1), 200e6)
+        self.assertAlmostEqual(ldpcqueue.port_cycles(4) / 1e6, 160.0, delta=0.05)
+        self.assertAlmostEqual(ldpcqueue.port_cycles(5, burst=False) / 1e6, 163.0, delta=0.05)
+
     def test_all_at_the_limit_overruns_and_is_counted(self):
         r = self.run_frames([[ldpc.DEFAULT_MAX_ITER + 1] * 120] * 2, banks=3)
         self.assertGreater(r["overruns"], 60)

@@ -39,6 +39,13 @@ chain's pace: four values per beat on the port cycles the demapper leaves
 (`CHAIN_FREE`): 1.07 ms, 3.9 slots. `result_fifo`: the chain's result
 FIFO (chain/results.py) takes the next stream while the finish stage
 formats the slot block (no gap), as long as the stage keeps up on average.
+
+`port_cycles`: the decoder cycles per second the input port asks of the
+bridge (`chain/ldpc_if.py`, one LLR per decoder cycle): the demapper's
+beats, one per main symbol of `bits` LLRs, and while a TMCC burst runs
+its beats of four on the cycles the demapper leaves; a beat of n values
+costs n + `per_beat` cycles (the serialiser: 1 before 2026-11-04, 0 since).
+The queue model above assumes the bridge keeps that pace.
 """
 
 import math
@@ -52,7 +59,8 @@ TMCC_SENT = 31_680
 DRAIN = 40  # the write pipeline's drain and the result's hand-over, about
 FINISH_FORMAT = 20 + 3 + 2 * 2174 + 9  # finish.py, a 93/120 slot block
 BURST_LANES = 4  # tmcc.py: TMCC values per port beat
-CHAIN_FREE = 1 - 33.7561e6 / 40e6 * 8976 / 9296  # the port cycles the demapper leaves
+MAIN_RATE = 33.7561e6 * 8976 / 9296  # main symbols per second (the front end's rate)
+CHAIN_FREE = 1 - MAIN_RATE / 40e6  # the port cycles the demapper leaves
 
 
 def passes_cycles(rate, s_units=34, tables=None):
@@ -163,3 +171,16 @@ def run(frames, banks=3, limit=16, rate=93, s_units=34, clock_hz=200e6, tmcc="st
 def budget(rate=93, s_units=34, clock_hz=200e6):
     """The frame-average passes per codeword: F / (121 x cycles per pass)."""
     return FRAME_S * clock_hz / ((SLOTS + 1) * passes_cycles(rate, s_units))
+
+
+def port_cycles(bits, burst=True, per_beat=0, finish_hz=40e6):
+    """The decoder cycles per second the bridge's serialiser needs for a
+    stream of `bits`-LLR main symbols at the front end's rate (5: 32APSK, 4:
+    16APSK), with a TMCC burst on the port's free cycles (`burst`): one
+    beat a main symbol, `BURST_LANES` values a burst beat, each beat n +
+    `per_beat` cycles. Against the decoder's clock (200 MHz)."""
+    free = finish_hz - MAIN_RATE
+    c = MAIN_RATE * (bits + per_beat)
+    if burst:
+        c += free * (BURST_LANES + per_beat)
+    return c
