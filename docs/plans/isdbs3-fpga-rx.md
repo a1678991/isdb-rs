@@ -1722,7 +1722,17 @@ The follow-up of "Build 8 issues", built on all sides; no image yet.
   revert and the recovery are unchanged, `words_read`, `rereads` and
   `torn_reads` read 0. A format-1 image (build 9: VERSION 1, FEATURES
   0x220e73) keeps the register path exactly as before (tested through the
-  mock register backend and recorded words of both formats).
+  mock register backend and recorded words of both formats). A stalled
+  stream (found by the timed host–FPGA model): another client's
+  SUMS_CAPTURE write latches one frame and holds the latch until the
+  next write or a restart, so no sums block leaves while the status
+  blocks still show decoded frames; the consumer counts the decoded
+  frames since the last sums block, and at 90 (3 s) the slow loop warns,
+  counts it (`sums_stalls`) and takes the sums from the registers (the
+  register path, a capture armed and the 308 verified reads) until blocks
+  come again at the free latch's rate (three between two ticks: a
+  capture lets out one), then goes back to the stream. A strobe alone is
+  no remedy: each SUMS_CAPTURE write holds again.
 
 **On the board (build 11, 2026-11-04; VERIFICATION.md "Build 11 on the
 board"):** the slow loop's first taps in force from frame 4 (+3 to +4

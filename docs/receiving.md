@@ -273,7 +273,15 @@ under their CRC, the first set as soon as the first decoded frame's
 block arrives, and the thread reads no chain register at all; on an
 older image (`"registers"`) it reads the 308 sum registers as before
 (`words_read`, `rereads` and `torn_reads` in `chain.radio.slow_loop`
-count those reads, 0 on the stream path). The chain tracks the carrier
+count those reads, 0 on the stream path while the sums blocks come). If
+they stop while frames still decode (another client of the board wrote
+SUMS_CAPTURE: the chain then holds its sums latch, and sends no sums
+block, until a restart), the thread warns after 90 decoded frames
+without one ("no sums block in the Slots stream for 90 decoded frames")
+and reads the sum registers instead until the blocks come back;
+`chain.radio.slow_loop.sums_stalls` counts these stalls,
+`sums_fallback` says whether it still read the registers at the end, and
+the summary line names them. The chain tracks the carrier
 itself; the summary reports its carrier register. `--slots-out FILE`
 records the words (with `FILE.json`), and `--slots FILE` decodes such a
 recording.
@@ -332,6 +340,10 @@ in the summary).
   counted), their mean n0 more than 20 % above the good set's, or 10
   frames without a layout, and the last good set is written again
   (`reverts`).
+- **Stalled sums blocks** (stream path): 90 decoded frames without a
+  sums block (3 s) and the sums are read from the registers, as on an
+  older image, until the blocks come at one a frame again
+  (`sums_stalls`).
 - **Recovery.** No layout (the chain's STATUS without DECODING; on the
   stream path, no status block of a decoded frame for 0.5 s), or no
   training-sum capture held, for more than 1.5 s: the last good set is

@@ -40,10 +40,32 @@
 //! path's. The first solve is taken as soon as the first block arrives
 //! (the loop's thread wakes for it: [`SlowLoop::sums_waiting`]), then
 //! every [`SlowLoopOptions::every`] as before. `words_read`, `rereads`,
-//! `torn` and `unsettled` stay 0 on this path ([`SlowLoopReport`]); the
-//! checks on the sums still run (a CRC protects the transfer, not the
-//! sums), so `captures_rejected` counts as before. A format-1 image
-//! (builds 1–9), or one without the bit, keeps the register path below.
+//! `torn` and `unsettled` stay 0 on this path ([`SlowLoopReport`]) while
+//! the blocks come; the checks on the sums still run (a CRC protects the
+//! transfer, not the sums), so `captures_rejected` counts as before. A
+//! format-1 image (builds 1–9), or one without the bit, keeps the register
+//! path below.
+//!
+//! **A stalled stream**: a frame whose sums the equaliser did not latch at
+//! its end gets no sums block, and a SUMS_CAPTURE write by another client
+//! of the device (a register-path host, a tool) latches one frame and then
+//! holds the latch until the next write or a restart of the chain (START,
+//! a lost sync, the chain's stop): the blocks stop while the status blocks
+//! still show decoded frames. The consumer counts the decoded frames since
+//! the last sums block ([`HealthState::decoded_since_sums`]); at
+//! [`SlowLoopOptions::sums_stall`] (90, 3 s) the loop warns (once a stall,
+//! counted in [`SlowLoopReport::sums_stalls`]) and takes the sums from the
+//! registers, the register path below as on a format-1 image (a capture
+//! armed, polled until VALID, the 308 verified reads, the held set
+//! identified before and after), the status blocks still judging what it
+//! writes. A capture lets one sums block out (the frame it latches); when
+//! three or more arrive between two ticks, the last within three decoded
+//! frames, the latch runs free again (a restart released the hold) and
+//! the loop goes back to the stream (logged), before it arms another
+//! capture; a tick of the fallback that reads SUMS_CAPTURE neither VALID
+//! nor ARMED (released) waits a poll for those blocks before it arms one,
+//! which would hold the latch again. A strobe of SUMS_CAPTURE alone would
+//! not release the hold: each write holds again.
 //!
 //! **Slow loop** ([`SlowLoop::tick`], on a timer thread by
 //! [`spawn_slow_loop`]; the register path, [`SumsSource::Registers`]):
@@ -1288,6 +1310,10 @@ pub struct HealthState {
     pub sums_blocks: u64,
     /// The frame of the last sums block handed over.
     pub sums_frame: Option<u32>,
+    /// Decoded frames (status blocks with a layout) since the last sums
+    /// block, or since the start: each one should have had one (the
+    /// stream path's stall, [`SlowLoopOptions::sums_stall`]).
+    pub decoded_since_sums: u32,
 }
 
 /// The channel from the consumer of the chain's `Slots` words to the slow
@@ -1328,6 +1354,7 @@ impl ChainHealth {
             let mut s = self.state();
             s.sums_blocks += 1;
             s.sums_frame = Some(t.frame);
+            s.decoded_since_sums = 0;
         }
         *self.latest() = Some(t);
     }
@@ -1358,6 +1385,9 @@ impl ChainHealth {
             };
         }
         s.frames += 1;
+        if f.decoded {
+            s.decoded_since_sums = s.decoded_since_sums.saturating_add(1);
+        }
         let c = &mut s.current;
         if f.decoded {
             c.frames += 1;
@@ -1502,6 +1532,11 @@ pub struct SlowLoopOptions {
     /// whose consumer hands the sums blocks over; without it the loop
     /// reads the registers).
     pub sums_source: SumsSource,
+    /// On the stream path, this many decoded frames without a sums block:
+    /// the sums blocks have stopped, and the loop reads the sum registers
+    /// until they come back (module documentation, "Sums from the
+    /// stream").
+    pub sums_stall: u32,
 }
 
 impl SlowLoopOptions {
@@ -1520,6 +1555,7 @@ impl SlowLoopOptions {
             start: None,
             recover_after: Duration::from_millis(1_500),
             sums_source: SumsSource::Registers,
+            sums_stall: SUMS_STALL_FRAMES,
         }
     }
 }
@@ -1531,6 +1567,18 @@ impl SlowLoopOptions {
 /// status blocks then arrive in bursts and read as none in between: no
 /// layout either way, the same recovery.
 pub const STREAM_STALE: Duration = Duration::from_millis(500);
+
+/// The default [`SlowLoopOptions::sums_stall`]: 90 decoded frames without
+/// a sums block (3 s; the chain sends one after every decoded frame's
+/// status block unless the latch is held).
+pub const SUMS_STALL_FRAMES: u32 = 90;
+
+/// On the stream path's fallback, sums blocks since the last tick, the
+/// last of them within as many decoded frames, that show the latch
+/// running free again (a capture lets one block out, the frame it
+/// latches, and the next tick is at least 6 frames later; a free latch
+/// lets one out per decoded frame).
+const STREAM_BACK_BLOCKS: u64 = 3;
 
 /// What one tick of the slow loop did.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1648,6 +1696,13 @@ pub struct SlowLoopReport {
     pub sums_source: SumsSource,
     /// Sums blocks the consumer handed over (the stream path).
     pub sums_blocks: u64,
+    /// On the stream path, the times the sums blocks stopped while frames
+    /// decoded ([`SlowLoopOptions::sums_stall`]) and the loop took the sums
+    /// from the registers instead.
+    pub sums_stalls: u64,
+    /// The loop was still reading the sum registers for a stalled stream
+    /// at its last tick.
+    pub sums_fallback: bool,
 }
 
 /// The equaliser's slow loop (module documentation).
@@ -1686,6 +1741,12 @@ pub struct SlowLoop {
     /// This period without a layout has had the good set (written, or in
     /// force when it began).
     tried_good: bool,
+    /// The stream path's sums blocks stopped: the sums are read from the
+    /// registers (the sums blocks counted at the last tick).
+    fallback: Option<u64>,
+    /// In the fallback, a tick has found the latch free and waited a poll
+    /// for the sums blocks before arming a capture.
+    free_waited: bool,
 }
 
 impl SlowLoop {
@@ -1726,6 +1787,8 @@ impl SlowLoop {
             last_recovery: None,
             recovery_idle: false,
             tried_good: false,
+            fallback: None,
+            free_waited: false,
         }
     }
 
@@ -1756,6 +1819,7 @@ impl SlowLoop {
     /// [`spawn_slow_loop`]).
     pub fn sums_waiting(&self) -> bool {
         self.opts.sums_source == SumsSource::Stream
+            && self.fallback.is_none()
             && self.report.solves == 0
             && self.watch.is_none()
             && self.opts.health.as_ref().is_some_and(|h| {
@@ -1776,7 +1840,7 @@ impl SlowLoop {
         now: Instant,
     ) -> Result<Tick> {
         self.report.ticks += 1;
-        if self.opts.sums_source == SumsSource::Stream {
+        if self.opts.sums_source == SumsSource::Stream && !self.stream_stalled() {
             return self.tick_stream(c, port, now);
         }
         let capture = match self.capture {
@@ -1842,7 +1906,19 @@ impl SlowLoop {
             return Ok(t);
         }
         if let Some(cap) = cap {
+            if self.fallback.is_some() && cap & (capture::VALID | capture::ARMED) == 0 {
+                // the stream's fallback with the latch neither held nor
+                // armed: a restart released it, and its sums blocks come
+                // one a frame; a poll for them (stream_stalled) before a
+                // capture holds it again
+                self.armed = false;
+                if !self.free_waited {
+                    self.free_waited = true;
+                    return Ok(Tick::Capturing);
+                }
+            }
             if !self.armed {
+                self.free_waited = false;
                 c.write(port, reg::SUMS_CAPTURE, &[1])?;
                 self.armed = true;
                 self.armed_since = Some(now);
@@ -1911,6 +1987,59 @@ impl SlowLoop {
         }
         let sums = cc::sums_from_words(frame, count, &words);
         self.solve_and_write(c, port, &sums, digest(&words), carrier, now)
+    }
+
+    /// On the stream path: whether the sums blocks have stopped while
+    /// frames decode ([`SlowLoopOptions::sums_stall`] decoded frames
+    /// without one: warned, counted) and have not come back (more than a
+    /// capture lets out since the last tick, the last of them recent: the
+    /// latch runs free again), so this tick takes the register path.
+    fn stream_stalled(&mut self) -> bool {
+        let Some(h) = self.opts.health.as_ref() else {
+            return false;
+        };
+        let s = h.snapshot();
+        self.report.sums_blocks = s.sums_blocks;
+        let stalled = match self.fallback {
+            None if s.decoded_since_sums >= self.opts.sums_stall => {
+                self.report.sums_stalls += 1;
+                warn!(
+                    target: "isdb::chain",
+                    decoded = s.decoded_since_sums,
+                    sums_blocks = s.sums_blocks,
+                    stalls = self.report.sums_stalls,
+                    "chain: no sums block in the Slots stream for {} decoded frames ({} so far, the last of frame {:?}): the training sums' latch is held (another client of the device wrote SUMS_CAPTURE?) or the blocks are lost; reading the sum registers instead (a capture armed, 308 verified reads a set) until the blocks come back (a restart of the chain releases a hold)",
+                    s.decoded_since_sums,
+                    s.sums_blocks,
+                    s.sums_frame
+                );
+                true
+            }
+            None => false,
+            Some(seen) => {
+                let new = s.sums_blocks.saturating_sub(seen);
+                if new >= STREAM_BACK_BLOCKS && u64::from(s.decoded_since_sums) < STREAM_BACK_BLOCKS
+                {
+                    info!(
+                        target: "isdb::chain",
+                        new,
+                        sums_blocks = s.sums_blocks,
+                        "chain: sums blocks in the Slots stream again ({new} since the last tick, the last of frame {:?}): the sums from the stream again, no sum register read",
+                        s.sums_frame
+                    );
+                    // a capture armed was released with the hold
+                    self.armed = false;
+                    self.armed_since = None;
+                    self.free_waited = false;
+                    false
+                } else {
+                    true
+                }
+            }
+        };
+        self.fallback = stalled.then_some(s.sums_blocks);
+        self.report.sums_fallback = stalled;
+        stalled
     }
 
     /// One tick of the stream path (module documentation, "Sums from the
@@ -4105,5 +4234,125 @@ pub(crate) mod tests {
         assert_eq!((r.words_read, r.rereads, r.torn, r.unsettled), (0, 0, 0, 0));
         assert!(!m.get().writes.iter().any(|w| w.0 == reg::SUMS_CAPTURE));
         assert_eq!((r.solves, r.recoveries), (1, 1));
+    }
+
+    /// The stream path when the sums blocks stop while frames decode (a
+    /// foreign SUMS_CAPTURE write holds the latch): frames without a
+    /// layout do not count; 89 decoded frames without a sums block read
+    /// nothing; at the 90th the loop warns once (`sums_stalls` 1) and
+    /// takes the register path: a capture armed, the held set read (308
+    /// verified reads) and solved, the status blocks still judging it;
+    /// the one sums block its own capture lets out does not end the
+    /// fallback; after a restart (the latch free, a block a frame) a tick
+    /// that sees one block finds SUMS_CAPTURE released and waits a poll
+    /// instead of arming a capture, and the next, with more blocks, goes
+    /// back to the stream and solves from it without a register read.
+    #[test]
+    fn a_stalled_stream_falls_back_to_the_registers() {
+        let (m, mut c) = opened(features::ALL);
+        let h = Arc::new(ChainHealth::new());
+        let opts = SlowLoopOptions {
+            gate: None,
+            check: None,
+            health: Some(Arc::clone(&h)),
+            sums_source: SumsSource::Stream,
+            ..SlowLoopOptions::new(fake_solve, 33.7561e6)
+        };
+        assert_eq!(opts.sums_stall, SUMS_STALL_FRAMES);
+        let mut l = SlowLoop::new(opts);
+        let status = |f: u32, decoded: bool, taps_from: Option<u32>| FrameHealth {
+            frame: f,
+            decoded,
+            taps_from,
+            n0: 40_000,
+            slots: if decoded { 96 } else { 0 },
+            locked: true,
+            ..FrameHealth::default()
+        };
+        let block = |h: &ChainHealth, f: u32| {
+            let (f, n, w) = sums(f, 6_720);
+            h.sums(cc::sums_from_words(f, n, &w));
+        };
+        let strobes = |m: &Mock| {
+            m.get()
+                .writes
+                .iter()
+                .filter(|w| w.0 == reg::SUMS_CAPTURE)
+                .count()
+        };
+        // frames without a layout send no sums block and do not count
+        for f in 0..100 {
+            h.frame(status(f, false, None));
+        }
+        assert_eq!(h.snapshot().decoded_since_sums, 0);
+        // frame 100 decoded, its block solved; 10 frames under it
+        h.frame(status(100, true, None));
+        block(&h, 100);
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 100 });
+        for f in 101..111 {
+            h.frame(status(f, true, Some(100)));
+            block(&h, f);
+        }
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 110 });
+        for f in 111..121 {
+            h.frame(status(f, true, Some(110)));
+        }
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Same);
+        // a foreign capture holds the latch: decoded frames, no block;
+        // 89 of them (10 above): nothing read
+        m.get().cap = (false, true, true);
+        let reads = m.get().gpio_in_reads;
+        for f in 121..200 {
+            h.frame(status(f, true, Some(110)));
+        }
+        assert_eq!(h.snapshot().decoded_since_sums, 89);
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Same);
+        assert_eq!(m.get().gpio_in_reads, reads);
+        assert_eq!((l.report.sums_stalls, l.report.sums_fallback), (0, false));
+        // the 90th: warned, the register path arms a capture
+        h.frame(status(200, true, Some(110)));
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Capturing);
+        assert_eq!((l.report.sums_stalls, l.report.sums_fallback), (1, true));
+        assert_eq!(strobes(&m), 1);
+        // frame 201 latched and held; its one sums block leaves too
+        m.get().frame_end(sums(201, 6_720));
+        h.frame(status(201, true, Some(110)));
+        block(&h, 201);
+        let words = l.report.words_read;
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 201 });
+        assert!(
+            l.report.words_read - words >= 308,
+            "read from the registers"
+        );
+        assert_eq!(m.get().taps.unwrap().1, 201);
+        // watched on the status blocks, then the next capture (still on
+        // the registers: one block since the last tick is a capture's)
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Watching);
+        for f in 202..213 {
+            h.frame(status(f, true, Some(201)));
+        }
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Capturing);
+        assert_eq!(strobes(&m), 2);
+        assert_eq!(l.report.last_good_frame, Some(201));
+        // a restart releases the hold (and the capture armed): a block
+        // after every decoded frame; a tick after the first finds the
+        // latch free and waits a poll instead of holding it again
+        m.get().cap = (false, false, false);
+        h.frame(status(3, true, Some(201)));
+        block(&h, 3);
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Capturing);
+        assert_eq!(strobes(&m), 2, "the free latch not held again");
+        assert!(l.report.sums_fallback);
+        for f in 4..8 {
+            h.frame(status(f, true, Some(201)));
+            block(&h, f);
+        }
+        let reads = m.get().gpio_in_reads;
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 7 });
+        assert_eq!(m.get().gpio_in_reads, reads, "from the stream");
+        assert_eq!(strobes(&m), 2, "no capture armed");
+        assert_eq!(m.get().taps.unwrap().1, 7);
+        assert_eq!((l.report.sums_stalls, l.report.sums_fallback), (1, false));
+        assert_eq!(l.report.sums_blocks, 17);
     }
 }

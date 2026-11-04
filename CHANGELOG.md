@@ -1542,6 +1542,18 @@ STD-B44) is received to TLV streams.
 
 ### Fixed
 
+- `isdb-radio`: on an image with the training sums in the `Slots`
+  stream, the slow loop waited for ever, silently, when the sums blocks
+  stopped while frames still decoded (another client's SUMS_CAPTURE write
+  holds the latch until a restart, and a held latch sends no block). The
+  consumer counts the decoded frames since the last sums block
+  (`HealthState::decoded_since_sums`); after 90 (3 s,
+  `SlowLoopOptions::sums_stall`) the loop warns once a stall, counts it
+  (`SlowLoopReport::sums_stalls`, `sums_fallback`; `isdb rx --json`
+  `chain.radio.slow_loop`, the summary line and the open line) and reads
+  the sums from the registers as on a format-1 image until the blocks
+  come again at the free latch's rate. Found by the timed host–FPGA
+  model (issue #30 item 4).
 - `isdb-radio`: the chain's slow loop discarded a good held set of
   training sums as torn ("the capture did not hold (moved from frame N
   to N)") when the layout was lost or came back during its 308 reads: it

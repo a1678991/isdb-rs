@@ -208,8 +208,14 @@ the consumer (`ChainHealth::sums`, the first as soon as it arrives:
 `SlowLoop::sums_waiting` wakes the thread) and the frame, layout, lock
 and carrier from the status blocks: no register is read
 (`SlowLoopReport::words_read` 0), no capture armed; the checks, the
-gate, the writes, the revert and the recovery are unchanged. The module
-documentation gives the bounds and the measurements behind them.
+gate, the writes, the revert and the recovery are unchanged. If the sums
+blocks stop while frames decode (another client's SUMS_CAPTURE write
+holds the latch until a restart of the chain), after 90 decoded frames
+without one (`SlowLoopOptions::sums_stall`, counted by
+`HealthState::decoded_since_sums`) it warns, counts the stall
+(`SlowLoopReport::sums_stalls`) and reads the sums from the registers as
+on a format-1 image until blocks come again at the free latch's rate. The
+module documentation gives the bounds and the measurements behind them.
 
 ### TX symbol codes: the FPGA transmit block
 
