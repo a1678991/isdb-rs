@@ -637,8 +637,10 @@ are needed: not provably narrower).
     it, so a restart that does not let the chain drain within 8 slots of a
     frame's end may find the HDL inside a frame the model handed out (the
     HDL drops it), or keep that frame's layout (the restart epoch, "What
-    is left"); from such an event on only the decoded bits, BCH results
-    and convergence are compared. Otherwise iteration counts must match
+    is left": the frames it decodes alone are excused those slot blocks
+    only; their TMCC blocks are compared as any other and their status
+    blocks but for the counters, `CompareTest`); from such an event on
+    only the decoded bits, BCH results and convergence are compared. Otherwise iteration counts must match
     too: both sides keep the NCO's phase across a restart (unlike
     `run_chain_restarts`, whose replay is compared with the model's run
     from reset).

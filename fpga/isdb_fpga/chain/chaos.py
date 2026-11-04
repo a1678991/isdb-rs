@@ -665,12 +665,15 @@ def compare(model, hdl_blocks, events):
         keys = sorted(k for k in set(eb) | set(gb) if k[0] == fr)
         diffs, iters, status_differs, orphan_counted = [], 0, False, False
         extra_slots = [k for k in keys if k not in eb and k[1] == S.SLOT]
-        if extra_slots and not any(k[1] == S.SLOT for k in keys if k in eb) and fr in epoch:
-            outcomes[fr] = "restart epoch"
+        epoch_frame = bool(extra_slots) and not any(k[1] == S.SLOT for k in keys if k in eb) and fr in epoch
+        if epoch_frame:
+            # the restart epoch explains the slot blocks the model has not;
+            # the frame's TMCC block is compared as any other, and its
+            # status block but for the counters (the chain counted those slots)
             findings.append(f"frame {fr}: decoded by the chain alone ({len(extra_slots)} slot blocks), with "
                             f"frame {epoch[fr]}'s layout kept across {ambiguous[epoch[fr]][0]} (the restart "
-                            f"epoch: by design)")
-            continue
+                            f"epoch: by design); its TMCC and status blocks compared")
+            keys = [k for k in keys if k not in extra_slots]
         for k in keys:
             if k not in gb:
                 diffs.append(f"block {k} missing")
@@ -681,6 +684,9 @@ def compare(model, hdl_blocks, events):
             g_, m_ = gb[k], eb[k]
             if g_ == m_:
                 continue
+            if k[1] == S.STATUS and epoch_frame and len(g_) == len(m_) \
+                    and g_[:status_counters(g_)[0]] == m_[:status_counters(m_)[0]]:
+                continue  # the counters hold the epoch's slots
             if k[1] == S.STATUS:
                 why = counters_explained(g_, m_, counted, fr)
                 if why:
@@ -709,7 +715,8 @@ def compare(model, hdl_blocks, events):
             problems.extend(f"frame {fr}: {d}" for d in diffs[:6])
         else:
             loose = [f"{iters} iteration counts"] * bool(iters) + ["the status block"] * status_differs
-            outcomes[fr] = (f"bits equal ({' and '.join(loose)} differ)" if loose
+            outcomes[fr] = ("restart epoch (TMCC equal)" if epoch_frame
+                            else f"bits equal ({' and '.join(loose)} differ)" if loose
                             else "equal but the counters (orphans)" if orphan_counted else "equal")
     if bits_from is not None:
         findings.append(f"from stream position {bits_from - LATENCY} on (an undrained restart right after a "
