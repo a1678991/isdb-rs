@@ -261,6 +261,9 @@ symbol clock beside it).
 | `ResultFifo` | `overflow` | no write into the full FIFO outside a header's retried chunks |
 | `Finish` | `status_point_settled` | a status word is taken only with the point RAM's address unchanged since the previous cycle (its registered read has landed) |
 | | `frame_fifo_overflow`, `frame_fifo_underflow` | the 4-entry frame FIFO |
+| `SumsReader` | `words` | a sums block's payload is 465 words: its last word is the 465th taken since its start (and no word offered outside a block) |
+| | `follows_status` | a sums block is accepted by the packer only right after its frame's status block (the block before it of type 3, the same frame) |
+| | `latch_steady` | the equaliser's latched sums stay the frame being sent until the block's last word (a latch moving mid-block would put two frames' sums under one CRC) |
 | `Packer` | `seq_contiguous` | each block's sequence number (its header words) is the last + 1; 0 for the first block and the first block accepted in or after a `start`'s cycle |
 | | `framing`, `block_kind`, `slot_index` | the output words parse as `Slots` blocks: the sync words, the header check, the payload length; header word 2; a slot block's slot index < 120 |
 | `SlotsRx` | `sum_readback_hold` | from a sum register's READ until `rd_ack` the readback keeps its value |
@@ -287,7 +290,10 @@ cycle 1 115 804 (and its own n0, K comparison); d53de60's pacing
 `commit_without_begin`, `queue_overflow`, every FIFO but `SlotsRx`'s
 input FIFO and `Finish`'s frame FIFO (the same `fifo_overflow` helper),
 the packer's four, `port_lost`, `staging_overrun`, `burst_lost`,
-`frame_order`, `taps_from_source`, `sum_read_slow`.
+`frame_order`, `taps_from_source`, `sum_read_slow`; the sums block's
+three (`SumsMonitorTest`: its last word flagged a word early, the block
+sent under the next frame's counter, the latch moved mid-block by the
+bench).
 
 **Found on the HDL, fixed**: `Packer` honoured `start` only between
 blocks, so a START that came while a block was being sent did not restart
@@ -394,8 +400,9 @@ module's docstring states its contract by reference and its schedule):
 | `demap.py` | 6 | the max-log metric in the 4× clock, 8 points per fast cycle from two 32-point sets in eight LUT RAM lanes (16 products), minima of four and running minima per bit position and value, × K on two time-shared units, the de-interleaved positions, the codeword cursor, the pilot sums and learned points, n0 and K at a frame's end |
 | `back.py` | 4–6 | the equaliser with FrameCtl, the routing record through the FIR pipeline, TMCC and demapper on its output, the decoder port's arbiter |
 | `ldpc_if.py` | (7) | the decoder interface (the chain's port), `LdpcBridge` to `isdb_fpga/ldpc.py`'s ports (async FIFOs, the serialiser, the tags in commit order), and how the stub works |
-| `finish.py`, `gf.py` | 8 | the BCH unit (syndromes 16 bits per clock, Berlekamp–Massey on one GF(2¹⁶) multiplier, Chien one position per clock, the roots flipped in the word buffers as the Rust decoder flips them: `FixRoots`), the slot PRBS, `Finish` (the result stream into slot, TMCC and status blocks; a frame's TMCC and status may follow the next frame's first slot blocks, with their contents the model's); `gf.py`: the field and a Python port of `isdb_fec::bch::decode` |
-| `packer.py`, `slots.py` | 9 | the `Slots` block framing with the front end's CRC-32C network, the status block's words; `slots.py`: the format in Python (reader, CRC) |
+| `finish.py`, `gf.py` | 8 | the BCH unit (syndromes 16 bits per clock, Berlekamp–Massey on one GF(2¹⁶) multiplier, Chien one position per clock, the roots flipped in the word buffers as the Rust decoder flips them: `FixRoots`), the slot PRBS, `Finish` (the result stream into slot, TMCC and status blocks, and a decoded frame's sums block after its status block; a frame's TMCC, status and sums blocks may follow the next frame's first slot blocks, with their contents the model's); `gf.py`: the field and a Python port of `isdb_fec::bch::decode` |
+| `sums.py` | 8–9 | `SumsReader`: the sums block (`Slots` format 2, type 4) from the equaliser's latched accumulator bank, an entry at a time through the same one-cycle steal of its read port as the host's register READ, six 16-bit words per entry by a 6:1 select |
+| `packer.py`, `slots.py` | 9 | the `Slots` block framing (format 2) with the front end's CRC-32C network, the status block's words; `slots.py`: the format in Python (reader, CRC, the sums block's fields) |
 | `top.py` | | `SlotsChain` (the stages wired, the status snapshot), `SlotsRx` (the bitstream block: front end → FIFO → chain → bridge → decoder and its MMCM, the register file at the host's map, the output selection) |
 | `nominal.py` | 4, 6 | the nominal points of every mode in one ROM (23 distinct sets, 510 × 24 bits, one RAMB18), shared by the equaliser and the demapper |
 | `sim.py`, `stages.py`, `simx.py`, `simv.py`, `harness.cc`, `bchsim.py` | | simulation against the vectors (`python -m isdb_fpga.chain.sim VECTORS.json [--backend pysim\|cxxrtl\|verilator] [--symbols N]`) |
@@ -479,7 +486,7 @@ parsing). A simulation checks only the values its set's expected outputs
 contain: build 7's n0 that was never learned and its shifted learned
 points passed every set because every expected status block had the
 reset n0 and none had learned points. The tool reads every chain and LDPC
-set in `build/` and reports, per field (the `Slots` header, slot, TMCC
+set in `build/` and reports, per field (the `Slots` header, slot, TMCC, sums
 and status words, the status block per word; each stage set's heads,
 periods, carrier updates, φ and gain, taps and sums, layout, points,
 LLRs, learned points, n0 and K; each LDPC codeword's rate, schedule,
@@ -749,6 +756,47 @@ are needed: not provably narrower).
 
   Fit (Yosys): `SlotsRx` without the decoder 26 395 → 26 487 LUT, 27 119
   → 27 245 FF, BRAM and DSP unchanged; the decoder 12 510 → 12 538 LUT.
+- **Sums in the stream** (`Slots` format 2, 2026-11-04;
+  docs/plans/isdbs3-fpga-rx.md "Sums in the stream"). Each decoded
+  frame's training sums leave in the stream as a sums block (type 4)
+  right after the frame's status block: the frame, the count and the 77
+  complex 48-bit sums as six words each (465 payload words, 476 with the
+  header and the CRC-32C trailer; `isdb_frontend::slots` "sums"), about
+  14 400 words/s. `SumsReader` (sums.py, hooked into `Finish` after the
+  status block) reads the latched bank through `eq.py`'s second readback
+  request (`sr_*`: the accumulator RAM's read port for one cycle, a MAC
+  due then waiting a cycle, a host READ in the same cycle first), an entry
+  every 10 cycles or so; a frame whose sums did not latch at its end (no
+  layout, or a SUMS_CAPTURE hold keeping an earlier frame) gets none, as
+  the model (which has no capture). The chain's arithmetic is unchanged.
+  The register map gains:
+
+  | Address | Bits | Meaning |
+  |---|---|---|
+  | 0x400 VERSION | | 2: the `Slots` format (format 1 and the sums block); the ID word's bits 11-8 read 2 |
+  | 0x401 FEATURES | 7 SUMS_STREAM | each frame's latched sums also leave in the stream, a sums block after its status block: a host needs no sum register (and arms no capture) |
+
+  SUMS_CAPTURE, its hold and the sum registers stay: the proven read path,
+  which this host still takes on an image without the bit, or without a
+  consumer of the stream to hand it the blocks (a host binary of builds
+  1-9 refuses this image at open: it reads `Slots` format 1 only, and the
+  ID word and VERSION read 2). Tests: every whole-chain set's sums block bit-exact with the model
+  (chain-6 with the stub, `FPGA_CHAIN_FULL=1`; chain-7 to chain-10 with the
+  real decoder, `FPGA_CHAIN_REAL=1`; the chaos runs, which compare it as a
+  status block after an undrained restart, and the restart test, which
+  checks it is there); `SumsBlockTest` (`Finish` against a stand-in
+  bank with sums over the whole 48-bit range: the vectors' stay below
+  2^33; and no block when the latch holds another frame); the three
+  monitors above, quiet everywhere and each fired by its defect; the value
+  coverage reads the block's fields (`sums.r`, `sums.p` vary;
+  `sums.count`, `sums.frame_lag` and `sums.after_status` are constant by
+  definition, in `ALLOWED`). Fit (Yosys, `mise run fpga:chain-estimate`,
+  at `PYTHONHASHSEED=0`): `SlotsRx` without the decoder 26 487 -> 26 641
+  LUT (+154, 0.29 % of the device), 27 245 -> 27 415 FF (+170: 96 of them
+  the entry's register), 32.5 BRAM36 and 164 DSP48E1 unchanged; by stage
+  `Finish` 5 832 -> 5 988 LUT, 2 960 -> 3 024 FF, the equaliser with
+  `FrameCtl` 2 502 -> 2 528 LUT, 4 724 -> 4 830 FF. Build 9 placed 43 730
+  LUT (82.2 %): about 82.5 % with this. Not built.
 - **Chaos runs** (issue #30 item 3; `isdb_fpga/chain/chaos.py`,
   `tests/test_chaos.py`, `tools/chaos_run.py`, `tools/chaos_table.py`).
   `run_chain_restarts` replays #28's one recipe; a chaos run draws random
@@ -902,9 +950,10 @@ board"): the slow loop's gate checks the centre tap and the residual
 only, and let through one set with odd outer taps (a whole-vector check
 would hold it);
 the restart epoch for a layout committed after a restart (the model's
-insert happens before it); the training sums delivered in the `Slots`
-stream (a block with its CRC instead of 308 register reads: the plan's
-"Build 8 issues", follow-up); `SlotsRx` as a whole with its front end in
+insert happens before it); an image with the sums in the `Slots` stream
+(built, and the host's stream path checked on the board: "Sums in the
+stream" above; the HDL and the host are done and tested in simulation);
+`SlotsRx` as a whole with its front end in
 simulation (the chain's simulations start at the symbols); a host CONST /
 N0 load and layout lag 1 (FEATURES says so); the recording sets
 (`chain-rec-*`, opt-in) were not generated here.

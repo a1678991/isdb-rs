@@ -6,7 +6,8 @@ python synth/chain_estimate.py [STAGE ...]     # default: every stage
 
 Stages: sync (SyncFront: NCO, slot sync, carrier loop), phase (SlotPhase),
 eq (Equaliser + FrameCtl), tmcc (TmccSoft), demap (Demap), finish (Finish:
-TmccResult, the BCH unit, the PRBS, the packer, the status source); chain
+TmccResult, the BCH unit, the PRBS, the packer, the status source, the
+sums block's reader with the equaliser's side as ports); chain
 (SlotsChain, all of them) only when named: abc9 in YoWASP's 32-bit
 WebAssembly runs out of memory on it; back (Back: eq, FrameCtl, TMCC soft
 bits, demapper with their shared ROM), bridge (LdpcBridge and SlotsRx's
@@ -63,6 +64,7 @@ def blocks():
             return [e.i_valid, *e.i_y, e.i_meta, e.restart, e.o_valid, *e.o_z, e.o_meta,
                     e.tap_we, e.tap_idx, *e.tap_val, e.tap_now, e.tap_arm, e.tap_at, e.tap_from_in,
                     e.rd_req, e.rd_addr, e.rd_data, e.rd_ack, e.sums_frame, e.sums_count,
+                    e.sr_req, e.sr_entry, e.sr_data, e.sr_ack,
                     f.lw_en, f.lw_slot, f.lw_data, f.lw_commit, f.lw_frame, f.lw_from, f.restart,
                     f.o_done, f.o_dropped, f.o_frame, f.active, f.is_main, f.is_tmcc, f.mi, f.ti,
                     f.s_mod, f.s_rate, f.s_start, f.s_symbols, f.s_dummy, f.s_mode]
@@ -110,9 +112,11 @@ def blocks():
 
         d = Finish()
         st = d.status
+        sr = d.sums
         return d, [d.r_valid, d.r_ready, d.r_head, d.r_tag, d.r_iterations, d.r_converged, d.r_overrun,
                    d.r_bits, d.r_last, d.f_valid, d.f_frame, d.f_decoded, d.o_valid, d.o_word,
                    st.pt_addr, st.pt_data, *st.snap.values(),
+                   sr.sums_frame, sr.sums_count, sr.rd_req, sr.rd_entry, sr.rd_ack, sr.rd_data,
                    *[getattr(d.tmcc.layout, n) for n in ("lw_open", "lw_en", "lw_slot", "lw_data", "lw_commit",
                                                         "lw_frame", "lw_from")]]
 

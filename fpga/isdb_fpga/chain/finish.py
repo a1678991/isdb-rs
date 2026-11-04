@@ -58,6 +58,7 @@ from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal
 from amaranth.lib.memory import Memory
 
 from . import gf
+from .slots import SUMS_PAYLOAD
 from .tables import SLOT_INIT, lfsr_state
 
 GF_BITS = 16
@@ -516,7 +517,11 @@ class Finish(Elaboratable):
     """The result side of stages 7-9: the decoder's results (`r_*`, the
     LDPC port's out stream) into `Slots` blocks through the packer, in the
     model's order: per whole frame its slots (decoded frames: all 120, the
-    dummies included), its TMCC, its status.
+    dummies included), its TMCC, its status, and (`Slots` format 2) its
+    training sums when the equaliser latched them at the frame's end
+    (`sums.SumsReader`, `self.sums`: wired to the equaliser by
+    `top.SlotsChain`; standalone, its `sums_frame` stays none and no sums
+    block is sent).
 
     - **Frames** (`f_*`): at each whole frame's end the back end pushes
       (frame, decoded) and a status snapshot (`snap_*`, `packer.status_layout`
@@ -576,6 +581,7 @@ class Finish(Elaboratable):
 
     def __init__(self, lag=2):
         from .packer import Packer, StatusSource
+        from .sums import SumsReader
         from .tmcc import TmccResult
 
         self.tmcc = TmccResult(lag, own_align=False)
@@ -583,6 +589,7 @@ class Finish(Elaboratable):
         self.prbs = SlotPrbs()
         self.packer = Packer()
         self.status = StatusSource()
+        self.sums = SumsReader()
         self.lag = lag
         # results
         self.r_valid = Signal()
@@ -622,6 +629,7 @@ class Finish(Elaboratable):
         m.submodules.prbs = prbs = self.prbs
         m.submodules.packer = pk = self.packer
         m.submodules.status = st = self.status
+        m.submodules.sums = sr = self.sums
         m.submodules.al = al = Realign()
         m.submodules.frames = ff = SyncFIFO(width=33, depth=4)
         cnt = self.counters
@@ -989,10 +997,25 @@ class Finish(Elaboratable):
                     with m.If(pk.w_ready):
                         m.d.sync += [st.next.eq(1), st_pace.eq(0)]
                         with m.If(st.last):
-                            m.next = "FRAME_DONE"
+                            m.next = "SUMS_HDR"
+            # the frame's training sums (sums.py), when it has them
+            with m.State("SUMS_HDR"):
+                with m.If(~sr.due):
+                    m.next = "FRAME_DONE"
+                with m.Elif(pk.b_ready & ~pk.b_valid):
+                    block(4, fr_frame, SUMS_PAYLOAD)
+                    m.d.comb += sr.go.eq(1)
+                    m.next = "SUMS_W"
+            with m.State("SUMS_W"):
+                m.d.comb += [pk.w_valid.eq(sr.w_valid), pk.w_data.eq(sr.w_data), sr.w_ready.eq(pk.w_ready)]
+                with m.If(sr.w_valid & pk.w_ready & sr.last):
+                    m.next = "FRAME_DONE"
             with m.State("FRAME_DONE"):
                 m.d.comb += ff.r_en.eq(1)
                 m.next = "IDLE"
+        m.d.comb += [sr.frame.eq(fr_frame), sr.decoded.eq(fr_dec),
+                     sr.pk_accept.eq(pk.b_valid & pk.b_ready & ~pk.start), sr.pk_kind.eq(pk.b_kind),
+                     sr.pk_frame.eq(pk.b_frame)]
         # the counters in the status: the whole frames up to this one (a
         # later frame's slots already sent wait in a_* for its TMCC result)
         for n_, sig in cnt.items():

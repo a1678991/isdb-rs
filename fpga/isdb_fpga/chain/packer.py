@@ -1,9 +1,9 @@
-"""Stage 9 of the ISDB-S3 chain: the `Slots` blocks (format version 1,
+"""Stage 9 of the ISDB-S3 chain: the `Slots` blocks (format version 2,
 `isdb_frontend::slots`).
 
 Contract (`isdb_frontend::slots` module docs): a block is the sync words
 0x1ACF 0xFC1D, header word 2 = 0xF (the `Slots` marker in the `Symbols`
-version nibble) | type << 4 | 1 << 8 (format version 1), the 32-bit
+version nibble) | type << 4 | 2 << 8 (format version 2), the 32-bit
 sequence number (one counter for every block type, low word first), the
 payload length P, the 32-bit frame counter, the header check (words 2 .. 8
 sum to 0xFFFF), the P payload words, and the CRC-32C trailer over the
@@ -35,6 +35,7 @@ read port: `StatusSource`).
 from amaranth.hdl import Array, Cat, Const, Elaboratable, Module, Mux, Signal
 
 from ..frontend import crc32c_word
+from .slots import SLOTS_VERSION
 
 SYNC = (0x1ACF, 0xFC1D)
 
@@ -47,7 +48,8 @@ class Packer(Elaboratable):
                                    "after the cycle of a `start`"),
         "framing": ("sync", "the output parses as Slots blocks: sync words, the header check, the "
                             "payload length"),
-        "block_kind": ("sync", "header word 2 is a Slots header of a slot, TMCC or status block"),
+        "block_kind": ("sync", "header word 2 is a Slots format 2 header of a slot, TMCC, status or "
+                               "sums block"),
         "slot_index": ("sync", "a slot block's slot index is below 120"),
     }
     monitor = None
@@ -74,7 +76,7 @@ class Packer(Elaboratable):
         idx = Signal(16)
         crc = Signal(32)
         seq = self.seq
-        w2 = 0xF | (kind << 4) | (1 << 8)
+        w2 = 0xF | (kind << 4) | (SLOTS_VERSION << 8)
         hw = [Const(SYNC[0], 16), Const(SYNC[1], 16), w2, seq[:16], seq[16:], ln, frame[:16], frame[16:]]
         s = (hw[2] + hw[3] + hw[4] + hw[5] + hw[6] + hw[7])[:16]
         hw.append((0xFFFF - s)[:16])

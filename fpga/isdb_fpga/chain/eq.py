@@ -50,7 +50,11 @@ Implementation:
   port for one cycle whatever the MAC unit does (a MAC due then waits a
   cycle; the MAC unit writes only the other bank): `rd_ack` 3 cycles
   after `rd_req` (before issue #27 a read waited for the MAC unit to be
-  idle, up to about 4 400 cycles, while the register showed 0).
+  idle, up to about 4 400 cycles, while the register showed 0). The
+  `Slots` sums block (sums.py) reads the latched bank the same way, a
+  whole 96-bit entry at a time (`sr_req`, `sr_entry` -> `sr_ack`,
+  `sr_data` 3 cycles later); a host READ in the same cycle goes first and
+  the stream's read a cycle later.
   **Capture** (`cap_strobe`, the host's SUMS_CAPTURE): the next frame end
   latches as always and then holds: later frames are summed in the other
   bank but not latched until the next strobe, so the host reads one
@@ -151,6 +155,11 @@ class Equaliser(Elaboratable):
         self.cap_armed = Signal()
         self.cap_seq = Signal(8)
         self.rd_busy = Signal()
+        # the sums block's readback (sums.py): one 96-bit entry per request
+        self.sr_req = Signal()
+        self.sr_entry = Signal(7)
+        self.sr_data = Signal(96)
+        self.sr_ack = Signal()
         # training internals (verification)
         self.d_valid = Signal()
         self.d_at = Signal(48)
@@ -471,6 +480,20 @@ class Equaliser(Elaboratable):
             v = arp.data
             word_ = Array([v[0:32], v[32:48].as_signed(), v[48:80], v[80:96].as_signed()])[rd_a[:2]]
             m.d.sync += [self.rd_data.eq(word_), self.rd_ack.eq(1), rd_pend.eq(0)]
+        # the sums block's read: the same one-cycle steal of the read port,
+        # after a host READ due in the same cycle
+        sr_pend = Signal()
+        sr_e = Signal(7)
+        sr_go = Signal()
+        sr_s1 = Signal()
+        with m.If(self.sr_req):
+            m.d.sync += [sr_pend.eq(1), sr_e.eq(self.sr_entry)]
+        m.d.comb += sr_go.eq(sr_pend & ~sr_s1 & ~rd_go)
+        m.d.sync += [sr_s1.eq(sr_go), self.sr_ack.eq(0)]
+        with m.If(sr_go):
+            m.d.comb += arp.addr.eq(Cat(sr_e, latched))
+        with m.If(sr_s1):
+            m.d.sync += [self.sr_data.eq(arp.data), self.sr_ack.eq(1), sr_pend.eq(0)]
         with m.FSM(name="mac"):
             with m.State("IDLE"):
                 with m.If(open_pend):
@@ -495,7 +518,7 @@ class Equaliser(Elaboratable):
                 with m.Else():
                     m.d.sync += ci.eq(ci + 1)
             with m.State("MAC"):
-                with m.If(~rd_go):
+                with m.If(~(rd_go | sr_go)):
                     m.d.sync += [va.eq(1), ea.eq(ce), pa.eq(e_p), ce.eq(ce + 1)]
                     with m.If(ce == ENTRIES - 1):
                         with m.If(ci == TRAIN - 1):
