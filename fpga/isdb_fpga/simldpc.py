@@ -20,6 +20,11 @@ to be +127 first. --backend: Amaranth's Python simulator or the design
 compiled with Yosys's CXXRTL backend or Verilator (`chain.simx`; the
 default where a C++ compiler is found, Verilator where it is installed,
 `$FPGA_SIM` overrides).
+
+Every run has the decoder's invariant monitors on (`chain/monitors.py`:
+the bank accounting of issue #28's class and the rest of
+`LdpcDecoder.MONITORS`); a violation raises `monitors.MonitorError` with
+the check's name and the cycle of its first violation.
 """
 
 import hashlib
@@ -31,7 +36,7 @@ import time
 from amaranth.sim import Simulator
 
 from . import ldpcmodel
-from .chain import simx
+from .chain import monitors, simx
 from .ldpc import LdpcDecoder
 
 
@@ -130,6 +135,12 @@ def simulate(doc, limit=None, all_rates=False, fill_known=False, log=None, banks
     return _simulate_cxx(doc, limit, all_rates, fill_known, log, banks, plan, max_iter, backend, probes)
 
 
+def check_monitors(col, get):
+    """Raise `monitors.MonitorError` if a monitor of the decoder fired (its
+    registers are sticky: on a reused engine, since its first run)."""
+    col.check(get)
+
+
 PROBED = ("held", "load_ready", "overruns", "aborted", "reused")
 
 
@@ -163,15 +174,18 @@ def _engine(doc, all_rates, banks, backend):
                          sorted(kw["codes"].items())])
     key = (backend, design)
     if key not in _ENGINES:
-        dut = LdpcDecoder(**kw, sim=True)  # the bounded-depth concatenations
+        # the bounded-depth concatenations; the invariant monitors
+        dut = LdpcDecoder(**kw, sim=True, monitors=True)
+        col = monitors.Collector(dut)
         h = hashlib.sha256(design.encode()).hexdigest()[:8]
         rates = "all" if len(kw["codes"]) > 1 else f"r{doc['rate']}"
-        e = simx.engine(dut, _ports(dut), backend, tag=f"ldpc-s{dut.S}-k{dut.K}-{rates}-{h}")
+        e = simx.engine(dut, dict(_ports(dut), **col.ports()), backend,
+                        tag=f"ldpc-s{dut.S}-k{dut.K}-{rates}-{h}")
         g_res = e.group("res_valid", ["res_iterations", "res_converged", "res_unsat",
                                       "res_overrun", "cycles", "passes"])
         g_out = e.group("o_valid", ["o_data", "o_last"])
         e.set("o_ready", 1)
-        _ENGINES[key] = (e, g_res, g_out)
+        _ENGINES[key] = (e, g_res, g_out, col)
     return _ENGINES[key] + (ridx,)
 
 
@@ -180,7 +194,7 @@ def _simulate_cxx(doc, limit=None, all_rates=False, fill_known=False, log=None, 
     """`_simulate_py` on the compiled design: the same plan, applied cycle
     for cycle through the engine's set / tick / run, the result records
     and output words collected by the harness's output groups."""
-    e, g_res, g_out, ridx = _engine(doc, all_rates, banks, backend)
+    e, g_res, g_out, col, ridx = _engine(doc, all_rates, banks, backend)
     words = doc["codewords"][:limit]
     plan = default_plan(len(words)) if plan is None else plan
     commits = sum(1 for op in plan if op[0] == "start")
@@ -268,6 +282,7 @@ def _simulate_cxx(doc, limit=None, all_rates=False, fill_known=False, log=None, 
     if results:
         results[-1]["overruns"] = overruns
         results[-1]["queue_overflow"] = overflow
+    check_monitors(col, e.get)
     return results
 
 
@@ -285,6 +300,8 @@ def _simulate_py(doc, limit=None, all_rates=False, fill_known=False, log=None, b
     "cycles", "passes", "seconds"}; the last also has "overruns" and
     "queue_overflow"."""
     dut, ridx = decoder_for(doc, all_rates, banks=banks)
+    col = monitors.Collector(monitors.enable(dut))
+    mon_values = {}
     words = doc["codewords"][:limit]
     plan = default_plan(len(words)) if plan is None else plan
     commits = sum(1 for op in plan if op[0] == "start")
@@ -379,10 +396,12 @@ def _simulate_py(doc, limit=None, all_rates=False, fill_known=False, log=None, b
         if results:
             results[-1]["overruns"] = ctx.get(dut.overruns)
             results[-1]["queue_overflow"] = ctx.get(dut.queue_overflow)
+        mon_values.update({n: ctx.get(s) for n, s in col.ports().items()})
 
     sim.add_testbench(loader, background=True)
     sim.add_testbench(reader)
     sim.run()
+    check_monitors(col, mon_values.get)
     return results
 
 

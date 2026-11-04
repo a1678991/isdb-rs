@@ -47,6 +47,12 @@ def lay_pack(mode, mod, rate, dummy, start, symbols):
 
 
 class FrameCtl(Elaboratable):
+    # the invariant monitors (monitors.py)
+    MONITORS = {
+        "frame_order": ("sync", "the frames ended or dropped come in increasing counter order"),
+    }
+    monitor = None
+
     def __init__(self):
         # the centre symbol
         self.cv = Signal()
@@ -223,4 +229,11 @@ class FrameCtl(Elaboratable):
                     with m.If(self.lw_bank == b):
                         m.d.sync += [q_valid[b].eq(1), q_frame[b].eq(self.lw_frame),
                                      q_from[b].eq(self.lw_from)]
+        if self.monitor is not None:
+            ev = c.o_done | c.o_dropped
+            last = Signal(32, name="mon_last_frame")
+            have = Signal(name="mon_have_frame")
+            with m.If(ev):
+                m.d.sync += [last.eq(c.o_frame), have.eq(1)]
+            self.monitor.watch(m, "frame_order", ev & have & (c.o_frame <= last))
         return m

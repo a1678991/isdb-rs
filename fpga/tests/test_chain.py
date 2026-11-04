@@ -385,6 +385,9 @@ class FinishBench(Elaboratable):
         self.c = Signal(8)
         self.d = Signal()
         self.e = Signal()
+        from isdb_fpga.chain.stages import monitored
+
+        monitored(self)  # Finish's invariant monitors: their ports `mon.ports()`
 
     def elaborate(self, platform):
         m = Module()
@@ -432,7 +435,7 @@ class TmccOverrunTest(unittest.TestCase):
         b = Bench()
         f = b.fin
         ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a, "b": b.b, "c": b.c,
-                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word, "ovr": f.tmcc_overruns}
+                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word, "ovr": f.tmcc_overruns, **b.mon.ports()}
         backend = COMPILED or "pysim"
         e = simx.engine(b, ports, backend, tag="tovr")
         g = e.group("ov", ["ow"])
@@ -440,6 +443,7 @@ class TmccOverrunTest(unittest.TestCase):
         e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=20_000)
         out = [w for (w,) in e.read(g)]
         self.assertEqual(e.get("ovr"), 1)
+        self.assertEqual(b.mon.report(e.get), [])
         bl = S.blocks(out)
         self.assertEqual([(x[0], x[2]) for x in bl], [(S.TMCC, 5), (S.STATUS, 5), (S.SLOT, 6)])
         self.assertEqual(bl[0][3], [0xFFFF, 0xFFFF, 7, 0] + [0] * 589)
@@ -489,13 +493,14 @@ class StatusPointsTest(unittest.TestCase):
         b = Bench()
         f = b.fin
         ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a, "b": b.b, "c": b.c,
-                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word}
+                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word, **b.mon.ports()}
         backend = COMPILED or "pysim"
         e = simx.engine(b, ports, backend, tag="stpts")
         g = e.group("ov", ["ow"])
         e.stall_limit = 1_000_000 if backend != "pysim" else None
         e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=20_000)
         bl = S.blocks([w for (w,) in e.read(g)])
+        self.assertEqual(b.mon.report(e.get), [])
         self.assertEqual([(x[0], x[2]) for x in bl], [(S.TMCC, 5), (S.STATUS, 5)])
         st = bl[1][3]
         want = [v & 0xFFFF for p in pts for v in p]
@@ -536,13 +541,14 @@ class SlotBchTest(unittest.TestCase):
         b = FinishBench()
         f = b.fin
         ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a, "b": b.b, "c": b.c,
-                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word}
+                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word, **b.mon.ports()}
         backend = "cxxrtl" if simx.available() else "pysim"
         e = simx.engine(b, ports, backend, tag="slotbch")
         g = e.group("ov", ["ow"])
         e.stall_limit = 2_000_000 if backend == "cxxrtl" else None
         e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=60_000)
         bl = S.blocks([w for (w,) in e.read(g)])
+        self.assertEqual(b.mon.report(e.get), [])
         slots = [x for x in bl if x[0] == S.SLOT]
         # the dummies before slot 3, then slot 3
         self.assertEqual(len(slots), 4)
@@ -646,7 +652,10 @@ class SlotsRxRegisterTest(unittest.TestCase):
         from isdb_fpga.control import ID_MAGIC, OP_ADDR, OP_CTRL, OP_HI, OP_NOP, OP_READ, OP_WRITE, OP_WRITE_S
         from isdb_fpga.frontend import FORMAT_VERSION
 
-        dut = SlotsRx(32, cos_table(), decoder=False)
+        from isdb_fpga.chain.monitors import Collector
+
+        dut = SlotsRx(32, cos_table(), decoder=False, monitors=True)
+        col = Collector(dut)
         top = Module()
         top.submodules.dut = dut
         top.domains.sync = ClockDomain()
@@ -751,6 +760,8 @@ class SlotsRxRegisterTest(unittest.TestCase):
                                 first is not None and trace[first][0] == 1
                                 and all(v != 0 for v, _ in trace[:first + 1]),
                                 trace[-1][0])
+            # the invariant monitors (the readback, TAPS_FROM, the FIFOs)
+            seen["monitors"] = col.report(lambda n: ctx.get(col.ports()[n]))
 
         sim.add_testbench(bench)
         sim.run()
@@ -761,7 +772,7 @@ class SlotsRxRegisterTest(unittest.TestCase):
             "capture_armed": 0b110, "armed": [(5, 7), (87, 89)], "tap3": 7 << 16 | 0xFFFB,
             "carrier": (-1234) & 0xFFFFFFFF, "status": 0b101, "period_again": 0x12345678, "id_again": ident,
             "decoder": 0x1234 | 1 << 16 | 2 << 20 | 3 << 24, "reclaimed": 7 | 9 << 16,
-            "sum_read": (True, True, 0),
+            "sum_read": (True, True, 0), "monitors": [],
         })
 
 
@@ -780,8 +791,12 @@ class BridgeTest(unittest.TestCase):
 
         from isdb_fpga.chain.ldpc_if import OP_ABORT, OP_BEGIN, OP_DONE, OP_WRITE, LdpcBridge, LdpcPort
 
+        from isdb_fpga.chain.monitors import Collector
+
         port = LdpcPort()
-        br = LdpcBridge(port)
+        br = LdpcBridge(port, monitors=True)
+        col = Collector(br)
+        mon = []
         top = Module()
         top.submodules.br = br
         from amaranth.hdl import ClockDomain
@@ -829,6 +844,7 @@ class BridgeTest(unittest.TestCase):
                         outs.append(("head", ctx.get(port.out_tag), ctx.get(port.out_iterations)))
                     else:
                         outs.append(("word", ctx.get(port.out_bits), ctx.get(port.out_last)))
+            mon.extend(col.report(lambda n: ctx.get(col.ports()[n])))
 
         async def decoder(ctx):
             for cyc in range(400):
@@ -858,6 +874,7 @@ class BridgeTest(unittest.TestCase):
         sim.add_testbench(chain)
         sim.add_testbench(decoder)
         sim.run()
+        self.assertEqual(mon, [])
         self.assertEqual(begins, [0, 1])
         self.assertEqual(aborts, [0])
         self.assertEqual(writes, [(0, 10, 1, 6), (0, 20, -2, 6), (0, 30, 3, 6), (0, 11, 4, 6),

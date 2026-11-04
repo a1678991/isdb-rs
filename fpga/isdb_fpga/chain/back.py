@@ -58,6 +58,13 @@ def aux_field(sig, name):
 
 
 class Back(Elaboratable):
+    # the invariant monitors (monitors.py)
+    MONITORS = {
+        "port_lost": ("sync", "no demapper beat offered while the decoder port is not ready (it "
+                              "cannot wait: the beat would be lost)"),
+    }
+    monitor = None
+
     def __init__(self, max_iter=50, offset=1):
         # one nominal-point ROM for the equaliser's references and the
         # demapper's points (two read ports of one RAMB18)
@@ -154,4 +161,6 @@ class Back(Elaboratable):
             ]
         with m.If(use_dm & ~p.in_ready):
             m.d.sync += self.port_lost.eq(self.port_lost + 1)
+        if self.monitor is not None:
+            self.monitor.watch(m, "port_lost", use_dm & ~p.in_ready)
         return m

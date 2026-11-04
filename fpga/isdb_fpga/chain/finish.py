@@ -555,6 +555,16 @@ class Finish(Elaboratable):
       N's TMCC block, well inside one frame.
     """
 
+    # the invariant monitors (monitors.py)
+    MONITORS = {
+        "status_point_settled": ("sync", "a status word is taken only once the point RAM's registered "
+                                         "read of the sequencer's address has landed (d53de60: each "
+                                         "learned point's re was the previous point's)"),
+        "frame_fifo_overflow": ("sync", "no frame end pushed into the full frame FIFO"),
+        "frame_fifo_underflow": ("sync", "a frame's blocks end only with its entry in the frame FIFO"),
+    }
+    monitor = None
+
     def __init__(self, lag=2):
         from .packer import Packer, StatusSource
         from .tmcc import TmccResult
@@ -716,7 +726,7 @@ class Finish(Elaboratable):
         t_held = Signal()
         t_cnt_held = Signal()
         m.d.comb += pk.w_valid.eq(0)
-        with m.FSM(name="finish"):
+        with m.FSM(name="finish") as fsm:
             with m.State("IDLE"):
                 with m.If(self.r_valid & self.r_head & is_tmcc & ff.r_rdy):
                     # the frame's trailing dummies continue from its last valid
@@ -950,4 +960,13 @@ class Finish(Elaboratable):
         for n_, sig in cnt.items():
             m.d.comb += st.snap[n_].eq(Mux(t_cnt_held, h_cnt[n_], sig) if n_ in SLOT_COUNTERS else sig)
         m.d.comb += st.snap["iterations"].eq(Mux(t_cnt_held, h_iter, self.iterations))
+        if self.monitor is not None:
+            from . import monitors
+
+            pa_d = Signal(8, name="mon_pt_addr_d")
+            m.d.sync += pa_d.eq(st.pt_addr)
+            take = fsm.ongoing("STATUS_W") & pk.w_valid & pk.w_ready
+            self.monitor.watch(m, "status_point_settled", take & (st.pt_addr != pa_d))
+            monitors.fifo_overflow(m, self.monitor, "frame_fifo_overflow", ff)
+            monitors.fifo_underflow(m, self.monitor, "frame_fifo_underflow", ff)
         return m

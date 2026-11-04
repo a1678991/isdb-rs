@@ -38,6 +38,13 @@ TMCC_WORDS = (374 * 61 + 15) // 16  # 1 426: the shortened TMCC word's k bits
 
 
 class ResultFifo(Elaboratable):
+    # the invariant monitors (monitors.py)
+    MONITORS = {
+        "overflow": ("sync", "no entry written into the full FIFO outside a header's retried chunk "
+                             "(it would be lost)"),
+    }
+    monitor = None
+
     def __init__(self):
         # in: the LDPC port's result side (`LdpcPort.out_*`, the bridge's overrun flag)
         self.i_valid = Signal()
@@ -122,4 +129,6 @@ class ResultFifo(Elaboratable):
                 m.d.sync += have.eq(0)
         with m.Elif(f.r_rdy & ~is_rec & self.o_ready):
             m.d.comb += f.r_en.eq(1)
+        if self.monitor is not None:
+            self.monitor.watch(m, "overflow", f.w_en & ~f.w_rdy & (chunk == 0))
         return m

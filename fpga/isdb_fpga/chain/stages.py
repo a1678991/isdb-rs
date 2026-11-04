@@ -11,12 +11,24 @@ import time
 
 from amaranth.hdl import Cat, Elaboratable, Module, Mux, Signal, signed
 
+from . import monitors as mon
 from .common import FRAME, FSYNC, PILOTS, SLOT, SLOTS, SSYNC, SYNC, SYNC_REF, word_symbols
 from .eq import ENTRIES, META, META_SMALL, Equaliser
 from .frame import FrameCtl, lay_pack
 from .phase import SlotPhase
 from .simx import engine
 from .sim import first_mismatch
+
+
+def monitored(bench, monitors=True, rename=None):
+    """The bench's invariant monitors (monitors.py): enabled in every
+    monitored module it holds (`monitors`), and `bench.mon` their
+    `Collector`, whose ports the bench's `ports()` adds and whose report
+    each run adds to its mismatches."""
+    if monitors:
+        mon.enable(bench, rename)
+    bench.mon = mon.Collector(bench)
+    return bench
 
 
 # --- stage 3 -------------------------------------------------------------------
@@ -162,7 +174,7 @@ class EqBench(Elaboratable):
     for frame a (from frame b); K_TAP tap a = (b, c); K_TAPNOW; K_CAP the
     host's SUMS_CAPTURE strobe."""
 
-    def __init__(self):
+    def __init__(self, monitors=True):
         self.eq = Equaliser()
         self.fc = FrameCtl()
         self.i_valid = Signal()
@@ -177,6 +189,7 @@ class EqBench(Elaboratable):
         self.o_at = Signal(48)
         self.rd_lat = Signal(16)  # cycles from a read's request to its rd_ack
         self.rd_lat_max = Signal(16)
+        monitored(self, monitors)
 
     def elaborate(self, platform):
         m = Module()
@@ -215,6 +228,7 @@ class EqBench(Elaboratable):
             "dv": e.d_valid, "dat": e.d_at, "d0": e.d_ref[0], "d1": e.d_ref[1],
             "rack": e.rd_ack, "rdata": e.rd_data, "sframe": e.sums_frame, "scount": e.sums_count,
             "cvalid": e.cap_valid, "carmed": e.cap_armed, "cseq": e.cap_seq, "rlat": self.rd_lat_max,
+            **self.mon.ports(),
         }
 
 
@@ -288,7 +302,7 @@ def run_eq(doc, layout, backend, symbols=None):
     rs = e.read(gr)
     cyc = e.cycles()
     dt = time.time() - t0
-    bad = []
+    bad = b.mon.report(e.get)
     got_z = [(z0, z1) for z0, z1, mt in zs if unpack_meta(mt)["frame"] == F]
     zz = doc["z"]
     nz = len(zz) // 2 if whole else max(0, n - 10)
@@ -368,7 +382,7 @@ def run_eq_capture(doc, layout, backend, strobe=True, read_during=False):
     e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "meta", "at"], recs, tail=100)
     rs = e.read(gr)
     lat = e.get("rlat")
-    bad = []
+    bad = b.mon.report(e.get)
     exp_r = []
     for v in doc["sums"]["r"] + doc["sums"]["p"]:
         (rh, rl), (ih, il) = v
@@ -405,7 +419,7 @@ class TmccBench(Elaboratable):
     (bits, last) of the stub's result. The port grant follows a fixed
     pseudo-random pattern (the demapper's priority, about half the cycles)."""
 
-    def __init__(self):
+    def __init__(self, monitors=True):
         from .finish import FastBch
         from .tmcc import TMCC_DATA, TmccResult, TmccSoft
 
@@ -420,6 +434,7 @@ class TmccBench(Elaboratable):
         self.c = Signal(32)
         self.d = Signal(16)
         self.taken = Signal()
+        monitored(self, monitors)
 
     def elaborate(self, platform):
         m = Module()
@@ -459,6 +474,7 @@ class TmccBench(Elaboratable):
             "obch": r.o_bch, "ov": r.o_valid, "obits": r.o_bits, "olast": r.o_last,
             "lwe": lay.lw_en, "lws": lay.lw_slot, "lwd": lay.lw_data, "lwc": lay.lw_commit,
             "lwf": lay.lw_frame, "lwfrom": lay.lw_from, "over": s.overrun,
+            **self.mon.ports(),
         }
 
 
@@ -518,7 +534,7 @@ def run_tmcc(doc, backend, flips=()):
     over = e.get("over")
     cyc = e.cycles()
     dt = time.time() - t0
-    bad = []
+    bad = bn.mon.report(e.get)
     bad += first_mismatch("soft", soft, list(enumerate(doc["soft"])), key=lambda i, v: f"TMCC bit {i}")
     exp_b = [(OP_BEGIN,)] + [(OP_WRITE, pos, v) for pos, v in zip(doc["position"], doc["soft"])] + [(OP_DONE,)]
     got_b = []
@@ -554,7 +570,7 @@ class BackBench(Elaboratable):
     """`Back` (equaliser, FrameCtl, TMCC input side, demapper, the port
     arbiter) fed as `EqBench`; the decoder port always ready."""
 
-    def __init__(self):
+    def __init__(self, monitors=True):
         from .back import Back
 
         self.back = Back()
@@ -567,6 +583,7 @@ class BackBench(Elaboratable):
         self.meta = Signal(META_SMALL)
         self.at = Signal(48)
         self.pv = Signal()
+        monitored(self, monitors)
 
     def elaborate(self, platform):
         from .ldpc_if import OP_WRITE
@@ -603,6 +620,7 @@ class BackBench(Elaboratable):
             "lpv": dm.lp_valid, "lpa": dm.lp_addr, "lpd": dm.lp_data,
             "nxv": dm.nx_valid, "nxn0": dm.nx_n0, "nxk": dm.nx_k, "late": dm.late,
             "kk": dm.kk, "tv": bk.tmcc.s_valid, "tidx": bk.tmcc.s_idx, "tsoft": bk.tmcc.s_soft,
+            **self.mon.ports(),
         }
         for i in range(5):
             out[f"pp{i}"] = p.in_pos[i]
@@ -672,7 +690,7 @@ def run_back(eqdoc, demapdoc, tmccdoc, backend, symbols=None, next_start=False):
     late = e.get("late")
     cyc = e.cycles()
     dt = time.time() - t0
-    bad = []
+    bad = b.mon.report(e.get)
     by_slot = {}
     for x in beats:
         by_slot.setdefault(x[3] & 0x7F, []).append(x)
@@ -771,7 +789,7 @@ class ChainBench(Elaboratable):
     that many TMCC OP_DONEs), so the stub never answers a codeword before
     the chain has sent it."""
 
-    def __init__(self):
+    def __init__(self, monitors=True):
         from .top import SlotsChain
 
         self.ch = SlotsChain()
@@ -783,6 +801,7 @@ class ChainBench(Elaboratable):
         self.c = Signal(signed(32))
         self.d = Signal(signed(32))
         self.e = Signal(16)
+        monitored(self, monitors)
 
     def elaborate(self, platform):
         m = Module()
@@ -815,7 +834,7 @@ class ChainBench(Elaboratable):
                 "ov": ch.o_valid, "ow": ch.o_word, "tdone": ch.tmcc_done,
                 "frames_done": ch.finish.counters["frames"], "tbusy": ch.back.tmcc.busy,
                 "port_lost": ch.back.port_lost, "late": ch.back.demap.late,
-                "overrun": ch.back.tmcc.overrun}
+                "overrun": ch.back.tmcc.overrun, **self.mon.ports()}
 
 
 def stub_results(words):
@@ -967,7 +986,7 @@ def run_chain(doc, taps, backend, symbols=None):
     cyc = e.cycles()
     dt = time.time() - t0
     exp = doc["slots_words"]
-    bad = [stuck] if stuck else []
+    bad = ([stuck] if stuck else []) + b.mon.report(e.get)
     if symbols is not None:
         exp = exp[:len(got)]
     for i, (a_, b_) in enumerate(zip(got, exp)):
@@ -1002,7 +1021,7 @@ class RealChainBench(Elaboratable):
     output stream (a set's `bch_errors`: the model flipped the same in its
     decoder's output), between the bridge and the chain."""
 
-    def __init__(self, units=34, banks=3, errors=()):
+    def __init__(self, units=34, banks=3, errors=(), monitors=True):
         from amaranth.hdl import DomainRenamer
 
         from ..ldpc import LdpcDecoder
@@ -1030,6 +1049,9 @@ class RealChainBench(Elaboratable):
         self.a = Signal(signed(33))
         self.b = Signal(signed(33))
         self.c = Signal(signed(32))
+        # the monitors' ports (`mon_*`) are this bench's: the decoder's
+        # cycles are its own (`ldpc`, 5 per symbol clock)
+        monitored(self, monitors, rename={"dec": {"sync": "ldpc"}})
 
     def elaborate(self, platform):
         m = Module()
@@ -1096,7 +1118,8 @@ class RealChainBench(Elaboratable):
                 # the decoder's banks and the bridge's queues (issue #28)
                 "held": self.dec.held, "load_ready": self.dec.load_ready, "aborted": self.dec.aborted,
                 "reused": self.dec.reused, "aborts": ch.back.aborts, "in_level": self.br.v_in_level,
-                "tag_level": self.br.v_tags, "out_level": self.br.v_out_level, "rf_level": ch.results.level}
+                "tag_level": self.br.v_tags, "out_level": self.br.v_out_level, "rf_level": ch.results.level,
+                **self.mon.ports()}
 
 
 def blocks_by_frame(words):
@@ -1183,7 +1206,7 @@ def run_chain_real(doc, taps, backend=None, symbols=None):
                                   "dec_overruns", "queue_overflow", "fifo_max")}
     cyc = e.cycles()
     dt = time.time() - t0
-    bad = [stuck] if stuck else []
+    bad = ([stuck] if stuck else []) + b.mon.report(e.get)
     try:
         gb, gorder, twice = blocks_by_frame(got)
     except AssertionError as err:
@@ -1264,6 +1287,7 @@ def run_chain_restarts(doc, taps, backend=None, cycles=4, pause=200_000):
     e.stall_limit = 3_000_000
     g = e.group("ov", ["ow"])
     bad, starts = [], []
+    violated = False
     keys = ("held", "load_ready", "in_level", "tag_level", "out_level", "rf_level", "aborted", "aborts",
             "reused", "dec_overruns")
     stop_recs, stop_gaps = symbols(stop)
@@ -1283,8 +1307,12 @@ def run_chain_restarts(doc, taps, backend=None, cycles=4, pause=200_000):
             e.run("i_valid", "i_ready", ["kind", "a", "b", "c"], recs, tail=1_500_000 if last else 3000,
                   gaps=gaps)
         except RuntimeError as err:
-            return "", bad + [f"pass {r}: {err}"]
+            return "", bad + [f"pass {r}: {err}"] + b.mon.report(e.get)
         words = [w for (w,) in e.read(g)]
+        viol = b.mon.report(e.get)  # sticky: reported after the pass that first violates
+        if viol and not violated:
+            violated = True
+            bad += [f"pass {r}: {x}" for x in viol]
         if not last:
             st = {k: e.get(k) for k in keys}
             starts.append(st)

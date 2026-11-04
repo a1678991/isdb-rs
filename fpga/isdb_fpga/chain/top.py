@@ -108,7 +108,10 @@ def split(sig, fields):
 
 
 class SlotsChain(Elaboratable):
-    def __init__(self, in_bits=6, carrier=0, max_iter=50, offset=1):
+    """The chain's stages wired (module docstring). `monitors`: the
+    invariant monitors of its blocks (monitors.py; simulation only)."""
+
+    def __init__(self, in_bits=6, carrier=0, max_iter=50, offset=1, monitors=False):
         self.front = SyncFront(in_bits, carrier, detail=False)
         self.phase = SlotPhase(in_bits, snap_bits=SNAP_BITS)
         self.back = Back(max_iter, offset)
@@ -125,6 +128,10 @@ class SlotsChain(Elaboratable):
         self.o_valid = self.finish.o_valid
         self.o_word = self.finish.o_word
         self.tmcc_done = Signal(16)  # TMCC codewords committed (verification)
+        if monitors:
+            from .monitors import enable
+
+            enable(self)
 
     def elaborate(self, platform):
         m = Module()
@@ -250,9 +257,22 @@ class SlotsRx(Elaboratable):
     itself), `ldpc` the decoder's 200 MHz: with `mmcm`, an MMCME2_BASE on
     `ldpc_ref` (the PS's clk_fpga_0, 100 MHz) inside the block, its reset
     held until the MMCM locks; without (the simulations), the `ldpc`
-    domain from outside."""
+    domain from outside. `monitors`: the invariant monitors of the block
+    and everything in it (monitors.py; simulation only)."""
 
-    def __init__(self, taps, cos_table, h=None, g=None, k=None, decoder=True, mmcm=False, units=34):
+    # the invariant monitors (monitors.py)
+    MONITORS = {
+        "sum_readback_hold": ("sync", "while a sum register's READ is pending the readback keeps the "
+                                      "previous value (a052ece: it showed 0 until the word came)"),
+        "sum_read_slow": ("sync", "a sum register's READ is answered within 16 symbol clocks"),
+        "taps_from_written": ("sync", "a TAPS_FROM write arms the equaliser with the frame written "
+                                      "and that frame + 2 (5f60649: the previous write's)"),
+        "input_fifo_overflow": ("sync", "no symbol written into the full 1 024-symbol input FIFO"),
+    }
+    monitor = None
+
+    def __init__(self, taps, cos_table, h=None, g=None, k=None, decoder=True, mmcm=False, units=34,
+                 monitors=False):
         from ..frontend import SymbolFrontend
         from .ldpc_if import LdpcBridge
 
@@ -282,6 +302,10 @@ class SlotsRx(Elaboratable):
         self.gpio_in = Signal(32)
         self.ldpc_ref = Signal()  # with mmcm: the MMCM's input clock
         self.ldpc_locked = Signal()
+        if monitors:
+            from .monitors import enable
+
+            enable(self, rename={"decoder": {"sync": "ldpc"}})
 
     def ports(self):
         out = [self.adc_valid, self.adc_i, self.adc_q, self.pass_valid, self.pass_data0, self.pass_data1,
@@ -487,4 +511,8 @@ class SlotsRx(Elaboratable):
             self.pack_data0.eq(Mux(slots_on, ch.o_word, Mux(ctl.symbols, core.o_word, self.pass_data0))),
             self.pack_data1.eq(Mux(slots_on | ctl.symbols, 0, self.pass_data1)),
         ]
+        if self.monitor is not None:
+            from . import monitors
+
+            monitors.slots_rx(m, self.monitor, eqm=eqm, readback=readback, value=value, fifo=fifo)
         return m
