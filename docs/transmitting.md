@@ -78,11 +78,11 @@ Device arguments, gains and ranges are listed in the
 
 - **Ethernet.** Gigabit Ethernet carries 512/63 MHz (32.5 MB/s) in one
   direction. Give the Pluto a static address on your LAN from its shell
-  (over SSH: `192.168.2.1` on USB, or its current
+  (over SSH: `<PLUTO_IP>` on USB, or its current
   Ethernet address): `fw_setenv ipaddr_eth <PLUTO_IP>;
   fw_setenv netmask_eth 255.255.255.0`, then `reboot`. The firmware writes
   `/etc/network/interfaces` from these variables at every boot (default
-  `192.168.1.10/24`, which may collide with another device on a home
+  `<DEFAULT_ETHERNET_IP>/<PREFIX_LENGTH>`, which may collide with another device on a home
   network); it has no gateway setting, so the host must be on the same
   subnet. Check with `iio_info -u ip:<PLUTO_IP>`.
 - **Level.** The TX attenuation defaults to its maximum (`att=89.75`).
@@ -236,7 +236,7 @@ a program of *another* network (e.g. a satellite recording), use
 |---|---|---|
 | `--iq PATH` | — | write baseband to a file (`-` = stdout) instead of a radio |
 | `--iq-format cf32\|cs8` | cf32 | float32 I/Q (GNU Radio) or signed 8-bit I/Q (`hackrf_transfer`, scaled with `--backoff-db`) |
-| `--radio NAME[:key=value,...]` | — | transmit with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.0.2.30`); needs `--channel` or `--freq`, and `--rf-enable` or `--dry-run`. An unknown name lists the compiled-in backends and their cargo features |
+| `--radio NAME[:key=value,...]` | — | transmit with a radio backend and its device arguments (`hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:<PLUTO_IP>`); needs `--channel` or `--freq`, and `--rf-enable` or `--dry-run`. An unknown name lists the compiled-in backends and their cargo features |
 | `--channel T` / `--freq HZ` | — | terrestrial channel T13–T52 (a bare number N means TN), or a centre frequency in Hz, within 470–710 MHz. Satellite channels (BSn, NDn) are refused |
 | `--freq-unrestricted` | off | allow a centre outside the 470–710 MHz TV band (shielded lab setups only); the backend's own range still applies (HackRF 1 MHz–6 GHz, Pluto 47 MHz–6 GHz) |
 | `--rf-enable` | off | **actually radiate** (licensed or conducted/shielded use only) |

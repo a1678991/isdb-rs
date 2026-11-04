@@ -11,7 +11,7 @@ use std::str::FromStr;
 /// key); the backend checks the argument names and values. The syntax
 /// cannot express every string: the name cannot contain `:` (it is
 /// `[A-Za-z0-9_-]+`), keys cannot contain `,` or `=`, values cannot
-/// contain `,` (they may contain `=` and `:`, e.g. `uri=ip:192.0.2.30`),
+/// contain `,` (they may contain `=` and `:`, e.g. `uri=ip:<PLUTO_IP>`),
 /// and whitespace around names, keys and values is dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSpec {

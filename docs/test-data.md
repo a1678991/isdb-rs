@@ -13,6 +13,11 @@ variable is unset or the file is missing. This page lists those variables,
 how to make or capture suitable data yourself, and how to set up the
 gr-isdbt differential test.
 
+Addresses such as `ip:<PLUTO_IP>` are explicit placeholders. Replace the
+angle-bracketed text with your device address, or export `ISDB_PLUTO_URI`
+locally and use `"$ISDB_PLUTO_URI"` in commands. Numeric addresses in
+automated test fixtures are synthetic test data.
+
 ## Environment variables
 
 | Variable | Points at | Enables |
@@ -247,7 +252,9 @@ All device addresses and external checkout/capture paths in this repository
 are placeholders. Substitute your local values at execution time. Set
 `ISDB_PLUTO_URI=ip:<DEVICE_IP>` for `tools/isdbs3-board-check.sh` (its URI
 argument takes precedence). Set `PLUTO_HOST=<DEVICE_IP_OR_HOSTNAME>` for
-`tools/pluto-image.sh`; it requires this value before any board operation.
+`tools/pluto-image.sh` (`HOST` is also accepted); it requires this value and
+`SSHPASS` supplied locally before any board operation. The board-check script
+also accepts the upstream `PLUTO_URI` variable when `ISDB_PLUTO_URI` is unset.
 For example, with the variables already exported locally:
 
 ```sh

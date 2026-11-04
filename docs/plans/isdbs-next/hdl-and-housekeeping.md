@@ -405,9 +405,9 @@ in main: keep).
 and L913 "**Before any TX test on TX1** (all three are required):" →
 "**Before any TX test on TX1** (all three are required; 1 and 2 are in
 place on the bench since 2026-10-29, keep them):". The address line
-L928 (`ip:<PLUTO_IP>`) is the documentation placeholder for the bench
-board's address, not to be committed as a real
-identity — leave it.
+L928 (`ip:<PLUTO_IP>`) is the documentation placeholder; the bench board
+is configured locally (see isdbs-next.md); keep only the documentation
+placeholder in committed examples.
 
 §0.23 (L862–879): L865 "2.7k LUT" (Yosys) → "2 331 LUT placed"; L868
 "Image expectation 158 DSP." → "Image: 158 DSP, timing met

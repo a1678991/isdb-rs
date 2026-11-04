@@ -118,7 +118,7 @@ Sinks: `--iq PATH [--iq-format cf32|cs8]` (`-` = stdout) or
 
 | flag | default | meaning |
 |---|---|---|
-| `--radio NAME[:key=value,...]` | — | radio backend and its device arguments, e.g. `hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:192.0.2.30`; an unknown name lists the compiled-in backends and their cargo features |
+| `--radio NAME[:key=value,...]` | — | radio backend and its device arguments, e.g. `hackrf`, `hackrf:serial=0000abcd`, `pluto:uri=ip:<PLUTO_IP>`; an unknown name lists the compiled-in backends and their cargo features |
 | `--channel T` / `--freq HZ` | — | terrestrial channel T13..T62 (a bare number N means TN) → 473 + 6(N−13) + 1/7 MHz; the centre must lie in the 470–710 MHz TV band (T13–T52). Satellite channels (BSn, NDn): `rx` receives them as ISDB-S, `tx --system isdbs` transmits at their IF (outside the band, so with `--freq-unrestricted`); ISDB-T `tx` refuses them |
 | `--freq-unrestricted` | off | allow a centre outside 470–710 MHz (shielded lab only); the backend's own range still applies (HackRF 1 MHz–6 GHz, Pluto TX 47 MHz–6 GHz) |
 | `--freq-corr-ppm P` | 0 | divide tuning and sample clock by 1 + P·1e-6 |

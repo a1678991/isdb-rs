@@ -17,8 +17,8 @@
 # HOST (required: the board's address, or PLUTO_HOST), SSHPASS (required:
 # the board's root password; Tezuka keeps the ADI firmware's default).
 set -euo pipefail
-PLUTO_HOST=${PLUTO_HOST:-${HOST:?set PLUTO_HOST or HOST to the board's address}}
-export SSHPASS=${SSHPASS:?set SSHPASS to the board's root password}
+PLUTO_HOST=${PLUTO_HOST:-${HOST:?set PLUTO_HOST or HOST to the board address}}
+export SSHPASS=${SSHPASS:?set SSHPASS to the board root password}
 SSH=(sshpass -e ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR
      -o ConnectTimeout=5 "root@$PLUTO_HOST")
 SCP=(sshpass -e scp -O -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR)

@@ -3,15 +3,15 @@
 //! through `isdb-iio` / libiio.
 //!
 //! * Device arguments:
-//!   * `uri`: libiio context URI, e.g. `ip:192.168.2.1` (USB RNDIS),
-//!     `ip:<PLUTO_IP>` (Ethernet), `usb:1.4.5`. Without it, the
+//!   * `uri`: libiio context URI, e.g. `ip:<PLUTO_IP>` (documentation placeholder)
+//!     or `usb:1.4.5`. Without it, the
 //!     `ISDB_PLUTO_URI` environment variable; without that, the device is
 //!     found by mDNS when it is opened: the one host on the link answering
 //!     for libiio's DNS-SD service `_iio._tcp.local` or for `pluto.local`
 //!     becomes `ip:ADDRESS` (none, or several, is an error naming them).
 //!     A given `uri` or `ISDB_PLUTO_URI` sends no mDNS query. The query
 //!     goes out on the interface of the IPv4 default route, so a Pluto on
-//!     USB alone needs `uri=ip:192.168.2.1` (or `usb:…`); the board
+//!     USB alone needs `uri=ip:<PLUTO_IP>` (or `usb:…`); the board
 //!     answers only while its `avahi-daemon` runs.
 //!     The network backend streams over iiod; Gigabit Ethernet keeps up
 //!     with 512/63 MHz (32.5 MB/s each way).
