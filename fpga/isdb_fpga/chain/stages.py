@@ -822,12 +822,14 @@ class ChainBench(Elaboratable):
     b) of the stub's results; a result record waits until `d`/`c` ... its
     frame's TMCC codeword has been committed on the port (`need` in e:
     that many TMCC OP_DONEs), so the stub never answers a codeword before
-    the chain has sent it."""
+    the chain has sent it. The chain's stop (`SlotsChain.stop_after`) is
+    off: the stub's results of a frame come as one run of records, with
+    no input for longer than a stop."""
 
     def __init__(self, monitors=True):
         from .top import SlotsChain
 
-        self.ch = SlotsChain()
+        self.ch = SlotsChain(stop_after=None)
         self.i_valid = Signal()
         self.i_ready = Signal()
         self.kind = Signal(3)
@@ -1054,7 +1056,9 @@ class RealChainBench(Elaboratable):
     taps written loaded as with INIT bit 0, the blocks' sequence from 0).
     `errors`: [(frame, slot, [positions])] bits to flip in the decoder's
     output stream (a set's `bch_errors`: the model flipped the same in its
-    decoder's output), between the bridge and the chain."""
+    decoder's output), between the bridge and the chain. The chain's stop
+    is on (`SlotsChain.stop_after`, `top.STOP_AFTER` symbol clocks without
+    an input record), as in `SlotsRx`: a bench's pause is a host's stop."""
 
     def __init__(self, units=34, banks=3, errors=(), monitors=True):
         from amaranth.hdl import DomainRenamer
@@ -1152,7 +1156,8 @@ class RealChainBench(Elaboratable):
                 "queue_overflow": self.dec.queue_overflow,
                 # the decoder's banks and the bridge's queues (issue #28)
                 "held": self.dec.held, "load_ready": self.dec.load_ready, "aborted": self.dec.aborted,
-                "reused": self.dec.reused, "aborts": ch.back.aborts, "in_level": self.br.v_in_level,
+                "reused": self.dec.reused, "aborts": ch.back.aborts, "stops": ch.stops,
+                "in_level": self.br.v_in_level,
                 "tag_level": self.br.v_tags, "out_level": self.br.v_out_level, "rf_level": ch.results.level,
                 **self.mon.ports()}
 
@@ -1285,14 +1290,18 @@ def run_chain_restarts(doc, taps, backend=None, cycles=4, pause=200_000):
     the input from its start to inside the first codeword of the first
     decoded frame (frame 2), then the host's stop (no input for `pause`
     symbol clocks: what was committed drains) and its START (C_START),
-    `cycles` times; then the whole input once more. After each START: no
-    bank held, a bank free (`load_ready`), the bridge's FIFOs and tag queue
-    and the result FIFO empty. The last pass: the slot and TMCC blocks of
+    `cycles` times; then the whole input once more. At the end of each
+    stop, before START: the chain's stop restarted it (`stops`, an abort
+    beat), no bank held (the open codeword's freed by that abort), a bank
+    free (`load_ready`), the bridge's FIFOs and tag queue and the result
+    FIFO empty; and the same after START. The last pass: the slot and TMCC blocks of
     its three frames against the model's (below: the decoded bits and
     BCH results; not the frame counter, which runs on across a restart,
     nor the iteration counts), so frame 2 decodes every slot as without a
     stop. Before the abort each stop kept a decoder bank (one of three):
-    the last pass had none. Returns (what, bad)."""
+    the last pass had none; before the stop's restart each stop kept the
+    open codeword's bank until START (build 9 on the board: "1 of 3 banks
+    held" at every open). Returns (what, bad)."""
     from . import simx
     from . import slots as S
 
@@ -1321,10 +1330,14 @@ def run_chain_restarts(doc, taps, backend=None, cycles=4, pause=200_000):
     e = engine(b, b.ports(), backend, tag="chainreal")
     e.stall_limit = 3_000_000
     g = e.group("ov", ["ow"])
-    bad, starts = [], []
+    bad, starts, stops = [], [], []
     violated = False
     keys = ("held", "load_ready", "in_level", "tag_level", "out_level", "rf_level", "aborted", "aborts",
-            "reused", "dec_overruns")
+            "reused", "dec_overruns", "stops")
+
+    def drained(st):
+        return (st["held"], st["load_ready"], st["in_level"], st["tag_level"], st["out_level"],
+                st["rf_level"]) == (0, 1, 0, 0, 0, 0)
     stop_recs, stop_gaps = symbols(stop)
     for r in range(cycles + 1):
         last = r == cycles
@@ -1332,15 +1345,17 @@ def run_chain_restarts(doc, taps, backend=None, cycles=4, pause=200_000):
         if r == 0 and taps is not None:
             head = [(C_TAP, i, taps[2 * i], taps[2 * i + 1]) for i in range(11)] + [(C_TAPNOW, 0, 0, 0)]
             recs, gaps = head + recs, [0] * len(head) + gaps
-        if not last:
-            # the stop: `pause` idle clocks after the last symbol (a gap
-            # follows its record), then START
-            gaps[-1] += pause
-            recs.append((C_START, 0, 0, 0))
-            gaps.append(0)
         try:
-            e.run("i_valid", "i_ready", ["kind", "a", "b", "c"], recs, tail=1_500_000 if last else 3000,
+            # the stop: `pause` idle clocks after the last symbol, then START
+            before = e.get("stops")
+            e.run("i_valid", "i_ready", ["kind", "a", "b", "c"], recs, tail=1_500_000 if last else pause,
                   gaps=gaps)
+            if not last:
+                st = {k: e.get(k) for k in keys}
+                stops.append(st)
+                if not drained(st) or st["stops"] != before + 1:
+                    bad.append(f"after stop {r + 1}, before START: {st}")
+                e.run("i_valid", "i_ready", ["kind", "a", "b", "c"], [(C_START, 0, 0, 0)], tail=3000)
         except RuntimeError as err:
             return "", bad + [f"pass {r}: {err}"] + b.mon.report(e.get)
         words = [w for (w,) in e.read(g)]
@@ -1351,8 +1366,7 @@ def run_chain_restarts(doc, taps, backend=None, cycles=4, pause=200_000):
         if not last:
             st = {k: e.get(k) for k in keys}
             starts.append(st)
-            if (st["held"], st["load_ready"], st["in_level"], st["tag_level"], st["out_level"],
-                    st["rf_level"]) != (0, 1, 0, 0, 0, 0):
+            if not drained(st):
                 bad.append(f"after START {r + 1}: {st}")
     dt = time.time() - t0
     # the last pass against the model: its frames in order are the model's 0, 1, 2
@@ -1403,6 +1417,6 @@ def run_chain_restarts(doc, taps, backend=None, cycles=4, pause=200_000):
         bad.append(f"{dropped} dropped slots in the last pass")
     what = (f"{cycles} stop/START cycles (stop at symbol {stop}, {pause} clocks), then the whole input: "
             f"{compared} slot and TMCC blocks of the model's compared, {dropped} dropped, iterations "
-            f"(slot, got, model's) differing in {iters}; after each START {starts}; "
+            f"(slot, got, model's) differing in {iters}; after each stop {stops}; after each START {starts}; "
             f"{e.cycles()} cycles in {dt:.0f} s")
     return what, bad
