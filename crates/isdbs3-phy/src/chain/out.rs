@@ -1,7 +1,9 @@
-//! A chain frame as `Slots` blocks (`isdb_frontend::slots`): what the
-//! FPGA's packer (stage 9) sends for it, in this order: the frame's slots
-//! (all 120, dummies flagged, when the frame was decoded), its TMCC, its
-//! status.
+//! A chain frame as `Slots` blocks (`isdb_frontend::slots`, format 2):
+//! what the FPGA's packer (stage 9) sends for it, in this order: the
+//! frame's slots (all 120, dummies flagged, when the frame was decoded),
+//! its TMCC, its status, and its training sums (when the equaliser
+//! latched them at the frame's end: a decoded frame,
+//! [`super::frame::FrameOut::sums`]).
 
 use super::frame::{FrameOut, SlotOut, Status};
 use isdb_frontend::slots::{Block, SlotBlock, Status as SlotsStatus, TmccBlock, bytes_to_bits};
@@ -15,7 +17,7 @@ fn codes(s: &SlotOut) -> (u8, u8) {
 /// The `Slots` blocks of `f` (the layout lag `lag` gives the TMCC
 /// block's first frame).
 pub fn blocks(f: &FrameOut, lag: u32) -> Vec<Block> {
-    let mut out = Vec::with_capacity(f.slots.len() + 2);
+    let mut out = Vec::with_capacity(f.slots.len() + 3);
     for s in &f.slots {
         let (m, r) = codes(s);
         let bits = if s.dummy {
@@ -54,6 +56,11 @@ pub fn blocks(f: &FrameOut, lag: u32) -> Vec<Block> {
         bits: t.bits.clone(),
     }));
     out.push(Block::Status(Box::new(status(&f.status))));
+    if let Some(s) = &f.sums {
+        let mut b = super::eq::to_block(s);
+        b.frame = f.frame;
+        out.push(Block::Sums(Box::new(b)));
+    }
     out
 }
 

@@ -216,6 +216,27 @@ pub fn from_training(t: &isdb_frontend::control::chain::TrainingSums) -> Sums {
     }
 }
 
+/// The sums as the chain's `Slots` sums block carries them
+/// (`isdb_frontend::slots::SumsBlock`, format 2: the frame summed in the
+/// header and the payload; the count is at most 6 720, saturated to
+/// 16 bits beyond).
+pub fn to_block(s: &Sums) -> isdb_frontend::slots::SumsBlock {
+    isdb_frontend::slots::SumsBlock {
+        frame: s.frame,
+        sums_frame: s.frame,
+        count: u16::try_from(s.count).unwrap_or(u16::MAX),
+        r: s.r.clone(),
+        p: s.p.clone(),
+    }
+}
+
+/// The host's slow-loop solve on the sums of a `Slots` sums block (the
+/// FPGA's stream path): [`solve_training`] of the block's registers' view
+/// (`SumsBlock::to_training`, the one conversion both paths share).
+pub fn solve_block(b: &isdb_frontend::slots::SumsBlock) -> Option<[[i16; 2]; TAPS]> {
+    solve_training(&b.to_training())
+}
+
 /// The host's slow-loop solve on sums read from the chain's registers:
 /// [`solve_sums`] (the same `f64` solve and Q2.14 rounding as the model).
 /// `None` for a singular system, an empty sum, or sums of the wrong shape.
@@ -310,6 +331,29 @@ mod tests {
             t.r.len() + t.p.len(),
             isdb_frontend::control::chain::all_sum_registers().len() / 4
         );
+        // and through the Slots sums block: the same values as the
+        // registers' path, the same taps
+        let b = to_block(&sums);
+        assert_eq!(b.to_training(), t);
+        assert_eq!(solve_block(&b), Some(w));
+        let mut words = Vec::new();
+        isdb_frontend::slots::Writer::new().write(
+            &isdb_frontend::slots::Block::Sums(Box::new(b.clone())),
+            &mut words,
+        );
+        let mut ev = Vec::new();
+        isdb_frontend::slots::Reader::new().feed(&words, &mut ev);
+        let [
+            isdb_frontend::slots::Event::Block {
+                block: isdb_frontend::slots::Block::Sums(read),
+                ..
+            },
+        ] = ev.as_slice()
+        else {
+            panic!("{ev:?}")
+        };
+        assert_eq!(**read, b);
+        assert_eq!(solve_block(read), Some(w));
         // centre ≈ 1, the next tap ≈ −0.2
         assert!((i32::from(w[CENTRE][0]) - 16_384).abs() < 300, "{w:?}");
         assert!((i32::from(w[CENTRE + 1][0]) + 3_277).abs() < 300, "{w:?}");

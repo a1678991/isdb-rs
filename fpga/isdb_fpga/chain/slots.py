@@ -1,11 +1,16 @@
-"""The `Slots` format, version 1 (`isdb_frontend::slots`), in Python: a
+"""The `Slots` format, version 2 (`isdb_frontend::slots`), in Python: a
 reader of the stream into blocks (for the comparisons and the LDPC stub)
-and the payload layouts the packer (`packer.py`) produces.
+and the payload layouts the packer (`packer.py`) produces. Version 2 is
+version 1 and the sums block (type 4: a frame's training sums after its
+status block, `sums_fields`); every block's header carries version 2.
 """
 
 SYNC = (0x1ACF, 0xFC1D)
 HEADER_WORDS = 9
-SLOT, TMCC, STATUS = 1, 2, 3
+SLOT, TMCC, STATUS, SUMS = 1, 2, 3, 4
+SLOTS_VERSION = 2
+SUMS_ENTRIES = 77  # R's 66 upper-triangle entries, then p's 11
+SUMS_PAYLOAD = 3 + 6 * SUMS_ENTRIES  # 465
 RATES = [41, 49, 61, 73, 81, 89, 93, 97, 101, 105, 109]
 
 
@@ -30,8 +35,8 @@ def crc32c(words, seq):
     return crc ^ 0xFFFFFFFF
 
 
-def header(kind, seq, payload, frame):
-    w = [SYNC[0], SYNC[1], 0xF | kind << 4 | 1 << 8, seq & 0xFFFF, seq >> 16, payload,
+def header(kind, seq, payload, frame, version=SLOTS_VERSION):
+    w = [SYNC[0], SYNC[1], 0xF | kind << 4 | version << 8, seq & 0xFFFF, seq >> 16, payload,
          frame & 0xFFFF, frame >> 16 & 0xFFFF, 0]
     w[8] = (0xFFFF - sum(w[2:8])) & 0xFFFF
     return w
@@ -71,3 +76,17 @@ def slot_fields(pay):
     n = 0 if f["dummy"] else 176 + data_bits(f["rate"])
     f["bits"] = unpack_bits(pay[3:], n)
     return f
+
+
+def s48(lo, mid, hi):
+    v = lo | mid << 16 | hi << 32
+    return v - (1 << 48) if v >> 47 else v
+
+
+def sums_fields(pay):
+    """A sums block's fields: the frame summed, the count, and the 77
+    complex sums as (re, im) 48-bit signed integers (R row by row, r <= c,
+    then p)."""
+    assert len(pay) == SUMS_PAYLOAD, len(pay)
+    v = [(s48(*pay[3 + 6 * i:6 + 6 * i]), s48(*pay[6 + 6 * i:9 + 6 * i])) for i in range(SUMS_ENTRIES)]
+    return {"frame": pay[0] | pay[1] << 16, "count": pay[2], "r": v[:66], "p": v[66:]}

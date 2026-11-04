@@ -52,9 +52,11 @@ with the first segment's).
 after its symbol front end (docs/plans/isdbs3-fpga-rx.md, piece 3): one
 6-bit symbol in per `Chain::push`, every stage in integers whose widths,
 roundings and thresholds the module documentation states (it is the
-specification the HDL follows), and frames out with their slots, TMCC
-and status, which `chain::out::blocks` turns into the `Slots` boundary
-format (`isdb_frontend::slots`). Stages: NCO and carrier loop (gain ½
+specification the HDL follows), and frames out with their slots, TMCC,
+status and (decoded frames) training sums, which `chain::out::blocks`
+turns into the `Slots` boundary format 2 (`isdb_frontend::slots`; the
+host's slow loop solves the sums block with `chain::eq::solve_block`).
+Stages: NCO and carrier loop (gain ½
 per frame from the SSync phase steps), slot sync (±I±Q correlation,
 max + ½min magnitude, a 9 296-position accumulator with a ⅛ leak, lock
 after 4 periods and loss after 8, frame heads by a streaming
