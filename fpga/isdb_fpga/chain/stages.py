@@ -1247,21 +1247,11 @@ def lateness(order):
     return worst
 
 
-def run_chain_real(doc, taps, backend=None, symbols=None, words=None):
-    """The whole chain with the real decoder on a whole-chain set written
-    with the decoder's settings (chain-7-hdl, chain-8-loss, chain-9-fade,
-    chain-10-bch): every block of the model's stream, compared per (frame,
-    kind, slot). `backend` None: the compiled one (`simx.compiled_backend`:
-    `$FPGA_SIM` if it names one, else Verilator where installed, else
-    CXXRTL); the decoder makes pysim impractical here. `words`: a list
-    that receives the chain's `Slots` words (a variant's own checks)."""
-    from . import simx
-
-    backend = backend or simx.compiled_backend()
-    if backend is None:
-        raise RuntimeError("the real-decoder chain needs a compiled backend (simx.compiled_backend)")
+def chain_real_records(doc, taps, n):
+    """The input of `RealChainBench` for a set's first `n` symbols: the
+    records (the host's taps at open if `taps`, its writes and the set's
+    losses where they fall, the symbols) and the idle cycles after each."""
     x = doc["input"]
-    n = len(x) // 2 if symbols is None else min(symbols, len(x) // 2)
     losses = {at: k for at, k in doc.get("losses", [])}
     recs = []
     if taps is not None:
@@ -1283,6 +1273,25 @@ def run_chain_real(doc, taps, backend=None, symbols=None, words=None):
         acc += 40e6 / 33.7561e6 - 1
         gaps.append(int(acc))
         acc -= int(acc)
+    return recs, gaps
+
+
+def run_chain_real(doc, taps, backend=None, symbols=None, words=None):
+    """The whole chain with the real decoder on a whole-chain set written
+    with the decoder's settings (chain-7-hdl, chain-8-loss, chain-9-fade,
+    chain-10-bch): every block of the model's stream, compared per (frame,
+    kind, slot). `backend` None: the compiled one (`simx.compiled_backend`:
+    `$FPGA_SIM` if it names one, else Verilator where installed, else
+    CXXRTL); the decoder makes pysim impractical here. `words`: a list
+    that receives the chain's `Slots` words (a variant's own checks)."""
+    from . import simx
+
+    backend = backend or simx.compiled_backend()
+    if backend is None:
+        raise RuntimeError("the real-decoder chain needs a compiled backend (simx.compiled_backend)")
+    x = doc["input"]
+    n = len(x) // 2 if symbols is None else min(symbols, len(x) // 2)
+    recs, gaps = chain_real_records(doc, taps, n)
     b = RealChainBench(errors=doc.get("bch_errors", ()), tmcc_errors=doc.get("tmcc_errors", ()))
     p = b.ports()
     t0 = time.time()
