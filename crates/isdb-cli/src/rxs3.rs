@@ -18,7 +18,7 @@ use isdb_tlv::Assembler;
 use isdb_tlv::stats::StreamStats;
 use isdbs3_core::params::FRAME_SYMBOLS;
 use isdbs3_phy::frontend::{Prior, Symbols, Trim, symbols_with_prior};
-use isdbs3_phy::rx::{Front, Rx, RxOptions, receive, receive_back, receive_front};
+use isdbs3_phy::rx::{Front, Rx, RxOptions, receive_back, receive_front};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -109,8 +109,10 @@ impl Outputs {
 #[derive(Debug)]
 pub struct Stats {
     /// Seconds spent in the front end (all blocks), in the receiver, and
-    /// in the whole run (the stages overlap, so the wall time is less
-    /// than their sum).
+    /// in the whole run. The stages overlap, and the streamed receiver
+    /// runs a chunk's sync on one thread while another decodes the
+    /// previous chunk (`back_s` is summed over both), so the wall time
+    /// can be less than either sum.
     pub front_s: f64,
     /// See `front_s`.
     pub back_s: f64,
@@ -358,23 +360,25 @@ pub fn decode(
     out: &mut Outputs,
     stats: &mut Stats,
 ) -> Result<usize> {
-    let r = receive(
-        z,
-        &RxOptions {
-            ldpc: stats.ldpc,
-            // a continuing stream is cut on a frame start (slot head at 0)
-            slot_offset: aligned.then_some(0),
-            carrier_hz,
-            ..RxOptions::default()
-        },
-    );
+    let opt = RxOptions {
+        ldpc: stats.ldpc,
+        // a continuing stream is cut on a frame start (slot head at 0)
+        slot_offset: aligned.then_some(0),
+        carrier_hz,
+        ..RxOptions::default()
+    };
+    let t = std::time::Instant::now();
+    let f = receive_front(z, &opt);
+    stats.prep_s += t.elapsed().as_secs_f64();
+    let t = std::time::Instant::now();
+    let r = receive_back(f, &opt);
+    stats.ldpc_s += t.elapsed().as_secs_f64();
     stats.residual_hz = r.residual_hz;
     stats.sync_snr_db = r.sync_snr_db;
     stats.sync_snr_eq_db = r.sync_snr_eq_db;
     let upto = keep_last.then(|| r.frame_starts.last().copied()).flatten();
     if keep_last && upto.is_none() {
         // no whole frame yet: keep everything for the next call
-        stats.prep_s += r.prep_s;
         return Ok(0);
     }
     emit(&r, upto, asm, out, stats)?;
@@ -392,8 +396,6 @@ fn emit(
     stats: &mut Stats,
 ) -> Result<()> {
     let te = std::time::Instant::now();
-    stats.prep_s += r.prep_s;
-    stats.ldpc_s += r.ldpc_s;
     // `r.frames[i]`, `r.frame_starts[i]` and the slots with `frame == i`
     // are the same frame (the receiver pushes one entry per frame in sync
     // order, up to the first incomplete one); a frame is taken when it
@@ -486,7 +488,7 @@ pub fn report(stats: &Stats, secs: f64) {
             speed = secs / stats.wall_s.max(1e-9),
             back_s = stats.back_s,
             max_queued_symbols = w.max_queued_symbols,
-            "time: {:.2} s for {secs:.3} s of signal ({:.2}× real time, startup included); receiver {:.2} s; at most {:.2} s of symbols queued behind the receiver",
+            "time: {:.2} s for {secs:.3} s of signal ({:.2}× real time, startup included); receiver {:.2} s over its two threads; at most {:.2} s of symbols queued behind the receiver",
             stats.wall_s,
             secs / stats.wall_s.max(1e-9),
             stats.back_s,
@@ -792,7 +794,7 @@ pub fn run_stream(
     let (w, back) = std::thread::scope(|sc| {
         // the front owns the senders: when it returns they drop and the
         // back's loop ends
-        let front = sc.spawn(move || {
+        let front = match std::thread::Builder::new().name("rx-front".into()).spawn_scoped(sc, move || {
             let tx_end = tx.clone();
             // whether the buffer starts where the previous call cut (a frame start)
             let mut aligned = false;
@@ -821,9 +823,11 @@ pub fn run_stream(
                             ..RxOptions::default()
                         },
                     );
+                    let prep_s = t.elapsed().as_secs_f64();
                     let upto = more.then(|| f.frame_starts().last().copied()).flatten();
                     {
                         let mut st = lock();
+                        st.prep_s += prep_s;
                         st.residual_hz = f.residual_hz();
                         st.sync_snr_db = f.sync_snr_db();
                         st.sync_snr_eq_db = f.sync_snr_eq_db();
@@ -841,7 +845,6 @@ pub fn run_stream(
                     }
                     let used = if more && upto.is_none() {
                         // no whole frame yet: keep everything for the next call
-                        lock().prep_s += f.prep_s();
                         0
                     } else {
                         let front = Box::new(f);
@@ -898,7 +901,10 @@ pub fn run_stream(
                     }
                 },
             )
-        });
+        }) {
+            Ok(h) => h,
+            Err(e) => return (Err(e.into()), Ok(())),
+        };
         let back = (|| -> Result<()> {
             let opt = RxOptions {
                 ldpc,
@@ -910,7 +916,9 @@ pub fn run_stream(
                     Back::Chunk { front, upto } => {
                         let t = std::time::Instant::now();
                         let r = receive_back(*front, &opt);
+                        let ldpc_s = t.elapsed().as_secs_f64();
                         let mut st = lock();
+                        st.ldpc_s += ldpc_s;
                         emit(&r, upto, &mut asm, out, &mut st)?;
                         st.back_s += t.elapsed().as_secs_f64();
                     }
