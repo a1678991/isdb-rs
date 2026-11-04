@@ -227,7 +227,7 @@ fn isdbs3_carrier_beats_the_survey_aliases() {
 /// `rx::receive` is `receive_front` then `receive_back` on a live stream's
 /// symbols: `ISDB_RS_ISDBS3_WORDS` names a words file (`isdb symbols
 /// --out`), of which the first 25 frames are received both ways and must
-/// give the same result (timings aside).
+/// give the same result.
 #[test]
 fn isdbs3_front_then_back_is_receive_on_words() {
     use isdb_frontend::format::{Event, Reader};
@@ -258,11 +258,6 @@ fn isdbs3_front_then_back_is_receive_on_words() {
         }
     }
     z.truncate(want);
-    let untimed = |mut r: isdbs3_phy::rx::Rx| {
-        r.prep_s = 0.0;
-        r.ldpc_s = 0.0;
-        format!("{r:?}")
-    };
     let opt = RxOptions::default();
     let whole = receive(&z, &opt);
     assert!(
@@ -275,7 +270,7 @@ fn isdbs3_front_then_back_is_receive_on_words() {
         "{path}: failed slots"
     );
     let halves = receive_back(receive_front(&z, &opt), &opt);
-    assert_eq!(untimed(halves), untimed(whole), "{path}");
+    assert_eq!(format!("{halves:?}"), format!("{whole:?}"), "{path}");
 }
 
 /// A slice cut from the middle of a long words file acquires by itself:

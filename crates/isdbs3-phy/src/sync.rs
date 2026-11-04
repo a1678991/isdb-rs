@@ -272,9 +272,10 @@ mod tests {
     /// `frames` frames of slots: each slot its sync word (FSync on slot #1,
     /// !FSync on the other odd slots, SSync on the even ones — the sign
     /// structure the synchronisation reads), then QPSK-like filler from a
-    /// fixed LCG with π/2-shift BPSK on the TMCC symbols, all at unit amplitude plus Gaussian-ish noise; `lead`
-    /// filler symbols first, so the first slot head is not at 0. Rotated by
-    /// `hz` (symbol n × e^{j2π·hz·n/Rs}).
+    /// fixed LCG with π/2-shift BPSK on the TMCC symbols, all at unit
+    /// amplitude plus Gaussian-ish noise; `lead` filler symbols first, so
+    /// the first slot head is not at 0. Rotated by `hz` (symbol n ×
+    /// e^{j2π·hz·n/Rs}).
     fn stream(frames: usize, lead: usize, hz: f64) -> (Vec<Cplx>, Vec<usize>) {
         let (fs, nfs, ss) = (
             sync_symbols(FSYNC),
@@ -308,6 +309,7 @@ mod tests {
             z.push(filler(&mut rnd));
         }
         let mut heads = Vec::new();
+        let tmcc: Vec<usize> = crate::tmcc::tmcc_offsets().collect();
         for _f in 0..frames {
             for k in 0..SLOTS {
                 if k == 0 {
@@ -319,7 +321,6 @@ mod tests {
                     _ => &ss,
                 };
                 z.extend_from_slice(w);
-                let tmcc: Vec<usize> = crate::tmcc::tmcc_offsets().collect();
                 for j in SYNC_LEN..MOD_SLOT {
                     if tmcc.binary_search(&j).is_ok() {
                         // π/2-shift BPSK, as the TMCC is (§3.8)
