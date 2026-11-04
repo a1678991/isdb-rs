@@ -17,7 +17,7 @@ STD-B44) is received to TLV streams.
 
 ### Added
 
-- Tools: `tools/split-rx.sh FILE.sym OUT [PARTS] [JOBS]` decodes a long
+- Tools: `tools/split-rx.sh FILE.sym PARTS JOBS [OUTDIR]` decodes a long
   ISDB-S3 `Symbols` recording in parallel slices and joins the part TLVs
   losslessly with `tools/tlv-join.py` (every slice but the last decoded
   `OVERLAP_BYTES` past its end; the join finds part k+1's start in part
@@ -1065,11 +1065,15 @@ STD-B44) is received to TLV streams.
 - `isdb rx` (ISDB-S3, streamed `Symbols`): each chunk's sync, equaliser,
   TMCC and symbols run on the stream's thread while the calling thread
   decodes the previous chunk's LDPC/BCH and writes its TLV packets, in
-  order (`isdbs3_phy::rx::receive_front` / `receive_back`); the summary
-  gains a `stages` line. With the unrolled max-log demapper, one
+  order (`isdbs3_phy::rx::receive_front` / `receive_back`; design in
+  `docs/plans/rx-pipeline.md`); the summary gains a `stages` line. With the unrolled max-log demapper, one
   interleaver table per mode, a byte-wise codeword check before the BCH
   syndromes and the per-slot phase step taken once per slot, 1 minute of
   BS-14 decodes in 244.5 s instead of 297.6 s on 4 cores, byte-identical.
+  Up to three chunks' fronts are in flight, about 0.7 GB more resident
+  memory on 24-frame chunks. A continued chunk whose frames decode no
+  TMCC makes the next chunk re-acquire (a stream that had locked onto an
+  alias of the residual carrier would otherwise track it for ever).
 
 - `isdb-cli`: the ISDB-T `isdb tx --mux-config` and `isdb loopback
   --mux-config` refuse a `[network] kind = "bs"` configuration (a
