@@ -398,6 +398,12 @@ def source_patch(module, edits):
     Used by the monitors' proofs (tests/test_monitors.py) and the pipeline
     mutation run (tools/pipeline_mutation.py)."""
     mod = importlib.import_module(module) if isinstance(module, str) else module
+    # every module of the package first, so that each one's references are
+    # swapped and restored: one first imported inside the block would bind
+    # the patched classes and keep them after it (a test order that puts a
+    # proof first in a worker made later tests of that worker run the
+    # patched HDL; CI's four workers hit it, 32 here did not)
+    import_all()
     with open(mod.__file__) as f:
         src = f.read()
     for old, new in edits:
@@ -421,10 +427,38 @@ def source_patch(module, edits):
             if id(v) in swap:
                 undo.append((other, k, v))
                 setattr(other, k, swap[id(v)])
+    loaded = set(sys.modules)
     try:
         yield mod
     finally:
         for other, k, v in undo:
             setattr(other, k, v)
+        # a module imported inside the block after all: its references to
+        # the patched objects back to the originals
+        back = {id(nv): saved[k] for k, v in saved.items() for nv in [vars(mod).get(k)]
+                if nv is not None and nv is not v and (isinstance(v, type) or callable(v))}
+        for name in set(sys.modules) - loaded:
+            other = sys.modules.get(name)
+            if other is None or not name.startswith("isdb_fpga"):
+                continue
+            for k, v in list(vars(other).items()):
+                if id(v) in back:
+                    setattr(other, k, back[id(v)])
         vars(mod).clear()
         vars(mod).update(saved)
+
+
+def import_all():
+    """Import every module of the `isdb_fpga` package (the chain's and the
+    decoder's; not the tools), for `source_patch`'s reference swap."""
+    import pkgutil
+
+    import isdb_fpga
+
+    for info in pkgutil.walk_packages(isdb_fpga.__path__, "isdb_fpga."):
+        if info.name.endswith(".harness") or ".formal" in info.name:
+            continue
+        try:
+            importlib.import_module(info.name)
+        except ImportError:
+            pass

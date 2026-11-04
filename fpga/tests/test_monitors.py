@@ -563,6 +563,32 @@ TAPS_FROM_REVERT = [
 READBACK_REVERT = [("with m.If(~(sums_r | sums_p)):", "with m.If(sums_r | ~sums_r):")]
 
 
+class SourcePatchIsolationTest(unittest.TestCase):
+    """A module first imported inside a `source_patch` block binds the
+    patched classes; it must not keep them after the block (a test order
+    that put a proof first in an xdist worker made that worker's later
+    tests run the patched HDL: main's CI after PR #44, `sum_read_slow` in
+    the register tests). A fresh interpreter, so the import order is ours."""
+
+    def test_a_module_imported_inside_the_block_is_restored(self):
+        import subprocess
+        import sys
+
+        code = (
+            "import sys\n"
+            f"sys.path.insert(0, {os.path.join(os.path.dirname(__file__), '..')!r})\n"
+            "from isdb_fpga.chain import monitors, eq\n"
+            "assert 'isdb_fpga.chain.stages' not in sys.modules\n"
+            "edits = [('        hold = Signal()\\n', '        hold = Signal()  # patched\\n')]\n"
+            "with monitors.source_patch('isdb_fpga.chain.eq', edits):\n"
+            "    import isdb_fpga.chain.stages as stages\n"
+            "print(stages.Equaliser is eq.Equaliser)\n"
+        )
+        out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=300)
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        self.assertEqual(out.stdout.strip(), "True", out.stdout)
+
+
 class SlotsRxMonitorTest(unittest.TestCase):
     def test_quiet(self):
         self.assertEqual(slots_rx_run(), [])
