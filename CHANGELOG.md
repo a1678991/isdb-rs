@@ -108,8 +108,8 @@ STD-B44) is received to TLV streams.
   introduces each board-found defect on a scratch copy of the source and
   shows its monitor fires; `tools/pipeline_mutation.py` (opt-in) shifts
   each pipeline delay by one cycle and lists the vector fields that
-  notice. Found: a START in the middle of a block does not restart the
-  `Slots` sequence numbers (open, an expected-failure test).
+  notice. Found: a START in the middle of a block did not restart the
+  `Slots` sequence numbers (fixed, under Fixed below).
 - Tools: `tools/isdbs-bench-check.sh --receiver dt295|exact` (default
   `dt295`) and `--receiver-drops PIDS` (the profile's `0x0001`; `""` for
   none): the PIX-DT295's raw output drops the CAT without a null (its PID
@@ -508,10 +508,10 @@ STD-B44) is received to TLV streams.
   iteration and BCH corrections, a missed and a stray frame marker; the
   benches flip the decoder-output errors the model injected, now also in
   a TMCC word), and chain-4-tmcc carries its noisy TMCC frame;
-  `KNOWN_GAPS` 33 → 20 entries. It found an open HDL defect: a TMCC word
-  whose BCH corrects six or more errors hangs the chain's finish stage
-  (fpga/README.md "Integration"; `test_six_tmcc_corrections`, an
-  expected failure; chain-12 injects five).
+  `KNOWN_GAPS` 33 → 20 entries. It found an HDL defect: a TMCC word
+  whose BCH corrected six or more errors hung the chain's finish stage
+  (fixed, under Fixed below; `test_six_tmcc_corrections`; chain-12
+  injects five).
 - `isdbs3-phy`, `fpga`: more value-coverage inputs (issue #30 item 1).
   `chain-13-modes` sends four transmission modes in one TMCC (16APSK
   93/120, 8PSK 73/120, QPSK 61/120, π/2-BPSK 41/120 with their dummy
