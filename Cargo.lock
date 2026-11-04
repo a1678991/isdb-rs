@@ -465,6 +465,7 @@ dependencies = [
  "isdbt-phy",
  "serde_json",
  "thiserror",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

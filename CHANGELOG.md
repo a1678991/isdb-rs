@@ -54,6 +54,24 @@ STD-B44) is received to TLV streams.
   live values are single words and that no host sequence waits for ever
   (`KNOWN_GAPS`: the stream path does not notice sums blocks that stop
   while frames still decode).
+- `fpga`, `isdb-frontend`, `isdb-radio`: one register map of the ISDB-S3
+  chain (issue #30 item 5): `fpga/isdb_fpga/chain/registers.toml` (per
+  register the address, access, width, reset, bit fields, read and write
+  semantics, the FEATURES flag that gates it, how a host reads it
+  consistently and what the host does with it; the CTRL bits, the command
+  timing, the host's open and slow-loop steps), loaded by
+  `isdb_fpga.chain.regmap`. `top.py`'s docstring table and the fpga
+  README's "Register map" are generated from it (`fpga/tools/regmap.py`,
+  `--check`); `top.py`'s REG_* constants and `isdb_frontend::control::chain`
+  are checked against it. Tests generated from it: `fpga/tests/test_registers.py`
+  (every address's reset, read-only registers and unmapped addresses
+  ignoring writes, walking ones and zeros, the staged and strobe
+  registers, the sum registers' answer, FEATURES, CTRL; pysim, 36 s in
+  three simulations), `crates/isdb-frontend/tests/chain_registers.rs`, and
+  `isdb-radio`'s `chain::tests::regmap` (the open sequence and the slow
+  loop's accesses on the mock backend against the map's steps, no write to
+  a read-only register, the host's register coverage printed: LLR_SCALE,
+  LEARNED_FROM, MAX_ITER and AGC untouched).
 - `fpga`: chaos runs of the ISDB-S3 chain with the real LDPC decoder
   (issue #30 item 3; `isdb_fpga/chain/chaos.py`, `tests/test_chaos.py`,
   `tools/chaos_run.py`): random host stops, STARTs, input losses and tap
