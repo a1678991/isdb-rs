@@ -41,7 +41,9 @@ What it simulates:
   path as `crates/isdb-radio/src/chain.rs` `SlowLoop::tick_at` does it, with
   the read discipline of each host generation: single reads (builds 6-8),
   the diagnostic double read of #27 / #29, or the verified reads of PR #31;
-  or the stream path, `tick_stream`), the host's capture context (the open,
+  or the stream path, `tick_stream`, with its fallback to the register path
+  when the sums blocks stop while frames decode, `stream_stalled`), the
+  host's capture context (the open,
   the per-buffer ADC overflow poll of builds 6-8, the counters at the end),
   the consumer of the `Slots` words (`ChainHealth`: the status and sums
   blocks), Tezuka's `api_controller.sh` polling 0x80000088 every 3.4-4.2 s
@@ -119,6 +121,10 @@ SUM_REGS = [SUMS_R + i for i in range(4 * R_ENTRIES)] + [SUMS_P + i for i in ran
 F_TAPS, F_SUMS, F_SUMS_CAPTURE, F_DECODER_HEALTH, F_SUMS_SEQ, F_SUMS_STREAM = 1, 2, 16, 32, 64, 128
 # SUMS_CAPTURE read bits
 CAP_VALID, CAP_ARMED, CAP_NO_LAYOUT = 1, 2, 4
+# the bits of SUMS_CAPTURE that identify a held capture (chain.rs
+# HELD_EXTRA): SEQ, VALID and ARMED; NO_LAYOUT follows the layout while a
+# capture holds and is not compared
+CAP_HELD_BITS = 0xFF00 | CAP_VALID | CAP_ARMED
 # chain STATUS bits
 ST_LOCKED, ST_FRAMED, ST_DECODING = 1, 2, 4
 # command ops (isdb_frontend::control::Op) and CTRL bits
@@ -283,6 +289,11 @@ class Host:
     wake_s: float = 0.005  # spawn_slow_loop's sleep step
     revert_frames: int = 10  # Revert::frames
     revert_timeout_s: float = 5.0  # Revert::timeout
+    # the stream path: decoded frames without a sums block before the sums
+    # are read from the registers (SlowLoopOptions::sums_stall), and the
+    # blocks between two ticks that end the fallback (STREAM_BACK_BLOCKS)
+    sums_stall_frames: int = 90
+    stream_back_blocks: int = 3
     # command words of the 11 taps and TAPS_FROM (ADDR, HI + WRITE per tap
     # whose imaginary part is negative, ADDR, WRITE_S)
     taps_words: int = 25
@@ -357,6 +368,9 @@ class Scenario:
     initial_capture: str = "free"
     # another client writes SUMS_CAPTURE at these times (a second host)
     foreign_capture_at: tuple = ()
+    # the chain restarts at these times (another client's START, or a lost
+    # sync): a hold and an armed capture released
+    restart_at: tuple = ()
     note: str = ""
 
 
@@ -857,7 +871,9 @@ class Stats:
     solved_mixed: int = 0
     solved_wrong: int = 0
     solved_bad: int = 0  # of which an entry moved by `Host.bad_error` or more
-    torn_no_layout_only: int = 0  # torn by SUMS_CAPTURE's NO_LAYOUT bit alone
+    # sets during which only SUMS_CAPTURE's NO_LAYOUT bit moved (accepted:
+    # the held sums are one frame's; before the fix, discarded as torn)
+    no_layout_moved: int = 0
     words_read: int = 0
     rereads: int = 0
     unsettled: int = 0
@@ -865,6 +881,13 @@ class Stats:
     transient_zero: int = 0  # a sum READ's readback still 0 (old HDL)
     recoveries: int = 0
     unverified: int = 0
+    # the stream path: stalls (sums_stall_frames decoded frames without a
+    # sums block: warned, the sums then read from the registers), the
+    # returns to the stream, and the sets read from the registers meanwhile
+    sums_stalls: int = 0
+    stream_returns: int = 0
+    fallback_sets: int = 0
+    stall_times: list = field(default_factory=list)
     first_write_t: float = None
     first_write_from: int = None
     first_write_frame: int = None  # the frame in progress at the write
@@ -904,6 +927,7 @@ class Health:
         self.cur_frames = 0
         self.sums_frame = None
         self.sums_blocks = 0
+        self.decoded_since_sums = 0  # HealthState::decoded_since_sums
 
 
 class Model:
@@ -941,6 +965,8 @@ class Model:
         self.in_force = "identity"
         self.watch = None
         self.last_frame = None
+        self.fallback = None  # the stream stalled: sums blocks counted at the last tick
+        self.free_waited = False
 
     # -- command words (isdb_frontend::control::Encoder) --
     def word(self, op, arg):
@@ -1106,12 +1132,15 @@ class Model:
                     hl.cur_from = m["taps_from"]
                     hl.cur_frames = 0
                 hl.cur_frames += 1
+                if m["decoded"]:
+                    hl.decoded_since_sums += 1
             elif kind == "sums":
                 self.st.sums_blocks += 1
                 lat = now - self.fpga.frame_start(m["frame"] + 1)
                 self.st.sums_latency_max = max(self.st.sums_latency_max, lat)
                 hl.sums_frame = m["frame"]
                 hl.sums_blocks += 1
+                hl.decoded_since_sums = 0
 
     # -- the board's other clients --
     def api_controller(self):
@@ -1146,8 +1175,8 @@ class Model:
 
     def sums_waiting(self):
         hl = self.health
-        return (self.st.solves == 0 and self.watch is None and hl.sums_frame is not None
-                and hl.sums_frame != self.last_frame)
+        return (self.fallback is None and self.st.solves == 0 and self.watch is None
+                and hl.sums_frame is not None and hl.sums_frame != self.last_frame)
 
     def slow_loop(self):
         h = self.sc.host
@@ -1168,7 +1197,7 @@ class Model:
             if self.stop:
                 break
             self.st.ticks += 1
-            if stream:
+            if stream and not self.stream_stalled():
                 last = yield from self.tick_stream()
             else:
                 last = yield from self.tick_registers()
@@ -1198,7 +1227,15 @@ class Model:
         if t:
             return t
         if capture:
+            if self.fallback is not None and not cap & (CAP_VALID | CAP_ARMED):
+                # the stream's fallback, the latch released (a restart): a
+                # poll for its sums blocks before a capture holds it again
+                self.armed = False
+                if not self.free_waited:
+                    self.free_waited = True
+                    return "Capturing"
             if not self.armed:
+                self.free_waited = False
                 yield from self.write_regs(c, SUMS_CAPTURE, [1])
                 self.armed = True
                 self.armed_since = self.sim.now
@@ -1233,16 +1270,40 @@ class Model:
         self.st.sets_wrong += wrong
         self.st.sets_detected += detected > 0
         self.st.detected_words += detected
-        if after[0] != frame or after[1] != held_before:
+        if after[0] != frame or (after[1] ^ held_before) & CAP_HELD_BITS:
             self.st.sets_torn += 1
-            if after[0] == frame and (after[1] ^ held_before) & ~CAP_NO_LAYOUT == 0:
-                # only SUMS_CAPTURE's NO_LAYOUT bit moved: the held set was
-                # one snapshot, discarded all the same
-                self.st.torn_no_layout_only += 1
             return "Torn"
+        if after[1] != held_before:
+            # only SUMS_CAPTURE's NO_LAYOUT bit moved: the held set is one
+            # snapshot, and kept
+            self.st.no_layout_moved += 1
+        if self.fallback is not None:
+            self.st.fallback_sets += 1
         yield from self.solve_and_write(frame, mixed=mixed, wrong=wrong,
                                         bad=error >= self.sc.host.bad_error)
         return "Solved"
+
+    def stream_stalled(self):
+        """chain.rs `SlowLoop::stream_stalled`: on the stream path, whether
+        this tick takes the register path (the sums blocks stopped while
+        frames decode, and have not come back at the free latch's rate)."""
+        h, hl = self.sc.host, self.health
+        if self.fallback is None:
+            stalled = hl.decoded_since_sums >= h.sums_stall_frames
+            if stalled:
+                self.st.sums_stalls += 1
+                self.st.stall_times.append(self.sim.now)
+        else:
+            new = hl.sums_blocks - self.fallback
+            stalled = not (new >= h.stream_back_blocks
+                           and hl.decoded_since_sums < h.stream_back_blocks)
+            if not stalled:
+                self.st.stream_returns += 1
+                self.armed = False
+                self.armed_since = None
+                self.free_waited = False
+        self.fallback = hl.sums_blocks if stalled else None
+        return stalled
 
     def tick_stream(self):
         h, hl = self.sc.host, self.health
@@ -1388,6 +1449,8 @@ class Model:
             self.sim.spawn(self.version_reader(), self.sim.rng.uniform(0, 0.2))
         for t in sc.foreign_capture_at:
             self.sim.at(t, self.fpga.capture_write)
+        for t in sc.restart_at:
+            self.sim.at(t, self.fpga.start)
         self.sim.spawn(self.close(), sc.seconds)
         self.sim.run(sc.seconds + 3.0)
         return self.result()
@@ -1395,7 +1458,7 @@ class Model:
     def result(self):
         st, f = self.st, self.fpga
         r = dataclasses.asdict(st)
-        for k in ("write_times", "set_times", "taps_from_writes", "recover_times"):
+        for k in ("write_times", "set_times", "taps_from_writes", "recover_times", "stall_times"):
             r.pop(k)
         # the first slow-loop set in force, from the status blocks' taps_from
         first = next(((k, n) for k, n, _ in f.commits if n != NONE), None)
@@ -1410,6 +1473,8 @@ class Model:
         w = st.write_times + [self.sc.seconds]
         r["solve_gap_max"] = max((b - a for a, b in zip(w, w[1:])), default=None)
         r["recover_t"] = [t - st.open_end for t in st.recover_times]
+        r["stall_t"] = [t - st.open_end for t in st.stall_times]
+        r["solve_t"] = [t - st.open_end for t in st.write_times]
         r["scenario"] = self.sc.name
         r["seconds"] = self.sc.seconds
         r["request_s"] = self.sc.profile.request_s
@@ -1465,15 +1530,25 @@ def liveness(sc, r):
     layout lag), the loop solving at least every `every + poll + a set +
     the revert watch` while frames are decoded (plus any stretch without a
     layout), and a stretch without a layout longer than `recover_after`
-    ending in a recovery when known taps other than those in force exist."""
+    ending in a recovery when known taps other than those in force exist.
+    On the stream path both bounds also allow for a stall of the sums
+    blocks (a held latch sends none): `sums_stall_frames` decoded frames,
+    the tick that sees it and the register path's capture and set (whether
+    a run needs it is `sums_stalls`, which no scenario without a foreign
+    hold has)."""
     h, sig, p = sc.host, sc.signal, sc.profile
     stream = h.sums_source == "stream" and sc.image.stream
     set_s = 0.0 if stream else set_read_s(p, h.reads) * 1.3  # with rereads and tick reads
+    stall_s = 0.0
+    if stream:
+        stall_s = (h.sums_stall_frames * sig.frame_s + h.every_s + 2 * h.poll_s + sig.frame_s
+                   + set_read_s(p, h.reads) * 1.3)
     watch_s = (h.revert_frames + 3) * sig.frame_s if h.health else 0.0
-    first_bound = sig.lock_s + (sig.layout_lag + 2) * sig.frame_s + 2 * h.poll_s + set_s + 0.2
+    first_bound = (sig.lock_s + (sig.layout_lag + 2) * sig.frame_s + 2 * h.poll_s + set_s + stall_s
+                   + 0.2)
     outage = sum((b - a + 1) * sig.frame_s for a, b in sig.no_layout)
     # one retry (a torn set read again) allowed
-    gap_bound = h.every_s + 3 * h.poll_s + 2 * set_s + watch_s + outage + 0.2
+    gap_bound = h.every_s + 3 * h.poll_s + 2 * set_s + stall_s + watch_s + outage + 0.2
     out = []
     if r["first_write_t"] is None or r["first_write_t"] > first_bound:
         out.append(f"no taps written within {first_bound:.2f} s of the open "
@@ -1490,14 +1565,6 @@ def liveness(sc, r):
 # Liveness gaps the model finds in today's host and HDL, with the reason:
 # the test fails when one of them goes (update the list) or a new one comes.
 KNOWN_GAPS = {
-    "stream-foreign-capture":
-        "the stream path has no timer on the sums blocks: when another client arms SUMS_CAPTURE "
-        "(a second host on the same board, a register-path tool) the latch holds, no sums block "
-        "leaves, the status blocks still say decoded, and the loop waits for ever without a "
-        "warning (the taps in use stay); a restart (START) releases it",
-    "stream-held-prefix":
-        "the HDL before dedbc14 (the reproduction of that fix): START kept a hold left by a "
-        "register-path run, so the stream path never got a sums block",
     "build6":
         "the reproduction of build 6: the latch moves every frame and the 308 reads take 15, "
         "every set is torn and the loop never writes taps",
@@ -1579,9 +1646,12 @@ SCENARIOS = {
     "stream-held": Scenario("stream-held", BENCH, FORMAT2, HOST_STREAM, initial_capture="held",
                             seconds=30.0, note="the same with dedbc14 (START releases the hold)"),
     "stream-foreign-capture": Scenario("stream-foreign-capture", BENCH, FORMAT2, HOST_STREAM,
-                                       foreign_capture_at=(10.0,), seconds=30.0,
+                                       foreign_capture_at=(10.0,), restart_at=(20.0,), seconds=30.0,
                                        note="another client arms SUMS_CAPTURE at 10 s: the sums "
-                                            "blocks stop, nothing in the host notices"),
+                                            "blocks stop; after 90 decoded frames the host warns "
+                                            "and reads the sums from the registers; a restart at "
+                                            "20 s frees the latch and the host goes back to the "
+                                            "stream"),
     # the HDL's latent transient 0 (#27 item 4)
     "local-old-hdl": Scenario("local-old-hdl", LOCAL, BUILD8, replace(HOST_VERIFIED, health=False),
                               seconds=5.0, note="a host on the board, the old sum READ (0 for up to "
@@ -1647,10 +1717,11 @@ def mean_summary(runs):
 
 def summarise(r):
     keys = ["sets_read", "sets_torn", "sets_foreign", "sets_detected", "detected_words", "sets_wrong",
-            "solves", "solved_wrong", "solved_bad", "solved_mixed", "torn_no_layout_only", "ticks",
+            "solves", "solved_wrong", "solved_bad", "solved_mixed", "no_layout_moved", "ticks",
             "words_read", "rereads", "unsettled",
             "reads_wrong", "overflow_flags", "first_write_t", "first_write_from", "first_in_force_frame",
-            "set_s_mean", "recoveries", "sums_blocks", "status_latency_max", "sums_latency_max"]
+            "set_s_mean", "recoveries", "sums_blocks", "status_latency_max", "sums_latency_max",
+            "sums_stalls", "stream_returns", "fallback_sets"]
     out = {}
     for k in keys:
         v = r.get(k)

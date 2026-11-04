@@ -72,6 +72,9 @@ STD-B44) is received to TLV streams.
   loop's accesses on the mock backend against the map's steps, no write to
   a read-only register, the host's register coverage printed: LLR_SCALE,
   LEARNED_FROM, MAX_ITER and AGC untouched).
+  (`KNOWN_GAPS`; the two host gaps it found, sums blocks that stop while
+  frames still decode and a held set discarded for its NO_LAYOUT bit, are
+  fixed in `isdb-radio` and the model follows the host's fallback).
 - `fpga`: chaos runs of the ISDB-S3 chain with the real LDPC decoder
   (issue #30 item 3; `isdb_fpga/chain/chaos.py`, `tests/test_chaos.py`,
   `tools/chaos_run.py`): random host stops, STARTs, input losses and tap
