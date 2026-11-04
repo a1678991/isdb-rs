@@ -198,6 +198,149 @@ Results (format 4, 2026-10-26):
   (`apply.sh`), which reception does not use: 66 + 112 = 178 of 220
   (158 with the transmit block in the TX FIR's place, below).
 
+### Invariant monitors
+
+Properties that hold in every correct run, checked on every cycle of every
+simulation independently of the vectors (`isdb_fpga/chain/monitors.py`,
+issue #30 item 2). Six defects reached the board although every bit-exact
+test had passed (the decoder's bank leak across stop/START, #28, fixed in
+e95c563; n0 cleared a cycle before the ended frame's division, 243d672;
+the learned points one word shifted, d53de60; TAPS_FROM one write behind,
+5f60649; the sum readback's transient 0, a052ece); each broke one of the
+properties below.
+
+**Mechanism.** A monitored module declares its checks (`MONITORS`, name →
+clock domain and the property) and adds them at the end of its
+`elaborate` when it has a `Monitor`; `monitors.enable(design)` gives every
+monitored module reachable from a design one. The parameter is
+`monitors=True` on `SlotsChain`, `SlotsRx`, `LdpcDecoder` and
+`LdpcBridge` (default False: nothing is added, the RTLIL and the bitstream
+are unchanged; `synth/verilog.py --slots` writes the same Verilog as
+before, byte for byte without the `src` attributes, at a fixed
+`PYTHONHASHSEED`) and on the simulation benches (default True). Each
+check is a 48-bit sticky register in its own clock domain holding 1 + the
+cycle of its first violation (0: never), counted from reset in that
+domain (`sync`: the symbol clock, the engine's cycle; `ldpc`: the
+decoder's clock, 5 per symbol clock in the simulations). The registers
+are ordinary signals exposed as the bench's ports (`mon_<path>_<check>`,
+`monitors.Collector(bench).ports()`), so the three backends read them
+alike through the engine's `get`; no harness change was needed.
+Amaranth's `Assert` is not used: whether Yosys's `write_verilog` and
+Verilator honour its `$check` cells is not something to rely on, and a
+register is.
+
+**Where they run.** Every bench of `stages.py` (`EqBench`, `TmccBench`,
+`BackBench`, `ChainBench`, `RealChainBench`: the monitors' report is part
+of each run's mismatches, after every pass of `run_chain_restarts`), every
+decoder run of `simldpc.py` (both paths; a violation raises
+`monitors.MonitorError`), `SlotsRxRegisterTest`, `BridgeTest` and the
+`Finish` tests. Stage 1 (`SyncFront`) and stage 3 (`SlotPhase`) have no
+monitors. A failure reads
+
+    monitor ch.back.demap.noise_count (the noise count at a decoded frame's end = the noise samples of that frame (243d672: the next frame's start had cleared it)) first violated at sync cycle 1115804
+
+(the path is the module's attribute path in the bench: `ch` the chain,
+`br` the bridge, `dec` the decoder, reported in its own clock with the
+symbol clock beside it).
+
+| Module | Check | What must hold (the signals watched) |
+|---|---|---|
+| `LdpcDecoder` | `bank_accounting` | popcount(`alloc`) = the contexts holding a bank (`ctx_open & ~ctx_drop`) + the monitor's own count of committed codewords holding one (+1 at a `start` on a holding context, −1 when an output stream ends, `free_mask`) |
+| | `held` | `held` = popcount(`alloc`) a cycle before |
+| | `load_ready` | `load_ready` a cycle before = (`held` < K) |
+| | `abort_closes` | the cycle after `abort`: the context closed and dropped |
+| | `commit_without_begin` | no `start` on a context that is neither open nor dropped (its bank would be committed twice) |
+| | `bank_leak` | no bank allocated for 32 cycles while the decoder is idle (not `busy`, no output stream, the queue empty) and no context holds one |
+| | `queue_overflow` | the sticky `queue_overflow` never rises (that commit's bank is never freed) |
+| `LdpcBridge` | `in_fifo_overflow`, `out_fifo_overflow`, `tag_overflow`, `tag_underflow` | no write into the full input or output AsyncFIFO or tag queue, no result record without a tag |
+| `Demap` | `noise_count` | at `f_end` the noise count = the monitor's count of the noise samples (A+8, context bit 41) tagged with the frame that ended (`frame` at `f_swap`) |
+| `Back` | `port_lost` | no demapper beat while the decoder port is not ready |
+| `TmccSoft` | `staging_overrun`, `burst_lost` | the soft-bit writer never at or past the burst's read index; no frame end while the burst runs |
+| `FrameCtl` | `frame_order` | the frames ended or dropped come in increasing counter order |
+| `Equaliser` | `taps_from_source` | `taps_from` changes only to NONE or to the armed set's frame |
+| `ResultFifo` | `overflow` | no write into the full FIFO outside a header's retried chunks |
+| `Finish` | `status_point_settled` | a status word is taken only with the point RAM's address unchanged since the previous cycle (its registered read has landed) |
+| | `frame_fifo_overflow`, `frame_fifo_underflow` | the 4-entry frame FIFO |
+| `Packer` | `seq_contiguous` | each block's sequence number (at its acceptance) is the last + 1; 0 for the first block and the first after `start` |
+| | `framing`, `block_kind`, `slot_index` | the output words parse as `Slots` blocks: the sync words, the header check, the payload length; header word 2; a slot block's slot index < 120 |
+| `SlotsRx` | `sum_readback_hold` | from a sum register's READ until `rd_ack` the readback keeps its value |
+| | `sum_read_slow` | the READ answered within 16 symbol clocks (3) |
+| | `taps_from_written` | the cycle after a TAPS_FROM write the armed set's frames are the value written and value + 2 |
+| | `input_fifo_overflow` | no symbol written into the full 1 024-symbol FIFO |
+
+**Proofs** (`tests/test_monitors.py`, part of `fpga:test`): each defect is
+re-introduced on a scratch copy of the module's source
+(`monitors.source_patch`: the module re-executed with the edit and every
+reference to its classes swapped while the design elaborates; no
+fault-injection parameter in the HDL), or, for a class only a broken
+neighbour can cause (a decoder answering a codeword it was never given,
+a result queue that never drains), the bench drives that input; each test
+also runs the unbroken case where it is cheap and expects no violation.
+The board's defects: e95c563's allocation rule reverted (no reuse, `abort`
+ignored) on test_isdb_fpga's abort recipe trips `abort_closes`,
+`bank_accounting` and `bank_leak`; 243d672 reverted on
+`DemapTest.test_next_frame_starts_at_once`'s run trips `noise_count` at
+cycle 1 115 804 (and its own n0, K comparison); d53de60's pacing
+(`st_pace != 1`) trips `status_point_settled`; 5f60649 reverted trips
+`taps_from_written`; a052ece's readback half reverted trips
+`sum_readback_hold`. The others: `held`, `load_ready`, `abort_closes`,
+`commit_without_begin`, `queue_overflow`, every FIFO but `SlotsRx`'s
+input FIFO and `Finish`'s frame FIFO (the same `fifo_overflow` helper),
+the packer's four, `port_lost`, `staging_overrun`, `burst_lost`,
+`frame_order`, `taps_from_source`, `sum_read_slow`.
+
+**Found on today's HDL** (an open finding, not fixed here):
+`Packer` honours `start` only between blocks, so a START that comes while
+a block is being sent does not restart the sequence numbers, as the
+packer's and `SlotsRx`'s documentation say it does
+(`PackerStartTest.test_start_during_a_block`, an expected failure until
+it is fixed: blocks 0, 1, 2 instead of 0, 1, 0). The host's
+`slots::Reader` joins a stream at any sequence number, so the effect is
+cosmetic there. No monitor fires in any other run of the suite,
+`FPGA_CHAIN_REAL=1` included (chain-3 … chain-10, the stub chain's frame
+0, the restarts, every LDPC set).
+
+**Cost** (this host, 32 threads, shared with other jobs; warm, at
+`PYTHONHASHSEED=0`, below): the default `pytest -n auto` 107-110 s before
+(93 tests), 115-121 s after (117 and an expected failure: the 24 new
+tests). The simulation itself does not measurably slow: `chain-6-chain`'s
+frame 0 (2 484 771 cycles) 10.2-10.3 s before, 9.7-9.8 s after;
+`chain-7-hdl` with the real decoder (8 179 491 cycles) 115-117 s before,
+112 s after (147 s once with the host loaded). With `FPGA_CHAIN_REAL=1`
+490 s before, 513 s after. (The designs' RTLIL, and so the compiled
+models' cache keys, depend on Python's hash seed: the order of the clock
+domains' ports changes with it, before and after this change, so a new
+process may rebuild a model a previous one built under another seed.)
+
+**The pipeline mutation run** (`tools/pipeline_mutation.py`, one-off and
+opt-in, about 3 minutes with 8 jobs on Verilator): 35 mutations, each
+pipeline delay of the chain's blocks and the decoder shifted by one cycle
+(a delay line's length, the stage a side field is taken from, a latency
+constant the schedule assumes), each on the compiled fast tests of the
+stages it can affect; the unmutated run is clean. Result (2026-11-04):
+
+| Mutation (±1 cycle) | Noticed by | Not noticed (by any field) |
+|---|---|---|
+| sync: FSync flag delay line | r, NCO phase, correlations, periods, heads, carrier (+1 also restarts) | |
+| phase: the gain into its products; φ into the rotation table | y | |
+| common: `Phase4`'s phase | z; the demapper's beats, learned points, n0/K, TMCC soft bits | |
+| eq: z's delay; the valid/meta pipeline | z (the training references and sums are taken before) | |
+| tmcc: the staging buffer's read-ahead (−1) | the burst | |
+| demap: the LLRs' delay; the beat's context | beats (positions, LLRs), de-interleaved words | |
+| demap: the minimum metric's, \|y\|²'s delay; the noise sample's context | n0/K (only that: `next_start`'s n0 comparison) | |
+| back: the frame end's drain (`end_d`, 12) | | **±1** (slack: the last noise sample is in by A+8) |
+| back: the abort's wait (`ABORT_WAIT`) | | **±1** (no fast test aborts; `run_chain_restarts`, opt-in, does) |
+| finish: the status words' pacing | −1: `status_point_settled`, the status bench's points (not chain-6: no learned points there, d53de60's gap) | **+1** (slack: a cycle more per word) |
+| ldpc: `WRITE_LATENCY` | −1: bits, iterations, convergence, unsatisfied | **+1** (slack: waits a cycle more) |
+| ldpc: `DECIDE` | | **±1** (on the toy sets at step 34; the B44 sets were not run) |
+| ldpc: the output read latency `OLAT` | bits | |
+
+The gaps: `end_d`, `ABORT_WAIT`, the status pacing +1 and
+`WRITE_LATENCY` +1 are slack (the design does not depend on the exact
+value within a cycle); `DECIDE` −1 unnoticed on the toy sets is the one to
+look at (a decision a cycle earlier than the schedule assumes changed no
+result there).
+
 ## Chain vectors
 
 The ISDB-S3 chain after the front end (docs/plans/isdbs3-fpga-rx.md,
@@ -309,6 +452,7 @@ The whole-set tests run on `simx.compiled_backend()`: `FPGA_SIM` if it
 names a compiled backend, else Verilator where it is installed, else
 CXXRTL, else they skip; `FPGA_SIM=cxxrtl` (or `verilator`) also makes it
 the default of `python -m isdb_fpga.chain.sim` ([backends](#simulation-backends)).
+Every run also checks the [invariant monitors](#invariant-monitors).
 Measured on this host, 2026-11-02, the synthetic sets (`chainvectors`, 5
 B44 frames of 16APSK 93/120, −400 Hz drifting, 14 dB):
 
