@@ -125,11 +125,11 @@ mod tests {
         assert_eq!(d.backend, "sdr");
         assert_eq!(d.get("serial"), Some("0000abcd"));
         assert_eq!(d.get("other"), None);
-        let d = p("pluto:uri=ip:192.0.2.30,buffer=65536").unwrap();
+        let d = p("pluto:uri=ip:<PLUTO_IP>,buffer=65536").unwrap();
         assert_eq!(
             d.args,
             vec![
-                ("uri".to_string(), "ip:192.0.2.30".to_string()),
+                ("uri".to_string(), "ip:<PLUTO_IP>".to_string()),
                 ("buffer".to_string(), "65536".to_string())
             ]
         );
