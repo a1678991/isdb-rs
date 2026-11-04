@@ -1488,7 +1488,7 @@ impl Backend for Pluto {
             }
         }
         let slots_version = isdb_frontend::control::chain::slots_version(word);
-        if slots_version != Some(isdb_frontend::slots::SLOTS_VERSION) {
+        if !slots_version.is_some_and(isdb_frontend::slots::readable) {
             return Err(RadioError::Chain {
                 backend: NAME,
                 found: slots_version,
@@ -1508,6 +1508,13 @@ impl Backend for Pluto {
             ChainControl::attach(NAME, &rx)?.open(&rx, params, init)?
         };
         let config_s = t0.elapsed().as_secs_f64();
+        // the training sums from the Slots stream when the image sends
+        // them and the caller's consumer hands them over (#27, #29: no
+        // register read exposed to another direct_reg_access client)
+        let sums_source = match &slow {
+            Some(o) if o.health.is_some() => open_report.sums_source(),
+            _ => chain::SumsSource::Registers,
+        };
         let gain = describe_rx_gain(&s);
         info!(
             backend = NAME,
@@ -1517,11 +1524,16 @@ impl Backend for Pluto {
             words,
             config_s,
             commands = open_report.commands,
-            "Pluto {} opened for a Slots capture of {words} words: {}; RX{} gain {gain}; FPGA receive chain: {}; configured in {config_s:.1} s",
+            sums_source = sums_source.name(),
+            "Pluto {} opened for a Slots capture of {words} words: {}; RX{} gain {gain}; FPGA receive chain: {}; training sums from the {}; configured in {config_s:.1} s",
             s.dev.uri(),
             cfg.describe_tuning(),
             s.dev.channel,
-            open_report.describe()
+            open_report.describe(),
+            match sums_source {
+                chain::SumsSource::Stream => "Slots stream (no sum register read)",
+                chain::SumsSource::Registers => "sum registers",
+            }
         );
         debug!(backend = NAME, "{device}{info}");
         // the slow loop on a context of its own; while it runs, the
@@ -1530,9 +1542,13 @@ impl Backend for Pluto {
         // process's only direct_reg_access user (#27)
         let loop_stop = Arc::new(AtomicBool::new(false));
         let slow_loop = match slow {
-            Some(o)
-                if open_report.features & isdb_frontend::control::chain::features::SUMS != 0 =>
+            Some(mut o)
+                if open_report.features
+                    & (isdb_frontend::control::chain::features::SUMS
+                        | isdb_frontend::control::chain::features::SUMS_STREAM)
+                    != 0 =>
             {
+                o.sums_source = sums_source;
                 let port = ChainPort(
                     Context::open(s.dev.uri())
                         .at("open a second context for the chain's slow loop")?,
