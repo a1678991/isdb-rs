@@ -53,8 +53,10 @@
 //! tick that has not armed one writes SUMS_CAPTURE (the next frame end
 //! latches the sums and holds them); the next ticks poll it until VALID;
 //! then the 308 sum registers are read (about 15 frames through iiod: the
-//! hold keeps them one frame's) and SUMS_FRAME again, which must be the
-//! same (else warned and counted as torn). Without it (older images) the
+//! hold keeps them one frame's) and SUMS_FRAME and SUMS_CAPTURE again,
+//! which must be the same, SUMS_CAPTURE's SEQ, VALID and ARMED bits
+//! compared, not NO_LAYOUT, which follows the layout while the capture
+//! holds (else warned and counted as torn). Without it (older images) the
 //! latch moves every frame: a frame's sums not solved yet are read, then
 //! SUMS_FRAME again (a different value: the latch moved during the read;
 //! tried again at the next tick). Then the solve (the caller's [`Solver`]:
@@ -1453,13 +1455,20 @@ struct Watch {
     since: Instant,
 }
 
-/// Registers that identify the held capture besides SUMS_FRAME: read with
-/// it before the 308 sum registers and again after them, all equal or the
-/// read is torn. SUMS_CAPTURE's read word carries the latch sequence
-/// number in bits 15–8 on an image with [`features::SUMS_SEQ`] (and the
-/// VALID / ARMED / NO_LAYOUT bits, stable while a capture is held); on an
-/// older image those bits read 0 and the word is stable all the same.
-const HELD_EXTRA: &[u16] = &[reg::SUMS_CAPTURE];
+/// Registers that identify the held capture besides SUMS_FRAME, and the
+/// bits of each that do: read with it before the 308 sum registers and
+/// again after them, those bits all equal or the read is torn.
+/// SUMS_CAPTURE's read word carries the latch sequence number in bits
+/// 15–8 on an image with [`features::SUMS_SEQ`], and VALID and ARMED
+/// (a foreign write re-arms the capture: ARMED set, VALID clear); its
+/// NO_LAYOUT bit follows the layout of the last frame end while a capture
+/// is held (the held sums do not change), so it is not compared: a layout
+/// lost during the reads does not discard a good set. On an older image
+/// SEQ and NO_LAYOUT read 0.
+const HELD_EXTRA: &[(u16, u32)] = &[(
+    reg::SUMS_CAPTURE,
+    capture::VALID | capture::ARMED | 0xFF << 8,
+)];
 
 /// How the slow loop runs.
 #[derive(Debug, Clone)]
@@ -1788,7 +1797,7 @@ impl SlowLoop {
             reg::FRAME,
         ];
         // last: compared again after the sums are read
-        regs.extend_from_slice(HELD_EXTRA);
+        regs.extend(HELD_EXTRA.iter().map(|&(r, _)| r));
         if capture {
             // first: VALID read before the frame it holds
             regs.insert(0, reg::SUMS_CAPTURE);
@@ -1860,7 +1869,7 @@ impl SlowLoop {
             }
         };
         let held: Vec<u16> = std::iter::once(reg::SUMS_FRAME)
-            .chain(HELD_EXTRA.iter().copied())
+            .chain(HELD_EXTRA.iter().map(|&(r, _)| r))
             .collect();
         let after = match self.read_checked(c, port, &held)? {
             Ok(w) => w,
@@ -1870,14 +1879,25 @@ impl SlowLoop {
             }
         };
         let again = after[0];
-        if again != frame || after[1..] != v[v.len() - HELD_EXTRA.len()..] {
+        let before = &v[v.len() - HELD_EXTRA.len()..];
+        let moved = HELD_EXTRA
+            .iter()
+            .zip(before.iter().zip(&after[1..]))
+            .find(|&(&(_, bits), (&b, &a))| (a ^ b) & bits != 0);
+        if again != frame || moved.is_some() {
             self.report.torn += 1;
             if capture {
+                let how = match moved {
+                    Some((&(r, _), (&b, &a))) if again == frame => format!(
+                        "register {r:#05x} moved from {b:#x} to {a:#x} (the latch sequence, or a capture armed again by another client of the device)"
+                    ),
+                    _ => format!("SUMS_FRAME moved from {frame} to {again}"),
+                };
                 warn!(
                     target: "isdb::chain",
                     frame,
                     again,
-                    "chain: the held training sums moved from frame {frame} to {again} while they were read (the capture did not hold); capturing again"
+                    "chain: the held training sums of frame {frame} did not hold while they were read: {how}; capturing again"
                 );
             } else {
                 debug!(
@@ -2445,6 +2465,8 @@ pub(crate) mod tests {
         /// CTRL with the argument.
         Ctrl(u32),
     }
+    /// A change of the [`Model`] during a set ([`Model::at_sum_read`]).
+    pub(crate) type Change = fn(&mut Model);
 
     /// A model of the front end with the chain behind its command pair:
     /// the command decoding of `isdb_frontend::control`, the chain's
@@ -2472,6 +2494,11 @@ pub(crate) mod tests {
         /// Move the latch to this frame after this many sum reads (a torn
         /// read).
         pub move_after: Option<(usize, u32)>,
+        /// Change the model at this many sum reads since its creation (a
+        /// layout lost, or a foreign capture write, during a set).
+        pub at_sum_read: Option<(usize, Change)>,
+        /// SUMS_CAPTURE's other read bits (NO_LAYOUT, SEQ).
+        pub cap_bits: u32,
         sum_reads: usize,
         /// Taps in use and the frame they came from.
         pub taps: Option<(Taps, u32)>,
@@ -2557,7 +2584,7 @@ pub(crate) mod tests {
                 return self.sums.as_ref().map_or(0, |s| s.1);
             }
             if a == reg::SUMS_CAPTURE {
-                return u32::from(self.cap.1) | u32::from(self.cap.0) << 1;
+                return u32::from(self.cap.1) | u32::from(self.cap.0) << 1 | self.cap_bits;
             }
             let sums: Vec<u16> = cc::all_sum_registers();
             if let Some(i) = sums.iter().position(|&r| r == a) {
@@ -2569,6 +2596,12 @@ pub(crate) mod tests {
                 {
                     s.0 = f;
                     self.move_after = None;
+                }
+                if let Some((n, change)) = self.at_sum_read
+                    && self.sum_reads == n
+                {
+                    self.at_sum_read = None;
+                    change(self);
                 }
                 return v;
             }
@@ -2991,6 +3024,50 @@ pub(crate) mod tests {
         assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 52 });
         assert_eq!((l.report.solves, l.report.torn), (2, 0));
         assert_eq!(m.get().gpio_in, id_word());
+    }
+
+    /// A layout lost during the 308 reads of a held capture: SUMS_CAPTURE's
+    /// NO_LAYOUT bit sets between its read before the sums and its read
+    /// after them, and clears during the next set; the held sums are one
+    /// frame's all the same, so both sets are solved, none torn (the whole
+    /// word compared discarded them: "moved from frame 50 to 50"). What
+    /// does move a held set is still torn with SUMS_FRAME unchanged: a
+    /// foreign SUMS_CAPTURE write (ARMED set, VALID clear) and a latch
+    /// (SEQ).
+    #[test]
+    fn a_layout_lost_during_the_reads_keeps_the_held_set() {
+        let m = chain();
+        let mut c = ChainControl::attach("mock", &m).unwrap();
+        c.open(&m, &params(), &ChainInit::default()).unwrap();
+        let mut l = SlowLoop::new(SlowLoopOptions {
+            gate: None,
+            check: None,
+            ..SlowLoopOptions::new(fake_solve, 33.7561e6)
+        });
+        m.get().cap_bits = 0x2A << 8;
+        let mut held = |m: &Mock, frame: u32, change: Change| {
+            assert_eq!(l.tick(&mut c, m).unwrap(), Tick::Capturing);
+            m.get().frame_end(sums(frame, 6_720));
+            let n = m.get().sum_reads + 100;
+            m.get().at_sum_read = Some((n, change));
+            let t = l.tick(&mut c, m).unwrap();
+            assert!(m.get().at_sum_read.is_none(), "changed during the set");
+            (t, l.report.torn)
+        };
+        // the layout lost, then back, during a set: solved
+        let lost = |m: &mut Model| m.cap_bits |= capture::NO_LAYOUT;
+        assert_eq!(held(&m, 50, lost), (Tick::Solved { frame: 50 }, 0));
+        let back = |m: &mut Model| m.cap_bits &= !capture::NO_LAYOUT;
+        assert_eq!(held(&m, 52, back), (Tick::Solved { frame: 52 }, 0));
+        assert_eq!(m.get().taps.unwrap().1, 52);
+        // another client arms a capture during the set: torn
+        let armed = |m: &mut Model| m.cap = (true, false, true);
+        assert_eq!(held(&m, 54, armed), (Tick::Torn, 1));
+        // the latch moves (SEQ) with SUMS_FRAME the same: torn
+        let latched = |m: &mut Model| m.cap_bits += 1 << 8;
+        assert_eq!(held(&m, 56, latched), (Tick::Torn, 2));
+        assert_eq!(m.get().taps.unwrap().1, 52, "nothing written on a torn set");
+        assert_eq!(l.report.solves, 2);
     }
 
     /// Sums whose solve is `taps`: R diagonal (2³⁰ on each tap), p = R w.
