@@ -526,7 +526,10 @@ STD-B44) is received to TLV streams.
   failure). `tools/real_blocks.py` prints the blocks a real-decoder run
   got wrong. `ldpc-14-49-layered34` … `ldpc-21-105-layered34`: the eight
   B44 rates no LDPC set had (49, 61 unshortened, 73, 81, 89, 97, 101,
-  105/120) at the HDL's step 34, bit-exact on the decoder.
+  105/120) at the HDL's step 34, bit-exact on the decoder. chain-1-sync
+  runs two frames past its first frame head (two carrier updates) and
+  carries a `relock` record (stage 1 from another start, locked at
+  another slot position); `KNOWN_GAPS` 8 → 6 entries.
 - `fpga`: the transmit block's follow-ups (docs/plans/isdbs-next.md item
   5; not yet in a built image). Prefetch while selected: the block polls
   the DMA from SELECT, drops the underflow answers before RUN and holds

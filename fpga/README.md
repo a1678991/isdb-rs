@@ -690,7 +690,7 @@ today's sets', the times those of 2026-11-02's 5-frame sets):
 
 | Stage | Vectors | Compared | Python simulator (default test) | Compiled |
 |---|---|---|---|---|
-| 1 + 2 | chain-1-sync | r of every symbol and φ every 4 096, the correlations and accumulator of the first 30 000 positions, every period (137), every head (132), the carrier update | 120 000 symbols (lock, parity, 8 heads with FSync signs), 18 s | the whole set, 1 274 552 symbols (the frame head, the carrier update), 2 s |
+| 1 + 2 | chain-1-sync | r of every symbol and φ every 4 096, the correlations and accumulator of the first 30 000 positions, every period (257), every head (252), both carrier updates; its `relock` record (the same from symbol 3 321, 100 000 symbols, locked at peak position 6 975) | 120 000 symbols (lock, parity, 8 heads with FSync signs), 18 s | the whole set, 2 390 072 symbols (the frame heads, two carrier updates); the relock record |
 | 3 | chain-2-phase | φ, gain, y, r of 18 592 symbols | the whole set, 3 s | 0.1 s |
 | 4 | chain-3-eq (+ chain-4's layout) | z of the frame's 1 115 520 symbols, the 6 720 training references, the 308 sum words, count and frame | 18 592 symbols (2 slots' z, references and MACs), 13 s | the whole frame, 4 s |
 | 5 | chain-4-tmcc | 31 680 soft bits, the 31 682 burst beats (port granted on half the cycles), 9 422 information bits, the result, 120 layout entries and their commit | the whole set, 40 s | 2 s; also with 7 bit errors corrected |
@@ -731,7 +731,10 @@ chain-11 changes the taps in use (32 entries) and chain-12 fails a slot's
 LDPC, a slot's BCH and a TMCC, corrects a TMCC and misses and strays a
 frame marker (20 entries; still one mode, 16APSK 93/120); chain-13
 sends four transmission modes and the host's AGC writes (8 entries; the
-learned 32APSK points wait for the HDL defect chain-14 found). It also fails
+learned 32APSK points wait for the HDL defect chain-14 found); chain-1
+runs two frames past its first frame head (two carrier updates) and
+relocks from another start (6 entries: the 32APSK points and chain-5's
+single-mode, first-decoded frame). It also fails
 on a known gap that a set now covers, so
 the list shrinks as the generators (`chainvectors.rs`, `ldpcvectors.rs`)
 grow. The gate reads the default synthetic corpus only; the recording

@@ -70,11 +70,14 @@ class ConstantsTest(unittest.TestCase):
 
 @needs("1-sync")
 class SyncTest(unittest.TestCase):
-    """Stages 2a, 1, 2b (`SyncFront`). The synthetic set (1 274 552 symbols,
-    chain-6's input up to one slot after one frame from its first frame
+    """Stages 2a, 1, 2b (`SyncFront`). The synthetic set (2 390 072 symbols,
+    chain-6's input up to one slot after two frames from its first frame
     head): lock at the 4th period (37 184 symbols), the first head at
     47 480, the parity, the FSync signs; the first frame head at 149 736
-    and the one carrier update at 1 163 024 need the whole set."""
+    and the carrier updates at 1 163 024 and 2 278 544 need the whole set.
+    Its `relock` record: stage 1 from reset on the same input from symbol
+    3 321 (100 000 symbols), locked with the slot heads at another
+    position of the periods (6 975 against 1 000)."""
 
     PREFIX = 120_000  # lock, parity, 8 heads with FSync/!FSync signs
 
@@ -93,8 +96,19 @@ class SyncTest(unittest.TestCase):
     def test_whole_set_compiled(self):
         res = self.check(COMPILED, None)
         self.assertEqual(len(res["heads"]), len(doc("1-sync")["heads"]))
-        self.assertEqual(len(res["carrier"]), 1)
+        self.assertEqual(len(res["carrier"]), 2)
         self.assertTrue(any(h[6] and h[7] == 0 for h in res["heads"]), "a frame head")
+
+    @cxx
+    def test_relock_at_another_position(self):
+        d = doc("1-sync").get("relock")
+        if d is None:
+            self.skipTest("chain-1-sync has no relock record (mise run fpga:vectors)")
+        res = simulate_stage1(d, COMPILED, None)
+        bad = compare_stage1(d, res)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+        self.assertEqual({p[2] for p in res["periods"] if p[4]}, {6975})
+        self.assertEqual(len(res["heads"]), len(d["heads"]))
 
     @unittest.skipUnless(FULL, "FPGA_CHAIN_FULL=1")
     def test_whole_set_pysim(self):
