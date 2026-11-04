@@ -403,6 +403,17 @@ STD-B44) is received to TLV streams.
   the summary; on stop, drop or error CTRL 0 before the attenuation and
   LO. TX1 only, both channels, `buffer` 65 536 and `kbuffers` 16 by
   default; `kbuffers` is now a TX argument (IQ default 4).
+- `fpga`: value coverage of the chain and LDPC vector sets (issue #30
+  item 1): `fpga/tools/value_coverage.py` reports per field (the `Slots`
+  header, slot, TMCC and status words, and each stage set's internal
+  values) the distinct values and the sets that carry them, and flags
+  constant and absent fields, boundary values never taken, enumerated
+  values never seen and status words a one-word shift would not change.
+  `tests/test_coverage.py` (in `fpga:test`, about 5 s) fails on a
+  constant or absent field that is neither on the tool's `ALLOWED` list
+  nor on its `KNOWN_GAPS` list. Today's corpus: n0, K, `learned_from`,
+  the learned constellation and `taps_from` never leave their reset or
+  "none" values in any status block, and no slot fails LDPC or BCH.
 - `fpga`: the transmit block's follow-ups (docs/plans/isdbs-next.md item
   5; not yet in a built image). Prefetch while selected: the block polls
   the DMA from SELECT, drops the underflow answers before RUN and holds
