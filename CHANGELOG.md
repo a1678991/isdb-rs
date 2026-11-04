@@ -914,6 +914,21 @@ STD-B44) is received to TLV streams.
 
 ### Changed
 
+- `isdb rx --radio … --system isdbs3` with the FPGA receive chain starts
+  the chain on equaliser taps solved from the acquisition's 0.2 s IQ
+  probe (`isdbs3_phy::chain::probe::probe_taps`: the front end's and the
+  chain's CPU models, the third frame's training sums, about 0.3 s
+  before the open) when its sums pass the slow loop's checks, instead of
+  the identity in a fresh process (else this process's last good set,
+  else the identity, warned). On build 9 the slots the decoder dropped
+  (0–4 per 8 s run) all fell in the first ≈ 30 frames, before the slow
+  loop's first taps were in force. `chain.start_taps` in `--json` (the
+  source, the probe's frame, its training MER and the identity's, the
+  solve time, why a probe was not used). New: `chain::synth::iq`
+  (synthetic ISDB-S3 IQ at a radio's rate) and the `isdb-cli` example
+  `s3open` (the open's acquisition and start taps on a synthetic probe
+  or a recording: time, peak memory, agreement with the chain's later
+  solves).
 - `isdb-cli`: the ISDB-T `isdb tx --mux-config` and `isdb loopback
   --mux-config` refuse a `[network] kind = "bs"` configuration (a
   satellite NIT on an ISDB-T signal), naming `isdb tx --system isdbs

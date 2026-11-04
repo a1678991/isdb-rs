@@ -398,9 +398,12 @@ chain yet):
   (another `Slots` format is `RadioError::Chain`); the front end's
   configuration as for symbols with KP read back; CARRIER and
   LAYOUT_LAG; the host's taps / constellation / n0 when it has them and
-  FEATURES allows (`ChainInit`; the CLI passes none, so the chain starts
-  on identity taps, the nominal points and the default n0, and what an
-  image refuses is warned); INIT; CTRL START, then RUN | SYMBOLS | SLOTS;
+  FEATURES allows (`ChainInit`; the CLI passes taps only, always with
+  INIT bit 0 since #28: those `isdbs3_phy::chain::probe::probe_taps`
+  solves from the acquisition's IQ probe, if its sums pass the slow
+  loop's checks, else the process's last good set, else the identity
+  (2026-11-04, "Build 9 residuals"); the nominal points and the default
+  n0; what an image refuses is warned); INIT; CTRL START, then RUN | SYMBOLS | SLOTS;
   STATUS must read run, symbols and slots; a failed step sends CTRL 0.
   **Slow loop** (`SlowLoop`, `spawn_slow_loop`): a timer thread with its
   own libiio context (the stream's context stays on the capture thread)
@@ -430,7 +433,8 @@ chain yet):
   losses, undecoded and missing frames, discontinuities, the carrier
   register and its range, and the last status block (n0 and MER, taps
   and `taps_from`, sync statistics, the chain's counters), plus the
-  radio's open / slow-loop / counters. Not built: `isdb slots --radio
+  radio's open / slow-loop / counters and `start_taps` (where the taps
+  at START came from). Not built: `isdb slots --radio
   --out` (recording is `isdb rx … --slots-out` instead).
 
 ### Verification ladder
@@ -1523,3 +1527,62 @@ pattern; the board was fine.)
 
 Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-rx8` (build 8),
 `prev-rx7`, `prev-rx6` or `prev-txrx2`, then `reboot` and `recover`.
+
+#### Build 9 residuals, host side (2026-11-04)
+
+Two host defects of the build 9 runs, fixed without the board
+(measurements: VERIFICATION.md "Build 9 residuals, host side").
+
+- **6.0–6.3 GB max RSS on the Slots path** (every run, 30 s or 600 s:
+  a fixed peak, not growth). It is the acquisition, before the chain
+  opens: `s3sync::best_trim` ran its 13 trim candidates on threads, each
+  collecting its front end's whole `Symbol` output over 0.15 s at
+  40 Msps (5 M × 56 bytes) and measuring it (40 bytes per symbol more)
+  all at once; `pick_carrier` the same with 8 candidates on 0.05 s. Now
+  the front ends keep only `zk` and measure one at a time
+  (`s3sync::measure_one`): the acquisition's peak 6.1 GB → about
+  0.6 GB, results bit for bit the same, time unchanged. The stream
+  itself never held more than its 17 MiB of queues.
+- **0–4 dropped slots per 8 s run, all before the first solved taps.**
+  Options:
+  1. *The taps from the acquisition's probe* (built): the CLI's probe is
+     0.2 s of IQ at the radio's rate (8 M samples at 40 Msps, about six
+     frames). `chain::probe::probe_taps` runs it through the front end's
+     model with the parameters the FPGA's front end gets (bit-exact with
+     it) and the chain's model (TMCC decoded, main signal not); the
+     first training sums are the third frame's after the frame sync
+     (layout lag 2), within 0.13–0.17 s of the probe, solved with
+     `solve_sums` as the slow loop solves the FPGA's. 0.3 s at the open.
+     The sums are taken at the equaliser's input, so the same signal
+     gives the same sums on the FPGA up to noise and drift: on the
+     synthetic echo the probe's taps are within 0.03 of every later
+     solve and lose ≤ 0.03 dB of training MER against them. Correct by
+     construction, no state on disk, and right after a channel change
+     (the process's last good set is not).
+  2. *A cache of the last good set across processes*: needs a key (URI,
+     channel, FEATURES), an age limit and a file; a stale set is caught
+     only by the gate (two solves) or the revert (10 frames). Not built:
+     (1) costs 0.3 s and is always fresh.
+  3. *The slow loop sooner*: its first capture is already armed at the
+     first tick; the first sums need frame 2 (the layout), the 308
+     register reads take ≈ 15 frames, and taps apply two frames after
+     their sums, so frames 0–≈ 25 stay on the start taps whatever the
+     loop does (the sums in the `Slots` stream, the follow-up above,
+     would save the reads only).
+
+  Order at the open: the probe's taps when its sums pass the slow loop's
+  `SumsCheck` and its solve the gate's residual bound, else the
+  process's last good set, else the identity (warned with the reason);
+  loaded with INIT bit 0 as before, and the slow loop's good set. The
+  acquisition's line names them; `chain.start_taps` in `--json`.
+
+  On the board, expected: the acquisition line ends "equaliser start
+  taps solved from the acquisition's probe (its frame 2, 6720 training
+  symbols: …) in ≈ 0.3 s", the open line "taps from the host";
+  `chain.start_taps.source` "probe"; the status blocks' `taps` the
+  probe's from frame 0 with `taps_from` none until the slow loop's first
+  write, which stays solved from frame ≈ 5–6 and in force from ≈ 26–28
+  (unchanged); that first solve taken by the gate against the probe's
+  set (`solves_rejected` 0, `reverts` 0); the mean iterations of frames
+  0–25 ≈ 2.1–2.3 as after it (4.1–4.8 on the identity) and no dropped
+  slot in the first 34 frames; max RSS ≈ 0.6–0.9 GB, all at the open.

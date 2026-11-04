@@ -126,6 +126,9 @@ pub struct ChainStats {
     pub restarts: Option<u64>,
     /// See `restarts`.
     pub frames_dropped: Option<u64>,
+    /// The taps the radio's chain started on, and where they came from
+    /// ([`StartTaps::json`]).
+    pub start_taps: Option<Value>,
     /// The radio's capture: the chain's open, slow loop and counters.
     pub radio: Option<Value>,
     /// The error the radio's capture ended on (`isdb rx` exits non-zero
@@ -171,6 +174,7 @@ impl ChainStats {
             "carrier_hz": self.carrier().map(|c| c.0),
             "carrier_range_hz": self.carrier().map(|c| [c.1, c.2]),
             "status": st.map(|s| status_json(s)),
+            "start_taps": self.start_taps,
             "radio": self.radio,
             "capture_error": self.capture_error,
         })
@@ -902,6 +906,146 @@ fn set_last_good_taps(t: isdb_frontend::control::chain::Taps) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(t);
 }
 
+/// Where the radio's chain got the taps it starts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapsSource {
+    /// Solved from the acquisition's IQ probe
+    /// (`isdbs3_phy::chain::probe::probe_taps`).
+    Probe,
+    /// The last good set of an earlier capture of this process.
+    Process,
+    /// The identity.
+    Identity,
+}
+
+impl TapsSource {
+    /// Its name in `--json`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Probe => "probe",
+            Self::Process => "process",
+            Self::Identity => "identity",
+        }
+    }
+}
+
+/// The taps the radio's chain starts on (`ChainInit::taps`, loaded with
+/// INIT bit 0, and the slow loop's first good set), where they came from,
+/// and the probe's solve.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartTaps {
+    /// The taps (Q2.14).
+    pub taps: isdb_frontend::control::chain::Taps,
+    /// Where they came from.
+    pub source: TapsSource,
+    /// The probe's frame whose sums were solved and its training
+    /// symbols (`None`: no frame of the probe gave sums).
+    pub frame: Option<(u32, u32)>,
+    /// The probe's solve on its sums: its [`isdb_radio::chain::fit`] and
+    /// the identity's.
+    pub fit: Option<(f64, f64)>,
+    /// Seconds the probe's solve took (front end and chain model).
+    pub solve_s: f64,
+    /// Why the probe's taps were not used.
+    pub fallback: Option<String>,
+}
+
+/// Training MER of a [`isdb_radio::chain::fit`], dB.
+fn fit_db(f: f64) -> f64 {
+    10.0 * (1.0 / (1.0 - f)).log10()
+}
+
+impl StartTaps {
+    /// `solved from the acquisition's probe (…)` and the like.
+    pub fn describe(&self) -> String {
+        match (self.source, self.frame, self.fit) {
+            (TapsSource::Probe, Some((f, n)), Some((fit, id))) => format!(
+                "solved from the acquisition's probe (its frame {f}, {n} training symbols: training MER {:.2} dB, {:.2} dB on the identity) in {:.2} s",
+                fit_db(fit),
+                fit_db(id),
+                self.solve_s
+            ),
+            (s, ..) => format!(
+                "{} ({})",
+                match s {
+                    TapsSource::Process => "the last good set of this process",
+                    _ => "identity",
+                },
+                self.fallback.as_deref().unwrap_or("no probe")
+            ),
+        }
+    }
+
+    /// `chain.start_taps` in `--json`.
+    pub fn json(&self) -> Value {
+        json!({
+            "source": self.source.name(),
+            "taps": self.taps,
+            "probe_frame": self.frame.map(|f| f.0),
+            "training_symbols": self.frame.map(|f| f.1),
+            "fit": self.fit.map(|f| f.0),
+            "training_mer_db": self.fit.map(|f| fit_db(f.0)),
+            "identity_training_mer_db": self.fit.map(|f| fit_db(f.1)),
+            "solve_s": self.solve_s,
+            "fallback": self.fallback,
+        })
+    }
+}
+
+/// The start taps from the probe's solve (`probe`: its result, or the
+/// error it failed on) when its sums pass the slow loop's checks
+/// ([`isdb_radio::chain::SumsCheck`]: R's shape and the fit) and the
+/// solve its residual bound (the default [`isdb_radio::chain::Gate`]'s),
+/// the rules a first solve of the chain's own sums is held to; else
+/// `last_good` (this process's), else the identity.
+pub fn choose_start_taps(
+    probe: std::result::Result<Option<isdbs3_phy::chain::probe::ProbeTaps>, String>,
+    solve_s: f64,
+    last_good: Option<isdb_frontend::control::chain::Taps>,
+) -> StartTaps {
+    use isdb_radio::chain::{Gate, SumsCheck, check_sums, fit, identity, residual};
+    let mut s = StartTaps {
+        taps: identity(),
+        source: TapsSource::Identity,
+        frame: None,
+        fit: None,
+        solve_s,
+        fallback: None,
+    };
+    let why = match probe {
+        Err(e) => format!("the probe's solve failed: {e}"),
+        Ok(None) => "no frame of the probe gave training sums".into(),
+        Ok(Some(p)) => {
+            let ts = isdbs3_phy::chain::eq::to_training(&p.sums);
+            let check = SumsCheck::default();
+            let f = fit(&ts, &p.taps);
+            s.frame = Some((p.sums.frame, p.sums.count));
+            s.fit = Some((f, fit(&ts, &identity())));
+            let r = residual(&ts, &p.taps);
+            match check_sums(&ts, &check) {
+                Some(fault) => format!("the probe's sums failed the checks: {fault}"),
+                None if f.is_nan() || f > check.fit => {
+                    format!("the probe's solve has a fit of {f:.4}, above {}", check.fit)
+                }
+                None if r.is_nan() || r > Gate::default().residual => {
+                    format!("the probe's solve has a residual of {r:.3}")
+                }
+                None => {
+                    s.taps = p.taps;
+                    s.source = TapsSource::Probe;
+                    return s;
+                }
+            }
+        }
+    };
+    s.fallback = Some(why);
+    if let Some(t) = last_good {
+        s.taps = t;
+        s.source = TapsSource::Process;
+    }
+    s
+}
+
 /// Live from a radio whose FPGA has the chain: acquire on a short IQ
 /// capture (as for the symbol front end), configure the front end and
 /// the chain (`Backend::capture_slots`, the slow loop on its timer
@@ -930,21 +1074,16 @@ pub fn run_radio(
     let mut acq = None;
     let cap_stop = std::sync::Arc::new(AtomicBool::new(false));
     // known taps at START (#28: without INIT bit 0 the chain keeps the
-    // taps of the run before, which may be a bad set): the last good set
-    // of an earlier capture of this process, else the identity
-    let start = last_good_taps().unwrap_or_else(isdb_radio::chain::identity);
-    let init = isdb_frontend::control::chain::ChainInit {
-        taps: Some(start),
-        ..isdb_frontend::control::chain::ChainInit::default()
-    };
+    // taps of the run before, which may be a bad set): solved from the
+    // acquisition's probe, else the last good set of an earlier capture
+    // of this process, else the identity (chosen in the acquisition,
+    // loaded by the capture thread)
+    let chosen: Arc<std::sync::Mutex<Option<StartTaps>>> = Arc::default();
+    let chosen_c = Arc::clone(&chosen);
     // the consumer reports each decoded frame to the slow loop, which
     // judges the taps it writes on them (and takes a bad set back)
     let health = Arc::new(ChainHealth::new());
-    let slow = isdb_radio::chain::SlowLoopOptions {
-        health: Some(Arc::clone(&health)),
-        start: Some(start),
-        ..isdb_radio::chain::SlowLoopOptions::new(isdbs3_phy::chain::eq::solve_training, rs)
-    };
+    let health_c = Arc::clone(&health);
     let stream = crate::symstream::start_radio_with(
         backend,
         cfg,
@@ -969,19 +1108,61 @@ pub fn run_radio(
             d.taps = taps;
             let params = isdb_frontend::Params::design(&d)?;
             acq = Some(p);
-            Ok(Some((
-                params,
-                format!(
-                    "carrier {:+.0} Hz, trim {:+.3} symbol, sync Es/N0 {:.2} dB there; FPGA front end ({taps} taps) and receive chain",
-                    p.carrier_offset_hz, p.trim, p.sync_snr_db
-                ),
-            )))
+            // the equaliser's taps from the same probe, through the front
+            // end's and the chain's models with these parameters
+            let t = std::time::Instant::now();
+            let probe = isdbs3_phy::chain::probe::probe_taps(x, &params).map_err(|e| e.to_string());
+            let start = choose_start_taps(probe, t.elapsed().as_secs_f64(), last_good_taps());
+            let what = format!(
+                "carrier {:+.0} Hz, trim {:+.3} symbol, sync Es/N0 {:.2} dB there; FPGA front end ({taps} taps) and receive chain; equaliser start taps {}",
+                p.carrier_offset_hz,
+                p.trim,
+                p.sync_snr_db,
+                start.describe()
+            );
+            *chosen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(start);
+            Ok(Some((params, what)))
         },
-        move |b, cfg, p, w, stop| b.capture_slots(cfg, p, &init, Some(slow), u64::MAX, w, stop),
+        move |b, cfg, p, w, stop| {
+            let start = chosen_c
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .map_or_else(isdb_radio::chain::identity, |s| s.taps);
+            let init = isdb_frontend::control::chain::ChainInit {
+                taps: Some(start),
+                ..isdb_frontend::control::chain::ChainInit::default()
+            };
+            let slow = isdb_radio::chain::SlowLoopOptions {
+                health: Some(health_c),
+                start: Some(start),
+                ..isdb_radio::chain::SlowLoopOptions::new(isdbs3_phy::chain::eq::solve_training, rs)
+            };
+            b.capture_slots(cfg, p, &init, Some(slow), u64::MAX, w, stop)
+        },
     )?;
     if let Some(p) = acq {
         stats.carrier_offset_hz = p.carrier_offset_hz;
         stats.trim = p.trim;
+    }
+    if let Some(s) = chosen
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+    {
+        // the acquisition's line says which taps; the identity is warned
+        if s.source == TapsSource::Identity {
+            warn!(
+                target: "isdb::rx",
+                source = s.source.name(),
+                solve_s = s.solve_s,
+                "the chain starts on taps {}: the decoder works harder until the slow loop's first solve is in force (about 1 s)",
+                s.describe()
+            );
+        }
+        Consumer::chain(stats).start_taps = Some(s.json());
     }
     // the decoder ends the capture once `seconds` of frames are in
     let enough = std::sync::Arc::clone(&cap_stop);
@@ -1388,5 +1569,90 @@ mod tests {
         assert_eq!(c.losses, 1);
         assert_eq!(c.blocks_lost, 1);
         assert_eq!(st.slots, (u64::try_from(n).unwrap() - 2) * VALID - 1);
+    }
+
+    /// The first training sums of a synthetic stream through the CPU
+    /// chain, as the acquisition's probe would give them.
+    fn probe() -> isdbs3_phy::chain::probe::ProbeTaps {
+        let s = generate(
+            &SynthOptions {
+                snr_db: 16.0,
+                ..SynthOptions::default()
+            },
+            5,
+        );
+        let mut c = Chain::new(ChainOptions {
+            eq_every: 0,
+            ..ChainOptions::default()
+        });
+        let mut out = Vec::new();
+        for &x in &s.symbols {
+            c.push(x, &mut out);
+        }
+        let sums = out
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Frame(f) => f.sums,
+                _ => None,
+            })
+            .expect("training sums");
+        isdbs3_phy::chain::probe::ProbeTaps {
+            taps: isdbs3_phy::chain::eq::solve_sums(&sums).expect("a solve"),
+            sums,
+            samples: 0,
+            symbols: c.symbols(),
+        }
+    }
+
+    /// The probe's taps when its sums pass the slow loop's checks; else
+    /// this process's last good set, else the identity, with the reason.
+    #[test]
+    fn the_chain_starts_on_the_probes_taps_when_they_pass_the_checks() {
+        use isdb_radio::chain::identity;
+        let p = probe();
+        let s = choose_start_taps(Ok(Some(p.clone())), 0.3, Some(identity()));
+        assert_eq!(s.source, TapsSource::Probe);
+        assert_eq!(s.taps, p.taps);
+        assert_eq!(s.frame, Some((2, 6_720)));
+        let (fit, id) = s.fit.expect("the fits");
+        assert!(fit >= id && fit <= 1.0, "fit {fit}, identity {id}");
+        assert_eq!(s.fallback, None);
+        let j = s.json();
+        assert_eq!(j["source"], "probe");
+        assert_eq!(j["probe_frame"], 2);
+        assert!(
+            s.describe()
+                .starts_with("solved from the acquisition's probe (its frame 2")
+        );
+
+        // a sum read wrong (an imaginary diagonal): not used
+        let mut bad = p.clone();
+        bad.sums.r[0][1] = bad.sums.r[0][0] / 100;
+        let mut last = identity();
+        last[4] = [100, -50];
+        let s = choose_start_taps(Ok(Some(bad.clone())), 0.3, Some(last));
+        assert_eq!((s.source, s.taps), (TapsSource::Process, last));
+        assert!(
+            s.fallback.as_deref().unwrap().contains("imaginary part"),
+            "{:?}",
+            s.fallback
+        );
+        let s = choose_start_taps(Ok(Some(bad)), 0.3, None);
+        assert_eq!((s.source, s.taps), (TapsSource::Identity, identity()));
+        assert_eq!(s.json()["source"], "identity");
+
+        // no sums in the probe, or its solve failed
+        let s = choose_start_taps(Ok(None), 0.2, None);
+        assert_eq!(s.source, TapsSource::Identity);
+        assert_eq!(s.frame, None);
+        assert_eq!(
+            s.describe(),
+            "identity (no frame of the probe gave training sums)"
+        );
+        let s = choose_start_taps(Err("bad parameters".into()), 0.0, None);
+        assert_eq!(
+            s.fallback.as_deref(),
+            Some("the probe's solve failed: bad parameters")
+        );
     }
 }
