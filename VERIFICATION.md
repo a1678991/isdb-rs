@@ -1319,6 +1319,38 @@ are transponder numbering, not station identities.
   (`isdbs3_every_segment_acquires`, `ISDB_RS_ISDBS3_LIVE_IQ`;
   `examples/blockacq`).
 
+### Acquisition mid-recording: the residual carrier's alias (2026-11-01)
+
+Reported and measured by the contributor of PR #23 on BS-14 `Symbols`
+words files (`isdb symbols --out`, PlutoSky R2 on the BS IF, 16APSK
+7/9); not re-run on this host.
+
+- **Symptom.** A words file sliced from the middle of a 3-hour recording
+  never decoded a TMCC: split in 8, parts 1–7 gave `TMCC ok 0` for their
+  whole 23 minutes, part 0 was clean.
+- **Cause.** The front end's NCO is set once, at the recording's start,
+  and the carrier drifts (+2.5 kHz after 23 min, +9.2 kHz after
+  90 min). The residual is measured from the phase step between SSync
+  slots, unambiguous only within ±Rs/(4·9 296) = ±908 Hz; beyond, it is
+  an alias 1 815.6 Hz apart (+2 538.8 Hz measured as +723.1 Hz,
+  +9 219.7 Hz as +141.6 Hz). The slot sync still finds the frame heads,
+  but the slot phases are a half turn off (odd alias) or turn whole
+  times per slot unseen (even alias), so no TMCC decodes, and a stream
+  then tracks the alias.
+- **Fix** (`isdbs3-phy` `sync::coarse_hz` / `carrier_hz`, `rx.rs`): on an
+  acquisition, the carrier is estimated coarsely from the squared
+  π/2-BPSK TMCC symbols (the phase step of the squared 4-symbol runs
+  140 symbols apart: unambiguous within ±60 kHz, a few Hz accurate over
+  a frame), the residual's alias nearest it is removed and the sync
+  measured again; the residual reported includes the alias.
+- **Evidence.** Every slice tried acquires on its own with a TMCC on
+  every frame and no LDPC failure: 1/8 … 7/8 of the file, and 30, 90
+  and 170 min in (carriers +2.5 … +9.3 kHz). The 1-minute reference
+  stream decodes to an identical TLV. Synthetic:
+  `sync::carrier_beyond_the_alias_spacing_is_resolved` (0 … 40 kHz);
+  opt-in: `isdbs3_mid_file_slice_acquires` (`ISDB_RS_ISDBS3_MIDFILE_WORDS`,
+  fails before the fix with 24 frames, TMCC ok 0, residual +723.3 Hz).
+
 ### MMT-SI, TLV-SI and media of the TLV streams (2026-10-26)
 
 `isdb-mmt` decodes what the TLV streams carry, `isdb tlv inspect /
@@ -1501,6 +1533,48 @@ Zen 4.
   and the receiver threads sharing a loaded machine the instruction set
   hardly shows in the wall time (summed front-end CPU −9 % with AVX2);
   the single-stream figure above is the load-independent one.
+
+### The streamed receiver pipelined, and the per-slot loops (2026-11-02)
+
+PR #23, measured by its contributor on a 4-core i5-4278U (4 threads),
+`isdb rx --symbols` on a 1-minute BS-14 `Symbols` words file; not
+re-run on this host. Output is byte-identical at every step.
+
+| | wall | CPU | RSS | TLV |
+|---|---|---|---|---|
+| before | 297.6 s | 305 % | 3.7 GB | reference |
+| after | 244.5 s | 369 % | 4.4 GB | byte-identical |
+
+(Re-measured after the rebase on `main`: 249.2 s, 365 %, byte-identical.)
+
+- *Max-log demapper* (`isdbs3-phy` `main_signal::demap_n`): the label
+  loops unrolled for the B44 constellations (2–32 points), comparisons
+  in place of `f64::min`, LLRs written in place; bit for bit the general
+  loop (`unrolled_demap_matches_the_general_loop`). 24 frames of BS-14
+  on one thread: 3.7 s → 0.61 s per slot pass. The bit-interleaver
+  permutation is built once per (modulation, direction) instead of once
+  per codeword.
+- *BCH* (`isdb-fec` `bch::is_codeword`): the word is first divided by
+  g(x) a byte at a time (a 256-entry table of 192-bit remainders); g is
+  the lcm of the minimal polynomials of α … α²⁴, so g | w iff
+  S₁ … S₂₄ = 0, and only a non-codeword goes on to the syndromes.
+  24 frames: `decode_frames` 3.7 s → 2.15 s on 4 threads
+  (`codeword_check_agrees_with_the_syndromes`: codewords pass, 1 … 12
+  errors never do, every alignment).
+- *Phase ramp* (`sync::PhaseRamp`): the per-slot phase step once per
+  slot instead of once per main symbol (1.08 M `arg` per frame), the
+  same values bit for bit. 24 frames: preparation 1.63 s → 0.98 s on one
+  thread.
+- *Pipeline* (`rx::receive_front` / `receive_back`, `rxs3::run_stream`):
+  each chunk's sync, equaliser, TMCC and symbols on the stream's thread,
+  the previous chunk's LDPC/BCH and TLV writes on the calling thread,
+  over a `sync_channel(1)`; the summary gains a `stages:` line.
+  1 minute: 297.6 s → 250.5 s, CPU 305 → 363 %, RSS 3.7 → 4.2 GB.
+- *Parallel decode of a long recording* (`tools/split-rx.sh`,
+  `tools/tlv-join.py`): a 10-minute BS-14 recording in 4 parts, 2 at a
+  time: the joined TLV (7 496 060 817 bytes) is `cmp`-identical to the
+  single-process decode (each seam cut 1 651 584 bytes of part k's
+  overlap, part k+1 taken from byte 0).
 
 ## Continuous reception through the FPGA front end
 

@@ -16,8 +16,8 @@
 #   the head) and joins there. A seam without a match fails the join and
 #   keeps the parts, unless ALLOW_LOSSY=1 (that seam is then a plain
 #   concatenation, repeating the overlap).
-# - Each slice needs a receiver that acquires mid-recording (isdb-rs
-#   fix/mid-file-start: the carrier alias is resolved from the TMCC).
+# - Each slice needs a receiver that acquires mid-recording (isdbs3-phy's
+#   rx resolves the residual carrier's alias from the TMCC symbols).
 # - Parts and logs go to OUTDIR (default: next to FILE). Nothing existing is
 #   overwritten: the script refuses to start if a joined TLV or any part
 #   file is already there, and checks again before each join; the joined
