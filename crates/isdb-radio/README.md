@@ -28,7 +28,7 @@ MB/s) are above what a Pluto streams over Gigabit Ethernet (about
 | `TxOptions`, `RxOptions` | TX: digital backoff (0..40 dB), prefill frames and frame duration (`validate()`); RX: receive queue length in seconds of signal, which the backend converts to its buffer count |
 | `Backend` | one kind of radio: `describe_tx` / `describe_rx` / `describe_capture` validate without hardware (dry run), `open_tx` / `open_rx` open the device; TX gain defaults are the device's minimum output power. Optional: `capture_limit` (the largest capture and why, `u64::MAX` for a stream; `None` by default) and `capture` (writes the sample bytes to an `io::Write` as they arrive); `offloads` (the receive stages the device runs itself, probed without changing it; none by default) and `capture_symbols` (streams the `Symbols` words of the device's front end); `tx_offloads` (the transmit stages, probed likewise with a TX configuration), `describe_tx_symbols` / `open_tx_symbols` (validate, describe and open the transmission of symbol codes through the device's FPGA transmit block, configured with `isdb_frontend::shape::fixed::TxParams`; `Unsupported` by default) |
 | `Offload`, `SymbolsCapture` | a stage a radio runs itself (`Offload::Symbols { version, taps }`: the receive front end in the FPGA; `Offload::RxSlots { version, taps, slots_version }`: the front end followed by the whole ISDB-S3 receive chain, `Slots` out, announced in bits 11–8 of the front end's ID word, `Offload::from_rx_id`; `Offload::TxSymbols { version, phases, taps }`: the transmit interpolator, `runs_tx(&TxParams)` saying whether it runs given parameters); what `capture_symbols` took (words, DMA overflow reports, settings read back) |
-| `Backend::capture_slots`, `SlotsCapture`, `chain` | the ISDB-S3 receive chain in the FPGA (default `Unsupported`): `capture_slots(cfg, params, init, slow, words, out, stop)` configures the front end and the chain and streams its `Slots` words on the same 16-bit DMA path as `capture_symbols`; `SlotsCapture` adds what the open loaded, the slow loop's report and the chain's counters. `chain::ChainControl` is the device-neutral control over a `RegisterAccess` (the command words of `isdb_frontend::control`, the register map of `isdb_frontend::control::chain`, whose addresses are placeholders): `open` and the equaliser's slow loop (`SlowLoop::tick`, `spawn_slow_loop`: read the training sums, solve with the caller's solver, write and commit the taps; the carrier register followed, informational) |
+| `Backend::capture_slots`, `SlotsCapture`, `chain` | the ISDB-S3 receive chain in the FPGA (default `Unsupported`): `capture_slots(cfg, params, init, slow, words, out, stop)` configures the front end and the chain and streams its `Slots` words on the same 16-bit DMA path as `capture_symbols`; `SlotsCapture` adds what the open loaded, the slow loop's report and the chain's counters. `chain::ChainControl` is the device-neutral control over a `RegisterAccess` (the command words of `isdb_frontend::control`, the register map of `isdb_frontend::control::chain`, whose addresses are placeholders): `open` and the equaliser's slow loop (`SlowLoop::tick`, `spawn_slow_loop`: take the training sums, from the `Slots` stream's sums blocks through `ChainHealth::sums` on an image that sends them, `SumsSource::Stream`, else from the sum registers, solve with the caller's solver, write and commit the taps; the carrier register followed, informational) |
 | `Capture`, `CaptureFormat`, `CaptureGap` | what one capture wrote: its format (`Cs8`, or `Cs16` with a full scale of 2048 or 32768), the samples written and the losses inside it, and the rate, LO, bandwidth and gain read back from the device, its identity, the capture method and the host time |
 | `backends()`, `backend(name)` | the compiled-in backends; an unknown name reports the `isdb-radio` feature of each known backend (forwarded by `isdb-cli` under the same name) |
 | `Quantizer<F>`, `IntFormat`, `Cs8`, `Cs12` | unit-RMS signal → integer samples (cs8; cs12 left-aligned in `i16`) with backoff below full scale, saturation and clip count |
@@ -149,7 +149,8 @@ with the chain puts its `Slots` format version in bits 11–8 of the front
 end's ID word (`cf-ad9361-lpc` `gpio_in`, 0x800000B8), so `offloads`
 finds it with the same one register read and returns
 `Offload::RxSlots` after `Offload::Symbols`. `capture_slots` then: checks
-the front end's format and taps and the chain's `Slots` version,
+the front end's format and taps and the chain's `Slots` version (1 or 2:
+`isdb_frontend::slots::readable`),
 configures the RX as for symbols, runs `chain::ChainControl::open`
 through the command words on `gpio_out` (0x800000BC): CTRL 0, VERSION
 and FEATURES, the front end's configuration with KP read back, the
@@ -158,7 +159,11 @@ has none: CTRL START keeps the taps in force otherwise, and a bad set of
 the run before would survive, issue #28) / constellation / n0 if given
 and FEATURES allows, INIT, CTRL START then RUN | SYMBOLS | SLOTS,
 STATUS checked; starts the equaliser's slow loop on a thread with a
-second libiio context (when FEATURES has the training sums); streams
+second libiio context (when FEATURES has the training sums: in the
+`Slots` stream with bit 7 SUMS_STREAM on a format-2 image, when the
+caller's consumer hands the sums blocks over through
+`SlowLoopOptions::health`, the loop then reading no register; else in
+the registers); streams
 `voltage0` 16-bit words on the same DMA path as `capture_symbols`, in
 buffers of 65 536 words by default (64 kernel buffers, a 30 s libiio
 timeout: a buffer must fill even while the chain has no layout and sends
@@ -196,9 +201,15 @@ consumer of the `Slots` words reports each frame, `ChainHealth`) it
 watches a written set on the frames under it and takes it back
 (`Revert`: n0 + 20 %, 5 % of the codewords failed, or no layout); and
 when the chain has had no layout, or no capture held, for 1.5 s it
-writes the last good set or the identity (`Tick::Recovered`). The
-module documentation gives the bounds and the measurements behind
-them.
+writes the last good set or the identity (`Tick::Recovered`). With
+`SlowLoopOptions::sums_source` `SumsSource::Stream` (an image of `Slots`
+format 2 with SUMS_STREAM, and `health`) it takes each frame's sums from
+the consumer (`ChainHealth::sums`, the first as soon as it arrives:
+`SlowLoop::sums_waiting` wakes the thread) and the frame, layout, lock
+and carrier from the status blocks: no register is read
+(`SlowLoopReport::words_read` 0), no capture armed; the checks, the
+gate, the writes, the revert and the recovery are unchanged. The module
+documentation gives the bounds and the measurements behind them.
 
 ### TX symbol codes: the FPGA transmit block
 

@@ -209,7 +209,8 @@ pub enum RadioError {
         /// The `Slots` format version of the device's chain; `None`: it
         /// has none.
         found: Option<u16>,
-        /// The `Slots` format version this host reads.
+        /// The newest `Slots` format version this host reads (it reads
+        /// `isdb_frontend::slots::SLOTS_VERSION_MIN` to this).
         need: u16,
     },
     /// Front-end parameters that do not validate
@@ -573,7 +574,8 @@ fn chain(backend: &str, found: Option<u16>, need: u16) -> String {
     match found {
         None => format!("{backend}: this bitstream has no ISDB-S3 receive chain (Slots)"),
         Some(v) => format!(
-            "{backend}: the device's ISDB-S3 receive chain writes Slots format {v}; this host reads format {need}"
+            "{backend}: the device's ISDB-S3 receive chain writes Slots format {v}; this host reads formats {} to {need}",
+            isdb_frontend::slots::SLOTS_VERSION_MIN
         ),
     }
 }

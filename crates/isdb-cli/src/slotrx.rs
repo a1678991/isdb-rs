@@ -481,6 +481,8 @@ impl Consumer {
                 slots,
                 failed,
                 dropped,
+                carrier: s.carrier,
+                locked: s.locked,
             });
         }
         let c = Self::chain(stats);

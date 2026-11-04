@@ -9,7 +9,8 @@
 //!
 //! **Open** ([`ChainControl::open`]): CTRL 0 (a chain left running by a
 //! process that did not close stops); VERSION and FEATURES read (the
-//! `Slots` format must be this host's); the front end configured as for
+//! `Slots` format must be one this host reads: 1 or 2,
+//! `isdb_frontend::slots::readable`); the front end configured as for
 //! symbols (`Encoder::configure`, KP read back); CARRIER and LAYOUT_LAG;
 //! the host's taps — or the identity when it has none: CTRL START keeps
 //! the taps in force without INIT bit 0, so a bad set of the run before
@@ -18,8 +19,32 @@
 //! points and the default n0); INIT; CTRL START, then RUN | SYMBOLS |
 //! SLOTS; the front end's STATUS must read run, symbols and slots.
 //!
+//! **Sums from the stream** ([`SumsSource::Stream`]: an image of `Slots`
+//! format 2 with [`features::SUMS_STREAM`], and a consumer of its words
+//! reporting to [`ChainHealth`]): the chain sends each decoded frame's
+//! training sums as a sums block after its status block
+//! (`isdb_frontend::slots::SumsBlock`, under the block's CRC), and the
+//! consumer hands each to the slow loop ([`ChainHealth::sums`]). The loop
+//! then reads no register at all: no SUMS_CAPTURE armed, none of the 308
+//! sum registers (1.3–1.5 s a set through iiod, each read exposed to any
+//! other client of the device's `direct_reg_access`: issues #27, #29), no
+//! SUMS_FRAME, STATUS, FRAME or CARRIER either: the status blocks give
+//! the frame, the layout (a decoded frame), the lock and the carrier
+//! register ([`ChainHealth::frame`]; none for [`STREAM_STALE`]: STATUS 0,
+//! as an unlocked chain sends nothing). Each tick solves the latest sums
+//! block not solved yet; the checks, the [`Gate`], the writes (the 11
+//! taps, TAPS_FROM), the revert watch and the recovery are the register
+//! path's. The first solve is taken as soon as the first block arrives
+//! (the loop's thread wakes for it: [`SlowLoop::sums_waiting`]), then
+//! every [`SlowLoopOptions::every`] as before. `words_read`, `rereads`,
+//! `torn` and `unsettled` stay 0 on this path ([`SlowLoopReport`]); the
+//! checks on the sums still run (a CRC protects the transfer, not the
+//! sums), so `captures_rejected` counts as before. A format-1 image
+//! (builds 1–9), or one without the bit, keeps the register path below.
+//!
 //! **Slow loop** ([`SlowLoop::tick`], on a timer thread by
-//! [`spawn_slow_loop`]): FEATURES once; then each tick SUMS_FRAME,
+//! [`spawn_slow_loop`]; the register path, [`SumsSource::Registers`]):
+//! FEATURES once; then each tick SUMS_FRAME,
 //! SUMS_COUNT, CARRIER, TAPS_FROM, the chain's STATUS and FRAME read (and
 //! SUMS_CAPTURE with [`features::SUMS_CAPTURE`]). With the capture: a
 //! tick that has not armed one writes SUMS_CAPTURE (the next frame end
@@ -176,6 +201,40 @@ pub fn settled(
 /// `None` when they do not solve.
 pub type Solver = fn(&TrainingSums) -> Option<Taps>;
 
+/// Where the slow loop takes the training sums from (module
+/// documentation, "Sums from the stream").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SumsSource {
+    /// The 308 sum registers (and SUMS_CAPTURE's hold where the image has
+    /// it): every image.
+    #[default]
+    Registers,
+    /// The sums blocks of the `Slots` stream, handed over by its consumer
+    /// ([`ChainHealth::sums`]): an image of `Slots` format 2 with
+    /// [`features::SUMS_STREAM`].
+    Stream,
+}
+
+impl SumsSource {
+    /// `"registers"` or `"stream"` (the summary's `sums_source`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Registers => "registers",
+            Self::Stream => "stream",
+        }
+    }
+
+    /// What an image of `Slots` format `version` with FEATURES `features`
+    /// offers: the stream with format 2 and [`features::SUMS_STREAM`].
+    pub fn offered(version: u16, features: u32) -> Self {
+        if version >= isdb_frontend::slots::SUMS_VERSION && features & features::SUMS_STREAM != 0 {
+            Self::Stream
+        } else {
+            Self::Registers
+        }
+    }
+}
+
 /// The chain as the host drives it: the command encoder (its toggle bit
 /// and `gpio_out` bit 0 carried on) and what the open found.
 #[derive(Debug, Clone)]
@@ -232,6 +291,11 @@ pub struct OpenReport {
 }
 
 impl OpenReport {
+    /// Where the image offers the training sums ([`SumsSource::offered`]).
+    pub fn sums_source(&self) -> SumsSource {
+        SumsSource::offered(self.version, self.features)
+    }
+
     /// `taps, constellation (16APSK) loaded; n0 default` and the like.
     pub fn describe(&self) -> String {
         let what = |bit: u32, name: &str| -> String {
@@ -420,7 +484,7 @@ impl ChainControl {
         n += 5;
         self.version = u16::try_from(v[0]).unwrap_or(u16::MAX);
         self.features = v[1];
-        if self.version != cc::SLOTS_VERSION {
+        if !isdb_frontend::slots::readable(self.version) {
             return Err(RadioError::Chain {
                 backend: self.backend,
                 found: Some(self.version),
@@ -1155,6 +1219,10 @@ pub struct FrameHealth {
     /// Of which the decoder took none (0 iterations, not converged: no
     /// free decoder bank, issue #28): not the taps' fault.
     pub dropped: u32,
+    /// The status block's carrier register (2⁻³² turn per symbol).
+    pub carrier: i32,
+    /// The status block's slot sync lock.
+    pub locked: bool,
 }
 
 /// The frames decoded under one set of taps (one value of the status
@@ -1205,6 +1273,16 @@ pub struct HealthState {
     pub previous: TapsHealth,
     /// Status blocks seen.
     pub frames: u64,
+    /// The last status block: its frame, whether the frame was decoded,
+    /// the lock, the carrier register, and when it came (the register-less
+    /// status of the stream path: [`SumsSource::Stream`]).
+    pub last: Option<FrameHealth>,
+    /// See `last`.
+    pub last_at: Option<Instant>,
+    /// Sums blocks handed over ([`ChainHealth::sums`]).
+    pub sums_blocks: u64,
+    /// The frame of the last sums block handed over.
+    pub sums_frame: Option<u32>,
 }
 
 /// The channel from the consumer of the chain's `Slots` words to the slow
@@ -1213,7 +1291,11 @@ pub struct HealthState {
 /// taps in force ([`ChainHealth::snapshot`]) to judge the taps it wrote
 /// (module documentation, "Revert").
 #[derive(Debug, Default)]
-pub struct ChainHealth(std::sync::Mutex<HealthState>);
+pub struct ChainHealth {
+    state: std::sync::Mutex<HealthState>,
+    /// The latest sums block's sums (the stream path).
+    sums: std::sync::Mutex<Option<TrainingSums>>,
+}
 
 impl ChainHealth {
     /// Nothing seen yet.
@@ -1222,14 +1304,44 @@ impl ChainHealth {
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, HealthState> {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn latest(&self) -> std::sync::MutexGuard<'_, Option<TrainingSums>> {
+        self.sums
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// One frame's training sums from the `Slots` stream (its sums block,
+    /// `isdb_frontend::slots::SumsBlock::to_training`): the slow loop
+    /// solves the latest ([`SumsSource::Stream`]).
+    pub fn sums(&self, t: TrainingSums) {
+        {
+            let mut s = self.state();
+            s.sums_blocks += 1;
+            s.sums_frame = Some(t.frame);
+        }
+        *self.latest() = Some(t);
+    }
+
+    /// The latest sums handed over ([`ChainHealth::sums`]).
+    pub fn latest_sums(&self) -> Option<TrainingSums> {
+        self.latest().clone()
+    }
+
     /// One frame's status (and slots).
     pub fn frame(&self, f: FrameHealth) {
+        self.frame_at(f, Instant::now());
+    }
+
+    /// [`ChainHealth::frame`] arriving at `now` (the tests' clock).
+    pub fn frame_at(&self, f: FrameHealth, now: Instant) {
         let mut s = self.state();
+        s.last = Some(f);
+        s.last_at = Some(now);
         if s.frames == 0 || s.current.taps_from != f.taps_from {
             if s.frames > 0 {
                 s.previous = s.current;
@@ -1374,6 +1486,10 @@ pub struct SlowLoopOptions {
     /// No layout (STATUS without DECODING), or no capture held, for this
     /// long: known taps written (module documentation, "Recovery").
     pub recover_after: Duration,
+    /// Where the sums come from ([`SumsSource::Stream`] needs `health`,
+    /// whose consumer hands the sums blocks over; without it the loop
+    /// reads the registers).
+    pub sums_source: SumsSource,
 }
 
 impl SlowLoopOptions {
@@ -1391,9 +1507,18 @@ impl SlowLoopOptions {
             revert: Revert::default(),
             start: None,
             recover_after: Duration::from_millis(1_500),
+            sums_source: SumsSource::Registers,
         }
     }
 }
+
+/// On the stream path, the last status block older than this reads as
+/// STATUS 0 (the chain sends a status block per frame, 33 ms, while its
+/// slot sync is locked, and nothing while it is not): 15 frames. Without
+/// a layout a DMA buffer of the stream takes seconds to fill, so the
+/// status blocks then arrive in bursts and read as none in between: no
+/// layout either way, the same recovery.
+pub const STREAM_STALE: Duration = Duration::from_millis(500);
 
 /// What one tick of the slow loop did.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1507,6 +1632,10 @@ pub struct SlowLoopReport {
     pub carrier_range: Option<(i32, i32)>,
     /// The error that ended the loop, if one did.
     pub error: Option<String>,
+    /// Where the sums came from (module documentation).
+    pub sums_source: SumsSource,
+    /// Sums blocks the consumer handed over (the stream path).
+    pub sums_blocks: u64,
 }
 
 /// The equaliser's slow loop (module documentation).
@@ -1557,9 +1686,18 @@ impl SlowLoop {
             .filter(|t| *t != identity())
             .map(|taps| Judged { taps, fit: None });
         let opts_start = opts.start.unwrap_or_else(identity);
+        let mut opts = opts;
+        if opts.sums_source == SumsSource::Stream && opts.health.is_none() {
+            warn!(
+                target: "isdb::chain",
+                "chain: the training sums are in the Slots stream but nothing hands them over (no consumer health); reading the sum registers instead"
+            );
+            opts.sums_source = SumsSource::Registers;
+        }
         Self {
             report: SlowLoopReport {
                 last_good: good.map(|g| g.taps),
+                sums_source: opts.sums_source,
                 ..SlowLoopReport::default()
             },
             opts,
@@ -1601,6 +1739,19 @@ impl SlowLoop {
         self.tick_at(c, port, Instant::now())
     }
 
+    /// On the stream path, before the first solve: a sums block not
+    /// solved yet is waiting (the loop's thread ticks at once for it,
+    /// [`spawn_slow_loop`]).
+    pub fn sums_waiting(&self) -> bool {
+        self.opts.sums_source == SumsSource::Stream
+            && self.report.solves == 0
+            && self.watch.is_none()
+            && self.opts.health.as_ref().is_some_and(|h| {
+                let f = h.snapshot().sums_frame;
+                f.is_some() && f != self.report.last_frame
+            })
+    }
+
     /// [`SlowLoop::tick`] at the time `now` (the tests' clock).
     ///
     /// # Errors
@@ -1613,6 +1764,9 @@ impl SlowLoop {
         now: Instant,
     ) -> Result<Tick> {
         self.report.ticks += 1;
+        if self.opts.sums_source == SumsSource::Stream {
+            return self.tick_stream(c, port, now);
+        }
         let capture = match self.capture {
             Some(x) => x,
             None => {
@@ -1733,23 +1887,99 @@ impl SlowLoop {
             return Ok(Tick::Torn);
         }
         let sums = cc::sums_from_words(frame, count, &words);
+        self.solve_and_write(c, port, &sums, digest(&words), carrier, now)
+    }
+
+    /// One tick of the stream path (module documentation, "Sums from the
+    /// stream"): no register read; the status blocks' state for the
+    /// recovery and the revert, the latest sums block for the solve.
+    fn tick_stream(
+        &mut self,
+        c: &mut ChainControl,
+        port: &dyn RegisterAccess,
+        now: Instant,
+    ) -> Result<Tick> {
+        let Some(h) = self.opts.health.clone() else {
+            return Ok(Tick::NoSums);
+        };
+        let s = h.snapshot();
+        self.report.sums_blocks = s.sums_blocks;
+        let fresh = s
+            .last_at
+            .is_some_and(|t| now.saturating_duration_since(t) <= STREAM_STALE);
+        let last = s.last.filter(|_| fresh);
+        let status = last.map_or(0, |f| {
+            (if f.locked { cc::status::LOCKED } else { 0 })
+                | cc::status::FRAMED
+                | if f.decoded { cc::status::DECODING } else { 0 }
+        });
+        let frame_now = s.last.map_or(NONE, |f| f.frame);
+        if let Some(f) = s.last {
+            self.report.carrier = Some(f.carrier);
+            self.report.carrier_range = Some(
+                self.report
+                    .carrier_range
+                    .map_or((f.carrier, f.carrier), |(a, b)| {
+                        (a.min(f.carrier), b.max(f.carrier))
+                    }),
+            );
+        }
+        debug!(
+            target: "isdb::chain",
+            sums_frame = s.sums_frame.map(i64::from),
+            sums_blocks = s.sums_blocks,
+            status,
+            frame_now,
+            "chain (stream): last sums block of frame {:?} ({} so far), status {status:#x} from the status blocks, frame {frame_now}",
+            s.sums_frame,
+            s.sums_blocks
+        );
+        if let Some(t) = self.recover(c, port, status, None, frame_now, now)? {
+            return Ok(t);
+        }
+        if let Some(t) = self.judge(c, port, frame_now, now)? {
+            return Ok(t);
+        }
+        let Some(sums) = h.latest_sums() else {
+            return Ok(Tick::NoSums);
+        };
+        if self.report.last_frame == Some(sums.frame) {
+            return Ok(Tick::Same);
+        }
+        let carrier = s.last.map_or(0, |f| f.carrier);
+        let d = digest(&cc::sums_to_words(&sums));
+        self.solve_and_write(c, port, &sums, d, carrier, now)
+    }
+
+    /// The checks, the solve, the gate and the write of `sums` (both
+    /// paths; `digest`: of the sums' 308 register words, for the log).
+    fn solve_and_write(
+        &mut self,
+        c: &mut ChainControl,
+        port: &dyn RegisterAccess,
+        sums: &TrainingSums,
+        digest: u64,
+        carrier: i32,
+        now: Instant,
+    ) -> Result<Tick> {
+        let (frame, count) = (sums.frame, sums.count);
         let centre = cc::TAPS / 2;
         let rc = r_index(centre, centre);
-        let shape = sums_shape(&sums);
-        let fault = self.opts.check.and_then(|k| check_sums(&sums, &k));
+        let shape = sums_shape(sums);
+        let fault = self.opts.check.and_then(|k| check_sums(sums, &k));
         let solved = if fault.is_none() {
-            (self.opts.solve)(&sums)
+            (self.opts.solve)(sums)
         } else {
             None
         };
-        let fitted = solved.map(|t| fit(&sums, &t));
+        let fitted = solved.map(|t| fit(sums, &t));
         debug!(
             target: "isdb::chain",
             frame,
             count,
-            digest = digest(&words),
+            digest,
             "chain: training sums of frame {frame} ({count} symbols): digest {:016x}, R[{centre}][{centre}] {:?}, p[{centre}] {:?}; R's diagonal {:.4e}, spread {:.2e}, Toeplitz {:.2e}, imaginary {:.1e}; solved taps {:?}, fit {:?} (MER {:.2} dB on the training symbols)",
-            digest(&words),
+            digest,
             sums.r[rc],
             sums.p[centre],
             shape.map_or(f64::NAN, |s| s.diagonal),
@@ -1796,7 +2026,7 @@ impl SlowLoop {
             return Ok(Tick::Singular { frame });
         };
         let new = Judged { taps, fit: fitted };
-        if let Some(why) = self.gate(&sums, &new) {
+        if let Some(why) = self.gate(sums, &new) {
             self.report.solves_rejected += 1;
             // the frame is not solved again; the next one may be
             self.report.last_frame = Some(frame);
@@ -1808,7 +2038,7 @@ impl SlowLoop {
                 rejected = self.report.solves_rejected,
                 "chain: the taps solved from frame {frame} (centre tap {:?}, residual {:.2e}) are not written ({}); the taps in use stay",
                 taps[centre],
-                residual(&sums, &taps),
+                residual(sums, &taps),
                 match (why, good) {
                     (Rejected::Residual, _) | (_, None) =>
                         "the normal equations' residual is too large".to_string(),
@@ -2167,6 +2397,10 @@ pub fn spawn_slow_loop(
                         if stop.load(Ordering::SeqCst) {
                             return Ok(());
                         }
+                        if l.sums_waiting() {
+                            // the first sums block of the stream: at once
+                            break;
+                        }
                         std::thread::sleep(Duration::from_millis(5));
                     }
                     if stop.load(Ordering::SeqCst) {
@@ -2465,8 +2699,15 @@ pub(crate) mod tests {
         let r = c.open(&m, &p, &init).unwrap();
         assert_eq!(
             (r.version, r.features, r.loaded, r.refused, r.taps),
-            (1, features::ALL, init::TAPS, 0, Some(identity()))
+            (
+                cc::SLOTS_VERSION,
+                features::ALL,
+                init::TAPS,
+                0,
+                Some(identity())
+            )
         );
+        assert_eq!(r.sums_source(), SumsSource::Stream);
         assert!(
             r.describe().contains("taps identity (loaded)"),
             "{}",
@@ -2579,15 +2820,15 @@ pub(crate) mod tests {
     #[test]
     fn open_refuses_another_format_and_a_deaf_block() {
         let p = params();
-        let m = Mock::new(Model::new(id_word(), 2, features::ALL));
+        let m = Mock::new(Model::new(id_word(), 3, features::ALL));
         let mut c = ChainControl::attach("mock", &m).unwrap();
         let e = c.open(&m, &p, &ChainInit::default()).unwrap_err();
         assert!(
             matches!(
                 e,
                 RadioError::Chain {
-                    found: Some(2),
-                    need: 1,
+                    found: Some(3),
+                    need: 2,
                     ..
                 }
             ),
@@ -3245,6 +3486,7 @@ pub(crate) mod tests {
                 slots: 96,
                 failed,
                 dropped,
+                ..FrameHealth::default()
             });
         }
     }
@@ -3620,5 +3862,148 @@ pub(crate) mod tests {
             .unwrap();
         assert!(r.error.unwrap().contains("write"));
         assert_eq!(r.solves, 0);
+    }
+
+    /// Where the sums come from, by image: build 9 (VERSION 1, FEATURES
+    /// 0x220e73) and any format-1 image read the registers; format 2 with
+    /// SUMS_STREAM the stream; format 2 without the bit the registers.
+    #[test]
+    fn the_sums_source_of_an_image() {
+        let build9 = 0x0022_0E73;
+        assert_eq!(SumsSource::offered(1, build9), SumsSource::Registers);
+        assert_eq!(
+            SumsSource::offered(1, build9 | features::SUMS_STREAM),
+            SumsSource::Registers
+        );
+        assert_eq!(
+            SumsSource::offered(2, build9 | features::SUMS_STREAM),
+            SumsSource::Stream
+        );
+        assert_eq!(SumsSource::offered(2, build9), SumsSource::Registers);
+        assert_eq!(
+            (SumsSource::Stream.name(), SumsSource::Registers.name()),
+            ("stream", "registers")
+        );
+        // without a consumer to hand the blocks over: the registers
+        let l = SlowLoop::new(SlowLoopOptions {
+            sums_source: SumsSource::Stream,
+            ..SlowLoopOptions::new(fake_solve, 33.7561e6)
+        });
+        assert_eq!(l.report.sums_source, SumsSource::Registers);
+    }
+
+    /// A build 9 image (Slots format 1, FEATURES 0x220e73: the ID word's
+    /// bits 11–8 and VERSION read 1) opens as before and its slow loop
+    /// takes the register path: the first tick arms SUMS_CAPTURE, the held
+    /// sums are read (308 registers) and solved.
+    #[test]
+    fn a_format_1_image_keeps_the_register_path() {
+        let id = cc::id_word(
+            &Identity {
+                version: isdb_frontend::params::FORMAT_VERSION,
+                taps: 32,
+            },
+            1,
+        );
+        assert_eq!(cc::slots_version(id), Some(1));
+        let m = Mock::new(Model::new(id, 1, 0x0022_0E73));
+        m.get().gpio_out = 1;
+        let mut c = ChainControl::attach("mock", &m).unwrap();
+        let r = c.open(&m, &params(), &ChainInit::default()).unwrap();
+        assert_eq!((r.version, r.sums_source()), (1, SumsSource::Registers));
+        let h = Arc::new(ChainHealth::new());
+        let mut l = SlowLoop::new(SlowLoopOptions {
+            gate: None,
+            check: None,
+            health: Some(Arc::clone(&h)),
+            sums_source: r.sums_source(),
+            ..SlowLoopOptions::new(fake_solve, 33.7561e6)
+        });
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Capturing);
+        assert!(m.get().writes.iter().any(|w| w.0 == reg::SUMS_CAPTURE));
+        m.get().frame_end(sums(50, 6_720));
+        let before = l.report.words_read;
+        assert_eq!(l.tick(&mut c, &m).unwrap(), Tick::Solved { frame: 50 });
+        assert!(l.report.words_read - before >= 308);
+        assert_eq!(l.report.sums_source, SumsSource::Registers);
+    }
+
+    /// The stream path (a format-2 image with SUMS_STREAM): no register is
+    /// read at all, before or after the first sums block; the first block
+    /// wakes the loop and is solved, its taps written with TAPS_FROM (the
+    /// writes are the register path's); the same block is not solved
+    /// twice; the written set is watched on the status blocks as before;
+    /// when the status blocks stop (the chain lost its lock: it sends
+    /// nothing) the recovery writes known taps, still without a read.
+    #[test]
+    fn the_stream_path_reads_no_register() {
+        let (m, mut c) = opened(features::ALL);
+        let h = Arc::new(ChainHealth::new());
+        let opts = SlowLoopOptions {
+            gate: None,
+            check: None,
+            health: Some(Arc::clone(&h)),
+            sums_source: SumsSource::Stream,
+            ..SlowLoopOptions::new(fake_solve, 33.7561e6)
+        };
+        let mut l = SlowLoop::new(opts.clone());
+        assert_eq!(l.report.sums_source, SumsSource::Stream);
+        let reads = m.get().gpio_in_reads;
+        let t0 = Instant::now();
+        let status = |f: u32, decoded: bool, taps_from: Option<u32>| FrameHealth {
+            frame: f,
+            decoded,
+            taps_from,
+            n0: 40_000,
+            slots: if decoded { 96 } else { 0 },
+            carrier: -97_000,
+            locked: true,
+            ..FrameHealth::default()
+        };
+        // frames 0 and 1 (no layout), nothing to solve
+        h.frame_at(status(0, false, None), t0);
+        h.frame_at(status(1, false, None), t0);
+        assert!(!l.sums_waiting());
+        assert_eq!(l.tick_at(&mut c, &m, t0).unwrap(), Tick::NoSums);
+        assert_eq!(l.wait(Tick::NoSums), opts.poll);
+        // frame 2 decoded: its status block, then its sums block
+        h.frame_at(status(2, true, None), t0);
+        let (f, n, w) = sums(2, 6_720);
+        h.sums(cc::sums_from_words(f, n, &w));
+        assert!(l.sums_waiting());
+        assert_eq!(
+            l.tick_at(&mut c, &m, t0).unwrap(),
+            Tick::Solved { frame: 2 }
+        );
+        assert!(!l.sums_waiting());
+        let taps = m.get().taps.unwrap();
+        assert_eq!(taps.1, 2);
+        assert_eq!(taps.0[cc::TAPS / 2], [16_000, 2]);
+        assert_eq!(l.report.carrier, Some(-97_000));
+        assert_eq!(l.report.sums_blocks, 1);
+        // the same block: not solved again; the set under watch
+        assert_eq!(l.tick_at(&mut c, &m, t0).unwrap(), Tick::Watching);
+        for f in 3..15 {
+            h.frame_at(status(f, true, Some(2)), t0);
+        }
+        assert_eq!(l.tick_at(&mut c, &m, t0).unwrap(), Tick::Same);
+        assert_eq!(l.report.last_good_frame, Some(2));
+        // the status blocks stop: STATUS 0 after STREAM_STALE, the
+        // recovery after recover_after: the identity (the good set is in
+        // force)
+        let t1 = t0 + STREAM_STALE + Duration::from_millis(10);
+        assert_eq!(l.tick_at(&mut c, &m, t1).unwrap(), Tick::Same);
+        let t2 = t1 + opts.recover_after + Duration::from_millis(10);
+        assert_eq!(
+            l.tick_at(&mut c, &m, t2).unwrap(),
+            Tick::Recovered { status: 0 }
+        );
+        assert_eq!(m.get().taps.unwrap().0, identity());
+        // not one register read by the loop
+        assert_eq!(m.get().gpio_in_reads, reads);
+        let r = &l.report;
+        assert_eq!((r.words_read, r.rereads, r.torn, r.unsettled), (0, 0, 0, 0));
+        assert!(!m.get().writes.iter().any(|w| w.0 == reg::SUMS_CAPTURE));
+        assert_eq!((r.solves, r.recoveries), (1, 1));
     }
 }
