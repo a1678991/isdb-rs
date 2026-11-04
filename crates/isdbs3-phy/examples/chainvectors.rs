@@ -70,8 +70,9 @@
 //!   register writes the chain's run assumed, in input order, each `{"at":
 //!   i, …}` before input symbol `i`: `"taps": [22 integers, re, im per
 //!   tap, Q2.14], "taps_from": N` (TAPS, then TAPS_FROM = N: in use from
-//!   frame N + 2, `EQ_APPLY_FRAMES`); `bch_errors` and `tmcc_errors`
-//!   (below).
+//!   frame N + 2, `EQ_APPLY_FRAMES`) or `"agc": G` (AGC = G, Q6.10, in
+//!   the status of the frames that end after it); `bch_errors` and
+//!   `tmcc_errors` (below).
 //!
 //! Three more whole-chain sets (the 6-chain fields; synthetic only), with
 //! the FPGA decoder's settings (`FixedLdpc::hdl`: `Schedule::Layered
@@ -117,13 +118,32 @@
 //!   `bch_errors` as 10-bch's; `tmcc_errors`: `[frame, [positions]]`,
 //!   the positions in the TMCC word's hard decisions (the decoder's output
 //!   stream order, data bits at 1 870 …).
+//! - **13-modes**: six generated frames of seed 13 with four transmission
+//!   modes in one TMCC ([`MODES`]: 16APSK 93/120 × 50 slots, 8PSK 73/120
+//!   × 35, QPSK 61/120 × 20, π/2-BPSK 41/120 × 15, each with its
+//!   modulation's dummy slots: 72 codewords a frame), identity taps, no
+//!   equaliser solve; the window up to 3 slots after the fifth frame's end
+//!   (4 639 704 symbols): frames 0–3 whole, 2 (D) and 3 decoded, frame 3's
+//!   status with the points learned on D for all four modulations.
+//!   `host_writes` has two AGC writes (`{"at": i, "agc": gain}`, the
+//!   host's REG_AGC; `Chain::set_agc` in the model) four slots into frames
+//!   2 and 3 ([`MODES_AGC`]), so the status blocks report 0, then each.
+//! - **14-apsk32**: as 13-modes (seed 14, no AGC writes) with 32APSK
+//!   109/120 first ([`MODES_32`]: × 30 slots, then 16APSK 93/120 × 40,
+//!   8PSK 73/120 × 25, QPSK 61/120 × 15, π/2-BPSK 41/120 × 10: 85
+//!   codewords a frame) at Es/N0 22 dB (32APSK 109/120 needs more than
+//!   14); frame 3's status with the points of all five modulations. The
+//!   HDL fails it (fpga/README.md "Integration": its decoder bridge
+//!   overflows when the TMCC burst meets 32APSK slots).
 //!
 //! chain-4-tmcc also carries `noisy`: chain-12's frame 1 as a stage-5
 //! record (the fields above, its `ldpc_iterations` > 0 and
 //! `bch_corrected` 5) with `errors`, the positions its TMCC word's decoder
-//! output had flipped (a stage bench flips them in its stub's output).
+//! output had flipped (a stage bench flips them in its stub's output);
+//! and `modes`: chain-14's frame D as a stage-5 record (five modes in its
+//! layout).
 
-use isdbs3_core::params::{FRAME_SYMBOLS, MOD_SLOT, SLOTS, SYMBOL_RATE};
+use isdbs3_core::params::{FRAME_SYMBOLS, MOD_SLOT, Modulation, SLOTS, SYMBOL_RATE};
 use isdbs3_phy::chain::frame::{FrameOut, Part, part};
 use isdbs3_phy::chain::fx::CORDIC_ATAN;
 use isdbs3_phy::chain::input::{Input, for_each};
@@ -151,6 +171,10 @@ const CUT: usize = 104 * MOD_SLOT;
 /// 14 between 254 and 317 such symbols, or between Es/N0 5.0 and 4.95 dB
 /// of added noise: no setting here gave two to thirteen.)
 const TMCC_WEAK_EVERY: usize = 125;
+
+/// Es/N0 of chain-14's added noise, dB: 32APSK 109/120 needs more than
+/// the other sets' 14.
+const APSK32_SNR_DB: f64 = 22.0;
 
 /// The window of a generated stream (at least `frames + 1` frames) the
 /// synthetic sets take as input: from [`CUT`] to 3 slots after the end of
@@ -398,7 +422,19 @@ fn run_with(
 }
 
 /// Chain `c` over `input` with `losses` (`[before_index, symbols]`).
-fn run_chain_with(input: Vec<[i8; 2]>, losses: Vec<(usize, u64)>, mut c: Chain) -> Run {
+fn run_chain_with(input: Vec<[i8; 2]>, losses: Vec<(usize, u64)>, c: Chain) -> Run {
+    run_chain_agc(input, losses, c, &[])
+}
+
+/// [`run_chain_with`] with the host's AGC writes `agc` (`[before_index,
+/// gain]`, in input order): `Chain::set_agc` before that input symbol,
+/// each listed in the run's `host_writes`.
+fn run_chain_agc(
+    input: Vec<[i8; 2]>,
+    losses: Vec<(usize, u64)>,
+    mut c: Chain,
+    agc: &[(usize, u16)],
+) -> Run {
     let mut out = Vec::new();
     let mut r = Run {
         input: Vec::new(),
@@ -412,7 +448,16 @@ fn run_chain_with(input: Vec<[i8; 2]>, losses: Vec<(usize, u64)>, mut c: Chain) 
     };
     let mut w = isdb_frontend::slots::Writer::new();
     let mut li = losses.iter().peekable();
+    let mut ai = agc.iter().peekable();
     for (n, &x) in input.iter().enumerate() {
+        while let Some(&&(at, g)) = ai.peek() {
+            if at != n {
+                break;
+            }
+            c.set_agc(g);
+            r.host.push(json!({"at": at, "agc": g}));
+            ai.next();
+        }
         while let Some(&&(at, k)) = li.peek() {
             if at != n {
                 break;
@@ -822,9 +867,9 @@ fn stage6(r: &Run) -> Value {
     v
 }
 
-/// The stage sets 1–6 of run `r`; `noisy`: another frame's stage-5
-/// record for chain-4 (module docs: 4-tmcc).
-fn write_all(dir: &Path, prefix: &str, source: &Value, r: &Run, noisy: Option<Value>) {
+/// The stage sets 1–6 of run `r`; `extra`: two other frames' stage-5
+/// records for chain-4, `noisy` and `modes` (module docs: 4-tmcc).
+fn write_all(dir: &Path, prefix: &str, source: &Value, r: &Run, extra: Option<(Value, Value)>) {
     let with = |mut v: Value| {
         v["source"] = source.clone();
         v
@@ -833,8 +878,9 @@ fn write_all(dir: &Path, prefix: &str, source: &Value, r: &Run, noisy: Option<Va
     write(dir, &format!("{prefix}2-phase.json"), with(stage2(r)));
     write(dir, &format!("{prefix}3-eq.json"), with(stage3(r)));
     let mut t = stage4(r);
-    if let Some(n) = noisy {
-        t["noisy"] = n;
+    if let Some((noisy, modes)) = extra {
+        t["noisy"] = noisy;
+        t["modes"] = modes;
     }
     write(dir, &format!("{prefix}4-tmcc.json"), with(t));
     write(dir, &format!("{prefix}5-demap.json"), with(stage5(r)));
@@ -905,6 +951,9 @@ fn main() {
             "ldpc": format!("layered {HDL_STEP}, limit {HDL_MAX_ITER}, offset {HDL_OFFSET}")}})
     };
     let (fail, noisy) = fail_set(&o, &src);
+    let (modes, _) = modes_set(&o, &MODES, 13, o.snr_db, &MODES_AGC);
+    let (apsk32, mut modes_tmcc) = modes_set(&o, &MODES_32, 14, APSK32_SNR_DB, &[]);
+    modes_tmcc["source"] = json!("chain-14-apsk32's frame D");
     write_all(
         &dir,
         "chain-",
@@ -923,7 +972,7 @@ fn main() {
             }
         }),
         &r,
-        Some(noisy),
+        Some((noisy, modes_tmcc)),
     );
     let mut v = stage6(&hdl);
     v["source"] = src(7, "chain-6's input");
@@ -937,6 +986,8 @@ fn main() {
     });
     write_taps(&dir, &o, &src);
     write(&dir, "chain-12-fail.json", fail);
+    write(&dir, "chain-13-modes.json", modes);
+    write(&dir, "chain-14-apsk32.json", apsk32);
 }
 
 /// The set with failures (module docs: 12-fail) and the noisy TMCC
@@ -1049,6 +1100,99 @@ fn fail_set(o: &SynthOptions, src: &dyn Fn(u64, &str) -> Value) -> (Value, Value
     noisy["errors"] = json!(t1);
     noisy["source"] = json!("chain-12-fail's frame 1");
     (v, noisy)
+}
+
+/// The transmission modes of chain-13 (B44 §3.11 order: modulation, then
+/// rate, descending): every modulation but 32APSK, 72 codewords a frame
+/// (40 + 21 + 8 + 3).
+const MODES: [(Modulation, u8, u8); 4] = [
+    (Modulation::Apsk16, 93, 50),
+    (Modulation::Psk8, 73, 35),
+    (Modulation::Qpsk, 61, 20),
+    (Modulation::Bpsk, 41, 15),
+];
+
+/// The transmission modes of chain-14: chain-13's with 32APSK 109/120
+/// first, 85 codewords a frame (30 + 32 + 15 + 6 + 2).
+const MODES_32: [(Modulation, u8, u8); 5] = [
+    (Modulation::Apsk32, 109, 30),
+    (Modulation::Apsk16, 93, 40),
+    (Modulation::Psk8, 73, 25),
+    (Modulation::Qpsk, 61, 15),
+    (Modulation::Bpsk, 41, 10),
+];
+
+/// Chain-13's AGC writes (Q6.10 gains), each four slots into its frame
+/// (frame counter, gain): frames 0 and 1 report the reset 0.
+const MODES_AGC: [(usize, u16); 2] = [(2, 0x0C00), (3, 0x1234)];
+
+/// A set with several transmission modes (module docs: 13-modes,
+/// 14-apsk32): `modes`, `seed`, Es/N0 `snr_db`, the host's AGC writes `agc`
+/// (frame counter, gain: four slots into that frame); and frame D's
+/// stage-5 record.
+fn modes_set(
+    o: &SynthOptions,
+    modes: &[(Modulation, u8, u8)],
+    seed: u64,
+    snr_db: f64,
+    agc: &[(usize, u16)],
+) -> (Value, Value) {
+    let o = SynthOptions {
+        modes: modes.to_vec(),
+        snr_db,
+        seed,
+        ..o.clone()
+    };
+    let s = generate(&o, 6);
+    let input = window(&s.symbols, &o, 5);
+    // generated frame g starts at input index base(g); frame counter g − 1
+    let base = |g: usize| o.lead + g * FRAME_SYMBOLS - CUT;
+    let writes: Vec<(usize, u16)> = agc
+        .iter()
+        .map(|&(f, g)| (base(f + 1) + 4 * MOD_SLOT, g))
+        .collect();
+    let opt = ChainOptions {
+        trace: true,
+        eq_every: 0,
+        ..ChainOptions::default()
+    };
+    let r = run_chain_agc(
+        input,
+        Vec::new(),
+        Chain::with_ldpc(opt, Box::new(hdl_ldpc())),
+        &writes,
+    );
+    check_decoded(&r, &s, 2);
+    for f in &r.frames {
+        assert_eq!(f.at, base(f.frame as usize + 1) as u64, "frame {}", f.frame);
+        let want = agc
+            .iter()
+            .rfind(|&&(n, _)| n <= f.frame as usize)
+            .map_or(0, |&(_, g)| g);
+        assert_eq!(f.status.agc, want, "frame {}'s AGC", f.frame);
+    }
+    // the frame after D carries the points learned on D for every
+    // modulation sent (and none for the others)
+    let d1 = r
+        .frames
+        .iter()
+        .filter(|f| !f.slots.is_empty())
+        .nth(1)
+        .expect("D + 1 decoded");
+    for (i, c) in d1.status.constellation.iter().enumerate() {
+        let sent = modes.iter().any(|m| usize::from(m.0.code()) == i + 1);
+        assert_eq!(!c.is_empty(), sent, "modulation {}'s points learned", i + 1);
+    }
+    let mut v = stage6(&r);
+    v["source"] = json!({"synthetic": {"frames": 6,
+        "window": [CUT, o.lead + 5 * FRAME_SYMBOLS + 3 * MOD_SLOT],
+        "modes": modes.iter().map(|(m, r, n)| format!("{m:?} {r}/120 x{n}")).collect::<Vec<_>>(),
+        "seed": o.seed, "carrier_hz": o.carrier_hz, "drift_hz_s": o.drift_hz_s,
+        "snr_db": o.snr_db, "amplitude": o.amplitude, "bits": o.bits,
+        "events": if agc.is_empty() { "none" } else { "AGC writes four slots into frames 2 and 3" },
+        "ldpc": format!("layered {HDL_STEP}, limit {HDL_MAX_ITER}, offset {HDL_OFFSET}")}});
+    let t = tmcc_record(pick(&r));
+    (v, t)
 }
 
 /// Every decoded frame of `r` carries what `s` sent in it, and at least
