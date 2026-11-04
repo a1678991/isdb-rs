@@ -2187,7 +2187,7 @@ including `--media` (directory resolution and refusals, the media TOML,
 `--frames` from the media length, the TS made again when a media file is
 newer, `--feed fifo`'s live multiplexer gone after a normal exit, an
 early exit and TERM); `tools/isdbs-bench-tx.sh --media=DIR --dry-run WORK
-45 ip:192.0.2.1` multiplexes `bs-media.ts` (T-STD ok, 0 late PES) and
+45 ip:<PLUTO_IP>` multiplexes `bs-media.ts` (T-STD ok, 0 late PES) and
 prints the Pluto's settings without opening a device.
 
 ### Pending: the bench run (piece C)

@@ -36,8 +36,7 @@ rustdoc clean, FPGA suite 24/24):
 
 **Bench** (as left):
 
-- PlutoSky R2 at `ip:<PLUTO_IP>` (the board's address; the repository
-  writes the placeholder),
+- PlutoSky R2 at `ip:<PLUTO_IP>` (documentation placeholder; supply the actual URI locally),
   booted from SD with `/boot/uEnv.txt` `bitstream_image=isdb_txrx2_top.bin`
   (since 2026-10-31: both blocks plus the transmit block's prefetch /
   BANK_TAG / 64-bit counters; `uEnv.txt.prev-txrx` = the `isdb_txrx_top.bin`

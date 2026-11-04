@@ -1002,7 +1002,7 @@ fn tx_symbols_loopback_on_a_pluto() {
     use std::io::BufRead;
     let Some(uri) = std::env::var_os("ISDB_RS_PLUTO_TX_LOOPBACK_URI") else {
         eprintln!(
-            "SKIP tx_symbols_loopback_on_a_pluto: ISDB_RS_PLUTO_TX_LOOPBACK_URI not set (e.g. ip:192.0.2.30)"
+            "SKIP tx_symbols_loopback_on_a_pluto: ISDB_RS_PLUTO_TX_LOOPBACK_URI not set (e.g. ip:<PLUTO_IP>)"
         );
         return;
     };
@@ -1357,7 +1357,7 @@ static RADIO: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[test]
 fn capture_from_a_pluto() {
     let Some(uri) = std::env::var_os("ISDB_RS_PLUTO_URI") else {
-        eprintln!("SKIP capture_from_a_pluto: ISDB_RS_PLUTO_URI not set (e.g. ip:192.0.2.30)");
+        eprintln!("SKIP capture_from_a_pluto: ISDB_RS_PLUTO_URI not set (e.g. ip:<PLUTO_IP>)");
         return;
     };
     let _radio = RADIO
@@ -1422,7 +1422,7 @@ fn capture_from_a_pluto() {
 #[test]
 fn symbols_probe_on_a_pluto() {
     let Some(uri) = std::env::var_os("ISDB_RS_PLUTO_URI") else {
-        eprintln!("SKIP symbols_probe_on_a_pluto: ISDB_RS_PLUTO_URI not set (e.g. ip:192.0.2.30)");
+        eprintln!("SKIP symbols_probe_on_a_pluto: ISDB_RS_PLUTO_URI not set (e.g. ip:<PLUTO_IP>)");
         return;
     };
     let _radio = RADIO
@@ -1470,7 +1470,7 @@ fn symbols_probe_on_a_pluto() {
 #[test]
 fn tezuka_captures() {
     let Some(uri) = std::env::var_os("ISDB_RS_TEZUKA_URI") else {
-        eprintln!("SKIP tezuka_captures: ISDB_RS_TEZUKA_URI not set (e.g. ip:192.0.2.30)");
+        eprintln!("SKIP tezuka_captures: ISDB_RS_TEZUKA_URI not set (e.g. ip:<PLUTO_IP>)");
         return;
     };
     let _radio = RADIO
