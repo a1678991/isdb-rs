@@ -73,7 +73,10 @@
 //! SUMS_COUNT, CARRIER, TAPS_FROM, the chain's STATUS and FRAME read (and
 //! SUMS_CAPTURE with [`features::SUMS_CAPTURE`]). With the capture: a
 //! tick that has not armed one writes SUMS_CAPTURE (the next frame end
-//! latches the sums and holds them); the next ticks poll it until VALID;
+//! latches the sums and holds them); the next ticks poll it until VALID
+//! (a tick that reads it neither VALID nor ARMED, the capture released by
+//! a restart of the chain, START, a lost sync or the chain's stop, on an
+//! image whose restart releases it, arms another at the next poll);
 //! then the 308 sum registers are read (about 15 frames through iiod: the
 //! hold keeps them one frame's) and SUMS_FRAME and SUMS_CAPTURE again,
 //! which must be the same, SUMS_CAPTURE's SEQ, VALID and ARMED bits
@@ -1744,8 +1747,8 @@ pub struct SlowLoop {
     /// The stream path's sums blocks stopped: the sums are read from the
     /// registers (the sums blocks counted at the last tick).
     fallback: Option<u64>,
-    /// In the fallback, a tick has found the latch free and waited a poll
-    /// for the sums blocks before arming a capture.
+    /// A tick has found the capture released (or, in the fallback, the
+    /// latch free) and waited a poll before arming another.
     free_waited: bool,
 }
 
@@ -1906,12 +1909,24 @@ impl SlowLoop {
             return Ok(t);
         }
         if let Some(cap) = cap {
-            if self.fallback.is_some() && cap & (capture::VALID | capture::ARMED) == 0 {
-                // the stream's fallback with the latch neither held nor
-                // armed: a restart released it, and its sums blocks come
-                // one a frame; a poll for them (stream_stalled) before a
-                // capture holds it again
+            if cap & (capture::VALID | capture::ARMED) == 0
+                && (self.armed || self.fallback.is_some())
+            {
+                // neither held nor armed while this loop waits for its
+                // capture (or, in the stream's fallback, before it arms
+                // one): a restart (START, a lost sync, the chain's stop)
+                // released it. Armed again after a poll: on the stream's
+                // fallback the latch's sums blocks come one a frame meanwhile
+                // (stream_stalled), and a capture would hold it again
+                if self.armed {
+                    debug!(
+                        target: "isdb::chain",
+                        cap,
+                        "chain: SUMS_CAPTURE {cap:#x}: the capture armed was released (a restart of the chain); arming another"
+                    );
+                }
                 self.armed = false;
+                self.armed_since = None;
                 if !self.free_waited {
                     self.free_waited = true;
                     return Ok(Tick::Capturing);
@@ -3197,6 +3212,69 @@ pub(crate) mod tests {
         assert_eq!(held(&m, 56, latched), (Tick::Torn, 2));
         assert_eq!(m.get().taps.unwrap().1, 52, "nothing written on a torn set");
         assert_eq!(l.report.solves, 2);
+    }
+
+    /// A restart of the chain (START, a lost sync, the chain's stop)
+    /// releases the capture the register path armed (PR #40's HDL):
+    /// SUMS_CAPTURE reads neither VALID nor ARMED. The tick that sees it
+    /// waits a poll, the next arms another, which the next frame end holds
+    /// and the tick after solves; no recovery meanwhile (before, the loop
+    /// waited for VALID for ever, and after 1.5 s wrote known taps as for
+    /// "no capture held"). Images of both formats (build 9's, format 1;
+    /// one with every feature, format 2, its loop on the registers).
+    #[test]
+    fn a_capture_released_by_a_restart_is_armed_again() {
+        let id1 = cc::id_word(
+            &Identity {
+                version: isdb_frontend::params::FORMAT_VERSION,
+                taps: 32,
+            },
+            1,
+        );
+        let build9 = Model::new(id1, 1, 0x0022_0E73);
+        for model in [
+            build9,
+            Model::new(id_word(), cc::SLOTS_VERSION, features::ALL),
+        ] {
+            let m = Mock::new(model);
+            m.get().gpio_out = 1;
+            let mut c = ChainControl::attach("mock", &m).unwrap();
+            c.open(&m, &params(), &ChainInit::default()).unwrap();
+            let opts = SlowLoopOptions {
+                gate: None,
+                check: None,
+                ..SlowLoopOptions::new(fake_solve, 33.7561e6)
+            };
+            let mut l = SlowLoop::new(opts.clone());
+            let strobes = |m: &Mock| {
+                m.get()
+                    .writes
+                    .iter()
+                    .filter(|w| w.0 == reg::SUMS_CAPTURE)
+                    .count()
+            };
+            let t0 = Instant::now();
+            assert_eq!(l.tick_at(&mut c, &m, t0).unwrap(), Tick::Capturing);
+            assert_eq!((strobes(&m), m.get().cap.0), (1, true));
+            // the restart: no frame end latched, the capture released
+            m.get().cap = (false, false, false);
+            let t1 = t0 + opts.poll;
+            assert_eq!(l.tick_at(&mut c, &m, t1).unwrap(), Tick::Capturing);
+            assert_eq!(strobes(&m), 1, "a poll first");
+            assert_eq!(l.wait(Tick::Capturing), opts.poll);
+            let t2 = t1 + opts.poll;
+            assert_eq!(l.tick_at(&mut c, &m, t2).unwrap(), Tick::Capturing);
+            assert_eq!((strobes(&m), m.get().cap.0), (2, true), "armed again");
+            m.get().frame_end(sums(60, 6_720));
+            // past recover_after since the first arm: no recovery, solved
+            let t3 = t0 + opts.recover_after + Duration::from_millis(100);
+            assert_eq!(
+                l.tick_at(&mut c, &m, t3).unwrap(),
+                Tick::Solved { frame: 60 }
+            );
+            assert_eq!(m.get().taps.unwrap().1, 60);
+            assert_eq!((l.report.recoveries, l.report.torn), (0, 0));
+        }
     }
 
     /// Sums whose solve is `taps`: R diagonal (2³⁰ on each tap), p = R w.

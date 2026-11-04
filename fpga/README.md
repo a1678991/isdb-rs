@@ -1155,6 +1155,13 @@ test fail until the entry goes):
   solving, until the next restart (1 of 40 restart times in the test's
   sweep). The same fallback turns `stream-held-prefix` (the HDL before
   dedbc14) from no taps into taps from the registers after 3.3 s.
+- *A released capture was never armed again* (fixed in the host). With
+  PR #40's HDL a restart (START, a lost sync, the chain's stop) releases
+  the capture the register path armed; the loop waited for VALID for ever
+  (`registers-restart`, a restart at 9.4 s: one "no capture held"
+  recovery, then no solve for the 20 s left). A tick that reads
+  SUMS_CAPTURE neither VALID nor ARMED while it waits arms another at the
+  next poll (`rearms`).
 - *A layout lost during a set discarded the held set as torn* (fixed in the
   host). The register path compared SUMS_CAPTURE's whole word before and
   after the 308 words (`HELD_EXTRA`), but its NO_LAYOUT bit follows the

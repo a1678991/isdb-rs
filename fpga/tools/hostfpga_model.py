@@ -886,6 +886,7 @@ class Stats:
     # returns to the stream, and the sets read from the registers meanwhile
     sums_stalls: int = 0
     stream_returns: int = 0
+    rearms: int = 0  # captures armed again after a restart released them
     fallback_sets: int = 0
     stall_times: list = field(default_factory=list)
     first_write_t: float = None
@@ -1227,10 +1228,15 @@ class Model:
         if t:
             return t
         if capture:
-            if self.fallback is not None and not cap & (CAP_VALID | CAP_ARMED):
-                # the stream's fallback, the latch released (a restart): a
-                # poll for its sums blocks before a capture holds it again
+            if not cap & (CAP_VALID | CAP_ARMED) and (self.armed or self.fallback is not None):
+                # the capture released by a restart while this loop waits
+                # for it (or, in the stream's fallback, the latch free): a
+                # poll, then another armed (the fallback's sums blocks come
+                # meanwhile)
+                if self.armed:
+                    self.st.rearms += 1
                 self.armed = False
+                self.armed_since = None
                 if not self.free_waited:
                     self.free_waited = True
                     return "Capturing"
@@ -1645,6 +1651,11 @@ SCENARIOS = {
                                         "START kept it: no sums block, no taps, no recovery"),
     "stream-held": Scenario("stream-held", BENCH, FORMAT2, HOST_STREAM, initial_capture="held",
                             seconds=30.0, note="the same with dedbc14 (START releases the hold)"),
+    "registers-restart": Scenario("registers-restart", BENCH, FORMAT2, HOST_VERIFIED,
+                                  restart_at=(9.4,), seconds=30.0,
+                                  note="the register path on a format-2 image: a restart (START, a "
+                                       "lost sync) while a capture is armed releases it; the loop "
+                                       "arms another at the next poll"),
     "stream-foreign-capture": Scenario("stream-foreign-capture", BENCH, FORMAT2, HOST_STREAM,
                                        foreign_capture_at=(10.0,), restart_at=(20.0,), seconds=30.0,
                                        note="another client arms SUMS_CAPTURE at 10 s: the sums "
@@ -1679,6 +1690,7 @@ MEASURED = {
     "nolayout-stream": "-",
     "stream-held-prefix": "-",
     "stream-held": "-",
+    "registers-restart": "-",
     "stream-foreign-capture": "-",
     "local-old-hdl": "(the HDL race, not observed over the network)",
     "local-new-hdl": "-",
@@ -1721,7 +1733,7 @@ def summarise(r):
             "words_read", "rereads", "unsettled",
             "reads_wrong", "overflow_flags", "first_write_t", "first_write_from", "first_in_force_frame",
             "set_s_mean", "recoveries", "sums_blocks", "status_latency_max", "sums_latency_max",
-            "sums_stalls", "stream_returns", "fallback_sets"]
+            "sums_stalls", "stream_returns", "fallback_sets", "rearms"]
     out = {}
     for k in keys:
         v = r.get(k)
