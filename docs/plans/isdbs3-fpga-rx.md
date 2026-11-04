@@ -1589,3 +1589,17 @@ Two host defects of the build 9 runs, fixed without the board
   set (`solves_rejected` 0, `reverts` 0); the mean iterations of frames
   0–25 ≈ 2.1–2.3 as after it (4.1–4.8 on the identity) and no dropped
   slot in the first 34 frames; max RSS ≈ 0.6–0.9 GB, all at the open.
+
+#### Chaos-found defects (HDL, 2026-11-04)
+
+The chaos runs and the invariant monitors (fpga/README.md "Chaos runs",
+"Invariant monitors") found these on the build 9 HDL; each is fixed with
+a test that fails without the fix.
+
+- **The `Slots` sequence across a START during a block.** `Packer`
+  restarted the sequence only between blocks, and START is one cycle, so
+  a START while a block left was lost for the sequence (8 of 80 chaos
+  runs). The packer latches it: the block leaving finishes whole with
+  its old number, the next has 0 (the model's new writer). The host's
+  reader takes any sequence number, so the stream stayed parseable; a
+  block cut at START would only have been skipped.

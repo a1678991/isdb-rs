@@ -59,7 +59,7 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | 0x43A | RECLAIMED (ro): bits 15-0 ABORTED (banks freed by the abort after a frame drop or restart), bits 31-16 REUSED (banks a codeword's begin took back from its context's abandoned codeword), since configuration, wrapping |
 | 0x500 + 4i, 0x610 + 4i | SUMS_R (i < 66), SUMS_P (i < 11): re low 32, re high 16 sign-extended, im low, im high (the latched bank; the READ is answered 3 symbol clocks after it is decoded, the register showing the last READ's value until then) |
 | 0x640 .. | CONST: not built (reads 0) |
-| CTRL | the front end's bits (RUN, START, SYMBOLS) and bit 3 SLOTS (the DMA carries the `Slots` words); START also restarts the chain (the model's `Chain::loss` of 0 symbols: everything but the carrier register, the taps, the constellation and n0), loads CARRIER and, with INIT bit 0, the taps, and restarts the blocks' sequence numbers |
+| CTRL | the front end's bits (RUN, START, SYMBOLS) and bit 3 SLOTS (the DMA carries the `Slots` words); START also restarts the chain (the model's `Chain::loss` of 0 symbols: everything but the carrier register, the taps, the constellation and n0), loads CARRIER and, with INIT bit 0, the taps, and restarts the blocks' sequence numbers: the first block the packer takes after START has sequence 0 (a block leaving at START finishes whole with its old number) |
 
 START and the decoder (issue #28): the decoder's clock domain is not reset
 by START. The restart drops the slot codeword being loaded, and the back

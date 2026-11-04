@@ -1498,6 +1498,12 @@ STD-B44) is received to TLV streams.
 
 ### Fixed
 
+- `fpga`: a CTRL START while a `Slots` block was leaving the ISDB-S3
+  chain did not restart the blocks' sequence numbers (the packer honoured
+  START only between blocks); it is latched until the block is done, the
+  next block has sequence 0; a block offered in the very cycle of a START
+  is taken (before, it was not, and the finish stage waited for it
+  forever).
 - ISDB-S3 acquisition (`isdb rx --system isdbs3` from a radio, every
   offload, and the CPU receiver's blocks): 6.0–6.3 GB of peak resident
   memory, all of it the trim search on the acquisition's probe. Its 13

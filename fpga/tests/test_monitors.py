@@ -343,19 +343,19 @@ class FinishMonitorTest(unittest.TestCase):
 
 
 class PackerStartTest(unittest.TestCase):
-    @unittest.expectedFailure
-    def test_start_during_a_block(self):
-        """An open finding of the monitors on today's HDL (not fixed here):
-        `Packer` honours `start` only between blocks (its IDLE state), so a
-        START (SlotsRx's CTRL START, one cycle) that comes while a block is
-        being sent does not restart the sequence numbers, which the packer's
-        and SlotsRx's documentation promise: the next block carries the old
-        count + 1, not 0 (blocks 0, 1, 2 here; `seq_contiguous` fires at
-        the third block's acceptance). The host's `slots::Reader` joins a
-        stream at any sequence number, so the effect is cosmetic there; the
-        restart test (`run_chain_restarts`) STARTs after a pause in which
-        every block has left. Expected to fail until the packer latches a
-        `start` that comes mid-block; then remove the marker."""
+    """A START (SlotsRx's CTRL START, one cycle) restarts the `Slots`
+    sequence numbers at the next block boundary: a START while a block is
+    being sent leaves that block whole with its old number, the next block
+    has sequence 0 (found by `seq_contiguous` and the chaos runs: the
+    packer honoured `start` only between blocks, so the next block carried
+    the old count + 1); a START in the cycle a block is offered gives that
+    block 0 and does not lose it (the finish stage offers a block for one
+    cycle)."""
+
+    def run_blocks(self, start_at):
+        """Three 20-word status blocks; `start` high in block `start_at[0]`'s
+        cycle `start_at[1]` after its offer (-1: the offer's cycle). Returns
+        (the sequence numbers, the monitor messages)."""
         from isdb_fpga.chain import slots as S
         from isdb_fpga.chain.packer import Packer
 
@@ -367,17 +367,19 @@ class PackerStartTest(unittest.TestCase):
 
         async def bench(ctx):
             for blk in range(3):
+                while not ctx.get(pk.b_ready):
+                    await ctx.tick()
+                # the finish stage's offer: b_valid for one cycle
                 ctx.set(pk.b_valid, 1)
                 ctx.set(pk.b_kind, 3)
                 ctx.set(pk.b_len, 20)
                 ctx.set(pk.b_frame, blk)
-                while not ctx.get(pk.b_ready):
-                    await ctx.tick()
+                ctx.set(pk.start, int((blk, -1) == start_at))
                 await ctx.tick()
                 ctx.set(pk.b_valid, 0)
                 ctx.set(pk.w_valid, 1)
                 for i in range(40):
-                    ctx.set(pk.start, int(blk == 1 and i == 5))  # START inside block 1's payload
+                    ctx.set(pk.start, int((blk, i) == start_at))
                     await ctx.tick()
                     if ctx.get(pk.o_valid):
                         words.append(ctx.get(pk.o_word))
@@ -388,9 +390,36 @@ class PackerStartTest(unittest.TestCase):
 
         sim.add_testbench(bench)
         sim.run()
-        print([b[1] for b in S.blocks(words)], report)
-        self.assertEqual([b[1] for b in S.blocks(words)], [0, 1, 0])
+        blocks = S.blocks(words)
+        self.assertEqual([b[2] for b in blocks], [0, 1, 2], "every block sent whole, in order")
+        return [b[1] for b in blocks], report
+
+    def test_start_during_a_block(self):
+        for at in ((1, 1), (1, 5), (1, 25), (1, 30)):  # header, payload, trailer of block 1
+            seqs, report = self.run_blocks(at)
+            print(at, seqs, report)
+            self.assertEqual(seqs, [0, 1, 0], at)
+            self.assertEqual(report, [], at)
+
+    def test_start_with_an_offer(self):
+        seqs, report = self.run_blocks((2, -1))
+        print(seqs, report)
+        self.assertEqual(seqs, [0, 1, 0])
         self.assertEqual(report, [])
+
+    def test_start_between_blocks(self):
+        seqs, report = self.run_blocks((1, 39))  # block 1 has left: idle
+        self.assertEqual((seqs, report), ([0, 1, 0], []))
+
+    def test_a_start_ignored_mid_block_is_caught(self):
+        """The defect re-introduced (the latch removed: `start` honoured in
+        IDLE only): `seq_contiguous` fires."""
+        with source_patch("isdb_fpga.chain.packer", [("with m.If(self.start | restart):",
+                                                       "with m.If(self.start):")]):
+            seqs, report = self.run_blocks((1, 5))
+        print(seqs, report)
+        self.assertEqual(seqs, [0, 1, 2])
+        self.assertTrue(fired(report, "seq_contiguous"), report)
 
 
 # --- SlotsRx's registers ----------------------------------------------------------

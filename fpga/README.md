@@ -261,7 +261,7 @@ symbol clock beside it).
 | `ResultFifo` | `overflow` | no write into the full FIFO outside a header's retried chunks |
 | `Finish` | `status_point_settled` | a status word is taken only with the point RAM's address unchanged since the previous cycle (its registered read has landed) |
 | | `frame_fifo_overflow`, `frame_fifo_underflow` | the 4-entry frame FIFO |
-| `Packer` | `seq_contiguous` | each block's sequence number (at its acceptance) is the last + 1; 0 for the first block and the first after `start` |
+| `Packer` | `seq_contiguous` | each block's sequence number (its header words) is the last + 1; 0 for the first block and the first block accepted in or after a `start`'s cycle |
 | | `framing`, `block_kind`, `slot_index` | the output words parse as `Slots` blocks: the sync words, the header check, the payload length; header word 2; a slot block's slot index < 120 |
 | `SlotsRx` | `sum_readback_hold` | from a sum register's READ until `rd_ack` the readback keeps its value |
 | | `sum_read_slow` | the READ answered within 16 symbol clocks (3) |
@@ -289,14 +289,20 @@ input FIFO and `Finish`'s frame FIFO (the same `fifo_overflow` helper),
 the packer's four, `port_lost`, `staging_overrun`, `burst_lost`,
 `frame_order`, `taps_from_source`, `sum_read_slow`.
 
-**Found on today's HDL** (an open finding, not fixed here):
-`Packer` honours `start` only between blocks, so a START that comes while
-a block is being sent does not restart the sequence numbers, as the
-packer's and `SlotsRx`'s documentation say it does
-(`PackerStartTest.test_start_during_a_block`, an expected failure until
-it is fixed: blocks 0, 1, 2 instead of 0, 1, 0). The host's
-`slots::Reader` joins a stream at any sequence number, so the effect is
-cosmetic there. No monitor fires in any other run of the suite,
+**Found on the HDL, fixed**: `Packer` honoured `start` only between
+blocks, so a START that came while a block was being sent did not restart
+the sequence numbers, as the packer's and `SlotsRx`'s documentation say
+it does (blocks 0, 1, 2 instead of 0, 1, 0). The packer now latches the
+`start`: the block leaving finishes whole with its old number (its header
+and CRC already carry it; cutting it would only make the host's reader
+skip its words) and the next block it takes has sequence 0, the model's
+new `slots::Writer` at START; a block offered in the START's cycle is
+taken with 0 (before, the packer did not take it and the finish stage,
+which offers a block for one cycle, waited for its payload forever). The
+check reads the sequence number from the output's header words
+(`PackerStartTest`: a START in block 1's header, payload and trailer,
+between blocks, and with an offer; the defect re-introduced trips
+`seq_contiguous`). No monitor fires in any other run of the suite,
 `FPGA_CHAIN_REAL=1` included (chain-3 … chain-10, the stub chain's frame
 0, the restarts, every LDPC set).
 
@@ -811,14 +817,15 @@ are needed: not provably narrower).
     event: a committed codeword and the open one), no overrun, no queue
     overflow, no lost or late beat, at least one abort beat per restart; the
     stream parses everywhere;
-  - **defect: the sequence number survives a START during a block.**
-    `Packer` restarts the sequence only in its IDLE state, and `SlotsRx`
-    (as the bench) pulses `start` for one cycle, so a START while a block
-    is leaving (a 93/120 slot block takes about 2 200 of a slot's 11 000
-    clocks) is ignored for
-    the sequence: the next block continues it (8 of 80 runs, e.g. chain-7
-    seed 15: START at input 3 618 132 while slot block 30 of frame 2 left;
-    the next block has sequence 31). Not fixed here;
+  - **defect (fixed): the sequence number survived a START during a
+    block.** `Packer` restarted the sequence only in its IDLE state, and
+    `SlotsRx` (as the bench) pulses `start` for one cycle, so a START while
+    a block was leaving (a 93/120 slot block takes about 2 200 of a slot's
+    11 000 clocks) was ignored for the sequence: the next block continued
+    it (8 of 80 runs, e.g. chain-7 seed 15: START at input 3 618 132 while
+    slot block 30 of frame 2 left; the next block had sequence 31). The
+    packer now latches the START until the block is done ([invariant
+    monitors](#invariant-monitors));
   - **defect: the sync's period statistics after a restart whose next
     slot head falls about 0 - 30 symbols before the end of the first
     sync period** (the restart 5 - 30 symbols after a head): every later
@@ -853,10 +860,10 @@ stream (a block with its CRC instead of 308 register reads: the plan's
 "Build 8 issues", follow-up); `SlotsRx` as a whole with its front end in
 simulation (the chain's simulations start at the symbols); a host CONST /
 N0 load and layout lag 1 (FEATURES says so); the recording sets
-(`chain-rec-*`, opt-in) were not generated here; the two defects and the
-counter divergence the chaos runs found (above: the sequence across a
-START during a block, the period statistics after a restart just after a
-slot head, the orphans in the counters).
+(`chain-rec-*`, opt-in) were not generated here; the defect and the
+counter divergence the chaos runs found that are still open (above: the
+period statistics after a restart just after a slot head, the orphans in
+the counters).
 
 ## The transmit block (`SymbolsTx`)
 
