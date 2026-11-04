@@ -1106,9 +1106,9 @@ class RealChainBench(Elaboratable):
     decoder's output), between the bridge and the chain; `tmcc_errors`:
     [(frame, [positions])] the same in a frame's TMCC word (a set's
     `tmcc_errors`). A flip is found by (frame, the tag's low byte: the slot,
-    or 0x80 for the TMCC, word) in that order, as the results leave in
-    commit order: the TMCC of frame N follows the first slots of N + 1, so
-    those must have no flips when it has. The chain's stop
+    or 0x80 for the TMCC, word), each entry compared with every beat (the
+    results leave in commit order: the TMCC of frame N follows the first
+    slots of N + 1, and both may have flips). The chain's stop
     is on (`SlotsChain.stop_after`, `top.STOP_AFTER` symbol clocks without
     an input record), as in `SlotsRx`: a bench's pause is a host's stop."""
 
@@ -1164,21 +1164,19 @@ class RealChainBench(Elaboratable):
         mask = Signal(16)
         m.d.comb += cp.out_bits.eq(bp.out_bits ^ mask)
         if self.flips:
-            from amaranth.hdl import Array, Const
+            from amaranth.hdl import Const
 
-            fl = self.flips + [((0xFFFFFFFF, 0xFF, 0xFFF), 0)]
-            ptr = Signal(range(len(fl)))
-            ent = Array(Const(fr << 20 | sl << 12 | w, 52) for (fr, sl, w), _ in fl)[ptr]
-            msk = Array(Const(mk, 16) for _, mk in fl)[ptr]
             cur = Signal(52)  # frame, slot (or the TMCC flag), word of the beat in hand
             take = bp.out_valid & cp.out_ready
             with m.If(take & bp.out_head):
                 m.d.sync += cur.eq(Cat(Const(0, 12), bp.out_tag[0:8], bp.out_tag[32:64]))
             with m.If(take & ~bp.out_head):
                 m.d.sync += cur.eq(cur + 1)
-                with m.If(cur == ent):
-                    m.d.comb += mask.eq(msk)
-                    m.d.sync += ptr.eq(ptr + 1)
+                # the keys are distinct: at most one entry matches
+                hit = Const(0, 16)
+                for (fr, sl, w), mk in self.flips:
+                    hit = hit | Mux(cur == (fr << 20 | sl << 12 | w), mk, 0)
+                m.d.comb += mask.eq(hit)
         eq = ch.back.eq
         k = self.kind
         go = self.i_valid & self.i_ready
@@ -1249,13 +1247,14 @@ def lateness(order):
     return worst
 
 
-def run_chain_real(doc, taps, backend=None, symbols=None):
+def run_chain_real(doc, taps, backend=None, symbols=None, words=None):
     """The whole chain with the real decoder on a whole-chain set written
     with the decoder's settings (chain-7-hdl, chain-8-loss, chain-9-fade,
     chain-10-bch): every block of the model's stream, compared per (frame,
     kind, slot). `backend` None: the compiled one (`simx.compiled_backend`:
     `$FPGA_SIM` if it names one, else Verilator where installed, else
-    CXXRTL); the decoder makes pysim impractical here."""
+    CXXRTL); the decoder makes pysim impractical here. `words`: a list
+    that receives the chain's `Slots` words (a variant's own checks)."""
     from . import simx
 
     backend = backend or simx.compiled_backend()
@@ -1298,6 +1297,8 @@ def run_chain_real(doc, taps, backend=None, symbols=None):
     except RuntimeError as err:
         stuck = str(err)
     got = [w for (w,) in e.read(g)]
+    if words is not None:
+        words.extend(got)
     import json
 
     with open(os.path.join(os.path.dirname(__file__), "..", "..", "build", f"chain-real-got-{n}.json"), "w") as f:
