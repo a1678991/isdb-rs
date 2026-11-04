@@ -825,6 +825,21 @@ pub fn run_stream(
                     );
                     let prep_s = t.elapsed().as_secs_f64();
                     let upto = more.then(|| f.frame_starts().last().copied()).flatten();
+                    // a continued chunk whose frames all lost their TMCC: the
+                    // sync hint held, but the stream is on an alias of the
+                    // residual carrier (or the signal changed under it). The
+                    // next chunk acquires afresh, which resolves the alias
+                    // from the TMCC symbols.
+                    let stale = aligned && f.frames() > 0 && f.tmcc_ok() == 0;
+                    if stale {
+                        warn!(
+                            target: "isdb::rx",
+                            frames = f.frames(),
+                            carrier_hz = tracked,
+                            "{} continued frame(s) without a TMCC at {tracked:+.1} Hz: the next chunk re-acquires",
+                            f.frames()
+                        );
+                    }
                     {
                         let mut st = lock();
                         st.prep_s += prep_s;
@@ -855,7 +870,7 @@ pub fn run_stream(
                     };
                     // the next buffer starts at the cut (a frame start) when
                     // this call cut on one; after a loss or with nothing cut, not
-                    aligned = more && used > 0;
+                    aligned = more && used > 0 && !stale;
                     Ok(used)
                 },
                 |_| {
