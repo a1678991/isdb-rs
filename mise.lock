@@ -90,50 +90,50 @@ url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/carg
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471599057"
 
 [[tools."github:taiki-e/cargo-hack"]]
-version = "0.6.45"
+version = "0.6.46"
 backend = "github:taiki-e/cargo-hack"
-specifiers = ["0.6.45"]
+specifiers = ["v0.6.46"]
 
 [tools."github:taiki-e/cargo-hack"."platforms.linux-arm64"]
-checksum = "sha256:821536b7dc4666764d36c09e665affcf98e3d69f5a99b171c03d47d3ec24d0e7"
-url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.45/cargo-hack-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/433843287"
+checksum = "sha256:6194a409da4a47bc7a7407583b6cbeba8ee98c1fbfb81d57f1e337124aa111ba"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698521742"
 provenance = "github-attestations"
 
 [tools."github:taiki-e/cargo-hack"."platforms.linux-arm64-musl"]
-checksum = "sha256:9ac71756f1da6e8798ac5afbfd222abecb95de9c10e672ed52c179b637d6444b"
-url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.45/cargo-hack-aarch64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/433843102"
+checksum = "sha256:2d6f3b8f73c53214195255a89a3dfd91520ad35254c7621fd5e9254e5751625d"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-aarch64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698520407"
 provenance = "github-attestations"
 
 [tools."github:taiki-e/cargo-hack"."platforms.linux-x64"]
-checksum = "sha256:16394b932180a4ae509a22b3b8294fc2525573d8592420133c428457ed676d5d"
-url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.45/cargo-hack-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/433843006"
+checksum = "sha256:ff1b9441986e494d32ce46a7c5a25af1cda3a18da2cde306b2f96dd0e7055b28"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698520256"
 provenance = "github-attestations"
 
 [tools."github:taiki-e/cargo-hack"."platforms.linux-x64-musl"]
-checksum = "sha256:b242dffcfd43317ac484dd2dbc3b9fc5f8a7eb3ba252af31b531503f0bad33d1"
-url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.45/cargo-hack-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/433843120"
+checksum = "sha256:82875b396319288894d4c213389a107039756e37f0f7eb299ed15f5d4ad269cf"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698520790"
 provenance = "github-attestations"
 
 [tools."github:taiki-e/cargo-hack"."platforms.macos-arm64"]
-checksum = "sha256:af0ab90e56aa716ae9f545a93e4338d4f36525e187d367b6519da71b60249b50"
-url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.45/cargo-hack-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/433843066"
+checksum = "sha256:9ad9fae78158671df8161b1803bb6b9f6a8b0081adc70a5c2bb91dff5ec4044d"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698520811"
 provenance = "github-attestations"
 
 [tools."github:taiki-e/cargo-hack"."platforms.macos-x64"]
-checksum = "sha256:b1a65c2daaca37957a288a295cb25f5c3bf3f7945ec60b450ecdbb1159acbff4"
-url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.45/cargo-hack-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/433843009"
+checksum = "sha256:d59a46947429dfa58e1c2f9b644e878580f85c3001b0f26854eeaa9da5b00fc4"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698521192"
 provenance = "github-attestations"
 
 [tools."github:taiki-e/cargo-hack"."platforms.windows-x64"]
-checksum = "sha256:b05485f03c1620f6481c41c4b03d5f59ca62d5f64a07d79df9ee088a91721b6c"
-url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.45/cargo-hack-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/433843419"
+checksum = "sha256:c647159f27352aa1a28c3383a937802c71dbda048a15a628e086c7bad4b57fa0"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698522469"
 provenance = "github-attestations"
 
 [[tools.lefthook]]
