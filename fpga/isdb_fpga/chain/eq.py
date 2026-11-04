@@ -60,7 +60,10 @@ Implementation:
   bank but not latched until the next strobe, so the host reads one
   frame's sums however long its reads take (`cap_valid`: latched since
   the strobe; `cap_armed`: waiting for a frame end). Before any strobe
-  every frame end latches (the free-running latch). `cap_seq` counts the
+  every frame end latches (the free-running latch), and a restart (START,
+  a lost sync, the chain's stop) releases a hold and an armed capture, so
+  a run that reads the sums blocks is not starved by the hold a run that
+  read the registers left. `cap_seq` counts the
   latches (8 bits, wraps): the same value before and after a set of
   reads says no latch moved in between. Only a frame with a layout opens
   a sum, so without a layout nothing latches and an armed capture waits.
@@ -550,7 +553,12 @@ class Equaliser(Elaboratable):
         with m.If(self.cap_strobe):
             m.d.sync += [self.cap_armed.eq(1), self.cap_valid.eq(0)]
         with m.If(self.restart):
-            m.d.sync += [opened.eq(0), go_pend.eq(0), open_pend.eq(0)]
+            # a restart (START, a lost sync, the chain's stop) releases a
+            # capture's hold and an armed capture: the latch runs free again
+            # (a host that reads the registers arms its capture after START;
+            # the stream's sums block needs the latch to move)
+            m.d.sync += [opened.eq(0), go_pend.eq(0), open_pend.eq(0), hold.eq(0), self.cap_armed.eq(0),
+                         self.cap_valid.eq(0)]
         if self.monitor is not None:
             prev = Signal(32, init=0xFFFFFFFF, name="mon_taps_from_d")
             pf_d = Signal(32, name="mon_pend_from_d")

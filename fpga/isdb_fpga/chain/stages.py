@@ -162,7 +162,7 @@ def run_phase(doc, backend, snapshots=False):
 
 # --- stage 4 -------------------------------------------------------------------
 
-K_SYM, K_READ, K_LAY, K_COMMIT, K_TAP, K_TAPNOW, K_CAP, K_OPEN = range(8)
+K_SYM, K_READ, K_LAY, K_COMMIT, K_TAP, K_TAPNOW, K_CAP, K_OPEN, K_RESTART = range(9)
 
 
 def pack_meta(**f):
@@ -207,14 +207,14 @@ class EqBench(Elaboratable):
     """Records (kind, a, b, c, meta): K_SYM y = (a, b) with meta; K_READ
     sums word a; K_LAY layout entry of slot a = meta; K_COMMIT the layout
     for frame a (from frame b); K_TAP tap a = (b, c); K_TAPNOW; K_CAP the
-    host's SUMS_CAPTURE strobe."""
+    host's SUMS_CAPTURE strobe; K_RESTART the chain's restart (START)."""
 
     def __init__(self, monitors=True):
         self.eq = Equaliser()
         self.fc = FrameCtl()
         self.i_valid = Signal()
         self.i_ready = Signal()
-        self.kind = Signal(3)
+        self.kind = Signal(4)
         self.a = Signal(signed(32))
         self.b = Signal(signed(32))
         self.c = Signal(signed(32))
@@ -251,6 +251,7 @@ class EqBench(Elaboratable):
             eq.tap_val[1].eq(self.c),
             eq.tap_now.eq(go & (k == K_TAPNOW)),
             eq.cap_strobe.eq(go & (k == K_CAP)),
+            eq.restart.eq(go & (k == K_RESTART)), fc.restart.eq(go & (k == K_RESTART)),
         ]
         return m
 
@@ -361,7 +362,7 @@ def run_eq(doc, layout, backend, symbols=None):
     return what, bad
 
 
-def run_eq_capture(doc, layout, backend, strobe=True, read_during=False):
+def run_eq_capture(doc, layout, backend, strobe=True, read_during=False, release=False):
     """The training sums' capture (SUMS_CAPTURE) over chain-3-eq's frame F
     sent three times as frames F, F + 1, F + 2 (each with its layout), the
     strobe (`strobe`) before F: the latch takes F's sums and holds them
@@ -371,7 +372,11 @@ def run_eq_capture(doc, layout, backend, strobe=True, read_during=False):
     number checked, SEQ 3). `read_during`: the 308 words are also read in
     frame F + 1 while the MAC unit sums its slot 10 (issue #27): F's sums
     again, every read answered 3 cycles after its request (it waited for
-    the MAC unit before). Returns (what, bad)."""
+    the MAC unit before). `release` (with the strobe): after the reads a
+    restart (START), its layout again and the frame once more as F + 3:
+    the restart released the hold, so F + 3's end latches (SUMS_FRAME
+    F + 3, SEQ 2, VALID and ARMED clear; without the release the latch
+    would stay on F). Returns (what, bad)."""
     F, at = doc["frame"], doc["at"]
     y = doc["y"]
     words = slot_words(doc["training"])
@@ -387,9 +392,16 @@ def run_eq_capture(doc, layout, backend, strobe=True, read_during=False):
     n = len(y) // 2
     rel0 = doc["y_from"] - at  # the first symbol's position (before F)
     body = [i for i in range(n) if 0 <= doc["y_from"] + i - at < FRAME]
-    for r in range(3):
-        idx_list = ([i for i in range(n) if doc["y_from"] + i - at < 0] if r == 0 else []) + body
-        if r == 2:
+    reps = 4 if release else 3
+    for r in range(reps):
+        if r == 3:
+            # the host's reads of the held set, then START: the hold goes,
+            # the frame bookkeeping restarts (its layout for F + 3 again)
+            recs += [(K_READ, a, 0, 0, 0) for a in range(4 * ENTRIES)]
+            recs.append((K_RESTART, 0, 0, 0, 0))
+            recs += [x + (0,) for x in layout_records(layout, F + 3, F + 1)]
+        idx_list = ([i for i in range(n) if doc["y_from"] + i - at < 0] if r in (0, 3) else []) + body
+        if r == reps - 1:
             idx_list += [i for i in range(n) if doc["y_from"] + i - at >= FRAME]
         for q, i in enumerate(idx_list):
             if r < 2 and q == len(idx_list) // 2:
@@ -399,12 +411,12 @@ def run_eq_capture(doc, layout, backend, strobe=True, read_during=False):
                 # the slot's MACs (from its position 55 on) are under way
                 recs += [(K_READ, a, 0, 0, 0) for a in range(4 * ENTRIES)]
             if rel < 0:
-                fr, k, j = F - 1, SLOTS - 1, SLOT + rel
+                fr, k, j = F + r - 1, SLOTS - 1, SLOT + rel
             elif rel >= FRAME:
-                fr, k, j = F + 3, 0, rel - FRAME
+                fr, k, j = F + r + 1, 0, rel - FRAME
             else:
                 fr, k, j = F + r, rel // SLOT, rel % SLOT
-            w = words[k] if F <= fr <= F + 2 else (0 if k == SLOTS - 1 else 1)
+            w = words[k] if F <= fr <= F + reps - 1 else (0 if k == SLOTS - 1 else 1)
             recs.append((K_SYM, y[2 * i], y[2 * i + 1], 0,
                          pack_meta(j=j, number=k, numbered=1, frame=fr, word=w), at + r * FRAME + rel))
     del rel0
@@ -423,15 +435,19 @@ def run_eq_capture(doc, layout, backend, strobe=True, read_during=False):
         (rh, rl), (ih, il) = v
         exp_r += [rl, rh & 0xFFFFFFFF, il, ih & 0xFFFFFFFF]
     sets = [rs[k:k + len(exp_r)] for k in range(0, len(rs), len(exp_r))]
-    if len(sets) != 1 + int(read_during):
+    if len(sets) != 1 + int(read_during) + int(release):
         bad.append(f"{len(rs)} sum words read")
     if strobe:
         # F's sums (F + 1's and F + 2's differ a little: their first
-        # training lines hold the end of the repeated frame)
-        for set_ in sets:
+        # training lines hold the end of the repeated frame); with the
+        # release the last set is F + 3's (not checked word for word)
+        for set_ in sets[:len(sets) - int(release)]:
             bad += first_mismatch("sums word", [(r[0],) for r in set_], [(v,) for v in exp_r],
                                   key=lambda i, v: f"entry {i // 4} part {i % 4}")
-    want = (F if strobe else F + 2, doc["sums"]["count"], int(strobe), 0, 1 if strobe else 3)
+        if release and len(sets) >= 2 and tuple(sets[-2][0][1:]) != (F, doc["sums"]["count"], 1, 0, 1):
+            bad.append(f"before the restart the held set read {tuple(sets[-2][0][1:])}, not F's")
+    want = ((F + 3, doc["sums"]["count"], 0, 0, 2) if release
+            else (F if strobe else F + 2, doc["sums"]["count"], int(strobe), 0, 1 if strobe else 3))
     got = tuple(rs[-1][1:]) if rs else None
     if got != want:
         bad.append(f"sums frame/count/valid/armed/seq {got} != {want}")
@@ -611,7 +627,7 @@ class BackBench(Elaboratable):
         self.back = Back()
         self.i_valid = Signal()
         self.i_ready = Signal()
-        self.kind = Signal(3)
+        self.kind = Signal(4)
         self.a = Signal(signed(32))
         self.b = Signal(signed(32))
         self.c = Signal(signed(32))

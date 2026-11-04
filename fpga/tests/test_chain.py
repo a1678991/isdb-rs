@@ -180,6 +180,16 @@ class EqTest(unittest.TestCase):
         self.assertEqual(bad, [], "\n".join(bad[:5]))
 
     @cxx
+    def test_a_restart_releases_the_capture_hold(self):
+        # the hold of a capture a run that reads the registers left would
+        # starve a run that reads the sums blocks (the latch never moves):
+        # after START the latch runs free again (PR #40's review)
+        from isdb_fpga.chain.stages import run_eq_capture
+
+        what, bad = run_eq_capture(doc("3-eq"), doc("4-tmcc")["layout"], COMPILED, release=True)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
+    @cxx
     def test_sums_latch_moves_without_a_capture(self):
         from isdb_fpga.chain.stages import run_eq_capture
 
