@@ -127,6 +127,18 @@ class PhaseTest(unittest.TestCase):
     def test_compiled(self):
         self.run_stage(COMPILED)
 
+    def test_snapshot_of_the_head(self):
+        """A slot carries the status snapshot of the head that completes it
+        (the model's sync statistics after that head's push), not one a
+        period end a few symbols later gives while the slot's setup runs
+        (the chaos runs: a restart 5 - 30 symbols after a slot head locks
+        the sync within 30 positions of its period's end, and every later
+        status block had the next period's peak and sum)."""
+        from isdb_fpga.chain.stages import run_phase
+
+        what, bad = run_phase(doc("2-phase"), "pysim", snapshots=True)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
 
 @needs("3-eq")
 @needs("4-tmcc")

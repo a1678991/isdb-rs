@@ -1603,3 +1603,11 @@ a test that fails without the fix.
   its old number, the next has 0 (the model's new writer). The host's
   reader takes any sequence number, so the stream stayed parseable; a
   block cut at START would only have been skipped.
+- **The status block's sync statistics after a restart just after a
+  slot head.** The sync then locks with its heads 4 - 29 positions
+  before its period's end, so a period end decides a few symbols after
+  each head; stage 3 took the status snapshot when it queued the head's
+  slot (about 80 cycles later), the period end's, and every later status
+  block carried the next period's peak and sum. Stage 3 keeps the first
+  snapshot after the head's record, the model's state after the head's
+  push.

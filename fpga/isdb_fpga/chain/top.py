@@ -20,7 +20,9 @@ fpga/tezuka/isdb_slots.xdc has the constraints:
 
 The status snapshot: SyncFront latches the sync statistics and the
 carrier register at each decision's end; SlotPhase keeps the one of the
-head that completes each slot and gives the frame-final slot's; at a
+head that completes each slot (the first after the head's record, as the
+model's slot has the state after its head's push: a period end may decide
+a few symbols later) and gives the frame-final slot's; at a
 frame's end the back end adds the taps in use, their frame, the frame's
 sums (decoded frames), the demapper's n0, K, learned-from and learned
 modulations in force (before the frame's swap) and the AGC register; the
@@ -150,6 +152,7 @@ class SlotsChain(Elaboratable):
             ph.h_word.eq(sy.o_head_word), ph.h_theta.eq(sy.o_head_theta), ph.h_amp.eq(sy.o_head_amp),
             ph.h_numbered.eq(sy.o_head_numbered), ph.h_number.eq(sy.o_head_number),
             ph.h_frame.eq(sy.o_head_frame), ph.restart.eq(sf.o_restart), ph.h_snap.eq(sf.snap),
+            ph.h_snap_valid.eq(sf.o_snap_valid),
             eq.i_valid.eq(ph.o_valid), eq.i_y[0].eq(ph.o_y[0]), eq.i_y[1].eq(ph.o_y[1]),
             eq.i_meta.eq(Cat(ph.o_j, ph.o_number, ph.o_numbered, ph.o_frame, ph.o_word, ph.o_at)),
             bk.restart.eq(ph.o_restart),
