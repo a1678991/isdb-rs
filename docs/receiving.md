@@ -241,7 +241,9 @@ sync, carrier loop, equaliser, TMCC, demapper, LDPC, BCH:
 docs/plans/isdbs3-fpga-rx.md) sends decoded slots instead of symbols:
 the `Slots` words of `isdb_frontend::slots` (a block per slot with its
 header and data bits, one per frame for the TMCC and one for the chain's
-status), about 12 MB/s for 16APSK 93/120 instead of 51 MB/s of symbols.
+status, and, `Slots` format 2, one per decoded frame with its equaliser
+training sums), about 12 MB/s for 16APSK 93/120 instead of 51 MB/s of
+symbols. The host reads formats 1 (the images of builds 1–9) and 2.
 The host then only assembles the TLV packets and writes them: the
 host receiver's demapper, equaliser and LDPC (about 10 cores busy for
 real time on a 16-core desktop, plan "Measured") are not run at all.
@@ -261,16 +263,26 @@ acquisition's line says which, `chain.start_taps` in `--json`); never
 the taps the chain still holds from the run before (START keeps them
 otherwise, and a bad set there could stop the TMCC decoding from the
 first frame: issue #28) — the nominal constellation
-and a default noise estimate; a thread then reads the chain's equaliser
+and a default noise estimate; a thread then takes the chain's equaliser
 training sums every 2 s, solves them on the host (the 11 taps, as the
-CPU model does) and writes the taps back. The chain tracks the carrier
+CPU model does) and writes the taps back. On an image with the sums in
+the stream (`Slots` format 2, FEATURES bit 7 SUMS_STREAM; the open line
+says "training sums from the Slots stream", `--json` has
+`chain.radio.sums_source` `"stream"`) the sums come in the `Slots` words
+under their CRC, the first set as soon as the first decoded frame's
+block arrives, and the thread reads no chain register at all; on an
+older image (`"registers"`) it reads the 308 sum registers as before
+(`words_read`, `rereads` and `torn_reads` in `chain.radio.slow_loop`
+count those reads, 0 on the stream path). The chain tracks the carrier
 itself; the summary reports its carrier register. `--slots-out FILE`
 records the words (with `FILE.json`), and `--slots FILE` decodes such a
 recording.
 
-**Stop board-side register pollers while the chain runs.** The host
-reads the chain's registers (the 308 training-sum words among them)
-through `cf-ad9361-lpc`'s `direct_reg_access`: libiio writes the
+**Stop board-side register pollers while the chain runs** (an image
+with the sums in the stream needs no register read while it runs, only
+the taps' writes: the rest of this paragraph is about the older images).
+The host reads the chain's registers (the 308 training-sum words among
+them) through `cf-ad9361-lpc`'s `direct_reg_access`: libiio writes the
 register's address there, then reads the value, and that address is
 one for every client of the device. Any other client that reads or
 writes a register of the core between the two makes the host's read
@@ -320,7 +332,8 @@ in the summary).
   counted), their mean n0 more than 20 % above the good set's, or 10
   frames without a layout, and the last good set is written again
   (`reverts`).
-- **Recovery.** No layout (the chain's STATUS without DECODING), or no
+- **Recovery.** No layout (the chain's STATUS without DECODING; on the
+  stream path, no status block of a decoded frame for 0.5 s), or no
   training-sum capture held, for more than 1.5 s: the last good set is
   written again unless it is the one in force, else the identity
   (`recoveries`); with the identity in force nothing more can be done
