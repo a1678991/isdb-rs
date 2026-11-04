@@ -39,6 +39,21 @@ STD-B44) is received to TLV streams.
   loop solves from the stream and reads no chain register
   (`isdb_radio::chain::SumsSource`, `sums_source` in the open line and
   `--json`); images of `Slots` format 1 keep the register path.
+- `fpga`: a timed host–FPGA interaction model of the ISDB-S3 chain
+  (issue #30 item 4; `fpga/tools/hostfpga_model.py`, standard-library
+  Python, `tests/test_hostfpga_model.py` in `mise run fpga:test`; fpga/README.md
+  "A timed host–FPGA model"): a seeded discrete-event simulation of the
+  chain's frame clock and register file (SUMS_CAPTURE, TAPS_FROM, the
+  `Slots` stream and its DMA buffers), `direct_reg_access`'s one cached
+  address shared by every client, iiod's measured request time, the host's
+  slow loop on both sums paths, its capture context and Tezuka's
+  `api_controller.sh`. It reproduces build 6's torn reads, build 7's first
+  taps (0.91 s, frame 26), #27 / #29's foreign words with and without the
+  verified reads, and puts the stream path's first taps in force from
+  frame 4; it checks that every solved set is one snapshot, that polled
+  live values are single words and that no host sequence waits for ever
+  (`KNOWN_GAPS`: the stream path does not notice sums blocks that stop
+  while frames still decode).
 - `fpga`: chaos runs of the ISDB-S3 chain with the real LDPC decoder
   (issue #30 item 3; `isdb_fpga/chain/chaos.py`, `tests/test_chaos.py`,
   `tools/chaos_run.py`): random host stops, STARTs, input losses and tap
