@@ -512,6 +512,19 @@ STD-B44) is received to TLV streams.
   whose BCH corrects six or more errors hangs the chain's finish stage
   (fpga/README.md "Integration"; `test_six_tmcc_corrections`, an
   expected failure; chain-12 injects five).
+- `isdbs3-phy`, `fpga`: more value-coverage inputs (issue #30 item 1).
+  `chain-13-modes` sends four transmission modes in one TMCC (16APSK
+  93/120, 8PSK 73/120, QPSK 61/120, π/2-BPSK 41/120 with their dummy
+  slots) and the host's AGC writes (`host_writes` `agc`): bit-exact with
+  the real decoder, the learned points of all four modulations in the
+  status; chain-4-tmcc carries a five-mode layout (`modes`);
+  `KNOWN_GAPS` 20 → 8 entries. `chain-14-apsk32` (32APSK 109/120 first)
+  found an open HDL defect: frame N's TMCC burst and frame N + 1's first
+  32APSK codewords need more decoder cycles than the bridge's serialiser
+  has, its input FIFO overflows and those slots fail (fpga/README.md
+  "Integration"; `test_apsk32_after_the_tmcc_burst`, an expected
+  failure). `tools/real_blocks.py` prints the blocks a real-decoder run
+  got wrong.
 - `fpga`: the transmit block's follow-ups (docs/plans/isdbs-next.md item
   5; not yet in a built image). Prefetch while selected: the block polls
   the DMA from SELECT, drops the underflow answers before RUN and holds
