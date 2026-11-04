@@ -1921,6 +1921,70 @@ PR #36). BS7, receive only, `tools/isdbs3-issue-checks.sh` (captures in
 Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-rx9` (build 9,
 `isdbs3_rx_top.bin`), `prev-rx8`, `prev-rx7`, `prev-rx6` or `prev-txrx2`,
 then `reboot` and `recover`.
+### Build 11 on the board: the sums in the Slots stream (2026-11-04)
+
+The image of PR #40's HDL before its review fix (`ff6ed2a`: the sums
+block, VERSION 2, FEATURES bit 7; the capture-hold release of `dedbc14`
+is build 12's). Vivado 2026.1, the project flow met every constraint
+itself: **WNS +0.100 ns, WHS +0.010 ns, 0 failing endpoints of 161 961**;
+`rx_clk` +0.120 / +0.017, decoder `c0` +0.126 / +0.026, symbol clock
++0.559 / +0.063, `clk_fpga_0` +1.122, `RGMII_rxc` +0.100 / +0.010.
+43 978 LUT (82.7 %; build 10: 43 792), 49 824 FF, 123.5 BRAM36, 176 DSP.
+`isdbs3_rx11_top.bin` 2 834 688 bytes, sha256
+`5d4a7b079215…` (the full digest in
+`/path/to/sdr/isdb-work/out/isdbs3-rx-build11/postflow.log`; XSA
+`996e86b120d1dc1ff134c4655bbf63d7ae4434751a982e2e6b2ddb3f4a977ffd`). On
+the card: build 10 stays as `isdbs3_rx10_top.bin` (`uEnv.txt.prev-rx10`),
+build 11 as `isdbs3_rx11_top.bin` (selected); one `recover` after the
+boot. Host binary from PR #40's branch. BS7, receive only,
+`tools/isdbs3-issue-checks.sh` (captures in
+`/path/to/sdr/isdbs3-bench/build11/`, not committed):
+
+| Run | Image | Open line | Valid slots | Not converged (dropped) | Slow loop | First taps in force | Max RSS |
+|---|---|---|---|---|---|---|---|
+| 8 s × 3 back to back | build 11 (format 2) | "Slots format 2, features 0x220ef3"; `sums_source` stream | 23 232 each | 0, 0, 1 (0 dropped) | 4 solves in 4 ticks each, **0 register words read**, 0 rejected, 0 reverts; 183 sums blocks per 8 s | **frame 4** (`taps_from` 2 from frame 4; +3 frames) | 730–742 MB |
+| 30 s | build 11 | the same | 86 976 | 0 (0) | 15 solves, 851 sums blocks, 0 words read | frame 4 (+4) | 727 MB |
+| 8 s, the same host on build 10 | build 10 (format 1) | "Slots format 1, features 0x220e73"; `sums_source` registers | 23 136 | 0 (0) | 3 solves in 6 ticks, 979 words read, 0 rereads | frame 33 (+33, as before) | 721 MB |
+
+- **The stream path**: the first sums block is frame 2's and the loop's
+  first write lands inside frame 3, so the slow loop's taps are in force
+  from frame 4, as docs/plans/isdbs3-fpga-rx.md "Sums in the stream"
+  predicted (frame 26–28 on the register path; 33 measured on build 10
+  with this host). The loop reads no register at all (`words_read` 0): no
+  `direct_reg_access` exposure to other clients. The probe's start taps
+  (PR #36) are in force from frame 0, so the gain is time and exposure,
+  not dropped slots (0 in every run).
+- **A format-1 image with this host**: build 10 opens and runs on the
+  register path exactly as before (the same counters as the build 10 runs).
+- MER 15.0 dB, mean iterations 2.0–2.1, 0 losses, exit 0 in every run.
+
+### Build 12 on the board: the capture hold released at a restart (2026-11-04)
+
+The image of PR #40 as merged (`main` 08dc093: build 11 plus `dedbc14`,
+a restart releasing the training sums' capture hold). Vivado 2026.1, the
+project flow met every constraint itself: **WNS +0.099 ns, WHS +0.034 ns,
+0 failing endpoints of 162 025 / 161 802**; `rx_clk` +0.099 / +0.034,
+decoder `c0` +0.174 / +0.036, symbol clock +0.465 / +0.047, `clk_fpga_0`
++1.390, `RGMII_rxc` +0.100 / +0.081. 43 921 LUT (82.6 %), 123.5 BRAM36,
+176 DSP. `isdbs3_rx12_top.bin` 2 864 672 bytes, sha256 `576a684b…` (the
+full digests in `/path/to/sdr/isdb-work/out/isdbs3-rx-build12/postflow.log`;
+XSA `c4dbb021c5d74b98a832fbb55d9b89f60e88d90940b8fda059c93295793af25e`).
+On the card: build 11 stays as `isdbs3_rx11_top.bin` (`uEnv.txt.prev-rx11`),
+build 12 as `isdbs3_rx12_top.bin` (selected). BS7, receive only, the host
+from `main` 08dc093 (captures in `/path/to/sdr/isdbs3-bench/build12/`):
+
+| Run | Valid slots | Not converged (dropped) | Slow loop | First taps in force | Max RSS |
+|---|---|---|---|---|---|
+| 8 s × 3 back to back | 23 136, 23 232, 23 232 | 0 (0) each | 4 solves in 4 ticks each, 0 register words read, 0 rejected, 0 reverts | frame 4, 3, 3 | 712–728 MB |
+| 30 s | 86 976 | 0 (0) | 15 solves, 0 words read | frame 4 | 729 MB |
+
+As build 11: "Slots format 2, features 0x220ef3", `sums_source` stream,
+MER 15.0 dB, exit 0, 0 losses. **The board runs build 12.**
+
+Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-rx11` (build 11),
+`prev-rx10` (build 10), `prev-rx9` (build 9, `isdbs3_rx_top.bin`),
+`prev-rx8`, `prev-rx7`, `prev-rx6` or `prev-txrx2`, then `reboot` and
+`recover`.
 
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
