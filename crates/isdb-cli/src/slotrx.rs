@@ -79,6 +79,12 @@ pub struct ChainStats {
     pub tmcc_blocks: u64,
     /// See `slot_blocks`.
     pub status_blocks: u64,
+    /// See `slot_blocks` (`Slots` format 2: a decoded frame's training
+    /// sums).
+    pub sums_blocks: u64,
+    /// Intact blocks of a type their header's format version does not
+    /// define (a writer newer than this host): skipped, not a loss.
+    pub unknown_blocks: u64,
     /// Dummy slots (no data).
     pub dummy_slots: u64,
     /// Losses in the words (each a discontinuity), blocks missing by the
@@ -153,7 +159,8 @@ impl ChainStats {
         let st = self.last_status.as_ref();
         json!({
             "words": self.words,
-            "blocks": {"slot": self.slot_blocks, "tmcc": self.tmcc_blocks, "status": self.status_blocks},
+            "blocks": {"slot": self.slot_blocks, "tmcc": self.tmcc_blocks, "status": self.status_blocks,
+                "sums": self.sums_blocks, "unknown": self.unknown_blocks},
             "dummy_slots": self.dummy_slots,
             "losses": self.losses,
             "blocks_lost": self.blocks_lost,
@@ -390,6 +397,23 @@ impl Consumer {
                 Self::chain(stats).truncated_words += words;
                 Ok(())
             }
+            Event::Unknown {
+                seq, kind, version, ..
+            } => {
+                // an intact block of a newer writer: skipped, not a loss
+                let c = Self::chain(stats);
+                c.unknown_blocks += 1;
+                if c.unknown_blocks == 1 {
+                    warn!(
+                        target: "isdb::rx",
+                        seq,
+                        kind,
+                        version,
+                        "slots block {seq} of type {kind} is not defined in Slots format {version}: skipped (an image newer than this host?)"
+                    );
+                }
+                Ok(())
+            }
         }
     }
 
@@ -433,6 +457,9 @@ impl Consumer {
             Block::Status(s) => {
                 self.flush_through(s.frame, out, stats)?;
                 self.status(&s, stats);
+            }
+            Block::Sums(_) => {
+                Self::chain(stats).sums_blocks += 1;
             }
         }
         Ok(())
