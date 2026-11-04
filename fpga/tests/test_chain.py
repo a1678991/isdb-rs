@@ -255,6 +255,21 @@ class TmccTest(unittest.TestCase):
         what, bad = run_tmcc(d, COMPILED)
         self.assertEqual(bad, [], "\n".join(bad[:5]))
 
+    @cxx
+    def test_mixed_modes(self):
+        # chain-4's `modes` record (chain-14's frame D): five transmission
+        # modes (32APSK 109/120 ... pi/2-BPSK 41/120), so the layout's mode,
+        # modulation and rate codes, its dummy pattern per modulation and
+        # its symbol starts all differ from the 16APSK frame's
+        from isdb_fpga.chain.stages import run_tmcc
+
+        d = doc("4-tmcc").get("modes")
+        if d is None:
+            self.skipTest("chain-4-tmcc has no modes record (mise run fpga:vectors)")
+        self.assertEqual(len({s[1] for s in d["layout"]}), 5)
+        what, bad = run_tmcc(d, COMPILED)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
 
 @needs("3-eq")
 @needs("4-tmcc")
@@ -445,6 +460,38 @@ class RealDecoderChainTest(unittest.TestCase):
             for i, v in expect.get(k, {}).items():
                 want[i] = v
             self.assertEqual(pay, want, f"block {k}")
+
+    @cxx
+    @needs("13-modes")
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    def test_mixed_modes(self):
+        # chain-13: four transmission modes in one TMCC (16APSK 93/120,
+        # 8PSK 73/120, QPSK 61/120, pi/2-BPSK 41/120, with the dummy slots
+        # of each), frames 2 and 3 decoded; frame 3's status carries the
+        # points learned on frame 2 for all four modulations; the host's
+        # AGC writes (`host_writes`) in frames 2 and 3's status
+        self.run_set("13-modes", None)
+
+    @cxx
+    @needs("14-apsk32")
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    @unittest.expectedFailure
+    def test_apsk32_after_the_tmcc_burst(self):
+        # An open defect chain-14 found (README "Integration"), not fixed
+        # here: chain-13's modes with 32APSK 109/120 first (slots 0-29, as
+        # B44 orders the modes). Frame 1's TMCC burst shares the decoder
+        # port with frame 2's first 32APSK codewords; the bridge's
+        # serialiser takes n + 1 decoder cycles per beat (6 per 32APSK
+        # symbol, 5 per burst beat: about 233 M cycles/s against the 200
+        # MHz), so its input FIFO overflows (monitor br.in_fifo_overflow,
+        # in_lost 9 631 by symbol 2 450 000) and frame 2's 32APSK slots fail
+        # (slots 0-5 unconverged at the limit, a decoder overrun). The
+        # input to inside frame 2: its first slot blocks against the
+        # model's, and the monitors and health counters.
+        from isdb_fpga.chain.stages import run_chain_real
+
+        what, bad = run_chain_real(doc("14-apsk32"), None, COMPILED, 2_450_000)
+        self.assertEqual(bad, [], "\n".join(bad[:8]))
 
     @cxx
     @needs("12-fail")
