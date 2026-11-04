@@ -56,7 +56,8 @@
 //!   `noise_count`, `n0_next`, `k_next`.
 //! - **6-chain**: the whole chain: `input`, `losses` (`[before_index,
 //!   symbols]`, none synthetic) and `slots_words` (every `Slots` word the
-//!   chain's frames give, `chain::out::blocks` through the `Writer`), with
+//!   chain's frames give, `chain::out::blocks` through the `Writer`:
+//!   format 2, a decoded frame's sums block after its status block), with
 //!   `frames` (per frame: counter, decoded, LDPC iterations per slot).
 //!
 //! Three more whole-chain sets (the 6-chain fields; synthetic only), with

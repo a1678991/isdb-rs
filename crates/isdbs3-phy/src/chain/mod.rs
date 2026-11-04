@@ -141,7 +141,10 @@
 //! not yet holding 11 inputs since the restart, adds nothing.
 //!
 //! **The host's slow loop** ([`eq::solve_sums`]): at the end of frame N the
-//! sums are latched; the host fills the lower triangle as conjugates,
+//! sums are latched (and sent in the `Slots` stream as frame N's sums
+//! block, "Frame output and status"; [`eq::solve_block`] solves those, the
+//! registers' reads [`eq::solve_training`]); the host fills the lower
+//! triangle as conjugates,
 //! solves in `f64` with `eq::solve` (the float receiver's elimination)
 //! and writes the taps rounded to Q2.14 (saturated); they are in use from
 //! the first output of frame N + [`EQ_APPLY_FRAMES`] (= 2: one frame to
@@ -250,8 +253,17 @@
 //! header's), the taps in use and the frame they were solved from, the
 //! frame of the training sums latched, n0 and K in force, the learned
 //! constellation in force, and the counters (frames, undecoded frames,
-//! TMCC failures, slots, LDPC and BCH failures, iterations). These are the
-//! `Slots` format's blocks (`isdb_frontend::slots`).
+//! TMCC failures, slots, LDPC and BCH failures, iterations), and the
+//! training sums latched at its end ([`frame::FrameOut::sums`]: a frame
+//! with a layout). These are the `Slots` format's blocks
+//! (`isdb_frontend::slots`, format 2; [`out::blocks`]), in this order: the
+//! frame's 120 slot blocks (a decoded frame), its tmcc block, its status
+//! block and then its sums block (a frame whose sums were latched: the
+//! status block's `sums_frame` is the frame). The HDL sends the same
+//! blocks; its decoder's commit order may put the next frame's first slot
+//! blocks before a frame's tmcc, status and sums blocks
+//! (fpga/isdb_fpga/chain/finish.py), but a sums block always follows its
+//! frame's status block at once.
 
 pub mod demap;
 pub mod eq;

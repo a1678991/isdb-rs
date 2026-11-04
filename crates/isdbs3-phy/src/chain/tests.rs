@@ -236,3 +236,70 @@ fn a_loss_restarts_and_the_stream_decodes_again() {
         );
     }
 }
+
+/// The `Slots` blocks of a frame (format 2): a decoded frame's end with
+/// its status block and then its sums block, the sums the frame's
+/// (`FrameOut::sums`, the status block's `sums_frame`), the block's
+/// header frame the frame's; an undecoded frame (no layout: nothing
+/// latched) ends with its status block. Written and read back, the
+/// sums solve to the model's taps.
+#[test]
+fn a_decoded_frame_ends_with_its_sums_block() {
+    use isdb_frontend::slots::{Block, Event, Reader, Writer};
+    let (out, _) = run(
+        &SynthOptions::default(),
+        5,
+        ChainOptions::default(),
+        &[65_536],
+    );
+    let fr = frames(&out);
+    let mut decoded = 0;
+    let mut words = Vec::new();
+    let mut w = Writer::new();
+    for f in &fr {
+        let b = super::out::blocks(f, super::LAYOUT_LAG);
+        for x in &b {
+            w.write(x, &mut words);
+        }
+        let n = b.len();
+        match (&f.sums, &b[n - 1]) {
+            (Some(s), Block::Sums(sb)) => {
+                decoded += 1;
+                assert!(!f.slots.is_empty(), "frame {}", f.frame);
+                assert!(matches!(&b[n - 2], Block::Status(st) if st.sums_frame == Some(f.frame)));
+                assert_eq!((sb.frame, sb.sums_frame), (f.frame, s.frame));
+                assert_eq!(u32::from(sb.count), s.count);
+                assert_eq!((&sb.r, &sb.p), (&s.r, &s.p));
+                assert_eq!(super::eq::solve_block(sb), super::eq::solve_sums(s));
+            }
+            (None, Block::Status(st)) => {
+                assert!(f.slots.is_empty(), "frame {}", f.frame);
+                assert_eq!(st.sums_frame, None);
+            }
+            (s, last) => panic!(
+                "frame {}: sums {:?}, last block {last:?}",
+                f.frame,
+                s.is_some()
+            ),
+        }
+    }
+    assert!(decoded >= 1, "{decoded} decoded frames");
+    let mut ev = Vec::new();
+    let mut r = Reader::new();
+    r.feed(&words, &mut ev);
+    r.finish(&mut ev);
+    let sums = ev
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::Block {
+                    block: Block::Sums(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(sums, decoded);
+    assert!(ev.iter().all(|e| matches!(e, Event::Block { .. })));
+}

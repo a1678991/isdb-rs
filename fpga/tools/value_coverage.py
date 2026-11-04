@@ -11,9 +11,10 @@ constellation. This tool reads every chain and LDPC set in `fpga/build/`
 values and the sets that exercise them:
 
 - every field of the `Slots` words of the whole-chain sets (6-10): the
-  block header, the slot block, the TMCC block and the status block
-  (`isdb_frontend::slots`: `SlotBlock`, `TmccBlock`, `Status`; read with
-  `isdb_fpga.chain.slots`), the status block per word;
+  block header, the slot block, the TMCC block, the status block and the
+  sums block (`isdb_frontend::slots` format 2: `SlotBlock`, `TmccBlock`,
+  `Status`, `SumsBlock`; read with `isdb_fpga.chain.slots`), the status
+  block per word;
 - the per-stage values the stage sets carry (`isdbs3-phy`
   `examples/chainvectors.rs`: heads, periods, carrier updates, φ and gain,
   the FIR's taps and sums, the TMCC layout, points, LLRs, learned points,
@@ -110,7 +111,7 @@ class Spec:
 
 
 WHOLE = ("chain-6", "chain-7", "chain-8", "chain-9", "chain-10")
-SLOTS_PARTS = ("header", "slot", "dummy", "tmcc", "status")
+SLOTS_PARTS = ("header", "slot", "dummy", "tmcc", "status", "sums")
 SPECS = {}
 
 
@@ -120,7 +121,7 @@ def spec(name, desc, sources, **kw):
 
 def _specs():
     # the Slots block header (isdb_frontend::slots module docs)
-    spec("header.kind", "block type (1 slot, 2 tmcc, 3 status)", WHOLE, domain=(1, 2, 3))
+    spec("header.kind", "block type (1 slot, 2 tmcc, 3 status, 4 sums)", WHOLE, domain=(1, 2, 3, 4))
     spec("header.version", "Slots format version (word 2 bits 8-11)", WHOLE)
     spec("header.flags", "header flags (word 2 bits 12-15, 0)", WHOLE)
     spec("header.payload", "payload words", WHOLE)
@@ -190,6 +191,12 @@ def _specs():
     for n in ("frames", "frames_undecoded", "tmcc_failed", "slots", "ldpc_failed",
               "bch_failed", "iterations"):
         spec(f"status.{n}", f"counter: {n}", WHOLE, reset=0)
+    # sums block (format 2: SumsBlock, after its frame's status block)
+    spec("sums.frame_lag", "the frame summed (payload words 0-1) minus the header's frame", WHOLE)
+    spec("sums.count", "training symbols summed", WHOLE)
+    spec("sums.r", "R's 66 upper-triangle sums, re and im (48 bit signed)", WHOLE)
+    spec("sums.p", "p's 11 sums, re and im (48 bit signed)", WHOLE)
+    spec("sums.after_status", "the block before it is its frame's status block", WHOLE, flag=True)
     # the whole-chain sets' own fields
     spec("chain.frames.decoded", "frames[].decoded", WHOLE, flag=True)
     spec("chain.frames.tmcc_bch", "frames[].tmcc_bch (None: failed)", WHOLE)
@@ -407,6 +414,7 @@ def _slots_words(V, sn, words):
     """The Slots words of a whole-chain set (the reader asserts the sync,
     header check and CRC of every block)."""
     prev = None
+    before = None  # the previous block: (kind, frame)
     i = 0
     while i < len(words):
         h = words[i:i + fmt.HEADER_WORDS]
@@ -442,6 +450,14 @@ def _slots_words(V, sn, words):
             V.add("tmcc.bits", sn, fmt.unpack_bits(pay[4:], 9422))
         elif kind == fmt.STATUS:
             _status(V, sn, frame, pay)
+        elif kind == fmt.SUMS:
+            f = fmt.sums_fields(pay)
+            V.one("sums.frame_lag", sn, (f["frame"] - frame) & NONE32)
+            V.one("sums.count", sn, f["count"])
+            V.add("sums.r", sn, (c for v in f["r"] for c in v))
+            V.add("sums.p", sn, (c for v in f["p"] for c in v))
+            V.one("sums.after_status", sn, int(before == (fmt.STATUS, frame)))
+        before = (kind, frame)
 
 
 def _cplx(V, name, sn, flat):
@@ -751,8 +767,9 @@ def coverage(build=BUILD, synthetic=False, sets=None, excuses=True):
 # cannot. A field here is not checked by the vectors' values at all, so an
 # entry needs a reason a reviewer can verify.
 ALLOWED = {
-    "header.version": "the Slots format version is 1 by definition (SLOTS_VERSION)",
-    "header.flags": "the header flags are 0 in format version 1",
+    "header.version": "the Slots format version is 2 by definition (SLOTS_VERSION; the HDL "
+                      "writes 2, the reader takes 1 too)",
+    "header.flags": "the header flags are 0 in format versions 1 and 2",
     "header.seq_step": "one sequence number per block: always 1 on a stream the chain "
                        "sends whole (a gap is a defect)",
     "slot.w0_reserved": "slot w0 bits 14-15 are unused (0) in format version 1",
@@ -768,6 +785,14 @@ ALLOWED = {
     "status.locked": "a status block is taken at a slot head, which the slot sync gives only "
                      "while locked; a loss of lock restarts the chain and drops the frame",
     "eq.sums.count": "one whole frame's training symbols: 120 x (24 + 32) = 6 720",
+    "sums.count": "one whole frame's training symbols: 120 x (24 + 32) = 6 720 (as "
+                  "eq.sums.count; a frame is summed only whole, with its layout)",
+    "sums.frame_lag": "the sums block's frame is the frame summed by definition: the latch at "
+                      "that frame's end, sent after its status block (0; a defect sending "
+                      "another frame's sums shows in the sums themselves)",
+    "sums.after_status": "a sums block follows its frame's status block by definition (the "
+                         "model's order; the HDL's Finish sends it right after; the monitor "
+                         "sums.follows_status checks it in every simulation)",
     "eq.taps_from": "chain-3's taps are the host's initial taps by construction (None); the "
                     "chain's own label is status.taps_from (a known gap)",
     "demap.n0_next": "chain-5 carries one frame's learning, so one value; it is a learned "
