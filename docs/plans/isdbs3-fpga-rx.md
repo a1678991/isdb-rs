@@ -1611,3 +1611,12 @@ a test that fails without the fix.
   block carried the next period's peak and sum. Stage 3 keeps the first
   snapshot after the head's record, the model's state after the head's
   push.
+- **The status counters counted orphan slots.** The finish stage counted
+  every slot it decoded, also those of a frame a restart dropped after
+  some of its codewords were committed (the host discards those blocks),
+  while the model counts whole frames (`chain::frame::Counters`). The
+  model's documentation decides, and the HDL's change is small: a frame's
+  slots are counted aside and added at its TMCC result (two 36-bit
+  per-frame counts replace the 160 bits of counters held for a late TMCC
+  result), so the HDL counts as the model; the chaos harness's
+  known-divergence branch is gone.

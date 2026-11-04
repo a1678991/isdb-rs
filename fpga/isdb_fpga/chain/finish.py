@@ -537,6 +537,15 @@ class Finish(Elaboratable):
     - **TMCC results** (tag bit 7): `TmccResult` (dispersal, BCH, layout),
       the TMCC block (BCH, iterations, the frame its layout applies from,
       the 9 422 bits), the counters, then the status block (`StatusSource`).
+    - **Counters** (`counters`, `iterations`; the status block's and
+      SlotsRx's COUNTERS): whole frames, as the model's
+      (`chain::frame::Counters`, counted when a frame completes). A
+      frame's slot results are counted aside (the frame in hand, and the
+      one before it while the next frame's first slots precede its TMCC
+      result) and enter the counters at the frame's TMCC result; a frame
+      whose TMCC result never comes (a restart dropped it after some of
+      its slot codewords were committed: their blocks are the orphans
+      the host discards) is never counted.
     - **Order**: the blocks are the model's when the results come in frame
       order (a frame's slot results, then its TMCC result). The decoder
       returns them in commit order, in which frame N's TMCC (its burst ends
@@ -545,9 +554,9 @@ class Finish(Elaboratable):
       block follow frame N + 1's first slot blocks (each block carries its
       frame counter; the host re-associates them: isdb-cli `slotrx.rs`),
       with their contents the model's: at frame N + 1's first slot result
-      the stage holds frame N's last valid slot (the trailing dummies' mode)
-      and the slot counters (the status block's), which a later TMCC
-      result of an earlier frame uses. Nothing is buffered. The lateness
+      the stage holds frame N's last valid slot (the trailing dummies' mode),
+      which a later TMCC result of an earlier frame uses. Nothing is
+      buffered. The lateness
       is bounded by the TMCC burst and decode: tmcc.py's burst (about 4
       slots at the front end's rate, 25 at one symbol per clock) plus a
       TMCC decode (a few passes, under a slot), so at most the slot blocks
@@ -713,18 +722,30 @@ class Finish(Elaboratable):
         s_frame = Signal(32)
         frame_of_slot = s_frame
         # held at a new frame's first slot result (see IDLE)
-        h_v = Signal()
-        h_next = Signal(32)
         h_have = Signal()
         h_frame = Signal(32)
         h_last = Signal(8)
         h_dmode = Signal(3)
         h_dmod = Signal(4)
         h_drate = Signal(4)
-        h_cnt = {n_: Signal(32, name=f"h_{n_}") for n_ in SLOT_COUNTERS}
-        h_iter = Signal(64)
         t_held = Signal()
-        t_cnt_held = Signal()
+        # the slot counters of whole frames only (the model's): a frame's
+        # slot results are counted in `a_*` (the frame in hand, prev_frame)
+        # and move to `b_*` when the next frame's first slot result comes
+        # (the commit order: frame N's TMCC result follows frame N + 1's
+        # first slots); a frame's counts enter the counters at its TMCC
+        # result (the frame is whole: its entry in the frame FIFO), and a
+        # frame whose TMCC result never comes (dropped by a restart after
+        # some of its codewords were committed: the orphans the host
+        # discards) is never counted. At most 120 slots a frame:
+        # 7 bits, 15 for the iterations (120 x 255)
+        a_cnt = {n_: Signal(7, name=f"a_{n_}") for n_ in SLOT_COUNTERS}
+        a_iter = Signal(15)
+        a_v = Signal()  # a_* hold prev_frame's uncounted slots
+        b_cnt = {n_: Signal(7, name=f"b_{n_}") for n_ in SLOT_COUNTERS}
+        b_iter = Signal(15)
+        b_v = Signal()
+        b_frame = Signal(32)
         m.d.comb += pk.w_valid.eq(0)
         with m.FSM(name="finish") as fsm:
             with m.State("IDLE"):
@@ -737,8 +758,20 @@ class Finish(Elaboratable):
                     m.d.sync += [tmode.eq(1),
                                  dslot.eq(Mux(cur, last_valid + 1, Mux(old, h_last + 1, 0))),
                                  t_held.eq(~cur & old),
-                                 t_cnt_held.eq(h_v & ((h_next - fr_frame)[:32].as_signed() > 0)),
                                  dend.eq(Mux(fr_dec, 120, 0)), t_ovr.eq(self.r_overrun)]
+                    # the frame is whole: its slots enter the counters. The
+                    # held frame's (b) are either its or an orphan's (a frame
+                    # before it: TMCC results come in frame order), and so are
+                    # the frame in hand's (a) unless that frame is a later one
+                    a_this = a_v & (prev_frame == fr_frame)
+                    b_this = b_v & (b_frame == fr_frame)
+                    for n_ in SLOT_COUNTERS:
+                        m.d.sync += cnt[n_].eq(cnt[n_] + Mux(a_this, a_cnt[n_], 0) + Mux(b_this, b_cnt[n_], 0))
+                    m.d.sync += [self.iterations.eq(self.iterations + Mux(a_this, a_iter, 0)
+                                                    + Mux(b_this, b_iter, 0)),
+                                 b_v.eq(0)]
+                    with m.If((prev_frame - fr_frame)[:32].as_signed() <= 0):
+                        m.d.sync += a_v.eq(0)
                     m.next = "TMCC_DUMMIES"
                 with m.Elif(self.r_valid & self.r_head & ~is_tmcc):
                     new_frame = ~have_prev | (prev_frame != tframe)
@@ -748,10 +781,16 @@ class Finish(Elaboratable):
                         # what a late TMCC result of an earlier frame needs:
                         # that frame's last valid slot and the slot counters
                         # as they were at its end
-                        m.d.sync += [h_v.eq(1), h_next.eq(tframe), h_have.eq(have_prev), h_frame.eq(prev_frame),
+                        m.d.sync += [h_have.eq(have_prev), h_frame.eq(prev_frame),
                                      h_last.eq(last_valid), h_dmode.eq(d_mode), h_dmod.eq(d_mod),
-                                     h_drate.eq(d_rate), h_iter.eq(self.iterations)]
-                        m.d.sync += [h_cnt[n_].eq(cnt[n_]) for n_ in SLOT_COUNTERS]
+                                     h_drate.eq(d_rate)]
+                        # the frame in hand's uncounted slots wait for its TMCC
+                        # result (b: one held frame; one still held when a
+                        # third frame's slots come is an orphan's, dropped)
+                        m.d.sync += [b_v.eq(a_v), b_frame.eq(prev_frame), b_iter.eq(a_iter), a_v.eq(1),
+                                     a_iter.eq(0)]
+                        m.d.sync += [b_cnt[n_].eq(a_cnt[n_]) for n_ in SLOT_COUNTERS]
+                        m.d.sync += [a_cnt[n_].eq(0) for n_ in SLOT_COUNTERS]
                     m.d.comb += slot_start.eq(1)
                     with m.If(1):
                         m.d.sync += [s_slot.eq(slot), s_mode.eq(mode), s_mod.eq(mod), s_rate.eq(rate),
@@ -844,13 +883,13 @@ class Finish(Elaboratable):
                                 m.next = "SLOT_DONE"
             with m.State("SLOT_DONE"):
                 m.d.sync += [last_valid.eq(s_slot), d_mode.eq(s_mode), d_mod.eq(s_mod), d_rate.eq(s_rate),
-                             cnt["slots"].eq(cnt["slots"] + 1)]
+                             a_cnt["slots"].eq(a_cnt["slots"] + 1)]
                 with m.If(~s_conv):
-                    m.d.sync += cnt["ldpc_failed"].eq(cnt["ldpc_failed"] + 1)
+                    m.d.sync += a_cnt["ldpc_failed"].eq(a_cnt["ldpc_failed"] + 1)
                 with m.Else():
-                    m.d.sync += self.iterations.eq(self.iterations + s_it)
+                    m.d.sync += a_iter.eq(a_iter + s_it)
                     with m.If(~bch_ok_l):
-                        m.d.sync += cnt["bch_failed"].eq(cnt["bch_failed"] + 1)
+                        m.d.sync += a_cnt["bch_failed"].eq(a_cnt["bch_failed"] + 1)
                 m.next = "IDLE"
             # ---- the TMCC result: the frame's remaining dummies, then its blocks
             with m.State("TMCC_DUMMIES"):
@@ -954,12 +993,11 @@ class Finish(Elaboratable):
             with m.State("FRAME_DONE"):
                 m.d.comb += ff.r_en.eq(1)
                 m.next = "IDLE"
-        # the counters in the status
-        # (a frame's status sent after the next frame's first slots: its
-        # slot counters as they were at its end)
+        # the counters in the status: the whole frames up to this one (a
+        # later frame's slots already sent wait in a_* for its TMCC result)
         for n_, sig in cnt.items():
-            m.d.comb += st.snap[n_].eq(Mux(t_cnt_held, h_cnt[n_], sig) if n_ in SLOT_COUNTERS else sig)
-        m.d.comb += st.snap["iterations"].eq(Mux(t_cnt_held, h_iter, self.iterations))
+            m.d.comb += st.snap[n_].eq(sig)
+        m.d.comb += st.snap["iterations"].eq(self.iterations)
         if self.monitor is not None:
             from . import monitors
 
