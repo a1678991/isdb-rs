@@ -715,23 +715,31 @@ are needed: not provably narrower).
   | 0x422 SUMS_CAPTURE (read) | 2 NO_LAYOUT | STATUS bit 2 clear: nothing latches, an armed capture waits |
   | 0x422 SUMS_CAPTURE (read) | 15-8 SEQ | latches since configuration (wrapping): the same before and after a 308-word set, no latch moved |
   | 0x439 DECODER (ro) | 15-0 OVERRUNS, 16 QUEUE_OVERFLOW, 23-20 HELD, 27-24 BANKS | the decoder's dropped codewords (wrapping), its sticky queue overflow, the banks allocated now, K (3); a snapshot under 1 µs old |
-  | 0x43A RECLAIMED (ro) | 15-0 ABORTED, 31-16 REUSED | banks freed by the abort, banks a begin took back (wrapping) |
+  | 0x43A RECLAIMED (ro) | 15-0 ABORTED, 31-16 REUSED | banks freed by the abort (after a frame drop, a lost sync, START or the chain's stop), banks a begin took back (wrapping) |
   | 0x500 .. 0x63F SUMS (ro) | | a READ answered 3 symbol clocks after it is decoded, the readback keeping the previous READ's value until then (it showed 0 for up to about 4 400) |
 
   **START and the decoder**: the decoder's clock is not reset by START.
   The restart (as a lost sync or a dropped frame) gives up the slot
   codeword being loaded and the back end sends the decoder its abort,
-  which frees the bank ([Abandoned codewords](#the-ldpc-decoder-ldpcdecoder));
-  committed codewords decode and leave as always. A stop (CTRL without
-  SLOTS) lets them drain, so after a stop and START every bank is free
-  (DECODER HELD 0), no context is open, the bridge's FIFOs, tag queue and
-  the result FIFO are empty. A START while the chain runs may be
-  followed by blocks of codewords committed before it and by the TMCC
-  codeword of a burst already begun (never cut; each block carries its
-  frame counter; the layout it decodes after the restart stays queued,
-  the restart epoch below). START with INIT bit 0 puts the taps last written to
-  TAPS in use at once (an armed TAPS_FROM set dropped); without it the
-  taps in use and an armed set stay.
+  which frees the bank ([Abandoned
+  codewords](#the-ldpc-decoder-ldpcdecoder)); committed codewords decode
+  and leave as always. A stop (CTRL without SLOTS) lets them drain and
+  stops the chain's input (deselected, the FIFO takes no symbol); after
+  `top.STOP_AFTER` symbol clocks without input (131 072, 3.3 ms) the chain
+  restarts itself (the chain's stop, a loss of 0 symbols without START's
+  carrier, taps and sequence number), which aborts the codeword the input
+  stopped inside. So after a stop every bank is free (DECODER HELD 0)
+  before any START, no context is open, the bridge's FIFOs, tag queue and
+  the result FIFO are empty; RECLAIMED ABORTED counts the stop's abort
+  when it freed a bank (build 9 read "1 of 3 banks held" at every open:
+  the previous run's stop had left its open codeword's bank for START's
+  abort). A START while the chain runs may be followed by blocks of
+  codewords committed before it and by the TMCC codeword of a burst
+  already begun (never cut; each block carries its frame counter; the
+  layout it decodes after the restart stays queued, the restart epoch
+  below). START with INIT bit 0 puts the taps last written to TAPS in use
+  at once (an armed TAPS_FROM set dropped); without it the taps in use and
+  an armed set stay.
 
   **Without a layout** the chain still sends, per whole frame, its TMCC
   block (604 words with header and trailer) and its status block (79, + 4
@@ -747,8 +755,8 @@ are needed: not provably narrower).
   host events from a seed into a real-decoder set (chain-7-hdl, -8-loss,
   -9-fade, -10-bch) and runs them on `RealChainBench` (Verilator):
   - **what it injects**: a long stop (no input for 200 000 - 400 000
-    symbol clocks: committed codewords drain, the open one stays begun)
-    then START (C_START: a loss of 0 symbols, CARRIER 0 and the taps last
+    symbol clocks: committed codewords drain, and after 131 072 the
+    chain's stop restarts it, aborting the open codeword) then START (C_START: a loss of 0 symbols, CARRIER 0 and the taps last
     written loaded, the sequence from 0); a short stop (100 - 20 000
     clocks: the chain has not drained) then START; a START while the input
     runs; an input loss (C_LOSS, 1 - 150 000 symbols not delivered, the
@@ -762,10 +770,10 @@ are needed: not provably narrower).
   - **what it checks**, from the bench's ports after each event,
     350 000 symbols after each restart and at the end: never a queue
     overflow, a lost beat, a port loss, a late beat, a TMCC or decoder
-    overrun, more than K banks held; after a long stop the bridge's FIFOs,
-    tag queue and result FIFO empty with at most the open codeword's bank
-    held, and 3 000 clocks after its START every bank free, a bank free to
-    load, every queue empty and one more abort beat; the same 350 000
+    overrun, more than K banks held; after a long stop (before START) the
+    chain stopped once (`stops`), every bank free, a bank free to load, the
+    bridge's FIFOs, tag queue and result FIFO empty, and 3 000 clocks after
+    its START the same and one more abort beat; the same 350 000
     symbols after any restart (no codeword can begin before a whole frame);
     the `Slots` stream parses and its sequence numbers run from 0 after
     each START (the first block whose first word follows the START's

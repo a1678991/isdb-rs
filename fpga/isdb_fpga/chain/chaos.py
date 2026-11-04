@@ -12,12 +12,14 @@ model restarted at the same points (`isdbs3-phy`'s `examples/chainscenario`).
 Events (`draw_events`, from a seed; positions are input indices):
 
 - `long`: the host's stop (no input for 200 000 - 400 000 symbol clocks:
-  committed codewords decode and leave, the open one stays begun), then
+  committed codewords decode and leave, and after `top.STOP_AFTER`
+  (131 072) clocks the chain's stop restarts it, which gives up the open
+  codeword and frees its bank by the abort), then
   CTRL START (C_START: what `SlotsRx`'s START does to the chain: a loss of
   0 symbols, CARRIER (0) and the taps last written loaded, the `Slots`
   sequence from 0);
 - `short`: a stop of 100 - 20 000 clocks (inside a codeword's load: the
-  chain has not drained), then START;
+  chain has not drained, nor stopped itself), then START;
 - `start`: START while the input runs;
 - `loss`: an input loss (C_LOSS, as chain-8's): `lost` symbols are not
   delivered and the chain is told so (1 - 4 096 or 4 096 - 150 000);
@@ -66,14 +68,16 @@ sampled after each event, `SETTLE` symbols later and at the end:
   late, no TMCC overrun, no decoder overrun (none of these sets loads
   the decoder enough for one), at most K banks held; any monitor flag
   (ports named `mon_*`, or listed in the bench's `MONITOR_PORTS`) clear;
-- after a long stop, before START: the bridge's FIFOs, tag queue and the
-  result FIFO empty, at most the open codeword's bank held;
+- after a long stop, before START: the chain's stop restarted it once
+  (`stops`), every bank free (the open codeword's freed by the stop's
+  abort), a bank free to load, the bridge's FIFOs, tag queue and the
+  result FIFO empty;
 - after a long stop's START (3 000 clocks on): every bank free, a bank
   free to load, every queue empty, one more abort beat;
 - `SETTLE` symbols after any restart (no codeword can begin until a
   whole frame after it): the same, if no other event came between;
 - at the end (`TAIL` clocks after the input, which ends inside a
-  frame): as after a long stop;
+  frame): as after a long stop (the chain stopped itself once more);
 - the `Slots` stream parses (headers, CRC), its sequence numbers are
   contiguous, from 0 after each START (the first block whose first word
   comes after the START's cycle; `cyc` in `ChaosBench`).
@@ -126,7 +130,7 @@ UNDRAINED = ("short", "start", "loss", "setloss")
 WEIGHTS = {"long": 3, "short": 2, "start": 2, "loss": 3}
 HEALTH = ("held", "load_ready", "in_level", "tag_level", "out_level", "rf_level", "aborted", "aborts",
           "reused", "dec_overruns", "queue_overflow", "port_lost", "late", "in_lost", "overrun", "tdone",
-          "frames_done", "fifo_max")
+          "frames_done", "fifo_max", "stops")
 NEVER = ("queue_overflow", "in_lost", "port_lost", "late", "overrun", "dec_overruns")
 EMPTY = ("in_level", "tag_level", "out_level", "rf_level")
 
@@ -361,11 +365,12 @@ def check_sample(label, kind, st, before=None):
     if st["held"] > BANKS:
         bad.append(f"held {st['held']} > {BANKS}")
     if label in ("stopped", "end"):
-        # the open codeword (the input stopped inside it) keeps its bank
-        # until a restart's abort or its context's next begin
-        bad += [f"{k} {st[k]}" for k in EMPTY if st[k]]
-        if st["held"] > 1:
-            bad.append(f"held {st['held']} (only the open codeword may hold a bank)")
+        # the chain's stop restarted it: the open codeword (the input
+        # stopped inside it) was given up and its bank freed by the abort
+        if st["held"] or not st["load_ready"] or any(st[k] for k in EMPTY):
+            bad.append("not drained: " + ", ".join(f"{k} {st[k]}" for k in ("held", "load_ready") + EMPTY))
+        if before is not None and st["stops"] != before["stops"] + 1:
+            bad.append(f"the chain's stop restarted it {st['stops'] - before['stops']} times, not once")
     if label in ("after START", "settled"):
         if st["held"] or not st["load_ready"] or any(st[k] for k in EMPTY):
             bad.append("not drained: " + ", ".join(f"{k} {st[k]}" for k in ("held", "load_ready") + EMPTY))
@@ -464,7 +469,7 @@ def run_hdl(doc, name, events, backend=None, log=None):
             if kind in ("long", "short"):
                 e.tick(ev["pause"])
                 if kind == "long":
-                    sample("stopped", i, kind)
+                    sample("stopped", i, kind, before)
             if kind in ("loss", "setloss"):
                 run([(C_LOSS, ev["lost"], 0, 0)], [0])
             else:
@@ -474,8 +479,9 @@ def run_hdl(doc, name, events, backend=None, log=None):
                 settle = (stream + SETTLE, i, kind, before)
             ptr = ev["resume"]
         deliver(n)
+        last_input = {k: e.get(k) for k in HEALTH}
         run([], [], tail=TAIL)
-        sample("end", None, "end")
+        sample("end", None, "end", last_input)
     except ChaosStuck as err:
         stuck = str(err)
         bad.append(f"the run stalled: {stuck}")

@@ -848,6 +848,83 @@ class SlotsRxRegisterTest(unittest.TestCase):
         })
 
 
+class SlotsRxStopTest(unittest.TestCase):
+    """The host's stop on the board: CTRL without SLOTS while the front end
+    runs on (RUN set, its symbols flowing). Deselected, `SlotsRx` writes no
+    symbol into its FIFO, so the chain's input stops and the chain restarts
+    itself after `stop_after` symbol clocks (`SlotsChain`: 131 072 in the
+    bitstream, 300 here): one stop, one abort beat to the decoder's port
+    (the open codeword's bank freed: `RealDecoderChainTest.
+    test_stop_and_start_free_the_decoder` and the chaos runs show the
+    bank, with the benches' stop, no input records). Selected, the input
+    flows and the chain never stops; selected again with START, neither."""
+
+    def test_deselection_stops_the_chain(self):
+        import random
+
+        from amaranth.hdl import ClockDomain, Module
+        from amaranth.sim import Simulator
+
+        from isdb_fpga.chain.common import cos_table
+        from isdb_fpga.chain.monitors import Collector
+        from isdb_fpga.chain.top import SlotsRx
+        from isdb_fpga.control import OP_CTRL
+
+        dut = SlotsRx(32, cos_table(), decoder=False, monitors=True, stop_after=300)
+        col = Collector(dut)
+        top = Module()
+        top.submodules.dut = dut
+        top.domains.sync = ClockDomain()
+        top.domains.fast = ClockDomain()
+        top.domains.ldpc = ClockDomain()
+        sim = Simulator(top)
+        sim.add_clock(25e-9, domain="sync")
+        sim.add_clock(6.25e-9, phase=12.5e-9, domain="fast")
+        sim.add_clock(5e-9, domain="ldpc")
+        ch = dut.chain
+        seen = []
+
+        async def bench(ctx):
+            rng = random.Random(1)
+            tg = 0
+
+            async def run(n):
+                sym = taken = 0
+                for _ in range(n):
+                    ctx.set(dut.adc_valid, 1)
+                    ctx.set(dut.adc_i, rng.randrange(-2000, 2000))
+                    ctx.set(dut.adc_q, rng.randrange(-2000, 2000))
+                    await ctx.tick("sync")
+                    sym += ctx.get(dut.core.s_valid)
+                    taken += ctx.get(ch.i_valid) & ctx.get(ch.i_ready)
+                return sym, taken
+
+            async def ctrl(arg):
+                nonlocal tg
+                tg ^= 1
+                ctx.set(dut.gpio_out, tg << 31 | OP_CTRL << 28 | arg << 1)
+                await run(8)
+
+            await ctrl(0b1011)  # RUN, START, SLOTS
+            seen.append(("selected",) + await run(1500) + (ctx.get(ch.stops), ctx.get(ch.back.aborts)))
+            await ctrl(0b0001)  # RUN: the Slots words deselected
+            seen.append(("deselected",) + await run(1500) + (ctx.get(ch.stops), ctx.get(ch.back.aborts)))
+            await ctrl(0b1011)
+            seen.append(("selected again",) + await run(1500) + (ctx.get(ch.stops), ctx.get(ch.back.aborts)))
+            seen.append(col.report(lambda n: ctx.get(col.ports()[n])))
+
+        sim.add_testbench(bench)
+        sim.run()
+        print(seen)
+        (_, s0, t0, st0, ab0), (_, s1, t1, st1, ab1), (_, s2, t2, st2, ab2), mon = seen
+        self.assertGreater(min(s0, s1, s2), 500, "the front end's symbols flow throughout")
+        self.assertGreater(min(t0, t2), 500, "the chain takes them while selected")
+        self.assertLess(t1, 1100, "deselected, the chain takes only the FIFO's rest")
+        self.assertEqual((st0, st1, st2), (0, 1, 1), "one stop, while deselected")
+        self.assertEqual(ab1, ab0 + 1, "the stop's abort beat")
+        self.assertEqual(mon, [])
+
+
 class BridgeTest(unittest.TestCase):
     """The bridge from the chain's decoder port (40 MHz, 5-lane beats) to
     `ldpc.py`'s ports (200 MHz, one LLR per cycle, begin / start, results in

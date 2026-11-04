@@ -57,29 +57,37 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | 0x422 | SUMS_CAPTURE: written (any value), the next frame end latches the training sums and holds them (later frames are summed but not latched) until the next write; read, bit 0 VALID (latched and held since the write), bit 1 ARMED (waiting for a frame end), bit 2 NO_LAYOUT (STATUS bit 2 clear: the last frame end had no layout, so nothing latches and an armed capture waits), bits 15-8 SEQ (the latches since configuration, wrapping: equal before and after a set of sum reads, no latch moved in between). Before the first write every frame end latches. Only frames with a layout are summed and latched |
 | 0x430 .. 0x437 | COUNTERS (ro): frames, undecoded, TMCC failed, slots, LDPC failed, BCH failed, iterations low, high (the status block's: whole frames, a frame's slots counted at its TMCC result; the slots of a frame a restart dropped are not counted) |
 | 0x438 | TMCC_OVERRUNS (ro): TMCC codewords the decoder dropped (also counted as TMCC failed) |
-| 0x439 | DECODER (ro): the LDPC decoder's health (a snapshot from its clock, under 1 us old): bits 15-0 OVERRUNS (codewords it dropped for want of a free bank since configuration, slots and TMCC, wrapping), bit 16 QUEUE_OVERFLOW (sticky: a commit its result queue could not take), bits 23-20 HELD (banks allocated now: 0 while the chain is stopped and the decoder idle), bits 27-24 BANKS (K, 3) |
-| 0x43A | RECLAIMED (ro): bits 15-0 ABORTED (banks freed by the abort after a frame drop or restart), bits 31-16 REUSED (banks a codeword's begin took back from its context's abandoned codeword), since configuration, wrapping |
+| 0x439 | DECODER (ro): the LDPC decoder's health (a snapshot from its clock, under 1 us old): bits 15-0 OVERRUNS (codewords it dropped for want of a free bank since configuration, slots and TMCC, wrapping), bit 16 QUEUE_OVERFLOW (sticky: a commit its result queue could not take), bits 23-20 HELD (banks allocated now: 0 once the chain has stopped, 3.3 ms after its input, and the decoder is idle), bits 27-24 BANKS (K, 3) |
+| 0x43A | RECLAIMED (ro): bits 15-0 ABORTED (banks freed by the abort after a frame drop or a restart: a lost sync, START, or the chain's stop), bits 31-16 REUSED (banks a codeword's begin took back from its context's abandoned codeword), since configuration, wrapping |
 | 0x500 + 4i, 0x610 + 4i | SUMS_R (i < 66), SUMS_P (i < 11): re low 32, re high 16 sign-extended, im low, im high (the latched bank; the READ is answered 3 symbol clocks after it is decoded, the register showing the last READ's value until then) |
 | 0x640 .. | CONST: not built (reads 0) |
 | CTRL | the front end's bits (RUN, START, SYMBOLS) and bit 3 SLOTS (the DMA carries the `Slots` words); START also restarts the chain (the model's `Chain::loss` of 0 symbols: everything but the carrier register, the taps, the constellation and n0), loads CARRIER and, with INIT bit 0, the taps, and restarts the blocks' sequence numbers: the first block the packer takes after START has sequence 0 (a block leaving at START finishes whole with its old number) |
 
 START and the decoder (issue #28): the decoder's clock domain is not reset
 by START. The restart drops the slot codeword being loaded, and the back
-end then sends the decoder an abort for it (back.py), which frees its bank;
-codewords already committed decode and their blocks leave as usual (a
-stop, CTRL without SLOTS, lets them drain: the chain's output runs on, not
-selected). So after a stop and a START every bank is free (DECODER HELD
-0), no context is open and the bridge's FIFOs and tag queue are empty; a
-START while the chain runs may be followed by blocks of codewords
-committed before it (each carries its frame counter) and by a TMCC
-codeword whose burst had begun (it is never cut, and the layout it gives
-after the restart stays queued: the restart epoch, README "What is
-left"). A codeword's begin on a
-context that still holds an abandoned bank takes it back, so no bank
-stays held even without the abort. Without INIT bit 0, START leaves the
-taps in use (and an armed TAPS_FROM set) as they are; with it, the taps
-last written to TAPS go in use at once (TAPS_FROM reads NONE) and an
-armed set is dropped.
+end then sends the decoder an abort for it (back.py), which frees its
+bank; codewords already committed decode and their blocks leave as usual.
+A stop, CTRL without SLOTS (or RUN cleared), lets them drain (the chain's
+output runs on, not selected) and stops the chain's input: the FIFO takes
+no symbol while the `Slots` words are deselected. After `STOP_AFTER`
+symbol clocks without input (131 072, 3.3 ms) the chain restarts itself
+(`SlotsChain`'s stop: the restart of a loss of 0 symbols, without START's
+carrier, taps and sequence number), which gives up the slot codeword the
+input stopped inside and aborts it. So after a stop every bank is free
+(DECODER HELD 0, before any START; RECLAIMED ABORTED counts the stop's
+abort when it freed a bank), no context is open and the bridge's FIFOs and
+tag queue are empty; the STATUS bits 1 and 2 read 0 then (the restart). A
+deselection shorter than that, selected again without START, gives the
+chain a stream with a gap it is not told of, as before (the host STARTs at
+every open). A START while the chain runs may be followed by blocks of
+codewords committed before it (each carries its frame counter) and by a
+TMCC codeword whose burst had begun (it is never cut, and the layout it
+gives after the restart stays queued: the restart epoch, README "What is
+left"). A codeword's begin on a context that still holds an abandoned bank
+takes it back, so no bank stays held even without the abort. Without INIT
+bit 0, START leaves the taps in use (and an armed TAPS_FROM set) as they
+are; with it, the taps last written to TAPS go in use at once (TAPS_FROM
+reads NONE) and an armed set is dropped.
 
 The ID word gains the chain's `Slots` format version in bits 11-8
 (`ID_CHAIN`: 1 << 8), 0 on every front end so far; the front end's STATUS
@@ -99,6 +107,13 @@ from .sync import SNAP_FIELDS, SyncFront
 
 SNAP_BITS = sum(w for _, w in SNAP_FIELDS)
 ID_CHAIN = 1 << 8
+# symbol clocks without an input record after which the chain counts as
+# stopped and restarts (SlotsChain's `stop_after`): 3.3 ms at 40 MHz. The
+# input's own gaps are a clock or two (the front end delivers 84 % of the
+# clocks, the FIFO in front absorbs the chain's holds); a stop drains what
+# the delivered input completes well within it (stage 3's reader a slot,
+# about 9 300 clocks, the TMCC burst on a free port about 32 000)
+STOP_AFTER = 1 << 17
 
 
 def split(sig, fields):
@@ -111,20 +126,39 @@ def split(sig, fields):
 
 class SlotsChain(Elaboratable):
     """The chain's stages wired (module docstring). `monitors`: the
-    invariant monitors of its blocks (monitors.py; simulation only)."""
+    invariant monitors of its blocks (monitors.py; simulation only).
 
-    def __init__(self, in_bits=6, carrier=0, max_iter=50, offset=1, monitors=False):
+    The input (`i_valid`, `i_ready`; a symbol `i_x` or, with `i_loss`,
+    `i_lost` symbols lost: `SyncFront`'s records). A stop: after
+    `stop_after` symbol clocks without an input record (`STOP_AFTER`;
+    None: never, for a bench that keeps the input away for other reasons,
+    as `stages.ChainBench`'s LDPC stub) the chain restarts as at a loss
+    of 0 symbols (CTRL START's restart, without its carrier, taps and
+    sequence number), once per stretch: the open frame is dropped and with
+    it the slot codeword being loaded, whose bank the back end's abort
+    frees (back.py); committed codewords decode and leave as always. So a
+    stop leaves no decoder bank held. The host's stop (CTRL without SLOTS:
+    `SlotsRx` writes no symbol into its FIFO then) and the benches' (no
+    input records) are both this. The model has no clock: a stop is
+    invisible to it, and START's restart, which the host sends before it
+    reads the chain again, is the same restart, so the chain after a stop
+    and START is the model after `Chain::start`. `stops` counts these
+    restarts (verification)."""
+
+    def __init__(self, in_bits=6, carrier=0, max_iter=50, offset=1, monitors=False, stop_after=STOP_AFTER):
+        self.stop_after = stop_after
         self.front = SyncFront(in_bits, carrier, detail=False)
         self.phase = SlotPhase(in_bits, snap_bits=SNAP_BITS)
         self.back = Back(max_iter, offset)
         self.finish = Finish()
         self.results = ResultFifo()
         self.port = self.back.port
-        self.i_valid = self.front.i_valid
-        self.i_ready = self.front.i_ready
+        self.i_valid = Signal()
+        self.i_ready = Signal()
         self.i_x = self.front.i_x
-        self.i_loss = self.front.i_loss
-        self.i_lost = self.front.i_lost
+        self.i_loss = Signal()
+        self.i_lost = Signal(32)
+        self.stops = Signal(16)
         self.agc = Signal(16)
         self.r_overrun = Signal()  # from the bridge (a dropped codeword's record)
         self.o_valid = self.finish.o_valid
@@ -143,6 +177,25 @@ class SlotsChain(Elaboratable):
         m.submodules.finish = fin = self.finish
         sy = sf.sync
         eq, fc, dm = bk.eq, bk.fc, bk.demap
+        # the input, and the stop's restart (class docstring): a loss record
+        # of 0 symbols ahead of any input
+        stop = Signal()
+        m.d.comb += [
+            sf.i_valid.eq(self.i_valid | stop),
+            sf.i_loss.eq(self.i_loss | stop),
+            sf.i_lost.eq(Mux(stop, 0, self.i_lost)),
+            self.i_ready.eq(sf.i_ready & ~stop),
+        ]
+        if self.stop_after is not None:
+            idle = Signal(range(self.stop_after + 1))
+            with m.If(self.i_valid):
+                m.d.sync += idle.eq(0)
+            with m.Elif(idle != self.stop_after):
+                m.d.sync += idle.eq(idle + 1)
+                with m.If(idle == self.stop_after - 1):
+                    m.d.sync += [stop.eq(1), self.stops.eq(self.stops + 1)]
+            with m.If(stop & sf.i_ready):
+                m.d.sync += stop.eq(0)
         m.d.comb += [
             sf.ext_hold.eq(ph.full),
             ph.i_valid.eq(sf.o_r_valid), ph.i_at.eq(sf.o_at),
@@ -261,7 +314,11 @@ class SlotsRx(Elaboratable):
     `ldpc_ref` (the PS's clk_fpga_0, 100 MHz) inside the block, its reset
     held until the MMCM locks; without (the simulations), the `ldpc`
     domain from outside. `monitors`: the invariant monitors of the block
-    and everything in it (monitors.py; simulation only)."""
+    and everything in it (monitors.py; simulation only). `stop_after`: the
+    chain's stop (`SlotsChain`; a test's shorter one): deselected (CTRL
+    without SLOTS) the FIFO takes no symbol, so the chain's input stops
+    while the front end's keeps flowing, and the chain restarts itself
+    after that many symbol clocks."""
 
     # the invariant monitors (monitors.py)
     MONITORS = {
@@ -275,13 +332,13 @@ class SlotsRx(Elaboratable):
     monitor = None
 
     def __init__(self, taps, cos_table, h=None, g=None, k=None, decoder=True, mmcm=False, units=34,
-                 monitors=False):
+                 monitors=False, stop_after=STOP_AFTER):
         from ..frontend import SymbolFrontend
         from .ldpc_if import LdpcBridge
 
         self.core = SymbolFrontend(taps, cos_table, h, g, k)
         # MAX_ITER's reset: the decoder's default
-        self.chain = SlotsChain(max_iter=ldpc.DEFAULT_MAX_ITER)
+        self.chain = SlotsChain(max_iter=ldpc.DEFAULT_MAX_ITER, stop_after=stop_after)
         self.bridge = LdpcBridge(self.chain.port)
         self.decoder = None
         if decoder:

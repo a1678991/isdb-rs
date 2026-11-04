@@ -1620,3 +1620,16 @@ a test that fails without the fix.
   per-frame counts replace the 160 bits of counters held for a late TMCC
   result), so the HDL counts as the model; the chaos harness's
   known-divergence branch is gone.
+- **A stop left the open codeword's bank held until START** (build 9:
+  "1 of 3 banks held" at every open). Deselected, `SlotsRx` writes no
+  symbol into its FIFO, so on the board a stop is the chain's input
+  stopping while the front end runs on, as in the benches (no input
+  records). `SlotsChain` now counts symbol clocks without an input record
+  and after `STOP_AFTER` (131 072, 3.3 ms; the input's own gaps are a
+  clock or two, and what the delivered input completes drains in about
+  45 000) restarts as at a loss of 0 symbols: the open frame and its
+  loading codeword are dropped and the back end's abort frees the bank,
+  committed codewords leave as always. The model needs no change: a stop
+  is invisible to it, and the START that follows is the same restart.
+  An 18-bit counter; the stub bench (`ChainBench`, whose LDPC
+  results come as one long run of records) has it off.

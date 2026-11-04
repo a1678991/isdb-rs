@@ -1514,6 +1514,12 @@ STD-B44) is received to TLV streams.
   slots of a frame a restart dropped after some of its codewords were
   decoded (the orphan blocks the host discards); they count whole frames,
   as the model's do.
+- `fpga`: a stop of the ISDB-S3 chain (CTRL without SLOTS) left the slot
+  codeword its input stopped inside holding an LDPC decoder bank until
+  the next START (build 9 read "1 of 3 banks held" at every open). After
+  3.3 ms without input (`top.STOP_AFTER` symbol clocks) the chain
+  restarts itself as at a loss and aborts that codeword, so DECODER HELD
+  reads 0 after a stop; RECLAIMED ABORTED counts that abort too.
 - ISDB-S3 acquisition (`isdb rx --system isdbs3` from a radio, every
   offload, and the CPU receiver's blocks): 6.0–6.3 GB of peak resident
   memory, all of it the trim search on the acquisition's probe. Its 13
