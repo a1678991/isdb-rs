@@ -12,6 +12,10 @@ dependencies = [
 dev = [
   # Synthesis for resource estimates (WebAssembly Yosys, user space).
   "yowasp-yosys==0.70.0.0.post1259",
+  # The SMT solver for its SymbiYosys (`yowasp-sby`, in the yowasp-yosys
+  # wheel) smtbmc engine: the formal checks (isdb_fpga/formal/, tools/formal.py).
+  # YoWASP publishes only `.dev` builds of it, hence the exact pin.
+  "yowasp-boolector==3.2.3.6.post31.dev0",
   # `uv run --locked pytest` (the tests are unittest classes; mise uses unittest).
   "pytest==9.1.1",
   "pytest-xdist==3.8.0",
