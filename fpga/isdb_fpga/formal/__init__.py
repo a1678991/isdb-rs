@@ -203,7 +203,10 @@ def run(name, tasks=None, brk=None, out=None, timeout=None):
     `name` or `name-brk`."""
     from ..chain.monitors import source_patch
 
-    out = out or os.path.join(FPGA, "build", "formal")
+    # absolute: sby runs with the work directory as its cwd, and the
+    # solver shim's directory goes on PATH (a relative `--out` would be
+    # looked up under the work directory)
+    out = os.path.abspath(out or os.path.join(FPGA, "build", "formal"))
     tag = f"{name}-{brk}" if brk else name
     wd = os.path.join(out, tag)
     os.makedirs(wd, exist_ok=True)
