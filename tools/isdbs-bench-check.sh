@@ -142,7 +142,7 @@ ISDB=${ISDB:-$HERE/target/release/isdb}
 if [ -n "$RECORD" ]; then
     [[ $RECORD =~ ^[1-9][0-9]*$ ]] || die "--record $RECORD: expected whole seconds"
     [ ! -e "$REC" ] || die "$REC exists; not overwriting it"
-    [ -x "$DT295" ] || die "dt295 not found at $DT295 (--dt295 or DT295)"
+    command -v "$DT295" >/dev/null || die "dt295 not found at $DT295 (--dt295 or DT295)"
     echo "== dt295 stream --isdbs $TP --tsid $TSID --raw-config --seconds $RECORD"
     "$DT295" stream --isdbs "$TP" --tsid "$TSID" --raw-config --out "$REC" --seconds "$RECORD" \
         --log-dir "$(dirname "$REC")/captures" || die "dt295 stream failed"

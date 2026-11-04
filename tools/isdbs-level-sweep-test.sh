@@ -143,7 +143,9 @@ while :; do
 done
 SH
 chmod +x "$S/bin/"*
-export IIO_ATTR=$S/bin/iio_attr DT295=$S/bin/dt295 ISDB=$S/bin/isdb BENCH_TX=$S/bin/isdbs-bench-tx.sh
+export PATH="$S/bin:$PATH"
+unset DT295  # exercise the default dt295 lookup on PATH
+export IIO_ATTR=$S/bin/iio_attr ISDB=$S/bin/isdb BENCH_TX=$S/bin/isdbs-bench-tx.sh
 export STUB_HOLD=61 STUB_ACQ=60.5 STUB_RELOCK=59.5 STUB_TSERR=60 STUB_ERR=58 STUB_IIO=ok STUB_SLOW=0
 unset ISDB_PLUTO_URI
 
