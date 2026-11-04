@@ -85,4 +85,21 @@ Measured against the floating-point receiver (2026-11-01):
 `chainvectors` writes the HDL's test vectors (fpga/README.md "Chain
 vectors"); the chain's tests decode synthetic streams (`chain::synth`:
 mixed modulations with dummies, a drift, a loss, any push split) back to
-the data sent.
+the data sent. `chain::synth::iq` gives the same frames as IQ samples at
+a radio's rate (a symbol-spaced channel, the §3.10 root-raised cosine
+through `isdb_frontend::shape`, the carrier offset and noise): the
+acquisition's and the front end's synthetic input.
+
+`chain::probe::probe_taps` solves the equaliser's taps from a short IQ
+capture before a radio's chain runs: the front end's model with the
+parameters the FPGA's front end gets, this chain's model (the TMCC
+decoded, the main signal not), the first frame's training sums solved as
+the host's slow loop solves the FPGA's. The sums are taken at the
+equaliser's input, so they do not depend on the taps in use. On the
+acquisition's 0.2 s probe at 40 Msps the first sums come from the third
+frame after the frame sync (≈ 0.13 s of signal), in 0.3 s on the CPU
+(the front end and the chain on two threads); on a synthetic 16APSK
+signal through an echo (Es/N0 15 dB) the taps are within 0.017
+(`‖Δw‖ / ‖w‖`) of the chain's own solves of every later frame and give
+14.5 dB of training MER on them against 12.9 dB for the identity
+(`isdb-cli` example `s3open`). `isdb rx` starts a radio's chain on them.

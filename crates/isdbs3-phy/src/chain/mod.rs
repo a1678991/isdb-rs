@@ -261,6 +261,7 @@ pub mod input;
 pub mod ldpc;
 pub mod out;
 pub mod phase;
+pub mod probe;
 pub mod sync;
 pub mod synth;
 pub mod tmcc;
