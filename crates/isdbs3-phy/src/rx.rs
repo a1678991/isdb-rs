@@ -222,6 +222,24 @@ impl Front {
     pub fn sync_snr_eq_db(&self) -> Option<f64> {
         self.rx.sync_snr_eq_db
     }
+
+    /// Whole frames found, decoded or not: the length of [`Rx::frames`]
+    /// after the decode.
+    pub fn frames(&self) -> usize {
+        self.order.len()
+    }
+
+    /// Frames whose TMCC decoded (with or without a consistent slot
+    /// allocation). A continued block (a [`RxOptions::slot_offset`] hint
+    /// that held) with frames but none of them decoded is a stream to
+    /// acquire afresh: it is on an alias of the residual carrier, or the
+    /// signal changed under it.
+    pub fn tmcc_ok(&self) -> usize {
+        self.order
+            .iter()
+            .filter(|f| f.as_ref().is_none_or(|f| f.tmcc.is_ok()))
+            .count()
+    }
 }
 
 /// The first half of [`receive`] (its events are those of the sync, the
@@ -259,7 +277,12 @@ pub fn receive_front(z: &[Cplx], opt: &RxOptions) -> Front {
     // turns whole times per slot unseen) and no TMCC decodes, however long
     // the stream is tracked on that alias. Take the alias the TMCC symbols
     // point at, remove it and measure again. (A continuing stream tracks
-    // its drift from call to call, well inside the range.)
+    // its drift from call to call, well inside the range.) Only an
+    // acquisition whose sync Es/N0 clears HINT_MIN_SNR_DB is checked: a
+    // stream that still settles on an alias (acquired below that, or the
+    // coarse estimate wrong at a marginal Es/N0) decodes no TMCC on its
+    // continued blocks, which is the caller's cue to acquire afresh
+    // (`Front::tmcc_ok`).
     if !continuation
         && sy0.sync_snr_db > HINT_MIN_SNR_DB
         && let (Some(fine), Some(carrier)) = (residual_hz, crate::sync::carrier_hz(z, &sy0))
@@ -739,9 +762,11 @@ mod tests {
             .collect();
         let opt = RxOptions::default();
         let f = receive_front(&z, &opt);
-        assert_eq!(
-            format!("{:?}", receive_back(f, &opt)),
-            format!("{:?}", receive(&z, &opt))
-        );
+        let (frames, tmcc_ok) = (f.frames(), f.tmcc_ok());
+        assert!(tmcc_ok <= frames);
+        let r = receive_back(f, &opt);
+        assert_eq!(frames, r.frames.len());
+        assert_eq!(tmcc_ok, r.frames.iter().filter(|f| f.tmcc.is_ok()).count());
+        assert_eq!(format!("{r:?}"), format!("{:?}", receive(&z, &opt)));
     }
 }
