@@ -25,7 +25,7 @@ Stages (the fields their comparisons name):
              after the last symbol (`stages.run_back(..., next_start=True)`)
   status     the status block's learned points (`Finish` with a point RAM:
              tests/test_monitors.py's bench, the words against the RAM)
-  6-chain    the whole chain with the LDPC stub, frame 0 (2 260 000 symbols)
+  6-chain    the whole chain with the LDPC stub, frames 0 and 1 (2 400 000 symbols)
   ldpc       the decoder on the toy sets at step 34 (toy-a-34, toy-b-34)
 """
 
@@ -194,7 +194,7 @@ def run_stage(stage, backend):
         return ["status counts", "status learned points"], bad
     if stage == "6-chain":
         return (["Slots words", "Slots blocks", "Slots word count"],
-                stages.run_chain(doc("6-chain"), doc("3-eq")["taps"], backend, 2_260_000)[1])
+                stages.run_chain(doc("6-chain"), doc("3-eq")["taps"], backend, 2_400_000)[1])
     if stage == "ldpc":
         from isdb_fpga import ldpcmodel, simldpc
         from isdb_fpga.chain.monitors import MonitorError

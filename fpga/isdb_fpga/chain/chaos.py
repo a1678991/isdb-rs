@@ -286,13 +286,14 @@ def place(name, events, doc=None):
 
 # The opt-in CI case (tests/test_chaos.py): chain-7-hdl, identity taps
 # written, an early loss, #28's long stop inside frame 2's first
-# codewords (a bank held, freed by the abort) and a replay from before
-# frame 0, a short stop and a START while running before the replay's
-# first frame head; then the replay's frame 2 decodes and is compared.
+# codewords (frame 2 starts at input index 2 380 776; a bank held, freed
+# by the abort) and a replay from inside frame 0, a short stop and a START
+# while running before the replay's first frame head (the set's frame 1
+# head); then the replay's frames 2 and 3 decode and are compared.
 CI_EVENTS = [
     {"kind": "taps", "at": 200_000, "taps": IDENTITY, "which": "identity"},
     {"kind": "loss", "at": 500_000, "lost": 6_144},
-    {"kind": "long", "at": 3_347_560 + SLOT + 6_000, "pause": 250_000, "resume": 700_000},
+    {"kind": "long", "at": 2_380_776 + SLOT + 6_000, "pause": 250_000, "resume": 700_000},
     {"kind": "short", "at": 730_000, "pause": 5_000},
     {"kind": "start", "at": 760_000},
 ]

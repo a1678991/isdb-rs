@@ -29,6 +29,9 @@ from isdb_fpga.chain.finish import Finish  # noqa: E402
 
 VECTORS = os.environ.get("FPGA_VECTORS", os.path.join(os.path.dirname(__file__), "..", "build"))
 FULL = os.environ.get("FPGA_CHAIN_FULL") == "1"
+# chain-6's default prefix: frames 0 and 1 end (frame 1 at 2 380 776) and
+# their blocks leave (two slots later)
+PREFIX_6 = 2_400_000
 
 
 def path(name):
@@ -67,11 +70,11 @@ class ConstantsTest(unittest.TestCase):
 
 @needs("1-sync")
 class SyncTest(unittest.TestCase):
-    """Stages 2a, 1, 2b (`SyncFront`). The synthetic set (2 241 336 symbols,
-    5 frames' worth of input up to one frame after the first frame head):
-    lock at the 4th period (37 184 symbols), the first head at 47 480, the
-    parity, the FSync signs; the first frame head at 1 116 520 and the one
-    carrier update at 1 163 024 need the whole set."""
+    """Stages 2a, 1, 2b (`SyncFront`). The synthetic set (1 274 552 symbols,
+    chain-6's input up to one slot after one frame from its first frame
+    head): lock at the 4th period (37 184 symbols), the first head at
+    47 480, the parity, the FSync signs; the first frame head at 149 736
+    and the one carrier update at 1 163 024 need the whole set."""
 
     PREFIX = 120_000  # lock, parity, 8 heads with FSync/!FSync signs
 
@@ -280,10 +283,12 @@ class ChainTest(unittest.TestCase):
     with the host's taps written at open and the LDPC stub (ldpc_if.py)
     answering each frame's codewords after its TMCC codeword is committed.
     The compiled backend only (about 300 000 cycles/s on Verilator, 37 000
-    on CXXRTL here; the Python simulator would need hours): by default the first 2 260 000 symbols
-    (lock, the frame head, frame 0's TMCC and status blocks, 683 words);
-    the whole set (5 587 896 symbols, 3 frames, frame 2 decoded: 120 slot
-    blocks, 211 281 words, about 3 minutes) with FPGA_CHAIN_FULL=1."""
+    on CXXRTL here; the Python simulator would need hours): by default the
+    first 2 400 000 symbols (lock, the frame head, frames 0 and 1's TMCC,
+    status blocks, 1 366 words); the whole set (5 755 224 symbols, 5
+    frames, frames 2-4 decoded: 360 slot blocks, frames 3 and 4 with the
+    n0, K and points learned on the frame before, 632 603 words) with
+    FPGA_CHAIN_FULL=1."""
 
     def run_chain(self, symbols):
         from isdb_fpga.chain.stages import run_chain
@@ -294,7 +299,7 @@ class ChainTest(unittest.TestCase):
 
     @cxx
     def test_frame_0(self):
-        self.run_chain(2_260_000)
+        self.run_chain(PREFIX_6)
 
     @cxx
     @unittest.skipUnless(FULL, "FPGA_CHAIN_FULL=1")
@@ -363,6 +368,17 @@ class RealDecoderChainTest(unittest.TestCase):
         # eight consecutive valid slots with 1-12 bit errors in the decoder's
         # output (the same flipped in the model's): corrected, no overrun
         self.run_set("10-bch", doc("3-eq")["taps"])
+
+    @cxx
+    @needs("11-taps")
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    def test_taps_change(self):
+        # chain-11: identity taps at open; the taps the model solved from
+        # frame 2 (eq_every 2) written as the host does (TAPS, then
+        # TAPS_FROM = 2, its `host_writes`) four slots into frame 3: frame
+        # 4's status has them and taps_from 2, frames 3 and 4 decode with
+        # the n0, K and points learned on the frame before
+        self.run_set("11-taps", None)
 
 
 @needs("8-loss")

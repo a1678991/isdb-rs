@@ -499,11 +499,25 @@ and the expected `Slots` words, `isdb_frontend::slots`). Complex
 sequences are flat `[re, im, …]` arrays; each file carries the chain's
 constants (`"chain"`: shifts, gains, thresholds, the CORDIC table, the
 sync words, the pilot signs, the cosine table) and its `"source"`. The
-synthetic sets are 5 B44 frames (16APSK 93/120, −400 Hz drifting
-−22 Hz/s, Es/N0 14 dB, 6-bit input); with a `Symbols` file as second
-argument (and seconds as third, default 0.2) the same sets come from a
-recording as `chain-rec-*.json` (opt-in, as the front end's). The
-example's documentation gives every field. Sizes: 1–33 MB per file.
+synthetic sets' input is a window of seven generated B44 frames (16APSK
+93/120, −400 Hz drifting −22 Hz/s, Es/N0 14 dB, 6-bit input) from 16
+slots before the second frame's head (the chain's frame 0, at symbol
+149 736) to 3 slots after the sixth frame's end: 5 755 224 symbols,
+frames 0–4 whole, 0 and 1 without a layout, 2 (D) the first decoded, 3
+and 4 decoded with the n0, K and points learned on the frame before;
+with a `Symbols` file as second argument (and seconds as third, default
+0.2) the same sets come from a recording as `chain-rec-*.json` (opt-in,
+as the front end's). The whole-chain sets beside chain-6 (written with
+the FPGA decoder's settings, layered 34, limit 14, offset 1, for the
+real-decoder tests): `chain-7-hdl` (chain-6's input), `chain-8-loss` and
+`chain-9-fade` (6 frames of their own with a block loss and 0.3 frame of
+noise), `chain-10-bch` (chain-6's input, 1–12 bit errors in eight slots'
+decoder output) and `chain-11-taps` (a window of its own, the equaliser
+solved by the model every second frame: the taps solved from D in use
+from D + 2, frame 4's status with `taps_from` 2; the host's TAPS and
+TAPS_FROM writes for them in the set's `host_writes`, which the benches
+write, `stages.host_records`). The example's documentation gives every
+field. Sizes: 1–37 MB per file.
 
 ## The ISDB-S3 chain (`SlotsRx`)
 
@@ -653,19 +667,20 @@ names a compiled backend, else Verilator where it is installed, else
 CXXRTL, else they skip; `FPGA_SIM=cxxrtl` (or `verilator`) also makes it
 the default of `python -m isdb_fpga.chain.sim` ([backends](#simulation-backends)).
 Every run also checks the [invariant monitors](#invariant-monitors).
-Measured on this host, 2026-11-02, the synthetic sets (`chainvectors`, 5
-B44 frames of 16APSK 93/120, −400 Hz drifting, 14 dB):
+Measured on this host, 2026-11-02, the synthetic sets (`chainvectors`,
+B44 frames of 16APSK 93/120, −400 Hz drifting, 14 dB; the counts are
+today's sets', the times those of 2026-11-02's 5-frame sets):
 
 | Stage | Vectors | Compared | Python simulator (default test) | Compiled |
 |---|---|---|---|---|
-| 1 + 2 | chain-1-sync | r of every symbol and φ every 4 096, the correlations and accumulator of the first 30 000 positions, every period (241), every head (236), the carrier update | 120 000 symbols (lock, parity, 8 heads with FSync signs), 18 s | the whole set, 2 241 336 symbols (the frame head, the carrier update), 2 s |
+| 1 + 2 | chain-1-sync | r of every symbol and φ every 4 096, the correlations and accumulator of the first 30 000 positions, every period (137), every head (132), the carrier update | 120 000 symbols (lock, parity, 8 heads with FSync signs), 18 s | the whole set, 1 274 552 symbols (the frame head, the carrier update), 2 s |
 | 3 | chain-2-phase | φ, gain, y, r of 18 592 symbols | the whole set, 3 s | 0.1 s |
 | 4 | chain-3-eq (+ chain-4's layout) | z of the frame's 1 115 520 symbols, the 6 720 training references, the 308 sum words, count and frame | 18 592 symbols (2 slots' z, references and MACs), 13 s | the whole frame, 4 s |
 | 5 | chain-4-tmcc | 31 680 soft bits, the 31 682 burst beats (port granted on half the cycles), 9 422 information bits, the result, 120 layout entries and their commit | the whole set, 40 s | 2 s; also with 7 bit errors corrected |
 | 6 (4–6) | chain-3 → chain-5 (+ chain-4) | all 96 codewords' 1 077 120 beats (count, flags, tags), both codewords chain-5 carries in full (every position and LLR, the de-interleaved words), 16 learned points, n0 and K for the next frame, the TMCC soft bits; again with the next frame (a layout queued) starting a cycle after the frame's last symbol, as on the board's gapless stream, and 16 of its main symbols (n0 and K still the frame's; K in force in time) | 12 000 symbols (the first codeword whole), 7 s | the whole frame, 9 s; with the next frame's start, 8 s |
 | 8 (BCH) | gf.py (the Rust decoder's port) | 32 random words of 9 614 and 34 776 bits with 0–20 errors: result, count, roots | 2 words | 32 words |
 | bridge | — | the 40 MHz port to the 200 MHz decoder ports and back, two clocks | the test | — |
-| 1–9 | chain-6-chain (+ chain-3's taps) | every `Slots` word: 5 587 896 symbols in, 211 281 words out (3 frames: TMCC and status blocks; frame 2 decoded, 120 slot blocks), the LDPC stub answering each frame after its TMCC codeword is committed | — | 2 260 000 symbols (frame 0's blocks, 683 words) by default: about 45 s on Verilator (7 s of it simulation, 380 000 cycles/s; the first build 23–43 s), 130 s on CXXRTL (27 000 cycles/s; the first build about 3 minutes); the whole set (`FPGA_CHAIN_FULL=1`) 171 s on CXXRTL before its harness settled combinational outputs (38 000 cycles/s) |
+| 1–9 | chain-6-chain (+ chain-3's taps) | every `Slots` word: 5 755 224 symbols in, 632 603 words out (5 frames: TMCC and status blocks; frames 2–4 decoded, 360 slot blocks, 3 sums blocks; frames 3 and 4 with learned n0, K and points), the LDPC stub answering each frame after its TMCC codeword is committed | — | 2 400 000 symbols (frames 0 and 1's blocks, 1 366 words) by default: about 45 s on Verilator (7 s of it simulation, 380 000 cycles/s; the first build 23–43 s), 130 s on CXXRTL (27 000 cycles/s; the first build about 3 minutes); the whole set (`FPGA_CHAIN_FULL=1`) 171 s on CXXRTL before its harness settled combinational outputs (38 000 cycles/s) |
 
 **Value coverage** (`tools/value_coverage.py`, issue #30 item 1;
 `tests/test_coverage.py` in `mise run fpga:test`, about 5 s of JSON
@@ -692,10 +707,12 @@ that is in neither of the tool's two lists: `ALLOWED`, the constants
 accepted by definition with the reason each cannot vary (the format
 version, reserved bits, a dummy slot's words, layout lag 2), and
 `KNOWN_GAPS`, the gaps of today's corpus with the input that would close
-each (every whole-chain set decodes one frame, its last whole one, so no
-status block has a learned n0, K, constellation or `taps_from`; no slot
-fails LDPC or BCH; no TMCC needs an iteration or a correction; one mode,
-16APSK 93/120). It also fails on a known gap that a set now covers, so
+each. When the tool came every whole-chain set decoded one frame, its
+last whole one, so no status block had a learned n0, K, constellation or
+`taps_from` (33 entries); the window sets now decode frames 2–4 and
+chain-11 changes the taps in use (32 entries; still no slot fails LDPC
+or BCH, no TMCC needs an iteration or a correction, one mode, 16APSK
+93/120). It also fails on a known gap that a set now covers, so
 the list shrinks as the generators (`chainvectors.rs`, `ldpcvectors.rs`)
 grow. The gate reads the default synthetic corpus only; the recording
 sets are reported, not gated.
@@ -1041,7 +1058,7 @@ are needed: not provably narrower).
     `ChaosTest.test_pinned_events` (chain-7-hdl, `chaos.CI_EVENTS`: an early
     loss, #28's stop inside frame 2's first codewords and START with a
     replay, a short stop and a START before the replay's first frame head;
-    8.2 M symbols, 10.7 M clocks: 177 s plus the build, about 3 minutes on
+    7.4 M symbols, 9.8 M clocks: about 4-5 minutes with the build on
     this host); `FPGA_CHAIN_CHAOS=20` (or
     `5-9`, `3,7,11`) adds a test per seed and set; `python
     tools/chaos_run.py SET SEED` (`--draw`, `--replay FILE`, `--place
