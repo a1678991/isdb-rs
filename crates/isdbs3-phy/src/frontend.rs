@@ -88,19 +88,16 @@ pub fn carrier_candidates(sv: &isdb_iq::survey::Survey) -> Vec<f64> {
 /// candidate within it. With no candidate the carrier is taken as 0.
 pub fn pick_carrier(xi: &[[i16; 2]], fs: f64, candidates: &[f64]) -> Result<f64, ParamError> {
     let n = samples_in(0.05, fs).min(xi.len());
+    // the front ends on their threads, the measures one at a time (in
+    // bounded memory: `s3sync::measure_one`)
+    let one = std::sync::Mutex::new(());
     let score = |cfo: f64| -> Result<(bool, f64), ParamError> {
-        let mut fe = Frontend::new(Params::design(&design(fs, cfo))?)?;
-        let mut out = Vec::new();
-        fe.process(&xi[..n], &mut out);
-        let z: Vec<num_complex::Complex64> = out
-            .iter()
-            .skip(3 * isdb_frontend::s3sync::SLOT)
-            .map(|s| num_complex::Complex64::new(f64::from(s.zk[0]), f64::from(s.zk[1])))
-            .collect();
+        let fe = Frontend::new(Params::design(&design(fs, cfo))?)?;
         Ok(
-            isdb_frontend::s3sync::measure(&z).map_or((false, f64::NEG_INFINITY), |r| {
-                (r.phase_step_mean.abs() <= MAX_PHASE_STEP, r.snr_db)
-            }),
+            isdb_frontend::s3sync::measure_one(fe, &xi[..n], 3 * isdb_frontend::s3sync::SLOT, &one)
+                .map_or((false, f64::NEG_INFINITY), |r| {
+                    (r.phase_step_mean.abs() <= MAX_PHASE_STEP, r.snr_db)
+                }),
         )
     };
     // the candidates run independently, one thread each; the first of

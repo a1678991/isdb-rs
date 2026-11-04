@@ -113,6 +113,11 @@ loop would follow it. The host measures it before a run on known
 symbols the front end cannot see: `s3sync::best_trim` (ISDB-S3 sync
 words) and `isdbs_phy::frontend::measure_trim` (ISDB-S bursts), on
 0.1–0.15 s of IQ. The optimum is flat within ±0.03 T (under 0.5 dB).
+`best_trim` runs its candidates' front ends on threads of their own but
+measures one at a time, each front end keeping only its symbols' `zk`
+(`s3sync::measure_one`): 13 candidates on 0.15 s at 40 Msps each holding
+their whole output took 6.1 GB of resident memory at once, now about
+0.6 GB with the same result bit for bit.
 
 Result over whole recordings, 32 taps, 8-bit output (`isdb iq s3sync`):
 
@@ -447,7 +452,7 @@ any. `CodePacker` carries a partial word across calls; an ISDB-S frame
 | `format::Packer`, `format::Reader` → `Event::{Block, Loss, Truncated}` | the `Symbols` words and their reader |
 | `control::{Encoder, Identity, reg}` | the FPGA's command words (through the AD9361 core's `up_adc_gpio_out` / `up_adc_gpio_in`), register map and ID word |
 | `metrics::{ring_stats, psk_mer, sqnr_db}` | MER without frame sync, SQNR |
-| `s3sync::{measure, measure_at, best_trim, derotated_data}` | ISDB-S3 slot sync (the search on every core, bit for bit as one thread) and sync-symbol Es/N0, or the same at a known offset; the trim search; data symbols for ring statistics |
+| `s3sync::{measure, measure_at, measure_one, best_trim, derotated_data}` | ISDB-S3 slot sync (the search on every core, bit for bit as one thread) and sync-symbol Es/N0, or the same at a known offset, or of a front end's output in bounded memory; the trim search; data symbols for ring statistics |
 | `vectors::document` | the JSON test vectors for `fpga/` |
 | `shape::Shaper` (`new`, `with_span`, `push`, `finish`, `samples_for`) | the transmit pulse shaper: symbols to IQ at any rate ≥ (1 + α)·R, output RMS 1 |
 | `shape::fixed::{TxDesign, TxParams}`, `TxParams::design`, `validate` | the transmit interpolator's design (rates, roll-off, span, phases, backoff) to its registers (step, shift, banks `a`, `b`) |

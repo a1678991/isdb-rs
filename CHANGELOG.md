@@ -1459,6 +1459,17 @@ STD-B44) is received to TLV streams.
 
 ### Fixed
 
+- ISDB-S3 acquisition (`isdb rx --system isdbs3` from a radio, every
+  offload, and the CPU receiver's blocks): 6.0–6.3 GB of peak resident
+  memory, all of it the trim search on the acquisition's probe. Its 13
+  candidates each held their front end's whole `Symbol` output (56
+  bytes per symbol, 5 M symbols on 0.15 s at 40 Msps) and measured it at
+  once (40 more bytes per symbol); the 8 carrier candidates the same on
+  0.05 s. The candidates' front ends still run on threads of their own,
+  keeping only `zk`, and measure one at a time
+  (`isdb_frontend::s3sync::measure_one`): the acquisition's peak falls
+  from 6.1 GB to about 0.6 GB (`isdb-cli` example `s3open`), its result
+  bit for bit the same.
 - `tools/ts-align-compare.py` aligned on the first recording packet whose
   bytes occur once in the reference, which with a looped placed TS could
   be a section packet of another pass (sections repeat unchanged, and a
