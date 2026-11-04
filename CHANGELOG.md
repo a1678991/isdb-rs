@@ -502,7 +502,16 @@ STD-B44) is received to TLV streams.
   blocks of frames 3 and 4 carry the learned n0, K, `learned_from` and
   16APSK points); `chain-11-taps` changes the taps in use (solved from
   frame 2, in use from frame 4, the host's TAPS / TAPS_FROM writes in its
-  `host_writes`, which the benches write); `KNOWN_GAPS` 33 → 32 entries.
+  `host_writes`, which the benches write); `chain-12-fail` has the
+  failure paths (a codeword of noise at the LDPC limit, a converged slot
+  and a TMCC word the BCH cannot correct, a TMCC word that needs an
+  iteration and BCH corrections, a missed and a stray frame marker; the
+  benches flip the decoder-output errors the model injected, now also in
+  a TMCC word), and chain-4-tmcc carries its noisy TMCC frame;
+  `KNOWN_GAPS` 33 → 20 entries. It found an open HDL defect: a TMCC word
+  whose BCH corrects six or more errors hangs the chain's finish stage
+  (fpga/README.md "Integration"; `test_six_tmcc_corrections`, an
+  expected failure; chain-12 injects five).
 - `fpga`: the transmit block's follow-ups (docs/plans/isdbs-next.md item
   5; not yet in a built image). Prefetch while selected: the block polls
   the DMA from SELECT, drops the underflow answers before RUN and holds

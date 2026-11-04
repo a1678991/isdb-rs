@@ -139,7 +139,8 @@ def stage_of(path):
     import os
 
     b = os.path.basename(path)
-    for k in ("1-sync", "2-phase", "3-eq", "4-tmcc", "5-demap", "6-chain", "7-hdl", "8-loss", "9-fade", "10-bch"):
+    for k in ("11-taps", "12-fail", "13-modes", "1-sync", "2-phase", "3-eq", "4-tmcc", "5-demap",
+              "6-chain", "7-hdl", "8-loss", "9-fade", "10-bch"):
         if k in b:
             return k
     raise ValueError(f"{path}: not a chain vectors file")

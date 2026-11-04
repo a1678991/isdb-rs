@@ -516,7 +516,16 @@ decoder output) and `chain-11-taps` (a window of its own, the equaliser
 solved by the model every second frame: the taps solved from D in use
 from D + 2, frame 4's status with `taps_from` 2; the host's TAPS and
 TAPS_FROM writes for them in the set's `host_writes`, which the benches
-write, `stages.host_records`). The example's documentation gives every
+write, `stages.host_records`) and `chain-12-fail` (a window of its own
+with the failure paths: in frame 1 a missed and a stray frame marker,
+254 TMCC symbols weak and wrong so its TMCC word needs an iteration, and
+5 errors in that word's decoder output that the TMCC BCH corrects; in
+frame 2 a codeword of noise that stops at the limit, 14, unconverged, 13
+errors in a converged slot's decoder output that the BCH cannot correct,
+and 13 in its TMCC word's, so frame 4 has no layout; the bench flips the
+same bits, `bch_errors` and `tmcc_errors`). chain-4-tmcc also carries
+chain-12's frame 1 as `noisy` (the TMCC stage test runs it with its
+decoder output's errors). The example's documentation gives every
 field. Sizes: 1–37 MB per file.
 
 ## The ISDB-S3 chain (`SlotsRx`)
@@ -709,10 +718,11 @@ version, reserved bits, a dummy slot's words, layout lag 2), and
 `KNOWN_GAPS`, the gaps of today's corpus with the input that would close
 each. When the tool came every whole-chain set decoded one frame, its
 last whole one, so no status block had a learned n0, K, constellation or
-`taps_from` (33 entries); the window sets now decode frames 2–4 and
-chain-11 changes the taps in use (32 entries; still no slot fails LDPC
-or BCH, no TMCC needs an iteration or a correction, one mode, 16APSK
-93/120). It also fails on a known gap that a set now covers, so
+`taps_from` (33 entries); the window sets now decode frames 2–4,
+chain-11 changes the taps in use (32 entries) and chain-12 fails a slot's
+LDPC, a slot's BCH and a TMCC, corrects a TMCC and misses and strays a
+frame marker (20 entries; still one mode, 16APSK 93/120). It also fails
+on a known gap that a set now covers, so
 the list shrinks as the generators (`chainvectors.rs`, `ldpcvectors.rs`)
 grow. The gate reads the default synthetic corpus only; the recording
 sets are reported, not gated.
@@ -838,6 +848,28 @@ are needed: not provably narrower).
   per clock) plus its decode (under a slot), so at most the blocks of the
   next frame's first 26 slots precede a frame's TMCC block; measured on
   chain-7, -8 and -9: 3 slot blocks.
+- **Failure paths** (chain-12-fail, `RealDecoderChainTest.test_failures`,
+  2026-11-04): a codeword of noise at the limit (14 iterations,
+  unconverged, its block's bits and counters), a converged slot the BCH
+  cannot correct, an uncorrectable TMCC (the frame two on undecoded), a
+  TMCC word that needs an iteration and 5 BCH corrections, a missed and a
+  stray frame marker: bit-exact with the real decoder, the monitors
+  quiet. **Open defect** (found by this set, not fixed): a TMCC word whose
+  BCH corrects **six or more** errors hangs the chain. With chain-12's
+  frame 1 TMCC given a sixth error in the decoder's output (position
+  11 209; `test_six_tmcc_corrections`, an expected failure, and
+  `tools/real_variant.py build/chain-12-fail.json --no-bch --no-tmcc 2
+  --tmcc-pos 1:2548,2748,4547,9042,10295,11209`), frame 1's TMCC block
+  (word 7 211 of the stream) leaves with payload word 0 = 0xFB79 instead
+  of the correction count 6, stops after 13 words (a bad CRC), and no
+  word follows; the decoder's result queue overflows at symbol clock
+  3 050 575 (monitor `dec.queue_overflow`), then its tag queue
+  (`br.tag_overflow`). One to five errors pass at any position (the
+  count and the bits as the model's); 13 (uncorrectable: Berlekamp-Massey
+  fails, no Chien search) pass; the TMCC stage bench alone (`TmccTest`,
+  own `Realign`, no `Finish`) corrects 7. So the fault is in `Finish`'s
+  TMCC path with the shared BCH unit and `Realign` (`tmcc.TmccResult`
+  with `own_align=False`) once the correction takes six or more roots.
 - **A corrected slot no longer holds the decoder.** The BCH's Chien search
   took n symbol clocks (34 776 at 93/120, 3.1 slots) while the finish
   stage held the result stream, and with it a decoder bank: a few
