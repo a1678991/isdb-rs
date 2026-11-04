@@ -1576,7 +1576,10 @@ Two host defects of the build 9 runs, fixed without the board
   loaded with INIT bit 0 as before, and the slow loop's good set. The
   acquisition's line names them; `chain.start_taps` in `--json`.
 
-  On the board, expected: the acquisition line ends "equaliser start
+  On the board (2026-11-04, VERIFICATION.md "Build 9 residuals, host
+  side"): 0 not-converged slots in each of 3 × 8 s and 30 s, 1.9–2.1 mean
+  iterations from the first decoded frame, max RSS 0.68–0.71 GB. What was
+  expected, and seen: the acquisition line ends "equaliser start
   taps solved from the acquisition's probe (its frame 2, 6720 training
   symbols: …) in ≈ 0.3 s", the open line "taps from the host";
   `chain.start_taps.source` "probe"; the status blocks' `taps` the
