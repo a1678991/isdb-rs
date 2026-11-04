@@ -76,6 +76,7 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `tools/queue_sweep.py` | the decoder queue's overruns at the chain's pace by S, clock, banks and iteration limit (the 160 MHz and S = 22 decisions) |
 | `tezuka/isdb_slots.xdc` | the constraints of `SlotsRx` (its three clocks, the GPIO paths) |
 | `tests/test_chain.py` | the chain's stage and chain tests against `chain-*.json` |
+| `isdb_fpga/chain/chaos.py`, `tests/test_chaos.py`, `tools/chaos_run.py`, `tools/chaos_table.py` | chaos runs of the chain with the real decoder: random stops, STARTs, losses and tap writes, health checks, the model restarted at the same points ([below](#the-isdb-s3-chain-slotsrx), "Chaos runs") |
 
 ## Running
 
@@ -590,6 +591,109 @@ are needed: not provably narrower).
 
   Fit (Yosys): `SlotsRx` without the decoder 26 395 → 26 487 LUT, 27 119
   → 27 245 FF, BRAM and DSP unchanged; the decoder 12 510 → 12 538 LUT.
+- **Chaos runs** (issue #30 item 3; `isdb_fpga/chain/chaos.py`,
+  `tests/test_chaos.py`, `tools/chaos_run.py`, `tools/chaos_table.py`).
+  `run_chain_restarts` replays #28's one recipe; a chaos run draws random
+  host events from a seed into a real-decoder set (chain-7-hdl, -8-loss,
+  -9-fade, -10-bch) and runs them on `RealChainBench` (Verilator):
+  - **what it injects**: a long stop (no input for 200 000 - 400 000
+    symbol clocks: committed codewords drain, the open one stays begun)
+    then START (C_START: a loss of 0 symbols, CARRIER 0 and the taps last
+    written loaded, the sequence from 0); a short stop (100 - 20 000
+    clocks: the chain has not drained) then START; a START while the input
+    runs; an input loss (C_LOSS, 1 - 150 000 symbols not delivered, the
+    chain told so); a TAPS write (identity, chain-3's or those perturbed:
+    the next START loads them, as INIT bit 0). After a START the input
+    continues, skips the front end's symbols of the stop, or replays from
+    an earlier index (a new run), within a budget of delivered symbols. A
+    restart drops the layouts, so the chain decodes again only in its
+    third whole frame: three in four events go into that frame of the
+    current run, where slot codewords are loading (the abort path);
+  - **what it checks**, from the bench's ports after each event,
+    350 000 symbols after each restart and at the end: never a queue
+    overflow, a lost beat, a port loss, a late beat, a TMCC or decoder
+    overrun, more than K banks held; after a long stop the bridge's FIFOs,
+    tag queue and result FIFO empty with at most the open codeword's bank
+    held, and 3 000 clocks after its START every bank free, a bank free to
+    load, every queue empty and one more abort beat; the same 350 000
+    symbols after any restart (no codeword can begin before a whole frame);
+    the `Slots` stream parses and its sequence numbers run from 0 after
+    each START (the first block whose first word follows the START's
+    cycle: `ChaosBench` stamps both). Invariant monitor flags (ports
+    `mon_*` or the bench's `MONITOR_PORTS`) are read and reported when the
+    bench has them;
+  - **the model restarted at the same points**: `cargo run --release -p
+    isdbs3-phy --example chainscenario -- SET EVENTS OUT` runs
+    `isdbs3_phy::chain` over the same delivered input with `Chain::loss`
+    and `Chain::start` (CTRL START's effect: `loss(0)`, CARRIER, the taps
+    last written in use, `taps_from` none, an armed TAPS_FROM set dropped; a new
+    `Slots` writer); with no events it reproduces each set's
+    `slots_words` (`ChaosModelTest`, by default). Every block is compared
+    per (frame, kind, slot), as in `run_chain_real`, frames whose slot
+    blocks the chain sent before a drop (orphans) counted, not compared.
+    Allowed by design: the model has no clock and hands a frame out when
+    its last look-ahead symbol is in, while the HDL's pipeline (stage 3's
+    slot, the FIR, the demapper, the TMCC burst and decode) is still in
+    it, so a restart that does not let the chain drain within 8 slots of a
+    frame's end may find the HDL inside a frame the model handed out (the
+    HDL drops it), or keep that frame's layout (the restart epoch, "What
+    is left"); from such an event on only the decoded bits, BCH results
+    and convergence are compared. Otherwise iteration counts must match
+    too: both sides keep the NCO's phase across a restart (unlike
+    `run_chain_restarts`, whose replay is compared with the model's run
+    from reset).
+  - **running it**: `FPGA_CHAIN_REAL=1` runs
+    `ChaosTest.test_pinned_events` (chain-7-hdl, `chaos.CI_EVENTS`: an early
+    loss, #28's stop inside frame 2's first codewords and START with a
+    replay, a short stop and a START before the replay's first frame head;
+    8.2 M symbols, 10.7 M clocks: 177 s plus the build, about 3 minutes on
+    this host); `FPGA_CHAIN_CHAOS=20` (or
+    `5-9`, `3,7,11`) adds a test per seed and set; `python
+    tools/chaos_run.py SET SEED` (`--draw`, `--replay FILE`, `--place
+    EVENTS.json`, `--pinned`) prints the events, the health after each and
+    the comparison, and `tools/chaos_table.py` tabulates the results in
+    `build/chaos/`.
+
+  Results on today's HDL (2026-11-04, Verilator 5.054, `FPGA_CHAIN_CHAOS=20`:
+  80 runs, 409 restarts (115 long stops, 88 short, 82 STARTs while
+  running, 87 losses, 37 of chain-8's own) and 81 tap writes, 6.8 - 13.2 M
+  symbols each, 29.7 minutes on 12 xdist workers, 150 - 320 s and about
+  1.2 GB per run):
+  - **the decoder and bridge are healthy everywhere**: in every sample of
+    every run no bank leaked (every long stop's START and every settled
+    restart: 0 held, a bank free, the four queues empty; up to 2 held at an
+    event: a committed codeword and the open one), no overrun, no queue
+    overflow, no lost or late beat, at least one abort beat per restart; the
+    stream parses everywhere;
+  - **defect: the sequence number survives a START during a block.**
+    `Packer` restarts the sequence only in its IDLE state, and `SlotsRx`
+    (as the bench) pulses `start` for one cycle, so a START while a block
+    is leaving (a 93/120 slot block takes about 2 200 of a slot's 11 000
+    clocks) is ignored for
+    the sequence: the next block continues it (8 of 80 runs, e.g. chain-7
+    seed 15: START at input 3 618 132 while slot block 30 of frame 2 left;
+    the next block has sequence 31). Not fixed here;
+  - **defect: the sync's period statistics after a restart whose next
+    slot head falls about 0 - 30 symbols before the end of the first
+    sync period** (the restart 5 - 30 symbols after a head): every later
+    status block's peak and sum (words 0-5) differ from the model's, the
+    decoded blocks do not (chain-7 with one START at input 502 989 or
+    503 014: frames 0-2 differ; at 502 974 or a few thousand symbols
+    after a head they are equal; a loss of 2 999 / 3 000 at input
+    500 000 resumes 15 - 16 after a head: the same; chain-9 seed 20 met it
+    at random). `ChaosTest.test_restart_just_after_a_slot_head`, an
+    expected failure, reproduces it. Not fixed here;
+  - **a known divergence, counted apart**: the chain's status counters
+    (slots, iterations, LDPC and BCH failures) include the slots it decoded
+    of a frame a restart dropped later (the orphans), the model's count
+    whole frames; in 158 status blocks of 75 runs, always exactly the
+    orphans before them. Which side should change is open (the host
+    discards orphan blocks but not these counts);
+  - **by design, never seen differing**: frames handed out by the model
+    within 8 slots before an undrained restart (the HDL's pipeline still in
+    them) and the restart epoch were compared loosely, and every one was
+    equal anyway: 170 frames equal block for block, 158 equal but for the
+    counters above, 2 differing (the period statistics).
 
 **What is left** (the receive-only image meets timing and, with fit
 `682032e`, decodes BS7 on the board as the model does: 1 LDPC failure in
@@ -603,7 +707,10 @@ stream (a block with its CRC instead of 308 register reads: the plan's
 "Build 8 issues", follow-up); `SlotsRx` as a whole with its front end in
 simulation (the chain's simulations start at the symbols); a host CONST /
 N0 load and layout lag 1 (FEATURES says so); the recording sets
-(`chain-rec-*`, opt-in) were not generated here.
+(`chain-rec-*`, opt-in) were not generated here; the two defects and the
+counter divergence the chaos runs found (above: the sequence across a
+START during a block, the period statistics after a restart just after a
+slot head, the orphans in the counters).
 
 ## The transmit block (`SymbolsTx`)
 
