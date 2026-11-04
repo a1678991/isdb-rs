@@ -1,0 +1,36 @@
+# LdpcDecoder's bank allocator (banks.py): `python tools/formal.py banks`.
+# bmc: every property on every path of DEPTH cycles from reset;
+# cover: each Cover reached; prove: k-induction, unbounded.
+[tasks]
+bmc
+cover
+prove
+
+[options]
+bmc: mode bmc
+bmc: depth 30
+cover: mode cover
+cover: depth 30
+prove: mode prove
+prove: depth 4
+
+[engines]
+smtbmc boolector
+
+[script]
+read_rtlil banks.il
+hierarchy -top top
+proc
+flatten
+# (opt_clean first: the cut must replace the cell that drives the net,
+# not one of its aliases)
+opt_clean
+# the allocator alone: the bank an output stream frees becomes a free
+# input (constrained by the harness's assumption); the engine, the load
+# pipeline and the memories then drive no property and are removed
+cutpoint top/w:dec.free_mask
+prep -top top
+stat
+
+[files]
+banks.il

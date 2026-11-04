@@ -221,6 +221,12 @@ env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https:/
 # with them cached; FPGA_SIM=cxxrtl: 8 and 4.4 min (without S = 187).
 run = "uv run --locked pytest -q -n auto --dist worksteal tests"
 
+[tasks."fpga:formal"]
+description = "bounded model checks and k-induction proofs of the LDPC bank allocator, the Slots packer's sequence numbers and the chain's frame boundaries (SymbiYosys from the YoWASP wheels; tests/test_formal.py runs them in fpga:test)"
+dir = "fpga"
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
+run = "uv run --locked python tools/formal.py"
+
 [tasks."fpga:verilog"]
 description = "Verilog of the 32-tap front end block for a vendor flow (fpga/build/isdb_symbols_rx.v)"
 depends = ["fpga:vectors"]
