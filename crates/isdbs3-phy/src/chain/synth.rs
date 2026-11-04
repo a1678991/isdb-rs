@@ -193,6 +193,43 @@ fn main_symbols(lay: &[Slot], rng: &mut Rng) -> (Vec<Cplx>, Vec<SlotTruth>) {
 ///
 /// If the modes do not give a consistent allocation.
 pub fn generate(o: &SynthOptions, frames: usize) -> Synth {
+    let (x, truth, lay, mut rng) = clean(o, frames);
+    // impairments
+    let sigma = if o.snr_db.is_finite() {
+        (10f64.powf(-o.snr_db / 10.0) / 2.0).sqrt()
+    } else {
+        0.0
+    };
+    let lim = f64::from(1i32 << (o.bits - 1));
+    let mut phase = 0.0f64;
+    let symbols = x
+        .iter()
+        .enumerate()
+        .map(|(n, v)| {
+            let t = n as f64 / SYMBOL_RATE;
+            let f = o.carrier_hz + o.drift_hz_s * t;
+            phase += std::f64::consts::TAU * f / SYMBOL_RATE;
+            let w = Cplx::new(rng.normal(), rng.normal()) * sigma;
+            let y = (v + w) * Cplx::from_polar(o.amplitude, phase);
+            let q = |c: f64| -> i8 {
+                // rounded and clamped to the n-bit range, so the cast is exact
+                #[allow(clippy::cast_possible_truncation)]
+                let r = c.round().clamp(-lim, lim - 1.0) as i8;
+                r
+            };
+            [q(y.re), q(y.im)]
+        })
+        .collect();
+    Synth {
+        symbols,
+        frames: truth,
+        layout: lay,
+    }
+}
+
+/// The frames' unit-power symbols before any impairment, their truth,
+/// the layout, and the generator as left (the impairments draw on it).
+fn clean(o: &SynthOptions, frames: usize) -> (Vec<Cplx>, Vec<FrameTruth>, Vec<Slot>, Rng) {
     let info = tmcc_info(&o.modes);
     let lay = layout(&info).expect("a consistent allocation");
     let tmcc_bits = isdbs3_core::tmcc::encode(&info);
@@ -250,35 +287,137 @@ pub fn generate(o: &SynthOptions, frames: usize) -> Synth {
     while x.len() % 2 == 1 || x.len() < o.lead + frames * SLOTS * MOD_SLOT + MOD_SLOT {
         x.push(qpsk(&mut rng));
     }
-    // impairments
+    (x, truth, lay, rng)
+}
+
+/// What [`iq`] puts between the symbols and the samples.
+#[derive(Debug, Clone)]
+pub struct IqOptions {
+    /// The radio's sample rate, Hz (≥ 1.03 × the symbol rate).
+    pub sample_rate_hz: f64,
+    /// A symbol-spaced channel (complex taps, the main path first:
+    /// `[1.0]` is none) applied to the symbols before the pulse shaper.
+    pub channel: Vec<Cplx>,
+    /// RMS of the samples at unit scale (the front end's 12-bit input
+    /// reads 1.0 as 2 048).
+    pub rms: f64,
+    /// Pulse span of the shaper, symbols on each side.
+    pub span: usize,
+}
+
+impl Default for IqOptions {
+    fn default() -> Self {
+        Self {
+            sample_rate_hz: 40e6,
+            channel: vec![Cplx::new(1.0, 0.0)],
+            rms: 0.2,
+            span: 64,
+        }
+    }
+}
+
+/// The frames of [`generate`] as IQ samples at a radio's rate: the
+/// unit-power symbols through the symbol-spaced `channel`, the B44 §3.10
+/// root-raised-cosine pulse (roll-off 0.03, `isdb_frontend::shape`), the
+/// carrier offset and drift of `o`, scaled to `rms`, with white Gaussian
+/// noise at `o.snr_db` (Es/N0 over the symbol rate). `o.amplitude` and
+/// `o.bits` do not apply. Returns the samples and the frames' truth (`at`
+/// counts symbols). Not a transmitter either: the acquisition's and the
+/// front end's synthetic input.
+///
+/// # Panics
+///
+/// If the modes do not give a consistent allocation, the channel is
+/// empty or the sample rate is below the shaper's minimum.
+pub fn iq(o: &SynthOptions, frames: usize, io: &IqOptions) -> (Vec<num_complex::Complex32>, Synth) {
+    let (x, truth, lay, mut rng) = clean(o, frames);
+    assert!(!io.channel.is_empty(), "a channel of at least one tap");
+    // the channel at symbol spacing
+    let y: Vec<num_complex::Complex32> = (0..x.len())
+        .map(|n| {
+            let v: Cplx = io
+                .channel
+                .iter()
+                .enumerate()
+                .filter(|&(k, _)| k <= n)
+                .map(|(k, h)| h * x[n - k])
+                .sum();
+            // DSP sample: f64 to the shaper's f32 on purpose
+            #[allow(clippy::cast_possible_truncation)]
+            let c = num_complex::Complex32::new(v.re as f32, v.im as f32);
+            c
+        })
+        .collect();
+    let mut sh = isdb_frontend::shape::Shaper::new(
+        io.sample_rate_hz,
+        SYMBOL_RATE,
+        crate::frontend::system().roll_off,
+    )
+    .and_then(|s| s.with_span(io.span))
+    .expect("a sample rate the shaper takes");
+    let mut s = Vec::with_capacity(usize::try_from(sh.samples_for(y.len() as u64)).unwrap_or(0));
+    sh.push(&y, &mut s);
+    let p = s.iter().map(|v| f64::from(v.norm_sqr())).sum::<f64>() / s.len().max(1) as f64;
+    let g = io.rms / p.sqrt().max(1e-30);
+    // Es/N0 over the symbol rate: noise of variance P·sps / (Es/N0) per
+    // sample (P the scaled signal power)
     let sigma = if o.snr_db.is_finite() {
-        (10f64.powf(-o.snr_db / 10.0) / 2.0).sqrt()
+        (io.rms * io.rms * io.sample_rate_hz / SYMBOL_RATE * 10f64.powf(-o.snr_db / 10.0) / 2.0)
+            .sqrt()
     } else {
         0.0
     };
-    let lim = f64::from(1i32 << (o.bits - 1));
     let mut phase = 0.0f64;
-    let symbols = x
-        .iter()
-        .enumerate()
-        .map(|(n, v)| {
-            let t = n as f64 / SYMBOL_RATE;
-            let f = o.carrier_hz + o.drift_hz_s * t;
-            phase += std::f64::consts::TAU * f / SYMBOL_RATE;
-            let w = Cplx::new(rng.normal(), rng.normal()) * sigma;
-            let y = (v + w) * Cplx::from_polar(o.amplitude, phase);
-            let q = |c: f64| -> i8 {
-                // rounded and clamped to the n-bit range, so the cast is exact
-                #[allow(clippy::cast_possible_truncation)]
-                let r = c.round().clamp(-lim, lim - 1.0) as i8;
-                r
-            };
-            [q(y.re), q(y.im)]
-        })
-        .collect();
-    Synth {
-        symbols,
-        frames: truth,
-        layout: lay,
+    for (n, v) in s.iter_mut().enumerate() {
+        let t = n as f64 / io.sample_rate_hz;
+        let f = o.carrier_hz + o.drift_hz_s * t;
+        phase += std::f64::consts::TAU * f / io.sample_rate_hz;
+        let w = Cplx::new(rng.normal(), rng.normal()) * sigma;
+        let z = Cplx::new(f64::from(v.re), f64::from(v.im)) * Cplx::from_polar(g, phase) + w;
+        // DSP sample: f64 to f32 on purpose
+        #[allow(clippy::cast_possible_truncation)]
+        let c = num_complex::Complex32::new(z.re as f32, z.im as f32);
+        *v = c;
+    }
+    (
+        s,
+        Synth {
+            symbols: Vec::new(),
+            frames: truth,
+            layout: lay,
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The samples have the asked RMS, the shaper's count for the
+    /// symbols, and the frames' truth of [`generate`] with the same
+    /// options.
+    #[test]
+    fn iq_has_the_asked_level_and_the_frames_of_generate() {
+        let o = SynthOptions {
+            lead: 100,
+            ..SynthOptions::default()
+        };
+        let io = IqOptions {
+            span: 16,
+            ..IqOptions::default()
+        };
+        let (x, s) = iq(&o, 1, &io);
+        let rms = (x.iter().map(|v| f64::from(v.norm_sqr())).sum::<f64>() / x.len() as f64).sqrt();
+        assert!((rms - io.rms).abs() < 1e-3 * io.rms, "rms {rms}");
+        let symbols = 100 + SLOTS * MOD_SLOT + MOD_SLOT;
+        let expect = symbols as f64 * io.sample_rate_hz / SYMBOL_RATE;
+        assert!(
+            (x.len() as f64 - expect).abs() <= 2.0,
+            "{} samples",
+            x.len()
+        );
+        let g = generate(&o, 1);
+        assert_eq!(s.frames[0].at, g.frames[0].at);
+        assert_eq!(s.frames[0].slots, g.frames[0].slots);
     }
 }
