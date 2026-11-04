@@ -1252,6 +1252,8 @@ pub fn run_radio(
                 "solves_rejected": l.solves_rejected,
                 "sums_source": l.sums_source.name(),
                 "sums_blocks": l.sums_blocks,
+                "sums_stalls": l.sums_stalls,
+                "sums_fallback": l.sums_fallback,
                 "torn_reads": l.torn,
                 "unsettled_reads": l.unsettled,
                 "words_read": l.words_read,
@@ -1293,12 +1295,24 @@ pub fn run_radio(
                 captures_rejected = l.captures_rejected,
                 rereads = l.rereads,
                 sums_source = l.sums_source.name(),
+                sums_stalls = l.sums_stalls,
                 "the equaliser's slow loop wrote taps {} time(s) in {} ticks, training sums from the {} ({} solve(s) rejected by its gate, {} capture(s) by the checks on the sums{}; {} of {} register reads read again after a foreign value, {} torn){}{}",
                 l.solves,
                 l.ticks,
                 match l.sums_source {
-                    isdb_radio::chain::SumsSource::Stream =>
+                    isdb_radio::chain::SumsSource::Stream if l.sums_stalls == 0 =>
                         format!("Slots stream ({} sums blocks, no sum register read)", l.sums_blocks),
+                    isdb_radio::chain::SumsSource::Stream => format!(
+                        "Slots stream ({} sums blocks; {} stall(s), {} decoded frames without a sums block: the sums then read from the sum registers{})",
+                        l.sums_blocks,
+                        l.sums_stalls,
+                        isdb_radio::chain::SUMS_STALL_FRAMES,
+                        if l.sums_fallback {
+                            ", still at the end"
+                        } else {
+                            " until the blocks came back"
+                        }
+                    ),
                     isdb_radio::chain::SumsSource::Registers => "sum registers".to_string(),
                 },
                 l.solves_rejected,
@@ -1468,6 +1482,7 @@ mod tests {
         // format 2: the stream path), the last one the last decoded
         // frame's, the same sums the model latched
         assert_eq!(s.sums_blocks, decoded);
+        assert_eq!(s.decoded_since_sums, 0);
         assert_eq!(ch.sums_blocks, decoded);
         assert_eq!(j["blocks"]["sums"], json!(decoded));
         let last = h.latest_sums().expect("sums");
@@ -1487,6 +1502,38 @@ mod tests {
             .unwrap()
             .carrier;
         assert_eq!(s.last.unwrap().carrier, carrier);
+    }
+
+    /// The consumer counts the decoded frames since the last sums block
+    /// (the slow loop's stall, `isdb_radio::chain` "Sums from the
+    /// stream"): the words of a format-2 stream whose latch is held after
+    /// the first decoded frame (its later sums blocks not sent: here each
+    /// replaced by an intact block the reader skips, so that the sequence
+    /// numbers run on as the chain's do) leave the count at the decoded
+    /// frames after it and the last sums block the first frame's.
+    #[test]
+    fn the_consumer_counts_decoded_frames_without_a_sums_block() {
+        let (words, n) = slots_words(6, None);
+        let decoded = u32::try_from(n).unwrap() - 2;
+        let h = Arc::new(ChainHealth::new());
+        let held = |e: Event| match e {
+            Event::Block {
+                block: Block::Sums(b),
+                seq,
+            } if b.frame > 2 => Event::Unknown {
+                seq,
+                kind: 4,
+                version: 2,
+                frame: b.frame,
+                payload: 465,
+            },
+            e => e,
+        };
+        consume_words_with(&words, 65_536, Consumer::with_health(Arc::clone(&h)), held);
+        let s = h.snapshot();
+        assert_eq!((s.sums_blocks, s.sums_frame), (1, Some(2)));
+        assert_eq!(s.decoded_since_sums, decoded - 1);
+        assert_eq!(s.current.frames, decoded);
     }
 
     /// A format-1 stream (what the images of builds 1–9 send: the same

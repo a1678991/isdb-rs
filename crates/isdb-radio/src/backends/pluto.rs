@@ -1531,8 +1531,12 @@ impl Backend for Pluto {
             s.dev.channel,
             open_report.describe(),
             match sums_source {
-                chain::SumsSource::Stream => "Slots stream (no sum register read)",
-                chain::SumsSource::Registers => "sum registers",
+                chain::SumsSource::Stream => format!(
+                    "Slots stream (no sum register read while its sums blocks come; the sum registers after {} decoded frames without one)",
+                    slow.as_ref()
+                        .map_or(chain::SUMS_STALL_FRAMES, |o| o.sums_stall)
+                ),
+                chain::SumsSource::Registers => "sum registers".to_string(),
             }
         );
         debug!(backend = NAME, "{device}{info}");
