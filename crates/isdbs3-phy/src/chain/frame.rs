@@ -270,6 +270,22 @@ impl Back {
         self.eq.taps = taps;
     }
 
+    /// The counter of the frame being received (`None` before the first
+    /// frame head or after a restart).
+    pub fn open_frame(&self) -> Option<u32> {
+        self.cur.as_ref().map(|c| c.frame)
+    }
+
+    /// What the HDL's CTRL START with INIT bit 0 does to the taps
+    /// (`SlotsRx`, fpga/isdb_fpga/chain/top.py; `eq.py` `tap_now`): `taps`
+    /// in use from the next symbol, reported as solved from no frame
+    /// (`taps_from` `None`), and taps waiting for their frame dropped.
+    pub fn load_taps(&mut self, taps: [[i16; 2]; TAPS]) {
+        self.eq.taps = taps;
+        self.eq.taps_from = None;
+        self.pending_taps = None;
+    }
+
     /// Record the stage boundaries' values of every frame
     /// ([`FrameOut::trace`]).
     pub fn set_trace(&mut self, on: bool) {

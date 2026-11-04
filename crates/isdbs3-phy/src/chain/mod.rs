@@ -425,6 +425,38 @@ impl Chain {
         self.restart_after_sync(false, out);
     }
 
+    /// What the HDL's CTRL START does to the chain (`SlotsRx`,
+    /// fpga/isdb_fpga/chain/top.py): every stage restarts as after a loss
+    /// of 0 symbols ([`Chain::loss`]: the NCO's phase, the learned
+    /// constellation and n0 stay, the open frame is dropped and the queued
+    /// layouts with it), the carrier register is loaded with the host's
+    /// `carrier` (CARRIER) and, with `taps` (INIT bit 0: the taps last
+    /// written to TAPS), those taps are in use from the next symbol
+    /// ([`Back::load_taps`]); without, the taps in use and taps waiting
+    /// for their frame stay. The `Slots` sequence numbers' restart is the
+    /// writer's (a new `isdb_frontend::slots::Writer`).
+    ///
+    /// The model has no clock: it hands a frame out when the frame's last
+    /// look-ahead symbol is in, while the HDL's pipeline is still inside
+    /// it (the FIR, the demapper, the TMCC burst, the decode), and the
+    /// HDL's restart epoch is not modelled (a TMCC codeword whose burst
+    /// began before the START still decodes and its layout stays queued:
+    /// fpga/README.md "What is left"). So this equals the HDL after a
+    /// START when no frame ended shortly before it, or when the chain had
+    /// drained (a stop first: fpga/isdb_fpga/chain/chaos.py).
+    pub fn start(
+        &mut self,
+        carrier: i32,
+        taps: Option<[[i16; 2]; crate::eq::TAPS]>,
+        out: &mut Vec<Output>,
+    ) {
+        self.loss(0, out);
+        self.nco.freq = carrier;
+        if let Some(t) = taps {
+            self.back.load_taps(t);
+        }
+    }
+
     fn restart_after_sync(&mut self, sync_lost: bool, out: &mut Vec<Output>) {
         self.phase.restart();
         self.nco.restart();
