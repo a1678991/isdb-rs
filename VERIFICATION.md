@@ -1829,6 +1829,33 @@ kept as `isdbs3_rx8_top.bin` (`uEnv.txt.prev-rx8`). Open line: "features
   board's `dmesg` (none afterwards); counted by the Slots sequence numbers.
 - Host CPU for the 600 s run: 76.3 s (0.13 cores).
 
+### Build 9 residuals, host side: offline (2026-11-04)
+
+No radio: `cargo run --release -p isdb-cli --example s3open` on a
+synthetic probe (`isdbs3_phy::chain::synth::iq`: 16APSK 93/120, 40 Msps,
++120 kHz, a three-tap symbol-spaced echo, Es/N0 10 and 15 dB, seeds
+1–5), on a 32-core desktop (busy with other work: times ±30 %). The
+peak is `VmHWM` over each stage, reset before it.
+
+| | before | after |
+|---|---|---|
+| acquisition on 0.2 s (8 M samples) | 0.9 s, peak **6 261 MB** (+5 941 MB over the RSS before) | 0.9–1.2 s, peak 760–930 MB (+0.5–0.6 GB); carrier, trim and sync Es/N0 (13.304729230714285 dB) bit for bit the same |
+| start taps from the same probe | — (identity) | 0.31–0.37 s, +2 MB; from the probe's frame 2 after 0.133 s of it (0.165 s with the first frame head a frame in) |
+
+- The 6.0–6.3 GB max RSS of every Slots run on the bench is the
+  acquisition's trim search (13 candidates × 5 M symbols × (56 bytes of
+  `Symbol` + 40 bytes of measure) at once), not the stream: the Slots
+  path's queues hold at most 64 + 64 + 8 buffers of 128 KiB (17 MiB) and
+  its decoding 40 MB (the `--slots` replay).
+- The start taps against the chain's own solves of frames 3–16 of the
+  same signal: `‖Δw‖ / ‖w‖` ≤ 0.017 at 15 dB and ≤ 0.028 at 10 dB (the
+  gate allows 0.20; every solve taken against them); training MER on
+  those frames' sums 14.5 dB with the start taps against 14.5 dB with
+  each frame's own and 12.9 dB with the identity (10.1 / 10.1 / 9.3 dB
+  at 10 dB); 10 of 10 seeds.
+- Pending: the bench run (what to look for in docs/plans/isdbs3-fpga-rx.md
+  "Build 9 residuals").
+
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
 The checks of [docs/plans/isdbs-fpga-tx.md](docs/plans/isdbs-fpga-tx.md)

@@ -251,11 +251,16 @@ With `--offload auto` (default) `isdb rx --radio … --system isdbs3`
 uses the chain when the radio's ID word announces it, else the symbol
 front end, else the CPU; `--offload fpga` needs at least the front end
 and takes the chain when offered. On open the host configures the front
-end as for symbols and starts the chain on known equaliser taps — the
-identity, or the last good set of an earlier capture of the same
-process; never the taps the chain still holds from the run before
-(START keeps them otherwise, and a bad set there could stop the TMCC
-decoding from the first frame: issue #28) — the nominal constellation
+end as for symbols and starts the chain on known equaliser taps — those
+solved from the acquisition's 0.2 s IQ probe (the front end's and the
+chain's CPU models over it, the third frame's training sums solved as
+the slow loop solves the chain's: about 0.3 s before the open, held to
+the slow loop's checks on the sums), else the last good set of an
+earlier capture of the same process, else the identity (the
+acquisition's line says which, `chain.start_taps` in `--json`); never
+the taps the chain still holds from the run before (START keeps them
+otherwise, and a bad set there could stop the TMCC decoding from the
+first frame: issue #28) — the nominal constellation
 and a default noise estimate; a thread then reads the chain's equaliser
 training sums every 2 s, solves them on the host (the 11 taps, as the
 CPU model does) and writes the taps back. The chain tracks the carrier
