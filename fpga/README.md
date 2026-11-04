@@ -719,7 +719,7 @@ are needed: not provably narrower).
   | 0x401 FEATURES | 5 DECODER_HEALTH | DECODER and RECLAIMED exist; the decoder frees the banks of abandoned codewords |
   | 0x401 FEATURES | 6 SUMS_SEQ | SUMS_CAPTURE's bits 2 and 15-8; a sum READ is answered in 3 symbol clocks |
   | 0x405 STATUS | 2 DECODING | now also cleared by a restart (the restart drops the layouts) |
-  | 0x422 SUMS_CAPTURE (read) | 2 NO_LAYOUT | STATUS bit 2 clear: nothing latches, an armed capture waits |
+  | 0x422 SUMS_CAPTURE (read) | 2 NO_LAYOUT | STATUS bit 2 clear: nothing latches, an armed capture waits. A restart (START, a lost sync, the chain's stop) releases a hold and an armed capture (so a run reading the sums blocks is not starved by the hold a register-reading run left) |
   | 0x422 SUMS_CAPTURE (read) | 15-8 SEQ | latches since configuration (wrapping): the same before and after a 308-word set, no latch moved |
   | 0x439 DECODER (ro) | 15-0 OVERRUNS, 16 QUEUE_OVERFLOW, 23-20 HELD, 27-24 BANKS | the decoder's dropped codewords (wrapping), its sticky queue overflow, the banks allocated now, K (3); a snapshot under 1 µs old |
   | 0x43A RECLAIMED (ro) | 15-0 ABORTED, 31-16 REUSED | banks freed by the abort (after a frame drop, a lost sync, START or the chain's stop), banks a begin took back (wrapping) |
