@@ -328,10 +328,13 @@ class _Cxx:
         ilp, cc, tmp = f"{so}.{pid}.il", f"{so}.{pid}.cc", f"{so}.{pid}.tmp"
         with open(ilp, "w") as f:
             f.write(il)
+        # relative paths: YoWASP's Yosys sees its own /tmp, so an absolute
+        # path into a checkout under the host's /tmp would not be found
         r = subprocess.run(
             [yosys_path(), "-q", "-p",
-             f"read_rtlil {ilp}; hierarchy -top top; write_cxxrtl -g2 {cc}"],
-            capture_output=True, text=True)
+             f"read_rtlil {os.path.basename(ilp)}; hierarchy -top top; "
+             f"write_cxxrtl -g2 {os.path.basename(cc)}"],
+            cwd=os.path.dirname(so), capture_output=True, text=True)
         if r.returncode:
             raise RuntimeError("write_cxxrtl: " + r.stdout + r.stderr)
         r = subprocess.run(

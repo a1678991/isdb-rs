@@ -14,6 +14,7 @@ import os
 import random
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -281,6 +282,19 @@ class ProgressTest(unittest.TestCase):
                 a, b = chunked(7)
                 with a, b, contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(self.stalled(backend, 25), ref)
+
+
+class BuildDirTest(unittest.TestCase):
+    @need("cxxrtl")
+    @unittest.skipUnless(os.path.isdir("/tmp"), "no /tmp here")
+    def test_cxxrtl_under_tmp(self):
+        # YoWASP's Yosys has a /tmp of its own: a build under the host's
+        # (a checkout there) must not give Yosys an absolute path
+        with tempfile.TemporaryDirectory(dir="/tmp") as d, patch.object(simx._Cxx, "build_dir", d):
+            b = ClockBench()
+            e = simx.engine(b, b.ports(), "cxxrtl", tag="simx-clocks")
+            self.assertEqual(os.path.dirname(e.so), d)
+            e.close()
 
 
 KEY = """
