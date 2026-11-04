@@ -322,6 +322,39 @@ B44 frames of 16APSK 93/120, −400 Hz drifting, 14 dB):
 | bridge | — | the 40 MHz port to the 200 MHz decoder ports and back, two clocks | the test | — |
 | 1–9 | chain-6-chain (+ chain-3's taps) | every `Slots` word: 5 587 896 symbols in, 211 281 words out (3 frames: TMCC and status blocks; frame 2 decoded, 120 slot blocks), the LDPC stub answering each frame after its TMCC codeword is committed | — | 2 260 000 symbols (frame 0's blocks, 683 words) by default: about 45 s on Verilator (7 s of it simulation, 380 000 cycles/s; the first build 23–43 s), 130 s on CXXRTL (27 000 cycles/s; the first build about 3 minutes); the whole set (`FPGA_CHAIN_FULL=1`) 171 s on CXXRTL before its harness settled combinational outputs (38 000 cycles/s) |
 
+**Value coverage** (`tools/value_coverage.py`, issue #30 item 1;
+`tests/test_coverage.py` in `mise run fpga:test`, about 5 s of JSON
+parsing). A simulation checks only the values its set's expected outputs
+contain: build 7's n0 that was never learned and its shifted learned
+points passed every set because every expected status block had the
+reset n0 and none had learned points. The tool reads every chain and LDPC
+set in `build/` and reports, per field (the `Slots` header, slot, TMCC
+and status words, the status block per word; each stage set's heads,
+periods, carrier updates, φ and gain, taps and sums, layout, points,
+LLRs, learned points, n0 and K; each LDPC codeword's rate, schedule,
+limit, iterations, convergence and LLRs), the number of distinct values
+and the sets that carry them. It flags constant and absent fields by
+their boundary (always 0, the reset value, "none", a flag never set) and
+lists the boundary values never taken (an uncorrectable BCH word, the
+iteration limit 14, i8 saturation), the enumerated values never seen
+(modes, modulations, rates), the status words equal to their predecessor
+in every block (a one-word shift passes there) and the `Slots` fields
+that never change inside a set (a value a frame late passes there).
+`python tools/value_coverage.py [--markdown] [--all-fields]
+[--synthetic] [--no-excuses]`; the test writes the full report to
+`build/value_coverage.md`. The test fails on a constant or absent field
+that is in neither of the tool's two lists: `ALLOWED`, the constants
+accepted by definition with the reason each cannot vary (the format
+version, reserved bits, a dummy slot's words, layout lag 2), and
+`KNOWN_GAPS`, the gaps of today's corpus with the input that would close
+each (every whole-chain set decodes one frame, its last whole one, so no
+status block has a learned n0, K, constellation or `taps_from`; no slot
+fails LDPC or BCH; no TMCC needs an iteration or a correction; one mode,
+16APSK 93/120). It also fails on a known gap that a set now covers, so
+the list shrinks as the generators (`chainvectors.rs`, `ldpcvectors.rs`)
+grow. The gate reads the default synthetic corpus only; the recording
+sets are reported, not gated.
+
 **Estimates** (`mise run fpga:chain-estimate`: Yosys `synth_xilinx`,
 before place and route; 6-bit input; LUT includes the LUT RAM cells'
 LUTs, which Vivado counts as Slice LUTs). Before (piece 4) and after the
