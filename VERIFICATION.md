@@ -2018,6 +2018,36 @@ Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-rx12` (build 12),
 `prev-rx8`, `prev-rx7`, `prev-rx6` or `prev-txrx2`, then `reboot` and
 `recover`.
 
+### Build 14 on the board: the LDPC bridge at n cycles per beat (2026-11-04)
+
+The image of PR #52 (the bridge's serialiser at n decoder cycles per beat
+of n values; 32APSK then needs 192.6 M of the decoder's 200 M cycles with
+the TMCC burst, 232.6 M before). The project flow met every constraint
+itself: **WNS +0.100 ns, WHS +0.035 ns, 0 failing endpoints of 162 380 /
+162 157**; `rx_clk` +0.149 / +0.035, decoder `c0` +0.178 / +0.057, symbol
+clock +0.316 / +0.050, `clk_fpga_0` +1.026, `RGMII_rxc` +0.100 / +0.202.
+43 907 LUT (82.5 %), 123.5 BRAM36, 176 DSP. `isdbs3_rx14_top.bin`
+2 760 064 bytes, sha256 `f28fd6e3…` (the full digests in
+`/path/to/sdr/isdb-work/out/isdbs3-rx-build14/postflow.log`; XSA
+`0ae1e5cd658dba81956b89bca51f51f7dfb7ea374f2853cea41cab78bcb97670`). On
+the card: build 13 stays as `isdbs3_rx13_top.bin` (`uEnv.txt.prev-rx13`),
+build 14 as `isdbs3_rx14_top.bin` (selected). BS7 (16APSK: the bridge's
+new pace is exercised, the 32APSK margin is proven in simulation on
+chain-14 only), receive only, the host from `main` (captures in
+`/path/to/sdr/isdbs3-bench/build14/`):
+
+| Run | Valid slots | Not converged (dropped) | Slow loop | First taps in force | Max RSS |
+|---|---|---|---|---|---|
+| 8 s × 3 back to back | 23 232, 23 232, 23 136 | 0 (0) each | 4 solves in 4 ticks each, 0 register words read | frame 3, 3, 4 | 711–739 MB |
+| 30 s | 86 976 | 1 (0) | 15 solves, 0 words read | frame 4 | 721 MB |
+
+As builds 12 and 13 otherwise. **The board runs build 14.**
+
+Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-rx13` (build 13),
+`prev-rx12`, `prev-rx11`, `prev-rx10`, `prev-rx9` (build 9,
+`isdbs3_rx_top.bin`), `prev-rx8`, `prev-rx7`, `prev-rx6` or `prev-txrx2`,
+then `reboot` and `recover`.
+
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
 The checks of [docs/plans/isdbs-fpga-tx.md](docs/plans/isdbs-fpga-tx.md)
