@@ -1509,6 +1509,11 @@ STD-B44) is received to TLV streams.
   period's peak and sum: stage 3 took the status snapshot when it queued
   a slot, after a period end a few symbols past the head had replaced it.
   It keeps the head's own snapshot, the model's.
+- `fpga`: the ISDB-S3 chain's status counters (slots, LDPC and BCH
+  failures, iterations; status block and COUNTERS registers) included the
+  slots of a frame a restart dropped after some of its codewords were
+  decoded (the orphan blocks the host discards); they count whole frames,
+  as the model's do.
 - ISDB-S3 acquisition (`isdb rx --system isdbs3` from a radio, every
   offload, and the CPU receiver's blocks): 6.0–6.3 GB of peak resident
   memory, all of it the trim search on the acquisition's probe. Its 13

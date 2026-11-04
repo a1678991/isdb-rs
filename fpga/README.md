@@ -847,12 +847,20 @@ are needed: not provably narrower).
     alone, a period end's snapshot 40 cycles after each head's: 2001
     before, 1001 now) and `ChaosTest.test_restart_just_after_a_slot_head`
     (`FPGA_CHAIN_REAL=1`, frames 0-2 equal);
-  - **a known divergence, counted apart**: the chain's status counters
-    (slots, iterations, LDPC and BCH failures) include the slots it decoded
-    of a frame a restart dropped later (the orphans), the model's count
-    whole frames; in 158 status blocks of 75 runs, always exactly the
-    orphans before them. Which side should change is open (the host
-    discards orphan blocks but not these counts);
+  - **a divergence, then counted apart (fixed: the HDL counts as the
+    model)**: the chain's status counters (slots, iterations, LDPC and BCH
+    failures) included the slots it decoded of a frame a restart dropped
+    later (the orphans), the model's count whole frames; in 158 status
+    blocks of 75 runs, always exactly the orphans before them. The model's
+    documentation is the arbiter (`chain::frame::Counters`, counted when a
+    frame completes; the status block is its format) and matching it costs
+    little: `Finish` counts a frame's slots aside (7-bit counts and 15-bit
+    iterations for the frame in hand and the one before it, whose TMCC
+    result follows the next frame's first slots) and adds them at the
+    frame's TMCC result, replacing the 160 bits of counters it held for
+    that late TMCC; a frame that never completes is never added
+    (`OrphanCountersTest`). The harness's "known divergence" branch is
+    gone: a status block must be equal;
   - **by design, never seen differing**: frames handed out by the model
     within 8 slots before an undrained restart (the HDL's pipeline still in
     them) and the restart epoch were compared loosely, and every one was
@@ -871,8 +879,7 @@ stream (a block with its CRC instead of 308 register reads: the plan's
 "Build 8 issues", follow-up); `SlotsRx` as a whole with its front end in
 simulation (the chain's simulations start at the symbols); a host CONST /
 N0 load and layout lag 1 (FEATURES says so); the recording sets
-(`chain-rec-*`, opt-in) were not generated here; the counter divergence
-the chaos runs found (above: the orphans in the counters).
+(`chain-rec-*`, opt-in) were not generated here.
 
 ## The transmit block (`SymbolsTx`)
 

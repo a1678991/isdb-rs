@@ -471,6 +471,66 @@ class TmccOverrunTest(unittest.TestCase):
         self.assertEqual(S.unpack_bits(pay[3:], k - 198), hd)
 
 
+class OrphanCountersTest(unittest.TestCase):
+    """The status counters count whole frames only, as the model's
+    (`chain::frame::Counters`, counted when a frame completes): the slot
+    results of a frame whose TMCC result never comes (a restart dropped it
+    after some of its codewords were committed: the orphans the host
+    discards) are not counted, and a frame's status does not count the
+    next frame's slots that came before its TMCC result (the decoder's
+    commit order). In commit order: frame 5 whole, its slot 0 (converged,
+    7 iterations), slot 1 of frame 6 (converged, 9 iterations) before frame
+    5's TMCC result, frame 5's TMCC (dropped: header only); frame 6 never
+    completes; slot 0 of frame 7 (dropped by the decoder: not converged),
+    frame 7 whole, its TMCC. Before the change frame 7's status counted
+    frame 6's slot (3 slots, 16 iterations)."""
+
+    def test_orphans_not_counted(self):
+        import random
+
+        from isdb_fpga.chain import slots as S
+
+        rng = random.Random(7)
+        k = 374 * 93
+        nw = (k + 15) // 16
+
+        def slot(n, frame, it):  # a converged 93/120 slot with random bits
+            return [(1, n | 7 << 8 | 4 << 12, frame, it, 1, 0)] + \
+                [(2, rng.randrange(1 << 16), int(i == nw - 1), 0, 0, 0) for i in range(nw)]
+
+        tmcc_dropped = (1, 1 << 7 | 3 << 8)
+        recs = ([(0, 5, 1, 0, 0, 0)] + slot(0, 5, 7) + slot(1, 6, 9)
+                + [tmcc_dropped + (5, 0, 0, 1)]
+                + [(1, 0 | 7 << 8 | 4 << 12, 7, 0, 0, 1)]  # slot 0 of frame 7, dropped
+                + [(0, 7, 1, 0, 0, 0), tmcc_dropped + (7, 0, 0, 1)])
+        b = FinishBench()
+        f = b.fin
+        ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a, "b": b.b, "c": b.c,
+                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word, **b.mon.ports()}
+        backend = COMPILED or "pysim"
+        e = simx.engine(b, ports, backend, tag="orphans")
+        g = e.group("ov", ["ow"])
+        e.stall_limit = 1_000_000 if backend != "pysim" else None
+        e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=40_000)
+        bl = S.blocks([w for (w,) in e.read(g)])
+        self.assertEqual(b.mon.report(e.get), [])
+        status = {x[2]: x[3] for x in bl if x[0] == S.STATUS}
+        self.assertEqual(sorted(status), [5, 7])
+
+        def counters(st):
+            # after the 47 head words and the 5 constellation counts (none learned)
+            c = [st[52 + 2 * i] | st[53 + 2 * i] << 16 for i in range(6)]
+            return dict(zip(("frames", "undecoded", "tmcc_failed", "slots", "ldpc_failed", "bch_failed"), c),
+                        iterations=sum(st[64 + i] << (16 * i) for i in range(4)))
+
+        c5, c7 = counters(status[5]), counters(status[7])
+        print(c5, c7)
+        self.assertEqual((c5["frames"], c5["slots"], c5["ldpc_failed"], c5["iterations"]), (1, 1, 0, 7))
+        self.assertEqual((c7["frames"], c7["slots"], c7["ldpc_failed"], c7["iterations"]), (2, 2, 1, 7))
+        self.assertEqual(c7["bch_failed"], c5["bch_failed"])  # frame 6's random word: not counted
+        self.assertEqual(f.counters["slots"].shape().width, 32)
+
+
 class StatusPointsTest(unittest.TestCase):
     """The status block's learned points (`StatusSource` through the
     demapper's point RAM, a registered read) in `Finish`'s pacing: with

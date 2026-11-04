@@ -55,12 +55,9 @@ bits and BCH result (`bits` mode); frames F + 1 and F + 2 of such a frame
 may be decoded by the HDL alone (the restart epoch). Everything else
 must be equal block for block, per (frame, kind, slot), as in
 `stages.run_chain_real`: frames the model does not send whose slot
-blocks the chain sent before a drop (orphans) are counted, not compared.
-One divergence is known and counted apart (`counters_explained`, a
-finding, not a failure): the chain's status counters (slots, LDPC and
-BCH failures, iterations) include the orphan slots, the model's count
-whole frames; a status block that differs by exactly the orphans before
-it is reported as that.
+blocks the chain sent before a drop (orphans) are counted, not compared;
+the status counters count whole frames on both sides (the orphans' slots
+are not in them: `Finish` counts a frame's slots at its TMCC result).
 
 Health (`check_sample`), from the bench's ports (`RealChainBench.ports`)
 sampled after each event, `SETTLE` symbols later and at the end:
@@ -559,53 +556,6 @@ def status_counters(pay):
     return i - sum(n for _, n in COUNTERS), out
 
 
-def orphan_counts(gb, whole):
-    """Per frame counter, the slot results of frames the chain sent slot
-    blocks of but no TMCC / status (`whole`: the frames that are not
-    orphans), summed over the orphan frames before it: what the chain's
-    counters hold beyond the model's (the model counts whole frames)."""
-    per = {}
-    for (fr, kind, _s), pay in gb.items():
-        if kind != S.SLOT or fr in whole:
-            continue
-        f = S.slot_fields(pay)
-        if f["dummy"]:
-            continue
-        c = per.setdefault(fr, {"slots": 0, "ldpc_failed": 0, "bch_failed": 0, "iterations": 0})
-        c["slots"] += 1
-        c["ldpc_failed"] += int(not f["converged"])
-        c["bch_failed"] += int(f["converged"] and not f["bch_ok"])
-        c["iterations"] += f["iterations"]
-
-    def before(frame):
-        tot = {"slots": 0, "ldpc_failed": 0, "bch_failed": 0, "iterations": 0}
-        for fr, c in per.items():
-            if fr < frame:
-                for k in tot:
-                    tot[k] += c[k]
-        return tot
-    return before
-
-
-def counters_explained(g_, m_, counted, frame):
-    """Whether a status block differs from the model's only in its
-    counters, by the slot results of the orphan frames before it (the
-    chain counts every slot it decodes, the model those of whole frames):
-    a description, or None."""
-    if len(g_) != len(m_):
-        return None
-    start, gc = status_counters(g_)
-    _, mc = status_counters(m_)
-    if g_[:start] != m_[:start]:
-        return None
-    extra = counted(frame)
-    diff = {k: gc[k] - mc[k] for k in gc if gc[k] != mc[k]}
-    if not diff or any(diff.get(k, 0) != extra.get(k, 0) for k in set(diff) | set(extra)):
-        return None
-    return (f"status counters exceed the model's by the orphan slots before it ({diff}): the chain counts the "
-            f"slots it decoded of frames dropped later, the model counts whole frames")
-
-
 def keyed(blocks):
     out, twice = {}, []
     for (_i, kind, _seq, frame, pay) in blocks:
@@ -642,9 +592,8 @@ def compare(model, hdl_blocks, events):
     epoch = {g + d: g for g in ambiguous for d in (1, 2)}
     hdl_sent = {k[0] for k in gb if k[1] in (S.TMCC, S.STATUS)}
     orphans = sorted({k[0] for k in gb if k[1] == S.SLOT} - hdl_sent - set(mframes))
-    counted = orphan_counts(gb, hdl_sent | set(mframes))
     problems += [f"the chain sends block {k} twice" for k in gtwice if k[0] in hdl_sent]
-    outcomes, known = {}, []
+    outcomes = {}
     for fr in sorted(set(mframes) | hdl_sent):
         mf = mframes.get(fr)
         bits = bits_from is not None and (mf is None or mf["done"] > bits_from - LATENCY)
@@ -663,7 +612,7 @@ def compare(model, hdl_blocks, events):
             problems.append(f"frame {fr}: the chain sends its TMCC/status, the model does not")
             continue
         keys = sorted(k for k in set(eb) | set(gb) if k[0] == fr)
-        diffs, iters, status_differs, orphan_counted = [], 0, False, False
+        diffs, iters, status_differs = [], 0, False
         extra_slots = [k for k in keys if k not in eb and k[1] == S.SLOT]
         epoch_frame = bool(extra_slots) and not any(k[1] == S.SLOT for k in keys if k in eb) and fr in epoch
         if epoch_frame:
@@ -687,15 +636,9 @@ def compare(model, hdl_blocks, events):
             if k[1] == S.STATUS and epoch_frame and len(g_) == len(m_) \
                     and g_[:status_counters(g_)[0]] == m_[:status_counters(m_)[0]]:
                 continue  # the counters hold the epoch's slots
-            if k[1] == S.STATUS:
-                why = counters_explained(g_, m_, counted, fr)
-                if why:
-                    known.append(f"frame {fr}: {why}")
-                    orphan_counted = True
-                    continue
-                if bits:
-                    status_differs = True
-                    continue
+            if k[1] == S.STATUS and bits:
+                status_differs = True
+                continue
             if bits and k[1] == S.SLOT:
                 gf_, mf_ = S.slot_fields(g_), S.slot_fields(m_)
                 dn = [x for x in mf_ if x != "iterations" and gf_[x] != mf_[x]]
@@ -717,14 +660,11 @@ def compare(model, hdl_blocks, events):
             loose = [f"{iters} iteration counts"] * bool(iters) + ["the status block"] * status_differs
             outcomes[fr] = ("restart epoch (TMCC equal)" if epoch_frame
                             else f"bits equal ({' and '.join(loose)} differ)" if loose
-                            else "equal but the counters (orphans)" if orphan_counted else "equal")
+                            else "equal")
     if bits_from is not None:
         findings.append(f"from stream position {bits_from - LATENCY} on (an undrained restart right after a "
                         f"frame the model handed out) compared in bits mode: slot fields but the iteration "
                         f"count, the TMCC's bits and BCH result; status blocks not compared")
-    if known:
-        findings.append(f"KNOWN DIVERGENCE (counted, not a failure; see README \"Chaos runs\"): {known[0]}"
-                        + (f" (and {len(known) - 1} more frames)" if len(known) > 1 else ""))
     if orphans:
         findings.append(f"slot blocks of frames the model does not send (dropped later or unfinished, "
                         f"orphans): {orphans}")
