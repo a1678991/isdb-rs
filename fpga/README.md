@@ -854,22 +854,32 @@ are needed: not provably narrower).
   cannot correct, an uncorrectable TMCC (the frame two on undecoded), a
   TMCC word that needs an iteration and 5 BCH corrections, a missed and a
   stray frame marker: bit-exact with the real decoder, the monitors
-  quiet. **Open defect** (found by this set, not fixed): a TMCC word whose
-  BCH corrects **six or more** errors hangs the chain. With chain-12's
-  frame 1 TMCC given a sixth error in the decoder's output (position
-  11 209; `test_six_tmcc_corrections`, an expected failure, and
+  quiet. **Fixed defect** (found by this set): a TMCC word whose BCH
+  corrected **six or more** errors hung the chain. With chain-12's frame
+  1 TMCC given a sixth error in the decoder's output (position 11 209;
   `tools/real_variant.py build/chain-12-fail.json --no-bch --no-tmcc 2
   --tmcc-pos 1:2548,2748,4547,9042,10295,11209`), frame 1's TMCC block
-  (word 7 211 of the stream) leaves with payload word 0 = 0xFB79 instead
-  of the correction count 6, stops after 13 words (a bad CRC), and no
-  word follows; the decoder's result queue overflows at symbol clock
+  (word 7 211 of the stream) left its 9 header words (the last, 0xFB79,
+  the header's checksum) and its 4 first payload words (count 6,
+  iterations, frame: right) and nothing more: a bad CRC, the result
+  stream stalled, the decoder's result queue overflowed at symbol clock
   3 050 575 (monitor `dec.queue_overflow`), then its tag queue
-  (`br.tag_overflow`). One to five errors pass at any position (the
-  count and the bits as the model's); 13 (uncorrectable: Berlekamp-Massey
-  fails, no Chien search) pass; the TMCC stage bench alone (`TmccTest`,
-  own `Realign`, no `Finish`) corrects 7. So the fault is in `Finish`'s
-  TMCC path with the shared BCH unit and `Realign` (`tmcc.TmccResult`
-  with `own_align=False`) once the correction takes six or more roots.
+  (`br.tag_overflow`). The cause: `Finish` asked `TmccResult` for the
+  information bits with a one-cycle `o_go` pulse (its state `TMCC_GO`,
+  after the block's 4 first words), and `TmccResult` takes `o_go` only
+  in its `HOLD`, after `FixRoots` has flipped the BCH's roots in its
+  buffer, 3 cycles a root. The pulse came 17 cycles after the BCH's
+  result, `HOLD` 2 + 3 n: from n = 6 roots the pulse was missed and the
+  finish stage waited in `TMCC_BITS` forever. The stage bench (`TmccTest`)
+  leaves `o_go` at its reset value 1, so it could not show it. `o_go` is
+  now a level the finish stage holds through `TMCC_BITS` (the state
+  `TMCC_GO` is gone); the BCH and its values are unchanged.
+  `RealDecoderChainTest` checks 6 and 12 TMCC corrections (t = 12) and
+  12 TMCC corrections right after three slots of 12 corrections each
+  (frame 2's slots 0-2, committed before frame 1's TMCC word, which waits
+  in the result FIFO for the shared unit), every block sent as the
+  model's but the counts; 7 to 11 with FPGA_CHAIN_SWEEP=1. Finish stage
+  (Yosys): 5 966 → 5 996 LUT, 2 937 FF unchanged.
 - **A corrected slot no longer holds the decoder.** The BCH's Chien search
   took n symbol clocks (34 776 at 93/120, 3.1 slots) while the finish
   stage held the result stream, and with it a decoder bank: a few

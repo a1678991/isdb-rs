@@ -410,7 +410,9 @@ class TmccResult(Elaboratable):
         self.o_bits = Signal(16)
         self.o_last = Signal()
         self.busy = Signal()
-        self.o_go = Signal(init=1)  # in: stream the information bits now
+        # in: stream the information bits now (a level, taken in HOLD: after
+        # the BCH's roots are flipped, 3 cycles a root; held until o_last)
+        self.o_go = Signal(init=1)
 
     def elaborate(self, platform):
         m = Module()
