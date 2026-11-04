@@ -28,6 +28,15 @@ STD-B44) is received to TLV streams.
   loop); `isdb_frontend::control::chain`, the host's register map of the
   chain (placeholder addresses). Tools: `tools/slots-vs-symbols.sh`,
   `tools/tlv-packet-diff.py`.
+- `fpga`: chaos runs of the ISDB-S3 chain with the real LDPC decoder
+  (issue #30 item 3; `isdb_fpga/chain/chaos.py`, `tests/test_chaos.py`,
+  `tools/chaos_run.py`): random host stops, STARTs, input losses and tap
+  writes from a seed on the real-decoder sets, the decoder's and bridge's
+  health after each event, the `Slots` sequence numbers, and every block
+  against the model restarted at the same points
+  (`isdbs3-phy` `examples/chainscenario`, `Chain::start`,
+  `Back::load_taps`, `Back::open_frame`). Opt-in with `FPGA_CHAIN_REAL=1`
+  (one pinned case) and `FPGA_CHAIN_CHAOS=<seeds>` (a sweep).
 - Tools: `tools/isdbs-bench-check.sh --receiver dt295|exact` (default
   `dt295`) and `--receiver-drops PIDS` (the profile's `0x0001`; `""` for
   none): the PIX-DT295's raw output drops the CAT without a null (its PID
