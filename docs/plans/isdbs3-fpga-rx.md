@@ -1641,3 +1641,12 @@ first symbols, so later), dropping its two 210-bit snapshot registers.
 Fit of the four (Yosys, against `4eb0602`): `SlotsRx` without the decoder
 26 487 → 26 461 LUT, 27 245 → 26 970 FF; `Finish` 5 832 → 5 809 LUT,
 2 960 → 2 873 FF; block RAM and DSP unchanged.
+
+**Build 10 on the board** (2026-11-04, VERIFICATION.md "Build 10 on the
+board"): every constraint met after `holdfix.tcl` (WNS +0.041 ns, WHS
++0.046 ns; 43 792 LUT, 123.5 BRAM36, 176 DSP); 3 × 8 s back to back, 30 s
+and an 8 s debug run on BS7: no bank held at any open (build 9 read
+"held 1" at every open after the first), 0 dropped slots, 0–1 not
+converged per run, the counters counting whole frames. The card keeps
+build 9 as `isdbs3_rx_top.bin` (`uEnv.txt.prev-rx9`) and runs build 10 as
+`isdbs3_rx10_top.bin`.
