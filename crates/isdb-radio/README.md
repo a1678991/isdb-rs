@@ -201,7 +201,9 @@ consumer of the `Slots` words reports each frame, `ChainHealth`) it
 watches a written set on the frames under it and takes it back
 (`Revert`: n0 + 20 %, 5 % of the codewords failed, or no layout); and
 when the chain has had no layout, or no capture held, for 1.5 s it
-writes the last good set or the identity (`Tick::Recovered`). With
+writes the last good set or the identity (`Tick::Recovered`); a capture
+a restart of the chain released (SUMS_CAPTURE neither VALID nor ARMED
+while it waits) is armed again at the next poll. With
 `SlowLoopOptions::sums_source` `SumsSource::Stream` (an image of `Slots`
 format 2 with SUMS_STREAM, and `health`) it takes each frame's sums from
 the consumer (`ChainHealth::sums`, the first as soon as it arrives:

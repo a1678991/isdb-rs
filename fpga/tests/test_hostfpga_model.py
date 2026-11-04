@@ -334,6 +334,23 @@ class PropertiesTest(unittest.TestCase):
         self.assertEqual(new["transient_zero"], 0)
         self.assertEqual(new["solved_wrong"], 0)
 
+    def test_a_released_capture_is_armed_again(self):
+        """A gap, fixed: with PR #40's HDL a restart releases the capture the
+        register path armed, and the loop waited for VALID for ever (one
+        "no capture held" recovery, then no solve). It arms another at the
+        next poll; across the restart times of an armed wait (9.3-9.475 s
+        in this run) the solves go on within the bound."""
+        r = run("registers-restart")
+        self.assertEqual(r["rearms"], 1)
+        self.assertEqual(r["recoveries"], 0)
+        self.assertEqual(r["solved_mixed"], 0)
+        self.assertEqual(hm.liveness(S["registers-restart"], r), [])
+        for i in range(8):
+            sc = replace(S["registers-restart"], restart_at=(9.3 + 0.025 * i,), seconds=20.0)
+            r = hm.run(sc)
+            self.assertEqual((r["rearms"], r["recoveries"]), (1, 0), sc.restart_at)
+            self.assertEqual(hm.liveness(sc, r), [], sc.restart_at)
+
     def test_a_layout_lost_during_a_set_keeps_it(self):
         """A finding, fixed: SUMS_CAPTURE's NO_LAYOUT bit follows the layout
         while a capture is held, so comparing the whole word before and after

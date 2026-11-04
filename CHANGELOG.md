@@ -1545,6 +1545,14 @@ STD-B44) is received to TLV streams.
 
 ### Fixed
 
+- `isdb-radio`: the chain's slow loop on the register path never armed a
+  capture again after a restart of the chain (START, a lost sync, the
+  chain's stop) released the one it waited for (PR #40's HDL releases an
+  armed capture and a hold at a restart): it polled for VALID for ever,
+  wrote known taps once after 1.5 s ("no capture held") and solved no
+  more. A tick that reads SUMS_CAPTURE neither VALID nor ARMED while it
+  waits arms another at the next poll. Found with the timed host–FPGA
+  model (`registers-restart`).
 - `isdb-radio`: on an image with the training sums in the `Slots`
   stream, the slow loop waited for ever, silently, when the sums blocks
   stopped while frames still decoded (another client's SUMS_CAPTURE write
