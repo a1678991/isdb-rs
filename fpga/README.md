@@ -7,6 +7,11 @@ a Rust reference model in the workspace that it must match **bit for
 bit**. The model writes test vectors, and the HDL simulation here
 reproduces them.
 
+For the development loop (`fpga:test-quick`, a test class, the suite, the
+real decoder), the bounded speed measurement and how the simulation's cost
+was measured, see [FPGA simulation
+turnaround](../docs/plans/fpga-simulation-timescale.md).
+
 The first stage is the single-carrier front end of
 [`isdb-frontend`](../crates/isdb-frontend/README.md) (IQ → `Symbols`,
 format version 4) for ISDB-S and ISDB-S3 on the PlutoSky R2
@@ -70,6 +75,8 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `isdb_fpga/simldpc.py` | the decoder against LDPC vectors files (`python -m isdb_fpga.simldpc VECTORS… [--max N] [--fill-known] [--all-rates] [--backend pysim\|cxxrtl\|verilator]`): Amaranth's Python simulator or the design compiled with Verilator or CXXRTL (`chain.simx`; the default where it can be built: Verilator where installed, else CXXRTL) |
 | `synth/ldpc_estimate.py`, `synth/ldpc_cycles.py`, `synth/ldpc_memories.py`, `synth/ldpc_simspeed.py`, `synth/ldpc_latency.py` | the decoder's Yosys estimate per S, its cycles per iteration per rate and S, how Yosys maps each memory shape, the simulation speed of both backends, the measured write latency |
 | `synth/sim_compare.py`, `synth/sim_speed.py`, `synth/sim_parallel_build.py`, `synth/sim_xcheck.py` | the compiled simulation backends ([below](#simulation-backends)): every test bench on two backends compared value for value (`--x-unique SEED`: Verilator's X values random), one bench's build time and speed, parallel builders of one library, the random X values in effect |
+| `synth/chain_simspeed.py` | the chain with the real decoder on a short prefix or idle clocks: cycles per second on a backend, what chunks or another compiler level cost and change, bounded ([the report](../docs/plans/fpga-simulation-timescale.md)) |
+| `tools/sim_hashseed.py` | the compiled libraries' keys per design and `PYTHONHASHSEED`, each seed in a process of its own |
 | `isdb_fpga/chain/` | the ISDB-S3 chain after the front end (stages 1–6, 8, 9; [below](#the-isdb-s3-chain-slotsrx)) |
 | `synth/chain_estimate.py` | Yosys estimates of the chain's blocks (LUT including the LUT RAM cells' LUTs) |
 | `synth/cells.py`, `synth/bch_parts.py` | which cells (DSP, block RAM, LUT RAM) a block's estimate made, by name; the BCH unit's parts |
@@ -88,6 +95,7 @@ in user space). Nothing here needs a vendor toolchain:
 
 ```sh
 mise run fpga:test         # vectors from the models, then the HDL simulation of both blocks
+mise run fpga:test-quick   # seconds, no vectors: the stream driver, the LDPC bridge, the CRC
 mise run fpga:formal       # the formal checks alone (also part of fpga:test)
 mise run fpga:estimate     # resource estimate of the 32-tap block
 mise run fpga:verilog      # fpga/build/isdb_symbols_rx.v for a vendor flow
@@ -124,6 +132,23 @@ never by the Python around them; one process builds a library while the
 others (pytest-xdist workers) wait on its lock. On Ubuntu `apt install
 verilator` (5.032 on 26.04); `tools/verilator-apt-time.sh` times that in
 a container.
+
+**The hash seed.** Amaranth collects a design's implicit clock domains in
+sets, so a design with more than one has an RTLIL port order, and a
+library key, per Python hash seed (`tools/sim_hashseed.py`: `RealChainBench`
+three keys over seeds 0, 1, 2, a decoder alone one). `fpga:test` and
+`fpga:test-quick` set `PYTHONHASHSEED=0`, which CI's `mise run fpga:test`
+inherits, so the workers of a run, later runs and CI's cache share one
+library per design. Set it before Python starts on a direct command
+(`PYTHONHASHSEED=0 uv run --locked pytest …`): without it each process,
+xdist workers included, has a seed of its own and may build its own copy of
+such a design. It cannot be set from inside a running interpreter.
+
+**`FPGA_SIM_PROGRESS=1`** reports on stderr the elaboration, the cache's
+answer and a run's records, drain cycles and cycles per second, for the
+compiled backends. The clock sequence is the same (`tests/test_simx.py`,
+`ProgressTest`), the cost not measurable (the report); under pytest add
+`-s`, which also works with xdist.
 
 The backends give the same records, value for value: `synth/sim_compare.py`
 runs every compiled test bench (the chain's stages 1–6 and BCH whole, the
@@ -323,9 +348,8 @@ frame 0 (2 484 771 cycles) 10.2-10.3 s before, 9.7-9.8 s after;
 `chain-7-hdl` with the real decoder (8 179 491 cycles) 115-117 s before,
 112 s after (147 s once with the host loaded). With `FPGA_CHAIN_REAL=1`
 490 s before, 513 s after. (The designs' RTLIL, and so the compiled
-models' cache keys, depend on Python's hash seed: the order of the clock
-domains' ports changes with it, before and after this change, so a new
-process may rebuild a model a previous one built under another seed.)
+models' cache keys, depend on Python's hash seed, before and after this
+change: [the hash seed](#simulation-backends).)
 
 **The pipeline mutation run** (`tools/pipeline_mutation.py`, one-off and
 opt-in, about 3 minutes with 8 jobs on Verilator): 35 mutations, each

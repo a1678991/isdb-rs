@@ -1029,6 +1029,15 @@ STD-B44) is received to TLV streams.
 
 ### Changed
 
+- The FPGA simulations: `fpga:test` sets `PYTHONHASHSEED=0`, so test
+  workers, later runs and CI share one compiled library per design (with
+  more than one clock domain the design's RTLIL, and the library's key,
+  followed Python's hash seed; `fpga/tools/sim_hashseed.py`). New:
+  `mise run fpga:test-quick` (seconds, no vectors), `FPGA_SIM_PROGRESS=1`
+  (elaboration, cache and rate reports from the compiled backends, the same
+  clock sequence), `fpga/synth/chain_simspeed.py` (a bounded speed
+  measurement of the chain with the real decoder) and the dated
+  measurements in `docs/plans/fpga-simulation-timescale.md`.
 - `isdb rx --radio … --system isdbs3` with the FPGA receive chain starts
   the chain on equaliser taps solved from the acquisition's 0.2 s IQ
   probe (`isdbs3_phy::chain::probe::probe_taps`: the front end's and the

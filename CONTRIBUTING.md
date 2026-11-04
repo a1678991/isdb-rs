@@ -195,6 +195,7 @@ tasks; `mise tasks` lists them with their descriptions. The tasks that
 | `mise run msrv` | `cargo +<rust-version> check` on every target |
 | `mise run oracle` | clippy on the stand-alone `oracle/rust_tx3` helper |
 | `mise run fpga:test` | the FPGA blocks simulated against the Rust/Python models (needs uv; CI runs it when `fpga/` or the model crates change) |
+| `mise run fpga:test-quick` | seconds, no vectors: the compiled stream driver, the LDPC bridge, the CRC (a smoke test, not the regression suite) |
 
 Tests must not depend on the speed of the machine. A test that compares
 with the wall clock (a real-time producer, pacing) goes into a test
