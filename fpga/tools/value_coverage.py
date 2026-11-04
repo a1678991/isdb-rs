@@ -10,7 +10,7 @@ constellation. This tool reads every chain and LDPC set in `fpga/build/`
 `ldpcvec-py-*.json`) and reports, per field, the number of distinct
 values and the sets that exercise them:
 
-- every field of the `Slots` words of the whole-chain sets (6-11): the
+- every field of the `Slots` words of the whole-chain sets (6-12): the
   block header, the slot block, the TMCC block, the status block and the
   sums block (`isdb_frontend::slots` format 2: `SlotBlock`, `TmccBlock`,
   `Status`, `SumsBlock`; read with `isdb_fpga.chain.slots`), the status
@@ -61,7 +61,7 @@ from isdb_fpga.chain import slots as fmt  # noqa: E402
 BUILD = os.path.join(os.path.dirname(__file__), "..", "build")
 
 CHAIN_STAGES = ["sync", "phase", "eq", "tmcc", "demap", "chain", "hdl", "loss", "fade", "bch",
-                "taps"]
+                "taps", "fail"]
 CHAIN_RE = re.compile(r"^chain-(rec-)?(\d+)-(" + "|".join(CHAIN_STAGES) + r")\.json$")
 LDPC_RE = re.compile(r"^(ldpc-\d+-.*|ldpcvec-py-\d+-.*)\.json$")
 
@@ -111,7 +111,7 @@ class Spec:
     bounds: dict = field(default_factory=dict)  # value -> meaning (reported when never taken)
 
 
-WHOLE = ("chain-6", "chain-7", "chain-8", "chain-9", "chain-10", "chain-11")
+WHOLE = ("chain-6", "chain-7", "chain-8", "chain-9", "chain-10", "chain-11", "chain-12")
 SLOTS_PARTS = ("header", "slot", "dummy", "tmcc", "status", "sums")
 SPECS = {}
 
@@ -203,7 +203,8 @@ def _specs():
     spec("chain.frames.tmcc_bch", "frames[].tmcc_bch (None: failed)", WHOLE)
     spec("chain.frames.ldpc_iterations", "frames[].ldpc_iterations per valid slot", WHOLE)
     spec("chain.losses", "losses: symbols lost per event", WHOLE)
-    spec("chain.bch_errors", "bch_errors: bit errors injected per slot", ("chain-10",))
+    spec("chain.bch_errors", "bch_errors: bit errors injected per slot", ("chain-10", "chain-12"))
+    spec("chain.tmcc_errors", "tmcc_errors: bit errors injected per TMCC word", ("chain-12",))
     spec("input.re", "input symbols (6 bit), re", ("chain-1", "chain-2") + WHOLE,
          bounds={-32: "negative full scale", 31: "positive full scale"})
     spec("input.im", "input symbols (6 bit), im", ("chain-1", "chain-2") + WHOLE,
@@ -519,15 +520,17 @@ def _chain(V, sn, stage, d):
         V.add("eq.sums.p", sn, (_wide(c) for v in su["p"] for c in v))
         V.add("eq.solved", sn, d["solved"] or [None])
     elif stage == "tmcc":
-        _cplx(V, "tmccst.z", sn, d["z_tmcc"])
-        V.add("tmccst.soft", sn, d["soft"])
-        V.one("tmccst.known", sn, d["known"])
-        V.one("tmccst.ldpc_iterations", sn, d["ldpc_iterations"])
-        V.one("tmccst.bch_corrected", sn, d["bch_corrected"])
-        V.one("tmccst.lag", sn, d["applies_to"] - d["frame"])
-        for k, n in enumerate(("slot", "mode", "modulation", "rate", "dummy", "symbol_start",
-                               "symbols")):
-            V.add(f"tmccst.layout.{n}", sn, _col(d["layout"], k))
+        # the frame's record and chain-12's noisy frame's (`noisy`)
+        for t in [d] + ([d["noisy"]] if "noisy" in d else []):
+            _cplx(V, "tmccst.z", sn, t["z_tmcc"])
+            V.add("tmccst.soft", sn, t["soft"])
+            V.one("tmccst.known", sn, t["known"])
+            V.one("tmccst.ldpc_iterations", sn, t["ldpc_iterations"])
+            V.one("tmccst.bch_corrected", sn, t["bch_corrected"])
+            V.one("tmccst.lag", sn, t["applies_to"] - t["frame"])
+            for k, n in enumerate(("slot", "mode", "modulation", "rate", "dummy", "symbol_start",
+                                   "symbols")):
+                V.add(f"tmccst.layout.{n}", sn, _col(t["layout"], k))
     elif stage == "demap":
         V.one("demap.k", sn, d["k"])
         V.one("demap.n0", sn, d["n0"])
@@ -554,6 +557,8 @@ def _chain(V, sn, stage, d):
         V.add("chain.losses", sn, (n for _, n in d["losses"]))
         if "bch_errors" in d:
             V.add("chain.bch_errors", sn, (len(p) for _, _, p in d["bch_errors"]))
+        if "tmcc_errors" in d:
+            V.add("chain.tmcc_errors", sn, (len(p) for _, p in d["tmcc_errors"]))
 
 
 def _ldpc(V, sn, d):
@@ -819,32 +824,12 @@ KNOWN_GAPS = {
                                      "TMCC)",
     "status.agc": "no set writes the AGC register (reset 0): needs Chain::set_agc in the "
                   "generator and the value in the set for the bench to write REG_AGC",
-    "status.ldpc_failed": "no slot fails LDPC: needs a slot whose symbols are destroyed (e.g. "
-                          "one slot replaced by noise) so the real decoder stops at 14",
-    "status.bch_failed": "no slot fails BCH: needs 13 or more bit errors in one converged "
-                         "slot (chain-10's injection beyond t = 12)",
-    "status.tmcc_failed": "no TMCC fails: needs a TMCC word the code cannot correct (noise "
-                          "on the TMCC symbols, or errors beyond its BCH t)",
-    "status.missed_markers": "no frame marker missed: needs one frame head's FSync corrupted "
-                             "while the lock holds",
-    "status.stray_markers": "no stray frame marker: needs a !FSync head of another slot "
-                            "turned into FSync polarity",
-    "slot.converged": "every valid slot converges: the same input as status.ldpc_failed",
-    "slot.bch_ok": "every converged slot's BCH succeeds: the same input as status.bch_failed",
     "slot.mode": "every slot is mode 0: needs a TMCC with several transmission modes",
     "slot.modulation": "every slot is 16APSK: needs pi/2-BPSK, QPSK, 8PSK and 32APSK slots "
                        "(a mixed-mode TMCC)",
     "slot.rate": "every slot is 93/120: needs the other ten rates",
     "dummy.modulation": "a dummy carries its mode's codes: one mode, one value (as slot.mode)",
     "dummy.rate": "a dummy carries its mode's codes: one mode, one value (as slot.rate)",
-    "tmcc.bch": "no TMCC word needs a BCH correction: needs bit errors in the TMCC decoder's "
-                "output (as chain-10 does for slots) or a noisier TMCC",
-    "tmcc.iterations": "every TMCC word is a codeword at iteration 0: needs noise on the TMCC "
-                       "symbols (lower Es/N0 there)",
-    "chain.frames.tmcc_bch": "no TMCC BCH correction: the same input as tmcc.bch",
-    "tmccst.ldpc_iterations": "chain-4's TMCC decodes at iteration 0 (as tmcc.iterations)",
-    "tmccst.bch_corrected": "chain-4's TMCC has no BCH correction in its expected values (the "
-                            "HDL test flips 7 bits itself)",
     "tmccst.layout.mode": "the layout has one mode: needs a mixed-mode TMCC",
     "tmccst.layout.modulation": "the layout is 16APSK only: needs a mixed-mode TMCC",
     "tmccst.layout.rate": "the layout is 93/120 only: needs a mixed-mode TMCC",

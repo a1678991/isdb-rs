@@ -549,9 +549,11 @@ def tmcc_stub_bits(info_bits):
 
 
 def run_tmcc(doc, backend, flips=()):
-    """Stage 5 on chain-4-tmcc. `flips`: decoder output positions to flip
-    (bit errors the BCH must correct: the vectors have none; the expected
-    result is then the vectors' with that many corrections)."""
+    """Stage 5 on chain-4-tmcc (or its `noisy` record). `flips`: decoder
+    output positions to flip (bit errors the BCH must correct; the expected
+    result is then the vectors' with that many corrections more); the
+    record's own `errors` (its decoder output's flips, counted in its
+    `bch_corrected`) are flipped too."""
     from .frame import lay_pack
     from .ldpc_if import OP_BEGIN, OP_DONE, OP_WRITE, TAG_TMCC
 
@@ -564,7 +566,7 @@ def run_tmcc(doc, backend, flips=()):
     gaps = [0] * len(recs)
     gaps[-1] = 80_000  # the burst (about half the cycles granted)
     beats = tmcc_stub_bits(doc["bits"])
-    for p_ in flips:
+    for p_ in list(doc.get("errors", ())) + list(flips):
         beats[p_ // 16] ^= 1 << (p_ % 16)
     it = doc["ldpc_iterations"]
     recs.append((T_HEAD, it if it is not None else 50, int(it is not None), F, 0))
@@ -821,7 +823,7 @@ def run(stage, doc, backend, symbols):
         return run_chain(doc, None, backend, symbols)
     if stage in ("7-hdl", "10-bch"):
         return run_chain_real(doc, load(path.replace(stage, "3-eq"))["taps"], backend, symbols)
-    if stage in ("8-loss", "9-fade"):
+    if stage in ("8-loss", "9-fade", "11-taps", "12-fail", "13-modes"):
         return run_chain_real(doc, None, backend, symbols)
     raise NotImplementedError(stage)
 
@@ -1101,15 +1103,20 @@ class RealChainBench(Elaboratable):
     C_TAPARM and C_AGC (the host's TAPS_FROM and AGC writes, `host_records`).
     `errors`: [(frame, slot, [positions])] bits to flip in the decoder's
     output stream (a set's `bch_errors`: the model flipped the same in its
-    decoder's output), between the bridge and the chain. The chain's stop
+    decoder's output), between the bridge and the chain; `tmcc_errors`:
+    [(frame, [positions])] the same in a frame's TMCC word (a set's
+    `tmcc_errors`). A flip is found by (frame, the tag's low byte: the slot,
+    or 0x80 for the TMCC, word) in that order, as the results leave in
+    commit order: the TMCC of frame N follows the first slots of N + 1, so
+    those must have no flips when it has. The chain's stop
     is on (`SlotsChain.stop_after`, `top.STOP_AFTER` symbol clocks without
     an input record), as in `SlotsRx`: a bench's pause is a host's stop."""
 
-    def __init__(self, units=34, banks=3, errors=(), monitors=True):
+    def __init__(self, units=34, banks=3, errors=(), tmcc_errors=(), monitors=True):
         from amaranth.hdl import DomainRenamer
 
         from ..ldpc import LdpcDecoder
-        from .ldpc_if import LdpcBridge
+        from .ldpc_if import TAG_TMCC, LdpcBridge
         from .top import SlotsChain
 
         from .ldpc_if import LdpcPort
@@ -1120,7 +1127,7 @@ class RealChainBench(Elaboratable):
         self.bport = LdpcPort("brg")
         self.br = LdpcBridge(self.bport)
         flips = {}
-        for fr, sl, pos in errors:
+        for fr, sl, pos in list(errors) + [(fr, TAG_TMCC, pos) for fr, pos in tmcc_errors]:
             for p_ in pos:
                 key = (fr, sl, p_ // 16)
                 flips[key] = flips.get(key, 0) | 1 << (p_ % 16)
@@ -1159,14 +1166,14 @@ class RealChainBench(Elaboratable):
         if self.flips:
             from amaranth.hdl import Array, Const
 
-            fl = self.flips + [((0xFFFFFFFF, 0x7F, 0xFFF), 0)]
+            fl = self.flips + [((0xFFFFFFFF, 0xFF, 0xFFF), 0)]
             ptr = Signal(range(len(fl)))
-            ent = Array(Const(fr << 19 | sl << 12 | w, 51) for (fr, sl, w), _ in fl)[ptr]
+            ent = Array(Const(fr << 20 | sl << 12 | w, 52) for (fr, sl, w), _ in fl)[ptr]
             msk = Array(Const(mk, 16) for _, mk in fl)[ptr]
-            cur = Signal(51)  # frame, slot, word of the beat in hand
+            cur = Signal(52)  # frame, slot (or the TMCC flag), word of the beat in hand
             take = bp.out_valid & cp.out_ready
             with m.If(take & bp.out_head):
-                m.d.sync += cur.eq(Cat(Const(0, 12), bp.out_tag[0:7], bp.out_tag[32:64]))
+                m.d.sync += cur.eq(Cat(Const(0, 12), bp.out_tag[0:8], bp.out_tag[32:64]))
             with m.If(take & ~bp.out_head):
                 m.d.sync += cur.eq(cur + 1)
                 with m.If(cur == ent):
@@ -1277,7 +1284,7 @@ def run_chain_real(doc, taps, backend=None, symbols=None):
         acc += 40e6 / 33.7561e6 - 1
         gaps.append(int(acc))
         acc -= int(acc)
-    b = RealChainBench(errors=doc.get("bch_errors", ()))
+    b = RealChainBench(errors=doc.get("bch_errors", ()), tmcc_errors=doc.get("tmcc_errors", ()))
     p = b.ports()
     t0 = time.time()
     e = engine(b, p, backend, tag="chainreal")
@@ -1378,7 +1385,7 @@ def run_chain_restarts(doc, taps, backend=None, cycles=4, pause=200_000):
             acc -= int(acc)
         return recs, gaps
 
-    b = RealChainBench(errors=doc.get("bch_errors", ()))
+    b = RealChainBench(errors=doc.get("bch_errors", ()), tmcc_errors=doc.get("tmcc_errors", ()))
     t0 = time.time()
     e = engine(b, b.ports(), backend, tag="chainreal")
     e.stall_limit = 3_000_000
