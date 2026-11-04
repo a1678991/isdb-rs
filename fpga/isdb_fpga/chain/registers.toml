@@ -11,7 +11,7 @@
 # - the host: crates/isdb-frontend/tests/chain_registers.rs checks every
 #   address, bit field, width and reset constant of
 #   `isdb_frontend::control::chain` against it (and that a register the map
-#   calls read only is documented so); isdb-radio's `chain::regmap_tests`
+#   calls read only is documented so); isdb-radio's `chain::tests::regmap`
 #   runs the host's open sequence and slow loop on its mock register backend
 #   and checks the order and values below ([host]) and which registers the
 #   host reads and writes (`host`).
