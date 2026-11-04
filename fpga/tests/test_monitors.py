@@ -729,8 +729,7 @@ class FifoMonitorTest(unittest.TestCase):
         beats = [(OP_WRITE, 0)] * 70
         self.assertEqual(bridge_run(beats), [])
         # the serialiser stalled: the 64-beat FIFO fills
-        bad = bridge_run(beats, edits=[("m.d.comb += [fin.r_en.eq(~have & ~need_start), tags.w_data.eq(f[\"tag\"])]",
-                                        "m.d.comb += [fin.r_en.eq(0), tags.w_data.eq(f[\"tag\"])]")])
+        bad = bridge_run(beats, edits=[("fin.r_en.eq(~have | (at_last & ~ends))", "fin.r_en.eq(0)")])
         print("\n".join(bad))
         self.assertTrue(fired(bad, "in_fifo_overflow"), bad)
 

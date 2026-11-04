@@ -489,23 +489,16 @@ class RealDecoderChainTest(unittest.TestCase):
     @cxx
     @needs("14-apsk32")
     @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
-    @unittest.expectedFailure
     def test_apsk32_after_the_tmcc_burst(self):
-        # An open defect chain-14 found (README "Integration"), not fixed
-        # here: chain-13's modes with 32APSK 109/120 first (slots 0-29, as
-        # B44 orders the modes). Frame 1's TMCC burst shares the decoder
-        # port with frame 2's first 32APSK codewords; the bridge's
-        # serialiser takes n + 1 decoder cycles per beat (6 per 32APSK
-        # symbol, 5 per burst beat: about 233 M cycles/s against the 200
-        # MHz), so its input FIFO overflows (monitor br.in_fifo_overflow,
-        # in_lost 9 631 by symbol 2 450 000) and frame 2's 32APSK slots fail
-        # (slots 0-5 unconverged at the limit, a decoder overrun). The
-        # input to inside frame 2: its first slot blocks against the
-        # model's, and the monitors and health counters.
-        from isdb_fpga.chain.stages import run_chain_real
-
-        what, bad = run_chain_real(doc("14-apsk32"), None, COMPILED, 2_450_000)
-        self.assertEqual(bad, [], "\n".join(bad[:8]))
+        # chain-14: chain-13's modes with 32APSK 109/120 first (slots 0-29,
+        # as B44 orders the modes), so frame N's TMCC burst shares the
+        # decoder port with frame N + 1's first 32APSK codewords: 5 LLRs a
+        # main symbol and 4 a burst beat, 192.6 M of the decoder's 200 M
+        # cycles/s. With n + 1 cycles a beat (before 2026-11-04: 233 M) the
+        # bridge's input FIFO overflowed and frame 2's first 32APSK slots
+        # failed. Every block of frames 1-3 as the model's (frame 3's
+        # learned 32APSK points in its status), the monitors quiet.
+        self.run_set("14-apsk32", None)
 
     @cxx
     @needs("12-fail")
@@ -1308,6 +1301,227 @@ class BridgeTest(unittest.TestCase):
                                   (0, 21, -5, 6), (0, 31, 6, 6), (1, 1870, -7, 2)])
         self.assertEqual(starts, [(0, 6, 0, 16, 1), (1, 2, 1, 50, 4)])
         self.assertEqual(outs, [("head", 0xA1, 2), ("word", 0x1234 + 301, 0), ("word", 0x1234 + 302, 1)])
+
+    def test_full_rate(self):
+        """A beat of n LLRs takes n decoder cycles, back to back. First a
+        32APSK codeword at one main symbol per symbol clock (5 LLRs a beat:
+        exactly the decoder's 5 cycles a clock), then a second one on 4
+        clocks of 5 with a TMCC burst beat of 4 (`TmccSoft`'s) on the
+        fifth, the cycles the demapper leaves: the input FIFO stays near
+        empty, every LLR arrives in order, the first codeword's LLRs take
+        every decoder cycle from its first to its last, and each codeword's
+        tag (its closing beat's) comes back with its result although the
+        next beat follows the closing one at once. (With n + 1 cycles a
+        beat, 6 per 5-LLR beat, the backlog grew by a beat every 6 clocks
+        and the 64-beat FIFO overflowed after about 380 beats.)"""
+        from amaranth.hdl import ClockDomain, Module
+        from amaranth.sim import Simulator
+
+        from isdb_fpga.chain.ldpc_if import OP_BEGIN, OP_DONE, OP_WRITE, LdpcBridge, LdpcPort
+        from isdb_fpga.chain.monitors import Collector
+
+        port = LdpcPort()
+        br = LdpcBridge(port, monitors=True)
+        col = Collector(br)
+        top = Module()
+        top.submodules.br = br
+        top.domains.sync = ClockDomain()
+        top.domains.ldpc = ClockDomain()
+        sim = Simulator(top)
+        sim.add_clock(25e-9, domain="sync")
+        sim.add_clock(5e-9, domain="ldpc")
+        full, mixed = 480, 500
+        # beats (op, ctx, n, first, last, positions, llrs, tag); a slot beat
+        # k: positions 5 k .. 5 k + 4 of its codeword (tag 0xA, 0xB); the
+        # burst: OP_BEGIN, beats of 4, OP_DONE (tag 0x81)
+        beats, want = [], {0: [], 1: []}
+
+        def slot_beat(k, first, last, base):
+            ps = list(range(5 * k, 5 * k + 5))
+            want[0].append([(p, (p + base) % 127) for p in ps])
+            return (OP_WRITE, 0, 5, first, last, ps, [(p + base) % 127 for p in ps], 0xA + base // 50)
+
+        for k in range(full):
+            beats.append(slot_beat(k, int(k == 0), int(k == full - 1), 0))
+        k = tp = 0
+        n_slot = mixed - mixed // 5
+        for i in range(mixed):
+            if i % 5 == 4:
+                if tp == 0:
+                    beats.append((OP_BEGIN, 1, 0, 0, 0, [], [], 0x81))
+                else:
+                    ps = list(range(tp, tp + 4))
+                    want[1] += [(p, -(p % 127)) for p in ps]
+                    beats.append((OP_WRITE, 1, 4, 0, 0, ps, [-(p % 127) for p in ps], 0x81))
+                tp += 4
+            else:
+                beats.append(slot_beat(k, int(k == 0), int(k == n_slot - 1), 50))
+                k += 1
+        beats.append((OP_DONE, 1, 0, 0, 0, [], [], 0x81))
+        want[0] = [x for b in want[0] for x in b]
+        got = {0: [], 1: []}
+        valid_at, starts, levels, mon, lost, tags = [], [], [], [], [], []
+
+        async def chain(ctx):
+            for op, cx, n, fi, la, ps, ls, tag in beats:
+                ctx.set(port.in_valid, 1)
+                ctx.set(port.in_op, op)
+                ctx.set(port.in_ctx, cx)
+                ctx.set(port.in_n, n)
+                ctx.set(port.in_first, fi)
+                ctx.set(port.in_last, la)
+                ctx.set(port.in_rate, 109 if cx == 0 else 61)
+                ctx.set(port.in_shortened, cx)
+                ctx.set(port.in_max_iter, 14)
+                ctx.set(port.in_tag, tag)
+                for j in range(5):
+                    ctx.set(port.in_pos[j], ps[j] if j < len(ps) else 0)
+                    ctx.set(port.in_llr[j], ls[j] if j < len(ls) else 0)
+                await ctx.tick("sync")
+            ctx.set(port.in_valid, 0)
+            ctx.set(port.out_ready, 1)
+            for _ in range(40):
+                await ctx.tick("sync")
+                if ctx.get(port.out_valid) and ctx.get(port.out_head):
+                    tags.append(ctx.get(port.out_tag))
+            lost.append(ctx.get(br.in_lost))
+            mon.extend(col.report(lambda n: ctx.get(col.ports()[n])))
+
+        async def decoder(ctx):
+            for cyc in range(5 * (len(beats) + 20)):
+                await ctx.tick("ldpc")
+                levels.append(ctx.get(br.v_in_level))
+                if ctx.get(br.d_valid):
+                    cx = ctx.get(br.d_ctx)
+                    got[cx].append((ctx.get(br.d_pos), ctx.get(br.d_llr)))
+                    if cx == 0 and len(got[0]) <= 5 * full:
+                        valid_at.append(cyc)
+                if ctx.get(br.start):
+                    starts.append(ctx.get(br.d_ctx))
+                # a result record for each of the three, after the input
+                ctx.set(br.res_valid, cyc in (5 * len(beats) + 20, 5 * len(beats) + 22,
+                                              5 * len(beats) + 24))
+
+        sim.add_testbench(chain)
+        sim.add_testbench(decoder)
+        sim.run()
+        self.assertEqual(mon, [])
+        self.assertEqual(lost, [0])
+        self.assertEqual(got, want)
+        self.assertEqual(starts, [0, 0, 1])
+        self.assertEqual(tags, [0xA, 0xB, 0x81])
+        self.assertLessEqual(max(levels), 4)
+        self.assertEqual(valid_at[-1] - valid_at[0] + 1, 5 * full)
+
+
+    def test_random_beats(self):
+        """Random beats of both contexts (writes of 0-5 values with or
+        without first / last, OP_BEGIN, OP_DONE, OP_ABORT), on every symbol
+        clock or on some: the decoder sees the events of each beat in beat
+        order (abort, begin, the values, start with the closing beat's
+        rate and limit), `start` never in a cycle with another event, and
+        each codeword's result comes back with its closing beat's tag."""
+        import random
+
+        from amaranth.hdl import ClockDomain, Module
+        from amaranth.sim import Simulator
+
+        from isdb_fpga.chain.ldpc_if import OP_ABORT, OP_BEGIN, OP_DONE, OP_WRITE, LdpcBridge, LdpcPort
+        from isdb_fpga.chain.monitors import Collector
+
+        for seed, duty in ((1, 1.0), (2, 0.8), (3, 0.3)):
+            rng = random.Random(seed)
+            port = LdpcPort()
+            br = LdpcBridge(port, monitors=True)
+            col = Collector(br)
+            top = Module()
+            top.submodules.br = br
+            top.domains.sync = ClockDomain()
+            top.domains.ldpc = ClockDomain()
+            sim = Simulator(top)
+            sim.add_clock(25e-9, domain="sync")
+            sim.add_clock(5e-9, domain="ldpc")
+            beats, want, want_tags = [], [], []
+            for i in range(300):
+                if rng.random() > duty:
+                    beats.append(None)
+                    continue
+                op = rng.choice([OP_WRITE] * 6 + [OP_BEGIN, OP_DONE, OP_ABORT])
+                cx = rng.randrange(2)
+                n = rng.randrange(6) if op == OP_WRITE else 0
+                fi = int(op == OP_WRITE and rng.random() < 0.1)
+                la = int(op == OP_WRITE and rng.random() < 0.1)
+                ps = [rng.randrange(44880) for _ in range(5)]
+                ls = [rng.randrange(-127, 128) for _ in range(5)]
+                rate, mi, tag = rng.randrange(1, 120), rng.randrange(256), rng.randrange(1 << 64)
+                beats.append((op, cx, n, fi, la, ps, ls, rate, mi, tag))
+                if op == OP_ABORT:
+                    want.append(("abort", cx))
+                if (fi if op == OP_WRITE else op == OP_BEGIN):
+                    want.append(("begin", cx))
+                want += [("w", cx, ps[k], ls[k], (rate - 1) & 15) for k in range(n)]
+                if (la if op == OP_WRITE else op == OP_DONE):
+                    want.append(("start", cx, (rate - 1) & 15, mi))
+                    want_tags.append(tag)
+            got, tags, clash, mon = [], [], [], []
+
+            async def chain(ctx):
+                ctx.set(port.out_ready, 1)
+                for b in beats:
+                    ctx.set(port.in_valid, b is not None)
+                    if b is not None:
+                        op, cx, n, fi, la, ps, ls, rate, mi, tag = b
+                        for sig, v in ((port.in_op, op), (port.in_ctx, cx), (port.in_n, n),
+                                       (port.in_first, fi), (port.in_last, la), (port.in_rate, rate),
+                                       (port.in_max_iter, mi), (port.in_tag, tag)):
+                            ctx.set(sig, v)
+                        for k in range(5):
+                            ctx.set(port.in_pos[k], ps[k])
+                            ctx.set(port.in_llr[k], ls[k])
+                    await ctx.tick("sync")
+                    if ctx.get(port.out_valid) and ctx.get(port.out_head):
+                        tags.append(ctx.get(port.out_tag))
+                ctx.set(port.in_valid, 0)
+                for _ in range(60):
+                    await ctx.tick("sync")
+                    if ctx.get(port.out_valid) and ctx.get(port.out_head):
+                        tags.append(ctx.get(port.out_tag))
+                mon.extend(col.report(lambda n: ctx.get(col.ports()[n])))
+
+            async def decoder(ctx):
+                pending = []  # the cycles of the commits without a result yet
+                for cyc in range(5 * (len(beats) + 60)):
+                    await ctx.tick("ldpc")
+                    c = ctx.get(br.d_ctx)
+                    ev = []
+                    if ctx.get(br.abort):
+                        ev.append(("abort", c))
+                    if ctx.get(br.begin):
+                        ev.append(("begin", c))
+                    if ctx.get(br.d_valid):
+                        ev.append(("w", c, ctx.get(br.d_pos), ctx.get(br.d_llr), ctx.get(br.d_rate)))
+                    if ctx.get(br.start):
+                        if ev:
+                            clash.append(cyc)
+                        ev.append(("start", c, ctx.get(br.st_rate), ctx.get(br.st_max_iter)))
+                        pending.append(cyc)
+                    got.extend(ev)
+                    # a result record for each commit, 8 cycles after it at
+                    # the earliest, at most one every 7 (the records cross
+                    # at the chain's pace)
+                    res = bool(pending) and cyc - pending[0] >= 8 and cyc % 7 == 0
+                    if res:
+                        pending.pop(0)
+                    ctx.set(br.res_valid, res)
+
+            sim.add_testbench(chain)
+            sim.add_testbench(decoder)
+            sim.run()
+            with self.subTest(seed=seed, duty=duty):
+                self.assertEqual(mon, [])
+                self.assertEqual(clash, [])
+                self.assertEqual(got, want)
+                self.assertEqual(tags, want_tags)
 
 
 class BchTest(unittest.TestCase):

@@ -73,7 +73,7 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `isdb_fpga/chain/` | the ISDB-S3 chain after the front end (stages 1–6, 8, 9; [below](#the-isdb-s3-chain-slotsrx)) |
 | `synth/chain_estimate.py` | Yosys estimates of the chain's blocks (LUT including the LUT RAM cells' LUTs) |
 | `synth/cells.py`, `synth/bch_parts.py` | which cells (DSP, block RAM, LUT RAM) a block's estimate made, by name; the BCH unit's parts |
-| `tools/queue_sweep.py` | the decoder queue's overruns at the chain's pace by S, clock, banks and iteration limit (the 160 MHz and S = 22 decisions) |
+| `tools/queue_sweep.py` | the decoder queue's overruns at the chain's pace by S, clock, banks, iteration limit and slot rate (the 160 MHz and S = 22 decisions; `--rate 109` 32APSK), and the decoder cycles per second the bridge's input port needs |
 | `tezuka/isdb_slots.xdc` | the constraints of `SlotsRx` (its three clocks, the GPIO paths) |
 | `tests/test_chain.py` | the chain's stage and chain tests against `chain-*.json` |
 | `isdb_fpga/chain/chaos.py`, `tests/test_chaos.py`, `tools/chaos_run.py`, `tools/chaos_table.py` | chaos runs of the chain with the real decoder: random stops, STARTs, losses and tap writes, health checks, the model restarted at the same points ([below](#the-isdb-s3-chain-slotsrx), "Chaos runs") |
@@ -530,7 +530,9 @@ modulation's dummy slots; frames 2 and 3 decoded, frame 3's status with
 the points learned on frame 2 for all four modulations; two AGC writes in
 `host_writes`, so frames 2 and 3 report their gains) and
 `chain-14-apsk32` (chain-13's modes with 32APSK 109/120 first, at Es/N0
-22 dB: an open HDL defect, under "Integration"). chain-4-tmcc also
+22 dB, so frame N's TMCC burst meets frame N + 1's first 32APSK
+codewords: the bridge's pace, under "Integration"; frame 3's status with
+the learned 32APSK points). chain-4-tmcc also
 carries chain-12's frame 1 as `noisy` (the TMCC stage test runs it with
 its decoder output's errors) and chain-14's frame 2 as `modes` (a layout
 of five modes). The example's documentation gives every field. Sizes:
@@ -596,6 +598,11 @@ module's docstring states its contract by reference and its schedule):
   9 overruns of 363 codewords on the measured distribution at 160 MHz, 0
   at 200 MHz;
   and 32APSK's 163 M LLR/s (one LLR per decoder cycle) exceeds 160 MHz.
+  At 200 MHz the bridge's serialiser (n decoder cycles a beat of n
+  values) needs 192.6 M cycles/s for 32APSK while a TMCC burst runs
+  (`ldpcqueue.port_cycles`); its peak, a 5-LLR beat on every symbol
+  clock, is exactly 5 cycles a clock, so the input FIFO holds only the
+  crossing's few beats.
 
 The BCH unit runs in `fast` (`finish.FastBch`): Chien one position per
 fast cycle, Berlekamp-Massey's product steps two fast cycles each (the
@@ -730,11 +737,11 @@ last whole one, so no status block had a learned n0, K, constellation or
 chain-11 changes the taps in use (32 entries) and chain-12 fails a slot's
 LDPC, a slot's BCH and a TMCC, corrects a TMCC and misses and strays a
 frame marker (20 entries; still one mode, 16APSK 93/120); chain-13
-sends four transmission modes and the host's AGC writes (8 entries; the
-learned 32APSK points wait for the HDL defect chain-14 found); chain-1
-runs two frames past its first frame head (two carrier updates) and
-relocks from another start (6 entries: the 32APSK points and chain-5's
-single-mode, first-decoded frame). It also fails
+sends four transmission modes and the host's AGC writes (8 entries);
+chain-1 runs two frames past its first frame head (two carrier updates)
+and relocks from another start (6 entries: the 32APSK points and
+chain-5's single-mode, first-decoded frame); chain-14 sends 32APSK (5
+entries: chain-5's single-mode, first-decoded frame). It also fails
 on a known gap that a set now covers, so
 the list shrinks as the generators (`chainvectors.rs`, `ldpcvectors.rs`)
 grow. The gate reads the default synthetic corpus only; the recording
@@ -904,25 +911,50 @@ are needed: not provably narrower).
   41/120 in one TMCC with each modulation's dummy slots, the host's AGC
   writes: bit-exact with the real decoder (the slot blocks' mode,
   modulation and rate codes, frame 3's learned points of all four
-  modulations, the AGC in the status), the monitors quiet. **Open
-  defect** (found by chain-14-apsk32, not fixed): 32APSK slots right
-  after a frame boundary lose decoder input. B44 puts the 32APSK mode
-  first, so frame N + 1's first codewords are demapped while frame N's
-  TMCC burst takes the port's free cycles; `LdpcBridge`'s serialiser
-  spends n + 1 decoder cycles per beat (6 per 32APSK symbol at 32.6 M
-  main symbols/s, 5 per burst beat on the 7.4 M free cycles/s: about
-  233 M cycles/s against the decoder's 200 MHz), so its 64-beat input
-  FIFO overflows (monitor `br.in_fifo_overflow` from symbol clock
+  modulations, the AGC in the status), the monitors quiet.
+- **32APSK after the TMCC burst** (chain-14-apsk32,
+  `RealDecoderChainTest.test_apsk32_after_the_tmcc_burst`, 2026-11-04):
+  bit-exact with the real decoder over frames 1-3 (250 blocks, frame 3's
+  learned 32APSK points in its status), the monitors quiet, `in_lost` 0,
+  0 decoder overruns. **Fixed defect** (found by this set): 32APSK slots
+  right after a frame boundary lost decoder input. B44 puts the 32APSK
+  mode first, so frame N + 1's first codewords are demapped while frame
+  N's TMCC burst takes the port's free cycles; `LdpcBridge`'s serialiser
+  spent n + 1 decoder cycles per beat (a cycle to pop the beat, then
+  one per value: 6 per 32APSK symbol at 32.6 M main symbols/s, 5 per
+  burst beat on the 7.4 M free cycles/s: 232.6 M cycles/s against the
+  decoder's 200 MHz; 195.6 M even without the burst), so its 64-beat
+  input FIFO overflowed (monitor `br.in_fifo_overflow` from symbol clock
   2 857 405, `in_lost` 9 631 by input symbol 2 450 000) and frame 2's
-  32APSK slots 0–5 leave unconverged at the limit (slot 2 a decoder
-  overrun), where the model converges in 1–3 iterations
-  (`test_apsk32_after_the_tmcc_burst`, an expected failure;
-  `tools/real_variant.py build/chain-14-apsk32.json --symbols 2450000`,
-  then `tools/real_blocks.py build/chain-14-apsk32.json
-  build/chain-real-got-2450000.json`). Even without the burst a 32APSK
-  stream needs 196 M of the 200 M cycles. 16APSK first (4 LLRs a beat,
-  5 cycles) passes. The 32APSK demapper itself is not yet checked by any
-  set (chain-14 fails before it can tell).
+  32APSK slots 0–5 left unconverged at the limit (slot 2 a decoder
+  overrun), where the model converges in 1–3 iterations. Now a beat of
+  n values takes n cycles, back to back: the serialiser pops the next
+  beat on the cycle of the last lane (or with the `start` after a
+  codeword's closing beat, one cycle more per codeword), its read enable
+  a function of three registers (`have`, `at_last`, `ends`), and the
+  tag queue is written in that cycle (the tag still from the closing
+  beat). The demand while the burst runs (`ldpcqueue.port_cycles`,
+  `tools/queue_sweep.py`):
+
+  | main symbols | none | with the TMCC burst (4 a beat) | before (n + 1 a beat): none / with |
+  |---|---|---|---|
+  | 32APSK, 5 LLRs | 163.0 M | **192.6 M** | 195.6 M / 232.6 M |
+  | 16APSK, 4 LLRs | 130.4 M | 160.0 M | 163.0 M / 200.0 M |
+
+  of the decoder's 200 M cycles/s (3.7 % to spare at 32APSK during the
+  burst; a symbol clock's beat never needs more than its 5 decoder
+  cycles, so the FIFO only absorbs the crossing). More values per burst
+  beat would not help: the burst's values cost the same cycles, only
+  sooner (8 a beat: 222 M). The bridge (Yosys, `synth/chain_estimate.py
+  bridge`): 293 → 291 LUT, 524 → 525 FF, 5 BRAM36. A first version
+  pushed the tag a cycle after the `start` cycle, when the next beat had
+  already replaced it: frame 1's TMCC result carried frame 2's slot 0
+  tag; `BridgeTest.test_full_rate` (two 32APSK codewords at a beat a
+  clock, the second with the burst: every decoder cycle used, the FIFO
+  at most 4 beats, the tags with a beat right after each closing one;
+  the n + 1 serialiser overflows in it) and `test_random_beats` (random
+  beats of both contexts: the events in beat order, `start` alone in its
+  cycle, every tag back) check the bridge.
 - **A corrected slot no longer holds the decoder.** The BCH's Chien search
   took n symbol clocks (34 776 at 93/120, 3.1 slots) while the finish
   stage held the result stream, and with it a decoder bank: a few
@@ -963,7 +995,19 @@ are needed: not provably narrower).
   | 3 | **14** | **0** | 6 | ≈ 123.5 |
   | 4 | 16 | 0 | 6 | ≈ 140.5: over the device |
   
-  (K = 3 at limits 12 and 10: 0 as well; at 160 MHz, limit 14: 9.) So K = 3
+  (K = 3 at limits 12 and 10: 0 as well; at 160 MHz, limit 14: 9.)
+  32APSK 109/120 (every slot valid, 4 738 cycles per pass;
+  `tools/queue_sweep.py --rate 109`, the input port at the bridge's pace
+  of n cycles a beat, "Integration"), of 363 codewords at 200 MHz:
+
+  | K | limit | overruns | with two adjacent long pairs |
+  |---|---|---|---|
+  | 2 | 14 | 15 | 15 |
+  | 3 | **14** | **0** | 0 |
+  | 3 | 16 | 0 | 6 |
+  | 4 | 16 | 0 | 0 |
+
+  So K = 3
   and the default limit 14: `ldpc.DEFAULT_MAX_ITER`, the chain's MAX_ITER
   reset, the model's `chain::ldpc::HDL_MAX_ITER` (`FixedLdpc::hdl`) and the
   host's `control::chain::MAX_ITER_RESET` agree; the host may write
@@ -1738,7 +1782,11 @@ cycle.
   writes sharing the single input port with the slot LLRs cycle by cycle
   (the port carries one write per cycle; the slot LLRs use ≈ 0.81 of the
   cycles at 200 MHz, so the 31 680-write burst takes ≈ 167k cycles, about
-  three slots); the default K = 3 assumes that. Interleaved TMCC LLRs
+  three slots); the default K = 3 assumes that. The bridge gives the
+  decoder a beat of n values in n cycles, so 32APSK's LLRs with the
+  burst's need 192.6 M of the 200 M cycles/s (`ldpcqueue.port_cycles`;
+  before 2026-11-04, n + 1 cycles a beat: 232.6 M, chain-14's defect,
+  "Integration"). Interleaved TMCC LLRs
   would hold a bank for the whole frame and need K = 4.
   `isdb_fpga/ldpcqueue.py` models the queue over frames (tests
   `LdpcQueueModelTest`, S = 34, 200 MHz, 93/120, limit 16; the cycles per

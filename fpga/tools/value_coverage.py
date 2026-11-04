@@ -61,7 +61,7 @@ from isdb_fpga.chain import slots as fmt  # noqa: E402
 BUILD = os.path.join(os.path.dirname(__file__), "..", "build")
 
 CHAIN_STAGES = ["sync", "phase", "eq", "tmcc", "demap", "chain", "hdl", "loss", "fade", "bch",
-                "taps", "fail", "modes"]
+                "taps", "fail", "modes", "apsk32"]
 CHAIN_RE = re.compile(r"^chain-(rec-)?(\d+)-(" + "|".join(CHAIN_STAGES) + r")\.json$")
 LDPC_RE = re.compile(r"^(ldpc-\d+-.*|ldpcvec-py-\d+-.*)\.json$")
 
@@ -114,7 +114,7 @@ class Spec:
 
 
 WHOLE = ("chain-6", "chain-7", "chain-8", "chain-9", "chain-10", "chain-11", "chain-12",
-         "chain-13")
+         "chain-13", "chain-14")
 SLOTS_PARTS = ("header", "slot", "dummy", "tmcc", "status", "sums")
 SPECS = {}
 
@@ -822,10 +822,6 @@ ALLOWED = {
 # generator changes; remove an entry once a set covers it (the test fails
 # on a known gap that is covered).
 KNOWN_GAPS = {
-    "status.constellation.32apsk.*": "chain-13's modes leave 32APSK out: chain-14-apsk32 has "
-                                     "it, but the HDL fails that set (the bridge's input FIFO "
-                                     "overflows when 32APSK slots meet the TMCC burst, README "
-                                     "\"Integration\"), so the tool does not read it",
     "demap.slot.modulation": "chain-5's codewords are 16APSK only: needs a mixed-mode frame",
     "demap.slot.rate": "chain-5's codewords are 93/120 only",
     "demap.learned.*.count": "learned points only for 16APSK, the one modulation used",

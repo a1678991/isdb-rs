@@ -778,7 +778,14 @@ decoder keeps 200 MHz from an MMCM on clk_fpga_0 behind the async bridge:
 the queue model with the chain's pace (`ldpcqueue.run(finish_hz=40e6)`)
 overruns 9 of 363 codewords at 160 MHz, 0 at 200 MHz, and 32APSK's
 163 M LLR/s exceeds one LLR per 160 MHz cycle. The chain is valid at
-40 Msps only.
+40 Msps only. **Amended 2026-11-04:** the bridge's serialiser took
+n + 1 decoder cycles for a beat of n values, so 32APSK with the TMCC
+burst (four values a beat on the 7.4 M free cycles/s) needed 232.6 M of
+the 200 M cycles/s and its input FIFO overflowed (chain-14-apsk32); a
+beat now takes n cycles, back to back: 192.6 M (16APSK 160 M), and a
+symbol clock's beat never needs more than its 5 decoder cycles
+(`ldpcqueue.port_cycles`; fpga/README.md "Integration"). At 32APSK
+109/120 the queue keeps K = 3 at the limit 14 (0 overruns of 363).
 
 **Every stage stayed bit-exact** (the whole existing vector suite, the
 whole-chain sets): the arithmetic is the model's; what changed is when
