@@ -658,6 +658,7 @@ class SyncFront(Elaboratable):
         # the status snapshot after each decision (the model's state after
         # the push that completes a decision window): SNAP_FIELDS
         self.snap = Signal(sum(w for _, w in SNAP_FIELDS))
+        self.o_snap_valid = Signal()  # `snap` has a new value (this cycle on)
 
     def elaborate(self, platform):
         m = Module()
@@ -690,7 +691,7 @@ class SyncFront(Elaboratable):
         # the decision's end: the carrier loop has answered and the period's
         # statistics are in (one cycle later for the register update)
         snap_go = Signal()
-        m.d.sync += snap_go.eq(sy.decided | sy.restart)
+        m.d.sync += [snap_go.eq(sy.decided | sy.restart), self.o_snap_valid.eq(snap_go)]
         with m.If(snap_go):
             vals = [sy.st_peak, sy.st_pos, sy.st_sum, sy.st_locked, sy.st_parity, sy.st_offset,
                     sy.st_stray, sy.st_missed, nco.f]

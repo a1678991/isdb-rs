@@ -1504,6 +1504,11 @@ STD-B44) is received to TLV streams.
   next block has sequence 0; a block offered in the very cycle of a START
   is taken (before, it was not, and the finish stage waited for it
   forever).
+- `fpga`: after a restart (START or a loss) 5–30 symbols after a slot
+  head, every later status block of the ISDB-S3 chain had the next sync
+  period's peak and sum: stage 3 took the status snapshot when it queued
+  a slot, after a period end a few symbols past the head had replaced it.
+  It keeps the head's own snapshot, the model's.
 - ISDB-S3 acquisition (`isdb rx --system isdbs3` from a radio, every
   offload, and the CPU receiver's blocks): 6.0–6.3 GB of peak resident
   memory, all of it the trim search on the acquisition's probe. Its 13

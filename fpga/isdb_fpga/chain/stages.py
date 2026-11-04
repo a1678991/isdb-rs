@@ -36,10 +36,15 @@ def monitored(bench, monitors=True, rename=None):
 class PhaseBench(Elaboratable):
     """Records: kind 0 = an NCO input with its phase (at, x0, x1, phi); kind
     1 = a head (at, word, theta, amp, numbered, number, frame, and in phi the
-    carrier register after it)."""
+    carrier register after it). `snapshots`: the status snapshot as
+    `SyncFront` gives it, a register and its strobe: after head k's record
+    its decision's snapshot (1000 + k) 6 cycles later, then a period end's
+    (2000 + k) 40 cycles after that, as when the slot sync locked a few
+    positions before its period's end (16-bit snapshots); else none."""
 
-    def __init__(self, in_bits=6):
-        self.dut = SlotPhase(in_bits)
+    def __init__(self, in_bits=6, snapshots=False):
+        self.snapshots = snapshots
+        self.dut = SlotPhase(in_bits, snap_bits=16 if snapshots else 1)
         self.i_valid = Signal()
         self.i_ready = Signal()
         self.kind = Signal()
@@ -65,6 +70,25 @@ class PhaseBench(Elaboratable):
             d.h_theta.eq(self.a), d.h_amp.eq(self.b), d.h_numbered.eq(self.numbered),
             d.h_number.eq(self.number), d.h_frame.eq(self.frame),
         ]
+        if self.snapshots:
+            k = Signal(16)
+            t = Signal(8)
+            snap = Signal(16)
+            strobe = Signal()
+            with m.If(head):
+                m.d.sync += t.eq(1)
+            with m.Elif(t == 46):
+                m.d.sync += [t.eq(0), k.eq(k + 1)]
+            with m.Elif(t != 0):
+                m.d.sync += t.eq(t + 1)
+            m.d.sync += strobe.eq((t == 6) | (t == 46))
+            with m.If(t == 6):
+                m.d.sync += snap.eq(1000 + k)
+            with m.If(t == 46):
+                m.d.sync += snap.eq(2000 + k)
+            m.d.comb += [d.h_snap.eq(snap), d.h_snap_valid.eq(strobe)]
+        else:
+            m.d.comb += d.h_snap_valid.eq(1)  # (no snapshot here)
         return m
 
     def ports(self):
@@ -74,7 +98,7 @@ class PhaseBench(Elaboratable):
             "a": self.a, "b": self.b, "word": self.word, "numbered": self.numbered,
             "number": self.number, "frame": self.frame, "phi": self.phi,
             "ov": d.o_valid, "oat": d.o_at, "oj": d.o_j, "ophi": d.o_phi, "og": d.o_gain,
-            "oy0": d.o_y[0], "oy1": d.o_y[1], "or0": d.o_r[0], "or1": d.o_r[1],
+            "oy0": d.o_y[0], "oy1": d.o_y[1], "or0": d.o_r[0], "or1": d.o_r[1], "osnap": d.o_snap,
         }
 
 
@@ -84,7 +108,13 @@ def head_record(h, f=0):
     return (1, at, theta_s, amp, word, int(number >= 0), max(number, 0), max(frame, 0), f & 0xFFFFFFFF)
 
 
-def run_phase(doc, backend):
+def run_phase(doc, backend, snapshots=False):
+    """Stage 3 on chain-2-phase (`PhaseBench`). `snapshots`: also the
+    status snapshot a slot carries (`PhaseBench` with `snapshots`, the
+    first head numbered 0, so the first slot is a frame's slot 0 and its
+    snapshot goes to `o_snap`): it must be head 1's decision's (1001), the
+    model's state after the push that gives the head, not the later
+    period end's (2001)."""
     heads = doc["heads"]
     r = doc["r"]
     x, phi = doc["x"], doc["phi"]
@@ -104,12 +134,15 @@ def run_phase(doc, backend):
     for i in range(n + pad):
         at = a0 + i
         if at in hq:
-            recs.append(head_record(hq[at], f_at(at - a0) if at - a0 < n else 0))
+            rec = head_record(hq[at], f_at(at - a0) if at - a0 < n else 0)
+            if snapshots and at == a0 + 24:
+                rec = rec[:5] + (1, 0) + rec[7:]  # numbered, slot 0
+            recs.append(rec)
         v = (x[2 * i], x[2 * i + 1], phi[i]) if i < n else (0, 0, 0)
         recs.append((0, at, v[0], v[1], 0, 0, 0, 0, v[2]))
-    b = PhaseBench()
+    b = PhaseBench(snapshots=snapshots)
     p = b.ports()
-    e = engine(b, p, backend, tag="chain2")
+    e = engine(b, p, backend, tag="chain2s" if snapshots else "chain2")
     g = e.group("ov", ["oat", "oj", "ophi", "og", "oy0", "oy1", "or0", "or1"])
     t0 = time.time()
     e.run("i_valid", "i_ready", ["kind", "at", "a", "b", "word", "numbered", "number", "frame", "phi"],
@@ -121,6 +154,8 @@ def run_phase(doc, backend):
     bad = first_mismatch("y", [x[:6] for x in got], exp, key=lambda i, v: f"symbol at {v[0]} (j {v[1]})")
     exp_r = [(r[2 * i], r[2 * i + 1]) for i in range(n)]
     bad += first_mismatch("r", [x[6:] for x in got], exp_r, key=lambda i, v: f"#{i}")
+    if snapshots and e.get("osnap") != 1001:
+        bad.append(f"the frame's snapshot {e.get('osnap')}, head 1's (1001) expected")
     what = f"{len(got)} symbols corrected over 2 slots; {cyc} cycles in {dt:.1f} s"
     return what, bad
 

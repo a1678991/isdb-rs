@@ -99,18 +99,20 @@ class ChaosTest(unittest.TestCase):
         self.assertTrue(any(v.startswith("equal") for v in r["frames"].values()), r["frames"])
 
     @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
-    @unittest.expectedFailure
     def test_restart_just_after_a_slot_head(self):
-        # A defect the chaos runs found (README "Chaos runs"): a restart
-        # whose next slot head falls within about 30 symbols of the end of
-        # the sync's first period after it (here START 5 symbols after a
-        # slot head of chain-7: the head 9 291 symbols on) leaves the
-        # status blocks' period peak and sum (words 0-5) unlike the
-        # model's in every later frame; 10 symbols before the head, or a
-        # few thousand after, they are equal. Remove expectedFailure with
-        # the fix.
+        # A defect the chaos runs found (README "Chaos runs"), fixed: START
+        # 5 symbols after a slot head of chain-7 makes the sync lock with
+        # its heads at position 9 291 of its 9 296-symbol periods, so a
+        # period end decides 4 symbols after each head while stage 3 still
+        # sets up the head's slot; stage 3 took the status snapshot when it
+        # queued the slot, the period end's, and every later status block
+        # had the next period's peak and sum (words 0-5). Stage 3 now keeps
+        # the head's own snapshot (`SlotPhase.h_snap_valid`;
+        # tests/test_chain.py PhaseTest.test_snapshot_of_the_head).
         events = chaos.place("7-hdl", [{"kind": "start", "at": 1000 + 54 * 9296 + 5}])
-        record(self, chaos.run_chaos("7-hdl", "head5", events=events, backend=COMPILED))
+        r = chaos.run_chaos("7-hdl", "head5", events=events, backend=COMPILED)
+        record(self, r)
+        self.assertTrue(all(v == "equal" for v in r["frames"].values()), r["frames"])
 
 
 @unittest.skipUnless(have("7-hdl"), "no chain-7-hdl (mise run fpga:vectors)")

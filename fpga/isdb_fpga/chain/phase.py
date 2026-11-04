@@ -90,7 +90,16 @@ STEP_BITS = 40  # |Delta| <= 2**31 * 2**37 / 9 296 / 2**21 < 2**34; |Gamma| < 2*
 class SlotPhase(Elaboratable):
     def __init__(self, in_bits=6, table=None, snap_bits=1):
         self.snap_bits = snap_bits
-        self.h_snap = Signal(snap_bits)  # the chain's status snapshot now (after head b's decision)
+        # the chain's status snapshot (SyncFront.snap) and its strobe: the
+        # cycle `h_snap` takes a decision's new snapshot. Head b's is the
+        # first one after its record (`h_valid`): the model's state after
+        # the push that gives the head. Taken then, not when the slot is
+        # queued: a period end a few symbols after the head (the slot sync
+        # locked within ~30 positions of its period's end, as after a
+        # restart just after a slot head) decides while the slot's setup
+        # runs, and its snapshot is the next period's
+        self.h_snap = Signal(snap_bits)
+        self.h_snap_valid = Signal()
         # the snapshot taken with the last slot numbered 0 (a frame's status:
         # the model's state when that slot was corrected, which completes the
         # previous frame's last symbol at the FIR's centre)
@@ -215,6 +224,9 @@ class SlotPhase(Elaboratable):
         q_frame = Signal(32)
         q_snap = Signal(self.snap_bits)
         take = Signal()
+        # head b's snapshot (the first after its record)
+        b_snap = Signal(self.snap_bits)
+        b_snap_wait = Signal()
 
         m.submodules.gdiv = gdiv = DivRound(33, 26)
         # Delta and then Gamma on one bit-serial multiplier
@@ -246,6 +258,7 @@ class SlotPhase(Elaboratable):
                     m.d.sync += prev_ok.eq(0)
                 with m.Elif(self.h_valid):
                     m.d.sync += [
+                        b_snap_wait.eq(1),
                         b_at.eq(self.h_at),
                         b_w.eq(hr0.data[32:44]), b_l.eq(hr0.data[44:46]), b_phi.eq(h_phi),
                         b_f0.eq((hr1.data[:32] - h_phi)[:32].as_signed()), b_f1.eq(self.h_f),
@@ -283,7 +296,9 @@ class SlotPhase(Elaboratable):
                 with m.If(mdelta.done):
                     m.next = "QUEUE"
             with m.State("QUEUE"):
-                with m.If(~q_valid | take):
+                # (the snapshot comes about 6 cycles after the record, the
+                # gain's division takes more: the wait is never taken)
+                with m.If((~q_valid | take) & ~b_snap_wait):
                     m.d.sync += [
                         q_valid.eq(1), q_at.eq(a_at), q_w.eq(a_w), q_l.eq(a_l), q_phi.eq(a_phi),
                         q_f0.eq(a_f0), q_f1.eq(a_f1), q_theta.eq(a_theta),
@@ -291,7 +306,7 @@ class SlotPhase(Elaboratable):
                         q_gain.eq(a_gain),
                         q_gamma.eq(round_shift(mdelta.p, 37 - INTERP_FRAC)),
                         q_word.eq(a_word), q_numbered.eq(a_numbered), q_number.eq(a_number),
-                        q_frame.eq(a_frame), q_snap.eq(self.h_snap),
+                        q_frame.eq(a_frame), q_snap.eq(b_snap),
                     ]
                     m.next = "SHIFT"
             with m.State("SHIFT"):
@@ -303,6 +318,9 @@ class SlotPhase(Elaboratable):
                     a_number.eq(b_number), a_frame.eq(b_frame),
                 ]
                 m.next = "IDLE"
+
+        with m.If(b_snap_wait & self.h_snap_valid):
+            m.d.sync += [b_snap.eq(self.h_snap), b_snap_wait.eq(0)]
 
         # ---- reader --------------------------------------------------------
         busy = Signal()

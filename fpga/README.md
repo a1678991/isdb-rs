@@ -826,16 +826,27 @@ are needed: not provably narrower).
     slot block 30 of frame 2 left; the next block had sequence 31). The
     packer now latches the START until the block is done ([invariant
     monitors](#invariant-monitors));
-  - **defect: the sync's period statistics after a restart whose next
-    slot head falls about 0 - 30 symbols before the end of the first
+  - **defect (fixed): the sync's period statistics after a restart whose
+    next slot head falls about 0 - 30 symbols before the end of the first
     sync period** (the restart 5 - 30 symbols after a head): every later
-    status block's peak and sum (words 0-5) differ from the model's, the
-    decoded blocks do not (chain-7 with one START at input 502 989 or
-    503 014: frames 0-2 differ; at 502 974 or a few thousand symbols
-    after a head they are equal; a loss of 2 999 / 3 000 at input
+    status block's peak and sum (words 0-5) differed from the model's, the
+    decoded blocks did not (chain-7 with one START at input 502 989 or
+    503 014: frames 0-2 differed; at 502 974 or a few thousand symbols
+    after a head they were equal; a loss of 2 999 / 3 000 at input
     500 000 resumes 15 - 16 after a head: the same; chain-9 seed 20 met it
-    at random). `ChaosTest.test_restart_just_after_a_slot_head`, an
-    expected failure, reproduces it. Not fixed here;
+    at random). The cause was stage 3, not stage 1: the sync locks with
+    its heads where the period's peak is, here 4 - 29 positions before
+    the period's end, so each head's decision is followed a few symbols
+    later by a period end's; `SlotPhase` took the status snapshot when it
+    queued the head's slot, after its gain division and step products
+    (about 80 cycles), by which time the period end had replaced it with
+    the next period's statistics. The model's slot carries the statistics
+    after the push that gives its head. `SlotPhase` now keeps the first
+    snapshot after the head's record (`SyncFront.o_snap_valid`, the
+    snapshot's strobe): `PhaseTest.test_snapshot_of_the_head` (stage 3
+    alone, a period end's snapshot 40 cycles after each head's: 2001
+    before, 1001 now) and `ChaosTest.test_restart_just_after_a_slot_head`
+    (`FPGA_CHAIN_REAL=1`, frames 0-2 equal);
   - **a known divergence, counted apart**: the chain's status counters
     (slots, iterations, LDPC and BCH failures) include the slots it decoded
     of a frame a restart dropped later (the orphans), the model's count
@@ -860,10 +871,8 @@ stream (a block with its CRC instead of 308 register reads: the plan's
 "Build 8 issues", follow-up); `SlotsRx` as a whole with its front end in
 simulation (the chain's simulations start at the symbols); a host CONST /
 N0 load and layout lag 1 (FEATURES says so); the recording sets
-(`chain-rec-*`, opt-in) were not generated here; the defect and the
-counter divergence the chaos runs found that are still open (above: the
-period statistics after a restart just after a slot head, the orphans in
-the counters).
+(`chain-rec-*`, opt-in) were not generated here; the counter divergence
+the chaos runs found (above: the orphans in the counters).
 
 ## The transmit block (`SymbolsTx`)
 
