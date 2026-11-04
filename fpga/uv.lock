@@ -68,6 +68,7 @@ dependencies = [
 dev = [
     { name = "pytest" },
     { name = "pytest-xdist" },
+    { name = "yowasp-boolector" },
     { name = "yowasp-yosys" },
 ]
 
@@ -78,6 +79,7 @@ requires-dist = [{ name = "amaranth", specifier = "==0.5.10" }]
 dev = [
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-xdist", specifier = "==3.8.0" },
+    { name = "yowasp-boolector", specifier = "==3.2.3.6.post31.dev0" },
     { name = "yowasp-yosys", specifier = "==0.70.0.0.post1259" },
 ]
 
@@ -333,6 +335,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ab/a1/1640bf06ee0515a3eac1a84ae1805cab5407af6226ad52a9e6034d43974f/wasmtime-47.0.1-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:f900fa571a9a5668b6210de9ecca1c5b66db14d85b7c36514c3d307d4f4cdc90", size = 10013249, upload-time = "2026-07-20T18:50:15.031Z" },
     { url = "https://files.pythonhosted.org/packages/90/e4/8603bd4a360edbe5178efe4e7b48f1677749a96a3caa3fc68ab23b0de62c/wasmtime-47.0.1-py3-none-win_amd64.whl", hash = "sha256:4e46a4a29092a2ac1001159d5673e2a23996f4474261c791401867b1630429f4", size = 8069924, upload-time = "2026-07-20T18:50:16.902Z" },
     { url = "https://files.pythonhosted.org/packages/e3/c6/183b9cff18b77d7f87ade1ae48ae971b25de3b367bf3c8e65ab253751444/wasmtime-47.0.1-py3-none-win_arm64.whl", hash = "sha256:812058e7b40b73defa1d5118c25faa674920b7833c0a22cf79f0ff4eadee0c32", size = 6962708, upload-time = "2026-07-20T18:50:18.404Z" },
+]
+
+[[package]]
+name = "yowasp-boolector"
+version = "3.2.3.6.post31.dev0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "yowasp-runtime" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/92/3098c6a4f37fb8c836d9af3188e664bc08b7fb0fb62747b141d872901e6c/yowasp_boolector-3.2.3.6.post31.dev0-py3-none-any.whl", hash = "sha256:553dc2188f0e0f60c16162e81466551c11571ee431445e26b508e2cb85a89aaf", size = 360055, upload-time = "2026-03-11T08:53:03.493Z" },
 ]
 
 [[package]]
