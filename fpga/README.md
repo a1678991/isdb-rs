@@ -879,6 +879,22 @@ are needed: not provably narrower).
     equal anyway: 170 frames equal block for block, 158 equal but for the
     counters above, 2 differing (the period statistics).
 
+  After the fixes (2026-11-04, Verilator 5.054, `FPGA_CHAIN_CHAOS=8
+  FPGA_CHAIN_REAL=1 pytest -n 8 tests/test_chaos.py`: 38 tests, 18 minutes;
+  32 runs, 49 long stops, 34 short, 31 STARTs while running, 37 losses,
+  17 of chain-8's own, 35 tap writes, 6.8 - 12.8 M symbols each, 148 -
+  294 s per run): **0 problems**, all 130 frames the model sends equal
+  block for block (status blocks included, counters and all), the
+  sequence numbers from 0 after every START; every long stop's
+  "stopped" sample (before START) and every run's end with **0 banks
+  held**, a bank free and the queues empty, the chain stopped once each
+  (`stops`); at most 2 banks held at an event. The two seeds that met
+  the defects at random (chain-7 seed 15, chain-9 seed 20) pass too.
+  Fit of the four fixes (Yosys, against `4eb0602`): `SlotsRx` without the
+  decoder 26 487 → 26 461 LUT, 27 245 → 26 970 FF (the finish stage
+  5 832 → 5 809 LUT, 2 960 → 2 873 FF; stage 3's slot queue no longer
+  carries the 210-bit snapshot); block RAM and DSP unchanged.
+
 **What is left** (the receive-only image meets timing and, with fit
 `682032e`, decodes BS7 on the board as the model does: 1 LDPC failure in
 30 s, 2.15 mean iterations, n0 learned; VERIFICATION.md "Build 8 on the
