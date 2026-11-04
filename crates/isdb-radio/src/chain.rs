@@ -5,7 +5,10 @@
 //! access on a Pluto, a model of the block in the tests).
 //!
 //! The register map is `isdb_frontend::control::chain`'s (the HDL's,
-//! `fpga/isdb_fpga/chain/top.py`); this module uses its names only.
+//! `fpga/isdb_fpga/chain/top.py`; both checked against
+//! `fpga/isdb_fpga/chain/registers.toml`); this module uses its names only.
+//! Its tests run the open sequence and the slow loop on a mock register
+//! backend against the map's `host` steps and its read-only registers.
 //!
 //! **Open** ([`ChainControl::open`]): CTRL 0 (a chain left running by a
 //! process that did not close stops); VERSION and FEATURES read (the
@@ -2428,6 +2431,21 @@ pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
+    // the host against fpga/isdb_fpga/chain/registers.toml (issue #30 item 5)
+    mod regmap;
+
+    /// A command of the protocol that reaches a register, as the model saw
+    /// it ([`Model::log`]).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Logged {
+        /// READ of the register at the address.
+        Read(u16),
+        /// WRITE or WRITE_S of the value to the register at the address.
+        Write(u16, u32),
+        /// CTRL with the argument.
+        Ctrl(u32),
+    }
+
     /// A model of the front end with the chain behind its command pair:
     /// the command decoding of `isdb_frontend::control`, the chain's
     /// registers, a sums latch the test sets, the taps committed by
@@ -2444,6 +2462,8 @@ pub(crate) mod tests {
         pub ctrl: Vec<u32>,
         /// Every register write (address, value), in order.
         pub writes: Vec<(u16, u32)>,
+        /// Every READ, write and CTRL, in order.
+        pub log: Vec<Logged>,
         pub run: bool,
         pub symbols: bool,
         pub slots: bool,
@@ -2505,6 +2525,7 @@ pub(crate) mod tests {
         fn store(&mut self, v: u32) {
             self.regs.insert(self.addr, v);
             self.writes.push((self.addr, v));
+            self.log.push(Logged::Write(self.addr, v));
             if self.addr == reg::SUMS_CAPTURE {
                 self.cap.0 = true;
                 self.cap.1 = false;
@@ -2565,10 +2586,12 @@ pub(crate) mod tests {
                 2 => self.staged = lo,
                 3 => self.store(self.staged << 16 | lo),
                 4 => {
+                    self.log.push(Logged::Read(self.addr));
                     self.read_addr = Some(self.addr);
                     self.gpio_in = self.read_reg();
                 }
                 5 => {
+                    self.log.push(Logged::Ctrl(arg));
                     self.ctrl.push(arg);
                     self.run = arg & control::ctrl::RUN != 0;
                     self.symbols = arg & control::ctrl::SYMBOLS != 0;
