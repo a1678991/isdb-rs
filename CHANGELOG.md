@@ -75,6 +75,17 @@ STD-B44) is received to TLV streams.
   (`KNOWN_GAPS`; the two host gaps it found, sums blocks that stop while
   frames still decode and a held set discarded for its NO_LAYOUT bit, are
   fixed in `isdb-radio` and the model follows the host's fallback).
+- `fpga`: formal checks with SymbiYosys (issue #30 item 6;
+  `isdb_fpga/formal/`, `tools/formal.py`, `mise run fpga:formal`,
+  `tests/test_formal.py` in `fpga:test`; fpga/README.md "Formal checks"):
+  bounded model checking, covers and k-induction proofs of the LDPC
+  decoder's bank allocator (no bank held without a context or a queued
+  codeword, `abort` frees it, `held`, `load_ready`), the `Slots` packer's
+  sequence numbers across START and the chain's frame boundaries, each
+  against a spec model; the e95c563 and 1817079 fixes reverted make them
+  fail with a counter-example. Tools from the locked uv environment:
+  yowasp-yosys's sby and smtbmc, and `yowasp-boolector` (new dev
+  dependency), no vendor tool.
 - `fpga`: chaos runs of the ISDB-S3 chain with the real LDPC decoder
   (issue #30 item 3; `isdb_fpga/chain/chaos.py`, `tests/test_chaos.py`,
   `tools/chaos_run.py`): random host stops, STARTs, input losses and tap

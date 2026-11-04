@@ -476,6 +476,11 @@ chain yet):
    and the time to the first taps in frames. It reproduces build 6's torn
    reads, build 7's frame 26 and #27 / #29's foreign words.
 5. Yosys estimate per stage against the budget; Vivado build; the final
+   the recordings (opt-in, as the front end's). Part of it: the formal
+   checks of the small control blocks (`mise run fpga:formal`: the LDPC
+   bank allocator, the packer's sequence numbers, the frame boundaries;
+   fpga/README.md "Formal checks").
+3. Yosys estimate per stage against the budget; Vivado build; the final
    checkpoint's timing (`timing.tcl`) and utilisation (`utilization.tcl`).
 6. On the board (receive only, nothing transmitted): the ID word; a
    `Slots` capture against the model run on a simultaneous `Symbols`

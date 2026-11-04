@@ -78,6 +78,7 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `tests/test_chain.py` | the chain's stage and chain tests against `chain-*.json` |
 | `isdb_fpga/chain/chaos.py`, `tests/test_chaos.py`, `tools/chaos_run.py`, `tools/chaos_table.py` | chaos runs of the chain with the real decoder: random stops, STARTs, losses and tap writes, health checks, the model restarted at the same points ([below](#the-isdb-s3-chain-slotsrx), "Chaos runs") |
 | `tools/hostfpga_model.py`, `tests/test_hostfpga_model.py` | the timed host–FPGA model: the chain's register file and frame clock, `direct_reg_access`'s shared address, the host's slow loop and the board's other clients over iiod, standard-library Python ([below](#a-timed-hostfpga-model)) |
+| `isdb_fpga/formal/`, `tests/test_formal.py`, `tools/formal.py` | formal checks with SymbiYosys of the LDPC bank allocator, the `Slots` packer's sequence numbers and the chain's frame boundaries: the harnesses, their `.sby` files, the runner ([below](#formal-checks)) |
 
 ## Running
 
@@ -87,6 +88,7 @@ in user space). Nothing here needs a vendor toolchain:
 
 ```sh
 mise run fpga:test         # vectors from the models, then the HDL simulation of both blocks
+mise run fpga:formal       # the formal checks alone (also part of fpga:test)
 mise run fpga:estimate     # resource estimate of the 32-tap block
 mise run fpga:verilog      # fpga/build/isdb_symbols_rx.v for a vendor flow
 mise run fpga:tx-estimate  # resource estimate of the transmit block
@@ -353,6 +355,126 @@ The gaps: `end_d`, `ABORT_WAIT`, the status pacing +1 and
 value within a cycle); `DECIDE` −1 unnoticed on the toy sets is the one to
 look at (a decision a cycle earlier than the schedule assumes changed no
 result there).
+
+### Formal checks
+
+Bounded model checking and k-induction on three small control blocks
+(issue #30, item 6), so that a property is checked on every path the
+block can take, not only on the paths a vector set exercises: the #28
+bank leak needed a stop/START during a codeword's load, which no vector
+set had. The tools are wheels of the locked environment and run without
+a vendor tool or a system Yosys: SymbiYosys (`yowasp-sby`) and smtbmc
+from `yowasp-yosys`, the SMT solver from `yowasp-boolector` (YoWASP
+publishes only `.dev` builds of it, hence the exact pin; it is the only
+solver YoWASP publishes: there is no YoWASP Yices, Z3 or Bitwuzla, and
+the `abc` and `btor` engines need binaries the wheels do not have).
+
+```sh
+mise run fpga:formal                            # every harness: bmc, cover, prove
+uv run --locked python tools/formal.py banks    # one harness (in fpga/)
+uv run --locked python tools/formal.py --break e95c563   # a fixed defect back: must FAIL
+uv run --locked python tools/formal.py --list
+```
+
+**Mechanism.** A harness (`isdb_fpga/formal/<name>.py`) instantiates the
+block unchanged, drives its inputs from free top-level ports, constrains
+them with Amaranth's `Assume` only where the block's port contract
+excludes a value, and states the properties with `Assert` and the
+events it must reach with `Cover`; the properties compare the block
+with a small spec model written from the block's documentation. Internal
+state a property needs (the allocator's `alloc`) is found by name in the
+block's elaborated fragment (`formal.taps`): the HDL has no formal-only
+ports or parameters. Amaranth 0.5 writes the properties as `$check`
+cells into the RTLIL, which sby's model (Yosys's `chformal`,
+`write_smt2`) and smtbmc take as they are.
+`tools/formal.py` writes the RTLIL into `build/formal/<name>/`, runs the
+`.sby` file's tasks (`bmc`: every path of the depth from reset; `cover`:
+each `Cover` reached; `prove`: k-induction, unbounded) and prints PASS /
+FAIL per task with the failing properties' messages; on a failure, the
+counter-example's VCD path and a table of its steps. The runner points
+sby at the YoWASP tools (`YOSYS`, `SMTBMC`, `WITNESS`, a `boolector`
+symlink first on `PATH`) and runs each tool once first under a lock: a
+YoWASP tool's first run compiles its WebAssembly and says so on stderr,
+which smtbmc would take for the solver's answer.
+
+**The harnesses** (all three prove by k-induction; the helper invariants
+that make them inductive are asserted too and listed in each docstring):
+
+| Harness | Block | Properties | Assumptions | Depth (bmc, cover / prove) |
+|---|---|---|---|---|
+| `banks` | `LdpcDecoder`'s bank allocator (toy-a code, S = 17, NG = 6, the build's K = 3) | `alloc` is exactly the banks the contexts hold plus the committed ones not yet freed (the `bank_leak` monitor's condition, as a set); a context holds a bank exactly when the model says and it is the model's (the lowest free one at its `begin`, or the bank a `begin` on a holding context keeps); the cycle after an `abort` the context holds no bank and its bank is free; `held` = popcount(`alloc`) a cycle before; `load_ready` = a bank free, and `load_ready` a cycle before = (`held` < K) | no reset; `abort` never with `begin` or `start`; no second `start` of a committed codeword without a `begin` between; the freed bank (`free_mask`, cut: below) is zero or the oldest committed bank not yet freed (the result queue is in order) | 30 / 4 |
+| `packer` | `Packer` | from a block's acceptance until it has left, `seq` is its number: 0 for the first block and for the first block accepted in or after a `start`'s cycle, else the last block's + 1; the block's header words 3 and 4 carry it; a block offered while idle is taken | no reset | 40 / 16 |
+| `frame` | `FrameCtl` | the frame numbers at `o_done` / `o_dropped` strictly increase; never both; each reports the frame open the cycle before; a restart closes the open frame (reported dropped, none open after); a frame head drops the open frame and opens its own; a restart drops the queued layouts | no reset; slot number < 120, position < 9 296; frame heads in increasing frame order (the front end's counter, which START does not reset) | 30 / 4 |
+
+The decoder is far too large for a solver as a whole, and its allocator
+is not a module of its own. The `banks` harness therefore elaborates the
+whole (toy) decoder and its `.sby` script cuts the one net from the rest
+of the decoder into the allocator, `free_mask` (Yosys `cutpoint` after
+`flatten` and `opt_clean`, so that the cell driving the net is replaced,
+not an alias of it): the engine, the load pipeline and the memories then
+drive no property and Yosys removes them (25 flip-flops remain), and the
+freed bank is a free input under the in-order assumption, a superset of
+the engine's timings (a decode takes thousands of cycles, beyond any
+bounded depth from reset). The harness drives `o_ready` from a free
+input: tied to 0, the engine's `free_mask` is a constant that Yosys
+folds before the cut. `Cover(freed)`, unreachable without the cut,
+checks that the cut took effect. Not modelled: a commit lost to a full
+result queue (`queue_overflow`, its own sticky flag and monitor).
+
+The covers (each reached within the depth): an allocation, a commit of a
+held bank, an abort that frees one, a `begin` that keeps its context's
+bank, a free by an output stream, a drop (every bank held), a bank
+allocated again after it was freed; a block accepted with a `start` in
+its cycle, a `start` in a block's header, the next block numbered 0
+after it, blocks numbered 0 and 1; frames dropped by a restart, by the
+next head and by an incomplete end, two reports in a row, a head with a
+queued layout. `o_done` needs a frame of 1 115 520 symbols and is beyond
+a bounded run; the `frame` proof covers it (the induction starts from
+every state the invariants admit).
+
+**It bites** (`--break`, `formal.BREAKS`: the fix reverted on a scratch
+copy of the module through `monitors.source_patch`, as the monitors'
+proofs do; `tests/test_formal.py` runs each and expects the FAIL):
+
+- `e95c563`: the allocation rule before e95c563 (`begin` always takes a
+  new bank, `abort` frees nothing): FAIL at step 2, "after abort: the
+  context holds no bank and its bank is free" (and `alloc` against the
+  model): `begin` on context 0 (bank 0), `abort`, and bank 0 stays
+  allocated (`alloc` 1, the model's 0).
+- `e95c563-begin`: its first half alone (`begin` on a context holding an
+  uncommitted bank takes another): FAIL at step 2, "alloc = the banks
+  held by contexts + committed not freed": two `begin`s on context 0,
+  `alloc` 3 against the model's 1, the board's leak across stop/START.
+- `1817079`: the packer's `start` handling before 1817079 (honoured only
+  while idle, a block offered with it not taken): FAIL at step 1, "a
+  block offered while idle is taken": `start` and `b_valid` together
+  while idle.
+- `1817079-latch`: its sequence half alone (the latch removed): FAIL at
+  step 14, "a block's seq while it leaves is its number": a block (no
+  payload) accepted at step 0, `start` in its header (steps 8-11), the
+  next block accepted at step 13 leaves with seq 1, the model's 0.
+- `restart-open` (a synthetic fault, no defect of record: the restart
+  reports the frame dropped but leaves it open): FAIL at step 2, "a
+  restart closes the open frame".
+
+**Cost** (this host, warm YoWASP cache): `banks` 2.0 + 1.2 + 1.0 s,
+`packer` 14.8 + 0.7 + 0.9 s, `frame` 2.0 + 0.5 + 0.5 s (bmc, cover,
+prove; `packer` bmc 19 s with the host at load 34);
+`tests/test_formal.py` (the three harnesses and the five breaks) 32 s on
+one worker (79 s at load 34), 21-28 s with `pytest -n auto`. A cold YoWASP cache adds
+the WebAssembly compilation once (about 5 s on 32 threads). It is part
+of `fpga:test`, and so of CI's FPGA job.
+
+Found: nothing on today's HDL. One limitation of the `bank_accounting`
+monitor, not of the HDL: it counts a commit only on a `start` without
+`begin` (`start & ~begin & holds`), but the decoder's ports allow `start`
+and the next `begin` in one cycle, which commits the open codeword's bank
+and allocates a new one; the monitor would then miss the committed bank
+and fire. `tools/monitor_begin_start.py` shows it (`begin`, then `start`
+with `begin`, on context 0 of the toy decoder: `held` 2, correct, and
+`bank_accounting` violated at cycle 2). The bridge never issues the two
+together, so no simulation of the chain reaches it; the `banks` harness
+allows it and passes. Left as it is (a simulation-only check).
 
 ## Chain vectors
 
