@@ -1060,7 +1060,7 @@ fn check_decoded(r: &Run, s: &isdbs3_phy::chain::synth::Synth, min: usize) {
         let t = s
             .frames
             .iter()
-            .find(|t| (t.at - CUT) as u64 == f.at)
+            .find(|t| t.at >= CUT && (t.at - CUT) as u64 == f.at)
             .unwrap();
         let got: Vec<&Vec<u8>> = f
             .slots
