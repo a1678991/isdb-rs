@@ -1986,6 +1986,38 @@ Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-rx11` (build 11),
 `prev-rx8`, `prev-rx7`, `prev-rx6` or `prev-txrx2`, then `reboot` and
 `recover`.
 
+### Build 13 on the board: six or more TMCC corrections no longer hang (2026-11-04)
+
+The image of the TMCC-corrections fix (PR #48 on PR #47's vectors): the
+project flow stopped on the RGMII receive IDDR's hold (−0.807 ns, the
+builds 6, 8 and 10 class); `holdfix.tcl`: **WNS +0.017 ns, WHS +0.040 ns,
+0 failing endpoints of 161 952 / 161 729**; `rx_clk` +0.017 / +0.040,
+decoder `c0` +0.179 / +0.052, symbol clock +0.293 / +0.046, `RGMII_rxc`
++0.100 / +0.045. 43 944 LUT (82.6 %), 123.5 BRAM36, 176 DSP.
+`isdbs3_rx13_top.bin` 2 750 272 bytes, sha256 `2710eccf…` (the full
+digests in `/path/to/sdr/isdb-work/out/isdbs3-rx-build13/postflow.log`;
+XSA `a41cdd3c50410f640b259d2da4c5979cd11c8190c4d655ec0be94ad0374ad2d2`).
+On the card: build 12 stays as `isdbs3_rx12_top.bin` (`uEnv.txt.prev-rx12`),
+build 13 as `isdbs3_rx13_top.bin` (selected). BS7, receive only, the host
+from `main` (captures in `/path/to/sdr/isdbs3-bench/build13/`):
+
+| Run | Valid slots | Not converged (dropped) | Slow loop | First taps in force | Max RSS |
+|---|---|---|---|---|---|
+| 8 s × 3 back to back | 23 232, 23 232, 23 136 | 0 (0) each | 4 solves in 4 ticks each, 0 register words read | frame 3, 3, 4 | 714–732 MB |
+| 30 s | 86 976 | 0 (0) | 15 solves, 0 words read | frame 4 | 717 MB |
+
+As build 12 ("Slots format 2, features 0x220ef3", `sums_source`
+stream, exit 0, 0 losses). A TMCC word needing six or more corrections
+does not occur on BS7 (its TMCC words decode clean), so the fix is
+proven in simulation (chain-12 with 6, 7–11 and 12 corrections and the
+overlap with slot corrections) and the board run shows no regression.
+**The board runs build 13.**
+
+Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-rx12` (build 12),
+`prev-rx11`, `prev-rx10`, `prev-rx9` (build 9, `isdbs3_rx_top.bin`),
+`prev-rx8`, `prev-rx7`, `prev-rx6` or `prev-txrx2`, then `reboot` and
+`recover`.
+
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
 The checks of [docs/plans/isdbs-fpga-tx.md](docs/plans/isdbs-fpga-tx.md)
