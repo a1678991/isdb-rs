@@ -113,6 +113,60 @@ class ChaosTest(unittest.TestCase):
         record(self, chaos.run_chaos("7-hdl", "head5", events=events, backend=COMPILED))
 
 
+@unittest.skipUnless(have("7-hdl"), "no chain-7-hdl (mise run fpga:vectors)")
+class CompareTest(unittest.TestCase):
+    """`chaos.compare`'s restart-epoch allowance: a frame the chain alone
+    decoded (its slot blocks come from a layout kept across an undrained
+    restart) is excused its extra slot blocks only; its TMCC block is still
+    compared, and its status block but for the counters."""
+
+    def setUp(self):
+        from isdb_fpga.chain import slots as S
+
+        doc = chaos.vector("7-hdl")
+        self.S = S
+        self.words = doc["slots_words"]
+        blocks, err = chaos.parse(self.words)
+        self.assertIsNone(err)
+        self.blocks = blocks
+        frames = sorted({b[3] for b in blocks if b[1] == S.TMCC})
+        self.assertGreaterEqual(len(frames), 3)
+        self.f0, self.f1 = frames[0], frames[1]
+        # frame f0 handed out at 1000, an undrained restart one symbol later:
+        # f0 ambiguous, f1 and f1 + 1 in its restart epoch
+        self.model = {"slots_words": self.words,
+                      "frames": [{"frame": f, "done": 1000 + 100 * i} for i, f in enumerate(frames)],
+                      "restarts": []}
+        self.events = [{"kind": "short", "stream": 1001}]
+        # a slot block of frame f1, which the model does not decode
+        slot = next(b for b in blocks if b[1] == S.SLOT)
+        self.extra = (slot[0], S.SLOT, slot[2], self.f1, slot[4])
+
+    def test_extra_slots_of_an_epoch_frame_are_excused(self):
+        problems, findings, outcomes = chaos.compare(self.model, self.blocks + [self.extra], self.events)
+        self.assertEqual(problems, [])
+        self.assertEqual(outcomes[self.f1], "restart epoch (TMCC equal)")
+        self.assertTrue(any("restart epoch" in f for f in findings), findings)
+
+    def test_a_missing_tmcc_of_an_epoch_frame_is_a_problem(self):
+        hdl = [b for b in self.blocks if not (b[1] == self.S.TMCC and b[3] == self.f1)] + [self.extra]
+        problems, _, outcomes = chaos.compare(self.model, hdl, self.events)
+        self.assertEqual(outcomes[self.f1], "DIFFERS")
+        self.assertTrue(any("missing" in p and f"({self.f1}, {self.S.TMCC}," in p for p in problems), problems)
+
+    def test_a_corrupted_tmcc_of_an_epoch_frame_is_a_problem(self):
+        hdl = []
+        for b in self.blocks:
+            if b[1] == self.S.TMCC and b[3] == self.f1:
+                pay = list(b[4])
+                pay[4] ^= 1  # a TMCC information bit
+                b = (b[0], b[1], b[2], b[3], pay)
+            hdl.append(b)
+        problems, _, outcomes = chaos.compare(self.model, hdl + [self.extra], self.events)
+        self.assertEqual(outcomes[self.f1], "DIFFERS")
+        self.assertTrue(any(f"({self.f1}, {self.S.TMCC}," in p for p in problems), problems)
+
+
 class ChaosSweepTest(unittest.TestCase):
     """Generated: test_<set>_<seed> for FPGA_CHAIN_CHAOS's seeds."""
 
