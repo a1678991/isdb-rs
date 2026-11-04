@@ -2,7 +2,12 @@
 //! (`isdb_frontend::slots`, docs/plans/isdbs3-fpga-rx.md "Boundary"): the
 //! slot blocks to the per-stream TLV assemblers and outputs of
 //! [`crate::rxs3`], the tmcc blocks for the slots' stream ids, the status
-//! blocks and the reader's losses to the summary ([`ChainStats`]).
+//! blocks and the reader's losses to the summary ([`ChainStats`]), and
+//! (`Slots` format 2) each decoded frame's sums block to the chain's slow
+//! loop, which solves the equaliser's taps from them instead of reading
+//! the chain's sum registers (`isdb_radio::chain`, "Sums from the
+//! stream"). Format 1 (the images of builds 1–9) and format 2 streams
+//! read alike.
 //!
 //! Three callers share [`Consumer`]:
 //!
@@ -458,8 +463,13 @@ impl Consumer {
                 self.flush_through(s.frame, out, stats)?;
                 self.status(&s, stats);
             }
-            Block::Sums(_) => {
+            Block::Sums(b) => {
                 Self::chain(stats).sums_blocks += 1;
+                // the slow loop's solve (the stream path); its status
+                // block came just before
+                if let Some(h) = &self.health {
+                    h.sums(b.to_training());
+                }
             }
         }
         Ok(())
@@ -1232,6 +1242,7 @@ pub fn run_radio(
         let ch = Consumer::chain(stats);
         ch.radio = Some(json!({
             "open": c.open.describe(),
+            "sums_source": c.slow_loop.as_ref().map_or("none", |l| l.sums_source.name()),
             "features": c.open.features,
             "loaded": c.open.loaded,
             "slow_loop": c.slow_loop.as_ref().map(|l| json!({
@@ -1239,6 +1250,8 @@ pub fn run_radio(
                 "solves": l.solves,
                 "singular": l.singular,
                 "solves_rejected": l.solves_rejected,
+                "sums_source": l.sums_source.name(),
+                "sums_blocks": l.sums_blocks,
                 "torn_reads": l.torn,
                 "unsettled_reads": l.unsettled,
                 "words_read": l.words_read,
@@ -1279,9 +1292,15 @@ pub fn run_radio(
                 ticks = l.ticks,
                 captures_rejected = l.captures_rejected,
                 rereads = l.rereads,
-                "the equaliser's slow loop wrote taps {} time(s) in {} ticks ({} solve(s) rejected by its gate, {} capture(s) by the checks on the sums{}; {} of {} register reads read again after a foreign value, {} torn){}{}",
+                sums_source = l.sums_source.name(),
+                "the equaliser's slow loop wrote taps {} time(s) in {} ticks, training sums from the {} ({} solve(s) rejected by its gate, {} capture(s) by the checks on the sums{}; {} of {} register reads read again after a foreign value, {} torn){}{}",
                 l.solves,
                 l.ticks,
+                match l.sums_source {
+                    isdb_radio::chain::SumsSource::Stream =>
+                        format!("Slots stream ({} sums blocks, no sum register read)", l.sums_blocks),
+                    isdb_radio::chain::SumsSource::Registers => "sum registers".to_string(),
+                },
                 l.solves_rejected,
                 l.captures_rejected,
                 if l.captures_rejected_by.is_empty() {
@@ -1445,6 +1464,86 @@ mod tests {
         let j = ch.json();
         assert_eq!(j["dropped_slots"], json!(decoded * 2));
         assert_eq!(j["capture_error"], Value::Null);
+        // each decoded frame's sums block handed to the slow loop (Slots
+        // format 2: the stream path), the last one the last decoded
+        // frame's, the same sums the model latched
+        assert_eq!(s.sums_blocks, decoded);
+        assert_eq!(ch.sums_blocks, decoded);
+        assert_eq!(j["blocks"]["sums"], json!(decoded));
+        let last = h.latest_sums().expect("sums");
+        assert_eq!(Some(last.frame), s.sums_frame);
+        assert_eq!(last.frame, s.last.unwrap().frame);
+        assert_eq!(last.count, 6_720);
+        assert!(
+            isdb_radio::chain::check_sums(&last, &isdb_radio::chain::SumsCheck::default())
+                .is_none()
+        );
+        let carrier = st
+            .chain
+            .as_ref()
+            .unwrap()
+            .last_status
+            .as_ref()
+            .unwrap()
+            .carrier;
+        assert_eq!(s.last.unwrap().carrier, carrier);
+    }
+
+    /// A format-1 stream (what the images of builds 1–9 send: the same
+    /// slot, tmcc and status blocks, no sums blocks) decodes exactly as
+    /// the format-2 stream of the same frames: the same TLV bytes, slots,
+    /// frames and summary, the sums blocks the only difference.
+    #[test]
+    fn a_format_1_stream_decodes_as_format_2() {
+        let o = SynthOptions::default();
+        let s = generate(&o, 7);
+        let opt = ChainOptions::default();
+        let lag = opt.layout_lag;
+        let mut chain = Chain::new(opt);
+        let mut blocks = Vec::new();
+        let mut out = Vec::new();
+        for &x in &s.symbols {
+            chain.push(x, &mut out);
+            for o in out.drain(..) {
+                if let Output::Frame(f) = o {
+                    blocks.extend(isdbs3_phy::chain::out::blocks(&f, lag));
+                }
+            }
+        }
+        let (mut w1, mut w2) = (
+            isdb_frontend::slots::Writer::with_version(1),
+            isdb_frontend::slots::Writer::new(),
+        );
+        let (mut v1, mut v2) = (Vec::new(), Vec::new());
+        for b in &blocks {
+            w2.write(b, &mut v2);
+            if !matches!(b, Block::Sums(_)) {
+                w1.write(b, &mut v1);
+            }
+        }
+        let sums = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Sums(_)))
+            .count() as u64;
+        assert!(sums >= 1);
+        // (splits no other test uses: consume_words's directory is per
+        // split and length)
+        let (a, tlv_a) = consume_words(&v1, 4001);
+        let (b, tlv_b) = consume_words(&v2, 4003);
+        assert!(a.slots > 0);
+        assert_eq!(tlv_a, tlv_b);
+        assert_eq!(
+            (a.frames, a.slots, a.tmcc_ok, a.ldpc_failed),
+            (b.frames, b.slots, b.tmcc_ok, b.ldpc_failed)
+        );
+        let (ca, cb) = (a.chain.as_ref().unwrap(), b.chain.as_ref().unwrap());
+        assert_eq!((ca.sums_blocks, cb.sums_blocks), (0, sums));
+        assert_eq!(
+            (ca.losses, ca.unknown_blocks, ca.frames_undecoded),
+            (cb.losses, cb.unknown_blocks, cb.frames_undecoded)
+        );
+        assert_eq!((cb.losses, cb.unknown_blocks), (0, 0));
+        assert_eq!(ca.last_status, cb.last_status);
     }
 
     /// The synthetic stream (one TLV stream id B070h on all 120 slots of
@@ -1564,8 +1663,12 @@ mod tests {
         // blocks, no tmcc or status; discarded, the rest as before
         let last = frames.iter().flatten().map(Block::frame).max().unwrap();
         let mut with_orphans = moved.clone();
+        // the last frame's sums block (format 2) follows its status block
+        let sums = with_orphans
+            .pop_if(|b| matches!(b, Block::Sums(_)))
+            .expect("the last block is a sums block");
         let Some(Block::Status(st)) = with_orphans.pop() else {
-            panic!("the last block is a status")
+            panic!("the block before is a status")
         };
         let orphans: Vec<Block> = frames[frames.len() - 2]
             .iter()
@@ -1580,6 +1683,7 @@ mod tests {
             .collect();
         with_orphans.extend(orphans);
         with_orphans.push(Block::Status(st));
+        with_orphans.push(sums);
         let (c, tlv_c) = consume_words(&write(&with_orphans), 4096);
         assert_eq!(tlv_c, tlv_a);
         assert_eq!((c.frames, c.slots), (a.frames, a.slots));

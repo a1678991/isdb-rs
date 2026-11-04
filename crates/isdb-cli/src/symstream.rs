@@ -512,7 +512,7 @@ pub enum S3Offload {
 /// receive chain (`Slots`) over the symbol front end over the CPU; `fpga`
 /// needs at least a compatible front end and takes the chain when it is
 /// offered; `cpu` takes neither. The chain counts only with a compatible
-/// front end and this host's `Slots` format.
+/// front end and a `Slots` format this host reads (1 or 2).
 pub fn select_s3(
     offers: &[isdb_radio::Offload],
     offload: crate::symbols::OffloadArg,
@@ -528,7 +528,7 @@ pub fn select_s3(
             version,
             taps,
             slots_version,
-        } if arith.contains(&version) && slots_version == isdb_frontend::slots::SLOTS_VERSION => {
+        } if arith.contains(&version) && isdb_frontend::slots::readable(slots_version) => {
             Some(taps)
         }
         _ => None,
@@ -1145,8 +1145,13 @@ mod tests {
         );
         assert_eq!(select_s3(&[sym, slots(1)], Cpu).unwrap(), S3Offload::Cpu);
         assert_eq!(select_s3(&[sym], Auto).unwrap(), S3Offload::Symbols(32));
+        // Slots format 2 (the sums block) is read too, format 3 is not
         assert_eq!(
             select_s3(&[sym, slots(2)], Auto).unwrap(),
+            S3Offload::Slots(32)
+        );
+        assert_eq!(
+            select_s3(&[sym, slots(3)], Auto).unwrap(),
             S3Offload::Symbols(32)
         );
         assert_eq!(select_s3(&[], Auto).unwrap(), S3Offload::Cpu);
