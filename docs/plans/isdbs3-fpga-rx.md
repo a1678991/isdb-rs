@@ -1707,6 +1707,14 @@ The follow-up of "Build 8 issues", built on all sides; no image yet.
   0x220e73) keeps the register path exactly as before (tested through the
   mock register backend and recorded words of both formats).
 
+**On the board (build 11, 2026-11-04; VERIFICATION.md "Build 11 on the
+board"):** the slow loop's first taps in force from frame 4 (+3 to +4
+frames; +33 on the register path), 0 register words read, 183 sums blocks
+per 8 s, 0 dropped slots; the same host on the format-1 build 10 takes
+the register path as before. Build 12 (PR #40 as merged, the capture
+hold released at a restart): the same figures, every constraint met in
+the project flow (WNS +0.099, WHS +0.034 ns); the board runs it.
+
 **When the first solved taps are in force.** Register path, measured
 (build 7, and build 9 with the probe's taps: "Build 9 residuals"): the
 first capture armed at the first tick latches frame ≈ 5, its 308 reads
