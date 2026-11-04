@@ -324,6 +324,7 @@ class ChainTest(unittest.TestCase):
 
 
 REAL = os.environ.get("FPGA_CHAIN_REAL") == "1"
+SWEEP = os.environ.get("FPGA_CHAIN_SWEEP") == "1"
 
 
 @needs("7-hdl")
@@ -407,28 +408,81 @@ class RealDecoderChainTest(unittest.TestCase):
         # decoded): every block as the model's, its counters included
         self.run_set("12-fail", None)
 
+    # chain-12's frame 1 TMCC word has five errors in the decoder's output;
+    # the variants add these, in order, for 6 .. 12 (the code's t)
+    TMCC_MORE = (11209, 3001, 5003, 6007, 7011, 8017, 11401)
+
+    def run_corrections(self, n, slot_errors=()):
+        """chain-12 with frame 1's TMCC word given `n` errors in the
+        decoder's output (its five, then TMCC_MORE) and `slot_errors`
+        [(frame, slot, positions)] besides the set's, over the input to
+        frame 2's first slots (frame 1's TMCC block follows frame 2's first
+        three slot blocks): no health problem (monitors, decoder, bridge,
+        a parsing stream), and every block the chain sent the model's but
+        for the BCH counts (the model's TMCC word has 5 errors, its slots
+        none): TMCC payload word 0 = n, a slot's word 2 = its errors."""
+        from isdb_fpga.chain import slots as S
+        from isdb_fpga.chain.stages import blocks_by_frame, run_chain_real
+
+        d = dict(doc("12-fail"))
+        fr1, five = d["tmcc_errors"][0]
+        self.assertEqual((fr1, len(five)), (1, 5))
+        d["tmcc_errors"] = [[1, sorted(five + list(self.TMCC_MORE[:n - 5]))]] + d["tmcc_errors"][1:]
+        d["bch_errors"] = [list(e) for e in slot_errors] + d["bch_errors"]
+        words = []
+        what, bad = run_chain_real(d, None, COMPILED, 2_600_000, words)
+        health = [b for b in bad if not b.startswith("block ")]
+        self.assertEqual(health, [], "\n".join(health[:8]))
+        gb, _, _ = blocks_by_frame(words)
+        eb, _, _ = blocks_by_frame(d["slots_words"])
+        expect = {(1, S.TMCC, 0): {0: n}}
+        expect.update({(fr, S.SLOT, sl): {2: len(ps)} for fr, sl, ps in slot_errors})
+        for k in expect:
+            self.assertIn(k, gb, what)
+        for k, pay in gb.items():
+            self.assertIn(k, eb)
+            want = list(eb[k])
+            for i, v in expect.get(k, {}).items():
+                want[i] = v
+            self.assertEqual(pay, want, f"block {k}")
+
     @cxx
     @needs("12-fail")
     @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
-    @unittest.expectedFailure
     def test_six_tmcc_corrections(self):
-        # An open defect chain-12 found (README "Integration"), not fixed
-        # here: frame 1's TMCC word with six bit errors in the decoder's
-        # output (chain-12's five and position 11 209), which its BCH
-        # corrects: the chain's TMCC block of frame 1 leaves with a wrong
-        # first word and stops after 13 words (a bad CRC), the result stream
-        # stalls and the decoder's result queue overflows (monitor
-        # dec.queue_overflow, then br.tag_overflow). One to five errors, at
-        # any position, pass; the TMCC stage alone (TmccTest) corrects 7.
-        # Only the health is checked (the comparison differs by design).
-        from isdb_fpga.chain.stages import run_chain_real
+        # chain-12 found it (README "Integration"): from six roots
+        # TmccResult was still flipping them (3 cycles a root) when the
+        # finish stage's one-cycle `o_go` came, so its TMCC block stopped
+        # after the four header words and the result stream stalled (the
+        # decoder's result queue, then the bridge's tag queue overflowed)
+        self.run_corrections(6)
 
-        d = dict(doc("12-fail"))
-        d["bch_errors"] = []
-        d["tmcc_errors"] = [[1, sorted(d["tmcc_errors"][0][1] + [11209])]]
-        what, bad = run_chain_real(d, None, COMPILED, 2_600_000)
-        health = [b for b in bad if not b.startswith("block ")]
-        self.assertEqual(health, [], "\n".join(health[:8]))
+    @cxx
+    @needs("12-fail")
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    def test_twelve_tmcc_corrections(self):
+        # the TMCC code's limit (t = 12): twelve roots, 36 cycles of flips
+        self.run_corrections(12)
+
+    @cxx
+    @needs("12-fail")
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    def test_tmcc_corrections_after_slot_corrections(self):
+        # the shared BCH unit: frame 2's slots 0, 1 and 2 with 12 errors
+        # each, the codewords committed just before frame 1's TMCC word
+        # (12 errors), which waits in the result FIFO while slot 2's Chien
+        # search runs and then takes the unit
+        slots = [(2, sl, [97 + 1201 * i + 13 * sl for i in range(12)]) for sl in range(3)]
+        self.run_corrections(12, slots)
+
+    @cxx
+    @needs("12-fail")
+    @unittest.skipUnless(REAL and SWEEP, "FPGA_CHAIN_REAL=1 FPGA_CHAIN_SWEEP=1")
+    def test_tmcc_corrections_7_to_11(self):
+        # the rest of the sweep 6 .. 12, opt-in (a whole-chain run each)
+        for n in range(7, 12):
+            with self.subTest(n=n):
+                self.run_corrections(n)
 
 
 @needs("8-loss")

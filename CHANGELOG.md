@@ -1600,6 +1600,14 @@ STD-B44) is received to TLV streams.
   compares SEQ, VALID and ARMED only (a latch, or another client's
   capture write, still tears a set); the warning names what moved.
   Found by the timed host–FPGA model (issue #30 item 4).
+- `fpga`: a TMCC word whose BCH corrected six or more errors hung the
+  ISDB-S3 chain: its TMCC block stopped after four payload words, the
+  result stream stalled and the LDPC decoder's result queue overflowed.
+  The finish stage asked for the TMCC's information bits with a
+  one-cycle pulse that came while `TmccResult` was still flipping the
+  roots (3 cycles a root); it now holds the request until the last word.
+  Checked with 6 and 12 TMCC corrections and with 12 right after three
+  slots of 12 corrections (the shared BCH unit); the BCH is unchanged.
 - `fpga`: a CTRL START while a `Slots` block was leaving the ISDB-S3
   chain did not restart the blocks' sequence numbers (the packer honoured
   START only between blocks); it is latched until the block is done, the

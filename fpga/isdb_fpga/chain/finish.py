@@ -961,7 +961,7 @@ class Finish(Elaboratable):
                 with m.If(pk.w_ready):
                     m.d.sync += word_i.eq(word_i + 1)
                     with m.If(word_i == 3):
-                        m.next = "TMCC_GO"
+                        m.next = "TMCC_BITS"
                         with m.If(t_ovr):
                             m.d.sync += word_i.eq(0)
                             m.next = "TMCC_ZERO"
@@ -972,12 +972,13 @@ class Finish(Elaboratable):
                     m.d.sync += word_i.eq(word_i + 1)
                     with m.If(word_i == 588):
                         m.next = "TMCC_WAIT"
-            with m.State("TMCC_GO"):
-                m.d.comb += tr.o_go.eq(1)
-                m.next = "TMCC_BITS"
             with m.State("TMCC_BITS"):
-                # the packer takes a word per clock in its payload state
-                m.d.comb += [pk.w_valid.eq(tr.o_valid), pk.w_data.eq(tr.o_bits)]
+                # the packer takes a word per clock in its payload state.
+                # `o_go` is a level held until the last word: TmccResult may
+                # still be flipping the BCH's roots (3 cycles a root) when
+                # the block's first words are out, and takes it only in its
+                # HOLD (a one-cycle pulse here missed it from 6 roots on)
+                m.d.comb += [tr.o_go.eq(1), pk.w_valid.eq(tr.o_valid), pk.w_data.eq(tr.o_bits)]
                 with m.If(tr.o_valid & tr.o_last):
                     m.next = "TMCC_WAIT"
             with m.State("TMCC_WAIT"):
