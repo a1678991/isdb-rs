@@ -34,7 +34,12 @@
 //!   offset, parity]` at each period's end), `heads` (`[at, word, corr_re,
 //!   corr_im, theta, amp, number, frame]`, word 0 SSync / 1 FSync / 2
 //!   !FSync, number and frame −1 when unknown) and `carrier` (`[at, f]`
-//!   after each register update: `at` the first symbol rotated with it).
+//!   after each register update: `at` the first symbol rotated with it),
+//!   from the input's start to one slot after two frames from the first
+//!   frame head (two carrier updates); and `relock`, the same fields of
+//!   stage 1 from reset on 100 000 input symbols from index 3 321
+//!   (`shift`, not a multiple of the slot: it locks with the slot heads at
+//!   position 6 975 of its periods, the main record at 1 000).
 //! - **2-phase** (stage 3): the heads of three slots (as above) and the
 //!   NCO outputs `r` of the two slots between them, with the NCO's input
 //!   `x` (the symbols) and phase `phi` (φ each symbol was rotated with)
@@ -157,6 +162,16 @@ use std::path::{Path, PathBuf};
 
 /// Per-symbol stage-1 internals for this many positions.
 const DETAIL: usize = 30_000;
+
+/// Chain-1's relock record: stage 1 from 0 again on the input from this
+/// index (not a multiple of the slot), so it locks with the slot heads at
+/// another position of its periods (6 975: 1 000 − 3 321 mod 9 296).
+const RELOCK_SHIFT: usize = 3_321;
+/// The relock record's length: lock (the 4th period), the parity and a
+/// few heads.
+const RELOCK_SYMBOLS: usize = 100_000;
+/// The relock record's per-position internals.
+const RELOCK_DETAIL: usize = 2_000;
 
 /// The synthetic sets' input starts this many symbols into the generated
 /// stream: 16 slots before the second frame's head (a multiple of the
@@ -486,32 +501,56 @@ fn run_chain_agc(
 }
 
 /// Stage 1 run alone (the chain's own NCO and detector code) for the
-/// per-period and per-position internals.
+/// per-period and per-position internals: the first frame head and two
+/// frames after it (lock, the parity, frame heads and two carrier
+/// updates), and the relock record (module docs: 1-sync).
 fn stage1(r: &Run) -> Value {
+    let first = r
+        .frames
+        .first()
+        .map_or(r.input.len(), |f| usize::try_from(f.at).unwrap());
+    let end = (first + 2 * FRAME_SYMBOLS + MOD_SLOT).min(r.input.len());
+    let (mut v, heads) = stage1_on(&r.input[..end], DETAIL);
+    // the same heads as the whole chain's
+    let chain_heads: Vec<Vec<i64>> = r
+        .heads
+        .iter()
+        .filter(|h| usize::try_from(h.at).unwrap() + 24 <= end)
+        .map(head_json)
+        .collect();
+    assert_eq!(heads, chain_heads, "stage 1 alone vs the chain");
+    assert!(
+        v["carrier"].as_array().unwrap().len() >= 2,
+        "two carrier updates"
+    );
+    let shifted = &r.input[RELOCK_SHIFT..RELOCK_SHIFT + RELOCK_SYMBOLS];
+    let (mut relock, _) = stage1_on(shifted, RELOCK_DETAIL);
+    relock["shift"] = json!(RELOCK_SHIFT);
+    v["relock"] = relock;
+    v
+}
+
+/// Stage 1 (NCO from 0, slot sync, carrier loop) over `input`; the
+/// per-position internals of the first `detail` positions. Returns the
+/// record and its heads.
+fn stage1_on(input: &[[i8; 2]], detail: usize) -> (Value, Vec<Vec<i64>>) {
     let mut nco = Nco::new(0);
     let mut sy = SlotSync::new();
     let mut ev = Vec::new();
-    let mut rs = Vec::with_capacity(r.input.len());
+    let mut rs = Vec::with_capacity(input.len());
     let mut per_symbol = Vec::new();
     let mut periods = Vec::new();
     let mut heads = Vec::new();
     let mut phases = Vec::new();
     let mut carrier = Vec::new();
-    // stop after the first frame head + one frame (enough for lock, the
-    // parity, a frame head and a carrier update)
-    let first = r
-        .frames
-        .first()
-        .map_or(r.input.len(), |f| usize::try_from(f.at).unwrap());
-    let end = (first + FRAME_SYMBOLS + MOD_SLOT).min(r.input.len());
-    for (n, &x) in r.input[..end].iter().enumerate() {
+    for (n, &x) in input.iter().enumerate() {
         if n % 4096 == 0 {
             phases.push([n as i64, i64::from(nco.phase)]);
         }
         let v = nco.rotate(x);
         rs.push(v);
         sy.push(v, &mut ev);
-        if n >= 23 && n - 23 < DETAIL {
+        if n >= 23 && n - 23 < detail {
             let (cf, cs, a) = sy.last_corr;
             per_symbol.push([
                 (n - 23) as i64,
@@ -544,24 +583,17 @@ fn stage1(r: &Run) -> Value {
             }
         }
     }
-    // the same heads as the whole chain's
-    let chain_heads: Vec<Vec<i64>> = r
-        .heads
-        .iter()
-        .filter(|h| usize::try_from(h.at).unwrap() + 24 <= end)
-        .map(head_json)
-        .collect();
-    assert_eq!(heads, chain_heads, "stage 1 alone vs the chain");
-    json!({
-        "input": flat2(&r.input[..end]),
+    let v = json!({
+        "input": flat2(input),
         "r": flat2(&rs),
         "nco_phase": phases,
-        "detail": DETAIL,
+        "detail": detail,
         "per_symbol": per_symbol,
         "periods": periods,
         "heads": heads,
         "carrier": carrier,
-    })
+    });
+    (v, heads)
 }
 
 fn stage2(r: &Run) -> Value {
