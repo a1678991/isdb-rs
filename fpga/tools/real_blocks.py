@@ -5,7 +5,11 @@ set's, block by block, and print the first words of the blocks that differ
 failing run got wrong.
 
 python tools/real_blocks.py build/chain-13-modes.json build/chain-real-got-2450000.json
-    [--frames 2,3] [--max 12]
+    [--frames 2,3] [--max 12] [--order]
+
+--order prints the blocks the run got in stream order (frame, kind, slot,
+first words) instead: which result came where, e.g. a TMCC block in a
+slot result's place (a tag out of step with the decoder's commits).
 """
 
 import json
@@ -35,6 +39,12 @@ def main(argv):
 
     frames = {int(x) for x in opt("--frames").split(",")} if opt("--frames") else None
     most = int(opt("--max", 12))
+    if "--order" in argv:
+        for kind, _seq, frame, pay in S.blocks(got):
+            k = (frame, kind, pay[0] & 0x7F if kind == S.SLOT else 0)
+            if frames is None or frame in frames:
+                print(k, slot_fields(pay) if kind == S.SLOT else f"{len(pay)} words, first {pay[:6]}")
+        return
     gb, _, _ = blocks_by_frame(got)
     eb, _, _ = blocks_by_frame(doc["slots_words"])
     shown = 0
