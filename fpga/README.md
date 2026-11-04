@@ -77,6 +77,7 @@ on the recordings to cost nothing ([`isdb-frontend` README, "Format
 | `tezuka/isdb_slots.xdc` | the constraints of `SlotsRx` (its three clocks, the GPIO paths) |
 | `tests/test_chain.py` | the chain's stage and chain tests against `chain-*.json` |
 | `isdb_fpga/chain/chaos.py`, `tests/test_chaos.py`, `tools/chaos_run.py`, `tools/chaos_table.py` | chaos runs of the chain with the real decoder: random stops, STARTs, losses and tap writes, health checks, the model restarted at the same points ([below](#the-isdb-s3-chain-slotsrx), "Chaos runs") |
+| `tools/hostfpga_model.py`, `tests/test_hostfpga_model.py` | the timed host–FPGA model: the chain's register file and frame clock, `direct_reg_access`'s shared address, the host's slow loop and the board's other clients over iiod, standard-library Python ([below](#a-timed-hostfpga-model)) |
 
 ## Running
 
@@ -957,6 +958,150 @@ stream" above; the HDL and the host are done and tested in simulation);
 simulation (the chain's simulations start at the symbols); a host CONST /
 N0 load and layout lag 1 (FEATURES says so); the recording sets
 (`chain-rec-*`, opt-in) were not generated here.
+
+### A timed host–FPGA model
+
+Issue #30 item 4: `tools/hostfpga_model.py` (Python standard library only,
+seeded) and `tests/test_hostfpga_model.py` (in `mise run fpga:test`; no
+simulator or vectors, about 7 s on one core). Two of the board's defects
+were properties of the host and the FPGA over time, not of either alone:
+build 6 latched the training sums every 33 ms frame while the host took
+about 15 frames to read them (an interface timing assumption nobody had
+stated), and #27 / #29 were races on `direct_reg_access`'s shared address
+between the host's two libiio contexts and a board-side script. A
+discrete-event model finds both from the register map, the frame period
+and the measured iiod cost, without hardware.
+
+**What it simulates.** The chain's frame clock (33.05 ms, frame 0 a fixed
+time after START, frames 0 and 1 without a layout) and the register file of
+`top.py`'s docstring (`REGISTERS`, each register's kind: constant, config,
+live, per frame, latched, version): the command protocol on `gpio_out` /
+`gpio_in`, the sums latched at each decoded frame's end, SUMS_CAPTURE's
+arm / latch / hold / release and SEQ, TAPS_FROM in force from frame N + 2
+(or the next frame start), START, the old HDL's sum READ (0 for up to
+4 400 symbol clocks) and build 9's (3 clocks). The `Slots` stream: a decoded
+frame's 210 000 words over the frame, its TMCC, status and (format 2) sums
+blocks 4.5 slots into the next, cut into DMA buffers, each arriving at the
+consumer after its transfer. `direct_reg_access`: one cached address per
+IIO device, set by every write to the attribute (an address alone, or an
+address and a value); a read returns the register at the cached address, so
+another client's address write between a read's two iiod requests returns
+the other register. The clients: the host's open (the capture context), its
+slow loop (its own context; the register path as `SlowLoop::tick_at` does
+it, with build 6-8's single reads, #27's diagnostic double read or PR #31's
+verified reads; or the stream path, `tick_stream`), the capture context's
+per-buffer ADC overflow poll of builds 6-8, the consumer (`ChainHealth`:
+status and sums blocks, the revert watch), Tezuka's `api_controller.sh`
+(0x80000088 every 3.4-4.2 s) and #29 E2's 5 Hz reader of 0x80000000. Every
+value read carries the register it came from, so foreign values are
+counted exactly.
+
+**Parameters** (dataclasses at the top of the file, each with its source;
+`--set SECTION.FIELD=VALUE` changes one from the command line, `--sweep`
+runs several values):
+
+| Parameter | Value | Source |
+|---|---|---|
+| `Profile.request_s`, this bench (`BENCH`) | 0.38 ms per iiod request | build 7: 308 single reads (4 requests a word) in about 15 frames, the first write 0.90 s after the open |
+| `Profile.wire_s`, `BENCH` | 0.10 ms | fitted to the false ADC overflow flags of builds 6 and 7 (27 and 8 in 30 s; the model 30 and 7) |
+| `Profile.request_s`, the reporter's board (`ISSUE29`) | 0.75 ms | #29: a set with the diagnostic double read (6 requests a word) in 1.3-1.5 s |
+| `Profile.wire_s`, `ISSUE29` | 0.36 ms | fitted to #29 E2 (34 of 50 sets, 52 words) |
+| `Signal.frame_s`, `lock_s`, `layout_lag` | 33.05 ms, 55 ms, 2 | the frame; START to frame 0, fitted to build 7 (frame 0 began 41-74 ms after START) |
+| `Signal.decoded_words`, block sizes, `block_delay_slots` | 210 000; 604 / 143 / 476; 4.5 | README "Without a layout", "Sums in the stream", the block order |
+| `Host.buffer_words` | 65 536 (262 144 in builds 6-8) | `SLOTS_BUFFER_WORDS`, the default buffer before #28 |
+| `Host.poll_s`, `every_s`, `recover_after_s`, `stream_stale_s`, `max_reads`, revert | 0.2 s, 2 s, 1.5 s, 0.5 s, 8, 10 frames / 5 s | `crates/isdb-radio/src/chain.rs` |
+| `Host.taps_words` | 25 command words | the 11 taps and TAPS_FROM |
+| `Board.api_period_s` | 3.4-4.2 s | #29 |
+
+`wire_s` is the window from the board's apply of a read's address write to
+its sample of the value (a write applies at the end of iiod's processing, a
+read samples at its start): the network round trip and the client's
+turnaround, the only part of a request another client can hit. Each
+profile has this one fitted number; every other comparison below is a
+prediction.
+
+**Running.** `python3 -I fpga/tools/hostfpga_model.py` runs every scenario
+(`--list` names them; a few seconds), `--seeds 5 --mean` averages seeds,
+`--json` for the raw counts, for example `python3 -I
+fpga/tools/hostfpga_model.py stream --set host.buffer_words=262144`.
+
+**The reproductions** (the model's mean over 5 seeds; the board's figures
+from VERIFICATION.md, #27 and #29):
+
+| | Board | Model |
+|---|---|---|
+| (a) build 6 (no SUMS_CAPTURE), 30 s | 46 sets read, every one torn, no taps; 27 overflow flags | 44 sets, 44 torn (the words of each from several latches), no write; 30 flags (fit) |
+| (a) build 7 (SUMS_CAPTURE), 30 s | first write 0.90 s after the open, solved from frame 5, in force from frame 26; 12 solves in 24 ticks; 8 flags; one bad solve of twelve, cause not found | 0.91 s, frame 4, frame 26; 11 in 22; 7 flags (fit); 3.2 of 11 solves from a set with a word moved by 10⁹ or more (the host's own overflow poll: the model's explanation of that bad solve) |
+| (a) build 9 (verified reads, the script running), 600 s | 200 written in 400 ticks; 1 reread in 65 201 reads; the first set in force at frame 33-34 | 203 in 406; 2.4 rereads in 66 193, none accepted; frame 34 (a set takes 0.71 s instead of 0.47: 6 requests a word) |
+| (b) #27 run B: the host's per-buffer poll, the script | 47 of 50 sets with a differing word, 186 words (3.7 a set) | 81 of 82, 4.3 words a set |
+| (b) #27 run C / #29 E3: the script alone, 600 s | 7 of 146 / 7 of 158 sets | 5.6 of 162 |
+| (b) #29 E1: neither | 0 of 163 | 0 of 162 |
+| (b) #29 E2: a 5 Hz reader of 0x80000000 | 34 of 50 sets, 52 words | 31.8 of 49, 49 words (fit) |
+| (b) PR #31's verified reads under run B's / run C's load | not run | 355 / 7 rereads, no wrong word accepted, no wrong set solved, nothing unsettled |
+| (c) the stream path (format 2), the script running | (no image yet) the plan expects `taps_from` 2 in force from frame 4 or 5 | the first sums block (frame 2's) at the consumer 10 ms after frame 2's end, TAPS_FROM 2 written 0.171 s after the open, in force from frame 4 (from 4 or 5 on the slower `ISSUE29` network); no sum, SUMS_FRAME or status register read: the loop's only reads are `gpio_out`'s at attach (2) |
+
+Not reproduced: #27 run A (build 8's released host: single reads and the
+poll, 600 s) had 231 overflow flags and 13 bad sets written and 30 rejected
+of 190; the model gives 535 flags and 151 of 186 solves from a set with a
+large wrong word. Its per-set exposure under the same poll is the one run B
+measured (where the model agrees), so either run A polled less often than
+the model's 24 buffers per second or the board's outcome criteria (more than
+half of the codewords failed; the centre-tap gate) count only part of the
+wrong sets; the model computes no taps to tell. Run B's loop also read 50
+sets in 300 s where the model reads 82 (a set every 6 s on the board).
+
+**Properties** (each a test): every set the host solves from is one
+snapshot (no scenario solves a set whose words came from two latches);
+the static rule on the map (`check_groups`): a multi-word value the host
+reads is latched and versioned, and held for at least the host's read time
+(build 6 fails it: latched every 33 ms, read in 0.47 s); every live register
+the register path polls (CARRIER, STATUS, FRAME, TAPS_FROM) is one word used
+alone; no host sequence waits for ever (`liveness`: the first taps within
+the lock, two frames, two polls and a set; a solve at least every period
+plus one retried set; a stretch without a layout longer than
+`recover_after` ending in a recovery); the sums blocks the stream path
+waits for all arrive, each within a buffer's fill at the decoded rate
+(10.3 ms) plus the block delay and the transfer. The verified reads accept
+no wrong word under any modelled load; the old HDL's transient 0 is never
+seen over iiod (0.4 ms and more between the READ and the read) but is by a
+host on the board (`LOCAL` profile), even through the verified reads, and
+not with build 9's READ.
+
+**What it found** (`KNOWN_GAPS` lists the liveness gaps; a fix makes the
+test fail until the entry goes):
+
+- *The stream path has no timer on the sums blocks.* If another client arms
+  SUMS_CAPTURE (a second host on the board, a register-path tool), the latch
+  holds, no sums block leaves, the status blocks still say decoded, and the
+  loop waits for ever without a warning (the taps in use stay; the next START
+  releases the hold). A "no sums block for N periods while frames decode"
+  warning, or a SUMS_CAPTURE write of 0 at open, would close it.
+- *A layout lost during a set discards the held set as torn.* The register
+  path compares SUMS_CAPTURE's whole word before and after the 308 words
+  (`HELD_EXTRA`), but its NO_LAYOUT bit follows the layout while a capture is
+  held: a good set is dropped and the warning says the capture did not hold
+  ("moved from frame N to N"). Comparing SEQ and VALID only (bits 15-8, 0)
+  would keep it.
+- *The verified reads cost 8 frames on the register path*: the first solved
+  taps in force from frame 34 instead of 26 (VERIFICATION.md "Build 9
+  residuals" measured +33-34).
+- *On the stream path a lost layout is seen late*: the status blocks of a
+  stretch without a layout arrive in bursts (a 65 536-word buffer takes up to
+  3.2 s at the no-layout rate), the stale rule reads them as no layout, and
+  the recovery comes within the loop's period, `recover_after` and the
+  stale time (3.9 s after the layout went in the model's run; 1.8 s on the
+  register path, which reads STATUS at its next tick).
+- COUNTERS' iterations low / high are a 64-bit live value read as two words
+  without a snapshot (`GROUPS_ALLOWED`: torn only at a carry of the low word,
+  about every 8 days of decoding; the counters are a report).
+
+**What it does not model**: the signal and the numerical solve (a wrong word
+is counted, and classed by how far it moves its entry; the host's sum checks
+and gate, which catch most such sets, act on values the model does not
+compute), n0 and the revert's quality rules (a written set is accepted once
+ten status blocks show it), the decoder, iiod's contention between clients,
+Ethernet losses and TCP's buffering beyond a fixed transfer time, and mid-run
+restarts other than stretches without a layout.
 
 ## The transmit block (`SymbolsTx`)
 

@@ -458,9 +458,26 @@ chain yet):
 2. HDL simulation (`mise run fpga:test`) bit-exact on the vectors of
    every stage and of the chain: synthetic (the models' generators) and
    the recordings (opt-in, as the front end's).
-3. Yosys estimate per stage against the budget; Vivado build; the final
+3. The checks of issue #30 that catch the board-found defect classes
+   before hardware (fpga/README.md): value coverage of the vectors
+   (item 1, `tools/value_coverage.py`, in `fpga:test`: a field constant
+   across the corpus is a field no simulation checks, as build 7's n0);
+   the invariant monitors in every simulation and the pipeline-delay
+   mutation run (item 2, `chain/monitors.py`, `tools/pipeline_mutation.py`);
+   the chaos runs of random stops, STARTs, losses and tap writes against
+   the model restarted at the same points (item 3, `chain/chaos.py`,
+   opt-in `FPGA_CHAIN_CHAOS`).
+4. The timed host–FPGA model (item 4, `tools/hostfpga_model.py`, in
+   `fpga:test`; fpga/README.md "A timed host–FPGA model"): the register
+   map, the frame period and the measured iiod cost against the host's
+   sequences, for any change to a register's semantics, the stream's
+   blocks or the slow loop: every multi-word value read is one snapshot,
+   polled live values are single words, no host sequence waits for ever,
+   and the time to the first taps in frames. It reproduces build 6's torn
+   reads, build 7's frame 26 and #27 / #29's foreign words.
+5. Yosys estimate per stage against the budget; Vivado build; the final
    checkpoint's timing (`timing.tcl`) and utilisation (`utilization.tcl`).
-4. On the board (receive only, nothing transmitted): the ID word; a
+6. On the board (receive only, nothing transmitted): the ID word; a
    `Slots` capture against the model run on a simultaneous `Symbols`
    capture of the same signal is impossible (one DMA), so: a `Slots`
    capture's slot bytes against `isdb rx --symbols` of a `Symbols` capture
@@ -1719,7 +1736,10 @@ the project flow (WNS +0.099, WHS +0.034 ns); the board runs it.
 (build 7, and build 9 with the probe's taps: "Build 9 residuals"): the
 first capture armed at the first tick latches frame ≈ 5, its 308 reads
 take ≈ 15 frames, so the first write lands ≈ 0.9 s after the open and the
-taps are in force from frame ≈ 26–28. Stream path, expected (not
+taps are in force from frame ≈ 26–28 (build 7's single reads; with build
+9's verified reads, six iiod requests a word instead of four, the timed
+model gives 1.16 s and frame 34, and the board's "Build 9 residuals" run
+showed +33–34). Stream path, expected (not
 measured: no image): the first sums block is frame 2's (the first frame
 with a layout at lag 2), sent after frame 2's status block, about 4–5
 slots into frame 3 (the TMCC burst and decode); the 64 Ki-word DMA buffer
@@ -1735,4 +1755,7 @@ than the register path's frame 26. With the probe's taps loaded at open
 frames 0–25 was already near the solved taps', so the gain is mostly the
 time and the 308 exposed reads, not dropped slots. To check on the board:
 the status blocks' `taps_from` (`examples/slotsstatus` on `--slots-out`
-words) should read 2 from frame 4 or 5.
+words) should read 2 from frame 4 or 5. The timed host–FPGA model
+(fpga/README.md) measures it: frame 2's sums block at the consumer 10 ms
+after the frame's end, TAPS_FROM 2 written 0.171 s after the open, in
+force from frame 4 (4 or 5 on the reporter's slower network).
