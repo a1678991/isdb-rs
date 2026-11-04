@@ -619,6 +619,7 @@ def compare(model, hdl_blocks, events):
             continue
         keys = sorted(k for k in set(eb) | set(gb) if k[0] == fr)
         diffs, iters, status_differs = [], 0, False
+        sums_differ = False
         extra_slots = [k for k in keys if k not in eb and k[1] == S.SLOT]
         epoch_frame = bool(extra_slots) and not any(k[1] == S.SLOT for k in keys if k in eb) and fr in epoch
         if epoch_frame:
@@ -628,7 +629,8 @@ def compare(model, hdl_blocks, events):
             findings.append(f"frame {fr}: decoded by the chain alone ({len(extra_slots)} slot blocks), with "
                             f"frame {epoch[fr]}'s layout kept across {ambiguous[epoch[fr]][0]} (the restart "
                             f"epoch: by design); its TMCC and status blocks compared")
-            keys = [k for k in keys if k not in extra_slots]
+            # (and its sums block: the chain decoded it, so latched its sums)
+            keys = [k for k in keys if k not in extra_slots and not (k[1] == S.SUMS and k not in eb)]
         for k in keys:
             if k not in gb:
                 diffs.append(f"block {k} missing")
@@ -644,6 +646,11 @@ def compare(model, hdl_blocks, events):
                 continue  # the counters hold the epoch's slots
             if k[1] == S.STATUS and bits:
                 status_differs = True
+                continue
+            if bits and k[1] == S.SUMS:
+                # the training sums of symbols the restart's pipeline may
+                # have rounded otherwise (as the iteration counts)
+                sums_differ = True
                 continue
             if bits and k[1] == S.SLOT:
                 gf_, mf_ = S.slot_fields(g_), S.slot_fields(m_)
@@ -663,14 +670,15 @@ def compare(model, hdl_blocks, events):
             outcomes[fr] = "DIFFERS"
             problems.extend(f"frame {fr}: {d}" for d in diffs[:6])
         else:
-            loose = [f"{iters} iteration counts"] * bool(iters) + ["the status block"] * status_differs
+            loose = ([f"{iters} iteration counts"] * bool(iters) + ["the status block"] * status_differs
+                     + ["the sums block"] * sums_differ)
             outcomes[fr] = ("restart epoch (TMCC equal)" if epoch_frame
                             else f"bits equal ({' and '.join(loose)} differ)" if loose
                             else "equal")
     if bits_from is not None:
         findings.append(f"from stream position {bits_from - LATENCY} on (an undrained restart right after a "
                         f"frame the model handed out) compared in bits mode: slot fields but the iteration "
-                        f"count, the TMCC's bits and BCH result; status blocks not compared")
+                        f"count, the TMCC's bits and BCH result; status and sums blocks not compared")
     if orphans:
         findings.append(f"slot blocks of frames the model does not send (dropped later or unfinished, "
                         f"orphans): {orphans}")

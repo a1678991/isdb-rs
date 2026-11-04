@@ -581,6 +581,93 @@ class StatusPointsTest(unittest.TestCase):
         self.assertEqual(st[51 + 32], 0)  # 32APSK: none
 
 
+class SumsBlockTest(unittest.TestCase):
+    """The sums block (`Slots` format 2, sums.py) in `Finish`, against a
+    stand-in for the equaliser's latched bank: a 96-bit RAM answering each
+    entry read 3 cycles after its request (eq.py's `sr_*`), with sums over
+    the whole 48-bit range (the vectors' sums stay below 2^33). Frame 5,
+    decoded, its TMCC codeword dropped: its 120 dummy slot blocks, TMCC,
+    status, then its sums block (465 words: frame, count, then each entry's
+    re and im as three words, low first); with the latch on another frame
+    (a capture's hold) no sums block. The monitors stay quiet."""
+
+    @staticmethod
+    def entries():
+        import random
+
+        rng = random.Random(30)
+        out = [((1 << 47) - 1, -(1 << 47)), (-1, 0), (0x1234_5678_9ABC, -0x0F0E_0D0C_0B0A)]
+        while len(out) < 77:
+            out.append((rng.randrange(-(1 << 47), 1 << 47), rng.randrange(-(1 << 47), 1 << 47)))
+        return out
+
+    def run_bench(self, latched_frame):
+        from amaranth.lib.memory import Memory
+
+        from isdb_fpga.chain import slots as S
+
+        ents = self.entries()
+        m48 = (1 << 48) - 1
+
+        class Bench(FinishBench):
+            def elaborate(self, platform):
+                m = super().elaborate(platform)
+                sr = self.fin.sums
+                init = [(re & m48) | (im & m48) << 48 for re, im in ents] + [0] * (128 - len(ents))
+                m.submodules.acc = mem = Memory(shape=96, depth=128, init=init)
+                rp = mem.read_port()
+                # eq.py's schedule: the request registered, the RAM's read
+                # a cycle later, its data registered
+                pend = Signal()
+                ent = Signal(7)
+                s1 = Signal()
+                m.d.sync += [s1.eq(pend & ~s1), sr.rd_ack.eq(0)]
+                with m.If(sr.rd_req):
+                    m.d.sync += [pend.eq(1), ent.eq(sr.rd_entry)]
+                m.d.comb += rp.addr.eq(ent)
+                with m.If(s1):
+                    m.d.sync += [sr.rd_data.eq(rp.data), sr.rd_ack.eq(1), pend.eq(0)]
+                m.d.comb += [sr.sums_frame.eq(latched_frame), sr.sums_count.eq(6720)]
+                return m
+
+        recs = [(0, 5, 1, 0, 0, 0), (1, 1 << 7 | 3 << 8, 5, 0, 0, 1)]
+        b = Bench()
+        f = b.fin
+        ports = {"i_valid": b.i_valid, "i_ready": b.i_ready, "kind": b.kind, "a": b.a, "b": b.b, "c": b.c,
+                 "d": b.d, "e": b.e, "ov": f.o_valid, "ow": f.o_word, **b.mon.ports()}
+        backend = COMPILED or "pysim"
+        e = simx.engine(b, ports, backend, tag=f"sums{latched_frame}")
+        g = e.group("ov", ["ow"])
+        e.stall_limit = 1_000_000 if backend != "pysim" else None
+        e.run("i_valid", "i_ready", ["kind", "a", "b", "c", "d", "e"], recs, tail=20_000)
+        self.assertEqual(b.mon.report(e.get), [])
+        return S.blocks([w for (w,) in e.read(g)])
+
+    def test_the_block_after_the_status_block(self):
+        from isdb_fpga.chain import slots as S
+
+        bl = self.run_bench(5)
+        kinds = [(x[0], x[2]) for x in bl]
+        self.assertEqual(kinds, [(S.SLOT, 5)] * 120 + [(S.TMCC, 5), (S.STATUS, 5), (S.SUMS, 5)])
+        self.assertEqual([x[1] for x in bl], list(range(123)))  # one sequence number each
+        pay = bl[-1][3]
+        want = [5, 0, 6720]
+        for re, im in self.entries():
+            for v in (re, im):
+                want += [(v >> (16 * k)) & 0xFFFF for k in range(3)]
+        self.assertEqual(len(pay), S.SUMS_PAYLOAD)
+        self.assertEqual(pay, want)
+        f = S.sums_fields(pay)
+        self.assertEqual((f["frame"], f["count"]), (5, 6720))
+        self.assertEqual(f["r"] + f["p"], self.entries())
+
+    def test_no_block_when_the_latch_holds_another_frame(self):
+        from isdb_fpga.chain import slots as S
+
+        bl = self.run_bench(4)
+        self.assertEqual([x[0] for x in bl[-2:]], [S.TMCC, S.STATUS])
+
+
 class SlotBchTest(unittest.TestCase):
     """A converged slot codeword with bit errors in its BCH word (93/120,
     frame 6, slot 3): `Finish` corrects them (the BCH unit's roots flipped
@@ -697,11 +784,11 @@ class BpskCodewordTest(unittest.TestCase):
 class SlotsRxRegisterTest(unittest.TestCase):
     """`SlotsRx`'s register file through `gpio_out` (the command protocol of
     control.py), at the host's addresses (isdb_frontend::control::chain): the
-    ID word with the Slots format version (bit 8); a front-end register
+    ID word with the Slots format version (2, bits 11-8); a front-end register
     written and read back (PERIOD_NOMINAL, 0x01: its READ must show the
-    front end's readback, not the chain's); the chain's VERSION (0x400),
+    front end's readback, not the chain's); the chain's VERSION (0x400, 2),
     MAX_ITER (0x40C, reset ldpc.DEFAULT_MAX_ITER, 14) written and read, AGC (0x40D), FEATURES
-    (0x401: TAPS | SUMS | SUMS_CAPTURE, the limit in bits 15-8, the step 34 in
+    (0x401: TAPS | SUMS | SUMS_CAPTURE | DECODER_HEALTH | SUMS_SEQ | SUMS_STREAM, the limit in bits 15-8, the step 34 in
     27-16), SUMS_CAPTURE (0x422: 0, then ARMED after a write), TAPS_FROM
     (0x41B) twice, each arming the equaliser with its own frame (in use
     from N + 2, reported as N), a tap
@@ -814,7 +901,7 @@ class SlotsRxRegisterTest(unittest.TestCase):
             seen["decoder"] = await cmd(OP_READ)
             await cmd(OP_ADDR, 0x43A)
             seen["reclaimed"] = await cmd(OP_READ)
-            # a sum word's READ after VERSION's: gpio_in shows VERSION's 1
+            # a sum word's READ after VERSION's: gpio_in shows VERSION's 2
             # until the cycle after rd_ack, then the word (0: no sums here)
             await cmd(OP_ADDR, 0x400)
             await cmd(OP_READ)
@@ -829,7 +916,7 @@ class SlotsRxRegisterTest(unittest.TestCase):
             # (the front end's readback until the READ is decoded: ADDR's
             # show the front end's)
             seen["sum_read"] = (first is not None and first < 12,
-                                first is not None and trace[first][0] == 1
+                                first is not None and trace[first][0] == 2
                                 and all(v != 0 for v, _ in trace[:first + 1]),
                                 trace[-1][0])
             # the invariant monitors (the readback, TAPS_FROM, the FIFOs)
@@ -839,8 +926,8 @@ class SlotsRxRegisterTest(unittest.TestCase):
         sim.run()
         ident = ID_MAGIC << 16 | FORMAT_VERSION << 12 | 32 | ID_CHAIN
         self.assertEqual(seen, {
-            "id": ident, "period": 0x12345678, "version": 1, "max_iter_reset": 14, "max_iter": 33,
-            "agc": 0x0400, "features": 0b1110011 | 33 << 8 | 34 << 16, "capture_idle": 0b100,
+            "id": ident, "period": 0x12345678, "version": 2, "max_iter_reset": 14, "max_iter": 33,
+            "agc": 0x0400, "features": 0b11110011 | 33 << 8 | 34 << 16, "capture_idle": 0b100,
             "capture_armed": 0b110, "armed": [(5, 7), (87, 89)], "tap3": 7 << 16 | 0xFFFB,
             "carrier": (-1234) & 0xFFFFFFFF, "status": 0b101, "period_again": 0x12345678, "id_again": ident,
             "decoder": 0x1234 | 1 << 16 | 2 << 20 | 3 << 24, "reclaimed": 7 | 9 << 16,

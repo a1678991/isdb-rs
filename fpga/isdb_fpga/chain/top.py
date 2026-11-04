@@ -15,8 +15,9 @@ fpga/tezuka/isdb_slots.xdc has the constraints:
   carrier loop; holds the input around decisions and while stage 3's ring
   is full) -> SlotPhase (one slot of delay) -> Back (equaliser + FrameCtl,
   TMCC soft bits and burst, demapper) -> LDPC port -> Finish (dispersal,
-  BCH, TMCC layout into FrameCtl, slot / TMCC / status blocks) -> Packer ->
-  `Slots` words.
+  BCH, TMCC layout into FrameCtl, slot / TMCC / status blocks, and the sums
+  block from the equaliser's latched bank: sums.py) -> Packer -> `Slots`
+  words (format 2).
 
 The status snapshot: SyncFront latches the sync statistics and the
 carrier register at each decision's end; SlotPhase keeps the one of the
@@ -41,8 +42,8 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 
 | Address | Register |
 |---|---|
-| 0x400 | VERSION (ro): the `Slots` format, 1 |
-| 0x401 | FEATURES (ro): bit 0 TAPS, bit 1 SUMS (no host constellation or n0 at START: bits 2, 3 clear), bit 4 SUMS_CAPTURE, bit 5 DECODER_HEALTH (DECODER and RECLAIMED below; the decoder frees abandoned banks), bit 6 SUMS_SEQ (SUMS_CAPTURE's bits 2 and 15-8; a sum register's READ answered in 3 symbol clocks, the register keeping its last value until then); bits 15-8 MAX_ITER, bits 27-16 the decoder's step (34) |
+| 0x400 | VERSION (ro): the `Slots` format, 2 (format 1 and the sums block) |
+| 0x401 | FEATURES (ro): bit 0 TAPS, bit 1 SUMS (no host constellation or n0 at START: bits 2, 3 clear), bit 4 SUMS_CAPTURE, bit 5 DECODER_HEALTH (DECODER and RECLAIMED below; the decoder frees abandoned banks), bit 6 SUMS_SEQ (SUMS_CAPTURE's bits 2 and 15-8; a sum register's READ answered in 3 symbol clocks, the register keeping its last value until then), bit 7 SUMS_STREAM (each frame's latched sums also leave in the `Slots` stream, a sums block after its status block: the host needs none of the sum registers); bits 15-8 MAX_ITER, bits 27-16 the decoder's step (34) |
 | 0x402 | CARRIER: written, loaded into the carrier register at START; read, the register in use (2^-32 turn per symbol) |
 | 0x403 | LAYOUT_LAG (ro): 2 (lag 1 is not built) |
 | 0x404 | INIT: bit 0, START puts the written taps in use (bits 1, 2 ignored: FEATURES) |
@@ -59,7 +60,7 @@ from this HDL, 2026-11-02), in the front end's address space at 0x400 -
 | 0x438 | TMCC_OVERRUNS (ro): TMCC codewords the decoder dropped (also counted as TMCC failed) |
 | 0x439 | DECODER (ro): the LDPC decoder's health (a snapshot from its clock, under 1 us old): bits 15-0 OVERRUNS (codewords it dropped for want of a free bank since configuration, slots and TMCC, wrapping), bit 16 QUEUE_OVERFLOW (sticky: a commit its result queue could not take), bits 23-20 HELD (banks allocated now: 0 once the chain has stopped, 3.3 ms after its input, and the decoder is idle), bits 27-24 BANKS (K, 3) |
 | 0x43A | RECLAIMED (ro): bits 15-0 ABORTED (banks freed by the abort after a frame drop or a restart: a lost sync, START, or the chain's stop), bits 31-16 REUSED (banks a codeword's begin took back from its context's abandoned codeword), since configuration, wrapping |
-| 0x500 + 4i, 0x610 + 4i | SUMS_R (i < 66), SUMS_P (i < 11): re low 32, re high 16 sign-extended, im low, im high (the latched bank; the READ is answered 3 symbol clocks after it is decoded, the register showing the last READ's value until then) |
+| 0x500 + 4i, 0x610 + 4i | SUMS_R (i < 66), SUMS_P (i < 11): re low 32, re high 16 sign-extended, im low, im high (the latched bank; the READ is answered 3 symbol clocks after it is decoded, the register showing the last READ's value until then). The same values leave in each decoded frame's sums block (FEATURES bit 7); the registers, SUMS_CAPTURE and its hold stay for hosts that read them (a capture held keeps the latch on its frame, and the frames meanwhile get no sums block) |
 | 0x640 .. | CONST: not built (reads 0) |
 | CTRL | the front end's bits (RUN, START, SYMBOLS) and bit 3 SLOTS (the DMA carries the `Slots` words); START also restarts the chain (the model's `Chain::loss` of 0 symbols: everything but the carrier register, the taps, the constellation and n0), loads CARRIER and, with INIT bit 0, the taps, and restarts the blocks' sequence numbers: the first block the packer takes after START has sequence 0 (a block leaving at START finishes whole with its old number) |
 
@@ -90,8 +91,9 @@ are; with it, the taps last written to TAPS go in use at once (TAPS_FROM
 reads NONE) and an armed set is dropped.
 
 The ID word gains the chain's `Slots` format version in bits 11-8
-(`ID_CHAIN`: 1 << 8), 0 on every front end so far; the front end's STATUS
-(0x10) reads bit 2 while the `Slots` words are selected.
+(`ID_CHAIN`: 2 << 8; 1 on the images of builds 1-9), 0 on every front end
+so far; the front end's STATUS (0x10) reads bit 2 while the `Slots` words
+are selected.
 """
 
 from amaranth.hdl import Cat, Const, Elaboratable, Module, Mux, Signal, signed
@@ -103,10 +105,11 @@ from .ldpc_if import OP_DONE
 from .packer import status_layout
 from .phase import SlotPhase
 from .results import ResultFifo
+from .slots import SLOTS_VERSION
 from .sync import SNAP_FIELDS, SyncFront
 
 SNAP_BITS = sum(w for _, w in SNAP_FIELDS)
-ID_CHAIN = 1 << 8
+ID_CHAIN = SLOTS_VERSION << 8
 # symbol clocks without an input record after which the chain counts as
 # stopped and restarts (SlotsChain's `stop_after`): 3.3 ms at 40 MHz. The
 # input's own gaps are a clock or two (the front end delivers 84 % of the
@@ -256,6 +259,12 @@ class SlotsChain(Elaboratable):
             fin.r_overrun.eq(rf.o_overrun), fin.r_bits.eq(rf.o_bits), fin.r_last.eq(rf.o_last),
             rf.o_ready.eq(fin.r_ready),
         ]
+        # the sums block's reads of the equaliser's latched bank (sums.py)
+        sr = fin.sums
+        m.d.comb += [
+            eq.sr_req.eq(sr.rd_req), eq.sr_entry.eq(sr.rd_entry), sr.rd_ack.eq(eq.sr_ack),
+            sr.rd_data.eq(eq.sr_data), sr.sums_frame.eq(eq.sums_frame), sr.sums_count.eq(eq.sums_count),
+        ]
         with m.If(p.in_valid & p.in_ready & p.in_ctx & (p.in_op == OP_DONE)):
             m.d.sync += self.tmcc_done.eq(self.tmcc_done + 1)
         return m
@@ -289,12 +298,14 @@ REG_DECODER = 0x439
 REG_RECLAIMED = 0x43A
 REG_SUMS_R = 0x500
 REG_SUMS_P = 0x610
-SLOTS_VERSION = 1  # the Slots format (isdb_frontend::slots::SLOTS_VERSION)
+# SLOTS_VERSION (slots.py, the Slots format: isdb_frontend::slots::SLOTS_VERSION)
+# is 2: the format of builds 1-9 and the sums block.
 # TAPS (the host writes taps), SUMS (the training sums readable), bit 4
 # SUMS_CAPTURE (the sums held from a host-armed frame end), bit 5
 # DECODER_HEALTH (DECODER, RECLAIMED; abandoned banks freed), bit 6
-# SUMS_SEQ (SUMS_CAPTURE's NO_LAYOUT and SEQ, the sum reads in bounded time)
-FEATURES = 0b1110011
+# SUMS_SEQ (SUMS_CAPTURE's NO_LAYOUT and SEQ, the sum reads in bounded time),
+# bit 7 SUMS_STREAM (the sums block in the Slots stream, sums.py)
+FEATURES = 0b11110011
 LAYOUT_LAG = 2
 EQ_APPLY_FRAMES = 2
 NONE = 0xFFFFFFFF

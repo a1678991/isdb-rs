@@ -83,7 +83,7 @@ class MonitorBasicsTest(unittest.TestCase):
         dut = SlotsRx(32, cos_table(), decoder=True, monitors=True)
         owners = {type(o).__name__ for o in _walk(dut) if getattr(o, "monitor", None) is not None}
         self.assertEqual(owners, {"SlotsRx", "LdpcDecoder", "LdpcBridge", "Demap", "Back", "TmccSoft",
-                                  "FrameCtl", "Equaliser", "ResultFifo", "Finish", "Packer"})
+                                  "FrameCtl", "Equaliser", "ResultFifo", "Finish", "SumsReader", "Packer"})
         names = monitors.Collector(dut).names()
         self.assertEqual(len(names), len(set(names)))
         _silence(dut)
@@ -327,8 +327,8 @@ class FinishMonitorTest(unittest.TestCase):
             _out, bad = FinishMonitorBench().run(STATUS_RECS, "monfin")
         print("\n".join(bad))
         self.assertTrue(fired(bad, "framing"), bad)
-        with source_patch("isdb_fpga.chain.packer", [("w2 = 0xF | (kind << 4) | (1 << 8)",
-                                                       "w2 = 0xF | (kind << 4) | (2 << 8)")]):
+        with source_patch("isdb_fpga.chain.packer", [("w2 = 0xF | (kind << 4) | (SLOTS_VERSION << 8)",
+                                                       "w2 = 0xF | (kind << 4) | (1 << 8)")]):
             _out, bad = FinishMonitorBench().run(STATUS_RECS, "monfin")
         print("\n".join(bad))
         self.assertTrue(fired(bad, "block_kind"), bad)
@@ -340,6 +340,86 @@ class FinishMonitorTest(unittest.TestCase):
         _out, bad = FinishMonitorBench().run(SLOT121_RECS, "monfin")
         print("\n".join(bad))
         self.assertTrue(fired(bad, "slot_index"), bad)
+
+
+class SumsMonitorBench(FinishMonitorBench):
+    """`FinishMonitorBench` with a stand-in for the equaliser's latched bank
+    (as test_chain.py's SumsBlockTest: entry i is re = i, im = -i, read 3
+    cycles after its request) holding frame 5's sums; `move`: the latch
+    moves to frame 6 a few hundred cycles into the sums block (a broken
+    neighbour: a frame end latching while a block is read)."""
+
+    def __init__(self, move=False):
+        super().__init__()
+        self.move = move
+
+    def elaborate(self, platform):
+        from amaranth.lib.memory import Memory
+
+        m = super().elaborate(platform)
+        sr = self.fin.sums
+        init = [i | ((-i) & ((1 << 48) - 1)) << 48 for i in range(128)]
+        m.submodules.acc = mem = Memory(shape=96, depth=128, init=init)
+        rp = mem.read_port()
+        pend = Signal()
+        ent = Signal(7)
+        s1 = Signal()
+        m.d.sync += [s1.eq(pend & ~s1), sr.rd_ack.eq(0)]
+        with m.If(sr.rd_req):
+            m.d.sync += [pend.eq(1), ent.eq(sr.rd_entry)]
+        m.d.comb += rp.addr.eq(ent)
+        with m.If(s1):
+            m.d.sync += [sr.rd_data.eq(rp.data), sr.rd_ack.eq(1), pend.eq(0)]
+        latch = Signal(32, init=5)
+        busy_n = Signal(16)
+        with m.If(sr.busy):
+            m.d.sync += busy_n.eq(busy_n + 1)
+        if self.move:
+            with m.If(busy_n == 300):
+                m.d.sync += latch.eq(6)
+        m.d.comb += [sr.sums_frame.eq(latch), sr.sums_count.eq(6720)]
+        return m
+
+
+# frame 5 ends decoded, its TMCC codeword comes back dropped: its 120
+# dummy slot blocks, TMCC, status and sums blocks
+SUMS_RECS = [(0, 5, 1, 0, 0, 0), (1, 1 << 7 | 3 << 8, 5, 0, 0, 1)]
+
+
+class SumsMonitorTest(unittest.TestCase):
+    """The sums block's monitors (sums.py, `SumsReader`)."""
+
+    def test_quiet_then_a_short_block(self):
+        """Unbroken: a sums block of 465 words after the status block, every
+        monitor quiet. Its last word flagged one word early (the packer then
+        waits for the 465th): `words`."""
+        from isdb_fpga.chain import slots as S
+
+        out, bad = SumsMonitorBench().run(SUMS_RECS, "monsums")
+        self.assertEqual(bad, [])
+        bl = S.blocks(out)
+        self.assertEqual([b[0] for b in bl[-3:]], [S.TMCC, S.STATUS, S.SUMS])
+        with source_patch("isdb_fpga.chain.sums", [("self.last.eq((sub == 5) & (ent == SUMS_ENTRIES - 1))",
+                                                     "self.last.eq((sub == 4) & (ent == SUMS_ENTRIES - 1))")]):
+            _out, bad = SumsMonitorBench().run(SUMS_RECS, "monsums")
+        print("\n".join(bad))
+        self.assertTrue(fired(bad, "words"), bad)
+
+    def test_a_sums_block_under_another_frame(self):
+        """The sums block sent with the next frame's counter (no longer its
+        status block's): `follows_status`."""
+        with source_patch("isdb_fpga.chain.finish", [("block(4, fr_frame, SUMS_PAYLOAD)",
+                                                       "block(4, fr_frame + 1, SUMS_PAYLOAD)")]):
+            _out, bad = SumsMonitorBench().run(SUMS_RECS, "monsums")
+        print("\n".join(bad))
+        self.assertTrue(fired(bad, "follows_status"), bad)
+
+    def test_the_latch_moves_during_a_block(self):
+        """The latched sums move to another frame while the block is read:
+        `latch_steady`."""
+        _out, bad = SumsMonitorBench(move=True).run(SUMS_RECS, "monsumsmv")
+        print("\n".join(bad))
+        self.assertTrue(fired(bad, "latch_steady"), bad)
 
 
 class PackerStartTest(unittest.TestCase):

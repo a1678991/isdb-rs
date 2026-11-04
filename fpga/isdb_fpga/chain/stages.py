@@ -1398,6 +1398,10 @@ def run_chain_restarts(doc, taps, backend=None, cycles=4, pause=200_000):
         if key not in gk:
             bad.append(f"block {key} missing in the last pass")
             continue
+        if k == S.SUMS:
+            # present (above); the sums of the replay's symbols, which the
+            # kept NCO phase rounds otherwise (as the iteration counts)
+            continue
         gp, ep = list(gk[key]), list(ek[key])
         compared += 1
         if k == S.SLOT:

@@ -8,8 +8,8 @@ could be asserted inside the simulation. The monitors are such
 assertions, compiled into the design only when asked for:
 
 - A monitored module (`LdpcDecoder`, `LdpcBridge`, `Demap`, `Back`,
-  `TmccSoft`, `FrameCtl`, `Equaliser`, `ResultFifo`, `Finish`, `Packer`,
-  `SlotsRx`) declares its checks in the class attribute `MONITORS`
+  `TmccSoft`, `FrameCtl`, `Equaliser`, `ResultFifo`, `Finish`,
+  `SumsReader`, `Packer`, `SlotsRx`) declares its checks in the class attribute `MONITORS`
   ({name: (domain, what must hold)}) and has `monitor = None`.
   `enable(design)` walks a design's submodule objects and gives each such
   module a `Monitor`; the module's `elaborate` then adds the checks (a
@@ -276,6 +276,8 @@ def packer_stream(m, mon, pk):
     header word 2, the header check, the payload length that puts the next
     block's sync words where they belong, a slot block's slot index <
     120)."""
+    from .slots import SLOTS_VERSION
+
     sync = m.d.sync
     # which blocks must restart the count: decided at acceptance (the
     # packer takes every block offered while idle), checked when the
@@ -314,7 +316,7 @@ def packer_stream(m, mon, pk):
                 sync += ps.eq(2)
             with m.Case(2):
                 k = w[4:8]
-                m.d.comb += bad_kind.eq((w[0:4] != 0xF) | (w[8:16] != 1) | (k == 0) | (k > 3))
+                m.d.comb += bad_kind.eq((w[0:4] != 0xF) | (w[8:16] != SLOTS_VERSION) | (k == 0) | (k > 4))
                 sync += [cs.eq(w), kind.eq(k), ps.eq(3)]
             with m.Case(3, 4, 5, 6, 7):
                 sync += [cs.eq(cs + w), ps.eq(ps + 1)]
