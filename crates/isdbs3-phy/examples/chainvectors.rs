@@ -10,6 +10,13 @@
 //! B44 frames: sync words, pilots with their PRBS signs, a real TMCC and
 //! LDPC/BCH-coded slots on the §3.8 points; a carrier offset with a drift,
 //! noise, 6-bit quantising), written as `OUT_DIR/chain-<n>-<stage>.json`.
+//! The input of sets 1–7, 10 and 11 is a window of seven generated frames
+//! ([`window`]): from 16 slots before the second frame's head (slot heads
+//! stay at input indices ≡ 1 000 mod 9 296; the sync locks and finds that
+//! head, frame 0, at 149 736) to 3 slots after the sixth frame's end, so
+//! frames 0–4 end whole: 0 and 1 without a layout, 2 the first decoded
+//! (D), 3 and 4 decoded with what D taught (n0, K and the constellation
+//! learned on D in force from D + 1).
 //! With a words file (the FPGA recording): the same sets from its first
 //! `SECONDS` (default 0.2) as `chain-rec-<n>-<stage>.json`.
 //!
@@ -58,7 +65,13 @@
 //!   symbols]`, none synthetic) and `slots_words` (every `Slots` word the
 //!   chain's frames give, `chain::out::blocks` through the `Writer`:
 //!   format 2, a decoded frame's sums block after its status block), with
-//!   `frames` (per frame: counter, decoded, LDPC iterations per slot).
+//!   `frames` (per frame: counter, `at`, decoded, LDPC iterations per
+//!   slot). Optional (the sets that have them): `host_writes`, the host's
+//!   register writes the chain's run assumed, in input order, each `{"at":
+//!   i, …}` before input symbol `i`: `"taps": [22 integers, re, im per
+//!   tap, Q2.14], "taps_from": N` (TAPS, then TAPS_FROM = N: in use from
+//!   frame N + 2, `EQ_APPLY_FRAMES`); `bch_errors` and `tmcc_errors`
+//!   (below).
 //!
 //! Three more whole-chain sets (the 6-chain fields; synthetic only), with
 //! the FPGA decoder's settings (`FixedLdpc::hdl`: `Schedule::Layered
@@ -81,6 +94,13 @@
 //!   `[frame, slot, [positions]]` per slot, the positions in the
 //!   codeword's hard decisions (the decoder's output stream order), so an
 //!   HDL bench can flip the same bits in its decoder's output.
+//! - **11-taps**: the window of seven frames of seed 11 (identity taps at
+//!   open), the equaliser solved by the model every second frame
+//!   (`eq_every` 2): the taps solved from D's sums are in use from D + 2
+//!   (frame 4's status: those taps, `taps_from` 2; frames 0–3 identity,
+//!   none). An HDL never solves taps; the host does, so `host_writes` has
+//!   the write a host makes for them (TAPS, then TAPS_FROM = 2) four slots
+//!   into frame D + 1.
 
 use isdbs3_core::params::{FRAME_SYMBOLS, MOD_SLOT, SLOTS, SYMBOL_RATE};
 use isdbs3_phy::chain::frame::{FrameOut, Part, part};
@@ -96,6 +116,20 @@ use std::path::{Path, PathBuf};
 
 /// Per-symbol stage-1 internals for this many positions.
 const DETAIL: usize = 30_000;
+
+/// The synthetic sets' input starts this many symbols into the generated
+/// stream: 16 slots before the second frame's head (a multiple of the
+/// slot, so slot heads stay at indices ≡ `lead` mod 9 296). The sync locks
+/// within the first 4 periods and finds that head: frame 0 at 149 736.
+const CUT: usize = 104 * MOD_SLOT;
+
+/// The window of a generated stream (at least `frames + 1` frames) the
+/// synthetic sets take as input: from [`CUT`] to 3 slots after the end of
+/// generated frame `frames - 1` (the chain hands a frame out once the head
+/// two slots after it is in), so frames 0 … `frames − 2` end whole.
+fn window(s: &[[i8; 2]], o: &SynthOptions, frames: usize) -> Vec<[i8; 2]> {
+    s[CUT..o.lead + frames * FRAME_SYMBOLS + 3 * MOD_SLOT].to_vec()
+}
 
 fn flat2<T: Copy + Into<i64>>(v: &[[T; 2]]) -> Vec<i64> {
     v.iter().flat_map(|x| [x[0].into(), x[1].into()]).collect()
@@ -188,6 +222,8 @@ struct Run {
     corrected: Vec<Corrected>,
     frames: Vec<FrameOut>,
     slots_words: Vec<u16>,
+    /// The host's register writes the run assumed (`host_writes`).
+    host: Vec<Value>,
 }
 
 fn run(input: Vec<[i8; 2]>, losses: Vec<(usize, u64)>, taps: Option<[[i16; 2]; 11]>) -> Run {
@@ -262,6 +298,7 @@ fn run_chain_with(input: Vec<[i8; 2]>, losses: Vec<(usize, u64)>, mut c: Chain) 
         corrected: Vec::new(),
         frames: Vec::new(),
         slots_words: Vec::new(),
+        host: Vec::new(),
     };
     let mut w = isdb_frontend::slots::Writer::new();
     let mut li = losses.iter().peekable();
@@ -659,12 +696,16 @@ fn stage6(r: &Run) -> Value {
             })
         })
         .collect();
-    json!({
+    let mut v = json!({
         "input": flat2(&r.input),
         "losses": r.losses,
         "frames": frames,
         "slots_words": r.slots_words,
-    })
+    });
+    if !r.host.is_empty() {
+        v["host_writes"] = json!(r.host);
+    }
+    v
 }
 
 fn write_all(dir: &Path, prefix: &str, source: &Value, r: &Run) {
@@ -721,37 +762,34 @@ fn main() {
         seed: 7,
         ..SynthOptions::default()
     };
-    let s = generate(&o, 5);
+    let s = generate(&o, 7);
+    let input = window(&s.symbols, &o, 6);
     // the taps the host would write at open: those a first pass solves
-    let first = run(s.symbols.clone(), Vec::new(), None);
+    let first = run(input.clone(), Vec::new(), None);
     let taps = first
         .frames
         .iter()
         .filter_map(|f| f.sums.as_ref())
         .find_map(isdbs3_phy::chain::eq::solve_sums);
     assert!(taps.is_some());
-    let hdl = run_with(s.symbols.clone(), Vec::new(), taps, 1, Some(hdl_ldpc()));
-    let r = run(s.symbols.clone(), Vec::new(), taps);
-    // the chain decodes what was sent
-    let decoded: Vec<&FrameOut> = r.frames.iter().filter(|f| !f.slots.is_empty()).collect();
-    assert!(!decoded.is_empty());
-    for f in &decoded {
-        let t = s.frames.iter().find(|t| t.at as u64 == f.at).unwrap();
-        let got: Vec<&Vec<u8>> = f
-            .slots
-            .iter()
-            .filter(|x| !x.dummy)
-            .map(|x| &x.data)
-            .collect();
-        let want: Vec<&Vec<u8>> = t.slots.iter().map(|x| &x.2).collect();
-        assert_eq!(got, want, "synthetic frame {} decodes", f.frame);
-    }
+    let hdl = run_with(input.clone(), Vec::new(), taps, 1, Some(hdl_ldpc()));
+    let r = run(input.clone(), Vec::new(), taps);
+    // the chain decodes what was sent: D and the two frames after it
+    check_decoded(&r, &s, 3);
+    let src = |seed: u64, what: &str| {
+        json!({"synthetic": {"frames": 7, "window": [CUT, o.lead + 6 * FRAME_SYMBOLS + 3 * MOD_SLOT],
+            "modes": "16APSK 93/120 x120", "seed": seed,
+            "carrier_hz": o.carrier_hz, "drift_hz_s": o.drift_hz_s, "snr_db": o.snr_db,
+            "amplitude": o.amplitude, "bits": o.bits, "events": what,
+            "ldpc": format!("layered {HDL_STEP}, limit {HDL_MAX_ITER}, offset {HDL_OFFSET}")}})
+    };
     write_all(
         &dir,
         "chain-",
         &json!({
             "synthetic": {
-                "frames": 5,
+                "frames": 7,
+                "window": [CUT, o.lead + 6 * FRAME_SYMBOLS + 3 * MOD_SLOT],
                 "modes": "16APSK 93/120 x120",
                 "lead": o.lead,
                 "carrier_hz": o.carrier_hz,
@@ -764,17 +802,81 @@ fn main() {
         }),
         &r,
     );
-    let src = |seed: u64, what: &str| {
-        json!({"synthetic": {"frames": 6, "modes": "16APSK 93/120 x120", "seed": seed,
-            "carrier_hz": o.carrier_hz, "drift_hz_s": o.drift_hz_s, "snr_db": o.snr_db,
-            "amplitude": o.amplitude, "bits": o.bits, "events": what,
-            "ldpc": format!("layered {HDL_STEP}, limit {HDL_MAX_ITER}, offset {HDL_OFFSET}")}})
-    };
     let mut v = stage6(&hdl);
     v["source"] = src(7, "chain-6's input");
     write(&dir, "chain-7-hdl.json", v);
-    write_bch(&dir, &s.symbols, taps, &src);
-    write_events(&dir, &o, &src);
+    write_bch(&dir, &input, taps, &src);
+    write_events(&dir, &o, &|seed, what| {
+        let mut v = src(seed, what);
+        v["synthetic"]["frames"] = json!(6);
+        v["synthetic"]["window"] = Value::Null;
+        v
+    });
+    write_taps(&dir, &o, &src);
+}
+
+/// Every decoded frame of `r` carries what `s` sent in it, and at least
+/// `min` frames are decoded.
+fn check_decoded(r: &Run, s: &isdbs3_phy::chain::synth::Synth, min: usize) {
+    let decoded: Vec<&FrameOut> = r.frames.iter().filter(|f| !f.slots.is_empty()).collect();
+    assert!(decoded.len() >= min, "{} frames decoded", decoded.len());
+    for f in &decoded {
+        let t = s
+            .frames
+            .iter()
+            .find(|t| (t.at - CUT) as u64 == f.at)
+            .unwrap();
+        let got: Vec<&Vec<u8>> = f
+            .slots
+            .iter()
+            .filter(|x| !x.dummy)
+            .map(|x| &x.data)
+            .collect();
+        let want: Vec<&Vec<u8>> = t.slots.iter().map(|x| &x.2).collect();
+        assert_eq!(got, want, "synthetic frame {} decodes", f.frame);
+    }
+}
+
+/// The set whose taps change (module docs: 11-taps).
+fn write_taps(dir: &Path, o: &SynthOptions, src: &dyn Fn(u64, &str) -> Value) {
+    let s = generate(
+        &SynthOptions {
+            seed: 11,
+            ..o.clone()
+        },
+        7,
+    );
+    let input = window(&s.symbols, o, 6);
+    let mut r = run_with(input, Vec::new(), None, 2, Some(hdl_ldpc()));
+    check_decoded(&r, &s, 3);
+    // the frame whose status first carries solved taps: D + 2, solved
+    // from D; the host's write four slots into D + 1
+    let f = r
+        .frames
+        .iter()
+        .find(|f| f.status.taps_from.is_some())
+        .expect("taps solved and in use");
+    let from = f.status.taps_from.unwrap();
+    let d1 = r
+        .frames
+        .iter()
+        .find(|p| p.frame == from + 1)
+        .expect("frame D + 1");
+    assert_eq!(f.frame, from + isdbs3_phy::chain::EQ_APPLY_FRAMES);
+    assert!(
+        r.frames
+            .iter()
+            .any(|p| p.frame == from && !p.slots.is_empty())
+    );
+    let at = usize::try_from(d1.at).unwrap() + 4 * MOD_SLOT;
+    r.host
+        .push(json!({"at": at, "taps": flat2(&f.status.taps), "taps_from": from}));
+    let mut v = stage6(&r);
+    v["source"] = src(
+        11,
+        "the equaliser solved every second frame (eq_every 2), identity taps at open",
+    );
+    write(dir, "chain-11-taps.json", v);
 }
 
 /// The set with BCH corrections (module docs: 10-bch).
