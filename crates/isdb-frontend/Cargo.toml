@@ -24,6 +24,8 @@ tracing.workspace = true
 [dev-dependencies]
 rustfft.workspace = true
 proptest.workspace = true
+# tests/chain_registers.rs reads fpga/isdb_fpga/chain/registers.toml
+toml.workspace = true
 
 [lints]
 workspace = true

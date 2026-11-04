@@ -13,6 +13,13 @@
 //! (the model's `Chain::loss`) and the blocks' sequence numbers. The host
 //! (`isdb-radio`'s `ChainControl`) uses only the names of this file.
 //!
+//! **The map's one source** is `fpga/isdb_fpga/chain/registers.toml`
+//! (issue #30 item 5): every address, bit field, width and reset constant
+//! here is checked against it by `tests/chain_registers.rs`, as are the
+//! HDL's constants (`fpga/tests/test_registers.py`, which also simulates
+//! each register's documented behaviour) and the host's register sequences
+//! (`isdb-radio`'s tests); change the map with the copies.
+//!
 //! The chain shares the front end's command protocol ([`super::Encoder`],
 //! the `gpio_out` / `gpio_in` pair of `cf-ad9361-lpc`) and its address
 //! space: the front end has 0x00–0x11 and the banks from 0x1000, the chain
@@ -154,7 +161,9 @@ pub mod reg {
     /// `ChainOptions::carrier` when written before START; reads the value
     /// in use: the block tracks the carrier itself).
     pub const CARRIER: u16 = 0x402;
-    /// The layout lag, 1 or 2 frames (`ChainOptions::layout_lag`).
+    /// The layout lag, 1 or 2 frames (`ChainOptions::layout_lag`): the
+    /// host writes it at open; an image that builds lag 2 only (the first,
+    /// `SlotsRx`) reads 2 and ignores the write.
     pub const LAYOUT_LAG: u16 = 0x403;
     /// [`super::init`] bits: which host values START loads.
     pub const INIT: u16 = 0x404;
@@ -174,7 +183,8 @@ pub mod reg {
     pub const LEARNED_FROM: u16 = 0x40A;
     /// Bit m: modulation m's points in [`CONST`] are learned (or the
     /// host's, [`super::init::CONSTELLATION`]), not the nominal ones;
-    /// written with the points before START.
+    /// written with the points before START (an image with
+    /// [`super::features::CONSTELLATION`]; read only on one without).
     pub const CONST_MASK: u16 = 0x40B;
     /// The LDPC iteration limit each codeword is committed with (8 bits,
     /// reset [`super::MAX_ITER_RESET`]; [`super::features::ldpc_limit`]
@@ -182,20 +192,23 @@ pub mod reg {
     pub const MAX_ITER: u16 = 0x40C;
     /// The input's AGC gain (Q6.10) the status blocks report.
     pub const AGC: u16 = 0x40D;
-    /// Tap k at `TAPS + k` (k < 11, [`super::pack_point`]): written, the
-    /// next taps (committed by [`TAPS_FROM`], or loaded by START with
-    /// [`super::init::TAPS`]); read, the taps in use.
+    /// Tap k at `TAPS + k` (k < 11, [`super::pack_point`]; an image with
+    /// [`super::features::TAPS`]): written, the next taps (committed by
+    /// [`TAPS_FROM`], or loaded by START with [`super::init::TAPS`]); read,
+    /// the taps in use.
     pub const TAPS: u16 = 0x410;
-    /// Written after [`TAPS`]: the frame N the taps were solved from
+    /// Written after [`TAPS`] ([`super::features::TAPS`]): the frame N the
+    /// taps were solved from
     /// (commits them; the block loads them at the start of frame N + 2,
     /// the model's rule, or of the next frame if that has passed).
     /// Read: the frame the taps in use were solved from
     /// ([`super::NONE`]: identity, or the host's at open).
     pub const TAPS_FROM: u16 = 0x41B;
-    /// Read only: the frame of the latched training sums
-    /// ([`super::NONE`]: none yet).
+    /// Read only ([`super::features::SUMS`]): the frame of the latched
+    /// training sums ([`super::NONE`]: none yet).
     pub const SUMS_FRAME: u16 = 0x420;
-    /// Read only: training symbols in the latched sums.
+    /// Read only ([`super::features::SUMS`]): training symbols in the
+    /// latched sums (16 bits).
     pub const SUMS_COUNT: u16 = 0x421;
     /// Written (any value): the next frame end latches the training sums
     /// and holds them until the next write ([`super::features::SUMS_CAPTURE`]);
@@ -221,13 +234,17 @@ pub mod reg {
     /// context's abandoned codeword, since configuration, wrapping
     /// ([`super::DecoderHealth`]).
     pub const RECLAIMED: u16 = 0x43A;
-    /// Read only: R's 66 upper-triangle entries ([`super::sum_registers`]).
+    /// Read only ([`super::features::SUMS`]): R's 66 upper-triangle
+    /// entries ([`super::sum_registers`]).
     pub const SUMS_R: u16 = 0x500;
-    /// Read only: p's 11 entries ([`super::sum_registers`]).
+    /// Read only ([`super::features::SUMS`]): p's 11 entries
+    /// ([`super::sum_registers`]).
     pub const SUMS_P: u16 = 0x610;
     /// Point t of modulation m at `CONST + 32·m + t`
     /// ([`super::pack_point`], Q.10): written, the initial points
-    /// ([`super::init::CONSTELLATION`]); read, the points in force.
+    /// ([`super::init::CONSTELLATION`], an image with
+    /// [`super::features::CONSTELLATION`]); read, the points in force (an
+    /// image without the feature has not built them: they read 0).
     pub const CONST: u16 = 0x640;
 }
 
