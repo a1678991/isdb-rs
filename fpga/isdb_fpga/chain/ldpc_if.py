@@ -245,47 +245,68 @@ class LdpcBridge(Elaboratable):
         m.d.comb += [fin.w_data.eq(Cat(*fields)), fin.w_en.eq(p.in_valid), p.in_ready.eq(1)]
         with m.If(p.in_valid & ~fin.w_rdy):
             m.d.sync += self.in_lost.eq(self.in_lost + 1)
-        # the serialiser
+        # the serialiser: a beat of n LLRs gives n decoder cycles (one, the
+        # `begin` or `abort`, for a beat of none), back to back with the
+        # beat before: the next beat is popped on the cycle of this one's
+        # last lane (`at_last`), or with the `start` that closes it, so the
+        # load cycle of a beat overlaps the previous beat's last cycle.
+        # `at_last` and `ends` (the beat closes a codeword) are registers,
+        # so the FIFO's read enable is a function of three registers.
         cur = Signal(width)
         have = Signal()
         lane = Signal(3)
+        at_last = Signal()  # this cycle gives the beat's last lane
+        ends = Signal()  # the beat closes its codeword: `start` follows
         o = 0
-        f = {}
+        at = {}  # a field's bits in a FIFO word
         for name, sig in zip(["op", "ctx", "n", "first", "last", "rate", "short", "tag", "max_iter", "offset"],
                              fields[:10]):
-            f[name] = cur[o:o + len(sig)]
+            at[name] = slice(o, o + len(sig))
             o += len(sig)
+        f = {name: cur[sl] for name, sl in at.items()}
         pos = [cur[o + 16 * k:o + 16 * k + 16] for k in range(LANES)]
         o += 16 * LANES
         llr = [cur[o + 8 * k:o + 8 * k + 8].as_signed() for k in range(LANES)]
         tags = SyncFIFO(width=64, depth=self.TAG_DEPTH)
         m.submodules.tags = DomainRenamer("ldpc")(tags)
-        is_write = f["op"] == OP_WRITE
-        opens = Mux(is_write, f["first"], f["op"] == OP_BEGIN)
-        closes = Mux(is_write, f["last"], f["op"] == OP_DONE)
-        n = Mux(is_write, f["n"], 0)
+
+        def decode(word):
+            """(opens, closes, n) of a FIFO word"""
+            op = word[at["op"]]
+            is_write = op == OP_WRITE
+            return (Mux(is_write, word[at["first"]], op == OP_BEGIN),
+                    Mux(is_write, word[at["last"]], op == OP_DONE), Mux(is_write, word[at["n"]], 0))
+
+        opens, _, n = decode(cur)
+        _, r_closes, r_n = decode(fin.r_data)
         need_start = Signal()
-        m.d.comb += [fin.r_en.eq(~have & ~need_start), tags.w_data.eq(f["tag"])]
-        m.d.ldpc += [self.begin.eq(0), self.d_valid.eq(0), self.start.eq(0), self.abort.eq(0), tags.w_en.eq(0)]
+        load = Signal()
+        # the tag is pushed in the `need_start` cycle itself (a cycle before
+        # `start` reaches the decoder): the next beat may replace `cur` at
+        # its end
+        m.d.comb += [fin.r_en.eq(~have | (at_last & ~ends)), load.eq(fin.r_en & fin.r_rdy),
+                     tags.w_data.eq(f["tag"]), tags.w_en.eq(need_start)]
+        m.d.ldpc += [self.begin.eq(0), self.d_valid.eq(0), self.start.eq(0), self.abort.eq(0)]
         rate_idx = (f["rate"] - 1)[:4]
         with m.If(need_start):
             m.d.ldpc += [self.start.eq(1), self.d_ctx.eq(f["ctx"]), self.st_rate.eq(rate_idx),
                          self.st_max_iter.eq(f["max_iter"]), self.st_offset.eq(f["offset"]),
-                         self.st_short.eq(f["short"]), tags.w_en.eq(1), need_start.eq(0)]
-        with m.Elif(~have & fin.r_rdy):
-            m.d.ldpc += [cur.eq(fin.r_data), have.eq(1), lane.eq(0)]
-        with m.Elif(have):
+                         self.st_short.eq(f["short"]), need_start.eq(0)]
+        with m.If(have):
             m.d.ldpc += [self.d_ctx.eq(f["ctx"]), self.d_rate.eq(rate_idx)]
             with m.If(lane == 0):
                 m.d.ldpc += [self.begin.eq(opens), self.abort.eq(f["op"] == OP_ABORT)]
             with m.If(lane < n):
                 m.d.ldpc += [self.d_valid.eq(1), self.d_pos.eq(Array(pos)[lane]),
                              self.d_llr.eq(Array(llr)[lane])]
-            last_lane = (lane + 1 >= n)
-            with m.If(last_lane):
-                m.d.ldpc += [have.eq(0), need_start.eq(closes)]
+            with m.If(at_last):
+                m.d.ldpc += [have.eq(0), need_start.eq(ends)]
             with m.Else():
-                m.d.ldpc += lane.eq(lane + 1)
+                m.d.ldpc += [lane.eq(lane + 1), at_last.eq(lane + 2 >= n)]
+        # (after the lanes: a beat popped on the last lane keeps `have`)
+        with m.If(load):
+            m.d.ldpc += [cur.eq(fin.r_data), have.eq(1), lane.eq(0), at_last.eq(r_n <= 1),
+                         ends.eq(r_closes)]
         # ---- out ------------------------------------------------------------
         # entry: kind (1: record), then the record (tag 64, iterations 8,
         # converged, overrun) or the word (data 16, last)

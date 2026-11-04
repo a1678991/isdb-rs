@@ -519,11 +519,10 @@ STD-B44) is received to TLV streams.
   the real decoder, the learned points of all four modulations in the
   status; chain-4-tmcc carries a five-mode layout (`modes`);
   `KNOWN_GAPS` 20 → 8 entries. `chain-14-apsk32` (32APSK 109/120 first)
-  found an open HDL defect: frame N's TMCC burst and frame N + 1's first
-  32APSK codewords need more decoder cycles than the bridge's serialiser
-  has, its input FIFO overflows and those slots fail (fpga/README.md
-  "Integration"; `test_apsk32_after_the_tmcc_burst`, an expected
-  failure). `tools/real_blocks.py` prints the blocks a real-decoder run
+  found an HDL defect: frame N's TMCC burst and frame N + 1's first
+  32APSK codewords needed more decoder cycles than the bridge's
+  serialiser had, its input FIFO overflowed and those slots failed
+  (fixed, below under Fixed). `tools/real_blocks.py` prints the blocks a real-decoder run
   got wrong. `ldpc-14-49-layered34` … `ldpc-21-105-layered34`: the eight
   B44 rates no LDPC set had (49, 61 unshortened, 73, 81, 89, 97, 101,
   105/120) at the HDL's step 34, bit-exact on the decoder. chain-1-sync
@@ -1618,6 +1617,18 @@ STD-B44) is received to TLV streams.
   compares SEQ, VALID and ARMED only (a latch, or another client's
   capture write, still tears a set); the warning names what moved.
   Found by the timed host–FPGA model (issue #30 item 4).
+- `fpga`: 32APSK slots right after an ISDB-S3 frame boundary lost LDPC
+  decoder input: frame N's TMCC burst shares the decoder port with frame
+  N + 1's first 32APSK codewords, and `LdpcBridge`'s serialiser spent
+  n + 1 decoder cycles on a beat of n values (233 M cycles/s against the
+  decoder's 200 MHz), so its input FIFO overflowed and those slots came
+  out unconverged. A beat now takes n cycles, back to back (the next
+  beat popped on the last lane's cycle): 32APSK with the burst needs
+  192.6 M cycles/s, 16APSK 160 M (`ldpcqueue.port_cycles`,
+  `tools/queue_sweep.py --rate`). chain-14-apsk32 is bit-exact with the
+  real decoder over frames 1-3 (`test_apsk32_after_the_tmcc_burst`) and
+  the value-coverage tool reads it (the learned 32APSK points;
+  `KNOWN_GAPS` 6 → 5 entries).
 - `fpga`: a TMCC word whose BCH corrected six or more errors hung the
   ISDB-S3 chain: its TMCC block stopped after four payload words, the
   result stream stalled and the LDPC decoder's result queue overflowed.
