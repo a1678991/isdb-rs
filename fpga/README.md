@@ -455,6 +455,70 @@ for about 0.7 % of the clocks (its decisions) and stage 3's ring when its
 reader stalls; `SlotsRx` puts a 1 024-symbol FIFO in front, the front end
 delivering 84 % of the clocks.
 
+**Register map** (`SlotsRx`, the front end's command protocol of
+`control.py` at 0x400–0x6FF; the host's copy is
+`isdb_frontend::control::chain`). The one source is
+`isdb_fpga/chain/registers.toml` (issue #30 item 5): per register the
+address, access, width, reset, bit fields, read and write semantics, the
+FEATURES flag that gates it, how a host reads it consistently and what
+the host does with it, plus the CTRL bits, the command timing and the
+host's open sequence and slow-loop steps. This table and `top.py`'s
+docstring table are generated from it (`uv run --locked python
+tools/regmap.py`; `--check` fails when either is stale);
+`tests/test_registers.py` checks `top.py`'s REG_* constants, FEATURES
+and `control.py` against it and simulates every register's documented
+behaviour through `gpio_out` (pysim, three simulations of 10, 10 and
+17 s: every
+address's reset value, every read-only register and unmapped address
+ignoring all-ones and all-zeros writes, walking ones and zeros through
+the read/write registers, CARRIER and the taps going in use only at
+START (the taps with INIT bit 0), TAPS_FROM arming the equaliser with
+the frame written, the SUMS_CAPTURE strobe and its release by START, the
+sum registers answering 3 symbol clocks after the decode with the
+previous value held, FEATURES, the CTRL bits and the ID word); on the
+host, `crates/isdb-frontend/tests/chain_registers.rs` checks every
+address, field and reset constant of `isdb_frontend::control::chain`,
+and `isdb-radio`'s `chain::regmap_tests` runs the open sequence and the
+slow loop on its mock backend against the map's steps and the registers
+each side may write. The host writes LAYOUT_LAG at open (its map's
+`ChainOptions::layout_lag`) although this image builds lag 2 only and
+ignores the write: the map records it (`ignored_write = 2`, the value the
+host writes and the register reads), the one read-only register the host
+writes on an image without a FEATURES flag for it. The host never touches
+LLR_SCALE, LEARNED_FROM, MAX_ITER and AGC (the status blocks carry n0, K
+and the learned frame; MAX_ITER and AGC keep their resets).
+
+<!-- regmap:begin: generated from isdb_fpga/chain/registers.toml by tools/regmap.py -->
+| Address | Register | Access | Reset | Bits | Read | Write | Host |
+|---|---|---|---|---|---|---|---|
+| 0x400 | VERSION | ro | 2 | — | the `Slots` format the chain writes: 2 (format 1 and the sums block); the ID word's bits 11-8 read the same | ignored | reads: open: must be a format this host reads (isdb_frontend::slots::readable) |
+| 0x401 | FEATURES | ro, 28 bits | 0x0022_0EF3 | 0 TAPS (the host may write taps (TAPS, TAPS_FROM)), 1 SUMS (the training sums are readable (SUMS_FRAME, SUMS_COUNT, SUMS_R, SUMS_P)), 2 CONSTELLATION (not built, reads 0: the host may load a constellation at START (CONST, CONST_MASK, INIT bit 1)), 3 N0 (not built, reads 0: the host may load n0 at START (N0, INIT bit 2)), 4 SUMS_CAPTURE (the training sums are held from a host-armed frame end (SUMS_CAPTURE)), 5 DECODER_HEALTH (DECODER and RECLAIMED exist; the decoder frees the banks of abandoned codewords), 6 SUMS_SEQ (SUMS_CAPTURE's bits 2 and 15-8; a sum register's READ is answered in 3 symbol clocks, the register keeping its last value until then), 7 SUMS_STREAM (each frame's latched sums also leave in the `Slots` stream, a sums block after its status block: the host needs none of the sum registers), 15-8 MAX_ITER (the LDPC iteration limit: MAX_ITER's value), 27-16 STEP (the LDPC decoder's step (34; 0 sequential)) | what the image offers (the flags below), the LDPC iteration limit (MAX_ITER's value) and the decoder's step | ignored | reads: open; the slow loop once (SUMS_CAPTURE) |
+| 0x402 | CARRIER | staged, signed | 0 | — | the carrier register in use (2^-32 turn per symbol; the chain tracks the carrier itself) | the carrier register's value for the next CTRL START (in use: CTRL START) | reads, writes: open writes the host's carrier; the slow loop's register path reads it every tick (informational) |
+| 0x403 | LAYOUT_LAG | ro | 2 | — | the layout lag: 2 (lag 1 is not built) | ignored: the host's map defines it as the lag START loads (`ChainOptions::layout_lag`, 1 or 2); this image builds lag 2 only and ignores the write | writes: open writes the host's lag (2, the only one this image has) |
+| 0x404 | INIT | rw, 3 bits | 0 | 0 TAPS (START puts the taps written to TAPS in use), 1 CONSTELLATION (START loads CONST for the modulations of CONST_MASK (FEATURES CONSTELLATION)), 2 N0 (START loads N0 (FEATURES N0)) | the value written | which host values CTRL START loads: bit 0 the taps written to TAPS (else the taps in use stay); bits 1 and 2 are stored and ignored (FEATURES CONSTELLATION and N0 are clear) | writes: open, last before START |
+| 0x405 | STATUS | ro, 3 bits | 0 | 0 LOCKED (the slot sync is locked), 1 FRAMED (a frame head since the (re)start), 2 DECODING (the last frame decoded since the (re)start: a layout in force (a restart clears it)) | the chain's state | ignored | reads: the slow loop's register path every tick; the error report (`ChainControl::state`) |
+| 0x406 | FRAME | ro | 0xFFFF_FFFF | — | the last whole frame's counter (0xFFFF_FFFF none) | ignored | reads: the slow loop's register path every tick (the identity's TAPS_FROM); the error report |
+| 0x407 | SEQ | ro | 0 | — | the next `Slots` block's sequence number (0 after CTRL START) | ignored | reads: the error report |
+| 0x408 | N0 (writable with FEATURES N0) | ro | 0xCD4C | — | n0 in force (Q.20; 52 556, Es/N0 13 dB, until learned) | ignored: on an image with FEATURES N0, n0 for START (INIT bit 2); this image ignores the write | writes: open writes the host's n0 only on an image with FEATURES N0 |
+| 0x409 | LLR_SCALE | ro | 0x0001_3F3A | — | K in force: round(2^32 / n0) | ignored | — |
+| 0x40A | LEARNED_FROM | ro | 0xFFFF_FFFF | — | the frame n0 and the constellation in force were learned on (0xFFFF_FFFF: the defaults) | ignored | — |
+| 0x40B | CONST_MASK (writable with FEATURES CONSTELLATION) | ro, 5 bits | 0 | — | bit m: modulation m's points in force are learned, not the nominal ones | ignored: on an image with FEATURES CONSTELLATION, the modulations whose CONST points START loads; this image ignores the write | writes: open writes it only on an image with FEATURES CONSTELLATION |
+| 0x40C | MAX_ITER | rw, 8 bits | 14 | — | the value written (FEATURES bits 15-8 read it too) | the LDPC iteration limit each codeword is committed with (reset `ldpc.DEFAULT_MAX_ITER`) | — |
+| 0x40D | AGC | rw, 16 bits | 0 | — | the value written | the input AGC gain the status blocks report (Q6.10) | — |
+| 0x410 .. 0x41A | TAPS (FEATURES TAPS) | staged | [5] 0x4000, else 0 | 15-0 RE (real part, Q2.14), 31-16 IM (imaginary part, Q2.14) | tap k in use (re + (im << 16), Q2.14; the identity after configuration) (consistency: the 11 registers change together at a frame start; TAPS_FROM reads their frame) | tap k of the next set (in use: TAPS_FROM N: from frame N + 2; CTRL START with INIT bit 0: at once) | writes: open writes the host's taps (the identity without), the slow loop each solve before TAPS_FROM |
+| 0x41B | TAPS_FROM (FEATURES TAPS) | staged | 0xFFFF_FFFF | — | the frame the taps in use were solved from (0xFFFF_FFFF: the identity, or taps START loaded) | after TAPS: the frame N the taps were solved from; commits them (arms the equaliser with N and N + 2 in the clock it is written: 5f60649) (in use: the first frame >= N + 2 (the model's EQ_APPLY_FRAMES)) | reads, writes: the slow loop writes it after each set of TAPS and reads it every tick; the error report |
+| 0x420 | SUMS_FRAME (FEATURES SUMS) | ro | 0xFFFF_FFFF | — | the frame of the latched training sums (0xFFFF_FFFF: none yet) (consistency: read before and after the sum registers: the same frame, or the latch moved) | ignored | reads: the slow loop's register path every tick and after the sums; the error report |
+| 0x421 | SUMS_COUNT (FEATURES SUMS) | ro, 16 bits | 0 | — | training symbols in the latched sums | ignored | reads: the slow loop's register path every tick |
+| 0x422 | SUMS_CAPTURE (FEATURES SUMS_CAPTURE) | strobe, 16 bits | 4 | 0 VALID (latched and held since the write), 1 ARMED (waiting for a frame end), 2 NO_LAYOUT (STATUS bit 2 clear: the last frame end had no layout, nothing latches and an armed capture waits), 15-8 SEQ (latches since configuration (wrapping)) | the capture's state: VALID, ARMED, NO_LAYOUT (FEATURES SUMS_SEQ), SEQ (FEATURES SUMS_SEQ) (consistency: SEQ read before and after a set of sum reads: equal, no latch moved in between) | any value: the next frame end with a layout latches the training sums and holds them (later frames are summed, not latched) until the next write. Before the first write every frame end latches; a restart (START, a lost sync, the chain's stop) releases a hold and an armed capture | reads, writes: the slow loop's register path: reads it every tick (first, with FEATURES SUMS_CAPTURE, and last), writes it to arm a capture; the error report |
+| 0x430 .. 0x437 | COUNTERS | ro | 0 | frames, frames_undecoded, tmcc_failed, slots, ldpc_failed, bch_failed, iterations (low), iterations (high) | the status block's counters: whole frames, a frame's slots counted at its TMCC result (the slots of a frame a restart dropped are not counted); the iteration sum in two registers, low first (consistency: none: each moves at a frame's end and the iteration sum's two words can tear across one (informational: the error report)) | ignored | reads: the error report (`ChainControl::counters`) |
+| 0x438 | TMCC_OVERRUNS | ro | 0 | — | TMCC codewords the decoder dropped (also counted as TMCC failed) | ignored | reads: the error report |
+| 0x439 | DECODER (FEATURES DECODER_HEALTH) | ro, 28 bits | 0x0300_0000 | 15-0 OVERRUNS (codewords dropped for want of a free bank since configuration, slots and TMCC (wrapping)), 16 QUEUE_OVERFLOW (sticky: a commit the result queue could not take), 23-20 HELD (banks allocated now (0 once the chain has stopped, 3.3 ms after its input, and the decoder is idle)), 27-24 BANKS (K (3)) | the LDPC decoder's health, a snapshot from its clock under 1 us old (consistency: one word from one snapshot) | ignored | reads: open (banks held before START: warned); the error report |
+| 0x43A | RECLAIMED (FEATURES DECODER_HEALTH) | ro | 0 | 15-0 ABORTED (banks freed by the abort after a frame drop or a restart (a lost sync, START, the chain's stop)), 31-16 REUSED (banks a codeword's begin took back from its context's abandoned codeword) | decoder banks freed since configuration (wrapping) | ignored | reads: open; the error report |
+| 0x500 .. 0x607 | SUMS_R (FEATURES SUMS) | ro | 0 | — | entry i < 66 of R at 0x500 + 4i: re low 32, re high 16 sign-extended, im low, im high (the latched bank); a READ is answered 3 symbol clocks after it is decoded, gpio_in keeping the previous READ's value until then (consistency: the latch moves at a frame end: SUMS_CAPTURE's hold and SEQ, or SUMS_FRAME before and after; the same values leave in each frame's sums block (FEATURES SUMS_STREAM)) | ignored | reads: the slow loop's register path, after a capture held (or a new SUMS_FRAME) |
+| 0x610 .. 0x63B | SUMS_P (FEATURES SUMS) | ro | 0 | — | entry i < 11 of p at 0x610 + 4i, as SUMS_R; a READ is answered 3 symbol clocks after it is decoded, gpio_in keeping the previous READ's value until then (consistency: as SUMS_R) | ignored | reads: as SUMS_R |
+| 0x640 .. 0x6DF | CONST (writable with FEATURES CONSTELLATION) | ro | 0 | — | not built: reads 0 (point t of modulation m at 0x640 + 32m + t on an image with FEATURES CONSTELLATION) | ignored: on an image with FEATURES CONSTELLATION, the points START loads; this image ignores the write | writes: open writes the host's points only on an image with FEATURES CONSTELLATION |
+<!-- regmap:end -->
+
 **Simulation** (`tests/test_chain.py`, part of `mise run fpga:test`): three
 backends behind one stream API (`simx.py`): Amaranth's Python simulator
 (about 6 500 cycles/s on the stage-1 block, 2 000 on the back end) and
