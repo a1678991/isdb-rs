@@ -1873,6 +1873,55 @@ peak is `VmHWM` over each stage, reset before it.
   CPU for 30 s: 9.9 s user + 0.5 s sys (0.30 cores, the acquisition and
   the probe's solve included). Max RSS 0.68–0.71 GB against 6.0–6.28 GB.
 
+### Build 10 on the board: the chaos-found fixes (2026-11-04)
+
+The image of `main` at 630f2e6 (PR #39: the `Slots` sequence restarted by
+a START during a block, a slot keeping its head's status snapshot, the
+status counters counting whole frames, a stop freeing the open codeword's
+decoder bank). Vivado 2026.1, project flow: setup met (WNS +0.041 ns) and
+one hold violation, the RGMII receive input's IDDR (−0.520 ns, the class
+of builds 6 and 8); `holdfix.tcl` on the final checkpoint: **WNS +0.041
+ns, WHS +0.046 ns, 0 failing endpoints of 161 523 / 161 300**; `rx_clk`
++0.041 / +0.046, decoder `c0` +0.212 / +0.049, symbol clock +0.302 /
++0.056, `clk_fpga_0` +1.012, `RGMII_rxc` +0.100 / +0.143. 43 792 LUT
+(82.3 %), 49 688 FF, 123.5 BRAM36, 176 DSP; `isdb_slots` 37 332 LUT (chain
+18 247, decoder 11 578, bridge 311, control 1 026). `isdbs3_rx10_top.bin`
+2 791 008 bytes, sha256
+`db90a5dc8e2e7194f7473c77618b5ce216fd33c2374b79aa479de344d9e556e7` (XSA
+`e619088b2b3ecb82ff6373f766beb4d8706e3a7d31a1fc7dd35732068f3ee031`), in
+`/path/to/sdr/isdb-work/out/isdbs3-rx-build10/`. On the card: build 9
+stays as `isdbs3_rx_top.bin` (`uEnv.txt.prev-rx9` selects it), build 10 as
+`isdbs3_rx10_top.bin` (selected); the boot hit "Tuning TX FAILED", one
+`recover`. Host binary from the same `main` (the probe's start taps of
+PR #36). BS7, receive only, `tools/isdbs3-issue-checks.sh` (captures in
+`/path/to/sdr/isdbs3-bench/build10/`, not committed):
+
+| Run | Valid slots | Not converged (dropped) | Banks held at the open | Slow loop | Losses | Max RSS | Exit |
+|---|---|---|---|---|---|---|---|
+| 8 s × 3 back to back | 23 232, 11 868, 23 136 | 0 (0), 0 (0), 0 (0) | **none warned** (build 9: "held 1" at every open after the first) | 3, 2, 3 solves, 0 rejected, 0 reverts, 0 rereads | run 2: 14 432 blocks (118 frames), a link flap | 724, 755, 721 MB | 0 |
+| 30 s | 87 072 | 1 (0) | none | 11 solves, all else 0 | 0 | 729 MB | 0 |
+| 8 s, `isdb::chain=debug` | 23 232 | 0 (0) | none | 3 solves | 0 | 696 MB | 0 |
+
+- **A stop leaves no bank held**: the open's warning "the LDPC decoder
+  still holds banks before START" (DECODER HELD read at the open) did not
+  appear in any of the five runs; on build 9 it read `held 1` at every open
+  after the first. The chain's own stop (3.3 ms without input) freed the
+  open codeword's bank before the next process opened.
+- Mean iterations 2.06 per codeword, MER 15.0 dB, 0 dropped slots in every
+  run (the probe's start taps, PR #36), the first slow-loop set in force
+  at +33 frames as before.
+- **The status counters count whole frames**: `frames` 244 → 489 → 748 →
+  1 658 → 1 914 across the runs (cumulative since configuration, as
+  before), `frames_undecoded` 2 per run (the two frames of layout lag).
+- The one loss is the board's Ethernet link (`dmesg`: "Link is Down",
+  "unable to generate target frequency: 125000000 Hz", "Link is Up" once,
+  about a minute after the boot, as after the build 9 boot); the Slots
+  sequence numbers counted every block.
+
+Rollback: `tools/pluto-image.sh rollback uEnv.txt.prev-rx9` (build 9,
+`isdbs3_rx_top.bin`), `prev-rx8`, `prev-rx7`, `prev-rx6` or `prev-txrx2`,
+then `reboot` and `recover`.
+
 ## ISDB-S transmitter in the FPGA: board checks (2026-10-29)
 
 The checks of [docs/plans/isdbs-fpga-tx.md](docs/plans/isdbs-fpga-tx.md)
