@@ -22,7 +22,7 @@ cargo-deny = "0.20.2"
 # every feature combination of the crates with features (`features-*`)
 "github:taiki-e/cargo-hack" = "0.6.45"
 # the FPGA simulation (`fpga:*`)
-uv = "0.13.6"
+uv = "0.13.7"
 # compiler cache for the CI jobs that build and link (.github/actions/sccache);
 # optional locally (RUSTC_WRAPPER=sccache)
 sccache = "0.19.0"
