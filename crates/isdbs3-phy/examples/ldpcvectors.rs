@@ -28,6 +28,7 @@
 //! | `ldpc-11-tmcc-rec-layered34.json` | TMCC, real codewords | layered, step 34 | 12 | 4 (opt-in): 2 as received, 2 with 3 % of the values made weak and wrong |
 //! | `ldpc-12-93-layered17.json` | 93/120 | layered, step 17 | 12 | 4, with `trace_hex` (a small step for the HDL simulation) |
 //! | `ldpc-13-tmcc-layered17.json` | 61/120 shortened (TMCC) | layered, step 17 | 12 | 4, with `trace_hex` |
+//! | `ldpc-14-49-layered34.json` … `ldpc-21-105-layered34.json` | 49, 61 (unshortened), 73, 81, 89, 97, 101, 105 /120: with sets 4–6 every B44 rate | layered, step 34 | 12 | 4 each, Es/N0 from easy to failing |
 //!
 //! The synthetic codewords are `Code::encode` of random information (a
 //! fixed seed per set) sent as BPSK through Gaussian noise at a given
@@ -536,6 +537,30 @@ fn main() {
             llrs: tmcc_words(&[2.0, -1.0, -2.0, -4.0], 13_013),
         },
     ];
+    // The other eight rates at step 34 (the HDL decoder's), four codewords
+    // each: two that converge quickly, one near the threshold, one that
+    // fails (Es/N0 in dB, per rate).
+    let rates: [(u8, &'static str, [f64; 4]); 8] = [
+        (49, "ldpc-14-49-layered34", [0.5, -1.0, -1.6, -4.0]),
+        (61, "ldpc-15-61-layered34", [1.5, 0.0, -0.5, -3.0]),
+        (73, "ldpc-16-73-layered34", [2.5, 1.0, 0.5, -2.0]),
+        (81, "ldpc-17-81-layered34", [3.0, 1.8, 1.2, -1.0]),
+        (89, "ldpc-18-89-layered34", [3.5, 2.6, 2.0, 0.0]),
+        (97, "ldpc-19-97-layered34", [4.5, 3.4, 2.8, 0.5]),
+        (101, "ldpc-20-101-layered34", [5.0, 3.8, 3.3, 1.0]),
+        (105, "ldpc-21-105-layered34", [5.5, 4.3, 3.8, 1.5]),
+    ];
+    for (r, name, esn0) in rates {
+        sets.push(Set {
+            name,
+            rate: rate(r),
+            shortened: false,
+            schedule: layered(34),
+            max_iter: 12,
+            trace: false,
+            llrs: synthetic(rate(r), &esn0, 14_014 + u64::from(r)),
+        });
+    }
     if let Some(rec) = rec {
         let (main, tmcc) = recording(&rec);
         eprintln!(
