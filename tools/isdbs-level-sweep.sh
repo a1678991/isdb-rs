@@ -203,7 +203,7 @@ if [ -n "$TX_PID_FILE" ] && [ -n "$START_TX" ]; then die "--tx-pid and --start-t
 for o in "${TX_OPTS[@]}"; do
     case $o in --rf-enable|--dry-run|--margin) die "--tx-opt $o is not allowed (the bench script owns the gate; --margin comes from this script's --margin)" ;; esac
 done
-[ -x "$DT295" ] || die "dt295 not found at $DT295 (set DT295)"
+command -v "$DT295" >/dev/null || die "dt295 not found at $DT295 (set DT295)"
 "$DT295" status --help 2>/dev/null | grep -q -- '--json' ||
     die "$DT295 has no 'status --json' (rebuild your PIX-DT295 checkout at d4ad6dc or later)"
 command -v "$IIO_ATTR" >/dev/null || die "iio_attr not found (libiio tools; or set IIO_ATTR)"

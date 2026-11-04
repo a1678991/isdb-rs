@@ -164,6 +164,17 @@ check "--receiver-drops 0x1,cat: exit 2" '[ $RC = 2 ]'
 RC=0; python3 -I "$HERE/tools/ts-align-compare.py" --receiver-drops 0x2000 "$T/rec-dt295.ts" "$T/placed.ts" > "$T/u3" 2>&1 || RC=$?
 check "ts-align-compare.py --receiver-drops 0x2000: exit 2" '[ $RC = 2 ] && grep -q "13-bit" "$T/u3"'
 
+# A recording reaches the mocked tuner found on PATH; no hardware opens.
+mkdir -p "$T/bin"
+printf '#!/bin/sh\nexit 37\n' > "$T/bin/dt295"
+chmod +x "$T/bin/dt295"
+RC=0
+PATH="$T/bin:$PATH" DT295="" "$CHECK" --record 1 "$T/path-record.ts" > "$T/path-record.log" 2>&1 || RC=$?
+check "record: default dt295 found on PATH" '[ $RC = 2 ] && grep -q "dt295 stream failed" "$T/path-record.log"'
+RC=0
+DT295="$T/bin/dt295" "$CHECK" --record 1 "$T/explicit-record.ts" > "$T/explicit-record.log" 2>&1 || RC=$?
+check "record: explicit dt295 path still works" '[ $RC = 2 ] && grep -q "dt295 stream failed" "$T/explicit-record.log"'
+
 if [ -n "${KEEP:-}" ] || [ "$FAIL" != 0 ]; then
     K=${KEEP:-$T.keep}
     mkdir -p "$K"
