@@ -28,6 +28,17 @@ STD-B44) is received to TLV streams.
   loop); `isdb_frontend::control::chain`, the host's register map of the
   chain (placeholder addresses). Tools: `tools/slots-vs-symbols.sh`,
   `tools/tlv-packet-diff.py`.
+- `Slots` format 2: the FPGA receive chain sends each decoded frame's
+  equaliser training sums as a sums block (type 4, 476 words with its
+  CRC) after the frame's status block (`isdb_frontend::slots::SumsBlock`,
+  `Event::Unknown` for an intact block of a type the reader does not
+  know; formats 1 and 2 read). The chain's model emits it
+  (`isdbs3_phy::chain::out::blocks`, `eq::solve_block`), the HDL sends it
+  (`fpga/isdb_fpga/chain/sums.py`; VERSION 2, FEATURES bit 7
+  SUMS_STREAM; +154 LUT in Yosys), and on such an image the host's slow
+  loop solves from the stream and reads no chain register
+  (`isdb_radio::chain::SumsSource`, `sums_source` in the open line and
+  `--json`); images of `Slots` format 1 keep the register path.
 - `fpga`: chaos runs of the ISDB-S3 chain with the real LDPC decoder
   (issue #30 item 3; `isdb_fpga/chain/chaos.py`, `tests/test_chaos.py`,
   `tools/chaos_run.py`): random host stops, STARTs, input losses and tap

@@ -101,6 +101,10 @@ fixed-point": 5 failures of 9 216 at 50, 100 and 200 iterations).
 
 ### Boundary: `Slots`, format version 1
 
+(Version 2, 2026-11-04, adds a fourth block type, the sums block: a
+decoded frame's training sums after its status block; "Sums in the
+stream" in the results.)
+
 What leaves the radio instead of `Symbols`: a stream of 16-bit words in
 blocks with the `Symbols` framing (sync `0x1ACF 0xFC1D`, a header with
 a type and sequence number, the CRC-32C trailer seeded with the
@@ -407,7 +411,12 @@ chain yet):
   STATUS must read run, symbols and slots; a failed step sends CTRL 0.
   **Slow loop** (`SlowLoop`, `spawn_slow_loop`): a timer thread with its
   own libiio context (the stream's context stays on the capture thread)
-  polls every 200 ms until the first solve, then every 2 s: SUMS_FRAME,
+  polls every 200 ms until the first solve, then every 2 s (on an image
+  of `Slots` format 2 with FEATURES bit 7 SUMS_STREAM it reads no register:
+  the consumer hands it each sums block, `ChainHealth::sums`, and the
+  status blocks give it the frame, layout, lock and carrier; the first
+  block wakes it at once: "Sums in the stream" in the results; otherwise,
+  as built first): SUMS_FRAME,
   SUMS_COUNT, CARRIER, TAPS_FROM and STATUS; for a frame not yet
   solved, the 308 sum registers, SUMS_FRAME again (a moved latch is a
   torn read, retried at the next poll), `isdbs3_phy::chain::eq::
@@ -1650,3 +1659,72 @@ and an 8 s debug run on BS7: no bank held at any open (build 9 read
 converged per run, the counters counting whole frames. The card keeps
 build 9 as `isdbs3_rx_top.bin` (`uEnv.txt.prev-rx9`) and runs build 10 as
 `isdbs3_rx10_top.bin`.
+
+#### Sums in the stream (`Slots` format 2; 2026-11-04, simulation only)
+
+The follow-up of "Build 8 issues", built on all sides; no image yet.
+
+- **Format** (`isdb_frontend::slots`): version 2 = version 1 + a sums
+  block (type 4) right after a decoded frame's status block: the frame
+  summed (2 words, the header's frame), the count (1), then the 77
+  complex sums, R's 66 upper-triangle entries in register order (`SUMS_R
+  + 4i`) and p's 11, each re then im as three words (48-bit two's
+  complement, low word first): 465 payload words, 476 with the header
+  and CRC-32C trailer, about 14 400 words/s. Every block of a stream
+  carries its writer's version; the slot, tmcc and status blocks are word
+  for word version 1's. The host's `Reader` reads both versions; an
+  intact block of a type its header's version does not define is
+  `Event::Unknown` (skipped, counted, not a loss: a loss would close the
+  TLV assemblers for an intact block). A version-1 host refuses a
+  version-2 stream header by header and the image at open (VERSION and
+  the ID word read 2), rather than run without the sums.
+- **Model** (`isdbs3_phy::chain::out::blocks`): the block for every frame
+  whose sums the equaliser latched (a decoded frame), after its status
+  block; `eq::solve_block` solves it through `SumsBlock::to_training`,
+  the registers' view, so both host paths share one conversion. The
+  vectors carry it in every whole-chain set.
+- **HDL** (`fpga/isdb_fpga/chain/sums.py`, `SumsReader`, hooked into
+  `Finish` after the status block; `eq.py`'s second readback request):
+  the latched bank an entry at a time through the same one-cycle steal of
+  the accumulator RAM's read port as the register READ, the six words of
+  an entry by a 6:1 select; VERSION 2, FEATURES bit 7 SUMS_STREAM, the ID
+  word's bits 11-8 2; SUMS_CAPTURE and the registers kept. Bit-exact
+  with the model on every set (chain-6 with the stub, chain-7 to chain-10
+  with the real decoder, the chaos runs); three monitors (its word count,
+  that it follows its frame's status block, that the latch holds still
+  while it is read). Yosys: `SlotsRx` without the decoder 26 487 →
+  26 641 LUT (+154), 27 245 → 27 415 FF (+170), BRAM and DSP unchanged
+  (the estimate above: 150–250 LUT, 100 FF; the FF are 96 for the entry's
+  register). fpga/README.md "Sums in the stream".
+- **Host** (`isdb_radio::chain`, `isdb-cli` `slotrx.rs`): with VERSION 2
+  and SUMS_STREAM the consumer hands each sums block to the slow loop
+  (`ChainHealth::sums`) and the loop reads no register at all: the
+  status blocks give it the frame, the layout, the lock and the carrier
+  register (`SumsSource::Stream`; `sums_source` in the open line and in
+  `--json`); the checks, the gate, the writes (11 taps, TAPS_FROM), the
+  revert and the recovery are unchanged, `words_read`, `rereads` and
+  `torn_reads` read 0. A format-1 image (build 9: VERSION 1, FEATURES
+  0x220e73) keeps the register path exactly as before (tested through the
+  mock register backend and recorded words of both formats).
+
+**When the first solved taps are in force.** Register path, measured
+(build 7, and build 9 with the probe's taps: "Build 9 residuals"): the
+first capture armed at the first tick latches frame ≈ 5, its 308 reads
+take ≈ 15 frames, so the first write lands ≈ 0.9 s after the open and the
+taps are in force from frame ≈ 26–28. Stream path, expected (not
+measured: no image): the first sums block is frame 2's (the first frame
+with a layout at lag 2), sent after frame 2's status block, about 4–5
+slots into frame 3 (the TMCC burst and decode); the 64 Ki-word DMA buffer
+holding it fills in ≈ 11 ms at the ≈ 6.4 M words/s of decoded frames,
+plus ≈ 1 ms of network; the loop's thread wakes for it within 5 ms
+(`SlowLoop::sums_waiting`); the 25 command words of the taps and TAPS_FROM
+take ≈ 10 ms (≈ 0.4 ms per iiod access, from the 308-read set's ≈ 1 230
+accesses in ≈ 0.5 s). TAPS_FROM 2 is then written ≈ 28 ms into frame 3,
+inside its 33 ms, so the taps are in force from frame 4 (from inside frame
+4 when a slower write lands after its start): ≈ 22 frames (0.73 s) sooner
+than the register path's frame 26. With the probe's taps loaded at open
+(already within 0.03 of a solve, "Build 9 residuals") the decoding of
+frames 0–25 was already near the solved taps', so the gain is mostly the
+time and the 308 exposed reads, not dropped slots. To check on the board:
+the status blocks' `taps_from` (`examples/slotsstatus` on `--slots-out`
+words) should read 2 from frame 4 or 5.
