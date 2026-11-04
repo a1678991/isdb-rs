@@ -1610,8 +1610,11 @@ Two host defects of the build 9 runs, fixed without the board
   symbols: …) in ≈ 0.3 s", the open line "taps from the host";
   `chain.start_taps.source` "probe"; the status blocks' `taps` the
   probe's from frame 0 with `taps_from` none until the slow loop's first
-  write, which stays solved from frame ≈ 5–6 and in force from ≈ 26–28
-  (unchanged); that first solve taken by the gate against the probe's
+  write, which stays solved from frame ≈ 5–6 and in force from frame
+  ≈ 33–34 (≈ 26 with build 7's single reads: the verified reads, six iiod
+  requests a word instead of four, cost 8 frames, as the timed host–FPGA
+  model gives; build 10's register path read +33); that first solve taken
+  by the gate against the probe's
   set (`solves_rejected` 0, `reverts` 0); the mean iterations of frames
   0–25 ≈ 2.1–2.3 as after it (4.1–4.8 on the identity) and no dropped
   slot in the first 34 frames; max RSS ≈ 0.6–0.9 GB, all at the open.
