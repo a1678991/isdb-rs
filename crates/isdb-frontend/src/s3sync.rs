@@ -344,6 +344,46 @@ fn search(mag: &(dyn Fn(usize) -> f64 + Sync)) -> (f64, usize) {
     (peak, offset)
 }
 
+/// [`measure`] of the front end `fe`'s output on the samples `x` after
+/// its first `skip` symbols, in bounded memory for callers that score
+/// several front ends on threads of their own ([`best_trim`], and the
+/// carrier choice of `isdbs3_phy::frontend`): the front end keeps only
+/// each symbol's `zk` (4 bytes of the 56 of a
+/// [`Symbol`](crate::fixed::Symbol)), and the measure, whose working set
+/// is about 40 bytes per symbol and which runs on all cores by itself,
+/// waits for `one`, so that the callers sharing it measure one at a time.
+/// The same report as [`measure`] of the `zk` as `Complex64`, bit for
+/// bit.
+///
+/// Thirteen trims on 0.15 s at 40 Msps (5 M symbols each), each holding
+/// its whole `Symbol` output and measuring at once, took 6.1 GB of
+/// resident memory; this way 0.6 GB (`isdb-cli` example `s3open`).
+pub fn measure_one(
+    mut fe: crate::fast::FastFrontend,
+    x: &[[i16; 2]],
+    skip: usize,
+    one: &std::sync::Mutex<()>,
+) -> Option<SyncReport> {
+    let mut zk = Vec::new();
+    let mut n = 0usize;
+    fe.process_each(x, |s| {
+        if n >= skip {
+            zk.push(s.zk);
+        }
+        n += 1;
+    });
+    drop(fe);
+    let _one = one
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let z: Vec<C> = zk
+        .iter()
+        .map(|v| C::new(f64::from(v[0]), f64::from(v[1])))
+        .collect();
+    drop(zk);
+    measure(&z)
+}
+
 /// The output trim (symbol periods) that maximises the sync-symbol Es/N0
 /// of the front end on the IQ excerpt `x` (12-bit components in `i16`),
 /// with every other setting from `d`: a coarse search over `candidates`,
@@ -361,20 +401,15 @@ pub fn best_trim(
     d: &crate::params::Design,
     candidates: &[f64],
 ) -> Result<(f64, f64), crate::params::ParamError> {
-    // the candidates run independently, one thread each
+    // the candidates' front ends run independently, one thread each, and
+    // their measures one at a time (`measure_one`)
+    let one = std::sync::Mutex::new(());
     let score = |t: f64| -> Result<f64, crate::params::ParamError> {
         let mut dd = d.clone();
         dd.trim = t;
-        let mut fe = crate::fast::FastFrontend::new(crate::params::Params::design(&dd)?)?;
-        let mut out = Vec::new();
-        fe.process(x, &mut out);
+        let fe = crate::fast::FastFrontend::new(crate::params::Params::design(&dd)?)?;
         // the loop settles within the first slots: skip three
-        let z: Vec<C> = out
-            .iter()
-            .skip(3 * SLOT)
-            .map(|s| C::new(f64::from(s.zk[0]), f64::from(s.zk[1])))
-            .collect();
-        Ok(measure(&z).map_or(f64::NEG_INFINITY, |r| r.snr_db))
+        Ok(measure_one(fe, x, 3 * SLOT, &one).map_or(f64::NEG_INFINITY, |r| r.snr_db))
     };
     let scores: Vec<f64> = std::thread::scope(|sc| {
         let handles: Vec<_> = candidates
@@ -511,6 +546,46 @@ mod tests {
             let r = corr(&x, n, &fs).norm().max(corr(&x, n, &ss).norm()) / SYNC_LEN as f64;
             assert_eq!(v.to_bits(), r.to_bits(), "position {n}");
         }
+    }
+
+    /// `measure_one` (the front end keeping `zk` only, the measure behind
+    /// the lock) reports what `measure` of the whole `Symbol` output does,
+    /// bit for bit.
+    #[test]
+    fn measure_one_equals_measure_of_the_symbols() {
+        let (fs, rs) = (40e6, 33.7561e6);
+        let sym: Vec<num_complex::Complex32> = stream(12, 14.0, 1e-6)
+            .iter()
+            .map(|v| {
+                // DSP sample: f64 to the shaper's f32 on purpose
+                #[allow(clippy::cast_possible_truncation)]
+                let c = num_complex::Complex32::new(v.re as f32, v.im as f32);
+                c
+            })
+            .collect();
+        let mut sh = crate::shape::Shaper::new(fs, rs, 0.03).unwrap();
+        let mut y = Vec::new();
+        sh.push(&sym, &mut y);
+        // a quarter of full scale in 12 bits
+        #[allow(clippy::cast_possible_truncation)]
+        let x: Vec<[i16; 2]> = y
+            .iter()
+            .map(|v| [(v.re * 400.0).round() as i16, (v.im * 400.0).round() as i16])
+            .collect();
+        let d = crate::params::Design::new(fs, rs, 0.03);
+        let p = crate::params::Params::design(&d).unwrap();
+        let mut fe = crate::fast::FastFrontend::new(p.clone()).unwrap();
+        let mut out = Vec::new();
+        fe.process(&x, &mut out);
+        let z: Vec<C> = out
+            .iter()
+            .skip(3 * SLOT)
+            .map(|s| C::new(f64::from(s.zk[0]), f64::from(s.zk[1])))
+            .collect();
+        let want = measure(&z).expect("a sync");
+        let fe = crate::fast::FastFrontend::new(p).unwrap();
+        let got = measure_one(fe, &x, 3 * SLOT, &std::sync::Mutex::new(()));
+        assert_eq!(got, Some(want));
     }
 
     #[test]
