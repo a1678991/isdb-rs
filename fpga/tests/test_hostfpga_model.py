@@ -12,7 +12,9 @@ show before it is trusted (fpga/README.md "A timed host–FPGA model"):
     per-buffer overflow poll or `api_controller.sh` running, none with
     both off, and PR #31's verified reads catch them (rereads);
 (c) the stream path (`Slots` format 2): the first taps in force from frame
-    4 or 5, no register read exposed.
+    4 or 5, no register read exposed; when another client's SUMS_CAPTURE
+    write holds the latch (no sums block leaves), the host's fallback to the
+    register path after 90 decoded frames, and its return after a restart.
 
 The properties: every multi-word value the host solves from is one
 snapshot; every polled live value is a single word or versioned; no host
@@ -304,11 +306,20 @@ class PropertiesTest(unittest.TestCase):
 
     def test_the_hold_is_released_at_start(self):
         """dedbc14: a hold a register-path run left no longer starves the
-        stream path."""
-        self.assertTrue(hm.liveness(S["stream-held-prefix"], run("stream-held-prefix")))
+        stream path. Before it the stream path got no sums block and (since
+        the stall fallback) its first taps came from the registers, after 90
+        decoded frames and a set; with it, from the stream at frame 4."""
+        r = run("stream-held-prefix")
+        self.assertEqual(r["sums_stalls"], 1)
+        self.assertEqual(r["stream_returns"], 0)
+        self.assertEqual(r["fallback_sets"], r["solves"])
+        self.assertGreater(r["solves"], 0)
+        self.assertGreater(r["first_write_t"], 92 * hm.Signal().frame_s)
+        self.assertEqual(hm.liveness(S["stream-held-prefix"], r), [])
         r = run("stream-held")
         self.assertEqual(hm.liveness(S["stream-held"], r), [])
         self.assertIn(r["first_in_force_frame"], (4, 5))
+        self.assertEqual(r["sums_stalls"], 0)
 
     def test_the_old_sum_read_shows_a_transient_0_to_a_fast_host(self):
         """#27 item 4: the old HDL's READ showed 0 for up to 4 400 symbol
@@ -323,15 +334,70 @@ class PropertiesTest(unittest.TestCase):
         self.assertEqual(new["transient_zero"], 0)
         self.assertEqual(new["solved_wrong"], 0)
 
-    def test_torn_by_the_no_layout_bit(self):
-        """A finding: the register path compares SUMS_CAPTURE's whole word
-        before and after the sum words, and its NO_LAYOUT bit follows the
-        layout while a capture is held, so a layout lost during a set
-        discards a good held set as torn (and warns that the capture did
-        not hold)."""
+    def test_a_layout_lost_during_a_set_keeps_it(self):
+        """A finding, fixed: SUMS_CAPTURE's NO_LAYOUT bit follows the layout
+        while a capture is held, so comparing the whole word before and after
+        the sum words discarded a good held set as torn when the layout went
+        during it. The host compares SEQ, VALID and ARMED only: the set the
+        layout loss falls in is solved, one snapshot."""
         r = run("nolayout-registers")
-        self.assertEqual(r["torn_no_layout_only"], 1)
+        self.assertEqual(r["no_layout_moved"], 1)
+        self.assertEqual(r["sets_torn"], 0)
         self.assertEqual(r["solved_mixed"], 0)
+
+    def test_a_foreign_capture_stalls_the_stream_and_the_registers_take_over(self):
+        """A finding, fixed: another client's SUMS_CAPTURE write holds the
+        latch, no sums block leaves while the status blocks still say
+        decoded. The host warns after 90 decoded frames without one (at its
+        next tick), reads the sums from the registers (every set one
+        snapshot) and goes back to the stream after a restart frees the
+        latch; no solve gap beyond the bound."""
+        sc = S["stream-foreign-capture"]
+        r = run("stream-foreign-capture")
+        self.assertEqual(r["sums_stalls"], 1)
+        h, sig = sc.host, sc.signal
+        # the result's times count from the open's end
+        held = sc.foreign_capture_at[0] - r["open_end"]
+        stall = r["stall_t"][0]
+        self.assertGreater(stall, held + h.sums_stall_frames * sig.frame_s)
+        self.assertLess(stall, held + (h.sums_stall_frames + 2) * sig.frame_s + h.every_s + h.poll_s)
+        self.assertGreaterEqual(r["fallback_sets"], 2)
+        self.assertEqual(r["sets_torn"], 0)
+        self.assertEqual(r["solved_mixed"], 0)
+        self.assertEqual(r["stream_returns"], 1)
+        # solves from the stream again after the restart, no register set
+        restart = sc.restart_at[0] - r["open_end"]
+        after = [t for t in r["solve_t"] if t > restart]
+        self.assertGreaterEqual(len(after), 3)
+        self.assertEqual(hm.liveness(sc, r), [])
+
+    def test_no_stall_without_a_hold(self):
+        """Every other scenario on the stream path: a sums block after every
+        decoded frame, the fallback never taken."""
+        for name, sc in S.items():
+            if sc.host.sums_source != "stream" or name in ("stream-foreign-capture",
+                                                           "stream-held-prefix"):
+                continue
+            r = run(name)
+            self.assertEqual((r["sums_stalls"], r["fallback_sets"]), (0, 0), name)
+
+    def test_the_fallback_returns_after_a_restart_at_any_time(self):
+        """A restart (START, a lost sync) at any time of the fallback's ticks
+        frees the latch, and the host goes back to the stream before it arms
+        a capture (a tick that reads SUMS_CAPTURE released waits a poll for
+        the blocks), except when the restart lands between a tick's read of
+        SUMS_CAPTURE and its capture write (about 16 ms of register reads in
+        a 2 s period): that capture holds the free latch again and the host
+        stays on the registers, still solving, until the next restart."""
+        returned, total = 0, 0
+        for i in range(40):
+            sc = replace(S["stream-foreign-capture"], restart_at=(19.0 + 0.05 * i,), seconds=25.0)
+            r = hm.run(sc)
+            total += 1
+            returned += r["stream_returns"]
+            self.assertEqual(hm.liveness(sc, r), [], sc.restart_at)
+            self.assertEqual(r["solved_mixed"], 0)
+        self.assertGreaterEqual(returned, total - 2)
 
 
 if __name__ == "__main__":

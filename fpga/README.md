@@ -1053,7 +1053,9 @@ another client's address write between a read's two iiod requests returns
 the other register. The clients: the host's open (the capture context), its
 slow loop (its own context; the register path as `SlowLoop::tick_at` does
 it, with build 6-8's single reads, #27's diagnostic double read or PR #31's
-verified reads; or the stream path, `tick_stream`), the capture context's
+verified reads; or the stream path, `tick_stream`, falling back to the
+register path when the sums blocks stop, `stream_stalled`), the capture
+context's
 per-buffer ADC overflow poll of builds 6-8, the consumer (`ChainHealth`:
 status and sums blocks, the revert watch), Tezuka's `api_controller.sh`
 (0x80000088 every 3.4-4.2 s) and #29 E2's 5 Hz reader of 0x80000000. Every
@@ -1074,6 +1076,7 @@ runs several values):
 | `Signal.decoded_words`, block sizes, `block_delay_slots` | 210 000; 604 / 143 / 476; 4.5 | README "Without a layout", "Sums in the stream", the block order |
 | `Host.buffer_words` | 65 536 (262 144 in builds 6-8) | `SLOTS_BUFFER_WORDS`, the default buffer before #28 |
 | `Host.poll_s`, `every_s`, `recover_after_s`, `stream_stale_s`, `max_reads`, revert | 0.2 s, 2 s, 1.5 s, 0.5 s, 8, 10 frames / 5 s | `crates/isdb-radio/src/chain.rs` |
+| `Host.sums_stall_frames`, `stream_back_blocks` | 90 decoded frames, 3 blocks | `SlowLoopOptions::sums_stall`, `STREAM_BACK_BLOCKS` |
 | `Host.taps_words` | 25 command words | the 11 taps and TAPS_FROM |
 | `Board.api_period_s` | 3.4-4.2 s | #29 |
 
@@ -1122,10 +1125,13 @@ reads is latched and versioned, and held for at least the host's read time
 the register path polls (CARRIER, STATUS, FRAME, TAPS_FROM) is one word used
 alone; no host sequence waits for ever (`liveness`: the first taps within
 the lock, two frames, two polls and a set; a solve at least every period
-plus one retried set; a stretch without a layout longer than
-`recover_after` ending in a recovery); the sums blocks the stream path
-waits for all arrive, each within a buffer's fill at the decoded rate
-(10.3 ms) plus the block delay and the transfer. The verified reads accept
+plus one retried set; on the stream path both bounds also allow a stall
+of the sums blocks, 90 decoded frames, a period and a register set; a
+stretch without a layout longer than `recover_after` ending in a
+recovery); the sums blocks the stream path waits for all arrive, each
+within a buffer's fill at the decoded rate (10.3 ms) plus the block delay
+and the transfer, and no stream scenario without a foreign hold falls
+back to the registers. The verified reads accept
 no wrong word under any modelled load; the old HDL's transient 0 is never
 seen over iiod (0.4 ms and more between the READ and the read) but is by a
 host on the board (`LOCAL` profile), even through the verified reads, and
@@ -1134,18 +1140,27 @@ not with build 9's READ.
 **What it found** (`KNOWN_GAPS` lists the liveness gaps; a fix makes the
 test fail until the entry goes):
 
-- *The stream path has no timer on the sums blocks.* If another client arms
-  SUMS_CAPTURE (a second host on the board, a register-path tool), the latch
-  holds, no sums block leaves, the status blocks still say decoded, and the
-  loop waits for ever without a warning (the taps in use stay; the next START
-  releases the hold). A "no sums block for N periods while frames decode"
-  warning, or a SUMS_CAPTURE write of 0 at open, would close it.
-- *A layout lost during a set discards the held set as torn.* The register
-  path compares SUMS_CAPTURE's whole word before and after the 308 words
-  (`HELD_EXTRA`), but its NO_LAYOUT bit follows the layout while a capture is
-  held: a good set is dropped and the warning says the capture did not hold
-  ("moved from frame N to N"). Comparing SEQ and VALID only (bits 15-8, 0)
-  would keep it.
+- *The stream path had no timer on the sums blocks* (fixed in the host).
+  If another client arms SUMS_CAPTURE (a second host on the board, a
+  register-path tool), the latch holds, no sums block leaves, the status
+  blocks still say decoded, and the loop waited for ever without a warning.
+  The host now counts the decoded frames since the last sums block; after 90
+  it warns and reads the sums from the registers until blocks come again at
+  the free latch's rate (`sums_stalls`, `stream_returns`, `fallback_sets`;
+  `stream-foreign-capture`: the stall seen at the first tick after 90
+  frames, 2 register sets, back to the stream after the restart at 20 s).
+  A residual: a restart that lands between a fallback tick's read of
+  SUMS_CAPTURE and its capture write (about 16 ms of reads a tick) has the
+  free latch held again, and the host stays on the registers, still
+  solving, until the next restart (1 of 40 restart times in the test's
+  sweep). The same fallback turns `stream-held-prefix` (the HDL before
+  dedbc14) from no taps into taps from the registers after 3.3 s.
+- *A layout lost during a set discarded the held set as torn* (fixed in the
+  host). The register path compared SUMS_CAPTURE's whole word before and
+  after the 308 words (`HELD_EXTRA`), but its NO_LAYOUT bit follows the
+  layout while a capture is held: a good set was dropped and the warning
+  said the capture did not hold ("moved from frame N to N"). It compares
+  SEQ, VALID and ARMED only (`no_layout_moved` counts the sets kept).
 - *The verified reads cost 8 frames on the register path*: the first solved
   taps in force from frame 34 instead of 26 (VERIFICATION.md "Build 9
   residuals" measured +33-34).
