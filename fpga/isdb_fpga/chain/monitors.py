@@ -217,7 +217,12 @@ def ldpc_banks(m, mon, dec, K, alloc, ctx_open, ctx_drop, holds, free_mask, out_
     sync = m.d.sync
     hold = [ctx_open[c] & ~ctx_drop[c] for c in range(2)]
     committed = Signal(range(K + 2), name="mon_committed")
-    commit = dec.start & ~dec.begin & holds
+    # a `start` commits the context's open codeword also when the next
+    # codeword's `begin` shares the cycle (the decoder's ports allow it:
+    # the bank is committed and a new one allocated; the formal `banks`
+    # harness proves the accounting there, tools/monitor_begin_start.py
+    # shows the case)
+    commit = dec.start & holds
     sync += committed.eq(committed + commit - free_mask.any())
     mon.watch(m, "bank_accounting", popcount(alloc) != hold[0] + hold[1] + committed)
     alloc_d = Signal(K, name="mon_alloc_d")
