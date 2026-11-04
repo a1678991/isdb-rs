@@ -485,20 +485,22 @@ def _head_rows(V, sn, heads):
 
 def _chain(V, sn, stage, d):
     if stage == "sync":
-        _cplx(V, "input", sn, d["input"])
-        _cplx(V, "sync.r", sn, d["r"])
-        V.add("sync.nco_phase", sn, _col(d["nco_phase"], 1))
-        for k, n in enumerate(("cf_re", "cf_im", "cs_re", "cs_im", "acc")):
-            V.add(f"sync.per_symbol.{n}", sn, _col(d["per_symbol"], k + 1))
-        pr = d["periods"]
-        V.add("sync.period.peak", sn, _col(pr, 1))
-        V.add("sync.period.peak_pos", sn, _col(pr, 2))
-        V.add("sync.period.sum", sn, (r[3] | r[4] << 32 for r in pr))
-        V.add("sync.period.locked", sn, _col(pr, 5))
-        V.add("sync.period.offset", sn, _col(pr, 6))
-        V.add("sync.period.parity", sn, _col(pr, 7))
-        _head_rows(V, sn, d["heads"])
-        V.add("sync.carrier", sn, _col(d["carrier"], 1))
+        # the record and its `relock` record (stage 1 from another start)
+        for t in [d] + ([d["relock"]] if "relock" in d else []):
+            _cplx(V, "input", sn, t["input"])
+            _cplx(V, "sync.r", sn, t["r"])
+            V.add("sync.nco_phase", sn, _col(t["nco_phase"], 1))
+            for k, n in enumerate(("cf_re", "cf_im", "cs_re", "cs_im", "acc")):
+                V.add(f"sync.per_symbol.{n}", sn, _col(t["per_symbol"], k + 1))
+            pr = t["periods"]
+            V.add("sync.period.peak", sn, _col(pr, 1))
+            V.add("sync.period.peak_pos", sn, _col(pr, 2))
+            V.add("sync.period.sum", sn, (r[3] | r[4] << 32 for r in pr))
+            V.add("sync.period.locked", sn, _col(pr, 5))
+            V.add("sync.period.offset", sn, _col(pr, 6))
+            V.add("sync.period.parity", sn, _col(pr, 7))
+            _head_rows(V, sn, t["heads"])
+            V.add("sync.carrier", sn, _col(t["carrier"], 1))
     elif stage == "phase":
         _head_rows(V, sn, d["heads"])
         _cplx(V, "sync.r", sn, d["r"])
@@ -831,11 +833,6 @@ KNOWN_GAPS = {
                 "whole-chain sets' status blocks carry learned ones, status.n0): a stage set of "
                 "the frame after it needs a bench that runs frame D first",
     "demap.k": "always the reset K (K follows n0): the same input as demap.n0",
-    "sync.period.peak_pos": "chain-1's slot position is fixed by its lead (1 000): needs a "
-                            "set that relocks at another position (the whole-chain status "
-                            "blocks have 977, 1 000 and 3 152)",
-    "sync.carrier": "chain-1 ends one frame after the first frame head: one carrier update; "
-                    "needs a longer stage-1 set (status.carrier varies end to end)",
 }
 
 
