@@ -239,6 +239,22 @@ class TmccTest(unittest.TestCase):
         # same information bits and layout, 7 reported
         self.run_stage(COMPILED, flips=(1870, 2000, 5003, 7777, 9000, 11000, 11483))
 
+    @cxx
+    def test_noisy_frame(self):
+        # chain-4's `noisy` record (chain-12's frame 1): 254 TMCC symbols
+        # weak and wrong, so other soft bits and burst values, the word
+        # decoded in an iteration (the stub reports the model's count) and
+        # 5 errors in its decoder output that the BCH corrects
+        from isdb_fpga.chain.stages import run_tmcc
+
+        d = doc("4-tmcc").get("noisy")
+        if d is None:
+            self.skipTest("chain-4-tmcc has no noisy record (mise run fpga:vectors)")
+        self.assertGreater(d["ldpc_iterations"], 0)
+        self.assertEqual(d["bch_corrected"], len(d["errors"]))
+        what, bad = run_tmcc(d, COMPILED)
+        self.assertEqual(bad, [], "\n".join(bad[:5]))
+
 
 @needs("3-eq")
 @needs("4-tmcc")
@@ -379,6 +395,40 @@ class RealDecoderChainTest(unittest.TestCase):
         # 4's status has them and taps_from 2, frames 3 and 4 decode with
         # the n0, K and points learned on the frame before
         self.run_set("11-taps", None)
+
+    @cxx
+    @needs("12-fail")
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    def test_failures(self):
+        # chain-12: a missed and a stray frame marker and a TMCC word that
+        # needs an iteration and 5 BCH corrections (frame 1); a codeword of
+        # noise that stops at the limit, a converged slot the BCH cannot
+        # correct and an uncorrectable TMCC (frame 2, so frame 4 is not
+        # decoded): every block as the model's, its counters included
+        self.run_set("12-fail", None)
+
+    @cxx
+    @needs("12-fail")
+    @unittest.skipUnless(REAL, "FPGA_CHAIN_REAL=1")
+    @unittest.expectedFailure
+    def test_six_tmcc_corrections(self):
+        # An open defect chain-12 found (README "Integration"), not fixed
+        # here: frame 1's TMCC word with six bit errors in the decoder's
+        # output (chain-12's five and position 11 209), which its BCH
+        # corrects: the chain's TMCC block of frame 1 leaves with a wrong
+        # first word and stops after 13 words (a bad CRC), the result stream
+        # stalls and the decoder's result queue overflows (monitor
+        # dec.queue_overflow, then br.tag_overflow). One to five errors, at
+        # any position, pass; the TMCC stage alone (TmccTest) corrects 7.
+        # Only the health is checked (the comparison differs by design).
+        from isdb_fpga.chain.stages import run_chain_real
+
+        d = dict(doc("12-fail"))
+        d["bch_errors"] = []
+        d["tmcc_errors"] = [[1, sorted(d["tmcc_errors"][0][1] + [11209])]]
+        what, bad = run_chain_real(d, None, COMPILED, 2_600_000)
+        health = [b for b in bad if not b.startswith("block ")]
+        self.assertEqual(health, [], "\n".join(health[:8]))
 
 
 @needs("8-loss")
