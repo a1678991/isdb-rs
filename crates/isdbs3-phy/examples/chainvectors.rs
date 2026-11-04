@@ -101,6 +101,27 @@
 //!   none). An HDL never solves taps; the host does, so `host_writes` has
 //!   the write a host makes for them (TAPS, then TAPS_FROM = 2) four slots
 //!   into frame D + 1.
+//! - **12-fail**: the window of seed 12 (identity taps, no equaliser
+//!   solve) with failures. Frame 1: its head's FSync sent as !FSync (a
+//!   missed frame marker) and slot 10's !FSync as FSync (a stray one);
+//!   every 125th TMCC symbol weak and wrong (negated, a quarter of its
+//!   amplitude: the TMCC word needs an LDPC iteration); 5 bit errors in
+//!   its TMCC word's decoder output (data bits: the TMCC BCH corrects
+//!   them; six or more hang the HDL's finish stage, fpga/README.md
+//!   "Integration"). Frame 2 (D): the main symbols of modulation slot 30 replaced
+//!   by noise of the signal's power (codeword 24 stops at the limit, 14,
+//!   not converged); 13 bit errors in valid slot 60's decoder output (it
+//!   converged; the BCH cannot correct them: a decoding failure, checked);
+//!   13 in its TMCC word's (uncorrectable: frame 4 has no layout and is
+//!   not decoded; frame 3 is, from frame 1's corrected TMCC).
+//!   `bch_errors` as 10-bch's; `tmcc_errors`: `[frame, [positions]]`,
+//!   the positions in the TMCC word's hard decisions (the decoder's output
+//!   stream order, data bits at 1 870 …).
+//!
+//! chain-4-tmcc also carries `noisy`: chain-12's frame 1 as a stage-5
+//! record (the fields above, its `ldpc_iterations` > 0 and
+//! `bch_corrected` 5) with `errors`, the positions its TMCC word's decoder
+//! output had flipped (a stage bench flips them in its stub's output).
 
 use isdbs3_core::params::{FRAME_SYMBOLS, MOD_SLOT, SLOTS, SYMBOL_RATE};
 use isdbs3_phy::chain::frame::{FrameOut, Part, part};
@@ -122,6 +143,14 @@ const DETAIL: usize = 30_000;
 /// slot, so slot heads stay at indices ≡ `lead` mod 9 296). The sync locks
 /// within the first 4 periods and finds that head: frame 0 at 149 736.
 const CUT: usize = 104 * MOD_SLOT;
+
+/// Chain-12 makes every this many-th TMCC symbol of frame 1 weak and
+/// wrong (254 of the 31 680): the TMCC word needs an LDPC iteration and
+/// still converges within the HDL's limit. (With the HDL's decoder
+/// settings the TMCC word goes from one iteration to no convergence in
+/// 14 between 254 and 317 such symbols, or between Es/N0 5.0 and 4.95 dB
+/// of added noise: no setting here gave two to thirteen.)
+const TMCC_WEAK_EVERY: usize = 125;
 
 /// The window of a generated stream (at least `frames + 1` frames) the
 /// synthetic sets take as input: from [`CUT`] to 3 slots after the end of
@@ -236,14 +265,29 @@ fn hdl_ldpc() -> FixedLdpc {
     FixedLdpc::hdl()
 }
 
-/// The FPGA decoder with bit errors flipped in its output: in the
-/// `frame_call`-th call for 93/120 (one per decoded frame), word i of
-/// `errors` (a valid slot in slot order) gets its positions flipped.
+/// The FPGA decoder with bit errors flipped in its output. `slots`: `(n,
+/// w, positions)` flips word w (the w-th valid slot, in slot order) of
+/// the n-th 93/120 call (one per decoded frame, from 0); `tmcc`: `(n,
+/// positions)` flips the word of the n-th TMCC call (one per whole frame,
+/// from the first: the frame counter of a stream without restarts). A
+/// 61/120 call is taken for the TMCC's (the sets that inject have only
+/// 93/120 slots).
 struct Injected {
     inner: FixedLdpc,
-    call: usize,
-    frame_call: usize,
-    errors: Vec<(usize, Vec<usize>)>,
+    calls: [usize; 2],
+    slots: Vec<(usize, usize, Vec<usize>)>,
+    tmcc: Vec<(usize, Vec<usize>)>,
+}
+
+impl Injected {
+    fn new(slots: Vec<(usize, usize, Vec<usize>)>, tmcc: Vec<(usize, Vec<usize>)>) -> Self {
+        Self {
+            inner: hdl_ldpc(),
+            calls: [0; 2],
+            slots,
+            tmcc,
+        }
+    }
 }
 
 impl isdbs3_phy::chain::ldpc::LdpcDecoder for Injected {
@@ -254,16 +298,82 @@ impl isdbs3_phy::chain::ldpc::LdpcDecoder for Injected {
     ) -> Vec<(isdb_fec::ldpc::fixed::LaneResult, Vec<u8>)> {
         let mut out = self.inner.decode(code, words);
         if code.k() == 374 * 93 {
-            if self.call == self.frame_call {
-                for (w, pos) in &self.errors {
-                    for &p in pos {
-                        out[*w].1[p] ^= 1;
-                    }
+            for (_, w, pos) in self.slots.iter().filter(|e| e.0 == self.calls[0]) {
+                for &p in pos {
+                    out[*w].1[p] ^= 1;
                 }
             }
-            self.call += 1;
+            self.calls[0] += 1;
+        } else if code.k() == 374 * 61 {
+            for (_, pos) in self.tmcc.iter().filter(|e| e.0 == self.calls[1]) {
+                for &p in pos {
+                    out[0].1[p] ^= 1;
+                }
+            }
+            self.calls[1] += 1;
         }
         out
+    }
+}
+
+/// `count` distinct positions in `lo..hi`, sorted, from the xorshift state
+/// `rng`.
+fn positions(rng: &mut u64, count: usize, lo: usize, hi: usize) -> Vec<usize> {
+    let mut pos: Vec<usize> = Vec::new();
+    while pos.len() < count {
+        *rng ^= *rng << 13;
+        *rng ^= *rng >> 7;
+        *rng ^= *rng << 17;
+        let p = lo + usize::try_from(*rng % (hi - lo) as u64).unwrap();
+        if !pos.contains(&p) {
+            pos.push(p);
+        }
+    }
+    pos.sort_unstable();
+    pos
+}
+
+/// `count` positions in a BCH word of `n` bits the BCH decoder cannot
+/// correct (a decoding failure, not a miscorrection: the decoder's result
+/// depends on the error pattern only, so a zero word shows it).
+fn uncorrectable(rng: &mut u64, count: usize, n: usize) -> Vec<usize> {
+    loop {
+        let pos = positions(rng, count, 0, n);
+        let mut w = vec![0u8; n];
+        for &p in &pos {
+            w[p] = 1;
+        }
+        if isdb_fec::bch::decode(&mut w).is_err() {
+            return pos;
+        }
+    }
+}
+
+/// Gaussian values (xorshift64, Box–Muller), as chain-9's noise.
+struct Gauss(u64);
+
+impl Gauss {
+    fn next(&mut self) -> f64 {
+        let mut unif = || {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            // 53 bits of the state as a fraction in (0, 1]
+            #[allow(clippy::cast_precision_loss)]
+            let u = ((self.0 >> 11) + 1) as f64 / (1u64 << 53) as f64;
+            u
+        };
+        let (a, b) = (unif(), unif());
+        (-2.0 * a.ln()).sqrt() * (std::f64::consts::TAU * b).cos()
+    }
+
+    /// `v` quantised as the input (`bits` wide, rounded and clamped).
+    fn quantise(v: f64, bits: u8) -> i8 {
+        let lim = f64::from((1i32 << (bits - 1)) - 1);
+        // rounded and clamped to the n-bit range, so the cast is exact
+        #[allow(clippy::cast_possible_truncation)]
+        let q = v.round().clamp(-lim - 1.0, lim) as i8;
+        q
     }
 }
 
@@ -550,7 +660,11 @@ fn stage3(r: &Run) -> Value {
 }
 
 fn stage4(r: &Run) -> Value {
-    let f = pick(r);
+    tmcc_record(pick(r))
+}
+
+/// Stage 5's values of whole frame `f` (traced).
+fn tmcc_record(f: &FrameOut) -> Value {
     let tr = f.trace.as_ref().unwrap();
     let mut z = Vec::new();
     let mut js = Vec::new();
@@ -708,7 +822,9 @@ fn stage6(r: &Run) -> Value {
     v
 }
 
-fn write_all(dir: &Path, prefix: &str, source: &Value, r: &Run) {
+/// The stage sets 1–6 of run `r`; `noisy`: another frame's stage-5
+/// record for chain-4 (module docs: 4-tmcc).
+fn write_all(dir: &Path, prefix: &str, source: &Value, r: &Run, noisy: Option<Value>) {
     let with = |mut v: Value| {
         v["source"] = source.clone();
         v
@@ -716,7 +832,11 @@ fn write_all(dir: &Path, prefix: &str, source: &Value, r: &Run) {
     write(dir, &format!("{prefix}1-sync.json"), with(stage1(r)));
     write(dir, &format!("{prefix}2-phase.json"), with(stage2(r)));
     write(dir, &format!("{prefix}3-eq.json"), with(stage3(r)));
-    write(dir, &format!("{prefix}4-tmcc.json"), with(stage4(r)));
+    let mut t = stage4(r);
+    if let Some(n) = noisy {
+        t["noisy"] = n;
+    }
+    write(dir, &format!("{prefix}4-tmcc.json"), with(t));
     write(dir, &format!("{prefix}5-demap.json"), with(stage5(r)));
     write(dir, &format!("{prefix}6-chain.json"), with(stage6(r)));
 }
@@ -751,6 +871,7 @@ fn main() {
             "chain-rec-",
             &json!({"recording": words, "seconds": secs}),
             &r,
+            None,
         );
         return;
     }
@@ -783,6 +904,7 @@ fn main() {
             "amplitude": o.amplitude, "bits": o.bits, "events": what,
             "ldpc": format!("layered {HDL_STEP}, limit {HDL_MAX_ITER}, offset {HDL_OFFSET}")}})
     };
+    let (fail, noisy) = fail_set(&o, &src);
     write_all(
         &dir,
         "chain-",
@@ -801,6 +923,7 @@ fn main() {
             }
         }),
         &r,
+        Some(noisy),
     );
     let mut v = stage6(&hdl);
     v["source"] = src(7, "chain-6's input");
@@ -813,6 +936,119 @@ fn main() {
         v
     });
     write_taps(&dir, &o, &src);
+    write(&dir, "chain-12-fail.json", fail);
+}
+
+/// The set with failures (module docs: 12-fail) and the noisy TMCC
+/// frame's stage-5 record for chain-4.
+fn fail_set(o: &SynthOptions, src: &dyn Fn(u64, &str) -> Value) -> (Value, Value) {
+    use isdbs3_core::tmcc::{DATA_BITS, NULL_HEAD};
+    let o = SynthOptions {
+        seed: 12,
+        ..o.clone()
+    };
+    let s = generate(&o, 7);
+    let mut input = window(&s.symbols, &o, 6);
+    // generated frame g starts at input index base(g); frame counter g − 1
+    let base = |g: usize| o.lead + g * FRAME_SYMBOLS - CUT;
+    let lim = (1i16 << (o.bits - 1)) - 1;
+    let neg = |v: i8| i8::try_from((-i16::from(v)).clamp(-lim - 1, lim)).unwrap();
+    // frame 1: its head's FSync sent as !FSync (a missed marker) and slot
+    // 10's !FSync as FSync (a stray one), each the 24 symbols negated
+    for at in [base(2), base(2) + 10 * MOD_SLOT] {
+        for x in &mut input[at..at + 24] {
+            *x = [neg(x[0]), neg(x[1])];
+        }
+    }
+    // frame 1: every TMCC_WEAK_EVERY-th TMCC symbol made weak and wrong
+    // (negated, a quarter of its amplitude), so its TMCC word needs LDPC
+    // iterations
+    let every = TMCC_WEAK_EVERY;
+    let weak = |v: i8| i8::try_from((-i16::from(v) + 2).div_euclid(4)).unwrap();
+    for (n, (k, j)) in (0..SLOTS)
+        .flat_map(|k| isdbs3_phy::tmcc::tmcc_offsets().map(move |j| (k, j)))
+        .enumerate()
+    {
+        if n % every == 0 {
+            let x = &mut input[base(2) + k * MOD_SLOT + j];
+            *x = [weak(x[0]), weak(x[1])];
+        }
+    }
+    let mut g = Gauss(0x5DEE_CE66_D1CE_4E5B);
+    let rms = o.amplitude / std::f64::consts::SQRT_2;
+    // frame 2 (D): the main symbols of modulation slot 30 replaced by
+    // Gaussian noise of the signal's power: codeword 24 (slot 30) fails
+    for j in 0..MOD_SLOT {
+        if let Part::Main(_) = part(j) {
+            let x = &mut input[base(3) + 30 * MOD_SLOT + j];
+            *x = [
+                Gauss::quantise(g.next() * rms, o.bits),
+                Gauss::quantise(g.next() * rms, o.bits),
+            ];
+        }
+    }
+    // decoder output errors: frame 1's TMCC 5 (corrected: of the 6 drawn
+    // the first 5, as six or more corrections of a TMCC word hang the HDL's
+    // finish stage, fpga/README.md "Integration"), frame 2's TMCC 13
+    // (uncorrectable: frame 4 gets no layout), frame 2's valid slot 60 13
+    // (converged, BCH fails)
+    let mut rng: u64 = 0x1234_5678_9ABC_DEF1;
+    let mut t1: Vec<usize> = positions(&mut rng, 6, NULL_HEAD, NULL_HEAD + DATA_BITS);
+    t1.truncate(5);
+    let t2: Vec<usize> = uncorrectable(&mut rng, 13, DATA_BITS)
+        .into_iter()
+        .map(|p| p + NULL_HEAD)
+        .collect();
+    // a 93/120 slot's BCH word: header, data and parity, the LDPC's k
+    // without the 6 stuffing bits
+    let s60 = uncorrectable(&mut rng, 13, 374 * 93 - 6);
+    let inj = Injected::new(
+        vec![(0, 60, s60.clone())],
+        vec![(1, t1.clone()), (2, t2.clone())],
+    );
+    let opt = ChainOptions {
+        trace: true,
+        eq_every: 0,
+        ..ChainOptions::default()
+    };
+    let r = run_chain_with(input, Vec::new(), Chain::with_ldpc(opt, Box::new(inj)));
+    let fr = |n: u32| r.frames.iter().find(|f| f.frame == n).expect("whole frame");
+    let (f1, f2, f3, f4) = (fr(1), fr(2), fr(3), fr(4));
+    assert!(f1.status.sync.missed_markers >= 1 && f1.status.sync.stray_markers >= 1);
+    let it = f1.tmcc.ldpc_iterations.expect("frame 1's TMCC converges");
+    assert!(it > 0, "frame 1's TMCC needs iterations");
+    assert_eq!(
+        f1.tmcc.bch_corrected,
+        Some(t1.len()),
+        "frame 1's TMCC corrected"
+    );
+    assert!(f2.tmcc.bch_corrected.is_none(), "frame 2's TMCC fails");
+    let valid: Vec<&isdbs3_phy::chain::frame::SlotOut> =
+        f2.slots.iter().filter(|x| !x.dummy).collect();
+    assert!(!valid[24].converged, "codeword 24 fails");
+    assert_eq!(valid[24].ldpc_iterations, HDL_MAX_ITER);
+    assert!(valid[60].converged && valid[60].bch_corrected.is_none());
+    assert!(
+        !f3.slots.is_empty(),
+        "frame 3 decoded (frame 1's corrected TMCC)"
+    );
+    assert!(
+        f4.slots.is_empty(),
+        "frame 4 not decoded (frame 2's TMCC failed)"
+    );
+    let mut v = stage6(&r);
+    v["bch_errors"] = json!([[2, valid[60].slot, s60]]);
+    v["tmcc_errors"] = json!([[1, t1], [2, t2]]);
+    v["source"] = src(
+        12,
+        "frame 1: a missed and a stray frame marker, 254 weak and wrong TMCC symbols, 5 errors in its \
+         TMCC decoder output; frame 2: slot 30's main symbols noise, 13 errors in valid slot 60's \
+         and in its TMCC's decoder output",
+    );
+    let mut noisy = tmcc_record(f1);
+    noisy["errors"] = json!(t1);
+    noisy["source"] = json!("chain-12-fail's frame 1");
+    (v, noisy)
 }
 
 /// Every decoded frame of `r` carries what `s` sent in it, and at least
@@ -889,33 +1125,21 @@ fn write_bch(
     let k = 374 * 93;
     let counts = [12usize, 1, 7, 12, 3, 12, 9, 12];
     let mut rng: u64 = 0x2545_F491_4F6C_DD1D;
-    let mut errors = Vec::new();
-    for (i, &c) in counts.iter().enumerate() {
-        let mut pos: Vec<usize> = Vec::new();
-        while pos.len() < c {
-            rng ^= rng << 13;
-            rng ^= rng >> 7;
-            rng ^= rng << 17;
-            let p = usize::try_from(rng % (k as u64 - 6)).unwrap();
-            if !pos.contains(&p) {
-                pos.push(p);
-            }
-        }
-        pos.sort_unstable();
-        errors.push((10 + i, pos));
-    }
+    let errors: Vec<(usize, Vec<usize>)> = counts
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| (10 + i, positions(&mut rng, c, 0, k - 6)))
+        .collect();
     let opt = ChainOptions {
         trace: true,
         eq_every: 1,
         initial_taps: taps,
         ..ChainOptions::default()
     };
-    let inj = Injected {
-        inner: hdl_ldpc(),
-        call: 0,
-        frame_call: 0,
-        errors: errors.clone(),
-    };
+    let inj = Injected::new(
+        errors.iter().map(|(w, p)| (0, *w, p.clone())).collect(),
+        Vec::new(),
+    );
     let r = run_chain_with(
         symbols.to_vec(),
         Vec::new(),
