@@ -524,7 +524,9 @@ STD-B44) is received to TLV streams.
   has, its input FIFO overflows and those slots fail (fpga/README.md
   "Integration"; `test_apsk32_after_the_tmcc_burst`, an expected
   failure). `tools/real_blocks.py` prints the blocks a real-decoder run
-  got wrong.
+  got wrong. `ldpc-14-49-layered34` … `ldpc-21-105-layered34`: the eight
+  B44 rates no LDPC set had (49, 61 unshortened, 73, 81, 89, 97, 101,
+  105/120) at the HDL's step 34, bit-exact on the decoder.
 - `fpga`: the transmit block's follow-ups (docs/plans/isdbs-next.md item
   5; not yet in a built image). Prefetch while selected: the block polls
   the DMA from SELECT, drops the underflow answers before RUN and holds

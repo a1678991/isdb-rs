@@ -1626,7 +1626,11 @@ variable with edges e₁ … e_m in a step: sat(t₁ + r₁,new + Σᵢ₌₂
   same source as the model;
 - `ldpc-1-93-seq` (sequential schedule, limit 50), `ldpc-2-93-layered34`
   and `ldpc-3-93-layered187` (limit 12), `ldpc-4-41-layered34` and
-  `ldpc-5-109-layered34` (the extreme rates), `ldpc-6-tmcc-layered34`
+  `ldpc-5-109-layered34` (the extreme rates), `ldpc-14-49-layered34` …
+  `ldpc-21-105-layered34` (the other eight rates, 49, 61 unshortened,
+  73, 81, 89, 97, 101 and 105/120: four codewords each, two easy, one
+  near the threshold, one failing at the limit 12; with sets 4–6 every
+  B44 code at the HDL's step), `ldpc-6-tmcc-layered34`
   (the shortened 61/120 TMCC code: `"shortened": {"info_start": 1870,
   "info_len": 9614}`, the known zeros carried as +127),
   `ldpc-7-93-stress-layered34` (a word valid at iteration 0, all-zero
