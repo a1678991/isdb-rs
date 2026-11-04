@@ -3,12 +3,13 @@ one bench through the stream driver's whole protocol (backpressure,
 gaps, two output groups, signed and 64-bit ports, a memory, set / get /
 tick / cycles) on the Python simulator, CXXRTL and Verilator, every
 value the same; a vectors set (chain-2-phase) on both compiled backends,
-every record the same; the Verilator adapter's port list. A backend that
-is not available here is skipped (`simx.available()`,
+every record the same; the cache key under one hash seed; the Verilator adapter's port list.
+A backend that is not available here is skipped (`simx.available()`,
 `simv.available()`)."""
 
 import os
 import random
+import subprocess
 import sys
 import unittest
 
@@ -157,6 +158,31 @@ class EngineEquivalenceTest(unittest.TestCase):
             self.assertEqual(bad, [], f"{backend}: " + "\n".join(bad[:5]))
         self.assertEqual(sum(len(r) for r in out["cxxrtl"]), 18592)
         self.assertEqual(out["verilator"], out["cxxrtl"])
+
+
+KEY = """
+import hashlib, sys
+sys.path[:0] = {path!r}
+from amaranth.back import rtlil
+from sim_hashseed import design
+from isdb_fpga.chain import simx
+d, ports = design("three")
+il = rtlil.convert(d, name="top", ports=list(ports.values()))
+print(hashlib.sha256(simx._Cxx._key(il)).hexdigest())
+"""
+
+
+class HashSeedTest(unittest.TestCase):
+    def test_one_seed_one_key(self):
+        # what PYTHONHASHSEED=0 in the fpga:* tasks relies on: a design of
+        # three clock domains has one key in every new process
+        fpga = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        code = KEY.format(path=[fpga, os.path.join(fpga, "tools")])
+        env = dict(os.environ, PYTHONHASHSEED="0")
+        keys = {subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+                               check=True).stdout for _ in range(2)}
+        self.assertEqual(len(keys), 1, keys)
+        self.assertRegex(keys.pop(), r"^[0-9a-f]{64}\n$")
 
 
 class AdapterTest(unittest.TestCase):

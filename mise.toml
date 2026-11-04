@@ -213,13 +213,24 @@ run = [
 description = "simulate the FPGA front end, transmit block, LDPC decoder and the ISDB-S3 chain stages against their models, bit for bit"
 depends = ["fpga:vectors", "fpga:tx-vectors", "fpga:ldpc-vectors"]
 dir = "fpga"
-env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days" }
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days", PYTHONHASHSEED = "0" }
+# PYTHONHASHSEED: Amaranth collects a design's implicit clock domains in
+# sets, so the RTLIL's port order and the compiled library's key follow the
+# hash seed (fpga/tools/sim_hashseed.py). One seed: one library per design
+# for the test workers, later runs and CI. A real-decoder run:
+# FPGA_CHAIN_REAL=1 mise run fpga:test (fpga/README.md).
 # pytest runs the unittest classes on every core (xdist): the suite is a
 # set of independent single-threaded simulations. On four cores of the
 # 7950X with Verilator installed (the compiled default, fpga/README.md
 # "Simulation backends"): 5 min with every compiled model built, 2.7 min
 # with them cached; FPGA_SIM=cxxrtl: 8 and 4.4 min (without S = 187).
 run = "uv run --locked pytest -q -n auto --dist worksteal tests"
+
+[tasks."fpga:test-quick"]
+description = "seconds, no vectors: the compiled stream driver on every backend, the LDPC bridge's clock crossing, the CRC (a smoke test, not the regression suite)"
+dir = "fpga"
+env = { UV_DEFAULT_INDEX = "{{ get_env(name='UV_DEFAULT_INDEX', default='https://pypi.org/simple') }}", UV_EXCLUDE_NEWER = "7 days", PYTHONHASHSEED = "0" }
+run = "uv run --locked pytest -q tests/test_simx.py tests/test_chain.py::BridgeTest tests/test_isdb_fpga.py::CrcTest"
 
 [tasks."fpga:formal"]
 description = "bounded model checks and k-induction proofs of the LDPC bank allocator, the Slots packer's sequence numbers and the chain's frame boundaries (SymbiYosys from the YoWASP wheels; tests/test_formal.py runs them in fpga:test)"
