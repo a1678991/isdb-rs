@@ -3,15 +3,19 @@ one bench through the stream driver's whole protocol (backpressure,
 gaps, two output groups, signed and 64-bit ports, a memory, set / get /
 tick / cycles) on the Python simulator, CXXRTL and Verilator, every
 value the same; a vectors set (chain-2-phase) on both compiled backends,
-every record the same; the cache key under one hash seed; the Verilator adapter's port list.
+every record the same; `FPGA_SIM_PROGRESS`'s chunks against one native
+call; the cache key under one hash seed; the Verilator adapter's port list.
 A backend that is not available here is skipped (`simx.available()`,
 `simv.available()`)."""
 
+import contextlib
+import io
 import os
 import random
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 from amaranth.hdl import Elaboratable, Module, Signal, signed
 from amaranth.lib.memory import Memory
@@ -82,7 +86,7 @@ class Bench(Elaboratable):
                                               "tick8")}
 
 
-def run_bench(backend, n=3000, limit=0):
+def run_bench(backend, n=3000, limit=0, tail=17):
     """Every value the engine hands back, in order."""
     rng = random.Random(7)
     recs = [(rng.randrange(-(1 << 39), 1 << 39), rng.randrange(1 << 63)) for _ in range(n)]
@@ -94,7 +98,7 @@ def run_bench(backend, n=3000, limit=0):
     g8 = e.group("tick8", ["free", "count"])
     e.set("limit", limit)
     e.tick(5)
-    e.run("valid", "ready", ["word", "wide"], recs, tail=17, gaps=gaps)
+    e.run("valid", "ready", ["word", "wide"], recs, tail=tail, gaps=gaps)
     e.tick(3)
     out = (e.read(g), e.read(g8), [e.get(p) for p in b.ports()], e.cycles())
     e.close()
@@ -158,6 +162,125 @@ class EngineEquivalenceTest(unittest.TestCase):
             self.assertEqual(bad, [], f"{backend}: " + "\n".join(bad[:5]))
         self.assertEqual(sum(len(r) for r in out["cxxrtl"]), 18592)
         self.assertEqual(out["verilator"], out["cxxrtl"])
+
+
+class ClockBench(Elaboratable):
+    """A stream sink in `sync` with a counter in each of the engine's faster
+    clocks, sampled with every record: where the clocks' edges fall against
+    the records."""
+
+    def __init__(self):
+        self.valid = Signal()
+        self.ready = Signal()
+        self.word = Signal(16)
+        self.count = Signal(16)
+        self.total = Signal(32)
+        self.free = Signal(2)
+        self.fast = Signal(32)
+        self.ldpc = Signal(32)
+        self.out = Signal()
+
+    def elaborate(self, platform):
+        m = Module()
+        m.d.comb += self.ready.eq(self.free != 3)
+        m.d.sync += [self.free.eq(self.free + 1), self.out.eq(self.valid & self.ready)]
+        with m.If(self.valid & self.ready):
+            m.d.sync += [self.count.eq(self.count + 1), self.total.eq(self.total + self.word)]
+        m.d.fast += self.fast.eq(self.fast + 1)
+        m.d.ldpc += self.ldpc.eq(self.ldpc + 1)
+        return m
+
+    def ports(self):
+        return {n: getattr(self, n) for n in ("valid", "ready", "word", "count", "total", "fast",
+                                              "ldpc", "out")}
+
+
+def run_clocks(backend, n, tail):
+    """The three clocks' trace, the ports, the cycles, what `run` returned
+    (the Python simulator's `run` is queued: None)."""
+    b = ClockBench()
+    e = simx.engine(b, b.ports(), backend, tag="simx-clocks")
+    g = e.group("out", ["count", "total", "fast", "ldpc"])
+    c = e.run("valid", "ready", ["word"], [(i % 251,) for i in range(n)], tail=tail,
+              gaps=[i % 3 for i in range(n)])
+    out = (e.read(g), [e.get(p) for p in b.ports()], e.cycles(), c)
+    e.close()
+    return out
+
+
+def chunked(chunk):
+    """FPGA_SIM_PROGRESS on, `chunk` records or drain cycles per native call."""
+    return patch.object(simx, "PROGRESS_CHUNK", chunk), patch.dict(os.environ, FPGA_SIM_PROGRESS="1")
+
+
+class ProgressTest(unittest.TestCase):
+    """`FPGA_SIM_PROGRESS=1` on each compiled backend: the same clock
+    sequence as one native call, chunk boundaries inside the records (a
+    `ready` low across one), the gaps and the drain."""
+
+    def compiled(self):
+        return [b for b in ("cxxrtl", "verilator") if BACKENDS[b]()]
+
+    def test_chunks_keep_every_value(self):
+        for backend in self.compiled():
+            with self.subTest(backend=backend):
+                with patch.dict(os.environ, FPGA_SIM_PROGRESS="0"):
+                    ref = run_bench(backend, tail=2500)
+                for chunk in (7, 1000):
+                    out = io.StringIO()
+                    a, b = chunked(chunk)
+                    with a, b, contextlib.redirect_stderr(out):
+                        got = run_bench(backend, tail=2500)
+                    for i, what in enumerate(("records", "tick8 records", "ports", "cycles")):
+                        self.assertEqual(got[i], ref[i], f"chunk {chunk}: {what} differ")
+                    self.assertIn("simx-bench: elaborating", out.getvalue())
+                    self.assertIn("simx-bench: cache hit", out.getvalue())
+                    self.assertIn("run: 3000/3000 records, 2500/2500 drain cycles", out.getvalue())
+
+    def test_three_clocks(self):
+        for backend in self.compiled():
+            with self.subTest(backend=backend):
+                with patch.dict(os.environ, FPGA_SIM_PROGRESS="0"):
+                    ref = run_clocks(backend, 53, 31)
+                    self.assertEqual(ref[:3], run_clocks("pysim", 53, 31)[:3])
+                self.assertEqual(ref[3], ref[2])
+                a, b = chunked(5)
+                with a, b, contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(run_clocks(backend, 53, 31), ref)
+
+    def test_no_records(self):
+        for backend in self.compiled():
+            with self.subTest(backend=backend):
+                with patch.dict(os.environ, FPGA_SIM_PROGRESS="0"):
+                    ref = run_clocks(backend, 0, 31)
+                a, b = chunked(5)
+                with a, b, contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(run_clocks(backend, 0, 31), ref)
+                self.assertEqual(ref[2], 31)
+
+    def stalled(self, backend, limit):
+        """The stalled record's index in the whole run, and the message."""
+        b = Bench()
+        e = simx.engine(b, b.ports(), backend, tag="simx-bench")
+        e.set("limit", limit)
+        e.stall_limit = 3
+        try:
+            with self.assertRaises(RuntimeError) as err:
+                e.run("valid", "ready", ["word", "wide"], [(1, 1)] * 40)
+            return e.stalled, str(err.exception)
+        finally:
+            e.close()
+
+    def test_stall_index_is_the_whole_runs(self):
+        for backend in self.compiled():
+            with self.subTest(backend=backend):
+                # record 25, inside the fourth chunk of seven
+                with patch.dict(os.environ, FPGA_SIM_PROGRESS="0"):
+                    ref = self.stalled(backend, 25)
+                self.assertEqual(ref[0], 25)
+                a, b = chunked(7)
+                with a, b, contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(self.stalled(backend, 25), ref)
 
 
 KEY = """
