@@ -176,6 +176,20 @@ class _Cxx:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 if not os.path.exists(so):
                     self._build(il, so)
+        self._attach(so, ports, clocks)
+
+    @classmethod
+    def from_library(cls, so, ports, clocks=CLOCKS):
+        """An engine on a library already built, without elaborating the
+        design: `ports` name its top-level ports (`synth/chain_simspeed.py`
+        opens a library per repeat and compiler). Every compiled backend's
+        library has the harness's interface."""
+        e = cls.__new__(cls)
+        e._attach(so, ports, clocks)
+        return e
+
+    def _attach(self, so, ports, clocks):
+        self.so = so
         lib = ctypes.CDLL(so)
         lib.h_create.restype = ctypes.c_void_p
         lib.h_port.restype = ctypes.c_int
