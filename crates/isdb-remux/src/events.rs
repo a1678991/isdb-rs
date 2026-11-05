@@ -30,7 +30,7 @@ use crate::timing::{Clock, au_ntp};
 use isdb_mkv::Chapter;
 use isdb_mmt::desc::Descriptor;
 use isdb_mmt::message::TableBytes;
-use isdb_mmt::table::{Eit, Mpt};
+use isdb_mmt::table::{Eit, Mpt, Sdt};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
@@ -44,7 +44,7 @@ const JST_OFFSET: i64 = 9 * 3600;
 /// How long after an event's scheduled time a switch of the stream counts as
 /// its own (seconds). The recordings' are 2.1–2.6 s after it; other MPT versions
 /// come a minute away.
-const WINDOW: u64 = 10;
+pub(crate) const WINDOW: u64 = 10;
 
 /// What the tables say of one event.
 #[derive(Debug, Clone)]
@@ -74,6 +74,24 @@ pub struct Schedule {
     versions_in_force: BTreeMap<u16, Vec<u64>>,
     /// Per service, where a new coded video sequence starts (NTP timestamps).
     sequences: BTreeMap<u16, Vec<u64>>,
+    /// Per service, the MH-service descriptor's provider and service names.
+    names: BTreeMap<u16, (String, String)>,
+}
+
+/// An event in the recording, placed on the timeline and clipped to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aired {
+    /// Where it starts (unwrapped PTS).
+    pub start: i64,
+    /// Where it stops (unwrapped PTS).
+    pub stop: i64,
+    /// Its name.
+    pub title: Option<String>,
+    /// The name's ISO 639-2 language.
+    pub language: Option<String>,
+    /// Its start is the scheduled time, no switch of the stream having been seen
+    /// (not one clipped to the recording's start).
+    pub scheduled: bool,
 }
 
 /// The chapters of a service.
@@ -99,8 +117,33 @@ impl Schedule {
         match t.bytes.first() {
             Some(0x20) if t.message_id == 0 => self.mpt(t),
             Some(0x8B..=0x9B) => self.eit(t),
+            Some(0x9F | 0xA0) => self.sdt(t),
             _ => {}
         }
+    }
+
+    /// An MH-SDT section (9Fh actual, A0h other): the services' names.
+    fn sdt(&mut self, t: &TableBytes) {
+        let Ok(sdt) = Sdt::parse(&t.bytes) else {
+            return;
+        };
+        for service in &sdt.services {
+            if let Some((_, provider, name)) = service.service() {
+                self.names
+                    .insert(service.service_id, (provider.to_owned(), name.to_owned()));
+            }
+        }
+    }
+
+    /// The name of the broadcaster of `service`: the MH-service descriptor's
+    /// provider name, else its service name, when they are not blank.
+    #[must_use]
+    pub fn broadcaster(&self, service: u16) -> Option<&str> {
+        let (provider, name) = self.names.get(&service)?;
+        [provider, name]
+            .into_iter()
+            .map(|n| n.trim())
+            .find(|n| !n.is_empty())
     }
 
     /// A new coded video sequence of `service` starts at the NTP timestamp
@@ -194,8 +237,25 @@ impl Schedule {
     /// it, with `clock` placing the event's time and the stream's switches.
     #[must_use]
     pub fn chapters(&self, service: u16, clock: Clock, origin: i64, end: i64) -> Chapters {
+        let mut chapters = Chapters::default();
+        for e in self.aired(service, clock, origin, end) {
+            chapters.scheduled += usize::from(e.scheduled);
+            chapters.list.push(Chapter {
+                start_ns: nanoseconds(e.start - origin),
+                end_ns: Some(nanoseconds(e.stop - origin)),
+                title: e.title,
+                language: e.language,
+            });
+        }
+        chapters
+    }
+
+    /// The events of `service` in the span from the unwrapped PTS `origin` to
+    /// `end`, in time order and clipped to it, placed as a chapter is.
+    #[must_use]
+    pub fn aired(&self, service: u16, clock: Clock, origin: i64, end: i64) -> Vec<Aired> {
         let Some(events) = self.services.get(&service) else {
-            return Chapters::default();
+            return Vec::new();
         };
         let mut placed: Vec<Placed> = events
             .values()
@@ -224,7 +284,7 @@ impl Schedule {
                 .map_or((scheduled, false), |ntp| (clock.ticks_of(ntp), true))
         };
         let starts: Vec<(i64, bool)> = kept.iter().map(|p| real(p.entry.start, p.start)).collect();
-        let mut chapters = Chapters::default();
+        let mut aired = Vec::new();
         for (i, p) in kept.iter().enumerate() {
             let (at, switched) = starts[i];
             let start = at.max(origin);
@@ -237,18 +297,17 @@ impl Schedule {
                 .into_iter()
                 .flatten()
                 .fold(end, std::cmp::Ord::min);
-            if stop <= start {
-                continue;
+            if stop > start {
+                aired.push(Aired {
+                    start,
+                    stop,
+                    title: p.entry.name.clone(),
+                    language: p.entry.language.clone(),
+                    scheduled: !switched && at > origin,
+                });
             }
-            chapters.scheduled += usize::from(!switched && at > origin);
-            chapters.list.push(Chapter {
-                start_ns: nanoseconds(start - origin),
-                end_ns: Some(nanoseconds(stop - origin)),
-                title: p.entry.name.clone(),
-                language: p.entry.language.clone(),
-            });
         }
-        chapters
+        aired
     }
 }
 

@@ -2892,7 +2892,7 @@ Reading the MH-EIT costs 27.9, 28.2 s against 26.5, 26.9 s user on a run of 0x00
 (two runs each; measured before the MPT versions were added, which parse only on a
 new version).
 
-**Known defect, not fixed.** At 0x0065's 03:23 change the stream's structure changes:
+**A one-file run's defect.** At 0x0065's 03:23 change the stream's structure changes:
 `0xf310` goes from 5.1 (`AudioSpecificConfig` 11b0) to stereo (1190) at +2.873 s, the
 stereo asset `0xf311` ends at about +2.25 s, and the video gets an end of sequence
 and a new SPS, the descriptors going from HLG to BT.2020. The track keeps its first
@@ -2901,6 +2901,37 @@ later frame of `0xf310`, as does mpv, and the file's last 12 minutes have no aud
 can play. The run warns. ffprobe and ffmpeg also report "Invalid length … > 0x10000000
 for element with ID 0x465C": a data broadcasting attachment over their 256 MB limit
 (297 MB and more; mpv skips one of 640 MiB). The rest of the file reads past it.
+
+## Matroska `--split-events`, offline (2026-11-05)
+
+`isdb-remux --mkv --split-events` on the same three recordings, checked with
+`tools/remux-split-check.sh`: 9 files, none cut at a scheduled time.
+
+| Service | File start (JST) and event | Video transfer | Audio | Pictures | Audio frames |
+|---|---|---|---|---|---|
+| 0x0065 | 02:21:30.946, event 1 | HLG | 5.1, stereo | 8 891 | 14 011 |
+| | 02:24:02.698, event 2 | HLG | 5.1, stereo | 212 105 | 331 839 |
+| | 03:23:02.250, event 3 | BT.2020 | stereo | 44 384 | 34 664 |
+| 0x00a1 | 02:21:31.432, event 1 | HLG | stereo | 138 315 | 108 247 |
+| | 03:00:02.808, event 2 | HLG | stereo | 3 577 | 2 809 |
+| | 03:01:02.734, no event | HLG | stereo | 123 461 | 96 550 |
+| 0x00b5 | 02:21:31.385, event 1 | HLG | stereo | 30 459 | 23 880 |
+| | 02:30:02.829, event 2 | HLG | stereo | 107 881 | 84 374 |
+| | 03:00:02.894, event 3 | HLG | stereo | 127 064 | 99 357 |
+
+- **Conservation:** each audio frame of a run is in one file (380 514, 207 606 and 207 611).
+  Pictures left out, against the run's report: 7, 14 and 14, the RASL pictures at each CRA
+  cut; none at the IDR cut.
+- **Decoding:** ffmpeg logs no error on any file's whole audio, including the stereo that
+  a one-file run cannot decode, nor on each file's first and last 4 s of video. The rest of
+  the video was not decoded. mpv logged no error on 30 pictures of 0x0065's third file (its
+  exit status was not captured).
+- **Names:** the start times agree with the first video PTS in each file and the chapter
+  table above (the first file's picture is 0.660 s after its audio).
+- **Unit tests only:** a file's data items being those that arrived in its span, and a
+  caption crossing a cut being clipped; 0x0065's captions all fall in its first file.
+- **Default directory and overwrite:** on a 400 MB slice, a run without `-o` writes next
+  to the input; a second run writes `-2` and leaves the first file alone.
 
 ## Open questions
 

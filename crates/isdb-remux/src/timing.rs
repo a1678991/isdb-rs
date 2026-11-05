@@ -87,6 +87,18 @@ impl Clock {
         self.ticks + (rounded(from + distance) - rounded(from)) as i64
     }
 
+    /// The NTP timestamp of an unwrapped PTS.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "onto the NTP timestamp's own 64-bit ring"
+    )]
+    pub fn ntp_of(self, ticks: i64) -> u64 {
+        let distance = (i128::from(ticks - self.ticks) << 32) / TS_HZ;
+        self.ntp.wrapping_add(distance as u64)
+    }
+
     /// The unwrapped PTS of the whole NTP second `seconds`.
     #[must_use]
     pub fn ticks_at(self, seconds: u32) -> i64 {
@@ -287,6 +299,17 @@ mod tests {
             c.ticks_at(4_001_996_504 + 172_800),
             1_000 - 45_000 + 172_800 * 90_000
         );
+    }
+
+    #[test]
+    fn clock_gives_the_ntp_time_of_a_tick() {
+        let c = Clock {
+            ticks: 1_000,
+            ntp: 7u64 << 32,
+        };
+        assert_eq!(c.ntp_of(1_000), 7u64 << 32);
+        assert_eq!(c.ntp_of(1_000 + 45_000), (7u64 << 32) + (1 << 31));
+        assert_eq!(c.ntp_of(1_000 - 90_000), 6u64 << 32);
     }
 
     #[test]

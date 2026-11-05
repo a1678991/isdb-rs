@@ -57,6 +57,22 @@ Matroska form have notes so far. "The BS17 recordings": clear TLV streams of ser
   sequence seen once; **other broadcasters, overrunning events and a switch outside the
   window are unchecked** (a p/f turnover later than the schedule is not looked at).
 
+## split-cut: how a stream divides into one file per event
+- Spec: none of B60 or RFC 9559 covers this; H.265 from knowledge: a RASL picture
+  (NAL 8/9) references pictures before its CRA in decode order, and a decoder starting
+  at that CRA does not output it.
+- Interpretation: a file starts at the first key picture at or after its switch, and
+  takes the pictures from it in decode order, less the RASL pictures of that key
+  picture: decodable in neither file. Audio cuts at the first picture's presentation
+  time, except that a configuration change within 10 s is that stream's own cut, since
+  a Matroska track declares one configuration. `${BROADCASTER_NAME}` is the MH-service
+  descriptor's `service_provider_name`, not MH-BIT's MH-broadcaster name descriptor
+  (§7.4.3.27): MH-SDT names the service directly.
+- Confirmation: on the three BS17 recordings, every audio frame lands in exactly one
+  file and decodes; the video decodes without error in each file's first and last 4 s;
+  7 pictures are left out at each CRA cut and none at the IDR cut. The 12 minutes of stereo that a one-file run cannot decode now do. The whole video of each file was not
+  decoded. Status: confirmed (live data) for these eight files; the audio change seen once.
+
 ## event-merge: which table's description of an event a chapter takes
 - Spec: §7.3.3.9 divides the MH-EIT into present/next (8Bh) and schedule
   (8Ch–9Bh) tables, and `event_id` is "uniquely assigned in one service". It says

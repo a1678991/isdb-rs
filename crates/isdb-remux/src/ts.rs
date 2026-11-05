@@ -269,6 +269,8 @@ pub struct Session {
     clock: Option<Clock>,
     /// The MH-EIT's events (the Matroska form's chapters).
     schedule: Schedule,
+    /// The files of `--split-events`, once finished.
+    written: Vec<crate::mkv::Written>,
     /// The caption documents per asset: `(document, arrival)`, arrival
     /// the unwrapped PTS of the last picture (`None` before the first).
     captions: BTreeMap<u16, Vec<CaptionDoc>>,
@@ -328,6 +330,7 @@ impl Session {
             latest_pts: None,
             clock: None,
             schedule: Schedule::new(),
+            written: Vec::new(),
             captions: BTreeMap::new(),
             counts: Counts::default(),
             mkv: None,
@@ -799,7 +802,7 @@ impl Session {
         };
         let ts_pid = stream.ts_pid;
         if let Some(m) = self.mkv.as_mut() {
-            m.data(pid, mpu, item, data);
+            m.data(pid, mpu, item, data, self.last_pts);
             self.counts.data += 1;
             return Ok(());
         }
@@ -858,6 +861,11 @@ impl Session {
         }
     }
 
+    /// The files of `--split-events`, after [`Session::finish`].
+    pub fn take_written(&mut self) -> Vec<crate::mkv::Written> {
+        std::mem::take(&mut self.written)
+    }
+
     /// One table of a control message: the Matroska form keeps the MH-EIT's
     /// events and the MPT versions for its chapters.
     pub fn table(&mut self, t: &TableBytes) {
@@ -891,10 +899,25 @@ impl Session {
             .into_iter()
             .map(|(pid, docs)| self.caption_track(pid, &docs))
             .collect();
+        let span = (self.service, self.clock, self.first_pts, self.latest_pts);
+        if let Some(m) = self.mkv.take_if(|m| m.splits()) {
+            // With nothing written there is no file; the sink removes its scratch.
+            if let (Some(service), Some(clock), Some(origin), Some(end)) = span {
+                let aired = self.schedule.aired(service, clock, origin, end);
+                let broadcaster = self
+                    .schedule
+                    .broadcaster(service)
+                    .map_or_else(|| format!("service-{service:04x}"), str::to_owned);
+                let parts = crate::split::plan(&aired, origin, end);
+                self.written =
+                    m.finish_parts(&tracks, self.first_pts, &parts, clock, &broadcaster)?;
+                self.counts.streams = self.written.iter().map(|w| w.tracks).max().unwrap_or(0);
+                self.counts.attachments = self.written.iter().map(|w| w.attachments).sum();
+                self.counts.chapters_scheduled = aired.iter().filter(|e| e.scheduled).count();
+            }
+        }
         if let Some(mut m) = self.mkv.take() {
-            if let (Some(service), Some(clock), Some(origin), Some(end)) =
-                (self.service, self.clock, self.first_pts, self.latest_pts)
-            {
+            if let (Some(service), Some(clock), Some(origin), Some(end)) = span {
                 let chapters = self.schedule.chapters(service, clock, origin, end);
                 self.counts.chapters = chapters.list.len();
                 self.counts.chapters_scheduled = chapters.scheduled;
