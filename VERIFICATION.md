@@ -2961,6 +2961,11 @@ with the example `captiontrace` and checked with `tools/caption-sync.py`.
   measured against the speech on the same spans.
 - **Services:** the stream of each of the above and BS7's three (0x0097, 0x00ab, 0x008d)
   has one service with captions; a run's other services are unit-tested only.
+- **Review follow-up:** choosing the information by the document's start MPU, and resolving
+  a document's NTP arrival at the end so that one before the first picture keeps it, leave
+  the `.srt` and `.vtt` of all four BS17 runs above byte-identical: none has a start MPU
+  (22 descriptors traced) or a caption before its first picture. Both are unit-tested only.
+  The BS11 recording was no longer available and was not run again.
 
 ## Open questions
 

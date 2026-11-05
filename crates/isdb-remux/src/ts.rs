@@ -60,8 +60,8 @@
 //! nor mpv decodes TTML. Each caption asset becomes a cue list
 //! ([`CaptionTrack`]) for SRT/WebVTT sidecars, on the TS's timeline. The MPT
 //! names the documents' clock (B60 Table 9-7): with time control mode `0010`
-//! a time code counts from the `reference_start_time` in force when the
-//! document came, which moves with every event, and the sum is a UTC time as
+//! a time code counts from the `reference_start_time` valid for the document's
+//! MPU, which moves with every event, and the sum is a UTC time as
 //! the video's presentation times are ([`Clock`]). Any other mode, and a
 //! document that this would place far from its arrival (the reference moved
 //! on while it travelled), is placed by its arrival on the NTP clock
@@ -289,9 +289,14 @@ pub struct Session {
 struct CaptionDoc {
     /// The TTML.
     bytes: Vec<u8>,
-    /// Its arrival as an unwrapped PTS ([`Session::arrival`]).
-    arrival: Option<i64>,
-    /// The asset's subtitle information then.
+    /// The stream's NTP clock when it came: its arrival on the media's clock, as
+    /// presentation times are, resolved at the end (it may precede the first
+    /// picture, which dates the media's clock).
+    ntp: Option<u64>,
+    /// The last picture written when it came: its arrival without NTP packets,
+    /// though that picture's presentation is some way ahead of its arrival.
+    last_pts: Option<i64>,
+    /// The asset's subtitle information valid for its MPU.
     info: Option<es::SubtitleInfo>,
 }
 
@@ -896,26 +901,17 @@ impl Session {
         self.ntp = Some(ntp);
     }
 
-    /// Now as an unwrapped PTS: the NTP clock on the media's, as presentation
-    /// times are; without it, the last picture written, whose presentation is
-    /// some way ahead of its arrival.
-    fn arrival(&self) -> Option<i64> {
-        match (self.clock, self.ntp) {
-            (Some(clock), Some(ntp)) => Some(clock.ticks_of(ntp)),
-            _ => self.last_pts,
-        }
-    }
-
-    /// One whole caption MFU of `pid` (B60 Table 9-1): its TTML document
-    /// is kept, with its arrival and clock, for [`Session::finish`].
-    pub fn caption_mfu(&mut self, pid: u16, data: &[u8]) {
+    /// One whole caption MFU of `pid`, of MPU `mpu` (B60 Table 9-1): its TTML
+    /// document is kept, with its arrival and clock, for [`Session::finish`].
+    pub fn caption_mfu(&mut self, pid: u16, mpu: u32, data: &[u8]) {
         if let Some(sub) = es::Subtitle::parse(data)
             && sub.data_type == 0
         {
             let doc = CaptionDoc {
                 bytes: sub.data.to_vec(),
-                arrival: self.arrival(),
-                info: self.timing.get(&pid).and_then(|t| t.subtitle),
+                ntp: self.ntp,
+                last_pts: self.last_pts,
+                info: self.timing.get(&pid).and_then(|t| t.subtitle_at(mpu)),
             };
             self.captions.entry(pid).or_default().push(doc);
         }
@@ -985,7 +981,10 @@ impl Session {
         let mut timeline = isdb_caption::Timeline::new();
         let mut by_arrival = 0;
         for (d, doc) in &parsed {
-            let arrival = doc.arrival.map(ms);
+            let arrival = match (self.clock, doc.ntp) {
+                (Some(clock), Some(ntp)) => Some(ms(clock.ticks_of(ntp))),
+                _ => doc.last_pts.map(ms),
+            };
             let first = d.blocks.iter().find_map(|b| b.begin);
             // The time code's origin: where the first block's time places it.
             let reference = doc
@@ -1759,10 +1758,13 @@ mod tests {
         )
     }
 
-    /// `timed()` with the caption asset's clock (Table 9-3).
-    fn with_captions(time_control: u8, reference: Option<u64>) -> BTreeMap<u16, AssetTiming> {
-        let mut t = timed();
-        t.get_mut(&0xf330).unwrap().subtitle = Some(es::SubtitleInfo {
+    /// Subtitle information (Table 9-3) with this clock, from `start_mpu`.
+    fn subtitle_info(
+        time_control: u8,
+        reference: Option<u64>,
+        start_mpu: Option<u32>,
+    ) -> es::SubtitleInfo {
+        es::SubtitleInfo {
             tag: 0x30,
             version: 0,
             language: *b"jpn",
@@ -1773,10 +1775,16 @@ mod tests {
             display_mode: 0b1010,
             resolution: 1,
             compression: 0,
-            start_mpu: None,
+            start_mpu,
             reference_start_time: reference,
             leap_indicator: reference.map(|_| 0),
-        });
+        }
+    }
+
+    /// `timed()` with the caption asset's clock.
+    fn with_captions(time_control: u8, reference: Option<u64>) -> BTreeMap<u16, AssetTiming> {
+        let mut t = timed();
+        t.get_mut(&0xf330).unwrap().subtitles = vec![subtitle_info(time_control, reference, None)];
         t
     }
 
@@ -1786,11 +1794,16 @@ mod tests {
         let mut s = Session::new(Box::new(std::io::sink()), None).unwrap();
         s.set_timing(&with_captions(time_control, reference))
             .unwrap();
-        // Joined mid-MPU: it starts at the next.
-        feed(&mut s, 99, [31]);
-        feed(&mut s, 100, 0..2);
-        s.flush_picture().unwrap();
+        first_picture(&mut s);
         s
+    }
+
+    /// The first picture of [`recording`].
+    fn first_picture(s: &mut Session) {
+        // Joined mid-MPU: it starts at the next.
+        feed(s, 99, [31]);
+        feed(s, 100, 0..2);
+        s.flush_picture().unwrap();
     }
 
     /// The cues of the only caption asset: `(start, end, text)`, ms.
@@ -1812,6 +1825,7 @@ mod tests {
         s.ntp(1005 << 32);
         s.caption_mfu(
             0xf330,
+            1,
             &caption_mfu(&closed("00:00:05", "00:00:07", "first")),
         );
         s.set_timing(&with_captions(0b0010, Some(1100 << 32)))
@@ -1819,6 +1833,7 @@ mod tests {
         s.ntp(1105 << 32);
         s.caption_mfu(
             0xf330,
+            1,
             &caption_mfu(&closed("00:00:05", "00:00:07", "second")),
         );
         assert_eq!(
@@ -1836,7 +1851,11 @@ mod tests {
     fn a_document_far_from_its_reference_is_placed_by_its_arrival() {
         let mut s = recording(0b0010, Some(1100 << 32));
         s.ntp(1099 << 32);
-        s.caption_mfu(0xf330, &caption_mfu(&closed("00:01:39", "00:01:41", "old")));
+        s.caption_mfu(
+            0xf330,
+            1,
+            &caption_mfu(&closed("00:01:39", "00:01:41", "old")),
+        );
         assert_eq!(cues(s), vec![(98_883, 100_883, "old".to_owned())]);
     }
 
@@ -1848,6 +1867,7 @@ mod tests {
         s.ntp((1005 << 32) - (1 << 30));
         s.caption_mfu(
             0xf330,
+            1,
             &caption_mfu(&closed("00:00:05", "00:00:07", "soon")),
         );
         assert_eq!(cues(s), vec![(4_883, 6_883, "soon".to_owned())]);
@@ -1861,12 +1881,13 @@ mod tests {
         s.ntp(1010 << 32);
         s.caption_mfu(
             0xf330,
+            1,
             &caption_mfu(&closed("05:00:00", "05:00:02", "closed")),
         );
         s.ntp(1020 << 32);
-        s.caption_mfu(0xf330, &caption_mfu(&open("open")));
+        s.caption_mfu(0xf330, 1, &caption_mfu(&open("open")));
         s.ntp(1023 << 32);
-        s.caption_mfu(0xf330, &caption_mfu(&open("next")));
+        s.caption_mfu(0xf330, 1, &caption_mfu(&open("next")));
         let shown = cues(s);
         assert_eq!(shown[0], (9_883, 11_883, "closed".to_owned()));
         assert_eq!(shown[1], (19_883, 22_883, "open".to_owned()));
@@ -1877,11 +1898,65 @@ mod tests {
     #[test]
     fn without_the_ntp_clock_arrival_is_the_last_picture() {
         let mut s = recording(0b1111, None);
-        s.caption_mfu(0xf330, &caption_mfu(&closed("00:00:00", "00:00:02", "x")));
+        s.caption_mfu(
+            0xf330,
+            1,
+            &caption_mfu(&closed("00:00:00", "00:00:02", "x")),
+        );
         let last = s.last_pts.unwrap() - s.first_pts.unwrap();
         assert_eq!(
             cues(s),
             vec![(last / 90, last / 90 + 2_000, "x".to_owned())]
+        );
+    }
+
+    /// A document may come before the first picture dates the media's clock: its
+    /// arrival is still known, and a cue running into the recording is kept.
+    #[test]
+    fn a_document_before_the_first_picture_keeps_its_arrival() {
+        let mut s = Session::new(Box::new(std::io::sink()), None).unwrap();
+        s.set_timing(&with_captions(0b1111, None)).unwrap();
+        s.ntp(999 << 32);
+        s.caption_mfu(
+            0xf330,
+            1,
+            &caption_mfu(&closed("00:00:00", "00:00:05", "early")),
+        );
+        first_picture(&mut s);
+        assert_eq!(cues(s), vec![(0, 3_884, "early".to_owned())]);
+    }
+
+    /// B60 Table 9-3: information with a start MPU governs from that MPU, however
+    /// soon it is announced: the documents before go by the reference before it,
+    /// even one too near the new reference for the arrival to tell.
+    #[test]
+    fn spec_b60_table_9_3_a_reference_waits_for_its_start_mpu() {
+        let mut t = timed();
+        t.get_mut(&0xf330).unwrap().subtitles = vec![
+            subtitle_info(0b0010, Some(1000 << 32), None),
+            subtitle_info(0b0010, Some(1005 << 32), Some(10)),
+        ];
+        let mut s = Session::new(Box::new(std::io::sink()), None).unwrap();
+        s.set_timing(&t).unwrap();
+        first_picture(&mut s);
+        s.ntp(1005 << 32);
+        s.caption_mfu(
+            0xf330,
+            9,
+            &caption_mfu(&closed("00:00:05", "00:00:07", "old")),
+        );
+        s.ntp(1010 << 32);
+        s.caption_mfu(
+            0xf330,
+            10,
+            &caption_mfu(&closed("00:00:05", "00:00:07", "new")),
+        );
+        assert_eq!(
+            cues(s),
+            vec![
+                (4_883, 6_883, "old".to_owned()),
+                (9_883, 11_883, "new".to_owned()),
+            ]
         );
     }
 

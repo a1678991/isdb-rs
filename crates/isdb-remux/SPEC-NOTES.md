@@ -15,7 +15,8 @@ with six event changes between them (VERIFICATION.md, "Matroska chapters").
   documents it governs; it is optional, and the clause gives no other rule for when a
   changed one takes effect.
 - Interpretation: a document's time is reference + time code, on the video's clock (both
-  UTC NTP), with the reference in force when the document arrives. A document so placed
+  UTC NTP), under the latest information listed whose `start_mpu_sequence_number` is not
+  after the document's MPU, or which names none and so governs from its arrival. A document so placed
   more than 10 s from its arrival is taken not to be under that reference, and is placed
   by its arrival: the new MPT version comes about 1 s before the event's first picture, so
   the old event's last document could be read against the new reference and land far
@@ -26,8 +27,8 @@ with six event changes between them (VERIFICATION.md, "Matroska chapters").
 - Confirmation: on the BS17 recordings of 2026-11-01 (0x0065, 0x00a1, 0x00b5) and
   2026-11-05 (0x0065), and a BS11 recording (0x00d3), every timed document comes within
   0.4 s of reference + time code (−0.298 to +0.363 s, per service within 0.07 s), with no
-  outlier over four events of 0x0065; none needed the 10 s rule, **which has only a
-  synthetic test**. 0x0065's references fall 74 and 126 ms before its programmes' first
+  outlier over four events of 0x0065; none needed the 10 s rule, and none of the 22
+  descriptors traced has a start MPU, **so both have only synthetic tests**. 0x0065's references fall 74 and 126 ms before its programmes' first
   pictures; 0x00a1 and 0x00b5 signal the scheduled minute, 2.7–2.9 s before theirs, and
   whether their time codes allow for that is not established. Speech begins 0.72 and
   0.52 s after the cues on 0x0065 (65 and 62 cues, 4.1 and 4.6 sigma), 0.34 and 0.64 s at
