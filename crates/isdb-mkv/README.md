@@ -9,11 +9,13 @@ decoder delivers, with no dependencies:
 | AAC | `A_AAC` | `AudioSpecificConfig` | one raw AAC frame (`isdb_mmt::es::latm_frame` takes it out of a LATM AudioMuxElement) |
 | text | `S_TEXT/UTF8` | — | a cue's text, in a BlockGroup with its BlockDuration |
 
-and attachments (`Writer::attach`).
+and chapters (`Writer::add_chapter`: one default, non-ordered edition, with
+times in nanoseconds and an optional title and language) and attachments
+(`Writer::attach`).
 
 The writer is two-pass: `Writer::frame` spills each frame to a scratch
 (`Read + Write + Seek`) and indexes it; `Writer::finish` writes the header
-with every track added by then, the frames in decode order across the
+with every track and chapter added by then, the frames in decode order across the
 tracks (a video's DTS orders, its PTS stamps the block), a cluster at each
 video keyframe (at the latest every 5 s), Cues for the keyframes, the
 attachments, and seeks back to fill in the Segment size, the SeekHead and

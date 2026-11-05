@@ -1,15 +1,16 @@
 //! A Matroska writer (RFC 9559 over EBML, RFC 8794) for the media a
 //! decoder of ISDB-S3 delivers: HEVC video (`V_MPEGH/ISO/HEVC`), AAC
 //! audio (`A_AAC`, raw frames — what a LATM AudioMuxElement carries),
-//! UTF-8 text subtitles (`S_TEXT/UTF8`) and attachments.
+//! UTF-8 text subtitles (`S_TEXT/UTF8`), chapters and attachments.
 //!
 //! Two passes: [`Writer::frame`] spills each frame to a scratch file and
 //! indexes it; [`Writer::finish`] writes the header with every track
 //! added by then, the frames in decode order across tracks (`order`, the
 //! decode time — a video's DTS — ties kept in arrival order; the block
 //! time is the presentation time), a cluster at each video keyframe (and
-//! at the latest every [`MAX_CLUSTER_MS`]), the Cues of the keyframes and
-//! the attachments, and seeks back to fill in the Segment size, the
+//! at the latest every [`MAX_CLUSTER_MS`]), the chapters (RFC 9559 §6.6:
+//! after the Info, before the Tracks), the Cues of the keyframes and the
+//! attachments, and seeks back to fill in the Segment size, the
 //! SeekHead and the Duration. So tracks — subtitles whose cue times are
 //! only known at the end, a configuration learnt from the stream — can be
 //! added at any time, the output is `Write + Seek` (a file, not a pipe),
@@ -83,6 +84,17 @@ mod id {
     pub const FILE_MEDIA_TYPE: u32 = 0x4660;
     pub const FILE_DATA: u32 = 0x465C;
     pub const FILE_UID: u32 = 0x46AE;
+    pub const CHAPTERS: u32 = 0x1043_A770;
+    pub const EDITION_ENTRY: u32 = 0x45B9;
+    pub const EDITION_UID: u32 = 0x45BC;
+    pub const EDITION_FLAG_DEFAULT: u32 = 0x45DB;
+    pub const CHAPTER_ATOM: u32 = 0xB6;
+    pub const CHAPTER_UID: u32 = 0x73C4;
+    pub const CHAPTER_TIME_START: u32 = 0x91;
+    pub const CHAPTER_TIME_END: u32 = 0x92;
+    pub const CHAPTER_DISPLAY: u32 = 0x80;
+    pub const CHAP_STRING: u32 = 0x85;
+    pub const CHAP_LANGUAGE: u32 = 0x437C;
 }
 
 /// An EBML element under construction (its children appended to `body`).
@@ -206,6 +218,20 @@ pub struct Track {
     pub default: bool,
 }
 
+/// One chapter of the segment's timeline (RFC 9559 §20.2): a simple chapter
+/// of the one, default edition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chapter {
+    /// Its start (ns, not scaled by the `TimestampScale`).
+    pub start_ns: u64,
+    /// Its end, excluded (ns), when known; at least `start_ns`.
+    pub end_ns: Option<u64>,
+    /// Its name; a chapter without one has no `ChapterDisplay`.
+    pub title: Option<String>,
+    /// The title's ISO 639-2 language (`jpn`), when known.
+    pub language: Option<String>,
+}
+
 /// One spilled frame.
 #[derive(Debug, Clone, Copy)]
 struct Indexed {
@@ -235,6 +261,7 @@ pub struct Writer<W: Write + Seek, S: Read + Write + Seek> {
     app: String,
     index: Vec<Indexed>,
     attachments: Vec<(String, String, String, Vec<u8>)>,
+    chapters: Vec<Chapter>,
 }
 
 impl<W: Write + Seek, S: Read + Write + Seek> Writer<W, S> {
@@ -251,6 +278,7 @@ impl<W: Write + Seek, S: Read + Write + Seek> Writer<W, S> {
             app: app.to_owned(),
             index: Vec::new(),
             attachments: Vec::new(),
+            chapters: Vec::new(),
         }
     }
 
@@ -303,6 +331,11 @@ impl<W: Write + Seek, S: Read + Write + Seek> Writer<W, S> {
             description.to_owned(),
             data,
         ));
+    }
+
+    /// Add a chapter, in the order a player lists them.
+    pub fn add_chapter(&mut self, c: Chapter) {
+        self.chapters.push(c);
     }
 
     /// One frame of `track`: `order` its decode time and `time` its
@@ -399,6 +432,10 @@ impl<W: Write + Seek, S: Read + Write + Seek> Writer<W, S> {
         let info = info.float(id::DURATION, (last - first).max(0) as f64);
         positions.push((id::INFO, self.out.stream_position()? - segment));
         self.out.write_all(&info.encode())?;
+        if !self.chapters.is_empty() {
+            positions.push((id::CHAPTERS, self.out.stream_position()? - segment));
+            self.out.write_all(&chapters(&self.chapters).encode())?;
+        }
         positions.push((id::TRACKS, self.out.stream_position()? - segment));
         let mut tracks = Element::new(id::TRACKS);
         for (i, t) in self.tracks.iter().enumerate() {
@@ -560,6 +597,31 @@ fn void(n: usize) -> Vec<u8> {
     v
 }
 
+/// The Chapters of one default edition (UIDs from 1; RFC 9559 §5.1.7 forbids
+/// 0). The language is always written: an absent one would read as `eng`.
+fn chapters(list: &[Chapter]) -> Element {
+    let mut edition = Element::new(id::EDITION_ENTRY)
+        .uint(id::EDITION_UID, 1)
+        .uint(id::EDITION_FLAG_DEFAULT, 1);
+    for (i, c) in list.iter().enumerate() {
+        let mut atom = Element::new(id::CHAPTER_ATOM)
+            .uint(id::CHAPTER_UID, i as u64 + 1)
+            .uint(id::CHAPTER_TIME_START, c.start_ns);
+        if let Some(end) = c.end_ns {
+            atom = atom.uint(id::CHAPTER_TIME_END, end);
+        }
+        if let Some(title) = &c.title {
+            atom = atom.child(
+                &Element::new(id::CHAPTER_DISPLAY)
+                    .string(id::CHAP_STRING, title)
+                    .string(id::CHAP_LANGUAGE, c.language.as_deref().unwrap_or("und")),
+            );
+        }
+        edition = edition.child(&atom);
+    }
+    Element::new(id::CHAPTERS).child(&edition)
+}
+
 fn track_entry(number: u64, t: &Track) -> Element {
     let (ty, codec) = match &t.kind {
         Kind::Hevc { .. } => (1, "V_MPEGH/ISO/HEVC"),
@@ -713,6 +775,119 @@ mod tests {
             i = end;
         }
         (clusters, blocks)
+    }
+
+    /// The top-level elements of the Segment: (id, data start, data end).
+    fn top_level(out: &[u8]) -> Vec<(u32, usize, usize)> {
+        let (_, _, ebml_end) = element_at(out, 0);
+        let (_, mut i, seg_end) = element_at(out, ebml_end);
+        let mut v = Vec::new();
+        while i < seg_end {
+            let e = element_at(out, i);
+            v.push(e);
+            i = e.2;
+        }
+        v
+    }
+
+    /// The direct children of the master element whose data is `from..to`.
+    fn children(out: &[u8], from: usize, to: usize) -> Vec<(u32, usize, usize)> {
+        let mut v = Vec::new();
+        let mut i = from;
+        while i < to {
+            let e = element_at(out, i);
+            v.push(e);
+            i = e.2;
+        }
+        v
+    }
+
+    fn uint_at(out: &[u8], e: (u32, usize, usize)) -> u64 {
+        out[e.1..e.2].iter().fold(0, |a, b| a << 8 | u64::from(*b))
+    }
+
+    #[test]
+    fn chapters_follow_the_info_and_are_in_the_seek_head() {
+        let mut w = Writer::new(Cursor::new(Vec::new()), Cursor::new(Vec::new()), "test");
+        let a = w.add_track(Track {
+            kind: Kind::Text,
+            language: None,
+            name: None,
+            default: false,
+        });
+        w.frame(a, 0, 0, true, Some(10), b"x").unwrap();
+        w.add_chapter(Chapter {
+            start_ns: 0,
+            end_ns: Some(153_000_000_000),
+            title: Some("番組".into()),
+            language: Some("jpn".into()),
+        });
+        w.add_chapter(Chapter {
+            start_ns: 153_000_000_000,
+            end_ns: None,
+            title: None,
+            language: None,
+        });
+        let (out, _) = w.finish().unwrap();
+        let out = out.into_inner();
+        let top = top_level(&out);
+        let ids: Vec<u32> = top.iter().map(|e| e.0).collect();
+        assert_eq!(
+            ids[..5],
+            [id::SEEK_HEAD, id::VOID, id::INFO, id::CHAPTERS, id::TRACKS]
+        );
+        // The SeekHead names the Chapters' position from the Segment's data.
+        let (_, _, ebml_end) = element_at(&out, 0);
+        let (_, segment, _) = element_at(&out, ebml_end);
+        let at = top[3].1 - 1 - 4 - segment;
+        let seeks = children(&out, top[0].1, top[0].2);
+        let chapter_seek = seeks
+            .iter()
+            .map(|s| children(&out, s.1, s.2))
+            .find(|c| out[c[0].1..c[0].2] == [0x10, 0x43, 0xa7, 0x70])
+            .expect("a Seek of the Chapters");
+        assert_eq!(usize::try_from(uint_at(&out, chapter_seek[1])).unwrap(), at);
+        // One default edition, two atoms.
+        let edition = children(&out, top[3].1, top[3].2);
+        assert_eq!(edition.len(), 1);
+        assert_eq!(edition[0].0, id::EDITION_ENTRY);
+        let fields = children(&out, edition[0].1, edition[0].2);
+        assert_eq!(
+            fields.iter().map(|e| e.0).collect::<Vec<_>>(),
+            [
+                id::EDITION_UID,
+                id::EDITION_FLAG_DEFAULT,
+                id::CHAPTER_ATOM,
+                id::CHAPTER_ATOM
+            ]
+        );
+        assert_eq!(uint_at(&out, fields[1]), 1);
+        let first = children(&out, fields[2].1, fields[2].2);
+        assert_eq!(first[0].0, id::CHAPTER_UID);
+        assert_eq!(uint_at(&out, first[0]), 1);
+        assert_eq!(first[1].0, id::CHAPTER_TIME_START);
+        assert_eq!(uint_at(&out, first[1]), 0);
+        assert_eq!(first[2].0, id::CHAPTER_TIME_END);
+        assert_eq!(uint_at(&out, first[2]), 153_000_000_000);
+        assert_eq!(first[3].0, id::CHAPTER_DISPLAY);
+        let display = children(&out, first[3].1, first[3].2);
+        assert_eq!(&out[display[0].1..display[0].2], "番組".as_bytes());
+        assert_eq!(&out[display[1].1..display[1].2], b"jpn");
+        // No end, no title: only the mandatory fields.
+        let second = children(&out, fields[3].1, fields[3].2);
+        assert_eq!(
+            second.iter().map(|e| e.0).collect::<Vec<_>>(),
+            [id::CHAPTER_UID, id::CHAPTER_TIME_START]
+        );
+        assert_eq!(uint_at(&out, second[0]), 2);
+    }
+
+    #[test]
+    fn no_chapters_no_element() {
+        let w = Writer::new(Cursor::new(Vec::new()), Cursor::new(Vec::new()), "test");
+        let (out, _) = w.finish().unwrap();
+        let out = out.into_inner();
+        assert!(top_level(&out).iter().all(|e| e.0 != id::CHAPTERS));
     }
 
     #[test]
