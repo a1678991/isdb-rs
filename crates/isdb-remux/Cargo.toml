@@ -11,7 +11,7 @@ documentation = "https://docs.rs/isdb-remux"
 readme = "README.md"
 keywords = ["isdb", "mmt", "mpeg-ts", "matroska", "remux"]
 categories = ["multimedia", "command-line-utilities"]
-include = ["/src/**", "/README.md", "/LICENSE", "/NOTICE"]
+include = ["/src/**", "/README.md", "/SPEC-NOTES.md", "/LICENSE", "/NOTICE"]
 
 [[bin]]
 name = "isdb-remux"
@@ -20,6 +20,7 @@ path = "src/main.rs"
 [dependencies]
 isdb-tlv.workspace = true
 isdb-mmt.workspace = true
+isdb-si.workspace = true
 isdb-ts.workspace = true
 isdb-caption.workspace = true
 isdb-mkv.workspace = true

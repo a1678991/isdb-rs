@@ -7,8 +7,9 @@ A clear TLV stream of ISDB-S3 / advanced BS in (a file or stdin), out
   with the PTS/DTS of the MPTs' timestamp descriptors, and the captions
   as SubRip / WebVTT next to it, or
 - a **Matroska** file of every track of the service (`--mkv -o OUT.mkv`):
-  the video, every audio as proper AAC, the captions as text tracks, the
-  data broadcasting packages as attachments.
+  the video, every audio as proper AAC, the captions as text tracks, a
+  chapter per programme of the MH-EIT, the data broadcasting packages as
+  attachments.
 
 The input's payloads are in the clear: a stream never scrambled, or the
 output of a cardholder's own descrambler (which keeps the scramble
@@ -94,6 +95,19 @@ without ffmpeg:
 | every `mp4a` | `A_AAC`: the raw AAC frame of each LATM AudioMuxElement, the `AudioSpecificConfig` its `CodecPrivate` — not re-encoded (ffmpeg's `-c copy` of the TS stores LATM as `A_MS/ACM`, which few players take) |
 | `stpp` captions | `S_TEXT/UTF8`, a block per cue, the same times as the TS form's sidecars |
 | `aapp` and other untimed assets | attachments, one per asset and package version: `PID-MPU.mmtitems`, each item `[item id u32][length u32][bytes]` in arrival order (the carousel's repeats kept) |
+
+Chapters: one per event of the service's MH-EIT in the recording, named by
+its MH-short event descriptor (the broadcast's name as sent, symbols such as
+🆞 included) in the descriptor's language, and clipped to the recording: an event
+already running starts at 0, and the last ends with the file. The event's JST
+`start_time` is placed by the MPT's NTP clock, so the mark is the exact
+**scheduled** time, not a detected change of picture. On the BS17 recording the
+picture cuts 2.665 s and 2.668 s after the two marks, an hour apart; nothing
+corrects for this. A player seeking to a chapter lands on the keyframe at or
+before the mark (up to an MPU, ≈ 0.53 s). No MH-EIT seen means no chapters; a time
+no event covers has none. How tables that disagree are merged:
+[SPEC-NOTES.md](SPEC-NOTES.md#event-merge-which-tables-description-of-an-event-a-chapter-takes).
+The TS form has no chapters.
 
 Each track carries the MPT's language (the video / audio component
 descriptors) and the audio its layout (`5.1ch`, `stereo`); the video and the

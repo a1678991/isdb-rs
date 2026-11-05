@@ -9,6 +9,7 @@
 //!   its `AudioSpecificConfig` the `CodecPrivate` — not re-encoded), the
 //!   MPT's language, named by its channels;
 //! - the captions (`S_TEXT/UTF8`, one block per cue);
+//! - a chapter per event of the MH-EIT ([`crate::events`]);
 //! - the untimed assets (data broadcasting): one attachment per asset
 //!   and package version, `PID-MPU.mmtitems`, its items each as
 //!   `[item id u32][length u32][bytes]`.
@@ -20,7 +21,7 @@
 //! earliest PTS of any stream: the zero of a player's timeline, the same
 //! as the TS form's sidecars.
 
-use isdb_mkv::{Kind, Track, Writer};
+use isdb_mkv::{Chapter, Kind, Track, Writer};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufWriter};
@@ -190,6 +191,11 @@ impl Mkv {
             );
         }
         self.frame(pid, pts, pts, true, &f.payload)
+    }
+
+    /// Add a chapter, in the order a player lists them.
+    pub fn chapter(&mut self, c: Chapter) {
+        self.writer.add_chapter(c);
     }
 
     /// One item of an untimed asset.

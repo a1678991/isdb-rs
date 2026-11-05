@@ -42,8 +42,8 @@ struct Args {
     #[arg(long)]
     ts: bool,
     /// A Matroska file of every track: the HEVC video, every AAC audio
-    /// (raw AAC, not re-encoded), the captions as text tracks, the data
-    /// broadcasting packages as attachments. Needs `-o` (the file is
+    /// (raw AAC, not re-encoded), the captions as text tracks, a chapter per
+    /// MH-EIT event, the data broadcasting packages as attachments. Needs `-o` (the file is
     /// finished by seeking back) and room for a scratch copy of the media
     /// next to it (`OUT.part`, removed at the end).
     #[arg(long, requires = "output")]
@@ -135,10 +135,11 @@ fn main() -> anyhow::Result<()> {
     }
     if a.mkv {
         eprintln!(
-            "mkv {out_name}: {} track(s) ({} caption track(s), {} cue(s)), {} attachment(s); {} picture(s), {} audio frame(s), {} data item(s); {} AU(s) before an MPU start or after a loss, {} untimed; {}",
+            "mkv {out_name}: {} track(s) ({} caption track(s), {} cue(s)), {} chapter(s), {} attachment(s); {} picture(s), {} audio frame(s), {} data item(s); {} AU(s) before an MPU start or after a loss, {} untimed; {}",
             c.streams,
             captions.iter().filter(|t| !t.cues.is_empty()).count(),
             captions.iter().map(|t| t.cues.len()).sum::<usize>(),
+            c.chapters,
             c.attachments,
             c.video,
             c.audio,

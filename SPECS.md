@@ -720,6 +720,9 @@ have no external confirmation, because none is possible from the local texts.
 | isdb-mmt | [async-mpu-numbering](crates/isdb-mmt/SPEC-NOTES.md#async-mpu-numbering-mpu-sequence-numbers-of-non-timed-assets) | confirmed (spec text and live data) |
 | isdb-mmt | [hevc-annex-b](crates/isdb-mmt/SPEC-NOTES.md#hevc-annex-b-hevc-elementary-stream-from-knowledge) | **from knowledge** (H.265 unavailable) |
 | isdb-mmt | [loas](crates/isdb-mmt/SPEC-NOTES.md#loas-mpeg-4-audio-elementary-stream-from-knowledge) | **from knowledge** (ISO/IEC 14496-3 unavailable) |
+| isdb-remux | [event-time](crates/isdb-remux/SPEC-NOTES.md#event-time-an-events-start_time-on-the-media-clock) | confirmed (live data); the picture's lag is an observation |
+| isdb-remux | [event-merge](crates/isdb-remux/SPEC-NOTES.md#event-merge-which-tables-description-of-an-event-a-chapter-takes) | confirmed (live data) for names and accumulation; **pending** for the rank and replacement rules |
+| isdb-remux | [chapter-placement](crates/isdb-remux/SPEC-NOTES.md#chapter-placement-where-the-chapters-element-goes) | confirmed (live data) |
 | isdbt-fec | [remux: model receiver timing](crates/isdbt-fec/SPEC-NOTES.md#remux-model-receiver-timing-multiplex-frame-pattern) | partially confirmed; **pending** live slot order |
 | isdbt-fec | [remux: null TSP content](crates/isdbt-fec/SPEC-NOTES.md#remux-null-tsp-content-in-the-reproduced-ts) | convention |
 | isdbt-fec | [layer: one-byte shift](crates/isdbt-fec/SPEC-NOTES.md#layer-one-byte-shift-of-the-frame-slot-structure) | confirmed |

@@ -69,9 +69,11 @@
 //! rate pacing; the PCR rides each picture at [`PCR_LEAD`] before its
 //! DTS.
 
+use crate::events::Schedule;
 use crate::signal::AssetTiming;
-use crate::timing::{TS_MASK, au_count, au_times, frame_ticks};
+use crate::timing::{Clock, TS_MASK, au_count, au_ntp, au_times, frame_ticks};
 use isdb_mmt::es::{self, START_CODE};
+use isdb_mmt::message::TableBytes;
 use isdb_ts::crc::crc32;
 use isdb_ts::pes::{PesBody, PesHeader, PesPacket, PtsDts};
 use std::collections::BTreeMap;
@@ -174,6 +176,8 @@ pub struct Counts {
     pub streams: usize,
     /// Attachments of the Matroska form (data packages).
     pub attachments: usize,
+    /// Chapters of the Matroska form (the MH-EIT's events).
+    pub chapters: usize,
     /// AUs skipped before the first MPU boundary or after a loss.
     pub unsynced: u64,
     /// AUs whose MPU the descriptors do not time.
@@ -255,6 +259,12 @@ pub struct Session {
     first_pts: Option<i64>,
     /// The last picture's PTS, unwrapped (the captions' arrival clock).
     last_pts: Option<i64>,
+    /// The latest PTS written on any stream, unwrapped.
+    latest_pts: Option<i64>,
+    /// The first PTS written with its NTP time: the timeline's date.
+    clock: Option<Clock>,
+    /// The MH-EIT's events (the Matroska form's chapters).
+    schedule: Schedule,
     /// The caption documents per asset: `(document, arrival)`, arrival
     /// the unwrapped PTS of the last picture (`None` before the first).
     captions: BTreeMap<u16, Vec<CaptionDoc>>,
@@ -310,6 +320,9 @@ impl Session {
             pcr: None,
             first_pts: None,
             last_pts: None,
+            latest_pts: None,
+            clock: None,
+            schedule: Schedule::new(),
             captions: BTreeMap::new(),
             counts: Counts::default(),
             mkv: None,
@@ -669,7 +682,7 @@ impl Session {
         let pcr = dts.wrapping_sub(PCR_LEAD) & TS_MASK;
         self.pcr = Some(pcr);
         let pts_unwrapped = unwrap(self.last_pts.or(self.first_pts), pts);
-        self.note_start(pts_unwrapped);
+        self.note_written(pid, mpu, index, pts_unwrapped);
         self.last_pts = Some(pts_unwrapped);
         self.counts.video += 1;
         if let Some(m) = self.mkv.as_mut() {
@@ -744,7 +757,7 @@ impl Session {
         }
         self.counts.audio += 1;
         let pts_unwrapped = unwrap(self.last_pts.or(self.first_pts), pts);
-        self.note_start(pts_unwrapped);
+        self.note_written(pid, mpu, index, pts_unwrapped);
         if let Some(m) = self.mkv.as_mut() {
             return m.audio(pid, pts_unwrapped, data);
         }
@@ -807,8 +820,26 @@ impl Session {
         Ok(())
     }
 
-    fn note_start(&mut self, pts: i64) {
+    /// Access unit `index` of `mpu` of `pid` is written, at the unwrapped
+    /// `pts`: the timeline's span, and its date from the first one.
+    fn note_written(&mut self, pid: u16, mpu: u32, index: usize, pts: i64) {
         self.first_pts = Some(self.first_pts.map_or(pts, |f| f.min(pts)));
+        self.latest_pts = Some(self.latest_pts.map_or(pts, |l| l.max(pts)));
+        if self.clock.is_none() {
+            self.clock = self
+                .timing
+                .get(&pid)
+                .and_then(|t| au_ntp(t, mpu, index))
+                .map(|ntp| Clock { ticks: pts, ntp });
+        }
+    }
+
+    /// One table of a control message: the Matroska form keeps the MH-EIT's
+    /// events for its chapters.
+    pub fn table(&mut self, t: &TableBytes) {
+        if self.mkv.is_some() {
+            self.schedule.feed(t);
+        }
     }
 
     /// One whole caption MFU of `pid` (B60 Table 9-1): its TTML document
@@ -836,7 +867,15 @@ impl Session {
             .into_iter()
             .map(|(pid, docs)| self.caption_track(pid, &docs))
             .collect();
-        if let Some(m) = self.mkv.take() {
+        if let Some(mut m) = self.mkv.take() {
+            if let (Some(service), Some(clock), Some(origin), Some(end)) =
+                (self.service, self.clock, self.first_pts, self.latest_pts)
+            {
+                for c in self.schedule.chapters(service, clock, origin, end) {
+                    self.counts.chapters += 1;
+                    m.chapter(c);
+                }
+            }
             let (n, attachments) = m.finish(&tracks, self.first_pts)?;
             self.counts.streams = n;
             self.counts.attachments = attachments;
@@ -1452,6 +1491,91 @@ mod tests {
         assert_eq!(s.counts.audio, 4 + 2 + 1 + 1);
         assert_eq!(s.counts.audio_lost, 5);
         assert_eq!(s.counts.unsynced, 2);
+    }
+
+    /// An MH-EIT section of service 0x65 with one event named `prog`.
+    fn eit_section(table_id: u8, id: u16, mjd: u16, hms: [u8; 3], duration: [u8; 3]) -> TableBytes {
+        let name = b"prog";
+        let name_len = u8::try_from(name.len()).unwrap();
+        let mut d = vec![0xF0, 0x01, 0, 6 + name_len];
+        d.extend(b"jpn");
+        d.push(name_len);
+        d.extend(name);
+        d.extend([0, 0]);
+        let mut s = vec![table_id, 0xf0, 0, 0x00, 0x65, 0xc1, 0, 0];
+        s.extend([0xb1, 0x10, 0, 0x0b, 0, table_id]);
+        s.extend(id.to_be_bytes());
+        s.extend(mjd.to_be_bytes());
+        s.extend(hms);
+        s.extend(duration);
+        s.extend(u16::try_from(d.len()).unwrap().to_be_bytes());
+        s.extend(d);
+        s[2] = u8::try_from(s.len() - 3 + 4).unwrap();
+        s.extend(crc32(&s).to_be_bytes());
+        TableBytes {
+            packet_id: 0x8000,
+            message_id: 0x8000,
+            bytes: s,
+        }
+    }
+
+    /// The Matroska form end to end: the descriptors' NTP clock places the
+    /// EIT's JST on the timeline, the recorded service's events only.
+    #[test]
+    fn mkv_chapters_from_the_eit_on_the_media_clock() {
+        const DAY: u16 = 61_349; // 2026-11-05
+        // The first MPU's PT: 02:21:26 JST, 17:21:26 UTC of the day before.
+        let pt = (u64::from(DAY) - 15_020) * 86_400 + 2 * 3600 + 21 * 60 + 26 - 9 * 3600;
+        let mut timing = timed();
+        for (pid, mpu) in [(0xf300, 100), (0xf310, 8)] {
+            let t = timing.get_mut(&pid).unwrap();
+            t.mpu_times.insert(mpu, pt << 32);
+        }
+        let dir = std::env::temp_dir().join(format!("isdb-remux-chapters-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.mkv");
+        let mkv = crate::mkv::Mkv::create(&path, "test").unwrap();
+        let mut s = Session::new(Box::new(std::io::sink()), None)
+            .unwrap()
+            .with_mkv(mkv);
+        s.set_timing(&timing).unwrap();
+        // Running since 02:00; ends and the next starts 1 s in (the two MPUs
+        // written span ≈ 1.07 s); one starts after them; another service's.
+        let hms = |m, s| [0x02, m, s];
+        s.table(&eit_section(0x8B, 1, DAY, hms(0x00, 0x00), [0, 0x21, 0x27]));
+        s.table(&eit_section(0x8B, 2, DAY, hms(0x21, 0x27), [0, 0x30, 0]));
+        s.table(&eit_section(0x8C, 3, DAY, hms(0x51, 0x27), [0, 0x30, 0]));
+        let mut other = eit_section(0x8B, 4, DAY, hms(0x00, 0x00), [1, 0, 0]);
+        other.bytes[4] = 0x66;
+        let at = other.bytes.len() - 4;
+        let crc = crc32(&other.bytes[..at]).to_be_bytes();
+        other.bytes[at..].copy_from_slice(&crc);
+        s.table(&other);
+        feed(&mut s, 100, 0..32);
+        feed(&mut s, 101, 0..32);
+        let (c, _) = s.finish().unwrap();
+        assert_eq!(c.chapters, 2);
+        let file = std::fs::read(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(file.windows(4).any(|w| w == [0x10, 0x43, 0xa7, 0x70]));
+        assert_eq!(file.windows(4).filter(|w| *w == b"prog").count(), 2);
+    }
+
+    /// The TS form never reads the events.
+    #[test]
+    fn ts_form_keeps_no_events() {
+        let mut s = Session::new(Box::new(std::io::sink()), None).unwrap();
+        s.set_timing(&timed()).unwrap();
+        s.table(&eit_section(
+            0x8B,
+            1,
+            15020,
+            [0x09, 0x00, 0x00],
+            [0, 0x30, 0],
+        ));
+        feed(&mut s, 100, 0..32);
+        let (c, _) = s.finish().unwrap();
+        assert_eq!(c.chapters, 0);
     }
 
     #[test]

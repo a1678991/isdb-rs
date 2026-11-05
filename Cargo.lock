@@ -479,6 +479,7 @@ dependencies = [
  "isdb-caption",
  "isdb-mkv",
  "isdb-mmt",
+ "isdb-si",
  "isdb-tlv",
  "isdb-ts",
  "tracing",

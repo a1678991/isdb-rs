@@ -42,6 +42,52 @@ const MAX_EXTRAPOLATION: u32 = 64;
 /// row's AUs).
 #[must_use]
 pub fn au_times(t: &AssetTiming, mpu: u32, index: usize) -> Option<(u64, u64)> {
+    let (pts, dts, scale) = au_units(t, mpu, index)?;
+    Some((to_90k(pts, scale), to_90k(dts, scale)))
+}
+
+/// The presentation time of access unit `index` (decode order) of `mpu` as
+/// the NTP timestamp the descriptors state it in; `None` as [`au_times`].
+#[must_use]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the NTP timestamp's own 64-bit ring"
+)]
+pub fn au_ntp(t: &AssetTiming, mpu: u32, index: usize) -> Option<u64> {
+    let (pts, _, scale) = au_units(t, mpu, index)?;
+    Some(pts.div_euclid(scale) as u64)
+}
+
+/// One instant on both of the recorder's clocks: the unwrapped 90 kHz PTS
+/// (whose 33 bits say nothing of the date) and the NTP time it stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Clock {
+    /// The unwrapped PTS.
+    pub ticks: i64,
+    /// Its NTP timestamp.
+    pub ntp: u64,
+}
+
+impl Clock {
+    /// The unwrapped PTS of the whole NTP second `seconds`, the nearest way
+    /// round the NTP ring (136 years), so an NTP era change costs nothing.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_wrap,
+        clippy::cast_possible_truncation,
+        reason = "a signed distance on the ring; ±68 years of ticks fit i64"
+    )]
+    pub fn ticks_at(self, seconds: u32) -> i64 {
+        let distance = (u64::from(seconds) << 32).wrapping_sub(self.ntp) as i64;
+        let ticks = (i128::from(distance) * TS_HZ + (1 << 31)) >> 32;
+        self.ticks + ticks as i64
+    }
+}
+
+/// The `(pts, dts, scale)` of an access unit, the times in units of
+/// 1/(2^32 · `scale`) s.
+fn au_units(t: &AssetTiming, mpu: u32, index: usize) -> Option<(i128, i128, i128)> {
     let scale = i128::from(t.timescale.filter(|&s| s != 0)?);
     let row = nearest(&t.rows, mpu)?.1;
     let offsets = row
@@ -59,7 +105,7 @@ pub fn au_times(t: &AssetTiming, mpu: u32, index: usize) -> Option<(u64, u64)> {
     let anchor = i128::from(ntp) * scale + ((steps * duration) << 32);
     let dts = anchor + ((before - i128::from(row.decoding_time_offset)) << 32);
     let pts = dts + (dts_pts << 32);
-    Some((to_90k(pts, scale), to_90k(dts, scale)))
+    Some((pts, dts, scale))
 }
 
 /// The number of access units of `mpu` (its row's, or the nearest row's
@@ -197,6 +243,50 @@ mod tests {
             assert_eq!(p, d);
             assert_eq!(p, 450_000 + 1920 * i as u64);
         }
+    }
+
+    #[test]
+    fn au_ntp_is_the_time_au_times_wraps() {
+        let t = video(4_001_996_504u64 << 32);
+        for i in 0..32 {
+            let ntp = au_ntp(&t, 100, i).unwrap();
+            let (pts, _) = au_times(&t, 100, i).unwrap();
+            let ticks = (i128::from(ntp) * TS_HZ) >> 32;
+            let ring = u64::try_from(ticks & i128::from(TS_MASK)).unwrap();
+            let diff = ring.wrapping_sub(pts) & TS_MASK;
+            assert!(diff <= 1 || diff == TS_MASK, "{i}: off by {diff}");
+        }
+        // The first displayed picture is `PT`, but for the encoder's one
+        // 180 kHz tick of rounding (dts 9009 − 9010, offset 0).
+        assert_eq!(
+            au_ntp(&t, 100, 3),
+            Some((4_001_996_504u64 << 32) - (1u64 << 32) / 180_000 - 1)
+        );
+    }
+
+    #[test]
+    fn clock_places_seconds_beyond_the_33_bit_ring() {
+        // Half a second past a whole NTP second.
+        let c = Clock {
+            ticks: 1_000,
+            ntp: (4_001_996_504u64 << 32) | (1 << 31),
+        };
+        assert_eq!(c.ticks_at(4_001_996_505), 1_000 + 45_000);
+        assert_eq!(c.ticks_at(4_001_996_504), 1_000 - 45_000);
+        // Two days on: past the ring of ≈ 26.5 h.
+        assert_eq!(
+            c.ticks_at(4_001_996_504 + 172_800),
+            1_000 - 45_000 + 172_800 * 90_000
+        );
+    }
+
+    #[test]
+    fn clock_crosses_the_ntp_era() {
+        let c = Clock {
+            ticks: 0,
+            ntp: u64::from(u32::MAX) << 32,
+        };
+        assert_eq!(c.ticks_at(9), 10 * 90_000);
     }
 
     #[test]

@@ -100,7 +100,8 @@ Around the physical layers:
 - **Playable files from advanced BS** — `isdb-remux` turns a clear TLV
   stream into a timed MPEG-TS or a Matroska file with every audio track,
   the captions (SubRip / WebVTT, keeping the broadcast's layout and colours
-  where WebVTT can) and the data broadcasting packages.
+  where WebVTT can) and the data broadcasting packages; the Matroska file
+  has a chapter per programme of the MH-EIT.
 - **SDR I/O** — HackRF One and the ADALM-Pluto family (USB or Ethernet),
   raw IQ capture with SigMF metadata, a satellite IF survey that finds the
   symbol rate, carrier and system, and an FPGA symbol front end for the
