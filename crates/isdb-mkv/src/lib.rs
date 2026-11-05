@@ -234,13 +234,18 @@ pub struct Chapter {
 
 /// One spilled frame.
 #[derive(Debug, Clone, Copy)]
-struct Indexed {
-    /// The write order: the decode time (ms).
-    order: i64,
-    /// The block time: the presentation time (ms).
-    time: i64,
-    track: u64,
-    keyframe: bool,
+pub struct Frame {
+    /// The write order: the decode time, in the unit it was given.
+    pub order: i64,
+    /// The block time: the presentation time, in the unit it was given.
+    pub time: i64,
+    /// Its track.
+    pub track: u64,
+    /// A random access point.
+    pub keyframe: bool,
+    /// Needs pictures before the random access point it follows
+    /// ([`Writer::mark_needs_previous`]).
+    pub needs_previous: bool,
     /// A text block's duration (ms).
     duration: Option<i64>,
     /// Where its bytes are in the scratch.
@@ -259,7 +264,7 @@ pub struct Writer<W: Write + Seek, S: Read + Write + Seek> {
     tracks: Vec<Track>,
     title: Option<String>,
     app: String,
-    index: Vec<Indexed>,
+    index: Vec<Frame>,
     attachments: Vec<(String, String, String, Vec<u8>)>,
     chapters: Vec<Chapter>,
 }
@@ -333,6 +338,63 @@ impl<W: Write + Seek, S: Read + Write + Seek> Writer<W, S> {
         ));
     }
 
+    /// The frames given so far, in arrival order (a track's own in its decode
+    /// order).
+    #[must_use]
+    pub fn frames(&self) -> &[Frame] {
+        &self.index
+    }
+
+    /// Mark the last frame given as needing pictures before the random access
+    /// point it follows (an HEVC RASL picture), for [`Writer::part`]'s caller.
+    pub fn mark_needs_previous(&mut self) {
+        if let Some(f) = self.index.last_mut() {
+            f.needs_previous = true;
+        }
+    }
+
+    /// A writer over `out` for the frames `keep` selects, read from `scratch`,
+    /// another handle on this writer's scratch. It starts with no tracks, title,
+    /// chapters or attachments, and frames in their given numbering and unit
+    /// ([`Writer::renumber`], [`Writer::rebase`]); frames given to it go to the end
+    /// of the scratch. Finish each part before starting the next.
+    ///
+    /// # Errors
+    ///
+    /// The scratch's write and seek.
+    pub fn part<O: Write + Seek, T: Read + Write + Seek>(
+        &mut self,
+        out: O,
+        mut scratch: T,
+        mut keep: impl FnMut(&Frame) -> bool,
+    ) -> io::Result<Writer<O, T>> {
+        self.spill()?;
+        self.scratch.flush()?;
+        let scratch_len = scratch.seek(SeekFrom::End(0))?;
+        Ok(Writer {
+            out,
+            scratch,
+            pending: Vec::new(),
+            scratch_len,
+            tracks: Vec::new(),
+            title: None,
+            app: self.app.clone(),
+            index: self.index.iter().filter(|f| keep(f)).copied().collect(),
+            attachments: Vec::new(),
+            chapters: Vec::new(),
+        })
+    }
+
+    /// Write out what waits in the scratch's buffer, at the scratch's end.
+    fn spill(&mut self) -> io::Result<()> {
+        if !self.pending.is_empty() {
+            self.scratch.seek(SeekFrom::End(0))?;
+            self.scratch.write_all(&self.pending)?;
+            self.pending.clear();
+        }
+        Ok(())
+    }
+
     /// Add a chapter, in the order a player lists them.
     pub fn add_chapter(&mut self, c: Chapter) {
         self.chapters.push(c);
@@ -362,14 +424,14 @@ impl<W: Write + Seek, S: Read + Write + Seek> Writer<W, S> {
         };
         self.pending.extend_from_slice(data);
         if self.pending.len() >= SPILL_BUFFER {
-            self.scratch.write_all(&self.pending)?;
-            self.pending.clear();
+            self.spill()?;
         }
-        self.index.push(Indexed {
+        self.index.push(Frame {
             order,
             time,
             track,
             keyframe,
+            needs_previous: false,
             duration,
             at: self.scratch_len,
             len,
@@ -384,7 +446,7 @@ impl<W: Write + Seek, S: Read + Write + Seek> Writer<W, S> {
     ///
     /// The writes' and the scratch reads' own.
     pub fn finish(mut self) -> io::Result<(W, S)> {
-        self.scratch.write_all(&self.pending)?;
+        self.spill()?;
         self.pending = Vec::new();
         self.scratch.flush()?;
         // Decode order across the tracks; the sort is stable, so a
@@ -880,6 +942,94 @@ mod tests {
             [id::CHAPTER_UID, id::CHAPTER_TIME_START]
         );
         assert_eq!(uint_at(&out, second[0]), 2);
+    }
+
+    /// Two parts of one scratch: each holds its own frames with its own track
+    /// and timeline, and text given to a part lands in the shared scratch.
+    #[test]
+    fn parts_of_one_scratch() {
+        let path = std::env::temp_dir().join(format!("isdb-mkv-part-{}", std::process::id()));
+        let scratch = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        let handle = || scratch.try_clone().unwrap();
+        let mut w = Writer::new(Cursor::new(Vec::new()), handle(), "test");
+        for (t, byte) in (0i64..4).zip(1u8..) {
+            w.frame(1, t * 900, t * 900, true, None, &[byte; 3])
+                .unwrap();
+        }
+        w.mark_needs_previous();
+        assert!(w.frames()[3].needs_previous);
+        let audio = Track {
+            kind: Kind::Aac {
+                config: vec![0x11, 0x90],
+                rate: 48000,
+                channels: 2,
+            },
+            language: None,
+            name: None,
+            default: true,
+        };
+        let text = Track {
+            kind: Kind::Text,
+            language: None,
+            name: None,
+            default: false,
+        };
+        let mut written = Vec::new();
+        for (from, to) in [(0, 1800), (1800, 9000)] {
+            let mut p = w
+                .part(Cursor::new(Vec::new()), handle(), |f| {
+                    (from..to).contains(&f.time)
+                })
+                .unwrap();
+            // Track numbers start again; the frames came as track 1.
+            p.renumber(&[Some(1)]);
+            assert_eq!(p.add_track(audio.clone()), 1);
+            p.rebase(from, 90);
+            let n = p.add_track(text.clone());
+            p.frame(n, 5, 5, true, Some(1), b"cue").unwrap();
+            let (out, _) = p.finish().unwrap();
+            written.push(out.into_inner());
+        }
+        std::fs::remove_file(&path).unwrap();
+        let block_bytes = |out: &[u8]| -> Vec<u8> {
+            let mut v = Vec::new();
+            for e in top_level(out).iter().filter(|e| e.0 == id::CLUSTER) {
+                for b in children(out, e.1, e.2) {
+                    if b.0 == id::SIMPLE_BLOCK {
+                        v.push(out[b.1 + 4]);
+                    }
+                }
+            }
+            v
+        };
+        assert_eq!(block_bytes(&written[0]), [1, 2]);
+        assert_eq!(block_bytes(&written[1]), [3, 4]);
+        assert_eq!(blocks_of_track(&written[1], 1), [0, 10]);
+        for out in &written {
+            assert!(out.windows(3).any(|w| w == b"cue"));
+        }
+    }
+
+    /// The times of one track's simple blocks.
+    fn blocks_of_track(out: &[u8], track: u8) -> Vec<i64> {
+        let mut v = Vec::new();
+        for e in top_level(out).iter().filter(|e| e.0 == id::CLUSTER) {
+            let parts = children(out, e.1, e.2);
+            let ts = uint_at(out, parts[0]) as i64;
+            for b in parts.iter().filter(|b| b.0 == id::SIMPLE_BLOCK) {
+                if out[b.1] & 0x7f == track {
+                    let rel = i16::from_be_bytes([out[b.1 + 1], out[b.1 + 2]]);
+                    v.push(ts + i64::from(rel));
+                }
+            }
+        }
+        v
     }
 
     #[test]
