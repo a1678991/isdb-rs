@@ -47,7 +47,7 @@ impl AssetTiming {
 
     /// Take one descriptor of the asset's loop; whether it changed
     /// anything.
-    fn add(&mut self, d: &Descriptor) -> bool {
+    pub(crate) fn add(&mut self, d: &Descriptor) -> bool {
         let mut changed = false;
         match d {
             Descriptor::MpuTimestamp(rows) => {

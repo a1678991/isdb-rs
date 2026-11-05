@@ -2,9 +2,16 @@
 //! §7.3.3.9, Table 7-18) on the recording's timeline.
 //!
 //! An event's `start_time` is JST and the media's clock is the NTP timestamp
-//! of the MPT's descriptors, UTC (B60 Chapter 3), so a start is exact on the
-//! timeline ([`crate::timing::Clock`]) — the broadcast's *scheduled* time, not
-//! a detected change of the picture.
+//! of the MPT's descriptors, UTC (B60 Chapter 3), so the schedule has an exact
+//! place on the timeline ([`crate::timing::Clock`]). The stream switches a little
+//! after it, and a chapter starts where it really does, on the video's key picture
+//! ([`Schedule::chapters`], `crates/isdb-remux/SPEC-NOTES.md`):
+//!
+//! 1. where a new coded video sequence starts in the 10 s after the
+//!    scheduled time (an end of sequence NAL unit, a changed SPS);
+//! 2. else at the first MPU sent wholly under the first new MPT version in the
+//!    window: the second it lists, the first being already on its way;
+//! 3. else, with neither seen, at the scheduled time (and counted).
 //!
 //! The tables are read for the whole run, not at its end: a p/f section drops
 //! an event as soon as it has aired. What each event says accumulates by
@@ -18,10 +25,12 @@
 //!   and has no chapter; another overlap ends the earlier chapter at the next
 //!   one's start.
 
-use crate::timing::Clock;
+use crate::signal::AssetTiming;
+use crate::timing::{Clock, au_ntp};
 use isdb_mkv::Chapter;
+use isdb_mmt::desc::Descriptor;
 use isdb_mmt::message::TableBytes;
-use isdb_mmt::table::Eit;
+use isdb_mmt::table::{Eit, Mpt};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
@@ -31,6 +40,11 @@ const TICKS: i64 = 90_000;
 const MJD_NTP_EPOCH: i64 = 15_020;
 /// JST − UTC (B60 §7.4.3.32: "Japan Standard Time (UTC+9 hours)").
 const JST_OFFSET: i64 = 9 * 3600;
+
+/// How long after an event's scheduled time a switch of the stream counts as
+/// its own (seconds). The recordings' are 2.1–2.6 s after it; other MPT versions
+/// come a minute away.
+const WINDOW: u64 = 10;
 
 /// What the tables say of one event.
 #[derive(Debug, Clone)]
@@ -54,6 +68,22 @@ pub struct Schedule {
     services: BTreeMap<u16, BTreeMap<u16, Entry>>,
     /// Sections taken.
     read: u64,
+    /// The MPT version last seen, by the packet id it came on.
+    versions: BTreeMap<u16, u8>,
+    /// Per service, where each new MPT version takes effect (NTP timestamps).
+    versions_in_force: BTreeMap<u16, Vec<u64>>,
+    /// Per service, where a new coded video sequence starts (NTP timestamps).
+    sequences: BTreeMap<u16, Vec<u64>>,
+}
+
+/// The chapters of a service.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Chapters {
+    /// In time order.
+    pub list: Vec<Chapter>,
+    /// How many start at their scheduled time, no switch of the stream having
+    /// been seen (one clipped to the recording's start is not counted).
+    pub scheduled: usize,
 }
 
 impl Schedule {
@@ -63,13 +93,50 @@ impl Schedule {
         Self::default()
     }
 
-    /// One table of a control message: an MH-EIT section (table id 8Bh p/f,
-    /// 8Ch–9Bh schedule) in force updates its service's events. Any other
-    /// table, or a section that does not check, changes nothing.
+    /// One table of a control message: an MPT, or an MH-EIT section. Any
+    /// other table, or one that does not check, changes nothing.
     pub fn feed(&mut self, t: &TableBytes) {
-        if !matches!(t.bytes.first(), Some(0x8B..=0x9B)) {
+        match t.bytes.first() {
+            Some(0x20) if t.message_id == 0 => self.mpt(t),
+            Some(0x8B..=0x9B) => self.eit(t),
+            _ => {}
+        }
+    }
+
+    /// A new coded video sequence of `service` starts at the NTP timestamp
+    /// `ntp` (its first access unit in decode order).
+    pub fn sequence_start(&mut self, service: u16, ntp: u64) {
+        self.sequences.entry(service).or_default().push(ntp);
+    }
+
+    /// The new coded video sequences noted for `service`.
+    #[cfg(test)]
+    pub(crate) fn sequence_count(&self, service: u16) -> usize {
+        self.sequences.get(&service).map_or(0, Vec::len)
+    }
+
+    /// An MPT: every copy is the same until the version moves, and the first
+    /// version seen is no change.
+    fn mpt(&mut self, t: &TableBytes) {
+        let Some(&version) = t.bytes.get(1) else {
+            return;
+        };
+        if self.versions.get(&t.packet_id) == Some(&version) {
             return;
         }
+        let Some(mpt) = Mpt::parse(&t.bytes) else {
+            return;
+        };
+        if self.versions.insert(t.packet_id, version).is_none() {
+            return;
+        }
+        if let (Some(service), Some(ntp)) = (mpt.service_id(), first_whole_mpu(&mpt)) {
+            self.versions_in_force.entry(service).or_default().push(ntp);
+        }
+    }
+
+    /// An MH-EIT section (table id 8Bh p/f, 8Ch–9Bh schedule), when in force.
+    fn eit(&mut self, t: &TableBytes) {
         let Ok(eit) = Eit::parse(&t.bytes) else {
             return;
         };
@@ -107,13 +174,28 @@ impl Schedule {
         }
     }
 
+    /// Where the stream of `service` really switches for a change scheduled
+    /// at the NTP second `seconds`, when a switch is seen.
+    fn switch_after(&self, service: u16, seconds: u32) -> Option<u64> {
+        let scheduled = u64::from(seconds) << 32;
+        let earliest = |from: &BTreeMap<u16, Vec<u64>>| {
+            from.get(&service)?
+                .iter()
+                .map(|&ntp| ntp.wrapping_sub(scheduled))
+                .filter(|&after| after < WINDOW << 32)
+                .min()
+                .map(|after| scheduled.wrapping_add(after))
+        };
+        earliest(&self.sequences).or_else(|| earliest(&self.versions_in_force))
+    }
+
     /// The chapters of `service` on the timeline from the unwrapped PTS
     /// `origin` to `end`, in time order: each event in that span, clipped to
-    /// it, with `clock` placing the event's time.
+    /// it, with `clock` placing the event's time and the stream's switches.
     #[must_use]
-    pub fn chapters(&self, service: u16, clock: Clock, origin: i64, end: i64) -> Vec<Chapter> {
+    pub fn chapters(&self, service: u16, clock: Clock, origin: i64, end: i64) -> Chapters {
         let Some(events) = self.services.get(&service) else {
-            return Vec::new();
+            return Chapters::default();
         };
         let mut placed: Vec<Placed> = events
             .values()
@@ -136,22 +218,37 @@ impl Schedule {
             }
         }
         kept.sort_by_key(|p| p.start);
-        kept.iter()
-            .enumerate()
-            .filter_map(|(i, p)| {
-                let start = p.start.max(origin);
-                let stop = [p.stop, kept.get(i + 1).map(|n| n.start)]
-                    .into_iter()
-                    .flatten()
-                    .fold(end, std::cmp::Ord::min);
-                (stop > start).then(|| Chapter {
-                    start_ns: nanoseconds(start - origin),
-                    end_ns: Some(nanoseconds(stop - origin)),
-                    title: p.entry.name.clone(),
-                    language: p.entry.language.clone(),
-                })
-            })
-            .collect()
+        // A scheduled time as the stream's, and whether a switch was seen.
+        let real = |seconds: u32, scheduled: i64| {
+            self.switch_after(service, seconds)
+                .map_or((scheduled, false), |ntp| (clock.ticks_of(ntp), true))
+        };
+        let starts: Vec<(i64, bool)> = kept.iter().map(|p| real(p.entry.start, p.start)).collect();
+        let mut chapters = Chapters::default();
+        for (i, p) in kept.iter().enumerate() {
+            let (at, switched) = starts[i];
+            let start = at.max(origin);
+            let own_end = p
+                .entry
+                .duration
+                .zip(p.stop)
+                .map(|(d, stop)| real(p.entry.start.wrapping_add(d), stop).0);
+            let stop = [own_end, starts.get(i + 1).map(|s| s.0)]
+                .into_iter()
+                .flatten()
+                .fold(end, std::cmp::Ord::min);
+            if stop <= start {
+                continue;
+            }
+            chapters.scheduled += usize::from(!switched && at > origin);
+            chapters.list.push(Chapter {
+                start_ns: nanoseconds(start - origin),
+                end_ns: Some(nanoseconds(stop - origin)),
+                title: p.entry.name.clone(),
+                language: p.entry.language.clone(),
+            });
+        }
+        chapters
     }
 }
 
@@ -168,6 +265,27 @@ impl Placed<'_> {
     fn covers(&self, t: i64) -> bool {
         self.start <= t && t < self.stop.unwrap_or(self.start + 1)
     }
+}
+
+/// Where an MPT version takes effect on the video: the key picture (the first
+/// access unit in decode order) of the second MPU the version lists, or its
+/// presentation time when the descriptors do not time the picture. The first MPU
+/// listed was being sent when the version came (B60 does not define this:
+/// `crates/isdb-remux/SPEC-NOTES.md`).
+fn first_whole_mpu(mpt: &Mpt) -> Option<u64> {
+    let video = mpt
+        .assets
+        .iter()
+        .find(|a| matches!(&a.asset_type, b"hev1" | b"hvc1"))?;
+    let row = video.descriptors.iter().find_map(|d| match d {
+        Descriptor::MpuTimestamp(rows) => rows.get(1).or_else(|| rows.first()),
+        _ => None,
+    })?;
+    let mut timing = AssetTiming::default();
+    for d in &video.descriptors {
+        timing.add(d);
+    }
+    au_ntp(&timing, row.mpu_sequence_number, 0).or(Some(row.presentation_time))
 }
 
 /// An event's name and, when it is one, its ISO 639 language.
@@ -198,9 +316,11 @@ fn ntp_seconds(start: isdb_si::time::MjdTime) -> Option<u32> {
     Some(((i64::from(start.mjd) - MJD_NTP_EPOCH) * 86_400 + of_day - JST_OFFSET) as u32)
 }
 
-/// 90 kHz ticks from the origin as nanoseconds.
+/// 90 kHz ticks from the origin as nanoseconds, rounded to the millisecond as
+/// the blocks' times are ([`isdb_mkv::Writer::rebase`]): a chapter at a key picture
+/// is at its block's time, where a seek lands on it and not a picture group early.
 fn nanoseconds(ticks: i64) -> u64 {
-    u64::try_from(ticks.max(0)).unwrap_or(0) * 100_000 / 9
+    u64::try_from((ticks.max(0) + 45) / 90).unwrap_or(0) * 1_000_000
 }
 
 #[cfg(test)]
@@ -278,6 +398,7 @@ mod tests {
     fn listed(s: &Schedule, from: u32, to: u32) -> Vec<(u64, u64, Option<String>)> {
         let (clock, origin, end) = span(from, to);
         s.chapters(SERVICE, clock, origin, end)
+            .list
             .into_iter()
             .map(|c| {
                 (
@@ -351,7 +472,9 @@ mod tests {
             ticks: 5_000_000,
             ntp: (u64::from(at(0x005959)) << 32) | (1 << 31),
         };
-        let c = s.chapters(SERVICE, clock, 5_000_000, 5_000_000 + 3_600 * TICKS);
+        let c = s
+            .chapters(SERVICE, clock, 5_000_000, 5_000_000 + 3_600 * TICKS)
+            .list;
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].start_ns, 500_000_000);
         assert_eq!(c[0].end_ns, Some(3_600_000_000_000));
@@ -381,7 +504,7 @@ mod tests {
             &[(1, 0x010000, 0x010000, None)],
         ));
         let (clock, origin, end) = span(0x010000, 0x020000);
-        let c = s.chapters(SERVICE, clock, origin, end);
+        let c = s.chapters(SERVICE, clock, origin, end).list;
         assert_eq!(c[0].title.as_deref(), Some("名前"));
         assert_eq!(c[0].language.as_deref(), Some("jpn"));
     }
@@ -616,6 +739,156 @@ mod tests {
             bytes: Vec::new(),
         });
         assert_eq!(listed(&s, 0x010000, 0x020000), vec![]);
+    }
+
+    /// An MPT of `service` at `version`: a video asset with its MPU timestamps
+    /// `(mpu, seconds after the NTP second base)`, and, with `timed`, the on-air
+    /// row of one access unit per MPU (key picture 21020/180000 s after the MPU's
+    /// presentation time).
+    fn mpt(service: u16, version: u8, base: u32, rows: &[(u32, u32)], timed: bool) -> TableBytes {
+        let mut d = vec![0x00, 0x01, u8::try_from(rows.len() * 12).unwrap()];
+        for &(mpu, after) in rows {
+            d.extend(mpu.to_be_bytes());
+            d.extend((u64::from(base + after) << 32).to_be_bytes());
+        }
+        if timed {
+            let mut e = vec![0b0000_0011];
+            e.extend(180_000u32.to_be_bytes());
+            e.extend(3003u16.to_be_bytes());
+            for &(mpu, _) in rows {
+                e.extend(mpu.to_be_bytes());
+                e.extend([0, 0x23, 0x32, 1, 0x75, 0x4e]);
+            }
+            d.extend([0x80, 0x26, u8::try_from(e.len()).unwrap()]);
+            d.extend(e);
+        }
+        let mut t = vec![0x20, version, 0, 0, 0xFC, 2];
+        t.extend(service.to_be_bytes());
+        t.extend([0, 0, 1, 0, 0, 0, 0, 0, 0]);
+        t.extend(*b"hev1");
+        t.extend([0xFE, 0]);
+        t.extend(u16::try_from(d.len()).unwrap().to_be_bytes());
+        t.extend(d);
+        let len = u16::try_from(t.len() - 4).unwrap();
+        t[2..4].copy_from_slice(&len.to_be_bytes());
+        TableBytes {
+            packet_id: 0xff02,
+            message_id: 0,
+            bytes: t,
+        }
+    }
+
+    /// Two events meeting at 02:00:00, recorded from 01:59:00 to 02:01:00.
+    fn two_events() -> Schedule {
+        let mut s = Schedule::new();
+        s.feed(&section(
+            0x8C,
+            SERVICE,
+            true,
+            &[
+                (1, 0x010000, 0x010000, Some("one")),
+                (2, 0x020000, 0x010000, Some("two")),
+            ],
+        ));
+        s
+    }
+
+    /// `(start ms, end ms)` of its chapters, and how many are at the schedule.
+    fn millis(s: &Schedule) -> (Vec<(u64, u64)>, usize) {
+        let (clock, origin, end) = span(0x015900, 0x020100);
+        let c = s.chapters(SERVICE, clock, origin, end);
+        let list = c
+            .list
+            .iter()
+            .map(|c| (c.start_ns / 1_000_000, c.end_ns.unwrap() / 1_000_000))
+            .collect();
+        (list, c.scheduled)
+    }
+
+    #[test]
+    fn with_no_switch_seen_a_chapter_is_at_the_schedule_and_counted() {
+        let (list, scheduled) = millis(&two_events());
+        assert_eq!(list, vec![(0, 60_000), (60_000, 120_000)]);
+        assert_eq!(scheduled, 1, "the clipped first chapter does not count");
+    }
+
+    #[test]
+    fn a_new_mpt_version_moves_the_change_to_its_first_whole_mpus_key_picture() {
+        let mut s = two_events();
+        let n = at(0x020000);
+        s.feed(&mpt(SERVICE, 1, n, &[(10, 0)], true));
+        s.feed(&mpt(SERVICE, 2, n, &[(20, 2), (21, 3), (22, 4)], true));
+        // A copy of the same version is no second change.
+        s.feed(&mpt(SERVICE, 2, n, &[(21, 3), (22, 4)], true));
+        // 60 s + MPU 21's 3 s + 21020/180000 s, to the millisecond.
+        let (list, scheduled) = millis(&s);
+        assert_eq!(list, vec![(0, 63_117), (63_117, 120_000)]);
+        assert_eq!(scheduled, 0);
+    }
+
+    #[test]
+    fn an_untimed_picture_falls_back_to_the_mpus_presentation_time() {
+        let mut s = two_events();
+        let n = at(0x020000);
+        s.feed(&mpt(SERVICE, 1, n, &[(10, 0)], false));
+        s.feed(&mpt(SERVICE, 2, n, &[(20, 2), (21, 3)], false));
+        assert_eq!(millis(&s).0, vec![(0, 63_000), (63_000, 120_000)]);
+    }
+
+    #[test]
+    fn a_new_video_sequence_outranks_the_mpt_version() {
+        let mut s = two_events();
+        let n = at(0x020000);
+        s.feed(&mpt(SERVICE, 1, n, &[(10, 0)], false));
+        s.feed(&mpt(SERVICE, 2, n, &[(20, 2), (21, 3)], false));
+        s.sequence_start(SERVICE, (u64::from(n) << 32) + (5u64 << 31));
+        assert_eq!(millis(&s).0, vec![(0, 62_500), (62_500, 120_000)]);
+    }
+
+    #[test]
+    fn a_switch_outside_the_window_or_of_another_service_is_not_the_events() {
+        let mut s = two_events();
+        let n = at(0x020000);
+        // The first version seen is no change.
+        s.feed(&mpt(SERVICE, 1, n, &[(10, 2), (11, 3)], false));
+        // A version with no event: its second MPU a minute before, and one
+        // past the window. (BS-TBS 4K's 02:59 one.)
+        s.feed(&mpt(SERVICE, 2, n - 60, &[(20, 2), (21, 3)], false));
+        s.feed(&mpt(SERVICE, 3, n, &[(30, 10), (31, 11)], false));
+        s.sequence_start(0x0066, u64::from(n + 1) << 32);
+        s.feed(&mpt(0x0066, 1, n, &[(40, 2), (41, 3)], false));
+        let (list, scheduled) = millis(&s);
+        assert_eq!(list, vec![(0, 60_000), (60_000, 120_000)]);
+        assert_eq!(scheduled, 1);
+    }
+
+    #[test]
+    fn an_events_end_with_nothing_after_it_moves_too() {
+        let mut s = Schedule::new();
+        s.feed(&section(
+            0x8C,
+            SERVICE,
+            true,
+            &[(1, 0x020000, 0x000030, Some("short"))],
+        ));
+        let n = at(0x020030);
+        s.feed(&mpt(SERVICE, 1, n, &[(10, 0)], false));
+        s.feed(&mpt(SERVICE, 2, n, &[(20, 2), (21, 3)], false));
+        assert_eq!(millis(&s).0, vec![(60_000, 93_000)]);
+    }
+
+    #[test]
+    fn a_malformed_mpt_changes_nothing() {
+        let mut s = two_events();
+        let whole = mpt(SERVICE, 2, at(0x020000), &[(20, 2), (21, 3)], true);
+        s.feed(&mpt(SERVICE, 1, at(0x020000), &[(10, 0)], false));
+        for n in 0..whole.bytes.len() {
+            s.feed(&TableBytes {
+                bytes: whole.bytes[..n].to_vec(),
+                ..whole.clone()
+            });
+        }
+        assert_eq!(millis(&s).1, 1);
     }
 
     #[test]

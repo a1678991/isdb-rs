@@ -70,18 +70,27 @@ pub struct Clock {
 }
 
 impl Clock {
-    /// The unwrapped PTS of the whole NTP second `seconds`, the nearest way
-    /// round the NTP ring (136 years), so an NTP era change costs nothing.
+    /// The unwrapped PTS of an NTP timestamp, the nearest way round the NTP
+    /// ring (136 years), so an NTP era change costs nothing.
     #[must_use]
     #[allow(
         clippy::cast_possible_wrap,
         clippy::cast_possible_truncation,
         reason = "a signed distance on the ring; ±68 years of ticks fit i64"
     )]
+    pub fn ticks_of(self, ntp: u64) -> i64 {
+        // Rounded as a PTS is ([`to_90k`]), not from the distance, so the
+        // access unit at `ntp` comes out as its own PTS to the tick.
+        let rounded = |t: i128| (t * TS_HZ + (1 << 31)) >> 32;
+        let from = i128::from(self.ntp);
+        let distance = i128::from(ntp.wrapping_sub(self.ntp) as i64);
+        self.ticks + (rounded(from + distance) - rounded(from)) as i64
+    }
+
+    /// The unwrapped PTS of the whole NTP second `seconds`.
+    #[must_use]
     pub fn ticks_at(self, seconds: u32) -> i64 {
-        let distance = (u64::from(seconds) << 32).wrapping_sub(self.ntp) as i64;
-        let ticks = (i128::from(distance) * TS_HZ + (1 << 31)) >> 32;
-        self.ticks + ticks as i64
+        self.ticks_of(u64::from(seconds) << 32)
     }
 }
 

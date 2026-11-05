@@ -99,15 +99,25 @@ without ffmpeg:
 Chapters: one per event of the service's MH-EIT in the recording, named by
 its MH-short event descriptor (the broadcast's name as sent, symbols such as
 🆞 included) in the descriptor's language, and clipped to the recording: an event
-already running starts at 0, and the last ends with the file. The event's JST
-`start_time` is placed by the MPT's NTP clock, so the mark is the exact
-**scheduled** time, not a detected change of picture. On the BS17 recording the
-picture cuts 2.665 s and 2.668 s after the two marks, an hour apart; nothing
-corrects for this. A player seeking to a chapter lands on the keyframe at or
-before the mark (up to an MPU, ≈ 0.53 s). No MH-EIT seen means no chapters; a time
-no event covers has none. How tables that disagree are merged:
-[SPEC-NOTES.md](SPEC-NOTES.md#event-merge-which-tables-description-of-an-event-a-chapter-takes).
+already running starts at 0, and the last ends with the file. A chapter starts
+where the stream really switches, not at the schedule, which the picture follows
+by about 2.7 s on the BS17 recordings: at a new coded video sequence in the 10 s
+after the scheduled time, else at the first MPU sent wholly under a new MPT version.
+Either way the mark is that MPU's key picture, so a seek lands in the chapter, up
+to 117 ms after the cut. With neither seen, the mark is the scheduled time, and the
+report counts it. No MH-EIT seen means no chapters; a time no event covers has none.
+The evidence and how tables that disagree are merged:
+[SPEC-NOTES.md](SPEC-NOTES.md#switch-point-where-a-programme-really-switches-in-the-stream).
 The TS form has no chapters.
+
+**A stream's structure can change mid-recording, and the file does not follow it
+yet.** On one BS17 recording, at a programme change 5.1 audio on `0xf310` becomes
+stereo, the stereo asset `0xf311` ends, and the video goes from HLG to BT.2020 with a
+new SPS. A track keeps its first configuration, so ffmpeg and mpv cannot decode the
+stereo frames in the 5.1 track, and that recording's last 12 minutes have no audio
+they can play (the run warns). The TS form carries LATM with its in-band
+configuration instead. The video's new parameter sets stay in-band, though the track
+still declares the first ones.
 
 Each track carries the MPT's language (the video / audio component
 descriptors) and the audio its layout (`5.1ch`, `stereo`); the video and the
