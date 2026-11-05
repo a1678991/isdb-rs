@@ -140,7 +140,7 @@ pub struct Written {
 }
 
 /// A data stream's items in arrival order: `[item id u32][length u32][bytes]`,
-/// with each item's arrival (unwrapped PTS) and offset.
+/// with each item's arrival (unwrapped PTS, never going back) and offset.
 #[derive(Default)]
 struct Items {
     bytes: Vec<u8>,
@@ -344,8 +344,18 @@ impl Mkv {
         self.writer.add_chapter(c);
     }
 
-    /// One item of an untimed asset, arriving at the unwrapped PTS `arrival`
-    /// (`None` before the first picture).
+    /// Every data item's arrival, by asset and MPU then in order.
+    #[cfg(test)]
+    pub(crate) fn arrivals(&self) -> Vec<i64> {
+        self.data
+            .values()
+            .flat_map(|d| d.marks.iter().map(|m| m.0))
+            .collect()
+    }
+
+    /// One item of an untimed asset, arriving when `arrival` is the latest
+    /// unwrapped PTS written (`None` before any): it never goes back, which
+    /// the search that splits the items by part relies on.
     pub fn data(
         &mut self,
         pid: u16,
