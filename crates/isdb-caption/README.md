@@ -42,13 +42,12 @@ Two patterns on the BS recordings (2026-10-26):
 - BS11 (Shop Channel): `begin` alone; the next document replaces the
   cue, and a document `<div><p><span/></p></div>` with no time clears it.
 
-The clock values (`00:42:13.854`) read like offsets from the event's
-start, but they are not tied to it exactly: against the video clock the
-documents arrive 3 s (BS17) to 18 s (BS11) after *event start + begin*,
-with a spread under 0.5 s within one service. The caller aligns the
-document clock to its media by the arrivals (see `isdb-remux --ts`, which
-takes the earliest arrival − begin), and passes the mapping to
-`Timeline::push`.
+The clock values (`00:42:13.854`) count from an origin the MPT names (ARIB
+STD-B60 Table 9-7): on these recordings a `reference_start_time` that moves
+with every event, so documents of different events share clock values and
+one mapping does not hold across a recording. The caller resolves each
+document's clock against its media (`isdb-remux` from
+`isdb_mmt::es::SubtitleInfo`) and passes the mapping to `Timeline::push`.
 
 `cargo run -p isdb-caption --example ttml2srt -- [--vtt] FILE.ttml...`
 converts extracted documents on their own clock.

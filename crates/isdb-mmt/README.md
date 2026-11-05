@@ -12,7 +12,7 @@ reads what they carry.
 | `table` | MPT and PLT (PA message), MH-EIT, MH-SDT, MH-TOT, MH-BIT (M2 section / short section messages), TLV-NIT and AMT (transmission-control packets); CRC-32 checked |
 | `message` | control-message reassembly: divided messages per packet id, aggregated messages split, each message cut into its tables |
 | `mpu` | MPU payload header and MFUs (Table 6-1), divided MFUs reassembled per asset, packet-sequence and MPU-sequence continuity, scrambled payloads counted from their clear header |
-| `es` | HEVC as an Annex B byte stream, MPEG-4 audio as LOAS, caption MFUs (Table 9-1) |
+| `es` | HEVC as an Annex B byte stream, MPEG-4 audio as LOAS, caption MFUs (Table 9-1) and the additional arib subtitle information naming their clock (Table 9-3) |
 | `decoder` | the streaming decoder over a stream's TLV packets: NTP time, TLV-SI, MMT-SI tables kept at their latest version (repeats not decoded again), MFUs with their asset |
 
 Diagnostics are `tracing` events, never printed: every deviation the

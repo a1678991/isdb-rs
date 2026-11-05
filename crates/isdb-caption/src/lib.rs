@@ -11,12 +11,14 @@
 //!   following document replaces it, and a document whose body is empty
 //!   (`<div><p><span/></p></div>`, no time) clears the screen.
 //!
-//! The `begin`/`end` clock values are offsets from the start of the
-//! current event (programme): BS11 18:00 event, captions at 00:42:13;
-//! BS17 18:30 event, captions at 00:13:39 — both with TOT 18:43. A
-//! document's time is therefore resolved by the caller, who knows the
-//! event start and its own media clock; [`Timeline`] takes the document
-//! with that resolution and the arrival time (for an untimed clear).
+//! The `begin`/`end` clock values count from an origin the document does not
+//! name: the MPT's time control mode says which (ARIB STD-B60 Table 9-7), on
+//! the BS recordings a `reference_start_time` that moves with each event. A
+//! document's time is therefore resolved by the caller, who knows that origin
+//! and its own media clock; [`Timeline`] takes the document with that
+//! resolution and the arrival time (for an untimed clear). Documents of
+//! different events can hold the same clock values: the resolution is per
+//! document, not per stream.
 //!
 //! Two outputs:
 //!

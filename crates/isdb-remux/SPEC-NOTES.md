@@ -1,11 +1,41 @@
 # isdb-remux — spec interpretation notes
 
 Specs: ARIB STD-B60 v1.14-E1 (MH-EIT §7.3.3.9, MPT §7.3.3.1, MPU timestamp descriptor
-§7.4.3.5, video component descriptor §7.4.3.19, NTP Chapter 3), H.265 from knowledge
-(SPECS.md §1.2) and RFC 9559 (Matroska chapters §6.6, §20). Only the chapters of the
-Matroska form have notes so far. "The BS17 recordings": clear TLV streams of services
-0x0065, 0x00a1 and 0x00b5, 74 min each, with six event changes between them
-(VERIFICATION.md, "Matroska chapters").
+§7.4.3.5, video component descriptor §7.4.3.19, NTP Chapter 3, caption clock §9.3),
+H.265 from knowledge (SPECS.md §1.2) and RFC 9559 (Matroska chapters §6.6, §20). "The
+BS17 recordings": clear TLV streams of services 0x0065, 0x00a1 and 0x00b5, 74 min each,
+with six event changes between them (VERIFICATION.md, "Matroska chapters").
+
+## caption-clock: where a caption document's time codes fall on the timeline
+- Spec: §9.3 Table 9-7: with TMD `0010`, "Time is represented by time code in TTML
+  document at reference starttime of this descriptor as the starting point", and the
+  reference is "UTC time ... represented by NTP long format"; `1111` is "presenting
+  closed-caption and superimposition promptly, following neither MPU timestamp descriptor
+  nor time code". `start_mpu_sequence_number` is the only tie of a descriptor to the
+  documents it governs; it is optional, and the clause gives no other rule for when a
+  changed one takes effect.
+- Interpretation: a document's time is reference + time code, on the video's clock (both
+  UTC NTP), with the reference in force when the document arrives. A document so placed
+  more than 10 s from its arrival is taken not to be under that reference, and is placed
+  by its arrival: the new MPT version comes about 1 s before the event's first picture, so
+  the old event's last document could be read against the new reference and land far
+  ahead. Mode `1111` is by arrival, a closed document keeping its duration. Modes `0000`,
+  `0001`, `0011`, `0100` and `1000` are not implemented: by arrival, with a warning.
+  Arrival is the stream's NTP clock (§3.2, 30 packets a second on air); without NTP
+  packets, the last picture's PTS, which runs about 0.4 s ahead.
+- Confirmation: on the BS17 recordings of 2026-11-01 (0x0065, 0x00a1, 0x00b5) and
+  2026-11-05 (0x0065), and a BS11 recording (0x00d3), every timed document comes within
+  0.4 s of reference + time code (−0.298 to +0.363 s, per service within 0.07 s), with no
+  outlier over four events of 0x0065; none needed the 10 s rule, **which has only a
+  synthetic test**. 0x0065's references fall 74 and 126 ms before its programmes' first
+  pictures; 0x00a1 and 0x00b5 signal the scheduled minute, 2.7–2.9 s before theirs, and
+  whether their time codes allow for that is not established. Speech begins 0.72 and
+  0.52 s after the cues on 0x0065 (65 and 62 cues, 4.1 and 4.6 sigma), 0.34 and 0.64 s at
+  under 3 sigma on the rest (`tools/caption-sync.py`): no error the size of the 2.8 s, but
+  whether that lead is authored is not established. Modes `0010` and `1111` are the only
+  ones seen. Each TLV stream of these and BS7's three carried one caption service, so
+  assets of two services sharing a packet id are unchecked. Status: confirmed (live
+  data) for the clock and these services; pending real-world check for the other modes.
 
 ## event-time: an event's `start_time` on the media clock
 - Spec: §7.3.3.9: "`start_time` … represents the start time of event by Japan

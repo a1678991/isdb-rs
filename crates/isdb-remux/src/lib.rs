@@ -35,7 +35,7 @@ pub mod split;
 pub mod timing;
 pub mod ts;
 
-use isdb_mmt::decoder::NTP_PORT;
+use isdb_mmt::decoder::{NTP_PORT, ntp_transmit_timestamp};
 use isdb_mmt::message::Messages;
 use isdb_tlv::ip::{compressed, ipv4, ipv6};
 use isdb_tlv::mmtp::{self, PayloadType};
@@ -111,6 +111,9 @@ impl Remux {
             };
             let Some(d) = d else { continue };
             if d.flow.as_ref().is_some_and(|f| f.dport == NTP_PORT) {
+                if let Some(t) = ntp_transmit_timestamp(&d.payload) {
+                    self.session.ntp(t);
+                }
                 continue;
             }
             let Some((h, payload)) = mmtp::parse(&d.payload) else {

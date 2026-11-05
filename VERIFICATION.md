@@ -2933,6 +2933,35 @@ for element with ID 0x465C": a data broadcasting attachment over their 256 MB li
 - **Default directory and overwrite:** on a 400 MB slice, a run without `-o` writes next
   to the input; a second run writes `-2` and leaves the first file alone.
 
+## Caption clock across events, offline (2026-11-05)
+
+`isdb-remux` before and after the fix, on clear TLV recordings of BS17 and BS11, traced
+with the example `captiontrace` and checked with `tools/caption-sync.py`.
+
+| Recording | Before: cues, overlapping the next | After: cues, overlapping | Same cues moved earlier |
+|---|---|---|---|
+| 0x0065, 2026-11-01, 67 min, 4 events | 388 in 0–1305 s, 204 | 625 in 9–4005 s, 0 | not comparable |
+| 0x00a1, 2026-11-01 | 18, 0 | 18, 0 | 0.293 s |
+| 0x00b5, 2026-11-01 | 300, 0 | 300, 0 | 0.165 s |
+| 0x0065, 2026-11-05 (one event with text) | 18, 0 | 18, 0 | 0.315 s |
+| 0x00d3 (BS11), 40 s | 12 | 12 | 0.795 s |
+
+- **End to end:** on the first recording, `--mkv`'s 625 cue times equal the sidecars', and
+  `--split-events` gives its programmes 147, none, 126 and 352 cues, none overlapping.
+  The 237 cues the old build lost had been placed before the timeline's start.
+- **The clock:** arrival minus (reference + time code) on each document, in ms:
+  −9 to 53 on 0x0065 (625 blocks, 2026-11-01), 0 to 34 on 0x0065 (2026-11-05), −237 to −207
+  on 0x00a1, −298 to −238 on 0x00b5, 351 to 363 on 0x00d3. A new reference's MPT version came
+  about 1.1 s before its programme's first picture, on 0x0065 and 0x00b5 alike; so on
+  0x00b5, which signals the scheduled minute, about 1.6 s after the moment it names.
+- **Against the speech:** from each `--split-events` file, the speech-band energy rise
+  after cue starts that follow a pause: speech +0.34 s (17 cues, 2.8 sigma), +0.72 s (65,
+  4.1), +0.52 s (62, 4.6) on 0x0065, +0.64 s (24, 2.5) on 0x00b5. Below 3 sigma this is
+  weak, and no player's rendering or a person's viewing was checked. The old build was not
+  measured against the speech on the same spans.
+- **Services:** the stream of each of the above and BS7's three (0x0097, 0x00ab, 0x008d)
+  has one service with captions; a run's other services are unit-tested only.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received
