@@ -1647,11 +1647,11 @@ STD-B44) is received to TLV streams.
   documents' clock and the video, but the clock restarts with each event's
   `reference_start_time` (B60 Table 9-7): on a BS17 recording of four events, 204 of 388
   cues overlapped within the first 22 minutes, and 625 cues now span the whole 67 minutes
-  with none overlapping. Each document is now placed by the reference in force when it
-  came, on the video's NTP clock, which also moves cues on one event's recordings earlier
+  with none overlapping. Each document is now placed by the reference valid for its
+  MPU, on the video's NTP clock, which also moves cues on one event's recordings earlier
   by 0.17–0.80 s. Time control mode `1111` and the modes not implemented go by arrival, the
   latter with a warning. New: `isdb_mmt::es::SubtitleInfo` (Table 9-3),
-  `isdb_mmt::decoder::ntp_transmit_timestamp`, `Session::ntp`, `AssetTiming::subtitle`,
+  `isdb_mmt::decoder::ntp_transmit_timestamp`, `Session::ntp`, `AssetTiming::subtitle_at`,
   `Clock::ticks_after`, the example `captiontrace` and `tools/caption-sync.py`.
 - `isdb-radio`: the chain's slow loop on the register path never armed a
   capture again after a restart of the chain (START, a lost sync, the

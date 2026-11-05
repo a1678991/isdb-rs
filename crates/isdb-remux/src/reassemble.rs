@@ -228,7 +228,7 @@ fn deliver(ts: &mut Session, kind: &[u8; 4], pid: u16, m: Partial) -> std::io::R
         b"hev1" | b"hvc1" => ts.video_mfu(pid, m.mpu, &m.data),
         b"mp4a" => ts.audio_mfu(pid, m.mpu, &m.data),
         b"stpp" => {
-            ts.caption_mfu(pid, &m.data);
+            ts.caption_mfu(pid, m.mpu, &m.data);
             Ok(())
         }
         _ => ts.data_mfu(pid, m.mpu, m.item, &m.data),

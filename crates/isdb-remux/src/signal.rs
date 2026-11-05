@@ -39,15 +39,32 @@ pub struct AssetTiming {
     /// Its per-MPU rows (the decode-order AU offsets), by MPU sequence
     /// number; the default PTS offset already filled in.
     pub rows: BTreeMap<u32, MpuExtended>,
-    /// A caption asset's additional arib subtitle information in force (the
-    /// latest MPT copy's): the clock of its documents (B60 Table 9-3).
-    pub subtitle: Option<SubtitleInfo>,
+    /// A caption asset's additional arib subtitle information as the MPTs
+    /// changed it, oldest first: the clock of its documents (B60 Table 9-3). See
+    /// [`AssetTiming::subtitle_at`].
+    pub subtitles: Vec<SubtitleInfo>,
 }
 
 impl AssetTiming {
     /// The MPUs kept per map (a few minutes of video MPUs; the oldest go
     /// first).
     const KEEP: usize = 512;
+    /// The subtitle information kept: one may wait for its start MPU while the
+    /// one before it still applies.
+    const KEEP_SUBTITLES: usize = 16;
+
+    /// The subtitle information valid for a document of `mpu`: the latest listed
+    /// that names no start, or whose `start_mpu_sequence_number` ("the first MPU
+    /// sequence number ... for which setting by this descriptor is valid", Table 9-3)
+    /// is not after `mpu` on the sequence number's ring.
+    #[must_use]
+    pub fn subtitle_at(&self, mpu: u32) -> Option<SubtitleInfo> {
+        self.subtitles
+            .iter()
+            .rev()
+            .find(|i| i.start_mpu.is_none_or(|s| mpu.wrapping_sub(s) < 1 << 31))
+            .copied()
+    }
 
     /// Take one descriptor of the asset's loop; whether it changed
     /// anything.
@@ -74,9 +91,12 @@ impl AssetTiming {
             }
             Descriptor::Other(r) if r.tag == tag::DATA_CODING => {
                 if let Some(info) = SubtitleInfo::parse(&r.body)
-                    && self.subtitle != Some(info)
+                    && self.subtitles.last() != Some(&info)
                 {
-                    self.subtitle = Some(info);
+                    self.subtitles.push(info);
+                    if self.subtitles.len() > Self::KEEP_SUBTITLES {
+                        self.subtitles.remove(0);
+                    }
                     changed = true;
                 }
             }
@@ -222,13 +242,62 @@ mod tests {
         assert!(a.add(&info(1)));
         assert!(!a.add(&info(1)), "another copy of the same");
         assert!(a.add(&info(2)));
-        let held = a.subtitle.and_then(|i| i.reference_start_time);
+        let held = a.subtitle_at(0).and_then(|i| i.reference_start_time);
         assert_eq!(held, Some(2u64 << 56));
         let multimedia = Descriptor::Other(Raw {
             tag: tag::DATA_CODING,
             body: vec![0x00, 0x21, 0, 0, 0, 0, 0, 0, 0, 0],
         });
         assert!(!a.add(&multimedia));
-        assert_eq!(a.subtitle.and_then(|i| i.reference_start_time), held);
+        assert_eq!(a.subtitle_at(0).and_then(|i| i.reference_start_time), held);
+    }
+
+    /// Table 9-3: a descriptor with a start MPU waits for it; the one before
+    /// applies until then, across the sequence number's wrap.
+    #[test]
+    fn spec_table_9_3_subtitle_info_waits_for_its_start_mpu() {
+        let info = |reference: u64, start: Option<u32>| SubtitleInfo {
+            tag: 0x30,
+            version: 0,
+            language: *b"jpn",
+            kind: 0,
+            format: 0,
+            operation_mode: 1,
+            time_control: SubtitleInfo::TMD_REFERENCE,
+            display_mode: 0b1010,
+            resolution: 1,
+            compression: 0,
+            start_mpu: start,
+            reference_start_time: Some(reference),
+            leap_indicator: Some(0),
+        };
+        let reference_at = |a: &AssetTiming, mpu| a.subtitle_at(mpu)?.reference_start_time;
+        let mut a = AssetTiming::default();
+        assert_eq!(a.subtitle_at(0), None);
+        a.subtitles = vec![info(1, None), info(2, Some(u32::MAX))];
+        assert_eq!(reference_at(&a, u32::MAX - 1), Some(1));
+        assert_eq!(reference_at(&a, u32::MAX), Some(2));
+        assert_eq!(reference_at(&a, 3), Some(2), "past the wrap");
+        // Nothing valid yet for an MPU before the only start.
+        a.subtitles = vec![info(2, Some(100))];
+        assert_eq!(reference_at(&a, 99), None);
+        // One with no start applies at once, whatever waits behind it.
+        a.subtitles = vec![info(2, Some(100)), info(3, None)];
+        assert_eq!(reference_at(&a, 99), Some(3));
+    }
+
+    #[test]
+    fn subtitle_info_history_is_bounded() {
+        let mut a = AssetTiming::default();
+        for n in 0..=u8::try_from(AssetTiming::KEEP_SUBTITLES).unwrap() {
+            let mut body = vec![0x00, 0x20, 0x30, 0x07];
+            body.extend(b"jpn");
+            body.extend([0x01, 0x2a, 0x10, n, 0, 0, 0, 0, 0, 0, 0, 0x3f]);
+            a.add(&Descriptor::Other(Raw {
+                tag: tag::DATA_CODING,
+                body,
+            }));
+        }
+        assert_eq!(a.subtitles.len(), AssetTiming::KEEP_SUBTITLES);
     }
 }
