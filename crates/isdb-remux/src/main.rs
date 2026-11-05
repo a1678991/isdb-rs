@@ -135,11 +135,12 @@ fn main() -> anyhow::Result<()> {
     }
     if a.mkv {
         eprintln!(
-            "mkv {out_name}: {} track(s) ({} caption track(s), {} cue(s)), {} chapter(s), {} attachment(s); {} picture(s), {} audio frame(s), {} data item(s); {} AU(s) before an MPU start or after a loss, {} untimed; {}",
+            "mkv {out_name}: {} track(s) ({} caption track(s), {} cue(s)), {} chapter(s) ({} at the scheduled time, no switch seen), {} attachment(s); {} picture(s), {} audio frame(s), {} data item(s); {} AU(s) before an MPU start or after a loss, {} untimed; {}",
             c.streams,
             captions.iter().filter(|t| !t.cues.is_empty()).count(),
             captions.iter().map(|t| t.cues.len()).sum::<usize>(),
             c.chapters,
+            c.chapters_scheduled,
             c.attachments,
             c.video,
             c.audio,

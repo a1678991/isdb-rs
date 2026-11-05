@@ -178,6 +178,8 @@ pub struct Counts {
     pub attachments: usize,
     /// Chapters of the Matroska form (the MH-EIT's events).
     pub chapters: usize,
+    /// Of them, those at their scheduled time, no switch of the stream seen.
+    pub chapters_scheduled: usize,
     /// AUs skipped before the first MPU boundary or after a loss.
     pub unsynced: u64,
     /// AUs whose MPU the descriptors do not time.
@@ -244,6 +246,8 @@ pub struct Session {
     /// The video's parameter sets as far as a slice's POC needs them.
     sps: Option<isdb_mkv::hevc::Sps>,
     pps: Option<isdb_mkv::hevc::Pps>,
+    /// The SPS in force as sent (a change starts a new coded video sequence).
+    sps_bytes: Option<Vec<u8>>,
     /// The last picture timed with a POC.
     anchor: Option<Anchor>,
     /// Video: an IRAP picture was lost; nothing until the next.
@@ -313,6 +317,7 @@ impl Session {
             picture: None,
             sps: None,
             pps: None,
+            sps_bytes: None,
             anchor: None,
             need_irap: false,
             gop_broken: false,
@@ -525,7 +530,15 @@ impl Session {
                     if let Some(s) = isdb_mkv::hevc::parse_sps(nal) {
                         self.sps = Some(s);
                     }
+                    if self.sps_bytes.as_deref() != Some(nal) {
+                        if self.sps_bytes.is_some() {
+                            self.note_sequence(pid, mpu);
+                        }
+                        self.sps_bytes = Some(nal.to_vec());
+                    }
                 }
+                // End of sequence: the next picture starts a new one.
+                36 => self.note_sequence(pid, mpu.wrapping_add(1)),
                 34 => {
                     if let Some(p) = isdb_mkv::hevc::parse_pps(nal) {
                         self.pps = Some(p);
@@ -834,8 +847,19 @@ impl Session {
         }
     }
 
+    /// A new coded video sequence starts at `mpu`: for the chapters.
+    fn note_sequence(&mut self, pid: u16, mpu: u32) {
+        if self.mkv.is_none() {
+            return;
+        }
+        let at = self.timing.get(&pid).and_then(|t| au_ntp(t, mpu, 0));
+        if let (Some(service), Some(ntp)) = (self.service, at) {
+            self.schedule.sequence_start(service, ntp);
+        }
+    }
+
     /// One table of a control message: the Matroska form keeps the MH-EIT's
-    /// events for its chapters.
+    /// events and the MPT versions for its chapters.
     pub fn table(&mut self, t: &TableBytes) {
         if self.mkv.is_some() {
             self.schedule.feed(t);
@@ -871,8 +895,10 @@ impl Session {
             if let (Some(service), Some(clock), Some(origin), Some(end)) =
                 (self.service, self.clock, self.first_pts, self.latest_pts)
             {
-                for c in self.schedule.chapters(service, clock, origin, end) {
-                    self.counts.chapters += 1;
+                let chapters = self.schedule.chapters(service, clock, origin, end);
+                self.counts.chapters = chapters.list.len();
+                self.counts.chapters_scheduled = chapters.scheduled;
+                for c in chapters.list {
                     m.chapter(c);
                 }
             }
@@ -1559,6 +1585,37 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(file.windows(4).any(|w| w == [0x10, 0x43, 0xa7, 0x70]));
         assert_eq!(file.windows(4).filter(|w| *w == b"prog").count(), 2);
+    }
+
+    /// An end of sequence and a changed SPS each start a new video sequence on
+    /// the chapters' clock; the first SPS does not.
+    #[test]
+    fn a_new_video_sequence_reaches_the_chapters() {
+        let dir = std::env::temp_dir().join(format!("isdb-remux-seq-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mkv = crate::mkv::Mkv::create(&dir.join("out.mkv"), "test").unwrap();
+        let mut s = Session::new(Box::new(std::io::sink()), None)
+            .unwrap()
+            .with_mkv(mkv);
+        s.set_timing(&timed()).unwrap();
+        let nal = |bytes: &[u8]| {
+            let mut mfu = u32::try_from(bytes.len()).unwrap().to_be_bytes().to_vec();
+            mfu.extend(bytes);
+            mfu
+        };
+        let sequences = |s: &Session| s.schedule.sequence_count(0x65);
+        // The first MPU may be joined midway: a stream starts at the next.
+        feed(&mut s, 100, 0..1);
+        s.video_mfu(0xf300, 101, &nal(&[33 << 1, 1, 0xaa])).unwrap();
+        assert_eq!(sequences(&s), 0, "the first SPS");
+        s.video_mfu(0xf300, 101, &nal(&[33 << 1, 1, 0xaa])).unwrap();
+        assert_eq!(sequences(&s), 0, "the same SPS");
+        s.video_mfu(0xf300, 101, &nal(&[33 << 1, 1, 0xbb])).unwrap();
+        assert_eq!(sequences(&s), 1, "a changed SPS");
+        s.video_mfu(0xf300, 101, &nal(&[36 << 1, 1])).unwrap();
+        assert_eq!(sequences(&s), 2, "an end of sequence");
+        drop(s);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The TS form never reads the events.

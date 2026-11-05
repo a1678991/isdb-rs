@@ -2867,28 +2867,40 @@ no PCR restamping involved.
 
 ## Matroska chapters from the MH-EIT, offline (2026-11-05)
 
-`isdb-remux --mkv` on a clear TLV stream of BS17 (TLV stream 0xb110, service
-0x0065, about 74 min across two event changes, recorded 2026-11-05; 18.4 GB,
-not in the repository), with the event times as the MH-EIT sends them:
+`isdb-remux --mkv` on clear TLV streams of BS17 (TLV streams 0xb110, 0xb111 and
+0xb112, services 0x0065, 0x00a1 and 0x00b5, about 74 min each, recorded 2026-11-05;
+18.4 GB each, not in the repository), traced with the examples `eittrace` and
+`switchtrace`. Six event changes, all placed by a switch seen, none at the schedule:
 
-| Check | Result |
-|---|---|
-| Chapters read back by ffprobe and mpv | 3, with the MH-short event names; the first clipped to 0, the last ended at the file's 4432.42 s Duration |
-| Second mark − first mark | 3540.000000 s, the first event's 59 min |
-| Independent place of 02:24:00 JST, from the TS form's first PTS: (NTP × 90 kHz − PTS) mod 2^33 | 149.712656 s; chapter 2 starts at 149.712656 s |
-| Picture cut (ffmpeg scene score above 0.25, ±8 s around each mark) | 2.665 s and 2.668 s after the two marks |
-| p/f section 0 turning over, on the stream's NTP clock (example `eittrace`) | 0.2 s and 0.3 s before the nominal starts |
-| `mpv --start='#N'`, chapters 2 and 3 | lands at 00:02:29 and 01:01:29, the keyframe just before each mark |
-| CPU of the run with and without reading the MH-EIT (two runs each) | 27.9, 28.2 s against 26.5, 26.9 s user |
+| Service, change | Chapter start after the schedule | Picture cut after the chapter start | mpv `--start='#N'` |
+|---|---|---|---|
+| 0x0065 02:24 | +2.698 s | −0.033 s | lands on the mark |
+| 0x0065 03:23 | +2.367 s (new video sequence) | +0.301 s | lands on the mark |
+| 0x00a1 03:00 | +2.809 s | −0.100 s | lands on the mark |
+| 0x00a1 03:01 | end of a chapter only (+2.735 s) | | |
+| 0x00b5 02:30 | +2.830 s | −0.117 s | lands on the mark |
+| 0x00b5 03:00 | +2.895 s | −0.050 s | lands on the mark |
 
-The chapters' mapping is exact; they mark the scheduled time, which the picture
-follows by the constant above on this service (cause not established, no other
-service measured). The merge rules for rescheduled and replaced events have
-synthetic tests only: no event changed its time on this recording
-(crates/isdb-remux/SPEC-NOTES.md). ffprobe and ffmpeg also report "Invalid length
-0x11c14430 > 0x10000000 for element with ID 0x465C": one data broadcasting
-attachment of 297 MB exceeds their 256 MB limit. That comes from the attachments,
-not the chapters; they read the rest of the file.
+(Picture cut: ffmpeg scene score above 0.2. mpv's `chapter` property reads the chapter
+before for that first frame at two of the five, with `time-pos` equal to the mark.)
+
+The schedule's place checks independently: from the TS form's first PTS of 0x0065,
+(NTP × 90 kHz − PTS) mod 2^33 puts 02:24:00 JST at 149.712656 s, as `Clock` does.
+p/f section 0 turns over within 0.3 s of each scheduled time, some before, some after. The candidates at each
+change, and what is unchecked: crates/isdb-remux/SPEC-NOTES.md, switch-point.
+Reading the MH-EIT costs 27.9, 28.2 s against 26.5, 26.9 s user on a run of 0x0065
+(two runs each; measured before the MPT versions were added, which parse only on a
+new version).
+
+**Known defect, not fixed.** At 0x0065's 03:23 change the stream's structure changes:
+`0xf310` goes from 5.1 (`AudioSpecificConfig` 11b0) to stereo (1190) at +2.873 s, the
+stereo asset `0xf311` ends at about +2.25 s, and the video gets an end of sequence
+and a new SPS, the descriptors going from HLG to BT.2020. The track keeps its first
+configuration, so ffmpeg reports "channel element 1.0 is not allocated" on every
+later frame of `0xf310`, as does mpv, and the file's last 12 minutes have no audio they
+can play. The run warns. ffprobe and ffmpeg also report "Invalid length … > 0x10000000
+for element with ID 0x465C": a data broadcasting attachment over their 256 MB limit
+(297 MB and more; mpv skips one of 640 MiB). The rest of the file reads past it.
 
 ## Open questions
 

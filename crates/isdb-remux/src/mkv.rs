@@ -9,7 +9,8 @@
 //!   its `AudioSpecificConfig` the `CodecPrivate` — not re-encoded), the
 //!   MPT's language, named by its channels;
 //! - the captions (`S_TEXT/UTF8`, one block per cue);
-//! - a chapter per event of the MH-EIT ([`crate::events`]);
+//! - a chapter per event of the MH-EIT, at the stream's real switch
+//!   ([`crate::events`]);
 //! - the untimed assets (data broadcasting): one attachment per asset
 //!   and package version, `PID-MPU.mmtitems`, its items each as
 //!   `[item id u32][length u32][bytes]`.
@@ -62,6 +63,8 @@ pub struct Mkv {
     decls: BTreeMap<u16, Decl>,
     /// The codec configuration learnt per stream.
     configs: BTreeMap<u16, Kind>,
+    /// Each audio stream's `AudioSpecificConfig` in force.
+    audio_config: BTreeMap<u16, Vec<u8>>,
     /// The parameter sets seen (the `hvcC`): VPS, SPS, PPS.
     vps: Option<Vec<u8>>,
     sps: Option<Vec<u8>>,
@@ -100,6 +103,7 @@ impl Mkv {
             },
             decls: BTreeMap::new(),
             configs: BTreeMap::new(),
+            audio_config: BTreeMap::new(),
             vps: None,
             sps: None,
             pps: None,
@@ -177,6 +181,20 @@ impl Mkv {
         let Some(f) = isdb_mmt::es::latm_frame(element) else {
             return Ok(());
         };
+        if let Some(config) = &f.config
+            && self.audio_config.get(&pid) != Some(config)
+        {
+            if let Some(first) = self.audio_config.get(&pid) {
+                tracing::warn!(
+                    pid,
+                    from = ?isdb_mkv::asc_rate_channels(first),
+                    to = ?isdb_mkv::asc_rate_channels(config),
+                    "mkv: an audio stream changes configuration; its track keeps the first, \
+                     so a player may not decode the frames from here on"
+                );
+            }
+            self.audio_config.insert(pid, config.clone());
+        }
         if let Some(config) = f.config
             && !self.configs.contains_key(&pid)
             && let Some((rate, channels)) = isdb_mkv::asc_rate_channels(&config)
