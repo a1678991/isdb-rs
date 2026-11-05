@@ -29,6 +29,15 @@ STD-B44) is received to TLV streams.
   structure over time. The run warns when an audio stream changes configuration:
   its track keeps the first, and players cannot decode the frames from there on.
 
+- `isdb-remux --mkv --split-events`: one Matroska file per MH-EIT event, cut at the
+  same switch points, each with its own tracks, codec configuration, timeline and
+  title, so a programme change that moves audio from 5.1 to stereo plays. A stretch
+  no event covers gets a file too. `--split-name` sets the file name, by default
+  `${START_TIME}-${EVENT_NAME}-${BROADCASTER_NAME}.mkv`; `-o` is then a directory,
+  by default the input's. `isdb_remux::split`, `Mkv::create_split`,
+  `Mkv::finish_parts`, `Report::written`; `isdb_mkv::Writer::part`, `frames`,
+  `mark_needs_previous` and `isdb_mkv::Frame`. Tool: `tools/remux-split-check.sh`.
+
 - Tools: `tools/split-rx.sh FILE.sym PARTS JOBS [OUTDIR]` decodes a long
   ISDB-S3 `Symbols` recording in parallel slices and joins the part TLVs
   losslessly with `tools/tlv-join.py` (every slice but the last decoded

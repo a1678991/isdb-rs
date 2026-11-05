@@ -28,6 +28,7 @@ isdb tx --mux-config test.toml --radio hackrf --channel 27 --gain txvga=20 --dry
 isdb rx --radio pluto --channel BS7 --system isdbs3 --seconds 30 --out 'bs7-{tlv_id}.tlv' # 新 4K8K 衛星放送 → TLV
 isdb tlv inspect bs7-b070.tlv                                 # サービス、イベント、アセット
 isdb-remux --mkv -i bs7-b070.tlv -o show.mkv                  # スクランブルされていない TLV → 字幕つき Matroska
+isdb-remux --mkv --split-events -i bs7-b070.tlv               # … 番組ごとに 1 ファイル（入力と同じディレクトリ）
 ```
 
 無線機からの送信には `--rf-enable` と有線接続の試験環境が必要です。先に下の注意事項を読んでください。
@@ -55,7 +56,7 @@ isdb-remux --mkv -i bs7-b070.tlv -o show.mkv                  # スクランブ�
 - **トランスポートストリームと SI** — PSI と ARIB SI を、すべてのテーブルと記述子でロスレス（`encode(decode(x)) == x`）な型付きコーデックとして実装。ARIB 8 単位符号の文字列、各指摘に根拠条項を示す検証器、フィールド単位の差分、TS の編集。
 - **サービス多重化器** — ネットワーク・サービス・イベントの TOML 記述と MPEG-2 映像／AAC ファイルから、伝送フレームに合わせて送出される一定レートの多重化ストリームを作ります。スクランブルされていない録画の 1 番組の中継、BML データカルーセルと Hybridcast の AIT、ISDB-S 用のプロセス内多重化にも対応します。
 - **新 4K8K 衛星放送の TLV／MMT** — TLV パケット、ヘッダ圧縮 IP、MMTP と MMT-SI テーブル（サービス、イベント、パッケージ、アセット）。スクランブルされていない各アセットのエレメンタリーストリームを取り出します。
-- **新 4K8K 衛星放送から再生できるファイルへ** — `isdb-remux` は、スクランブルされていない TLV ストリームを、すべての音声トラック、字幕（SubRip／WebVTT。WebVTT で表せる範囲で放送のレイアウトと色を保持）、データ放送のパッケージを含む、タイムスタンプつきの MPEG-TS または Matroska ファイルにします。Matroska ファイルには MH-EIT の番組ごとのチャプターも、ストリームが実際に切り替わる位置に付きます。
+- **新 4K8K 衛星放送から再生できるファイルへ** — `isdb-remux` は、スクランブルされていない TLV ストリームを、すべての音声トラック、字幕（SubRip／WebVTT。WebVTT で表せる範囲で放送のレイアウトと色を保持）、データ放送のパッケージを含む、タイムスタンプつきの MPEG-TS または Matroska ファイルにします。Matroska ファイルには MH-EIT の番組ごとのチャプターも、ストリームが実際に切り替わる位置に付きます。`--split-events` を付けると、番組ごとに別のファイルに分けて書き出します。
 - **SDR の入出力** — HackRF One と ADALM-Pluto 系（USB または Ethernet）、SigMF メタデータつきの IQ 録音、シンボルレート・搬送波・方式を見つける衛星 IF の測定（survey）、PlutoSky R2 用の FPGA シンボル・フロントエンド（Amaranth HDL。CPU 上のモデルとビット単位で一致）。
 
 ## クイックスタート

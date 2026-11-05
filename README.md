@@ -34,6 +34,7 @@ isdb tx --mux-config test.toml --radio hackrf --channel 27 --gain txvga=20 --dry
 isdb rx --radio pluto --channel BS7 --system isdbs3 --seconds 30 --out 'bs7-{tlv_id}.tlv' # advanced BS → TLV
 isdb tlv inspect bs7-b070.tlv                                 # services, events, assets
 isdb-remux --mkv -i bs7-b070.tlv -o show.mkv                  # clear TLV → Matroska with captions
+isdb-remux --mkv --split-events -i bs7-b070.tlv               # … one file per programme, next to the input
 ```
 
 Transmitting to a radio needs `--rf-enable` and a conducted bench; read
@@ -101,7 +102,8 @@ Around the physical layers:
   stream into a timed MPEG-TS or a Matroska file with every audio track,
   the captions (SubRip / WebVTT, keeping the broadcast's layout and colours
   where WebVTT can) and the data broadcasting packages; the Matroska file
-  has a chapter per programme of the MH-EIT, at the stream's real switch.
+  has a chapter per programme of the MH-EIT, at the stream's real switch. `--split-events`
+  writes one file per programme instead.
 - **SDR I/O** — HackRF One and the ADALM-Pluto family (USB or Ethernet),
   raw IQ capture with SigMF metadata, a satellite IF survey that finds the
   symbol rate, carrier and system, and an FPGA symbol front end for the

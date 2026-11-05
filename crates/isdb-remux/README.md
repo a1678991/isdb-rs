@@ -20,6 +20,7 @@ descrambled here.
 ```sh
 cargo build --release -p isdb-remux
 isdb-remux -i dec.tlv --mkv -o out.mkv                 # every track, one file
+isdb-remux -i dec.tlv --mkv --split-events             # one file per programme, next to the input
 isdb-remux -i dec.tlv --service 0x0097 --ts -o out.ts  # + out.ja.srt / .vtt
 DESCRAMBLER < rec.tlv | isdb-remux --ts > out.ts      # straight from a descrambler
 ```
@@ -110,14 +111,59 @@ The evidence and how tables that disagree are merged:
 [SPEC-NOTES.md](SPEC-NOTES.md#switch-point-where-a-programme-really-switches-in-the-stream).
 The TS form has no chapters.
 
-**A stream's structure can change mid-recording, and the file does not follow it
-yet.** On one BS17 recording, at a programme change 5.1 audio on `0xf310` becomes
-stereo, the stereo asset `0xf311` ends, and the video goes from HLG to BT.2020 with a
-new SPS. A track keeps its first configuration, so ffmpeg and mpv cannot decode the
-stereo frames in the 5.1 track, and that recording's last 12 minutes have no audio
-they can play (the run warns). The TS form carries LATM with its in-band
-configuration instead. The video's new parameter sets stay in-band, though the track
-still declares the first ones.
+**A stream's structure can change mid-recording, and one file cannot follow it.**
+On one BS17 recording, at a programme change 5.1 audio on `0xf310` becomes stereo,
+the stereo asset `0xf311` ends, and the video goes from HLG to BT.2020 with a new
+SPS. A track keeps its first configuration, so ffmpeg and mpv cannot decode the stereo
+frames in the 5.1 track, and that file's last 12 minutes have no audio they can play
+(the run warns). `--split-events` is the way out when the change comes with a
+programme, as it did here; a change inside a programme still warns.
+
+## `--split-events`: one file per programme
+
+`--mkv --split-events` writes one Matroska file per MH-EIT event instead of one
+with chapters, from the same switch points (above):
+
+```sh
+isdb-remux -i /path/to/dec.tlv --mkv --split-events               # files next to the input
+isdb-remux -i dec.tlv --mkv --split-events -o DIR                 # in DIR (made if missing)
+DESCRAMBLER < rec.tlv | isdb-remux --mkv --split-events -o DIR    # stdin needs -o DIR
+isdb-remux -i dec.tlv --mkv --split-events \
+    --split-name '${EVENT_NAME}_${START_TIME}.mkv'                 # another name
+```
+
+The name is `--split-name`'s template, by default
+`${START_TIME}-${EVENT_NAME}-${BROADCASTER_NAME}.mkv`, for example
+`2026-11-05_02-24-02.698-番組名-ＮＨＫ.mkv`:
+
+| Field | Value |
+|---|---|
+| `${START_TIME}` | the presentation time of the file's first picture, from the MPT's clock, in JST to the millisecond |
+| `${EVENT_NAME}` | the MH-short event descriptor's name; `unknown-event` for a stretch no event covers or an event with no name. Shortened to fit a file name |
+| `${BROADCASTER_NAME}` | the MH-SDT provider name (else its service name, else `service-0065`) |
+
+Characters a file system could refuse or read as a path become `_`. An existing
+file is never overwritten: the name takes a `-2`, `-3` ….
+
+Each file stands alone:
+
+- **Video** starts on the switch's key picture, with the parameter sets in force
+  there in its `hvcC`. The RASL pictures after a CRA are left out, since they need
+  pictures from the previous file: 7 per cut on the BS17 recordings (117 ms, the first
+  moments of the new programme), none at an IDR.
+- **Audio** cuts at the file's first picture, except that a stream's configuration
+  change within 10 s of it is that stream's own cut, so a track holds one
+  configuration. Tracks are named from their channels, and a stream with no frames
+  in the span has no track. The old file's audio can run past its last picture.
+- **Captions** shown across a cut are clipped to each file, and **data broadcasting**
+  items go to the file they arrived in, so a package can appear in several.
+- A stretch no event covers gets a file too, so no media is left out. The event's
+  name is the Segment title; the files have no chapters.
+
+The files appear at the end of the run, from one scratch in the directory
+(`isdb-remux-PID.part`, about the media's size, removed at the end), so the input must
+end, and live or very long recordings need that room. If a run fails, the files
+finished by then stay and the one being written is removed.
 
 Each track carries the MPT's language (the video / audio component
 descriptors) and the audio its layout (`5.1ch`, `stereo`); the video and the

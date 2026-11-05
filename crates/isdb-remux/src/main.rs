@@ -4,6 +4,7 @@
 //!
 //! ```notcode
 //! isdb-remux -i dec.tlv --mkv -o out.mkv            # every track, one file
+//! isdb-remux -i dec.tlv --mkv --split-events         # one file per event, by the input
 //! isdb-remux -i dec.tlv --ts -o out.ts              # + out.ja.srt / .vtt
 //! DESCRAMBLER < rec.tlv | isdb-remux --ts > out.ts  # straight from a descrambler
 //! ```
@@ -12,8 +13,9 @@
 //! (refused, as curl does); `-o -` writes it to stdout anyway.
 
 use clap::Parser;
+use isdb_remux::split::{DEFAULT_TEMPLATE, Template};
 use isdb_remux::{Remux, mkv::Mkv, output, ts::Session};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A `0x…` or decimal u16.
 fn parse_u16(s: &str) -> Result<u16, String> {
@@ -33,7 +35,8 @@ struct Args {
     #[arg(short = 'i', long)]
     input: Option<PathBuf>,
     /// The output file. `--ts` without it goes to stdout, unless stdout
-    /// is a terminal (refused; `-o -` writes there anyway).
+    /// is a terminal (refused; `-o -` writes there anyway). With
+    /// `--split-events`, the directory (made if missing; default: the input's).
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
     /// An MPEG-TS: the video, every audio, the data assets as private
@@ -46,8 +49,19 @@ struct Args {
     /// MH-EIT event, the data broadcasting packages as attachments. Needs `-o` (the file is
     /// finished by seeking back) and room for a scratch copy of the media
     /// next to it (`OUT.part`, removed at the end).
-    #[arg(long, requires = "output")]
+    #[arg(long)]
     mkv: bool,
+    /// With `--mkv`: one file per MH-EIT event instead of one with chapters,
+    /// each from the stream's real switch, with its own tracks and timeline; a
+    /// stretch no event covers gets a file too. The files appear at the end of the
+    /// run, and an existing file is not overwritten (the name takes a `-N`).
+    #[arg(long, requires = "mkv", conflicts_with = "ts")]
+    split_events: bool,
+    /// With `--split-events`: the file name. `${START_TIME}` is the first
+    /// picture's presentation time in JST, `2026-11-05_02-24-02.698`;
+    /// `${EVENT_NAME}` the MH-EIT's; `${BROADCASTER_NAME}` the MH-SDT's provider.
+    #[arg(long, requires = "split_events", value_name = "TEMPLATE", default_value = DEFAULT_TEMPLATE)]
+    split_name: Template,
     /// With `--ts`: where the captions' `.srt` / `.vtt` go (default: next
     /// to `-o`, as `OUT.LANG.srt`; none on stdout without this).
     #[arg(long, requires = "ts")]
@@ -80,17 +94,28 @@ fn main() -> anyhow::Result<()> {
         .compact()
         .with_writer(std::io::stderr)
         .init();
+    if a.mkv && !a.split_events && a.output.is_none() {
+        anyhow::bail!("--mkv needs -o FILE (or --split-events)");
+    }
     let to_stdout = output::is_stdout(a.output.as_deref());
     let out_name = match &a.output {
         Some(p) if !to_stdout => p.display().to_string(),
         _ => "stdout".to_owned(),
     };
-    let session = if a.mkv {
+    let app = concat!("isdb-remux ", env!("CARGO_PKG_VERSION"));
+    let session = if a.split_events {
+        if a.output.as_deref() == Some(Path::new("-")) {
+            anyhow::bail!("--split-events writes files: give -o DIR, not -o -");
+        }
+        let dir = split_dir(&a)?;
+        let mkv = Mkv::create_split(&dir, a.split_name.clone(), app)
+            .map_err(|e| anyhow::anyhow!("cannot write in {}: {e}", dir.display()))?;
+        Session::new(Box::new(std::io::sink()), a.service)?.with_mkv(mkv)
+    } else if a.mkv {
         let path = a.output.as_ref().expect("clap: --mkv requires -o");
         if to_stdout {
             anyhow::bail!("--mkv writes a file it seeks back into: give -o FILE, not -o -");
         }
-        let app = concat!("isdb-remux ", env!("CARGO_PKG_VERSION"));
         let mkv = Mkv::create(path, app)
             .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", path.display()))?;
         Session::new(Box::new(std::io::sink()), a.service)?.with_mkv(mkv)
@@ -117,13 +142,18 @@ fn main() -> anyhow::Result<()> {
     progress.finish();
     if a.mkv && !a.quiet && !a.no_progress {
         // The Matroska form's second pass (the file in decode order).
-        eprintln!("writing {out_name} …");
+        if a.split_events {
+            eprintln!("writing the files …");
+        } else {
+            eprintln!("writing {out_name} …");
+        }
     }
     let isdb_remux::Report {
         counts: c,
         captions,
         stats,
         assets,
+        written,
     } = remux.finish()?;
     let caption_lines = if a.ts {
         write_captions(&a, &captions)?
@@ -133,7 +163,28 @@ fn main() -> anyhow::Result<()> {
     if a.quiet {
         return Ok(());
     }
-    if a.mkv {
+    if a.split_events {
+        eprintln!(
+            "mkv: {} file(s) ({} at the scheduled time, no switch seen); {} picture(s), {} audio frame(s), {} data item(s); {} AU(s) before an MPU start or after a loss, {} untimed; {}",
+            written.len(),
+            c.chapters_scheduled,
+            c.video,
+            c.audio,
+            c.data,
+            c.unsynced,
+            c.untimed,
+            loss_line(&c)
+        );
+        for w in &written {
+            eprintln!(
+                "  {}: {} track(s), {} attachment(s), {} frame(s)",
+                w.path.display(),
+                w.tracks,
+                w.attachments,
+                w.frames
+            );
+        }
+    } else if a.mkv {
         eprintln!(
             "mkv {out_name}: {} track(s) ({} caption track(s), {} cue(s)), {} chapter(s) ({} at the scheduled time, no switch seen), {} attachment(s); {} picture(s), {} audio frame(s), {} data item(s); {} AU(s) before an MPU start or after a loss, {} untimed; {}",
             c.streams,
@@ -186,6 +237,26 @@ fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Where `--split-events` writes: `-o`'s directory (made if missing), else the
+/// input's. Standard input has none, and must say.
+fn split_dir(a: &Args) -> anyhow::Result<PathBuf> {
+    if let Some(dir) = &a.output {
+        if dir.exists() && !dir.is_dir() {
+            anyhow::bail!("--split-events: -o {} is not a directory", dir.display());
+        }
+        std::fs::create_dir_all(dir)
+            .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", dir.display()))?;
+        return Ok(dir.clone());
+    }
+    let Some(input) = &a.input else {
+        anyhow::bail!("--split-events from standard input: give -o DIR");
+    };
+    Ok(match input.parent() {
+        Some(p) if p != Path::new("") => p.to_owned(),
+        _ => PathBuf::from("."),
+    })
 }
 
 /// The recorder's loss handling, for the report.

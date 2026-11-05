@@ -17,6 +17,7 @@
 //! | [`ts`] | the recorder: pictures at their AU boundaries, loss handling, the MPEG-TS writer, caption alignment |
 //! | [`mkv`] | the recorder's Matroska form (`isdb-mkv`) |
 //! | [`events`] | its chapters: the MH-EIT's events on the timeline |
+//! | [`split`] | `--split-events`: the parts of a recording and their file names |
 //! | [`output`] | stdout or a file, never binary onto a terminal unless forced (`-o -`) |
 //! | [`progress`] | the progress line on stderr |
 //!
@@ -30,6 +31,7 @@ pub mod output;
 pub mod progress;
 pub mod reassemble;
 pub mod signal;
+pub mod split;
 pub mod timing;
 pub mod ts;
 
@@ -63,6 +65,8 @@ pub struct Report {
     pub stats: Stats,
     /// The reassembly's counts per asset packet id.
     pub assets: BTreeMap<u16, reassemble::Stats>,
+    /// The files of `--split-events`.
+    pub written: Vec<mkv::Written>,
 }
 
 /// The run of one stream into one recorder.
@@ -157,6 +161,7 @@ impl Remux {
         Ok(Report {
             counts,
             captions,
+            written: self.session.take_written(),
             stats: self.stats,
             assets: self.reassembler.stats(),
         })
