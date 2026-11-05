@@ -509,7 +509,7 @@ impl Mkv {
         ts_origin: Option<i64>,
         parts: &[Part],
         clock: Clock,
-        broadcaster: &str,
+        channel: &str,
     ) -> io::Result<Vec<Written>> {
         let split = self
             .split
@@ -582,7 +582,7 @@ impl Mkv {
             // The file.
             let start = start_time(clock.ntp_of(first_frame));
             let event = part.title.as_deref().unwrap_or(NO_EVENT);
-            let name = split.template.render(&start, event, broadcaster);
+            let name = split.template.render(&start, event, channel);
             let (file, path) = create_new(&split.dir, &name)?;
             let mut guard = PartFile {
                 path,
@@ -970,7 +970,7 @@ mod tests {
     fn a_part_per_event_with_its_own_configuration() {
         assert!(hevc::parse_sps(&hex("420106022000000300b000000300000300990000a001e020021c4d8d18826490a594e0284244826ca500000303e90000ea60803e9c00814bc00004c4b4000004c5ec5c00004c4b4000004c5ec5c00004c4b4000004c5ec5c00004c4b4000004c5ec440")).is_some());
         let dir = Dir::new("split");
-        let template: Template = "${START_TIME}-${EVENT_NAME}-${BROADCASTER_NAME}.mkv"
+        let template: Template = "${START_TIME}-${EVENT_NAME}-${CHANNEL_NAME}.mkv"
             .parse()
             .unwrap();
         let mut m = Mkv::create_split(&dir.0, template, "test").unwrap();

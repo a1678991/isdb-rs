@@ -59,7 +59,7 @@ struct Args {
     split_events: bool,
     /// With `--split-events`: the file name. `${START_TIME}` is the first
     /// picture's presentation time in JST, `2026-11-05_02-24-02.698`;
-    /// `${EVENT_NAME}` the MH-EIT's; `${BROADCASTER_NAME}` the MH-SDT's provider.
+    /// `${EVENT_NAME}` the MH-EIT's; `${CHANNEL_NAME}` the MH-SDT's service name.
     #[arg(long, requires = "split_events", value_name = "TEMPLATE", default_value = DEFAULT_TEMPLATE)]
     split_name: Template,
     /// With `--ts`: where the captions' `.srt` / `.vtt` go (default: next

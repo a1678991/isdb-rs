@@ -11,7 +11,7 @@ use isdb_si::time::mjd_to_date;
 use std::path::Path;
 
 /// The default file name.
-pub const DEFAULT_TEMPLATE: &str = "${START_TIME}-${EVENT_NAME}-${BROADCASTER_NAME}.mkv";
+pub const DEFAULT_TEMPLATE: &str = "${START_TIME}-${EVENT_NAME}-${CHANNEL_NAME}.mkv";
 /// `${EVENT_NAME}` of a part no event names.
 pub const NO_EVENT: &str = "unknown-event";
 /// The longest file name of the usual file systems (bytes), less room for the
@@ -65,11 +65,11 @@ enum Piece {
     Text(String),
     StartTime,
     EventName,
-    BroadcasterName,
+    ChannelName,
 }
 
 /// A file name template: text with `${START_TIME}`, `${EVENT_NAME}` and
-/// `${BROADCASTER_NAME}`.
+/// `${CHANNEL_NAME}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Template(Vec<Piece>);
 
@@ -96,10 +96,10 @@ impl std::str::FromStr for Template {
             pieces.push(match &after[..close] {
                 "START_TIME" => Piece::StartTime,
                 "EVENT_NAME" => Piece::EventName,
-                "BROADCASTER_NAME" => Piece::BroadcasterName,
+                "CHANNEL_NAME" => Piece::ChannelName,
                 other => {
                     return Err(format!(
-                        "unknown ${{{other}}}: START_TIME, EVENT_NAME and BROADCASTER_NAME are known"
+                        "unknown ${{{other}}}: START_TIME, EVENT_NAME and CHANNEL_NAME are known"
                     ));
                 }
             });
@@ -115,8 +115,8 @@ impl std::str::FromStr for Template {
 impl Template {
     /// The file name for a part, its event name shortened to fit.
     #[must_use]
-    pub fn render(&self, start: &str, event: &str, broadcaster: &str) -> String {
-        let (event, broadcaster) = (sanitize(event), sanitize(broadcaster));
+    pub fn render(&self, start: &str, event: &str, channel: &str) -> String {
+        let (event, channel) = (sanitize(event), sanitize(channel));
         let fixed: usize = self
             .0
             .iter()
@@ -124,7 +124,7 @@ impl Template {
                 Piece::Text(t) => t.len(),
                 Piece::StartTime => start.len(),
                 Piece::EventName => 0,
-                Piece::BroadcasterName => broadcaster.len(),
+                Piece::ChannelName => channel.len(),
             })
             .sum();
         let events = self
@@ -140,10 +140,10 @@ impl Template {
                 Piece::Text(t) => t,
                 Piece::StartTime => start,
                 Piece::EventName => event,
-                Piece::BroadcasterName => &broadcaster,
+                Piece::ChannelName => &channel,
             });
         }
-        // A broadcaster's name alone can still be too long.
+        // A channel's name alone can still be too long.
         shorten_keeping_extension(&name, MAX_NAME)
     }
 }
@@ -257,8 +257,8 @@ mod tests {
     fn the_default_template_names_a_file() {
         let t: Template = DEFAULT_TEMPLATE.parse().unwrap();
         assert_eq!(
-            t.render("2026-11-05_02-24-02.698", "番組", "ＮＨＫ"),
-            "2026-11-05_02-24-02.698-番組-ＮＨＫ.mkv"
+            t.render("2026-11-05_02-24-02.698", "番組", "ＮＨＫ　ＢＳＰ４Ｋ"),
+            "2026-11-05_02-24-02.698-番組-ＮＨＫ　ＢＳＰ４Ｋ.mkv"
         );
     }
 
@@ -292,7 +292,7 @@ mod tests {
         let name = t.render("2026-11-05_02-24-02.698", &long, "ＮＨＫ");
         assert!(name.len() <= 255 - 4, "{}", name.len());
         assert!(name.ends_with("-ＮＨＫ.mkv"), "{name}");
-        // A very long broadcaster's name: still fits, and still a .mkv.
+        // A very long channel name: still fits, and still a .mkv.
         let name = t.render("t", "e", &"局".repeat(200));
         assert!(name.len() <= 255 - 4, "{}", name.len());
         assert_eq!(
