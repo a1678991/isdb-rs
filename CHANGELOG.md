@@ -17,6 +17,15 @@ STD-B44) is received to TLV streams.
 
 ### Added
 
+- `isdb-remux --mkv`: a chapter per MH-EIT event of the recorded service,
+  named by its MH-short event descriptor and clipped to the recording; the
+  event's JST `start_time` is placed by the MPT's NTP clock, so a mark is the
+  exact scheduled time (crates/isdb-remux/SPEC-NOTES.md). `isdb_mkv::Chapter`
+  and `Writer::add_chapter`; `isdb_remux::events`, `Session::table`,
+  `Counts::chapters`, `timing::au_ntp` and `timing::Clock`. The `--mkv` report
+  counts the chapters. Example: `isdb-mmt`'s `eittrace` traces a service's
+  MH-EIT changes against the MPT versions and MPU jumps.
+
 - Tools: `tools/split-rx.sh FILE.sym PARTS JOBS [OUTDIR]` decodes a long
   ISDB-S3 `Symbols` recording in parallel slices and joins the part TLVs
   losslessly with `tools/tlv-join.py` (every slice but the last decoded

@@ -2865,6 +2865,31 @@ packet for packet, once its own drops are put back: the on-air TS of the
 in-process multiplexer meets H.222.0's ±500 ns with 18 ns to spare, with
 no PCR restamping involved.
 
+## Matroska chapters from the MH-EIT, offline (2026-11-05)
+
+`isdb-remux --mkv` on a clear TLV stream of BS17 (TLV stream 0xb110, service
+0x0065, about 74 min across two event changes, recorded 2026-11-05; 18.4 GB,
+not in the repository), with the event times as the MH-EIT sends them:
+
+| Check | Result |
+|---|---|
+| Chapters read back by ffprobe and mpv | 3, with the MH-short event names; the first clipped to 0, the last ended at the file's 4432.42 s Duration |
+| Second mark − first mark | 3540.000000 s, the first event's 59 min |
+| Independent place of 02:24:00 JST, from the TS form's first PTS: (NTP × 90 kHz − PTS) mod 2^33 | 149.712656 s; chapter 2 starts at 149.712656 s |
+| Picture cut (ffmpeg scene score above 0.25, ±8 s around each mark) | 2.665 s and 2.668 s after the two marks |
+| p/f section 0 turning over, on the stream's NTP clock (example `eittrace`) | 0.2 s and 0.3 s before the nominal starts |
+| `mpv --start='#N'`, chapters 2 and 3 | lands at 00:02:29 and 01:01:29, the keyframe just before each mark |
+| CPU of the run with and without reading the MH-EIT (two runs each) | 27.9, 28.2 s against 26.5, 26.9 s user |
+
+The chapters' mapping is exact; they mark the scheduled time, which the picture
+follows by the constant above on this service (cause not established, no other
+service measured). The merge rules for rescheduled and replaced events have
+synthetic tests only: no event changed its time on this recording
+(crates/isdb-remux/SPEC-NOTES.md). ffprobe and ffmpeg also report "Invalid length
+0x11c14430 > 0x10000000 for element with ID 0x465C": one data broadcasting
+attachment of 297 MB exceeds their 256 MB limit. That comes from the attachments,
+not the chapters; they read the rest of the file.
+
 ## Open questions
 
 - **Broadcast coverage.** Seven stations of one region were received

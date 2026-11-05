@@ -16,13 +16,15 @@
 //! | [`timing`] | the MPT clock as 90 kHz PTS/DTS |
 //! | [`ts`] | the recorder: pictures at their AU boundaries, loss handling, the MPEG-TS writer, caption alignment |
 //! | [`mkv`] | the recorder's Matroska form (`isdb-mkv`) |
+//! | [`events`] | its chapters: the MH-EIT's events on the timeline |
 //! | [`output`] | stdout or a file, never binary onto a terminal unless forced (`-o -`) |
 //! | [`progress`] | the progress line on stderr |
 //!
 //! [`Remux::run`] walks the TLV packets: control messages feed
-//! [`signal::Signal`] (and the recorder's view of it), MPU packets of the
+//! [`signal::Signal`] (and the recorder's view of it, its events), MPU packets of the
 //! recorded assets the [`reassemble::Reassembler`].
 
+pub mod events;
 pub mod mkv;
 pub mod output;
 pub mod progress;
@@ -119,6 +121,7 @@ impl Remux {
                     self.messages.push(h.packet_id, payload, gap, &mut tables);
                     for t in tables.drain(..) {
                         self.signal.feed(&t);
+                        self.session.table(&t);
                     }
                     if self.signal.take_changed() {
                         self.session.set_timing(&self.signal.assets)?;
