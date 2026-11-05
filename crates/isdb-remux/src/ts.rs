@@ -904,13 +904,12 @@ impl Session {
             // With nothing written there is no file; the sink removes its scratch.
             if let (Some(service), Some(clock), Some(origin), Some(end)) = span {
                 let aired = self.schedule.aired(service, clock, origin, end);
-                let broadcaster = self
+                let channel = self
                     .schedule
-                    .broadcaster(service)
+                    .channel(service)
                     .map_or_else(|| format!("service-{service:04x}"), str::to_owned);
                 let parts = crate::split::plan(&aired, origin, end);
-                self.written =
-                    m.finish_parts(&tracks, self.first_pts, &parts, clock, &broadcaster)?;
+                self.written = m.finish_parts(&tracks, self.first_pts, &parts, clock, &channel)?;
                 self.counts.streams = self.written.iter().map(|w| w.tracks).max().unwrap_or(0);
                 self.counts.attachments = self.written.iter().map(|w| w.attachments).sum();
                 self.counts.chapters_scheduled = aired.iter().filter(|e| e.scheduled).count();

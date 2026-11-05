@@ -135,12 +135,12 @@ impl Schedule {
         }
     }
 
-    /// The name of the broadcaster of `service`: the MH-service descriptor's
-    /// provider name, else its service name, when they are not blank.
+    /// The channel name of `service`: the MH-service descriptor's service name,
+    /// else its provider name, when they are not blank.
     #[must_use]
-    pub fn broadcaster(&self, service: u16) -> Option<&str> {
+    pub fn channel(&self, service: u16) -> Option<&str> {
         let (provider, name) = self.names.get(&service)?;
-        [provider, name]
+        [name, provider]
             .into_iter()
             .map(|n| n.trim())
             .find(|n| !n.is_empty())
@@ -948,6 +948,43 @@ mod tests {
             });
         }
         assert_eq!(millis(&s).1, 1);
+    }
+
+    /// An MH-SDT section with one service's provider and service names.
+    fn sdt(service: u16, provider: &str, name: &str) -> TableBytes {
+        let mut d = vec![1, u8::try_from(provider.len()).unwrap()];
+        d.extend(provider.as_bytes());
+        d.push(u8::try_from(name.len()).unwrap());
+        d.extend(name.as_bytes());
+        let mut descriptors = vec![0x80, 0x19, u8::try_from(d.len()).unwrap()];
+        descriptors.extend(d);
+        let mut s = vec![0xA0, 0xf0, 0, 0xb1, 0x10, 0xc1, 0, 0, 0x00, 0x0b, 0xff];
+        s.extend(service.to_be_bytes());
+        s.push(0xff);
+        s.extend(u16::try_from(descriptors.len()).unwrap().to_be_bytes());
+        s.extend(descriptors);
+        let len = u16::try_from(s.len() - 3 + 4).unwrap();
+        s[1] = 0xf0 | u8::try_from(len >> 8).unwrap();
+        s[2] = u8::try_from(len & 0xff).unwrap();
+        s.extend(isdb_ts::crc::crc32(&s).to_be_bytes());
+        TableBytes {
+            packet_id: 0x8000,
+            message_id: 0x8000,
+            bytes: s,
+        }
+    }
+
+    #[test]
+    fn the_channel_is_the_service_name_else_the_provider() {
+        let mut s = Schedule::new();
+        s.feed(&sdt(SERVICE, "ＮＨＫ", "ＮＨＫ　ＢＳＰ４Ｋ"));
+        assert_eq!(s.channel(SERVICE), Some("ＮＨＫ　ＢＳＰ４Ｋ"));
+        // Blank on air (an ideographic space): the provider, else none.
+        s.feed(&sdt(0x0066, "局", "　"));
+        assert_eq!(s.channel(0x0066), Some("局"));
+        s.feed(&sdt(0x00e7, "　", "　"));
+        assert_eq!(s.channel(0x00e7), None);
+        assert_eq!(s.channel(0x0097), None);
     }
 
     #[test]

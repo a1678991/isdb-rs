@@ -133,14 +133,14 @@ isdb-remux -i dec.tlv --mkv --split-events \
 ```
 
 The name is `--split-name`'s template, by default
-`${START_TIME}-${EVENT_NAME}-${BROADCASTER_NAME}.mkv`, for example
-`2026-11-05_02-24-02.698-番組名-ＮＨＫ.mkv`:
+`${START_TIME}-${EVENT_NAME}-${CHANNEL_NAME}.mkv`, for example
+`2026-11-05_02-24-02.698-番組名-ＮＨＫ　ＢＳＰ４Ｋ.mkv`:
 
 | Field | Value |
 |---|---|
 | `${START_TIME}` | the presentation time of the file's first picture, from the MPT's clock, in JST to the millisecond |
 | `${EVENT_NAME}` | the MH-short event descriptor's name; `unknown-event` for a stretch no event covers or an event with no name. Shortened to fit a file name |
-| `${BROADCASTER_NAME}` | the MH-SDT provider name (else its service name, else `service-0065`) |
+| `${CHANNEL_NAME}` | the MH-SDT service name (else its provider name, else `service-0065`) |
 
 Characters a file system could refuse or read as a path become `_`. An existing
 file is never overwritten: the name takes a `-2`, `-3` ….

@@ -65,9 +65,8 @@ Matroska form have notes so far. "The BS17 recordings": clear TLV streams of ser
   takes the pictures from it in decode order, less the RASL pictures of that key
   picture: decodable in neither file. Audio cuts at the first picture's presentation
   time, except that a configuration change within 10 s is that stream's own cut, since
-  a Matroska track declares one configuration. `${BROADCASTER_NAME}` is the MH-service
-  descriptor's `service_provider_name`, not MH-BIT's MH-broadcaster name descriptor
-  (§7.4.3.27): MH-SDT names the service directly.
+  a Matroska track declares one configuration. `${CHANNEL_NAME}` is the MH-service
+  descriptor's `service_name`.
 - Confirmation: on the three BS17 recordings, every audio frame lands in exactly one
   file and decodes; the video decodes without error in each file's first and last 4 s;
   7 pictures are left out at each CRA cut and none at the IDR cut. The 12 minutes of stereo that a one-file run cannot decode now do. The whole video of each file was not
