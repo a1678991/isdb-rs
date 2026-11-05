@@ -193,6 +193,14 @@ ffmpeg -i bs7-0097.ts -i bs7-0097.ja.srt -map 0 -map 1 -c copy \
     -disposition:s:0 default -metadata:s:s:0 language=jpn bs7-0097.mkv
 ```
 
+Each document is placed by the clock the MPT names for it (B60 Table 9-7): its
+time codes count from a `reference_start_time` that moves with every event, so a
+recording's programmes keep their own places on the timeline. A mode other than
+`0010` (reference) or `1111` (none, shown on arrival) is placed by its arrival, with
+a warning. `cargo run --release -p isdb-remux --example captiontrace -- FILE --text`
+traces an asset's signalling and documents; `tools/caption-sync.py` checks a `.srt`
+for overlaps and against the speech.
+
 The TTML of the captions is not put in the TS itself: neither ffmpeg nor
 mpv decodes TTML (`crates/isdb-caption` does the conversion). The `.vtt`
 keeps the broadcast's layout and styling as far as WebVTT can (each line

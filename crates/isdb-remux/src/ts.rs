@@ -58,12 +58,14 @@
 //!
 //! Captions (`stpp`, TTML documents) do not go into the TS: neither ffmpeg
 //! nor mpv decodes TTML. Each caption asset becomes a cue list
-//! ([`CaptionTrack`]) for SRT/WebVTT sidecars, on the TS's timeline: the
-//! documents' own clock (`begin`/`end`) is aligned to the video by the
-//! earliest offset between a document's arrival — the PTS of the picture
-//! written when its MFU came — and its `begin`. On the BS recordings that
-//! offset is constant within 0.5 s per service, while the event start of
-//! the EIT is 3–18 s off.
+//! ([`CaptionTrack`]) for SRT/WebVTT sidecars, on the TS's timeline. The MPT
+//! names the documents' clock (B60 Table 9-7): with time control mode `0010`
+//! a time code counts from the `reference_start_time` in force when the
+//! document came, which moves with every event, and the sum is a UTC time as
+//! the video's presentation times are ([`Clock`]). Any other mode, and a
+//! document that this would place far from its arrival (the reference moved
+//! on while it travelled), is placed by its arrival on the NTP clock
+//! (`crates/isdb-remux/SPEC-NOTES.md`, caption-clock).
 //!
 //! The file is for decoding, not a T-STD conforming stream: there is no
 //! rate pacing; the PCR rides each picture at [`PCR_LEAD`] before its
@@ -267,6 +269,8 @@ pub struct Session {
     latest_pts: Option<i64>,
     /// The first PTS written with its NTP time: the timeline's date.
     clock: Option<Clock>,
+    /// The stream's NTP clock, as last read.
+    ntp: Option<u64>,
     /// The MH-EIT's events (the Matroska form's chapters).
     schedule: Schedule,
     /// The files of `--split-events`, once finished.
@@ -280,9 +284,21 @@ pub struct Session {
     mkv: Option<crate::mkv::Mkv>,
 }
 
-/// A caption document and its arrival (the unwrapped PTS of the last
-/// picture written when it came).
-type CaptionDoc = (Vec<u8>, Option<i64>);
+/// A caption document as it came.
+#[derive(Debug)]
+struct CaptionDoc {
+    /// The TTML.
+    bytes: Vec<u8>,
+    /// Its arrival as an unwrapped PTS ([`Session::arrival`]).
+    arrival: Option<i64>,
+    /// The asset's subtitle information then.
+    info: Option<es::SubtitleInfo>,
+}
+
+/// How far a document's reference may place it from its arrival (ms): further, and
+/// the reference is not the document's own. The recordings' are within 0.3 s; a
+/// reference moves by a whole event.
+const CAPTION_REFERENCE_TOLERANCE: i64 = 10_000;
 
 /// One caption asset's cues for the sidecars: times in milliseconds from
 /// the TS's earliest PTS (where a player's timeline starts).
@@ -329,6 +345,7 @@ impl Session {
             last_pts: None,
             latest_pts: None,
             clock: None,
+            ntp: None,
             schedule: Schedule::new(),
             written: Vec::new(),
             captions: BTreeMap::new(),
@@ -874,16 +891,33 @@ impl Session {
         }
     }
 
+    /// The stream's NTP clock read `ntp` (B60 §3.2).
+    pub fn ntp(&mut self, ntp: u64) {
+        self.ntp = Some(ntp);
+    }
+
+    /// Now as an unwrapped PTS: the NTP clock on the media's, as presentation
+    /// times are; without it, the last picture written, whose presentation is
+    /// some way ahead of its arrival.
+    fn arrival(&self) -> Option<i64> {
+        match (self.clock, self.ntp) {
+            (Some(clock), Some(ntp)) => Some(clock.ticks_of(ntp)),
+            _ => self.last_pts,
+        }
+    }
+
     /// One whole caption MFU of `pid` (B60 Table 9-1): its TTML document
-    /// is kept, with its arrival, for [`Session::finish`].
+    /// is kept, with its arrival and clock, for [`Session::finish`].
     pub fn caption_mfu(&mut self, pid: u16, data: &[u8]) {
         if let Some(sub) = es::Subtitle::parse(data)
             && sub.data_type == 0
         {
-            self.captions
-                .entry(pid)
-                .or_default()
-                .push((sub.data.to_vec(), self.last_pts));
+            let doc = CaptionDoc {
+                bytes: sub.data.to_vec(),
+                arrival: self.arrival(),
+                info: self.timing.get(&pid).and_then(|t| t.subtitle),
+            };
+            self.captions.entry(pid).or_default().push(doc);
         }
     }
 
@@ -936,8 +970,8 @@ impl Session {
         let mut rejected = 0;
         let parsed: Vec<_> = docs
             .iter()
-            .filter_map(|(bytes, arrival)| match isdb_caption::parse(bytes) {
-                Ok(d) => Some((d, *arrival)),
+            .filter_map(|doc| match isdb_caption::parse(&doc.bytes) {
+                Ok(d) => Some((d, doc)),
                 Err(e) => {
                     tracing::debug!(pid, error = %e, "caption document rejected");
                     rejected += 1;
@@ -948,18 +982,57 @@ impl Session {
         // Milliseconds from the start of the TS's timeline.
         let origin = self.first_pts.unwrap_or(0);
         let ms = |pts: i64| (pts - origin) / 90;
-        // The document clock's offset to the TS: the earliest arrival
-        // relative to its begin (no cue shows before its document came).
-        let offset = parsed
-            .iter()
-            .filter_map(|(d, arrival)| {
-                let begin = d.blocks.iter().find_map(|b| b.begin)?;
-                Some(ms((*arrival)?) - begin)
-            })
-            .min();
         let mut timeline = isdb_caption::Timeline::new();
-        for (d, arrival) in &parsed {
-            timeline.push(d, |t| offset.map(|o| t + o), arrival.map(ms));
+        let mut by_arrival = 0;
+        for (d, doc) in &parsed {
+            let arrival = doc.arrival.map(ms);
+            let first = d.blocks.iter().find_map(|b| b.begin);
+            // The time code's origin: where the first block's time places it.
+            let reference = doc
+                .info
+                .and_then(|i| i.reference_start_time)
+                .zip(self.clock);
+            let placed = |t: i64, (r, c): (u64, Clock)| ms(c.ticks_after(r, t));
+            let reference = reference.filter(|&rc| match (first, arrival) {
+                (Some(f), Some(a)) => {
+                    let near = (placed(f, rc) - a).abs() <= CAPTION_REFERENCE_TOLERANCE;
+                    by_arrival += u32::from(!near);
+                    near
+                }
+                _ => true,
+            });
+            if let Some(rc) = reference {
+                timeline.push(d, |t| Some(placed(t, rc)), arrival);
+            } else {
+                // The first block at the arrival, the rest as far after it as
+                // the document says.
+                timeline.push(d, |t| Some(arrival? + t - first?), arrival);
+            }
+        }
+        if by_arrival > 0 {
+            tracing::debug!(
+                pid,
+                by_arrival,
+                "caption documents far from their reference: placed by their arrival"
+            );
+        }
+        let modes: std::collections::BTreeSet<u8> = docs
+            .iter()
+            .filter_map(|d| d.info.map(|i| i.time_control))
+            .filter(|&m| {
+                !matches!(
+                    m,
+                    es::SubtitleInfo::TMD_REFERENCE | es::SubtitleInfo::TMD_NONE
+                )
+            })
+            .collect();
+        for mode in modes {
+            tracing::warn!(
+                pid,
+                mode,
+                "captions: time control mode (B60 Table 9-7) not implemented; \
+                 its documents are placed by their arrival"
+            );
         }
         let end = self.last_pts.map(ms);
         let cues = timeline
@@ -1662,6 +1735,172 @@ mod tests {
         assert!(arrivals.is_sorted(), "{arrivals:?}");
         drop(s);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A caption MFU (B60 Table 9-1) of the document `ttml`.
+    fn caption_mfu(ttml: &str) -> Vec<u8> {
+        let mut b = vec![0x30, 0, 0, 0, 0x00];
+        b.extend(u16::try_from(ttml.len()).unwrap().to_be_bytes());
+        b.extend(ttml.as_bytes());
+        b
+    }
+
+    /// A document shown from `begin` to `end`.
+    fn closed(begin: &str, end: &str, text: &str) -> String {
+        format!(
+            r#"<tt xmlns="http://www.w3.org/ns/ttml"><body><div begin="{begin}" end="{end}"><p>{text}</p></div></body></tt>"#
+        )
+    }
+
+    /// A document left open, with no time.
+    fn open(text: &str) -> String {
+        format!(
+            r#"<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p>{text}</p></div></body></tt>"#
+        )
+    }
+
+    /// `timed()` with the caption asset's clock (Table 9-3).
+    fn with_captions(time_control: u8, reference: Option<u64>) -> BTreeMap<u16, AssetTiming> {
+        let mut t = timed();
+        t.get_mut(&0xf330).unwrap().subtitle = Some(es::SubtitleInfo {
+            tag: 0x30,
+            version: 0,
+            language: *b"jpn",
+            kind: 0,
+            format: 0,
+            operation_mode: 1,
+            time_control,
+            display_mode: 0b1010,
+            resolution: 1,
+            compression: 0,
+            start_mpu: None,
+            reference_start_time: reference,
+            leap_indicator: reference.map(|_| 0),
+        });
+        t
+    }
+
+    /// A recorder that has written its first picture: PTS 21020 / 180000 s (116 ms
+    /// after the MPU's presentation time) after NTP second 1000, the timeline's zero.
+    fn recording(time_control: u8, reference: Option<u64>) -> Session {
+        let mut s = Session::new(Box::new(std::io::sink()), None).unwrap();
+        s.set_timing(&with_captions(time_control, reference))
+            .unwrap();
+        // Joined mid-MPU: it starts at the next.
+        feed(&mut s, 99, [31]);
+        feed(&mut s, 100, 0..2);
+        s.flush_picture().unwrap();
+        s
+    }
+
+    /// The cues of the only caption asset: `(start, end, text)`, ms.
+    fn cues(mut s: Session) -> Vec<(i64, i64, String)> {
+        let (_, tracks) = s.finish().unwrap();
+        assert_eq!(tracks.len(), 1);
+        tracks[0]
+            .cues
+            .iter()
+            .map(|c| (c.start, c.end, c.lines.join("/")))
+            .collect()
+    }
+
+    /// B60 Table 9-7, `0010`: each event's time codes count from its own reference,
+    /// so the same time code in two events is two places on the timeline.
+    #[test]
+    fn spec_b60_table_9_7_each_event_counts_from_its_reference() {
+        let mut s = recording(0b0010, Some(1000 << 32));
+        s.ntp(1005 << 32);
+        s.caption_mfu(
+            0xf330,
+            &caption_mfu(&closed("00:00:05", "00:00:07", "first")),
+        );
+        s.set_timing(&with_captions(0b0010, Some(1100 << 32)))
+            .unwrap();
+        s.ntp(1105 << 32);
+        s.caption_mfu(
+            0xf330,
+            &caption_mfu(&closed("00:00:05", "00:00:07", "second")),
+        );
+        assert_eq!(
+            cues(s),
+            vec![
+                (4_883, 6_883, "first".to_owned()),
+                (104_883, 106_883, "second".to_owned()),
+            ]
+        );
+    }
+
+    /// The MPT's new reference comes before the event's switch: the old event's
+    /// last document, read against it, would land far ahead in the next event.
+    #[test]
+    fn a_document_far_from_its_reference_is_placed_by_its_arrival() {
+        let mut s = recording(0b0010, Some(1100 << 32));
+        s.ntp(1099 << 32);
+        s.caption_mfu(0xf330, &caption_mfu(&closed("00:01:39", "00:01:41", "old")));
+        assert_eq!(cues(s), vec![(98_883, 100_883, "old".to_owned())]);
+    }
+
+    /// A document may come a little before its time, as on air: not far enough to
+    /// doubt the reference.
+    #[test]
+    fn a_document_ahead_of_its_time_keeps_it() {
+        let mut s = recording(0b0010, Some(1000 << 32));
+        s.ntp((1005 << 32) - (1 << 30));
+        s.caption_mfu(
+            0xf330,
+            &caption_mfu(&closed("00:00:05", "00:00:07", "soon")),
+        );
+        assert_eq!(cues(s), vec![(4_883, 6_883, "soon".to_owned())]);
+    }
+
+    /// B60 Table 9-7, `1111`: presented when it comes; a time code, if any, says
+    /// only how long. An open document ends at the next.
+    #[test]
+    fn spec_b60_table_9_7_without_time_control_a_document_shows_on_arrival() {
+        let mut s = recording(0b1111, None);
+        s.ntp(1010 << 32);
+        s.caption_mfu(
+            0xf330,
+            &caption_mfu(&closed("05:00:00", "05:00:02", "closed")),
+        );
+        s.ntp(1020 << 32);
+        s.caption_mfu(0xf330, &caption_mfu(&open("open")));
+        s.ntp(1023 << 32);
+        s.caption_mfu(0xf330, &caption_mfu(&open("next")));
+        let shown = cues(s);
+        assert_eq!(shown[0], (9_883, 11_883, "closed".to_owned()));
+        assert_eq!(shown[1], (19_883, 22_883, "open".to_owned()));
+        assert_eq!(shown.len(), 2, "the last opens after the last picture");
+    }
+
+    /// A stream without NTP packets still times a document, by the picture then.
+    #[test]
+    fn without_the_ntp_clock_arrival_is_the_last_picture() {
+        let mut s = recording(0b1111, None);
+        s.caption_mfu(0xf330, &caption_mfu(&closed("00:00:00", "00:00:02", "x")));
+        let last = s.last_pts.unwrap() - s.first_pts.unwrap();
+        assert_eq!(
+            cues(s),
+            vec![(last / 90, last / 90 + 2_000, "x".to_owned())]
+        );
+    }
+
+    /// Another service's caption asset in the same stream is not recorded.
+    #[test]
+    fn another_services_captions_are_not_recorded() {
+        let mut t = timed();
+        t.insert(
+            0xf331,
+            AssetTiming {
+                kind: *b"stpp",
+                service: Some(0x66),
+                ..AssetTiming::default()
+            },
+        );
+        let mut s = Session::new(Box::new(std::io::sink()), Some(0x65)).unwrap();
+        s.set_timing(&t).unwrap();
+        assert!(s.records(0xf330));
+        assert!(!s.records(0xf331));
     }
 
     /// The TS form never reads the events.

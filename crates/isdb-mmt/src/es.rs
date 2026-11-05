@@ -326,6 +326,100 @@ impl<'a> Subtitle<'a> {
     }
 }
 
+/// `data_component_id` of closed captions and superimpositions (Table 7-74).
+const CAPTION_COMPONENT: [u8; 2] = [0x00, 0x20];
+
+/// The additional arib subtitle information of a caption asset (B60 §9.3, Table
+/// 9-3), which an MH-data coding system descriptor in the MPT carries. It names the
+/// clock of the asset's documents: see [`SubtitleInfo::time_control`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubtitleInfo {
+    /// `subtitle_tag`.
+    pub tag: u8,
+    /// `subtitle_info_version`.
+    pub version: u8,
+    /// `ISO_639_language_code`.
+    pub language: [u8; 3],
+    /// `type` (Table 9-4: 0 closed caption, 1 superimposition).
+    pub kind: u8,
+    /// `subtitle_format` (Table 9-5).
+    pub format: u8,
+    /// `OPM` (Table 9-6: 0 live, 1 segment, 2 program).
+    pub operation_mode: u8,
+    /// `TMD` (Table 9-7).
+    pub time_control: u8,
+    /// `DMF` (Table 9-8).
+    pub display_mode: u8,
+    /// `resolution` (Table 9-9).
+    pub resolution: u8,
+    /// `compression_type` (Table 9-10).
+    pub compression: u8,
+    /// `start_mpu_sequence_number`, when present.
+    pub start_mpu: Option<u32>,
+    /// `reference_start_time` (NTP long format, UTC), with
+    /// [`SubtitleInfo::TMD_REFERENCE`].
+    pub reference_start_time: Option<u64>,
+    /// `reference_start_time_leap_indicator`, with the reference.
+    pub leap_indicator: Option<u8>,
+}
+
+impl SubtitleInfo {
+    /// TMD `0010`: a document's time codes count from `reference_start_time`.
+    pub const TMD_REFERENCE: u8 = 0b0010;
+    /// TMD `1111`: no time control, a document is presented when it comes.
+    pub const TMD_NONE: u8 = 0b1111;
+
+    /// Parse an MH-data coding system descriptor's body (§7.4.3.31): `None` for
+    /// another coding system, or when it is cut short.
+    pub fn parse(body: &[u8]) -> Option<SubtitleInfo> {
+        if body.get(..2)? != CAPTION_COMPONENT {
+            return None;
+        }
+        let b = body.get(2..)?;
+        let &[
+            tag,
+            version_flag,
+            l0,
+            l1,
+            l2,
+            type_format_opm,
+            tmd_dmf,
+            resolution_compression,
+            ..,
+        ] = b
+        else {
+            return None;
+        };
+        let time_control = tmd_dmf >> 4;
+        let mut p = 8;
+        let mut start_mpu = None;
+        if version_flag & 0x08 != 0 {
+            start_mpu = Some(u32::from_be_bytes(b.get(p..p + 4)?.try_into().ok()?));
+            p += 4;
+        }
+        let (mut reference_start_time, mut leap_indicator) = (None, None);
+        if time_control == Self::TMD_REFERENCE {
+            reference_start_time = Some(u64::from_be_bytes(b.get(p..p + 8)?.try_into().ok()?));
+            leap_indicator = Some(*b.get(p + 8)? >> 6);
+        }
+        Some(SubtitleInfo {
+            tag,
+            version: version_flag >> 4,
+            language: [l0, l1, l2],
+            kind: type_format_opm >> 6,
+            format: (type_format_opm >> 2) & 0x0f,
+            operation_mode: type_format_opm & 0x03,
+            time_control,
+            display_mode: tmd_dmf & 0x0f,
+            resolution: resolution_compression >> 4,
+            compression: resolution_compression & 0x0f,
+            start_mpu,
+            reference_start_time,
+            leap_indicator,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +512,63 @@ mod tests {
         let s = Subtitle::parse(&b).unwrap();
         assert_eq!((s.tag, s.data_type, s.extension()), (0x30, 0, "ttml"));
         assert_eq!(s.data, b"<tt/>");
+    }
+
+    /// Table 9-3 with a reference start time: the fields at their bit positions.
+    #[test]
+    fn spec_table_9_3_subtitle_info_with_a_reference() {
+        let mut body = vec![0x00, 0x20, 0x30, 0x07];
+        body.extend(b"jpn");
+        body.extend([0x01, 0x2a, 0x10]);
+        body.extend(0xee95_e310_0000_0000u64.to_be_bytes());
+        body.push(0x3f);
+        let i = SubtitleInfo::parse(&body).unwrap();
+        assert_eq!(i.tag, 0x30);
+        assert_eq!(i.version, 0);
+        assert_eq!(i.language, *b"jpn");
+        assert_eq!((i.kind, i.format, i.operation_mode), (0, 0, 1));
+        assert_eq!(i.time_control, SubtitleInfo::TMD_REFERENCE);
+        assert_eq!(i.display_mode, 0b1010);
+        assert_eq!((i.resolution, i.compression), (1, 0));
+        assert_eq!(i.start_mpu, None);
+        assert_eq!(i.reference_start_time, Some(0xee95_e310_0000_0000));
+        assert_eq!(i.leap_indicator, Some(0));
+    }
+
+    /// Table 9-3: the start MPU precedes the reference; without control, no reference.
+    #[test]
+    fn spec_table_9_3_subtitle_info_optional_fields() {
+        let mut body = vec![0x00, 0x20, 0x38, 0x18];
+        body.extend(b"eng");
+        body.extend([0x41, 0x2a, 0x00]);
+        body.extend(7u32.to_be_bytes());
+        body.extend(0x1122_3344_5566_7788u64.to_be_bytes());
+        body.push(0x80);
+        let i = SubtitleInfo::parse(&body).unwrap();
+        assert_eq!((i.version, i.kind), (1, 1));
+        assert_eq!(i.start_mpu, Some(7));
+        assert_eq!(i.reference_start_time, Some(0x1122_3344_5566_7788));
+        assert_eq!(i.leap_indicator, Some(2));
+        let mut none = vec![0x00, 0x20, 0x38, 0x07];
+        none.extend(b"jpn");
+        none.extend([0x41, 0xf2, 0x10]);
+        let i = SubtitleInfo::parse(&none).unwrap();
+        assert_eq!(i.time_control, SubtitleInfo::TMD_NONE);
+        assert_eq!(i.reference_start_time, None);
+    }
+
+    #[test]
+    fn subtitle_info_refuses_what_it_cannot_read() {
+        // Another coding system (multimedia, Table 7-74).
+        assert_eq!(
+            SubtitleInfo::parse(&[0x00, 0x21, 0, 0, 0, 0, 0, 0, 0, 0]),
+            None
+        );
+        // Cut short: the header, and a promised reference.
+        assert_eq!(SubtitleInfo::parse(&[0x00, 0x20, 0x30]), None);
+        let mut cut = vec![0x00, 0x20, 0x30, 0x07];
+        cut.extend(b"jpn");
+        cut.extend([0x01, 0x2a, 0x10, 0xee]);
+        assert_eq!(SubtitleInfo::parse(&cut), None);
     }
 }

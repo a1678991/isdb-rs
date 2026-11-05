@@ -25,6 +25,13 @@ use tracing::{debug, trace};
 /// NTP's UDP port (§3.2).
 pub const NTP_PORT: u16 = 123;
 
+/// An NTP packet's `transmit_timestamp`: the last 8 bytes of the 48-byte format
+/// (Table 3-1).
+#[must_use]
+pub fn ntp_transmit_timestamp(payload: &[u8]) -> Option<u64> {
+    Some(u64::from_be_bytes(payload.get(40..48)?.try_into().ok()?))
+}
+
 /// Key of a section-format table instance.
 type SectionKey = (u8, u16, u8);
 
@@ -167,10 +174,8 @@ impl Decoder {
     fn datagram(&mut self, d: &Datagram, mfus: &mut Vec<Mfu>) {
         if d.flow.as_ref().is_some_and(|f| f.dport == NTP_PORT) {
             self.counters.ntp += 1;
-            // transmit_timestamp: the last 8 bytes of the 48-byte format
-            // (Table 3-1)
-            if let Some(t) = d.payload.get(40..48) {
-                self.ntp = Some(u64::from_be_bytes(t.try_into().unwrap_or_default()));
+            if let Some(t) = ntp_transmit_timestamp(&d.payload) {
+                self.ntp = Some(t);
             }
             return;
         }

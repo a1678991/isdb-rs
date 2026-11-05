@@ -87,6 +87,17 @@ impl Clock {
         self.ticks + (rounded(from + distance) - rounded(from)) as i64
     }
 
+    /// The unwrapped PTS `ms` milliseconds after the NTP timestamp `ntp`.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "onto the NTP timestamp's own 64-bit ring"
+    )]
+    pub fn ticks_after(self, ntp: u64, ms: i64) -> i64 {
+        self.ticks_of(ntp.wrapping_add(((i128::from(ms) << 32) / 1000) as u64))
+    }
+
     /// The NTP timestamp of an unwrapped PTS.
     #[must_use]
     #[allow(
@@ -180,6 +191,17 @@ fn to_90k(units: i128, scale: i128) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ticks_after_counts_from_an_ntp_time() {
+        let clock = Clock {
+            ticks: 1_000,
+            ntp: 7000 << 32,
+        };
+        assert_eq!(clock.ticks_after(7000 << 32, 0), 1_000);
+        assert_eq!(clock.ticks_after(7010 << 32, 1_500), 1_000 + 115 * 9_000);
+        assert_eq!(clock.ticks_after(6990 << 32, 1_000), 1_000 - 9 * 90_000);
+    }
     use isdb_mmt::desc::MpuExtended;
 
     /// The BS7 video's on-air row: the 8-picture cycle ×4.

@@ -9,7 +9,8 @@
 //! accumulate ([`AssetTiming`]); [`crate::timing::au_times`] resolves
 //! them.
 
-use isdb_mmt::desc::{Descriptor, MpuExtended};
+use isdb_mmt::desc::{Descriptor, MpuExtended, tag};
+use isdb_mmt::es::SubtitleInfo;
 use isdb_mmt::message::TableBytes;
 use isdb_mmt::table::Mpt;
 use std::collections::BTreeMap;
@@ -38,6 +39,9 @@ pub struct AssetTiming {
     /// Its per-MPU rows (the decode-order AU offsets), by MPU sequence
     /// number; the default PTS offset already filled in.
     pub rows: BTreeMap<u32, MpuExtended>,
+    /// A caption asset's additional arib subtitle information in force (the
+    /// latest MPT copy's): the clock of its documents (B60 Table 9-3).
+    pub subtitle: Option<SubtitleInfo>,
 }
 
 impl AssetTiming {
@@ -66,6 +70,14 @@ impl AssetTiming {
                 for m in &e.mpus {
                     changed |= self.rows.get(&m.mpu_sequence_number) != Some(m);
                     self.rows.insert(m.mpu_sequence_number, m.clone());
+                }
+            }
+            Descriptor::Other(r) if r.tag == tag::DATA_CODING => {
+                if let Some(info) = SubtitleInfo::parse(&r.body)
+                    && self.subtitle != Some(info)
+                {
+                    self.subtitle = Some(info);
+                    changed = true;
                 }
             }
             _ => {}
@@ -191,5 +203,32 @@ mod tests {
         });
         assert_eq!(component_language(&[a]), (Some("jpn".into()), Some(0x09)));
         assert_eq!(component_language(&[]), (None, None));
+    }
+
+    /// The reference moves with each event: a new one is a change, and what
+    /// is not caption information leaves it.
+    #[test]
+    fn subtitle_info_follows_the_mpt() {
+        let info = |reference: u8| {
+            let mut body = vec![0x00, 0x20, 0x30, 0x07];
+            body.extend(b"jpn");
+            body.extend([0x01, 0x2a, 0x10, reference, 0, 0, 0, 0, 0, 0, 0, 0x3f]);
+            Descriptor::Other(Raw {
+                tag: tag::DATA_CODING,
+                body,
+            })
+        };
+        let mut a = AssetTiming::default();
+        assert!(a.add(&info(1)));
+        assert!(!a.add(&info(1)), "another copy of the same");
+        assert!(a.add(&info(2)));
+        let held = a.subtitle.and_then(|i| i.reference_start_time);
+        assert_eq!(held, Some(2u64 << 56));
+        let multimedia = Descriptor::Other(Raw {
+            tag: tag::DATA_CODING,
+            body: vec![0x00, 0x21, 0, 0, 0, 0, 0, 0, 0, 0],
+        });
+        assert!(!a.add(&multimedia));
+        assert_eq!(a.subtitle.and_then(|i| i.reference_start_time), held);
     }
 }
