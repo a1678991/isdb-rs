@@ -802,7 +802,7 @@ impl Session {
         };
         let ts_pid = stream.ts_pid;
         if let Some(m) = self.mkv.as_mut() {
-            m.data(pid, mpu, item, data, self.last_pts);
+            m.data(pid, mpu, item, data, self.latest_pts);
             self.counts.data += 1;
             return Ok(());
         }
@@ -1636,6 +1636,30 @@ mod tests {
         assert_eq!(sequences(&s), 1, "a changed SPS");
         s.video_mfu(0xf300, 101, &nal(&[36 << 1, 1])).unwrap();
         assert_eq!(sequences(&s), 2, "an end of sequence");
+        drop(s);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A data item's arrival never goes back, though pictures come in decode
+    /// order, their PTSs reordered: a cut selects items by a search over arrivals.
+    #[test]
+    fn data_arrivals_never_go_back_over_reordered_pictures() {
+        let dir = std::env::temp_dir().join(format!("isdb-remux-arrival-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mkv = crate::mkv::Mkv::create(&dir.join("out.mkv"), "test").unwrap();
+        let mut s = Session::new(Box::new(std::io::sink()), None)
+            .unwrap()
+            .with_mkv(mkv);
+        s.set_timing(&timed()).unwrap();
+        feed(&mut s, 100, 0..1);
+        // Trailing pictures, whose display order is not their decode order.
+        for i in 0..32 {
+            feed(&mut s, 101, i..=i);
+            s.data_mfu(0xf340, 7, Some(0), b"x").unwrap();
+        }
+        let arrivals = s.mkv.as_ref().unwrap().arrivals();
+        assert!(arrivals.len() > 8, "{arrivals:?}");
+        assert!(arrivals.is_sorted(), "{arrivals:?}");
         drop(s);
         std::fs::remove_dir_all(&dir).unwrap();
     }
