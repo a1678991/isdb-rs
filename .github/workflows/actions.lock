@@ -7,7 +7,7 @@ workflows:
         - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
         - 'dorny/paths-filter@v4.0.3'
-        - 'jdx/mise-action@v5.2.7'
+        - 'jdx/mise-action@v5.2.8'
         - 'swatinem/rust-cache@v2.9.3'
     '.github/workflows/dependabot-automerge.yml':
         - 'dependabot/fetch-metadata@v3.1.0'
@@ -32,9 +32,9 @@ dependencies:
         commit: 'sha1-ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d'
         owner_id: 1588572
         repo_id: 265601040
-    'jdx/mise-action@v5.2.7':
-        ref: 'v5.2.7'
-        commit: 'sha1-b44d12e7d0d8ee7461bb893e1b1993500433185b'
+    'jdx/mise-action@v5.2.8':
+        ref: 'v5.2.8'
+        commit: 'sha1-d5574b52816a478f9d4e6529a3f6ff17a8a36785'
         owner_id: 216188
         repo_id: 738284564
     'swatinem/rust-cache@v2.9.3':
